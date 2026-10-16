@@ -91,3 +91,45 @@ test("reopening after a close loads again (StrictMode remount)", async () => {
   assert.equal(await run, true);
   assert.equal(h.owner.loadedId, "kokoro");
 });
+
+// A page that left mid-load unloads by model id. A new page adopting the same
+// voice in that window must not have it unloaded under it.
+test("a new page keeps the voice an old page's stale cleanup would unload", async () => {
+  const served = new Set<string>();
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const api = async () => ({
+    voiceServing: async (id: string) => served.has(id),
+    loadVoice: async (id: string) => {
+      await sleep(10);
+      served.add(id);
+    },
+    unloadVoice: async (id: string) => {
+      await sleep(5);
+      served.delete(id);
+    },
+  });
+  const owner = () =>
+    createVoiceSlotOwner({
+      api,
+      pickedVoice: () => "kokoro",
+      hasChatModel: () => true,
+      voiceOff: () => false,
+      setLoaded: () => {},
+      setLoading: () => {},
+      onError: (error) => {
+        throw error;
+      },
+    });
+  const oldPage = owner();
+  oldPage.open();
+  const oldRun = oldPage.ensure();
+  await sleep(1);
+  oldPage.close();
+  const newPage = owner();
+  newPage.open();
+  assert.equal(await newPage.ensure(), true);
+  assert.equal(await oldRun, false);
+  await sleep(30);
+  assert.equal(newPage.loadedId, "kokoro");
+  assert.ok(served.has("kokoro"), "the new page's voice was unloaded under it");
+});

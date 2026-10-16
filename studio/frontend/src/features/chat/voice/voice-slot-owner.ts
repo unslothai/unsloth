@@ -30,6 +30,15 @@ export type VoiceSlotOwner = {
   readonly pending: Promise<boolean> | null;
 };
 
+// Every owner's loads and unloads run one after another: a page that left can
+// still be unloading the voice a new page is about to adopt by id.
+let slotTail: Promise<unknown> = Promise.resolve();
+function serial<T>(op: () => Promise<T>): Promise<T> {
+  const next = slotTail.then(op, op);
+  slotTail = next.catch(() => {});
+  return next;
+}
+
 export function createVoiceSlotOwner(deps: VoiceSlotOwnerDeps): VoiceSlotOwner {
   let loaded: string | null = null;
   let pending: Promise<boolean> | null = null;
@@ -43,16 +52,15 @@ export function createVoiceSlotOwner(deps: VoiceSlotOwnerDeps): VoiceSlotOwner {
     loaded = null;
     deps.setLoaded(false);
     if (id) {
-      void deps
-        .api()
-        .then(({ unloadVoice }) => unloadVoice(id))
-        .catch(() => {});
+      void serial(() =>
+        deps.api().then(({ unloadVoice }) => unloadVoice(id)),
+      ).catch(() => {});
     }
   };
 
   const ensure = (): Promise<boolean> => {
     if (pending) return pending;
-    const run = (async () => {
+    const run = serial(async () => {
       const id = deps.pickedVoice();
       try {
         const { loadVoice, unloadVoice, voiceServing } = await deps.api();
@@ -87,7 +95,7 @@ export function createVoiceSlotOwner(deps: VoiceSlotOwnerDeps): VoiceSlotOwner {
         deps.setLoading(false);
         pending = null;
       }
-    })();
+    });
     pending = run;
     return run;
   };
