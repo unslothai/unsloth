@@ -31,3 +31,9 @@ test("header controls use the app's tooltip, not the browser's title", () => {
   assert.match(panel, /<HeaderTip label=\{compact \? "Expand files" : "Collapse files"\}>/);
   assert.match(panel, /<HeaderTip label=\{closeLabel \?\? "Close"\}>/);
 });
+
+test("the RAG tag's menu offers Show files, with the count, while the panel is hidden", () => {
+  const menu = readSrc("features/rag/components/knowledge-base-composer-button.tsx");
+  assert.match(menu, /\{ragPanelHidden \? \([\s\S]*?onSelect=\{\(\) => setRagPanelHidden\(false\)\}[\s\S]*?Show files[\s\S]*?\{ragPanelFileCount\}/);
+  assert.match(bar, /setRagPanelFileCount\(fileCount\);\n\s*\}, \[fileCount\]\);/);
+});
