@@ -6389,7 +6389,8 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	display: none;
 }
 .unsloth-files-panel[data-collapsed="true"] {
-	@apply gap-2.5 pt-3 pb-3;
+	/* pt-2.5 + the 32px header row's 2px around the Add files pill = the pills' 12px below. */
+	@apply gap-2.5 pt-2.5 pb-3;
 }
 /* Dropdown-surface look. Hover washes over the solid fill, never replaces it (it would turn see-through). */
 .unsloth-files-panel-show-all {
