@@ -23,6 +23,7 @@ import types
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _PATH = os.path.join(_ROOT, "unsloth", "optimizers", "state_offload.py")
@@ -136,7 +137,7 @@ def _bnb_factory():
     return lambda p: bnb.optim.AdamW8bit(p, lr = 1e-3)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 @pytest.mark.parametrize("name", ["adamw", "adamw_foreach", "adamw_fused", "adamw_8bit"])
 @pytest.mark.parametrize("chunk_bytes", [None, 1])
 def test_offload_matches_on_device_steps_and_resumes(name, chunk_bytes):
@@ -170,7 +171,7 @@ def test_offload_matches_on_device_steps_and_resumes(name, chunk_bytes):
     assert _state_devices(resumed_opt) == {"cpu"}
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_chunked_step_bounds_device_state_and_keeps_grads():
     module = _module()
     params = [torch.nn.Parameter(torch.randn(1 << 20, device = "cuda")) for _ in range(4)]
@@ -257,7 +258,7 @@ def test_nested_state_tensors_are_sized():
     assert len(offloader._chunks([param, other])) == 2
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_nested_state_object_round_trip():
     module = _module()
     param = torch.nn.Parameter(torch.randn(64, device = "cuda"))
@@ -278,7 +279,7 @@ def test_nested_state_object_round_trip():
     assert projector.ortho_matrix.device.type == "cpu"
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_layerwise_optimizer_dict_is_offloaded():
     module = _module()
     LayerWiseDummyOptimizer = pytest.importorskip(
@@ -368,7 +369,7 @@ def test_list_state_tensors_are_sized():
     assert len(module._StateOffloader(optimizer, chunk_bytes = 100)._chunks(params)) == 2
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_lbfgs_history_is_offloaded():
     module = _module()
     torch.manual_seed(0)
@@ -450,7 +451,7 @@ def _big_params(n = 4, numel = 1 << 20):
     return [torch.nn.Parameter(torch.randn(numel, device = "cuda")) for _ in range(n)]
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 @pytest.mark.parametrize("fused", [False, True])
 def test_load_state_dict_keeps_state_on_host(fused):
     module = _module()
@@ -490,7 +491,7 @@ def test_load_state_dict_keeps_state_on_host(fused):
     assert _state_devices(optimizer) == {"cpu"}
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_resumed_bitsandbytes_first_step_stays_chunked():
     bnb = pytest.importorskip("bitsandbytes")
     module = _module()
