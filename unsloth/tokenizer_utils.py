@@ -1797,24 +1797,24 @@ def check_tokenizer(
                     from_slow = True,
                     cache_dir = reload_cache_dir,
                 )
-                return check_tokenizer(
-                    model = model,
-                    tokenizer = tokenizer,
-                    model_name = model_name,
-                    model_max_length = model_max_length,
-                    padding_side = padding_side,
-                    token = token,
-                    _reload = False,
-                    cache_dir = cache_dir,
-                )
-                break
-            except:
+            except Exception:
                 logger.warning_once(
                     "Unsloth: Tokenizer is most likely buggy, and Unsloth failed to repair it.\n"
                     "It will still work, but beware of out of bounds memory accesses.\n"
                     "Please file an issue on the model owner's repo about this issue."
                 )
                 return tokenizer
+            # Outside the try: an unrepairable tokenizer must raise, not come back with a warning.
+            return check_tokenizer(
+                model = model,
+                tokenizer = tokenizer,
+                model_name = model_name,
+                model_max_length = model_max_length,
+                padding_side = padding_side,
+                token = token,
+                _reload = False,
+                cache_dir = cache_dir,
+            )
     return convert_to_fast_tokenizer(tokenizer)
 
 
