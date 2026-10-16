@@ -600,7 +600,9 @@ def test_dense_fallback_fills_the_staged_snapshot_in_its_own_cache_root(monkeypa
         return str(snap)
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_download)
-    assert tpq._fetch_dense_components(str(snap), ["text_encoder"], hf_token = None, local_files_only = False)
+    assert tpq._fetch_dense_components(
+        str(snap), ["text_encoder"], hf_token = None, local_files_only = False
+    )
     repo_id, kwargs = calls[0]
     assert repo_id == "Qwen/Qwen-Image"
     assert kwargs["cache_dir"] == str(tmp_path / "secondary")
@@ -616,8 +618,12 @@ def test_dense_fallback_into_another_snapshot_is_not_reported_as_filled(monkeypa
     snap = tmp_path / "models--Qwen--Qwen-Image" / "snapshots" / ("b" * 40)
     snap.mkdir(parents = True)
     monkeypatch.setattr(ml, "_hosted_component_cached", lambda *a, **k: False)
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda *a, **k: str(tmp_path / "elsewhere"))
-    assert not tpq._fetch_dense_components(str(snap), ["text_encoder"], hf_token = None, local_files_only = False)
+    monkeypatch.setattr(
+        huggingface_hub, "snapshot_download", lambda *a, **k: str(tmp_path / "elsewhere")
+    )
+    assert not tpq._fetch_dense_components(
+        str(snap), ["text_encoder"], hf_token = None, local_files_only = False
+    )
 
 
 @pytest.mark.parametrize("name", INT8_DEFAULTS)
@@ -628,11 +634,21 @@ def test_a_kept_lm_head_keeps_the_automatic_int8_default_dense(name, monkeypatch
     monkeypatch.setenv(KEEP_LM_HEAD_ENV, "1")
     fam = _fam(name)
     mode, _ = resolve_te_quant_request(None, fam.te_quant_auto)
-    assert tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = mode, target = CUDA_BF16) == {}
+    assert (
+        tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = mode, target = CUDA_BF16)
+        == {}
+    )
     with tpq.auto_te_request(True):
-        assert tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16) == {}
+        assert (
+            tpq.te_prequant_sources_for_base(
+                fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16
+            )
+            == {}
+        )
     # an explicit int8 still takes the fp8 file, which carries the head
-    explicit = tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16)
+    explicit = tpq.te_prequant_sources_for_base(
+        fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16
+    )
     assert all("FP8" in s.filename for s in explicit.values()) and explicit
     monkeypatch.setattr(prec, "te_quant_supported", lambda *a, **k: True)
     out = prec.quantize_text_encoders(
@@ -641,12 +657,13 @@ def test_a_kept_lm_head_keeps_the_automatic_int8_default_dense(name, monkeypatch
     assert out.mode is None and KEEP_LM_HEAD_ENV in out.reason
 
 
-MPS_TARGET = types.SimpleNamespace(device = "mps", dtype = torch.bfloat16, backend = "mps", supports_model_cpu_offload = False)
+MPS_TARGET = types.SimpleNamespace(
+    device = "mps", dtype = torch.bfloat16, backend = "mps", supports_model_cpu_offload = False
+)
 
 
 def _preflight(fam, te_mode):
     from core.inference.diffusion import DiffusionBackend
-
     DiffusionBackend()._assert_precision_for_target(
         fam,
         MPS_TARGET,
@@ -675,7 +692,9 @@ def test_mps_preflight_still_refuses_explicit_fp8():
 _DEVICES = {
     "cuda": CUDA_BF16,
     "mps": MPS_TARGET,
-    "cpu": types.SimpleNamespace(device = "cpu", dtype = torch.bfloat16, backend = "cpu", supports_model_cpu_offload = False),
+    "cpu": types.SimpleNamespace(
+        device = "cpu", dtype = torch.bfloat16, backend = "cpu", supports_model_cpu_offload = False
+    ),
 }
 _HOSTING = sorted(n for n in tpq.TE_INT8_CONVROT_FILES if any(f.name == n for f in _FAMILIES))
 
@@ -716,12 +735,17 @@ def test_explicit_int8_takes_the_hosted_file_table(name, device, present, keep_h
         assert checked in ("int8", "fp8")
     # a supplied encoder for a hosted component replaces the file
     comp = next(iter(tpq.TE_INT8_CONVROT_FILES[name]))
-    assert tpq.explicit_int8_takes_hosted_file(fam, fam.base_repo, target, supplied = (comp,)) is False
+    assert (
+        tpq.explicit_int8_takes_hosted_file(fam, fam.base_repo, target, supplied = (comp,)) is False
+    )
 
 
 def test_explicit_int8_on_a_custom_base_does_not_take_the_hosted_file(monkeypatch):
     target = _table_env(monkeypatch, "mps", True, False)
-    assert tpq.explicit_int8_takes_hosted_file(_fam("qwen-image"), "someone/custom-qwen-image", target) is False
+    assert (
+        tpq.explicit_int8_takes_hosted_file(_fam("qwen-image"), "someone/custom-qwen-image", target)
+        is False
+    )
 
 
 @pytest.mark.parametrize("present", [True, False])
@@ -733,8 +757,14 @@ def test_mps_preflight_refuses_explicit_int8_unless_the_file_will_load(present, 
 
     def run():
         DiffusionBackend()._assert_precision_for_target(
-            fam, target, model_kind = "pipeline", pinned = None, te_mode = "int8", memory_mode = None,
-            cpu_offload = False, base_repo = fam.base_repo,
+            fam,
+            target,
+            model_kind = "pipeline",
+            pinned = None,
+            te_mode = "int8",
+            memory_mode = None,
+            cpu_offload = False,
+            base_repo = fam.base_repo,
         )
 
     if present:
@@ -751,7 +781,9 @@ def test_mps_preflight_refuses_explicit_int8_with_a_kept_lm_head(monkeypatch):
 
 
 @pytest.mark.parametrize("present", [True, False])
-def test_explicit_int8_under_offload_checks_torchao_when_the_file_will_not_load(present, monkeypatch):
+def test_explicit_int8_under_offload_checks_torchao_when_the_file_will_not_load(
+    present, monkeypatch
+):
     import core.inference.diffusion as D
     import core.inference.diffusion_precision as prec
 
@@ -759,12 +791,20 @@ def test_explicit_int8_under_offload_checks_torchao_when_the_file_will_not_load(
     monkeypatch.setattr(prec, "torchao_quantize_importable", lambda: True)
     monkeypatch.setattr(D, "torchao_quantize_importable", lambda: True)
     fam = _fam("qwen-image")
-    assert prec.preflight_te_quant("int8", fam, fam.base_repo, target) == (None if present else "int8")
+    assert prec.preflight_te_quant("int8", fam, fam.base_repo, target) == (
+        None if present else "int8"
+    )
 
     def run():
         D.DiffusionBackend()._assert_precision_for_target(
-            fam, target, model_kind = "pipeline", pinned = None, te_mode = "int8", memory_mode = "balanced",
-            cpu_offload = True, base_repo = fam.base_repo,
+            fam,
+            target,
+            model_kind = "pipeline",
+            pinned = None,
+            te_mode = "int8",
+            memory_mode = "balanced",
+            cpu_offload = True,
+            base_repo = fam.base_repo,
         )
 
     if present:
@@ -781,9 +821,13 @@ def test_hidream_loads_the_hosted_int8_te4_on_mps(monkeypatch):
 
     monkeypatch.delenv("UNSLOTH_TE_KEEP_LM_HEAD", raising = False)
     monkeypatch.setattr(prec, "te_quant_supported", lambda target, mode: False)
-    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", staticmethod(lambda *a, **k: "tok4"))
     monkeypatch.setattr(
-        transformers.LlamaForCausalLM, "from_pretrained", staticmethod(lambda *a, **k: pytest.fail("dense TE4"))
+        transformers.AutoTokenizer, "from_pretrained", staticmethod(lambda *a, **k: "tok4")
+    )
+    monkeypatch.setattr(
+        transformers.LlamaForCausalLM,
+        "from_pretrained",
+        staticmethod(lambda *a, **k: pytest.fail("dense TE4")),
     )
     loaded = []
     sentinel = object()
@@ -793,7 +837,9 @@ def test_hidream_loads_the_hosted_int8_te4_on_mps(monkeypatch):
         return sentinel
 
     monkeypatch.setattr(tpq, "load_prequant_text_encoder", fake_load)
-    out = dh.hidream_te4_kwargs(None, None, fam = _fam("hidream-i1"), te_quant_mode = "int8", target = MPS_TARGET)
+    out = dh.hidream_te4_kwargs(
+        None, None, fam = _fam("hidream-i1"), te_quant_mode = "int8", target = MPS_TARGET
+    )
     assert out["text_encoder_4"] is sentinel
     assert loaded == [("HiDream-I1-Full-text_encoder_4-INT8-ConvRot.safetensors", "int8")]
 
@@ -805,33 +851,45 @@ def _hidream_mps(monkeypatch, *, load):
     monkeypatch.delenv("UNSLOTH_TE_KEEP_LM_HEAD", raising = False)
     monkeypatch.setattr(prec, "te_quant_supported", lambda target, mode: False)
     monkeypatch.setattr(prec, "_cast_fp8", lambda *a, **k: pytest.fail("fp8 cast on MPS"))
-    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", staticmethod(lambda *a, **k: "tok4"))
+    monkeypatch.setattr(
+        transformers.AutoTokenizer, "from_pretrained", staticmethod(lambda *a, **k: "tok4")
+    )
     dense = torch.nn.Linear(2, 2)
-    monkeypatch.setattr(transformers.LlamaForCausalLM, "from_pretrained", staticmethod(lambda *a, **k: dense))
+    monkeypatch.setattr(
+        transformers.LlamaForCausalLM, "from_pretrained", staticmethod(lambda *a, **k: dense)
+    )
     monkeypatch.setattr(tpq, "load_prequant_text_encoder", lambda *a, **k: load)
     return dense
 
 
 def test_hidream_explicit_int8_on_mps_refuses_when_the_te4_file_fails(monkeypatch):
     import core.inference.diffusion_hidream as dh
-
     _hidream_mps(monkeypatch, load = None)
     with pytest.raises(RuntimeError, match = "text_encoder_4"):
-        dh.hidream_te4_kwargs(None, None, fam = _fam("hidream-i1"), te_quant_mode = "int8", target = MPS_TARGET)
+        dh.hidream_te4_kwargs(
+            None, None, fam = _fam("hidream-i1"), te_quant_mode = "int8", target = MPS_TARGET
+        )
 
 
 def test_hidream_none_on_mps_still_loads_the_dense_te4(monkeypatch):
     import core.inference.diffusion_hidream as dh
 
     dense = _hidream_mps(monkeypatch, load = None)
-    out = dh.hidream_te4_kwargs(None, None, fam = _fam("hidream-i1"), te_quant_mode = None, target = MPS_TARGET)
+    out = dh.hidream_te4_kwargs(
+        None, None, fam = _fam("hidream-i1"), te_quant_mode = None, target = MPS_TARGET
+    )
     assert out["text_encoder_4"] is dense
 
 
 # ---- review round 4: both cache roots --------------------------------------------------------------------------
 
 
-def _cache_file(root, repo, name, rev = "c" * 40):
+def _cache_file(
+    root,
+    repo,
+    name,
+    rev = "c" * 40,
+):
     repo_dir = root / ("models--" + repo.replace("/", "--"))
     (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
     (repo_dir / "refs" / "main").write_text(rev)
@@ -867,7 +925,9 @@ def test_a_hosted_encoder_in_either_cache_root_is_confirmed_offline(where, monke
     tpq._confirmed_cache.clear()
     assert tpq._held_locally(*_QWEN25VL_INT8, None)
     fam = _fam("qwen-image")
-    sources = tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16)
+    sources = tpq.te_prequant_sources_for_base(
+        fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16
+    )
     assert tpq.te_prequant_sources_confirmed(sources)
 
 

@@ -305,7 +305,11 @@ def te_prequant_budget_scale(
 
 
 def explicit_int8_takes_hosted_file(
-    fam: Any, base: Optional[str], target: Any, *, supplied: Iterable[str] = ()
+    fam: Any,
+    base: Optional[str],
+    target: Any,
+    *,
+    supplied: Iterable[str] = (),
 ) -> bool:
     """Whether an explicit int8 request on ``fam`` / ``base`` will load the hosted int8 ConvRot file for EVERY
     encoder the family hosts one for (HiDream's text_encoder_4 included) on ``target``: the device runs the file,
@@ -320,13 +324,14 @@ def explicit_int8_takes_hosted_file(
         extra: dict[str, Any] = {"components": tuple(hosted)}
         if "text_encoder_4" in hosted:
             from .diffusion_hidream import HIDREAM_LLAMA_REPO
-
             extra["standalone_component_bases"] = {"text_encoder_4": HIDREAM_LLAMA_REPO}
         sources: dict[str, TePrequantSource] = {}
         for component in hosted:
             # TE4 is matched against its own standalone repo, the rest against the selected base.
-            component_base = extra.get("standalone_component_bases", {}).get(component) or base or getattr(
-                fam, "base_repo", ""
+            component_base = (
+                extra.get("standalone_component_bases", {}).get(component)
+                or base
+                or getattr(fam, "base_repo", "")
             )
             got = te_prequant_sources_for_base(
                 fam,
@@ -334,7 +339,11 @@ def explicit_int8_takes_hosted_file(
                 te_quant_mode = "int8",
                 target = target,
                 components = (component,),
-                **({"standalone_component_bases": extra["standalone_component_bases"]} if component == "text_encoder_4" else {}),
+                **(
+                    {"standalone_component_bases": extra["standalone_component_bases"]}
+                    if component == "text_encoder_4"
+                    else {}
+                ),
             ).get(component)
             if got is None or (got.kind == "repo" and _is_fp8_te_name(got.filename)):
                 return False
@@ -1331,7 +1340,10 @@ def _held_locally(repo_id: str, name: Optional[str], hf_token: Optional[str]) ->
         from .diffusion_prequant import _cached_in_root
 
         source = types.SimpleNamespace(kind = "repo", location = repo_id, filename = name)
-        return any(_cached_in_root(source, root, name) is not None for root in (active_hf_hub_cache(), None))
+        return any(
+            _cached_in_root(source, root, name) is not None
+            for root in (active_hf_hub_cache(), None)
+        )
     except Exception:  # noqa: BLE001 - not cached, or unanswerable
         return False
 

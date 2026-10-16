@@ -158,7 +158,12 @@ def effective_te_quant(mode: Optional[str], family: Optional[str]) -> Optional[s
 
 
 def preflight_te_quant(
-    mode: Optional[str], fam: Any, base: Optional[str], target: Any, *, supplied: Any = ()
+    mode: Optional[str],
+    fam: Any,
+    base: Optional[str],
+    target: Any,
+    *,
+    supplied: Any = (),
 ) -> Optional[str]:
     """The text-encoder mode a pre-load gate must check for an EXPLICIT request: None when an int8 request will
     load the hosted int8 ConvRot file (plain tensors, no torchao, offload-safe, runs on MPS), else the mode the
@@ -372,7 +377,6 @@ def _quantize_text_encoders(
         why = "is not available (not published yet, offline, or refused, see the server log)"
         if mode == TE_QUANT_INT8 and _family_hosts_te_int8(family):
             from .diffusion_text_encoder_trim import KEEP_LM_HEAD_ENV, family_trims_lm_head
-
             if not family_trims_lm_head(family):
                 why = f"carries no lm_head, which {KEEP_LM_HEAD_ENV} keeps"
         _note(logger, f"automatic {label} text encoder not used; keeping the dense bf16 encoder")

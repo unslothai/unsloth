@@ -85,7 +85,9 @@ def hidream_te4_kwargs(
             # fp8 (the hosted fp8 file, else a dense load and cast) needs fp8 support; int8 takes the hosted int8
             # ConvRot file, which Apple Silicon runs as plain tensors where fp8 does not.
             fp8_engages = (
-                mode in (TE_QUANT_FP8, "int8") and te_quant_supported(target, TE_QUANT_FP8) and allowed
+                mode in (TE_QUANT_FP8, "int8")
+                and te_quant_supported(target, TE_QUANT_FP8)
+                and allowed
             )
             hosted_int8 = mode == "int8" and allowed and int8_convrot_te_runs_on(target)
         except Exception:  # noqa: BLE001 -- quant probe failure keeps the dense bf16 path
@@ -96,6 +98,7 @@ def hidream_te4_kwargs(
             load_prequant_text_encoder,
             te_prequant_sources_for_base,
         )
+
         source = te_prequant_sources_for_base(
             fam,
             HIDREAM_LLAMA_REPO,
@@ -129,7 +132,6 @@ def hidream_te4_kwargs(
                 return {"text_encoder_4": encoder, "tokenizer_4": tokenizer_4}
         if hosted_int8 and not fp8_engages:
             from .diffusion_precision import te_quant_picked_automatically
-
             if not te_quant_picked_automatically(te_quant_mode):
                 # Apple Silicon: the plan priced the hosted int8 TE4 and nothing else runs here, so the 16 GB dense
                 # Llama is not loaded in its place (as _te_prequant_pipe_kwargs refuses for the other encoders).
