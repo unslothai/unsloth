@@ -14841,7 +14841,19 @@ def _gguf_memory_breakdown(
     )
 
     def _files_bytes_with(extra: tuple[str, ...]) -> Optional[int]:
-        gb = _gguf_resident_file_gb(config, llama_extra_args = extras + list(extra), **files_probe)
+        probe_extras = list(extras)
+        if extra == _DRAFT_FORCE_CPU_ARGS:
+            # The CPU counterfactual has to BE a CPU placement: a GPU -otd keeps drafter
+            # tensors on the card whatever -ngld says (_extra_args_draft_offloaded_to_cpu
+            # reads it so), and left in, both probes charge the drafter and the
+            # difference -- the whole drafter charge -- comes out 0.
+            from core.inference.llama_cpp import LlamaCppBackend, _DRAFT_TENSOR_OVERRIDE_FLAGS
+            stripped = LlamaCppBackend._without_flags(probe_extras, _DRAFT_TENSOR_OVERRIDE_FLAGS)
+            if stripped is not None:
+                probe_extras = stripped
+        gb = _gguf_resident_file_gb(
+            config, llama_extra_args = probe_extras + list(extra), **files_probe
+        )
         return None if gb is None else int(round(gb * (1024**3)))
 
     # A CPU-pinned drafter is dropped from _estimate_gguf_required_gb, a VRAM admission

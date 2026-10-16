@@ -528,16 +528,12 @@ def test_zero_offload_mask_honors_device_pin_spellings():
     # drafter loaded), or as an inherited LLAMA_ARG_DEVICE env var.
     load_src = _load_model_source()
     assert "self._zero_offload_keeps_gpu_visible(cmd, env)" in load_src
-    block = inspect.getsource(LlamaCppBackend._cmd_has_gpu_device_pin)
-    for flag in (
-        '"--device"',
-        '"-dev"',
-        '"--spec-draft-device"',
-        '"-devd"',
-        '"--device-draft"',
-    ):
-        assert flag in block
-    assert '"LLAMA_ARG_DEVICE"' in block
+    # Behavioural, not source text: the names now live in the one device-list enumeration.
+    pin = LlamaCppBackend._cmd_has_gpu_device_pin
+    for flag in ("--device", "-dev", "--spec-draft-device", "-devd", "--device-draft"):
+        assert pin(["llama-server", flag, "CUDA0"], {}) is True
+        assert pin(["llama-server", flag, "none"], {}) is False
+    assert pin(["llama-server"], {"LLAMA_ARG_DEVICE": "CUDA0"}) is True
 
 
 def test_resolve_cpu_moe_flag():

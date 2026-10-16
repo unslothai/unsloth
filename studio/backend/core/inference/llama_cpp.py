@@ -6959,12 +6959,67 @@ def _extra_args_draft_device(extra_args: Optional[Iterable[str]]) -> Optional[st
 
 
 _GPU_DEVICE_TOKEN_RE = re.compile(r"(CUDA|ROCm)(\d+)$", re.IGNORECASE)
+_MAIN_DEVICE_FLAGS = frozenset({"--device", "-dev"})
+_DRAFT_DEVICE_FLAGS = frozenset({"--spec-draft-device", "-devd", "--device-draft"})
 # One group per companion. llama.cpp is last-wins within a group for placement, but it
 # resolves every value it reads, so widening covers each occurrence.
-_COMPANION_DEVICE_FLAG_GROUPS = (
-    frozenset({"--mmproj-device", "-mmdev"}),
-    frozenset({"--spec-draft-device", "-devd", "--device-draft"}),
+_COMPANION_DEVICE_FLAG_GROUPS = (_MMPROJ_DEVICE_FLAGS, _DRAFT_DEVICE_FLAGS)
+# Every option common/arg.cpp resolves by device NAME (parse_device_list), with the env
+# twin it reads first: -dev / LLAMA_ARG_DEVICE, -mmdev / MTMD_BACKEND_DEVICE (no
+# LLAMA_ARG_ prefix upstream), and -devd, which has no env twin.
+_DEVICE_LIST_OPTIONS: tuple[tuple[str, frozenset, Optional[str]], ...] = (
+    ("main", _MAIN_DEVICE_FLAGS, "LLAMA_ARG_DEVICE"),
+    ("mmproj", _MMPROJ_DEVICE_FLAGS, "MTMD_BACKEND_DEVICE"),
+    ("draft", _DRAFT_DEVICE_FLAGS, None),
 )
+
+
+class _DeviceListSite(NamedTuple):
+    """One device-list value llama.cpp parses: an env twin (``env_name``) or an argv
+    occurrence (``at`` = index of the token holding the value, ``lead`` = the inline
+    ``flag=`` prefix). ``final`` marks its group's last value, the one that places."""
+
+    group: str
+    env_name: Optional[str]
+    at: Optional[int]
+    lead: Optional[str]
+    value: str
+    final: bool
+
+
+def _device_list_sites(
+    cmd: Iterable[str], env: Optional[Mapping[str, str]] = None
+) -> list[_DeviceListSite]:
+    """Every device-list value llama.cpp parses for a launch, in its order.
+
+    arg.cpp applies each SET env twin first, then argv in order, and every handler
+    resolves its value as it runs (parse_device_list throws "invalid device" on a name
+    the child cannot see) -- a later flag overriding it does not help. So every
+    consumer that narrows or widens what the child sees reads all of these, not the
+    last-wins placement. A flag with no value left is kept with an empty value.
+    """
+    args = [str(raw) for raw in cmd]
+    env = env or {}
+    found: list[tuple[str, Optional[str], Optional[int], Optional[str], str]] = []
+    for group, _flags, env_name in _DEVICE_LIST_OPTIONS:
+        if env_name is not None and env.get(env_name) is not None:
+            found.append((group, env_name, None, None, str(env.get(env_name))))
+    group_of = {flag: group for group, flags, _ in _DEVICE_LIST_OPTIONS for flag in flags}
+    for i, raw in enumerate(args):
+        group = group_of.get(_flag_name(raw))
+        if group is None:
+            continue
+        head, eq, inline = raw.partition("=")
+        if eq:
+            found.append((group, None, i, head + "=", inline))
+        elif i + 1 < len(args):
+            found.append((group, None, i + 1, None, args[i + 1]))
+        else:
+            found.append((group, None, None, None, ""))
+    last = {entry[0]: index for index, entry in enumerate(found)}
+    return [
+        _DeviceListSite(*entry, final = last[entry[0]] == index) for index, entry in enumerate(found)
+    ]
 
 
 def _widen_pin_ids_for_companion_devices(
@@ -6973,43 +7028,44 @@ def _widen_pin_ids_for_companion_devices(
     inherited_ids: Optional[list[int]],
     *,
     allowed_ids: Optional[Iterable[int]] = None,
+    env: Optional[MutableMapping[str, str]] = None,
 ) -> tuple[list[int], str]:
-    """Fit a pinned GPU mask to the companion devices the argv names (#11810).
+    """Fit a pinned GPU mask to every device name the launch parses (#11810).
 
-    Companion ``CUDA<n>`` / ``ROCm<n>`` tokens use the unpinned numbering (position in
-    ``inherited_ids``, else the physical index). Cards they name are appended after the
-    pinned ones, every occurrence (an overridden one is still parsed) is renumbered to
-    the child's mask, and a main ``--device`` is added so ``-ngl -1`` does not spread
-    over the extra cards. Tokens the parent cannot see are left alone. ``allowed_ids``
-    (explicit gpu_ids) limits widening to those cards. Returns the mask and a log note,
-    empty when unchanged.
+    The sites are ``_device_list_sites``: env twins (``env``, the child's environment)
+    and every argv occurrence. The FINAL main device value (argv, else
+    ``LLAMA_ARG_DEVICE``) is the child's own numbering over the pinned cards. Every other
+    ``CUDA<n>`` / ``ROCm<n>`` -- companions, an inherited ``MTMD_BACKEND_DEVICE``, and a
+    main value a later one overrides -- uses the unpinned numbering (position in
+    ``inherited_ids``, else the physical index): cards they name are appended after the
+    pinned ones and each value is renumbered to the child's mask (env values in place),
+    and a main ``--device`` is added when none is set so ``-ngl -1`` does not spread over
+    the extra cards. Tokens the parent cannot see are left alone. ``allowed_ids``
+    (explicit gpu_ids) limits widening to those cards; an OVERRIDDEN value naming a card
+    it excludes places nothing, so it becomes ``none`` (an env twin is dropped) instead
+    of failing the launch. Returns the mask and a log note, empty when unchanged.
     """
     if not pin_ids:
         return list(pin_ids), ""
     main_ids = [int(i) for i in pin_ids]
     allowed = None if allowed_ids is None else {int(i) for i in allowed_ids}
-    # A main --device past the pinned positions would resolve to a widened companion card.
-    for token in str(_extra_args_main_device(cmd) or "").split(","):
+    all_sites = _device_list_sites(cmd, env)
+    final_main = next((s for s in all_sites if s.group == "main" and s.final), None)
+    # A main device past the pinned positions would resolve to a widened companion card.
+    for token in (final_main.value if final_main else "").split(","):
         match = _GPU_DEVICE_TOKEN_RE.match(token.strip())
         if match and int(match.group(2)) >= len(main_ids):
             return list(main_ids), ""
-    # (value index, prefix before "=" or None, [(token, physical id or None)])
-    sites: list[tuple[int, Optional[str], list[tuple[str, Optional[int]]]]] = []
+    # (site, [(token, physical id or None)])
+    sites: list[tuple[_DeviceListSite, list[tuple[str, Optional[int]]]]] = []
+    excluded_sites: list[_DeviceListSite] = []
     prefix_word = None
-    # Every occurrence, not only each group's last: arg.cpp resolves each device value as
-    # it reads it (parse_device_list), so a name a later flag overrides must still exist.
-    companion_flags = frozenset().union(*_COMPANION_DEVICE_FLAG_GROUPS)
-    for i in [i for i, raw in enumerate(cmd) if _flag_name(str(raw)) in companion_flags]:
-        raw = str(cmd[i])
-        head, eq, inline = raw.partition("=")
-        if eq:
-            at, value, lead = i, inline, head + "="
-        elif i + 1 < len(cmd):
-            at, value, lead = i + 1, str(cmd[i + 1]), None
-        else:
+    for site in all_sites:
+        if site is final_main or (site.at is None and site.env_name is None):
             continue
         tokens: list[tuple[str, Optional[int]]] = []
-        for token in value.split(","):
+        excluded = False
+        for token in site.value.split(","):
             match = _GPU_DEVICE_TOKEN_RE.match(token.strip())
             physical = None
             if match:
@@ -7020,19 +7076,28 @@ def _widen_pin_ids_for_companion_devices(
                 elif n < len(inherited_ids):
                     physical = int(inherited_ids[n])
                 if allowed is not None and physical not in main_ids and physical not in allowed:
+                    excluded = excluded or physical is not None
                     physical = None
             tokens.append((token, physical))
-        if any(physical is not None for _, physical in tokens):
-            sites.append((at, lead, tokens))
-    if not sites:
+        if excluded and not site.final:
+            excluded_sites.append(site)
+        elif any(physical is not None for _, physical in tokens):
+            sites.append((site, tokens))
+    if not sites and not excluded_sites:
         return list(main_ids), ""
     widened = list(main_ids)
-    for _, _, tokens in sites:
+    for _, tokens in sites:
         for _, physical in tokens:
             if physical is not None and physical not in widened:
                 widened.append(physical)
     changed = False
-    for at, lead, tokens in sites:
+    for site in excluded_sites:
+        if site.env_name is not None:
+            env.pop(site.env_name, None)
+        else:
+            cmd[site.at] = f"{site.lead}none" if site.lead is not None else "none"
+        changed = True
+    for site, tokens in sites:
         rewritten = []
         for token, physical in tokens:
             if physical is None:
@@ -7041,17 +7106,25 @@ def _widen_pin_ids_for_companion_devices(
             match = _GPU_DEVICE_TOKEN_RE.match(token.strip())
             rewritten.append(f"{match.group(1)}{widened.index(physical)}")
         value = ",".join(rewritten)
-        new = f"{lead}{value}" if lead is not None else value
-        if new != cmd[at]:
-            cmd[at] = new
+        if site.env_name is not None:
+            if value != env[site.env_name]:
+                env[site.env_name] = value
+                changed = True
+            continue
+        new = f"{site.lead}{value}" if site.lead is not None else value
+        if new != cmd[site.at]:
+            cmd[site.at] = new
             changed = True
-    if len(widened) > len(main_ids) and _extra_args_main_device(cmd) is None:
+    if len(widened) > len(main_ids) and final_main is None:
         # Pinned cards lead the mask, so the main model's devices are the first positions.
         cmd.extend(["--device", ",".join(f"{prefix_word}{k}" for k in range(len(main_ids)))])
         changed = True
     if not changed and widened == main_ids:
         return list(main_ids), ""
-    return widened, f"{main_ids} -> {widened}"
+    note = f"{main_ids} -> {widened}"
+    if excluded_sites:
+        note += f" ({len(excluded_sites)} overridden device value(s) outside gpu_ids cleared)"
+    return widened, note
 
 
 def _extra_args_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optional[str]:
@@ -32129,19 +32202,19 @@ class LlamaCppBackend:
                     # enumerates every agent first, which segfaults on a deselected
                     # unsupported GPU (e.g. gfx1036 iGPU under a gfx103X prebuilt).
                     # Companion flags use the unpinned numbering (#11810). Skipped for a
-                    # uuid/MIG mask (CUDA<n> is ambiguous) and an inherited LLAMA_ARG_DEVICE
-                    # (the appended --device would override it).
+                    # uuid/MIG mask (CUDA<n> is ambiguous). Every device name the child
+                    # parses is fitted, env twins included (MTMD_BACKEND_DEVICE, an
+                    # inherited LLAMA_ARG_DEVICE, which as the final main value also stops
+                    # a --device being appended over it), so env goes in too.
                     _companion_widen = ""
-                    if not self._visibility_mask_is_unmappable() and not (
-                        _extra_args_main_device(cmd) is None
-                        and str(env.get("LLAMA_ARG_DEVICE", "")).strip()
-                    ):
+                    if not self._visibility_mask_is_unmappable():
                         _had_main_device = _extra_args_main_device(cmd) is not None
                         _pin_ids, _companion_widen = _widen_pin_ids_for_companion_devices(
                             cmd,
                             _pin_ids,
                             self._resolve_visible_physical_ids(),
                             allowed_ids = gpu_ids or None,
+                            env = env,
                         )
                         if _companion_widen:
                             _companion_fit_mask = list(_pin_ids)
@@ -33511,6 +33584,7 @@ class LlamaCppBackend:
                                 list(_remaining),
                                 list(_companion_fit_mask),
                                 allowed_ids = gpu_ids or None,
+                                env = env,
                             )
                             _companion_added_device = (
                                 list(cmd[-2:])
@@ -35461,16 +35535,12 @@ class LlamaCppBackend:
 
         arg.cpp resolves each --mmproj-device / MTMD_BACKEND_DEVICE as it reads it (env
         first, then argv in order; parse_device_list), so a name before a final none
-        must still exist: hiding the GPUs fails the launch with "invalid device"."""
-        values = [(env or {}).get("MTMD_BACKEND_DEVICE")]
-        args = [str(arg) for arg in cmd]
-        for index, raw in enumerate(args):
-            if _flag_name(raw) in _MMPROJ_DEVICE_FLAGS:
-                _, equals, inline = raw.partition("=")
-                values.append(
-                    inline if equals else (args[index + 1] if index + 1 < len(args) else "")
-                )
-        return any(value is not None and value != "none" for value in values)
+        must still exist: hiding the GPUs fails the launch with "invalid device". The
+        sites are ``_device_list_sites``, the one enumeration every visibility consumer
+        reads."""
+        return any(
+            site.group == "mmproj" and site.value != "none" for site in _device_list_sites(cmd, env)
+        )
 
     @staticmethod
     def _cmd_has_gpu_device_pin(cmd: list, env: Optional[Mapping[str, str]] = None) -> bool:
@@ -35479,23 +35549,17 @@ class LlamaCppBackend:
         arg.cpp resolves each --device / -devd / LLAMA_ARG_DEVICE as it reads it (env
         first, then argv in order; parse_device_list), so a GPU name before a final none
         must still exist: hiding the GPUs fails the launch with "invalid device". The
-        twin of ``_cmd_names_mmproj_device`` for the main and draft device lists."""
-        flags = {"--device", "-dev", "--spec-draft-device", "-devd", "--device-draft"}
-        values = [(env or {}).get("LLAMA_ARG_DEVICE")]
-        args = [str(arg) for arg in cmd]
-        for index, raw in enumerate(args):
-            if _flag_name(raw) not in flags:
-                continue
-            _, equals, inline = raw.partition("=")
-            values.append(inline if equals else (args[index + 1] if index + 1 < len(args) else ""))
+        twin of ``_cmd_names_mmproj_device`` for the main and draft device lists, over the
+        same ``_device_list_sites`` enumeration."""
 
-        def _names_gpu(value: Optional[str]) -> bool:
-            if value is None:
-                return False
+        def _names_gpu(value: str) -> bool:
             devices = [item.strip().lower() for item in value.split(",") if item.strip()]
             return not devices or any(item not in ("cpu", "none") for item in devices)
 
-        return any(_names_gpu(value) for value in values)
+        return any(
+            site.group in ("main", "draft") and _names_gpu(site.value)
+            for site in _device_list_sites(cmd, env)
+        )
 
     @staticmethod
     def _zero_offload_gpu_flag(
