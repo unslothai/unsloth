@@ -326,6 +326,35 @@ def _pipeline_components_present(root: Path) -> bool:
     return True
 
 
+def flux3_seeded_cache_repo(path: Any) -> Optional[str]:
+    """The Hub repo id of a FLUX.3 snapshot in the HF cache whose only gap is the dense transformer weights (what a
+    download planned around a hosted pre-quantized seed leaves), or None. Everything else the loader opens, the
+    transformer config included, must be there."""
+    import json
+    try:
+        snapshot = Path(path)
+        repo_dir = snapshot.parent.parent
+        if snapshot.parent.name != "snapshots" or not repo_dir.name.startswith("models--"):
+            return None
+        index = json.loads((snapshot / "modular_model_index.json").read_text(encoding = "utf-8-sig"))
+        if not isinstance(index, dict) or not _is_flux3_manifest(index):
+            return None
+        from core.inference.diffusion_families import local_pipeline_components_are_complete
+        from core.inference.diffusion_flux3 import FLUX3_COMPONENT_FOLDERS
+
+        if not local_pipeline_components_are_complete(
+            snapshot,
+            "modular_model_index.json",
+            excluded_components = ("transformer",),
+            fixed_component_folders = FLUX3_COMPONENT_FOLDERS,
+        ):
+            return None
+        owner, _, name = repo_dir.name[len("models--") :].partition("--")
+        return f"{owner}/{name}" if owner and name else None
+    except (OSError, ValueError):
+        return None
+
+
 def _is_flux3_manifest(index: dict) -> bool:
     from core.inference.diffusion_flux3 import flux3_index_family
     return flux3_index_family(index) is not None
@@ -506,7 +535,14 @@ def missing_download_bytes(
     target = normalized_pick(pick)
     local_pipeline = not target.gguf_filename and Path(target.model_path).is_dir()
     if local_pipeline and not _pipeline_components_present(Path(target.model_path)):
-        return UNSIZED_MISSING
+        repo = flux3_seeded_cache_repo(target.model_path) if owner == DIFFUSION else None
+        if repo is None:
+            return UNSIZED_MISSING
+        # A FLUX.3 snapshot Studio staged for a pre-quantized seed holds no dense transformer shards: whether the seed
+        # is cached and is what the load picks is the planner's question, so ask it of the repo, which is also what
+        # the switch loads (cache only), instead of requiring dense weights the load never opens.
+        target = replace(target, model_path = repo)
+        local_pipeline = False
     if owner == DIFFUSION:
         # asked of every image pick, not only local pipelines: a single-file HiDream checkpoint plans clean and its
         # assembly still loads the encoder repo unconditionally
@@ -554,6 +590,7 @@ __all__ = [
     "encoder_repo_complete",
     "hidden_ltx23_extras",
     "is_edit_only",
+    "flux3_seeded_cache_repo",
     "missing_download_bytes",
     "normalized_pick",
     "plan_gpu_ordinal",

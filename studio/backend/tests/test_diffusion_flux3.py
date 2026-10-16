@@ -626,31 +626,110 @@ def _family(name):
     return next(f for f in families._FAMILIES if f.name == name)
 
 
-def test_prequant_repos_point_at_the_fp8_repo_for_the_distilled_model_only():
+def test_prequant_repos_point_each_variant_at_its_own_fp8_repo():
     distilled = _family(FLUX3_KLEIN_FAMILY_NAME)
+    base = _family(FLUX3_KLEIN_BASE_FAMILY_NAME)
     for scheme in ("int8", "fp8"):
         assert (
             families.family_prequant_repo(distilled, scheme, DISTILLED)
             == "unsloth/flux-3-image-klein-FP8"
         )
-    # nvfp4 is denied for the family, and the base model has no hosted artifact yet.
+        assert (
+            families.family_prequant_repo(base, scheme, BASE)
+            == "unsloth/flux-3-image-klein-base-FP8"
+        )
+    # nvfp4 is denied for both families
     assert families.family_prequant_repo(distilled, "nvfp4", DISTILLED) is None
-    base = _family(FLUX3_KLEIN_BASE_FAMILY_NAME)
-    for scheme in ("int8", "fp8", "nvfp4"):
-        assert families.family_prequant_repo(base, scheme, BASE) is None
+    assert families.family_prequant_repo(base, "nvfp4", BASE) is None
 
 
+@pytest.mark.parametrize("variant", ["distilled", "base"])
 @pytest.mark.parametrize("scheme, stem", [("int8", "INT8"), ("fp8", "FP8")])
-def test_prequant_filenames_resolve_to_the_built_safetensors(scheme, stem):
+def test_prequant_filenames_resolve_to_the_built_safetensors(scheme, stem, variant):
     from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
 
-    source = resolve_prequant_source(_family(FLUX3_KLEIN_FAMILY_NAME), scheme, base_repo = DISTILLED)
-    assert source.kind == "repo" and source.location == "unsloth/flux-3-image-klein-FP8"
+    name, base, model = {
+        "distilled": (FLUX3_KLEIN_FAMILY_NAME, DISTILLED, "flux-3-image-klein"),
+        "base": (FLUX3_KLEIN_BASE_FAMILY_NAME, BASE, "flux-3-image-klein-base"),
+    }[variant]
+    source = resolve_prequant_source(_family(name), scheme, base_repo = base)
+    assert source.kind == "repo" and source.location == f"unsloth/{model}-FP8"
     names = candidate_filenames_of(source)
-    wanted = f"flux-3-image-klein-{stem}.safetensors"
-    assert wanted in names
+    wanted = f"{model}-{stem}.safetensors"
+    # first after any ComfyUI twin (int8 tries a "-ComfyUI" name first, which neither repo hosts)
+    assert [n for n in names if "-ComfyUI" not in n][0] == wanted
     # The safetensors artifact is tried before the legacy pickle name.
-    assert names.index(wanted) < names.index(f"flux-3-image-klein-{stem}.pt")
+    assert names.index(wanted) < names.index(f"{model}-{stem}.pt")
+
+
+def _comfy_int8_file(path):
+    """A minimal ComfyUI int8_convrot file: one quantised Linear, no Studio metadata (BFL's own layout)."""
+    import torch
+    from safetensors.torch import save_file
+
+    conf = json.dumps({"format": "int8_tensorwise", "convrot": True, "convrot_groupsize": 16})
+    save_file(
+        {
+            "blocks.0.qkv.weight": torch.zeros(48, 16, dtype = torch.int8),
+            "blocks.0.qkv.weight_scale": torch.ones(48, 1),
+            "blocks.0.qkv.comfy_quant": torch.tensor(list(conf.encode()), dtype = torch.uint8),
+        },
+        str(path),
+    )
+    return str(path)
+
+
+def test_the_base_int8_slot_holds_a_comfy_file_and_is_read_through_the_comfy_loader(
+    tmp_path, monkeypatch
+):
+    """The base repo's INT8 file is BFL's ComfyUI int8_convrot denoiser, not a Studio checkpoint: the header
+    probe must not refuse it for lacking Studio metadata, and the loader must hand it to the ComfyUI quant
+    loader with the base family (which picks the layers and splits the fused q/k/v)."""
+    import torch
+
+    from core.inference import diffusion_comfy_quant as cq
+    from core.inference import diffusion_prequant as pq
+
+    hub = tmp_path / "hub"
+    snap = hub / "models--unsloth--flux-3-image-klein-base-FP8" / "snapshots" / "abc"
+    snap.mkdir(parents = True)
+    (hub / "models--unsloth--flux-3-image-klein-base-FP8" / "refs").mkdir()
+    (hub / "models--unsloth--flux-3-image-klein-base-FP8" / "refs" / "main").write_text("abc")
+    path = _comfy_int8_file(snap / "flux-3-image-klein-base-INT8.safetensors")
+    assert cq.scan_comfy_quant(path) is not None
+
+    source = pq.resolve_prequant_source(
+        _family(FLUX3_KLEIN_BASE_FAMILY_NAME), "int8", base_repo = BASE
+    )
+    assert (
+        pq.hosted_prequant_refusal(
+            source, "int8", base = BASE, cache_dir = str(hub), local_files_only = True
+        )
+        is None
+    )
+
+    seen = {}
+
+    def _comfy_load(cls, file, **kw):
+        seen.update(kw, path = file)
+        return torch.nn.Linear(16, 16)
+
+    monkeypatch.setattr(cq, "load_comfy_prequant", _comfy_load)
+    monkeypatch.setattr(pq, "hosted_prequant_refusal", lambda *a, **k: None)
+    model = pq.load_prequantized_transformer(
+        object,
+        BASE,
+        source,
+        device = "cpu",
+        dtype = torch.bfloat16,
+        scheme = "int8",
+        cache_dir = str(hub),
+        local_files_only = True,
+        family = FLUX3_KLEIN_BASE_FAMILY_NAME,
+    )
+    assert model is not None, pq.last_prequant_failure()
+    assert seen["path"] == path
+    assert seen["family"] == FLUX3_KLEIN_BASE_FAMILY_NAME and seen["scheme"] == "int8"
 
 
 def test_operator_mirror_serves_the_hosted_name(tmp_path, monkeypatch):
@@ -1199,12 +1278,15 @@ def test_every_fixed_folder_is_required_even_when_the_manifest_omits_it(tmp_path
     )
     assert check()  # the folders are all there: an omitted entry alone is fine
     folder = FLUX3_COMPONENT_FOLDERS[missing][0]
+    if missing == "transformer":
+        # A GGUF supplies the denoiser's weights, but not its config.
+        (root / folder / "model.safetensors").unlink()
+        assert not check()
+        assert check(excluded_components = ("transformer",))
     for f in (root / folder).iterdir():
         f.unlink()
     assert not check()
-    if missing == "transformer":
-        # A GGUF supplies the denoiser: its folder is not needed then.
-        assert check(excluded_components = ("transformer",))
+    assert not check(excluded_components = ("transformer",))
 
 
 def test_the_base_access_probe_reads_the_modular_manifest(tmp_path, monkeypatch):
@@ -1613,3 +1695,107 @@ def test_flux3_family_decides_generation_defaults_over_file_names():
         )["steps"]
         == 20
     )
+
+
+def _seeded_snapshot(tmp_path, repo = "black-forest-labs/flux-3-image-klein"):
+    """What a download planned around a hosted pre-quantized seed leaves in the HF cache: the official layout with
+    only the transformer config, no dense transformer shards."""
+    snapshot = tmp_path / "hub" / f"models--{repo.replace('/', '--')}" / "snapshots" / "abc123"
+    snapshot.parent.mkdir(parents = True)
+    _official_layout(tmp_path, "distilled", True).rename(snapshot)
+    (snapshot / "transformer" / "model.safetensors").unlink()
+    return snapshot
+
+
+def test_a_seeded_flux3_snapshot_is_planned_against_its_repo(tmp_path, monkeypatch):
+    from core.inference import gpu_arbiter as arb
+    from core.inference import media_locality as locality
+    from core.inference.media_model_index import MediaModelPick
+
+    snapshot = _seeded_snapshot(tmp_path)
+    seen = []
+
+    class _Planner:
+        def __init__(self, entries):
+            self.entries = entries
+
+        def download_plan(self, model_path, **kwargs):
+            seen.append(model_path)
+            return {"total_bytes": 0 if not self.entries else 5, "entries": self.entries}
+
+    monkeypatch.setattr(locality, "plan_gpu_ordinal", lambda: None)
+    pick = MediaModelPick("black-forest-labs/flux-3-image-klein", str(snapshot))
+    # seed cached: nothing to fetch, and the planner was asked about the repo the switch loads, not the folder
+    monkeypatch.setattr(locality, "planners_for", lambda owner, p: [_Planner([])])
+    assert locality.missing_download_bytes(arb.DIFFUSION, pick) == 0
+    assert seen == ["black-forest-labs/flux-3-image-klein"]
+    # seed not cached: sized like any hub pick instead of refused unsized
+    monkeypatch.setattr(
+        locality, "planners_for", lambda owner, p: [_Planner([{"repo_id": "unsloth/x"}])]
+    )
+    assert locality.missing_download_bytes(arb.DIFFUSION, pick) == 5
+    assert locality.flux3_seeded_cache_repo(snapshot) == "black-forest-labs/flux-3-image-klein"
+
+
+def test_only_a_seeded_flux3_snapshot_is_mapped_to_its_repo(tmp_path):
+    from core.inference.media_locality import flux3_seeded_cache_repo
+
+    snapshot = _seeded_snapshot(tmp_path)
+    # a plain folder (not a cache snapshot) has no repo to load from
+    plain = tmp_path / "plain"
+    _official_layout(tmp_path, "base", False).rename(plain)
+    (plain / "transformer" / "model.safetensors").unlink()
+    assert flux3_seeded_cache_repo(plain) is None
+    # the transformer config is still read from the snapshot, so it must be there
+    (snapshot / "transformer" / "config.json").unlink()
+    assert flux3_seeded_cache_repo(snapshot) is None
+    other = _seeded_snapshot(tmp_path / "o")
+    (other / "vae" / "model.safetensors").unlink()
+    assert flux3_seeded_cache_repo(other) is None
+    manifest = _seeded_snapshot(tmp_path / "m")
+    (manifest / "modular_model_index.json").write_text(
+        json.dumps({"_class_name": "QwenImagePipeline"})
+    )
+    assert flux3_seeded_cache_repo(manifest) is None
+
+
+def test_the_auto_switch_loads_a_seeded_flux3_snapshot_by_repo(tmp_path, monkeypatch):
+    import asyncio
+
+    import routes.inference as route
+    from core.inference import gpu_arbiter as arb
+    from core.inference import media_auto_switch as mas
+    from core.inference.media_model_index import MediaModelPick
+
+    seen = []
+
+    async def _load(
+        request,
+        subject,
+        user_initiated = True,
+    ):
+        seen.append((request.model_path, request.display_repo_id, user_initiated))
+
+    monkeypatch.setattr(route, "load_diffusion_model_gated", _load)
+    snapshot = _seeded_snapshot(tmp_path)
+    full = tmp_path / "full"
+    _official_layout(tmp_path, "base", False).rename(full)
+    repo = "black-forest-labs/flux-3-image-klein"
+    asyncio.run(mas._start_load(arb.DIFFUSION, MediaModelPick(repo, str(snapshot)), "s"))
+    asyncio.run(mas._start_load(arb.DIFFUSION, MediaModelPick("local/full", str(full)), "s"))
+    assert seen == [(repo, repo, False), (str(full), "local/full", False)]
+
+
+def test_flux3_reference_edits_use_the_measured_activations(monkeypatch):
+    import torch
+
+    from core.inference import diffusion as d
+
+    monkeypatch.setattr(d, "sdpa_subquadratic_confirmed", lambda target: True)
+    nvidia = SimpleNamespace(backend = "cuda", vendor = "nvidia", dtype = torch.bfloat16)
+    distilled = _family("flux.3-klein")
+    assert distilled.reference and not tuple(getattr(distilled, "reference_resolutions", ()) or ())
+    act = d._calibrated_activation(distilled, nvidia)
+    assert act is not None and act == d.calibrated_image_activation("flux.3-klein", max_speed = True)
+    # the base runs CFG (two denoiser batches) and has no measured row: it keeps the flat estimate
+    assert d._calibrated_activation(_family("flux.3-klein-base"), nvidia) is None

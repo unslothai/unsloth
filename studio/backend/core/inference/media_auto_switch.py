@@ -231,11 +231,19 @@ async def _start_load(
     """Run the load its own route would run, as an API load rather than a user one."""
     partition = expected_partition(pick)
     if owner == DIFFUSION:
+        from core.inference.media_locality import flux3_seeded_cache_repo
         from models.inference import DiffusionLoadRequest
         from routes.inference import load_diffusion_model_gated
+
         await load_diffusion_model_gated(
             DiffusionLoadRequest(
-                model_path = pick.model_path,
+                # A seeded FLUX.3 snapshot loads by its repo id (an API load is cache only), so the load plans the
+                # cached seed the locality check approved instead of opening dense shards the snapshot never held.
+                model_path = (
+                    (flux3_seeded_cache_repo(pick.model_path) or pick.model_path)
+                    if not pick.gguf_filename
+                    else pick.model_path
+                ),
                 display_repo_id = pick.model_id,
                 gguf_filename = pick.gguf_filename,
                 model_kind = pick.model_kind,

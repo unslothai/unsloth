@@ -447,6 +447,13 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             scheme_deny = frozenset({"nvfp4"}),
         ),
         pipeline_class = "Flux3ModularPipeline",
+        # Same layout as the distilled repo. The INT8 file is BFL's own ComfyUI int8_convrot denoiser
+        # (black-forest-labs/flux-3-image-klein-comfy, byte-identical), which scored better than an INT8 built with
+        # the keep-list, so the prequant loader reads it through the ComfyUI quant path. The FP8 file is Studio's own.
+        prequant_repos = (
+            ("int8", "unsloth/flux-3-image-klein-base-FP8"),
+            ("fp8", "unsloth/flux-3-image-klein-base-FP8"),
+        ),
         transformer_class = "Flux3Transformer2DModel",
         base_repo = "black-forest-labs/flux-3-image-klein-base",
         aliases = ("flux-3-image-klein-base", "flux3-image-klein-base", "flux3-klein-base"),
@@ -475,7 +482,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         pipeline_class = "Flux3DistilledModularPipeline",
         # Pre-quantized distilled denoisers (both schemes in one repo, as FLUX.2 klein), built with the keep-list above;
-        # the loader checks the stored exclude set against it. The base's weights differ: it quantizes on the fly.
+        # the loader checks the stored exclude set against it. The base has its own repo.
         prequant_repos = (
             ("int8", "unsloth/flux-3-image-klein-FP8"),
             ("fp8", "unsloth/flux-3-image-klein-FP8"),
@@ -2041,7 +2048,8 @@ def local_pipeline_components_are_complete(
 
     ``fixed_component_folders`` (``{component: (folder, library, class)}``) is for a loader that reads a fixed set
     of components from fixed folders of this root whatever the manifest lists (FLUX.3's assembler). Exactly those
-    are checked, each at ``root/<folder>``, whether or not the manifest names them, minus ``excluded_components``;
+    are checked, each at ``root/<folder>``, whether or not the manifest names them, ``excluded_components`` for their
+    config only;
     every other manifest entry and every spec source is ignored, since none of it is loaded (FLUX.3's optional
     prompt upsampler lives in another repo). The manifest still has to be readable and name a pipeline class."""
     if filename not in {"model_index.json", "modular_model_index.json"}:
@@ -2052,17 +2060,18 @@ def local_pipeline_components_are_complete(
     if not isinstance(class_name, str) or not class_name.strip():
         return False
     if fixed_component_folders is not None:
+        # An excluded component's WEIGHTS come from elsewhere (a GGUF / single file), but the loader still reads its
+        # config from this folder (FLUX.3 builds the denoiser with config=<base>, subfolder="transformer"), so it is
+        # checked config-only rather than skipped.
         try:
-            checked = [
-                (name, spec)
-                for name, spec in fixed_component_folders.items()
-                if name not in excluded_components
-            ]
-            return bool(checked) and all(
+            return bool(fixed_component_folders) and all(
                 _local_pipeline_component_is_complete(
-                    base / folder, library, cls, config_only_model_components
+                    base / folder,
+                    library,
+                    cls,
+                    config_only_model_components or name in excluded_components,
                 )
-                for _name, (folder, library, cls) in checked
+                for name, (folder, library, cls) in fixed_component_folders.items()
             )
         except OSError:
             return False

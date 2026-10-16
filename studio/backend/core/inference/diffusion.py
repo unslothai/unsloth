@@ -1969,8 +1969,11 @@ def _calibrated_activation(fam: Any, target: Any) -> Any:
     if getattr(target, "backend", None) != "cuda" or getattr(target, "vendor", None) != "nvidia":
         return None
     # Measured without input images: references the guard cannot size (no reference_resolutions) would overflow.
-    if getattr(fam, "reference", False) and not tuple(
-        getattr(fam, "reference_resolutions", ()) or ()
+    # FLUX.3 can: every reference is resized to 1 MP and the request guard charges those pixels on top.
+    if (
+        getattr(fam, "reference", False)
+        and not tuple(getattr(fam, "reference_resolutions", ()) or ())
+        and not is_flux3_family(fam)
     ):
         return None
     # Measured at 16-bit only; fp32-promoted families (Z-Image pre-Ampere) do not qualify.
