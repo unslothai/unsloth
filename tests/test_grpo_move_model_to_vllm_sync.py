@@ -10,13 +10,29 @@ import pytest
 import torch
 
 
-# trl 0.27.2 grpo_trainer.py GRPOTrainer._move_model_to_vllm, PEFT branch dropped.
+# trl 0.27.2 grpo_trainer.py GRPOTrainer._move_model_to_vllm, FSDP branches dropped.
 _TRL_SOURCE = """
     def _move_model_to_vllm(self):
         deepspeed_plugin = self.accelerator.state.deepspeed_plugin
         zero_stage_3 = deepspeed_plugin is not None and deepspeed_plugin.zero_stage == 3
         gather_if_zero3 = nullcontext
-        if self.is_fsdp_enabled:
+        if is_peft_model(self.model):
+            with gather_if_zero3(list(self.model.parameters())):
+                self.model.merge_adapter()
+                for name, param in self.model.named_parameters():
+                    name = name.removeprefix("base_model.model.").replace(".base_layer", "")
+                    if self.model.prefix in name:
+                        continue
+                    if "original_module" in name:
+                        continue
+                    name = self._fix_param_name_to_vllm(name)
+                    if self.vllm_mode == "server" and self.accelerator.is_main_process:
+                        self.vllm_client.update_named_param(name, param.data)
+                    elif self.vllm_mode == "colocate":
+                        llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
+                        llm_model.load_weights([(name, param.data)])
+                self.model.unmerge_adapter()
+        elif self.is_fsdp_enabled:
             pass
         else:
             for name, param in self.model.named_parameters():
@@ -89,7 +105,10 @@ def _patched_method():
         _strip_vllm_weight_loads = None
     if _strip_vllm_weight_loads is not None:
         source = _strip_vllm_weight_loads("_move_model_to_vllm", source, "grpo_trainer")
-    namespace = {"nullcontext": nullcontext}
+    namespace = {
+        "nullcontext": nullcontext,
+        "is_peft_model": lambda model: hasattr(model, "merge_adapter"),
+    }
     exec(textwrap.dedent(source), namespace)
     return namespace["_move_model_to_vllm"]
 
@@ -146,4 +165,40 @@ def test_quantized_load_flag_keeps_no_op():
     trainer.model.is_loaded_in_4bit = True
     method = _patched_method()
     assert method(trainer) is None
+    assert rec.loaded == [] and rec.resets == 0
+
+
+def _lora_model(dtype):
+    peft = pytest.importorskip("peft")
+    torch.manual_seed(1)
+    base = torch.nn.Sequential(torch.nn.Linear(64, 64, bias = False)).to(dtype)
+    config = peft.LoraConfig(r = 4, lora_alpha = 8, target_modules = ["0"], init_lora_weights = False)
+    return peft.get_peft_model(base, config)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_lora_sync_never_touches_frozen_base(dtype):
+    # merge_adapter + unmerge_adapter is a lossy round trip in fp16 / bf16, so syncing a LoRA
+    # model through TRL's PEFT branch would drift the frozen base weights every step.
+    model = _lora_model(dtype)
+    weight = model.base_model.model[0].base_layer.weight
+    before = weight.detach().clone()
+    trainer, rec = _trainer("colocate")
+    trainer.model = model
+    method = _patched_method()
+    for _ in range(3):
+        assert method(trainer) is None
+    assert torch.equal(weight, before)
+    assert rec.loaded == [] and rec.resets == 0
+
+
+def test_fp8_base_keeps_no_op():
+    # merge_adapter refuses FP8 grouped-linear bases, and a 1-byte float base is not a dense sync.
+    if not hasattr(torch, "float8_e4m3fn"):
+        pytest.skip("no float8 dtype")
+    trainer, rec = _trainer("colocate")
+    trainer.model.weight = torch.nn.Parameter(
+        trainer.model.weight.data.to(torch.float8_e4m3fn), requires_grad = False
+    )
+    assert _patched_method()(trainer) is None
     assert rec.loaded == [] and rec.resets == 0

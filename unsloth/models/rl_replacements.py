@@ -2259,6 +2259,23 @@ def grpo_trainer_fix_maybe_apply_chat_template(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer_fix_maybe_apply_chat_template)
 
 
+def _unsloth_vllm_sync_unsafe(model):
+    # FSDP2 turns Params4bit into a DTensor, so also read the load flags the model keeps.
+    if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):
+        return True
+    if getattr(model, "peft_config", None):
+        return True
+    for module in model.modules():
+        if hasattr(module, "lora_A") or hasattr(module, "base_layer"):
+            return True
+    for param in model.parameters():
+        if type(param).__name__ in ("Params4bit", "Int8Params"):
+            return True
+        if param.is_floating_point() and param.element_size() == 1:
+            return True
+    return False
+
+
 def grpo_trainer__move_model_to_vllm(function_name, function):
     if function_name != "_move_model_to_vllm":
         return function
@@ -2280,17 +2297,21 @@ def grpo_trainer__move_model_to_vllm(function_name, function):
 
         return inspect.getsource(_move_model_to_vllm)
     indent = body_indent.group(1)
-    # PEFT merge_adapter requantizes bitsandbytes base weights from the fp32 LoRA delta, so the
-    # next fast_lora backward fails on a float32 quant_state: keep those runs on the old no-op.
+    # Keep the old no-op where TRL's sync is unsafe:
+    # - LoRA / PEFT: merge_adapter + unmerge_adapter on the live model is a lossy round trip in
+    #   fp16 / bf16, so frozen base weights drift every sync; it also requantizes bitsandbytes bases
+    #   from the fp32 delta (fast_lora backward then fails) and refuses FP8 grouped-linear bases.
+    # - Quantized bases (bitsandbytes, 1-byte floats such as FP8) cannot be loaded into vLLM as is.
+    # So the sync only runs for dense full finetuning.
     guard = (
         f"{indent}if getattr(getattr(self, 'llm', None), 'shared_weights', False):\n"
         f"{indent}    return None\n"
-        f"{indent}if getattr(self, '_unsloth_bnb_vllm_sync_skip', None) is None:\n"
-        # FSDP2 turns Params4bit into a DTensor, so also read the load flags the model keeps.
-        f"{indent}    self._unsloth_bnb_vllm_sync_skip = bool(getattr(self.model, 'is_loaded_in_4bit', False) or getattr(self.model, 'is_loaded_in_8bit', False)) or any(type(_p).__name__ in ('Params4bit', 'Int8Params') for _p in self.model.parameters())\n"
-        f"{indent}    if self._unsloth_bnb_vllm_sync_skip:\n"
-        f"{indent}        print('Unsloth: vLLM weight sync is skipped for a bitsandbytes 4-bit / 8-bit model without fast_inference, so rollouts use the initial weights. Load with fast_inference = True to sample from the trained model.')\n"
-        f"{indent}if self._unsloth_bnb_vllm_sync_skip:\n"
+        f"{indent}if getattr(self, '_unsloth_vllm_sync_skip', None) is None:\n"
+        f"{indent}    from unsloth.models.rl_replacements import _unsloth_vllm_sync_unsafe\n"
+        f"{indent}    self._unsloth_vllm_sync_skip = _unsloth_vllm_sync_unsafe(self.model)\n"
+        f"{indent}    if self._unsloth_vllm_sync_skip:\n"
+        f"{indent}        print('Unsloth: vLLM weight sync is skipped for a LoRA / PEFT or quantized model without fast_inference, so rollouts use the initial weights. Load with fast_inference = True to sample from the trained model.')\n"
+        f"{indent}if self._unsloth_vllm_sync_skip:\n"
         f"{indent}    return None\n"
     )
     return function[: match.end()] + guard + function[match.end() :]
