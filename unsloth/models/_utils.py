@@ -167,6 +167,7 @@ from ..device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
     apply_gfx101x_triton_workaround,
+    cuda_gate_capabilities,
     gfx101x_triton_workaround_applied,
 )
 from ..import_fixes import UNSLOTH_ENABLE_LOGGING, stale_kernel_hint
@@ -3846,6 +3847,48 @@ def _package_available(pkg_name: str) -> bool:
     return bool(result)
 
 
+def _cache_device_capability(get_device_capability):
+    """Cache per resolved device index: a no-arg call means the current device, so caching the
+    call itself returned device 0's answer after torch.cuda.set_device(1)."""
+    if getattr(get_device_capability, "_unsloth_per_device_cache", False):
+        return get_device_capability
+
+    # One visible device: every spelling names it, so the plain C-level cache is exact and fastest.
+    try:
+        single_device = torch.cuda.device_count() <= 1
+    except Exception:
+        single_device = False
+    if single_device:
+        cached = functools.cache(get_device_capability)
+        cached._unsloth_per_device_cache = True
+        return cached
+
+    cache = {}
+
+    @functools.wraps(get_device_capability)
+    def cached_get_device_capability(device = None):
+        if device is None:
+            index = torch.cuda.current_device()
+        elif isinstance(device, int):
+            index = device
+        else:
+            # torch.device, not torch.cuda._utils._get_device_index: Dynamo traces it (fullgraph).
+            try:
+                device = torch.device(device)
+            except Exception:
+                return get_device_capability(device)
+            if device.type != "cuda":
+                return get_device_capability(device)
+            index = torch.cuda.current_device() if device.index is None else device.index
+        capability = cache.get(index)
+        if capability is None:
+            capability = cache[index] = get_device_capability(index)
+        return capability
+
+    cached_get_device_capability._unsloth_per_device_cache = True
+    return cached_get_device_capability
+
+
 SUPPORTS_BFLOAT16 = False
 HAS_FLASH_ATTENTION = False
 HAS_FLASH_ATTENTION_SOFTCAPPING = False
@@ -3857,10 +3900,13 @@ if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
     HAS_FLASH_ATTENTION_SOFTCAPPING = False
 elif DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
-    torch.cuda.get_device_capability = functools.cache(torch.cuda.get_device_capability)
+    torch.cuda.get_device_capability = _cache_device_capability(torch.cuda.get_device_capability)
+    # SUPPORTS_BFLOAT16 is process-wide, so one pre-Ampere card in the visible set disables it for all.
+    _cuda_caps = cuda_gate_capabilities()
+    SUPPORTS_BFLOAT16 = bool(_cuda_caps) and all(major >= 8 for major, _ in _cuda_caps)
+    del _cuda_caps
 
     if major_version >= 8:
-        SUPPORTS_BFLOAT16 = True
         if _package_available("flash_attn"):
             # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl" and for softcapping; see #1437.
             try:
@@ -5499,6 +5545,11 @@ def patch_gradient_accumulation_fix(Trainer):
                     apply_accepts_loss_kwargs_fix(model)
                 except Exception:
                     pass
+            try:
+                from .fsdp2 import install_fsdp2_policy_provenance
+                install_fsdp2_policy_provenance()
+            except Exception:
+                pass
             _original_trainer_init(self, *args, **kwargs)
             try:
                 accelerator = getattr(self, "accelerator", None)
@@ -5516,11 +5567,19 @@ def patch_gradient_accumulation_fix(Trainer):
             except Exception:
                 pass
             if getattr(self, "is_fsdp_enabled", False):
-                from .llama import _decline_fused_lora_for_fsdp
-                _decline_fused_lora_for_fsdp(getattr(self, "model", None))
+                # FSDP2 keeps the fused LoRA kernels when each decoder block is its own unit (checked
+                # again once accelerate has wrapped); FSDP1 and a root-only wrap decline them here.
+                from .fsdp2 import fsdp2_trainer_setup
+                keep_fused, reason = fsdp2_trainer_setup(self)
+                if not keep_fused:
+                    from .llama import _decline_fused_lora_for_fsdp
+                    _decline_fused_lora_for_fsdp(getattr(self, "model", None), reason)
             _replan_auto_offload_safely(self)
             _block_swap_for_trainer_backend(self)
             _enable_ddp_batched_grad_copy(self)
+            if os.environ.get("UNSLOTH_OFFLOAD_OPTIMIZER_STATE", "0") != "0":
+                from ..optimizers.state_offload import install_optimizer_state_offload
+                install_optimizer_state_offload(self)
 
         _unsloth_trainer_init.__wrapped__ = _original_trainer_init
         Trainer.__init__ = _unsloth_trainer_init
@@ -8497,8 +8556,8 @@ def _ignore_block_swap_params_for_ddp(model):
 
 
 def _block_swap_for_trainer_backend(trainer):
-    """DDP: ignore swapped weights. FSDP / DeepSpeed (invisible at load, so "auto" planned for DDP):
-    refuse, since sharding would flatten the 0-element placeholders."""
+    """DDP: ignore swapped weights. FSDP / DeepSpeed (invisible at load): refuse any block swap, since
+    sharding flattens the 0-element placeholders the swap later rebinds."""
     model = getattr(trainer, "model", None)
     backend = (
         "FSDP"
@@ -8521,6 +8580,14 @@ def _block_swap_for_trainer_backend(trainer):
             f"Unsloth: offload_layers = 'auto' (this rank swapped {swapped} decoder layers to host "
             f"RAM) cannot be combined with {backend}, which shards the weights itself and cannot wrap "
             "swapped layers. Load with offload_layers = 0 (and get_peft_model(offload_layers = 0)), "
+            f"or launch without {backend}."
+        )
+    # An explicit count swaps the same layers on every rank, so every rank refuses alike.
+    if swapped:
+        raise ValueError(
+            f"Unsloth: offload_layers = {swapped} (decoder layers swapped to host RAM) cannot be "
+            f"combined with {backend}, which shards the weights itself and cannot wrap swapped "
+            "layers. Load with offload_layers = 0 (and get_peft_model(offload_layers = 0)), "
             f"or launch without {backend}."
         )
     return []

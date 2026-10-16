@@ -34,6 +34,7 @@ from typing import Any, Optional
 from core.inference.diffusion_auto_policy import build_resolved_record, format_generation_for_log
 from core.inference.diffusion_compat import flux2_inner_dim_for_pick
 from core.inference.diffusion_device import (
+    resolve_auto_cuda_ordinal,
     resolve_diffusion_device_target,
     resolve_selected_cuda_ordinal,
 )
@@ -2934,11 +2935,13 @@ class SdCppDiffusionBackend:
         # engine is the one engine that would drop the pick silently. Re-ranked only when nobody has, so a
         # route-resolved winner is never second-guessed against free VRAM that has moved since.
         if gpu_ordinal is None:
-            gpu_ordinal = (
-                resolve_selected_cuda_ordinal(gpu_ids)
-                if gpu_ids and resolve_diffusion_device_target().device == "cuda"
-                else None
-            )
+            # Automatic ranks the torch cards too, unless sd.cpp runs on one torch cannot see.
+            if off_torch is not None or resolve_diffusion_device_target().device != "cuda":
+                gpu_ordinal = None
+            elif gpu_ids:
+                gpu_ordinal = resolve_selected_cuda_ordinal(gpu_ids)
+            else:
+                gpu_ordinal = resolve_auto_cuda_ordinal()
         if not gguf_filename:
             raise ValueError(
                 "gguf_filename is required: the native engine loads single-file GGUF checkpoints only."

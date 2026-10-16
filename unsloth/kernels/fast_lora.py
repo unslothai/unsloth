@@ -12,19 +12,21 @@
 import sys
 import torch
 from unsloth_zoo.utils import Version
+from . import utils as _kernel_utils
 from .utils import (
     _has_active_dora_adapter,
     _has_active_lora_bias,
     _has_multiple_active_adapters,
     addmm_,
     fast_dequantize,
-    QUANT_STATE,
+    _base_quant_state,
     get_lora_parameters,
     get_lora_parameters_bias,
     matmul_lora,
     torch_amp_custom_fwd,
     torch_amp_custom_bwd,
 )
+from . import rms_layernorm as _rms_layernorm
 
 _is_compiling = torch.compiler.is_compiling
 
@@ -71,6 +73,18 @@ def _has_activation_fake_quantizer(proj):
         ):
             return True
     return False
+
+
+def _may_overwrite_input(X):
+    # Backward writes dX into X; not when an RMSNorm saved X (its output) for its own backward,
+    # including through a view of it (tiled MLP chunks).
+    if _is_compiling():
+        return True
+    base = X._base
+    return not (
+        getattr(X, "_unsloth_rmsnorm_saved", False)
+        or (base is not None and getattr(base, "_unsloth_rmsnorm_saved", False))
+    )
 
 
 class LoRA_MLP(torch.autograd.Function):
@@ -156,7 +170,8 @@ class LoRA_MLP(torch.autograd.Function):
             _backward_function,
         )
         ctx.save_for_backward(gateA, gateB, upA, upB, downA, downB, X, e, g)
-        ctx.inplace = inplace
+        # Only an opt-in UNSLOTH_RMSNORM_SAVE_OUTPUT norm marks its output; skip the check otherwise.
+        ctx.inplace = inplace and (not _rms_layernorm._SAVE_OUTPUT or _may_overwrite_input(X))
         return i
 
     @staticmethod
@@ -484,7 +499,8 @@ class LoRA_QKV(torch.autograd.Function):
             VA,
             VB,
         )
-        ctx.inplace = inplace
+        # Only an opt-in UNSLOTH_RMSNORM_SAVE_OUTPUT norm marks its output; skip the check otherwise.
+        ctx.inplace = inplace and (not _rms_layernorm._SAVE_OUTPUT or _may_overwrite_input(X))
         return Q, K, V
 
     @staticmethod
@@ -734,7 +750,10 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
                 lora_B = self.lora_B[active_adapter].weight
                 scaling = self.scaling[active_adapter]
                 W = self.base_layer.weight
-                return _apply(LoRA_W, x, W, QUANT_STATE(W), lora_A, lora_B, scaling)
+                W_quant = getattr(W, "quant_state", None)
+                if W_quant is None and _kernel_utils._FSDP2_QLORA_PREPARED:
+                    W_quant = _base_quant_state(self.base_layer, W)
+                return _apply(LoRA_W, x, W, W_quant, lora_A, lora_B, scaling)
             pass
         pass
 

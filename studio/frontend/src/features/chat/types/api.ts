@@ -754,7 +754,7 @@ export interface OpenAIChatCompletionsRequest {
   context_overflow?: "error" | "truncate_middle" | "truncate_oldest";
   /** Override UNSLOTH_CONTEXT_POLICY for this local GGUF request. */
   context_policy?: "checkpoint" | "rolling";
-  /** Extra share of the prompt budget to drop when a rolling compaction fires. */
+  /** Extra share of the prompt budget a rolling compaction drops, or a checkpoint reset keeping the turn in progress leaves free. */
   compaction_headroom_ratio?: number;
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
