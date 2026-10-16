@@ -714,7 +714,14 @@ def _scan_hf_cache(
                     rows, snapshot_partial = True, gguf_partial = gguf_partial
                 )
             ]
-        rows = _artifact_mirror_rows(model_id, repo_dir, rows)
+        rows = _artifact_mirror_rows(
+            model_id,
+            repo_dir,
+            rows,
+            load_path = load_path,
+            updated_at = updated_at,
+            active_cache = active_cache,
+        )
         found.extend(rows)
     return found
 
@@ -728,8 +735,26 @@ def _hosts_artifacts(repo_id: str) -> bool:
         return False
 
 
+def _cached_gguf_bytes(repo_dir: Path) -> int:
+    """Bytes of every ``.gguf`` under any cached revision of the repo, each file counted once."""
+    seen: dict[str, int] = {}
+    try:
+        for path in (repo_dir / "snapshots").rglob("*.gguf"):
+            if path.is_file():
+                seen[str(path.resolve())] = path.stat().st_size
+    except OSError:
+        pass
+    return sum(seen.values())
+
+
 def _artifact_mirror_rows(
-    model_id: str, repo_dir: Path, rows: List[LocalModelInfo]
+    model_id: str,
+    repo_dir: Path,
+    rows: List[LocalModelInfo],
+    *,
+    load_path: Optional[Path] = None,
+    updated_at: Optional[float] = None,
+    active_cache: bool = True,
 ) -> List[LocalModelInfo]:
     """An artifact mirror (a model's own GGUF / FP8 repo that also holds its base's official diffusers folders) never
     lists those folders as a pipeline row: they are what a pick of the BASE fetches, a pipeline pick of the repo id is
@@ -742,6 +767,24 @@ def _artifact_mirror_rows(
     if snapshot is None or not hf_cache_scan.snapshot_has_pipeline_index(snapshot):
         return rows
     gguf_rows = [row for row in rows if row.model_format == "gguf"]
+    if not gguf_rows and (gguf_bytes := _cached_gguf_bytes(repo_dir)):
+        # The quants sit in an OLDER revision than the folders a later base pick added, and only the newest snapshot
+        # was classified: recover the GGUF row from every cached revision rather than drop an installed model.
+        gguf_rows = [
+            _local_model_info(
+                scan_path = repo_dir,
+                load_path = load_path or repo_dir,
+                source = "hf_cache",
+                model_format = "gguf",
+                display_name = model_id.split("/")[-1],
+                model_id = model_id,
+                updated_at = updated_at,
+                partial = False,
+                requires_variant = True,
+                size_bytes = gguf_bytes,
+                active_cache = active_cache,
+            )
+        ]
     if gguf_rows:
         from hub.services.models.cache_inventory import artifact_folder_bytes
         folder_bytes = artifact_folder_bytes(repo_dir)

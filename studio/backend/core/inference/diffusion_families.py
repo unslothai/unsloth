@@ -1524,6 +1524,7 @@ def prefer_ungated_mirror(
     hf_token: Optional[str] = None,
     *,
     files: Optional[Sequence[str]] = None,
+    other_root: bool = False,
 ) -> str:
     """``base``, or its ungated unsloth mirror when that is the better repo to FETCH from.
 
@@ -1558,7 +1559,10 @@ def prefer_ungated_mirror(
     # the copy already downloaded
     if _is_local_path(base):
         return base
-    return base if _upstream_is_cached(base, files) else mirror
+    # ``other_root`` for a fetch that resolves each file through either cache root (``reuse_other_cache_root``):
+    # an upstream copy left in the pre-change root then serves the load, so it must keep the upstream id.
+    cached = _upstream_is_cached(base, files, other_root = True) if other_root else _upstream_is_cached(base, files)
+    return base if cached else mirror
 
 
 # Default (steps, guidance) per model for callers that cannot pass them. Matched by substring, most specific first;

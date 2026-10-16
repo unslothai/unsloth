@@ -311,3 +311,31 @@ def test_load_progress_through_an_artifact_mirror_counts_only_the_pipeline_part(
     progress = backend.load_progress()
     assert progress["phase"] == "downloading"
     assert progress["bytes_downloaded"] == sum(pipeline.values()) + 1_000
+
+
+def test_on_device_keeps_a_gguf_cached_in_an_older_revision_than_the_folders(tmp_path):
+    """An install that cached a quant before the diffusers folders were added, then a base pick that fetched those
+    folders from the newer revision: the newest snapshot holds only folders, the quant sits in the older one. The GGUF
+    row must survive, with the folders counted, rather than leave only a partial companion row."""
+    from hub.services.models import local_inventory
+
+    repo_dir = tmp_path / "models--unsloth--Z-Image-GGUF"
+    old = repo_dir / "snapshots" / "rev-old"
+    new = repo_dir / "snapshots" / "rev-new"
+    (old).mkdir(parents = True)
+    (old / "z-image-Q4_K_M.gguf").write_bytes(b"\0" * 5_000)
+    for name, size in {**_FOLDERS, **_DENOISER}.items():
+        p = new / name
+        p.parent.mkdir(parents = True, exist_ok = True)
+        p.write_bytes(b"\0" * size)
+    (new / "model_index.json").write_text('{"_class_name": "ZImagePipeline"}')
+    (repo_dir / "refs").mkdir()
+    (repo_dir / "refs" / "main").write_text("rev-new")
+    import os
+
+    os.utime(old, (1, 1))
+
+    rows = local_inventory._scan_hf_cache(tmp_path)
+    assert [r.model_format for r in rows] == ["gguf"]
+    assert rows[0].size_bytes > 5_000 + sum(v for k, v in _DENOISER.items())
+    assert not rows[0].partial

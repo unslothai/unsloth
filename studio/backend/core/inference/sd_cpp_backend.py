@@ -2579,7 +2579,7 @@ def _colocate_shards(index_path: str, fetched: dict[str, str]) -> None:
 
     ``_fetch_assets`` resolves each file through either root, so after a cache-folder change the index can come from
     the old root while its shards land in the active one. sd-cli only looks beside the index, and an offline user
-    cannot repair that by re-downloading, so each missing shard is linked (else copied) into the index's snapshot
+    cannot repair that by re-downloading, so each missing shard is hard-linked (else copied) into the index's snapshot
     directory, under the name the repo itself gives it. ``fetched`` maps a shard's file name to the path it was
     resolved to. Best-effort: anything left missing is reported by ``_assert_shards_beside_index``."""
     if not str(index_path).endswith(".safetensors.index.json"):
@@ -2596,8 +2596,9 @@ def _colocate_shards(index_path: str, fetched: dict[str, str]) -> None:
         if target.exists() or not source or not Path(source).is_file():
             continue
         real = Path(source).resolve()
+        # A hard link, else a copy, never a symlink: each cache root is deleted and unmounted on its own, so a link
+        # from one into the other would dangle, or a cache scan would treat the other root's blob as this one's.
         for place in (
-            lambda: os.symlink(real, target),
             lambda: os.link(real, target),
             lambda: shutil.copyfile(real, target),
         ):
@@ -2619,7 +2620,11 @@ def _fetch_repo_map(assets: list[tuple[str, str, str]], hf_token: Optional[str])
     for repo, filename, _kind in assets:
         by_repo.setdefault(repo, []).append(filename)
     return {
-        repo: prefer_cached_legacy_source(prefer_ungated_mirror(repo, hf_token, files = names), names)
+        # Both cache roots: _fetch_assets resolves each file through either, so an upstream copy in the pre-change
+        # root keeps the upstream id instead of re-pulling the mirror.
+        repo: prefer_cached_legacy_source(
+            prefer_ungated_mirror(repo, hf_token, files = names, other_root = True), names
+        )
         for repo, names in by_repo.items()
     }
 

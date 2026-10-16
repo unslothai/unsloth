@@ -2933,3 +2933,23 @@ def test_a_t5_index_from_the_old_cache_root_gets_its_shards_beside_it(monkeypatc
     for fn in shard_files:
         beside = index.parent / fn.rsplit("/", 1)[-1]
         assert beside.read_bytes() == b"shard:" + fn.encode()
+        # Never a symlink into the other root: deleting or unmounting either root must not break the other.
+        assert not beside.is_symlink()
+
+
+def test_the_native_fetch_keeps_an_upstream_cached_only_in_the_pre_change_root(monkeypatch):
+    """_fetch_assets resolves each file through either cache root, so FLUX.1's CLIP / T5 left in the previous root
+    serve the load. Deciding the mirror swap off the live root alone rewrote them to unsloth/FLUX.1-schnell, which a
+    cache-only load then could not find and an online one re-pulled (~10 GB)."""
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+    monkeypatch.setattr(
+        "core.inference.diffusion_families._upstream_is_cached",
+        lambda repo_id, files = None, *, other_root = False: other_root,
+    )
+    assets = [
+        ("black-forest-labs/FLUX.1-schnell", "text_encoder/model.safetensors", "clip_l"),
+        ("black-forest-labs/FLUX.1-schnell", "ae.safetensors", "vae"),
+    ]
+    assert bk._fetch_repo_map(assets, None) == {
+        "black-forest-labs/FLUX.1-schnell": "black-forest-labs/FLUX.1-schnell"
+    }
