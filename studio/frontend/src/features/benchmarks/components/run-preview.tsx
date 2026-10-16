@@ -20,9 +20,6 @@ import type { ReactElement, ReactNode } from "react";
 import { useChatSettings } from "../api/chat-base";
 import {
   type BaseSetting,
-  CUSTOM_PROMPT_ID,
-  PROMPT_SETS,
-  SWEEP_TITLE,
   modelShort,
   pinnedFields,
   variedFields,
@@ -150,11 +147,6 @@ export function RunPreviewCard({
   const ready =
     hasModel && active.length > 0 && !metadataPending && !metadataError;
   const perRow = config.warmup + config.repetitions;
-  const prompts =
-    config.promptSet === CUSTOM_PROMPT_ID
-      ? "Your own"
-      : (PROMPT_SETS.find((p) => p.id === config.promptSet)?.name ??
-        config.promptSet);
   const shown = settings.filter((b) => SHOWN_SETTINGS.includes(b.field));
 
   return (
@@ -204,31 +196,10 @@ export function RunPreviewCard({
       </section>
 
       <section className="flex flex-col gap-3">
-        <MetaRow label="Sweep" value={SWEEP_TITLE[config.sweep]} />
-        <MetaRow
-          label="Rows"
-          value={`${active.length} of ${config.variants.length}`}
-        />
         <MetaRow
           label="Generations"
-          value={
-            <>
-              <span className="font-mono">{active.length * perRow}</span>
-              <span className="text-muted-foreground/70">
-                {" "}
-                · {config.maxTokens} tokens each
-              </span>
-            </>
-          }
+          value={<span className="font-mono">{active.length * perRow}</span>}
         />
-        <MetaRow label="Baseline" value={config.baseline ?? "None"} />
-        <MetaRow
-          label="Prompts"
-          value={`${prompts}${config.rotatePrompts ? " · rotated" : ""}`}
-        />
-      </section>
-
-      <section className="flex flex-col gap-3">
         {shown.map((b) => (
           <MetaRow
             key={b.field}
@@ -246,10 +217,6 @@ export function RunPreviewCard({
         <MetaRow
           label="Run Settings"
           value={<SettingsPopover settings={settings} varied={varied} />}
-        />
-        <MetaRow
-          label="After the run"
-          value={config.restoreAfter ? "Chat's settings restored" : "Left as the last row"}
         />
       </section>
 

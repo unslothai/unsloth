@@ -96,6 +96,7 @@ except ImportError:
     from utils.paths import is_local_path, normalize_path, resolve_dataset_path
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
+from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.host_paths import redact_host_paths
 from hub.utils.hf_tokens import HfTokenArg, cached_read_refused, hf_token_arg
 
@@ -136,6 +137,7 @@ from models.training import (
     DiffusionTrainingStatusResponse,
     DiffusionTrainingStopRequest,
     TRAINING_REQUEST_ID_PATTERN,
+    TokenPreviewRequest,
 )
 from models.responses import TrainingStopResponse, TrainingMetricsResponse
 from pydantic import (
@@ -1683,6 +1685,47 @@ async def get_offload_state(current_subject: str = Depends(get_current_subject))
     return {"active": True, **offload}
 
 
+@router.get("/drafter-capability")
+async def get_drafter_capability(
+    model_name: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+    hf_token: Optional[str] = Depends(get_hf_token),
+):
+    """Which speculative-decoding drafter the Train tab can train for `model_name`: the native MTP head
+    when the checkpoint ships one, else an EAGLE-3 drafter where vLLM or llama.cpp can run it."""
+    from core.training.drafter import drafter_capability
+
+    from models.inference import resolve_inventory_handle
+
+    shown = (model_name or "").strip()
+    if not shown or len(shown) > 512:
+        raise HTTPException(status_code = 400, detail = "model_name is required")
+    # A picker `ref:` handle resolves the way TrainingStartRequest resolves it; the answer keeps the handle.
+    name = resolve_inventory_handle(shown)
+    managed = managed_account()
+    if managed:
+        # Same rule as the training routes: Hub ids, or paths inside this account's workspace.
+        try:
+            account_path(name, reference = True, shared_cache = True)
+            # A shared-cache snapshot is another tenant's unless this account may see that model.
+            await asyncio.to_thread(_authorize_cache_fallback, name)
+        except HTTPException:
+            return {
+                "model_name": shown,
+                "has_native_mtp": False,
+                "strategy": None,
+                "supported": False,
+                "reason": "This model is not available to this account.",
+                "vllm": False,
+                "llama_cpp": False,
+            }
+    # The caller's own token comes in the header; without one, ambient credentials for the owner
+    # only, anonymous for API keys and managed accounts (the owner's token must not answer for them).
+    token = hf_token_arg(hf_token, allow_ambient_token = not (via_api_key is True or managed))
+    return {**await asyncio.to_thread(drafter_capability, name, token), "model_name": shown}
+
+
 @router.get("/hardware/visible")
 async def get_visible_hardware_utilization(current_subject: str = Depends(get_current_subject)):
     from utils.hardware import get_visible_gpu_utilization, gpu_query
@@ -1691,6 +1734,122 @@ async def get_visible_hardware_utilization(current_subject: str = Depends(get_cu
     # route.
     with gpu_query.display_reads():
         return await asyncio.to_thread(get_visible_gpu_utilization)
+
+
+# As many head rows as prepare_raw_text_dataset scores to pick a column; the worker shows a few at random.
+_TOKEN_PREVIEW_POOL_ROWS = 100
+
+
+def _token_preview_rows(request: TokenPreviewRequest, hf_token) -> list[dict]:
+    from hub.schemas.datasets import CheckFormatRequest as HubCheckFormatRequest
+    from hub.services.datasets.formatting import load_preview_slice
+
+    from core.training.account_jobs import visible_cached_path
+
+    from hub.utils import download_registry
+    from hub.utils.hf_errors import hf_error_status
+
+    visible_cached_path(request.dataset_local_path, "dataset")
+    try:
+        rows, _ = load_preview_slice(
+            HubCheckFormatRequest(
+                dataset_name = request.dataset_name,
+                subset = request.subset,
+                train_split = request.train_split or "train",
+                prefer_local_cache = request.dataset_known_cached
+                and bool(request.dataset_local_path),
+                local_path = request.dataset_local_path,
+            ),
+            hf_token,
+            _TOKEN_PREVIEW_POOL_ROWS,
+            viewer_rows = True,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code = hf_error_status(exc) or 400,
+            detail = download_registry.scrub_secrets(str(exc), hf_token = hf_token),
+        ) from exc
+    return rows.to_list()
+
+
+@router.post("/token-preview")
+async def token_preview(
+    request: TokenPreviewRequest,
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Tokens and completion mask for a few rows of the selected dataset, or for ``text``, as
+    training would produce them. Loads the tokenizer only, in a GPU-free subprocess."""
+    from core.training.token_preview import (
+        TokenPreviewError,
+        run_token_preview,
+    )
+    from core.training.training import should_use_mlx_training_backend
+    from routes.models import _require_model_access_or_caller_token
+    from utils.account_context import current_account_id
+    from hub.utils.hf_tokens import recording_a_request_token_fetch
+    from utils.models.unsloth_mirror import unsloth_public_mirror
+    from utils.paths import is_local_path
+    from utils.utils import anonymous_and_offline
+
+    if request.text is None and not request.dataset_name:
+        raise HTTPException(status_code = 400, detail = "Pick a dataset or type a text to preview.")
+    hf_token = account_hf_token(hf_token)
+    model_name = request.model_name.strip()
+    account_path(model_name, reference = True)
+    if request.dataset_name:
+        account_path(request.dataset_name, reference = True)
+    await _require_model_access_or_caller_token(model_name, hf_token)
+    # By repo id, not the picked cache folder: a cached repo still resolves from disk, and a folder
+    # path would skip the account checks above.
+    # Same repo the trainer reads: MLX loads the picked name as given (see _metadata_lookup_name).
+    source = model_name
+    if not should_use_mlx_training_backend():
+        source = unsloth_public_mirror(model_name, request.load_in_4bit) or model_name
+    remote = not is_local_path(source)
+    if remote and anonymous_and_offline(hf_token, repo_id = source):
+        raise HTTPException(status_code = 404, detail = "This model is not available offline.")
+
+    def _run() -> dict:
+        rows = None if request.text is not None else _token_preview_rows(request, hf_token)
+        payload = {
+            "rows": rows,
+            "text": request.text,
+            "final_format": request.final_format,
+            "dataset_name": request.dataset_name,
+            "format_type": request.format_type,
+            "custom_format_mapping": request.custom_format_mapping,
+            "raw_text": request.is_cpt or request.format_type == "raw",
+            "is_cpt": request.is_cpt,
+            # The trainer never masks audio models or DeepSeek OCR (it skips apply_completion_masking).
+            "train_on_completions": request.train_on_completions
+            and not request.is_cpt
+            and request.model_type != "audio"
+            and not ("deepseek" in model_name.lower() and "ocr" in model_name.lower()),
+            "max_seq_length": request.max_seq_length,
+            "num_samples": request.num_samples,
+            "seed": request.seed,
+        }
+        key = (current_account_id(), model_name, source, hf_token)
+        # The tokenizer is loaded only when a worker starts, and which files that load resolves is not
+        # known up front, so every load is recorded; a warm worker fetches nothing.
+        return run_token_preview(
+            key,
+            {"model_name": model_name, "tokenizer_source": source, "hf_token": hf_token},
+            payload,
+            (lambda: recording_a_request_token_fetch(hf_token, source, "model"))
+            if remote
+            else None,
+        )
+
+    try:
+        return await asyncio.to_thread(_run)
+    except TokenPreviewError as exc:
+        from hub.utils import download_registry
+        detail = download_registry.scrub_secrets(str(exc), hf_token = hf_token)
+        raise HTTPException(status_code = 422, detail = detail) from exc
 
 
 @router.get("/start-requests/{start_request_id}", response_model = TrainingStartRequestStatus)
@@ -1795,6 +1954,17 @@ async def start_training(
     to check progress.
     """
     await asyncio.to_thread(_validate_decision_request, request, via_api_key)
+    if request.drafter is not None and request.drafter.enabled:
+        from core.training.training import should_use_mlx_training_backend
+        if should_use_mlx_training_backend():
+            raise HTTPException(
+                status_code = 400,
+                detail = "Drafter training is not available on Apple Silicon (MLX) yet.",
+            )
+    from core.training.token_preview import stop_token_preview_worker
+
+    # The run needs the host RAM more than the preview needs to stay warm; reaped off the request path.
+    threading.Thread(target = stop_token_preview_worker, daemon = True).start()
     if managed_account():
         from utils.paths import tensorboard_root
 
@@ -2118,6 +2288,12 @@ async def start_training(
             "dataset_streaming": request.dataset_streaming,
             "eval_split": request.eval_split,
             "eval_steps": request.eval_steps,
+            "early_stopping_patience": request.early_stopping_patience,
+            "drafter": (
+                request.drafter.model_dump()
+                if request.drafter is not None and request.drafter.enabled
+                else None
+            ),
             "dataset_slice_start": request.dataset_slice_start,
             "dataset_slice_end": request.dataset_slice_end,
             "custom_format_mapping": request.custom_format_mapping,
@@ -2645,7 +2821,9 @@ def _build_training_status(
         phase = "error"
     elif is_active:
         msg_lower = status_message.lower()
-        if "loading" in msg_lower or "importing" in msg_lower:
+        if msg_lower.startswith("training drafter"):
+            phase = "training_drafter"
+        elif "loading" in msg_lower or "importing" in msg_lower:
             phase = "loading_model"
         elif any(k in msg_lower for k in ["preparing", "initializing", "configuring"]):
             phase = "configuring"
@@ -2669,6 +2847,7 @@ def _build_training_status(
             "loss": getattr(progress, "loss", None),
             "learning_rate": getattr(progress, "learning_rate", None),
             "output_dir": getattr(backend, "_output_dir", None) or None,
+            "drafter": getattr(progress, "drafter", None),
             "model_download_repo_id": (
                 getattr(backend, "_model_download_repo_id", None) if is_active else None
             ),

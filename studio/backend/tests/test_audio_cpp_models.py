@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.inference import audio_cpp_backend, audio_cpp_files
+from core.inference import audio_cpp_backend, audio_cpp_files, audio_cpp_music
 from core.inference import audio_cpp_models as acm
 from core.inference.audio_cpp_models import (
     AUDIO_CPP_REPO,
@@ -376,19 +376,14 @@ def _fake_runtime(
     return binary
 
 
-def test_the_spec_family_list_matches_the_pinned_runtime():
-    import importlib.util
-
+def test_the_spec_family_list_covers_the_published_runtimes():
     from core.inference.audio_cpp_spec_families import (
         AUDIO_CPP_SPEC_FAMILIES,
-        AUDIO_CPP_SPEC_FAMILIES_TAG,
+        AUDIO_CPP_SPEC_FAMILIES_TAGS,
     )
 
-    installer = Path(__file__).resolve().parents[2] / "install_audio_cpp_prebuilt.py"
-    spec = importlib.util.spec_from_file_location("_audio_cpp_installer", installer)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    assert AUDIO_CPP_SPEC_FAMILIES_TAG == module.DEFAULT_TAG
+    # Both releases ship the same model_specs/ stems, so a v0.9.0 install keeps the up-front refusal.
+    assert {"v0.9.0-unsloth.1", "v0.9.1-unsloth.1"} <= AUDIO_CPP_SPEC_FAMILIES_TAGS
     for family in ("crisperwhisper", "index_echo", "audio_flamingo", "kugelaudio", "smart_turn"):
         assert family not in AUDIO_CPP_SPEC_FAMILIES
     for family in ("samsone", "gigaam_asr", "maya1"):
@@ -396,32 +391,30 @@ def test_the_spec_family_list_matches_the_pinned_runtime():
     assert set(acm.FAMILIES) - AUDIO_CPP_SPEC_FAMILIES == {"marblenet_vad", "silero_vad"}
 
 
-def test_runtime_knows_a_family_from_its_specs_or_the_pinned_list(monkeypatch, tmp_path):
+def test_runtime_knows_a_family_from_its_specs_or_the_listed_tags(monkeypatch, tmp_path):
     from core.inference import audio_cpp_server
-    from core.inference.audio_cpp_spec_families import AUDIO_CPP_SPEC_FAMILIES_TAG
 
     monkeypatch.setattr(audio_cpp_server, "find_audio_cpp_server_binary", lambda: None)
     assert acm.runtime_knows_family("samsone") is None
-    _fake_runtime(monkeypatch, tmp_path / "pinned", tag = AUDIO_CPP_SPEC_FAMILIES_TAG)
-    assert acm.runtime_knows_family("samsone") is True
-    assert acm.runtime_knows_family("crisperwhisper") is False
+    for tag in ("v0.9.0-unsloth.1", "v0.9.1-unsloth.1"):
+        _fake_runtime(monkeypatch, tmp_path / tag, tag = tag)
+        assert acm.runtime_knows_family("samsone") is True
+        assert acm.runtime_knows_family("crisperwhisper") is False
     _fake_runtime(monkeypatch, tmp_path / "newer", tag = "v9.9.9-unsloth.1")
     assert acm.runtime_knows_family("crisperwhisper") is None
     _fake_runtime(monkeypatch, tmp_path / "custom")
     assert acm.runtime_knows_family("crisperwhisper") is None
     _fake_runtime(
-        monkeypatch, tmp_path / "specs", tag = AUDIO_CPP_SPEC_FAMILIES_TAG, specs = ("crisperwhisper",)
+        monkeypatch, tmp_path / "specs", tag = "v0.9.1-unsloth.1", specs = ("crisperwhisper",)
     )
     assert acm.runtime_knows_family("crisperwhisper") is True
     assert acm.runtime_knows_family("samsone") is False
 
 
 def test_a_spec_fallback_family_the_runtime_lacks_is_refused(hub, monkeypatch, tmp_path):
-    from core.inference.audio_cpp_spec_families import AUDIO_CPP_SPEC_FAMILIES_TAG
-
     # The hub fixture leaves the runtime out of reach; this test installs one.
     monkeypatch.setattr(acm, "runtime_knows_family", _REAL_RUNTIME_KNOWS_FAMILY)
-    _fake_runtime(monkeypatch, tmp_path, tag = AUDIO_CPP_SPEC_FAMILIES_TAG)
+    _fake_runtime(monkeypatch, tmp_path, tag = "v0.9.1-unsloth.1")
     for family, folder, tasks in (
         ("gigaam_asr", "GigaAM-v3-GGUF", ["asr"]),
         ("crisperwhisper", "CrisperWhisper2.0-GGUF", ["asr"]),
@@ -1549,7 +1542,11 @@ def test_audio_options_reach_the_request_validated():
         "hi", audio_options = {"voice": "am_adam", "speed": 1.5, "bogus": 1, "mode": "zzz"}
     )
     body = srv.calls[0][1]
-    assert body["voice"] == "am_adam" and body["options"] == {"speed": 1.5}
+    assert body["voice"] == "am_adam" and body["options"] == {
+        "speed": 1.5,
+        "mode": "a",
+        "text_chunk_size": 240,
+    }
 
 
 def test_speech_retry_keeps_package_defaults_and_user_options_and_covers_500():
@@ -1614,7 +1611,13 @@ def test_minimax_takes_the_caption_as_input_and_lyrics_and_duration_as_options()
     request = srv.calls[0][1]["request"]
     assert request["text"] == "lofi" and request["seed"] == "3"
     # The runtime rejects duration_sec beside duration_seconds ("conflicting option values").
-    assert request["options"] == {"top_k": 9, "lyrics": "[verse] hi"}
+    assert request["options"] == {
+        "top_k": 9,
+        "lyrics": "[verse] hi",
+        "ar_guidance_scale": 1.5,
+        "guidance_scale": 1.7,
+        "num_inference_steps": 30,
+    }
     assert request["duration_seconds"] == 20.0
     with pytest.raises(RuntimeError, match = "needs lyrics"):
         b.generate_audio_response("", instructions = "lofi")
@@ -1625,12 +1628,7 @@ def test_yue2_takes_the_description_as_its_required_style():
     b.generate_audio_response("[chorus] oh", instructions = "rock, male vocal")
     request = srv.calls[0][1]["request"]
     assert request["text"] == "[chorus] oh"
-    assert request["options"] == {
-        "style": "rock, male vocal",
-        "lyrics": "[chorus] oh",
-        "semantic_max_tokens": 3072,
-        "semantic_min_tokens": 200,
-    }
+    assert request["options"] == {"style": "rock, male vocal", "lyrics": "[chorus] oh"}
     with pytest.raises(RuntimeError, match = "style"):
         b.generate_audio_response("[chorus] oh")
 
@@ -2631,17 +2629,21 @@ def test_stt_takes_the_variant_keys_gguf_variants_lists_even_from_a_partial_cach
     assert stem.variant.key == "Q8_0" and stem.unsupported is None
 
 
-def test_yue2_length_follows_the_requested_duration():
+def test_yue2_runs_to_its_own_ending_whatever_the_token_budget():
     b, srv = _backend_with(_speech_model("yue2"), MUSIC_REPLY)
-    b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = 125)
-    options = srv.calls[0][1]["request"]["options"]
-    # 5 s at 25 frames per second, with the 200-frame default lowered to fit; the cap is 1.5x.
-    assert options["semantic_max_tokens"] == 188 and options["semantic_min_tokens"] == 125
-    b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = 1500)
-    options = srv.calls[1][1]["request"]["options"]
-    assert options["semantic_max_tokens"] == 2250 and options["semantic_min_tokens"] == 200
-    b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = 6000)
-    assert srv.calls[2][1]["request"]["options"]["semantic_max_tokens"] == 9000
+    srv.backend = "cpu"
+    waits = []
+    post = srv.post_json
+    srv.post_json = lambda path, payload, **kw: waits.append(kw["timeout"]) or post(path, payload)
+    for budget in (125, 1500, 6000):
+        b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = budget)
+    for _path, body in srv.calls:
+        options = body["request"]["options"]
+        assert "semantic_max_tokens" not in options and "semantic_min_tokens" not in options
+    assert waits == [audio_cpp_music.self_ending_timeout("yue2", "cpu")] * 3 == [4 * 3600.0] * 3
+    srv.backend = "cuda"
+    b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = 2048)
+    assert waits[-1] == audio_cpp_music.timeout_seconds("yue2", 240, 1, "cuda") == 2460.0
 
 
 def test_music_requests_missing_a_required_field_are_a_400_message():
@@ -3075,3 +3077,69 @@ def test_samsone_is_refused_for_transcription(hub):
     with pytest.raises(SttModelIdError, match = "describes audio"):
         s.resolve_audio_cpp_stt_model(f"{AUDIO_CPP_REPO}/Samsone-GGUF")
     assert f"{AUDIO_CPP_REPO}/Samsone-GGUF" not in s.downloaded_model_ids()
+
+
+@pytest.mark.parametrize(
+    "family,filename",
+    [("breeze_tts", "breeze-tts-2-q8_0.gguf"), ("dots_tts", "dots-tts-soar-q8_0.gguf")],
+)
+def test_audio_page_local_filename_pick_uses_audio_cpp(hub, tmp_path, family, filename):
+    from hub.services.models.gguf_variants import get_gguf_variants_response
+    from utils.models.model_config import ModelConfig
+
+    folder = tmp_path / "portable-audio-models" / family
+    folder.mkdir(parents = True)
+    weights = folder / filename
+    weights.write_bytes(_gguf_bytes(family = family))
+    listing = asyncio.run(get_gguf_variants_response(str(folder)))
+    selected = next(v for v in listing.variants if v.filename == filename)
+    config = ModelConfig.from_identifier(str(folder), gguf_variant = selected.filename)
+
+    assert config.audio_type == "audiocpp_tts"
+    assert config.audio_cpp is not None
+    assert config.audio_cpp.family == family
+    assert config.path == str(weights)
+    assert config.is_gguf is False  # audio.cpp bypasses llama-server
+
+
+def test_audio_page_split_symlink_alias_keeps_its_resolved_target(hub, tmp_path):
+    from utils.models.model_config import ModelConfig
+
+    real = tmp_path / "real"
+    real.mkdir()
+    first = real / "model-Q8_0-00001-of-00002.gguf"
+    first.write_bytes(_gguf_bytes(family = "breeze_tts"))
+    (real / "model-Q8_0-00002-of-00002.gguf").write_bytes(b"GGUF")
+    links = tmp_path / "links"
+    links.mkdir()
+    alias = links / "alias-Q8_0-00001-of-00002.gguf"
+    try:
+        alias.symlink_to(first)
+    except OSError:
+        pytest.skip("this filesystem or account cannot create symlinks")
+
+    config = ModelConfig.from_identifier(str(links), gguf_variant = alias.name)
+
+    assert config.audio_type == "audiocpp_tts"
+    assert config.audio_cpp.family == "breeze_tts"
+    assert config.path == str(first)
+
+
+def test_filename_variant_matches_a_windows_local_primary():
+    filename = "breeze-tts-2-q8_0.gguf"
+    variant = AudioCppVariant(
+        "Q8_0",
+        (RepoFile(filename),),
+        rf"C:\models\breeze_tts\{filename}",
+    )
+
+    assert acm.match_variant((variant,), filename) is variant
+    assert acm.match_variant((variant,), f"breeze_tts/{filename}") is variant
+
+
+def test_exact_audio_filename_path_wins_over_an_earlier_suffix_match():
+    filename = "model-Q8_0.gguf"
+    archived = AudioCppVariant("archive/Q8_0", (RepoFile(filename),), f"archive/chosen/{filename}")
+    exact = AudioCppVariant("chosen/Q8_0", (RepoFile(filename),), f"chosen/{filename}")
+
+    assert acm.match_variant((archived, exact), f"chosen/{filename}") is exact

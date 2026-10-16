@@ -568,6 +568,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
                 variant_repos = ("unsloth/LTX-2.5-FP8",),
                 default_on = True,
             ),
+            # ComfyUI's LTX-2.5 templates run the int8-convrot DiT; LPIPS 0.265 = compile floor (FP8 0.366).
+            auto_prequant_when_resident = frozenset({"int8"}),
             untiled_vae = _LTX2_VAE_UNTILED,
             # 2.5 keeps the 2.3 conv VAE encoder (byte-identical weights), so the same latent space.
             compile_static = True,
@@ -663,6 +665,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # temporal compression 4 gives valid frame counts 4k+1. Defaults 20 steps / CFG 5 (ComfyUI's template).
     VideoFamily(
         name = "wan2.2-ti2v-5b",
+        trainable = True,
+        label = "Wan2.2 TI2V 5B",
         profile = FamilyProfile(
             untiled_vae = UntiledVae(bytes_per_latent_pixel = 2.5 * 2**20, output_scale = (16, 4)),
             preview_factors = "wan22_5b",
@@ -1215,11 +1219,52 @@ def format_video_resolution_presets(fam: VideoFamily) -> str:
     return ", ".join(f"{w}x{h}" for w, h in fam.resolution_presets)
 
 
+# Ceiling = largest preset area, not more: MiniMax-H3 budgets denoiser residency at that preset. Floor = smallest preset
+# area (relaxed to half the largest), which keeps 256x256 refused and honours UNSLOTH_VIDEO_H3_480P=0.
+CUSTOM_VIDEO_MAX_ASPECT = 4.0
+
+
+def video_custom_size_bounds(fam: VideoFamily) -> Optional[tuple[int, int, float]]:
+    """(min_pixels, max_pixels, max_aspect) a custom size must fit, or None for a family without presets."""
+    presets = [(int(w), int(h)) for w, h in fam.resolution_presets if int(w) > 0 and int(h) > 0]
+    if not presets:
+        return None
+    areas = [w * h for w, h in presets]
+    max_aspect = max([CUSTOM_VIDEO_MAX_ASPECT] + [max(w, h) / min(w, h) for w, h in presets])
+    return min(min(areas), max(areas) // 2), max(areas), max_aspect
+
+
 class VideoShapeError(ValueError):
     """A shape this family cannot render. A ValueError subclass so the existing
     ``except ValueError`` callers keep catching it, and a distinct type so the generate
     route can answer 422 (the body is in range, the shape is not supported) without
     widening the 400 it gives every other bad-input ValueError."""
+
+
+def _validate_custom_video_size(fam: VideoFamily, width: int, height: int) -> None:
+    bounds = video_custom_size_bounds(fam)
+    if bounds is None:
+        return
+    min_pixels, max_pixels, max_aspect = bounds
+    multiple = max(1, fam.resolution_multiple)
+    presets = format_video_resolution_presets(fam)
+    if width <= 0 or height <= 0 or width % multiple or height % multiple:
+        raise VideoShapeError(
+            f"{width}x{height} is not a supported resolution for {fam.name}: width and height must "
+            f"be multiples of {multiple}. Trained resolutions: {presets}."
+        )
+    area = width * height
+    if area < min_pixels or area > max_pixels:
+        raise VideoShapeError(
+            f"{width}x{height} is not a supported resolution for {fam.name}: the frame must hold "
+            f"between {min_pixels:,} and {max_pixels:,} pixels, near the sizes it was trained at. "
+            f"Trained resolutions: {presets}."
+        )
+    if max(width, height) / min(width, height) > max_aspect + 1e-9:
+        raise VideoShapeError(
+            f"{width}x{height} is not a supported resolution for {fam.name}: the aspect ratio "
+            f"must stay within {max_aspect:g}:1. Trained resolutions: {presets}."
+        )
 
 
 def validate_video_request_shape(
@@ -1230,35 +1275,21 @@ def validate_video_request_shape(
 ) -> None:
     """Raise ``ValueError`` when a request asks for a shape ``fam`` does not support.
 
-    The generate route calls this at the API boundary so HTTP enforces exactly the rules the Desktop
-    interface offers: its resolution select lists only ``resolution_presets`` and its duration
-    select only lattice frame counts, while the API took anything inside the coarse request bounds
-    and then SNAPPED it. The snap is silent and floors, so a 256x256 request survived untouched and
-    denoised at a size no checkpoint was ever trained for.
-
-    This is a separate, explicit check rather than a change to ``snap_video_size`` /
-    ``snap_num_frames``, which internal callers still need. It stays silent for anything it cannot
-    judge (a family that declares no presets keeps the old SIZE snapping), and ``None`` means "use
-    the family default". The frame lattice is deliberately NOT part of that escape hatch: every
-    family declares a ``frame_step``, so an off-lattice count is always refused.
+    The generate route calls this at the API boundary. A size is accepted when both sides sit on the
+    family's ``resolution_multiple`` and the frame stays inside ``video_custom_size_bounds``: the
+    old silent floor snap let 256x256 through to a size no checkpoint was trained for, so sizes far
+    from the presets are refused rather than snapped. A family that declares no presets keeps the
+    old SIZE snapping, and ``None`` means "use the family default". The frame lattice has no escape
+    hatch: every family declares a ``frame_step``, so an off-lattice count is always refused.
     """
-    # Normalised to int pairs so membership holds however a family spelled its presets (the status payload hands them
-    # out as lists, and a round-trip through it must not silently stop matching).
     presets = tuple((int(w), int(h)) for w, h in fam.resolution_presets)
-    # No declared presets: no table to judge a SIZE against, so leave that to the snap (unusual/custom families). The
-    # frame check below still runs either way -- frame_step is always declared.
     if presets and (width is not None or height is not None):
-        # Resolve a half-specified request against the default preset first, as generate() does, then judge the pair.
-        # Keyed on None, where generate() keys on falsiness: a 0 is judged as 0 here rather than replaced by the
-        # default. The route cannot deliver one (the request model bounds it at 32), and refusing an explicit 0 beats
-        # silently rendering something else, so the two agree on every value that can arrive.
+        # A half-specified request resolves against the default preset, as generate() does. Keyed on None, not
+        # falsiness: an explicit 0 is refused rather than replaced (the request model bounds it at 32 anyway).
         want_w = presets[0][0] if width is None else int(width)
         want_h = presets[0][1] if height is None else int(height)
         if (want_w, want_h) not in presets:
-            raise VideoShapeError(
-                f"{want_w}x{want_h} is not a supported resolution for {fam.name}. "
-                f"Supported resolutions: {format_video_resolution_presets(fam)}."
-            )
+            _validate_custom_video_size(fam, want_w, want_h)
     if num_frames is not None:
         # The lattice is k * frame_step + frame_offset, NOT a hardcoded k * step + 1: most families do sit at offset 1,
         # but MiniMax-H3 is 17k + 5, and judging it against 17k + 1 would refuse every count its own duration select

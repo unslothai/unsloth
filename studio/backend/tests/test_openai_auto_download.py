@@ -1825,6 +1825,111 @@ def test_a_sibling_quant_in_the_same_directory_is_not_the_resident_one(monkeypat
     assert asyncio.run(inference_route._reject_unservable_model("org/model:Q4_K_M", _Req())) is None
 
 
+def test_a_sibling_build_stem_is_not_the_resident_one(monkeypatch):
+    entry = resolver._LocalGgufEntry("org/model", "/models/model", ("Q4_K_M", "beta-Q4_K_M"))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/model": entry}))
+    loaded = _Loaded("org/model", "Q4_K_M")
+    loaded.gguf_path = "/models/model/alpha-Q4_K_M.gguf"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    monkeypatch.setattr(inference_route, "_unavailable_model_message", _fake_unavailable_message)
+
+    with pytest.raises(HTTPException):
+        asyncio.run(inference_route._reject_unservable_model("org/model:beta-Q4_K_M", _Req()))
+
+
+def test_a_withheld_build_is_not_admitted_through_the_advertised_folder(monkeypatch):
+    entry = resolver._LocalGgufEntry(
+        "org/model", "/models/model", ("Q4_K_M",), withheld = ("beta-q4_k_m",), exact_builds = True
+    )
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/model": entry}))
+    loaded = _Loaded("org/model", "Q4_K_M")
+    loaded.gguf_path = "/models/model/alpha-Q4_K_M.gguf"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    monkeypatch.setattr(inference_route, "_advertised_local_path", lambda name: "/models/model")
+    monkeypatch.setattr(inference_route, "_unavailable_model_message", _fake_unavailable_message)
+
+    with pytest.raises(HTTPException):
+        asyncio.run(inference_route._reject_unservable_model("org/model:beta-Q4_K_M", _Req()))
+
+
+def test_a_rekeyed_quant_directory_build_is_admitted_against_its_resident(monkeypatch):
+    entry = resolver._LocalGgufEntry(
+        "org/model",
+        "/models/model",
+        ("Q4_K_M",),
+        build_aliases = (("q4_k_m/beta-q4_k_m", "Q4_K_M"),),
+        exact_builds = True,
+    )
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/model": entry}))
+    loaded = _Loaded("org/model", "Q4_K_M")
+    loaded.gguf_path = "/models/model/Q4_K_M/beta-Q4_K_M.gguf"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    monkeypatch.setattr(inference_route, "_unavailable_model_message", _fake_unavailable_message)
+
+    asyncio.run(inference_route._reject_unservable_model("org/model:Q4_K_M/beta-Q4_K_M", _Req()))
+
+
+def test_a_build_loaded_by_its_stem_still_answers_its_canonical_key(monkeypatch):
+    entry = resolver._LocalGgufEntry(
+        "org/model",
+        "/models/model",
+        ("Q4_K_M", "beta-Q4_K_M"),
+        build_aliases = (("alpha-q4_k_m", "Q4_K_M"),),
+        exact_builds = True,
+    )
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/model": entry}))
+    loaded = _Loaded("org/model", "alpha-Q4_K_M")
+    loaded.gguf_path = "/models/model/alpha-Q4_K_M.gguf"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    monkeypatch.setattr(inference_route, "_unavailable_model_message", _fake_unavailable_message)
+
+    assert inference_route._loaded_satisfies("org/model:alpha-Q4_K_M") is True
+    assert inference_route._loaded_satisfies("org/model:beta-Q4_K_M") is False
+    asyncio.run(inference_route._reject_unservable_model("org/model:alpha-Q4_K_M", _Req()))
+
+
+def test_a_rekeyed_slash_pin_is_admitted_for_a_bare_local_id(monkeypatch):
+    entry = resolver._LocalGgufEntry(
+        "custom",
+        "/models/custom",
+        ("Q4_K_M",),
+        build_aliases = (("q4_k_m/beta-q4_k_m", "Q4_K_M"),),
+        exact_builds = True,
+    )
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"custom": entry}))
+    loaded = _Loaded("custom", "Q4_K_M/beta-Q4_K_M")
+    loaded.gguf_path = "/models/custom/Q4_K_M/beta-Q4_K_M.gguf"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    monkeypatch.setattr(inference_route, "_unavailable_model_message", _fake_unavailable_message)
+
+    asyncio.run(inference_route._reject_unservable_model("custom:Q4_K_M/beta-Q4_K_M", _Req()))
+
+
 def test_a_remote_tag_that_names_no_quant_picks_the_preferred_one(hub):
     # ":latest" and ":8b" name no quant, so remote admission must default-select like a
     # bare repo id (as the local resolver does) instead of 404ing on a non-quant.
@@ -1927,9 +2032,75 @@ def test_a_non_quant_tag_does_not_tear_down_a_serving_quant(monkeypatch):
     monkeypatch.setattr(
         "utils.openai_auto_switch_settings.get_openai_auto_switch_enabled", lambda: True
     )
+    probes = []
+    real_pinned_variant = resolver.local_gguf_pinned_variant
+
+    def _record_probe(requested, allow_scan = True):
+        probes.append((requested, allow_scan))
+        return real_pinned_variant(requested, allow_scan = allow_scan)
+
+    monkeypatch.setattr(resolver, "local_gguf_pinned_variant", _record_probe)
     for tag in ("org/model:latest", "org/model:8b", "org/model"):
         asyncio.run(inference_route._maybe_auto_switch_model(tag, _Req(), "tester"))
     assert loads == [], "a tag naming no quant swapped the serving model out"
+    assert probes == [("org/model:latest", False), ("org/model:8b", False)]
+
+
+def test_a_split_build_stem_switches_away_from_the_resident_sibling(monkeypatch):
+    entry = resolver._LocalGgufEntry("org/model", "/models/model", ("Q4_K_M", "beta-Q4_K_M"))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/model": entry}))
+    loaded = _Loaded("org/model", "Q4_K_M")
+    loaded.gguf_path = "/models/model/alpha-Q4_K_M.gguf"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    loads: list = []
+
+    async def _record_load(request, *args, **kwargs):
+        variant = getattr(request, "gguf_variant", None)
+        loads.append(variant)
+        loaded.hf_variant = variant
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _record_load)
+    monkeypatch.setattr(
+        "utils.openai_auto_switch_settings.get_openai_auto_switch_enabled", lambda: True
+    )
+
+    asyncio.run(inference_route._maybe_auto_switch_model("org/model:beta-Q4_K_M", _Req(), "tester"))
+
+    assert loads == ["beta-Q4_K_M"]
+
+
+def test_a_quant_directory_build_key_switches_away_from_the_resident_sibling(monkeypatch):
+    key = "Q4_K_M/beta-Q4_K_M"
+    entry = resolver._LocalGgufEntry("custom-model", "/models/model", ("Q4_K_M", key))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"custom-model": entry}))
+    loaded = _Loaded("custom-model", "Q4_K_M")
+    loaded.gguf_path = "/models/model/Q4_K_M/alpha-Q4_K_M.gguf"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    loads: list = []
+
+    async def _record_load(request, *args, **kwargs):
+        variant = getattr(request, "gguf_variant", None)
+        loads.append(variant)
+        loaded.hf_variant = variant
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _record_load)
+    monkeypatch.setattr(
+        "utils.openai_auto_switch_settings.get_openai_auto_switch_enabled", lambda: True
+    )
+
+    asyncio.run(inference_route._maybe_auto_switch_model(f"custom-model:{key}", _Req(), "tester"))
+
+    assert loads == [key]
 
 
 def test_the_trust_probe_never_falls_back_to_the_server_identity(hub, monkeypatch):
@@ -2247,3 +2418,28 @@ def test_the_diagnosis_does_not_report_a_model_this_account_cannot_see(monkeypat
         monkeypatch = monkeypatch,
     )
     assert "is downloaded, but this server cannot serve it here" in granted
+
+
+def test_vision_refusal_names_the_image_block_on_messages(hub, monkeypatch):
+    async def _no_mmproj(model, **kwargs):
+        return auto_dl.AutoDownloadRefusal(
+            status = 400, code = "invalid_value", message = "'x' ships no mmproj companion."
+        )
+
+    import utils.openai_auto_switch_settings as s
+
+    monkeypatch.setattr(auto_dl, "maybe_auto_download", _no_mmproj)
+    monkeypatch.setattr(s, "get_openai_auto_download_enabled", lambda: True)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inference_route._maybe_auto_download_model(
+                "unsloth/text-GGUF",
+                _Req(path = "/v1/messages"),
+                require_vision = True,
+                rejection_prefix = "messages.0.content.1.image: ",
+            )
+        )
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.detail["error"]["message"] == (
+        "messages.0.content.1.image: 'x' ships no mmproj companion."
+    )

@@ -45,6 +45,7 @@ from .lora_init import adapter_used_fast_pissa, fast_lora_init, record_fast_piss
 from ..tokenizers_v1 import tokenizers_v1_on_return
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
+    deepspeed_zero3_device_map,
     OFFLOAD_EMBEDDING_AUTO,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
@@ -104,6 +105,9 @@ SUPPORTS_GEMMA4 = transformers_version >= Version("5.5.0")
 VLLM_UNSUPPORTED_MODEL_TYPES = ("gpt_oss",)
 # model_type -> unsloth_zoo.empty_model symbol that rebuilds it from vLLM; an older zoo falls back.
 _VLLM_NEEDS_ZOO_SYMBOL = {"nemotron_h": "extract_nemotron_h_mixer"}
+# vLLM 0.31 has no attention backend for these below sm80: TRITON_ATTN needs 96 KB shared memory
+# for Gemma 4's 512-wide global heads (T4 has 64 KB), FlexAttention rejects its KV sharing.
+VLLM_NEEDS_SM80_MODEL_TYPES = ("gemma4", "gemma4_text", "gemma4_unified", "gemma4_unified_text")
 
 
 def _vllm_unsupported_model_types(model_types):
@@ -114,6 +118,23 @@ def _vllm_unsupported_model_types(model_types):
             if not hasattr(zoo_empty_model, symbol):
                 unsupported.append(model_type)
     return unsupported
+
+
+def _vllm_needs_newer_gpu(model_types):
+    """First model type vLLM cannot run on this CUDA GPU (compute capability < 8), else None."""
+    if DEVICE_TYPE != "cuda":
+        return None
+    model_type = next((t for t in model_types if t in VLLM_NEEDS_SM80_MODEL_TYPES), None)
+    if model_type is None:
+        return None
+    import torch
+
+    try:
+        if torch.cuda.get_device_capability()[0] >= 8:
+            return None
+    except Exception:
+        return None
+    return model_type
 
 
 # Transformers v5 meta-device loading corrupts non-persistent buffers (inv_freq); see _fix_rope_inv_freq() below.
@@ -922,6 +943,14 @@ def _fix_rope_inv_freq(model):
                     ).float()
                     freqs = torch.outer(t, module.short_inv_freq)
                     emb = torch.cat((freqs, freqs), dim = -1)
+                    if hasattr(module, "_unsloth_short_cos_cpu"):
+                        # Devices not built yet copy the short cache from these on first use.
+                        module._unsloth_short_cos_cpu = (emb.cos() * module.scaling_factor).to(
+                            dtype = dtype
+                        )
+                        module._unsloth_short_sin_cpu = (emb.sin() * module.scaling_factor).to(
+                            dtype = dtype
+                        )
                     for device_idx in range(len(module.multi_gpu_short_cos_cached)):
                         if module.multi_gpu_short_cos_cached[device_idx] is not None:
                             device_obj = torch.device(device_idx)
@@ -972,6 +1001,44 @@ def _vllm_unavailable_error():
     )
 
 
+def _reattach_saved_mtp_head(
+    model,
+    adapter_dir,
+    token = None,
+    revision = None,
+    cache_dir = None,
+    local_files_only = False,
+):
+    """A LoRA folder (local or on the Hub) saved with a trained MTP head gets it back, so a later
+    merge keeps it."""
+    if not isinstance(adapter_dir, str):
+        return
+    if not os.path.isfile(os.path.join(adapter_dir, "mtp_head.safetensors")):
+        if os.path.isdir(adapter_dir):
+            return
+        try:
+            from huggingface_hub import hf_hub_download
+            path = hf_hub_download(
+                adapter_dir,
+                "mtp_head.safetensors",
+                token = token,
+                revision = revision,
+                cache_dir = cache_dir,
+                local_files_only = local_files_only,
+            )
+        except Exception:
+            return  # no head uploaded beside this adapter
+        adapter_dir = os.path.dirname(path)
+    try:
+        from .speculative import attach_saved_mtp_head
+        attach_saved_mtp_head(model, adapter_dir)
+        print(f"Unsloth: Re-attached the trained MTP head saved in '{adapter_dir}'.")
+    except Exception as error:
+        print(
+            f"Unsloth: Could not re-attach the MTP head in '{adapter_dir}' ({error}); merges will keep the stock head."
+        )
+
+
 def _diffusion_peft_kwargs(
     model,
     args,
@@ -1003,6 +1070,7 @@ _VLLM_ENGINE_KWARGS = (
     "conservativeness",
     "max_logprobs",
     "max_num_seqs",
+    "max_num_batched_tokens",
     "return_args",
     "training",
 )
@@ -1040,6 +1108,11 @@ class FastLanguageModel(FastLlamaModel):
                 use_gradient_checkpointing = getattr(model, "_unsloth_gradient_checkpointing", True)
             return FastDiffusionModel.for_training(model, use_gradient_checkpointing)
         return FastLlamaModel.for_training(model, use_gradient_checkpointing)
+
+    @staticmethod
+    def get_mtp_head(model, *args, **kwargs):
+        from .speculative import get_mtp_head
+        return get_mtp_head(model, *args, **kwargs)
 
     @staticmethod
     @tokenizers_v1_on_return
@@ -1114,7 +1187,7 @@ class FastLanguageModel(FastLlamaModel):
                 dtype = bnb_compute_dtype
 
         # Distributed-safe placement: under torchrun / accelerate launch each rank must load on its own device. Quantized weights make it mandatory, since Accelerate raises device relocation errors on them, but a 16-bit load needs it just as much: an unchosen placement ends up dispatching to cuda:0, so all the ranks land on card 0 and contend for it while the rest of the cards stay empty (#3459). A device the caller named is left alone.
-        device_map = requested_device_map(device_map)
+        device_map = deepspeed_zero3_device_map(requested_device_map(device_map))
         if is_automatic_device_map(device_map):
             distributed_device_map, is_dist = prepare_device_map()
             if is_dist:
@@ -1855,6 +1928,14 @@ class FastLanguageModel(FastLlamaModel):
                 )
             if fast_pissa:
                 record_fast_pissa(model)
+            _reattach_saved_mtp_head(
+                model,
+                old_model_name,
+                token = token,
+                revision = revision,
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = local_files_only,
+            )
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
             try:
                 from .vision import _lift_endpoint_hooks_onto_adapters
@@ -1909,6 +1990,11 @@ except:
 
 
 class FastModel(FastBaseModel):
+    @staticmethod
+    def get_mtp_head(model, *args, **kwargs):
+        from .speculative import get_mtp_head
+        return get_mtp_head(model, *args, **kwargs)
+
     @staticmethod
     def _prepare_for_qat(model, qat_scheme):
         model = _prepare_model_for_qat(model, qat_scheme)
@@ -2096,7 +2182,7 @@ class FastModel(FastBaseModel):
             qat_scheme = "int8-int4"
 
         # Distributed-safe placement: under torchrun / accelerate launch each rank must load on its own device. Quantized weights make it mandatory, since Accelerate raises device relocation errors on them, but a 16-bit load needs it just as much: an unchosen placement ends up dispatching to cuda:0, so all the ranks land on card 0 and contend for it while the rest of the cards stay empty (#3459). A device the caller named is left alone.
-        device_map = requested_device_map(device_map)
+        device_map = deepspeed_zero3_device_map(requested_device_map(device_map))
         if is_automatic_device_map(device_map):
             distributed_device_map, is_dist = prepare_device_map()
             if is_dist:
@@ -2380,6 +2466,14 @@ class FastModel(FastBaseModel):
             # Without this, vLLM loads the whole model first and weight sharing then crashes (unslothai/unsloth#4541).
             print(
                 f"Unsloth: fast_inference (vLLM) does not support {_vllm_unsupported[0]} yet - will switch to Unsloth inference!"
+            )
+            fast_inference = False
+            _drop_vllm_engine_kwargs(kwargs)
+        _vllm_old_gpu = _vllm_needs_newer_gpu(model_types) if fast_inference else None
+        if _vllm_old_gpu is not None:
+            print(
+                f"Unsloth: fast_inference (vLLM) cannot run {_vllm_old_gpu} on GPUs older than compute capability 8.0 "
+                "(such as T4) - will switch to Unsloth inference!"
             )
             fast_inference = False
             _drop_vllm_engine_kwargs(kwargs)
@@ -3181,6 +3275,14 @@ class FastModel(FastBaseModel):
             )
             if fast_pissa:
                 record_fast_pissa(model)
+            _reattach_saved_mtp_head(
+                model,
+                old_model_name,
+                token = token,
+                revision = revision,
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = local_files_only,
+            )
             try:
                 from .vision import _lift_endpoint_hooks_onto_adapters
                 _lift_endpoint_hooks_onto_adapters(model)

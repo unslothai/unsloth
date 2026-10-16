@@ -76,7 +76,7 @@ GGUF_QUANT_PREFERENCE = [
 _GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-(\d{3,})", re.IGNORECASE)
 _GGUF_QUANT_RE = re.compile(
     r"(UD-)?"
-    r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"((?:MX|NV)FP[0-9]+(?:_[A-Z0-9]+)*"
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
@@ -103,7 +103,7 @@ def is_imatrix_filename(path: str) -> bool:
 
 
 # dspark and dflash are the same DeepSeek V4 Flash drafter: the folder it ships in and the architecture it reports.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3", "lilicorr")
 
 # Directories only: mtp/ and dspark/ are always a publisher's companion folder, while dflash/ is a family name a user picks for real weights.
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
@@ -116,7 +116,7 @@ _DSPARK_BEFORE_QUANT_RE = re.compile(
 
 
 def is_mtp_drafter_path(path: str) -> bool:
-    """True for a separate-file drafter, a companion to the main model rather than a selectable quant: the repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships for llama.cpp ``-hf`` auto-discovery), the ``MTP/`` subdir copies (Gemma 4), the ``dspark/`` drafters (DeepSeek V4 Flash), the ``<model>-dspark-<quant>.gguf`` drafters (prism-ml Bonsai) and the ``eagle3-*.gguf`` draft heads (ggml-org gpt-oss). Repos that bake the head into the main GGUF (Qwen) have no such file, so this is False for them. Must be excluded from main-model selection everywhere mmproj is. Matched by basename prefix, by an exact parent dir for ``_DRAFTER_DIR_KINDS``, or by ``_DSPARK_BEFORE_QUANT_RE``; never a bare substring, since the kind names double as family names, so ``Qwen3.6-27B-MTP-Q4_K_M.gguf`` and ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` ARE the model. CANONICAL COPY. Two mirrors must change in lockstep: utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import hub) and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core avoids hub imports; bundles the mmproj check)."""
+    """True for a separate-file drafter, a companion to the main model rather than a selectable quant: the repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships for llama.cpp ``-hf`` auto-discovery), the ``MTP/`` subdir copies (Gemma 4), the ``dspark/`` drafters (DeepSeek V4 Flash), the ``<model>-dspark-<quant>.gguf`` drafters (prism-ml Bonsai) the ``eagle3-*.gguf`` draft heads (ggml-org gpt-oss) and the ``lilicorr-*.gguf`` drafters (NVIDIA Nemotron 3.5). Repos that bake the head into the main GGUF (Qwen) have no such file, so this is False for them. Must be excluded from main-model selection everywhere mmproj is. Matched by basename prefix, by an exact parent dir for ``_DRAFTER_DIR_KINDS``, or by ``_DSPARK_BEFORE_QUANT_RE``; never a bare substring, since the kind names double as family names, so ``Qwen3.6-27B-MTP-Q4_K_M.gguf`` and ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` ARE the model. CANONICAL COPY. Two mirrors must change in lockstep: utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import hub) and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core avoids hub imports; bundles the mmproj check)."""
     p = path.replace("\\", "/").lower()
     if not p.endswith(".gguf"):
         return False
@@ -384,7 +384,26 @@ def default_gguf_scope(
         if scoped:
             return scoped
     root = [item for item in rows if "/" not in str(key_of(item) or "")]
-    return root or rows
+    if not root:
+        return rows
+    root_keys = {str(key_of(item) or "").casefold() for item in root}
+
+    def _same_quant_directory(item) -> bool:
+        value = str(key_of(item) or "").replace("\\", "/")
+        parents, separator, _basename = value.rpartition("/")
+        segments = [segment for segment in parents.split("/") if segment]
+        return bool(
+            separator
+            and segments
+            and all(_is_quant_directory(segment) for segment in segments)
+            and bare_quant_alias(value).casefold() in root_keys
+        )
+
+    return [
+        item
+        for item in rows
+        if "/" not in str(key_of(item) or "").replace("\\", "/") or _same_quant_directory(item)
+    ]
 
 
 def _gguf_stem(filename: str) -> str:
@@ -496,8 +515,98 @@ def gguf_checkpoint_family(filename: str) -> Optional[str]:
     return family.strip("-_. /\t\r\n") or None
 
 
+def _fold_name(text: str, *, drop_quant: bool) -> str:
+    token = quant_token_with_bpw(text) if drop_quant else None
+    if token is not None:
+        text = re.sub(re.escape(token), "", text, count = 1, flags = re.IGNORECASE)
+    return re.sub(r"[-_.\s]+", "-", text).strip("-").casefold()
+
+
+def _checkpoint_identity(filename: str) -> Optional[str]:
+    """keep a quant directory's non-quant words unless they repeat the file's name."""
+    parts = gguf_variant_family(filename.replace("\\", "/")).split("/")
+    stem = _fold_name(parts.pop(), drop_quant = True)
+    segments = []
+    for segment in filter(None, parts):
+        quant_dir = _is_quant_directory(segment)
+        folded = _fold_name(segment, drop_quant = quant_dir)
+        if quant_dir and folded in ("", stem):
+            continue
+        segments.append(folded)
+    return "/".join((*segments, stem)).strip("/") or None
+
+
+def _paths_by_variant_key(paths: Iterable[str]) -> dict[str, list[str]]:
+    by_key: dict[str, list[str]] = {}
+    for path in paths:
+        by_key.setdefault(gguf_variant_key(path).lower(), []).append(path)
+    for members in by_key.values():
+        members.sort(key = lambda path: path.replace("\\", "/"))
+    return by_key
+
+
+def _loader_visible_members(members: Sequence[str]) -> list[str]:
+    from utils.models.model_config import _extract_quant_label as _loader_quant
+    return [path for path in members if not is_big_endian_gguf_path(path, _loader_quant(path))]
+
+
+def _listed_identity(members: Sequence[str]) -> Optional[str]:
+    """prefer the first lister-visible file over hidden big-endian members."""
+    selectable = _loader_visible_members(members)
+    return _checkpoint_identity((selectable or members)[0])
+
+
+def gguf_listed_checkpoints(
+    snapshots: Iterable[Iterable[str]], completed: Optional[Iterable[Iterable[str]]] = None
+) -> dict[str, Optional[str]]:
+    groups = [_paths_by_variant_key(paths) for paths in snapshots]
+    whole = [set(keys) for keys in completed] if completed is not None else []
+    if len(whole) < len(groups):
+        whole.extend(set() for _ in range(len(groups) - len(whole)))
+
+    listed: dict[str, Optional[str]] = {}
+    complete_keys: set[str] = set()
+    for index, snapshot in enumerate(groups):
+        for key, members in snapshot.items():
+            selectable = _loader_visible_members(members)
+            if not selectable:
+                continue
+            complete = gguf_variant_key(selectable[0]) in whole[index]
+            if key not in listed or (complete and key not in complete_keys):
+                listed[key] = _checkpoint_identity(selectable[0])
+            if complete:
+                complete_keys.add(key)
+    return listed
+
+
+def gguf_variant_keys_by_checkpoint(
+    paths: Iterable[str], listed: Optional[dict[str, Optional[str]]] = None
+) -> dict[str, str]:
+    """separate checkpoints sharing a key; listed preserves the row's cross-snapshot build."""
+    keys: dict[str, str] = {}
+    for key, members in _paths_by_variant_key(paths).items():
+        identity_listed = listed[key] if listed and key in listed else _listed_identity(members)
+        colliding: dict[Optional[str], list[str]] = {}
+        for path in members:
+            identity = _checkpoint_identity(path)
+            family = gguf_variant_family(path.replace("\\", "/"))
+            if identity != identity_listed and family.casefold() == key.casefold():
+                colliding.setdefault(identity, []).append(path.replace("\\", "/"))
+        collision_keys = {
+            identity: min(identity_paths) for identity, identity_paths in colliding.items()
+        }
+        for path in members:
+            normalized = path.replace("\\", "/")
+            identity = _checkpoint_identity(path)
+            if identity == identity_listed:
+                keys[path] = gguf_variant_key(normalized)
+            else:
+                keys[path] = collision_keys.get(identity, gguf_variant_family(normalized))
+    return keys
+
+
 def local_path_physical_identity(raw_path: str) -> str:
-    """Identity for an existing local path without folding valid filename characters."""
+    """identify an existing local path without folding valid filename characters."""
     try:
         path = os.path.realpath(os.path.expanduser(raw_path))
         stat = os.stat(path)
@@ -509,7 +618,7 @@ def local_path_physical_identity(raw_path: str) -> str:
 
 
 def should_group_local_gguf_files(filenames: Sequence[str]) -> bool:
-    """Whether filenames are variants of one selectable checkpoint."""
+    """whether filenames are variants of one selectable checkpoint."""
     if len(filenames) == 1:
         return True
 
@@ -910,27 +1019,33 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo], *repo_ids: objec
         if token is None:
             variant.display_label = f"GGUF · {variant.filename}" if ambiguous else "GGUF"
         elif variant.quant.lower() != (_plain_key(variant) or "").lower():
-            # A key qualified by path: show the quant, plus what distinguishes it.
             collides = scopes.get(_variant_scope_label(variant.filename).lower(), 0) > 1
             variant.display_label = (
                 f"{token} · {_variant_scope_label(variant.filename, with_stem = collides)}"
             )
         elif root_label and "/" not in variant.filename.replace("\\", "/"):
-            # Else the root quant reads as the default checkpoint.
+            # root quant labels identify the default checkpoint
             variant.display_label = f"{variant.quant} · {root_label}"
 
 
-def group_gguf_variant_files(entries) -> dict[str, tuple[str, int]]:
-    """``variant key -> (first filename, summed size of ONE shard set)``: a quant shipped twice (``QwQ-32B-BF16-*`` beside ``QwQ-32B.BF16-*``, or whole beside split) keeps only the set holding the first file, the one the loader opens."""
+def group_gguf_variant_files(
+    entries, keys: Optional[dict[str, str]] = None
+) -> dict[str, tuple[str, int]]:
+    """group each variant's first shard set and size, with optional path-specific keys."""
+
+    def key_of(path: str) -> str:
+        return (keys or {}).get(path) or gguf_variant_key(path)
+
     families: dict[str, dict[tuple[str, int], list[tuple[str, int]]]] = {}
     for path, size in entries:
-        families.setdefault(gguf_variant_key(path), {}).setdefault(gguf_shard_set(path), []).append(
-            (path, int(size or 0))
-        )
+        families.setdefault(key_of(path).casefold(), {}).setdefault(
+            gguf_shard_set(path), []
+        ).append((path, int(size or 0)))
     grouped: dict[str, tuple[str, int]] = {}
-    for key, by_family in families.items():
+    for by_family in families.values():
         chosen = min(by_family.values(), key = lambda members: min(path for path, _ in members))
-        grouped[key] = (min(path for path, _ in chosen), sum(size for _, size in chosen))
+        first = min(path for path, _ in chosen)
+        grouped[key_of(first)] = (first, sum(size for _, size in chosen))
     return grouped
 
 
@@ -1370,14 +1485,15 @@ def list_local_gguf_variants(
 
     main_files: list[tuple[str, int]] = []
     has_vision = False
-    # Match the cache dir of ANY H3 bundle repo: the aggregation runs over whichever mirror the user actually downloaded. A whole SEGMENT, not a substring: "models--unsloth--MiniMax-H3-GGUF-mirror" (and -v2, -i1) contains the marker while being an ordinary chat repo, and the denoiser filter then left it with no quants, which withholds the auto-switch entry so a downloaded model 404s.
-    segments = set(root.as_posix().lower().split("/"))
+    # match H3 bundle caches by full path segment so similarly named chat repos keep their quants
+    path_segments = root.as_posix().lower().split("/")
+    segments = set(path_segments)
     h3_bundle_repo = next(
         (r for r in _H3_BUNDLE_REPOS if f"models--{r.replace('/', '--')}" in segments), None
     )
 
     for file in sorted(iter_gguf_files(root, recursive = True)):
-        # Off by default: the Hub lists the dangling link an evicted blob leaves, so a user can see and clean that quant. Only a caller advertising what it loads excludes it.
+        # keep dangling cache links visible for cleanup unless the caller requires loadable files
         if require_existing_files and not _is_existing_file(file):
             continue
         if h3_bundle_repo and not _is_selectable_repo_gguf(h3_bundle_repo, file.name):
@@ -1385,7 +1501,7 @@ def list_local_gguf_variants(
         if is_imatrix_filename(file.name):
             continue
         if is_mmproj_filename(file.name):
-            # Header metadata distinguishes vision projectors from audio-only ones, read only when Windows reports the file fully present: opening a cloud placeholder would recall it during discovery.
+            # inspect complete local projectors only because opening a Windows cloud placeholder recalls it
             try:
                 info = file.stat()
                 has_vision = has_vision or (
@@ -1409,10 +1525,42 @@ def list_local_gguf_variants(
             continue
         main_files.append((rel, size))
 
+    # custom folders split shared-quant builds; HF caches keep remote keys, and the first keeps the bare key
+    keys = (
+        None
+        if any(
+            segment.startswith("models--")
+            and index + 2 < len(path_segments)
+            and path_segments[index + 1] == "snapshots"
+            for index, segment in enumerate(path_segments)
+        )
+        else gguf_variant_keys_by_checkpoint(rel for rel, _size in main_files)
+    )
     variants = [
         GgufVariantInfo(filename = filename, quant = quant, size_bytes = size)
-        for quant, (filename, size) in group_gguf_variant_files(main_files).items()
+        for quant, (filename, size) in group_gguf_variant_files(main_files, keys).items()
     ]
     variants.sort(key = lambda variant: -variant.size_bytes)
     _apply_gguf_display_labels(variants, directory, model_root)
+    if keys:
+        _label_split_builds(variants, keys)
     return variants, has_vision
+
+
+def _label_split_builds(variants: list[GgufVariantInfo], keys: dict[str, str]) -> None:
+    """label all rows for a quant split across builds, including the bare-keyed first build."""
+    split = {
+        variant.filename
+        for variant in variants
+        if keys.get(variant.filename, variant.quant) != gguf_variant_key(variant.filename)
+    }
+    split_tokens = {(quant_token_with_bpw(name) or "").lower() for name in split}
+    for variant in variants:
+        token = quant_token_with_bpw(variant.filename)
+        if token is None or token.lower() not in split_tokens:
+            continue
+        # directory-qualified siblings keep their existing directory labels
+        if variant.filename not in split and variant.quant.lower() != token.lower():
+            continue
+        scope = _variant_scope_label(variant.filename, with_stem = True)
+        variant.display_label = f"{extract_quant_token(variant.filename)} · {scope}"

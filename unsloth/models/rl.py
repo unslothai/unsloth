@@ -27,6 +27,7 @@ import inspect
 import os
 import re
 import sys
+import textwrap
 import warnings
 import weakref
 from contextlib import contextmanager
@@ -97,6 +98,38 @@ except Exception:
 
 # TrainingArguments falls back to this FSDP version when fsdp_config names none (1 -> 2 in transformers 5.10.0).
 _FSDP_DEFAULT_VERSION = 2 if transformers_version >= Version("5.10.0") else 1
+
+_GRPO_VLLM_SYNC_FUNCTIONS = frozenset(
+    (
+        "_move_model_to_vllm",
+        "_sync_fsdp_params_to_vllm",  # TRL < 0.20
+        "_sync_fsdp1_params_to_vllm",
+        "_sync_fsdp2_params_to_vllm",
+    )
+)
+
+
+def _strip_vllm_weight_loads(function, source, trainer_file):
+    # GRPO's _move_model_to_vllm returns early under fast_inference (grpo_trainer__move_model_to_vllm),
+    # and TRL's own vLLM (colocate or server) needs these lines to receive the trainer weights.
+    if trainer_file == "grpo_trainer" and function in _GRPO_VLLM_SYNC_FUNCTIONS:
+        return source
+    source = re.sub(
+        r"(\n[\s]{4,}).+?model_executor\.driver_worker.+?\n",
+        r"\n\1pass\n",
+        source,
+    )
+    source = re.sub(
+        r"(\n[\s]{4,}).+?load_weights\(.+?\n",
+        r"\n\1pass\n",
+        source,
+    )
+    source = re.sub(
+        r"\.state_dict\(\)",
+        r"",
+        source,
+    )
+    return source
 
 
 def vLLMSamplingParams(**kwargs):
@@ -536,6 +569,7 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
     """
     {__RLConfig_doc__}
     """
+    _unsloth_accepts_adamw_flash = True
     vllm_sampling_params: Optional[Any] = field(
         default = None,
         metadata = {{'help': 'vLLM SamplingParams'}},
@@ -834,6 +868,114 @@ def _wrap_ppo_train(trainer_cls):
     trainer_cls.train = wrapped
 
 
+def _park_optimizer_enabled(trainer):
+    if not torch.cuda.is_available():
+        return False
+    # DeepSpeed / FSDP own their optimizer state layout; moving it behind their back is unsafe.
+    if getattr(trainer, "is_deepspeed_enabled", False) or getattr(
+        trainer, "is_fsdp_enabled", False
+    ):
+        return False
+    # DDP may keep grads as bucket views; replacing them would detach the views.
+    if getattr(getattr(trainer, "args", None), "world_size", 1) > 1:
+        return False
+    return getattr(trainer, "optimizer", None) is not None
+
+
+def _is_parkable_tensor(value):
+    # bitsandbytes paged state lives in unified memory and is paged by bnb itself.
+    return (
+        isinstance(value, torch.Tensor)
+        and value.is_cuda
+        and value.layout == torch.strided
+        and not getattr(value, "is_paged", False)
+    )
+
+
+def _optimizer_state_is_flat(optimizer):
+    # Layer-wise optimizers keep their real state in optimizer_dict, Q-GaLore keeps CUDA tensors inside
+    # a projector object: parking only the visible tensors would free part of it, so decline instead.
+    if hasattr(optimizer, "optimizer_dict"):
+        return False
+    for state in optimizer.state.values():
+        for value in state.values():
+            if not isinstance(value, (torch.Tensor, int, float, bool, type(None))):
+                return False
+    return True
+
+
+def _park_optimizer_to_host(trainer):
+    """Move every CUDA optimizer state tensor and .grad to pinned host buffers kept on the trainer.
+    Returns the record needed by _restore_optimizer_from_host, or None if nothing was parked."""
+    optimizer = trainer.optimizer
+    optimizer = getattr(optimizer, "optimizer", optimizer)
+    if not _optimizer_state_is_flat(optimizer):
+        if not getattr(trainer, "_unsloth_park_declined", False):
+            trainer._unsloth_park_declined = True
+            print(
+                f"Unsloth: UNSLOTH_PARK_OPTIMIZER_DURING_ROLLOUT does not support {type(optimizer).__name__} "
+                "(nested optimizer state); the optimizer stays on the GPU during rollouts."
+            )
+        return None
+    buffers = trainer.__dict__.setdefault("_unsloth_park_buffers", {})
+    # Shared tensors (bitsandbytes qmap1/qmap2) are parked once so the sharing survives the restore.
+    parked = {}
+    states = []
+    grads = []
+
+    def park(tensor, key):
+        if id(tensor) in parked:
+            return parked[id(tensor)][0]
+        host = buffers.get(key)
+        if (
+            host is None
+            or host.shape != tensor.shape
+            or host.dtype != tensor.dtype
+            or host.stride() != tensor.stride()
+        ):
+            # Same strides as the source: fused AdamW needs param, grad and moments in one layout.
+            host = torch.empty_like(tensor, device = "cpu", pin_memory = True)
+            buffers[key] = host
+        host.copy_(tensor, non_blocking = True)
+        parked[id(tensor)] = (host, tensor.device)
+        return host
+
+    for group in optimizer.param_groups:
+        for param in group["params"]:
+            state = optimizer.state.get(param)
+            if state:
+                for name, value in state.items():
+                    if _is_parkable_tensor(value):
+                        states.append((state, name, park(value, (id(param), name))))
+            grad = getattr(param, "grad", None)
+            if _is_parkable_tensor(grad):
+                grads.append((param, park(grad, (id(param), ".grad"))))
+    if not states and not grads:
+        return None
+    for state, name, host in states:
+        state[name] = host
+    for param, _ in grads:
+        param.grad = None
+    # Loop locals still hold the last CUDA tensors; drop them so empty_cache can release those blocks.
+    value = grad = None
+    # D2H copies must land on every device before the CUDA blocks are handed to vLLM / released.
+    for device in {device for _, device in parked.values()}:
+        torch.cuda.synchronize(device)
+    torch.cuda.empty_cache()
+    return (states, grads, parked)
+
+
+def _restore_optimizer_from_host(record):
+    states, grads, parked = record
+    restored = {}
+    for host, device in parked.values():
+        restored[id(host)] = host.to(device, non_blocking = True)
+    for state, name, host in states:
+        state[name] = restored[id(host)]
+    for param, host in grads:
+        param.grad = restored[id(host)]
+
+
 def _wrap_grpo_generate_and_score(trainer_cls):
     if not hasattr(trainer_cls, "_generate_and_score_completions"):
         return
@@ -843,9 +985,18 @@ def _wrap_grpo_generate_and_score(trainer_cls):
 
     def wrapped(self, *args, **kwargs):
         was_training = getattr(getattr(self, "model", None), "training", None)
+        parked = None
+        if os.environ.get(
+            "UNSLOTH_PARK_OPTIMIZER_DURING_ROLLOUT", "0"
+        ) == "1" and _park_optimizer_enabled(self):
+            parked = _park_optimizer_to_host(self)
+            if parked is not None:
+                self._unsloth_park_count = getattr(self, "_unsloth_park_count", 0) + 1
         try:
             return original(self, *args, **kwargs)
         finally:
+            if parked is not None:
+                _restore_optimizer_from_host(parked)
             if (
                 was_training is False
                 and hasattr(self, "model")
@@ -3034,6 +3185,18 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "pass\n"
         )
 
+    if trainer_file == "grpo_trainer":
+        RLTrainer_post += (
+            "if os.environ.get('UNSLOTH_GRPO_ROUTING_REPLAY', '0') == '1' and hasattr(model, 'vllm_engine'):\n"
+            "    try:\n"
+            "        from unsloth_zoo.routing_replay import install_routing_replay\n"
+            "    except ImportError:\n"
+            "        print('Unsloth: UNSLOTH_GRPO_ROUTING_REPLAY=1 needs a newer unsloth_zoo: pip install -U unsloth_zoo')\n"
+            "    else:\n"
+            "        install_routing_replay(model, model.vllm_engine, getattr(self, 'processing_class', None))\n"
+            "pass\n"
+        )
+
     if trainer_file == "gkd_trainer":
         # Match native GKD's pure JSD at T=1 without changing the generation temperature.
         RLTrainer_post += (
@@ -3177,6 +3340,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 f"    _unsloth_fsdp2 = _unsloth_fsdp2 or str(_unsloth_fsdp_cfg.get('fsdp_version', _unsloth_fsdp_cfg.get('version', {_FSDP_DEFAULT_VERSION}))) == '2'\n"
             )
         extra_args += (
+            "_unsloth_flash_adamw = str(getattr(optim, 'value', optim)).strip().lower() == 'adamw_flash'\n"
+            "if _unsloth_flash_adamw: optim = 'adamw_torch'\n"
+        )
+        extra_args += (
             "if _unsloth_fsdp2 and str(getattr(optim, 'value', optim)) == 'adamw_8bit':\n"
             "    print(\"Unsloth: FSDP2 shards parameters as DTensors, which bitsandbytes' 8-bit optimizers cannot step. Switching optim = 'adamw_8bit' to 'adamw_torch_fused'.\")\n"
             "    optim = 'adamw_torch_fused'\n"
@@ -3201,6 +3368,32 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         max_seq_length_pre = ""
         max_seq_length_call = ""
         max_seq_length_post = ""
+
+    # Read by unsloth.context_parallel; a field here keeps SFTConfig itself unpatched (pickling).
+    if trainer_file == "sft_trainer" and "context_parallel_size" not in call_args:
+        max_seq_length_pre += """
+    context_parallel_size : Optional[int] = field(
+        default = 1,
+        metadata = {'help': 'Ranks per context parallel group. 1 disables it.'},
+    )
+    context_parallel_backend : Optional[str] = field(
+        default = 'ring',
+        metadata = {'help': 'Context parallel attention backend: ring or ulysses (keeps packing).'},
+    )
+    context_parallel_rotate_method : Optional[str] = field(
+        default = 'allgather',
+        metadata = {'help': 'Ring KV rotation: allgather or alltoall.'},
+    )"""
+        max_seq_length_call += (
+            "context_parallel_size = 1,"
+            "context_parallel_backend = 'ring',"
+            "context_parallel_rotate_method = 'allgather',"
+        )
+        max_seq_length_post += (
+            "\n        self.context_parallel_size = context_parallel_size"
+            "\n        self.context_parallel_backend = context_parallel_backend"
+            "\n        self.context_parallel_rotate_method = context_parallel_rotate_method"
+        )
 
     if "output_dir" in call_args:
         saving_check = (
@@ -3409,6 +3602,15 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         "                self.gradient_checkpointing_kwargs = _gc_kwargs\n"
     )
 
+    if "optim" in call_args:
+        RLConfig_post += (
+            "        from unsloth.optimizers.flash_adamw import is_flash_adamw_marked, mark_flash_adamw, unmark_flash_adamw\n"
+            "        if _unsloth_flash_adamw or is_flash_adamw_marked(self):\n"
+            "            mark_flash_adamw(self)\n"
+            "        else:\n"
+            "            unmark_flash_adamw(self)\n"
+        )
+
     RLTrainer_extras = patch_functions(
         RLTrainer, trainer_file, RLTrainer_name, all_imports, imports
     )
@@ -3480,13 +3682,21 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "trace.enabled"     : False,"""
 
         if DEVICE_TYPE == "cuda":
-            cuda_options = """
-            "triton.enable_persistent_tma_matmul": torch.cuda.get_device_capability()[0] >= 9,"""
+            # TMA only if every visible card is sm90+ (compile options are process-wide); an
+            # unreadable card is skipped by the probe, so a short list also means False.
+            all_sm90 = (
+                "(lambda caps: bool(caps) and len(caps) == torch.cuda.device_count() "
+                "and min(c[0] for c in caps) >= 9)"
+                '(__import__("unsloth.device_type", fromlist = ["cuda_visible_capabilities"])'
+                ".cuda_visible_capabilities())"
+            )
+            cuda_options = f"""
+            "triton.enable_persistent_tma_matmul": {all_sm90},"""
             # cutlass options were added in PyTorch 2.8.0.
             if torch_version >= Version("2.8.0"):
-                cuda_options += """
-            "cuda.cutlass_epilogue_fusion_enabled": torch.cuda.get_device_capability()[0] >= 9,
-            "cuda.cutlass_tma_only": torch.cuda.get_device_capability()[0] >= 9,"""
+                cuda_options += f"""
+            "cuda.cutlass_epilogue_fusion_enabled": {all_sm90},
+            "cuda.cutlass_tma_only": {all_sm90},"""
             cuda_options += """
             "cuda.compile_opt_level"              : "-O2",
             "cuda.enable_cuda_lto"                : True,
@@ -4028,23 +4238,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             source,
         )
 
-        source = re.sub(
-            r"(\n[\s]{4,}).+?model_executor\.driver_worker.+?\n",
-            r"\n\1pass\n",
-            source,
-        )
-
-        source = re.sub(
-            r"(\n[\s]{4,}).+?load_weights\(.+?\n",
-            r"\n\1pass\n",
-            source,
-        )
-
-        source = re.sub(
-            r"\.state_dict\(\)",
-            r"",
-            source,
-        )
+        source = _strip_vllm_weight_loads(function, source, trainer_file)
 
         if "CUDA_VISIBLE_DEVICES" in os.environ:
             lora_name = (
@@ -4254,6 +4448,83 @@ def patch_trl_disable_gradient_checkpointing():
             "generation passes."
         )
     return
+
+
+def _spans_several_devices(model):
+    device_map = getattr(model, "hf_device_map", None)
+    return isinstance(device_map, dict) and len({str(d) for d in device_map.values()}) > 1
+
+
+def _first_tensor_device(args, kwargs):
+    for key in ("input_ids", "inputs_embeds", "attention_mask", "labels"):
+        value = kwargs.get(key)
+        if isinstance(value, torch.Tensor):
+            return value.device
+    for value in list(args) + list(kwargs.values()):
+        if isinstance(value, torch.Tensor):
+            return value.device
+    return None
+
+
+class _ApplyOnInputDevice:
+    # Triton launches on the current device, not the tensors': off it, TRL's chunked log-prob kernel returns inf.
+    _unsloth_device_patched = True
+
+    def __init__(self, function):
+        self.function = function
+
+    def apply(self, hidden, *args):
+        device = hidden.device
+        backend = getattr(torch, device.type, None) if device.type in ("cuda", "xpu") else None
+        if backend is None or device.index is None or device.index == backend.current_device():
+            return self.function.apply(hidden, *args)
+        with backend.device(device):
+            return self.function.apply(hidden, *args)
+
+
+def patch_trl_fused_lm_head_devices():
+    # TRL >= 1.15's fused head drops accelerate's io_same_device hook: on a split model log_probs stay on lm_head's card (#4030).
+    try:
+        import trl.trainer.utils as _tu
+    except ImportError:
+        return
+    original = getattr(_tu, "add_fused_lm_head", None)
+    if original is None or getattr(original, "_unsloth_device_patched", False):
+        return
+
+    @functools.wraps(original)
+    def add_fused_lm_head(model, *args, **kwargs):
+        result = original(model, *args, **kwargs)
+        if not _spans_several_devices(model):
+            return result
+        kernel = getattr(_tu, "_ChunkedLogProbFunction", None)
+        if kernel is not None and not getattr(kernel, "_unsloth_device_patched", False):
+            _tu._ChunkedLogProbFunction = _ApplyOnInputDevice(kernel)
+        fused_forward = model.forward
+
+        @functools.wraps(fused_forward)
+        def forward(*f_args, **f_kwargs):
+            outputs = fused_forward(*f_args, **f_kwargs)
+            if not f_kwargs.get("fused_lm_head", False):
+                return outputs
+            device = _first_tensor_device(f_args, f_kwargs)
+            if device is None:
+                return outputs
+            for key, value in outputs.items():
+                if isinstance(value, torch.Tensor) and value.device != device:
+                    outputs[key] = value.to(device)
+            return outputs
+
+        model.forward = forward
+        return result
+
+    add_fused_lm_head._unsloth_device_patched = True
+    _tu.add_fused_lm_head = add_fused_lm_head
+    for _mod_name, _mod in list(sys.modules.items()):
+        if _mod is None or not _mod_name.startswith("trl."):
+            continue
+        if getattr(_mod, "add_fused_lm_head", None) is original:
+            setattr(_mod, "add_fused_lm_head", add_fused_lm_head)
 
 
 def patch_trl_openenv():
@@ -4611,6 +4882,46 @@ def _check_async_grpo_adapter_servable(model):
         model.load_lora(os.path.join(directory, "adapter"), load_tensors = True)
 
 
+_ASYNC_GRPO_PPO_LOSS = "per_token_loss = -torch.min(per_token_loss1, per_token_loss2)"
+# Direct double-sided IS (SAO, arXiv 2607.07508 Eq. 3): a token whose pi_theta / pi_rollout ratio leaves
+# (1 - epsilon, 1 + epsilon_high) gets no gradient at all, whatever the sign of its advantage.
+_ASYNC_GRPO_MASKED_LOSS = (
+    "per_token_loss = torch.where("
+    "(coef_1 > 1 - self.epsilon_low) & (coef_1 < 1 + self.epsilon_high), -per_token_loss1, 0.0)"
+)
+_ASYNC_GRPO_MASK_METRICS = (
+    (
+        "is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages < 0)",
+        "is_low_clipped = coef_1 <= 1 - self.epsilon_low",
+    ),
+    (
+        "is_high_clipped = (coef_1 > 1 + self.epsilon_high) & (advantages > 0)",
+        "is_high_clipped = coef_1 >= 1 + self.epsilon_high",
+    ),
+)
+
+
+@functools.lru_cache(maxsize = None)
+def _async_grpo_masked_compute_loss(compute_loss):
+    source = textwrap.dedent(inspect.getsource(compute_loss))
+    if source.count(_ASYNC_GRPO_PPO_LOSS) != 1:
+        raise ValueError(
+            "Unsloth: importance_sampling_mask = True could not find the PPO loss in "
+            f"{compute_loss.__qualname__}, so it cannot be masked. Drop importance_sampling_mask for this trainer."
+        )
+    source = source.replace(_ASYNC_GRPO_PPO_LOSS, _ASYNC_GRPO_MASKED_LOSS)
+    # The clip_ratio metrics then count masked tokens (either advantage sign) instead of PPO-clipped ones.
+    for old, new in _ASYNC_GRPO_MASK_METRICS:
+        source = source.replace(old, new)
+    namespace = {}
+    exec(
+        compile(source, f"<unsloth masked {compute_loss.__qualname__}>", "exec"),
+        compute_loss.__globals__,
+        namespace,
+    )
+    return functools.wraps(compute_loss)(namespace[compute_loss.__name__])
+
+
 def patch_trl_async_grpo():
     # Let TRL's AsyncGRPOTrainer take a loaded Unsloth model; keep packed rows from attending across sequences.
     if importlib.util.find_spec("trl.experimental") is None:
@@ -4653,7 +4964,18 @@ def patch_trl_async_grpo():
     original_train = getattr(trainer_class, "train", None)
 
     @functools.wraps(original_init)
-    def __init__(self, model, *args, **kwargs):
+    def __init__(
+        self,
+        model,
+        *args,
+        importance_sampling_mask = False,
+        **kwargs,
+    ):
+        masked_loss = (
+            _async_grpo_masked_compute_loss(type(self).compute_loss)
+            if importance_sampling_mask
+            else None
+        )
         config = args[1] if len(args) >= 2 else kwargs.get("args")
         if not isinstance(model, str) and config is None:
             name = getattr(getattr(model, "config", None), "_name_or_path", "") or "model"
@@ -4716,6 +5038,8 @@ def patch_trl_async_grpo():
         if server is not None:
             self._unsloth_vllm_server = server
             weakref.finalize(self, server.stop)
+        if masked_loss is not None:
+            self.compute_loss = types.MethodType(masked_loss, self)
 
     trainer_class.__init__ = __init__
     if original_train is not None:
@@ -4769,6 +5093,10 @@ def PatchFastRL(algorithm = None, FastLanguageModel = None):
         return
     # Install the disable_gradient_checkpointing noop BEFORE patch_trl_rl_trainers, which imports more trl.* submodules: anything imported after the sys.modules walk keeps the old binding.
     patch_trl_disable_gradient_checkpointing()
+    try:
+        patch_trl_fused_lm_head_devices()
+    except Exception as e:
+        logger.info(f"Unsloth: Could not patch trl add_fused_lm_head for split models: {e}")
     # Also before patch_trl_rl_trainers, so the generated trainers import the wrapped helpers.
     try:
         from ._trl_tool_templates import patch_trl_tool_chat_templates

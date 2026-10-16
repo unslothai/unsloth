@@ -65,7 +65,7 @@ export const SWEEP_TITLE: Record<SweepKind, string> = {
 };
 
 export const SWEEP_BLURB: Record<SweepKind, string> = {
-  spec: "Every mode Studio offers, from off to MTP + ngram. Modes this model can't run are skipped with the reason.",
+  spec: "Every speculation mode, from off to MTP + ngram. Modes this model can't run are skipped with the reason.",
   draft:
     "Speculation off against MTP at 1 to 8 draft tokens. Finds the depth where drafting stops paying.",
   ngram:
@@ -76,9 +76,9 @@ export const SWEEP_BLURB: Record<SweepKind, string> = {
   context:
     "The same prompt at growing context windows, with load time for each.",
   parallel:
-    "1, 2 and 4 decode slots. More slots serve more users, each a little slower.",
+    "1, 2 and 4 decode slots, one request at a time: what reserving extra slots costs a single chat. It does not measure several users at once.",
   offload:
-    "For MoE models bigger than VRAM: Studio's own fit, then expert layers moved to RAM from all of them down to none. Every row runs at 8K context. Dense models get GPU layer steps instead.",
+    "For MoE models bigger than VRAM: the automatic fit, then expert layers moved to RAM from all of them down to none. Every row runs at 8K context. Dense models get GPU layer steps instead.",
   tune: "Off, MTP at 1 to 4 draft tokens, ngram, and MTP + ngram. Picks the fastest and hands it to chat.",
 };
 

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -57,7 +56,11 @@ test("each file kind is read off the name, with a decisive MIME type first", () 
     ["notes", "text/plain", "text"],
   ];
   for (const [name, mime, kind] of cases) {
-    assert.equal(attachmentFileKind(name, mime), kind, `${name} (${mime || "no type"})`);
+    assert.equal(
+      attachmentFileKind(name, mime),
+      kind,
+      `${name} (${mime || "no type"})`,
+    );
   }
   assert.equal(attachmentFileKind("recording.txt", "audio/wav"), "audio");
   assert.equal(attachmentFileKind("x.constructor", ""), "file");
@@ -91,26 +94,43 @@ test("Auto lists up to six sent files, then collapses them to chips", () => {
 
 test("composer cards wrap for two rows, then become one scrolling strip", () => {
   assert.equal(COMPOSER_ATTACHMENT_MAX_ROWS, 2);
-  const fifth = (724 - 4 * 8) / 5;
-  assert.equal(composerAttachmentsOverflow(10, 724, fifth, 8), false);
-  assert.equal(composerAttachmentsOverflow(11, 724, fifth, 8), true);
-  assert.equal(composerAttachmentsOverflow(10, 724, fifth + 0.004, 8), false);
-  assert.equal(composerAttachmentsOverflow(7, 300, 105, 8), true);
-  assert.equal(composerAttachmentsOverflow(0, 724, fifth, 8), false);
-  assert.equal(composerAttachmentsOverflow(20, 724, 0, 8), false);
+  const quarter = (724 - 3 * 8) / 4;
+  const cards = (n: number, w = quarter) => Array.from({ length: n }, () => w);
+  assert.equal(composerAttachmentsOverflow(cards(8), 724, 8), false);
+  assert.equal(composerAttachmentsOverflow(cards(9), 724, 8), true);
+  assert.equal(composerAttachmentsOverflow(cards(8, quarter + 0.004), 724, 8), false);
+  assert.equal(composerAttachmentsOverflow(cards(7, 105), 300, 8), true);
+  assert.equal(composerAttachmentsOverflow([], 724, 8), false);
+  assert.equal(composerAttachmentsOverflow(cards(20, 0), 724, 8), false);
+  // In a chat the strip allows one row: a fifth card at a quarter of the width already scrolls.
+  assert.equal(composerAttachmentsOverflow(cards(4), 724, 8, 1), false);
+  assert.equal(composerAttachmentsOverflow(cards(5), 724, 8, 1), true);
+  // Image cards take their own widths.
+  assert.equal(composerAttachmentsOverflow(cards(8, 75), 724, 8, 1), false);
+  assert.equal(composerAttachmentsOverflow([168, 168, 168, 168, 75], 724, 8, 1), true);
   assert.match(
     ATTACHMENT,
-    /const CARD_SLOT =\n\s*"shrink-0 w-\[calc\(\(100%_-_var\(--spacing\)\*8\)\/5\)\] min-w-\[calc\(7rem\*var\(--ui-space-scale,1\)\)\]";/,
+    /const CARD_SLOT =\n\s*"shrink-0 w-\[calc\(\(100%_-_var\(--spacing\)\*6\)\/4\.15\)\] min-w-\[calc\(7\.5rem\*var\(--ui-space-scale,1\)\)\]";/,
   );
-  assert.match(ATTACHMENT, /const CARD_SIZE = "h-\[calc\(7rem\*var\(--ui-space-scale,1\)\)\] w-full";/);
-  assert.match(ATTACHMENT, /className=\{cn\("aui-attachment-root aui-attachment-card group\/attachment-card relative", CARD_SLOT\)\}/);
-  assert.match(ATTACHMENT, /variant === "card" && cn\("group\/attachment-card", CARD_SLOT\)/);
+  assert.match(
+    ATTACHMENT,
+    /const CARD_SIZE = "h-\[calc\(7rem\*var\(--ui-space-scale,1\)\)\] w-full";/,
+  );
+  assert.match(
+    ATTACHMENT,
+    /"aui-attachment-root aui-attachment-card group\/attachment-card relative",\n\s*src \? "shrink-0" : CARD_SLOT,/,
+  );
+  assert.match(
+    ATTACHMENT,
+    /variant === "card" && cn\("group\/attachment-card", CARD_SLOT\)/,
+  );
   assert.match(ATTACHMENT, /aui-composer-attachment-cards [^"]*\bgap-2\b/);
 });
 
 test("cards keep their hairline edge in dark mode", () => {
   const edge = /const CARD_EDGE =\n\s*"([^"]*)";/.exec(ATTACHMENT)?.[1] ?? "";
-  const surface = /const CARD_SURFACE =\n\s*"([^"]*)";/.exec(ATTACHMENT)?.[1] ?? "";
+  const surface =
+    /const CARD_SURFACE =\n\s*"([^"]*)";/.exec(ATTACHMENT)?.[1] ?? "";
   assert.match(edge, /^border border-\[/);
   assert.doesNotMatch(edge + surface, /dark:/);
 });
@@ -122,7 +142,8 @@ test("the strip is laid out through the DOM, never through React state", () => {
   );
   assert.match(strip, /el\.dataset\.layout = next/);
   assert.doesNotMatch(strip, /useState/);
-  assert.match(strip, /\}, \[count\]\);/);
+  // maxRows flips once, when the first message lands; resizes still go through the observer.
+  assert.match(strip, /\}, \[count, maxRows\]\);/);
   assert.match(strip, /new ResizeObserver\(layout\)/);
 });
 
@@ -141,8 +162,14 @@ test("sent attachments split images from files by type, with stable component ma
 
 test("the sent attachments setting defaults to auto and rejects anything else", () => {
   assert.equal(DEFAULT_CUSTOMIZATION.sentAttachments, "auto");
-  assert.equal(sanitizeCustomization({ sentAttachments: "chips" }).sentAttachments, "chips");
-  assert.equal(sanitizeCustomization({ sentAttachments: 7 }).sentAttachments, "auto");
+  assert.equal(
+    sanitizeCustomization({ sentAttachments: "chips" }).sentAttachments,
+    "chips",
+  );
+  assert.equal(
+    sanitizeCustomization({ sentAttachments: 7 }).sentAttachments,
+    "auto",
+  );
 });
 
 test("the sent attachments options read as Standard and Compact", () => {
@@ -158,10 +185,33 @@ test("the composer always shows attachments as cards", () => {
   assert.equal("composerAttachments" in saved, false);
   assert.match(
     ATTACHMENT,
-    /<ComposerPrimitive\.Attachments components=\{CARD_COMPONENTS\} \/>/,
+    /<ComposerAttachmentByIdProvider key=\{id\} id=\{id\}>\s*<ComposerAttachmentCard \/>/,
   );
-  assert.doesNotMatch(ATTACHMENT, /COMPACT_COMPONENTS|const AttachmentUI\b|aui-pasted-text-chip/);
+  assert.doesNotMatch(
+    ATTACHMENT,
+    /COMPACT_COMPONENTS|const AttachmentUI\b|aui-pasted-text-chip/,
+  );
   assert.doesNotMatch(ATTACHMENT, /customization\.composerAttachments/);
+});
+
+// assistant-ui keys composer attachments by index, so removing the first remounted every card after
+// it (each card is keyed by its attachment id), and each remount blanked its preview and decoded the
+// image again. The list is keyed and scoped by id instead; an index scope would also throw for a
+// moved card, whose new index applies a step after the list re-renders.
+test("composer attachment cards are keyed and scoped by attachment id", async () => {
+  const list = ATTACHMENT.slice(
+    ATTACHMENT.indexOf("const ComposerAttachmentCardList: FC"),
+  );
+  assert.match(
+    list,
+    /composer\.attachments\.map\(\(attachment\) => attachment\.id\)/,
+  );
+  assert.doesNotMatch(ATTACHMENT, /<ComposerPrimitive\.Attachments\b/);
+  const scopes = await readSrcAsync(
+    "components/assistant-ui/stale-safe-scopes.tsx",
+  );
+  assert.match(scopes, /query: \{ type: "id", id \}/);
+  assert.match(scopes, /aui\.composer\(\)\.attachment\(\{ id \}\)/);
 });
 
 test("audio or video attached before a model loaded is checked when sent", () => {
@@ -169,22 +219,47 @@ test("audio or video attached before a model loaded is checked when sent", () =>
   const textOnly = { hasAudioInput: false, hasVideoInput: false };
   const base = { checkpoint: "unsloth/model", modelLabel: "Model" };
   assert.equal(
-    attachedMediaUnavailableReason({ ...base, activeModel: listener, audio: true, video: false }),
+    attachedMediaUnavailableReason({
+      ...base,
+      activeModel: listener,
+      audio: true,
+      video: false,
+    }),
     null,
   );
   assert.match(
-    attachedMediaUnavailableReason({ ...base, activeModel: textOnly, audio: true, video: false }) ?? "",
+    attachedMediaUnavailableReason({
+      ...base,
+      activeModel: textOnly,
+      audio: true,
+      video: false,
+    }) ?? "",
     /^Model cannot accept audio\./,
   );
   assert.match(
-    attachedMediaUnavailableReason({ ...base, activeModel: listener, audio: false, video: true }) ?? "",
+    attachedMediaUnavailableReason({
+      ...base,
+      activeModel: listener,
+      audio: false,
+      video: true,
+    }) ?? "",
     /^Model cannot accept video\./,
   );
   assert.ok(
-    attachedMediaUnavailableReason({ ...base, activeModel: undefined, audio: true, video: false }),
+    attachedMediaUnavailableReason({
+      ...base,
+      activeModel: undefined,
+      audio: true,
+      video: false,
+    }),
   );
   assert.equal(
-    attachedMediaUnavailableReason({ ...base, activeModel: textOnly, audio: false, video: false }),
+    attachedMediaUnavailableReason({
+      ...base,
+      activeModel: textOnly,
+      audio: false,
+      video: false,
+    }),
     null,
   );
   assert.equal(
@@ -204,15 +279,33 @@ test("several clips are sent to GGUF and transformers, but refused on MLX", () =
   const gguf = { hasAudioInput: true, isMlx: false };
   const mlx = { hasAudioInput: true, isMlx: true };
   assert.equal(
-    attachedMediaUnavailableReason({ ...base, activeModel: gguf, audio: true, audioCount: 3, video: false }),
+    attachedMediaUnavailableReason({
+      ...base,
+      activeModel: gguf,
+      audio: true,
+      audioCount: 3,
+      video: false,
+    }),
     null,
   );
   assert.equal(
-    attachedMediaUnavailableReason({ ...base, activeModel: mlx, audio: true, audioCount: 1, video: false }),
+    attachedMediaUnavailableReason({
+      ...base,
+      activeModel: mlx,
+      audio: true,
+      audioCount: 1,
+      video: false,
+    }),
     null,
   );
   assert.match(
-    attachedMediaUnavailableReason({ ...base, activeModel: mlx, audio: true, audioCount: 2, video: false }) ?? "",
+    attachedMediaUnavailableReason({
+      ...base,
+      activeModel: mlx,
+      audio: true,
+      audioCount: 2,
+      video: false,
+    }) ?? "",
     /^Gemma takes one audio file per message\./,
   );
 });
@@ -247,8 +340,12 @@ test("attaching no longer needs a loaded model, only a capable one when one is l
 });
 
 test("every attachment opens in the Library's viewer, from the composer and from a message", async () => {
-  const preview = await readSrcAsync("components/assistant-ui/attachment-preview.tsx");
-  const viewer = await readSrcAsync("components/assistant-ui/attachment-document-dialog.tsx");
+  const preview = await readSrcAsync(
+    "components/assistant-ui/attachment-preview.tsx",
+  );
+  const viewer = await readSrcAsync(
+    "components/assistant-ui/attachment-document-dialog.tsx",
+  );
   for (const dialog of [
     "ImageGalleryDialog",
     "AttachmentTextDialog",
@@ -271,7 +368,10 @@ test("files handed to a new chat wait until it is on screen", async () => {
   const fn = start.slice(start.indexOf("export function startLibraryChat("));
   const navigate = fn.indexOf('navigate({ to: "/chat"');
   const offer = fn.indexOf(".offer(");
-  assert.ok(navigate !== -1 && offer > navigate, "the files are offered before the new chat opens");
+  assert.ok(
+    navigate !== -1 && offer > navigate,
+    "the files are offered before the new chat opens",
+  );
   assert.match(fn, /\.then\(\(\) => \{\n\s*requestAnimationFrame\(/);
 });
 
@@ -282,23 +382,45 @@ test("an image card in the composer shares the file card border but has no fill"
   );
   assert.match(card, /const src = useAttachmentImageSrc\(\);/);
   assert.match(card, /CARD_EDGE,\n\s*!src && CARD_SURFACE,/);
-  assert.match(card, /<CardImageOrBody name=\{name\} kind=\{kind\} src=\{src\} \/>/);
+  assert.match(
+    card,
+    /Math\.min\(Math\.max\(ratio \?\? 1, MIN_IMAGE_RATIO\), MAX_IMAGE_RATIO\)/,
+  );
+  assert.match(
+    card,
+    /<CardImageOrBody name=\{name\} kind=\{kind\} src=\{src\} onRatio=\{setRatio\} \/>/,
+  );
 });
 
 test("an attachment's viewer mounts on first open, not with every tile", async () => {
-  const viewer = await readSrcAsync("components/assistant-ui/attachment-document-dialog.tsx");
-  assert.match(viewer, /const \[mounted, setMounted\] = useState\(open\);\n\s*if \(open && !mounted\) setMounted\(true\);/);
+  const viewer = await readSrcAsync(
+    "components/assistant-ui/attachment-document-dialog.tsx",
+  );
+  assert.match(
+    viewer,
+    /const \[mounted, setMounted\] = useState\(open\);\n\s*if \(open && !mounted\) setMounted\(true\);/,
+  );
   assert.match(viewer, /\{mounted && \(\n\s*<MediaViewer/);
 });
 
 test("the viewer's chat and download report a file they could not read", async () => {
-  const viewer = await readSrcAsync("components/assistant-ui/attachment-document-dialog.tsx");
-  assert.match(viewer, /\.catch\(\(\) => toast\.error\(`Could not read \$\{name\}`\)\)/);
-  assert.match(viewer, /\.catch\(\(\) => toast\.error\(t\("library\.toast\.downloadFailed", \{ name \}\)\)\)/);
+  const viewer = await readSrcAsync(
+    "components/assistant-ui/attachment-document-dialog.tsx",
+  );
+  assert.match(
+    viewer,
+    /\.catch\(\(\) => toast\.error\(`Could not read \$\{name\}`\)\)/,
+  );
+  assert.match(
+    viewer,
+    /\.catch\(\(\) => toast\.error\(t\("library\.toast\.downloadFailed", \{ name \}\)\)\)/,
+  );
 });
 
 test("a sent text file downloads whole, not the capped preview", async () => {
-  const preview = await readSrcAsync("components/assistant-ui/attachment-preview.tsx");
+  const preview = await readSrcAsync(
+    "components/assistant-ui/attachment-preview.tsx",
+  );
   assert.match(preview, /new Blob\(\[attachmentBodyText\(sentText\)\]/);
   assert.doesNotMatch(preview, /new Blob\(\[ready\.text\]/);
 });
@@ -310,16 +432,50 @@ test("a composer clip reads as a video, not by its .mp4 name as audio", () => {
 });
 
 test("a sent document shown from its stored text downloads and chats as a .txt", async () => {
-  const dialog = await readSrcAsync("components/assistant-ui/attachment-document-dialog.tsx");
+  const dialog = await readSrcAsync(
+    "components/assistant-ui/attachment-document-dialog.tsx",
+  );
   assert.match(
     dialog,
     /saveAs=\{\n\s*loaded\?\.plain !== undefined\n\s*\? \{ name: `\$\{source\.name\.replace\(\/\\\.\[\^\.\]\+\$\/, ""\)\}\.txt`, contentType: "text\/plain" \}/,
   );
-  assert.match(dialog, /const name = saveAs\?\.name \?\? \(source\.name \|\| "attachment"\);/);
-  assert.match(dialog, /downloadFile\(blob, name, contentType \|\| undefined\)/);
+  assert.match(
+    dialog,
+    /const name = saveAs\?\.name \?\? \(source\.name \|\| "attachment"\);/,
+  );
+  assert.match(
+    dialog,
+    /downloadFile\(blob, name, contentType \|\| undefined\)/,
+  );
 });
 
 test("a card preview follows the text adapter before a binary document viewer", async () => {
-  const preview = await readSrcAsync("components/assistant-ui/attachment-card-preview.tsx");
-  assert.match(preview, /if \(binary && isTextAttachment\(file\.name, file\.type\)\) return \{ kind: "text" \};\n\s*if \(document\)/);
+  const preview = await readSrcAsync(
+    "components/assistant-ui/attachment-card-preview.tsx",
+  );
+  assert.match(
+    preview,
+    /if \(binary && isTextAttachment\(file\.name, file\.type\)\) return \{ kind: "text" \};\n\s*if \(document\)/,
+  );
+});
+
+test("the main composer keeps attachments to one scrolling row once the chat has messages", async () => {
+  const attachment = await readSrcAsync(
+    "components/assistant-ui/attachment.tsx",
+  );
+  assert.match(
+    attachment,
+    /const maxRows = oneRowInChat && inChat \? 1 : COMPOSER_ATTACHMENT_MAX_ROWS;/,
+  );
+  assert.match(
+    attachment,
+    /useAuiState\(\(\{ thread \}\) => !thread\.isEmpty\)/,
+  );
+  const thread = await readSrcAsync("components/assistant-ui/thread.tsx");
+  assert.match(thread, /<ComposerAttachments oneRowInChat=\{true\} \/>/);
+  // The gap under the strip matches the one between the input and the controls.
+  assert.match(
+    attachment,
+    /aui-composer-attachment-cards mb-\[calc\(0\.5rem\*var\(--ui-space-scale,1\)\)\]/,
+  );
 });

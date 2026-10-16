@@ -2929,8 +2929,9 @@ class ChatCompletionRequest(BaseModel):
         description = (
             "[x-unsloth] Extra share of the prompt budget to drop when a rolling "
             "compaction fires, so the boundary can stay put for a stretch of turns. "
-            "0.25 is the process default (ROLLING_COMPACTION_HEADROOM_RATIO). Ignored "
-            "for checkpoint compaction. Unset keeps the process default."
+            "A checkpoint reset leaves the same share free when it keeps the tool calls "
+            "of the turn in progress. 0.25 is the process default "
+            "(ROLLING_COMPACTION_HEADROOM_RATIO). Unset keeps the process default."
         ),
     )
     compact_context: Optional[bool] = Field(
@@ -3954,6 +3955,8 @@ class ResponsesUsage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
+    # {"cached_tokens": n}: prompt tokens the server reused from its cache, when it said.
+    input_tokens_details: Optional[dict[str, int]] = None
 
 
 class ResponsesResponse(BaseModel):
@@ -4106,6 +4109,41 @@ def _merge_anthropic_system(system: Any, additions: list[str]) -> Any:
     if isinstance(system, list):
         return [*system, *addition_blocks]
     return system
+
+
+def _block_type(block: Any) -> Any:
+    return block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+
+
+def _system_note(text: str) -> str:
+    if text.lstrip().startswith("<system-reminder>"):
+        return text
+    return f"<system-reminder>\n{text}\n</system-reminder>"
+
+
+def _as_blocks(content: Any) -> Optional[list]:
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content else []
+    return list(content) if isinstance(content, list) else None
+
+
+def _with_user_note(message: dict, note: str, *, first: bool) -> Optional[dict]:
+    """Copy of a user turn with a text block added; None for malformed content, left for validation to reject."""
+    blocks = _as_blocks(message.get("content"))
+    if blocks is None:
+        return None
+    block = {"type": "text", "text": note}
+    if blocks and all(_block_type(b) == "tool_result" for b in blocks):
+        # As a text block it would start a new user query (templates drop the reasoning before it); MCP image envelopes stay last.
+        index = 0 if first else len(blocks) - 1
+        result = blocks[index] if isinstance(blocks[index], dict) else blocks[index].model_dump()
+        inner = result.get("content")
+        inner = [] if inner is None else _as_blocks(inner)
+        if inner is None:
+            return None
+        blocks[index] = {**result, "content": [block, *inner]}
+        return {**message, "content": blocks}
+    return {**message, "content": [block, *blocks] if first else [*blocks, block]}
 
 
 _CLAUDE_STYLE_REMINDER_SUFFIX = (
@@ -4273,6 +4311,7 @@ class AnthropicMessagesRequest(BaseModel):
         description = "[x-unsloth] Opt-in tool-call recovery; mirrors the Chat Completions nudge_tool_calls field and defaults off.",
     )
     model_config = {"extra": "allow"}
+    _message_ordinals: Optional[list[int]] = PrivateAttr(default = None)
 
     @model_validator(mode = "after")
     def _effort_from_output_config(self) -> "AnthropicMessagesRequest":
@@ -4309,25 +4348,63 @@ class AnthropicMessagesRequest(BaseModel):
         normalized_messages: list[Any] = []
         system_additions: list[str] = []
         retained_system = [_anthropic_content_to_system_text(data.get("system"))]
+        pending: list[str] = []
         changed = False
 
         for message in messages:
             if isinstance(message, dict) and message.get("role") == "system":
                 text = _anthropic_content_to_system_text(message.get("content", ""))
-                if not _is_repeated_claude_style_reminder(text, retained_system):
-                    system_additions.append(text)
-                    retained_system.append(text)
                 changed = True
+                if _is_repeated_claude_style_reminder(text, retained_system):
+                    continue
+                retained_system.append(text)
+                previous = normalized_messages[-1] if normalized_messages else None
+                if previous is None or not text.strip():
+                    system_additions.append(text)
+                elif isinstance(previous, dict) and previous.get("role") == "user":
+                    # Hoisted, it renders above the tools: claude's per-session env message broke every new session's cache.
+                    folded = _with_user_note(previous, _system_note(text), first = False)
+                    if folded is None:
+                        system_additions.append(text)
+                    else:
+                        normalized_messages[-1] = folded
+                else:
+                    pending.append(text)
                 continue
+            if pending and isinstance(message, dict) and message.get("role") == "user":
+                note = "\n".join(_system_note(text) for text in pending)
+                folded = _with_user_note(message, note, first = True)
+                if folded is None:
+                    system_additions.extend(pending)
+                else:
+                    message = folded
+                pending = []
             normalized_messages.append(message)
 
         if not changed:
             return data
 
+        # A trailing assistant turn is a prefill; a user turn after it would replace it.
+        system_additions.extend(pending)
+
         normalized = dict(data)
         normalized["messages"] = normalized_messages
         normalized["system"] = _merge_anthropic_system(normalized.get("system"), system_additions)
         return normalized
+
+    @model_validator(mode = "wrap")
+    @classmethod
+    def _record_message_ordinals(cls, data: Any, handler):
+        # Error paths name the client's own message index, not the one left after system folding.
+        model = handler(data)
+        messages = data.get("messages") if isinstance(data, dict) else None
+        if isinstance(messages, list):
+            model._message_ordinals = [
+                i
+                for i, m in enumerate(messages)
+                if not (isinstance(m, dict) and m.get("role") == "system")
+            ]
+        return model
 
     @field_validator("sandbox_level", mode = "before")
     @classmethod
@@ -4892,6 +4969,14 @@ class DiffusionGenerateRequest(BaseModel):
         description = "Noise schedule for the sampler. Omitted or 'automatic' uses the sampler's "
         "usual schedule (Karras for DPM++ 2M, Exponential for DPM++ 2M SDE, else the model's).",
     )
+    provider_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Saved connection ID. When set, the prompt goes to that "
+        "connection's /images/generations as `model` and the results are saved to the gallery.",
+    )
+    model: Optional[str] = Field(
+        None, description = "Model name on the connection named by `provider_id`."
+    )
 
     @field_validator("loras")
     @classmethod
@@ -5133,6 +5218,11 @@ class DiffusionGenerateProgressResponse(BaseModel):
         None, description = "Live latent preview of the image being denoised, as a JPEG data URL"
     )
     preview_seq: int = Field(0, description = "Moves each time a new preview is published")
+    target: Optional[Literal["connection"]] = Field(
+        None,
+        description = "'connection' when the run is on a saved image connection, so a page that "
+        "resumed it sends Stop to POST /images/generate/cancel?target=connection",
+    )
 
 
 class DiffusionLoadProgressResponse(BaseModel):
@@ -6198,19 +6288,19 @@ class VideoGenerateRequest(BaseModel):
     )
     # Width/height/num_frames/fps default per loaded family, so they are optional here. These bounds
     # stay a COARSE family-agnostic outer guard: the enforced rule is the LOADED family's own
-    # (resolution presets and the k * frame_step + frame_offset lattice), which the route checks with
+    # (sizes near its presets and the k * frame_step + frame_offset lattice), which the route checks with
     # validate_video_request_shape. With no model loaded there is no family to judge against.
     width: Optional[int] = Field(
         None,
         ge = 32,
         le = 2048,
-        description = "Frame width in pixels (a resolution preset of the loaded family)",
+        description = "Frame width in pixels (a multiple of the loaded family's resolution_multiple near its presets)",
     )
     height: Optional[int] = Field(
         None,
         ge = 32,
         le = 2048,
-        description = "Frame height in pixels (a resolution preset of the loaded family)",
+        description = "Frame height in pixels (see width)",
     )
     num_frames: Optional[int] = Field(
         None,
@@ -6498,6 +6588,18 @@ class VideoGenerationDefaults(BaseModel):
     resolution_multiple: int = Field(..., description = "Width/height must be divisible by this")
     resolution_presets: list[list[int]] = Field(
         default_factory = list, description = "(width, height) presets the UI offers, default first"
+    )
+    custom_size_min_pixels: Optional[int] = Field(
+        None,
+        description = "Smallest width * height accepted off the presets, or null when only the snap applies",
+    )
+    custom_size_max_pixels: Optional[int] = Field(
+        None,
+        description = "Largest width * height accepted off the presets (see custom_size_min_pixels)",
+    )
+    custom_size_max_aspect: Optional[float] = Field(
+        None,
+        description = "Widest long:short ratio accepted off the presets (see custom_size_min_pixels)",
     )
     canvas_short_edge: Optional[int] = Field(
         None,

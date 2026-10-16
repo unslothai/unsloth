@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every installer probe that imports `studio` through `python -c` runs isolated (-I).
-
-A bare `-c` puts the caller's working directory first on sys.path. Launched from an unsloth
-checkout, `importlib.resources.files('studio')` then answered with the checkout instead of the
-venv's wheel, so install.sh ran the checkout's setup.sh and installed the checkout's requirement
-pins, while the wheel's verify_install compared against the wheel's. After #12656 moved pyjwt
-to 2.15.1 in the repo, every desktop clean-machine leg (which runs the bundled installer from
-the repository checkout) came up `studio_deps_missing` on a released wheel pinning 2.13.0.
-"""
+"""python -c probes that import studio run with -I, since cwd on sys.path can shadow the wheel."""
 
 from __future__ import annotations
 

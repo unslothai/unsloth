@@ -3381,30 +3381,30 @@ def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
     deleted_bytes = 0
     from hub.utils.gguf import remove_appledouble_sidecar
 
+    from hub.utils.gguf import gguf_variant_keys_by_checkpoint
+
+    weights: list[tuple[Path, str]] = []
     for path in root.rglob("*"):
         if not path.is_file() or not _is_main_gguf_filename(path.name):
             continue
-        # Counted as a model if left in, so the reported count would follow the walk order; it still goes
-        # below, as metadata of the file it belongs to. Proven metadata only.
+        # proven AppleDouble metadata is removed with its weight, not counted as a model.
         if is_appledouble_metadata(path):
             continue
-        # Keyed on the path, not the basename: a repo holding several checkpoints at
-        # one quant would otherwise delete every one of them for a single row.
-        from utils.models.model_config import _gguf_variant_key
-
         try:
             relative = path.relative_to(root).as_posix()
         except ValueError:
             relative = path.name
-        if _gguf_variant_key(relative).lower() != variant.lower():
+        weights.append((path, relative))
+    # checkpoint-qualified keys isolate sibling builds that share a quant.
+    keys = gguf_variant_keys_by_checkpoint(relative for _path, relative in weights)
+    for path, relative in weights:
+        if keys[relative].lower() != variant.lower():
             continue
         try:
             deleted_bytes += path.stat().st_size
         except OSError:
             pass
         path.unlink()
-        # Skipped by the walk above, so this is its only chance to be reclaimed. Its bytes count
-        # toward what was freed even though it is not counted as a model.
         deleted_bytes += remove_appledouble_sidecar(path)
         deleted_count += 1
     return deleted_count, deleted_bytes
@@ -3418,11 +3418,7 @@ async def delete_finetuned_model(
     gguf_variant: Optional[str] = Body(None),
     current_subject: str = Depends(get_current_subject),
 ):
-    """Delete an Unsloth-trained or exported model from disk.
-
-    Only paths under Unsloth's outputs/exports roots are accepted.
-    Exported GGUF entries can delete one quant variant at a time.
-    """
+    """delete an Unsloth output, or one quant from an exported GGUF, within approved roots."""
     if source not in {"training", "exported"}:
         raise HTTPException(
             status_code = 400,
@@ -5050,23 +5046,19 @@ def _one_shard_family_of(entries: list) -> list:
 
 
 def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
-    """How well *want* names this file's variant: 0 for its own key, 1 for the legacy quant-label spelling, None
-    for neither.
-
-    *want* is the request VERBATIM: the bare-quant folding is applied per comparison, because doing it once
-    up front strips a qualified key's own path punctuation and folds ``exp-a/`` into ``expa/``.
-    Directory-qualified keys keep their legacy bare spelling, since stored pins predate them. Root-level H3
-    stems do not: a bare quant names both FL2VA and Ref2VA, and picking the first file would load a
-    different task.
-    """
-    from hub.utils.gguf import is_qualified_gguf_variant_key
+    """rank an exact variant as 0, its legacy quant alias as 1, or no match as None without normalizing paths."""
+    from hub.utils.gguf import gguf_variant_family, is_qualified_gguf_variant_key
     from utils.models.model_config import _gguf_variant_key
 
     label = _main_variant_gguf_label(rel_path)
     if label is None:
         return None
     key = _gguf_variant_key(rel_path)
-    if _variant_keys_match(key, want):
+    # a second same-quant build in a custom folder is keyed by its family (#13926)
+    want_family = gguf_variant_family(want) if want.lower().endswith(".gguf") else want
+    if _variant_keys_match(key, want) or (
+        gguf_variant_family(rel_path).casefold() == want_family.strip().casefold()
+    ):
         return 0
     if is_qualified_gguf_variant_key(key) and "/" not in key.replace("\\", "/"):
         return None
@@ -5074,10 +5066,7 @@ def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
 
 
 def _variant_keys_match(key: str, want: str) -> bool:
-    """Whether *want* is *key*, for the exact-key test. ``_normalized_quant_label`` strips hyphens and
-    underscores, which is right for a bare quant (``UD-Q4_K_XL`` and ``udq4kxl`` are the same ask) and wrong
-    for a path: it folds ``exp-a/`` and ``expa/`` into one, so two advertised checkpoints both answered to
-    the other's key."""
+    """match exact variant keys without folding punctuation in qualified paths."""
     from hub.utils.gguf import is_qualified_gguf_variant_key
 
     if is_qualified_gguf_variant_key(key) or is_qualified_gguf_variant_key(want):

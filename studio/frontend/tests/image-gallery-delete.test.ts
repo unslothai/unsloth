@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import { readSrc } from "./helpers/kit.ts";
 
 test("gallery delete accepts an externally removed image but still reports real failures", async () => {
