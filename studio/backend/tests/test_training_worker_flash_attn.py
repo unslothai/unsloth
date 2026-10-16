@@ -1724,6 +1724,19 @@ def test_windows_an_unanswered_head_still_downloads_the_wheel(monkeypatch):
 
 def test_linux_an_unanswered_head_installs_the_wheel_not_a_source_build(monkeypatch):
     monkeypatch.setattr(worker.sys, "platform", "linux")
+    # A cell upstream publishes, so the resolver names a wheel.
+    monkeypatch.setattr(
+        worker,
+        "probe_torch_wheel_env",
+        lambda **k: {
+            "python_tag": "cp313",
+            "torch_mm": "2.10",
+            "cuda_version": "12.8",
+            "cuda_major": "12",
+            "cxx11abi": "TRUE",
+            "platform_tag": "linux_x86_64",
+        },
+    )
     monkeypatch.setattr(worker, "url_exists", lambda url: None)
     installs = []
     monkeypatch.setattr(
