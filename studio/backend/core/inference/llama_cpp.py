@@ -13213,6 +13213,8 @@ class LlamaCppBackend:
     # index -> inherited uuid, when CUDA_VISIBLE_DEVICES named the NVML rows by uuid.
     _NVML_ROWS: list = []  # the last NVML inventory; _child_visibility_for reads it
     _SMI_UUID_ROWS: list = []  # (index, uuid) from the last nvidia-smi memory probe
+    # MIG cards that same probe saw (None = discovery unknown), so pinning uses its snapshot.
+    _SMI_MIG_INDICES: Optional[frozenset] = None
 
     # Boot-time property: read once, not per launch (the #10613 host has 175
     # groups). Only the default root is cached; an explicit root (tests) re-reads.
@@ -15119,8 +15121,19 @@ class LlamaCppBackend:
             return None
         if not visible or not ids or len(set(ids)) != len(ids):
             return None
-        mig = nvidia.get_mig_gpu_indices_or_none()
-        if any(i not in visible for i in ids) or mig is None or set(ids) & mig:
+        if any(i not in visible for i in ids):
+            return None
+        # The probe that chose these rows classified them; a later recheck failing must
+        # not widen the child to the whole inherited mask.
+        mig = LlamaCppBackend._SMI_MIG_INDICES
+        if mig is None:
+            # Unknown then too: NVML rows from that probe still name MIG cards.
+            mig = {
+                int(r["index"])
+                for r in LlamaCppBackend._NVML_ROWS
+                if r.get("mig") and str(r.get("index", "")).isdigit()
+            }
+        if set(ids) & mig:
             return None
         by_index = dict(rows)
         return ",".join(by_index[i] for i in ids)
@@ -15305,6 +15318,7 @@ class LlamaCppBackend:
                             total_mib = 0
                     rows.append((idx, free_mib, total_mib))
                 LlamaCppBackend._SMI_UUID_ROWS = uuid_rows
+                LlamaCppBackend._SMI_MIG_INDICES = None
                 if allowed is None and _cvd:
                     allowed = LlamaCppBackend._whole_gpu_mask_rows(
                         _cvd, uuid_rows, {r[0] for r in rows} | set(unsized_rows)
@@ -15324,6 +15338,8 @@ class LlamaCppBackend:
                     gpus = []
                 elif gpus:
                     mig_known = nvidia.get_mig_gpu_indices_or_none()
+                    if mig_known is not None:
+                        LlamaCppBackend._SMI_MIG_INDICES = frozenset(mig_known)
                     mig = (mig_known or set()) & {g[0] for g in gpus}
                     if mig_known is None:
                         # MIG discovery failed: a row may be a whole MIG card. NVML names
