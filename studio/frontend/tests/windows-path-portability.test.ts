@@ -24,7 +24,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 const TESTS_DIR = new URL("./", import.meta.url);
 
