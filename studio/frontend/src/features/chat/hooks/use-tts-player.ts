@@ -64,8 +64,6 @@ interface Stream {
   sentences: string[];
   next: number;
   final: boolean;
-  /** Sentences spoken that are not part of the reply text (thinking fillers). */
-  extra: number;
 }
 
 /**
@@ -81,8 +79,6 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   beginStream(): void;
   feedText(text: string): void;
   endStream(finalText: string): void;
-  /** Queue a sentence that is not in the reply text, e.g. a thinking filler. */
-  sayAside(text: string): void;
   stop(): void;
   /** Hold the reply while a possible barge-in is checked; resumePlayback picks it back up. */
   pausePlayback(): void;
@@ -258,7 +254,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     stop();
     const reqId = reqRef.current;
     abortRef.current = new AbortController();
-    streamRef.current = { reqId, sentences: [], next: 0, final: false, extra: 0 };
+    streamRef.current = { reqId, sentences: [], next: 0, final: false };
     setIsSpeaking(true);
     void run(reqId);
   }, [stop, run]);
@@ -267,16 +263,9 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     const st = streamRef.current;
     if (!st || st.reqId !== reqRef.current) return;
     const { complete } = splitStreaming(text);
-    while (st.sentences.length - st.extra < complete.length) {
-      st.sentences.push(complete[st.sentences.length - st.extra] ?? "");
+    while (st.sentences.length < complete.length) {
+      st.sentences.push(complete[st.sentences.length] ?? "");
     }
-  }, []);
-
-  const sayAside = useCallback((text: string) => {
-    const st = streamRef.current;
-    if (!st || st.reqId !== reqRef.current || st.final) return;
-    st.sentences.push(text);
-    st.extra += 1;
   }, []);
 
   // A stream stopped by a barge-in or a thread switch is gone, and ending it is a
@@ -285,8 +274,8 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     const st = streamRef.current;
     if (!st || st.reqId !== reqRef.current) return;
     const all = splitIntoSentences(finalText);
-    while (st.sentences.length - st.extra < all.length) {
-      st.sentences.push(all[st.sentences.length - st.extra] ?? "");
+    while (st.sentences.length < all.length) {
+      st.sentences.push(all[st.sentences.length] ?? "");
     }
     st.final = true;
   }, []);
@@ -335,7 +324,6 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     beginStream,
     feedText,
     endStream,
-    sayAside,
     stop,
     pausePlayback,
     resumePlayback,

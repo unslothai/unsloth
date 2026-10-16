@@ -27,15 +27,6 @@ import {
   clearHeldTurn,
 } from "@/features/chat/adapters/studio-voice-loop-adapter";
 import { useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
-import {
-  fillerDelayMs,
-  pickStage2,
-  predictFiller,
-  STAGE2_AFTER_MS,
-  setPendingFiller,
-  toolKindOf,
-  type ToolKind,
-} from "@/features/chat/voice/thinking-filler";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { deriveOrbState } from "@/features/chat/voice/orb-state";
 import {
@@ -204,7 +195,6 @@ export const VoiceEngine: FC = () => {
     beginStream,
     feedText,
     endStream,
-    sayAside,
     stop,
     primeAudio,
     pausePlayback,
@@ -231,37 +221,6 @@ export const VoiceEngine: FC = () => {
   const streamBegunRef = useRef(false);
   // Interval that feeds the growing assistant reply into the TTS stream.
   const streamPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const sayAsideRef = useRef(sayAside);
-  sayAsideRef.current = sayAside;
-  // Thinking filler for the run in flight: decided at submit (the model is told
-  // about it), spoken after a short delay once the run starts, then at most one
-  // more line if the model is still thinking. Text is held back until the filler
-  // has been queued so it is always the first thing heard.
-  const fillerRef = useRef<{
-    phrase: string;
-    timer: ReturnType<typeof setTimeout> | null;
-    queued: boolean;
-    spokenAt: number | null;
-    stage2Done: boolean;
-  } | null>(null);
-  const clearFiller = useCallback(() => {
-    const f = fillerRef.current;
-    if (f?.timer) clearTimeout(f.timer);
-    fillerRef.current = null;
-  }, []);
-  const latestAssistantToolKinds = useCallback((): ToolKind[] => {
-    const messages = auiRef.current.thread().getState().messages;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (msg.role !== "assistant") continue;
-      const kinds: ToolKind[] = [];
-      for (const part of msg.content as ReadonlyArray<{ type: string; toolName?: string }>) {
-        if (part.type === "tool-call") kinds.push(toolKindOf(part.toolName ?? ""));
-      }
-      return kinds;
-    }
-    return [];
-  }, []);
 
   // Latest assistant reply text (concatenated text parts of the newest assistant
   // message). Used both to stream during generation and to flush on completion.
@@ -312,24 +271,6 @@ export const VoiceEngine: FC = () => {
       // re-arm; resumeListen defers that until the reply has finished speaking.
       resumeListen();
       return;
-    }
-    // Decide the thinking filler for this turn now, so the run's request can tell
-    // the model what was said. A reply that ended in a question wants a short
-    // answer, so no filler there.
-    const prevReply = latestAssistantText().trimEnd();
-    const decision = predictFiller(text, {
-      prevAssistantAskedQuestion: prevReply.endsWith("?"),
-    });
-    setPendingFiller(decision);
-    clearFiller();
-    if (decision.say) {
-      fillerRef.current = {
-        phrase: decision.phrase,
-        timer: null,
-        queued: false,
-        spokenAt: null,
-        stage2Done: false,
-      };
     }
     // Barge-in: the instant the user speaks, cut the audio and the in-flight run.
     // This utterance supersedes whatever the model was saying. Cover the tail
@@ -432,7 +373,7 @@ export const VoiceEngine: FC = () => {
       () => fireCoalescedRun(0),
       VOICE_COALESCE_MS,
     );
-  }, [resumeListen, stop, latestAssistantText, clearFiller]);
+  }, [resumeListen, stop]);
 
   // Sync derived orb state to the store so VoiceOrb can read it without prop-drilling.
   // The priority order itself lives in deriveOrbState, which is pure and tested.
@@ -567,36 +508,9 @@ export const VoiceEngine: FC = () => {
         // on the first complete sentence, not after the whole reply.
         beginStreamRef.current();
         streamBegunRef.current = true;
-        const filler = fillerRef.current;
-        if (filler && !filler.queued && !filler.timer) {
-          filler.timer = setTimeout(() => {
-            const f = fillerRef.current;
-            if (!f || f !== filler) return;
-            f.timer = null;
-            f.queued = true;
-            f.spokenAt = Date.now();
-            sayAsideRef.current(f.phrase);
-          }, fillerDelayMs());
-        }
         if (streamPollRef.current) clearInterval(streamPollRef.current);
         streamPollRef.current = setInterval(() => {
-          const f = fillerRef.current;
-          const text = latestAssistantText();
-          if (f && !f.queued) {
-            // Hold the reply until the filler is in the queue.
-          } else {
-            feedTextRef.current(text);
-          }
-          if (
-            f?.queued &&
-            !f.stage2Done &&
-            f.spokenAt !== null &&
-            !text &&
-            Date.now() - f.spokenAt >= STAGE2_AFTER_MS
-          ) {
-            f.stage2Done = true;
-            sayAsideRef.current(pickStage2(latestAssistantToolKinds()));
-          }
+          feedTextRef.current(latestAssistantText());
           setIsReasoning(latestAssistantIsReasoning());
         }, 150);
         // The session starting is what reopens the mic, in barge-in mode (below).
@@ -613,11 +527,6 @@ export const VoiceEngine: FC = () => {
       clearInterval(streamPollRef.current);
       streamPollRef.current = null;
     }
-    // A reply that landed inside the delay: the model was told about the filler,
-    // so it still goes first, just without the wait.
-    const fillerAtEnd = fillerRef.current;
-    if (fillerAtEnd && !fillerAtEnd.queued) sayAsideRef.current(fillerAtEnd.phrase);
-    clearFiller();
     if (voiceModeRef.current !== "active") return;
     // Note: no isSpeaking guard here. If a stale utterance is still speaking when
     // a newer reply lands, the newest wins — beginStream above supersedes via
@@ -638,14 +547,7 @@ export const VoiceEngine: FC = () => {
       // speak() ends the turn through onPlaybackEnd -> resumeListen like a stream.
       speakRef.current(text);
     }
-  }, [
-    isThreadRunning,
-    resumeListen,
-    latestAssistantText,
-    latestAssistantIsReasoning,
-    latestAssistantToolKinds,
-    clearFiller,
-  ]);
+  }, [isThreadRunning, resumeListen, latestAssistantText]);
 
   // Barge-in: while the reply is being spoken the mic stays open. The adapter sees
   // playback (registerVoicePlayback) and only listens for the user cutting in over
@@ -700,14 +602,12 @@ export const VoiceEngine: FC = () => {
         voiceCoalesceTimerRef.current = null;
       }
       clearHeldTurn();
-      clearFiller();
-      setPendingFiller(null);
       stop();
       const composer = auiRef.current.composer();
       if (composer.getState().dictation) composer.stopDictation();
     }
     // "configuring": dropdown appears via store; mic stays off.
-  }, [stop, primeAudio, clearFiller]);
+  }, [stop, primeAudio]);
 
   // Switching threads carries the loop over instead of ending it: cut the old
   // thread's reply and mic, drop its pending timers, then re-arm on the new one.
@@ -725,15 +625,13 @@ export const VoiceEngine: FC = () => {
     }
     streamBegunRef.current = false;
     clearHeldTurn();
-    clearFiller();
-    setPendingFiller(null);
     stop();
     const composer = auiRef.current.composer();
     if (composer.getState().dictation) composer.stopDictation();
     // Only "active" re-arms. In "configuring" the mic was never open, and the
     // re-arm would start a loop the user has not started yet.
     if (voiceModeRef.current === "active") resumeListen();
-  }, [stop, resumeListen, clearFiller]);
+  }, [stop, resumeListen]);
 
   useEffect(() => {
     registerVoiceThreadReset(threadReset);
