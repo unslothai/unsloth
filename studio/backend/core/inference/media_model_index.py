@@ -180,7 +180,7 @@ def _add_gguf_picks(
     one id cannot mean different weights here than in the picker.
     """
     from core.inference.openai_auto_download import preferred_quant
-    from hub.utils.gguf import default_gguf_scope, gguf_variant_key
+    from hub.utils.gguf import default_gguf_scope, gguf_variant_family, gguf_variant_key
     from hub.utils.gguf import list_local_gguf_variants as list_build_variants
     from utils.models.model_config import list_local_gguf_variants
 
@@ -237,6 +237,22 @@ def _add_gguf_picks(
                 names,
                 MediaModelPick(keys[0], load_path, variant.filename, "gguf"),
             )
+    # a build's stem or filename key keeps naming it after a sibling's removal re-keys it
+    claims: dict[str, list[str]] = {}
+    for quant, variant in openable.items():
+        relative = variant.filename.replace("\\", "/")
+        for spelling in {gguf_variant_family(relative), relative}:
+            if spelling and spelling.lower() != quant.lower():
+                claims.setdefault(spelling.lower(), []).append(variant.filename)
+    for spelling, files in claims.items():
+        if len(set(files)) != 1:
+            continue
+        names = [
+            name
+            for name in (f"{key}:{spelling}" for key in keys)
+            if primary_keys.get(name.strip().lower(), files[0]) == files[0]
+        ]
+        _register(index, names, MediaModelPick(keys[0], load_path, files[0], "gguf"))
     scope = default_gguf_scope(list(openable), *keys, getattr(info, "id", None), str(on_disk))
     best = None
     legacy_groups: dict[str, int] = {}

@@ -822,6 +822,20 @@ def test_a_build_stem_still_resolves_after_its_sibling_is_removed(tmp_path):
     assert entry.aliases == ()
 
 
+def test_a_filename_build_key_still_resolves_after_its_sibling_is_removed(tmp_path):
+    (tmp_path / "0-model-F16.gguf").write_bytes(b"x" * 80)
+    (tmp_path / "F16.gguf").write_bytes(b"x" * 80)
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x" * 40)
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+    assert "F16.gguf" in entry.variants
+
+    (tmp_path / "0-model-F16.gguf").unlink()
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+
+    resolved = resolver._resolve_from_index("local/model:F16.gguf", {"local/model": entry})
+    assert resolved is not None and resolved[1] == "F16"
+
+
 def test_local_gguf_entry_labels_a_quantless_filename_as_the_picker_does(tmp_path):
     # No quant token in the name, so the picker and every saved setting key this variant by
     # the stem. Labelling it "v2" here left an API load reading a key nothing wrote (#10227).

@@ -357,10 +357,12 @@ def _build_family_aliases(variants) -> tuple[tuple[str, str], ...]:
             filename = getattr(variant, "filename", None)
             if not quant or not filename:
                 continue
-            family = gguf_variant_family(str(filename).replace("\\", "/")).lower()
-            if not family or family in current:
-                continue
-            seen[family] = None if family in seen else str(quant)
+            relative = str(filename).replace("\\", "/")
+            # the family (beta-Q4_K_M) and the filename key a collision falls back to (F16.gguf)
+            for spelling in {gguf_variant_family(relative).lower(), relative.lower()}:
+                if not spelling or spelling in current:
+                    continue
+                seen[spelling] = None if spelling in seen else str(quant)
         return tuple((family, quant) for family, quant in seen.items() if quant is not None)
     except Exception:
         return ()

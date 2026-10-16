@@ -347,6 +347,22 @@ def test_a_larger_sibling_build_does_not_override_the_preferred_media_quant(tmp_
     assert picks["local-image"].gguf_filename == "model-Q4_K_M.gguf"
 
 
+def test_a_media_build_stem_survives_its_sibling_removal(tmp_path, monkeypatch):
+    (tmp_path / "alpha-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "beta-Q4_K_M.gguf").write_bytes(b"x" * 90)
+    info = _Info("local-image", "Local Image", path = str(tmp_path), task = "text-to-image")
+    monkeypatch.setattr(mmi, "_loader_can_open", lambda *_args: True)
+    picks = {}
+    assert mmi._add_gguf_picks(picks, info, (info.id,), tmp_path, tmp_path)
+    assert picks["local-image:beta-q4_k_m"].gguf_filename == "beta-Q4_K_M.gguf"
+
+    (tmp_path / "alpha-Q4_K_M.gguf").unlink()
+    picks = {}
+    assert mmi._add_gguf_picks(picks, info, (info.id,), tmp_path, tmp_path)
+
+    assert picks["local-image:beta-q4_k_m"].gguf_filename == "beta-Q4_K_M.gguf"
+
+
 def test_quant_directory_siblings_share_the_media_default_scope(tmp_path, monkeypatch):
     quant_dir = tmp_path / "Q4_K_M"
     quant_dir.mkdir()
