@@ -635,3 +635,48 @@ def test_non_peft_gguf_leaves_the_users_checkpoint_as_it_was(monkeypatch, tmp_pa
     assert converter_saw["tokenizer_config.json"] == b'{"chat_template": "x"}'
     assert converter_saw["model.safetensors"] == b"WEIGHTS"
     assert {p.name: p.read_bytes() for p in checkpoint.iterdir()} == before
+
+
+@pytest.mark.parametrize("fails_at", ["tokenizer_save", "quantization_method"])
+def test_non_peft_gguf_removes_the_staged_copy_when_export_fails_before_converting(
+    monkeypatch, tmp_path, fails_at
+):
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "model.safetensors").write_bytes(b"WEIGHTS")
+    model = _FakeModel()
+    model.config = type(
+        "cfg",
+        (),
+        {
+            "_name_or_path": str(checkpoint),
+            "architectures": ["LlamaForCausalLM"],
+            "model_type": "llama",
+        },
+    )()
+
+    class BrokenTokenizer(_FakeTokenizer):
+        def save_pretrained(self, path):
+            raise OSError("tokenizer save failed")
+
+    monkeypatch.setattr(save_mod, "_is_vlm", lambda _model: False)
+    monkeypatch.setattr(save_mod, "_is_gpt_oss", lambda _model: False)
+    monkeypatch.setattr(save_mod, "fix_tokenizer_bos_token", lambda _tokenizer: (False, None))
+    monkeypatch.setattr(save_mod, "_resolve_imatrix_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(save_mod, "dtype_from_config", lambda _config: save_mod.torch.float16)
+    monkeypatch.setattr(save_mod, "save_to_gguf", lambda **kw: pytest.fail("converter reached"))
+
+    requested = tmp_path / "export" / "model"
+    (tmp_path / "export").mkdir()
+    with pytest.raises((OSError, TypeError)):
+        save_mod.unsloth_save_pretrained_gguf(
+            model,
+            str(requested),
+            tokenizer = BrokenTokenizer() if fails_at == "tokenizer_save" else _FakeTokenizer(),
+            quantization_method = "q8_0" if fails_at == "tokenizer_save" else 8,
+        )
+
+    gguf_directory = f"{requested}_gguf"
+    leftovers = os.listdir(gguf_directory) if os.path.isdir(gguf_directory) else []
+    assert not [name for name in leftovers if name.startswith(".unsloth_gguf_source_")]
+    assert os.listdir(checkpoint) == ["model.safetensors"]

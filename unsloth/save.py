@@ -3655,28 +3655,37 @@ def _stage_reused_checkpoint(source, gguf_directory):
 
     os.makedirs(gguf_directory, exist_ok = True)
     staging = tempfile.mkdtemp(prefix = ".unsloth_gguf_source_", dir = gguf_directory)
-    for name in os.listdir(source):
-        src = os.path.join(source, name)
-        dst = os.path.join(staging, name)
-        if os.path.realpath(staging).startswith(os.path.realpath(src) + os.sep):
-            continue  # the GGUF output folder sits inside the checkpoint
-        if os.path.isdir(src):
-            try:
-                os.symlink(src, dst, target_is_directory = True)
-            except OSError:
-                shutil.copytree(src, dst)
-        elif name.endswith(_GGUF_LINKED_WEIGHT_SUFFIXES):
-            for link in (os.link, os.symlink):
+    try:
+        for name in os.listdir(source):
+            src = os.path.join(source, name)
+            dst = os.path.join(staging, name)
+            if os.path.realpath(staging).startswith(os.path.realpath(src) + os.sep):
+                continue  # the GGUF output folder sits inside the checkpoint
+            if os.path.isdir(src):
                 try:
-                    link(src, dst)
-                    break
+                    os.symlink(src, dst, target_is_directory = True)
                 except OSError:
-                    continue
+                    shutil.copytree(src, dst)
+            elif name.endswith(_GGUF_LINKED_WEIGHT_SUFFIXES):
+                for link in (os.link, os.symlink):
+                    try:
+                        link(src, dst)
+                        break
+                    except OSError:
+                        continue
+                else:
+                    shutil.copy2(src, dst)
             else:
                 shutil.copy2(src, dst)
-        else:
-            shutil.copy2(src, dst)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors = True)
+        raise
     return staging
+
+
+def _drop_staged_checkpoint(staged_directory):
+    if staged_directory is not None:
+        shutil.rmtree(staged_directory, ignore_errors = True)
 
 
 def _gguf_output_directory(save_directory):
@@ -4420,7 +4429,11 @@ def unsloth_save_pretrained_gguf(
             merge_is_disposable = False
             # Persist tokenizer fixes (BOS stripping) so the GGUF converter reads the corrected chat template.
             if tokenizer is not None:
-                tokenizer.save_pretrained(save_directory)
+                try:
+                    tokenizer.save_pretrained(save_directory)
+                except BaseException:
+                    _drop_staged_checkpoint(staged_directory)
+                    raise
         else:
             print("Unsloth: Model is not a PEFT model. Saving directly without LoRA merge...")
             os.makedirs(save_directory, exist_ok = True)
@@ -4437,61 +4450,66 @@ def unsloth_save_pretrained_gguf(
                     f"{_offloaded_parameter_hint(self)}"
                 ) from e
 
-    if fix_bos_token:
-        for _template_owner, _old_template in old_chat_templates:
-            _template_owner.chat_template = _old_template
-
-    if is_processor:
-        tokenizer = tokenizer.tokenizer
-
-    for _ in range(3):
-        import gc
-        gc.collect()
-        clean_gpu_cache()
-
+    # Until the conversion's own finally, an error here would leave the staged copy in the GGUF folder.
     try:
-        model_dtype = dtype_from_config(self.config)
-        model_type = self.config.model_type
-        if type(model_dtype) is str:
-            assert model_dtype == "float16" or model_dtype == "bfloat16"
-        elif model_dtype == torch.float16:
-            model_dtype = "float16"
-        elif model_dtype == torch.bfloat16:
-            model_dtype = "bfloat16"
-        else:
-            raise TypeError("Unsloth: Model dtype can only be float16 or bfloat16")
-    except Exception as e:
-        print(f"Unsloth: Could not determine dtype ({e}), defaulting to float16")
-        model_dtype = "float16"
+        if fix_bos_token:
+            for _template_owner, _old_template in old_chat_templates:
+                _template_owner.chat_template = _old_template
 
-    print("Unsloth: Converting to GGUF format...")
+        if is_processor:
+            tokenizer = tokenizer.tokenizer
 
-    quantization_methods = []
-    if quantization_method is not None:
-        if isinstance(quantization_method, list):
-            pass
-        elif isinstance(quantization_method, str):
-            quantization_method = [
-                quantization_method,
-            ]
-        elif isinstance(quantization_method, tuple):
-            quantization_method = list(quantization_method)
-        else:
-            raise TypeError(
-                "Unsloth: quantization_method can only be a string or a list of strings"
-            )
-        for i, quant_method in enumerate(quantization_method):
-            if quant_method is None:
-                quant_method = "q8_0"
+        for _ in range(3):
+            import gc
+            gc.collect()
+            clean_gpu_cache()
+
+        try:
+            model_dtype = dtype_from_config(self.config)
+            model_type = self.config.model_type
+            if type(model_dtype) is str:
+                assert model_dtype == "float16" or model_dtype == "bfloat16"
+            elif model_dtype == torch.float16:
+                model_dtype = "float16"
+            elif model_dtype == torch.bfloat16:
+                model_dtype = "bfloat16"
             else:
-                quant_method = quant_method.lower()
-            if quant_method == "not_quantized":
-                quant_method = "f16"
-            elif quant_method == "fast_quantized":
-                quant_method = "q8_0"
-            elif quant_method == "quantized":
-                quant_method = "q4_k_m"
-            quantization_methods.append(quant_method.lower())
+                raise TypeError("Unsloth: Model dtype can only be float16 or bfloat16")
+        except Exception as e:
+            print(f"Unsloth: Could not determine dtype ({e}), defaulting to float16")
+            model_dtype = "float16"
+
+        print("Unsloth: Converting to GGUF format...")
+
+        quantization_methods = []
+        if quantization_method is not None:
+            if isinstance(quantization_method, list):
+                pass
+            elif isinstance(quantization_method, str):
+                quantization_method = [
+                    quantization_method,
+                ]
+            elif isinstance(quantization_method, tuple):
+                quantization_method = list(quantization_method)
+            else:
+                raise TypeError(
+                    "Unsloth: quantization_method can only be a string or a list of strings"
+                )
+            for i, quant_method in enumerate(quantization_method):
+                if quant_method is None:
+                    quant_method = "q8_0"
+                else:
+                    quant_method = quant_method.lower()
+                if quant_method == "not_quantized":
+                    quant_method = "f16"
+                elif quant_method == "fast_quantized":
+                    quant_method = "q8_0"
+                elif quant_method == "quantized":
+                    quant_method = "q4_k_m"
+                quantization_methods.append(quant_method.lower())
+    except BaseException:
+        _drop_staged_checkpoint(staged_directory)
+        raise
 
     try:
         from .tokenizer_utils import fix_sentencepiece_gguf
@@ -4537,7 +4555,7 @@ def unsloth_save_pretrained_gguf(
             raise RuntimeError(f"Unsloth: GGUF conversion failed: {_describe_exception(e)}") from e
     finally:
         if staged_directory is not None:
-            shutil.rmtree(staged_directory, ignore_errors = True)
+            _drop_staged_checkpoint(staged_directory)
             save_directory = original_path
 
     modelfile_location = None
