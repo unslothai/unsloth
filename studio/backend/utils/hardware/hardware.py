@@ -1042,6 +1042,10 @@ _GPU_NAME_GFX_TABLE: "list[tuple[str, str]]" = [
 # Only the Windows multi-arch route ships these (#11755, #11815); Linux installers decline them.
 _ROCM_SUPPORTED_GFX_WINDOWS_ONLY = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx1153"})
 
+# Krackan Point 2 (gfx1153) names overlap the table's gfx1152 row; the Linux installers read them
+# first and leave CPU torch on purpose (install_python_stack._LINUX_KRACKAN2_NAME_RE).
+_LINUX_KRACKAN2_NAME_RE = r"820M|Krackan ?(?:Point ?)?2|AI 5 (?:PRO )?330"
+
 
 def _rocm_supported_gfx_here() -> "frozenset[str]":
     """The arches the installers ship a ROCm wheel for on THIS platform."""
@@ -1071,6 +1075,11 @@ def _amd_device_can_establish_a_mismatch(device: Dict[str, Any]) -> bool:
         if gfx
     ]
     if not candidates:
+        # A lone Linux gfx1153 is declined by the installers, so its CPU wheel is no fault.
+        if platform.system() != "Windows" and re.search(
+            _LINUX_KRACKAN2_NAME_RE, device.get("name") or "", re.IGNORECASE
+        ):
+            return False
         # The DirectX registry publishes AdapterFamily only when the driver wrote one, so a supported Windows card can arrive with no arch. setup.ps1 answers that from the marketing name; the probe below can only speak for Linux.
         _named = _rocm_supported_gfx_from_gpu_name(device.get("name") or "")
         if _named:

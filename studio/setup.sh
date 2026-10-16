@@ -4451,8 +4451,24 @@ elif [ "$_setup_amd_detected" = true ]; then
     elif [ -z "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
         _setup_gfx=$(_setup_supported_gfx_from_name "$_setup_mkt") || _setup_gfx=""
         # Krackan Point 2 names overlap the table's gfx1152 patterns (install.sh tests them first).
-        if printf '%s\n' "$_setup_mkt" | grep -Eqi '820M|Krackan ?(Point ?)?2|AI 5 (PRO )?330'; then
-            _setup_gfx=gfx1153
+        # amd-smi names only the first device, so a covered lspci peer (the same rule as
+        # _setup_unsupported_gfx_any) keeps the table's answer, as before.
+        _setup_k2_name_ere='820M|Krackan ?(Point ?)?2|AI 5 (PRO )?330'
+        if printf '%s\n' "$_setup_mkt" | grep -Eqi "$_setup_k2_name_ere"; then
+            _setup_k2_peer=""
+            if command -v lspci >/dev/null 2>&1; then
+                while IFS= read -r _setup_k2_ln; do
+                    [ -n "$_setup_k2_ln" ] || continue
+                    printf '%s\n' "$_setup_k2_ln" | grep -Eqi "$_setup_k2_name_ere" && continue
+                    if _setup_supported_gfx_from_name "$_setup_k2_ln" >/dev/null 2>&1; then
+                        _setup_k2_peer=1
+                        break
+                    fi
+                done <<EOF
+$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+EOF
+            fi
+            [ -n "$_setup_k2_peer" ] || _setup_gfx=gfx1153
         fi
         if [ -n "$_setup_gfx" ]; then
             substep "gfx arch inferred from GPU name: $_setup_gfx"

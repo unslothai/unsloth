@@ -603,3 +603,51 @@ def test_setup_sh_name_inference_reads_krackan_point_2_first(name, expected):
         ["bash", "-c", script, "bash", name], capture_output = True, text = True, timeout = 30
     )
     assert out.stdout.strip() == expected, out.stderr
+
+
+# ── Codex round 3: setup.sh name inference keeps the covered-peer guard ─────
+
+
+@pytest.mark.parametrize(
+    "mkt,lspci,expected",
+    [
+        ("AMD Radeon 820M", [_K2_LINE], "gfx1153"),
+        ("AMD Radeon 820M", None, "gfx1153"),
+        # A covered peer keeps the table's answer, as main: none for 820M, gfx1152 for "Krackan".
+        ("AMD Radeon 820M", [_K2_LINE, _NAVI31_LINE], ""),
+        ("AMD Krackan Point 2", [_K2_LINE, _NAVI31_LINE], "gfx1152"),
+        ("AMD Radeon 860M", [_K2_LINE], "gfx1152"),
+    ],
+)
+def test_setup_sh_name_inference_keeps_the_covered_peer_guard(mkt, lspci, expected, tmp_path):
+    from test_rdna1_unsupported_message_8529 import _SETUP_SH, _sh_function_body
+
+    src = _SETUP_SH.read_text(encoding = "utf-8")
+    start = src.index('        _setup_gfx=$(_setup_supported_gfx_from_name "$_setup_mkt") || _setup_gfx=""')
+    end_marker = '            [ -n "$_setup_k2_peer" ] || _setup_gfx=gfx1153\n        fi\n'
+    end = src.index(end_marker, start) + len(end_marker)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for tool in ("sh", "bash", "grep", "cat", "sed", "tr", "awk", "printf"):
+        found = shutil.which(tool)
+        if found:
+            (bin_dir / tool).symlink_to(found)
+    if lspci is not None:
+        fake = bin_dir / "lspci"
+        printed = "\n".join(lspci)
+        fake.write_text(f'#!/bin/sh\ncat <<"LSPCI_EOF"\n{printed}\nLSPCI_EOF\n', encoding = "utf-8")
+        fake.chmod(0o755)
+    script = (
+        _sh_function_body(src, "_setup_supported_gfx_from_name")
+        + f"\n_setup_mkt='{mkt}'\n_setup_gfx=''\n"
+        + src[start:end]
+        + 'printf "GFX:%s\\n" "$_setup_gfx"\n'
+    )
+    out = subprocess.run(
+        [str(bin_dir / "bash"), "-c", script],
+        capture_output = True,
+        text = True,
+        timeout = 30,
+        env = dict(os.environ, PATH = str(bin_dir)),
+    )
+    assert out.stdout.strip().rsplit("GFX:", 1)[-1] == expected, out
