@@ -6298,10 +6298,12 @@ def _with_mig_instance_memory(devices: list[Dict[str, Any]]) -> list[Dict[str, A
         return devices
     try:
         from . import nvidia
-        mig = nvidia.get_mig_gpu_indices() & {d.get("index") for d in devices}
+        mig_known = nvidia.get_mig_gpu_indices_or_none()
     except Exception:
         return devices
-    if not mig:
+    indices = {d.get("index") for d in devices}
+    mig = None if mig_known is None else mig_known & indices
+    if mig is not None and not mig:
         return devices
     slices: Dict[int, tuple[int, int]] = {}
     try:
@@ -6309,6 +6311,12 @@ def _with_mig_instance_memory(devices: list[Dict[str, Any]]) -> list[Dict[str, A
         slices = {idx: (free, total) for idx, free, total in LlamaCppBackend._get_gpu_memory_nvml()}
     except Exception as e:
         logger.debug("NVML MIG slice probe failed: %s", e)
+    if mig is None:
+        # MIG discovery failed: NVML reads slices and whole cards alike, so its readings
+        # replace the CLI's; without any the devices stand as before MIG support.
+        if not slices:
+            return devices
+        mig = set(slices) & indices
     out = []
     for device in devices:
         idx = device.get("index")
