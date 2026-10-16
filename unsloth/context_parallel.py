@@ -87,8 +87,9 @@ def context_parallel_options(config) -> tuple:
     return size, backend, rotate_method
 
 
-def _unsupported_attention(config) -> Optional[str]:
+def _unsupported_attention(config, backend = "ring") -> Optional[str]:
     # Ring and Llama's forward ignore mask, window and softcap, so both backends refuse them.
+    allowed = {"full_attention", "linear_attention"} if backend == "ulysses" else {"full_attention"}
     configs = [config]
     text_config = getattr(config, "text_config", None)
     if text_config is not None and text_config is not config:
@@ -97,9 +98,14 @@ def _unsupported_attention(config) -> Optional[str]:
         if c is None:
             continue
         layer_types = getattr(c, "layer_types", None)
-        if layer_types and any(t != "full_attention" for t in layer_types):
-            kinds = sorted({t for t in layer_types if t != "full_attention"})
-            return f"{', '.join(kinds)} layers"
+        if layer_types and any(t not in allowed for t in layer_types):
+            kinds = sorted({t for t in layer_types if t not in allowed})
+            hint = (
+                " (use context_parallel_backend = 'ulysses')"
+                if kinds == ["linear_attention"]
+                else ""
+            )
+            return f"{', '.join(kinds)} layers{hint}"
         # Any positive window, even with use_sliding_window off: Unsloth's masks read it directly.
         sliding_window = getattr(c, "sliding_window", None)
         if (isinstance(sliding_window, int) and sliding_window > 0) or getattr(
@@ -125,6 +131,13 @@ def _unregister_cp_sharding_rules() -> None:
 
 from .device_type import DEVICE_TYPE_TORCH
 from .utils.ulysses import _document_positions, ulysses_head_plan
+from .utils.ulysses_hybrid import (
+    GATED_DELTA_ATTENTION_CLASSES,
+    check_gated_delta_heads,
+    install_hf_attention_wrapper,
+    is_ulysses_gated_delta,
+    wrap_gated_delta_forward,
+)
 
 # A module global, not a ContextVar: CUDA runs backward (and checkpoint recompute) on another thread.
 _ACTIVE_MANAGER: Optional["ContextParallelManager"] = None
@@ -141,14 +154,71 @@ def get_cp_manager() -> Optional["ContextParallelManager"]:
     return _ACTIVE_MANAGER
 
 
-def _supports_context_parallel(model) -> bool:
+def _stateful_mixers(model) -> list:
+    from .utils.packing import _iter_stateful_mixers
+    return _iter_stateful_mixers(model) if isinstance(model, torch.nn.Module) else []
+
+
+def _positions_restart(position_ids, attention_mask) -> bool:
+    restart = position_ids[:, 1:] <= position_ids[:, :-1]
+    if isinstance(attention_mask, torch.Tensor) and attention_mask.shape == position_ids.shape:
+        # Right padding may carry any positions; only steps between real tokens count.
+        valid = attention_mask.bool()
+        restart = restart & valid[:, 1:] & valid[:, :-1]
+    return bool(restart.any())
+
+
+def _hybrid_config_blocker(model) -> Optional[str]:
+    config = getattr(model, "config", None)
+    if getattr(config, "vision_config", None) is not None:
+        # Only text buffers are sharded; image / video features would stay whole on every rank.
+        return "multimodal models"
+    text_config = getattr(config, "text_config", None) or config
+    if getattr(text_config, "output_router_logits", False):
+        # The load balancing loss is a product of per-sequence means, not a sum over shards.
+        return "the MoE router auxiliary loss (output_router_logits)"
+    if any(isinstance(getattr(m, "experts", None), torch.nn.ModuleList) for m in model.modules()):
+        # Per-expert modules run only for experts the local shard routes to, so with DDP's
+        # find_unused_parameters off an expert unused on one rank stalls the gradient reduction.
+        return "sparse MoE layers with per-expert modules (transformers 4.x Qwen3-Next)"
+    return None
+
+
+def _supports_context_parallel(model, backend = "ring") -> bool:
     from .models.llama import LlamaAttention_fast_forward
-    forwards = [
-        getattr(type(module).forward, "__func__", type(module).forward)
-        for name, module in model.named_modules()
-        if name.endswith("self_attn")
-    ]
-    return bool(forwards) and all(f is LlamaAttention_fast_forward for f in forwards)
+
+    modules = [module for name, module in model.named_modules() if name.endswith("self_attn")]
+    forwards = [getattr(type(m).forward, "__func__", type(m).forward) for m in modules]
+    if bool(forwards) and all(f is LlamaAttention_fast_forward for f in forwards):
+        return not _stateful_mixers(model)
+    mixers = _stateful_mixers(model)
+    return (
+        backend == "ulysses"
+        and bool(mixers)
+        and all(is_ulysses_gated_delta(m) for m, _ in mixers)
+        and all(type(m).__name__ in GATED_DELTA_ATTENTION_CLASSES for m in modules)
+        and _hybrid_config_blocker(model) is None
+    )
+
+
+def _check_stateful_mixers(model, backend, size) -> None:
+    mixers = _stateful_mixers(model)
+    if not mixers:
+        return
+    if backend != "ulysses":
+        kinds = sorted({type(m).__name__ for m, _ in mixers})
+        raise NotImplementedError(
+            f"Unsloth: ring context parallelism cannot split the sequential scans of {kinds}; "
+            "use context_parallel_backend = 'ulysses'."
+        )
+    unsupported = sorted({type(m).__name__ for m, _ in mixers if not is_ulysses_gated_delta(m)})
+    if unsupported:
+        raise NotImplementedError(
+            "Unsloth: Ulysses context parallelism supports Gated DeltaNet linear attention only, "
+            f"not {unsupported}."
+        )
+    for module, _ in mixers:
+        check_gated_delta_heads(module, size)
 
 
 def _self_attn_pre_forward_hook(_module, module_args, module_kwargs):
@@ -183,6 +253,18 @@ class ContextParallelManager:
         return self.mesh.get_group()
 
     def attach_attention_hooks(self, model: torch.nn.Module) -> None:
+        if self.backend == "ulysses":
+            for module, _ in _stateful_mixers(model):
+                if is_ulysses_gated_delta(module):
+                    wrap_gated_delta_forward(module, get_cp_manager)
+            for name, module in model.named_modules():
+                if (
+                    name.endswith("self_attn")
+                    and type(module).__name__ in GATED_DELTA_ATTENTION_CLASSES
+                ):
+                    install_hf_attention_wrapper(
+                        module, module.config._attn_implementation, get_cp_manager
+                    )
         for name, module in model.named_modules():
             if name.endswith("self_attn") and not getattr(module, "_unsloth_cp_hooked", False):
                 module.register_forward_pre_hook(
@@ -209,6 +291,29 @@ class ContextParallelManager:
                 raise ValueError(
                     f"Unsloth: packed_seq_lengths sum to {used} but the packed row has {seq_len} tokens."
                 )
+        if inputs.get("output_router_logits"):
+            raise ValueError(
+                "Unsloth: context parallelism does not support the MoE router auxiliary loss "
+                "(output_router_logits): it is a product of per-sequence means, not a sum over shards."
+            )
+        position_ids = inputs.get("position_ids")
+        if isinstance(position_ids, torch.Tensor) and position_ids.ndim != 2:
+            # Sharding slices dim 1, which is the batch axis of e.g. Qwen3.5's [4, batch, seq] ids.
+            raise ValueError(
+                f"Unsloth: context parallelism needs 2D [batch, seq] position_ids, got {position_ids.ndim}D."
+            )
+        if (
+            ulysses
+            and packed_seq_lengths is None
+            and isinstance(position_ids, torch.Tensor)
+            and position_ids.ndim == 2
+            and _positions_restart(position_ids, inputs.get("attention_mask"))
+        ):
+            # Restarting positions mark packed documents that attention and scans could not see.
+            raise ValueError(
+                "Unsloth: Ulysses context parallelism needs packed_seq_lengths for packed batches; "
+                "position_ids that restart are not enough."
+            )
         # .get: a collator may carry the key with None, which would leave positions shard-local.
         if inputs.get("position_ids") is None and packed_seq_lengths is not None:
             inputs["position_ids"] = _document_positions(
@@ -272,10 +377,13 @@ class ContextParallelManager:
                 inputs[name] = tensor[:, rank * local : (rank + 1) * local].contiguous()
         global _ACTIVE_MANAGER
         previous, _ACTIVE_MANAGER = _ACTIVE_MANAGER, self
+        # Some decoders (transformers 5.3 / 5.5) do not forward packed_seq_lengths to linear_attn.
+        self.packed_seq_lengths = inputs.get("packed_seq_lengths")
         try:
             yield
         finally:
             _ACTIVE_MANAGER = previous
+            self.packed_seq_lengths = None
 
     @contextlib.contextmanager
     def apply(self, inputs: dict) -> Iterator[None]:
@@ -470,7 +578,7 @@ def patch_sft_trainer() -> None:
         if Version(accelerate.__version__) < Version("1.10.0"):
             raise NotImplementedError("Unsloth: context parallelism needs accelerate >= 1.10.0.")
         model_config = getattr(self.model, "config", None)
-        unsupported = _unsupported_attention(model_config)
+        unsupported = _unsupported_attention(model_config, backend)
         if unsupported is not None:
             raise NotImplementedError(
                 f"Unsloth: {backend} context parallelism does not support {unsupported}."
@@ -484,10 +592,16 @@ def patch_sft_trainer() -> None:
                 or text_config.num_attention_heads,
                 size,
             )
-        if not _supports_context_parallel(self.model):
+        _check_stateful_mixers(self.model, backend, size)
+        blocker = _hybrid_config_blocker(self.model) if _stateful_mixers(self.model) else None
+        if blocker is not None:
             raise NotImplementedError(
-                "Unsloth: context parallelism currently supports Llama-style attention only "
-                "(Llama, Qwen2, Gemma)."
+                f"Unsloth: context parallelism on Gated DeltaNet hybrids does not support {blocker}."
+            )
+        if not _supports_context_parallel(self.model, backend):
+            raise NotImplementedError(
+                "Unsloth: context parallelism currently supports Llama-style attention "
+                "(Llama, Qwen2, Gemma), and Qwen3-Next / Qwen3.5 Gated DeltaNet hybrids with Ulysses."
             )
         accelerator = getattr(self, "accelerator", None)
         distributed_type = getattr(getattr(accelerator, "distributed_type", None), "name", "NO")
@@ -594,6 +708,9 @@ def patch_sft_trainer() -> None:
                 args = (args[0] // manager.size, *args[1:])
             elif kwargs.get("num_items_in_batch") is not None:
                 kwargs["num_items_in_batch"] = kwargs["num_items_in_batch"] // manager.size
+            # Without gradient checkpointing the model would build a cache for the sharded scans.
+            if hasattr(inputs, "setdefault"):
+                inputs.setdefault("use_cache", False)
         # Forward and backward both inside, so gradient checkpointing recomputes with ring attention.
         with manager.apply(inputs) if manager else contextlib.nullcontext():
             return original_training_step(self, model, inputs, *args, **kwargs)
