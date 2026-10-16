@@ -82,10 +82,15 @@ class _ActiveRun:
     cancel_event: threading.Event
 
 
-def retire_account_scheduled_tasks(account: AccountContext) -> None:
-    """Stop the account's run in progress. Retired accounts are already out of job_accounts()."""
+def cancel_account_runs(account_id: str) -> None:
+    """Stop the account's run in progress, one still waiting for the model gate included. A
+    disabled or retired account is out of job_accounts() already, so none starts after this."""
     for scheduler in list(_schedulers):
-        scheduler.cancel_account(account.account_id)
+        scheduler.cancel_account(account_id)
+
+
+def retire_account_scheduled_tasks(account: AccountContext) -> None:
+    cancel_account_runs(account.account_id)
 
 
 def next_run_for(task: dict, after_ms: int) -> Optional[int]:

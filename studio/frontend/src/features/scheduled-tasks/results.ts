@@ -55,8 +55,15 @@ export interface SeenRuns {
   ids: string[];
 }
 
-/** The stored record, if it is still within the catch-up window. Without one, announcing starts
- *  from the server's present and covers only what finishes from then on. */
+/** The record as stored, with when this browser saved it. */
+export function serializeSeenRuns(seen: SeenRuns, now: number): string {
+  return JSON.stringify({ since: seen.since, ids: seen.ids, savedAt: now });
+}
+
+/** The stored record, if it was saved within the catch-up window. Its age is read on this
+ *  browser's clock, from `savedAt`: `since` is the server's time, which this clock need not agree
+ *  with. Without one, announcing starts from the server's present and covers only what finishes
+ *  from then on. */
 export function readSeenRuns(stored: string | null, now: number): SeenRuns | null {
   let value: unknown;
   try {
@@ -64,9 +71,10 @@ export function readSeenRuns(stored: string | null, now: number): SeenRuns | nul
   } catch {
     return null;
   }
-  const { since, ids } = (value ?? {}) as Partial<SeenRuns>;
+  const { since, ids, savedAt } = (value ?? {}) as Partial<SeenRuns & { savedAt: number }>;
   if (typeof since !== "number" || !Number.isFinite(since)) return null;
-  if (since > now || now - since > CATCH_UP_MS) return null;
+  // Either way: a clock set back since the save puts it in the future.
+  if (typeof savedAt !== "number" || !(Math.abs(now - savedAt) <= CATCH_UP_MS)) return null;
   return {
     since,
     ids: (Array.isArray(ids) ? ids : [])
@@ -91,6 +99,24 @@ export function advanceSeenRuns(
   return {
     since: Math.max(seen?.since ?? 0, reached),
     ids: [...(seen?.ids ?? []), ...announced].slice(-SEEN_IDS_LIMIT),
+  };
+}
+
+/** Which of `fresh` this tab announces, and the record the account's tabs share once it has. Another
+ *  tab may have announced some of them already, which `shared` lists, and they stay quiet here. */
+export function claimAnnouncements<T extends { id: string }>(
+  shared: SeenRuns | null,
+  cursor: SeenRuns,
+  fresh: readonly T[],
+): { mine: T[]; record: SeenRuns } {
+  const announced = new Set(shared?.ids);
+  const mine = fresh.filter((run) => !announced.has(run.id));
+  return {
+    mine,
+    record: {
+      since: Math.max(shared?.since ?? 0, cursor.since),
+      ids: [...(shared?.ids ?? []), ...mine.map((run) => run.id)].slice(-SEEN_IDS_LIMIT),
+    },
   };
 }
 

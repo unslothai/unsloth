@@ -22,17 +22,21 @@ import {
   SCHEDULED_TASK_RUNS_FINISHED_EVENT,
   SEEN_KEY_PREFIX,
   type SeenRuns,
+  claimAnnouncements,
   collectFinishedRuns,
   nextPollDelay,
   readSeenRuns,
   runErrorText,
   runsToAnnounce,
+  serializeSeenRuns,
 } from "./results";
 import { useUnseenScheduledRuns } from "./unseen";
 
 // More than this at once, e.g. on reopening Studio, and one toast speaks for them all.
 const INDIVIDUAL_TOASTS = 2;
 const RECHECK_MS = 500;
+// Held by one of an account's tabs while it claims what to announce, the account's name appended.
+const ANNOUNCE_LOCK_PREFIX = "unsloth-scheduled-task-results:";
 
 /** The signed-in account the record belongs to: another account's cursor would pass over this
  *  one's results. A token that names none shares one record. */
@@ -50,9 +54,27 @@ function loadSeen(account: string): SeenRuns | null {
 
 function saveSeen(account: string, seen: SeenRuns): void {
   try {
-    localStorage.setItem(SEEN_KEY_PREFIX + account, JSON.stringify(seen));
+    localStorage.setItem(SEEN_KEY_PREFIX + account, serializeSeenRuns(seen, Date.now()));
   } catch {
     // Without storage the next launch only announces runs from then on.
+  }
+}
+
+/** `claim` with no other tab of this browser holding the same lock, where the browser has locks
+ *  (secure contexts). Elsewhere two tabs polling at once may both announce a run. */
+async function exclusively<T>(name: string, claim: () => T): Promise<T> {
+  const locks = (navigator as Navigator & { locks?: LockManager }).locks;
+  if (!locks) return claim();
+  let claimed = false;
+  try {
+    return await locks.request(name, () => {
+      claimed = true;
+      return claim();
+    });
+  } catch (error) {
+    // A browser that refuses the lock itself (a sandboxed page, say) still announces.
+    if (claimed) throw error;
+    return claim();
   }
 }
 
@@ -130,7 +152,9 @@ export function ScheduledTaskRunNotifier() {
       void navigateRef.current({ to: "/chat", search: { thread: threadId } });
     const openTasks = () => void navigateRef.current({ to: "/tasks" });
 
-    const announce = (finished: FinishedScheduledTaskRun[]) => {
+    // In every tab: the new chats in Recents, marked unread, the unseen dots, and a loaded
+    // Scheduled page up to date.
+    const refreshFor = (finished: FinishedScheduledTaskRun[]) => {
       const threadIds = finished.flatMap((run) =>
         run.status === "succeeded" && run.threadId ? [run.threadId] : [],
       );
@@ -139,15 +163,21 @@ export function ScheduledTaskRunNotifier() {
         useChatNavigationStore.getState().markThreadsUnread(threadIds);
       }
       window.dispatchEvent(new Event(SCHEDULED_TASK_RUNS_FINISHED_EVENT));
-      const runs = runsToAnnounce(finished);
-      if (runs.length === 0) return;
+      const shown = runsToAnnounce(finished);
+      if (shown.length === 0) return;
       useUnseenScheduledRuns.getState().markFinished(
-        runs.map((run) => ({
+        shown.map((run) => ({
           taskId: run.taskId,
           threadId: run.status === "succeeded" ? run.threadId : null,
         })),
         pathnameRef.current === "/tasks",
       );
+    };
+
+    // In the one tab that claimed them: the toasts, and a system notification.
+    const announce = (claimed: FinishedScheduledTaskRun[]) => {
+      const runs = runsToAnnounce(claimed);
+      if (runs.length === 0) return;
       if (runs.length > INDIVIDUAL_TOASTS) {
         toast(translate("scheduledTasks.toast.many", { count: runs.length }), {
           action: { label: translate("scheduledTasks.toast.view"), onClick: openTasks },
@@ -195,15 +225,23 @@ export function ScheduledTaskRunNotifier() {
       polling = true;
       try {
         const result = await collectFinishedRuns(seen, getScheduledTaskActivity);
+        // One tab announces a run: the claim reads and writes the record the account's tabs share,
+        // under their lock, and nothing can sign out between its check and its write.
+        const mine = await exclusively(ANNOUNCE_LOCK_PREFIX + owner, () => {
+          // Signed out or into another account meanwhile: the answer was the previous account's.
+          if (disposed || getAuthSessionEpoch() !== epoch || currentAccount() !== owner) return null;
+          const claim = claimAnnouncements(loadSeen(owner), result.seen, result.fresh);
+          saveSeen(owner, claim.record);
+          return claim.mine;
+        });
         if (disposed) return;
-        // Signed out or into another account meanwhile: the answer was the previous account's.
-        if (getAuthSessionEpoch() !== epoch || currentAccount() !== owner) {
+        if (mine === null) {
           recheckAfterPoll = true;
           return;
         }
         seen = result.seen;
-        saveSeen(owner, seen);
-        if (result.fresh.length > 0) announce(result.fresh);
+        if (result.fresh.length > 0) refreshFor(result.fresh);
+        if (mine.length > 0) announce(mine);
         schedule(nextPollDelay(result.last));
       } catch {
         schedule(IDLE_POLL_MS);
