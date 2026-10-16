@@ -3213,8 +3213,9 @@ export function HubModelPicker({
     keepUnsupportedTags: true,
     accessToken,
     // Only Recommended renders Hub results, so keep the Hub hooks idle on other tabs and preserve
-    // offline-local behavior.
-    enabled: online && section === "recommended",
+    // offline-local behavior. Search rows render only with a query (showHfSection); browse reads
+    // recommendedSearch, so an empty query would only fetch Latest's pools a second time.
+    enabled: online && section === "recommended" && debouncedQuery.trim().length > 0,
   });
   const recommendedSearch = useHubModelSearch("", {
     // Audio keeps only task rows, so an untasked listing pages forever without finding one.

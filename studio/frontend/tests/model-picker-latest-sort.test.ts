@@ -15,3 +15,10 @@ test("Recommended defaults to the hub's Latest ranking, with Trending and Recent
   assert.match(pickers, /\{ value: "fresh", label: "Latest" \},\n\s*\{ value: "trendingScore", label: "Trending" \},/);
   assert.match(pickers, /useState<RecommendedSortKey>\("fresh"\)/);
 });
+
+test("the search-only hook stays idle until there is a query, so browse fetches Latest once", () => {
+  assert.match(
+    pickers,
+    /enabled: online && section === "recommended" && debouncedQuery\.trim\(\)\.length > 0,\n\s*\}\);\n\s*const recommendedSearch = useHubModelSearch\(""/,
+  );
+});
