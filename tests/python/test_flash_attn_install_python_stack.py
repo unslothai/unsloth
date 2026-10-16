@@ -827,3 +827,62 @@ class TestWarningColor:
         out = capsys.readouterr().out
         assert f"\033[{code}mflash-attn install failed (exit code 1)\033[0m" in out
         assert "\033[96m" not in out
+
+
+class TestDownloadNotice:
+    """uv/pip output is captured, so the step bar sat on "flash-attn" for 30+ min on a 427 MB Windows wheel."""
+
+    WIN_URL = (
+        "https://github.com/unslothai/unsloth/releases/download/prebuilt-wheels-cu13/"
+        "flash_attn-2.8.4+cu13torch2.13cxx11abiTRUE-cp313-cp313-win_amd64.whl"
+    )
+
+    def _run(self, size):
+        events: list[tuple[str, str]] = []
+
+        def fake_install_wheel(url, **kwargs):
+            events.append(("install", url))
+            return [("uv", subprocess.CompletedProcess(["uv"], 0, ""))]
+
+        with (
+            mock.patch.object(ips, "NO_TORCH", False),
+            mock.patch.object(ips, "IS_WINDOWS", True),
+            mock.patch.object(ips, "IS_MACOS", False),
+            mock.patch.object(ips, "_flash_attn_importable", side_effect = [False, True]),
+            mock.patch.object(ips, "_installed_distribution_version", return_value = None),
+            mock.patch.object(
+                ips,
+                "probe_torch_wheel_env",
+                return_value = {
+                    "python_tag": "cp313",
+                    "abi_tag": "cp313",
+                    "torch_mm": "2.13",
+                    "cuda_major": "13",
+                    "cxx11abi": "TRUE",
+                    "platform_tag": "win_amd64",
+                },
+            ),
+            mock.patch.object(ips, "url_exists", return_value = True),
+            mock.patch.object(ips, "url_size", return_value = size),
+            mock.patch.object(ips, "install_wheel", side_effect = fake_install_wheel),
+            mock.patch.object(
+                ips,
+                "_note",
+                side_effect = lambda message, color_fn = None: events.append(("note", message)),
+            ),
+        ):
+            ips._ensure_flash_attn()
+        return events
+
+    def test_size_is_printed_before_the_download_starts(self):
+        events = self._run(427_062_625)
+        assert [kind for kind, _ in events] == ["note", "install"]
+        assert events[1][1] == self.WIN_URL
+        assert "flash-attn" in events[0][1]
+        assert "427 MB" in events[0][1]
+
+    def test_unknown_size_still_warns(self):
+        events = self._run(None)
+        assert [kind for kind, _ in events] == ["note", "install"]
+        assert "MB" not in events[0][1]
+        assert "can take a while" in events[0][1]

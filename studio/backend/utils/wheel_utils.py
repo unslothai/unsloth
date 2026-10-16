@@ -529,11 +529,18 @@ def install_wheel(
     return attempts
 
 
+# Content-Length seen by url_exists, so a caller can name a download's size without a second request.
+_URL_SIZES: dict[str, int] = {}
+
+
 def url_exists(url: str) -> bool | None:
     """True if reachable, False on a 404, None when it cannot be checked: a refusal is no proof the wheel is unpublished."""
     try:
         request = urllib.request.Request(url, method = "HEAD")
-        with urllib.request.urlopen(request, timeout = 10):
+        with urllib.request.urlopen(request, timeout = 10) as response:
+            size = str(getattr(response, "headers", {}).get("Content-Length") or "").strip()
+            if size.isdigit():
+                _URL_SIZES[url] = int(size)
             return True
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
@@ -549,3 +556,8 @@ def url_exists(url: str) -> bool | None:
         "url_exists(%s): %s; could not check prebuilt wheel availability", shown, reason
     )
     return None
+
+
+def url_size(url: str) -> int | None:
+    """Bytes at *url* as reported by the last url_exists() that reached it, or None."""
+    return _URL_SIZES.get(url)

@@ -61,6 +61,7 @@ from backend.utils.wheel_utils import (
     install_wheel,
     probe_torch_wheel_env,
     url_exists,
+    url_size,
     xformers_torch_requirement_unmet,
 )
 from backend.utils.uv_path_safety import uv_safe_path as _uv_safe_path
@@ -8596,6 +8597,13 @@ def _ensure_flash_attn() -> None:
     if wheel_available:
         # installing a distribution invalidates caches keyed on the action counter.
         _count_install_action()
+        # uv/pip output is captured, so without this a large download looks like a hang.
+        size = url_size(wheel_url)
+        download = f" ({size / 1e6:.0f} MB download)" if size else ""
+        _note(
+            f"installing the flash-attn prebuilt wheel{download}; "
+            "this can take a while on a slow connection"
+        )
         outcome = install_prebuilt(
             wheel_url,
             install = install_wheel,
