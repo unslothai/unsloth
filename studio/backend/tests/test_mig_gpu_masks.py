@@ -242,40 +242,64 @@ class TestAMigCardIsSizedByItsSlice:
         assert LlamaCppBackend._get_gpu_memory() == [(0, 39000, A100_MIB), (1, 30000, A100_MIB)]
 
 
-# The same card as R570+ NVML reports it: each slice its own GPU instance.
-TWO_SLICES_R570 = [dict(r) for r in TWO_SLICES_NVML]
-TWO_SLICES_R570[1]["gpu_instance_id"], TWO_SLICES_R570[2]["gpu_instance_id"] = "1", "2"
+MIG1A = "MIG-2e3f4a5b-1111-5bcd-9eef-112233445566"
+# Two GPU instances on one card, as an R570+ host enumerates them.
+TWO_GPU_INSTANCES = [dict(r) for r in TWO_SLICES_NVML]
+TWO_GPU_INSTANCES[1]["gpu_instance_id"], TWO_GPU_INSTANCES[2]["gpu_instance_id"] = "1", "2"
 
 
-class TestR570EnumeratesEverySlice:
-    @pytest.mark.parametrize("mask", [None, "0", f"{MIG0A},{MIG0B}"])
-    def test_every_slice_of_a_card_counts_on_r570(self, host, monkeypatch, mask):
-        host(TWO_SLICES, [38000], TWO_SLICES_R570, driver = "570.86.15")
+class TestOneSlicePerMigCard:
+    # R570+ CUDA enumerates every slice; Studio still sizes and pins one per card, so a
+    # tensor split or a single-device load never counts memory the child cannot use.
+    @pytest.mark.parametrize(
+        "mask, expected, uuid",
+        [
+            (None, (0, 15000, 19968), MIG0A),
+            ("0", (0, 15000, 19968), MIG0A),
+            (f"{MIG0A},{MIG0B}", (0, 15000, 19968), MIG0A),
+            (f"{MIG0B},{MIG0A}", (0, 19000, 19968), MIG0B),
+        ],
+    )
+    def test_a_mig_card_is_one_slice(self, host, monkeypatch, mask, expected, uuid):
+        host(TWO_SLICES, [38000], TWO_GPU_INSTANCES, driver = "570.86.15")
         if mask is not None:
             monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
-        assert LlamaCppBackend._get_gpu_memory() == [(0, 34000, 2 * 19968)]
-        assert LlamaCppBackend._pinned_child_visibility([0]) == f"{MIG0A},{MIG0B}"
+        assert LlamaCppBackend._get_gpu_memory() == [expected]
+        assert LlamaCppBackend._pinned_child_visibility([0]) == uuid
 
-    def test_before_r570_only_the_first_named_slice_counts(self, host, monkeypatch):
-        host(TWO_SLICES, [38000], TWO_SLICES_NVML, driver = "550.54.15")
-        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", f"{MIG0A},{MIG0B}")
-        assert LlamaCppBackend._get_gpu_memory() == [(0, 15000, 19968)]
-        assert LlamaCppBackend._pinned_child_visibility([0]) == MIG0A
-
-    def test_r570_compute_instances_of_one_gpu_instance_are_not_summed(self, host, monkeypatch):
-        # Two compute instances share one 3g.20gb GPU instance; CUDA exposes one of them.
+    @pytest.mark.parametrize("mask", [None, "0"])
+    def test_an_unnamed_slice_is_the_least_free_one(self, host, monkeypatch, mask):
+        # The budget must not exceed the slice the child is pinned to, whichever CUDA lists first.
         rows = [dict(r) for r in TWO_SLICES_NVML]
-        rows[1]["gpu_instance_id"] = rows[2]["gpu_instance_id"] = "1"
-        rows[1]["memory_free_mib"] = rows[2]["memory_free_mib"] = "15000"
-        host(TWO_SLICES, [38000], rows, driver = "570.86.15")
-        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
-        assert LlamaCppBackend._get_gpu_memory() == [(0, 15000, 19968)]
-        assert LlamaCppBackend._pinned_child_visibility([0]) == MIG0A
+        rows[1]["memory_free_mib"], rows[2]["memory_free_mib"] = "19000", "4000"
+        host(TWO_SLICES, [38000], rows)
+        if mask is not None:
+            monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 4000, 19968)]
+        assert LlamaCppBackend._pinned_child_visibility([0]) == MIG0B
 
-    def test_r570_without_gpu_instance_ids_does_not_sum(self, host, monkeypatch):
-        rows = [{k: v for k, v in r.items() if k != "gpu_instance_id"} for r in TWO_SLICES_R570]
-        host(TWO_SLICES, [38000], rows, driver = "570.86.15")
-        assert LlamaCppBackend._get_gpu_memory() == [(0, 15000, 19968)]
+    @pytest.mark.parametrize("mask", ["1,1", "1gpu,1gpu", "0,2,0"])
+    def test_a_repeated_index_hides_every_gpu(self, host, monkeypatch, mask):
+        # CUDA empties the device set on a repeat (torch's _parse_visible_devices agrees).
+        host(MIXED, [39000, 30000, 40000], MIXED_NVML)
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+        assert LlamaCppBackend._nvml_rows_visible(MIXED_NVML) == []
+
+    def test_torch_ordinals_ignore_rows_cached_by_an_earlier_probe(self, host, monkeypatch):
+        # Mask order is card 1's slice then card 0's: torch ordinal 0 is MIG1A, while the cached
+        # rows are keyed by physical index and would name card 0's slice.
+        rows = [
+            _nvml_row(0, GPU0, 38000, A100_MIB),
+            _nvml_row(0, MIG0A, 15000, 19968, mig = True),
+            _nvml_row(1, GPU1, 38000, A100_MIB),
+            _nvml_row(1, MIG1A, 17000, 19968, mig = True),
+        ]
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", f"{MIG1A},{MIG0A}")
+        monkeypatch.setattr(LlamaCppBackend, "_NVML_ROWS", rows)
+        monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", False)
+        fake = types.SimpleNamespace(cuda = types.SimpleNamespace(device_count = lambda: 2))
+        monkeypatch.setitem(sys.modules, "torch", fake)
+        assert LlamaCppBackend._pinned_child_visibility([0]) == MIG1A
 
     @pytest.mark.parametrize(
         "count, picked, expected", [(2, [1], MIG0B), (2, [0, 1], None), (1, [0], None)]
@@ -340,14 +364,14 @@ class TestMigSlicesAreNotGpus:
         assert nvidia.get_mig_gpu_indices() == {1}
 
 
-def test_auto_select_budgets_one_r570_gpu_instance_not_the_sum(host):
-    # A training worker takes one device per selected id; the card's other GPU instance is
-    # another CUDA device, so its memory must not be counted (llama.cpp still sums).
-    host(TWO_SLICES, [38000], TWO_SLICES_R570, driver = "570.86.15")
+def test_auto_select_and_llama_cpp_budget_the_same_slice(host):
+    # One selected id is one worker device: training and llama.cpp both see one slice per card.
+    host(TWO_SLICES, [38000], TWO_GPU_INSTANCES, driver = "570.86.15")
     devices = [{"index": 0, "vram_total_gb": 40.0, "vram_used_gb": 2.0}]
     out = hw._with_mig_instance_memory(devices)
     assert out[0]["vram_total_gb"] == round(19968 / 1024, 2)
-    assert LlamaCppBackend._get_gpu_memory() == [(0, 34000, 2 * 19968)]
+    assert out[0]["vram_used_gb"] == round((19968 - 15000) / 1024, 2)
+    assert LlamaCppBackend._get_gpu_memory() == [(0, 15000, 19968)]
 
 
 def test_mig_overlay_skips_a_non_cuda_backend(host, monkeypatch):
