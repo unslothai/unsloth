@@ -168,3 +168,26 @@ def test_zai_check_and_model_list_read_the_live_models_route():
     assert check.success is True, check.message
     assert model_ids == ["glm-5.3", "glm-4.7"]
     assert [path for path, _ in seen] == ["/api/paas/v4/models", "/api/paas/v4/models"]
+
+
+def test_zai_models_get_their_window_and_modalities_from_the_catalog():
+    from core.inference.provider_model_capabilities import trim_models_dev_catalog
+
+    catalog = trim_models_dev_catalog(
+        {
+            "zai": {
+                "models": {
+                    "glm-4.7-flashx": {
+                        "modalities": {"input": ["text"]},
+                        "limit": {"context": 200000},
+                    },
+                    "glm-5v-turbo": {
+                        "modalities": {"input": ["text", "image"]},
+                        "limit": {"context": 200000},
+                    },
+                }
+            }
+        }
+    )
+    assert catalog["zai"]["glm-4.7-flashx"] == {"input": ["text"], "context": 200000}
+    assert catalog["zai"]["glm-5v-turbo"]["input"] == ["text", "image"]
