@@ -835,6 +835,114 @@ def _wrap_ppo_train(trainer_cls):
     trainer_cls.train = wrapped
 
 
+def _park_optimizer_enabled(trainer):
+    if not torch.cuda.is_available():
+        return False
+    # DeepSpeed / FSDP own their optimizer state layout; moving it behind their back is unsafe.
+    if getattr(trainer, "is_deepspeed_enabled", False) or getattr(
+        trainer, "is_fsdp_enabled", False
+    ):
+        return False
+    # DDP may keep grads as bucket views; replacing them would detach the views.
+    if getattr(getattr(trainer, "args", None), "world_size", 1) > 1:
+        return False
+    return getattr(trainer, "optimizer", None) is not None
+
+
+def _is_parkable_tensor(value):
+    # bitsandbytes paged state lives in unified memory and is paged by bnb itself.
+    return (
+        isinstance(value, torch.Tensor)
+        and value.is_cuda
+        and value.layout == torch.strided
+        and not getattr(value, "is_paged", False)
+    )
+
+
+def _optimizer_state_is_flat(optimizer):
+    # Layer-wise optimizers keep their real state in optimizer_dict, Q-GaLore keeps CUDA tensors inside
+    # a projector object: parking only the visible tensors would free part of it, so decline instead.
+    if hasattr(optimizer, "optimizer_dict"):
+        return False
+    for state in optimizer.state.values():
+        for value in state.values():
+            if not isinstance(value, (torch.Tensor, int, float, bool, type(None))):
+                return False
+    return True
+
+
+def _park_optimizer_to_host(trainer):
+    """Move every CUDA optimizer state tensor and .grad to pinned host buffers kept on the trainer.
+    Returns the record needed by _restore_optimizer_from_host, or None if nothing was parked."""
+    optimizer = trainer.optimizer
+    optimizer = getattr(optimizer, "optimizer", optimizer)
+    if not _optimizer_state_is_flat(optimizer):
+        if not getattr(trainer, "_unsloth_park_declined", False):
+            trainer._unsloth_park_declined = True
+            print(
+                f"Unsloth: UNSLOTH_PARK_OPTIMIZER_DURING_ROLLOUT does not support {type(optimizer).__name__} "
+                "(nested optimizer state); the optimizer stays on the GPU during rollouts."
+            )
+        return None
+    buffers = trainer.__dict__.setdefault("_unsloth_park_buffers", {})
+    # Shared tensors (bitsandbytes qmap1/qmap2) are parked once so the sharing survives the restore.
+    parked = {}
+    states = []
+    grads = []
+
+    def park(tensor, key):
+        if id(tensor) in parked:
+            return parked[id(tensor)][0]
+        host = buffers.get(key)
+        if (
+            host is None
+            or host.shape != tensor.shape
+            or host.dtype != tensor.dtype
+            or host.stride() != tensor.stride()
+        ):
+            # Same strides as the source: fused AdamW needs param, grad and moments in one layout.
+            host = torch.empty_like(tensor, device = "cpu", pin_memory = True)
+            buffers[key] = host
+        host.copy_(tensor, non_blocking = True)
+        parked[id(tensor)] = (host, tensor.device)
+        return host
+
+    for group in optimizer.param_groups:
+        for param in group["params"]:
+            state = optimizer.state.get(param)
+            if state:
+                for name, value in state.items():
+                    if _is_parkable_tensor(value):
+                        states.append((state, name, park(value, (id(param), name))))
+            grad = getattr(param, "grad", None)
+            if _is_parkable_tensor(grad):
+                grads.append((param, park(grad, (id(param), ".grad"))))
+    if not states and not grads:
+        return None
+    for state, name, host in states:
+        state[name] = host
+    for param, _ in grads:
+        param.grad = None
+    # Loop locals still hold the last CUDA tensors; drop them so empty_cache can release those blocks.
+    value = grad = None
+    # D2H copies must land on every device before the CUDA blocks are handed to vLLM / released.
+    for device in {device for _, device in parked.values()}:
+        torch.cuda.synchronize(device)
+    torch.cuda.empty_cache()
+    return (states, grads, parked)
+
+
+def _restore_optimizer_from_host(record):
+    states, grads, parked = record
+    restored = {}
+    for host, device in parked.values():
+        restored[id(host)] = host.to(device, non_blocking = True)
+    for state, name, host in states:
+        state[name] = restored[id(host)]
+    for param, host in grads:
+        param.grad = restored[id(host)]
+
+
 def _wrap_grpo_generate_and_score(trainer_cls):
     if not hasattr(trainer_cls, "_generate_and_score_completions"):
         return
@@ -844,9 +952,18 @@ def _wrap_grpo_generate_and_score(trainer_cls):
 
     def wrapped(self, *args, **kwargs):
         was_training = getattr(getattr(self, "model", None), "training", None)
+        parked = None
+        if os.environ.get(
+            "UNSLOTH_PARK_OPTIMIZER_DURING_ROLLOUT", "0"
+        ) == "1" and _park_optimizer_enabled(self):
+            parked = _park_optimizer_to_host(self)
+            if parked is not None:
+                self._unsloth_park_count = getattr(self, "_unsloth_park_count", 0) + 1
         try:
             return original(self, *args, **kwargs)
         finally:
+            if parked is not None:
+                _restore_optimizer_from_host(parked)
             if (
                 was_training is False
                 and hasattr(self, "model")
@@ -3203,6 +3320,32 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         max_seq_length_call = ""
         max_seq_length_post = ""
 
+    # Read by unsloth.context_parallel; a field here keeps SFTConfig itself unpatched (pickling).
+    if trainer_file == "sft_trainer" and "context_parallel_size" not in call_args:
+        max_seq_length_pre += """
+    context_parallel_size : Optional[int] = field(
+        default = 1,
+        metadata = {'help': 'Ranks per context parallel group. 1 disables it.'},
+    )
+    context_parallel_backend : Optional[str] = field(
+        default = 'ring',
+        metadata = {'help': 'Context parallel attention backend: ring or ulysses (keeps packing).'},
+    )
+    context_parallel_rotate_method : Optional[str] = field(
+        default = 'allgather',
+        metadata = {'help': 'Ring KV rotation: allgather or alltoall.'},
+    )"""
+        max_seq_length_call += (
+            "context_parallel_size = 1,"
+            "context_parallel_backend = 'ring',"
+            "context_parallel_rotate_method = 'allgather',"
+        )
+        max_seq_length_post += (
+            "\n        self.context_parallel_size = context_parallel_size"
+            "\n        self.context_parallel_backend = context_parallel_backend"
+            "\n        self.context_parallel_rotate_method = context_parallel_rotate_method"
+        )
+
     if "output_dir" in call_args:
         saving_check = (
             "if output_dir is None and save_strategy == 'steps' and save_steps == 500:\n"
@@ -3481,13 +3624,21 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "trace.enabled"     : False,"""
 
         if DEVICE_TYPE == "cuda":
-            cuda_options = """
-            "triton.enable_persistent_tma_matmul": torch.cuda.get_device_capability()[0] >= 9,"""
+            # TMA only if every visible card is sm90+ (compile options are process-wide); an
+            # unreadable card is skipped by the probe, so a short list also means False.
+            all_sm90 = (
+                "(lambda caps: bool(caps) and len(caps) == torch.cuda.device_count() "
+                "and min(c[0] for c in caps) >= 9)"
+                '(__import__("unsloth.device_type", fromlist = ["cuda_visible_capabilities"])'
+                ".cuda_visible_capabilities())"
+            )
+            cuda_options = f"""
+            "triton.enable_persistent_tma_matmul": {all_sm90},"""
             # cutlass options were added in PyTorch 2.8.0.
             if torch_version >= Version("2.8.0"):
-                cuda_options += """
-            "cuda.cutlass_epilogue_fusion_enabled": torch.cuda.get_device_capability()[0] >= 9,
-            "cuda.cutlass_tma_only": torch.cuda.get_device_capability()[0] >= 9,"""
+                cuda_options += f"""
+            "cuda.cutlass_epilogue_fusion_enabled": {all_sm90},
+            "cuda.cutlass_tma_only": {all_sm90},"""
             cuda_options += """
             "cuda.compile_opt_level"              : "-O2",
             "cuda.enable_cuda_lto"                : True,

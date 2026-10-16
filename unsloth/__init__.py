@@ -18,6 +18,13 @@ os.environ["UNSLOTH_IS_PRESENT"] = "1"
 # an explicit override, including "0".
 os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
+# UNSLOTH_FSDP2=1 under plain torchrun: export accelerate's FSDP2 launch env before transformers or
+# accelerate read it. A conflicting launch (DeepSpeed, FSDP_VERSION=1) raises here, on every rank.
+from .fsdp2_launch import apply_unsloth_fsdp2_launch_env as _apply_fsdp2_env
+
+_apply_fsdp2_env()
+del _apply_fsdp2_env
+
 # Before transformers, which reads sentencepiece availability during its own import. On Windows
 # the extension is never imported at all: a code integrity policy can refuse it by reputation,
 # and any probe to find out whether this machine will is itself the refusal the user sees. See
@@ -1632,6 +1639,15 @@ else:
     # GPU path: load everything from _gpu_init
     from ._gpu_init import *
     from ._gpu_init import __version__
+
+    # Raw `Accelerator.prepare()` loops never reach the Trainer init that also installs these, and
+    # `Accelerator(fsdp_plugin = ...)` leaves no launcher env to gate on. Inert unless FSDP2 wraps.
+    try:
+        from .models.fsdp2 import install_fsdp2_hooks as _install_fsdp2_hooks
+        _install_fsdp2_hooks()
+        del _install_fsdp2_hooks
+    except Exception:
+        pass
 
     def get_gpu_memory_stats():
         """Return CUDA/ROCm/XPU/NPU device stats, peak memory, and total memory in GiB."""
