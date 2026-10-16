@@ -676,3 +676,10 @@ class TestAnEmptyEntryEndsAUuidMask:
     def test_the_nvml_rows(self, host, monkeypatch, mask, expected):
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
         assert [r["index"] for r in LlamaCppBackend._nvml_rows_visible(MIXED_NVML)] == expected
+
+
+def test_without_a_uuid_column_every_named_card_needs_a_row(host, monkeypatch):
+    host([(GPU0, []), (GPU1, [])], [39000, 30000], None)
+    mask = f"{GPU0},{GPU1}"
+    assert LlamaCppBackend._whole_gpu_mask_rows(mask, [], {0, 1}) == {0, 1}
+    assert LlamaCppBackend._whole_gpu_mask_rows(mask, [], {0}) is None

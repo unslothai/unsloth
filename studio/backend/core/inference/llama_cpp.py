@@ -15208,8 +15208,9 @@ class LlamaCppBackend:
             visible = nvidia._uuid_visible_ordinal_map(cvd, uuid_rows)
             return set(visible) if visible is not None else None
         # No uuid column: verify with the separate uuid query, never assume.
+        # Every named card needs a row: a partial set is budgeted but cannot be pinned.
         ids = nvidia.resolve_uuid_mask(cvd)
-        return set(ids) & physical_ids if ids else None
+        return set(ids) if ids and set(ids) <= physical_ids else None
 
     @staticmethod
     def _get_gpu_memory(
