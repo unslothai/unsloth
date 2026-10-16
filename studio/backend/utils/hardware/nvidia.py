@@ -564,6 +564,8 @@ def get_cuda_ordinal_smi_rows() -> Optional[list[int]]:
     """
     import sys
 
+    from utils.child_stdio import utf8_child_env
+
     try:
         child = subprocess.run(
             [sys.executable, "-c", _CUDA_BUS_ID_SCRIPT],
@@ -572,7 +574,7 @@ def get_cuda_ordinal_smi_rows() -> Optional[list[int]]:
             encoding = "utf-8",
             errors = "replace",
             timeout = 15,
-            env = child_env_without_native_path_secret(),
+            env = utf8_child_env(child_env_without_native_path_secret()),
             **_windows_hidden_subprocess_kwargs(),
         )
         smi = gpu_query.run_nvidia_smi(
