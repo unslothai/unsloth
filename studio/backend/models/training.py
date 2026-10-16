@@ -764,7 +764,9 @@ class TrainingStartRequest(BaseModel):
             self.grpo_rewards
         ):
             raise ValueError("Each GRPO reward can only be selected once.")
-        if self.grpo_format_warmup_steps and not (objective == "grpo" and self.grpo_reasoning_format):
+        if self.grpo_format_warmup_steps and not (
+            objective == "grpo" and self.grpo_reasoning_format
+        ):
             raise ValueError("The format warm-up needs GRPO with the reasoning format on.")
         if self.grpo_format_warmup_steps and self.max_seq_length < WARMUP_MIN_SEQ_LENGTH:
             raise ValueError(

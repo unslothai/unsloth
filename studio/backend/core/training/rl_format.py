@@ -56,7 +56,9 @@ CHAT_TEMPLATE = (
 
 def apply_reasoning_template(tokenizer) -> None:
     """Sets the notebook template on the tokenizer (and the inner tokenizer of a processor)."""
-    for tok in {id(t): t for t in (tokenizer, getattr(tokenizer, "tokenizer", None)) if t is not None}.values():
+    for tok in {
+        id(t): t for t in (tokenizer, getattr(tokenizer, "tokenizer", None)) if t is not None
+    }.values():
         tok.chat_template = CHAT_TEMPLATE
 
 
@@ -80,7 +82,12 @@ def warmup_messages(problem: str, solution: str, answer: str) -> list[dict]:
     ]
 
 
-def build_warmup_dataset(tokenizer, max_seq_length: int, rows: int, dataset=None):
+def build_warmup_dataset(
+    tokenizer,
+    max_seq_length: int,
+    rows: int,
+    dataset = None,
+):
     """Formatted rows that fit in half the context, like the notebooks. ``rows`` caps how many get tokenized."""
     from datasets import Dataset, load_dataset
 
@@ -129,7 +136,16 @@ def run_format_warmup(
     )
     logger.info(f"Format warm-up: {steps} SFT steps on {len(train_dataset)} examples\n")
 
-    keep = ("seed", "bf16", "fp16", "disable_tqdm", "dataset_num_proc", "per_device_train_batch_size", "gradient_accumulation_steps", "report_to")
+    keep = (
+        "seed",
+        "bf16",
+        "fp16",
+        "disable_tqdm",
+        "dataset_num_proc",
+        "per_device_train_batch_size",
+        "gradient_accumulation_steps",
+        "report_to",
+    )
     base = {k: v for k, v in config_args.items() if k in keep}
     base["max_length"] = max_seq_length
     args = SFTConfig(

@@ -4636,7 +4636,6 @@ class UnslothTrainer:
             rl_settings = training_args.get("rl_settings") or {}
             if training_args.get("objective") == "grpo" and rl_settings.get("reasoning_format"):
                 from core.training.rl_format import apply_reasoning_template
-
                 apply_reasoning_template(self.tokenizer)
 
             data_collator = None
@@ -4954,7 +4953,9 @@ class UnslothTrainer:
                 if objective == "grpo" and warmup_steps > 0:
                     from core.training.rl_format import run_format_warmup
 
-                    self._update_progress(status_message = f"Format warm-up ({warmup_steps} SFT steps)...")
+                    self._update_progress(
+                        status_message = f"Format warm-up ({warmup_steps} SFT steps)..."
+                    )
                     run_format_warmup(
                         self.model,
                         rl_tokenizer,
@@ -4963,7 +4964,9 @@ class UnslothTrainer:
                         should_stop = lambda: self.should_stop,
                     )
                     if self.should_stop:
-                        self._update_progress(is_training = False, status_message = "Training cancelled.")
+                        self._update_progress(
+                            is_training = False, status_message = "Training cancelled."
+                        )
                         return
                 logger.info(f"Configuring {objective.upper()} trainer\n")
                 self.trainer = build_rl_trainer(

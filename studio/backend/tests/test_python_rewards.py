@@ -36,11 +36,19 @@ TEXTS = [
 ]
 
 
-def _python_md(name: str, code: str, entry: str = "reward") -> str:
+def _python_md(
+    name: str,
+    code: str,
+    entry: str = "reward",
+) -> str:
     return f"---\nname: {name}\nkind: python\nentry: {entry}\ndescription: test\n---\n```python\n{code}```\n"
 
 
-def _spec(name: str, code: str, entry: str = "reward") -> dict:
+def _spec(
+    name: str,
+    code: str,
+    entry: str = "reward",
+) -> dict:
     return rewards.parse_reward_markdown(_python_md(name, code, entry))
 
 
@@ -60,7 +68,9 @@ def worker_factory():
 
 
 def test_python_reward_round_trips_through_markdown():
-    spec = _spec("counter", "def reward(completions, **kwargs):\n    return [1.0] * len(completions)\n")
+    spec = _spec(
+        "counter", "def reward(completions, **kwargs):\n    return [1.0] * len(completions)\n"
+    )
     assert spec["kind"] == "python" and spec["entry"] == "reward" and spec["rule"] is None
     again = rewards.parse_reward_markdown(rewards.render_reward_markdown(spec))
     assert again == spec
@@ -103,7 +113,13 @@ def test_notebook_rewards_score_the_same_in_the_worker(worker_factory):
 def test_reward_funcs_keep_spec_order_and_accept_plain_strings(tmp_path, monkeypatch):
     monkeypatch.setattr(rewards, "_user_root", lambda: tmp_path / "rewards")
     specs = [
-        {**_spec("py-len", "def reward(completions, **kw):\n    return [len(c[0]['content']) for c in completions]\n"), "weight": 1.0},
+        {
+            **_spec(
+                "py-len",
+                "def reward(completions, **kw):\n    return [len(c[0]['content']) for c in completions]\n",
+            ),
+            "weight": 1.0,
+        },
         {**rewards.get_reward("strict-xml-format"), "weight": 2.0},
     ]
     created = []
@@ -158,7 +174,9 @@ def test_columns_reach_the_reward_and_trainer_kwargs_do_not(worker_factory):
 
 
 def test_a_failing_reward_names_itself(worker_factory):
-    worker = worker_factory([_spec("boom", "def reward(completions, **kw):\n    raise KeyError('answer')\n")])
+    worker = worker_factory(
+        [_spec("boom", "def reward(completions, **kw):\n    raise KeyError('answer')\n")]
+    )
     with pytest.raises(PythonRewardError, match = r"boom: KeyError: 'answer'"):
         worker.score(["boom"], [], [[{"content": "x"}]], {})
 
@@ -178,7 +196,12 @@ def test_nan_and_none_scores_become_none(worker_factory):
 def test_code_that_fails_to_load_stops_the_run_before_training():
     with pytest.raises(PythonRewardError, match = "bad-import: ModuleNotFoundError"):
         RewardWorker(
-            [_spec("bad-import", "import not_a_real_module_xyz\ndef reward(completions, **kw):\n    return []\n")],
+            [
+                _spec(
+                    "bad-import",
+                    "import not_a_real_module_xyz\ndef reward(completions, **kw):\n    return []\n",
+                )
+            ],
             mode = "full",
         ).start()
 
@@ -200,7 +223,9 @@ def test_prints_do_not_block_the_worker(worker_factory):
 
 
 def test_worker_files_are_removed_on_close(worker_factory):
-    worker = worker_factory([_spec("t", "def reward(completions, **kw):\n    return [0.0] * len(completions)\n")])
+    worker = worker_factory(
+        [_spec("t", "def reward(completions, **kw):\n    return [0.0] * len(completions)\n")]
+    )
     workdir = worker._workdir
     assert os.path.isdir(workdir)
     worker.close()
@@ -225,7 +250,10 @@ def test_import_and_preview_a_python_reward(client):
     md = _python_md("correctness", NOTEBOOK, "correctness_reward_func")
     created = client.post("/api/rewards", json = {"markdown": md})
     assert created.status_code == 201, created.text
-    assert created.json()["kind"] == "python" and "def correctness_reward_func" in created.json()["code"]
+    assert (
+        created.json()["kind"] == "python"
+        and "def correctness_reward_func" in created.json()["code"]
+    )
     response = client.post(
         "/api/rewards/preview",
         json = {
@@ -244,7 +272,9 @@ def test_import_and_preview_a_python_reward(client):
 
 def test_preview_reports_a_broken_python_reward_as_a_400(client):
     md = _python_md("boom", "def reward(completions, **kw):\n    return 1 / 0\n")
-    response = client.post("/api/rewards/preview", json = {"rewards": [{"markdown": md}], "completion": "x"})
+    response = client.post(
+        "/api/rewards/preview", json = {"rewards": [{"markdown": md}], "completion": "x"}
+    )
     assert response.status_code == 400
     assert "ZeroDivisionError" in response.json()["detail"]
 
@@ -253,7 +283,6 @@ def _os_sandbox_available() -> bool:
     import sys
 
     from core.inference import os_sandbox
-
     try:
         return os_sandbox.capability_snapshot(
             execution_kind = "python", selected_executable = sys.executable

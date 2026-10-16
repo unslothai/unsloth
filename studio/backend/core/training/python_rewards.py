@@ -223,19 +223,13 @@ class RewardWorker:
         return text[-limit:].strip()
 
     def score(
-        self,
-        names: list[str],
-        prompts: Any,
-        completions: Any,
-        kwargs: dict[str, Any],
+        self, names: list[str], prompts: Any, completions: Any, kwargs: dict[str, Any]
     ) -> dict[str, list[Optional[float]]]:
         request = {
             "rewards": names,
             "prompts": _jsonable(prompts),
             "completions": _jsonable(completions),
-            "kwargs": {
-                k: _jsonable(v) for k, v in kwargs.items() if k not in _TRAINER_KWARGS
-            },
+            "kwargs": {k: _jsonable(v) for k, v in kwargs.items() if k not in _TRAINER_KWARGS},
         }
         with self._lock:
             if self._proc is None or self._proc.poll() is not None:
@@ -251,7 +245,9 @@ class RewardWorker:
                 raise
         if result.get("errors"):
             raise PythonRewardError(
-                "; ".join(f"{name}: {message}" for name, message in sorted(result["errors"].items()))
+                "; ".join(
+                    f"{name}: {message}" for name, message in sorted(result["errors"].items())
+                )
             )
         return result["scores"]
 
@@ -284,7 +280,11 @@ def make_python_reward_funcs(
     specs: list[dict], worker: RewardWorker
 ) -> list[Callable[..., list[Optional[float]]]]:
     def make(name: str):
-        def reward(prompts = None, completions = None, **kwargs):
+        def reward(
+            prompts = None,
+            completions = None,
+            **kwargs,
+        ):
             return worker.score(
                 [name], _as_turns(prompts, "user"), _as_turns(completions, "assistant"), kwargs
             )[name]

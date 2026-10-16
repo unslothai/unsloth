@@ -19,12 +19,21 @@ class FakeTokenizer:
     eos_token = "</s>"
     chat_template = "original"
 
-    def apply_chat_template(self, messages, tokenize = False, add_generation_prompt = False):
+    def apply_chat_template(
+        self,
+        messages,
+        tokenize = False,
+        add_generation_prompt = False,
+    ):
         return jinja2.Template(self.chat_template).render(
             messages = messages, eos_token = self.eos_token, add_generation_prompt = add_generation_prompt
         )
 
-    def __call__(self, text, add_special_tokens = False):
+    def __call__(
+        self,
+        text,
+        add_special_tokens = False,
+    ):
         return {"input_ids": text.split()}
 
 
@@ -79,9 +88,7 @@ def test_warmup_rows_are_numeric_short_and_formatted():
     assert len(ds) == 2
     first = ds[0]["text"]
     assert "<think>" not in first
-    assert first.endswith(
-        f"1+1?{REASONING_START}add<end_working_out><SOLUTION>2</SOLUTION></s>"
-    )
+    assert first.endswith(f"1+1?{REASONING_START}add<end_working_out><SOLUTION>2</SOLUTION></s>")
 
 
 def test_warmup_rows_are_capped():

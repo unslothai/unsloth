@@ -8,6 +8,7 @@ from typing import List, Tuple, Optional
 import random
 import copy
 
+
 def _is_valid_placement(board: List[List[int]], row: int, col: int, num: int) -> bool:
     """Check if placing num at (row, col) is valid."""
     # Check row
@@ -27,6 +28,7 @@ def _is_valid_placement(board: List[List[int]], row: int, col: int, num: int) ->
 
     return True
 
+
 def _solve_sudoku(board: List[List[int]]) -> bool:
     """Solve sudoku using backtracking (for puzzle generation)."""
     for row in range(9):
@@ -40,6 +42,7 @@ def _solve_sudoku(board: List[List[int]]) -> bool:
                         board[row][col] = 0
                 return False
     return True
+
 
 def _generate_complete_board(rng: random.Random) -> List[List[int]]:
     """Generate a complete valid Sudoku board."""
@@ -56,6 +59,7 @@ def _generate_complete_board(rng: random.Random) -> List[List[int]]:
     # Solve the rest
     _solve_sudoku(board)
     return board
+
 
 @dataclass
 class SudokuGame:
@@ -80,7 +84,7 @@ class SudokuGame:
         cells = [(r, c) for r in range(9) for c in range(9)]
         self._rng.shuffle(cells)
 
-        for r, c in cells[:self.difficulty]:
+        for r, c in cells[: self.difficulty]:
             self._board[r][c] = 0
 
         self._initial_board = copy.deepcopy(self._board)
@@ -146,9 +150,9 @@ class SudokuGame:
     def pretty(self, colors: bool = True) -> str:
         """Pretty print the Sudoku board."""
         RESET = "\x1b[0m"
-        INITIAL = "\x1b[38;5;45m"   # Cyan for initial numbers
-        PLACED = "\x1b[38;5;226m"    # Yellow for placed numbers
-        EMPTY = "\x1b[38;5;239m"     # Gray for empty cells
+        INITIAL = "\x1b[38;5;45m"  # Cyan for initial numbers
+        PLACED = "\x1b[38;5;226m"  # Yellow for placed numbers
+        EMPTY = "\x1b[38;5;239m"  # Gray for empty cells
 
         lines = []
         lines.append("┌───────┬───────┬───────┐")
@@ -185,6 +189,7 @@ class SudokuGame:
 
 from typing import Callable
 from unsloth import execute_with_time_limit
+
 
 def _execute_strategy(strategy: Callable, game: SudokuGame):
     """Execute a strategy function on a Sudoku game."""
@@ -241,7 +246,7 @@ def extract_function(text):
         second = text.find("```", first)
         fx = text[first:second].strip()
         fx = fx.removeprefix("python\n")
-        fx = fx[fx.find("def"):]
+        fx = fx[fx.find("def") :]
         if fx.startswith("def strategy(board, initial):"):
             return fx
     return None
@@ -291,6 +296,7 @@ import numpy as np
 
 global PRINTER
 PRINTER = 0
+
 
 def strategy_succeeds(completions, **kwargs):
     """Reward valid moves even if strategy eventually fails."""
