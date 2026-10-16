@@ -273,6 +273,39 @@ def test_a_plan_the_gate_voids_is_gone_before_the_pre_spawn_pricing(tmp_path, mo
     assert _PAGEABLE_OVERRIDE_NOTE not in (backend.last_load_warning or "")
 
 
+def test_a_surviving_plan_that_keeps_every_layer_on_the_gpu_is_a_full_offload_at_the_gate(
+    tmp_path, monkeypatch
+):
+    """A plan whose survivors are its devices stays, and one with no -ot keeps every layer on the
+    cards under -ngl -1 --fit off. The gate re-asks host residency for the narrowed set, and asked
+    as a fitter placement it read the weights as host-resident: the launch above and the arch-crash
+    retry ask with the plan's full offload, so the gate dropped a DirectIO pair they granted."""
+    from dataclasses import replace
+
+    verdicts = []
+
+    def hook(backend):
+        orig = backend._weights_in_host_memory
+
+        def spy(*a, **kw):
+            verdicts.append(kw.get("fully_gpu_offloaded"))
+            return orig(*a, **kw)
+
+        backend._weights_in_host_memory = spy
+
+    cmd, backend, _seen = _gated_launch(
+        tmp_path,
+        monkeypatch,
+        survivors = SURVIVORS,
+        plan = replace(PLAN, ot_patterns = (), spilled_blocks = ()),
+        hook = hook,
+    )
+    assert _flag(cmd, "--fit") == "off" and "-ot" not in cmd, cmd
+    assert _flag(cmd, "--tensor-split") == "17,48", "harness: the plan survives the gate"
+    assert verdicts, "harness: residency was asked"
+    assert all(verdicts), verdicts
+
+
 # --- a projector device of any value -----------------------------------------------------------
 
 

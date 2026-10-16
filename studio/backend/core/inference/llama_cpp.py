@@ -33828,9 +33828,13 @@ class LlamaCppBackend:
                         _launch_pinned_ids = list(_survivors)
                         # Taken against the UNNARROWED set, where an unsupported APU
                         # answered host-resident for the whole launch; this gate removes
-                        # it. fully_offloaded False: the fitter still owns placement.
+                        # it. Without a plan the fitter still owns placement; a plan that
+                        # survived the gate with every layer on the cards (a voided one was
+                        # revoked above, which clears the flag) is the launch's full offload.
                         _gate_dio, _gate_applicable, _gate_active = _dio_decision_for(
-                            _survivors, fully_offloaded = False, child_env = env
+                            _survivors,
+                            fully_offloaded = fully_gpu_offloaded or _spill_keeps_every_layer_on_gpu,
+                            child_env = env,
                         )
                         self._memory_dio_applicable = _gate_applicable
                         # BOTH directions: narrowing can also take the offload away, and
