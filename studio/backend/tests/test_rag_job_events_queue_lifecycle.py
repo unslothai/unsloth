@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""job_events keeps the per-job queue registered only while the worker runs.
-
-``_emit()`` writes to ``_jobs[job_id]`` while the worker runs; if an early SSE
-disconnect removed that queue, later events would be dropped and a reconnect
-would see only ``[DONE]`` and mark a running job complete. So keep it on an early
-disconnect of a running job, but drop it on a terminal exit or a disconnect after
-the job already finished; ``_reap_finished_jobs`` sweeps any leftovers.
-"""
+"""Keep a running job's event queue on early SSE disconnect; dropping it marks a live job complete."""
 
 import queue
 import sqlite3
@@ -24,14 +17,13 @@ import core.rag.ingestion as ing
 
 def test_early_disconnect_keeps_queue_registered(monkeypatch):
     monkeypatch.setattr(ing, "_SSE_POLL_SECONDS", 0.01)
-    # Job is still running; nothing terminal has happened.
     monkeypatch.setattr(ing, "get_job_status", lambda _jid: {"status": "running"})
     jid = "job-early-disconnect"
     ing._jobs[jid] = queue.Queue()
     try:
         gen = ing.job_events(jid)
-        next(gen)  # enter loop: Empty -> non-terminal -> heartbeat
-        gen.close()  # client disconnects before the job finishes
+        next(gen)
+        gen.close()
         assert (
             jid in ing._jobs
         ), "queue must survive an early disconnect so the worker can still emit"
@@ -44,10 +36,10 @@ def test_terminal_sentinel_removes_queue(monkeypatch):
     jid = "job-terminal-sentinel"
     q = queue.Queue()
     q.put({"type": "progress", "stage": "embedding", "progress": 0.5})
-    q.put(None)  # worker finished -> sentinel
+    q.put(None)
     ing._jobs[jid] = q
     try:
-        events = list(ing.job_events(jid))  # drains progress, then None -> terminal
+        events = list(ing.job_events(jid))
         assert any(e.get("type") == "progress" for e in events)
         assert jid not in ing._jobs, "queue must be removed once the job is terminal"
     finally:
@@ -56,9 +48,7 @@ def test_terminal_sentinel_removes_queue(monkeypatch):
 
 def test_disconnect_after_terminal_event_removes_queue(monkeypatch):
     monkeypatch.setattr(ing, "_SSE_POLL_SECONDS", 0.01)
-    # Worker finished: the DB row is terminal and a complete event is queued. The
-    # UI reads that event and disconnects (reader.cancel) before the None sentinel,
-    # so the queue must still drop rather than linger until the next reap.
+    # The UI disconnects on the complete event before the None sentinel; the queue must still drop.
     monkeypatch.setattr(ing, "get_job_status", lambda _jid: {"status": "completed"})
     jid = "job-disconnect-after-complete"
     q = queue.Queue()
@@ -67,8 +57,8 @@ def test_disconnect_after_terminal_event_removes_queue(monkeypatch):
     ing._jobs[jid] = q
     try:
         gen = ing.job_events(jid)
-        assert next(gen)["type"] == "complete"  # client receives the terminal event
-        gen.close()  # disconnects before draining the sentinel
+        assert next(gen)["type"] == "complete"
+        gen.close()
         assert jid not in ing._jobs, "a finished job's queue must drop on disconnect"
     finally:
         ing._jobs.pop(jid, None)
@@ -76,8 +66,6 @@ def test_disconnect_after_terminal_event_removes_queue(monkeypatch):
 
 def test_disconnect_after_cancelled_event_removes_queue(monkeypatch):
     monkeypatch.setattr(ing, "_SSE_POLL_SECONDS", 0.01)
-    # Deleting a document while its worker is storing marks the job cancelled.
-    # The UI consumes the error event and closes the stream before the sentinel.
     monkeypatch.setattr(ing, "get_job_status", lambda _jid: {"status": "cancelled"})
     jid = "job-disconnect-after-cancelled"
     q = queue.Queue()
@@ -106,10 +94,7 @@ def test_reaper_removes_cancelled_queue(monkeypatch):
 
 def test_transient_status_read_failure_does_not_end_stream(monkeypatch):
     monkeypatch.setattr(ing, "_SSE_POLL_SECONDS", 0.01)
-    # The heartbeat poll hits a momentarily-locked DB. That must not propagate: the
-    # SSE route would turn the raised error into a terminal {type: error} frame and
-    # the UI would drop a document whose worker is still running. The stream should
-    # heartbeat and keep the queue so the worker can finish / a reconnect can resume.
+    # A locked DB on heartbeat must not raise: the SSE route would emit a terminal error frame.
     calls = {"n": 0}
 
     def flaky_status(_jid):
@@ -123,7 +108,7 @@ def test_transient_status_read_failure_does_not_end_stream(monkeypatch):
     ing._jobs[jid] = queue.Queue()
     try:
         gen = ing.job_events(jid)
-        assert next(gen) == {"type": "heartbeat"}  # transient error -> heartbeat, no raise
+        assert next(gen) == {"type": "heartbeat"}
         gen.close()
         assert jid in ing._jobs, "an unconfirmed (transient-error) status must keep the queue"
     finally:
@@ -132,8 +117,6 @@ def test_transient_status_read_failure_does_not_end_stream(monkeypatch):
 
 def test_terminal_db_status_removes_queue(monkeypatch):
     monkeypatch.setattr(ing, "_SSE_POLL_SECONDS", 0.01)
-    # No events arrive, but the DB row reports the job finished (hard worker death
-    # that skipped the sentinel): the stream ends and the queue is reaped.
     monkeypatch.setattr(ing, "get_job_status", lambda _jid: {"status": "completed"})
     jid = "job-terminal-db"
     ing._jobs[jid] = queue.Queue()

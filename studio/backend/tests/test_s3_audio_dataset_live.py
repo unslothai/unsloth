@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The audio S3 loader against a real, writable bucket (ambient AWS credentials; set
-``AWS_ENDPOINT_URL_S3`` for an S3-compatible server). Opt-in; uploads are deleted after.
-
-    UNSLOTH_S3_LIVE_BUCKET=my-bucket pytest studio/backend/tests/test_s3_audio_dataset_live.py -q
-"""
+"""Opt-in live test on the bucket named by UNSLOTH_S3_LIVE_BUCKET; uploads are deleted afterwards."""
 
 from __future__ import annotations
 

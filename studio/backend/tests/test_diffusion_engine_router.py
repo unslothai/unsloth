@@ -26,8 +26,7 @@ def _clean_env_and_state(monkeypatch):
     r._supported_family_capabilities.cache_clear()
     for e in _ENVS:
         monkeypatch.delenv(e, raising = False)
-    # A light status-capable stub so selection / active_status() never import the heavy diffusers or sd.cpp
-    # backends; the active engine NAME is module state. unload() is part of the engine contract, so it is honoured.
+    # Light stub so selection never imports the heavy diffusers or sd.cpp backends.
     monkeypatch.setattr(
         r,
         "get_active_diffusion_engine",
@@ -35,11 +34,9 @@ def _clean_env_and_state(monkeypatch):
             status = lambda: {"loaded": False, "repo_id": None}, unload = lambda: None
         ),
     )
-    # Default: no resident sd-server (tests exercise the sd-cli path) and a stubbed runnability probe, so neither reaches a real install/exec.
     monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: None)
     monkeypatch.setattr(r, "_server_binary_runnable", lambda *_a, **_k: True)
-    # The selection is module state and several tests below set it by plain assignment, so monkeypatch cannot undo it. A leaked ENGINE_SD_CPP left
-    # get_active_diffusion_engine() returning the sd.cpp backend for the rest of the process, 503ing eight tests in a full-suite run.
+    # Module state set by plain assignment; monkeypatch cannot undo it, so save and restore.
     saved_engine = r._active_engine_name
     saved_reason = r._fallback_reason
     try:
@@ -74,9 +71,6 @@ def _select(fam_name = "z-image"):
     return r.active_engine_name()
 
 
-# ── core selection matrix ─────────────────────────────────────────────────────
-
-
 def test_cpu_with_binary_and_supported_family_picks_sd_cpp(monkeypatch):
     _set_device(monkeypatch, "cpu")
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
@@ -86,16 +80,14 @@ def test_cpu_with_binary_and_supported_family_picks_sd_cpp(monkeypatch):
 
 
 def test_cpu_with_only_sd_server_picks_sd_cpp(monkeypatch):
-    # An sd-server-only install (no runnable sd-cli) still routes to native: the backend prefers the resident server.
     _set_device(monkeypatch, "cpu")
-    _set_binary(monkeypatch, None)  # no sd-cli
+    _set_binary(monkeypatch, None)
     monkeypatch.setattr(r, "SdCppEngine", lambda **_: SimpleNamespace(version = lambda: None))
     monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: "/usr/bin/sd-server")
     assert _select() == ENGINE_SD_CPP
 
 
 def test_present_but_not_runnable_binary_falls_back(monkeypatch):
-    # A binary that exists but cannot run falls back to diffusers at selection, not commit native and fail inside the load.
     _set_device(monkeypatch, "cpu")
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
     monkeypatch.setattr(r, "SdCppEngine", lambda **_: SimpleNamespace(version = lambda: None))
@@ -106,7 +98,7 @@ def test_present_but_not_runnable_binary_falls_back(monkeypatch):
 @pytest.mark.parametrize("gpu", ["cuda", "rocm", "xpu"])
 def test_gpu_backends_use_diffusers(monkeypatch, gpu):
     _set_device(monkeypatch, gpu)
-    _set_binary(monkeypatch, "/usr/bin/sd-cli")  # even with a binary, GPU stays diffusers
+    _set_binary(monkeypatch, "/usr/bin/sd-cli")
     assert _select() == ENGINE_DIFFUSERS
     assert "uses diffusers" in (r.active_status()["fallback_reason"] or "")
 
@@ -131,9 +123,7 @@ def test_mps_default_diffusers_but_optin_sd_cpp(monkeypatch):
     _set_device(monkeypatch, "mps")
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
     _set_runnable(monkeypatch)
-    # Default: MPS is not native-eligible -> diffusers.
     assert _select() == ENGINE_DIFFUSERS
-    # Opt in: MPS routes to sd.cpp.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_MPS", "1")
     assert _select() == ENGINE_SD_CPP
 
@@ -148,7 +138,7 @@ def test_unsupported_family_falls_back(monkeypatch):
 
 def test_missing_binary_falls_back(monkeypatch):
     _set_device(monkeypatch, "cpu")
-    _set_binary(monkeypatch, None)  # install unavailable
+    _set_binary(monkeypatch, None)
     assert _select() == ENGINE_DIFFUSERS
     assert "binary unavailable" in (r.active_status()["fallback_reason"] or "")
 
@@ -192,13 +182,10 @@ def test_force_native_install_uses_gpu_accelerator(monkeypatch):
     assert seen.get("accelerator") == "rocm"
 
 
-# ── active_status annotation ──────────────────────────────────────────────────
-
-
 def test_active_status_injects_engine_and_reason(monkeypatch):
     _set_device(monkeypatch, "cpu")
     _set_binary(monkeypatch, None)
-    _select()  # -> diffusers fallback (no binary)
+    _select()
     st = r.active_status()
     assert st["engine"] == ENGINE_DIFFUSERS
     assert st["fallback_reason"] and "binary unavailable" in st["fallback_reason"]
@@ -217,12 +204,8 @@ def test_status_family_capabilities_are_probed_once(monkeypatch):
     assert calls == ["probe"]
 
 
-# ── engine-switch eviction ordering ───────────────────────────────────────────
-
-
 def test_switch_unloads_old_engine_before_publishing_new(monkeypatch):
-    # The arbiter's diffusion evictor unloads get_active_diffusion_engine(): publishing the new (empty) engine before the old
-    # one finished unloading would let a concurrent acquire take the GPU with the old model still resident.
+    # The evictor unloads the active engine, so publish the new one only after the old unloaded.
     seen = {}
 
     def _fake_engine():
@@ -239,7 +222,6 @@ def test_switch_unloads_old_engine_before_publishing_new(monkeypatch):
 
 
 def test_no_switch_keeps_engine_and_refreshes_reason(monkeypatch):
-    # When the engine does not change, _activate must not unload anything but must still refresh the recorded fallback reason.
     calls = {"unload": 0}
 
     def _fake_engine():
@@ -276,22 +258,21 @@ def test_activate_serializes_switch_and_concurrent_query(monkeypatch):
     switch_done = threading.Event()
 
     def _switch():
-        r._activate(ENGINE_SD_CPP, None)  # diffusers -> sd_cpp: unloads the old engine (blocks)
+        r._activate(ENGINE_SD_CPP, None)
         switch_done.set()
 
     t = threading.Thread(target = _switch)
     t.start()
-    assert unload_started.wait(2.0)  # switch is mid-unload, holding the transition lock
+    assert unload_started.wait(2.0)
 
     query_done = threading.Event()
 
     def _query():
-        r._activate(ENGINE_DIFFUSERS, None)  # would hit the "no change" branch pre-fix
+        r._activate(ENGINE_DIFFUSERS, None)
         query_done.set()
 
     q = threading.Thread(target = _query)
     q.start()
-    # Serialized: the query cannot complete while the switch holds the transition lock.
     assert not query_done.wait(0.4)
 
     release_unload.set()
@@ -301,8 +282,7 @@ def test_activate_serializes_switch_and_concurrent_query(monkeypatch):
 
 
 def test_begin_load_on_refuses_an_engine_that_was_switched_away(monkeypatch):
-    # A load selects its engine, then yields (device probe, arbiter acquire) before registering. A second load choosing the
-    # OTHER engine unloads the captured engine in that gap, so registering there strands a model nothing can reach.
+    # Engine capture and registration must be atomic: a competing switch can unload it in between.
     diffusers = SimpleNamespace(name = "diffusers")
     sd_cpp = SimpleNamespace(name = "sd_cpp")
     active = {"engine": diffusers}
@@ -312,7 +292,6 @@ def test_begin_load_on_refuses_an_engine_that_was_switched_away(monkeypatch):
     assert r.begin_load_on(diffusers, lambda: started.append("ok") or "status") == "status"
     assert started == ["ok"]
 
-    # A competing request switched the active engine after this one captured `diffusers`.
     active["engine"] = sd_cpp
     with pytest.raises(RuntimeError, match = "engine changed"):
         r.begin_load_on(diffusers, lambda: started.append("leaked"))
@@ -320,7 +299,6 @@ def test_begin_load_on_refuses_an_engine_that_was_switched_away(monkeypatch):
 
 
 def test_begin_load_on_holds_the_transition_lock_while_registering(monkeypatch):
-    # The check and the registration must be one operation under the lock a switch takes, so no _activate can slip between them.
     import threading
 
     engine = SimpleNamespace(name = "diffusers")
@@ -343,8 +321,7 @@ def test_begin_load_on_holds_the_transition_lock_while_registering(monkeypatch):
 
 
 def test_switch_aborts_when_the_old_engine_fails_to_unload(monkeypatch):
-    # A swallowed teardown failure published the new engine anyway and stranded the old model: the evictor, /images/unload and the next load all
-    # resolve through get_active_diffusion_engine(), so nothing could reclaim the resident pipeline. Keep the old engine published and fail the switch.
+    # A failed teardown keeps the old engine published so the resident model stays reclaimable.
     def _fake_engine():
         def _boom():
             raise RuntimeError("sd-server would not die")
@@ -355,15 +332,10 @@ def test_switch_aborts_when_the_old_engine_fails_to_unload(monkeypatch):
     r._active_engine_name = ENGINE_SD_CPP
     with pytest.raises(RuntimeError, match = "Could not switch the diffusion engine"):
         r._activate(ENGINE_DIFFUSERS, "switch test")
-    # Still the old engine, so the resident model remains reachable and reclaimable.
     assert r.active_engine_name() == ENGINE_SD_CPP
 
 
-# ── predict_engine: the download plan's read-only twin of the selection ───────
-
-
 def test_predict_engine_matches_the_selection_without_activating(monkeypatch):
-    # The download plan is built from this prediction, so it must agree with the selection the load will make, but staging must not unload a resident model: it activates nothing.
     _set_device(monkeypatch, "cpu")
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
     _set_runnable(monkeypatch)
@@ -373,8 +345,7 @@ def test_predict_engine_matches_the_selection_without_activating(monkeypatch):
 
 
 def test_predict_engine_counts_an_installable_binary_as_available(monkeypatch):
-    # The first native load on a fresh CPU host installs the binary, so predicting diffusers just because nothing is on disk
-    # yet would stage components the load never opens. It must not install anything itself.
+    # The first native load installs the binary, so predict native even with nothing on disk.
     _set_device(monkeypatch, "cpu")
     installs: list[dict] = []
 
@@ -389,7 +360,6 @@ def test_predict_engine_counts_an_installable_binary_as_available(monkeypatch):
 
 
 def test_predict_engine_falls_back_when_install_is_disabled_and_nothing_is_installed(monkeypatch):
-    # With installs off and no binary present, the load really will fall back to diffusers.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_INSTALL", "0")
     _set_device(monkeypatch, "cpu")
     _set_binary(monkeypatch, None)
@@ -413,14 +383,10 @@ def test_predict_engine_returns_diffusers_where_the_load_would(monkeypatch, kwar
 
 
 def test_predict_engine_returns_diffusers_for_a_family_without_native_assets(monkeypatch):
-    # sdxl has no single-file VAE / text-encoder mapping, so sd-cli cannot serve it.
     _set_device(monkeypatch, "cpu")
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
     _set_runnable(monkeypatch)
     assert r.predict_engine(detect_family("sdxl"), model_kind = "gguf") == ENGINE_DIFFUSERS
-
-
-# ── the architecture gate: a runnable build is not always a CAPABLE one ───────
 
 
 def _write_binary(tmp_path, name, *, marker: bool):
@@ -434,10 +400,7 @@ def _write_binary(tmp_path, name, *, marker: bool):
 
 
 def test_a_build_that_predates_the_family_does_not_get_the_native_route(monkeypatch, tmp_path):
-    # The real regression: nothing upgrades a runnable sd.cpp build of the right accelerator, so a
-    # host that installed one before upstream added Qwen-Image-2.1 keeps it, and without this gate
-    # the router hands it a model it cannot read -- a load that reports ready and dies on the first
-    # generation. Diffusers can run it, so the fallback is the right answer and the reason says so.
+    # Old runnable sd.cpp builds are never upgraded and may lack newer architectures (Qwen-Image-2.1).
     _set_device(monkeypatch, "cpu")
     _set_runnable(monkeypatch)
     _set_binary(monkeypatch, _write_binary(tmp_path, "sd-cli-old", marker = False))
@@ -449,9 +412,7 @@ def test_a_build_that_predates_the_family_does_not_get_the_native_route(monkeypa
 
 
 def test_the_gate_only_speaks_for_families_that_declare_a_marker(monkeypatch, tmp_path):
-    # z-image has been in sd.cpp for as long as the native route has existed and declares no
-    # marker, so the same old binary that is refused above must still serve it. A gate that read
-    # "no marker found" as "cannot run" would take the native engine away from every family.
+    # Families with no marker (z-image) must still route native: no marker is not "cannot run".
     _set_device(monkeypatch, "cpu")
     _set_runnable(monkeypatch)
     _set_binary(monkeypatch, _write_binary(tmp_path, "sd-cli-old2", marker = False))
@@ -459,17 +420,11 @@ def test_the_gate_only_speaks_for_families_that_declare_a_marker(monkeypatch, tm
 
 
 def test_the_prediction_agrees_with_the_selection_about_an_incapable_build(monkeypatch, tmp_path):
-    # The download plan is built from the prediction. Installs are ALLOWED here and there is a
-    # resident binary, which is exactly the case where a permitted install changes nothing: the
-    # ensure helpers keep a runnable build of the right accelerator. Predicting native would stage
-    # sd-cli's companion VAE and text encoder for a load that goes to diffusers.
     _set_device(monkeypatch, "cpu")
     _set_runnable(monkeypatch)
     _set_binary(monkeypatch, _write_binary(tmp_path, "sd-cli-old3", marker = False))
     fam = detect_family("qwen-image-2.1")
     assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_DIFFUSERS
-    # ... and a fresh host with nothing installed still predicts native, since the install lands on
-    # the pinned prebuilt, which does carry the architecture.
     _set_binary(monkeypatch, None)
     monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: None)
     assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_SD_CPP

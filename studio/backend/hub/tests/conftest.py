@@ -75,13 +75,7 @@ class _DummyLogger:
 
 
 def _stub_unless_installed(name: str, stub) -> None:
-    """Stub *name* only when it is genuinely not installed.
-
-    ``setdefault`` alone stubs whenever the module is merely not imported yet, and these stubs
-    carry a few symbols each. Since they are never removed, one such stub decides the rest of
-    the process: anything importing ``routes`` afterwards dies on a name the stub omits, which
-    is most of ``studio/backend/tests``.
-    """
+    """Stub only when truly not installed; stubs are never removed and would shadow later real imports."""
     if name in sys.modules:
         return
     try:
@@ -129,12 +123,7 @@ import pytest
 
 @pytest.fixture(scope = "session")
 def _hub_studio_home_root(tmp_path_factory):
-    """One parent directory for every per-test studio home.
-
-    ``tmp_path_factory.mktemp`` scans the whole basetemp on every call to pick
-    the next number, so calling it once per test is quadratic in the number of
-    tests. Paid once per session here, the per-test cost below is a bare mkdir.
-    """
+    """Create the parent once per session: mktemp rescans basetemp on each call, which is quadratic."""
     return tmp_path_factory.mktemp("hub_studio_homes")
 
 
@@ -153,11 +142,7 @@ def _isolate_studio_home(_hub_studio_home_root, monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _reset_optional_module_memo():
-    """Forget the shim's memoised optional-module results between tests.
-
-    ``_load_optional`` caches per module name including failures, so without this one test's fake
-    module would answer the next test's question.
-    """
+    """Clear the optional-module memo between tests so one test's fake module cannot answer the next."""
     try:
         import utils.hf_xet_fallback as _shim
     except Exception:  # noqa: BLE001 - hub tests run against stubbed modules

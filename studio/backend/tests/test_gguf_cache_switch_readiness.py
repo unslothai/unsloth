@@ -87,9 +87,7 @@ def test_pin_listing_needs_explicit_token_when_ambient_is_denied(
         if value[0].parent != hf_cache_settings.get_hf_cache_paths().hub_cache
     )
     variant = GgufVariantInfo(filename = path.name, quant = quant, size_bytes = 256)
-    # Main decides this by probing the Hub, and the fixture repo is not really there. The repo is
-    # private to an ambient caller and reachable with an explicit token, which is the difference
-    # this test measures, so answer the probe instead of the network.
+    # The fixture repo is not on the Hub, so answer the visibility probe directly.
     monkeypatch.setattr(
         "hub.utils.hf_tokens._explicit_token_reaches_repo",
         lambda repo, token, *a, **k: token is not None,
@@ -121,8 +119,7 @@ def test_incomplete_remembered_copy_is_not_advertised_complete(
     active = hf_cache_settings.get_hf_cache_paths().hub_cache
     quant = "Q4_K_M"
     filename = f"Model-{quant}.gguf"
-    # The remembered copy holds every main shard but is missing its projector, which is
-    # exactly the torn state a completed-looking snapshot can hide.
+    # Every main shard but no projector: the torn state a completed-looking snapshot can hide.
     remembered = None
     for repo, path in expected.values():
         if repo.parent == active:
@@ -175,7 +172,6 @@ def test_a_healthy_duplicate_is_preferred_over_a_cancelled_copy(cache_locations)
     active = hf_cache_settings.get_hf_cache_paths().hub_cache
     quant = "Q4_K_M"
     filename = f"Model-{quant}.gguf"
-    # The same quant is present in two folders, which is exactly what duplicate ranking decides.
     cancelled = healthy = None
     for repo, path in expected.values():
         snapshot = path.parent
@@ -185,8 +181,7 @@ def test_a_healthy_duplicate_is_preferred_over_a_cancelled_copy(cache_locations)
         else:
             healthy = snapshot
     assert cancelled is not None and healthy is not None
-    # Manifest-verified by construction (every file it declares exists), yet partial by its own
-    # marker -- the state a manifest-only comparison cannot see.
+    # Manifest-complete but cancel-marked: the state a manifest-only check misses.
     assert download_manifest.write_cancel_marker(
         "model", repo_id, quant, hub_cache = cancelled.parent.parent.parent
     )

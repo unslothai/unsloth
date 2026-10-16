@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Clip datasets in the diffusion dataset routes.
-
-The families that train from video read a folder of clips and the caption beside each one.
-Before this, the routes only knew about images, so such a folder summarised as empty and
-``/diffusion/info`` never listed it: the video trainer was unreachable from the UI.
-
-The claim these tests exist to hold is that admitting clips is PURELY ADDITIVE. That rests on
-two properties, both asserted below rather than asserted in prose:
-
-* the image and clip extension sets are DISJOINT, so no file changes which branch it takes;
-* the caption rules over them are IDENTICAL, so a clip resolves its caption through the very
-  same function, with the same sidecar-over-metadata precedence and the same empty-sidecar
-  tombstone, as an image does.
-
-Everything else here is the behaviour those two properties buy: a clip folder is listed, a
-clip uploads with its sidecar, and the stem-keyed sidecar is shared between kinds exactly as
-it is shared between two images.
-"""
+"""Video clips in dataset routes; the clip and image sets stay disjoint and share caption rules."""
 
 from __future__ import annotations
 
@@ -56,8 +39,7 @@ def _png_bytes(color = (200, 100, 50), size = (8, 8)) -> bytes:
     return buf.getvalue()
 
 
-# An mp4 is never decoded by these routes, only counted and moved, so a recognisable ftyp box
-# is enough to stand in for one. Nothing here opens it.
+# Never decoded here, only counted and moved, so an ftyp box stands in for an mp4.
 _MP4_BYTES = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 64
 
 
@@ -79,12 +61,8 @@ def ds_root(monkeypatch, tmp_path):
     return root
 
 
-# ── the additive claim ───────────────────────────────────────────────────────
 def test_image_and_clip_extension_sets_are_disjoint():
-    """The whole design rests on this. Every site that widened from images to media assumes an
-    extension belongs to exactly ONE kind: the summary picks its counter with an if/elif, so an
-    overlapping extension would count as an image and never as a clip, and the two counts would
-    stop summing to the number of trainable files in the folder."""
+    """An extension in both sets would count as an image, so the kind counts would stop summing."""
     assert _DIFFUSION_DATASET_IMAGE_EXTS & _DIFFUSION_DATASET_CLIP_EXTS == set()
     assert _DIFFUSION_DATASET_MEDIA_EXTS == (
         _DIFFUSION_DATASET_IMAGE_EXTS | _DIFFUSION_DATASET_CLIP_EXTS
@@ -104,12 +82,7 @@ def test_routes_read_the_shared_clip_definition():
 
 
 def test_trainer_clip_discovery_uses_the_same_set_when_it_is_present():
-    """A divergence tripwire for the video trainers.
-
-    The clip trainer lands separately from this. Once it is in the tree its own extension set
-    has to be the shared one, or the two halves can drift: a clip the upload accepts and the
-    summary counts but the trainer skips is a run that starts and trains on nothing. Skipped
-    while the module is absent, enforced the moment it appears."""
+    """Trainer clip discovery must use the shared extension set, or a clip is counted but never trained."""
     clips = pytest.importorskip("core.training.diffusion_h3_clips")
     assert set(clips._VIDEO_EXTS) == set(CLIP_EXTS)
 
@@ -130,12 +103,10 @@ def test_clip_captions_resolve_through_the_same_rules_as_images(tmp_path):
     for stem in ("sidecar", "meta", "tombstone", "bare"):
         _write_png(folder / f"{stem}.png")
         (folder / f"{stem}.mp4").write_bytes(_MP4_BYTES)
-    # A sidecar wins over the metadata row; an EMPTY sidecar is a tombstone that shadows it.
     (folder / "sidecar.txt").write_text("edited sidecar", encoding = "utf-8")
     (folder / "tombstone.txt").write_text("   ", encoding = "utf-8")
 
-    # sidecar.txt is shared by sidecar.png and sidecar.mp4 here on purpose: that sharing is the
-    # point, and it is what the upload's stem check refuses to let a user create by accident.
+    # sidecar.txt is shared by sidecar.png and sidecar.mp4 on purpose.
     for stem, expected in (
         ("sidecar", "edited sidecar"),
         ("meta", "from metadata"),
@@ -168,7 +139,6 @@ def test_an_image_only_dataset_summarises_exactly_as_before(tmp_path):
     assert summary.caption_count == 2
 
 
-# ── summary + listing ────────────────────────────────────────────────────────
 def test_summary_counts_clips_and_their_captions(tmp_path):
     folder = tmp_path / "clipset"
     folder.mkdir()
@@ -182,7 +152,6 @@ def test_summary_counts_clips_and_their_captions(tmp_path):
     summary = _diffusion_dataset_summary(folder)
     assert summary.image_count == 0
     assert summary.clip_count == 3
-    # Captions are one folder total over both kinds; three.webm has none from any source.
     assert summary.caption_count == 2
 
 
@@ -274,7 +243,6 @@ def test_list_images_marks_clips_and_leaves_images_unchanged(client, ds_root):
     assert recs["moving.mp4"]["caption_source"] == "sidecar"
 
 
-# ── upload ───────────────────────────────────────────────────────────────────
 def test_upload_accepts_a_clip_and_its_sidecar_as_a_pair(client, ds_root):
     r = client.post(
         "/api/train/diffusion/dataset",
@@ -303,7 +271,6 @@ def test_upload_still_refuses_an_extension_of_neither_kind(client, ds_root):
         files = [("files", ("notes.pdf", b"%PDF-1.4", "application/pdf"))],
     )
     assert r.status_code == 400, r.text
-    # All-or-nothing: the refused batch leaves nothing behind.
     assert not (ds_root / "clipset" / "notes.pdf").exists()
 
 
@@ -319,8 +286,6 @@ def test_upload_refuses_an_image_and_a_clip_sharing_a_stem(client, ds_root):
         ],
     )
     assert r.status_code == 400, r.text
-    # The wording names the kind of the file being refused, so the existing image-vs-image
-    # message is unchanged and the cross-kind one still reads truthfully.
     assert "Duplicate clip name 'cat'" in r.json()["detail"]
     assert "cat.png" in r.json()["detail"]
     assert list((ds_root / "mixed").iterdir()) == []
@@ -352,7 +317,6 @@ def test_upload_does_not_decode_a_clip_as_an_image(client, ds_root):
     assert r.json()["clip_count"] == 1
 
 
-# ── delete ───────────────────────────────────────────────────────────────────
 def test_deleting_an_image_keeps_a_clip_of_the_same_stem_captioned(client, ds_root):
     """Legacy folders can hold cat.png beside cat.mp4 (the upload refuses new ones). Deleting
     the image must not strip the sidecar the surviving clip still reads."""
@@ -369,7 +333,6 @@ def test_deleting_an_image_keeps_a_clip_of_the_same_stem_captioned(client, ds_ro
     assert _diffusion_dataset_summary(folder).caption_count == 1
 
 
-# ── the start refusal ────────────────────────────────────────────────────────
 def test_start_refuses_a_clip_only_folder_by_naming_the_clips(tmp_path):
     """A clip folder is listed now, so a user can pick it and press Start. Discovery reads
     stills, so the raw refusal is "No captioned images found ... provide per-image .txt
@@ -383,7 +346,6 @@ def test_start_refuses_a_clip_only_folder_by_naming_the_clips(tmp_path):
         (folder / f"{stem}.mp4").write_bytes(_MP4_BYTES)
         (folder / f"{stem}.txt").write_text(f"clip {stem}", encoding = "utf-8")
 
-    # The folder IS captioned, by the summary the picker is built from.
     assert _diffusion_dataset_summary(folder).caption_count == 2
     with pytest.raises(ValueError, match = "No captioned images found"):
         discover_image_caption_pairs(folder)
@@ -408,7 +370,6 @@ def test_start_refuses_a_mixed_folder_rather_than_training_the_images_alone(tmp_
     (folder / "clip.mp4").write_bytes(_MP4_BYTES)
     (folder / "clip.txt").write_text("a clip", encoding = "utf-8")
 
-    # Two captioned items by the summary, one trainable pair by discovery.
     assert _diffusion_dataset_summary(folder).caption_count == 2
     assert len(discover_image_caption_pairs(folder)) == 1
 
@@ -418,12 +379,7 @@ def test_start_refuses_a_mixed_folder_rather_than_training_the_images_alone(tmp_
 
 
 def test_the_summary_reads_a_video_keyed_metadata_caption(tmp_path):
-    """The clip discovery accepts {"video": ..., "text": ...}; the summary loader must too.
-
-    It knew only file_name/image/file, so a clip dataset written with the video key reported
-    caption_count 0 while the trainer had a caption for every clip, and the panel blocked Start
-    on a trigger prompt that was not needed.
-    """
+    """The summary must read video-keyed metadata captions, or clip datasets report zero captions."""
     import json
 
     folder = tmp_path / "video-keyed"
@@ -441,7 +397,6 @@ def test_the_summary_reads_a_video_keyed_metadata_caption(tmp_path):
     assert summary.clip_count == 2
     assert summary.caption_count == 2
 
-    # And the trainer agrees, which is the disagreement this closes.
     from core.training.diffusion_h3_clips import discover_clip_caption_pairs
 
     assert len(discover_clip_caption_pairs(folder)) == 2

@@ -19,7 +19,7 @@ _REAL_ARCHITECTURE = mxc_runtime._expected_architecture
 
 @pytest.fixture
 def runtime(tmp_path, monkeypatch):
-    # The runtime is x86-64 only; an arm64 test host (Apple Silicon CI) is not the host under test.
+    # The runtime is x86-64 only; arm64 CI hosts are not the host under test.
     monkeypatch.setattr(mxc_runtime, "_expected_architecture", lambda: "x86_64")
     root = tmp_path / "managed" / "windows-x86_64"
     root.mkdir(parents = True)
@@ -101,7 +101,6 @@ def test_reparse_runtime_directory_is_rejected(runtime, tmp_path):
 
 
 def test_release_identity_is_fixed_to_microsoft_v080():
-    # The npm package ships the v0.8.0 release's x64 binaries byte for byte, without symbols.
     assert mxc_runtime.RELEASE_URL == (
         "https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-0.8.0.tgz"
     )

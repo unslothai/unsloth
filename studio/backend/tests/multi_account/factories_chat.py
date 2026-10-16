@@ -167,7 +167,6 @@ def seed_chat_fork_tree(account) -> dict[str, str]:
     return {"thread_id": FORK_THREAD_ID, "message_id": FORK_MESSAGE_ID}
 
 
-# Both count routes answer 200 for any thread id, so the foreign-account expectation is 200.
 _FORK_COUNT_REASON = (
     "Fork counts aggregate per account: another account counts its own empty database, not alice's."
 )

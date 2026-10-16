@@ -216,7 +216,7 @@ def test_weights_are_pinned_on_first_onload_into_shared_chunks(monkeypatch):
     pipe = _pipe("cuda", "text_encoder", "transformer")
     pipe.enable_model_cpu_offload()
     dm.keep_cpu_weights_on_offload(pipe)
-    assert not pipe.transformer.weight.is_pinned()  # nothing locked at load
+    assert not pipe.transformer.weight.is_pinned()
     for _ in range(2):
         assert torch.equal(_render(pipe, x), ref)
     for module in pipe.components.values():
@@ -251,7 +251,7 @@ def test_a_non_contiguous_weight_keeps_its_layout(monkeypatch):
     monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, "1")
     pipe = _pipe("cuda", "transformer")
     lin = pipe.transformer
-    lin.weight = torch.nn.Parameter(lin.weight.detach().t().contiguous().t())  # transposed strides
+    lin.weight = torch.nn.Parameter(lin.weight.detach().t().contiguous().t())
     assert not lin.weight.is_contiguous()
     pipe.enable_model_cpu_offload()
     dm.keep_cpu_weights_on_offload(pipe)
@@ -435,10 +435,10 @@ def _fake_cgroup(
 @pytest.mark.parametrize(
     "version, limit, current, host_available, pinned",
     [
-        # 64 GiB container on a 512 GiB host, 10 GiB left in it: the host reading would pin 16 GiB.
+        # 64 GiB container on a 512 GiB host, 10 GiB left: the host reading would pin 16 GiB.
         (2, 64 << 30, 54 << 30, 400 << 30, False),
         (1, 64 << 30, 54 << 30, 400 << 30, False),
-        # 40 GiB left: fits over a reserve of 15% of the container; 15% of the host would refuse it.
+        # 40 GiB left: fits the container's 15% reserve; 15% of the host would refuse it.
         (2, 64 << 30, 24 << 30, 400 << 30, True),
         (1, 64 << 30, 24 << 30, 400 << 30, True),
         # 24 GiB left: 8 GiB would remain, under the container's 9.6 GiB reserve.
@@ -534,8 +534,8 @@ def test_a_gguf_transformer_keeps_its_host_bytes_and_quant_type(monkeypatch, pin
     raw = pipe.transformer.weight.detach().clone()
     pipe.enable_model_cpu_offload()
     dm.keep_cpu_weights_on_offload(pipe)
-    _run(pipe, x)  # the first onload pins
-    # Held, so a stock copy can never land back at a freed address and pass for the kept tensor.
+    _run(pipe, x)
+    # Held so a stock copy can never land at a freed address and pass for the kept tensor.
     held = [p.data for p in pipe.transformer.parameters()]
     host = [t.data_ptr() for t in held]
     for _ in range(3):

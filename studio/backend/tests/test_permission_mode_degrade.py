@@ -147,7 +147,6 @@ def test_off_gate_is_armed_only_where_a_prompt_can_reach_the_caller(
     [
         ({}, True),
         ({"confirm_tool_calls": False}, False),
-        # An explicit true is the Ask-every-time contract, not an opt-out.
         ({"confirm_tool_calls": True}, True),
     ],
 )
@@ -271,14 +270,14 @@ def test_forget_discards_a_refresh_that_started_before_it(monkeypatch):
 
 
 def test_an_older_check_that_finishes_last_never_overwrites_a_newer_one():
-    stale = os_sandbox.tool_isolation_generation()  # background refresh of an expired answer
-    forced = os_sandbox.tool_isolation_generation()  # a forced refresh started after it
+    stale = os_sandbox.tool_isolation_generation()
+    forced = os_sandbox.tool_isolation_generation()
     os_sandbox.note_tool_isolation("python", True, backend = "bubblewrap", generation = forced)
     os_sandbox.note_tool_isolation("python", False, backend = "none", generation = stale)
     assert os_sandbox.cached_tool_capability("python")[:2] == (True, "bubblewrap")
-    os_sandbox.note_tool_isolation("python", False, backend = "none")  # a real launch, just now
+    os_sandbox.note_tool_isolation("python", False, backend = "none")
     assert os_sandbox.cached_tool_capability("python")[:2] == (False, "none")
-    os_sandbox.note_tool_isolation("terminal", True, generation = stale)  # other tools are separate
+    os_sandbox.note_tool_isolation("terminal", True, generation = stale)
     assert os_sandbox.cached_tool_capability("terminal")[0] is True
 
 
@@ -436,7 +435,6 @@ def test_a_reset_during_a_reprobe_keeps_its_result_out(probe_env):
 
 @pytest.fixture(autouse = True)
 def _no_host_setup_probe(monkeypatch):
-    # The setup plan would run `sudo -n true` on this host; the capability tests only need its shape.
     from core.inference import sandbox_setup_plan
     monkeypatch.setattr(
         sandbox_setup_plan,
@@ -655,7 +653,6 @@ def test_every_loop_launches_strictly_through_the_mode_parameter():
 
 
 def test_a_launch_does_not_republish_an_answer_a_reset_cleared(monkeypatch, tmp_path):
-    # Settings or a failed launch reset the cached answers while this launch was still checking.
     def snapshot(**_kw):
         os_sandbox.forget_tool_isolation()
         return os_sandbox.SandboxCapability(

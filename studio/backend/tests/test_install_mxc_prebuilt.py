@@ -133,7 +133,6 @@ def test_corrupt_wxc_is_replaced_safely(tmp_path, official_release):
 
 
 def test_install_without_host_prep_is_refreshed(tmp_path, official_release):
-    # Installs from before host-prep was pinned must pick it up, not count as current.
     payload, _archive_bytes = official_release
     install_dir = tmp_path / "installed" / "windows-x86_64"
     install_dir.mkdir(parents = True)
@@ -305,7 +304,6 @@ def _windows_split(command_line: str) -> list[str]:
 
 
 def _decoded_script(argv):
-    # What powershell.exe receives: the argv after the exe, serialised and split the Windows way.
     received = _windows_split(installer.subprocess.list2cmdline(argv[1:]))
     assert received == argv[1:]
     assert received.index("-Command") == len(received) - 2

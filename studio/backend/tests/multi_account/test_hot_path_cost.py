@@ -45,7 +45,6 @@ def test_one_account_adds_no_hot_path_io(
     assert measured["queries"] == queries
     assert measured["mkdir_calls"] == mkdir_calls
     assert measured["directories_created"] == 0
-    # The auth schema setup is cached per file, so head may run fewer statements, never more.
     assert head[operation]["statements"] <= measured["statements"]
     compare = {key: value for key, value in measured.items() if key != "statements"}
     assert {key: head[operation][key] for key in compare} == compare

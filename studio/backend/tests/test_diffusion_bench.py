@@ -101,13 +101,7 @@ def test_process_rss_falls_back_to_proc_without_psutil(monkeypatch):
 
 @pytest.mark.parametrize("name", ["compare.json", "compare.png"])
 def test_compare_refuses_to_overwrite_its_own_baseline(tmp_path, monkeypatch, name):
-    """--write-baseline accepts any path, so a baseline can legitimately be sitting on one of the
-    names the compare run writes. Refuse instead of destroying the reference metrics, and refuse
-    BEFORE the generation rather than after paying for it.
-
-    _run and _psnr are stubbed so that without the guard this reaches the real write and
-    clobbers the baseline; otherwise the case would pass for the wrong reason.
-    """
+    """Compare must refuse to overwrite its own --write-baseline file, before generating, not after."""
     out_dir = tmp_path / "out"
     out_dir.mkdir()
     reference = tmp_path / "reference.png"

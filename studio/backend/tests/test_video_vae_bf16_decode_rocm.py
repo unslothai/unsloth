@@ -89,9 +89,7 @@ def test_rocm_rdna3_plus_decodes_under_bf16_autocast_and_returns_fp32(gpu, arch,
     out = pipe.vae.decode(torch.ones(3), return_dict = False)
     assert pipe.vae.calls == [("cuda", torch.bfloat16)]
     assert out[0].dtype == torch.float32 and torch.equal(out[0], torch.full((3,), 2.0))
-    assert (
-        pipe.vae.dtype is torch.float32 and pipe.vae.weight.dtype == torch.float32
-    )  # weights untouched
+    assert pipe.vae.dtype is torch.float32 and pipe.vae.weight.dtype == torch.float32
     assert pipe.vae.decode.__wrapped__ == original
 
 
@@ -129,7 +127,7 @@ def test_force_allows_nvidia_with_bf16(gpu, monkeypatch):
     assert (
         install_rocm_vae_bf16_decode(_pipe(), _target(backend = "cuda", vendor = "nvidia"))
         == "autocast"
-    )  # no decoder module to cast: autocast
+    )
     gpu["bf16"] = False
     assert install_rocm_vae_bf16_decode(_pipe(), _target(backend = "cuda", vendor = "nvidia")) is None
 
@@ -137,10 +135,8 @@ def test_force_allows_nvidia_with_bf16(gpu, monkeypatch):
 def test_only_fp32_vaes_and_only_once(gpu):
     assert install_rocm_vae_bf16_decode(_pipe(torch.bfloat16), _target()) is None
     pipe = _pipe()
-    assert (
-        install_rocm_vae_bf16_decode(pipe, _target()) == "autocast"
-    )  # no decoder module to cast: autocast
-    assert install_rocm_vae_bf16_decode(pipe, _target()) is None  # no double wrap
+    assert install_rocm_vae_bf16_decode(pipe, _target()) == "autocast"
+    assert install_rocm_vae_bf16_decode(pipe, _target()) is None
     pipe.vae.decode(torch.ones(1))
     assert pipe.vae.calls == [("cuda", torch.bfloat16)]
 
@@ -153,9 +149,7 @@ def test_decoder_output_object_is_widened(gpu):
     vae = _FakeVAE()
     vae.decode = lambda z, return_dict = True: Out(z.to(torch.bfloat16))
     pipe = types.SimpleNamespace(vae = vae)
-    assert (
-        install_rocm_vae_bf16_decode(pipe, _target()) == "autocast"
-    )  # no decoder module to cast: autocast
+    assert install_rocm_vae_bf16_decode(pipe, _target()) == "autocast"
     assert pipe.vae.decode(torch.ones(2)).sample.dtype == torch.float32
 
 
@@ -195,9 +189,7 @@ def test_default_casts_only_the_decode_half_and_matches_fp32(tiny_wan_vae, gpu, 
     assert all(p.dtype == torch.bfloat16 for p in vae.decoder.parameters())
     assert all(p.dtype == torch.bfloat16 for p in vae.post_quant_conv.parameters())
     assert all(p.dtype == torch.float32 for p in vae.encoder.parameters())
-    assert (
-        vae.dtype == torch.float32
-    )  # pipelines keep handing it fp32 latents; the encode stays fp32
+    assert vae.dtype == torch.float32
     with torch.no_grad():
         out = vae.decode(z, return_dict = False)[0]
         assert vae.encode(torch.randn(1, 3, 1, 8, 8)).latent_dist.mean.dtype == torch.float32
@@ -210,9 +202,7 @@ def test_decoder_reached_without_vae_decode_still_gets_bf16_inputs(tiny_wan_vae,
     pipe = types.SimpleNamespace(vae = vae)
     assert install_rocm_vae_bf16_decode(pipe, _target()) == "weights"
     with torch.no_grad():
-        x = vae.post_quant_conv(
-            torch.randn(1, 4, 1, 4, 4)
-        )  # fp32 input, bf16 weights: the pre-hook casts
+        x = vae.post_quant_conv(torch.randn(1, 4, 1, 4, 4))
     assert x.dtype == torch.bfloat16
 
 
@@ -255,7 +245,7 @@ def test_nvidia_real_vae_untouched(tiny_wan_vae, gpu):
     not torch.cuda.is_available(), reason = "needs a real CUDA device for the NVIDIA fp16 decode"
 )
 def test_forced_bf16_leaves_nvidia_fp16_decode_alone(monkeypatch):
-    # Stacked, the fp16 wrapper's non-finite fallback recasts the decoder to fp32 under bf16 input hooks: crash.
+    # Stacked, the fp16 wrapper's fp32 fallback under bf16 input hooks crashes.
     diffusers = pytest.importorskip("diffusers")
     from core.inference import diffusion_speed as ds
 

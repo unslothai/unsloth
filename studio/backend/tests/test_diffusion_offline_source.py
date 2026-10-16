@@ -130,7 +130,7 @@ def test_modular_tokenizer_and_processor_specs_are_pointed_at_the_snapshot(tmp_p
         _component_specs = {
             "processor": _spec(_Processor, "processor"),
             "tokenizer": _spec(_Tokenizer, "tokenizer"),
-            # Models carry their own config.json and load offline by repo id already.
+            # Models carry their own config.json and already load offline by repo id.
             "text_encoder": _spec(_Encoder, "text_encoder"),
             "guider": SimpleNamespace(type_hint = _Tokenizer, default_creation_method = "from_config"),
         }

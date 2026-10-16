@@ -297,7 +297,6 @@ def test_layouts_the_native_reader_does_not_model_go_to_torchao():
     for weight in (per_tensor, experts):
         flat, meta = flatten({"blk.w.weight": weight})
         assert pn.native_unflatten(dict(flat), dict(meta)) is None
-    # an int8 field this reader does not know is torchao's call too, never silently dropped
     flat, meta = flatten({"blk.w.weight": _int8_tensor()})
     entry = json.loads(meta["blk.w.weight"])
     entry["_data"]["future_live_field"] = "per_block_128"
@@ -438,7 +437,6 @@ def test_the_mirror_is_read_before_the_hub_and_cannot_escape_its_root(tmp_path, 
     assert pq.prequant_mirror_path("unsloth/Model-FP8", "Model-INT8.safetensors") == str(
         target.resolve()
     )
-    # a request for the pickle gets its converted sibling; a pickle with no sibling is not mirrored
     assert pq.prequant_mirror_path("unsloth/Model-FP8", "Model-INT8.pt") == str(target.resolve())
     assert pq.prequant_mirror_path("unsloth/Model-FP8", "Model-FP8.pt") is None
     assert pq.prequant_mirror_path("unsloth/..", "secret.safetensors") is None
@@ -616,7 +614,6 @@ def test_the_converter_writes_a_bit_identical_v1_int8_artifact(
         raw = handle.metadata()
     assert json.loads(raw[pn.SOURCE_KEY])["sha256"] == conv.sha256_of(str(src))
     assert json.loads(raw[pn.QUANT_LAYOUT_KEY])["int8_v1"] == pn.INT8_V1_FACTS
-    # the same pickle, read by Studio, and the new file, read by Studio: same objects, same bytes
     a = pq._load_prequant_checkpoint(str(src), map_location = "cpu")["state_dict"]
     b = pq._load_prequant_checkpoint(str(dst), map_location = "cpu", mmap = True)["state_dict"]
     assert conv.compare_state_dicts(a, b) == []

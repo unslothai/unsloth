@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Where a project's workspace folder lands, and what happens when it cannot.
-
-Project workspaces are the only thing Unsloth writes into the user's Documents,
-so a Documents folder it guesses wrong about breaks project creation and
-nothing else. On Windows that guess is wrong by default whenever OneDrive's
-Known Folder Move has repointed Documents at the synced copy.
-"""
+"""Project workspaces are the only thing written to Documents, and OneDrive can repoint that folder."""
 
 import os
 import re
@@ -29,7 +23,6 @@ def test_a_redirected_documents_folder_is_read_as_written():
     assert _documents_from_registry_value(r"C:\Users\t\OneDrive\Documents", False) == Path(
         r"C:\Users\t\OneDrive\Documents"
     )
-    # A variable with nothing to expand into stays put rather than vanishing.
     assert _documents_from_registry_value(r"%NOT_A_REAL_VAR%\Documents", True) == Path(
         r"%NOT_A_REAL_VAR%\Documents"
     )
@@ -40,7 +33,6 @@ def test_expansion_uses_windows_syntax(monkeypatch):
     assert _documents_from_registry_value(r"%USERPROFILE%\Documents", True) == Path(
         r"C:\Users\tombino\Documents"
     )
-    # Without the flag the value is taken literally, variables and all.
     assert _documents_from_registry_value(r"%USERPROFILE%\Documents", False) == Path(
         r"%USERPROFILE%\Documents"
     )
@@ -84,8 +76,7 @@ def test_the_studio_images_keep_project_folders_on_the_studio_volume(
     monkeypatch.setenv("HOME", str(tmp_path / "root"))
 
     assert project_workspaces_root().is_relative_to(image_env["UNSLOTH_STUDIO_HOME"])
-    # The owner gets no OS confinement and its project root is a silent tool root, so it must not
-    # contain the base the managed accounts' `Accounts/<id>/Projects` live under.
+    # The owner has no OS confinement and its project root is silent, so it must not contain Accounts/.
     assert not shared_project_workspaces_root().is_relative_to(project_workspaces_root())
 
 
@@ -102,18 +93,13 @@ def _probe_payload():
 
 
 def test_the_workspace_error_carries_the_folder_it_could_not_make(tmp_path, monkeypatch):
-    """The failing path, not the root it was derived from.
-
-    An existing project keeps a recorded rootPath that can sit anywhere, so the
-    configured projects root is not always the folder that failed.
-    """
+    """Name the failing folder itself: an existing project's rootPath can sit outside the projects root."""
     from storage import studio_db
     from storage.studio_db import ProjectWorkspaceError, _ensure_project_workspace
 
     blocked = tmp_path / "read-only" / "child"
 
-    # The refusal is stubbed rather than staged with chmod: root ignores a
-    # read-only directory, and Windows does not enforce one this way at all.
+    # Stubbed, not chmod: root ignores read-only dirs and Windows does not enforce it.
     def refuse(path):
         raise PermissionError(13, "Permission denied", str(path))
 
@@ -124,11 +110,7 @@ def test_the_workspace_error_carries_the_folder_it_could_not_make(tmp_path, monk
 
 
 def test_creating_a_project_says_which_folder_failed(tmp_path, monkeypatch):
-    """A folder Unsloth cannot create is the one failure this route has.
-
-    It used to surface as a bare 500, which says nothing about which folder or
-    what to do, and the folder is one the user can move.
-    """
+    """A project folder that cannot be created must yield an error naming that folder, not a bare 500."""
     from fastapi import HTTPException
 
     from routes import chat_history
@@ -150,16 +132,11 @@ def test_creating_a_project_says_which_folder_failed(tmp_path, monkeypatch):
     detail = str(caught.value.detail)
     assert str(blocked) in detail
     assert "UNSLOTH_STUDIO_PROJECTS_HOME" in detail
-    # The raw OSError text stays in the log, not in the response.
     assert "Permission denied" not in detail
 
 
 def test_a_database_folder_failure_is_not_blamed_on_the_projects_folder(monkeypatch):
-    """The same upsert opens studio.db before it picks a workspace.
-
-    That folder is UNSLOTH_STUDIO_HOME's, so answering it with "set
-    UNSLOTH_STUDIO_PROJECTS_HOME" sends the user to fix the wrong path.
-    """
+    """A studio.db folder failure must not blame UNSLOTH_STUDIO_PROJECTS_HOME, which is not that folder."""
     from routes import chat_history
 
     monkeypatch.setattr(

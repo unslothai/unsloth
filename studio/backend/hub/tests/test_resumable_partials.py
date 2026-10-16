@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Restoring huggingface_hub's resumable HTTP partials.
-
-The patched writer has to be a faithful 1.17 caller and nothing more: a stable name, opened for
-append, told how far it got, and left alone on failure. It also has to stand down wherever it
-cannot prove that is safe, which is the whole reason 1.18 removed it.
-"""
+"""The patched writer must match the 1.17 caller and stand down whenever safety cannot be proven."""
 
 from __future__ import annotations
 
@@ -99,9 +94,6 @@ def _patched_writer(module):
     return module._download_to_tmp_and_move
 
 
-# ---------------------------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "version, expected",
     [("0.36.2", False), ("1.17.0", False), ("1.18.0", True), ("1.28.0", True), ("2.0.0", False)],
@@ -136,12 +128,7 @@ def test_the_lock_probe_reports_a_working_lock(tmp_path, monkeypatch):
 
 
 def test_the_probe_follows_the_cache_studio_is_using_now(tmp_path, monkeypatch):
-    """Not the one this process booted with.
-
-    huggingface_hub resolves HF_HUB_CACHE at import and moving the cache in Settings does not
-    rewrite the live process, so probing the constant would judge a different filesystem than the
-    one a freshly spawned worker writes its partial to.
-    """
+    """Probe the cache Studio uses now, not HF_HUB_CACHE, which huggingface_hub resolved at import."""
     live = tmp_path / "moved-cache"
     fake = types.ModuleType("utils.hf_cache_settings")
     fake.active_hf_hub_cache = lambda: str(live)
@@ -169,11 +156,7 @@ def test_moving_the_cache_re_probes_rather_than_reusing_the_old_verdict(tmp_path
 
 
 def test_a_network_cache_keeps_the_stock_writer(tmp_path, monkeypatch):
-    """A probe on this host cannot speak for another client.
-
-    NFS mounted -o local_lock=flock keeps flock locks client-local, so two hosts each take the
-    lock and neither is refused. Nothing measurable here would notice, so the mount type decides.
-    """
+    """Network mounts are non-local, since NFS local_lock=flock keeps flock locks client-local."""
     for fstype in ("nfs4", "lustre", "gpfs", "cifs"):
         rp.invalidate_probe_cache()
         monkeypatch.setattr(rp, "_mounts", lambda: [(str(tmp_path), fstype)], raising = False)
@@ -202,12 +185,7 @@ def test_a_local_disk_is_local(tmp_path):
 
 
 def test_an_unrecognised_mount_type_is_not_treated_as_local(tmp_path, monkeypatch):
-    """Locality is an allowlist, because a FUSE daemon picks its own name.
-
-    Unless it negotiates FUSE_FLOCK_LOCKS the kernel answers flock locally (libfuse
-    fuse_lowlevel.h), so a cache on object storage passes the same-host probe while excluding no
-    other client. A blank fstype says nothing either. Neither may read as local.
-    """
+    """Locality is an allowlist: a FUSE mount that lacks FUSE_FLOCK_LOCKS answers flock locally."""
     for fstype in ("fuse.rclone", "fuse.s3fs", "fuse.gocryptfs", "somethingnew", ""):
         rp.invalidate_probe_cache()
         monkeypatch.setattr(rp, "_mounts", lambda: [(str(tmp_path), fstype)], raising = False)
@@ -223,18 +201,12 @@ def test_the_known_local_filesystems_are_local(tmp_path, monkeypatch):
 
 
 def test_each_cache_root_is_judged_on_its_own_filesystem(tmp_path, monkeypatch):
-    """Unsloth remembers several cache roots and they need not lock alike.
-
-    One global verdict taken from the selected cache would have the boot sweep delete a local
-    cache's still-appendable partials whenever the selected one sits on a network mount.
-    """
+    """Each cache root is judged on its own filesystem; a network root must not condemn local partials."""
     from hub.utils import hf_cache_state
 
     local_root, network_root = tmp_path / "local", tmp_path / "network"
     local_root.mkdir()
     network_root.mkdir()
-    # Past the version gate, so the filesystem is what is left to decide.
-    # And out through the public entry point, past the version gate.
     monkeypatch.setattr("huggingface_hub.__version__", "1.28.0", raising = False)
     monkeypatch.setattr(rp, "_hub_is_patchable", lambda: True)
     monkeypatch.setattr(
@@ -259,12 +231,7 @@ def test_a_named_root_that_is_gone_is_not_recreated(tmp_path):
 
 
 def test_only_contention_counts_as_a_working_lock(tmp_path, monkeypatch):
-    """A filesystem with no locking answers ENOLCK or EOPNOTSUPP.
-
-    Reading either as "refused" would enable the shared writer on exactly the mounts that cannot
-    support it, which is the opposite of what the probe is for. flock never answers EACCES; that
-    is fcntl's.
-    """
+    """ENOLCK and EOPNOTSUPP mean no locking, so only lock contention may count as a working lock."""
     import errno as errno_mod
 
     calls = {"n": 0}
@@ -295,12 +262,7 @@ def test_only_contention_counts_as_a_working_lock(tmp_path, monkeypatch):
 
 
 def test_the_probe_does_not_follow_a_planted_symlink(tmp_path):
-    """A shared cache is writable by others, and a predictable probe name is a truncation gadget.
-
-    Plants a symlink at the name a pid-based scheme would pick, pointing at a file the Unsloth
-    account owns. Opening that path "wb" follows the link and empties the target, so the probe has
-    to use a name nobody can guess and create it exclusively.
-    """
+    """Probe files need unguessable names created exclusively, or a planted symlink truncates its target."""
     import os as os_mod
 
     rp.invalidate_probe_cache()
@@ -330,11 +292,7 @@ def test_the_verdict_is_cached_per_directory(tmp_path):
 
 
 def test_a_new_mount_at_the_same_path_is_re_probed(tmp_path, monkeypatch):
-    """The path is not the identity of a filesystem.
-
-    An external cache can be unmounted and something else mounted at the same name, and a verdict
-    about the old filesystem says nothing about the new one, so the device is part of the key.
-    """
+    """Probe verdicts are keyed by device, since a new mount at the same path is a new filesystem."""
     rp.invalidate_probe_cache()
     root = tmp_path / "cache"
     root.mkdir()
@@ -351,11 +309,7 @@ def test_a_new_mount_at_the_same_path_is_re_probed(tmp_path, monkeypatch):
 
 
 def test_a_probe_that_could_not_run_is_not_remembered(tmp_path, monkeypatch):
-    """A full disk or a briefly unwritable cache is not a measurement.
-
-    Caching one would have the backend condemn partials a freshly spawned worker is happily
-    resuming, for the life of the process.
-    """
+    """A probe that could not run must not be cached, or a full disk condemns partials until restart."""
     rp.invalidate_probe_cache()
     attempts: list[int] = []
 
@@ -417,13 +371,8 @@ def test_changing_the_cache_home_invalidates_the_verdict(monkeypatch):
     assert hf_cache_state.hf_partials_are_resumable() is True
 
     monkeypatch.setattr(rp, "can_restore_partials", lambda _c = None: False)
-    # No cache at this layer any more: the verdict follows the filesystem, and a result kept against the
-    # path alone outlives a remount at the same name.
     assert hf_cache_state.hf_partials_are_resumable() is False
     hf_cache_state.invalidate_partial_resumability()
-
-
-# ---------------------------------------------------------------------------------------------
 
 
 def test_it_appends_to_the_stable_name_and_says_how_far_it_got(monkeypatch, tmp_path):
@@ -446,11 +395,7 @@ def test_it_appends_to_the_stable_name_and_says_how_far_it_got(monkeypatch, tmp_
 
 
 def test_a_planted_symlink_is_not_appended_to(monkeypatch, tmp_path):
-    """The stable name is predictable, so on a shared cache it can be pre-created.
-
-    An unguarded "ab" would follow the link and append the model to whatever it points at, and
-    _chmod_and_move would then chmod that file too.
-    """
+    """An append-mode open on the stable name would follow a planted link into the victim file."""
     calls, module, partial, victim = _shared_setup_3(monkeypatch, tmp_path)
     partial.symlink_to(victim)
 
@@ -458,23 +403,14 @@ def test_a_planted_symlink_is_not_appended_to(monkeypatch, tmp_path):
 
     assert victim.read_bytes() == b"keep me", "the download was appended to the symlink target"
     assert not partial.is_symlink(), "the planted link survived"
-    # Started from zero rather than trusting the target's length.
     assert calls["http_get"] == [{"resume_size": 0, "mode": "ab"}]
 
 
 def test_a_partial_left_by_another_user_is_not_built_on(monkeypatch, tmp_path):
-    """Nothing about a plain file says who wrote it.
-
-    A partial another account left is bytes of their choosing, and appending the server's
-    remaining range to a chosen prefix publishes a blob of exactly the right length and entirely
-    the wrong contents. huggingface_hub checks the size afterwards and never the hash
-    (huggingface_hub#3643), so no later step would catch it.
-    """
+    """Never append to a partial another account wrote; upstream checks size, never the hash."""
     calls, module, partial = _shared_setup_2(monkeypatch, tmp_path)
     partial.write_bytes(b"poison" * 100)
 
-    # Only the planted file reads as somebody else's, and the fresh partial replacing it has to still
-    # be ours; keyed on which open it is, since a filesystem may reuse the released inode.
     real_fstat = os.fstat
     opens: list[int] = []
 
@@ -498,11 +434,8 @@ def test_a_partial_left_by_another_user_is_not_built_on(monkeypatch, tmp_path):
 
 
 def test_an_unopenable_partial_defers_instead_of_failing_the_download(monkeypatch, tmp_path):
-    """A 0600 partial from another account answers EACCES, and that is not a reason to give up.
-
-    Stock writes a file of its own and never touches this one, so the download still happens.
-    Raising here would fail every attempt at that blob for good, which is worse than not resuming.
-    """
+    """EACCES on another account's partial must defer to the stock writer, not fail the download for
+    good."""
     calls, module, partial = _shared_setup_2(monkeypatch, tmp_path)
     partial.write_bytes(b"someone else's")
     real_open = os.open
@@ -522,17 +455,12 @@ def test_an_unopenable_partial_defers_instead_of_failing_the_download(monkeypatc
 
 
 def test_a_partial_swapped_after_the_last_write_is_not_published(monkeypatch, tmp_path):
-    """_chmod_and_move resolves the name again, so the name has to still hold what was written.
-
-    Otherwise a shared cache lets another account replace the partial once writing stops and have
-    its file installed as the blob, under a descriptor that passed every check.
-    """
+    """_chmod_and_move re-resolves the name, so the partial must still be the file written, not a swap."""
     calls, module, partial = _shared_setup_2(monkeypatch, tmp_path)
     real_http_get = module.http_get
 
     def swap_then_write(url, handle, **kwargs):
         real_http_get(url, handle, **kwargs)
-        # The writer is finished with the descriptor; the name now points somewhere else.
         partial.unlink()
         partial.write_bytes(b"attacker's model")
 
@@ -545,11 +473,7 @@ def test_a_partial_swapped_after_the_last_write_is_not_published(monkeypatch, tm
 
 
 def test_ownership_that_cannot_be_established_is_an_objection(monkeypatch, tmp_path):
-    """Windows has no st_uid and no ACL read without pywin32, so nothing there can be vouched for.
-
-    _exclusion_is_provable keeps the shared writer off that platform, and this is the second line:
-    if it were ever enabled, an unknown owner still must not read as ours.
-    """
+    """An owner that cannot be established is an objection, so an unknown owner never reads as ours."""
     monkeypatch.delattr(rp.os, "geteuid", raising = False)
     target = tmp_path / "partial"
     target.write_bytes(b"whoever wrote this")
@@ -561,11 +485,7 @@ def test_ownership_that_cannot_be_established_is_an_objection(monkeypatch, tmp_p
 
 
 def test_windows_keeps_the_stock_writer(monkeypatch, tmp_path):
-    """No fcntl and no way to establish ownership, so the shared name stays off.
-
-    os.name is faked as well as fcntl: on a posix box the answer would be False either way, and
-    a test that cannot tell the difference would not notice the writer being switched back on.
-    """
+    """Without fcntl or provable ownership the shared name stays off; os.name and fcntl are both faked."""
     monkeypatch.setattr(rp, "_probe_dir", lambda _c = None: tmp_path)
     monkeypatch.setattr(rp, "_filesystem_is_local", lambda _d: True)
     monkeypatch.setattr(rp.os, "name", "nt")
@@ -581,11 +501,7 @@ def test_windows_keeps_the_stock_writer(monkeypatch, tmp_path):
 
 
 def test_an_oversized_partial_is_restarted_rather_than_resumed(monkeypatch, tmp_path):
-    """A partial longer than the file cannot be resumed from.
-
-    A Range starting past the end answers 416, and it would answer 416 on every later attempt too,
-    so the download would be wedged where the stock writer's fresh name recovers.
-    """
+    """An oversized partial must restart, since a Range past its end answers 416 on every attempt."""
     calls, module, partial = _shared_setup_2(monkeypatch, tmp_path)
     partial.write_bytes(b"z" * 80)
 
@@ -596,10 +512,7 @@ def test_an_oversized_partial_is_restarted_rather_than_resumed(monkeypatch, tmp_
 
 
 def test_a_complete_partial_is_left_for_upstream_to_finish(monkeypatch, tmp_path):
-    """Exactly the declared size is not the wedged case: http_get returns early and it publishes.
-
-    Restarting here would refetch the whole file for nothing, so the boundary is strictly greater.
-    """
+    """A partial of exactly the declared size is left alone; restart only when it is strictly larger."""
     calls, module, partial = _shared_setup_2(monkeypatch, tmp_path)
     partial.write_bytes(b"z" * 50)
 
@@ -609,11 +522,7 @@ def test_a_complete_partial_is_left_for_upstream_to_finish(monkeypatch, tmp_path
 
 
 def test_an_unavailable_probe_does_not_take_the_worker_down(monkeypatch):
-    """The worker patches at import, so this must never raise out of here.
-
-    _ProbeUnavailable is what a transient mount-table or write-probe failure raises; escaping it
-    would kill the download process instead of leaving it with the stock writer.
-    """
+    """A transient _ProbeUnavailable must not escape the import-time patch and kill the download worker."""
     _fake_file_download(monkeypatch)
 
     def unavailable(_c = None):
@@ -691,11 +600,7 @@ def test_xet_keeps_its_own_writer(monkeypatch, tmp_path):
 
 
 def test_a_xet_backed_repo_downloading_over_http_still_resumes(monkeypatch, tmp_path):
-    """xet_file_data is set for any XET-backed repo, including when hf_xet is off.
-
-    Gating on the metadata rather than on whether XET will actually run silently disables this for
-    most of the Hub.
-    """
+    """Gate on whether XET will actually run, not on xet_file_data, which is set for every XET repo."""
     module, calls = _fake_file_download(monkeypatch, xet_available = False)
     rp.restore_resumable_partials()
 
@@ -750,9 +655,6 @@ def test_patching_twice_keeps_one_layer(monkeypatch):
     first = module._download_to_tmp_and_move
     assert rp.restore_resumable_partials() is True
     assert module._download_to_tmp_and_move is first
-
-
-# ---------------------------------------------------------------------------------------------
 
 
 def test_the_ui_is_told_partials_are_resumable_again(monkeypatch):

@@ -337,7 +337,7 @@ def test_no_private_api_but_rocm_clang_cl_on_disk_is_gated(tmp_path, monkeypatch
     monkeypatch.setitem(sys.modules, "triton.runtime.build", None)
     monkeypatch.setattr(_msvc_env, "_rocm_clang_cl_present", lambda: True)
     monkeypatch.setattr(_msvc_env, "_triton_is_triton_windows", lambda: True)
-    # Left real, this asks the runner's own Visual Studio and answers for the wrong machine.
+    # Left real, this queries the runner's own Visual Studio.
     monkeypatch.setattr(_msvc_env, "_triton_include_dirs", lambda: [])
     assert _msvc_env._needs_msvc_headers() is True
     assert _msvc_env.crt_headers_reachable() is False
@@ -374,10 +374,7 @@ def test_the_union_still_gates_when_neither_half_is_there(tmp_path, monkeypatch)
 
 
 def test_a_compiler_that_actually_works_overrules_the_header_heuristic(tmp_path, monkeypatch):
-    """The heuristic reads directories; clang-cl locates MSVC through its own search and can
-    compile from an -internal-isystem we see no trace of (measured on an R9700 with INCLUDE,
-    VCINSTALLDIR and WindowsSdkDir cleared). So a compile that succeeds has to win, or a
-    working machine loses torch.compile on the strength of a guess."""
+    """A compile that succeeds overrules the header heuristic, or a working machine loses torch.compile."""
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.delenv("INCLUDE", raising = False)
     _fake_triton(monkeypatch, [str(tmp_path)])
@@ -404,16 +401,12 @@ def test_an_unrunnable_probe_keeps_the_header_verdict(tmp_path, monkeypatch):
 
 
 def test_marker_positive_dirs_are_still_probed(tmp_path, monkeypatch):
-    """stdlib.h and vcruntime.h are entry points, not the whole toolchain: vcruntime.h includes
-    sal.h, which lives in the SDK's `shared` directory rather than beside either marker, so a
-    mismatched SDK can carry both markers and still fail to compile. The markers must not
-    short-circuit the compiler."""
+    """Marker headers do not prove the toolchain: vcruntime.h needs sal.h from the SDK, so still compile."""
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.delenv("INCLUDE", raising = False)
     dirs = _sdk_dirs(tmp_path, with_toolset = True)
     _fake_triton(monkeypatch, dirs)
     monkeypatch.setattr(_msvc_env, "_compiles_a_trivial_translation_unit", lambda cc, d: False)
-    # The heuristic would say yes; the compiler says no, and the compiler wins.
     assert _msvc_env._headers_complete(dirs) is True
     assert _msvc_env.crt_headers_reachable() is False
 
@@ -429,10 +422,7 @@ def test_marker_positive_dirs_survive_an_unrunnable_probe(tmp_path, monkeypatch)
 
 
 def test_the_probe_really_compiles_and_really_reports_failure(tmp_path):
-    """The probe itself, against a real compiler on whatever platform runs this. cc accepts the
-    MSVC-style flags clang and clang-cl do; if none is installed the probe must say None, never
-    guess. Left as a live check because a probe that silently stopped compiling would report
-    False on every host and disable torch.compile everywhere."""
+    """Live check: a probe that stopped compiling would say False everywhere and disable torch.compile."""
     import shutil
 
     cc = shutil.which("clang-cl") or shutil.which("clang") or shutil.which("cc")
@@ -440,8 +430,6 @@ def test_the_probe_really_compiles_and_really_reports_failure(tmp_path):
         assert _msvc_env._compiles_a_trivial_translation_unit("no-such-compiler", []) is None
         return
     flag_style_ok = _msvc_env._compiles_a_trivial_translation_unit(cc, [])
-    # A cc that rejects /Zs answers False rather than crashing, which is the contract that
-    # matters here; on a real clang-cl it answers True.
     assert flag_style_ok in (True, False)
     assert _msvc_env._compiles_a_trivial_translation_unit("no-such-compiler", []) is None
 
@@ -498,10 +486,9 @@ def test_gate_survives_a_probe_that_raises(monkeypatch):
 
 def _gate(monkeypatch, *, triton_importable, headers_ok):
     monkeypatch.setattr(sys, "platform", "win32")
-    # setenv first: delenv(raising = False) records nothing when absent, so the gate's write leaks.
+    # setenv first: delenv(raising=False) records nothing when absent, so the gate's write leaks.
     monkeypatch.setenv("TORCHDYNAMO_DISABLE", "")
     monkeypatch.delenv("TORCHDYNAMO_DISABLE")
-    # A None entry in sys.modules makes `import triton` raise ImportError.
     monkeypatch.setitem(
         sys.modules, "triton", types.ModuleType("triton") if triton_importable else None
     )

@@ -20,9 +20,6 @@ def _h3_family():
     return detect_video_family("minimax-h3")
 
 
-# ── VRAM floors ─────────────────────────────────────────────────────────────────────────────────────────────────────
-
-
 @pytest.mark.parametrize("budget_gb", [24.0, 16.0, 12.0])
 def test_a_streamed_conditioner_and_denoiser_floor_fits_small_cards(budget_gb):
     """The old floor was the 27.2 GB conditioner + 1.8 = 29.0 GB at every size: 24 / 16 / 12 GB were all refused.
@@ -70,9 +67,6 @@ def test_the_floor_still_grows_with_the_clip():
     assert floor(1344, 768, 345) > 24.0
 
 
-# ── conditioner streaming ───────────────────────────────────────────────────────────────────────────────────────────
-
-
 def test_the_conditioner_stream_kill_switch(monkeypatch):
     from core.inference.video_minimax_h3_te import h3_te_stream_enabled, stream_h3_text_encoder
 
@@ -102,10 +96,9 @@ def test_pinning_in_place_replaces_tensors_and_releases_the_originals():
             self.b = torch.nn.Linear(16, 8, bias = False)
             self.register_buffer("q", torch.arange(64, dtype = torch.int8).view(8, 8))
             self.c = torch.nn.Linear(16, 8, bias = False)
-            self.c.weight = self.b.weight  # tied
+            self.c.weight = self.b.weight
 
     m = M()
-    # Views of one flat base, like safetensors tensors over a single mapping.
     base = torch.randn(16 * 8 + 16)
     m.a.weight = torch.nn.Parameter(base[: 16 * 8].view(16, 8))
     m.a.bias = torch.nn.Parameter(base[16 * 8 :])
@@ -131,14 +124,9 @@ def test_pinning_in_place_replaces_tensors_and_releases_the_originals():
     assert isinstance(m.a.weight, torch.nn.Parameter) and not isinstance(m.q, torch.nn.Parameter)
 
 
-# ── denoiser residency ──────────────────────────────────────────────────────────────────────────────────────────────
-
-
 class _Group:
     def __init__(self, nbytes):
-        self.modules = [
-            torch.nn.Linear(1, nbytes // 4, bias = False)
-        ]  # nbytes/4 fp32 weights -> nbytes
+        self.modules = [torch.nn.Linear(1, nbytes // 4, bias = False)]
         self.parameters = []
         self.buffers = []
         self.stream = None
@@ -172,7 +160,7 @@ def _residency(top_bytes, block_bytes):
 def test_residency_spends_the_budget_on_the_top_level_then_a_block_prefix():
     r = _residency(400, [100] * 10)
     assert r.plan(0) == (False, 0)
-    assert r.plan(399) == (False, 3)  # the top does not fit; blocks still use what is there
+    assert r.plan(399) == (False, 3)
     assert r.plan(400) == (True, 0)
     assert r.plan(750) == (True, 3)
     assert r.plan(10_000) == (True, 10)
@@ -186,13 +174,11 @@ def test_residency_demotes_the_tail_for_a_bigger_request_and_promotes_it_back(mo
     r.fit(1000, initial = True)
     assert r.resident_blocks() == 6 and res.is_resident(r.top)
     assert [g.where for g in r.blocks] == ["cuda"] * 6 + ["cpu"] * 4
-    # A resident group's hooks are no-ops: the streaming hook cannot move it.
     r.blocks[0].offload_()
     assert r.blocks[0].where == "cuda"
     r.fit(600)
     assert r.resident_blocks() == 2
     assert [g.where for g in r.blocks] == ["cuda"] * 2 + ["cpu"] * 8
-    # demoted groups stream again
     r.blocks[3].onload_()
     assert r.blocks[3].where == "cuda"
     r.blocks[3].offload_()
@@ -213,7 +199,7 @@ def test_a_fit_that_fails_partway_releases_what_it_promoted(monkeypatch):
     r = _residency(400, [100] * 10)
 
     def oom():
-        r.blocks[2].where = "cuda"  # partly onloaded
+        r.blocks[2].where = "cuda"
         raise RuntimeError("CUDA out of memory")
 
     r.blocks[2].onload_ = oom
@@ -223,7 +209,6 @@ def test_a_fit_that_fails_partway_releases_what_it_promoted(monkeypatch):
     res.release_all(r)
     assert r.resident_bytes() == 0
     assert r.top.where == "cpu" and all(g.where == "cpu" for g in r.blocks)
-    # streaming hooks are live again
     r.blocks[0].onload_()
     assert r.blocks[0].where == "cuda"
 
@@ -244,7 +229,6 @@ def test_the_phase_need_leaves_room_on_a_12gb_card():
     floor = h3_phase_need_gb(960, 544, 124, te_streamed_gb = H3_TE_STREAMED_GB, fragmentation = False)
     assert floor < 11.0
     assert h3_phase_need_gb(1344, 768, 345, te_streamed_gb = H3_TE_STREAMED_GB) > 24.0
-    # The residency plan keeps fragmentation slack free; the refusal floor does not ask for it.
     assert h3_phase_need_gb(1344, 768, 124, te_streamed_gb = H3_TE_STREAMED_GB) > h3_phase_need_gb(
         1344, 768, 124, te_streamed_gb = H3_TE_STREAMED_GB, fragmentation = False
     )
@@ -344,8 +328,8 @@ def test_pinning_is_budgeted_on_the_whole_payload_not_one_arena(monkeypatch):
     monkeypatch.delenv(dm.GROUP_OFFLOAD_PIN_ENV, raising = False)
     monkeypatch.setattr(dm, "_pinned_memory_capped", lambda: False)
     monkeypatch.setattr(dm, "_pin_budget_mib", lambda: 20 * 1024)
-    assert h3_te_pin_allowed()  # one arena fits
-    assert h3_te_pin_allowed(5 * 2**30)  # the VAEs
-    assert not h3_te_pin_allowed(27 * 2**30)  # the conditioner does not
+    assert h3_te_pin_allowed()
+    assert h3_te_pin_allowed(5 * 2**30)
+    assert not h3_te_pin_allowed(27 * 2**30)
     monkeypatch.setenv(dm.GROUP_OFFLOAD_PIN_ENV, "1")
     assert h3_te_pin_allowed(27 * 2**30)

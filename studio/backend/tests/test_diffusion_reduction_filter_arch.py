@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.1, Z-Image and Qwen-Image pin inductor's reduction-config filter on sm120, sm80 and sm89, so one seed renders
-one image in every fresh server there.
-
-A few of their norm reductions get several configs that sum in different orders, and a cold-cache server benchmarks
-them in its own process on near-equal timings: fresh servers rendered 2-4 variants per seed on an RTX PRO 6000, A100
-and L4. B200 servers were already deterministic for these families, so the opt-in is per (family, compute
-capability)."""
+"""Near-equal reduction configs sum in different orders; the pin keeps one seed one image."""
 
 from __future__ import annotations
 
@@ -75,7 +69,7 @@ def test_the_race_families_share_one_arch_list():
 @pytest.mark.parametrize("cap", [(10, 0), (10, 3), (9, 0), (7, 5), (12, 1), None])
 @pytest.mark.parametrize("name", _IMAGE_FAMILIES)
 def test_image_family_keeps_inductor_pick_elsewhere(monkeypatch, name, cap):
-    # B200 (measured deterministic), B300, H100, T4, other Blackwell parts (unmeasured), no CUDA / ROCm.
+    # B200 measured deterministic; B300, H100, T4, other Blackwell unmeasured; no CUDA / ROCm
     _on(monkeypatch, cap)
     fam = _family(name)
     assert cc.family_filters_reductions(fam) is False
@@ -122,7 +116,7 @@ def test_capability_query_never_raises(monkeypatch):
 
 
 def test_load_paths_key_the_bundle_on_the_same_decision():
-    # The bundle key follows the arch-scoped decision, else a load reuses a bundle compiled the other way.
+    # the bundle key must follow the arch-scoped decision or a load reuses the wrong bundle
     import inspect
 
     from core.inference import diffusion

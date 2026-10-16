@@ -116,8 +116,7 @@ def test_cache_escape_uses_size_verified_predicate(remote_gguf_repo, monkeypatch
 
 
 def test_variant_matching_uncollapsed_repo_file_accepted(remote_gguf_repo, monkeypatch):
-    # Same quant label across shards collapses to one GgufVariantInfo; the
-    # preflight must still match against every repo file, like the load path.
+    # Shards collapse to one GgufVariantInfo; preflight must still match every repo file like the load.
     monkeypatch.setattr(
         huggingface_hub,
         "list_repo_files",
@@ -175,7 +174,7 @@ def test_a_verified_cached_copy_uses_a_projector_beside_it(
     config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
 
     assert config.is_vision is True
-    # Carried for the training guard only: the launch resolves its own beside the weight.
+    # Only for the training guard; the launch resolves its own projector beside the weight.
     assert config.gguf_local_mmproj_file == str(projector.resolve())
     assert config.gguf_mmproj_file is None
 
@@ -314,7 +313,6 @@ def test_a_verified_cached_copy_settles_the_variant_without_a_second_listing(
     assert config.gguf_variant == "OLD_Q2"
     assert listings == [], "a verified cached file still cost a repo listing"
 
-    # Nothing cached: the listing runs and still rejects a variant it does not name.
     listings.clear()
     monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: None)
     with pytest.raises(ValueError, match = "OLD_Q2"):

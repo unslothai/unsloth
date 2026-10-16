@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The MLX post-load audio mirror must not strip a classification the pre-load
-config already earned.
-
-`_handle_load` mirrors the backend entry's is_audio/audio_type/has_audio_input
-over the pre-load ModelConfig values. The MLX probe only ever speaks for
-"audio_vlm", so for every other audio family (snac/csm/bicodec/dac TTS, whisper
-ASR) the mirror has to be a no-op. Otherwise the chat route's TTS redirect
-(`model_info.get("is_audio") and audio_type != "whisper"`) and the whisper guard
-stop firing on Apple Silicon, and the checkpoint is served as a plain text model
-that streams raw codec tokens into chat.
-"""
+"""The MLX audio mirror must not change TTS or whisper classification, only audio_vlm."""
 
 import sys
 from types import SimpleNamespace
@@ -135,7 +125,6 @@ def test_audio_cpp_workflow_fields_cross_the_worker_and_the_parent(monkeypatch):
         "audio_convert_rules": {"source_rate": 16000, "target_rate": 24000},
         "audio_edit": {"style": "instructions", "delivery": True, "max_changes": 5},
         "audio_music": {"modes": [{"id": "song", "variations": None}]},
-        # The /audio/run route sizes CPU waits from it.
         "audio_cpp_backend": "cpu",
     }
     entry = {"is_audio": True, "audio_type": "audiocpp_tts", "has_audio_input": False, **fields}

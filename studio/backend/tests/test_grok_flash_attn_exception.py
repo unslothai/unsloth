@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Grok is priced without flash attention, whatever else the launch resolves.
-
-``llama_init_from_model`` forces it off for LLM_ARCH_GROK above both later upgrades, so
-answering "on" would publish a context the child cannot hold. The rule is easy to lose in a
-merge (#11043 against #9697, #10489), so these tests hold both ends: the rule itself, and
-the architecture reaching the resolver at every sizing seam.
-"""
+"""Grok is priced without flash attention; answering on would publish a context the child cannot hold."""
 
 from __future__ import annotations
 
@@ -72,7 +66,6 @@ class TestNothingPutsItBack:
             _planned_flash_attn_state(planned_cache_types = ("f16", v_type), architecture = "grok")
             is False
         )
-        # The same pair elsewhere still forces it on: not asserting a constant.
         assert (
             _planned_flash_attn_state(planned_cache_types = ("f16", v_type), architecture = "qwen3")
             is True

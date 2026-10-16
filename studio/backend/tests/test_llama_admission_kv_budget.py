@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Admission must count KV tokens, not just serving slots.
-
-The failure these cover happened live. Two chats generating at once against a model
-loaded at ``-c 2048``:
-
-    srv send_error: task id = 1101, error: Context size has been exceeded.
-    slot   release: id 0 | task 1101 | n_tokens = 565,  truncated = 0
-    srv send_error: task id = 714,  error: Context size has been exceeded.
-    slot   release: id 1 | task 714  | n_tokens = 1485, truncated = 0
-
-565 + 1485 = 2050 against a 2048-token cache, ``truncated = 0`` on both: neither request
-was too long on its own. llama.cpp killed both tasks, taking a chat reply and a Deep
-Research run with it.
-
-The cause is that ``--parallel 4 --kv-unified`` allocates ONE cache of ``n_ctx`` and then
-reports ``n_ctx_slot = n_ctx`` to every slot, so four generations can each be admitted
-believing they own the whole window.
-"""
+"""Admission must count KV tokens, since --kv-unified reports the full n_ctx to every slot."""
 
 import asyncio
 
@@ -65,8 +48,6 @@ class TestTheBudgetIsEnforced:
             lease = first.lease_nowait()
             assert lease is not None, "the first request owns the cache"
             second = await _reserve(queue, capacity = 4, tokens = 1500, budget = 2048)
-            # A slot is free, but the cache is not. Before token accounting this
-            # returned a lease and llama.cpp killed both tasks.
             assert second.lease_nowait() is None
             return queue, lease, second
 
@@ -106,7 +87,6 @@ class TestTheBudgetIsEnforced:
             assert queue.snapshot().committed == 1500
             lease.release()
             assert queue.snapshot().committed == 0
-            # And the cache is available again.
             second = await _reserve(queue, capacity = 4, tokens = 1500, budget = 2048)
             return second.lease_nowait()
 
@@ -223,7 +203,6 @@ class TestTheRouteHelpers:
             budget = 2048,
             capacity = 4,
         )
-        # Clamped so the queue admits it alone rather than stranding it.
         assert cost == 2048
 
     def test_a_shape_with_no_messages_reserves_a_fair_share(self):
@@ -236,8 +215,7 @@ class TestTheRouteHelpers:
             budget = 2048,
             capacity = 4,
         )
-        # Not the whole budget (that would serialise /completions) and not nothing
-        # (that would restore the overcommit).
+        # not the whole budget (serialises /completions), not zero (overcommits)
         assert cost == 512
 
     def test_no_budget_means_no_cost(self):
@@ -256,13 +234,7 @@ class TestTheRouteHelpers:
 
 
 class TestParkedLeasesStillHoldTheirKV:
-    """A parked holder gives its SLOT back, not its cache.
-
-    `try_park` hands the slot to the pool while its holder waits on a tool approval, so
-    `_held` drops to zero even though llama-server still holds that lease's KV. The
-    deadlock escape used to ask whether a slot was held, which made a parked lease look
-    like an empty backend and admitted the next caller unconditionally.
-    """
+    """A parked lease gives back its slot but keeps its KV, so parking must not reopen the whole cache."""
 
     def test_parking_does_not_reopen_the_whole_cache(self):
         async def scenario():
@@ -271,7 +243,6 @@ class TestParkedLeasesStillHoldTheirKV:
             lease = first.lease_nowait()
             assert lease is not None
             assert lease.park() is True, "the park budget must allow this"
-            # The slot is back, the KV is not.
             assert queue.snapshot().committed == 1500
             second = await _reserve(queue, capacity = 4, tokens = 1500, budget = 2048)
             return queue, second.lease_nowait()
@@ -329,17 +300,7 @@ class TestTheOutputAllowanceIsCounted:
 
 
 class TestTheWholeRenderedPromptIsCounted:
-    """Two more ways the reservation undercounted, both from review.
-
-    An uncapped request reserved no output allowance even though
-    `_build_passthrough_payload` then sends `max_tokens = backend_ctx`, so short
-    prompts held tiny commitments while each generation could fill the cache. That is
-    now a bounded allowance rather than the whole window, which fixed the undercount by
-    making Studio's default chat un-runnable concurrently. And
-    the estimate covered only `messages`, while OpenAI tool definitions are
-    rendered into the prompt and Anthropic keeps `system` and `tools` separate
-    until they are translated.
-    """
+    """Price the whole rendered prompt including tools and system, plus a bounded output allowance."""
 
     @staticmethod
     def _cost(
@@ -371,11 +332,8 @@ class TestTheWholeRenderedPromptIsCounted:
         assert cost <= _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS + 64
 
     def test_uncapped_short_prompts_fill_the_slots_and_no_more(self):
-        """The collision this closes: tiny commitments, cache-filling generations.
-
-        Four fit and a fifth does not, on a cache small enough that the flat allowance would
-        not have left room for four. A prompt-only charge would admit any number.
-        """
+        """Tiny prompts with cache-filling generations must be charged for output, or any number is
+        admitted."""
         from types import SimpleNamespace
 
         async def scenario():
@@ -451,21 +409,7 @@ class TestTheWholeRenderedPromptIsCounted:
 
 
 class TestToolLoopsOpenAtAShareAndGrow:
-    """One lease covers up to 25 rounds, each larger than the last.
-
-    `generate_chat_completion_with_tools` appends every tool result and re-sends the
-    conversation, so a request that starts small can approach the full window while its
-    commitment stays at the opening estimate. Another request is then admitted against a
-    cache the active rounds have already grown into.
-
-    #9392 closed that by reserving the WHOLE cache for any tool loop, which made every
-    tool chat run alone: any lit pill sets ``enable_tools``. Measured on a 262144 cache,
-    four tool chats reached first token at 0.1s, 2.8s, 4.6s and 8.8s, one after another.
-
-    A tool loop now opens at an equal share and re-costs as it grows
-    (``on_conversation_grew`` -> ``lease.recost_waiting``), the alternative #9392 named:
-    the growth is charged when it happens instead of assumed up front.
-    """
+    """Tool loops open at an equal share and re-cost as they grow, instead of reserving the whole cache."""
 
     @staticmethod
     def _cost(
@@ -483,13 +427,7 @@ class TestToolLoopsOpenAtAShareAndGrow:
         )
 
     def test_a_tool_request_opens_at_an_equal_share(self):
-        """Keyed on the resolved path, not on ``tools``: the loop also opens on
-        ``enable_tools``, ``mcp_enabled``, the CLI policy and a checkpoint repair,
-        none of which carry a client catalogue.
-
-        The share is a FLOOR, not a cap: a larger estimate is charged in full, and the
-        floor only spares a small opening request a re-cost on its first round.
-        """
+        """Keyed on the resolved tool-loop path, not on tools; the equal share is a floor, not a cap."""
         from types import SimpleNamespace
 
         payload = SimpleNamespace(
@@ -539,7 +477,6 @@ class TestToolLoopsOpenAtAShareAndGrow:
             for _ in range(4):
                 reservation = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
                 leases.append(reservation.lease_nowait())
-            # The cache is exactly full at four shares, so nobody may grow.
             return leases, queue
 
         leases, queue = _run(scenario())
@@ -581,13 +518,7 @@ class TestToolLoopsOpenAtAShareAndGrow:
 
 
 class TestCancellingTheBlockingHeadReopensTheLine:
-    """A cancelled head owns nothing, so nothing else re-runs admission for it.
-
-    FIFO parks the line behind an oversized waiter, and a release re-runs
-    admission. A cancel frees no slot and no tokens, so the waiters behind it sat
-    on a free budget until unrelated traffic arrived, which never happens on a
-    queue whose only lease is parked awaiting tool approval.
-    """
+    """A cancel frees no slot and triggers no re-admission, so waiters behind it sat on a free budget."""
 
     def test_a_smaller_waiter_runs_once_the_oversized_head_is_cancelled(self):
         async def scenario():
@@ -597,12 +528,12 @@ class TestCancellingTheBlockingHeadReopensTheLine:
 
             blocked = await _reserve(queue, capacity = 4, tokens = 1500, budget = 2048)
             behind = await _reserve(queue, capacity = 4, tokens = 500, budget = 2048)
-            # 1000 + 1500 > 2048, and FIFO holds the 500 behind it.
+            # 1000 + 1500 > 2048, and FIFO holds the 500 behind it
             assert blocked.lease_nowait() is None
             assert behind.lease_nowait() is None
 
             blocked.cancel()
-            # No other queue traffic: the cancel itself must reopen the line.
+            # no other queue traffic: the cancel itself must reopen the line
             await asyncio.sleep(0)
             assert behind.lease_nowait() is not None
 
@@ -627,7 +558,6 @@ class TestCancellingTheBlockingHeadReopensTheLine:
 
             tail.cancel()
             await asyncio.sleep(0)
-            # The oversized head is still oversized, so it stays queued.
             assert head.lease_nowait() is None
             assert queue.snapshot().queued == 1
 

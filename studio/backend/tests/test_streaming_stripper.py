@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Correctness proof for ``StreamingMarkupStripper``.
-
-The incremental stripper is only sound if two claims hold, so both are tested directly
-rather than assumed:
-
-1. **Sentinel completeness** - text containing no literal from ``_STRIP_SENTINELS`` is
-   returned unchanged by the strip. If an arm could fire without one of those literals,
-   the fast path would silently skip a strip that should have happened.
-2. **Prefix split** - ``strip(text) == text[:i] + strip(text[i:])`` for any ``i`` at or
-   before the first sentinel. This is what lets the stripper keep a settled prefix.
-
-On top of those, the whole thing is replayed token by token against the non-incremental
-strip and asserted byte-identical at every step, over every chunking the corpus produces.
-"""
+"""StreamingMarkupStripper must match the non-incremental strip, and skip only text without sentinels."""
 
 import random
 import sys
@@ -72,12 +59,7 @@ def test_sentinel_free_text_is_returned_unchanged(corpus):
 
 
 def test_sentinel_free_fuzz_is_returned_unchanged():
-    """Claim 1 over random text built from characters the markup is made of.
-
-    Drawing from ``<>|[]{}/:=_`` and backticks rather than plain prose is what makes this
-    a real test: it produces near-miss markup that a too-narrow sentinel list would let
-    through.
-    """
+    """Markup-alphabet fuzz catches near-miss text that a too-narrow sentinel list would let through."""
     rng = random.Random(20260811)
     alphabet = "<>|[]{}/:=_`~ \n\tabcTOOLCALSfunctionthinkARGSpython_tagcall"
     checked = 0
@@ -158,7 +140,6 @@ def test_rewind_resets_cached_state():
     stripper = StreamingMarkupStripper(ENABLED)
     long_text = 'hello <tool_call>{"name": "search", "arguments": {}}</tool_call> world'
     assert stripper.strip(long_text) == _reference_strip(long_text)
-    # Unrelated shorter text: not an extension of the previous input.
     assert stripper.strip("different") == _reference_strip("different")
     assert stripper.strip(long_text) == _reference_strip(long_text)
 
@@ -170,13 +151,7 @@ def test_repeated_call_is_cached():
 
 
 def test_scan_is_amortized_not_quadratic():
-    """A prose-only response must not cost more per token as it grows.
-
-    Measures work rather than wall clock: the reference does a full pass per token, so
-    its total character-visits grow quadratically; the incremental stripper resumes its
-    scan and must stay linear. Compared as a ratio so the assertion is machine
-    independent.
-    """
+    """Prose-only text must cost constant work per token, not grow with length; compared as a ratio."""
     import time
 
     def elapsed(fn, tokens):
@@ -205,8 +180,7 @@ def test_scan_is_amortized_not_quadratic():
     )
 
 
-# Cases the corpus and the alphabet fuzz both missed. Each produced a real divergence from
-# the reference strip before the guard it names was added, so each is pinned as a literal.
+# Each case diverged from the reference strip before its guard was added.
 _MISSED_BY_THE_CORPUS = (
     # ``_GEMMA_BARE_TC_RE`` is ``call\s*:``, so a space or newline before the colon is
     # still a call. Sentinel completeness needs the literal ``call``, not ``call:``.
@@ -245,12 +219,7 @@ def test_known_hard_cases_are_still_sentinel_reachable(text):
 
 
 def test_incremental_matches_reference_on_structured_fuzz():
-    """Fuzz built from whole markup fragments rather than from an alphabet.
-
-    The alphabet fuzz above rarely assembles a complete, well-formed call, which is why
-    it missed every case in ``_MISSED_BY_THE_CORPUS``. Splicing real fragments reaches
-    the arms that only fire on a complete one.
-    """
+    """Fuzz splicing whole markup fragments, which reaches the arms that only fire on a complete call."""
     fragments = _MISSED_BY_THE_CORPUS + (
         "Hello world. ",
         "I will call the tool. ",
@@ -281,12 +250,7 @@ def test_incremental_matches_reference_on_structured_fuzz():
 
 
 def test_prose_containing_the_word_call_is_still_amortized():
-    """``call`` is a sentinel and an ordinary English word.
-
-    Taking it at face value put the full strip back on the per-token path for any answer
-    that says "I will call the tool", which measured slower than the code this replaces.
-    ``_first_sentinel`` confirms the hit against the arm instead, and this pins that.
-    """
+    """The word call is also English, so a sentinel hit must be confirmed against its arm."""
     import time
 
     def elapsed(fn, tokens):
@@ -313,11 +277,7 @@ def test_prose_containing_the_word_call_is_still_amortized():
 
 
 def test_a_real_bare_call_is_still_seen_as_a_sentinel():
-    """The other side of the same refinement: a real call must not be skipped.
-
-    Including while it is still a partial, which is the state the buffer is in for every
-    token but the last one of it.
-    """
+    """A real bare call must still be seen as a sentinel while partial, not skipped."""
     text = "Sure. call:get_weather{city:Paris}"
     for size in range(text.index("call") + len("call"), len(text) + 1):
         assert _first_sentinel(text[:size], 0) == text.index(
@@ -328,11 +288,7 @@ def test_a_real_bare_call_is_still_seen_as_a_sentinel():
 
 
 def test_the_bracket_scan_size_guard_survives_a_prefix_cut():
-    """``_strip_bracket_tag_calls`` stands down over ``_MAX_BRACKET_SCAN_CHARS``.
-
-    A cut shortens the segment, so a tail that fell under the limit would re-enable an
-    arm the full scan had skipped and strip text the reference keeps.
-    """
+    """A prefix cut must not drop the segment under _MAX_BRACKET_SCAN_CHARS, or a skipped arm re-enables."""
     prose = "word " * ((tool_healing._MAX_BRACKET_SCAN_CHARS // 5) + 1)
     text = prose + '\nsearch[ARGS]{"x": 1} tail'
     assert len(text) > tool_healing._MAX_BRACKET_SCAN_CHARS
@@ -344,12 +300,7 @@ def test_the_bracket_scan_size_guard_survives_a_prefix_cut():
 
 
 def test_a_prose_call_at_a_token_boundary_stays_amortized():
-    """``call`` ending a token is only a possible marker, and only until the next one.
-
-    Committing that hit sends every later token through the whole-buffer checks, so the
-    cost depended on where the tokenizer happened to split rather than on the text. This
-    measures the same text under two chunkings; they have to stay comparable.
-    """
+    """A call at a token end is only a possible marker, so it must not commit the whole-buffer path."""
     import time
 
     def elapsed(tokens):
@@ -377,13 +328,7 @@ def test_a_real_call_arriving_a_character_at_a_time_is_still_caught():
 
 
 def test_the_caller_can_still_grow_its_buffer_in_place():
-    """The stripper must not hold a reference to the buffer it is handed.
-
-    The streaming loop grows it with ``cumulative_display += token``, and CPython only
-    resizes a string in place while nothing else refers to it. One extra reference turns
-    every append into a full copy, so the concatenation goes quadratic even though the
-    scanning does not, and that cost lands on the caller rather than here.
-    """
+    """The stripper must not keep a reference to the caller's buffer, or += copies it on every token."""
     import time
 
     def elapsed(count):
@@ -422,13 +367,7 @@ def test_no_reference_to_the_buffer_is_retained():
 
 
 def test_reset_clears_the_cached_prefix_for_a_new_buffer():
-    """The streaming caller keeps one instance across tool iterations, and each iteration
-    starts a fresh ``cumulative_display``. ``_is_extension`` samples rather than compares,
-    so it cannot be relied on to notice: a new buffer that agreed with the old one on
-    length and on every sampled window would be accepted, the scan would resume at an
-    offset from the previous iteration and never look below it again. The caller says so
-    explicitly rather than depending on the sampling to catch it.
-    """
+    """reset() must clear the cached prefix, since _is_extension samples and may miss a new buffer."""
     stripper = StreamingMarkupStripper(ENABLED)
 
     first = "x" * 200 + '<tool_call>{"name": "search", "arguments": {}}</tool_call>' + "y" * 200
@@ -454,26 +393,7 @@ def test_reset_clears_the_cached_prefix_for_a_new_buffer():
     ],
 )
 def test_early_markup_is_not_slower_than_the_code_it_replaces(monkeypatch, prefix):
-    """Once the cut is 0 and nothing is settled, both arms are the same strip.
-
-    Paying the whole-buffer checks there cannot change the answer, and an answer with
-    markup near its front would pay them on every token for the rest of the turn, which
-    measured slower than the full rescan this replaces.
-
-    Counted, not timed. This used to compare CPU time against the reference with a 10%
-    margin, but the two arms do the same strip here, so their ratio sits at 1.0 and the
-    runner's noise alone spans 0.89 to 1.09: it failed on a PR that did not touch the
-    stripper (0.444s against 0.404s). Paying the checks on every token measured 1.11 to
-    1.33, overlapping that noise, so no margin separates the two.
-
-    The work is countable where it is done: the characters each arm hands to
-    ``strip_outside_think`` and ``strip_segment``, which hold the regex passes, and to the
-    blocked-body masking only the incremental arm runs. The incremental arm may read no
-    more of either than the reference, may mask each character at most once per strip, and
-    runs the whole-buffer checks on no token. A second strip or scan inside ``_full_strip``
-    doubles those counts. The at-offset-0 case reaches the degenerate branch, which the
-    timed version never did.
-    """
+    """Counts work instead of timing it: runner noise spans 0.89 to 1.09, too wide for a 10% margin."""
     work = {}
 
     def counting(name, fn):
@@ -483,7 +403,6 @@ def test_early_markup_is_not_slower_than_the_code_it_replaces(monkeypatch, prefi
 
         return wrapper
 
-    # Both arms reach these through the same module objects, so one patch counts both.
     monkeypatch.setattr(
         tool_healing,
         "strip_outside_think",
@@ -521,7 +440,6 @@ def test_early_markup_is_not_slower_than_the_code_it_replaces(monkeypatch, prefi
     incremental, got = run(StreamingMarkupStripper(ENABLED).strip)
 
     assert got == expected
-    # Not vacuous: the reference did one full strip per token, so the counters were live.
     assert reference.get("strip_outside_think", 0) >= count * len(prefix)
     assert reference.get("strip_segment", 0) > 0
     assert not incremental.get("whole_buffer_checks"), (
@@ -539,12 +457,7 @@ def test_early_markup_is_not_slower_than_the_code_it_replaces(monkeypatch, prefi
 
 
 def test_an_open_reasoning_block_is_scanned_incrementally():
-    """A reasoning body is most of a reasoning model's answer.
-
-    The open-block branch restarted at the opener on every token, so the body was
-    rescanned in full each time: the same quadratic this class exists to remove, with a
-    smaller constant. 16k tokens cost 7.4s before this and 0.05s after.
-    """
+    """An open reasoning block must be scanned incrementally, or each token rescans the whole body."""
     import time
 
     def elapsed(count):
@@ -616,11 +529,7 @@ def test_non_final_stripper_matches_the_non_final_strip(text):
 
 
 def test_the_final_answer_loop_is_not_quadratic():
-    """That loop ran the whole strip over the growing buffer on every token.
-
-    It is reached when the tool-iteration budget is exhausted, which is uncommon, but it
-    was the largest single cost left in this file: 50s over a 16k-token answer.
-    """
+    """The final-answer loop must not run the whole strip over the growing buffer on every token."""
     import time
 
     def elapsed(fn, count):
@@ -657,7 +566,6 @@ def test_a_cut_never_crosses_an_open_parameter_block():
         assert got == expected
         assert "TEXT</function>" not in got
 
-    # A closed parameter block still gets cut, so the guard is not blanket.
     closed = "Visible <parameter=x>v</parameter>\n<function=a></function>TEXT</function>"
     stripper = StreamingMarkupStripper(names)
     for i in range(1, len(closed) + 1):
@@ -666,10 +574,7 @@ def test_a_cut_never_crosses_an_open_parameter_block():
 
 
 def test_a_replaced_middle_is_not_taken_for_a_continuation():
-    """The extension check samples rather than compares in full, so it has to sample
-    somewhere the difference can show. Head and tail alone missed a buffer whose middle
-    was replaced while both ends and the length stayed put, and the stripper then skipped
-    rescanning the part that changed and returned a stale answer."""
+    """Extension sampling must include the middle: head and tail alone missed a replaced middle."""
     sample = tool_call_parser._EXTENSION_SAMPLE
     names = {"a"}
     first = "A" * sample + "x" * 11 + "Z" * sample
@@ -695,10 +600,7 @@ def test_an_append_only_stream_is_still_recognised_as_a_continuation():
 
 
 def test_a_bounded_scan_still_takes_the_eos_after_a_malformed_mistral_array():
-    """The Mistral array arm keeps consuming an optional ``</s>`` after the ``]`` that the
-    bound is computed from, so bounding at the last ``]`` alone left the EOS in the
-    displayed text. Prose ``[1]`` before the marker is what turns the bound on, and a
-    malformed array is what gets past the string-aware pre-pass to this arm."""
+    """The bounded Mistral scan must still consume the trailing </s> after a malformed array."""
     text = 'See [1]. [TOOL_CALLS] [{"name": "get_weather", "ar}]</s> Done.'
 
     assert tool_call_parser.strip_tool_markup(text, final = True) == "See [1].  Done."
@@ -706,10 +608,7 @@ def test_a_bounded_scan_still_takes_the_eos_after_a_malformed_mistral_array():
 
 
 def test_openers_far_past_the_closer_do_not_reopen_the_quadratic_scan():
-    """The bound at the last closer is what keeps a tail of unclosed openers linear, so
-    deciding whether to apply it by probing a fixed window after the FIRST closer just
-    moves the cliff: put more prose than the window between the closed call and the
-    openers and the unbounded scan comes back. Prose length must not enter the decision."""
+    """Bound the scan at the last closer; a window after the first closer just moves the quadratic cliff."""
     import time
 
     def elapsed(n):
@@ -765,5 +664,4 @@ def test_a_body_scan_with_no_closing_brace_short_circuits():
 
     assert _balanced_json_span('{"command":"' + "A" * 4096, 0) is None
     assert _balanced_json_span('{"command":"x"}', 0) == 14
-    # A brace inside a string still does not close it.
     assert _balanced_json_span('{"c":"}"}', 0) == 8
