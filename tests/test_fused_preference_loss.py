@@ -601,7 +601,7 @@ def test_orpo_under_fsdp1_falls_back(dpo_module, monkeypatch, tmp_path):
 
 
 def _real_hidden_states_helpers():
-    text = (ROOT / "unsloth" / "models" / "rl_replacements.py").read_text()
+    text = (ROOT / "unsloth" / "models" / "rl_replacements.py").read_text(encoding = "utf-8")
     start = text.index("def _unsloth_grpo_returns_hidden_states(")
     end = text.index("_GRPO_HIDDEN_STATES_WIDTH_DISPATCH = ")
     package = types.ModuleType("_fake_unsloth_models")
@@ -653,7 +653,7 @@ def test_rl_replacement_injects_dispatch_only_when_enabled(monkeypatch):
         "        return num_examples\n"
     )
     rl_path = ROOT / "unsloth" / "models" / "rl_replacements.py"
-    text = rl_path.read_text()
+    text = rl_path.read_text(encoding = "utf-8")
     start = text.index("def _insert_after_docstring(")
     end = text.index('RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_fused_preference_forward)')
     namespace = {"os": os, "re": __import__("re"), "textwrap": __import__("textwrap")}
