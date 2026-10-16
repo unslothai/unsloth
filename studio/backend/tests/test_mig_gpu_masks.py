@@ -397,7 +397,13 @@ T4_MIB = 15360
 
 @pytest.fixture
 def calls(monkeypatch):
-    seen = {"torch": 0, "list": 0, "uuid_query_fails": False, "list_fails": False, "list_empty": False}
+    seen = {
+        "torch": 0,
+        "list": 0,
+        "uuid_query_fails": False,
+        "list_fails": False,
+        "list_empty": False,
+    }
     run = mod.subprocess.run
 
     def counting_run(cmd, *args, **kwargs):
