@@ -102,20 +102,19 @@ test("a streaming open fence is highlighted rather than shown plain", () => {
   );
 });
 
-test("a fence in the thinking box is coloured off the main thread, while it grows only on screen", () => {
+test("thinking fences stay plain while answers retain highlighting", () => {
   assert.match(readSrc("components/assistant-ui/code-highlight-context.ts"), /export const CodeHighlightModeContext = createContext<CodeHighlightMode>\("all"\);/);
-  assert.match(MARKDOWN_TEXT, /\{highlightCode \|\| highlightMode === "settled" \? \(\s*<FenceBlock[\s\S]{0,300}isIncomplete=\{highlightCode \? props\.isIncomplete : false\}/, "a closed fence in a trace takes the deferred, worker-routed block, never the growing fence's tokenizer");
-  assert.equal((MARKDOWN_TEXT.match(/\) : \(\s*<PlainFenceBlock/g) ?? []).length, 1, "only the ``` closed fence route keeps a plain twin");
-  assert.match(MARKDOWN_TEXT, /<StreamingFenceBlock\s*language=\{openFence\.language\}\s*source=\{openFence\.text\}\s*\/>\s*\) : \(\s*<LiveThinkingFence/, "a growing thinking fence takes the viewport-gated worker route");
-  const live = MARKDOWN_TEXT.slice(MARKDOWN_TEXT.indexOf("function LiveThinkingFence("), MARKDOWN_TEXT.indexOf("function FenceBlock("));
-  assert.match(live, /useThinkingCodeColour\(host, source, languageToken, settled\)/);
-  assert.match(live, /<FenceBody\s*isIncomplete=\{!settled\}/);
-  assert.equal(/useFenceTokens|code\.highlight|noteStreamingFence/.test(live), false, "no main-thread tokenizer for a growing thinking fence");
-  assert.match(live, /result === null \? \(\s*<PlainFenceShell language=\{languageToken\} source=\{source\} \/>/, "plain until the worker answers");
+  assert.match(MARKDOWN_TEXT, /\{highlightCode \? \(\s*<FenceBlock[\s\S]{0,100}isIncomplete=\{props\.isIncomplete\}/, "completed answer fences retain their highlighted renderer");
+  assert.match(MARKDOWN_TEXT, /\) : \(\s*<PlainFenceBlock\s*actions/, "completed thinking fences retain their plain shell and copy controls");
+  assert.match(MARKDOWN_TEXT, /<StreamingFenceBlock\s*language=\{openFence\.language\}\s*source=\{openFence\.text\}\s*\/>\s*\) : \(\s*<PlainThinkingFence/, "a growing thinking fence stays plain while an answer keeps streaming tokens");
+  const start = MARKDOWN_TEXT.indexOf("function PlainThinkingFence(");
+  const thinking = MARKDOWN_TEXT.slice(start, MARKDOWN_TEXT.indexOf("\n}\n", start));
+  assert.equal(/useFenceTokens|useThinkingCodeColour|requestFullHighlight|code\.highlight|noteStreamingFence|FenceBody/.test(thinking), false, "plain thinking never queues or renders highlight tokens");
+  assert.match(thinking, /<PlainFenceShell language=\{languageToken\} source=\{source\} \/>/);
   assert.match(MARKDOWN_TEXT, /const STREAMDOWN_PLAIN_CODE_PLUGINS = \{ math, mermaid \}/);
   assert.match(MARKDOWN_TEXT, /plugins=\{\s*highlightCode \? STREAMDOWN_PLUGINS : STREAMDOWN_PLAIN_CODE_PLUGINS\s*\}/, "a fence nested in a list or a quote is plain too");
-  const start = MARKDOWN_TEXT.indexOf("function PlainFenceBlock(");
-  const plain = MARKDOWN_TEXT.slice(start, MARKDOWN_TEXT.indexOf("\n}\n", start));
+  const plainStart = MARKDOWN_TEXT.indexOf("function PlainFenceBlock(");
+  const plain = MARKDOWN_TEXT.slice(plainStart, MARKDOWN_TEXT.indexOf("\n}\n", plainStart));
   assert.equal(/useFenceTokens|requestFullHighlight|code\.highlight|noteStreamingFence/.test(plain), false);
   assert.match(plain, /<PlainFenceShell language=\{languageToken\} source=\{source\} \/>/);
   assert.match(DEFER, /<code>\{plain \? shellLines\(source\) : shellBody\(source\)\}<\/code>/);
@@ -140,11 +139,11 @@ test("a completed fence on a non-``` form keeps the bounded renderer", () => {
     ),
     "and it must render the per-line body rather than Block, or the spans remount",
   );
-  // In a thinking box the same forms, and a fence left open by Stop, keep their colour once settled.
+  // In a thinking box the same forms, and a fence left open by Stop, stay plain.
   assert.match(
     branch,
-    /\) : \(\s*<LiveThinkingFence\s*language=\{settledFence\.language\}\s*settled\s*source=\{settledFence\.text\}/,
-    "a settled tilde, four-backtick, indented or stopped fence in a trace must not drop to the plain block",
+    /\) : \(\s*<PlainThinkingFence\s*language=\{settledFence\.language\}\s*source=\{settledFence\.text\}/,
+    "a settled tilde, four-backtick, indented or stopped fence in a trace must stay plain",
   );
     // Not `FenceBlock`: that branch also owns the reach latch, the action bar and the mode switch.
   assert.ok(

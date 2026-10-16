@@ -36,7 +36,7 @@ test("explicit deferral and windowing overrides remain available", () => {
 test("every answer fence takes its line window from the mode, streaming or not", () => {
   assert.deepEqual(
     readSrc("components/assistant-ui/markdown-text.tsx").match(/windowing=\{[^}]*\}/g),
-    ['windowing={fenceMode() === "window"}', 'windowing={fenceMode() === "window"}', 'windowing={mode === "window"}'],
+    ['windowing={fenceMode() === "window"}', 'windowing={mode === "window"}'],
     "a streaming fence that windowed whatever the mode kept \"off\" from restoring the old rendering",
   );
 });
