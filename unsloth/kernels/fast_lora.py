@@ -25,6 +25,7 @@ from .utils import (
     torch_amp_custom_fwd,
     torch_amp_custom_bwd,
 )
+from . import rms_layernorm as _rms_layernorm
 
 _is_compiling = torch.compiler.is_compiling
 
@@ -168,7 +169,8 @@ class LoRA_MLP(torch.autograd.Function):
             _backward_function,
         )
         ctx.save_for_backward(gateA, gateB, upA, upB, downA, downB, X, e, g)
-        ctx.inplace = inplace and _may_overwrite_input(X)
+        # Only an opt-in UNSLOTH_RMSNORM_SAVE_OUTPUT norm marks its output; skip the check otherwise.
+        ctx.inplace = inplace and (not _rms_layernorm._SAVE_OUTPUT or _may_overwrite_input(X))
         return i
 
     @staticmethod
@@ -496,7 +498,8 @@ class LoRA_QKV(torch.autograd.Function):
             VA,
             VB,
         )
-        ctx.inplace = inplace and _may_overwrite_input(X)
+        # Only an opt-in UNSLOTH_RMSNORM_SAVE_OUTPUT norm marks its output; skip the check otherwise.
+        ctx.inplace = inplace and (not _rms_layernorm._SAVE_OUTPUT or _may_overwrite_input(X))
         return Q, K, V
 
     @staticmethod

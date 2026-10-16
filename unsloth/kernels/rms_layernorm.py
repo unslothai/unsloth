@@ -827,6 +827,9 @@ _SAVE_OUTPUT = os.environ.get("UNSLOTH_RMSNORM_SAVE_OUTPUT", "0") == "1"
 
 def _save_output_ok(W, gemma, dtype):
     # Y / W needs |W| (|1 + W| for Gemma) clear of 0 and fp16 Y not subnormal. Cached per weight version.
+    if torch.is_inference(W):
+        # Inference tensors have no version counter to key the cache on: save X.
+        return False
     key = (W._version, W.data_ptr(), gemma, dtype)
     cached = getattr(W, "_unsloth_save_output", None)
     if cached is not None and cached[0] == key:
@@ -869,6 +872,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         ctx.FROM_Y = (
             save_output
             and _SAVE_OUTPUT
+            and ctx.needs_input_grad[0]
             and not ctx.needs_input_grad[1]
             and _save_output_ok(W, gemma, Y.dtype)
         )
@@ -886,7 +890,9 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         dim: int = shape[-1]
         dY = dY.reshape(-1, dim).contiguous()
         X, W, r = ctx.saved_tensors
-        X = X.view(-1, dim)
+        if ctx.FROM_Y:
+            # The saved Y keeps the caller's shape; a saved X is already 2D.
+            X = X.view(-1, dim)
         # allocate dX because autograd may share dY with other nodes or the caller.
         dX = torch.empty_like(dY)
         with torch_gpu_device(dY.device):

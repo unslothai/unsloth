@@ -162,3 +162,22 @@ def test_guard_does_not_sync_inside_cuda_graph_capture():
         # Inside capture the check would need .item(): fall back to saving X, cache nothing.
         assert not rms_layernorm._save_output_ok(w, False, torch.bfloat16)
     assert rms_layernorm._save_output_ok(w, False, torch.bfloat16)
+
+
+def test_guard_skips_inference_tensor_weights():
+    # Inference tensors have no version counter; reading W._version would raise.
+    with torch.inference_mode():
+        w = torch.full((8,), 0.5)
+    assert torch.is_inference(w)
+    assert not rms_layernorm._save_output_ok(w, False, torch.bfloat16)
+
+
+@cuda
+def test_save_output_with_inference_created_weights(monkeypatch):
+    monkeypatch.setattr(rms_layernorm, "_SAVE_OUTPUT", True)
+    with torch.inference_mode():
+        x = torch.randn(1, 8, 128, device = "cuda", dtype = torch.float16)
+        w = torch.ones(128, device = "cuda", dtype = torch.float16)
+        y = rms_layernorm.Fast_RMS_Layernorm.apply(x, w, 1e-6, False, True)
+    assert torch.isfinite(y).all()
+    assert not getattr(y, "_unsloth_rmsnorm_saved", False)
