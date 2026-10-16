@@ -284,14 +284,14 @@ def test_quantize_int8_uses_family_keep_bf16_schedule(monkeypatch):
     assert calls == [(te, 6, 6)]
 
 
-def test_int8_on_a_family_hosting_an_int8_file_never_takes_the_torchao_cast(monkeypatch):
-    # qwen-image has a keep-bf16 schedule AND a hosted int8 ConvRot file: an int8 request whose file did not engage
-    # (the fp8 sibling or the dense encoder loaded) is the fp8 cast, never torchao on top of a pre-cast encoder.
+def test_int8_never_takes_the_torchao_cast_over_a_pre_cast_encoder(monkeypatch):
+    # qwen-image has a keep-bf16 schedule AND a hosted int8 ConvRot file: an int8 request whose encoder came from a
+    # pre-cast fp8 file is the (idempotent) fp8 cast, never torchao on top of fp8 storage.
     _stub_torch(monkeypatch, cc = (10, 0))
     monkeypatch.setattr(dp, "_cast_int8_selective", lambda *a: pytest.fail("torchao int8 cast"))
     fp8_calls: list = []
     monkeypatch.setattr(dp, "_cast_fp8", lambda enc, tgt: fp8_calls.append(enc))
-    te = object()
+    te = types.SimpleNamespace(_unsloth_te_prequant_scheme = "fp8")
     outcome = quantize_text_encoders(
         types.SimpleNamespace(text_encoder = te), _target(), mode = "int8", family = "qwen-image"
     )

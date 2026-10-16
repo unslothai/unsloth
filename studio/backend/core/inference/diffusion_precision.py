@@ -289,9 +289,12 @@ def quantize_text_encoders(
     downgrade_reason = ""
     skip: Optional[tuple[int, int]] = None
     if mode == TE_QUANT_INT8:
-        # A family that hosts an int8 ConvRot file never falls back to the torchao cast: the file did not engage, so
-        # its fp8 sibling (or the fp8 cast) is what the resolver already chose.
-        skip = None if _family_hosts_te_int8(family) else _TE_INT8_SKIP.get((family or "").lower())
+        skip = _TE_INT8_SKIP.get((family or "").lower())
+        pre_cast = [a for a in present if _hosted_te_scheme(getattr(pipe, a)) is not None]
+        if skip is not None and _family_hosts_te_int8(family) and (pre_cast or not torchao_quantize_importable()):
+            # The hosted int8 file did not engage. The on-the-fly torchao int8 (the path before the file existed) is
+            # the fallback only over a dense encoder and with torchao present; otherwise fp8.
+            skip = None
         if skip is None:
             _note(logger, f"int8 has no keep-bf16 schedule for family '{family}'; using fp8")
             mode = TE_QUANT_FP8

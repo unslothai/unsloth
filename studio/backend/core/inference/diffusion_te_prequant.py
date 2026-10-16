@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import re
 import sys
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import Any, Iterable, Optional
 
@@ -131,6 +133,25 @@ TE_INT8_CONVROT_LINEAR = re.compile(
     r"(?:^|\.)layers\.\d+\.(?:self_attn\.[qkvo]_proj|mlp\.(?:gate|up|down)_proj)$"
     r"|(?:^|\.)block\.\d+\.layer\.\d+\.(?:SelfAttention\.[qkvo]|DenseReluDense\.(?:wi_0|wi_1|wo))$"
 )
+
+# True while a load runs whose text-encoder scheme was picked automatically (unset / "auto"). Nobody asked for that
+# scheme, so a hosted file that cannot be loaded never fails the load: the dense encoder is loaded instead (logged). An
+# explicit request keeps the strict refusal. Set by the image loader around each load (``auto_te_request``).
+_AUTO_TE_REQUEST: ContextVar[bool] = ContextVar("unsloth_auto_te_request", default = False)
+
+
+@contextmanager
+def auto_te_request(auto: bool):
+    token = _AUTO_TE_REQUEST.set(bool(auto))
+    try:
+        yield
+    finally:
+        _AUTO_TE_REQUEST.reset(token)
+
+
+def te_request_is_auto() -> bool:
+    return _AUTO_TE_REQUEST.get()
+
 
 # The scheme the loaded FILE carried ("fp8" / "int8"), so quantize_text_encoders never re-casts an int8 encoder.
 TE_PREQUANT_SCHEME_ATTR = "_unsloth_te_prequant_scheme"
@@ -510,7 +531,14 @@ def resolve_te_prequant_source(
             # The int8 file has no lm_head; with the head kept (UNSLOTH_TE_KEEP_LM_HEAD) only the fp8 one can serve.
             return fp8
         fallback = ()
-        if fp8 is not None and fp8.kind == "repo" and fp8.location.lower() == repo_id.lower():
+        if (
+            fp8 is not None
+            and fp8.kind == "repo"
+            and fp8.location.lower() == repo_id.lower()
+            and not _family_has_torchao_int8(fam)
+        ):
+            # A family with a keep-bf16 int8 schedule (Qwen-Image and its releases, FLUX.2-dev) keeps the on-the-fly
+            # torchao int8 as the fallback for a missing file, as before the file existed; fp8 comes after that.
             fallback = te_candidate_filenames(fp8)
         return TePrequantSource(
             kind = "repo",
@@ -531,6 +559,15 @@ def resolve_te_prequant_source(
             component = hosted_component if hosted_component != component else None,
         )
     return None
+
+
+def _family_has_torchao_int8(fam: Any) -> bool:
+    try:
+        from .diffusion_precision import _TE_INT8_SKIP
+
+        return _TE_INT8_SKIP.get(str(getattr(fam, "name", "") or "").lower()) is not None
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def te_prequant_sources(
@@ -1036,6 +1073,23 @@ def _te_prequant_pipe_kwargs(
                 cause = f" ({failures[-1]})" if failures else cause
         if not unavailable and not unbudgeted:
             return injected
+        if te_request_is_auto() and _fetch_dense_components(
+            dense_source or base,
+            unavailable + unbudgeted,
+            hf_token = hf_token,
+            local_files_only = local_files_only,
+            logger = logger,
+        ):
+            # Nobody asked for this scheme: the dense encoder loads in its place rather than failing the load.
+            if logger is not None:
+                logger.warning(
+                    "diffusion.te_prequant: automatic %s %s for %s could not be loaded%s; loading the dense encoder",
+                    mode,
+                    ", ".join(unbudgeted + unavailable),
+                    base,
+                    cause,
+                )
+            return injected
     except Exception as exc:  # noqa: BLE001 - injection is an optimisation, never a blocker
         _warn(logger, "pipe_kwargs", exc)
         return {}
@@ -1051,6 +1105,48 @@ def _te_prequant_pipe_kwargs(
         "(os error 1455 means the Windows page file is too small), close other apps or enlarge the page "
         "file and load again, or set Text encoder precision to Dense (bf16)."
     )
+
+
+def _fetch_dense_components(
+    source: str, components: list, *, hf_token: Optional[str], local_files_only: bool, logger: Any = None
+) -> bool:
+    """Bring the dense shards of ``components`` the plan left out back into ``source`` (a Hub cache snapshot or repo
+    id) so assembly can load them. True when there is nothing to fetch or the fetch worked; False offline, for a local
+    folder that is not a cache snapshot, or on any failure."""
+    if not components:
+        return True
+    try:
+        from .media_locality import _hosted_component_cached
+
+        if all(_hosted_component_cached(source, c, "", "") for c in components):
+            return True
+    except Exception:  # noqa: BLE001 - unknown: try the fetch
+        pass
+    if local_files_only:
+        return False
+    try:
+        import os
+
+        from huggingface_hub import snapshot_download
+
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        repo_id = source
+        if os.path.isdir(str(source)):
+            parts = os.path.normpath(str(source)).split(os.sep)
+            if len(parts) < 3 or parts[-2] != "snapshots" or not parts[-3].startswith("models--"):
+                return False
+            repo_id = parts[-3][len("models--") :].replace("--", "/")
+        snapshot_download(
+            repo_id,
+            allow_patterns = [f"{c}/*" for c in components],
+            token = hf_token,
+            cache_dir = active_hf_hub_cache(),
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 - the strict refusal below still explains the load
+        _warn(logger, "dense_fallback_fetch", exc)
+        return False
 
 
 def _held_locally(repo_id: str, name: Optional[str], hf_token: Optional[str]) -> bool:

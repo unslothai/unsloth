@@ -1121,9 +1121,14 @@ def _with_supplied_components(load: Callable[..., dict]) -> Callable[..., dict]:
             kwargs["text_encoder_quant"] = _te_quant_for_supplied_encoders(
                 kwargs.get("text_encoder_quant")
             )
+        from .diffusion_precision import te_quant_is_auto
+        from .diffusion_te_prequant import auto_te_request
+
         token = set_active_component_overrides(overrides)
         try:
-            return load(self, repo_id, **kwargs)
+            # An unset / "auto" encoder scheme never fails the load: a hosted file that cannot load falls back to dense.
+            with auto_te_request(te_quant_is_auto(kwargs.get("text_encoder_quant"))):
+                return load(self, repo_id, **kwargs)
         finally:
             reset_active_component_overrides(token)
 

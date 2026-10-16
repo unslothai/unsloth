@@ -38,10 +38,12 @@ EXPECTED = {
         "int8",
         "text_encoder",
         ("unsloth/FLUX.2-dev-FP8", "FLUX.2-dev-text_encoder-INT8-ConvRot.safetensors"),
-        ("unsloth/FLUX.2-dev-FP8", "FLUX.2-dev-text_encoder-FP8.safetensors"),
+        None,
     ),
-    "qwen-image": ("int8", "text_encoder", _QWEN25VL_INT8, _QWEN25VL_FP8),
-    "qwen-image-edit": ("int8", "text_encoder", _QWEN25VL_INT8, _QWEN25VL_FP8),
+    # Families with a torchao keep-bf16 int8 schedule have no fp8 file behind the int8 one: a missing file takes the
+    # on-the-fly int8 cast, as before the file existed.
+    "qwen-image": ("int8", "text_encoder", _QWEN25VL_INT8, None),
+    "qwen-image-edit": ("int8", "text_encoder", _QWEN25VL_INT8, None),
     "qwen-image-layered": ("fp8", "text_encoder", _QWEN25VL_FP8, None),
     "hunyuanimage-2.1": ("int8", "text_encoder", _QWEN25VL_INT8, _QWEN25VL_FP8),
     "z-image": (
@@ -123,3 +125,122 @@ def test_every_release_of_the_same_encoder_gets_the_default_file(name, base):
     scheme, component, hosted, _fp8 = EXPECTED[name]
     source = tpq.te_prequant_sources_for_base(fam, base, te_quant_mode = scheme, target = CUDA_BF16)[component]
     assert (source.location, source.filename) == hosted
+
+
+# ── an automatic default never fails a load ───────────────────────────────────
+
+MPS_BF16 = types.SimpleNamespace(device = "mps", dtype = torch.bfloat16)
+
+
+def _missing_file(monkeypatch):
+    """The hosted file cannot be loaded (not uploaded yet, offline, refused) and the dense shards are on disk."""
+    import core.inference.media_locality as ml
+
+    monkeypatch.setattr(tpq, "load_prequant_text_encoder", lambda *a, **k: None)
+    monkeypatch.setattr(tpq, "_held_locally", lambda *a, **k: False)
+    monkeypatch.setattr(ml, "_hosted_component_cached", lambda *a, **k: True)
+
+
+@pytest.mark.parametrize("name", sorted(n for n, row in EXPECTED.items() if row[0] == "int8"))
+def test_auto_int8_with_the_file_missing_on_mps_loads_dense_without_an_error(name, monkeypatch):
+    _missing_file(monkeypatch)
+    fam = _fam(name)
+    with tpq.auto_te_request(True):
+        out = tpq.te_prequant_pipe_kwargs(
+            fam, fam.base_repo, te_quant_mode = fam.te_quant_auto, target = MPS_BF16, dtype = None,
+            dense_source = "/somewhere/staged",
+        )
+    assert not any(k.startswith("text_encoder") for k in out)
+
+
+def test_explicit_int8_with_the_file_missing_on_mps_is_still_refused(monkeypatch):
+    _missing_file(monkeypatch)
+    fam = _fam("qwen-image")
+    with tpq.auto_te_request(False), pytest.raises(RuntimeError, match = "could not be loaded"):
+        tpq.te_prequant_pipe_kwargs(fam, fam.base_repo, te_quant_mode = "int8", target = MPS_BF16, dtype = None)
+
+
+def test_auto_with_the_dense_shards_left_out_fetches_them_instead_of_failing(monkeypatch, tmp_path):
+    import core.inference.media_locality as ml
+
+    monkeypatch.setattr(tpq, "load_prequant_text_encoder", lambda *a, **k: None)
+    monkeypatch.setattr(tpq, "_held_locally", lambda *a, **k: False)
+    monkeypatch.setattr(ml, "_hosted_component_cached", lambda *a, **k: False)
+    fetched = []
+    import huggingface_hub
+
+    monkeypatch.setattr(
+        huggingface_hub, "snapshot_download", lambda repo, **k: fetched.append((repo, k["allow_patterns"]))
+    )
+    fam = _fam("z-image")
+    snap = tmp_path / "models--Tongyi-MAI--Z-Image-Turbo" / "snapshots" / "abc"
+    snap.mkdir(parents = True)
+    snap = str(snap)
+    with tpq.auto_te_request(True):
+        out = tpq.te_prequant_pipe_kwargs(
+            fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16, dtype = None, dense_source = snap
+        )
+    assert out == {} and fetched == [("Tongyi-MAI/Z-Image-Turbo", ["text_encoder/*"])]
+    # offline: nothing to fall back to, so the load explains itself as before
+    with tpq.auto_te_request(True), pytest.raises(RuntimeError):
+        tpq.te_prequant_pipe_kwargs(
+            fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16, dtype = None, dense_source = snap,
+            local_files_only = True,
+        )
+
+
+@pytest.mark.parametrize("device", ["cpu", "xpu", "cuda"])
+def test_auto_on_a_device_that_cannot_run_the_scheme_keeps_the_dense_encoder(device, monkeypatch):
+    import core.inference.diffusion_precision as prec
+
+    monkeypatch.setattr(prec, "te_quant_supported", lambda *a, **k: False)
+    target = types.SimpleNamespace(device = device, dtype = torch.bfloat16)
+    for name in sorted(EXPECTED):
+        fam = _fam(name)
+        # nothing pre-cast is planned or loaded ...
+        assert tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = fam.te_quant_auto, target = target) == {}
+        # ... and the in-place pass reports it unsupported instead of raising, leaving the encoder dense
+        pipe = types.SimpleNamespace(text_encoder = torch.nn.Linear(4, 4))
+        out = prec.quantize_text_encoders(pipe, target, mode = fam.te_quant_auto, family = name)
+        assert out.mode is None and pipe.text_encoder.weight.dtype == torch.float32
+
+
+def test_the_auto_flag_follows_the_raw_request():
+    from core.inference.diffusion import _with_supplied_components
+
+    seen = []
+
+    @_with_supplied_components
+    def load(self, repo_id, **kwargs):
+        seen.append(tpq.te_request_is_auto())
+        return {}
+
+    for value, auto in ((None, True), ("auto", True), ("int8", False), ("none", False)):
+        load(object(), "r", text_encoder_quant = value)
+        assert seen.pop() is auto
+    assert tpq.te_request_is_auto() is False
+
+
+# ── explicit int8 with the file missing: never worse than before the file existed ─
+
+
+@pytest.mark.parametrize("name", ["qwen-image", "qwen-image-edit", "qwen-image-layered", "flux.2-dev"])
+def test_explicit_int8_without_the_file_still_takes_the_torchao_int8_cast(name, monkeypatch):
+    import core.inference.diffusion_precision as prec
+
+    # no fp8 file behind the int8 one: a missing file means the dense encoder, then the old on-the-fly int8
+    src = tpq.resolve_te_prequant_source(_fam(name), "text_encoder", "int8")
+    assert src.filename.endswith("INT8-ConvRot.safetensors") and src.fallback_filenames == ()
+    monkeypatch.setattr(prec, "te_quant_supported", lambda *a, **k: True)
+    monkeypatch.setattr(prec, "torchao_quantize_importable", lambda: True)
+    calls = []
+    monkeypatch.setattr(prec, "_cast_int8_selective", lambda enc, tgt, f, l: calls.append((f, l)))
+    pipe = types.SimpleNamespace(text_encoder = torch.nn.Linear(4, 4))
+    out = prec.quantize_text_encoders(pipe, CUDA_BF16, mode = "int8", family = name)
+    assert out.mode == "int8" and calls == [prec._TE_INT8_SKIP[name]]
+    # without torchao it is the fp8 cast, never a refusal
+    monkeypatch.setattr(prec, "torchao_quantize_importable", lambda: False)
+    fp8 = []
+    monkeypatch.setattr(prec, "_cast_fp8", lambda enc, tgt: fp8.append(enc))
+    out = prec.quantize_text_encoders(pipe, CUDA_BF16, mode = "int8", family = name)
+    assert out.mode == "fp8" and fp8 == [pipe.text_encoder]
