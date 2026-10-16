@@ -120,6 +120,7 @@ from core.inference.llama_server_args import (
     fit_is_effectively_on,
     fit_target_margin_in,
     fit_target_is_per_device,
+    fit_target_first_device_margin_in,
     MANAGED_DIO_FLAGS,
     no_reserve_requires_dio,
     resolve_launch_load_mode,
@@ -6074,6 +6075,58 @@ def _resolved_mmproj_offload(
     if device is None:
         device = source.get("MTMD_BACKEND_DEVICE")
     return False if device == "none" else None
+
+
+_MMPROJ_DEVICE_FLAGS: frozenset = frozenset({"--mmproj-device", "-mmdev"})
+
+
+def _mmproj_placement(
+    extra_args: Optional[Sequence[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[str]:
+    """Where the projector runs, replaying common/arg.cpp's last-wins order.
+
+    Env twins first, in option order (LLAMA_ARG_MMPROJ_OFFLOAD, then MTMD_BACKEND_DEVICE),
+    then argv left to right. --[no-]mmproj-offload sets mmproj_use_gpu; --mmproj-device
+    none clears it, any other name sets it and pins that device. ``"host"`` = not
+    offloaded; ``"default"`` = offloaded to the model's first device (devices.front());
+    ``"named"`` = pinned to a device by name (a CPU name is rejected by
+    parse_device_list); ``None`` = unreadable.
+    """
+    source = os.environ if env is None else env
+    on_gpu, named, unreadable = True, False, False
+    env_offload = _env_mmproj_offload_value(source)
+    if env_offload is not None:
+        on_gpu = env_offload
+    elif source.get(_MMPROJ_OFFLOAD_ENV_VAR) is not None:
+        unreadable = True
+
+    def _device(value: str) -> None:
+        nonlocal on_gpu, named, unreadable
+        if value == "none":
+            on_gpu, named = False, False
+        elif value.strip():
+            on_gpu, named = True, True
+        else:
+            unreadable = True
+
+    if source.get("MTMD_BACKEND_DEVICE") is not None:
+        _device(str(source.get("MTMD_BACKEND_DEVICE")))
+    args = [str(a) for a in extra_args] if extra_args else []
+    for i, raw in enumerate(args):
+        flag = _flag_name(raw)
+        if flag == "--mmproj-offload":
+            on_gpu = True
+        elif flag == "--no-mmproj-offload":
+            on_gpu = False
+        elif flag in _MMPROJ_DEVICE_FLAGS:
+            _, eq, inline = raw.partition("=")
+            _device(inline if eq else (args[i + 1] if i + 1 < len(args) else ""))
+    # arg.cpp throws on these, so the child never places anything.
+    if unreadable:
+        return None
+    if not on_gpu:
+        return "host"
+    return "named" if named else "default"
 
 
 _OVERRIDE_TENSOR_FLAGS: frozenset = frozenset(
@@ -26370,6 +26423,10 @@ class LlamaCppBackend:
                     # ownership: arg.cpp reads the env before argv, so the environment
                     # places the projector just as surely as the flag.
                     _user_mmproj_offload = _resolved_mmproj_offload(extra_args)
+                    # The resolver keeps an explicit --mmproj-offload's answer; a later
+                    # --mmproj-device none (argv after env, left to right) still wins.
+                    if _mmproj_placement(extra_args) == "host":
+                        _user_mmproj_offload = False
                     mmproj_size = (
                         self._mmproj_vram_bytes(launch_mmproj_path)
                         if (effective_is_vision and _user_mmproj_offload is not False)
@@ -28834,40 +28891,22 @@ class LlamaCppBackend:
                         # The emitted --mmproj replaces an inherited path (argv after env).
                         if effective_is_vision:
                             _env_mmproj = None
-                        # --mmproj-device / MTMD_BACKEND_DEVICE re-enable the GPU projector.
-                        _mmproj_dev = _extra_args_device(
-                            _child_extras, {"--mmproj-device", "-mmdev"}
-                        )
-                        if _mmproj_dev is None:
-                            _mmproj_dev = _child_env.get("MTMD_BACKEND_DEVICE")
-                        _mmproj_dev_gpu = bool(
-                            _mmproj_dev is not None and str(_mmproj_dev).strip().lower() != "none"
-                        )
-                        # --mmproj-device none keeps the projector in host RAM (common/arg.cpp
-                        # sets mmproj_use_gpu = false), so model_size_fit's projector bytes
-                        # and their soft overhead are not on the card.
-                        _mmproj_dev_none = bool(
-                            _mmproj_dev is not None and str(_mmproj_dev).strip().lower() == "none"
-                        )
+                        # Where the projector really runs, in arg.cpp's last-wins order over
+                        # --[no-]mmproj-offload, --mmproj-device / -mmdev and their env twins.
+                        _mmproj_place = _mmproj_placement(_child_extras, _child_env)
                         _mmproj_host_bytes = 0
-                        _mmproj_offload = _resolved_mmproj_offload(_child_extras, _child_env)
-                        if _mmproj_dev_none and effective_is_vision and mmproj_size > 0:
-                            # An explicit --mmproj-offload also sets mmproj_use_gpu; which one
-                            # wins depends on parse order, so the placement is unknown.
-                            if _mmproj_offload is True:
-                                return None
-                            _mmproj_host_bytes = mmproj_size + int(
-                                mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0)
-                            )
-                        # A projector pinned to a named device: a GPU may be a companion card
-                        # gpu_ids exposes (_widen_pin_ids_for_companion_devices) and CPU keeps it
-                        # off the card, so whether model_size_fit's projector bytes sit on this
-                        # card is unknown.
-                        if _mmproj_dev is not None and effective_is_vision and mmproj_size > 0:
-                            _mmproj_devs = [
-                                d.strip().lower() for d in str(_mmproj_dev).split(",") if d.strip()
-                            ]
-                            if _mmproj_devs and not all(d == "none" for d in _mmproj_devs):
+                        if effective_is_vision and mmproj_size > 0:
+                            # model_size_fit charged the projector and its soft overhead to the
+                            # card (the offload resolved on). Host RAM: they are not there.
+                            if _mmproj_place == "host":
+                                _mmproj_host_bytes = mmproj_size + int(
+                                    mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0)
+                                )
+                            # A named device may be a companion card gpu_ids exposes
+                            # (_widen_pin_ids_for_companion_devices); a CPU name fails
+                            # parse_device_list. Unreadable: arg.cpp throws. Either way,
+                            # unknown.
+                            elif _mmproj_place != "default":
                                 return None
                         # A drafter model pinned by --spec-draft-device to a device this
                         # estimate cannot map to the card (common_base_params_to_speculative,
@@ -28915,9 +28954,10 @@ class LlamaCppBackend:
                             )
                         ):
                             return None
-                        if _mmproj_offload is False:
-                            if _mmproj_dev_gpu:
-                                return None
+                        # A projector in host RAM never reaches the card; any other one
+                        # Studio did not size is unpriced.
+                        if _mmproj_place == "host":
+                            pass
                         elif disable_vision:
                             if _mmproj_env_is_audio_only(_env_mmproj):
                                 return None
@@ -28939,17 +28979,37 @@ class LlamaCppBackend:
                             supports_fit_target = _supports_fit_target,
                         )
                         # A per-device list is applied positionally (fit_params_target[i],
-                        # common/arg.cpp); which entry this card gets is unknown here.
+                        # common/arg.cpp) over the child's model devices: RPC servers first,
+                        # then GPUs, or the --device list as given (src/llama.cpp). With one
+                        # model device only margins_s[0] is read (common/fit.cpp), so entry 0
+                        # is this card's; with an RPC server or a longer --device list, which
+                        # entry this card gets is unknown.
+                        _dev_list = _extra_args_main_device(_child_extras)
+                        if _dev_list is None:
+                            _dev_list = _child_env.get("LLAMA_ARG_DEVICE")
+                        _one_model_device = not (
+                            str(_extra_args_device(_child_extras, {"--rpc"}) or "").strip()
+                            or str(_child_env.get("LLAMA_ARG_RPC") or "").strip()
+                            or len([d for d in str(_dev_list or "").split(",") if d.strip()]) > 1
+                        )
                         if fit_target_is_per_device(_child_extras or (), None):
-                            return None
-                        _margin_mib = fit_target_margin_in(_child_extras or (), None)
+                            if not _one_model_device:
+                                return None
+                            _margin_mib = fit_target_first_device_margin_in(
+                                _child_extras or (), None
+                            )
+                        else:
+                            _margin_mib = fit_target_margin_in(_child_extras or (), None)
                         if _margin_mib is None:
                             _emits = _supports_fit_target and (
                                 _auto_fit or _managed_mib != _LLAMA_FIT_TARGET_DEFAULT_MIB
                             )
                             if not _emits and fit_target_is_per_device((), _child_env):
-                                return None
-                            _env_mib = None if _emits else fit_target_margin_in((), _child_env)
+                                if not _one_model_device:
+                                    return None
+                                _env_mib = fit_target_first_device_margin_in((), _child_env)
+                            else:
+                                _env_mib = None if _emits else fit_target_margin_in((), _child_env)
                             # An inherited 0 is a valid margin, not "unset".
                             _margin_mib = _managed_mib if _env_mib is None else _env_mib
                         # A lazily read table stays mmap'd on the host, never on the GPU.
@@ -29361,6 +29421,7 @@ class LlamaCppBackend:
                     # the resolved projector gets.
                     _fit_env_mmproj_on_host = (
                         _resolved_mmproj_offload(_fit_extras, _fit_env) is False
+                        or _mmproj_placement(_fit_extras, _fit_env) == "host"
                     )
                     _fit_model_size = model_size
                     if _fit_env_mmproj_unsized:
@@ -29388,7 +29449,7 @@ class LlamaCppBackend:
                     # is nothing to split. Both resolutions must agree, the budget's
                     # (model_size) and this view's (inherited projector).
                     _fit_mmproj_known_host = bool(
-                        _fit_mmproj_device == "none"
+                        _mmproj_placement(_fit_extras, _fit_env) == "host"
                         and _fit_env_mmproj_on_host
                         and (not launch_mmproj_path or _user_mmproj_offload is False)
                     )

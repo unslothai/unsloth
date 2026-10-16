@@ -5135,20 +5135,21 @@ _RESIDENT_SHARE = llama_cpp_module._moe_resident_expert_share
 
 
 @pytest.mark.parametrize(
-    "extra_args, env",
+    "extra_args, env, cached",
     [
-        (["--fit-target", "512,4096"], {}),
-        (["-fitt=4096/512"], {}),
-        ([], {"LLAMA_ARG_FIT_TARGET": "512,4096"}),
+        (["--fit-target", "512,4096"], {}, False),
+        (["-fitt=4096/512"], {}, True),
+        ([], {"LLAMA_ARG_FIT_TARGET": "512,4096"}, False),
     ],
     ids = ["argv", "short_slash", "env"],
 )
-def test_a_per_device_fit_target_keeps_the_split(
-    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+def test_a_per_device_fit_target_prices_this_cards_entry(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env, cached
 ):
-    """llama.cpp applies a --fit-target list positionally (fit_params_target[i]), so the
-    entry this card gets is unknown and the share is not priced. Reading the largest
-    entry put this launch inside the band."""
+    """llama.cpp applies a --fit-target list positionally (fit_params_target[i]) and a
+    one-device child reads only entry 0 (common/fit.cpp). 4096 first prices like
+    _IN_BAND_CARD (the cache); 512 first leaves ~77% resident, above the band. Reading
+    the largest entry put the 512 launches inside the band."""
     monkeypatch.delenv("LLAMA_ARG_FIT_TARGET", raising = False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
@@ -5156,8 +5157,7 @@ def test_a_per_device_fit_target_keeps_the_split(
         tmp_path, memory = [(0, _PER_DEVICE_FREE_MIB, 32_000)], extra_args = extra_args
     )
 
-    assert not _has_moe_cache(cmd), cmd
-    assert backend._moe_cache_flags == []
+    assert _has_moe_cache(cmd) is cached, cmd
 
 
 @pytest.mark.parametrize("margin", ["4096", "4096,4096"])
@@ -5264,13 +5264,17 @@ def test_a_cpu_projector_is_not_charged_to_the_card(
     assert on_gpu[-1] - on_cpu[-1] == pytest.approx(charged, abs = 1024)
 
 
-def test_a_cpu_projector_turned_back_on_is_unpriced(tmp_path, _moe_cache_host, monkeypatch):
-    # --mmproj-offload sets mmproj_use_gpu too; parse order decides, so the share abstains.
+def test_a_cpu_projector_turned_back_on_is_charged_to_the_card(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    # A later --mmproj-offload sets mmproj_use_gpu again (arg.cpp is last-wins) and the
+    # projector follows the model's device: priced like no flag at all.
     monkeypatch.delenv("MTMD_BACKEND_DEVICE", raising = False)
+    _cmd, on_gpu = _vision_cache_launch(tmp_path / "gpu", monkeypatch)
     _cmd, seen = _vision_cache_launch(
-        tmp_path, monkeypatch, ["--mmproj-device", "none", "--mmproj-offload"]
+        tmp_path / "back_on", monkeypatch, ["--mmproj-device", "none", "--mmproj-offload"]
     )
-    assert seen == []
+    assert seen and seen[-1] is not None and seen[-1] == pytest.approx(on_gpu[-1], abs = 1024)
 
 
 @pytest.mark.parametrize(
@@ -5296,8 +5300,8 @@ def test_a_gpu_pinned_projector_is_unpriced(
 
 
 def test_a_cpu_named_projector_device_is_unpriced(tmp_path, _moe_cache_host, monkeypatch):
-    """--mmproj-device CPU names the CPU backend device (parse_device_list), which keeps the
-    projector off the card while model_size_fit still charges it there."""
+    """parse_device_list rejects a CPU-type device ("invalid device: CPU"), so the child
+    never starts with --mmproj-device CPU: nothing to price."""
     monkeypatch.delenv("MTMD_BACKEND_DEVICE", raising = False)
     _cmd, seen = _vision_cache_launch(tmp_path, monkeypatch, ["--mmproj-device", "CPU"])
     assert seen == []
@@ -5370,15 +5374,16 @@ def test_a_gpu_projector_at_the_same_ram_gets_the_moe_cache(tmp_path, _moe_cache
         (["--mmproj-device", "none", "--mmproj-offload"], {}),
         (["--mmproj-device", "none", "--mmproj-device", "CUDA1"], {}),
         (["--mmproj-device", "NONE"], {}),
-        (["--mmproj-device", "none"], {"LLAMA_ARG_MMPROJ_OFFLOAD": "1"}),
     ],
-    ids = ["offload_after", "gpu_after", "not_exactly_none", "env_offload"],
+    ids = ["offload_after", "gpu_after", "not_exactly_none"],
 )
 def test_a_projector_none_with_a_conflicting_placement_keeps_the_split(
     tmp_path, _moe_cache_host, monkeypatch, extra_args, env
 ):
-    """Controls: an explicit offload or a later GPU device leaves the projector placement
-    unknown (arg.cpp only matches the literal none), so the cache still abstains."""
+    """Controls: a later offload or GPU device puts the projector back on a card and
+    arg.cpp only matches the literal none, so the load-mode fit (which reads only a
+    host-RAM projector device) abstains and the cache stays off. An env offload under
+    an argv none is host RAM (env first): test_moe_share_device_margins.py."""
     monkeypatch.delenv("MTMD_BACKEND_DEVICE", raising = False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
