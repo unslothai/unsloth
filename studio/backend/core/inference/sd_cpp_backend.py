@@ -2593,20 +2593,34 @@ def _colocate_shards(index_path: str, fetched: dict[str, str]) -> None:
     for shard in sorted(shards):
         target = parent / shard
         source = fetched.get(shard)
-        if target.exists() or not source or not Path(source).is_file():
+        if not source or not Path(source).is_file():
             continue
         real = Path(source).resolve()
+        size = real.stat().st_size
+        if target.exists():
+            # A complete shard is left alone; a short one (an earlier copy cut off) is replaced.
+            if target.stat().st_size == size:
+                continue
+            with contextlib.suppress(OSError):
+                target.unlink()
         # A hard link, else a copy, never a symlink: each cache root is deleted and unmounted on its own, so a link
         # from one into the other would dangle, or a cache scan would treat the other root's blob as this one's.
-        for place in (
-            lambda: os.link(real, target),
-            lambda: shutil.copyfile(real, target),
-        ):
-            try:
-                place()
-                break
-            except OSError:
-                continue
+        try:
+            os.link(real, target)
+            continue
+        except OSError:
+            pass
+        # The copy lands under a temporary name and is renamed into place only once complete, so a full disk or an
+        # interrupted copy never leaves a truncated shard that the existence check would accept.
+        partial = target.with_name(f".{target.name}.{os.getpid()}.partial")
+        try:
+            shutil.copyfile(real, partial)
+            if partial.stat().st_size != size:
+                raise OSError(f"short copy of {real}")
+            os.replace(partial, target)
+        except OSError:
+            with contextlib.suppress(OSError):
+                partial.unlink()
 
 
 def _fetch_repo_map(assets: list[tuple[str, str, str]], hf_token: Optional[str]) -> dict[str, str]:

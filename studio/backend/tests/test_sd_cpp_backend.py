@@ -2937,6 +2937,47 @@ def test_a_t5_index_from_the_old_cache_root_gets_its_shards_beside_it(monkeypatc
         assert not beside.is_symlink()
 
 
+def test_a_cross_device_shard_copy_never_leaves_a_truncated_shard(monkeypatch, tmp_path):
+    """Across filesystems the hard link fails and the shard is copied. A copy cut off (full disk) must not leave a
+    file at the final name, since the existence check would accept it, and a short file left by an earlier copy is
+    replaced on the next load."""
+    import json
+    import os
+    import shutil
+
+    from core.inference import sd_cpp_backend as mod
+
+    src = tmp_path / "live" / "model-00001-of-00001.safetensors"
+    src.parent.mkdir(parents = True)
+    src.write_bytes(b"x" * 4096)
+    index = tmp_path / "old" / "model.safetensors.index.json"
+    index.parent.mkdir(parents = True)
+    index.write_text(json.dumps({"weight_map": {"a": src.name}}))
+    target = index.parent / src.name
+
+    def no_link(*_a, **_k):
+        raise OSError("cross-device link")
+
+    def full_disk(a, b):
+        with open(b, "wb") as fh:
+            fh.write(b"x" * 100)
+        raise OSError("No space left on device")
+
+    real_copyfile = shutil.copyfile
+    monkeypatch.setattr(mod.os, "link", no_link)
+    monkeypatch.setattr(mod.shutil, "copyfile", full_disk)
+    mod._colocate_shards(str(index), {src.name: str(src)})
+    assert not target.exists()
+    assert os.listdir(index.parent) == [index.name]
+
+    # A short shard from an earlier, cut-off copy is replaced by a complete one.
+    target.write_bytes(b"x" * 100)
+    monkeypatch.setattr(mod.shutil, "copyfile", real_copyfile)
+    mod._colocate_shards(str(index), {src.name: str(src)})
+    assert target.read_bytes() == src.read_bytes()
+    assert sorted(os.listdir(index.parent)) == sorted([index.name, src.name])
+
+
 def test_the_native_fetch_keeps_an_upstream_cached_only_in_the_pre_change_root(monkeypatch):
     """_fetch_assets resolves each file through either cache root, so FLUX.1's CLIP / T5 left in the previous root
     serve the load. Deciding the mirror swap off the live root alone rewrote them to unsloth/FLUX.1-schnell, which a
