@@ -141,3 +141,80 @@ def test_failing_command_is_reported(tmp_path, monkeypatch):
     export = _merged_export(root)
     ok, message, details = post_hooks.run_hook("a", str(export), {}, root, lambda l, s: None)
     assert not ok and "exit 3" in message and details["tail"] == ["boom"]
+
+
+@pytest.mark.parametrize("root", [[], None, {"hooks": None}, {"hooks": {"id": "a"}}, "hooks", 3])
+def test_wrong_file_shape_means_no_hooks(tmp_path, monkeypatch, root):
+    path = tmp_path / "post_export_hooks.json"
+    path.write_text(json.dumps(root))
+    monkeypatch.setenv("UNSLOTH_POST_EXPORT_HOOKS", str(path))
+    assert post_hooks.list_hooks() == []
+    ok, message, _ = post_hooks.run_hook("a", str(tmp_path), {}, tmp_path, lambda l, s: None)
+    assert not ok and "Unknown" in message
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"id": 7, "command": ECHO},
+        {"id": "x", "command": "echo hi"},
+        {"id": "x", "command": [sys.executable, 3]},
+        {"id": "x", "command": ECHO, "applies_to": "merged"},
+        {"id": "x", "command": ECHO, "options": {"name": "level"}},
+        {"id": "x", "command": ECHO, "options": [{"label": "no name"}]},
+        {"id": "x", "command": ECHO, "options": ["level"]},
+        {"id": "x", "command": ECHO, "timeout_s": "soon"},
+        {"id": "x", "command": ECHO, "label": ["A"]},
+    ],
+)
+def test_malformed_entry_skipped_beside_a_valid_one(tmp_path, monkeypatch, bad):
+    _write_hooks(tmp_path, monkeypatch, [bad, {"id": "a", "command": ECHO}])
+    assert [h["id"] for h in post_hooks.list_hooks()] == ["a"]
+    ok, message, _ = post_hooks.run_hook("x", str(tmp_path), {}, tmp_path, lambda l, s: None)
+    assert not ok and "Unknown" in message
+
+
+@pytest.mark.parametrize(
+    "printed", ['{"recipes": "auto"}', '{"recipes": null}', '"auto"', "not json"]
+)
+def test_choices_command_with_wrong_output_falls_back(tmp_path, monkeypatch, printed):
+    cmd = [sys.executable, "-c", f"print({printed!r})"]
+    _write_hooks(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "id": "a",
+                "command": ECHO,
+                "options": [
+                    {
+                        "name": "recipe",
+                        "choices": ["auto"],
+                        "choices_command": cmd,
+                        "choices_key": "recipes",
+                    }
+                ],
+            }
+        ],
+    )
+    assert post_hooks.list_hooks()[0]["options"][0]["choices"] == ["auto"]
+
+
+def test_silent_command_still_times_out(tmp_path, monkeypatch):
+    _write_hooks(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "id": "a",
+                "command": [sys.executable, "-c", "import time; time.sleep(30)"],
+                "timeout_s": 1,
+            }
+        ],
+    )
+    root = tmp_path / "exports"
+    export = _merged_export(root)
+    t0 = __import__("time").time()
+    ok, message, _ = post_hooks.run_hook("a", str(export), {}, root, lambda l, s: None)
+    assert not ok and "timeout" in message
+    assert __import__("time").time() - t0 < 10

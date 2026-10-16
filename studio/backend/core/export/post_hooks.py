@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -53,6 +54,33 @@ def hooks_file() -> Path:
     return Path(studio_root()) / "post_export_hooks.json"
 
 
+def _str_list(v: Any) -> bool:
+    return isinstance(v, list) and bool(v) and all(isinstance(x, str) and x for x in v)
+
+
+def _normalise(h: Any) -> Optional[Dict[str, Any]]:
+    """One hook entry checked field by field; None when any field has the wrong shape."""
+    if not isinstance(h, dict) or not isinstance(h.get("id"), str) or not h["id"]:
+        return None
+    if not _str_list(h.get("command")):
+        return None
+    applies = h.get("applies_to", ["merged", "lora"])
+    if not _str_list(applies):
+        return None
+    options = h.get("options", [])
+    if not isinstance(options, list) or not all(
+        isinstance(o, dict) and isinstance(o.get("name"), str) and o["name"] for o in options
+    ):
+        return None
+    timeout = h.get("timeout_s", 3600)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+        return None
+    for key in ("label", "description"):
+        if key in h and not isinstance(h[key], str):
+            return None
+    return {**h, "applies_to": applies, "options": options, "timeout_s": float(timeout)}
+
+
 def _load() -> List[Dict[str, Any]]:
     path = hooks_file()
     if not path.is_file():
@@ -62,36 +90,44 @@ def _load() -> List[Dict[str, Any]]:
     except Exception as e:
         logger.warning(f"post-export hooks: cannot read {path}: {e}")
         return []
+    if not isinstance(raw, dict) or not isinstance(raw.get("hooks", []), list):
+        logger.warning(
+            f'post-export hooks: {path} must be an object with a "hooks" list; ignoring it'
+        )
+        return []
     hooks = []
     for h in raw.get("hooks", []):
-        if (
-            not isinstance(h, dict)
-            or not h.get("id")
-            or not isinstance(h.get("command"), list)
-            or not h["command"]
-        ):
+        hook = _normalise(h)
+        if hook is None:
             logger.warning(f"post-export hooks: skipping malformed entry {h!r}")
             continue
-        hooks.append(h)
+        hooks.append(hook)
     return hooks
 
 
+def _as_choices(values: Any) -> List[str]:
+    if not isinstance(values, list):
+        return []
+    return [str(v) for v in values if isinstance(v, (str, int, float)) and not isinstance(v, bool)]
+
+
 def _choices(opt: Dict[str, Any]) -> List[str]:
-    if isinstance(opt.get("choices"), list) and not opt.get("choices_command"):
-        return [str(c) for c in opt["choices"]]
     cmd = opt.get("choices_command")
-    if not isinstance(cmd, list) or not cmd:
-        return [str(c) for c in opt.get("choices", [])]
+    if not _str_list(cmd):
+        return _as_choices(opt.get("choices", []))
+    assert isinstance(cmd, list)
     try:
         out = subprocess.run(
             cmd, capture_output = True, text = True, timeout = _CHOICES_TIMEOUT_S, check = True
         ).stdout
         data = json.loads(out)
         values = data.get(opt.get("choices_key", "choices"), []) if isinstance(data, dict) else data
-        return [str(v) for v in values]
+        if not isinstance(values, list):
+            raise ValueError(f"expected a JSON list of choices, got {type(values).__name__}")
+        return _as_choices(values)
     except Exception as e:
         logger.warning(f"post-export hooks: choices_command {cmd!r} failed: {e}")
-        return [str(c) for c in opt.get("choices", [])]
+        return _as_choices(opt.get("choices", []))
 
 
 def list_hooks(export_type: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -206,29 +242,58 @@ def run_hook(
             "UNSLOTH_EXPORT_DIR": str(target),
             "UNSLOTH_EXPORT_TYPE": export_type,
         }
+        # Own process group on POSIX, so a timeout or cancel also stops what the command started.
         proc = subprocess.Popen(
-            argv, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, text = True, bufsize = 1, env = env
+            argv,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
+            bufsize = 1,
+            env = env,
+            start_new_session = os.name == "posix",
         )
     except OSError as e:
         return False, f"Hook '{hook_id}' could not start: {e}", {}
     assert proc.stdout is not None
-    for line in proc.stdout:
-        line = line.rstrip()
-        if line.startswith("UNSLOTH_HOOK_OUTPUT="):
-            produced = line.split("=", 1)[1].strip()
-            continue
-        if line:
-            log(line, "stdout")
-            tail = (tail + [line])[-20:]
-        if (cancel is not None and cancel.is_set()) or time.time() - t0 > timeout:
+    # A watcher enforces the timeout and cancel even while the command prints nothing.
+    stopped: List[str] = []
+    finished = threading.Event()
+
+    def _watch() -> None:
+        while not finished.wait(0.5):
+            if cancel is not None and cancel.is_set():
+                stopped.append("cancelled")
+            elif time.time() - t0 > timeout:
+                stopped.append("timeout")
+            else:
+                continue
+            if os.name == "posix":
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    return
+                except OSError:
+                    pass
             proc.kill()
-            log(
-                f"[post-export:{hook_id}] stopped ({'cancelled' if cancel is not None and cancel.is_set() else 'timeout'})",
-                "stderr",
-            )
-            proc.wait()
-            return False, f"Hook '{hook_id}' stopped", {"tail": tail}
-    rc = proc.wait()
+            return
+
+    watcher = threading.Thread(target = _watch, daemon = True)
+    watcher.start()
+    try:
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line.startswith("UNSLOTH_HOOK_OUTPUT="):
+                produced = line.split("=", 1)[1].strip()
+                continue
+            if line:
+                log(line, "stdout")
+                tail = (tail + [line])[-20:]
+        rc = proc.wait()
+    finally:
+        finished.set()
+        watcher.join()
+    if stopped:
+        log(f"[post-export:{hook_id}] stopped ({stopped[0]})", "stderr")
+        return False, f"Hook '{hook_id}' stopped ({stopped[0]})", {"tail": tail}
     secs = round(time.time() - t0, 1)
     details = {
         "hook": hook_id,
