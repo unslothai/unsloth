@@ -36,7 +36,7 @@ def _host(
     if caps is None:
         caps = {d["index"]: (8, 6) for d in devices}
     monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda: dict(caps))
-    monkeypatch.setattr(nvidia, "get_mig_gpu_indices", lambda: set())
+    monkeypatch.setattr(hw, "_nvidia_mig_gpu_indices_or_none", lambda: set())
     monkeypatch.setattr(hw, "IS_ROCM", rocm)
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: list(visible))

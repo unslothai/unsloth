@@ -99,7 +99,7 @@ def _two_cards(monkeypatch, devices, caps, mig = ()):
     from utils.hardware import nvidia
 
     monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda: dict(caps))
-    monkeypatch.setattr(nvidia, "get_mig_gpu_indices", lambda: set(mig))
+    monkeypatch.setattr(hw, "_nvidia_mig_gpu_indices_or_none", lambda: set(mig))
     monkeypatch.setattr(hw, "IS_ROCM", False)
     monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0, 1])
     monkeypatch.setattr(hw, "_cuda_order_matches_smi", lambda: True)
@@ -315,7 +315,7 @@ def test_card_identities_are_read_once(monkeypatch):
     monkeypatch.setattr(hw, "IS_ROCM", False)
     monkeypatch.setattr(hw, "get_physical_gpu_count", lambda: 2)
     monkeypatch.setattr(nvidia, "get_card_identities", lambda: reads.append(1) or {0: row, 1: row})
-    monkeypatch.setattr(nvidia, "get_mig_gpu_indices", lambda: set())
+    monkeypatch.setattr(hw, "_nvidia_mig_gpu_indices_or_none", lambda: set())
     monkeypatch.setattr(hw, "_cuda_card_identities", {})
     assert hw._cuda_cards_identical() is True
     assert hw._cuda_cards_identical([0, 1]) is True
@@ -424,7 +424,7 @@ def test_identical_rows_with_a_mig_card_are_not_identical(monkeypatch):
     monkeypatch.setattr(hw, "get_physical_gpu_count", lambda: 2)
     monkeypatch.setattr(nvidia, "get_card_identities", lambda: {0: row, 1: row})
     monkeypatch.setattr(hw, "_cuda_card_identities", {})
-    monkeypatch.setattr(nvidia, "get_mig_gpu_indices", lambda: {1})
+    monkeypatch.setattr(hw, "_nvidia_mig_gpu_indices_or_none", lambda: {1})
     assert hw._cuda_cards_identical() is False
     assert hw._cuda_cards_identical([0]) is True
 
@@ -444,3 +444,47 @@ def test_catalog_compares_every_card_when_mask_ids_are_not_smi_rows(monkeypatch)
     routes._validated_media_picks(1.0)
     assert asked == [None]
     assert len(ranks) == 1
+
+
+@pytest.mark.parametrize(
+    "listing",
+    [
+        types.SimpleNamespace(returncode = 1, stdout = ""),  # nvidia-smi -L failed
+        types.SimpleNamespace(returncode = 0, stdout = ""),  # empty output
+        "timeout",
+    ],
+)
+def test_failed_mig_discovery_is_unknown_not_identical(monkeypatch, listing):
+    import subprocess
+
+    from utils.hardware import nvidia
+
+    def _run(argv, **_k):
+        if listing == "timeout":
+            raise subprocess.TimeoutExpired(argv, 5)
+        return listing
+
+    row = ("NVIDIA A100-SXM4-80GB", "81920 MiB", "8.0", "1410 MHz")
+    monkeypatch.setattr(hw, "IS_ROCM", False)
+    monkeypatch.setattr(hw, "get_physical_gpu_count", lambda: 2)
+    monkeypatch.setattr(nvidia, "get_card_identities", lambda: {0: row, 1: row})
+    monkeypatch.setattr(hw, "_cuda_card_identities", {})
+    monkeypatch.setattr(nvidia.gpu_query, "run_nvidia_smi", _run)
+    assert hw._nvidia_mig_gpu_indices_or_none() is None
+    assert hw._cuda_cards_identical() is None
+    # The load path keeps card 0 explicit when MIG is unknown.
+    _two_cards(monkeypatch, [_dev(0, 80.0, 0.5), _dev(1, 80.0, 0.5)], {0: (8, 0), 1: (8, 0)})
+    monkeypatch.setattr(hw, "_nvidia_mig_gpu_indices_or_none", lambda: None)
+    assert dd.resolve_auto_cuda_ordinal() == 0
+
+
+def test_mig_listing_parses_slices():
+    from unittest.mock import patch as _patch
+
+    from utils.hardware import nvidia
+
+    out = "GPU 0: A100 (UUID: GPU-a)\n  MIG 3g.40gb Device 0: (UUID: MIG-x)\nGPU 1: A100 (UUID: GPU-b)\n"
+    with _patch.object(
+        nvidia.gpu_query, "run_nvidia_smi", lambda argv, **_k: types.SimpleNamespace(returncode = 0, stdout = out)
+    ):
+        assert hw._nvidia_mig_gpu_indices_or_none() == {0}

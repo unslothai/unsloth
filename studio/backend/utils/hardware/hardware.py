@@ -2066,11 +2066,40 @@ def _cuda_cards_identical(gpu_ids: Optional[list[int]] = None) -> Optional[bool]
     if len(set(rows)) != 1:
         return False
     # A MIG card is seen through a slice whose size the physical row does not show.
+    mig = _nvidia_mig_gpu_indices_or_none()
+    if mig is None:
+        return None
+    return not (set(wanted) & mig)
+
+
+def _nvidia_mig_gpu_indices_or_none() -> Optional[set[int]]:
+    """Physical indices of NVIDIA cards with MIG instances, from ``nvidia-smi -L``, or None when the
+    listing failed or came back empty (unknown, unlike a confirmed set with no MIG card)."""
     try:
         from . import nvidia
-        return not (set(wanted) & nvidia.get_mig_gpu_indices())
+        result = nvidia.gpu_query.run_nvidia_smi(
+            [nvidia._nvidia_smi_executable(), "-L"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = nvidia.child_env_without_native_path_secret(),
+            **nvidia._windows_hidden_subprocess_kwargs(),
+        )
     except Exception:
         return None
+    if result.returncode != 0 or not isinstance(result.stdout, str) or not result.stdout.strip():
+        return None
+    indices: set[int] = set()
+    current: Optional[int] = None
+    for line in result.stdout.splitlines():
+        if line.startswith("GPU "):
+            head = line[4:].split(":", 1)[0].strip()
+            current = int(head) if head.isdecimal() else None
+        elif current is not None and line.strip().startswith("MIG "):
+            indices.add(current)
+    return indices
 
 
 _cuda_ordinal_rows_cache: Dict[tuple, list[int]] = {}
