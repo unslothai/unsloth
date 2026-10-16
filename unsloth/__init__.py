@@ -18,6 +18,12 @@ os.environ["UNSLOTH_IS_PRESENT"] = "1"
 # an explicit override, including "0".
 os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
+# Before anything can create a process group: c10d and NCCL read these at init.
+if os.environ.get("UNSLOTH_DEBUG_DISTRIBUTED"):
+    from .distributed_debug import apply_debug_distributed_env as _apply_debug_distributed_env
+    _apply_debug_distributed_env()
+    del _apply_debug_distributed_env
+
 # UNSLOTH_FSDP2=1 under plain torchrun: export accelerate's FSDP2 launch env before transformers or
 # accelerate read it. A conflicting launch (DeepSpeed, FSDP_VERSION=1) raises here, on every rank.
 from .fsdp2_launch import apply_unsloth_fsdp2_launch_env as _apply_fsdp2_env
