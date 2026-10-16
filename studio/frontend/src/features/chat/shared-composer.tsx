@@ -3138,7 +3138,7 @@ export function SharedComposer({
                 <span>Images</span>
               </button>
             )}
-            {showRagPill && <KnowledgeBaseComposerButton side="top" />}
+            {showRagPill && <KnowledgeBaseComposerButton side="top" hasFilesPanel={false} />}
             {showWebFetchPill && (
               <button
                 type="button"

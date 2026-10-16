@@ -35,8 +35,11 @@ import { KnowledgeBaseDialog } from "./knowledge-base-dialog";
 // on; dims but stays interactive (so it can be turned off) while the loaded model can't run it.
 export function KnowledgeBaseComposerButton({
   side = "bottom",
+  hasFilesPanel = true,
 }: {
   side?: "top" | "bottom";
+  /** False in Compare, which renders no files panel to show. */
+  hasFilesPanel?: boolean;
 } = {}) {
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
@@ -167,7 +170,7 @@ export function KnowledgeBaseComposerButton({
           ) : (
             <>
             {/* The way back to a panel its X hid, while retrieval carries on. */}
-            {ragPanelHidden ? (
+            {ragPanelHidden && hasFilesPanel ? (
               <>
                 <DropdownMenuItem onSelect={() => setRagPanelHidden(false)} className="gap-2.5">
                   <FileGlyph strokeWidth={1.75} />

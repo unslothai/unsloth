@@ -39,6 +39,10 @@ test("header controls use the app's tooltip, not the browser's title", () => {
 
 test("the RAG tag's menu offers Show files, with the count, while the panel is hidden", () => {
   const menu = readSrc("features/rag/components/knowledge-base-composer-button.tsx");
-  assert.match(menu, /\{ragPanelHidden \? \([\s\S]*?onSelect=\{\(\) => setRagPanelHidden\(false\)\}[\s\S]*?Show files[\s\S]*?\{ragPanelFileCount\}/);
+  assert.match(menu, /\{ragPanelHidden && hasFilesPanel \? \([\s\S]*?onSelect=\{\(\) => setRagPanelHidden\(false\)\}[\s\S]*?Show files[\s\S]*?\{ragPanelFileCount\}/);
   assert.match(bar, /setRagPanelFileCount\(fileCount\);\n\s*\}, \[fileCount\]\);/);
+});
+
+test("Compare, with no files panel of its own, does not offer Show files", () => {
+  assert.match(readSrc("features/chat/shared-composer.tsx"), /<KnowledgeBaseComposerButton side="top" hasFilesPanel=\{false\} \/>/);
 });
