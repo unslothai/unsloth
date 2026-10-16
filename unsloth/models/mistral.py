@@ -290,8 +290,6 @@ def MistralForCausalLM_fast_forward(
     else:
         outputs = _run_backbone(
             self,
-            num_logits_to_keep,
-            logits_to_keep,
             input_ids = input_ids,
             causal_mask = causal_mask,
             attention_mask = attention_mask,

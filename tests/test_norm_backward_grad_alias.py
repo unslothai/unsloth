@@ -168,4 +168,15 @@ def test_final_norm_reuses_grad_only_under_the_causal_lm_head(monkeypatch):
     calls.clear()
     backbone(input_ids = ids, use_cache = False)
     assert calls and not calls[-1]
+    # GRPO / DPO style: hidden states come back as logits and feed a chunked lm_head loss.
+    calls.clear()
+    monkeypatch.setenv("UNSLOTH_RETURN_HIDDEN_STATES", "1")
+    embeds = backbone.embed_tokens(ids).detach().requires_grad_()
+    hidden = model(inputs_embeds = embeds, use_cache = False).logits
+    assert calls and calls[-1], "GRPO-style hidden states should let the final norm reuse its grad"
+    assert hidden.shape[-1] == model.config.hidden_size
+    logits = hidden.float() @ model.lm_head.weight.float().t()
+    (grad,) = torch.autograd.grad(logits.logsumexp(-1).mean(), embeds)
+    assert torch.isfinite(grad).all()
+    monkeypatch.delenv("UNSLOTH_RETURN_HIDDEN_STATES")
     assert not getattr(backbone, "_unsloth_head_reads_final_norm", False)
