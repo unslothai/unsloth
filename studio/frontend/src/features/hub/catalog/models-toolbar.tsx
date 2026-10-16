@@ -53,7 +53,6 @@ const SORT_OPTIONS: ReadonlyArray<{
   value: HfSortKey;
   label: string;
 }> = [
-  // New and trending together; Newest is creation date alone.
   { value: "fresh", label: "Latest" },
   { value: "createdAt", label: "Newest" },
   { value: "trendingScore", label: "Trending" },

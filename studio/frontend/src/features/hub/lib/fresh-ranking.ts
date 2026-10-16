@@ -5,7 +5,6 @@
 
 export interface FreshRankable {
   createdAt?: string | Date;
-  /** The listing's lastModified. */
   updatedAt?: string | Date;
   likes?: number;
   trendingScore?: number;
@@ -28,11 +27,7 @@ function ageDays(value: string | Date | undefined, now: number): number | null {
   return Number.isFinite(time) ? Math.max(0, (now - time) / DAY_MS) : null;
 }
 
-/**
- * Days since the model came out. The Hub has no publish date, and createdAt is when the repo was
- * made, which for a repo kept private until launch is weeks early. A repo whose likes are nearly all
- * trending (recent) went public recently, so its last change dates it instead.
- */
+/** The Hub has no publish date and createdAt predates a private-until-launch repo going public; nearly all-recent likes mean it just went public, so its last change dates it. */
 export function releaseAgeDays(model: FreshRankable, now: number): number {
   const created = ageDays(model.createdAt, now);
   const updated = ageDays(model.updatedAt, now);

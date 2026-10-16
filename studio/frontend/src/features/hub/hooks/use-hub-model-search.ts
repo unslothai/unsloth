@@ -474,14 +474,12 @@ export interface HfModelSearchChannel {
   idSuffix?: string;
 }
 
-/** Candidates per listing for the fresh ranking: the newest and the most trending. */
 const FRESH_POOL = 100;
 
-/** Ranks the newest and the most trending uploads together, then carries on through the rest by date. */
+/** Ranks the newest and most trending together, then the rest by date. */
 async function* freshChannelIterator(
   channel: HfModelSearchChannel,
   opts: Omit<Parameters<typeof createChannelIterator>[1], "sortBy" | "task"> & {
-    /** Scopes both candidate listings, so the pool is the newest and trending of these tasks. */
     tasks?: readonly PipelineType[];
   },
 ): AsyncGenerator<unknown> {
@@ -824,9 +822,7 @@ export function useHubModelSearch(
           },
         );
       }
-      // Latest picked from the sort menu while browsing: the same ranking as the feed, over the chosen
-      // uploaders. A typed search keeps the search paths below (Unsloth floated, tasks checked
-      // client-side), newest first.
+      // Browsing only: a typed search keeps the search paths below (Unsloth floated, tasks checked client-side).
       if (sortBy === "fresh" && !trimmed) {
         return freshChannelIterator(
           { owner: unslothOnly ? "unsloth" : undefined },
