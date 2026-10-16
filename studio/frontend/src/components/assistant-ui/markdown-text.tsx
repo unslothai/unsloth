@@ -863,7 +863,7 @@ function StreamdownBlockContent(props: BlockProps) {
         ) : (
           <PlainFenceBlock
             actions
-            isIncomplete={props.isIncomplete}
+            isIncomplete={false}
             language={codeFence.language}
             source={codeFence.source}
           />
