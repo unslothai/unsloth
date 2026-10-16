@@ -1986,6 +1986,35 @@ def test_a_split_build_stem_switches_away_from_the_resident_sibling(monkeypatch)
     assert loads == ["beta-Q4_K_M"]
 
 
+def test_a_quant_directory_build_key_switches_away_from_the_resident_sibling(monkeypatch):
+    key = "Q4_K_M/beta-Q4_K_M"
+    entry = resolver._LocalGgufEntry("custom-model", "/models/model", ("Q4_K_M", key))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"custom-model": entry}))
+    loaded = _Loaded("custom-model", "Q4_K_M")
+    loaded.gguf_path = "/models/model/Q4_K_M/alpha-Q4_K_M.gguf"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    loads: list = []
+
+    async def _record_load(request, *args, **kwargs):
+        variant = getattr(request, "gguf_variant", None)
+        loads.append(variant)
+        loaded.hf_variant = variant
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _record_load)
+    monkeypatch.setattr(
+        "utils.openai_auto_switch_settings.get_openai_auto_switch_enabled", lambda: True
+    )
+
+    asyncio.run(inference_route._maybe_auto_switch_model(f"custom-model:{key}", _Req(), "tester"))
+
+    assert loads == [key]
+
+
 def test_the_trust_probe_never_falls_back_to_the_server_identity(hub, monkeypatch):
     # huggingface_hub treats None as "use the cached login", so only an explicit False
     # is anonymous. This probe passed None, so a caller-named repo was read with the

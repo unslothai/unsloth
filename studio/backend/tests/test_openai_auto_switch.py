@@ -799,6 +799,21 @@ def test_a_torn_build_key_misses_instead_of_serving_its_sibling(tmp_path, monkey
     assert inference_route._loaded_satisfies("local/model:latest") is True
 
 
+def test_a_build_stem_still_resolves_after_its_sibling_is_removed(tmp_path):
+    (tmp_path / "alpha-F16.gguf").write_bytes(b"x" * 80)
+    (tmp_path / "beta-F16.gguf").write_bytes(b"x" * 80)
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x" * 40)
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+    assert "beta-F16" in entry.variants
+
+    (tmp_path / "alpha-F16.gguf").unlink()
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+
+    resolved = resolver._resolve_from_index("local/model:beta-F16", {"local/model": entry})
+    assert resolved is not None and resolved[1] == "F16"
+    assert entry.aliases == ()
+
+
 def test_local_gguf_entry_labels_a_quantless_filename_as_the_picker_does(tmp_path):
     # No quant token in the name, so the picker and every saved setting key this variant by
     # the stem. Labelling it "v2" here left an API load reading a key nothing wrote (#10227).

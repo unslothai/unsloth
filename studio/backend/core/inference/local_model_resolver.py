@@ -43,6 +43,7 @@ class _LocalGgufEntry:
     repo_level_companions: bool = False
     aliases: tuple[tuple[str, str], ...] = ()  # see _legacy_variant_aliases
     withheld: tuple[str, ...] = ()  # listed build keys that cannot be served (torn split sets)
+    build_aliases: tuple[tuple[str, str], ...] = ()  # see _build_family_aliases
 
 
 _CACHE_TTL_S = 5.0
@@ -343,6 +344,28 @@ def _legacy_variant_aliases(variants) -> tuple[tuple[str, str], ...]:
         return ()
 
 
+def _build_family_aliases(variants) -> tuple[tuple[str, str], ...]:
+    """``(file family, current key)`` per custom-folder build: a stem key a build was advertised
+    under keeps naming it after a sibling's removal hands it the bare quant key."""
+    try:
+        from hub.utils.gguf import gguf_variant_family
+
+        current = {str(v.quant).lower() for v in variants if getattr(v, "quant", None)}
+        seen: dict[str, Optional[str]] = {}
+        for variant in variants:
+            quant = getattr(variant, "quant", None)
+            filename = getattr(variant, "filename", None)
+            if not quant or not filename:
+                continue
+            family = gguf_variant_family(str(filename).replace("\\", "/")).lower()
+            if not family or family in current:
+                continue
+            seen[family] = None if family in seen else str(quant)
+        return tuple((family, quant) for family, quant in seen.items() if quant is not None)
+    except Exception:
+        return ()
+
+
 def _local_gguf_entry(
     loader_id: str,
     info,
@@ -493,6 +516,7 @@ def _local_gguf_entry(
             repo_level_companions = cache_repo_dir is not None,
             aliases = _legacy_variant_aliases(variants),
             withheld = withheld,
+            build_aliases = _build_family_aliases(variants) if cache_repo_dir is None else (),
         )
     except Exception:
         return None
@@ -1378,7 +1402,7 @@ def _resolve_from_index(
                 return _result(entry, v)
         # ahead of both branches below: one refuses a retired spelling, the other answers it
         # with a different quant
-        for legacy, current in entry.aliases:
+        for legacy, current in (*entry.aliases, *entry.build_aliases):
             if legacy == wanted:
                 return _result(entry, current)
         # a listed build that cannot be served misses rather than falling back to a sibling
@@ -1426,7 +1450,7 @@ def local_gguf_pinned_variant(requested: str, allow_scan: bool = True) -> Option
     for variant in entry.variants:
         if variant.lower() == wanted:
             return variant
-    for legacy, current in entry.aliases:
+    for legacy, current in (*entry.aliases, *entry.build_aliases):
         if legacy == wanted:
             return current
     return None

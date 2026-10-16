@@ -11590,9 +11590,10 @@ async def _maybe_auto_switch_model(
         # _loaded_satisfies and the resolver read it. Treating it as a quant tears down
         # a serving Q8 to load the preferred Q4 for a request either satisfies.
         _, _requested_variant = split_model_ref(requested_model)
-        bare = not looks_like_quant(_requested_variant) and (
-            not _requested_variant
-            or local_gguf_pinned_variant(requested_model, allow_scan = False) is None
+        # the index pin also covers directory-qualified keys split_model_ref cannot parse
+        bare = (
+            not looks_like_quant(_requested_variant)
+            and local_gguf_pinned_variant(requested_model, allow_scan = False) is None
         )
 
         ollama_target = target_is_gguf and is_ollama_manifest_ref(target_id)
