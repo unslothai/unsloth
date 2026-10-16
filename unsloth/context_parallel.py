@@ -179,6 +179,10 @@ def _hybrid_config_blocker(model) -> Optional[str]:
     if getattr(text_config, "output_router_logits", False):
         # The load balancing loss is a product of per-sequence means, not a sum over shards.
         return "the MoE router auxiliary loss (output_router_logits)"
+    if any(isinstance(getattr(m, "experts", None), torch.nn.ModuleList) for m in model.modules()):
+        # Per-expert modules run only for experts the local shard routes to, so with DDP's
+        # find_unused_parameters off an expert unused on one rank stalls the gradient reduction.
+        return "sparse MoE layers with per-expert modules (transformers 4.x Qwen3-Next)"
     return None
 
 
@@ -289,7 +293,17 @@ class ContextParallelManager:
                 raise ValueError(
                     f"Unsloth: packed_seq_lengths sum to {used} but the packed row has {seq_len} tokens."
                 )
+        if inputs.get("output_router_logits"):
+            raise ValueError(
+                "Unsloth: context parallelism does not support the MoE router auxiliary loss "
+                "(output_router_logits): it is a product of per-sequence means, not a sum over shards."
+            )
         position_ids = inputs.get("position_ids")
+        if isinstance(position_ids, torch.Tensor) and position_ids.ndim != 2:
+            # Sharding slices dim 1, which is the batch axis of e.g. Qwen3.5's [4, batch, seq] ids.
+            raise ValueError(
+                f"Unsloth: context parallelism needs 2D [batch, seq] position_ids, got {position_ids.ndim}D."
+            )
         if (
             ulysses
             and packed_seq_lengths is None

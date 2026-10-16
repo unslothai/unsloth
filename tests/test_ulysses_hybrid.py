@@ -246,6 +246,24 @@ def test_hybrid_refuses_multimodal_and_router_aux_loss():
     model.config.vision_config = {"model_type": "qwen3_5_vision"}
     assert cp._hybrid_config_blocker(model) == "multimodal models"
     assert not cp._supports_context_parallel(model, "ulysses")
+    model.config.vision_config = None
+    # transformers 4.x Qwen3-Next: per-expert modules, each run only when routed on that rank.
+    model.mlp_holder = torch.nn.Module()
+    model.mlp_holder.experts = torch.nn.ModuleList([torch.nn.Linear(2, 2)])
+    assert "sparse MoE" in cp._hybrid_config_blocker(model)
+    assert not cp._supports_context_parallel(model, "ulysses")
+
+
+def test_ulysses_refuses_per_batch_router_logits_and_3d_positions():
+    inputs = {"input_ids": torch.ones(1, 6, dtype = torch.long), "output_router_logits": True}
+    with pytest.raises(ValueError, match = "output_router_logits"):
+        _manager(2, 0)._prepare_inputs(inputs)
+    inputs = {
+        "input_ids": torch.ones(1, 6, dtype = torch.long),
+        "position_ids": torch.arange(6).expand(4, 1, 6).contiguous(),
+    }
+    with pytest.raises(ValueError, match = "2D"):
+        _manager(2, 0)._prepare_inputs(inputs)
 
 
 def test_linear_attn_gets_packed_lengths_the_decoder_did_not_forward(monkeypatch):
