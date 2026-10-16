@@ -33,6 +33,17 @@ BACKEND = Path(__file__).resolve().parent.parent / "studio" / "backend"
 DECODER_LINEAR = re.compile(
     r"^model\.language_model\.layers\.\d+\.(self_attn\.[qkvo]_proj|mlp\.(gate|up|down)_proj)\.weight$"
 )
+# UMT5 / T5 encoder blocks (Wan's UMT5-XXL): self-attention q/k/v/o and the gated-GELU MLP wi_0 / wi_1 / wo.
+T5_ENCODER_LINEAR = re.compile(
+    r"^encoder\.block\.\d+\.layer\.(0\.SelfAttention\.[qkvo]|1\.DenseReluDense\.(wi_0|wi_1|wo))\.weight$"
+)
+_T5_CLASSES = ("UMT5EncoderModel", "T5EncoderModel")
+# The encoder classes' _keep_in_fp32_modules: a projection kept dense is stored float32, as from_pretrained holds it.
+_T5_KEEP_FP32 = ("wo",)
+
+
+def _linear_pattern(te_class):
+    return T5_ENCODER_LINEAR if te_class in _T5_CLASSES else DECODER_LINEAR
 
 
 _ST_DTYPES = {"float32": "F32", "bfloat16": "BF16", "float16": "F16", "int8": "I8", "uint8": "U8"}
@@ -89,7 +100,13 @@ def main(argv = None) -> int:
         "--device", default = "cuda" if os.environ.get("CUDA_VISIBLE_DEVICES") != "" else "cpu"
     )
     p.add_argument("--hf-token", default = None)
+    p.add_argument(
+        "--keep-dense",
+        default = "",
+        help = "comma-separated Linear leaf names left dense (e.g. 'wo' for UMT5); fp32-kept modules stay float32",
+    )
     args = p.parse_args(argv)
+    keep_dense = tuple(t for t in (x.strip() for x in args.keep_dense.split(",")) if t)
 
     sys.path.insert(0, str(BACKEND))
     import safetensors
@@ -115,6 +132,9 @@ def main(argv = None) -> int:
     else:
         with safe_open(str(src / "model.safetensors"), framework = "pt") as handle:
             weight_map = {name: "model.safetensors" for name in handle.keys()}
+    te_class = (config.get("architectures") or [None])[0]
+    pattern = _linear_pattern(te_class)
+    keep_fp32 = _T5_KEEP_FP32 if te_class in _T5_CLASSES else ()
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     quant = {"format": "int8_tensorwise", "convrot": True, "convrot_groupsize": args.group}
     blob = torch.tensor(list(json.dumps(quant).encode("utf-8")), dtype = torch.uint8)
@@ -126,28 +146,36 @@ def main(argv = None) -> int:
                 if name == "lm_head.weight":
                     continue
                 tensor = handle.get_tensor(name)
-                if DECODER_LINEAR.match(name):
+                leaf = name[: -len(".weight")].rsplit(".", 1)[-1] if name.endswith(".weight") else ""
+                if pattern.match(name) and leaf not in keep_dense:
                     q, scale = quantize_int8_convrot_weight(tensor.to(device), args.group)
                     prefix = name[: -len(".weight")]
                     tensors[name] = q.cpu().contiguous()
                     tensors[prefix + ".weight_scale"] = scale.cpu().contiguous()
                     tensors[prefix + ".comfy_quant"] = blob.clone()
                     quantized += 1
+                elif pattern.match(name) and leaf in keep_fp32:
+                    tensors[name] = tensor.to(torch.float32).contiguous()
                 else:
                     tensors[name] = tensor.to(torch.bfloat16).contiguous()
     if not quantized:
-        raise SystemExit("no decoder projections matched; is this a Qwen3-VL text encoder?")
+        raise SystemExit("no projections matched; is this a Qwen3-VL or UMT5 text encoder?")
     metadata = {
         "base_model_id": args.base,
         "family": args.family,
         "scheme": "int8",
         "component": args.component,
-        "te_class": (config.get("architectures") or [None])[0],
+        "te_class": te_class,
         "torch_dtype": "bfloat16",
         "quant": dict(
-            quant, weight_only = True, scale = "per_output_channel_absmax_over_127", linears = quantized
+            quant,
+            weight_only = True,
+            scale = "per_output_channel_absmax_over_127",
+            linears = quantized,
+            pattern = pattern.pattern,
+            kept_dense = list(keep_dense),
         ),
-        "lm_head": "dropped",
+        "lm_head": "dropped" if te_class not in _T5_CLASSES else "absent",
         "torch_version": torch.__version__,
         "transformers_version": transformers.__version__,
         "safetensors_version": safetensors.__version__,
