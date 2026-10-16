@@ -4,6 +4,7 @@
 """Scheduled tasks: schedule math, storage, routes, and the runner that posts answers to chats."""
 
 import asyncio
+import sqlite3
 import threading
 from datetime import datetime
 from types import SimpleNamespace
@@ -579,6 +580,55 @@ def test_a_task_deleted_while_its_chat_is_saved_keeps_no_chat(monkeypatch):
     assert studio_db.list_chat_threads() == []
 
 
+def answer_with(content):
+    async def generate(app, task, run, cancel_event):
+        return Answer(content = content, reasoning = "", model = "gemma-3")
+
+    return generate
+
+
+def test_settling_a_run_is_tried_again_over_a_locked_database(monkeypatch):
+    task, run = claim_manual_run()
+    finish_run = db.finish_run
+    attempts = []
+
+    def locked_once(*args, **kwargs):
+        attempts.append(args)
+        if len(attempts) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return finish_run(*args, **kwargs)
+
+    monkeypatch.setattr(scheduler_module, "generate_answer", answer_with("Done."))
+    monkeypatch.setattr(scheduler_module, "_SETTLE_RETRY_SECONDS", 0)
+    monkeypatch.setattr(db, "finish_run", locked_once)
+    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
+    scheduler.worker_id = "worker-under-test"
+    asyncio.run(scheduler._execute(OWNER, task, run))
+
+    assert len(attempts) == 2
+    last_run = db.get_task(task["id"])["lastRun"]
+    assert last_run["status"] == "succeeded"
+    assert [thread["id"] for thread in studio_db.list_chat_threads()] == [last_run["threadId"]]
+
+
+def test_a_chat_whose_run_cannot_be_settled_is_removed(monkeypatch):
+    task, run = claim_manual_run()
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(scheduler_module, "generate_answer", answer_with("Stranded."))
+    monkeypatch.setattr(scheduler_module, "_SETTLE_RETRY_SECONDS", 0)
+    monkeypatch.setattr(db, "finish_run", locked)
+    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
+    scheduler.worker_id = "worker-under-test"
+    asyncio.run(scheduler._execute(OWNER, task, run))
+
+    # No chat without a run recorded as succeeded; the stale-run sweep settles this one later.
+    assert studio_db.list_chat_threads() == []
+    assert db.get_task(task["id"])["lastRun"]["status"] == "running"
+
+
 class FakeProducer:
     def __init__(
         self,
@@ -738,6 +788,46 @@ def test_the_scheduler_runs_a_due_task_and_wakes_for_run_now(monkeypatch):
     assert len(studio_db.list_chat_threads()) == 2
     # The overdue run moved the schedule on to the next 09:00 still ahead.
     assert db.get_task("task-1")["nextRunAt"] > db.now_ms()
+
+
+def test_a_cancellation_raised_for_a_run_ends_the_run_not_the_scheduler(monkeypatch):
+    monkeypatch.setattr(scheduler_module, "job_accounts", lambda: [OWNER])
+    calls = []
+
+    async def fake_generate(app, task, run, cancel_event):
+        calls.append(run["id"])
+        if len(calls) == 1:
+            # What the model unload gate raises when the run's cancel event fires as it waits.
+            raise asyncio.CancelledError()
+        return Answer(content = "Done.", reasoning = "", model = "gemma-3")
+
+    monkeypatch.setattr(scheduler_module, "generate_answer", fake_generate)
+    # Not due, so only the Run now requests below are claimed.
+    make_task(nextRunAt = db.now_ms() + DAY)
+    db.request_run("task-1")
+
+    async def settled(count: int) -> dict:
+        for _ in range(500):
+            runs = db.list_runs("task-1")
+            if len(calls) == count and runs and runs[0]["status"] in ("succeeded", "failed"):
+                return runs[0]
+            await asyncio.sleep(0.01)
+        raise AssertionError(f"run {count} never settled")
+
+    async def scenario():
+        scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
+        scheduler.start()
+        try:
+            first = await settled(1)
+            assert (first["status"], first["errorCode"]) == ("failed", "cancelled")
+            # The loop is still there to run the next one.
+            db.request_run("task-1")
+            scheduler.wake()
+            assert (await settled(2))["status"] == "succeeded"
+        finally:
+            await scheduler.stop()
+
+    asyncio.run(scenario())
 
 
 def test_the_system_prompt_falls_back_to_utc_for_an_unknown_zone():

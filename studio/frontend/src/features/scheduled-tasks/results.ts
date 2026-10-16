@@ -12,6 +12,10 @@ export const SCHEDULED_TASKS_CHANGED_EVENT = "unsloth-scheduled-tasks-changed";
 /** Runs finished: a loaded Tasks page re-reads its list to show them. */
 export const SCHEDULED_TASK_RUNS_FINISHED_EVENT = "unsloth-scheduled-task-runs-finished";
 
+/** Where the results poll keeps each account's record, the account's name appended. Listed in
+ *  `ACCOUNT_KEYED_PREFIXES`, so switching accounts leaves it for when this one signs in again. */
+export const SEEN_KEY_PREFIX = "unsloth_scheduled_tasks_seen:";
+
 export const ACTIVE_POLL_MS = 2_000;
 export const IDLE_POLL_MS = 5 * 60_000;
 // Past the due time, so the run has been claimed by the time the poll asks.

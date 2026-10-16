@@ -20,6 +20,7 @@ import {
   IDLE_POLL_MS,
   SCHEDULED_TASKS_CHANGED_EVENT,
   SCHEDULED_TASK_RUNS_FINISHED_EVENT,
+  SEEN_KEY_PREFIX,
   type SeenRuns,
   collectFinishedRuns,
   nextPollDelay,
@@ -27,13 +28,12 @@ import {
   runErrorText,
 } from "./results";
 
-// One record per account: another account's cursor would pass over this one's results.
-const SEEN_KEY_PREFIX = "unsloth_scheduled_tasks_seen:";
 // More than this at once, e.g. on reopening Studio, and one toast speaks for them all.
 const INDIVIDUAL_TOASTS = 2;
 const RECHECK_MS = 500;
 
-/** The signed-in account the record belongs to. A token that names none shares one record. */
+/** The signed-in account the record belongs to: another account's cursor would pass over this
+ *  one's results. A token that names none shares one record. */
 function currentAccount(): string {
   return sessionAccount(getAuthToken())?.username ?? "";
 }

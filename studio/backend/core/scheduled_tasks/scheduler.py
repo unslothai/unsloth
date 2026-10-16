@@ -46,6 +46,9 @@ _STALE_RUN_MS = 2 * 60 * 1000
 _RUN_TIMEOUT_SECONDS = 20 * 60
 _CANCEL_GRACE_SECONDS = 10.0
 _STOP_GRACE_SECONDS = 5.0
+# Settling a run is tried again over a locked database, all within the stop grace above.
+_SETTLE_ATTEMPTS = 3
+_SETTLE_RETRY_SECONDS = 1.0
 _ERROR_TEXT_LIMIT = 500
 
 _schedulers: "weakref.WeakSet[ScheduledTaskScheduler]" = weakref.WeakSet()
@@ -466,23 +469,39 @@ class ScheduledTaskScheduler:
                 "error": failure.message,
             }
         except asyncio.CancelledError:
-            outcome = {"status": "failed", "error_code": "interrupted"}
-            raise
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                # This loop itself is being cancelled: Studio is shutting down.
+                outcome = {"status": "failed", "error_code": "interrupted"}
+                raise
+            # Raised for this run's own cancel event (the model unload gate raises it while the
+            # run waits on a load or unload): it ends the run, not the loop serving every account.
+            outcome = {
+                "status": "failed",
+                "error_code": "interrupted" if self._stopping else "cancelled",
+            }
         except Exception as exc:
             logger.exception("scheduled_tasks.run_failed")
             outcome = {"status": "failed", "error": _error_text(str(exc))}
         finally:
             heartbeat.cancel()
             self._active = None
-            settled: Optional[bool] = None
-            try:
-                settled = await asyncio.to_thread(
-                    db.finish_run, run["id"], self.worker_id, **outcome
-                )
-            except Exception:
-                # Left running, the stale-run sweep settles it.
-                logger.exception("scheduled_tasks.finish_failed")
-            # Deleting a task deletes its runs in the same transaction, so a run that is gone by
-            # the time it settles lost to a deletion, even one that landed after the check above.
-            if settled is False and outcome.get("thread_id"):
+            settled = await self._settle(run["id"], outcome)
+            # A chat stands only for a run recorded as succeeded. Deleting a task deletes its runs
+            # in the same transaction, so a run gone when it settles lost to a deletion, even one
+            # that landed after the check above; one that cannot be settled at all is left to the
+            # stale-run sweep, which records it as interrupted.
+            if settled is not True and outcome.get("thread_id"):
                 await asyncio.to_thread(_discard_chat, outcome["thread_id"])
+
+    async def _settle(self, run_id: str, outcome: dict[str, Any]) -> Optional[bool]:
+        """finish_run, tried again over a transient error such as a locked database. None when it
+        never went through."""
+        for attempt in range(_SETTLE_ATTEMPTS):
+            try:
+                return await asyncio.to_thread(db.finish_run, run_id, self.worker_id, **outcome)
+            except Exception:
+                logger.exception("scheduled_tasks.finish_failed")
+            if attempt + 1 < _SETTLE_ATTEMPTS:
+                await asyncio.sleep(_SETTLE_RETRY_SECONDS)
+        return None

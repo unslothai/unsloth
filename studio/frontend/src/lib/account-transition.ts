@@ -40,6 +40,13 @@ export const ACCOUNT_CHROME_KEYS = new Set([
 export const ACCOUNT_CHROME_PREFIXES = [
   "unsloth_web_update_dismissed:",
 ] as const;
+/** Records named after the account they belong to, which only that account reads, kept so it
+ * carries on where it left off when it signs in again. Bookkeeping only: never add content,
+ * credentials or anything one account could learn about another from. */
+export const ACCOUNT_KEYED_PREFIXES = [
+  // The scheduled task results poll's cursor: a time and the run ids it has announced.
+  "unsloth_scheduled_tasks_seen:",
+] as const;
 /** Per-tab flags about the browser session, not the account. Never add content. */
 export const ACCOUNT_SESSION_CHROME_KEYS = new Set([USER_STOPPED_KEY]);
 /** Purged on an account change. Durable stores are named per account (`accountDatabaseName`). */
@@ -221,7 +228,8 @@ export async function transitionBrowserAccount(
         ACCOUNT_CHROME_KEYS.has(key) ||
         // About this machine's install, not the account signed in to it.
         key === RUNTIME_REPAIR_KEY ||
-        ACCOUNT_CHROME_PREFIXES.some((prefix) => key.startsWith(prefix))
+        ACCOUNT_CHROME_PREFIXES.some((prefix) => key.startsWith(prefix)) ||
+        ACCOUNT_KEYED_PREFIXES.some((prefix) => key.startsWith(prefix))
       )
         continue;
       if (key.startsWith("unsloth") || key.startsWith("chat-draft"))
