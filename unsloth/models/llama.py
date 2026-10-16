@@ -1428,6 +1428,18 @@ def LlamaModel_fast_forward(
             self.config.max_position_embeddings,
             materialize_len = rope_rows,
         )
+        if (
+            position_ids is not None
+            and isinstance(self.rotary_emb, LongRopeRotaryEmbedding)
+            and rope_len <= self.rotary_emb.original_max_position_embeddings
+        ):
+            # transformers' longrope_frequency_update picks the factors from max(position_ids) + 1, a host
+            # sync it pays too; other models and LongRoPE without position_ids stay sync-free.
+            if torch.compiler.is_compiling():
+                # No graph break: rope_rows spans max_position_embeddings, so never index the short cache.
+                rope_len = rope_rows
+            else:
+                rope_len = max(rope_len, int(position_ids.max()) + 1)
         # rope_rows only sizes the build; LongRoPE picks its short or long factors from rope_len.
         position_embeddings = self.rotary_emb.get_cached(rope_len, hidden_states.device.index)
     else:

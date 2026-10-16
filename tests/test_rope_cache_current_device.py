@@ -298,6 +298,11 @@ def _model_forward_rope(
         "position_ids": position_ids,
         "IS_ATTENTION_REFACTOR": True,
         "IS_GRANITE": False,
+        "torch": torch,
+        # isinstance needs the class this rope was built from; other ropes never match.
+        "LongRopeRotaryEmbedding": type(rope)
+        if type(rope).__name__ == "LongRopeRotaryEmbedding"
+        else type("LongRopeRotaryEmbedding", (), {}),
         "max": max,
         "getattr": getattr,
     }
@@ -347,3 +352,51 @@ def test_model_forward_position_ids_keep_longrope_short_factors():
     cos, sin = _model_forward_rope(rope, 4, torch.tensor([[0, 1, 2, 3]]), 128, max_seq_length = 8)
     assert cos is rope.multi_gpu_short_cos_cached[0]
     assert sin is rope.multi_gpu_short_sin_cached[0]
+
+
+def _longrope(max_position, original_max_position):
+    return _llama_ns()["LongRopeRotaryEmbedding"](
+        dim = DIM,
+        max_position_embeddings = max_position,
+        original_max_position_embeddings = original_max_position,
+        short_factor = [1.0] * (DIM // 2),
+        long_factor = [2.0] * (DIM // 2),
+    )
+
+
+def test_model_forward_longrope_offset_positions_match_transformers():
+    # transformers picks LongRoPE's factors from max(position_ids) + 1, so 4 tokens at 40000 with a 4096
+    # pretrained window use the long factors; the short cache has no row 40000.
+    from transformers import Phi3Config
+    from transformers.models.phi3.modeling_phi3 import Phi3RotaryEmbedding
+
+    max_position, original_max_position = 1 << 17, 4096
+    position_ids = torch.tensor([[40000, 40001, 40002, 40003]])
+    rope = _longrope(max_position, original_max_position)
+    cos, sin = _model_forward_rope(rope, 4, position_ids, max_position)
+    assert cos.shape[0] > int(position_ids.max())
+
+    config = Phi3Config(
+        hidden_size = DIM,
+        num_attention_heads = 1,
+        num_key_value_heads = 1,
+        max_position_embeddings = max_position,
+        original_max_position_embeddings = original_max_position,
+        rope_scaling = {
+            "type": "longrope",
+            "short_factor": [1.0] * (DIM // 2),
+            "long_factor": [2.0] * (DIM // 2),
+        },
+    )
+    ref_cos, ref_sin = Phi3RotaryEmbedding(config)(torch.zeros(1, 4, DIM), position_ids)
+    torch.testing.assert_close(cos[position_ids[0]].float(), ref_cos[0], atol = 2e-3, rtol = 0)
+    torch.testing.assert_close(sin[position_ids[0]].float(), ref_sin[0], atol = 2e-3, rtol = 0)
+
+
+def test_model_forward_longrope_offset_positions_without_sync_under_compile(monkeypatch):
+    # While tracing there is no .item(): positions may span max_position_embeddings, so take the long cache.
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    monkeypatch.setattr(torch.Tensor, "max", lambda *args, **kwargs: pytest.fail("host sync"))
+    rope = _longrope(1 << 17, 4096)
+    cos, _ = _model_forward_rope(rope, 4, torch.tensor([[40000, 40001, 40002, 40003]]), 1 << 17)
+    assert cos is rope.multi_gpu_long_cos_cached[0]
