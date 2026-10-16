@@ -129,6 +129,7 @@ def test_training_step_divides_the_pre_shard_token_count_by_cp_size(monkeypatch)
             num_items_in_batch = None,
         ):
             seen.append(("train", num_items_in_batch))
+            assert inputs["use_cache"] is False
 
         def prediction_step(self, model, inputs, prediction_loss_only):
             return (None, None, None)
@@ -406,7 +407,7 @@ def test_deepspeed_and_fsdp1_are_refused(monkeypatch, distributed_type, fsdp_ver
     monkeypatch.setattr(cp.dist, "is_initialized", lambda: True)
     monkeypatch.setattr(cp.dist, "get_world_size", lambda: 2)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    monkeypatch.setattr(cp, "_supports_context_parallel", lambda model: True)
+    monkeypatch.setattr(cp, "_supports_context_parallel", lambda model, backend = "ring": True)
     args = types.SimpleNamespace(context_parallel_size = 2, label_smoothing_factor = 0.0)
     plugin = None if fsdp_version is None else types.SimpleNamespace(fsdp_version = fsdp_version)
     accelerator = types.SimpleNamespace(
@@ -472,7 +473,7 @@ def _cp_env(monkeypatch):
     monkeypatch.setattr(cp.dist, "is_initialized", lambda: True)
     monkeypatch.setattr(cp.dist, "get_world_size", lambda: 2)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    monkeypatch.setattr(cp, "_supports_context_parallel", lambda model: True)
+    monkeypatch.setattr(cp, "_supports_context_parallel", lambda model, backend = "ring": True)
 
 
 @pytest.mark.parametrize("case", ["iterable", "dispatch", "eval_dict"])

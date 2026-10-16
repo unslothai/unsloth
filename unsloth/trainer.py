@@ -34,6 +34,7 @@ from unsloth.utils import (
     enable_sample_packing,
 )
 from unsloth.utils.packing import _stateful_mixer_kind, patch_hybrid_linear_attention_varlen
+from unsloth.utils.token_budget import install_token_budget
 from unsloth_zoo.training_utils import (
     unsloth_train as _unsloth_train,
 )
@@ -2035,6 +2036,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 else "🦥 Unsloth: Padding-free enabled, enabling faster training."
             )
             print(message)
+
+        install_token_budget(self)
 
         # get_peft_model installs a pre-train forward detector for plain LoRA/vision models, but only RL
         # trainers run the reset via prepare_for_training_mode, so wire it into the SFT train() path too,

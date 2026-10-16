@@ -1415,10 +1415,15 @@ def LlamaModel_fast_forward(
     ) or IS_GRANITE:
         # position_embeddings is mandatory on main (huggingface/transformers#34858), and granite always
         # had the attention refactor, so it always takes this path.
-        self.rotary_emb.extend_rope_embedding(hidden_states, self.config.max_position_embeddings)
-        position_embeddings = self.rotary_emb.get_cached(
-            self.config.max_position_embeddings, hidden_states.device.index
+        # max_position_embeddings still sets the cache size and dtype as before, but only the rows
+        # this batch (or the declared max_seq_length) can index are built, on this device only.
+        rope_rows = max(seq_length_with_past, getattr(self, "max_seq_length", None) or 0)
+        self.rotary_emb.extend_rope_embedding(
+            hidden_states,
+            self.config.max_position_embeddings,
+            materialize_len = rope_rows,
         )
+        position_embeddings = self.rotary_emb.get_cached(rope_rows, hidden_states.device.index)
     else:
         position_embeddings = None
 
@@ -2137,9 +2142,120 @@ def _compute_config_rope_inv_freq(config, rope_scaling):
         return None, 1.0
 
 
+def _round_rope_size(seq_len):
+    return ((seq_len // 8192) + ((seq_len % 8192) != 0)) * 8192
+
+
+class _PerDeviceRopeCache:
+    """cos/sin built lazily per device with only the rows asked for, so torchrun ranks do not
+    allocate on their peers. A row depends only on its position, so a shorter cache matches the
+    full one row for row."""
+
+    def _init_rope_cache_state(self, dtype):
+        self._rope_cache_dtype = dtype
+        # Bumped whenever the eager code rebuilt every device (growth), so stale devices rebuild.
+        self._rope_cache_version = 0
+        self._rope_cache_versions = [None] * DEVICE_COUNT
+        # Rows each device can serve without bookkeeping; reset on growth. Read per layer per decode step.
+        self._rope_rows_ready = [0] * DEVICE_COUNT
+        # Never fewer rows than the eager cache started with, so those positions stay valid.
+        self._rope_cache_floor = self.current_rope_size
+        self._rope_cache_needed = self.current_rope_size
+
+    def _rope_cache_rows(self):
+        rows = max(self._rope_cache_floor, _round_rope_size(self._rope_cache_needed))
+        return min(self.current_rope_size, rows)
+
+    def _build_rope_cache(self, device_index):
+        # _set_cos_sin_cache records its length as current_rope_size; a lazy build may be shorter.
+        current_rope_size = self.current_rope_size
+        self._set_cos_sin_cache(
+            seq_len = self._rope_cache_rows(),
+            device = torch.device(device_index),
+            dtype = self._rope_cache_dtype,
+        )
+        self.current_rope_size = current_rope_size
+        self._rope_cache_versions[device_index] = self._rope_cache_version
+
+    def _rope_cache_stale(self, cached, device_index):
+        return (
+            cached is None
+            or cached.shape[0] < self._rope_cache_rows()
+            or self._rope_cache_versions[device_index] != self._rope_cache_version
+        )
+
+    def _ensure_rope_cache(self, device_index):
+        if device_index is None:
+            device_index = get_current_device()
+        if self._rope_cache_stale(self.multi_gpu_cos_cached[device_index], device_index):
+            self._build_rope_cache(device_index)
+            self._rope_rows_ready[device_index] = self.multi_gpu_cos_cached[device_index].shape[0]
+        return device_index
+
+    def _grow_rope_cache(self, seq_len, dtype):
+        self.current_rope_size = seq_len
+        self._rope_cache_dtype = dtype
+        self._rope_cache_version += 1
+        self._rope_rows_ready = [0] * DEVICE_COUNT
+
+    def _need_rope_rows(self, seq_len):
+        if seq_len > self._rope_cache_needed:
+            self._rope_cache_needed = seq_len
+
+    def forward(
+        self,
+        x,
+        position_ids = None,
+        seq_len = None,
+    ):
+        if seq_len is not None and seq_len > self.current_rope_size:
+            self._grow_rope_cache(seq_len, x.dtype)
+        self._need_rope_rows(self.current_rope_size if seq_len is None else seq_len)
+        device_index = self._ensure_rope_cache(x.device.index)
+        return self._slice_rope_cache(device_index, seq_len)
+
+    def _slice_rope_cache(self, device_index, seq_len):
+        return (
+            self.multi_gpu_cos_cached[device_index][:seq_len],
+            self.multi_gpu_sin_cached[device_index][:seq_len],
+        )
+
+    def get_cached(
+        self,
+        seq_len = None,
+        device_index = None,
+    ):
+        if seq_len is not None:
+            if device_index is not None and seq_len <= self._rope_rows_ready[device_index]:
+                return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[
+                    device_index
+                ]
+            self._need_rope_rows(seq_len)
+        device_index = self._ensure_rope_cache(device_index)
+        return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[device_index]
+
+    def extend_rope_embedding(
+        self,
+        x,
+        seq_len,
+        materialize_len = None,
+    ):
+        # seq_len moves current_rope_size and the dtype as before; materialize_len (default seq_len)
+        # is how many rows x's device needs now.
+        rows = seq_len if materialize_len is None else materialize_len
+        if seq_len <= self.current_rope_size:
+            device_index = x.device.index
+            if device_index is not None and rows <= self._rope_rows_ready[device_index]:
+                return
+        self._need_rope_rows(rows)
+        if seq_len > self.current_rope_size:
+            self._grow_rope_cache(_round_rope_size(seq_len), x.dtype)
+        self._ensure_rope_cache(x.device.index)
+
+
 # Static KV Cache landed in 4.38.0 and made training much slower (#168,
 # huggingface/transformers#27931), so the old rotary embeddings are retained.
-class LlamaRotaryEmbedding(torch.nn.Module):
+class LlamaRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
     # RoPE buffer precision is wrong, so cast to int64; see huggingface/transformers#28837 and microsoft/DeepSpeed#4932.
     def __init__(
         self,
@@ -2179,12 +2295,8 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         inv_freq = self._unsloth_recompute_inv_freq()
         self.register_buffer("inv_freq", inv_freq, persistent = False)
 
-        for device_idx in range(DEVICE_COUNT):
-            self._set_cos_sin_cache(
-                seq_len = self.current_rope_size,
-                device = torch.device(device_idx),
-                dtype = torch.get_default_dtype(),
-            )
+        # Built per device on first use, not for every visible GPU here.
+        self._init_rope_cache_state(torch.get_default_dtype())
 
         self.cos_cached = torch.empty(
             1, device = get_current_device(), dtype = torch.get_default_dtype()
@@ -2242,40 +2354,6 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         self.multi_gpu_cos_cached[device.index] = cos
         self.multi_gpu_sin_cached[device.index] = sin
         return cos, sin
-
-    def forward(
-        self,
-        x,
-        position_ids = None,
-        seq_len = None,
-    ):
-        if seq_len is not None and seq_len > self.current_rope_size:
-            self._set_cos_sin_cache(seq_len = seq_len, device = x.device, dtype = x.dtype)
-
-        device_index = x.device.index
-        return (
-            self.multi_gpu_cos_cached[device_index][:seq_len],
-            self.multi_gpu_sin_cached[device_index][:seq_len],
-        )
-
-    def get_cached(
-        self,
-        seq_len = None,
-        device_index = None,
-    ):
-        if device_index is None:
-            device_index = get_current_device()
-        return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[device_index]
-
-    def extend_rope_embedding(self, x, seq_len):
-        if seq_len <= self.current_rope_size:
-            return
-        # Iteratively grow by increments of 8192.
-        self.current_rope_size = ((seq_len // 8192) + ((seq_len % 8192) != 0)) * 8192
-        for device_idx in range(DEVICE_COUNT):
-            self._set_cos_sin_cache(
-                self.current_rope_size, device = torch.device(device_idx), dtype = x.dtype
-            )
 
 
 class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
@@ -2354,7 +2432,7 @@ class LlamaExtendedRotaryEmbedding(LlamaRotaryEmbedding):
         return torch.tensor(new_freqs, dtype = freqs.dtype, device = freqs.device)
 
 
-class LongRopeRotaryEmbedding(torch.nn.Module):
+class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
     # For Phi 3.5 128K; see microsoft/Phi-3.5-mini-instruct modeling_phi3.py
     def __init__(
         self,
@@ -2414,7 +2492,8 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         self.register_buffer("short_inv_freq", short_inv_freq, persistent = False)
         self.register_buffer("long_inv_freq", long_inv_freq, persistent = False)
 
-        # Build here to make torch.jit.trace work, initializing the short-sequence cache for all devices.
+        # The short-sequence cache is computed here, on CPU, and copied to a device on first use. Kept
+        # off the buffers so a later load refilling short_inv_freq cannot reach it (#884).
         dtype = torch.bfloat16 if is_bfloat16_supported() else torch.float16
         t = torch.arange(
             original_max_position_embeddings,
@@ -2423,17 +2502,10 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         ).float()
         freqs = torch.outer(t, self.short_inv_freq)
         emb = torch.cat((freqs, freqs), dim = -1)
-
-        for device_idx in range(DEVICE_COUNT):
-            device_obj = torch.device(device_idx)
-            cos_cached = (emb.cos() * self.scaling_factor).to(
-                dtype = dtype, device = device_obj, non_blocking = True
-            )
-            sin_cached = (emb.sin() * self.scaling_factor).to(
-                dtype = dtype, device = device_obj, non_blocking = True
-            )
-            self.multi_gpu_short_cos_cached[device_idx] = cos_cached
-            self.multi_gpu_short_sin_cached[device_idx] = sin_cached
+        self._unsloth_short_cos_cpu = (emb.cos() * self.scaling_factor).to(dtype = dtype)
+        self._unsloth_short_sin_cpu = (emb.sin() * self.scaling_factor).to(dtype = dtype)
+        # The long cache only exists once something asks for more than original_max_position_embeddings.
+        self._init_rope_cache_state(dtype)
 
         self.short_cos_cached = torch.empty(
             1, device = get_current_device(), dtype = torch.get_default_dtype()
@@ -2467,17 +2539,24 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         self.multi_gpu_long_sin_cached[device.index] = sin_cached
         return cos_cached, sin_cached
 
-    def forward(
-        self,
-        x,
-        position_ids = None,
-        seq_len = None,
-    ):
-        if seq_len is not None and seq_len > self.current_rope_size:
-            self._set_cos_sin_cache(seq_len = seq_len, device = x.device, dtype = x.dtype)
+    def _ensure_rope_cache(self, device_index):
+        if device_index is None:
+            device_index = get_current_device()
+        if self.multi_gpu_short_cos_cached[device_index] is None:
+            device = torch.device(device_index)
+            self.multi_gpu_short_cos_cached[device_index] = self._unsloth_short_cos_cpu.to(
+                device = device, non_blocking = True
+            )
+            self.multi_gpu_short_sin_cached[device_index] = self._unsloth_short_sin_cpu.to(
+                device = device, non_blocking = True
+            )
+        if self._rope_cache_version > 0 and self._rope_cache_stale(
+            self.multi_gpu_long_cos_cached[device_index], device_index
+        ):
+            self._build_rope_cache(device_index)
+        return device_index
 
-        device_index = x.device.index
-
+    def _slice_rope_cache(self, device_index, seq_len):
         # transformers' _compute_longrope_parameters takes the long factor only on
         # `seq_len and seq_len > original_max_position_embeddings`, so an unknown length is
         # short too. Long stays None until something asks for a longer sequence, so routing
@@ -2498,8 +2577,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         seq_len = None,
         device_index = None,
     ):
-        if device_index is None:
-            device_index = get_current_device()
+        device_index = self._ensure_rope_cache(device_index)
         if seq_len is None or seq_len <= self.original_max_position_embeddings:
             return self.multi_gpu_short_cos_cached[device_index], self.multi_gpu_short_sin_cached[
                 device_index
@@ -2507,16 +2585,6 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         return self.multi_gpu_long_cos_cached[device_index], self.multi_gpu_long_sin_cached[
             device_index
         ]
-
-    def extend_rope_embedding(self, x, seq_len):
-        if seq_len <= self.current_rope_size:
-            return
-        # Iteratively grow by increments of 8192.
-        self.current_rope_size = ((seq_len // 8192) + ((seq_len % 8192) != 0)) * 8192
-        for device_idx in range(DEVICE_COUNT):
-            self._set_cos_sin_cache(
-                self.current_rope_size, device = torch.device(device_idx), dtype = x.dtype
-            )
 
 
 def unsloth_fast_generate(self, *args, **kwargs):

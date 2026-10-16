@@ -3077,3 +3077,69 @@ def test_samsone_is_refused_for_transcription(hub):
     with pytest.raises(SttModelIdError, match = "describes audio"):
         s.resolve_audio_cpp_stt_model(f"{AUDIO_CPP_REPO}/Samsone-GGUF")
     assert f"{AUDIO_CPP_REPO}/Samsone-GGUF" not in s.downloaded_model_ids()
+
+
+@pytest.mark.parametrize(
+    "family,filename",
+    [("breeze_tts", "breeze-tts-2-q8_0.gguf"), ("dots_tts", "dots-tts-soar-q8_0.gguf")],
+)
+def test_audio_page_local_filename_pick_uses_audio_cpp(hub, tmp_path, family, filename):
+    from hub.services.models.gguf_variants import get_gguf_variants_response
+    from utils.models.model_config import ModelConfig
+
+    folder = tmp_path / "portable-audio-models" / family
+    folder.mkdir(parents = True)
+    weights = folder / filename
+    weights.write_bytes(_gguf_bytes(family = family))
+    listing = asyncio.run(get_gguf_variants_response(str(folder)))
+    selected = next(v for v in listing.variants if v.filename == filename)
+    config = ModelConfig.from_identifier(str(folder), gguf_variant = selected.filename)
+
+    assert config.audio_type == "audiocpp_tts"
+    assert config.audio_cpp is not None
+    assert config.audio_cpp.family == family
+    assert config.path == str(weights)
+    assert config.is_gguf is False  # audio.cpp bypasses llama-server
+
+
+def test_audio_page_split_symlink_alias_keeps_its_resolved_target(hub, tmp_path):
+    from utils.models.model_config import ModelConfig
+
+    real = tmp_path / "real"
+    real.mkdir()
+    first = real / "model-Q8_0-00001-of-00002.gguf"
+    first.write_bytes(_gguf_bytes(family = "breeze_tts"))
+    (real / "model-Q8_0-00002-of-00002.gguf").write_bytes(b"GGUF")
+    links = tmp_path / "links"
+    links.mkdir()
+    alias = links / "alias-Q8_0-00001-of-00002.gguf"
+    try:
+        alias.symlink_to(first)
+    except OSError:
+        pytest.skip("this filesystem or account cannot create symlinks")
+
+    config = ModelConfig.from_identifier(str(links), gguf_variant = alias.name)
+
+    assert config.audio_type == "audiocpp_tts"
+    assert config.audio_cpp.family == "breeze_tts"
+    assert config.path == str(first)
+
+
+def test_filename_variant_matches_a_windows_local_primary():
+    filename = "breeze-tts-2-q8_0.gguf"
+    variant = AudioCppVariant(
+        "Q8_0",
+        (RepoFile(filename),),
+        rf"C:\models\breeze_tts\{filename}",
+    )
+
+    assert acm.match_variant((variant,), filename) is variant
+    assert acm.match_variant((variant,), f"breeze_tts/{filename}") is variant
+
+
+def test_exact_audio_filename_path_wins_over_an_earlier_suffix_match():
+    filename = "model-Q8_0.gguf"
+    archived = AudioCppVariant("archive/Q8_0", (RepoFile(filename),), f"archive/chosen/{filename}")
+    exact = AudioCppVariant("chosen/Q8_0", (RepoFile(filename),), f"chosen/{filename}")
+
+    assert acm.match_variant((archived, exact), f"chosen/{filename}") is exact

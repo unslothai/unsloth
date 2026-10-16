@@ -470,6 +470,80 @@ RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_compute_loss_liger)
 RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_data_collator_vision_keys)
 
 
+def _insert_after_docstring(function, lines):
+    """Put ``lines`` (body-relative) first in the method body, after any docstring."""
+    import ast
+
+    try:
+        node = ast.parse(textwrap.dedent(function)).body[0]
+    except SyntaxError:
+        return function
+    if not isinstance(node, ast.FunctionDef) or not node.body:
+        return function
+    first = node.body[0]
+    has_docstring = (
+        isinstance(first, ast.Expr)
+        and isinstance(getattr(first, "value", None), ast.Constant)
+        and isinstance(first.value.value, str)
+    )
+    source_lines = function.split("\n")
+    anchor = node.body[1] if has_docstring and len(node.body) > 1 else first
+    indent = re.match(r"[ \t]*", source_lines[anchor.lineno - 1]).group(0)
+    insert_at = first.end_lineno if has_docstring else first.lineno - 1
+    block = [indent + line for line in lines]
+    return "\n".join(source_lines[:insert_at] + block + source_lines[insert_at:])
+
+
+def _fused_preference_dispatch(function_name, function, call, signature):
+    if function_name != "concatenated_forward" or signature not in function:
+        return function
+    if os.environ.get("UNSLOTH_FUSED_PREFERENCE_LOSS", "0") != "1":
+        return function
+    if "_unsloth_fused_output" in function:
+        return function
+    return _insert_after_docstring(
+        function,
+        [
+            "from unsloth.models.dpo import " + call.split("(")[0],
+            "_unsloth_fused_output = " + call,
+            "if _unsloth_fused_output is not None:",
+            "    return _unsloth_fused_output",
+        ],
+    )
+
+
+def dpo_trainer_fused_preference_forward(function_name, function):
+    return _fused_preference_dispatch(
+        function_name,
+        function,
+        "unsloth_fused_dpo_concatenated_forward(self, model, batch, is_ref_model)",
+        "is_ref_model",
+    )
+
+
+def orpo_trainer_fused_preference_forward(function_name, function):
+    return _fused_preference_dispatch(
+        function_name,
+        function,
+        'unsloth_fused_orpo_concatenated_forward(self, model, batch, method = "orpo")',
+        "batch",
+    )
+
+
+def cpo_trainer_fused_preference_forward(function_name, function):
+    return _fused_preference_dispatch(
+        function_name,
+        function,
+        'unsloth_fused_orpo_concatenated_forward(self, model, batch, method = "cpo")',
+        "batch",
+    )
+
+
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_fused_preference_forward)
+RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_fused_preference_forward)
+RL_FUNCTIONS["cpo_trainer"].append(cpo_trainer_fused_preference_forward)
+
+
 # Unsloth's training forward drops the 2D mask, so right-align Online DPO rows (GRPO's left_pack_padding) before scoring.
 _ONLINE_DPO_MODEL_CALL = re.compile(
     r"^(?P<indent>[ \t]*)output = model\(prompt_completion_ids, "
@@ -2614,6 +2688,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             # Sequence packing (default on; UNSLOTH_GRPO_SEQ_PACKING=0 disables): one varlen block-diagonal forward replaces the padded loop exactly and fixes its left-pad RoPE error. Self-verified, re-checked as T grows, falls back if a backend ignores packed_seq_lengths, and lm_head runs on completion positions only.
             _pk_result = None
             _pk_use = False
+            _pk_T = None
+            # True only while the packed forward and its scatter run, so an OOM elsewhere (setup, per-row verifier) is not read as a length limit.
+            _pk_in_packed = False
             _pk_enabled = UNSLOTH_GRPO_SEQ_PACKING_ON
             # Without zoo#840's masked-column guard, zeroed prompt/pad columns turn NaN in exp().
             _pk_enabled = _pk_enabled and UNSLOTH_ZOO_HAS_MASKED_COL_GUARD
@@ -2670,6 +2747,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         # Per-row completion start after left-packing, matching create_completion_attention_mask.
                         _pk_cstart = (_pk_L - logits_to_keep) - left_pad_tokens_per_prompt  # [rows]
                         _pk_ctgt = (_pk_nz_idx[1:, 1] >= _pk_cstart[_pk_nz_idx[1:, 0]]) & _pk_within
+                        _pk_in_packed = True
                         with _get_inference_mode_context_manager(model):
                             with torch.amp.autocast(
                                 device_type = DEVICE_TYPE_TORCH,
@@ -2722,6 +2800,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             .index_put((_pk_tgt,), _pk_sel.to(torch.float32))
                             .view(total_rows, _pk_L)[:, -_pk_W:]
                         )
+                        _pk_in_packed = False
                         # Re-verify when T or the longest segment grows past the verified envelope; a LongRoPE cache switch can change the result.
                         _pk_vT = int(
                             getattr(unwrapped_model, "_unsloth_seq_packing_nograd_verified_T", 0)
@@ -2823,19 +2902,36 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                         flush = True,
                                     )
                 except Exception as _pk_err:
-                    # Any failure: drop intermediates, use the padded loop, do not retry.
+                    # Any failure: drop intermediates and use the padded loop for this batch.
                     _pk_hidden = None
                     _pk_sel = None
                     _pk_result = None
                     _pk_use = False
                     if isinstance(_pk_err, torch.cuda.OutOfMemoryError):
                         torch.cuda.empty_cache()
-                    unwrapped_model._unsloth_seq_packing_nograd_ok = False
-                    if UNSLOTH_ENABLE_LOGGING:
-                        print(
-                            f"[Unsloth] GRPO sequence-packing (no-grad) disabled (fell back to padded): {_pk_err!r}",
-                            flush = True,
+                    if (
+                        isinstance(_pk_err, torch.cuda.OutOfMemoryError)
+                        and _pk_in_packed
+                        and _pk_T is not None
+                    ):
+                        # An OOM in the packed forward says this flattened length does not fit, not that packing is wrong: keep packing smaller batches.
+                        _pk_unsafe = getattr(
+                            unwrapped_model, "_unsloth_seq_packing_nograd_unsafe_T", None
                         )
+                        _pk_unsafe = _pk_T if _pk_unsafe is None else min(_pk_unsafe, _pk_T)
+                        unwrapped_model._unsloth_seq_packing_nograd_unsafe_T = _pk_unsafe
+                        if UNSLOTH_ENABLE_LOGGING:
+                            print(
+                                f"[Unsloth] GRPO sequence-packing (no-grad) OOM at T={_pk_T}: packing capped below T={_pk_unsafe}, this batch uses the padded loop: {_pk_err!r}",
+                                flush = True,
+                            )
+                    else:
+                        unwrapped_model._unsloth_seq_packing_nograd_ok = False
+                        if UNSLOTH_ENABLE_LOGGING:
+                            print(
+                                f"[Unsloth] GRPO sequence-packing (no-grad) disabled (fell back to padded): {_pk_err!r}",
+                                flush = True,
+                            )
             # PrefixGrouper first-use self-verify (no-grad): compare the untrusted PG result to the packed result over the completion mask. Below tol_ok trust the structure, at or above TOL_KILL mark it unsafe forever, borderline falls back for this shape.
             if _pg_forward_fn is not None and not _pg_use:
                 if _pk_use and _pk_result is not None:
@@ -3703,7 +3799,8 @@ def grpo_trainer_compute_loss(function_name, function):
         completion_token_count = completion_mask.sum().clamp(min = 1.0)
 
         def masked_batch_mean(x):
-            if x.shape[1] == 1:  # when importance_sampling_level == "sequence"
+            # a width-1 tensor is sequence-level only when the completion mask spans multiple tokens
+            if x.shape[1] == 1 and completion_mask.shape[1] != 1:
                 return x.mean()
             else:
                 return (x * completion_mask).sum() / completion_token_count
