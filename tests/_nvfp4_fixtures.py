@@ -1,13 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""Tiny compressed-tensors NVFP4 + FP8 mixed-precision checkpoints, laid out like unsloth/Qwen3.8-27B-NVFP4.
-
-MLPs are NVFP4 (weight_packed U8, weight_scale F8_E4M3 per 16 columns, weight_global_scale and input_global_scale F32[1]),
-attention and the last layer's MLP are FP8 per channel (weight F8_E4M3, weight_scale BF16 [out, 1]). Built without
-llmcompressor: scales are computed here and the tensors come from compressed-tensors' own compressors.
-
-    python tests/_nvfp4_fixtures.py OUT_DIR [--arch qwen3|qwen3_5]
-"""
+"""Builds tiny NVFP4/FP8 compressed-tensors checkpoints without llmcompressor; scales computed here."""
 
 import argparse
 import copy
@@ -182,7 +175,6 @@ def build(
     if arch == "qwen3":
         repo = QWEN3
         config = AutoConfig.from_pretrained(repo)
-        # hidden 8 cannot hold 16-column NVFP4 groups.
         config.update(
             dict(
                 hidden_size = 64,
@@ -213,7 +205,7 @@ def build(
             if isinstance(m, torch.nn.Linear)
             and (".visual." in f".{n}" or n.endswith(("in_proj_a", "in_proj_b")))
         ]
-        lm_head = False  # tied to the embeddings
+        lm_head = False
     else:
         raise ValueError(arch)
 
@@ -230,7 +222,7 @@ def build(
         w = state.pop(name + ".weight", None)
         if w is None:
             continue
-        # Same precedence as the real checkpoint: the FP8 override wins over the broad MLP NVFP4 target.
+        # The FP8 override wins over the broad MLP NVFP4 target, as in the real checkpoint.
         if _matches(name, fp8_targets):
             q, s = fp8_channel_tensors(w)
             state[name + ".weight"] = q
@@ -329,8 +321,7 @@ def run_lora_case(path, arch, api, out_dir):
         losses.append(loss.item())
     model.eval()
 
-    # The first eval calls recompile after training and can run eager meanwhile; compiled and eager bf16 LoRA
-    # rounding differ by ~0.3%, so compare settled forwards (logits are bit-identical with TORCHDYNAMO_DISABLE=1).
+    # Compiled vs eager bf16 LoRA rounding differ by ~0.3% until recompile, so compare settled forwards.
     def settled(m):
         with torch.no_grad():
             for _ in range(3):

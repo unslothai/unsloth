@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""docker stop must leave a training run the time to save its checkpoint.
-
-Studio stops the run cooperatively on SIGTERM and waits up to
-UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S for the save. supervisord and docker stop both
-default to a 10 second budget, so the image, the launcher and run.sh carry a matching one.
-"""
+"""Studio's save wait needs a longer grace than the 10s default that supervisord and docker stop use."""
 
 from __future__ import annotations
 
@@ -32,8 +27,7 @@ def _program(name: str) -> str:
     return match.group(1)
 
 
-# Sourced under an EXIT trap so the wait the launcher exports for supervisord can be read
-# back; the check-only exit still runs the trap, and nothing is written to the host.
+# EXIT trap reads back the exported wait, even on the check-only exit.
 _PROBE = r"""trap 'printf "WAIT=%s\n" "${UNSLOTH_STUDIO_STOP_WAIT_S-unset}"' EXIT; . "$1" """
 
 
@@ -52,7 +46,7 @@ def test_supervisord_waits_for_the_save_and_then_kills_the_whole_tree():
     studio = _program("studio")
     assert "stopwaitsecs=%(ENV_UNSLOTH_STUDIO_STOP_WAIT_S)s" in studio
     assert "killasgroup=true" in studio
-    # a raw SIGTERM to the group would kill the worker before Studio can ask it to save
+    # A group SIGTERM would kill the worker before Studio can ask it to save.
     assert "stopasgroup" not in studio
 
 
@@ -62,7 +56,7 @@ def test_the_image_defaults_resolve_the_placeholder_without_the_launcher():
     assert "UNSLOTH_STUDIO_STOP_WAIT_S=150" in dockerfile
 
 
-# "0600" and "08" would read as octal, and an unset budget must still produce a wait.
+# "0600" and "08" would read as octal; an unset budget must still produce a wait.
 @pytest.mark.parametrize(
     "value, expected", [(None, "150"), ("0", "30"), ("120", "150"), ("0600", "630"), ("08", "38")]
 )

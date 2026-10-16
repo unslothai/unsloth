@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""``unsloth/dataprep/synthetic.py`` turns ``HF_HUB_ENABLE_HF_TRANSFER`` on at import, and
-``import unsloth`` imports it. On huggingface_hub < 1.0 that flag without the ``hf_transfer``
-package makes every Hub download raise ``ValueError: Fast download using 'hf_transfer' is
-enabled``, so the flag may only be set when the package is importable.
-
-The module itself needs torch, requests and unsloth_zoo, so the guard is run from its own
-source: the probe function and the module-level ``if`` that sets the flag."""
+"""Set HF_HUB_ENABLE_HF_TRANSFER only if hf_transfer imports; without it, hub < 1.0 downloads fail."""
 
 import ast
 import types

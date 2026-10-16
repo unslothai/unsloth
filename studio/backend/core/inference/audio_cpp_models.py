@@ -909,11 +909,21 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
         ),
     ),
     # Speech to text.
+    # Full context fails past the ~400 s encoder ceiling; windows drop about a third of the words.
+    AudioCppFamily(
+        "parakeet_tdt",
+        "asr",
+        model_options = {
+            "session_options": {
+                "parakeet_tdt.offline_mode": "auto",
+                "parakeet_tdt.audio_chunk_threshold_sec": "390",
+            }
+        },
+    ),
     *(
         AudioCppFamily(name, "asr")
         for name in (
             "qwen3_asr",
-            "parakeet_tdt",
             "canary_asr",
             "citrinet_asr",
             "cohere_asr",
@@ -2597,6 +2607,10 @@ def _raw_request_options(spec: Optional[dict], embedded: Optional[dict]) -> list
 
 
 def _request_keys(spec: Optional[dict], embedded: Optional[dict]) -> Optional[frozenset[str]]:
+    # The server prefers an embedded v1 contract over model_specs/ (model_spec/package.cpp).
+    if isinstance(embedded, dict) and embedded.get("schema_version") is not None:
+        if (embedded.get("options") or {}).get("request"):
+            spec = None
     if _request_source(spec, embedded).get("schema_version") is None:
         return None
     names = frozenset(
