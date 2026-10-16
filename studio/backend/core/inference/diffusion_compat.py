@@ -689,27 +689,34 @@ def _flux3_pipeline_index(
 
 def _flux3_pick_tensor_names(
     repo_id: str, filename: str, token: Optional[str], allow_network: bool
-) -> Optional[list[str]]:
-    """Tensor names of a FLUX.3 single file / GGUF pick without reading a weight: the file on disk, else a GGUF
-    header range read or the safetensors header from the Hub. None on anything unreadable."""
-    from .diffusion_families import _checkpoint_tensor_names, gguf_tensor_names_from_header
+) -> tuple[Optional[list[str]], bool]:
+    """Tensor names of a FLUX.3 single file / GGUF pick without reading a weight, and whether it declares ComfyUI
+    quantization: the file on disk, else a GGUF header range read or the safetensors header from the Hub. None
+    names on anything unreadable."""
+    from .diffusion_families import (
+        _checkpoint_comfy_declared,
+        _checkpoint_tensor_names,
+        flux3_comfy_declared,
+        gguf_tensor_names_from_header,
+    )
 
     local = _local_gguf_path(repo_id, filename)
     if local is not None:
-        return _checkpoint_tensor_names(local)
+        return _checkpoint_tensor_names(local), _checkpoint_comfy_declared(local)
     if not allow_network:
-        return None
+        return None, False
     try:
         if filename.lower().endswith(".gguf"):
             return gguf_tensor_names_from_header(
                 _shared_gguf_header(repo_id, filename, token, None)
-            )
+            ), False
         from huggingface_hub import HfApi
 
         meta = HfApi().parse_safetensors_file_metadata(repo_id, filename, token = token)
-        return list(meta.tensors)
+        names = list(meta.tensors)
+        return names, flux3_comfy_declared(names, getattr(meta, "metadata", None))
     except Exception:  # noqa: BLE001 -- offline, gated or odd: the loader's own check still runs
-        return None
+        return None, False
 
 
 def flux3_pick_mismatch(
@@ -734,8 +741,12 @@ def flux3_pick_mismatch(
         return flux3_family_blocks_mismatch(name, declared, repo_id)
     from .diffusion_families import flux3_variant_mismatch_reason
 
-    names = _flux3_pick_tensor_names(repo_id, gguf_filename, normalize_token(hf_token), allow_network)
-    return flux3_variant_mismatch_reason(name, Path(str(gguf_filename)).name, names)
+    names, comfy_declared = _flux3_pick_tensor_names(
+        repo_id, gguf_filename, normalize_token(hf_token), allow_network
+    )
+    return flux3_variant_mismatch_reason(
+        name, Path(str(gguf_filename)).name, names, comfy_declared = comfy_declared
+    )
 
 
 def assert_flux3_pick_compatible(

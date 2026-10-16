@@ -1691,9 +1691,20 @@ def comfy_flow_shift_for(fam: Any, *identifiers: Optional[str]) -> Optional[floa
     return row[1] if row else getattr(fam, "comfy_flow_shift", None)
 
 
+# FLUX.3 single files / GGUFs take their transformer config from the companion repo, which may be the other
+# variant's (the TE and VAE are shared, and the base repo is gated). The variant check has already matched the
+# checkpoint to the family, so the family sets flow_map: a base file on the distilled config would otherwise build the
+# target-time embedder the file has no weights for and fail on meta tensors, and the reverse would drop its weights.
+_FLUX3_FLOW_MAP = {"flux.3-klein": True, "flux.3-klein-base": False}
+
+
 def transformer_config_overrides_for(fam: Any, *identifiers: Optional[str]) -> dict[str, Any]:
     row = _first_variant(getattr(fam, "transformer_config_variants", ()), identifiers)
-    return dict(row[1]) if row else {}
+    overrides = dict(row[1]) if row else {}
+    flow_map = _FLUX3_FLOW_MAP.get(getattr(fam, "name", None))
+    if flow_map is not None:
+        overrides["flow_map"] = flow_map
+    return overrides
 
 
 def _first_checkpoint_variant(
@@ -2858,17 +2869,45 @@ def _checkpoint_tensor_names(path) -> Optional[list[str]]:
         return None
 
 
+def flux3_comfy_declared(names: Optional[list[str]], metadata: Optional[dict]) -> bool:
+    """Whether a safetensors file declares ComfyUI quantization (per-layer ``.comfy_quant`` tensors or the
+    ``_quantization_metadata`` header table): BFL's own ComfyUI int8 / nvfp4 files do, its ``variants/`` packages
+    do not. Matches what diffusion_comfy_quant.scan_comfy_quant reads as a declaration."""
+    if any(str(n).endswith(".comfy_quant") for n in names or ()):
+        return True
+    return isinstance(metadata, dict) and bool(metadata.get("_quantization_metadata"))
+
+
+def _checkpoint_comfy_declared(path) -> bool:
+    """:func:`flux3_comfy_declared` for a local safetensors file; False when unreadable or not safetensors."""
+    name = str(path)
+    if not name.lower().endswith(".safetensors"):
+        return False
+    try:
+        from safetensors import safe_open
+
+        with safe_open(name, "pt") as handle:
+            return flux3_comfy_declared(list(handle.keys()), handle.metadata())
+    except Exception:  # noqa: BLE001 -- fail open: the loader reports its own error
+        return False
+
+
 def flux3_variant_mismatch_reason(
-    family_name: str, filename: str, names: Optional[list[str]]
+    family_name: str,
+    filename: str,
+    names: Optional[list[str]],
+    comfy_declared: bool = False,
 ) -> Optional[str]:
     """Why a FLUX.3 single file / GGUF cannot run under ``family_name``, or None. The distilled checkpoint is a flow
     map (it carries the target-time embedder ``ref_time_in``) and runs the 16-step distilled graph; the base has none
-    and runs CFG. Same shapes otherwise, so a mix-up would load and render garbage instead of failing."""
+    and runs CFG. Same shapes otherwise, so a mix-up would load and render garbage instead of failing.
+    ``comfy_declared`` (:func:`flux3_comfy_declared`): the scales belong to a ComfyUI quantized file, which the
+    ComfyUI loader reads from its own per-layer declarations, so only BFL's undeclared packages are refused."""
     if not names or family_name not in ("flux.3-klein", "flux.3-klein-base"):
         return None
     stripped = [n.split("model.diffusion_model.", 1)[-1] for n in names]
     bfl_native = any(n.startswith(("emb_in.", "txt_in.")) for n in stripped)
-    if bfl_native and any(
+    if bfl_native and not comfy_declared and any(
         n.endswith((".weight_scale", ".weight_scale_2", ".input_scale")) for n in stripped
     ):
         # BFL's variants/fp8r and variants/nvfp4: row-major scales in BFL's own layout. The NVFP4 one has the same
@@ -2898,7 +2937,10 @@ def assert_flux3_checkpoint_matches_family(fam, checkpoint_path) -> None:
     if checkpoint_path is None or not name.startswith("flux.3"):
         return
     reason = flux3_variant_mismatch_reason(
-        name, Path(str(checkpoint_path)).name, _checkpoint_tensor_names(checkpoint_path)
+        name,
+        Path(str(checkpoint_path)).name,
+        _checkpoint_tensor_names(checkpoint_path),
+        comfy_declared = _checkpoint_comfy_declared(checkpoint_path),
     )
     if reason is not None:
         raise ValueError(reason)

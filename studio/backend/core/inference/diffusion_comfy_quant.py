@@ -626,7 +626,34 @@ def _mapping(transformer_cls: Any) -> tuple[Any, Any]:
         entry = sfm.SINGLE_FILE_LOADABLE_CLASSES.get(name or "")
     if not entry:
         raise ValueError(f"{transformer_cls.__name__} has no single-file converter")
+    if getattr(transformer_cls, "__name__", "") == "Flux3Transformer2DModel":
+        return _flux3_split_fused_qkv(entry["checkpoint_mapping_fn"]), sfm
     return entry["checkpoint_mapping_fn"], sfm
+
+
+def _flux3_split_fused_qkv(mapping_fn: Any) -> Any:
+    """``mapping_fn`` after splitting ComfyUI's fused FLUX.3 attention: BFL's ComfyUI int8 files
+    (black-forest-labs/flux-3-image-klein-comfy) store ``<block>.qkv.weight`` where the BFL layout diffusers converts
+    has ``q_proj`` / ``k_proj`` / ``v_proj`` (24 heads x 128 each, no GQA, so equal thirds). Rows only: per-row int8
+    scales and the ConvRot column rotation split with them, and the row tags the loader decodes stay exact. A file in
+    the BFL layout passes through unchanged."""
+    import functools
+
+    @functools.wraps(mapping_fn)
+    def convert(checkpoint, **kwargs):
+        for key in [k for k in checkpoint if k.endswith(".qkv.weight")]:
+            value = checkpoint.pop(key)
+            rows = value.shape[0] // 3
+            if rows * 3 != value.shape[0]:
+                raise ValueError(f"{key}: {value.shape[0]} rows do not split into q, k and v")
+            stem = key[: -len("qkv.weight")]
+            for index, part in enumerate(("q_proj", "k_proj", "v_proj")):
+                checkpoint[f"{stem}{part}.weight"] = value[index * rows : (index + 1) * rows]
+        for key in [k for k in checkpoint if k.endswith(".comfy_attention.config")]:
+            del checkpoint[key]  # ComfyUI's attention-backend hint, not a weight
+        return mapping_fn(checkpoint, **kwargs)
+
+    return convert
 
 
 def _decode_rows(
