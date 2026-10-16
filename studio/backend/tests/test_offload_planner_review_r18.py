@@ -247,3 +247,34 @@ def test_no_projector_device_still_plans():
     from core.inference.llama_cpp import LlamaCppBackend
     assert LlamaCppBackend._planner_may_run(["--no-mmproj-offload"], {"UNSLOTH_SMART_OFFLOAD": "1"})
     assert LlamaCppBackend._planner_may_run(None, {"UNSLOTH_SMART_OFFLOAD": "1"})
+
+
+# --- --moe-cache-mib precedence ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "env, extra_args, plans",
+    [
+        # An argv 0 overrides an inherited cache: nothing is allocated, the plan may run.
+        ({"LLAMA_ARG_MOE_CACHE_MIB": "2048"}, ["--moe-cache-mib", "0"], True),
+        ({"LLAMA_ARG_MOE_CACHE_MIB": "2048"}, ["--moe-cache-mib=0"], True),
+        # An argv cache overrides an inherited 0.
+        ({"LLAMA_ARG_MOE_CACHE_MIB": "0"}, ["--moe-cache-mib", "1024"], False),
+        # An empty value is not a known "none", in argv or env.
+        ({}, ["--moe-cache-mib="], False),
+        ({"LLAMA_ARG_MOE_CACHE_MIB": "0"}, ["--moe-cache-mib="], False),
+        ({"LLAMA_ARG_MOE_CACHE_MIB": ""}, None, False),
+    ],
+    ids = [
+        "argv_zero_over_env",
+        "argv_inline_zero_over_env",
+        "argv_over_env_zero",
+        "argv_empty",
+        "argv_empty_over_env_zero",
+        "env_empty",
+    ],
+)
+def test_the_moe_cache_argv_value_wins_over_its_env_twin(env, extra_args, plans):
+    from core.inference.llama_cpp import LlamaCppBackend
+    full_env = {"UNSLOTH_SMART_OFFLOAD": "1", **env}
+    assert bool(LlamaCppBackend._planner_may_run(extra_args, full_env)) is plans

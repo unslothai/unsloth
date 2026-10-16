@@ -7036,8 +7036,8 @@ def _moe_cache_requested(value: Optional[str]) -> bool:
     if value is None:
         return False
     text = str(value).strip().lower()
-    if not text:
-        return False
+    # An empty value is not "no cache": what the child makes of it is not known here, so it
+    # counts as asking, like any other value that is not a parsed 0.
     try:
         return int(text) != 0
     except ValueError:
@@ -38417,9 +38417,13 @@ class LlamaCppBackend:
             or source_env.get("MTMD_BACKEND_DEVICE") is not None
             # A user MoE expert cache is VRAM llama.cpp allocates on top of the plan, and the
             # plan pins --fit off, so nothing re-fits it. 0 allocates nothing.
+            # argv wins over the env twin even when empty (arg.cpp applies argv on top), so the
+            # env is read only when no --moe-cache-mib is passed at all.
             or _moe_cache_requested(
-                _extra_args_device(extra_args, {"--moe-cache-mib"})
-                or source_env.get("LLAMA_ARG_MOE_CACHE_MIB")
+                _moe_cache_arg
+                if (_moe_cache_arg := _extra_args_device(extra_args, {"--moe-cache-mib"}))
+                is not None
+                else source_env.get("LLAMA_ARG_MOE_CACHE_MIB")
             )
             # -sm row and -sm tensor split WITHIN a tensor rather than handing out
             # whole rows of layers, so the row model below does not describe them.
