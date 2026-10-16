@@ -759,7 +759,8 @@ export function ModelSearchFiltersControl({
             type="button"
             variant="ghost"
             size="xs"
-            className={TEXT_BOX}
+            // "Reset all" has no descenders: its ink sits 0.25em inside the text box on each side.
+            className={cn(TEXT_BOX, "-my-[0.25em]")}
             disabled={!filtered}
             onClick={onReset}
           >
