@@ -163,22 +163,30 @@ struct Proxies {
     pac: Option<pac::Pac>,
     /// Fixed settings, in order: proxy variables, else macOS or Windows settings.
     fixed: Vec<Matcher>,
+    /// macOS or Windows exceptions to `fixed`, unless NO_PROXY replaces them.
+    exceptions: Vec<String>,
 }
 
 fn system_proxies() -> Proxies {
     #[cfg(target_os = "macos")]
     let proxies = macos_proxies(|name| std::env::var(name).ok());
     #[cfg(windows)]
-    let proxies = Proxies {
-        pac: pac::configured()
-            .map(|source| pac::Pac::new(source, &|name: &str| std::env::var(name).ok())),
-        fixed: vec![windows_per_protocol().unwrap_or_else(Matcher::from_system)],
+    let proxies = {
+        let (fixed, exceptions) =
+            windows_settings().unwrap_or_else(|| (Matcher::from_system(), Vec::new()));
+        Proxies {
+            pac: pac::configured()
+                .map(|source| pac::Pac::new(source, &|name: &str| std::env::var(name).ok())),
+            fixed: vec![fixed],
+            exceptions,
+        }
     };
     #[cfg(target_os = "linux")]
     let proxies = linux_proxies(|name| std::env::var(name).ok());
     #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
     let proxies = Proxies {
         fixed: vec![Matcher::from_system()],
+        exceptions: Vec::new(),
     };
     proxies
 }
@@ -190,7 +198,6 @@ struct Settings {
     http: String,
     https: String,
     all: String,
-    bypass: String,
 }
 
 /// Proxies for `settings`. As in hyper-util, each proxy variable that is set and not empty
@@ -202,7 +209,7 @@ fn with_variables(settings: Settings, env: &impl Fn(&str) -> Option<String>) -> 
         .all(variable(["ALL_PROXY", "all_proxy"]).unwrap_or(settings.all))
         .http(variable(["HTTP_PROXY", "http_proxy"]).unwrap_or(settings.http))
         .https(variable(["HTTPS_PROXY", "https_proxy"]).unwrap_or(settings.https))
-        .no(variable(["NO_PROXY", "no_proxy"]).unwrap_or(settings.bypass))
+        .no(variable(["NO_PROXY", "no_proxy"]).unwrap_or_default())
         .build()
 }
 
@@ -228,6 +235,7 @@ fn linux_proxies(env: impl Fn(&str) -> Option<String>) -> Proxies {
     Proxies {
         pac: (!variables).then(|| pac::Pac::new(pac::Source::Desktop, &env)),
         fixed: vec![Matcher::from_system()],
+        exceptions: Vec::new(),
     }
 }
 
@@ -249,6 +257,7 @@ fn macos_proxies(env: impl Fn(&str) -> Option<String>) -> Proxies {
         return Proxies {
             pac: None,
             fixed: vec![with_variables(Settings::default(), &env)],
+            exceptions: Vec::new(),
         };
     };
     let number = |key| {
@@ -306,7 +315,6 @@ fn macos_proxies(env: impl Fn(&str) -> Option<String>) -> Proxies {
             )
             .unwrap_or_default(),
             all: String::new(),
-            bypass: bypass_list(exceptions.iter().map(String::as_str)),
         }
     };
     let socks = unsafe {
@@ -316,10 +324,14 @@ fn macos_proxies(env: impl Fn(&str) -> Option<String>) -> Proxies {
             kSCPropNetProxiesSOCKSPort,
         )
     };
-    let no = variable(&env, ["NO_PROXY", "no_proxy"]).unwrap_or_else(|| settings.bypass.clone());
+    let no = variable(&env, ["NO_PROXY", "no_proxy"]).unwrap_or_default();
     let mut fixed = vec![with_variables(settings, &env)];
     fixed.extend(socks.map(|address| socks_fallback(&address, &no)));
-    Proxies { pac, fixed }
+    Proxies {
+        pac,
+        fixed,
+        exceptions: exception_list(exceptions.iter().map(String::as_str), &env),
+    }
 }
 
 /// `host[:port]`, with an IPv6 host bracketed as a URI needs.
@@ -335,14 +347,37 @@ fn authority(host: &str, port: Option<i32>) -> String {
     }
 }
 
-/// A NO_PROXY list from bypass entries, `*.` wildcards as suffixes as hyper-util reads them.
+/// The system's exception entries, unless NO_PROXY replaces them.
 #[cfg(any(target_os = "macos", windows, test))]
-fn bypass_list<'a>(entries: impl Iterator<Item = &'a str>) -> String {
+fn exception_list<'a>(
+    entries: impl Iterator<Item = &'a str>,
+    env: &impl Fn(&str) -> Option<String>,
+) -> Vec<String> {
+    if variable(env, ["NO_PROXY", "no_proxy"]).is_some() {
+        return Vec::new();
+    }
     entries
-        .map(str::trim)
-        .collect::<Vec<_>>()
-        .join(",")
-        .replace("*.", "")
+        .map(|entry| entry.trim().to_ascii_lowercase())
+        .filter(|entry| !entry.is_empty())
+        .collect()
+}
+
+/// Whether an exception covers `host`, as macOS and Windows match them: `*` stands for any run of
+/// characters and an entry without one names that host alone (`*.corp.example` leaves
+/// `corp.example` to the proxy); Windows' `<local>` is any name without a dot.
+fn excepted(exceptions: &[String], host: &str) -> bool {
+    fn matches(pattern: &[u8], host: &[u8]) -> bool {
+        match pattern.split_first() {
+            None => host.is_empty(),
+            Some((b'*', rest)) => (0..=host.len()).any(|at| matches(rest, &host[at..])),
+            Some((first, rest)) => host.first() == Some(first) && matches(rest, &host[1..]),
+        }
+    }
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    exceptions.iter().any(|entry| match entry.as_str() {
+        "<local>" => !host.contains(['.', ':']),
+        entry => matches(entry.as_bytes(), host.as_bytes()),
+    })
 }
 
 /// Every destination through the SOCKS proxy at `address`, minus the `no` list.
@@ -354,10 +389,10 @@ fn socks_fallback(address: &str, no: &str) -> Matcher {
         .build()
 }
 
-/// hyper-util reads Windows' `ProxyServer` as one address, so its per-protocol form
-/// (`http=a:80;https=b:443`) is split here.
+/// Windows' fixed proxy and its exceptions. hyper-util reads `ProxyServer` as one address, so its
+/// per-protocol form (`http=a:80;https=b:443`) is split here.
 #[cfg(windows)]
-fn windows_per_protocol() -> Option<Matcher> {
+fn windows_settings() -> Option<(Matcher, Vec<String>)> {
     use winreg::enums::{HKEY_CURRENT_USER, KEY_QUERY_VALUE};
     use winreg::RegKey;
 
@@ -374,16 +409,22 @@ fn windows_per_protocol() -> Option<Matcher> {
     let proxy_override = settings
         .get_value::<String, _>("ProxyOverride")
         .unwrap_or_default();
-    per_protocol(&server, &proxy_override, |name| std::env::var(name).ok())
+    let env = |name: &str| std::env::var(name).ok();
+    let fixed = per_protocol(&server, env).unwrap_or_else(|| {
+        let server = server.trim().to_string();
+        let settings = Settings {
+            http: server.clone(),
+            https: server,
+            all: String::new(),
+        };
+        with_variables(settings, &env)
+    });
+    Some((fixed, exception_list(proxy_override.split(';'), &env)))
 }
 
 /// Proxies for a per-protocol `ProxyServer` value (`None` for a single address).
 #[cfg(any(windows, test))]
-fn per_protocol(
-    server: &str,
-    proxy_override: &str,
-    env: impl Fn(&str) -> Option<String>,
-) -> Option<Matcher> {
+fn per_protocol(server: &str, env: impl Fn(&str) -> Option<String>) -> Option<Matcher> {
     if !server.contains('=') {
         return None;
     }
@@ -405,7 +446,6 @@ fn per_protocol(
         } else {
             format!("socks4a://{socks}")
         },
-        bypass: bypass_list(proxy_override.split(';')),
     };
     Some(with_variables(settings, &env))
 }
@@ -414,10 +454,13 @@ fn per_protocol(
 async fn routes(proxies: &Proxies, request: &Request) -> Vec<Option<Upstream>> {
     let destination: Option<http::Uri> = match &request.forward {
         Some(forward) => forward.url.as_str().parse().ok(),
-        // Tunnels carry TLS, so they take the HTTPS proxy.
-        None => format!("https://{}:{}/", request.host, request.port)
-            .parse()
-            .ok(),
+        // Tunnels carry TLS, so they take the HTTPS proxy; macOS also tunnels plain HTTP, to port 80.
+        None => {
+            let scheme = if request.port == 80 { "http" } else { "https" };
+            format!("{scheme}://{}:{}/", request.host, request.port)
+                .parse()
+                .ok()
+        }
     };
     let Some(destination) = destination else {
         return vec![None];
@@ -430,6 +473,9 @@ async fn routes(proxies: &Proxies, request: &Request) -> Vec<Option<Upstream>> {
         if let Some(routes) = pac::routes(pac, &url).await {
             return routes;
         }
+    }
+    if excepted(&proxies.exceptions, &request.host) {
+        return vec![None];
     }
     // A set proxy this can't speak to leaves no route, rather than going direct around it.
     system_proxy(&proxies.fixed, &destination).map_or_else(|()| Vec::new(), |route| vec![route])
@@ -1402,7 +1448,11 @@ mod tests {
                 .find(|(key, _)| *key == name)
                 .map(|(_, v)| v.to_string())
         };
-        let intercept = per_protocol(server, bypass, env)?.intercept(&url.parse().unwrap())?;
+        let url: http::Uri = url.parse().unwrap();
+        if excepted(&exception_list(bypass.split(';'), &env), url.host()?) {
+            return None;
+        }
+        let intercept = per_protocol(server, env)?.intercept(&url)?;
         intercept.uri().port_u16()
     }
 
@@ -1411,7 +1461,7 @@ mod tests {
         let both = "http=127.0.0.1:1; HTTPS=127.0.0.1:2;socks=127.0.0.1:3";
         let corp = "*.corp.example;<local>";
         let (http, https) = ("http://a.example/", "https://a.example/");
-        assert!(per_protocol("127.0.0.1:7890", "", |_| None).is_none());
+        assert!(per_protocol("127.0.0.1:7890", |_| None).is_none());
         let (wiki, http_wiki) = ("https://wiki.corp.example/", "http://wiki.corp.example/");
         for (url, port) in [(http, Some(1)), (https, Some(2)), (wiki, None)] {
             assert_eq!(port_for(both, corp, &[], url), port, "{url}");
@@ -1436,7 +1486,7 @@ mod tests {
     fn windows_socks_setting_carries_the_other_protocols() {
         let routes = |server: &str, url: &str| {
             system_proxy(
-                &[per_protocol(server, "", |_| None).unwrap()],
+                &[per_protocol(server, |_| None).unwrap()],
                 &url.parse().unwrap(),
             )
             .unwrap()
@@ -1528,6 +1578,55 @@ mod tests {
         let https = Matcher::builder().all("https://127.0.0.1:9").build();
         let response = exchange(https, &tunnel("example.com:443")).await;
         assert!(response.starts_with("HTTP/1.1 502"), "{response}");
+    }
+
+    #[tokio::test]
+    async fn exceptions_match_as_the_system_does() {
+        let none = |_: &str| None;
+        let entries = ["*.corp.example", "Intranet.example", "<local>", "10.*"];
+        let exceptions = exception_list(entries.into_iter(), &none);
+        for (host, expected) in [
+            ("wiki.corp.example", true),
+            ("WIKI.corp.example.", true),
+            ("corp.example", false),
+            ("xcorp.example", false),
+            ("intranet.example", true),
+            ("a.intranet.example", false),
+            ("printer", true),
+            ("10.1.2.3", true),
+            ("example.com", false),
+        ] {
+            assert_eq!(excepted(&exceptions, host), expected, "{host}");
+        }
+        let no_proxy = |name: &str| (name == "NO_PROXY").then(|| "x.example".to_string());
+        assert!(exception_list(entries.into_iter(), &no_proxy).is_empty());
+        let proxies = Proxies {
+            fixed: vec![Matcher::builder().all("http://127.0.0.1:9").build()],
+            exceptions,
+            ..Default::default()
+        };
+        let http = Some(Upstream::Http {
+            address: "127.0.0.1:9".into(),
+            auth: None,
+        });
+        let to = |host| parse(&tunnel(&format!("{host}:443"))).unwrap();
+        assert_eq!(routes(&proxies, &to("corp.example")).await, [http]);
+        assert_eq!(routes(&proxies, &to("wiki.corp.example")).await, [None]);
+    }
+
+    #[tokio::test]
+    async fn plain_http_tunnels_take_the_http_proxy() {
+        let proxies = Proxies {
+            fixed: vec![Matcher::builder().http("http://127.0.0.1:1").build()],
+            ..Default::default()
+        };
+        let http = Some(Upstream::Http {
+            address: "127.0.0.1:1".into(),
+            auth: None,
+        });
+        let to = |port| parse(&tunnel(&format!("h.example:{port}"))).unwrap();
+        assert_eq!(routes(&proxies, &to(80)).await, [http]);
+        assert_eq!(routes(&proxies, &to(443)).await, [None]);
     }
 
     #[tokio::test]
@@ -1689,6 +1788,7 @@ mod tests {
         let proxies = Proxies {
             pac: pac(pac::Source::Url(location)),
             fixed: fixed(),
+            exceptions: Vec::new(),
         };
         let to = |host| parse(&tunnel(&format!("{host}:443"))).unwrap();
         let http = |address: &str| {
@@ -1717,6 +1817,7 @@ mod tests {
         let broken = Proxies {
             pac: pac(pac::Source::Script("not a script(".into())),
             fixed: fixed(),
+            exceptions: Vec::new(),
         };
         assert_eq!(
             routes(&broken, &to("h.example")).await,
@@ -1728,6 +1829,7 @@ mod tests {
         let proxies = Proxies {
             pac: Some(pac::Pac::new(pac::Source::Script(by_url.into()), &no_env)),
             fixed: vec![],
+            exceptions: Vec::new(),
         };
         assert_eq!(
             routes(&proxies, &to("h.example")).await,
@@ -1756,6 +1858,7 @@ mod tests {
             let proxies = Proxies {
                 pac: pac(pac::Source::Script(script.into())),
                 fixed: vec![],
+                exceptions: Vec::new(),
             };
             let response = exchange_via(proxies, &tunnel(&format!("{UNRESOLVABLE}:443"))).await;
             assert!(response.starts_with(expected), "{first}: {response}");
@@ -1792,6 +1895,7 @@ mod tests {
                 &|_: &str| None,
             )),
             fixed: vec![Matcher::builder().all("http://127.0.0.1:9").build()],
+            exceptions: Vec::new(),
         };
         let to = |host| parse(&tunnel(&format!("{host}:443"))).unwrap();
         let http = |address: &str| {
