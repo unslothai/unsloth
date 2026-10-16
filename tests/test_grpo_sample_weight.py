@@ -31,7 +31,8 @@ SOURCE = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl_replac
 def _load():
     tree = ast.parse(SOURCE.read_text(encoding = "utf-8"))
     nodes = [
-        n for n in tree.body
+        n
+        for n in tree.body
         if isinstance(n, ast.FunctionDef)
         and n.name in ("_unsloth_grpo_sample_weight_mode", "_unsloth_grpo_sample_weight")
     ]
@@ -63,13 +64,17 @@ def _trainer(loss_type, lengths_all):
     )
 
 
-def _batch(seed, groups = 4, cols = 7):
+def _batch(
+    seed,
+    groups = 4,
+    cols = 7,
+):
     gen = torch.Generator().manual_seed(seed)
     rows = groups * G
     rpf = torch.randint(0, 3, (rows, 2), generator = gen).float()
     rpf[0:G] = torch.tensor([1.0, 2.0])  # group 0: zero variance
-    rpf[2 * G:3 * G, 0] = 0.0
-    rpf[2 * G:3 * G, 1] = torch.nan  # group 2: one reward func never applies, still zero variance
+    rpf[2 * G : 3 * G, 0] = 0.0
+    rpf[2 * G : 3 * G, 1] = torch.nan  # group 2: one reward func never applies, still zero variance
     rpf[3 * G, :] = torch.nan  # an unscorable completion in a varied group
     mask = (torch.rand(rows, cols, generator = gen) > 0.3).long()
     mask[5] = 0
@@ -122,14 +127,26 @@ def _unsloth(rpf, mask, new, old, adv, loss_type, processes, spg, monkeypatch, e
         idx = torch.arange(rows)[ps][perm]
         micro = local // spg
         for m in range(spg):
-            sel = idx[m * micro:(m + 1) * micro]
+            sel = idx[m * micro : (m + 1) * micro]
             loss = rr.grpo_compute_loss(
-                None, new[sel], old[sel], None, torch.zeros_like(mask[sel]), mask[sel], 0.0, adv[sel],
-                loss_type = loss_type, epsilon_low = 0.2, epsilon_high = 0.28,
-                max_completion_length = mask.shape[1], num_items_in_batch = mask.sum(),
-                current_gradient_accumulation_steps = spg, steps_per_generation = spg,
-                num_processes = processes, importance_sampling_level = "token",
-                sample_weight = w[perm][m * micro:(m + 1) * micro],
+                None,
+                new[sel],
+                old[sel],
+                None,
+                torch.zeros_like(mask[sel]),
+                mask[sel],
+                0.0,
+                adv[sel],
+                loss_type = loss_type,
+                epsilon_low = 0.2,
+                epsilon_high = 0.28,
+                max_completion_length = mask.shape[1],
+                num_items_in_batch = mask.sum(),
+                current_gradient_accumulation_steps = spg,
+                steps_per_generation = spg,
+                num_processes = processes,
+                importance_sampling_level = "token",
+                sample_weight = w[perm][m * micro : (m + 1) * micro],
             )[0]
             total = total + loss
     return total / processes  # DDP averages the processes' gradients
@@ -144,8 +161,8 @@ def test_weights_reproduce_scalerl_objective(exclude, prompt, processes, spg, se
     got = _unsloth(rpf, mask, new, old, adv, "dapo", processes, spg, monkeypatch, exclude, prompt)
     want = _oracle(rpf, mask, new, old, adv, exclude, prompt)
     torch.testing.assert_close(got, want, rtol = 1e-6, atol = 1e-9)
-    g1, = torch.autograd.grad(got, new)
-    g2, = torch.autograd.grad(want, new)
+    (g1,) = torch.autograd.grad(got, new)
+    (g2,) = torch.autograd.grad(want, new)
     torch.testing.assert_close(g1, g2, rtol = 1e-6, atol = 1e-9)
 
 
@@ -153,15 +170,30 @@ def test_weights_reproduce_scalerl_objective(exclude, prompt, processes, spg, se
 def test_no_zero_variance_group_matches_dapo(monkeypatch):
     rpf, mask, new, old, adv = _batch(3)
     rpf[0:G, 0] = torch.arange(G).float()
-    rpf[2 * G:3 * G, 0] = torch.arange(G).float()
+    rpf[2 * G : 3 * G, 0] = torch.arange(G).float()
     got = _unsloth(rpf, mask, new, old, adv, "dapo", 2, 2, monkeypatch, True, False)
     total = 0
     for sl in (slice(0, 4), slice(4, 8), slice(8, 12), slice(12, 16)):
-        total = total + rr.grpo_compute_loss(
-            None, new[sl], old[sl], None, torch.zeros_like(mask[sl]), mask[sl], 0.0, adv[sl],
-            loss_type = "dapo", epsilon_low = 0.2, epsilon_high = 0.28, num_items_in_batch = mask.sum(),
-            current_gradient_accumulation_steps = 2, steps_per_generation = 2, num_processes = 2,
-        )[0]
+        total = (
+            total
+            + rr.grpo_compute_loss(
+                None,
+                new[sl],
+                old[sl],
+                None,
+                torch.zeros_like(mask[sl]),
+                mask[sl],
+                0.0,
+                adv[sl],
+                loss_type = "dapo",
+                epsilon_low = 0.2,
+                epsilon_high = 0.28,
+                num_items_in_batch = mask.sum(),
+                current_gradient_accumulation_steps = 2,
+                steps_per_generation = 2,
+                num_processes = 2,
+            )[0]
+        )
     torch.testing.assert_close(got, total / 2, rtol = 1e-6, atol = 1e-9)
 
 
@@ -177,7 +209,10 @@ def test_off_eval_and_unsupported_loss_types_return_none(monkeypatch):
         monkeypatch.setenv("UNSLOTH_GRPO_LOSS_AGGREGATION", prompt)
         with warnings.catch_warnings(record = True) as caught:
             warnings.simplefilter("always")
-            assert sample_weight(_trainer(loss_type, lengths), "train", rpf, mask, None, slice(0, 16)) is None
+            assert (
+                sample_weight(_trainer(loss_type, lengths), "train", rpf, mask, None, slice(0, 16))
+                is None
+            )
         assert caught
     monkeypatch.setenv("UNSLOTH_GRPO_LOSS_AGGREGATION", "sequence")
     with pytest.raises(ValueError):
@@ -201,11 +236,17 @@ def test_trl_generation_anchors_present():
     # From the file: the imported method can be a runtime wrapper.
     text = Path(trl_grpo.__file__).read_text(encoding = "utf-8")
     node = next(
-        n for n in ast.walk(ast.parse(text))
+        n
+        for n in ast.walk(ast.parse(text))
         if isinstance(n, ast.FunctionDef) and n.name == "_generate_and_score_completions"
     )
     src = ast.get_source_segment(text, node, padded = True)
-    assert src.count('self._metrics[mode]["frac_reward_zero_std"].append(is_std_zero.float().mean().item())') == 1
+    assert (
+        src.count(
+            'self._metrics[mode]["frac_reward_zero_std"].append(is_std_zero.float().mean().item())'
+        )
+        == 1
+    )
     assert src.count("\n        return output") == 1
     for name in ("rewards_per_func", "process_slice", "completion_mask"):
         assert name in src

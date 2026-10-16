@@ -3303,7 +3303,6 @@ def _unsloth_grpo_sample_weight(
     ):
         if not getattr(trainer, "_unsloth_sample_weight_warned", False):
             import warnings
-
             warnings.warn(
                 f"Unsloth: zero-variance exclusion alone needs a token-normalised loss_type "
                 f"(bnpo, dapo, cispo, vespo) and prompt-level aggregation does not support "
@@ -3315,6 +3314,7 @@ def _unsloth_grpo_sample_weight(
     num_generations = trainer.num_generations
     loss_mask = completion_mask if tool_mask is None else completion_mask * tool_mask
     lengths = trainer.accelerator.gather(loss_mask.sum(dim = 1).to(torch.float32))
+
     def nan_variance(x, dim):
         # TRL's nanstd squared: Bessel corrected, nan (never "zero") with fewer than two values.
         centred = x - torch.nanmean(x, dim = dim, keepdim = True)
