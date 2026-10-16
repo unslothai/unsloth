@@ -191,6 +191,11 @@ export const BUDGET = {
   // 377 B transfer (6,796,799 -> 6,798,138 B raw, 2,044,202 -> 2,044,579 B transfer against 1574001bc1, one
   // machine and build, Node 24, chunk count unchanged at 95). Raised by that growth so main's margin stays where
   // it was.
+  // Three Studio merges since add 3,117 B raw / 1,058 B transfer (6,798,138 -> 6,801,255 B raw, 2,044,534 ->
+  // 2,045,592 B transfer from 4ebc263832~1 to d4e005e73e, one machine and build, Node 24, chunk count unchanged at
+  // 95). Nearly all of it is searching a model maker in the Model hub (#13998, +3,038 B raw / +1,000 B transfer):
+  // its owner-to-uploads search lives in use-hub-model-search, a hook the startup screen already loads, so there
+  // is no separate module to lazy-load. #13999 and #13993 add 79 B raw / 58 B transfer. Raised by that growth.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -205,11 +210,11 @@ export const BUDGET = {
   // Re-measured on main at a2003f1a0: +7,225 B raw / +2,416 B transfer (6,790,366 -> 6,797,591 B raw,
   // 2,042,026 -> 2,044,442 B transfer, one machine and build). On main's limits plus that growth, with
   // 0.9 KB raw / 0.4 KB transfer above it for the CI runner, which measured this branch 0.6 KB raw higher.
-  // Re-measured on main at a1d4daa47: +7,303 B raw / +2,367 B transfer (6,800,624 -> 6,807,927 B raw,
+  // Re-measured on main at cb7a04736: +7,303 B raw / +2,367 B transfer (6,800,624 -> 6,807,927 B raw,
   // 2,045,484 -> 2,047,851 B transfer, one machine and build). Set to main's limits plus that growth, with
   // 0.9 KB raw / 0.4 KB transfer above it for the CI runner.
-  transferBytes: 2_047_535,
-  rawBytes: 6_806_501,
+  transferBytes: 2_048_548,
+  rawBytes: 6_809_618,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

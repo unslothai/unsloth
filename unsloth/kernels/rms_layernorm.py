@@ -856,6 +856,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         eps: float,
         gemma: bool = False,
         save_output: bool = False,
+        reuse_grad: bool = False,
     ):
         shape = X.shape
         dim: int = shape[-1]
@@ -866,6 +867,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
             Y, r = _rms_forward(X, W, eps, gemma, _eager_kernel)
         ctx.eps = eps
         ctx.GEMMA = gemma
+        ctx.reuse_grad = reuse_grad
         Y = Y.view(*shape)
         # save_output: the caller guarantees nothing writes into Y (an untracked Triton write would
         # corrupt dX silently). Only frozen W: a trained W changes every step.
@@ -893,8 +895,10 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         if ctx.FROM_Y:
             # The saved Y keeps the caller's shape; a saved X is already 2D.
             X = X.view(-1, dim)
-        # allocate dX because autograd may share dY with other nodes or the caller.
-        dX = torch.empty_like(dY)
+        # Autograd may share dY with other nodes or the caller, so dX gets its own buffer.
+        # reuse_grad is for call sites whose output only feeds layers that return a fresh grad
+        # (pre-norm decoder norms): there dX overwrites dY and saves one activation.
+        dX = dY if ctx.reuse_grad and not ctx.GEMMA else torch.empty_like(dY)
         with torch_gpu_device(dY.device):
             dW = _rms_backward(
                 dY,
@@ -909,7 +913,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
                 from_y = ctx.FROM_Y,
             )
         dX = dX.view(*shape)
-        return dX, dW, None, None, None
+        return dX, dW, None, None, None, None
 
 
 # compiled graphs use these ops with the same kernels as the Function.
@@ -1011,8 +1015,9 @@ def _fast_rms_layernorm_untraced(
     eps,
     gemma,
     save_output = False,
+    reuse_grad = False,
 ):
-    return Fast_RMS_Layernorm.apply(X, W, eps, gemma, save_output)
+    return Fast_RMS_Layernorm.apply(X, W, eps, gemma, save_output, reuse_grad)
 
 
 def fast_rms_layernorm(
@@ -1020,19 +1025,20 @@ def fast_rms_layernorm(
     X: torch.Tensor,
     gemma: bool = False,
     save_output: bool = False,
+    reuse_grad: bool = False,
 ):
     W: torch.Tensor = layernorm.weight
     eps: float = (
         layernorm.variance_epsilon if hasattr(layernorm, "variance_epsilon") else layernorm.eps
     )
     if not torch.compiler.is_compiling():
-        return Fast_RMS_Layernorm.apply(X, W, eps, gemma, save_output)
+        return Fast_RMS_Layernorm.apply(X, W, eps, gemma, save_output, reuse_grad)
     if (
         not _TRACEABLE
         or X.device.type != "cuda"
         or (X.dtype == torch.bfloat16 and not _BF16_TRACEABLE)
     ):
-        return _fast_rms_layernorm_untraced(X, W, eps, gemma, save_output)
+        return _fast_rms_layernorm_untraced(X, W, eps, gemma, save_output, reuse_grad)
     shape = X.shape
     Y, _ = torch.ops.unsloth.rms_layernorm(
         X.reshape(-1, shape[-1]).contiguous(), W.contiguous(), eps, gemma
