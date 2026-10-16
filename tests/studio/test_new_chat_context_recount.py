@@ -40,6 +40,7 @@ BOUND_NAMES = {
     "mainThreadId",
     "runActive",
     "ownRunActive",
+    "queuedPromptPending",
     "modelLoading",
     "newThreadSwitchStateRef",
     "nonce",
@@ -162,6 +163,7 @@ export const world: any = {
   countedTokensOverride: undefined as { value: any } | undefined,
   // Holds the count in flight, so a test can move the world while it is awaiting.
   countGate: null as Promise<void> | null,
+  promptQueueByThreadId: {} as Record<string, { paused: boolean }>,
 };
 
 const state: any = {
@@ -427,6 +429,8 @@ export function renderThreadContextUsageRecount(props: any = {}): void {
   const ownRunActive = Boolean(
     state.activeThreadId && state.runningByThreadId?.[state.activeThreadId],
   );
+  const queueEntry = activeThreadId ? world.promptQueueByThreadId[activeThreadId] : undefined;
+  const queuedPromptPending = Boolean(queueEntry && !queueEntry.paused);
   const messages = aui.thread().getState().messages;
   const tip = messages.at(-1);
   const tipId = tip?.id;
@@ -442,6 +446,7 @@ export function renderThreadContextUsageRecount(props: any = {}): void {
     modelLoading,
     runActive,
     ownRunActive,
+    queuedPromptPending,
     tipId,
     tipRunning,
     branchLength,
@@ -2542,6 +2547,11 @@ _TOOL_CALL_PARTS = {
         '{ type: "tool-call", toolCallId: "c1", toolName: "web_search", args: {}, '
         'argsText: "{}", result: "found" }, '
     ),
+    "retrieval": (
+        '{ type: "tool-call", toolCallId: "rag_auto_0123456789ab", '
+        'toolName: "search_knowledge_base", args: {}, argsText: "{}", result: "found", '
+        'provenance: { source: "local" } }, '
+    ),
 }
 
 _CLOUD_SUM = (
@@ -2758,6 +2768,64 @@ def test_a_run_cancelled_before_any_output_reprices_only_what_it_can_count(picke
         assert settled["total"] not in (None, 300)
 
 
+_RUN_CANCELLED_FOR_A_QUEUED_PROMPT = """
+    world.promptQueueByThreadId = { "thread-a": { paused: false } };
+    seed({ runningByThreadId: {} });
+    await step("run_flag_cleared");
+    live[3] = { ...live[3], status: { type: "incomplete", reason: "cancelled" } };
+    await step("tip_settled");
+"""
+
+_QUEUED_PROMPT_RUNS = """
+    live.push(msg("u5", "user", "steer it"), msg("a6", "assistant", "", { status: "running" }));
+    await step("queued_placeholder");
+    seed({ runningByThreadId: { "thread-a": true } });
+    await step("queued_running");
+    const published = { promptTokens: 800, completionTokens: 9, totalTokens: 809, cachedTokens: 0 };
+    useChatRuntimeStore.getState().setContextUsage(published);
+    world.promptQueueByThreadId = {};
+    seed({ runningByThreadId: {} });
+    await step("queued_flag_cleared");
+    live[5] = msg("a6", "assistant", "steered", { usage: { ...published, modelId: useChatRuntimeStore.getState().params.checkpoint } });
+    await step("queued_settled");
+"""
+
+_QUEUE_PAUSED = """
+    world.promptQueueByThreadId = { "thread-a": { paused: true } };
+    await step("queue_paused");
+"""
+
+
+def test_a_run_cancelled_for_a_queued_prompt_leaves_the_count_to_that_prompt():
+    out = _run(
+        _script(
+            _SEND_WINDOW,
+            PICK = "",
+            END = textwrap.dedent(_RUN_CANCELLED_FOR_A_QUEUED_PROMPT + _QUEUED_PROMPT_RUNS),
+        )
+    )
+    steps = {step["name"]: step for step in out["steps"]}
+    for name, step in steps.items():
+        assert step["counts"] == 0, name
+    assert steps["tip_settled"]["total"] == 300
+    assert steps["queued_settled"]["total"] == 809
+    assert steps["queued_settled"]["estimated"] is None
+
+
+def test_a_queue_paused_after_the_cancel_gets_the_recount_it_waited_for():
+    out = _run(
+        _script(
+            _SEND_WINDOW,
+            PICK = "",
+            END = textwrap.dedent(_RUN_CANCELLED_FOR_A_QUEUED_PROMPT + _QUEUE_PAUSED),
+        )
+    )
+    steps = {step["name"]: step for step in out["steps"]}
+    assert steps["tip_settled"]["counts"] == 0
+    assert steps["queue_paused"]["counts"] == 1
+    assert steps["queue_paused"]["total"] == 112
+
+
 def test_a_runtime_still_showing_another_thread_never_prices_this_one():
     out = _run(
         _script(
@@ -2840,8 +2908,14 @@ def test_a_cloud_tool_loop_sum_on_the_tip_is_estimated(saved, tool_call, expecte
         (_CLOUD_SUM, "local", {"estimated": True, "total": 104}),
         (_CLOUD_SUM_WITH_CONTEXT, "local", {"estimated": None, "total": 322760}),
         (_CLOUD_SUM, "hosted", {"estimated": None, "total": 322760}),
+        (_CLOUD_SUM, "retrieval", {"estimated": None, "total": 322760}),
     ],
-    ids = ["loop_sum_without_context", "loop_turn_with_context", "provider_hosted_tool_turn"],
+    ids = [
+        "loop_sum_without_context",
+        "loop_turn_with_context",
+        "provider_hosted_tool_turn",
+        "retrieval_card_before_one_pass",
+    ],
 )
 def test_history_hydration_estimates_a_cloud_tool_loop_sum(saved, tool_call, expected):
     out = _run(
@@ -3186,6 +3260,35 @@ _DELETE_EVERY_REPLY_AFTER_OWN_RUN_WHILE_ANOTHER_CHAT_RUNS = (
 """
 )
 
+_DELETE_THEN_LEAVE_WHILE_ANOTHER_CHAT_RUNS = """
+    show(live.slice(0, 3));
+    await render();
+    world.liveMessages["thread-b"] = [msg("b1", "user", 1), msg("b2", "assistant", 2, { contextUsage: saved(900, 2) })];
+    useChatRuntimeStore.getState().setThreadContextUsage("thread-b", saved(900, 2));
+    useChatRuntimeStore.getState().setActiveThreadId("thread-b");
+    await render();
+"""
+
+_RETURN_AFTER_ANOTHER_CHAT_ENDS = (
+    _DELETE_THEN_LEAVE_WHILE_ANOTHER_CHAT_RUNS
+    + """
+    seed({ runningByThreadId: {} });
+    await render();
+    useChatRuntimeStore.getState().setActiveThreadId("thread-a");
+    await render();
+"""
+)
+
+_RETURN_BEFORE_ANOTHER_CHAT_ENDS = (
+    _DELETE_THEN_LEAVE_WHILE_ANOTHER_CHAT_RUNS
+    + """
+    useChatRuntimeStore.getState().setActiveThreadId("thread-a");
+    await render();
+    seed({ runningByThreadId: {} });
+    await render();
+"""
+)
+
 
 @pytest.mark.parametrize(
     ("steps", "picked", "expected"),
@@ -3236,6 +3339,18 @@ _DELETE_EVERY_REPLY_AFTER_OWN_RUN_WHILE_ANOTHER_CHAT_RUNS = (
             "external::openai::gpt-x",
             {"counts": 0, "total": 10, "estimated": True},
         ),
+        (_RETURN_AFTER_ANOTHER_CHAT_ENDS, "", {"counts": 1, "total": 87, "estimated": None}),
+        (
+            _RETURN_AFTER_ANOTHER_CHAT_ENDS,
+            "external::openai::gpt-x",
+            {"counts": 0, "total": 310, "estimated": True},
+        ),
+        (_RETURN_BEFORE_ANOTHER_CHAT_ENDS, "", {"counts": 1, "total": 87, "estimated": None}),
+        (
+            _RETURN_BEFORE_ANOTHER_CHAT_ENDS,
+            "external::openai::gpt-x",
+            {"counts": 0, "total": 310, "estimated": True},
+        ),
     ],
     ids = [
         "local_branch_switch",
@@ -3248,6 +3363,10 @@ _DELETE_EVERY_REPLY_AFTER_OWN_RUN_WHILE_ANOTHER_CHAT_RUNS = (
         "cloud_delete_every_reply",
         "local_delete_every_reply_after_its_own_run",
         "cloud_delete_every_reply_after_its_own_run",
+        "local_delete_then_return_after_it_ends",
+        "cloud_delete_then_return_after_it_ends",
+        "local_delete_then_return_before_it_ends",
+        "cloud_delete_then_return_before_it_ends",
     ],
 )
 def test_a_change_made_while_another_chat_generates_is_priced_when_it_ends(steps, picked, expected):

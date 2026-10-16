@@ -1041,25 +1041,55 @@ _WEB_SEARCH_CALL = _sse(
 )
 
 
-def test_usage_re_emitted_within_a_turn_counts_once(executed):
+def test_usage_reports_sum_while_context_uses_the_last_turn(executed):
     transport = FakeTransport(
         [
             [
                 _WEB_SEARCH_CALL,
-                _usage_line(10, 2),
+                _usage_line(
+                    10,
+                    2,
+                    prompt_tokens_details = {"cached_tokens": 4},
+                    completion_tokens_details = {"reasoning_tokens": 1},
+                    cache_creation_input_tokens = 3,
+                    cache_read_input_tokens = 4,
+                ),
                 _sse(finish = "tool_calls"),
-                _usage_line(10, 5),
+                _usage_line(
+                    10,
+                    5,
+                    prompt_tokens_details = {"cached_tokens": 6},
+                    completion_tokens_details = {"reasoning_tokens": 2},
+                    cache_creation_input_tokens = 5,
+                    cache_read_input_tokens = 6,
+                ),
                 _DONE,
             ],
-            [_sse({"content": "done"}), _sse(finish = "stop"), _usage_line(20, 7), _DONE],
+            [
+                _sse({"content": "done"}),
+                _sse(finish = "stop"),
+                _usage_line(
+                    20,
+                    7,
+                    prompt_tokens_details = {"cached_tokens": 8},
+                    completion_tokens_details = {"reasoning_tokens": 3},
+                    cache_creation_input_tokens = 7,
+                    cache_read_input_tokens = 8,
+                ),
+                _DONE,
+            ],
         ]
     )
     usages = _usage_payloads(_run(transport))
 
     assert len(usages) == 1
-    assert usages[0]["prompt_tokens"] == 30
-    assert usages[0]["completion_tokens"] == 12
-    assert usages[0]["total_tokens"] == 42
+    assert usages[0]["prompt_tokens"] == 40
+    assert usages[0]["completion_tokens"] == 14
+    assert usages[0]["total_tokens"] == 54
+    assert usages[0]["prompt_tokens_details"] == {"cached_tokens": 18}
+    assert usages[0]["completion_tokens_details"] == {"reasoning_tokens": 6}
+    assert usages[0]["cache_creation_input_tokens"] == 15
+    assert usages[0]["cache_read_input_tokens"] == 18
     assert usages[0]["context_tokens"] == 27
 
 
@@ -1112,18 +1142,24 @@ def test_a_partial_report_after_a_full_one_keeps_the_fields_it_omits(executed):
 
     assert len(usages) == 1
     assert usages[0]["prompt_tokens"] == 100
+    assert usages[0]["completion_tokens"] == 40
     assert usages[0]["total_tokens"] == 120
     assert usages[0]["context_tokens"] == 120
 
 
-def test_a_turn_reporting_only_its_total_prices_the_context_from_it(executed):
+@pytest.mark.parametrize(
+    "last_usage",
+    [{"total_tokens": 300}, {"completion_tokens": 50, "total_tokens": 300}],
+    ids = ["total_only", "total_above_its_parts"],
+)
+def test_a_turn_whose_total_exceeds_its_parts_prices_the_context_from_it(executed, last_usage):
     transport = FakeTransport(
         [
             [_WEB_SEARCH_CALL, _sse(finish = "tool_calls"), _usage_line(100, 5), _DONE],
             [
                 _sse({"content": "done"}),
                 _sse(finish = "stop"),
-                "data: " + json.dumps({"choices": [], "usage": {"total_tokens": 300}}),
+                "data: " + json.dumps({"choices": [], "usage": last_usage}),
                 _DONE,
             ],
         ]

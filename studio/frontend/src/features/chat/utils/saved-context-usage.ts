@@ -3,6 +3,7 @@
 
 import type { ThreadMessage } from "@assistant-ui/react";
 import type { MessageRecord } from "../types";
+import { codexLocalToolRoundId } from "../codex-reasoning.ts";
 import { isExternalModelId } from "../external-providers.ts";
 import { estimateContextUsage, estimateMessagesTokenCount } from "./estimate-chat-tokens.ts";
 
@@ -32,8 +33,8 @@ export function isSummedToolLoopUsage(
     usage.contextTokens === undefined &&
     Array.isArray(content) &&
     content.some((part) => {
-      const toolCall = part as { type?: unknown; provenance?: { source?: unknown } } | null;
-      return toolCall?.type === "tool-call" && toolCall.provenance?.source === "local";
+      const toolCall = part as { type?: unknown; provenance?: unknown } | null;
+      return toolCall?.type === "tool-call" && codexLocalToolRoundId(toolCall.provenance) !== null;
     })
   );
 }

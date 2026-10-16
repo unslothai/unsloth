@@ -1276,9 +1276,6 @@ def _merge_usage(totals: dict[str, Any], usage: Any) -> None:
         for detail, count in value.items():
             if isinstance(count, int) and not isinstance(count, bool):
                 bucket[detail] = bucket.get(detail, 0) + count
-    context = _pass_context_tokens(usage)
-    if context > 0:
-        totals["context_tokens"] = context
 
 
 def _usage_int(usage: dict[str, Any], field: str) -> int:
@@ -1291,7 +1288,7 @@ def _pass_context_tokens(usage: dict[str, Any]) -> int:
     if own > 0:
         return own
     parts = _usage_int(usage, "prompt_tokens") + _usage_int(usage, "completion_tokens")
-    return parts or _usage_int(usage, "total_tokens")
+    return max(parts, _usage_int(usage, "total_tokens"))
 
 
 def _usage_chunk_line(
@@ -1611,6 +1608,7 @@ async def stream_with_studio_tools(
                 if isinstance(upstream_model, str) and upstream_model:
                     model_name = upstream_model
                 if "usage" in payload:
+                    _merge_usage(usage_totals, payload.get("usage"))
                     if isinstance(payload.get("usage"), dict):
                         turn.usage = {
                             **(turn.usage or {}),
@@ -1753,7 +1751,10 @@ async def stream_with_studio_tools(
                 except (RuntimeError, GeneratorExit):
                     pass
 
-        _merge_usage(usage_totals, turn.usage)
+        if turn.usage is not None:
+            context = _pass_context_tokens(turn.usage)
+            if context > 0:
+                usage_totals["context_tokens"] = context
 
         # The provider turn is over, whichever way it ended. Said explicitly because a turn closed on [DONE] alone
         # carries no finish_reason for the stripper to read the boundary off, and the loop consumes that sentinel.

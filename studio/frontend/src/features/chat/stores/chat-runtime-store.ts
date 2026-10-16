@@ -2856,7 +2856,7 @@ type ChatRuntimeStore = {
   /** A finished run's usage, kept per thread so switching back re-applies it. */
   setThreadContextUsage: (
     threadId: string,
-    usage: ContextUsageSnapshot,
+    usage: ContextUsageSnapshot | null,
   ) => void;
 };
 
@@ -6174,15 +6174,23 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { contextUsage: stamped, contextUsageByThreadId: next };
     }),
   setThreadContextUsage: (threadId, usage) =>
-    set((state) => ({
-      contextUsageByThreadId: {
-        ...state.contextUsageByThreadId,
-        [threadId]:
-          usage.modelId || !state.params.checkpoint
-            ? usage
-            : { ...usage, modelId: state.params.checkpoint },
-      },
-    })),
+    set((state) => {
+      if (!usage) {
+        if (!Object.hasOwn(state.contextUsageByThreadId, threadId)) return state;
+        const next = { ...state.contextUsageByThreadId };
+        delete next[threadId];
+        return { contextUsageByThreadId: next };
+      }
+      return {
+        contextUsageByThreadId: {
+          ...state.contextUsageByThreadId,
+          [threadId]:
+            usage.modelId || !state.params.checkpoint
+              ? usage
+              : { ...usage, modelId: state.params.checkpoint },
+        },
+      };
+    }),
 }));
 
 // Mirror token edits made through the shared store (e.g. Unsloth's field).

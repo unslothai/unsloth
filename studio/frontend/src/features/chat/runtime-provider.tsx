@@ -141,6 +141,7 @@ import {
   ingestResearchUpdate,
   useResearchRunStore,
 } from "./stores/research-run-store";
+import { usePromptQueueUI } from "./stores/prompt-queue-ui-store";
 import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
 import { ChatProjectScopeContext } from "./chat-project-scope";
 import { readThreadCreationClaim } from "./utils/chat-thread-creation-claim";
@@ -3859,6 +3860,10 @@ function ThreadContextUsageRecount({
   const ownRunActive = useChatRuntimeStore((s) =>
     Boolean(s.activeThreadId && s.runningByThreadId[s.activeThreadId]),
   );
+  const queuedPromptPending = usePromptQueueUI((s) => {
+    const entry = activeThreadId ? s.byThreadId[activeThreadId] : undefined;
+    return Boolean(entry && !entry.paused);
+  });
   const tipId = useAuiState(({ thread }) => thread.messages.at(-1)?.id);
   const tipRunning = useAuiState(({ thread }) => {
     const last = thread.messages.at(-1);
@@ -3989,7 +3994,10 @@ function ThreadContextUsageRecount({
       !messagesContainImage(messages) &&
       !findLatestUserAudioBase64(messages) &&
       !findLatestUserVideoBase64(messages);
-    if (recount && runActive) return;
+    if (recount && (runActive || queuedPromptPending)) {
+      store.setThreadContextUsage(activeThreadId, null);
+      return;
+    }
     pricedTipRef.current = current;
     const shown = store.contextUsage;
     if (priced.ran && (shown == null || shown.estimated)) return;
@@ -4023,6 +4031,7 @@ function ThreadContextUsageRecount({
     loadedContextLength,
     modelLoading,
     ownRunActive,
+    queuedPromptPending,
     runActive,
     tipId,
     tipRunning,

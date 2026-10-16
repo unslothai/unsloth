@@ -143,6 +143,25 @@ function row(
   return { id, role, createdAt, content: [{ type: "text" as const, text }], ...(metadata ? { metadata } : {}) };
 }
 
+test("a retrieval card added before the first pass leaves a one-pass cloud figure trusted", () => {
+  const retrievalCard = {
+    type: "tool-call",
+    toolCallId: "rag_auto_0123456789ab",
+    toolName: "search_knowledge_base",
+    args: { query: "q" },
+    provenance: { source: "local" },
+  };
+  assert.equal(isSummedToolLoopUsage(cloudUsage, [retrievalCard, { type: "text", text: "a" }]), false);
+  assert.equal(isSummedToolLoopUsage(cloudUsage, [retrievalCard, localToolCall]), true);
+  const saved = usage(6330, CLOUD);
+  const reply = row("a2", "assistant", 2, "y".repeat(40), { contextUsage: saved });
+  const branch = [
+    row("u1", "user", 1, "x".repeat(40)),
+    { ...reply, content: [retrievalCard, ...reply.content] },
+  ] as never;
+  assert.equal(branchContextUsage(branch, CLOUD, null, null), saved);
+});
+
 const conversation = () => [
   row("u1", "user", 1, "x".repeat(40)),
   row("a1", "assistant", 2, "y".repeat(40), { contextUsage: usage(300, LOCAL) }),
