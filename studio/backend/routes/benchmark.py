@@ -3,6 +3,8 @@
 
 """Benchmark API routes for model benchmarking."""
 
+from __future__ import annotations
+
 import asyncio
 import copy
 import json
@@ -255,7 +257,7 @@ async def get_task_config(task_id: str, current_subject: str = Depends(get_curre
         # or 0 if explicitly disabled (slider hidden).
         # lm_eval YAMLs use !function tags; register a no-op constructor for them.
         yaml.add_constructor("!function", lambda loader, node: None, Loader = yaml.FullLoader)
-        with open(yaml_path) as f:
+        with open(yaml_path, encoding = "utf-8") as f:
             cfg = yaml.full_load(f)
         if not isinstance(cfg, dict):
             return BenchmarkTaskConfigResponse(task_id = task_id, num_fewshot = None)
@@ -456,7 +458,7 @@ async def run_benchmark(
             try:
                 os.makedirs(output_path, exist_ok = True)
                 results_path = os.path.join(output_path, "results.json")
-                with open(results_path, "w") as f:
+                with open(results_path, "w", encoding = "utf-8") as f:
                     json.dump(_without_api_keys(results), f, indent = 2, default = str)
                 backend._append_log("stdout", f"Results saved to {results_path}")
             except Exception as e:
@@ -901,7 +903,7 @@ async def export_benchmark_runs(
                 results_path = os.path.join(output_path, "results.json")
                 if os.path.isfile(results_path):
                     try:
-                        with open(results_path, "r") as f:
+                        with open(results_path, "r", encoding = "utf-8") as f:
                             results_json = _without_api_keys(json.load(f))
                     except Exception as e:
                         logger.warning(f"Failed to read results.json for {run_id}: {e}")
