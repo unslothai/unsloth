@@ -120,7 +120,7 @@ def test_every_release_of_the_same_encoder_gets_the_default_file(name, base):
 
 # ── an automatic default never fails a load ───────────────────────────────────
 
-MPS_BF16 = types.SimpleNamespace(device = "mps", dtype = torch.bfloat16)
+MPS_BF16 = types.SimpleNamespace(device = "mps", dtype = torch.bfloat16, backend = "mps")
 
 
 def _missing_file(monkeypatch):
@@ -555,9 +555,6 @@ def test_hidream_int8_on_both_encoders_is_applied(monkeypatch):
         _hidream_pipe("int8", "int8"), CUDA_BF16, mode = "int8", family = "hidream-i1"
     )
     assert out.mode == "int8" and out.status == prec.RESOLVED_APPLIED
-
-
-MPS_BF16 = types.SimpleNamespace(device = "mps", dtype = torch.bfloat16, backend = "mps")
 
 
 @pytest.mark.parametrize("confirmed, priced", [(False, False), (True, True)])
