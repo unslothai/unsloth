@@ -802,7 +802,9 @@ LTX23_PREQUANT_RESIDENT_GB = 19.06
 
 
 # The hosted DiT REPLACES the file's own, so the file must be the official one (a same-named fine-tune would be swapped silently).
-LTX23_PREQUANT_SOURCE_REPOS = frozenset({"lightricks/ltx-2.3"})
+# The official repo and its byte-identical unsloth mirror (diffusion_families._VIDEO_MIRROR_PAIRS): a pick of
+# Lightricks/LTX-2.3 is FETCHED from the mirror, so the file it lands on sits under the mirror's cache dir.
+LTX23_PREQUANT_SOURCE_REPOS = frozenset({"lightricks/ltx-2.3", "unsloth/ltx-2.3"})
 _LTX23_HUB_REPO_DIRS = frozenset(
     "models--" + r.replace("/", "--") for r in LTX23_PREQUANT_SOURCE_REPOS
 )
@@ -985,7 +987,14 @@ def ltx23_prequant_eligible(
         return False
     if str(repo_id).strip().lower() not in LTX23_PREQUANT_SOURCE_REPOS:
         return False
-    cached = _ltx23_hub_cached_file(str(repo_id).strip(), str(checkpoint_filename))
+    cached = None
+    from .diffusion_families import canonical_base, mirror_repo
+
+    upstream = canonical_base(str(repo_id).strip())
+    for candidate in dict.fromkeys((str(repo_id).strip(), upstream, mirror_repo(upstream) or upstream)):
+        cached = _ltx23_hub_cached_file(candidate, str(checkpoint_filename))
+        if cached is not None:
+            break
     return True if cached is None else ltx23_source_file_verified(cached)
 
 

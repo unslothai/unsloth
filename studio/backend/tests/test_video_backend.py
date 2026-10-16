@@ -140,6 +140,14 @@ def _shared_setup_12(_download, monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _pin_video_fetch_to_the_named_repo(monkeypatch):
+    """These tests are about plan / load decisions, written against the UPSTREAM ids their fake Hub serves. The fetch
+    swap onto the unsloth mirrors depends on the developer's own HF cache, so it is pinned off here, as the image
+    offline-load tests do; tests/test_video_unsloth_mirrors.py covers the swap itself."""
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
+
+
+@pytest.fixture(autouse = True)
 def _roomy_host_ram(monkeypatch):
     """Native H3 loads fit against the host's available RAM, which a CI runner may not have (macos-15: about 3 GiB).
     Tests that need a tight host stub usable_host_ram_mib themselves, after this."""
@@ -1072,7 +1080,8 @@ def test_loading_repo_ids_guards_in_flight_delete():
     backend = VideoBackend()
     assert backend.loading_repo_ids() == ()  # idle: nothing to guard
     backend._loading = _VideoLoadingState(repo_id = "org/ckpt", base_repo = "Lightricks/LTX-2")
-    assert set(backend.loading_repo_ids()) == {"org/ckpt", "Lightricks/LTX-2"}
+    # The base's unsloth mirror too: that is the id the fetch actually pulls into.
+    assert set(backend.loading_repo_ids()) == {"org/ckpt", "Lightricks/LTX-2", "unsloth/LTX-2"}
     # An errored load is no longer in flight, so the files are safe to delete.
     backend._loading = _VideoLoadingState(
         repo_id = "org/ckpt", base_repo = "Lightricks/LTX-2", error = "boom"

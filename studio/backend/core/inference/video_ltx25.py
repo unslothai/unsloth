@@ -472,7 +472,10 @@ def is_ltx25_single_file_base(base: Optional[str]) -> bool:
         return (path / LTX25_SINGLE_TEXT_ENCODER).is_file() and (
             path / LTX25_SINGLE_VIDEO_VAE
         ).is_file()
-    return text.lower() == LTX25_SINGLE_FILE_REPO.lower()
+    # Its byte-identical unsloth mirror is the same release: the fetch sites hand the mirror id to the assembly.
+    from .diffusion_families import canonical_base
+
+    return canonical_base(text).lower() == LTX25_SINGLE_FILE_REPO.lower()
 
 
 def is_ltx25_single_file_listing(names: Any) -> bool:

@@ -42,7 +42,7 @@ import time
 import types
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 from hub.utils.hf_errors import modelscope_missing
 from loggers import get_logger
@@ -742,6 +742,16 @@ def _cached_checkpoint_file(repo_id: str, filename: str) -> Optional[Path]:
     path = Path(repo_id).expanduser() / filename
     if path.is_file():
         return path
+    # A mirrored repo is fetched into the MIRROR's cache key, an older install's copy sits under the upstream's.
+    for alias in _video_repo_aliases(repo_id) or (repo_id,):
+        hit = _cached_hub_checkpoint_file(alias, filename)
+        if hit is not None:
+            return hit
+    return None
+
+
+def _cached_hub_checkpoint_file(repo_id: str, filename: str) -> Optional[Path]:
+    """``filename``'s cached hub blob for exactly ``repo_id`` (active, legacy and default cache roots), else None."""
     from huggingface_hub import try_to_load_from_cache
 
     cached = try_to_load_from_cache(repo_id, filename)
@@ -1559,6 +1569,49 @@ def _h3_te_canonical(repo_id: Optional[str]) -> str:
     is a different repo with different weights."""
     from .diffusion_families import canonical_base
     return canonical_base(repo_id).strip().lower()
+
+
+def _video_fetch_repo(
+    repo_id: Optional[str],
+    hf_token: Optional[str] = None,
+    *,
+    files: Optional[Sequence[str]] = None,
+) -> Optional[str]:
+    """The repo a video download should hit for ``repo_id``: its byte-identical unsloth mirror when one exists
+    (``diffusion_families._VIDEO_MIRROR_PAIRS``), else ``repo_id`` unchanged.
+
+    FETCH sites only, exactly like the image side's ``prefer_ungated_mirror`` calls: the upstream id stays the
+    logical identity (picker, status(), prequant / te-prequant base checks, size tables), and every table keyed on
+    it normalises a mirror back through ``canonical_base``. Same opt-outs too: a local path, an upstream already
+    satisfying the load from cache (``files`` sharpens that to the names about to be fetched), and
+    ``UNSLOTH_DIFFUSION_NO_MIRROR``. Pure: table lookup, env read, local stat."""
+    if not repo_id:
+        return repo_id
+    from .diffusion_families import prefer_ungated_mirror
+
+    return prefer_ungated_mirror(repo_id, hf_token, files = files)
+
+
+def _video_listing_repo(repo_id: str) -> str:
+    """The repo to read ``repo_id``'s file LISTING / sizes from: its mirror whenever one exists, cached upstream or
+    not, since the two listings are identical and only the mirror keeps the metadata call inside unsloth/*. Honours
+    ``UNSLOTH_DIFFUSION_NO_MIRROR`` and never rewrites a local path."""
+    from .diffusion_families import _is_local_path, mirror_repo
+
+    if not repo_id or os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip() or _is_local_path(repo_id):
+        return repo_id
+    return mirror_repo(repo_id) or repo_id
+
+
+def _video_repo_aliases(repo_id: Optional[str]) -> tuple[str, ...]:
+    """``repo_id`` plus the other side of its mirror pair, for the guards that must protect whichever id a load is
+    actually reading from (the delete-cached guard, the progress cache scan)."""
+    if not repo_id:
+        return ()
+    from .diffusion_families import canonical_base, mirror_repo
+
+    upstream = canonical_base(repo_id)
+    return tuple(dict.fromkeys(r for r in (repo_id, upstream, mirror_repo(upstream)) if r))
 
 
 # MiniMax-H3 modular precision tri-state. unset/"auto" -> whatever the backend decided;
@@ -3683,7 +3736,11 @@ class VideoBackend:
 
                 checkpoint_local = Path(
                     hf_hub_download_with_xet_fallback(
-                        kwargs["repo_id"],
+                        _video_fetch_repo(
+                            kwargs["repo_id"],
+                            kwargs.get("hf_token"),
+                            files = (kwargs["gguf_filename"],),
+                        ),
                         kwargs["gguf_filename"],
                         kwargs.get("hf_token"),
                         cancel_event = cancel_event,
@@ -3699,7 +3756,7 @@ class VideoBackend:
                 partner = moe_partner_filename(kwargs["gguf_filename"])
                 if getattr(fam, "is_moe", False) and kind != "pipeline" and partner:
                     hf_hub_download_with_xet_fallback(
-                        kwargs["repo_id"],
+                        _video_fetch_repo(kwargs["repo_id"], kwargs.get("hf_token"), files = (partner,)),
                         partner,
                         kwargs.get("hf_token"),
                         cancel_event = cancel_event,
@@ -5633,13 +5690,13 @@ class VideoBackend:
             if self._h3_te_quant_hub_files(h3_te_scheme, api)[1]:
                 skip_te_components = skip_te_components + ("text_encoder",)
             if gguf_filename and not Path(repo_id).expanduser().exists():
-                info = api.model_info(repo_id, files_metadata = True)
+                info = api.model_info(_video_listing_repo(repo_id), files_metadata = True)
                 wanted = _checkpoint_files(gguf_filename, kind)
                 for sibling in info.siblings or []:
                     if sibling.rfilename in wanted and sibling.size:
                         total += int(sibling.size)
             if base and not Path(base).expanduser().exists():
-                info = api.model_info(base, files_metadata = True)
+                info = api.model_info(_video_listing_repo(base), files_metadata = True)
                 total += sum(
                     size
                     for _, size in self._base_download_files(
@@ -5810,7 +5867,8 @@ class VideoBackend:
         try:
             api = HfApi(token = hf_token or None)
             if gguf_filename and not Path(repo_id).expanduser().exists():
-                info = api.model_info(repo_id, files_metadata = True)
+                listing = _video_listing_repo(repo_id)
+                info = api.model_info(listing, files_metadata = True)
                 wanted_checkpoints = (
                     _checkpoint_files(gguf_filename, kind) if fam.is_moe else (gguf_filename,)
                 )
@@ -5820,11 +5878,16 @@ class VideoBackend:
                     if s.rfilename in wanted_checkpoints
                 ]
                 checkpoint_bytes = sum(size for _name, size in sizes)
+                # Staged under the repo the load will FETCH from (the download manager pulls the entry's repo); the
+                # mirror's commit only describes the mirror, so an upstream kept for its complete cache gets no pin.
+                fetch_repo = (
+                    _video_fetch_repo(repo_id, hf_token, files = [n for n, _ in sizes]) or repo_id
+                )
                 total += add(
-                    repo_id,
+                    fetch_repo,
                     sizes,
                     gguf = gguf_filename,
-                    revision = getattr(info, "sha", None),
+                    revision = getattr(info, "sha", None) if fetch_repo == listing else None,
                     checkpoint = True,
                 )
                 if ltx23:
@@ -5902,35 +5965,40 @@ class VideoBackend:
             if h3_te_repo:
                 total += add(h3_te_repo, h3_te_files)
             if base and not Path(base).expanduser().exists():
-                info = api.model_info(base, files_metadata = True)
-                total += add(
-                    base,
-                    self._base_download_files(
-                        info,
-                        kind,
-                        ltx23 = ltx23,
-                        skip_te_components = (
-                            tuple(te_files) + (("text_encoder",) if h3_te_repo else ())
-                        ),
-                        # Gated on the artifact RESOLVING, exactly like the two encoder skips above, not on the registry
-                        # alone: the registry says a checkpoint should exist, dq_repo says one does. When the
-                        # task-specific file is absent or its repo cannot be read, dropping the dense shards leaves a
-                        # plan with NEITHER denoiser, and the bf16 fallback the loader documents has nothing to fall
-                        # back to offline. The registry probe still runs, because it is the one that refuses a
-                        # non-modular family and an auto request.
-                        skip_transformer_weights = (
-                            dq_repo is not None
-                            and self._denoiser_prequant_covered(
-                                fam, transformer_quant, base, h3_task, kind = kind, hf_token = hf_token
-                            )
-                        ),
-                        skip_transformer_components = _planned_denoiser_components(fam, kind),
-                        h3_task = h3_task,
-                        ltx25_dev = ltx25_dev,
-                        # The pack's indexes pick the transformer / connectors copy, as _predownload_base does.
-                        ltx25_shards = self._ltx25_plan_shards(info, base, hf_token),
+                listing = _video_listing_repo(base)
+                info = api.model_info(listing, files_metadata = True)
+                base_files = self._base_download_files(
+                    info,
+                    kind,
+                    ltx23 = ltx23,
+                    skip_te_components = (
+                        tuple(te_files) + (("text_encoder",) if h3_te_repo else ())
                     ),
-                    revision = getattr(info, "sha", None),
+                    # Gated on the artifact RESOLVING, exactly like the two encoder skips above, not on the registry
+                    # alone: the registry says a checkpoint should exist, dq_repo says one does. When the
+                    # task-specific file is absent or its repo cannot be read, dropping the dense shards leaves a
+                    # plan with NEITHER denoiser, and the bf16 fallback the loader documents has nothing to fall
+                    # back to offline. The registry probe still runs, because it is the one that refuses a
+                    # non-modular family and an auto request.
+                    skip_transformer_weights = (
+                        dq_repo is not None
+                        and self._denoiser_prequant_covered(
+                            fam, transformer_quant, base, h3_task, kind = kind, hf_token = hf_token
+                        )
+                    ),
+                    skip_transformer_components = _planned_denoiser_components(fam, kind),
+                    h3_task = h3_task,
+                    ltx25_dev = ltx25_dev,
+                    # The pack's indexes pick the transformer / connectors copy, as _predownload_base does.
+                    ltx25_shards = self._ltx25_plan_shards(info, listing, hf_token),
+                )
+                # The same fetch-repo decision _predownload_base makes from the same names, so the staged entry is the
+                # repo the load then reads (its mirror, unless the upstream cache already holds every file).
+                fetch_base = _video_fetch_repo(base, hf_token, files = [n for n, _ in base_files]) or base
+                total += add(
+                    fetch_base,
+                    base_files,
+                    revision = getattr(info, "sha", None) if fetch_base == listing else None,
                     # A pipeline pick has no single file: the base IS the selected model (base = repo_id above). Under a
                     # GGUF pick the base is a companion, so it stays unflagged.
                     checkpoint = kind == "pipeline",
@@ -6273,7 +6341,10 @@ class VideoBackend:
                 return None
             from huggingface_hub import HfApi
 
-            info = HfApi(token = hf_token or None).model_info(base, files_metadata = True)
+            # Listed from the mirror (byte identical, so the same names and sizes), then the fetch repo is settled
+            # against the EXACT names: an upstream snapshot that already holds every one of them keeps being used.
+            listing = _video_listing_repo(base)
+            info = HfApi(token = hf_token or None).model_info(listing, files_metadata = True)
             files = self._base_download_files(
                 info,
                 kind,
@@ -6309,7 +6380,11 @@ class VideoBackend:
                         if cancel.is_set():
                             raise RuntimeError(VIDEO_CANCELLED_MSG)
                         local_index = hf_hub_download_with_xet_fallback(
-                            base, name, hf_token, cancel_event = cancel, reuse_other_cache_root = True
+                            _video_fetch_repo(base, hf_token, files = (name,)) or base,
+                            name,
+                            hf_token,
+                            cancel_event = cancel,
+                            reuse_other_cache_root = True,
                         )
                         indexes[name] = json.loads(Path(local_index).read_text(encoding = "utf-8"))
                 files = self._base_download_files(
@@ -6326,6 +6401,7 @@ class VideoBackend:
 
             snapshot_root: Optional[str] = None
             roots: set[str] = set()
+            base = _video_fetch_repo(base, hf_token, files = [name for name, _ in files]) or base
             for name, _ in files:
                 # Explicit check: a cached file returns without consulting the event, so a warm-cache sweep would run to
                 # completion after a cancel.
@@ -6397,9 +6473,13 @@ class VideoBackend:
             return _progress("error", error = loading.error)
         if loading is None:
             return _progress("ready" if self._state is not None else None)
-        downloaded = self._cache_bytes(loading.repo_id)
-        if loading.base_repo and loading.base_repo != loading.repo_id:
-            downloaded += self._cache_bytes(loading.base_repo)
+        # Every id the load can be pulling into: a mirrored repo downloads under the MIRROR's cache key.
+        downloaded = sum(
+            self._cache_bytes(rid)
+            for rid in dict.fromkeys(
+                _video_repo_aliases(loading.repo_id) + _video_repo_aliases(loading.base_repo)
+            )
+        )
         expected = loading.expected_bytes
         phase = "downloading"
         if not expected:
@@ -6432,7 +6512,10 @@ class VideoBackend:
             if loading is None or loading.error is not None:
                 return ()
             ids = (loading.repo_id, loading.base_repo, *loading.asset_repos)
-            return tuple(r for r in ids if r)
+            # Both sides of a mirror pair: the fetch reads the mirror while status() names the upstream.
+            return tuple(
+                dict.fromkeys(alias for r in ids if r for alias in _video_repo_aliases(r))
+            )
 
     def loaded_repo_ids(self) -> tuple[str, ...]:
         """Repo ids the COMMITTED model reads from disk (empty unless a native model is loaded).
@@ -6540,6 +6623,9 @@ class VideoBackend:
             pass
 
         base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo, repo_id)
+        # Where the base's components are FETCHED from when no staged snapshot dir covers them: its unsloth mirror.
+        # ``base`` stays the upstream id every table below is keyed on.
+        fetch_base = _video_fetch_repo(base, hf_token) or base
 
         with self._lock:
             if _load_token is not None and _load_token != self._load_token:
@@ -7075,7 +7161,7 @@ class VideoBackend:
             if stale_encoder is not None:
                 _stop_ltx25_encoder(stale_encoder[1])
             ltx25_client = start_text_encoder(
-                repo = _base_local_dir or (repo_id if kind == "pipeline" else base),
+                repo = _base_local_dir or fetch_base,
                 hf_token = hf_token,
                 cache_dir = hub_cache_dir(),
                 local_files_only = local_files_only,
@@ -7121,7 +7207,8 @@ class VideoBackend:
 
         te_injected = te_prequant_pipe_kwargs(
             fam,
-            repo_id if kind == "pipeline" else base,
+            # the encoder config is read from here; the base checks fold a mirror back onto its upstream
+            fetch_base,
             te_quant_mode = text_encoder_quant,
             target = target,
             dtype = dtype,
@@ -7158,7 +7245,7 @@ class VideoBackend:
 
             denoiser_injected = denoiser_prequant_pipe_kwargs(
                 fam,
-                base,
+                fetch_base,
                 scheme = denoiser_seed_scheme,
                 dtype = dtype,
                 device = device,
@@ -7215,13 +7302,13 @@ class VideoBackend:
             pipe_kwargs.update({name: None for name in LTX25_NONE_COMPONENTS})
         if kind == "pipeline":
             # The pre-downloaded snapshot dir keeps from_pretrained off the hub; hub id when pre-download was skipped.
-            pipe = pipeline_cls.from_pretrained(_base_local_dir or repo_id, **pipe_kwargs)
+            pipe = pipeline_cls.from_pretrained(_base_local_dir or fetch_base, **pipe_kwargs)
         else:
             transformer_cls = getattr(diffusers, fam.transformer_class)
             # checkpoint_path was resolved (and downloaded) by the memory-planning branch above.
             sf_kwargs: dict[str, Any] = {
                 "torch_dtype": dtype,
-                "config": base,
+                "config": fetch_base,
                 "subfolder": "transformer",
                 "token": hf_token,
                 "cache_dir": hub_cache_dir(),
@@ -7254,7 +7341,7 @@ class VideoBackend:
                     ltx23_override = load_ltx23_comfy_transformer(
                         checkpoint_path,
                         comfy_scan,
-                        base_repo = base,
+                        base_repo = fetch_base,
                         torch_dtype = dtype,
                         hf_token = hf_token,
                         cache_dir = hub_cache_dir(),
@@ -7272,7 +7359,7 @@ class VideoBackend:
                         fam,
                         ltx23_scheme,
                         checkpoint_path,
-                        config_repo = base,
+                        config_repo = fetch_base,
                         device = device,
                         dtype = dtype,
                         hf_token = hf_token,
@@ -7331,7 +7418,7 @@ class VideoBackend:
                 # the 2.3 connectors/VAEs/vocoder.
                 pipe = load_ltx23_pipeline(
                     checkpoint_path,
-                    base_repo = base,
+                    base_repo = fetch_base,
                     torch_dtype = dtype,
                     is_gguf = kind == "gguf",
                     hf_token = hf_token,
@@ -7355,7 +7442,7 @@ class VideoBackend:
                     load_ltx25_transformer,
                 )
 
-                if comfy_scan is not None and is_ltx25_single_file_base(_base_local_dir or base):
+                if comfy_scan is not None and is_ltx25_single_file_base(_base_local_dir or fetch_base):
                     # The int8-convrot files quantize the text connectors too, and the pack-free assembly reads them from
                     # the DiT file: refuse before the DiT is read.
                     raise ValueError(
@@ -7367,7 +7454,7 @@ class VideoBackend:
                     ltx25_transformer = load_ltx25_comfy_transformer(
                         checkpoint_path,
                         comfy_scan,
-                        base_repo = _base_local_dir or base,
+                        base_repo = _base_local_dir or fetch_base,
                         torch_dtype = dtype,
                         hf_token = hf_token,
                         cache_dir = hub_cache_dir(),
@@ -7382,7 +7469,7 @@ class VideoBackend:
                 else:
                     ltx25_transformer = load_ltx25_transformer(
                         checkpoint_path,
-                        base_repo = _base_local_dir or base,
+                        base_repo = _base_local_dir or fetch_base,
                         torch_dtype = dtype,
                         is_gguf = kind == "gguf",
                         hf_token = hf_token,
@@ -7394,19 +7481,19 @@ class VideoBackend:
                     is_ltx25_single_file_base,
                 )
 
-                if is_ltx25_single_file_base(_base_local_dir or base):
+                if is_ltx25_single_file_base(_base_local_dir or fetch_base):
                     # The split single-file release: every component from the files beside the DiT, no pack.
                     pipe = assemble_ltx25_single_file_pipeline(
                         ltx25_transformer,
                         checkpoint_path,
-                        base = _base_local_dir or base,
+                        base = _base_local_dir or fetch_base,
                         torch_dtype = dtype,
                         hf_token = hf_token,
                         local_files_only = local_files_only,
                     )
                 else:
                     pipe = pipeline_cls.from_pretrained(
-                        _base_local_dir or base, **{**pipe_kwargs, "transformer": ltx25_transformer}
+                        _base_local_dir or fetch_base, **{**pipe_kwargs, "transformer": ltx25_transformer}
                     )
             else:
 
@@ -7442,7 +7529,7 @@ class VideoBackend:
                         Path(str(partner_path)).name,
                     )
                 pipe = pipeline_cls.from_pretrained(
-                    _base_local_dir or base, **{**pipe_kwargs, **experts}
+                    _base_local_dir or fetch_base, **{**pipe_kwargs, **experts}
                 )
 
         # The dtype dict already loads the Wan VAE at float32; belt-and-suspenders for any path that bypassed it (e.g. a
@@ -7458,7 +7545,7 @@ class VideoBackend:
                 pipe,
                 ltx25_client,
                 dev = ltx25_dev,
-                base_repo = _base_local_dir or (repo_id if kind == "pipeline" else base),
+                base_repo = _base_local_dir or fetch_base,
                 torch_dtype = dtype,
                 hf_token = hf_token,
                 cache_dir = hub_cache_dir(),
@@ -8365,6 +8452,9 @@ class VideoBackend:
         quantized CONDITIONER and the released bfloat16 DENOISER; ``"none"`` pins the released
         component either way; an explicit scheme is honored or falls back with the reason
         recorded."""
+        # Component configs and the dense weights are FETCHED from the base's unsloth mirror; ``base`` stays the
+        # upstream id the prequant / te-prequant tables are keyed on.
+        fetch_base = _video_fetch_repo(base, hf_token) or base
         # Defence in depth: validate_load_request now refuses a single_file modular pick outright, so this is
         # unreachable from the routes. It stays because this method is also reachable directly, and by the time it runs
         # the resident pipeline has already been torn down.
@@ -8407,7 +8497,7 @@ class VideoBackend:
         if hf_token:
             load_kwargs["token"] = hf_token
         pipe = diffusers.ModularPipeline.from_pretrained(
-            _base_local_dir or (base if comfy_checkpoint else repo_id), **load_kwargs
+            _base_local_dir or fetch_base, **load_kwargs
         )
         transformer_quant_engaged: Optional[str] = None
         transformer_quant_reason = "released bfloat16 components"
@@ -8524,7 +8614,7 @@ class VideoBackend:
                 getattr(diffusers, fam.transformer_class),
                 comfy_checkpoint,
                 comfy_scan,
-                config = _base_local_dir or base,
+                config = _base_local_dir or fetch_base,
                 subfolder = denoiser_component,
                 dtype = dtype,
                 hf_token = hf_token,
@@ -8571,7 +8661,7 @@ class VideoBackend:
             else:
                 transformer = load_prequantized_transformer(
                     getattr(diffusers, fam.transformer_class),
-                    base,
+                    fetch_base,
                     source,
                     # CPU: enable_auto_cpu_offload below owns placement for every component, so a pre-placed denoiser
                     # would just be moved again (and a 66 GB pin on a device the manager wanted to offload from is how
@@ -8715,7 +8805,7 @@ class VideoBackend:
         if te_scheme is not None:
             from .video_minimax_h3_te import load_h3_quantized_text_encoder
             text_encoder = load_h3_quantized_text_encoder(
-                base,
+                fetch_base,
                 te_scheme,
                 dtype = dtype,
                 hf_token = hf_token,
@@ -9484,7 +9574,7 @@ class VideoBackend:
 
         return Path(
             hf_hub_download_with_xet_fallback(
-                repo_id,
+                _video_fetch_repo(repo_id, hf_token, files = (gguf_filename or "",)),
                 gguf_filename or "",
                 hf_token,
                 reuse_other_cache_root = True,

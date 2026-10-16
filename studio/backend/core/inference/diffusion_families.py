@@ -1254,9 +1254,38 @@ _UNGATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("stabilityai/sdxl-turbo", "unsloth/sdxl-turbo"),
 )
 _MIRROR_PAIRS: tuple[tuple[str, str], ...] = _GATED_MIRROR_PAIRS + _UNGATED_MIRROR_PAIRS
-_GATED_MIRRORS: dict[str, str] = {u.lower(): m for u, m in _MIRROR_PAIRS}
-_MIRROR_UPSTREAM: dict[str, str] = {m.lower(): u for u, m in _MIRROR_PAIRS}
-_GATED_UPSTREAMS: frozenset[str] = frozenset(u.lower() for u, _m in _GATED_MIRROR_PAIRS)
+
+# The VIDEO bases (video_families), mirrored on the same terms: complete byte-identical copies, the upstream LICENSE
+# kept, a NOTICE where the licence asks for one. Every video component (transformer, text encoder, tokenizer, VAE,
+# audio VAE, connectors, upsampler, scheduler) is fetched from the base or from an unsloth/* artifact repo, so these
+# rows are what keep a video load inside unsloth/*. Kept OUT of ``_MIRROR_PAIRS``: that tuple is the IMAGE companion
+# table (hub/utils/companion_assets reads it to decide which cached repos an image checkpoint can strand), while these
+# feed only the id lookups below, so mirror_repo / canonical_base / prefer_ungated_mirror answer for video ids and
+# nothing image-side changes. HunyuanVideo-1.5 is deliberately absent: its Tencent Hunyuan Community licence is limited
+# to a Territory that excludes the EU, UK and South Korea, which a public Hub repo cannot honour (the same reason
+# HunyuanImage-2.1 has no mirror).
+_VIDEO_GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
+    ("Lightricks/LTX-2.5-Diffusers", "unsloth/LTX-2.5-Diffusers"),
+    ("Lightricks/LTX-2.5", "unsloth/LTX-2.5"),
+)
+_VIDEO_UNGATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
+    ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", "unsloth/Wan2.2-TI2V-5B-Diffusers"),
+    ("Wan-AI/Wan2.2-T2V-A14B-Diffusers", "unsloth/Wan2.2-T2V-A14B-Diffusers"),
+    ("Wan-AI/Wan2.1-T2V-1.3B-Diffusers", "unsloth/Wan2.1-T2V-1.3B-Diffusers"),
+    ("Wan-AI/Wan2.1-T2V-14B-Diffusers", "unsloth/Wan2.1-T2V-14B-Diffusers"),
+    # LTX-2 is the base of the ltx-2 family AND the source of LTX-2.3's scheduler, Gemma3 text encoder and tokenizer.
+    ("Lightricks/LTX-2", "unsloth/LTX-2"),
+    ("Lightricks/LTX-2.3", "unsloth/LTX-2.3"),
+    ("MiniMaxAI/MiniMax-H3", "unsloth/MiniMax-H3"),
+)
+_VIDEO_MIRROR_PAIRS: tuple[tuple[str, str], ...] = _VIDEO_GATED_MIRROR_PAIRS + _VIDEO_UNGATED_MIRROR_PAIRS
+
+_ALL_MIRROR_PAIRS: tuple[tuple[str, str], ...] = _MIRROR_PAIRS + _VIDEO_MIRROR_PAIRS
+_GATED_MIRRORS: dict[str, str] = {u.lower(): m for u, m in _ALL_MIRROR_PAIRS}
+_MIRROR_UPSTREAM: dict[str, str] = {m.lower(): u for u, m in _ALL_MIRROR_PAIRS}
+_GATED_UPSTREAMS: frozenset[str] = frozenset(
+    u.lower() for u, _m in _GATED_MIRROR_PAIRS + _VIDEO_GATED_MIRROR_PAIRS
+)
 
 
 def mirror_repo(repo_id: Optional[str]) -> Optional[str]:
