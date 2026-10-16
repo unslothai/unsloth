@@ -86,3 +86,11 @@ test("the Latest feed uses the fresh ranking, which no Hub request ever sends", 
   assert.match(hook, /url\.searchParams\.set\("sort", hubListingSort\(sortBy\)\)/);
   assert.doesNotMatch(hook, /sort: (opts\.)?sortBy,/);
 });
+
+test("Latest picked from the sort menu, outside any section, ranks the same way", () => {
+  const hook = readSrc("features/hub/hooks/use-hub-model-search.ts");
+  assert.match(
+    hook,
+    /if \(sortBy === "fresh"\) \{[\s\S]*?freshChannelIterator\(\n\s*\{ owner: unslothOnly \? "unsloth" : undefined \},/,
+  );
+});

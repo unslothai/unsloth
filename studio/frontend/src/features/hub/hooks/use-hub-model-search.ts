@@ -805,6 +805,27 @@ export function useHubModelSearch(
           },
         );
       }
+      // Latest picked from the sort menu: the same ranking as the feed, over the chosen uploaders.
+      if (sortBy === "fresh") {
+        const tasks = normalizeTaskFilter(task);
+        const ranked = freshChannelIterator(
+          { owner: unslothOnly ? "unsloth" : undefined },
+          {
+            query: trimmed || undefined,
+            sortDirection,
+            accessToken,
+            signal,
+            parameterFilter: filterRange,
+          },
+        );
+        return tasks.length === 0
+          ? ranked
+          : (async function* () {
+              for await (const model of ranked) {
+                if (taskMatches((model as { task?: string }).task, tasks)) yield model;
+              }
+            })();
+      }
       if (!trimmed) {
         // No query: show priority models first (with full metadata), then general unsloth listing
         if (stablePriorityIds && stablePriorityIds.length > 0) {
