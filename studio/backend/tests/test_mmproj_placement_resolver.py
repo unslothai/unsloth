@@ -310,3 +310,101 @@ def test_the_fit_target_reader_is_exact_only_where_the_entry_is_provable(
         )
         == expected
     )
+
+
+# --- target and draft layer / CPU-MoE counts parse like std::stoi ------------------------
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, expected",
+    [
+        # std::stoi (common/arg.cpp handler_int) reads the leading digits and ignores the rest.
+        (["-ncmoe", "4abc"], {}, True),
+        (["--n-cpu-moe", "999 layers"], {}, True),
+        (["-ncmoe=+2"], {}, True),
+        ([], {"LLAMA_ARG_N_CPU_MOE": "4abc"}, True),
+        ([], {"LLAMA_ARG_N_CPU_MOE": " 3"}, True),
+        # Controls: zero, a negative (arg.cpp throws) and no digits place nothing.
+        (["-ncmoe", "0"], {}, False),
+        (["-ncmoe", "0abc"], {}, False),
+        (["-ncmoe", "-2"], {}, False),
+        (["-ncmoe", "abc"], {}, False),
+        ([], {"LLAMA_ARG_N_CPU_MOE": "0"}, False),
+        ([], {}, False),
+    ],
+)
+def test_target_cpu_moe_counts_follow_upstream_parsing(extra_args, env, expected):
+    assert (
+        llama_cpp_module._args_place_tensors_on_cpu(extra_args)
+        or llama_cpp_module._env_places_tensors_on_cpu(env)
+    ) is expected
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, expected",
+    [
+        (["-ngld", "2 layers"], {}, True),
+        (["--spec-draft-ngl", "3x"], {}, True),
+        ([], {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "1abc"}, True),
+        # Controls: the whole drafter, the 0 offload, and the auto / all spellings.
+        (["-ngld", "2"], {}, True),
+        (["-ngld", "5 layers"], {}, False),
+        (["-ngld", "0 layers"], {}, False),
+        (["-ngld", "auto"], {}, False),
+        (["-ngld", "all"], {}, False),
+    ],
+)
+def test_a_draft_layer_split_follows_upstream_parsing(extra_args, env, expected):
+    assert (
+        llama_cpp_module._draft_is_split_across_host(extra_args, env, n_draft_layers = 4) is expected
+    )
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, expected",
+    [
+        (["-ngld", "0 layers"], {}, True),
+        (["-ngld", " 0"], {}, True),
+        ([], {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "0abc"}, True),
+        # A GPU tensor override puts drafter weights on the card whatever -ngld says
+        # (llama-model.cpp applies the buffer-type overrides per tensor).
+        (["-ngld", "0", "-otd", ".*=CUDA0"], {}, False),
+        (["-ngld", "0", "--override-tensor-draft=exps=CPU,attn=CUDA0"], {}, False),
+        (["-ngld", "0", "-otd", "exps=CPU", "-otd", "attn=Vulkan0"], {}, False),
+        # parse_tensor_buffer_overrides throws without "=": no placement to price as CPU.
+        (["-ngld", "0", "-otd", "exps"], {}, False),
+        # Controls: CPU-only overrides and the device pin keep the drafter off the card.
+        (["-ngld", "0", "-otd", ".*=CPU"], {}, True),
+        (["-ngld", "0", "-otd", "exps=CPU,attn=CPU", "-cmoed"], {}, True),
+        (["-ngld", "0"], {}, True),
+        (["--spec-draft-device", "none"], {}, True),
+        (["-ngld", "1"], {}, False),
+        (["-ngld", "auto"], {}, False),
+    ],
+)
+def test_a_cpu_drafter_follows_upstream_parsing_and_tensor_overrides(extra_args, env, expected):
+    assert llama_cpp_module._extra_args_draft_offloaded_to_cpu(extra_args, env) is expected
+
+
+# --- a zero-offload launch keeps GPUs visible for every projector device name ------------
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, expected",
+    [
+        # arg.cpp parses each projector device as it reads it, env first then argv, so a
+        # name before a final none must still resolve: masking the GPUs fails it.
+        (["--mmproj-device", "CUDA0", "--mmproj-device", "none"], {}, True),
+        (["-mmdev=CUDA0", "-mmdev", "none"], {}, True),
+        (["--mmproj-device", "none"], {"MTMD_BACKEND_DEVICE": "CUDA0"}, True),
+        # Controls: only none ever named, or no projector device at all.
+        (["--mmproj-device", "none"], {}, False),
+        ([], {"MTMD_BACKEND_DEVICE": "none"}, False),
+        (["--no-mmproj-offload"], {}, False),
+    ],
+)
+def test_a_zero_offload_launch_keeps_gpus_for_an_earlier_projector_device(
+    extra_args, env, expected
+):
+    cmd = ["/fake/llama-server", "-m", "m.gguf", "--mmproj", "p.gguf", "-ngl", "0", *extra_args]
+    assert LlamaCppBackend._zero_offload_keeps_gpu_visible(cmd, env) is expected

@@ -2711,16 +2711,43 @@ def test_a_cpu_projector_takes_none_only_when_ram_holds_it(
 
 @pytest.mark.parametrize(
     "extra_args",
-    [["--mmproj-device", "none", "--mmproj-offload"], ["-mmdev", "CPU"], ["-mmdev", "NONE"]],
-    ids = ["offload_after", "cpu_name", "not_exactly_none"],
+    [["-mmdev", "CPU"], ["-mmdev", "NONE"]],
+    ids = ["cpu_name", "not_exactly_none"],
 )
 def test_an_unresolved_projector_device_keeps_the_default_loader_with_room(
     tmp_path, monkeypatch, extra_args
 ):
-    """Controls: placements the resolver cannot read as host RAM still abstain."""
+    """Controls: a named projector device, which this fit cannot place, still abstains."""
     assert (
         _placed_launch(
             tmp_path, monkeypatch, extra_args = extra_args, **{**_PROJECTOR, "ram_gib": 64}
         )
         is None
+    )
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--mmproj-device", "none", "--mmproj-offload"], {}),
+        (["--mmproj-offload"], {"MTMD_BACKEND_DEVICE": "none"}),
+        (["--mmproj-offload"], {}),
+    ],
+    ids = ["offload_after", "env_none_argv_offload", "control_offload"],
+)
+def test_a_projector_offloaded_after_none_is_priced_on_the_card(
+    tmp_path, monkeypatch, extra_args, env
+):
+    """A later --mmproj-offload puts the projector on the model's device (the resolver's
+    "default"), the placement the budget charged: the fit prices it like a bare offload
+    instead of abstaining on the raw none token."""
+    assert (
+        _placed_launch(
+            tmp_path,
+            monkeypatch,
+            extra_args = extra_args,
+            env = env,
+            **{**_PROJECTOR, "ram_gib": 64},
+        )
+        == FIT_MODE
     )
