@@ -5,7 +5,7 @@
 export const DEFAULT_SAMPLER = "default";
 export const AUTOMATIC_SCHEDULE = "automatic";
 
-const SAMPLER_LABELS: Record<string, string> = {
+export const SAMPLER_LABELS: Record<string, string> = {
   default: "Model default",
   euler: "Euler",
   euler_a: "Euler a",

@@ -185,7 +185,7 @@ function useFrameMessages(tabId: string, origin: string | null) {
 
 // Stands in for the app name while translating, so it can be a link.
 const APP_MARK = "\u0000";
-const DESKTOP_APP_URL = "https://github.com/unslothai/unsloth";
+const DESKTOP_APP_URL = "https://github.com/unslothai/unsloth#-get-started";
 
 function PageError({
   url,

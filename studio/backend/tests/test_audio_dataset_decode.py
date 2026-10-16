@@ -321,8 +321,18 @@ def test_the_dataset_format_check_installs_the_decoder():
 
     from hub.services.datasets import formatting
 
-    source = inspect.getsource(formatting.check_format_response)
-    assert "ensure_audio_decoding()" in source
+    # check_format_response reads its rows through load_preview_slice (#13850), so the decoder
+    # has to be installed there, ahead of every tier that can decode an audio row.
+    check = inspect.getsource(formatting.check_format_response)
+    assert "load_preview_slice(" in check, "check-format no longer reads through load_preview_slice"
+    loader = inspect.getsource(formatting.load_preview_slice)
+    body = loader[loader.index('"""', loader.index('"""') + 3) + 3 :]
+    install = body.find("ensure_audio_decoding()")
+    assert install != -1, "load_preview_slice no longer installs the audio decoder"
+    first_read = min(
+        i for i in (body.find("resolve_dataset_path("), body.find("load_dataset(")) if i != -1
+    )
+    assert install < first_read, "the decoder must be installed before the first row is read"
 
 
 def test_the_audio_trainer_paths_install_the_decoder():

@@ -459,6 +459,33 @@ def get_checkpoint_quant_formats() -> list[str]:
     return [fmt for fmt, needed in _CHECKPOINT_QUANT_MIN_CAPABILITY if floor >= needed]
 
 
+def get_compute_capabilities() -> dict[int, tuple[int, int]]:
+    """nvidia-smi row index -> (major, minor), no mask and no torch; {} when unreadable."""
+    try:
+        result = gpu_query.run_nvidia_smi(
+            [_nvidia_smi_executable(), "--query-gpu=index,compute_cap", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if result.returncode != 0:
+        return {}
+    capabilities: dict[int, tuple[int, int]] = {}
+    for line in result.stdout.strip().splitlines():
+        index, _, cap = (part.strip() for part in line.partition(","))
+        major, _, minor = cap.partition(".")
+        if not (index.isdigit() and major.isdigit() and minor.isdigit()):
+            return {}
+        capabilities[int(index)] = (int(major), int(minor))
+    return capabilities
+
+
 def get_physical_gpu_inventory() -> dict[str, Any]:
     """Every NVIDIA GPU the driver enumerates, with no visibility mask and no torch. Display-only inventory: ``index`` is nvidia-smi's own row number, a physical id and NOT something a caller may pin, because the whole point of this probe is that PyTorch cannot open these devices. A failed probe comes back as a structured unavailable result, so this never raises out of an endpoint."""
     rows = _query_gpu_inventory("get_physical_gpu_inventory")
