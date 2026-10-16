@@ -55,6 +55,7 @@ _SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom"})
 _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
 _served_windows: dict[tuple[str, str, str], tuple[float, Optional[int]]] = {}
+_served_templates: dict[tuple[str, str, str], tuple[float, Optional[str]]] = {}
 _served_versions: dict[tuple[str, str], tuple[float, bool]] = {}
 
 
@@ -7718,6 +7719,37 @@ class ExternalProviderClient:
             del _served_windows[stale]
         _served_windows[key] = (now + _SERVED_WINDOW_TTL_S, window)
         return window
+
+    async def served_chat_template(self, model: str) -> Optional[str]:
+        """llama-server's chat template from /props, cached for a minute like the served window."""
+        if self.provider_type != "llama_cpp":
+            return None
+        now = time.monotonic()
+        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest(), model)
+        cached = _served_templates.get(key)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        template = None
+        try:
+            response = await _client().get(
+                f"{self.base_url.removesuffix('/v1')}/props",
+                params = {"model": model},
+                headers = self._auth_headers(),
+                timeout = _SERVED_WINDOW_TIMEOUT_S,
+            )
+            response.raise_for_status()
+            body = response.json()
+            value = body.get("chat_template") if isinstance(body, dict) else None
+            template = value if isinstance(value, str) and value.strip() else None
+        except httpx.ConnectError as exc:
+            logger.info("No served chat template from %s: %s", self.base_url, exc)
+            return None
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.info("No served chat template from %s: %r", self.base_url, exc)
+        for stale in [k for k, (expiry, _) in _served_templates.items() if expiry <= now]:
+            del _served_templates[stale]
+        _served_templates[key] = (now + _SERVED_WINDOW_TTL_S, template)
+        return template
 
     @staticmethod
     def _parse_gemini_models(payload: Any) -> list[dict[str, Any]]:
