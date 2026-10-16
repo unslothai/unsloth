@@ -726,7 +726,9 @@ def test_selective_dequant_keeps_bnb4bit_experts_outside_the_block(monkeypatch):
         def __init__(self, quantized):
             super().__init__()
             weight = torch.zeros(2, 4, 4)
-            self.gate_up_proj = Params4bit(weight, requires_grad = False) if quantized else torch.nn.Parameter(weight)
+            self.gate_up_proj = (
+                Params4bit(weight, requires_grad = False) if quantized else torch.nn.Parameter(weight)
+            )
 
         def forward(self, x):
             return x * 2
@@ -738,12 +740,19 @@ def test_selective_dequant_keeps_bnb4bit_experts_outside_the_block(monkeypatch):
         return out
 
     monkeypatch.setattr(M, "_lora_would_fold", lambda experts: False)
-    for key in ("UNSLOTH_BLOCK_MOE", "UNSLOTH_MOE_SELECTIVE_DEQUANT", "UNSLOTH_MOE_DEQUANT_CHUNK_EXPERTS"):
+    for key in (
+        "UNSLOTH_BLOCK_MOE",
+        "UNSLOTH_MOE_SELECTIVE_DEQUANT",
+        "UNSLOTH_MOE_DEQUANT_CHUNK_EXPERTS",
+    ):
         monkeypatch.delenv(key, raising = False)
     default = layer(True)
     M._experts_outside(default)
     assert not getattr(default.mlp.experts, "_unsloth_block_outside", False)
-    for key, value in (("UNSLOTH_MOE_SELECTIVE_DEQUANT", "1"), ("UNSLOTH_MOE_DEQUANT_CHUNK_EXPERTS", "32")):
+    for key, value in (
+        ("UNSLOTH_MOE_SELECTIVE_DEQUANT", "1"),
+        ("UNSLOTH_MOE_DEQUANT_CHUNK_EXPERTS", "32"),
+    ):
         monkeypatch.setenv(key, value)
         quantized, plain = layer(True), layer(False)
         M._experts_outside(quantized)
@@ -772,7 +781,11 @@ def test_selective_dequant_off_never_reads_a_packed_expert_stack(monkeypatch):
             return x
 
     monkeypatch.setattr(M, "_lora_would_fold", lambda experts: False)
-    for key in ("UNSLOTH_BLOCK_MOE", "UNSLOTH_MOE_SELECTIVE_DEQUANT", "UNSLOTH_MOE_DEQUANT_CHUNK_EXPERTS"):
+    for key in (
+        "UNSLOTH_BLOCK_MOE",
+        "UNSLOTH_MOE_SELECTIVE_DEQUANT",
+        "UNSLOTH_MOE_DEQUANT_CHUNK_EXPERTS",
+    ):
         monkeypatch.delenv(key, raising = False)
     layer = torch.nn.Module()
     layer.mlp = torch.nn.Module()

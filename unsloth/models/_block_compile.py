@@ -737,7 +737,11 @@ def _experts_outside(layer):
         experts = _experts_of(module)
         if experts is None:  # named_modules() is pre-order: the outermost wrapper comes first
             continue
-        if mode != "outside" and not _lora_would_fold(experts) and not _selective_dequant_requested(experts):
+        if (
+            mode != "outside"
+            and not _lora_would_fold(experts)
+            and not _selective_dequant_requested(experts)
+        ):
             continue
         module.forward = torch.compiler.disable(module.forward)
         for inner in module.modules():
