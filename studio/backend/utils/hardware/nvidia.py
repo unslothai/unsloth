@@ -163,7 +163,10 @@ _mig_indices_cache: Optional[tuple[int, float, frozenset[int], bool]] = None
 
 
 def _store_mig_gpu_indices(
-    indices: frozenset[int], gen: int, at: Optional[float] = None, answered: bool = True
+    indices: frozenset[int],
+    gen: int,
+    at: Optional[float] = None,
+    answered: bool = True,
 ) -> None:
     """Publish a listing under the generation read before its query started; one the
     inventory was invalidated during is dropped, so the next caller re-reads. ``at`` is

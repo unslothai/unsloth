@@ -423,7 +423,6 @@ def calls(monkeypatch):
 class TestOrdinaryHostsKeepTheirReadings:
     """Whole-GPU uuid masks and plain polls on hosts without MIG behave as before MIG support."""
 
-
     @pytest.mark.parametrize("token", [GPU0, GPU0[:12], GPU0.lower()])
     def test_a_uuid_mask_under_fastest_first_reads_its_card(self, host, monkeypatch, calls, token):
         host([(GPU0, [])], [14000], None)
