@@ -54,6 +54,7 @@ import { UserMessageActionBar, UserMessageFooter } from "@/components/assistant-
 import { useActionBarFocusReveal } from "@/components/assistant-ui/use-action-bar-focus-reveal";
 import {
   composerColumnInset,
+  composerInsetFromColumn,
   readViewportBox,
 } from "@/components/assistant-ui/composer-column-inset";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
@@ -2578,16 +2579,28 @@ const ThreadComposerDock: FC<{
       ":scope > .aui-thread-viewport",
     );
     if (!dock || !inner || !viewport) return;
+    const resizeObserver = new ResizeObserver(() => apply());
+    let observedFooter: Element | null = null;
     const apply = () => {
-      const inset = composerColumnInset(
-        readViewportBox(viewport),
-        dock.getBoundingClientRect(),
+      // The full-width footer is the column's real box. WebKit's both-edges gutter reserves
+      // twice the scrollbar on the right while clientWidth counts it once, so the
+      // computed box is only the fallback until the footer mounts.
+      const footer = viewport.querySelector(
+        ":scope > .aui-thread-viewport-footer",
       );
+      if (footer && footer !== observedFooter) {
+        if (observedFooter) resizeObserver.unobserve(observedFooter);
+        resizeObserver.observe(footer);
+        observedFooter = footer;
+      }
+      const dockRect = dock.getBoundingClientRect();
+      const inset = footer
+        ? composerInsetFromColumn(footer.getBoundingClientRect(), dockRect)
+        : composerColumnInset(readViewportBox(viewport), dockRect);
       inner.style.setProperty("--composer-dock-inset-left", `${inset.left}px`);
       inner.style.setProperty("--composer-dock-inset-right", `${inset.right}px`);
     };
     apply();
-    const resizeObserver = new ResizeObserver(apply);
     resizeObserver.observe(viewport);
     resizeObserver.observe(dock);
     return () => resizeObserver.disconnect();
