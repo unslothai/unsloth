@@ -30432,11 +30432,12 @@ async def openai_chat_completions(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    _admit_tool_access(payload)
     from auth.authentication import request_admitted_without_credential
 
+    # Before the local tool policy, as on /responses and /messages: the linked server applies its own.
     if linked := await linked_instances.resolve(request, payload.model):
         return await _forward_linked(request, "chat/completions", linked, current_subject)
+    _admit_tool_access(payload)
 
     if (payload.provider_id or payload.provider_type) and request_admitted_without_credential(
         request

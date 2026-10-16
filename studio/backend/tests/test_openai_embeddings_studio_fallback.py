@@ -1482,3 +1482,35 @@ def test_a_linked_embedding_model_is_forwarded_to_its_instance(monkeypatch):
     assert result == "forwarded"
     assert resolved == ["@gpu/bge-small"]
     assert forwarded == [("embeddings", target, "tester")]
+
+
+def test_a_linked_chat_model_is_forwarded_before_the_local_tool_policy(monkeypatch):
+    # /responses and /messages forward a linked model before local tool admission; so does chat.
+    import state.tool_policy as tool_policy
+    from models.inference import ChatCompletionRequest
+
+    target = ({"id": "i1", "name": "gpu"}, "qwen")
+    forwarded = []
+
+    async def resolve(request, model):
+        return target if model == "@gpu/qwen" else None
+
+    async def forward(request, path, linked, subject):
+        forwarded.append(path)
+        return "forwarded"
+
+    def refuse(*args, **kwargs):
+        raise HTTPException(status_code = 403, detail = "full access is off here")
+
+    monkeypatch.setattr(inference_route.linked_instances, "resolve", resolve)
+    monkeypatch.setattr(inference_route, "_forward_linked", forward)
+    monkeypatch.setattr(tool_policy, "require_tool_access", refuse)
+    payload = ChatCompletionRequest(
+        model = "@gpu/qwen",
+        messages = [{"role": "user", "content": "hi"}],
+        permission_mode = "full",
+    )
+    result = asyncio.run(
+        inference_route.openai_chat_completions(payload, _Request({}), current_subject = "tester")
+    )
+    assert result == "forwarded" and forwarded == ["chat/completions"]
