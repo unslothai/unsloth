@@ -78,7 +78,6 @@ def _worker(rank, port, out_dir, user_config):
         if user_config:
             # A dp_shard only ParallelismConfig the user passed: still non-None for transformers 4.x.
             from accelerate.parallelism_config import ParallelismConfig
-
             state.parallelism_config = ParallelismConfig(dp_shard_size = 2)
         cp._install_fsdp2_parallelism_config(state, manager)
         installed = state.parallelism_config
