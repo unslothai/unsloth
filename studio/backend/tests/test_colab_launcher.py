@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 import threading
 import time
 
@@ -15,6 +18,7 @@ from core.inference import linked_instances
 from storage import credential_secrets, linked_instances_db
 
 _REAL_DETECT = cl.detect_runner
+NL = chr(10)
 REMOTE_KEY = "sk-unsloth-" + "b" * 32
 TUNNEL = "https://quiet-otter.trycloudflare.com"
 READY_PROBE = "UNSLOTH_PROBE uv=yes\nUNSLOTH_PROBE cli=/root/.local/bin/colab\nUNSLOTH_PROBE auth=oauth2\nUNSLOTH_PROBE sessions_rc=0\n[colab] No active sessions found on server."
@@ -478,3 +482,57 @@ def test_a_cancel_racing_the_ready_transition_never_leaves_a_cancelled_vm_runnin
     cl._run_job(job)
     assert job.state == "ready" and not job.cancel.is_set()
     assert "stop" not in fake.kinds()
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+def test_the_probe_reads_a_signed_in_cli_without_gnu_timeout(tmp_path):
+    # Stock macOS has no `timeout`; a signed-in CLI must still probe as signed in.
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    for tool in ("head", "sed", "tail"):
+        real = shutil.which(tool)
+        (bindir / tool).write_text(f'#!/bin/sh{NL}exec "{real}" "$@"{NL}')
+    (bindir / "colab").write_text(f"#!/bin/sh{NL}echo 'no sessions'{NL}")
+    for script in bindir.iterdir():
+        script.chmod(0o755)
+    token = tmp_path / ".config" / "colab-cli" / "token.json"
+    token.parent.mkdir(parents = True)
+    token.write_text("{}")
+    out = subprocess.run(
+        [shutil.which("bash"), "-c", cl.PROBE_SCRIPT],
+        env = {
+            "PATH": str(bindir),
+            "HOME": str(tmp_path),
+            "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
+        },
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    ).stdout
+    assert "UNSLOTH_PROBE auth=oauth2" in out
+    assert "UNSLOTH_PROBE sessions_rc=0" in out, out
+
+
+def test_stop_during_the_ready_transition_still_stops_the_vm(monkeypatch):
+    # Stop lands from another thread right as the launch checks for a cancel on its way to
+    # ready. It must either be honored by the launch or stop the VM itself, never neither.
+    fake = FakeColab()
+    monkeypatch.setattr(cl, "run_shell", fake)
+    job = _job()
+    monkeypatch.setattr(cl, "_job", job)
+    stopper: list[threading.Thread] = []
+
+    class RacingEvent(threading.Event):
+        def is_set(self):
+            # Read first, then let the Stop through: the window between the check and ready.
+            seen = super().is_set()
+            if job.stage == "linking" and not stopper:
+                stopper.append(threading.Thread(target = cl.stop_session, args = (job.session,)))
+                stopper[0].start()
+                stopper[0].join(0.3)
+            return seen
+
+    job.cancel = RacingEvent()
+    cl._run_job(job)
+    stopper[0].join(10)
+    assert "stop" in fake.kinds() and cl.list_sessions() == []
