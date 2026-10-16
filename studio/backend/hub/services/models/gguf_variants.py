@@ -1434,6 +1434,7 @@ async def get_gguf_variants_answer(
 
             if context_root:
                 root = Path(context_root).expanduser()
+                source_root = root.parent if root.is_file() else root
                 rows_by_legacy_key: dict[str, list] = {}
                 for variant in variants:
                     if variant.quant and variant.filename and _downloaded(variant):
@@ -1444,7 +1445,7 @@ async def get_gguf_variants_answer(
                     if len(rows) < 2:
                         continue
                     for variant in rows:
-                        source = root if root.is_file() else root / variant.filename
+                        source = source_root / variant.filename
                         if source.is_file():
                             variant_context_sources[variant.quant.lower()] = str(source)
 

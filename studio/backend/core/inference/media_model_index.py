@@ -180,8 +180,7 @@ def _add_gguf_picks(
     one id cannot mean different weights here than in the picker.
     """
     from core.inference.openai_auto_download import preferred_quant
-    from hub.utils.gguf import default_gguf_scope
-    from utils.models.model_config import list_local_gguf_variants
+    from hub.utils.gguf import default_gguf_scope, list_local_gguf_variants
 
     if load_dir.is_file():
         if load_dir.suffix.lower() != ".gguf":

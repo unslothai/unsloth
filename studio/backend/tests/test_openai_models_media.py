@@ -262,6 +262,20 @@ def test_a_standalone_gguf_resident_is_matched_by_its_load_directory(monkeypatch
     assert "/srv/" not in json.dumps(data)
 
 
+def test_media_index_keeps_same_quant_custom_builds(tmp_path, monkeypatch):
+    names = ["alpha-Q4_K_M.gguf", "beta-Q4_K_M.gguf"]
+    for name in names:
+        (tmp_path / name).write_bytes(b"x")
+    info = _Info("local-image", "Local Image", path = str(tmp_path), task = "text-to-image")
+    monkeypatch.setattr(mmi, "_loader_can_open", lambda *_args: True)
+
+    picks = {}
+    assert mmi._add_gguf_picks(picks, info, (info.id,), tmp_path, tmp_path)
+
+    assert picks["local-image:q4_k_m"].gguf_filename == names[0]
+    assert picks["local-image:beta-q4_k_m"].gguf_filename == names[1]
+
+
 def test_edit_only_checkpoints_are_not_offered_for_text_to_image(monkeypatch):
     """The catalog tags an instruction-editing checkpoint text-to-image, but it ships no
     txt2img workflow: the switch refuses it with a 400 and a resident one is refused by
