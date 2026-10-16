@@ -60,3 +60,10 @@ test("both GGUF cards report their selected quant to the Memory stat", () => {
   const local = readSrc("features/hub/catalog/local-on-device-card.tsx");
   assert.match(local, /onSelectedBytesChange\?\.\(modelId, selectedBytes\)/);
 });
+
+test("the reported quant size is the fit size, so a zero download size still counts", () => {
+  for (const file of ["gguf-download-card.tsx", "local-on-device-card.tsx"]) {
+    const src = readSrc(`features/hub/catalog/${file}`);
+    assert.match(src, /\? ggufVariantFitSizeBytes\(selected(?:Variant)?\)/, file);
+  }
+});

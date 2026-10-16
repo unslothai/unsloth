@@ -33,7 +33,11 @@ import {
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { type GgufFitClass, classifyGgufVariantFit } from "@/lib/gguf-fit";
+import {
+  type GgufFitClass,
+  classifyGgufVariantFit,
+  ggufVariantFitSizeBytes,
+} from "@/lib/gguf-fit";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -80,7 +84,6 @@ import {
 } from "../lib/gguf-filename";
 import {
   ggufVariantDisplayLabel,
-  ggufVariantDownloadSizeBytes,
   ggufVariantTransferLabel,
   sortDownloadableGgufVariants,
 } from "../lib/gguf-variant-sort";
@@ -799,9 +802,7 @@ export function GgufDownloadCard({
   const selected =
     sortedVariants?.find((v) => ggufVariantsMatch(v.quant, selectedQuant)) ??
     null;
-  const selectedBytes = selected
-    ? ggufVariantDownloadSizeBytes(selected)
-    : null;
+  const selectedBytes = selected ? ggufVariantFitSizeBytes(selected) : null;
   useEffect(() => {
     onSelectedBytesChange?.(repoId, selectedBytes);
   }, [onSelectedBytesChange, repoId, selectedBytes]);

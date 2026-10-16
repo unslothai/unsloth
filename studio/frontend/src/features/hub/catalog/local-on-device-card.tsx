@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { ggufVariantFitSizeBytes } from "@/lib/gguf-fit";
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
@@ -52,7 +53,6 @@ import {
 } from "../lib/gguf-filename";
 import {
   ggufVariantDisplayLabel,
-  ggufVariantDownloadSizeBytes,
   resolveLocalGgufVariant,
   sortLocalGgufVariants,
 } from "../lib/gguf-variant-sort";
@@ -418,7 +418,7 @@ export function LocalOnDeviceCard({
   const selectedQuant = selectedVariant?.quant ?? null;
   const selectedBytes =
     needsVariantSelection && selectedVariant
-      ? ggufVariantDownloadSizeBytes(selectedVariant)
+      ? ggufVariantFitSizeBytes(selectedVariant)
       : null;
   useEffect(() => {
     onSelectedBytesChange?.(modelId, selectedBytes);
