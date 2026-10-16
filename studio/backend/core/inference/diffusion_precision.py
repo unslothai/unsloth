@@ -157,18 +157,26 @@ def effective_te_quant(mode: Optional[str], family: Optional[str]) -> Optional[s
     return normalized
 
 
-def hosted_int8_te_runs_on(mode: Optional[str], family: Optional[str], target: Any) -> bool:
-    """Whether an int8 request on ``family`` takes a hosted int8 ConvRot file that ``target`` runs as plain tensors
-    (Apple Silicon), where ``effective_te_quant``'s fp8 rewrite would make a preflight refuse a load the loader runs."""
-    try:
-        from .diffusion_te_prequant import int8_convrot_te_runs_on
-        return (
-            normalize_te_quant(mode) == TE_QUANT_INT8
-            and _family_hosts_te_int8(family)
-            and int8_convrot_te_runs_on(target)
-        )
-    except Exception:  # noqa: BLE001
-        return False
+def preflight_te_quant(
+    mode: Optional[str], fam: Any, base: Optional[str], target: Any, *, supplied: Any = ()
+) -> Optional[str]:
+    """The text-encoder mode a pre-load gate must check for an EXPLICIT request: None when an int8 request will
+    load the hosted int8 ConvRot file (plain tensors, no torchao, offload-safe, runs on MPS), else the mode the
+    runtime will attempt without it -- torchao int8 on a family with a keep-bf16 schedule and torchao present (with
+    its device and offload limits), fp8 otherwise -- so the gate refuses what the load would refuse."""
+    normalized = normalize_te_quant(mode)
+    family = getattr(fam, "name", None)
+    if normalized != TE_QUANT_INT8:
+        return effective_te_quant(normalized, family)
+    from .diffusion_te_prequant import explicit_int8_takes_hosted_file
+
+    if explicit_int8_takes_hosted_file(fam, base, target, supplied = supplied or ()):
+        return None
+    if _family_hosts_te_int8(family):
+        if _TE_INT8_SKIP.get((family or "").lower()) is not None and torchao_quantize_importable():
+            return TE_QUANT_INT8
+        return TE_QUANT_FP8
+    return effective_te_quant(normalized, family)
 
 
 def te_quant_needs_resident_weights(mode: Optional[str]) -> bool:
@@ -364,6 +372,7 @@ def _quantize_text_encoders(
         why = "is not available (not published yet, offline, or refused, see the server log)"
         if mode == TE_QUANT_INT8 and _family_hosts_te_int8(family):
             from .diffusion_text_encoder_trim import KEEP_LM_HEAD_ENV, family_trims_lm_head
+
             if not family_trims_lm_head(family):
                 why = f"carries no lm_head, which {KEEP_LM_HEAD_ENV} keeps"
         _note(logger, f"automatic {label} text encoder not used; keeping the dense bf16 encoder")

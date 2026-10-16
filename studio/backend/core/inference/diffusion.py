@@ -270,7 +270,7 @@ from .diffusion_step_skip import (
 from .diffusion_nvfp4_protect import protect_generation
 from .diffusion_precision import (
     effective_te_quant,
-    hosted_int8_te_runs_on,
+    preflight_te_quant,
     normalize_te_quant,
     quantize_text_encoders,
     resolve_te_quant_request,
@@ -2917,6 +2917,11 @@ class DiffusionBackend:
         # keep-bf16 schedule is rewritten to layerwise fp8 before support is consulted, and that path needs no
         # torchao. Refusing on the raw int8 rejected loads the runtime would run and report as fell_back.
         te_effective = effective_te_quant(te_mode, getattr(fam, "name", None))
+        if te_effective is not None and normalize_te_quant(te_mode) == "int8":
+            # int8 depends on whether the hosted int8 ConvRot file will really load for this base and device.
+            te_effective = preflight_te_quant(
+                te_mode, fam, base_repo, target, supplied = _active_supplied_text_encoders()
+            )
         te_reason = None
         if te_quant_needs_resident_weights(te_effective) and not torchao_quantize_importable():
             # The casters import torchao only after the pipeline is downloaded and built, so a broken or absent
@@ -2925,12 +2930,7 @@ class DiffusionBackend:
                 "torchao is not importable on this install, and these encoder modes are torchao "
                 "quantisations"
             )
-        elif (
-            te_effective is not None
-            and not hosted_int8_te_runs_on(te_mode, getattr(fam, "name", None), target)
-            and not te_quant_supported(target, te_effective)
-        ):
-            # On MPS an int8 request takes the hosted int8 ConvRot file (plain tensors), which runs where fp8 does not.
+        elif te_effective is not None and not te_quant_supported(target, te_effective):
             te_reason = te_quant_unsupported_reason(te_effective)
         elif te_quant_needs_resident_weights(te_effective) and _memory_request_forces_offload(
             memory_mode, cpu_offload

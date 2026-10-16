@@ -600,9 +600,7 @@ def test_dense_fallback_fills_the_staged_snapshot_in_its_own_cache_root(monkeypa
         return str(snap)
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_download)
-    assert tpq._fetch_dense_components(
-        str(snap), ["text_encoder"], hf_token = None, local_files_only = False
-    )
+    assert tpq._fetch_dense_components(str(snap), ["text_encoder"], hf_token = None, local_files_only = False)
     repo_id, kwargs = calls[0]
     assert repo_id == "Qwen/Qwen-Image"
     assert kwargs["cache_dir"] == str(tmp_path / "secondary")
@@ -618,12 +616,8 @@ def test_dense_fallback_into_another_snapshot_is_not_reported_as_filled(monkeypa
     snap = tmp_path / "models--Qwen--Qwen-Image" / "snapshots" / ("b" * 40)
     snap.mkdir(parents = True)
     monkeypatch.setattr(ml, "_hosted_component_cached", lambda *a, **k: False)
-    monkeypatch.setattr(
-        huggingface_hub, "snapshot_download", lambda *a, **k: str(tmp_path / "elsewhere")
-    )
-    assert not tpq._fetch_dense_components(
-        str(snap), ["text_encoder"], hf_token = None, local_files_only = False
-    )
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda *a, **k: str(tmp_path / "elsewhere"))
+    assert not tpq._fetch_dense_components(str(snap), ["text_encoder"], hf_token = None, local_files_only = False)
 
 
 @pytest.mark.parametrize("name", INT8_DEFAULTS)
@@ -634,21 +628,11 @@ def test_a_kept_lm_head_keeps_the_automatic_int8_default_dense(name, monkeypatch
     monkeypatch.setenv(KEEP_LM_HEAD_ENV, "1")
     fam = _fam(name)
     mode, _ = resolve_te_quant_request(None, fam.te_quant_auto)
-    assert (
-        tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = mode, target = CUDA_BF16)
-        == {}
-    )
+    assert tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = mode, target = CUDA_BF16) == {}
     with tpq.auto_te_request(True):
-        assert (
-            tpq.te_prequant_sources_for_base(
-                fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16
-            )
-            == {}
-        )
+        assert tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16) == {}
     # an explicit int8 still takes the fp8 file, which carries the head
-    explicit = tpq.te_prequant_sources_for_base(
-        fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16
-    )
+    explicit = tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16)
     assert all("FP8" in s.filename for s in explicit.values()) and explicit
     monkeypatch.setattr(prec, "te_quant_supported", lambda *a, **k: True)
     out = prec.quantize_text_encoders(
@@ -657,13 +641,12 @@ def test_a_kept_lm_head_keeps_the_automatic_int8_default_dense(name, monkeypatch
     assert out.mode is None and KEEP_LM_HEAD_ENV in out.reason
 
 
-MPS_TARGET = types.SimpleNamespace(
-    device = "mps", dtype = torch.bfloat16, backend = "mps", supports_model_cpu_offload = False
-)
+MPS_TARGET = types.SimpleNamespace(device = "mps", dtype = torch.bfloat16, backend = "mps", supports_model_cpu_offload = False)
 
 
 def _preflight(fam, te_mode):
     from core.inference.diffusion import DiffusionBackend
+
     DiffusionBackend()._assert_precision_for_target(
         fam,
         MPS_TARGET,
@@ -677,10 +660,150 @@ def _preflight(fam, te_mode):
 
 
 @pytest.mark.parametrize("name", ["qwen-image", "flux.2-dev", "krea-2", "z-image"])
-def test_mps_preflight_accepts_explicit_int8_on_a_family_hosting_the_int8_file(name):
+def test_mps_preflight_accepts_explicit_int8_on_a_family_hosting_the_int8_file(name, monkeypatch):
+    monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda sources: True)
     _preflight(_fam(name), "int8")
 
 
 def test_mps_preflight_still_refuses_explicit_fp8():
     with pytest.raises(RuntimeError):
         _preflight(_fam("qwen-image"), "fp8")
+
+
+# ---- review round 3: one answer to "will this explicit int8 load the hosted int8 ConvRot file here" --------------
+
+_DEVICES = {
+    "cuda": CUDA_BF16,
+    "mps": MPS_TARGET,
+    "cpu": types.SimpleNamespace(device = "cpu", dtype = torch.bfloat16, backend = "cpu", supports_model_cpu_offload = False),
+}
+_HOSTING = sorted(n for n in tpq.TE_INT8_CONVROT_FILES if any(f.name == n for f in _FAMILIES))
+
+
+def _table_env(monkeypatch, device, present, keep_head):
+    import core.inference.diffusion_precision as prec
+    from core.inference.diffusion_text_encoder_trim import KEEP_LM_HEAD_ENV
+
+    if keep_head:
+        monkeypatch.setenv(KEEP_LM_HEAD_ENV, "1")
+    else:
+        monkeypatch.delenv(KEEP_LM_HEAD_ENV, raising = False)
+    # fp8 runs on the CUDA card only; MPS and CPU do not
+    monkeypatch.setattr(prec, "te_quant_supported", lambda target, mode: getattr(target, "device", None) == "cuda")
+    monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda sources: present)
+    return _DEVICES[device]
+
+
+@pytest.mark.parametrize("keep_head", [False, True])
+@pytest.mark.parametrize("present", [True, False])
+@pytest.mark.parametrize("device", sorted(_DEVICES))
+@pytest.mark.parametrize("name", _HOSTING)
+def test_explicit_int8_takes_the_hosted_file_table(name, device, present, keep_head, monkeypatch):
+    target = _table_env(monkeypatch, device, present, keep_head)
+    fam = _fam(name)
+    got = tpq.explicit_int8_takes_hosted_file(fam, fam.base_repo, target)
+    assert got is (device in ("cuda", "mps") and present and not keep_head)
+    import core.inference.diffusion_precision as prec
+
+    checked = prec.preflight_te_quant("int8", fam, fam.base_repo, target)
+    if got:
+        assert checked is None
+    else:
+        assert checked in ("int8", "fp8")
+    # a supplied encoder for a hosted component replaces the file
+    comp = next(iter(tpq.TE_INT8_CONVROT_FILES[name]))
+    assert tpq.explicit_int8_takes_hosted_file(fam, fam.base_repo, target, supplied = (comp,)) is False
+
+
+def test_explicit_int8_on_a_custom_base_does_not_take_the_hosted_file(monkeypatch):
+    target = _table_env(monkeypatch, "mps", True, False)
+    assert tpq.explicit_int8_takes_hosted_file(_fam("qwen-image"), "someone/custom-qwen-image", target) is False
+
+
+@pytest.mark.parametrize("present", [True, False])
+def test_mps_preflight_refuses_explicit_int8_unless_the_file_will_load(present, monkeypatch):
+    target = _table_env(monkeypatch, "mps", present, False)
+    from core.inference.diffusion import DiffusionBackend
+
+    fam = _fam("krea-2")
+
+    def run():
+        DiffusionBackend()._assert_precision_for_target(
+            fam, target, model_kind = "pipeline", pinned = None, te_mode = "int8", memory_mode = None,
+            cpu_offload = False, base_repo = fam.base_repo,
+        )
+
+    if present:
+        run()
+    else:
+        with pytest.raises(RuntimeError):
+            run()
+
+
+def test_mps_preflight_refuses_explicit_int8_with_a_kept_lm_head(monkeypatch):
+    target = _table_env(monkeypatch, "mps", True, True)
+    with pytest.raises(RuntimeError):
+        _preflight(_fam("qwen-image"), "int8")
+
+
+@pytest.mark.parametrize("present", [True, False])
+def test_explicit_int8_under_offload_checks_torchao_when_the_file_will_not_load(present, monkeypatch):
+    import core.inference.diffusion as D
+    import core.inference.diffusion_precision as prec
+
+    target = _table_env(monkeypatch, "cuda", present, False)
+    monkeypatch.setattr(prec, "torchao_quantize_importable", lambda: True)
+    monkeypatch.setattr(D, "torchao_quantize_importable", lambda: True)
+    fam = _fam("qwen-image")
+    assert prec.preflight_te_quant("int8", fam, fam.base_repo, target) == (None if present else "int8")
+
+    def run():
+        D.DiffusionBackend()._assert_precision_for_target(
+            fam, target, model_kind = "pipeline", pinned = None, te_mode = "int8", memory_mode = "balanced",
+            cpu_offload = True, base_repo = fam.base_repo,
+        )
+
+    if present:
+        run()
+    else:
+        with pytest.raises(RuntimeError, match = "offload"):
+            run()
+
+
+def test_hidream_loads_the_hosted_int8_te4_on_mps(monkeypatch):
+    import core.inference.diffusion_hidream as dh
+    import core.inference.diffusion_precision as prec
+    import transformers
+
+    monkeypatch.delenv("UNSLOTH_TE_KEEP_LM_HEAD", raising = False)
+    monkeypatch.setattr(prec, "te_quant_supported", lambda target, mode: False)
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", staticmethod(lambda *a, **k: "tok4"))
+    monkeypatch.setattr(
+        transformers.LlamaForCausalLM, "from_pretrained", staticmethod(lambda *a, **k: pytest.fail("dense TE4"))
+    )
+    loaded = []
+    sentinel = object()
+
+    def fake_load(base, component, source, **kwargs):
+        loaded.append((source.filename, kwargs.get("scheme")))
+        return sentinel
+
+    monkeypatch.setattr(tpq, "load_prequant_text_encoder", fake_load)
+    out = dh.hidream_te4_kwargs(None, None, fam = _fam("hidream-i1"), te_quant_mode = "int8", target = MPS_TARGET)
+    assert out["text_encoder_4"] is sentinel
+    assert loaded == [("HiDream-I1-Full-text_encoder_4-INT8-ConvRot.safetensors", "int8")]
+
+
+def test_hidream_int8_on_mps_without_the_file_loads_dense_and_does_not_cast_fp8(monkeypatch):
+    import core.inference.diffusion_hidream as dh
+    import core.inference.diffusion_precision as prec
+    import transformers
+
+    monkeypatch.setattr(prec, "te_quant_supported", lambda target, mode: False)
+    monkeypatch.setattr(prec, "_cast_fp8", lambda *a, **k: pytest.fail("fp8 cast on MPS"))
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", staticmethod(lambda *a, **k: "tok4"))
+    dense = torch.nn.Linear(2, 2)
+    monkeypatch.setattr(transformers.LlamaForCausalLM, "from_pretrained", staticmethod(lambda *a, **k: dense))
+    monkeypatch.setattr(tpq, "load_prequant_text_encoder", lambda *a, **k: None)
+    out = dh.hidream_te4_kwargs(None, None, fam = _fam("hidream-i1"), te_quant_mode = "int8", target = MPS_TARGET)
+    assert out["text_encoder_4"] is dense

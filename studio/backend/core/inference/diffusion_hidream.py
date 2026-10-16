@@ -68,6 +68,7 @@ def hidream_te4_kwargs(
     )
 
     fp8_engages = False
+    hosted_int8 = False
     if target is not None:
         try:
             from . import diffusion_precision as precision
@@ -76,19 +77,21 @@ def hidream_te4_kwargs(
                 normalize_te_quant,
                 te_quant_supported,
             )
+            from .diffusion_te_prequant import int8_convrot_te_runs_on
 
             mode = normalize_te_quant(te_quant_mode)
             denied = getattr(precision, "_te_family_denied", None)
-            # int8 takes the hosted int8 ConvRot file (its fp8 file behind it); neither runs without fp8 support here.
+            allowed = not (callable(denied) and denied(getattr(fam, "name", None), mode))
+            # fp8 (the hosted fp8 file, else a dense load and cast) needs fp8 support; int8 takes the hosted int8
+            # ConvRot file, which Apple Silicon runs as plain tensors where fp8 does not.
             fp8_engages = (
-                mode in (TE_QUANT_FP8, "int8")
-                and te_quant_supported(target, TE_QUANT_FP8)
-                and not (callable(denied) and denied(getattr(fam, "name", None), mode))
+                mode in (TE_QUANT_FP8, "int8") and te_quant_supported(target, TE_QUANT_FP8) and allowed
             )
+            hosted_int8 = mode == "int8" and allowed and int8_convrot_te_runs_on(target)
         except Exception:  # noqa: BLE001 -- quant probe failure keeps the dense bf16 path
-            fp8_engages = False
+            fp8_engages = hosted_int8 = False
 
-    if fp8_engages and fam is not None:
+    if (fp8_engages or hosted_int8) and fam is not None:
         from .diffusion_te_prequant import (
             load_prequant_text_encoder,
             te_prequant_sources_for_base,
