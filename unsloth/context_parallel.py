@@ -396,8 +396,7 @@ class ContextParallelManager:
         finally:
             _cp_options.rotate_method = previous
 
-    @contextlib.contextmanager
-    def _ulysses_scope(self, inputs: dict) -> Iterator[None]:
+    def _ulysses_shard(self, inputs: dict) -> None:
         # Contiguous shards; packed_seq_lengths stays global.
         rank = self.mesh.get_local_rank()
         for name in _BUFFER_NAMES:
@@ -405,6 +404,10 @@ class ContextParallelManager:
             if isinstance(tensor, torch.Tensor) and tensor.ndim > 1:
                 local = tensor.shape[1] // self.size
                 inputs[name] = tensor[:, rank * local : (rank + 1) * local].contiguous()
+
+    @contextlib.contextmanager
+    def _ulysses_scope(self, inputs: dict) -> Iterator[None]:
+        self._ulysses_shard(inputs)
         global _ACTIVE_MANAGER
         previous, _ACTIVE_MANAGER = _ACTIVE_MANAGER, self
         # Some decoders (transformers 5.3 / 5.5) do not forward packed_seq_lengths to linear_attn.
@@ -592,6 +595,133 @@ def _restore_parallelism_config(state) -> None:
         _INSTALLED_PARALLELISM_CONFIG.clear()
 
 
+def _install_accelerator_state(self):
+    manager = getattr(self, "_context_parallel_manager", None)
+    accelerator = getattr(self, "accelerator", None)
+    state = getattr(accelerator, "state", None)
+    if manager is None:
+        if _INSTALLED_MESH and getattr(state, "device_mesh", None) is _INSTALLED_MESH[0]:
+            # The mesh an accepted FSDP2 ParallelismConfig indexes, restored with that config.
+            state.device_mesh = _INSTALLED_MESH[1] if len(_INSTALLED_MESH) > 1 else None
+            _INSTALLED_MESH.clear()
+        _restore_parallelism_config(state)
+        return
+    if accelerator is None:
+        return
+    current = getattr(accelerator.state, "device_mesh", None)
+    if _INSTALLED_MESH and current is _INSTALLED_MESH[0]:
+        current = _INSTALLED_MESH[1] if len(_INSTALLED_MESH) > 1 else None
+    accelerator.state.device_mesh = manager.device_mesh
+    _INSTALLED_MESH[:] = [manager.device_mesh, current]
+    if getattr(manager, "fsdp2", False):
+        _install_fsdp2_parallelism_config(accelerator.state, manager)
+    else:
+        _restore_parallelism_config(accelerator.state)
+    # PEFT makes the Trainer ask DDP for find_unused_parameters, which breaks reentrant checkpointing.
+    if getattr(self.args, "ddp_find_unused_parameters", None) in (None, False):
+        self.args.ddp_find_unused_parameters = False
+        handler = getattr(accelerator, "ddp_handler", None)
+        if handler is not None:
+            handler.find_unused_parameters = False
+
+
+def _check_cp_runtime(self, size: int, backend: str) -> None:
+    # train() would swap in a fresh model without the attention hooks or the support check.
+    if getattr(self, "model_init", None) is not None:
+        raise NotImplementedError("Unsloth: context parallelism does not support model_init.")
+    if not _torch_supports_context_parallel():
+        raise RuntimeError(
+            f"Unsloth: context_parallel_size > 1 needs PyTorch >= 2.7, found {torch.__version__}."
+        )
+    if not (dist.is_available() and dist.is_initialized()):
+        raise RuntimeError(
+            "Unsloth: context_parallel_size > 1 needs torch.distributed. "
+            f"Launch with torchrun or accelerate launch using a multiple of {size} processes."
+        )
+    world_size = dist.get_world_size()
+    if world_size % size != 0:
+        raise RuntimeError(
+            f"Unsloth: world size {world_size} is not a multiple of context_parallel_size {size}."
+        )
+    if (
+        backend == "ring"
+        and torch.cuda.is_available()
+        and torch.cuda.get_device_capability()[0] < 8
+    ):
+        # Pure torch ring attention fails in backward without flash (2x T4, torch 2.10).
+        raise NotImplementedError(
+            "Unsloth: context parallelism needs flash attention (compute capability >= 8.0)."
+        )
+
+
+def _check_cp_model(model, size: int, backend: str, allow_hybrids: bool = True) -> None:
+    model_config = getattr(model, "config", None)
+    unsupported = _unsupported_attention(model_config, backend)
+    if unsupported is not None:
+        raise NotImplementedError(
+            f"Unsloth: {backend} context parallelism does not support {unsupported}."
+        )
+    if backend == "ulysses":
+        # Every rank raises here, before any collective.
+        text_config = getattr(model_config, "text_config", None) or model_config
+        ulysses_head_plan(
+            text_config.num_attention_heads,
+            getattr(text_config, "num_key_value_heads", None)
+            or text_config.num_attention_heads,
+            size,
+        )
+    if _stateful_mixers(model) and not allow_hybrids:
+        raise NotImplementedError(
+            "Unsloth: DPO / GRPO context parallelism does not support Gated DeltaNet hybrids yet."
+        )
+    _check_stateful_mixers(model, backend, size)
+    blocker = _hybrid_config_blocker(model) if _stateful_mixers(model) else None
+    if blocker is not None:
+        raise NotImplementedError(
+            f"Unsloth: context parallelism on Gated DeltaNet hybrids does not support {blocker}."
+        )
+    if not _supports_context_parallel(model, backend):
+        raise NotImplementedError(
+            "Unsloth: context parallelism currently supports Llama-style attention "
+            "(Llama, Qwen2, Gemma), and Qwen3-Next / Qwen3.5 Gated DeltaNet hybrids with Ulysses."
+        )
+
+
+def _check_cp_trainer(self, size: int, backend: str, models, allow_fsdp2: bool = False) -> bool:
+    """Shared trainer checks; returns whether the trainer runs under FSDP2."""
+    import accelerate
+    from packaging.version import Version
+
+    if Version(accelerate.__version__) < Version("1.10.0"):
+        raise NotImplementedError("Unsloth: context parallelism needs accelerate >= 1.10.0.")
+    for model in models:
+        if model is not None:
+            # SFT shards the inputs of the whole model; the RL hooks only shard Llama-style decoders.
+            _check_cp_model(model, size, backend, allow_hybrids = allow_fsdp2)
+    accelerator = getattr(self, "accelerator", None)
+    distributed_type = getattr(getattr(accelerator, "distributed_type", None), "name", "NO")
+    fsdp2 = allow_fsdp2 and _is_fsdp2(accelerator, distributed_type)
+    if distributed_type != "NO" and not distributed_type.startswith("MULTI_") and not fsdp2:
+        if allow_fsdp2:
+            raise NotImplementedError(
+                f"Unsloth: context parallelism supports DDP and FSDP2 only, not {distributed_type}"
+                + (" version 1." if distributed_type == "FSDP" else ".")
+            )
+        raise NotImplementedError(
+            f"Unsloth: DPO / GRPO context parallelism supports DDP only, not {distributed_type}."
+        )
+    if fsdp2:
+        _check_fsdp2_parallelism_config(accelerator)
+    if getattr(accelerator, "dispatch_batches", None):
+        raise NotImplementedError(
+            "Unsloth: context parallelism does not support dispatch_batches."
+        )
+    _refuse_iterable_datasets(
+        getattr(self, "train_dataset", None), getattr(self, "eval_dataset", None)
+    )
+    return fsdp2
+
+
 def patch_sft_trainer(install_cp_methods: bool = False) -> None:
     # Only __init__ is wrapped up front; the other wrappers go on the class once a trainer enables
     # CP. With CP off they still slowed torch 2.10 LoRA steps by ~35% (gemma-4-E2B, L4 / A100).
@@ -623,35 +753,6 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
     has_total_train_batch_size = hasattr(trainer_cls, "get_total_train_batch_size")
     if has_total_train_batch_size:
         original_get_total_train_batch_size = _original("get_total_train_batch_size")
-
-    def _install_accelerator_state(self):
-        manager = getattr(self, "_context_parallel_manager", None)
-        accelerator = getattr(self, "accelerator", None)
-        state = getattr(accelerator, "state", None)
-        if manager is None:
-            if _INSTALLED_MESH and getattr(state, "device_mesh", None) is _INSTALLED_MESH[0]:
-                # The mesh an accepted FSDP2 ParallelismConfig indexes, restored with that config.
-                state.device_mesh = _INSTALLED_MESH[1] if len(_INSTALLED_MESH) > 1 else None
-                _INSTALLED_MESH.clear()
-            _restore_parallelism_config(state)
-            return
-        if accelerator is None:
-            return
-        current = getattr(accelerator.state, "device_mesh", None)
-        if _INSTALLED_MESH and current is _INSTALLED_MESH[0]:
-            current = _INSTALLED_MESH[1] if len(_INSTALLED_MESH) > 1 else None
-        accelerator.state.device_mesh = manager.device_mesh
-        _INSTALLED_MESH[:] = [manager.device_mesh, current]
-        if getattr(manager, "fsdp2", False):
-            _install_fsdp2_parallelism_config(accelerator.state, manager)
-        else:
-            _restore_parallelism_config(accelerator.state)
-        # PEFT makes the Trainer ask DDP for find_unused_parameters, which breaks reentrant checkpointing.
-        if getattr(self.args, "ddp_find_unused_parameters", None) in (None, False):
-            self.args.ddp_find_unused_parameters = False
-            handler = getattr(accelerator, "ddp_handler", None)
-            if handler is not None:
-                handler.find_unused_parameters = False
 
     @functools.wraps(original_init)
     def patched_init(self, *args, **kwargs):
@@ -686,32 +787,7 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
                 pre_cp_trainers[:] = [ref for ref in pre_cp_trainers if ref() is not None]
                 pre_cp_trainers.append(weakref.ref(self))
             return
-        # train() would swap in a fresh model without the attention hooks or the support check.
-        if getattr(self, "model_init", None) is not None:
-            raise NotImplementedError("Unsloth: context parallelism does not support model_init.")
-        if not _torch_supports_context_parallel():
-            raise RuntimeError(
-                f"Unsloth: context_parallel_size > 1 needs PyTorch >= 2.7, found {torch.__version__}."
-            )
-        if not (dist.is_available() and dist.is_initialized()):
-            raise RuntimeError(
-                "Unsloth: context_parallel_size > 1 needs torch.distributed. "
-                f"Launch with torchrun or accelerate launch using a multiple of {size} processes."
-            )
-        world_size = dist.get_world_size()
-        if world_size % size != 0:
-            raise RuntimeError(
-                f"Unsloth: world size {world_size} is not a multiple of context_parallel_size {size}."
-            )
-        if (
-            backend == "ring"
-            and torch.cuda.is_available()
-            and torch.cuda.get_device_capability()[0] < 8
-        ):
-            # Pure torch ring attention fails in backward without flash (2x T4, torch 2.10).
-            raise NotImplementedError(
-                "Unsloth: context parallelism needs flash attention (compute capability >= 8.0)."
-            )
+        _check_cp_runtime(self, size, backend)
         # These recompute loss outside our forward from sharded labels, losing cross-shard targets.
         if (
             getattr(self.args, "label_smoothing_factor", 0)
@@ -735,53 +811,8 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
             raise NotImplementedError(
                 "Unsloth: context parallelism needs average_tokens_across_devices = True."
             )
-        import accelerate
-        from packaging.version import Version
-
-        if Version(accelerate.__version__) < Version("1.10.0"):
-            raise NotImplementedError("Unsloth: context parallelism needs accelerate >= 1.10.0.")
-        model_config = getattr(self.model, "config", None)
-        unsupported = _unsupported_attention(model_config, backend)
-        if unsupported is not None:
-            raise NotImplementedError(
-                f"Unsloth: {backend} context parallelism does not support {unsupported}."
-            )
-        if backend == "ulysses":
-            # Every rank raises here, before any collective.
-            text_config = getattr(model_config, "text_config", None) or model_config
-            ulysses_head_plan(
-                text_config.num_attention_heads,
-                getattr(text_config, "num_key_value_heads", None)
-                or text_config.num_attention_heads,
-                size,
-            )
-        _check_stateful_mixers(self.model, backend, size)
-        blocker = _hybrid_config_blocker(self.model) if _stateful_mixers(self.model) else None
-        if blocker is not None:
-            raise NotImplementedError(
-                f"Unsloth: context parallelism on Gated DeltaNet hybrids does not support {blocker}."
-            )
-        if not _supports_context_parallel(self.model, backend):
-            raise NotImplementedError(
-                "Unsloth: context parallelism currently supports Llama-style attention "
-                "(Llama, Qwen2, Gemma), and Qwen3-Next / Qwen3.5 Gated DeltaNet hybrids with Ulysses."
-            )
-        accelerator = getattr(self, "accelerator", None)
-        distributed_type = getattr(getattr(accelerator, "distributed_type", None), "name", "NO")
-        fsdp2 = _is_fsdp2(accelerator, distributed_type)
-        if distributed_type != "NO" and not distributed_type.startswith("MULTI_") and not fsdp2:
-            raise NotImplementedError(
-                f"Unsloth: context parallelism supports DDP and FSDP2 only, not {distributed_type}"
-                + (" version 1." if distributed_type == "FSDP" else ".")
-            )
-        if fsdp2:
-            _check_fsdp2_parallelism_config(accelerator)
-        if getattr(accelerator, "dispatch_batches", None):
-            raise NotImplementedError(
-                "Unsloth: context parallelism does not support dispatch_batches."
-            )
-        _refuse_iterable_datasets(
-            getattr(self, "train_dataset", None), getattr(self, "eval_dataset", None)
+        fsdp2 = _check_cp_trainer(
+            self, size, backend, [getattr(self, "model", None)], allow_fsdp2 = True
         )
         manager = ContextParallelManager(size, backend, rotate_method, fsdp2 = fsdp2)
         self._context_parallel_manager = manager
@@ -796,7 +827,7 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
             f"Unsloth: Context parallelism enabled with size = {size} ({backend}"
             + (f", rotate_method = {rotate_method})" if backend == "ring" else ")")
             + (
-                f", FSDP2 sharding over dp_shard = {world_size // size} x cp = {size}."
+                f", FSDP2 sharding over dp_shard = {dist.get_world_size() // size} x cp = {size}."
                 if fsdp2
                 else "."
             )
@@ -956,3 +987,386 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
     trainer_cls.__unsloth_context_parallel__ = True
     if install_cp_methods:
         install_methods()
+
+
+
+# DPO / GRPO: the loss reads per-token logps of whole sequences (sums over completions, group masks),
+# so only the decoder is sharded; its last hidden states are gathered back to full length before lm_head.
+class _GatherSequence(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, group, rank, size):
+        ctx.group, ctx.rank, ctx.local = group, rank, x.shape[1]
+        x = x.contiguous()
+        parts = [torch.empty_like(x) for _ in range(size)]
+        dist.all_gather(parts, x, group = group)
+        return torch.cat(parts, dim = 1)
+
+    @staticmethod
+    def backward(ctx, grad):
+        # Every peer computes the same loss on the gathered sequence: summing their gradients makes each
+        # shard's parameter grads N x its share, and DDP's average over the group then yields one copy.
+        grad = grad.clone(memory_format = torch.contiguous_format)
+        dist.all_reduce(grad, group = ctx.group)
+        return grad.narrow(1, ctx.rank * ctx.local, ctx.local), None, None, None
+
+
+def gather_sequence(x, manager):
+    return _GatherSequence.apply(x, manager.group, manager.mesh.get_local_rank(), manager.size)
+
+
+def _rl_decoder_pre_hook(module, args, kwargs):
+    manager = get_cp_manager()
+    stack = module._unsloth_cp_rl_stack
+    if manager is None or manager is not module._unsloth_cp_rl_manager:
+        stack.append(None)
+        return None
+    if args or kwargs.get("past_key_values") is not None or kwargs.get("input_ids") is None:
+        raise NotImplementedError(
+            "Unsloth: DPO / GRPO context parallelism shards keyword input_ids training forwards "
+            "only (no positional inputs, inputs_embeds or KV cache)."
+        )
+    for key in ("prefix_seg_info", "output_attentions"):
+        if kwargs.get(key):
+            raise NotImplementedError(f"Unsloth: context parallelism does not support {key}.")
+    batch = {
+        name: kwargs.get(name)
+        for name in ("input_ids", "attention_mask", "position_ids", "packed_seq_lengths")
+    }
+    seq_len = batch["input_ids"].shape[1]
+    manager._prepare_inputs(batch)
+    manager._ulysses_shard(batch)
+    for name in ("input_ids", "attention_mask", "position_ids"):
+        if batch.get(name) is not None:
+            kwargs[name] = batch[name]
+    stack.append(seq_len)
+    return args, kwargs
+
+
+def _rl_decoder_post_hook(module, args, kwargs, output):
+    seq_len = module._unsloth_cp_rl_stack.pop() if module._unsloth_cp_rl_stack else None
+    if seq_len is None:
+        return None
+    manager = module._unsloth_cp_rl_manager
+    last = output[0]
+    hidden = gather_sequence(last, manager)[:, :seq_len]
+    layers = output.get("hidden_states") if not isinstance(output, tuple) else None
+    if isinstance(output, tuple):
+        if kwargs.get("output_hidden_states"):
+            raise NotImplementedError(
+                "Unsloth: context parallelism needs return_dict = True with output_hidden_states."
+            )
+        return (hidden, *output[1:])
+    output[next(iter(output.keys()))] = hidden
+    if layers is not None:
+        # GRPO's hidden-state forward asks for these and reads the last one (the same tensor as above).
+        output["hidden_states"] = tuple(
+            hidden if layer is last else gather_sequence(layer, manager)[:, :seq_len]
+            for layer in layers
+        )
+    return output
+
+
+def _decoders(model):
+    # The text decoder of each CausalLM (its embed_tokens + layers), under any PEFT / DDP wrapping.
+    found = []
+    for name, module in model.named_modules():
+        if hasattr(module, "embed_tokens") and hasattr(module, "layers"):
+            if not any(name.startswith(prefix + ".") for prefix, _ in found):
+                found.append((name, module))
+    return [module for _, module in found]
+
+
+def attach_rl_hooks(manager, model) -> None:
+    decoders = _decoders(model)
+    if not decoders:
+        raise NotImplementedError("Unsloth: context parallelism could not find the text decoder.")
+    for decoder in decoders:
+        decoder._unsloth_cp_rl_manager = manager
+        decoder._unsloth_cp_rl_stack = []
+        if not getattr(decoder, "_unsloth_cp_rl_hooked", False):
+            decoder.register_forward_pre_hook(_rl_decoder_pre_hook, with_kwargs = True)
+            decoder.register_forward_hook(_rl_decoder_post_hook, with_kwargs = True)
+            decoder._unsloth_cp_rl_hooked = True
+    manager.attach_attention_hooks(model)
+
+
+def _activate(manager) -> None:
+    global _ACTIVE_MANAGER
+    _ACTIVE_MANAGER = manager
+
+
+@contextlib.contextmanager
+def _manager_scope(manager) -> Iterator[None]:
+    previous = get_cp_manager()
+    _activate(manager)
+    try:
+        yield
+    finally:
+        _activate(previous)
+
+
+def _map_leaves(obj, fn, leaf = torch.Tensor):
+    if isinstance(obj, leaf):
+        return fn(obj)
+    if isinstance(obj, (list, tuple)):
+        mapped = [_map_leaves(x, fn, leaf) for x in obj]
+        return type(obj)(*mapped) if hasattr(obj, "_fields") else type(obj)(mapped)
+    if isinstance(obj, dict):
+        return type(obj)((k, _map_leaves(v, fn, leaf)) for k, v in obj.items())
+    return obj
+
+
+class _OnDevice:
+    def __init__(self, tensor):
+        self.tensor, self.on_accelerator = tensor.cpu(), tensor.device.type != "cpu"
+
+
+def _broadcast_from_group_root(obj, manager, device):
+    """CP rank 0 sends its object (tensors through CPU) so every peer scores the same samples."""
+    payload = [_map_leaves(obj, _OnDevice)]
+    group = manager.group
+    dist.broadcast_object_list(payload, src = dist.get_global_rank(group, 0), group = group)
+    return _map_leaves(
+        payload[0],
+        lambda x: x.tensor.to(device) if x.on_accelerator else x.tensor,
+        leaf = _OnDevice,
+    )
+
+
+def _check_same_prompts(prompts, manager) -> None:
+    import hashlib
+    import pickle
+
+    digest = hashlib.sha256(pickle.dumps(prompts)).hexdigest()
+    digests = [None] * manager.size
+    dist.all_gather_object(digests, digest, group = manager.group)
+    if len(set(digests)) != 1:
+        raise RuntimeError(
+            "Unsloth: context parallel peers received different prompts; the dataloader must shard "
+            "by data parallel rank only."
+        )
+
+
+def _check_rl_config(self, kind: str) -> None:
+    args = self.args
+    if kind == "dpo_trainer":
+        for name in ("padding_free", "precompute_ref_log_probs", "generate_during_eval"):
+            if getattr(args, name, False):
+                raise NotImplementedError(
+                    f"Unsloth: DPO context parallelism does not support {name} = True."
+                )
+        return
+    if getattr(self, "use_vllm", False) or getattr(args, "use_vllm", False):
+        raise NotImplementedError(
+            "Unsloth: GRPO context parallelism does not support vLLM generation "
+            "(fast_inference / use_vllm); generate with model.generate instead."
+        )
+    if getattr(args, "scale_rewards", None) == "batch" or (
+        getattr(args, "multi_objective_aggregation", None) == "normalize_then_sum"
+    ):
+        # Batch-wide reward std over TRL's gather would count each peer's copy (Bessel bias).
+        raise NotImplementedError(
+            "Unsloth: GRPO context parallelism needs per-group reward scaling "
+            "(scale_rewards = 'group' or 'none', multi_objective_aggregation = 'sum_then_normalize')."
+        )
+    if not hasattr(self, "_generate"):
+        raise NotImplementedError("Unsloth: GRPO context parallelism needs TRL >= 0.24.")
+    num_generations = getattr(args, "num_generations", None) or 1
+    steps = getattr(args, "steps_per_generation", None) or args.gradient_accumulation_steps
+    local = args.per_device_train_batch_size * steps
+    eval_local = args.per_device_eval_batch_size
+    if local % num_generations or (
+        getattr(self, "eval_dataset", None) is not None
+        and eval_local % (getattr(args, "num_generations_eval", None) or num_generations)
+    ):
+        # Peers duplicate their rank's slice in TRL's global reward gather; a group split across
+        # ranks would mix copies into its mean and std.
+        raise NotImplementedError(
+            "Unsloth: GRPO context parallelism needs per_device_train_batch_size x "
+            "steps_per_generation (and per_device_eval_batch_size) to be multiples of num_generations."
+        )
+
+
+def patch_rl_trainer(trainer_cls, kind: str) -> None:
+    """Context parallelism for DPOTrainer / GRPOTrainer training forwards (Ulysses backend)."""
+    if trainer_cls.__dict__.get("__unsloth_context_parallel__"):
+        return
+    original_init = trainer_cls.__init__
+
+    def _original(name):
+        if name in trainer_cls.__dict__:
+            return trainer_cls.__dict__[name]
+        if getattr(trainer_cls, name, None) is None:
+            return None
+
+        @functools.wraps(getattr(trainer_cls, name))
+        def inherited(self, *args, **kwargs):
+            return getattr(super(trainer_cls, self), name)(*args, **kwargs)
+
+        return inherited
+
+    originals = {
+        name: _original(name)
+        for name in (
+            "training_step",
+            "prediction_step",
+            "train",
+            "evaluate",
+            "evaluation_loop",
+            "compute_loss",
+            "_generate",
+            "_prepare_inputs",
+            "_get_per_token_logps",
+            "_get_per_token_logps_and_entropies",
+            "_get_train_sampler",
+        )
+    }
+    # GRPO generates (and scores rewards) inside training_step, so it switches CP on only for the
+    # logprob forwards and from compute_loss until backward ends; DPO has no unsharded forward.
+    activate_at_step = kind != "grpo_trainer"
+
+    @functools.wraps(original_init)
+    def patched_init(self, *args, **kwargs):
+        config = kwargs.get("args")
+        if config is None:
+            config = next((x for x in args if hasattr(x, "context_parallel_size")), None)
+        try:
+            requested = context_parallel_options(config)[0]
+        except ValueError:
+            requested = 1  # Raised again after the original __init__.
+        if requested > 1:
+            # Before the original __init__, so instance wrappers made there capture the CP methods.
+            install_methods()
+        original_init(self, *args, **kwargs)
+        self._context_parallel_manager = None
+        size, backend, _ = context_parallel_options(getattr(self, "args", None))
+        if size <= 1:
+            _install_accelerator_state(self)
+            return
+        if backend != "ulysses":
+            raise NotImplementedError(
+                "Unsloth: DPO / GRPO context parallelism needs context_parallel_backend = 'ulysses'."
+            )
+        _check_cp_runtime(self, size, backend)
+        _check_rl_config(self, kind)
+        ref_model = getattr(self, "ref_model", None)
+        _check_cp_trainer(self, size, backend, [self.model, ref_model])
+        manager = ContextParallelManager(size, backend)
+        self._context_parallel_manager = manager
+        attach_rl_hooks(manager, self.model)
+        if kind == "grpo_trainer":
+            # GRPO's packed and shared-prefix forwards pick their path per step from self-checks;
+            # under CP every peer must run the same forwards, so keep the padded path.
+            unwrap = getattr(getattr(self, "accelerator", None), "unwrap_model", None)
+            for module in (self.model, unwrap(self.model) if unwrap else self.model):
+                module._unsloth_seq_packing_grad_ok = False
+                module._unsloth_seq_packing_nograd_ok = False
+                module._unsloth_prefix_grouper_nograd_disabled = True
+        if isinstance(ref_model, torch.nn.Module):
+            attach_rl_hooks(manager, ref_model)
+        _install_accelerator_state(self)
+        print(f"Unsloth: Context parallelism enabled with size = {size} (ulysses, {kind}).")
+
+    def _step_wrapper(name):
+        original = originals[name]
+
+        @functools.wraps(original)
+        def wrapped(self, *args, **kwargs):
+            manager = getattr(self, "_context_parallel_manager", None)
+            if manager is None:
+                return original(self, *args, **kwargs)
+            for decoder in _decoders(self.model):
+                decoder._unsloth_cp_rl_stack.clear()
+            # Backward, and checkpoint recompute in it, run Ulysses attention too, so the scope spans them.
+            with _manager_scope(manager if activate_at_step else None):
+                return original(self, *args, **kwargs)
+
+        return wrapped
+
+    def _scoped(name, sticky = False):
+        original = originals[name]
+
+        @functools.wraps(original)
+        def wrapped(self, *args, **kwargs):
+            manager = getattr(self, "_context_parallel_manager", None)
+            if manager is None:
+                return original(self, *args, **kwargs)
+            if sticky:
+                # Left on: training_step's scope restores it after backward.
+                _activate(manager)
+                return original(self, *args, **kwargs)
+            with _manager_scope(manager):
+                return original(self, *args, **kwargs)
+
+        return wrapped
+
+    def patched_generate(self, prompts, *args, **kwargs):
+        manager = getattr(self, "_context_parallel_manager", None)
+        if manager is None:
+            return originals["_generate"](self, prompts, *args, **kwargs)
+        _check_same_prompts(prompts, manager)
+        with _manager_scope(None):
+            result = originals["_generate"](self, prompts, *args, **kwargs)
+        return _broadcast_from_group_root(result, manager, self.accelerator.device)
+
+    @functools.wraps(originals["_prepare_inputs"])
+    def patched_prepare_inputs(self, *args, **kwargs):
+        inputs = originals["_prepare_inputs"](self, *args, **kwargs)
+        manager = getattr(self, "_context_parallel_manager", None)
+        if manager is None:
+            return inputs
+        # TRL shuffles the scored batch with the process RNG; peers must hold the same rows in the same order.
+        return _broadcast_from_group_root(inputs, manager, self.accelerator.device)
+
+    @functools.wraps(originals["_get_train_sampler"])
+    def patched_train_sampler(self, *args, **kwargs):
+        sampler = originals["_get_train_sampler"](self, *args, **kwargs)
+        manager = getattr(self, "_context_parallel_manager", None)
+        # TRL sizes a generation batch for every process; CP peers share one data parallel slice.
+        if manager is not None and hasattr(sampler, "mini_repeat_count"):
+            sampler.batch_size = sampler.batch_size // manager.size
+        return sampler
+
+    @functools.wraps(originals["train"])
+    def patched_train(self, *args, **kwargs):
+        if getattr(self, "_context_parallel_manager", None) is not None:
+            _refuse_iterable_datasets(getattr(self, "train_dataset", None))
+        _install_accelerator_state(self)
+        return originals["train"](self, *args, **kwargs)
+
+    @functools.wraps(originals["evaluate"])
+    def patched_evaluate(self, *args, **kwargs):
+        _install_accelerator_state(self)
+        return originals["evaluate"](self, *args, **kwargs)
+
+    @functools.wraps(originals["evaluation_loop"])
+    def patched_evaluation_loop(self, *args, **kwargs):
+        manager = getattr(self, "_context_parallel_manager", None)
+        if manager is not None:
+            self.gather_function = _cp_gather_for_metrics(self.accelerator, manager.size)
+        return originals["evaluation_loop"](self, *args, **kwargs)
+
+    def install_methods():
+        # Only __init__ is wrapped up front (as for SFT): the wrappers below go on the class once a
+        # trainer enables CP, so trainers without CP keep their original methods.
+        if trainer_cls.__dict__.get("__unsloth_context_parallel_methods__"):
+            return
+        trainer_cls.training_step = _step_wrapper("training_step")
+        trainer_cls.prediction_step = _step_wrapper("prediction_step")
+        trainer_cls.train = patched_train
+        trainer_cls.evaluate = patched_evaluate
+        trainer_cls.evaluation_loop = patched_evaluation_loop
+        if kind == "grpo_trainer":
+            trainer_cls.compute_loss = _scoped("compute_loss", sticky = True)
+            for name in ("_get_per_token_logps", "_get_per_token_logps_and_entropies"):
+                if originals[name] is not None:
+                    setattr(trainer_cls, name, _scoped(name))
+            if originals["_generate"] is not None:
+                trainer_cls._generate = functools.wraps(originals["_generate"])(patched_generate)
+            trainer_cls._prepare_inputs = patched_prepare_inputs
+            if originals["_get_train_sampler"] is not None:
+                trainer_cls._get_train_sampler = patched_train_sampler
+        trainer_cls.__unsloth_context_parallel_methods__ = True
+
+    trainer_cls.__init__ = patched_init
+    trainer_cls.__unsloth_context_parallel__ = True
