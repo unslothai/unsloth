@@ -37,7 +37,12 @@ class _Block(torch.nn.Module):
         self.act_fn = torch.nn.SiLU()
 
 
-def _peft_block(device, dtype, dropout, lora_bias = False):
+def _peft_block(
+    device,
+    dtype,
+    dropout,
+    lora_bias = False,
+):
     from peft import LoraConfig, get_peft_model
 
     torch.manual_seed(3407)
@@ -91,9 +96,7 @@ def _run(fn, model, X0, seed, device):
     out = fn(X * 1)  # a non-leaf, since the fused backward may write dX into its input buffer
     outs = out if isinstance(out, tuple) else (out,)
     gen = torch.Generator(device = "cpu").manual_seed(seed + 1)
-    loss = sum(
-        (o.float() * torch.randn(o.shape, generator = gen).to(device)).sum() for o in outs
-    )
+    loss = sum((o.float() * torch.randn(o.shape, generator = gen).to(device)).sum() for o in outs)
     loss.backward()
     grads = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
     model.zero_grad(set_to_none = True)
@@ -141,7 +144,9 @@ class _Recorder(torch.nn.Module):
     def forward(self, x):
         if x.device.type == "cpu":
             out = self.dropout(x)
-            self.masks[self.name] = (out != 0) | (x == 0)  # zeros never matter on the reference path
+            self.masks[self.name] = (out != 0) | (
+                x == 0
+            )  # zeros never matter on the reference path
             return out
         out, self.masks[self.name] = torch.native_dropout(x, self.dropout.p, True)
         return out
@@ -251,7 +256,9 @@ def test_checkpoint_recompute_replays_the_same_masks(device, path):
         torch.testing.assert_close(plain[2][n], ckpt[2][n], rtol = 0, atol = 0)
 
 
-@pytest.mark.parametrize("dropout,lora_bias,flag", [(0.3, False, "FUSED_LORA_DROPOUT"), (0.0, True, "FUSED_LORA_BIAS")])
+@pytest.mark.parametrize(
+    "dropout,lora_bias,flag", [(0.3, False, "FUSED_LORA_DROPOUT"), (0.0, True, "FUSED_LORA_BIAS")]
+)
 def test_kill_switch_restores_the_peft_fallback(monkeypatch, dropout, lora_bias, flag):
     model, block = _peft_block("cpu", torch.float32, dropout, lora_bias)
     monkeypatch.setattr(fast_lora, flag, False)
@@ -289,7 +296,9 @@ def test_active_adapter_absent_from_projection_falls_back(monkeypatch, dropout, 
     model, block = _peft_block("cpu", torch.float32, dropout, lora_bias)
     model.add_adapter(
         "other",
-        LoraConfig(r = 4, lora_alpha = 8, lora_dropout = dropout, target_modules = ["q_proj"], lora_bias = lora_bias),
+        LoraConfig(
+            r = 4, lora_alpha = 8, lora_dropout = dropout, target_modules = ["q_proj"], lora_bias = lora_bias
+        ),
     )
     model.set_adapter("other")
     model.train()
@@ -308,9 +317,13 @@ def test_routing_resolves_each_active_adapter_once(monkeypatch, lora_bias):
     projs = (block.q_proj, block.k_proj, block.v_proj)
     real = fast_lora._active_lora_adapter
     seen = []
-    monkeypatch.setattr(fast_lora, "_active_lora_adapter", lambda proj: seen.append(proj) or real(proj))
     monkeypatch.setattr(
-        fast_lora, "_has_active_lora_bias", lambda proj: pytest.fail("lora_bias scanned with fused bias on")
+        fast_lora, "_active_lora_adapter", lambda proj: seen.append(proj) or real(proj)
+    )
+    monkeypatch.setattr(
+        fast_lora,
+        "_has_active_lora_bias",
+        lambda proj: pytest.fail("lora_bias scanned with fused bias on"),
     )
     dropout_p, biases = fast_lora._lora_dropout_and_bias(projs, torch.randn(2, 5, H))
     assert dropout_p is None

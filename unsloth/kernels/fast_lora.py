@@ -90,7 +90,11 @@ def _active_lora_adapter(proj):
     return adapter if adapter in proj.lora_A else None
 
 
-def _lora_dropout_p(proj, X, adapter = False):
+def _lora_dropout_p(
+    proj,
+    X,
+    adapter = False,
+):
     """Dropout probability of the active adapter, 0.0 when it is a no-op, None when only PEFT can run it."""
     if adapter is False:
         adapter = _active_lora_adapter(proj)
@@ -158,7 +162,12 @@ def _dropout_forward(X, p):
     return torch.native_dropout(X, p, True)
 
 
-def _dropout_replay(T, mask, p, S = 1.0):
+def _dropout_replay(
+    T,
+    mask,
+    p,
+    S = 1.0,
+):
     # S * T * mask / (1 - p): with S = 1 exactly the dropout forward's output, and the dropout backward.
     if mask.device.type == "cpu":
         T = T * mask.to(T.dtype).div_(1 - p)
@@ -887,7 +896,17 @@ class LoRA_W(torch.autograd.Function):
 
     @staticmethod
     @torch_amp_custom_fwd
-    def forward(ctx, X: torch.Tensor, W, W_quant, A, B, S, dropout_p = None, bias = None):
+    def forward(
+        ctx,
+        X: torch.Tensor,
+        W,
+        W_quant,
+        A,
+        B,
+        S,
+        dropout_p = None,
+        bias = None,
+    ):
         dtype = X.dtype
         if dropout_p is None and bias is None:
             XW = matmul_lora(X, W, W_quant, A, B, S)
