@@ -483,11 +483,12 @@ def _settings(n_cols):
 
 def _launch(wrap, kernel, grid, args, n_tensors, constexprs, device, **options):
     # Eager CUDA skips Triton's arg binding (triton_launch.py); traced / non-Triton keep kernel[grid].
+    # is_compiling first: Dynamo must not read (and guard on) the mutable _ENABLED.
     if (
-        triton_launch._ENABLED
+        not torch.compiler.is_compiling()
+        and triton_launch._ENABLED
         and wrap is _eager_kernel
         and device.type == "cuda"
-        and not torch.compiler.is_compiling()
     ):
         fn = kernel
         if isinstance(kernel, triton.runtime.autotuner.Heuristics):

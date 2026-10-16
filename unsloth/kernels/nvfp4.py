@@ -450,9 +450,6 @@ def _fused_ok(A, packed, scale, global_scale, inner):
         return False
     if A.dtype == torch.bfloat16 and _device_capability(index) < (8, 0):
         return False
-    # The dense matmul follows autocast; the fused kernels write A's dtype.
-    if torch.is_autocast_enabled("cuda") and torch.get_autocast_dtype("cuda") != A.dtype:
-        return False
     return (
         packed.device == A.device
         and scale.device == A.device
@@ -628,7 +625,11 @@ def _nvfp4_matmul_fwd(
     X: torch.Tensor, packed: torch.Tensor, scale: torch.Tensor, global_scale: torch.Tensor
 ) -> torch.Tensor:
     if _fused_ok(X, packed, scale, global_scale, packed.shape[1] * 2):
-        return _nvfp4_matmul_fwd_fused(X, packed, scale, global_scale.reshape(-1)[:1])
+        out = _nvfp4_matmul_fwd_fused(X, packed, scale, global_scale.reshape(-1)[:1])
+        # The dense matmul follows autocast; the fused kernel writes X's dtype.
+        if torch.is_autocast_enabled("cuda") and torch.get_autocast_dtype("cuda") != out.dtype:
+            out = out.to(torch.get_autocast_dtype("cuda"))
+        return out
     return torch.matmul(X, nvfp4_dequantize(packed, scale, global_scale, X.dtype).t())
 
 
