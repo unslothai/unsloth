@@ -29,8 +29,7 @@ import { cn } from "@/lib/utils";
 
 /** Output size controls shared by the Images and Video Create panels. */
 
-// Common aspect ratios (landscape; Flip mirrors to portrait). Picking one locks W:H; the
-// dimension inputs set the size.
+// Landscape ratios; Flip mirrors them to portrait.
 export const ASPECT_RATIOS: Record<string, [number, number]> = {
   "1:1": [1, 1],
   "3:2": [3, 2],

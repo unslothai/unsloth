@@ -1219,11 +1219,8 @@ def format_video_resolution_presets(fam: VideoFamily) -> str:
     return ", ".join(f"{w}x{h}" for w, h in fam.resolution_presets)
 
 
-# A custom size may reshape a family's trained presets but not outgrow them. The ceiling is the largest preset's area
-# (MiniMax-H3 budgets its denoiser residency at that preset, so a bigger frame could OOM mid-render). The floor is the
-# smallest preset's area, relaxed to half the largest so a family trained at one size still gets a usable band; it
-# keeps 256x256 on a 768x512 model refused and honours UNSLOTH_VIDEO_H3_480P=0. The ratio is capped at 4:1 or the
-# family's most extreme preset, whichever is wider.
+# Ceiling = largest preset area, not more: MiniMax-H3 budgets denoiser residency at that preset. Floor = smallest preset
+# area (relaxed to half the largest), which keeps 256x256 refused and honours UNSLOTH_VIDEO_H3_480P=0.
 CUSTOM_VIDEO_MAX_ASPECT = 4.0
 
 

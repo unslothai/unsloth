@@ -341,7 +341,6 @@ const FALLBACK_RESOLUTION_PRESETS: Array<[number, number]> = [
   [704, 1216],
 ];
 
-// Aspect select value for a keyframe-derived canvas.
 const MATCH_SOURCE = "match";
 
 // Fallbacks for the duration presets before a model is loaded, so the select is populated and valid on first paint.
@@ -2255,7 +2254,6 @@ function VideoGenerator({
       if (video.flow_shift != null) setFlowShift(video.flow_shift);
       if (video.audio_flow_shift != null) setAudioFlowShift(video.audio_flow_shift);
       setSeed(String(video.seed));
-      // The clip's size, or the nearest one the loaded family accepts.
       const size = fitVideoSize(video.width, video.height, sizeLimits);
       setResolutionIntent(size);
       const matched = matchAspect(size[0], size[1]);
@@ -3431,8 +3429,7 @@ function VideoGenerator({
     }
   }, []);
 
-  // Mirrors the Images size controls: a locked ratio keeps the paired side in step, "custom" frees
-  // both, Flip swaps them. Every pair is fitted to what the loaded family accepts.
+  // As on Images: a locked ratio keeps the paired side in step; every pair is fitted to the family.
   const dimOptions = useMemo(() => videoDimOptions(sizeLimits), [sizeLimits]);
   const applySize = (width: number, height: number, keepAspect = false) => {
     const size = fitVideoSize(width, height, sizeLimits);

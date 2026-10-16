@@ -200,14 +200,12 @@ def test_a_half_specified_size_resolves_against_the_default_preset():
     validate_video_request_shape(LTX2, height = 512)
     # 1216 alone resolves to 1216x512: off the presets but on /32 and inside the area band.
     validate_video_request_shape(LTX2, width = 1216)
-    # 2048 alone resolves to 2048x512, wider than 4:1.
     with pytest.raises(ValueError) as excinfo:
         validate_video_request_shape(LTX2, width = 2048)
     assert "2048x512" in str(excinfo.value)
 
 
 def test_a_custom_size_on_the_multiple_and_inside_the_band_is_accepted():
-    # 1024x576 is 16:9, on LTX-2's /32 grid and between its smallest and largest preset areas.
     validate_video_request_shape(LTX2, width = 1024, height = 576, num_frames = 97)
     validate_video_request_shape(LTX2, width = 576, height = 1024)
     validate_video_request_shape(LTX2, width = 640, height = 640)
@@ -235,14 +233,12 @@ def test_a_size_outside_the_area_band_or_too_narrow_is_refused():
     # Larger than the largest preset: a memory plan budgeted at that preset would not hold.
     with pytest.raises(ValueError, match = "pixels"):
         validate_video_request_shape(LTX2, width = 1280, height = 1024)
-    # Smaller than the smallest preset.
     with pytest.raises(ValueError, match = "pixels"):
         validate_video_request_shape(LTX2, width = 512, height = 512)
     # A family trained at one area still gets a band down to half of it.
     single = replace(LTX2, resolution_presets = ((832, 480), (480, 832)))
     assert video_custom_size_bounds(single)[0] == 832 * 480 // 2
     validate_video_request_shape(single, width = 512, height = 512)
-    # Inside the band but past 4:1.
     with pytest.raises(ValueError, match = "aspect ratio"):
         validate_video_request_shape(LTX2, width = 1536, height = 352)
 

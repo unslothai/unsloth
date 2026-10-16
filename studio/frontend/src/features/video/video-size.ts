@@ -4,7 +4,6 @@
 import { closestResolutionIndex } from "../generation-presets/preset-policy.ts";
 import type { VideoGenerationDefaults } from "./api";
 
-// The request model's per-side bounds.
 const MAX_VIDEO_SIDE = 2048;
 const MAX_ASPECT = 4;
 

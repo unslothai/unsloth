@@ -177,5 +177,4 @@ def test_the_size_controls_follow_the_backend_presets_not_a_hardcoded_list():
     assert "presets && presets.length > 0" in memo
     assert "{resolutionPresets.map(([w, h]) => (" in src
     assert "videoSizeLimits(status?.defaults, resolutionPresets)" in src
-    # And the generate call sends the fitted size, so the size shown is the one rendered.
     assert "width: sourceSized ? undefined : videoSize[0]," in src
