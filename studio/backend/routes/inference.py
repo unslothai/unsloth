@@ -46704,6 +46704,8 @@ def _sum_passthrough_attempt_stats(first: dict, retry: dict, selected: dict) -> 
     aggregate = _summed_tool_loop_stats(first, retry)
     result = dict(selected)
     result["usage"] = aggregate["usage"]
+    # Two attempts at one reply, not tool passes: the client gets llama-server's usage shape back.
+    result["usage"].pop("context_tokens", None)
     if "timings" in aggregate:
         result["timings"] = aggregate["timings"]
     return result
