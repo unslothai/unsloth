@@ -162,7 +162,6 @@ def hosted_int8_te_runs_on(mode: Optional[str], family: Optional[str], target: A
     (Apple Silicon), where ``effective_te_quant``'s fp8 rewrite would make a preflight refuse a load the loader runs."""
     try:
         from .diffusion_te_prequant import int8_convrot_te_runs_on
-
         return (
             normalize_te_quant(mode) == TE_QUANT_INT8
             and _family_hosts_te_int8(family)
@@ -365,7 +364,6 @@ def _quantize_text_encoders(
         why = "is not available (not published yet, offline, or refused, see the server log)"
         if mode == TE_QUANT_INT8 and _family_hosts_te_int8(family):
             from .diffusion_text_encoder_trim import KEEP_LM_HEAD_ENV, family_trims_lm_head
-
             if not family_trims_lm_head(family):
                 why = f"carries no lm_head, which {KEEP_LM_HEAD_ENV} keeps"
         _note(logger, f"automatic {label} text encoder not used; keeping the dense bf16 encoder")
