@@ -52,8 +52,8 @@ class _TRL022Trainer:
 
     def compute_loss(self, inputs):
         correct, entropy = _token_stats(inputs["input_ids"])
-        mask = inputs["attention_mask"].double()
-        self._metrics["train"]["entropy"].append(float((entropy * mask).sum() / mask.sum()))
+        attention_mask = inputs["attention_mask"].double()
+        self._metrics["train"]["entropy"].append(float((entropy * attention_mask).sum() / attention_mask.sum()))
         self._metrics["train"]["num_tokens"] = [0]
         shift_labels = inputs["labels"][..., 1:]
         valid = shift_labels != -100
@@ -295,3 +295,21 @@ def test_unknown_entropy_code_leaves_entries_unfolded(monkeypatch):
     expected = _per_chunk_entries(_UnknownEntropyTrainer, batch)
     assert len(expected["entropy"]) > 1
     assert _split_once(monkeypatch, _UnknownEntropyTrainer, batch) == expected
+
+
+class _AmbiguousEntropyTrainer(_TRL022Trainer):
+    """Custom metric code naming an attention-weighted numerator entropy_sum: both signatures."""
+
+    def compute_loss(self, inputs):
+        correct, entropy = _token_stats(inputs["input_ids"])
+        attention_mask = inputs["attention_mask"].double()
+        entropy_sum = (entropy * attention_mask).sum()
+        self._metrics["train"]["entropy"].append(float(entropy_sum / attention_mask.sum()))
+        self._metrics["train"]["mean_token_accuracy"].append(float(correct.mean()))
+
+
+def test_entropy_code_with_both_signatures_leaves_entries_unfolded(monkeypatch):
+    batch = _label_gap_batch()
+    expected = _per_chunk_entries(_AmbiguousEntropyTrainer, batch)
+    assert len(expected["entropy"]) > 1
+    assert _split_once(monkeypatch, _AmbiguousEntropyTrainer, batch) == expected

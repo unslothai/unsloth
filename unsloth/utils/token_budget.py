@@ -520,11 +520,11 @@ def _metric_style(trainer):
             break
         if "mean_token_accuracy" in source:
             # TRL >= 1.3 sums entropy over valid labels (entropy_sum / label_mask); older TRL divides by
-            # the attention mask. Anything else is unknown, so its entries are left unfolded.
-            if "label_mask" in source or "entropy_sum" in source:
-                style = "labels"
-            elif "attention_mask" in source:
-                style = "attention"
+            # attention_mask.sum(). Both or neither is unknown, so its entries are left unfolded.
+            labels = "label_mask" in source or "entropy_sum" in source
+            attention = "attention_mask.sum()" in source
+            if labels != attention:
+                style = "labels" if labels else "attention"
             break
     trainer._unsloth_token_budget_metric_style = style
     return style
