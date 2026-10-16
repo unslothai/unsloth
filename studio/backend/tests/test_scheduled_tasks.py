@@ -515,7 +515,9 @@ def test_a_run_saves_the_exchange_as_a_new_chat(monkeypatch):
 
 def test_a_run_chat_is_marked_as_the_tasks_and_keeps_the_mark(monkeypatch):
     task, run = claim_manual_run()
-    run_scheduler(task, run, answer = Answer(content = "Hi.", reasoning = "", model = "m"), monkeypatch = monkeypatch)
+    run_scheduler(
+        task, run, answer = Answer(content = "Hi.", reasoning = "", model = "m"), monkeypatch = monkeypatch
+    )
 
     thread_id = db.get_task(task["id"])["lastRun"]["threadId"]
     thread = studio_db.get_chat_thread(thread_id)
