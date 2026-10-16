@@ -3103,3 +3103,11 @@ def test_filename_variant_matches_a_windows_local_primary():
 
     assert acm.match_variant((variant,), filename) is variant
     assert acm.match_variant((variant,), f"breeze_tts/{filename}") is variant
+
+
+def test_exact_audio_filename_path_wins_over_an_earlier_suffix_match():
+    filename = "model-Q8_0.gguf"
+    archived = AudioCppVariant("archive/Q8_0", (RepoFile(filename),), f"archive/chosen/{filename}")
+    exact = AudioCppVariant("chosen/Q8_0", (RepoFile(filename),), f"chosen/{filename}")
+
+    assert acm.match_variant((archived, exact), f"chosen/{filename}") is exact

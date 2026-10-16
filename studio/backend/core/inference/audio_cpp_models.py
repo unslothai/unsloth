@@ -1688,13 +1688,12 @@ def match_variant(
     for variant in variants:
         if variant.key.lower() == low:
             return variant
-    for variant in variants:
-        main = variant.main_file.replace("\\", "/").lower()
-        if (
-            main == low
-            or main.endswith(f"/{low}")
-            or main.rsplit("/", 1)[-1] in (low, f"{low}.gguf")
-        ):
+    mains = [(variant, variant.main_file.replace("\\", "/").lower()) for variant in variants]
+    for variant, main in mains:
+        if main == low:
+            return variant
+    for variant, main in mains:
+        if main.endswith(f"/{low}") or main.rsplit("/", 1)[-1] in (low, f"{low}.gguf"):
             return variant
     quant = low.rsplit("/", 1)[-1]
     matches = [
