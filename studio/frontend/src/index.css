@@ -39,6 +39,10 @@
 	[data-slot="window-titlebar"][data-viewport-backdrop-tone="strong"]::after {
 		background: rgb(0 0 0 / 40%);
 	}
+	/* An expanded chat table dims the page behind it further still. */
+	[data-slot="window-titlebar"][data-viewport-backdrop-tone="dense"]::after {
+		background: rgb(0 0 0 / 70%);
+	}
 
 	/* The surface the sidebar panel actually paints. The collapsed icon rail
 	   repaints it, so gradients fading into the panel must read this rather
@@ -4426,10 +4430,38 @@ html[data-chat-font] .aui-root {
 		margin-block: calc(1rem * var(--ui-space-scale, 1));
 	}
 
-	/* Wide tables scroll inside the column instead of widening it. */
+	/* Wide tables scroll inside the column instead of widening it. An edge hiding more columns
+	   fades out (TableScroll sets the flags); the second mask layer keeps the scrollbar opaque. */
 	.aui-md-table-scroll {
+		--md-table-fade-start: 0px;
+		--md-table-fade-end: 0px;
 		max-width: 100%;
 		overflow-x: auto;
+	}
+
+	.aui-md-table-scroll[data-fade-start] {
+		--md-table-fade-start: 4rem;
+	}
+
+	.aui-md-table-scroll[data-fade-end] {
+		--md-table-fade-end: 4rem;
+	}
+
+	.aui-md-table-scroll:is([data-fade-start], [data-fade-end]) {
+		mask-image:
+			linear-gradient(
+				to right,
+				transparent,
+				#000 var(--md-table-fade-start),
+				#000 calc(100% - var(--md-table-fade-end)),
+				transparent
+			),
+			linear-gradient(#000, #000);
+		mask-size:
+			100% calc(100% - var(--md-table-scrollbar, 0px)),
+			100% var(--md-table-scrollbar, 0px);
+		mask-position: top, bottom;
+		mask-repeat: no-repeat;
 	}
 
 	.aui-md-table table {
@@ -5177,6 +5209,25 @@ html.force-reduced-motion .sidebar-section-drop-line {
 
 .dark *::-webkit-scrollbar-thumb {
 	background: oklch(0.67 0 0 / 0.5);
+}
+
+/* Chat tables keep a classic scrollbar, so a wide one shows it scrolls before it is touched;
+   overlay scrollbars stay hidden until then. */
+@supports selector(::-webkit-scrollbar) {
+	.aui-md-table-scroll,
+	.dark .aui-md-table-scroll {
+		scrollbar-width: auto;
+		scrollbar-color: auto;
+	}
+}
+
+.aui-md-table-scroll::-webkit-scrollbar {
+	height: 12px;
+}
+
+.aui-md-table-scroll::-webkit-scrollbar-thumb {
+	border: 3px solid transparent;
+	background-clip: padding-box;
 }
 
 /* Unlayered like the rules above, which a utility class could not outrank. */
