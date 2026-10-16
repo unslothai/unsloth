@@ -69,8 +69,12 @@ def test_unsloth_non_reentrant_offload_uses_side_stream_hooks(tmp_path):
     )
     env.setdefault("UNSLOTH_COMPILE_LOCATION", str(tmp_path / "unsloth_compiled_cache"))
     result = subprocess.run(
-        [sys.executable, "-c", _CHILD], cwd = str(tmp_path), env = env,
-        capture_output = True, text = True, timeout = 900,
+        [sys.executable, "-c", _CHILD],
+        cwd = str(tmp_path),
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 900,
     )
     assert result.returncode == 0, result.stdout[-4000:] + result.stderr[-4000:]
     line = next(l for l in result.stdout.splitlines() if l.startswith("@@@"))
