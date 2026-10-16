@@ -5583,8 +5583,8 @@ export function AppSidebar() {
                 )}
                 aria-hidden
               >
-                {/* Accent, not a warning colour: a finished reply is news, not a fault. */}
-                <span className="size-2 rounded-full bg-primary" />
+                {/* Neutral: a finished reply is news, not a fault. */}
+                <span className="size-2 rounded-full bg-muted-foreground/60" />
               </span>
             ) : null}
             {showScheduledMark ? (

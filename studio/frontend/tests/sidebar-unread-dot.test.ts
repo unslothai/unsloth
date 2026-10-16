@@ -11,9 +11,8 @@ import { readSrc } from "./helpers/kit.ts";
 
 const SIDEBAR = readSrc("components/app-sidebar.tsx");
 
-// The accent, which follows the user's chosen colour; still not the warm stopped/errored tone.
-test("the unread dot uses the accent colour", () => {
-  assert.match(SIDEBAR, /size-2 rounded-full bg-primary"/);
+test("the unread dot is grey", () => {
+  assert.match(SIDEBAR, /size-2 rounded-full bg-muted-foreground\/60/);
 });
 
 // A literal pair misses the contrast-boost theme, which recomputes
