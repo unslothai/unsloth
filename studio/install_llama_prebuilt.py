@@ -3692,7 +3692,9 @@ def published_windows_cuda_attempts(
             )
             # Only bundles whose SM metadata proves they cover every card count as widening.
             widened = [
-                a for a in widened if a.supported_sms and a.min_sm is not None and a.max_sm is not None
+                a
+                for a in widened
+                if a.supported_sms and a.min_sm is not None and a.max_sm is not None
             ]
             if widened:
                 names = {a.name for a in widened}

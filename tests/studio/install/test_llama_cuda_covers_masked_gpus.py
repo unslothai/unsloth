@@ -175,7 +175,9 @@ class TestWindows:
             bundle_profile = "cuda12-unknown",
             rank = 50,
         )
-        attempts = m.published_windows_cuda_attempts(MASKED_WINDOWS, release([WIN_NEWER, unknown]), None)
+        attempts = m.published_windows_cuda_attempts(
+            MASKED_WINDOWS, release([WIN_NEWER, unknown]), None
+        )
         assert "cuda12-newer" in [a.bundle_profile for a in attempts]
 
 
