@@ -504,8 +504,9 @@ function rankListing(
 
 /**
  * A search naming a model maker ("meta", "alibaba"): Unsloth's uploads of that maker's models, the
- * ones shown with its avatar, then (beyond Unsloth-only) the maker's own org uploads, each in the
- * listing's sort, then the search's own results without them.
+ * ones shown with its avatar, then (beyond Unsloth-only) the maker's own org uploads. Each group's
+ * first pool is ranked by the listing's sort; the rest of each listing follows in its own order,
+ * then the search's own results without repeats.
  */
 async function* providerUnslothFirstIterator(
   provider: ProviderLogo,
@@ -517,61 +518,97 @@ async function* providerUnslothFirstIterator(
     signal: AbortSignal;
     parameterFilter?: string;
     includeOrgs: boolean;
+    filterPriority?: ModelListingTransform;
   },
 ): AsyncGenerator<unknown> {
-  const read = async (search: { query?: string; owner: string }) => {
+  const listing = (search: { query?: string; owner: string }) =>
+    listModels({
+      hubUrl: getHfEndpoint(),
+      search,
+      additionalFields: ALL_FIELDS,
+      fetch: makeSortFetch(opts.sortBy, opts.sortDirection, opts.signal, opts.parameterFilter),
+      sort: hubListingSort(opts.sortBy),
+      ...(opts.accessToken ? { credentials: { accessToken: opts.accessToken } } : {}),
+    }) as AsyncGenerator<unknown>;
+  // Read by hand: breaking out of a for-await would close the listing its tail continues.
+  const take = async (iter: AsyncGenerator<unknown>) => {
     const items: unknown[] = [];
     try {
-      for await (const model of listModels({
-        hubUrl: getHfEndpoint(),
-        search,
-        additionalFields: ALL_FIELDS,
-        fetch: makeSortFetch(opts.sortBy, opts.sortDirection, opts.signal, opts.parameterFilter),
-        sort: hubListingSort(opts.sortBy),
-        ...(opts.accessToken ? { credentials: { accessToken: opts.accessToken } } : {}),
-      })) {
-        items.push(model);
-        if (items.length >= PROVIDER_POOL) break;
+      while (items.length < PROVIDER_POOL) {
+        const next = await iter.next();
+        if (next.done) break;
+        items.push(next.value);
       }
     } catch {
       // One listing failing leaves the others; the search's own results still follow.
     }
     return items;
   };
-  const orgLists = opts.includeOrgs
-    ? Promise.all(providerHubOrgs(provider).map((owner) => read({ owner })))
-    : Promise.resolve([]);
-  const lists = await Promise.all(
-    providerSearchTerms(provider).map((term) => read({ query: term, owner: "unsloth" })),
-  );
-  const shown = new Set<string>();
-  const pool = new Map<string, FreshRankable>();
-  for (const model of lists.flat()) {
-    const name = (model as { name?: string }).name;
-    if (
-      name &&
-      !pool.has(name) &&
-      resolveOwnerProviderLogo("unsloth", name.split("/")[1])?.id === provider.id
-    ) {
-      pool.set(name, model as FreshRankable);
+  const drain = async function* (iter: AsyncGenerator<unknown>) {
+    try {
+      yield* iter;
+    } catch {
+      // As above: a failed page ends that listing only.
     }
-  }
-  const own = new Map<string, FreshRankable>();
-  for (const model of (await orgLists).flat()) {
-    const name = (model as { name?: string }).name;
-    if (name && !own.has(name)) own.set(name, model as FreshRankable);
-  }
-  for (const group of [pool, own]) {
+  };
+  const nameOf = (model: unknown) => (model as { name?: string } | null)?.name;
+  const isProviders = (name: string) =>
+    resolveOwnerProviderLogo("unsloth", name.split("/")[1])?.id === provider.id;
+  const unslothIters = providerSearchTerms(provider).map((term) =>
+    listing({ query: term, owner: "unsloth" }),
+  );
+  const orgIters = opts.includeOrgs
+    ? providerHubOrgs(provider).map((owner) => listing({ owner }))
+    : [];
+  // Started together; the Unsloth group yields without waiting on the org listings.
+  const orgFirst = Promise.all(orgIters.map(take));
+  const unslothFirst = await Promise.all(unslothIters.map(take));
+  const shown = new Set<string>();
+  const ranked = function* (models: unknown[], keep: (name: string) => boolean) {
+    const group = new Map<string, FreshRankable>();
+    for (const model of models) {
+      const name = nameOf(model);
+      if (name && !shown.has(name) && !group.has(name) && keep(name)) {
+        group.set(name, model as FreshRankable);
+      }
+    }
     for (const model of rankListing([...group.values()], opts.sortBy, opts.sortDirection)) {
-      const name = (model as { name?: string }).name;
-      if (!name || shown.has(name)) continue;
+      const name = nameOf(model) as string;
       shown.add(name);
       primeFromListing(name, opts.accessToken, model);
-      yield model;
+      yield model as unknown;
     }
+  };
+  const tail = async function* (iters: AsyncGenerator<unknown>[], keep: (name: string) => boolean) {
+    for (const iter of iters) {
+      for await (const model of drain(iter)) {
+        const name = nameOf(model);
+        if (!name || shown.has(name) || !keep(name)) continue;
+        shown.add(name);
+        primeFromListing(name, opts.accessToken, model);
+        yield model;
+      }
+    }
+  };
+  const prefix = async function* () {
+    yield* ranked(unslothFirst.flat(), isProviders);
+    yield* ranked((await orgFirst).flat(), () => true);
+    yield* tail(unslothIters, isProviders);
+    yield* tail(orgIters, () => true);
+  };
+  // Like the Unsloth pass in mergedModelIterator: a client-side filter that rejects these groups
+  // gives way to the search's own results after a bounded scan.
+  let rejected = 0;
+  for await (const model of opts.filterPriority ? opts.filterPriority(prefix()) : prefix()) {
+    if (model === null) {
+      yield null;
+      if (++rejected >= UNSLOTH_FILTER_REJECT_LIMIT) break;
+      continue;
+    }
+    yield model;
   }
   for await (const model of inner) {
-    const name = (model as { name?: string } | null)?.name;
+    const name = nameOf(model);
     if (name && shown.has(name)) continue;
     yield model;
   }
@@ -1013,6 +1050,7 @@ export function useHubModelSearch(
           ? providerUnslothFirstIterator(queryProvider, orgSearch, {
               ...providerOpts,
               includeOrgs: false,
+              filterPriority,
             })
           : orgSearch;
       }
@@ -1034,6 +1072,7 @@ export function useHubModelSearch(
         ? providerUnslothFirstIterator(queryProvider, merged, {
             ...providerOpts,
             includeOrgs: true,
+            filterPriority,
           })
         : merged;
     },

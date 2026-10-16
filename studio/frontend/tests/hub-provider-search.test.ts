@@ -49,3 +49,15 @@ test("a maker search also reaches the maker's own Hub orgs, outside Unsloth-only
   assert.match(hook, /providerUnslothFirstIterator\(queryProvider, orgSearch, \{\n\s*\.\.\.providerOpts,\n\s*includeOrgs: false,/);
   assert.match(hook, /providerUnslothFirstIterator\(queryProvider, merged, \{\n\s*\.\.\.providerOpts,\n\s*includeOrgs: true,/);
 });
+
+test("the maker groups stream: Unsloth first, listing tails kept, a rejecting filter bounded", () => {
+  const hook = readSrc("features/hub/hooks/use-hub-model-search.ts");
+  const fn = hook.slice(hook.indexOf("async function* providerUnslothFirstIterator("), hook.indexOf("const FRESH_POOL"));
+  // The org listings start with the Unsloth ones but are awaited only after the Unsloth group yields.
+  assert.match(fn, /const orgFirst = Promise\.all\(orgIters\.map\(take\)\);\n[\s\S]*const unslothFirst = await Promise\.all/);
+  assert.match(fn, /yield\* ranked\(unslothFirst\.flat\(\), isProviders\);\n\s*yield\* ranked\(\(await orgFirst\)\.flat\(\)/);
+  // Pools past the first page are not dropped.
+  assert.match(fn, /yield\* tail\(unslothIters, isProviders\);\n\s*yield\* tail\(orgIters, \(\) => true\);/);
+  assert.match(fn, /if \(\+\+rejected >= UNSLOTH_FILTER_REJECT_LIMIT\) break;/);
+  assert.equal(hook.match(/includeOrgs: (true|false),\n\s*filterPriority,/g)?.length, 2);
+});
