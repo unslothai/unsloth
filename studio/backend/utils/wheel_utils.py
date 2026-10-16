@@ -487,7 +487,7 @@ _WHEEL_FILENAME_FIELD_RE = re.compile(r"[A-Za-z0-9._+!]+")
 def _uv_project_config_found() -> bool:
     """Whether uv would discover a project config from the working directory.
 
-    uv reads only the nearest one, so running it elsewhere would drop that file: never wanted
+    uv reads only one, so pointing --project elsewhere would drop that file: never wanted
     for an input setup.sh / setup.ps1 already honour (_mirror_uv_project_config).
     """
     try:
@@ -562,8 +562,10 @@ def install_wheel(
         uv_cmd.append(wheel_url)
         config_dir = tempfile.mkdtemp(prefix = "unsloth-uv-")
         try:
-            # uv finds the uv.toml as its project config; user and system configs still apply.
-            cwd = config_dir if _uv_static_metadata_config(wheel_url, config_dir) else None
+            # --project, not cwd: uv takes the uv.toml as its project config while relative paths
+            # (UV_CACHE_DIR, UV_CONSTRAINT, ...) still resolve here. User and system configs apply.
+            if _uv_static_metadata_config(wheel_url, config_dir):
+                uv_cmd[1:1] = ["--project", config_dir]
             result = run(
                 uv_cmd,
                 stdout = subprocess.PIPE,
@@ -572,7 +574,6 @@ def install_wheel(
                 encoding = "utf-8",
                 errors = "replace",
                 env = child_env_without_native_path_secret(),
-                cwd = cwd,
             )
         finally:
             shutil.rmtree(config_dir, ignore_errors = True)

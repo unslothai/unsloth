@@ -109,34 +109,45 @@ def test_project_config_is_found_from_a_parent(name, text, found, tmp_path, monk
 class _Recorder:
     def __init__(self, codes):
         self.codes = list(codes)
-        self.calls: list[tuple[list[str], object, str | None]] = []
+        self.calls: list[tuple[list[str], str | None, str | None]] = []
 
     def __call__(self, cmd, **kwargs):
-        cwd = kwargs.get("cwd")
-        toml = Path(cwd, "uv.toml").read_text(encoding = "utf-8") if cwd else None
-        self.calls.append((list(cmd), cwd, toml))
+        assert "cwd" not in kwargs, "uv must run from the caller's directory"
+        project = cmd[cmd.index("--project") + 1] if "--project" in cmd else None
+        toml = Path(project, "uv.toml").read_text(encoding = "utf-8") if project else None
+        self.calls.append((list(cmd), project, toml))
         return subprocess.CompletedProcess(cmd, self.codes.pop(0), stdout = "")
 
 
-def test_uv_runs_beside_the_metadata_and_pip_runs_as_before(no_project_config, monkeypatch):
+def test_uv_reads_the_metadata_and_pip_runs_as_before(no_project_config, monkeypatch):
     monkeypatch.setattr(wheel_utils.shutil, "which", lambda name: "/usr/bin/uv")
     run = _Recorder([1, 0])
     attempts = wheel_utils.install_wheel(FLASH_ATTN, python_executable = "PY", use_uv = True, run = run)
     assert [installer for installer, _ in attempts] == ["uv", "pip"]
-    (uv_cmd, uv_cwd, uv_toml), (pip_cmd, pip_cwd, _) = run.calls
+    (uv_cmd, project, uv_toml), (pip_cmd, _, _) = run.calls
     # Still the URL: uv downloads and caches it itself, so a reinstall stays a cache hit.
-    assert uv_cmd == ["uv", "pip", "install", "--python", "PY", "--no-deps", FLASH_ATTN]
+    assert uv_cmd == [
+        "uv",
+        "--project",
+        project,
+        "pip",
+        "install",
+        "--python",
+        "PY",
+        "--no-deps",
+        FLASH_ATTN,
+    ]
     assert uv_toml == FLASH_ATTN_TOML
-    assert not os.path.exists(uv_cwd), "the config directory outlived the install"
-    assert pip_cmd[-1] == FLASH_ATTN and pip_cwd is None
+    assert not os.path.exists(project), "the config directory outlived the install"
+    assert pip_cmd == ["PY", "-m", "pip", "install", "--no-deps", FLASH_ATTN]
 
 
-def test_uv_keeps_the_working_directory_when_a_project_config_applies(tmp_path, monkeypatch):
+def test_uv_runs_as_before_when_a_project_config_applies(monkeypatch):
     monkeypatch.setattr(wheel_utils.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(wheel_utils, "_uv_project_config_found", lambda: True)
     run = _Recorder([0])
     wheel_utils.install_wheel(FLASH_ATTN, python_executable = "PY", use_uv = True, run = run)
-    assert run.calls[0][1] is None
+    assert run.calls[0][0] == ["uv", "pip", "install", "--python", "PY", "--no-deps", FLASH_ATTN]
 
 
 # -- Against real uv ----------------------------------------------------------------------------
@@ -211,13 +222,16 @@ def test_real_uv_fetches_the_wheel_once(
     venv = tmp_path / "venv"
     subprocess.run(["uv", "venv", "-q", "--python", sys.executable, str(venv)], check = True)
     python = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
-    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
+    # Relative on purpose: it must resolve against the caller's directory, not the config's,
+    # which is deleted after each install and would take the cache with it.
+    monkeypatch.setenv("UV_CACHE_DIR", "relative-uv-cache")
     monkeypatch.setenv("NO_PROXY", "127.0.0.1")
     if not static_metadata:
         monkeypatch.setattr(wheel_utils, "_uv_static_metadata_config", lambda *args: False)
     attempts = wheel_utils.install_wheel(url, python_executable = str(python), use_uv = True)
     assert [(i, r.returncode) for i, r in attempts] == [("uv", 0)], attempts[-1][1].stdout
     assert len(gets) == expected_gets, gets
+    assert (no_project_config / "relative-uv-cache").is_dir()
     # A reinstall is answered from uv's own cache.
     wheel_utils.install_wheel(url, python_executable = str(python), use_uv = True, reinstall = True)
     assert len(gets) == expected_gets, gets

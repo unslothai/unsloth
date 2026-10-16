@@ -17,7 +17,7 @@ _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-from utils import kernel_install  # noqa: E402
+from utils import kernel_install, wheel_utils  # noqa: E402
 
 _REPO = _BACKEND.parent.parent
 _PT = "https://download.pytorch.org/whl"
@@ -48,6 +48,8 @@ def _no_mirror(monkeypatch):
     monkeypatch.delenv("UNSLOTH_PYTORCH_MIRROR", raising = False)
     # Forces the mamba_ssm decision below sm80; an inherited value would override the mocked Triton.
     monkeypatch.delenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", raising = False)
+    # The installer commands below are the subject; test_wheel_download covers uv's --project.
+    monkeypatch.setattr(wheel_utils, "_uv_static_metadata_config", lambda *args: False)
 
 
 @pytest.mark.parametrize(
