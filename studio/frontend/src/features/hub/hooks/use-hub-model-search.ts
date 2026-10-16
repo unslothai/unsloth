@@ -23,7 +23,11 @@ import { detectBaseModel } from "../lib/model-capabilities";
 import { isGgufLike } from "../lib/model-identifiers";
 import { type FreshRankable, rankFresh } from "../lib/fresh-ranking";
 import { type ProviderLogo, resolveOwnerProviderLogo } from "../lib/provider-logos";
-import { matchProviderByQuery, providerSearchTerms } from "../lib/provider-search";
+import {
+  matchProviderByQuery,
+  providerHubOrgs,
+  providerSearchTerms,
+} from "../lib/provider-search";
 import { fetchWithTimeout } from "../lib/network";
 import {
   type UnslothSupport,
@@ -500,7 +504,8 @@ function rankListing(
 
 /**
  * A search naming a model maker ("meta", "alibaba"): Unsloth's uploads of that maker's models, the
- * ones shown with its avatar, in the listing's sort, then the search's own results without them.
+ * ones shown with its avatar, then (beyond Unsloth-only) the maker's own org uploads, each in the
+ * listing's sort, then the search's own results without them.
  */
 async function* providerUnslothFirstIterator(
   provider: ProviderLogo,
@@ -511,29 +516,35 @@ async function* providerUnslothFirstIterator(
     accessToken?: string;
     signal: AbortSignal;
     parameterFilter?: string;
+    includeOrgs: boolean;
   },
 ): AsyncGenerator<unknown> {
-  const lists = await Promise.all(
-    providerSearchTerms(provider).map(async (term) => {
-      const items: unknown[] = [];
-      try {
-        for await (const model of listModels({
-          hubUrl: getHfEndpoint(),
-          search: { query: term, owner: "unsloth" },
-          additionalFields: ALL_FIELDS,
-          fetch: makeSortFetch(opts.sortBy, opts.sortDirection, opts.signal, opts.parameterFilter),
-          sort: hubListingSort(opts.sortBy),
-          ...(opts.accessToken ? { credentials: { accessToken: opts.accessToken } } : {}),
-        })) {
-          items.push(model);
-          if (items.length >= PROVIDER_POOL) break;
-        }
-      } catch {
-        // One term failing leaves the others; the search's own results still follow.
+  const read = async (search: { query?: string; owner: string }) => {
+    const items: unknown[] = [];
+    try {
+      for await (const model of listModels({
+        hubUrl: getHfEndpoint(),
+        search,
+        additionalFields: ALL_FIELDS,
+        fetch: makeSortFetch(opts.sortBy, opts.sortDirection, opts.signal, opts.parameterFilter),
+        sort: hubListingSort(opts.sortBy),
+        ...(opts.accessToken ? { credentials: { accessToken: opts.accessToken } } : {}),
+      })) {
+        items.push(model);
+        if (items.length >= PROVIDER_POOL) break;
       }
-      return items;
-    }),
+    } catch {
+      // One listing failing leaves the others; the search's own results still follow.
+    }
+    return items;
+  };
+  const orgLists = opts.includeOrgs
+    ? Promise.all(providerHubOrgs(provider).map((owner) => read({ owner })))
+    : Promise.resolve([]);
+  const lists = await Promise.all(
+    providerSearchTerms(provider).map((term) => read({ query: term, owner: "unsloth" })),
   );
+  const shown = new Set<string>();
   const pool = new Map<string, FreshRankable>();
   for (const model of lists.flat()) {
     const name = (model as { name?: string }).name;
@@ -545,14 +556,23 @@ async function* providerUnslothFirstIterator(
       pool.set(name, model as FreshRankable);
     }
   }
-  for (const model of rankListing([...pool.values()], opts.sortBy, opts.sortDirection)) {
+  const own = new Map<string, FreshRankable>();
+  for (const model of (await orgLists).flat()) {
     const name = (model as { name?: string }).name;
-    if (name) primeFromListing(name, opts.accessToken, model);
-    yield model;
+    if (name && !own.has(name)) own.set(name, model as FreshRankable);
+  }
+  for (const group of [pool, own]) {
+    for (const model of rankListing([...group.values()], opts.sortBy, opts.sortDirection)) {
+      const name = (model as { name?: string }).name;
+      if (!name || shown.has(name)) continue;
+      shown.add(name);
+      primeFromListing(name, opts.accessToken, model);
+      yield model;
+    }
   }
   for await (const model of inner) {
     const name = (model as { name?: string } | null)?.name;
-    if (name && pool.has(name)) continue;
+    if (name && shown.has(name)) continue;
     yield model;
   }
 }
@@ -990,7 +1010,10 @@ export function useHubModelSearch(
           ...(accessToken ? { credentials: { accessToken } } : {}),
         }) as AsyncGenerator<unknown>;
         return queryProvider
-          ? providerUnslothFirstIterator(queryProvider, orgSearch, providerOpts)
+          ? providerUnslothFirstIterator(queryProvider, orgSearch, {
+              ...providerOpts,
+              includeOrgs: false,
+            })
           : orgSearch;
       }
       // Typed query: drop the task filter so searched models appear despite wrong/missing HF task
@@ -1008,7 +1031,10 @@ export function useHubModelSearch(
         filterPriority,
       ) as AsyncGenerator<unknown>;
       return queryProvider
-        ? providerUnslothFirstIterator(queryProvider, merged, providerOpts)
+        ? providerUnslothFirstIterator(queryProvider, merged, {
+            ...providerOpts,
+            includeOrgs: true,
+          })
         : merged;
     },
     [

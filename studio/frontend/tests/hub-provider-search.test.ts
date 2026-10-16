@@ -6,7 +6,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { matchProviderByQuery, providerSearchTerms } from "../src/features/hub/lib/provider-search.ts";
+import {
+  matchProviderByQuery,
+  providerHubOrgs,
+  providerSearchTerms,
+} from "../src/features/hub/lib/provider-search.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 test("maker names, orgs and common aliases resolve; partial words do not", () => {
@@ -36,4 +40,12 @@ test("both typed-search paths put the maker's Unsloth uploads first, never for o
   assert.match(hook, /isPublisherQuery \|\| !trimmed \? null : matchProviderByQuery\(trimmed\)/);
   assert.equal(hook.match(/providerUnslothFirstIterator\(queryProvider, /g)?.length, 2);
   assert.match(hook, /resolveOwnerProviderLogo\("unsloth", name\.split\("\/"\)\[1\]\)\?\.id === provider\.id/);
+});
+
+test("a maker search also reaches the maker's own Hub orgs, outside Unsloth-only scope", () => {
+  assert.deepEqual(providerHubOrgs(matchProviderByQuery("alibaba")!), ["Qwen"]);
+  assert.deepEqual(providerHubOrgs(matchProviderByQuery("meta")!), ["meta-models", "meta-llama", "facebook"]);
+  const hook = readSrc("features/hub/hooks/use-hub-model-search.ts");
+  assert.match(hook, /providerUnslothFirstIterator\(queryProvider, orgSearch, \{\n\s*\.\.\.providerOpts,\n\s*includeOrgs: false,/);
+  assert.match(hook, /providerUnslothFirstIterator\(queryProvider, merged, \{\n\s*\.\.\.providerOpts,\n\s*includeOrgs: true,/);
 });

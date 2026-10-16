@@ -23,6 +23,29 @@ const QUERY_ALIASES: Readonly<Record<string, readonly string[]>> = {
   cohere: ["cohere", "coherelabs"],
 };
 
+/** The maker's own Hub orgs, where the registry lists none. */
+const HUB_ORGS: Readonly<Record<string, readonly string[]>> = {
+  qwen: ["Qwen"],
+  "zai-org": ["zai-org"],
+  google: ["google"],
+  nvidia: ["nvidia"],
+  "deepseek-ai": ["deepseek-ai"],
+  microsoft: ["microsoft"],
+  moonshotai: ["moonshotai"],
+  mistralai: ["mistralai"],
+  "xai-org": ["xai-org"],
+  minimax: ["MiniMaxAI"],
+  huggingface: ["HuggingFaceTB"],
+  ibm: ["ibm-granite"],
+  cohere: ["CohereLabs"],
+  openai: ["openai"],
+};
+
+/** Hub orgs the maker uploads under, so "alibaba" reaches Qwen's own repos. */
+export function providerHubOrgs(provider: ProviderLogo): readonly string[] {
+  return provider.owners ?? HUB_ORGS[provider.id] ?? [];
+}
+
 const normalize = (value: string) => value.toLowerCase().replace(/[\s._-]+/g, "");
 
 /** The provider a whole query names, or null. Exact names only, so "gem" or "metal" match nothing. */
