@@ -282,9 +282,74 @@ def te_prequant_budget_scale(
         return 1.0
     if not sources:
         return 1.0
+    if _auto_pick(te_quant_mode) and not te_prequant_sources_confirmed(sources):
+        # An automatic default whose hosted file is not confirmed loads the DENSE encoder, so budget that.
+        return 1.0
     if _int8_convrot_only(te_quant_mode, target):
         return te_int8_convrot_budget_scale(fam)
     return TE_PREQUANT_BUDGET_SCALE
+
+
+def _auto_pick(te_quant_mode: Any) -> bool:
+    try:
+        from .diffusion_precision import te_quant_picked_automatically
+
+        return te_quant_picked_automatically(te_quant_mode)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+# How long a Hub-listing verdict is reused, so the several budget calls of one load ask the Hub once.
+_CONFIRMED_TTL_S = 300.0
+_confirmed_cache: dict[tuple, tuple[float, bool]] = {}
+
+
+def _hub_offline() -> bool:
+    try:
+        from huggingface_hub import constants
+
+        return bool(constants.HF_HUB_OFFLINE)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def te_prequant_sources_confirmed(sources: dict[str, "TePrequantSource"]) -> bool:
+    """Whether every hosted pre-cast file in ``sources`` is CONFIRMED: on disk (path, mirror, Hub cache), or listed
+    by the Hub. Offline, or when the Hub cannot answer, only what is on disk counts. An automatic pick budgets the
+    dense encoder unless this holds, since that is what its load falls back to."""
+    import os
+    import time
+
+    pending: dict[str, "TePrequantSource"] = {}
+    for component, source in sources.items():
+        kind = getattr(source, "kind", None)
+        if kind == "path":
+            if not os.path.isfile(os.path.expanduser(str(source.location))):
+                return False
+            continue
+        if kind != "repo" or not getattr(source, "filename", None):
+            return False
+        names = [n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)]
+        if not any(_held_locally(source.location, n, None) for n in names):
+            pending[component] = source
+    if not pending:
+        return True
+    if _hub_offline():
+        return False
+    key = tuple(sorted((c, s.location, tuple(te_candidate_filenames(s))) for c, s in pending.items()))
+    now = time.monotonic()
+    hit = _confirmed_cache.get(key)
+    if hit is not None and now - hit[0] < _CONFIRMED_TTL_S:
+        return hit[1]
+    try:
+        from huggingface_hub import HfApi
+
+        found = te_prequant_hub_files(pending, HfApi())
+        confirmed = all(c in found for c in pending)
+    except Exception:  # noqa: BLE001 - an unanswerable Hub confirms nothing
+        confirmed = False
+    _confirmed_cache[key] = (now, confirmed)
+    return confirmed
 
 
 def _int8_convrot_only(te_quant_mode: Optional[str], target: Any) -> bool:

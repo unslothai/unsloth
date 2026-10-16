@@ -298,3 +298,79 @@ def test_an_automatic_int8_file_that_will_not_build_is_not_retried_as_fp8(monkey
         "Krea-2-Turbo-text_encoder-INT8-ConvRot.safetensors",
         "Krea-2-Turbo-text_encoder-FP8.safetensors",
     ]
+
+
+# ---- memory budget: an automatic default budgets dense until its hosted file is confirmed ------------------------
+
+
+def _budget(monkeypatch, mode, *, held = False, listed = (), offline = False, hub_raises = False):
+    from core.inference.diffusion_precision import AutoTeQuant  # noqa: F401
+
+    fam = _fam("qwen-image")
+    tpq._confirmed_cache.clear()
+    monkeypatch.setattr(tpq, "_held_locally", lambda repo, name, token: held)
+    monkeypatch.setattr(tpq, "_hub_offline", lambda: offline)
+    calls = []
+
+    class _Api:
+        def model_info(self, repo, files_metadata = False):
+            calls.append(repo)
+            if hub_raises:
+                raise OSError("Hub unreachable")
+            sib = [types.SimpleNamespace(rfilename = n, size = 9_000_000_000) for n in listed]
+            return types.SimpleNamespace(siblings = sib)
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", lambda *a, **k: _Api())
+    scale = tpq.te_prequant_budget_scale(
+        fam, te_quant_mode = mode, target = CUDA_BF16, base = fam.base_repo
+    )
+    return scale, calls
+
+
+def _auto_int8():
+    from core.inference.diffusion_precision import AutoTeQuant
+
+    return AutoTeQuant("int8")
+
+
+def test_automatic_default_budgets_dense_while_the_file_is_not_on_the_hub(monkeypatch):
+    scale, calls = _budget(monkeypatch, _auto_int8(), listed = ())
+    assert scale == 1.0
+    assert calls == [_QWEN25VL_INT8[0]]
+
+
+def test_automatic_default_budgets_dense_offline_without_the_file_cached(monkeypatch):
+    scale, calls = _budget(monkeypatch, _auto_int8(), offline = True, listed = (_QWEN25VL_INT8[1],))
+    assert scale == 1.0
+    assert calls == []
+
+
+def test_automatic_default_budgets_dense_when_the_hub_cannot_answer(monkeypatch):
+    scale, _ = _budget(monkeypatch, _auto_int8(), hub_raises = True)
+    assert scale == 1.0
+
+
+def test_automatic_default_budgets_int8_once_the_hub_lists_the_file(monkeypatch):
+    scale, _ = _budget(monkeypatch, _auto_int8(), listed = (_QWEN25VL_INT8[1],))
+    explicit, _ = _budget(monkeypatch, "int8")
+    assert scale == explicit < 1.0
+
+
+def test_automatic_default_budgets_int8_when_the_file_is_cached_without_asking_the_hub(monkeypatch):
+    scale, calls = _budget(monkeypatch, _auto_int8(), held = True, offline = True)
+    assert scale < 1.0
+    assert calls == []
+
+
+def test_automatic_default_inside_a_load_budgets_dense_without_the_file(monkeypatch):
+    with tpq.auto_te_request(True):
+        scale, _ = _budget(monkeypatch, "int8", listed = ())
+    assert scale == 1.0
+
+
+def test_explicit_request_budget_is_unchanged_by_the_confirmation(monkeypatch):
+    scale, calls = _budget(monkeypatch, "int8", listed = ())
+    assert scale < 1.0
+    assert calls == []
