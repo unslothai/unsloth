@@ -1570,3 +1570,19 @@ def test_the_preflight_and_handle_load_share_one_failed_attempt(monkeypatch):
             mamba_ssm_required = False,
         )
     assert len(host.builds) == 1  # one causal-conv1d build; mamba-ssm is wheel-only here
+
+
+@pytest.mark.parametrize("torch_mm", ["2.13", "2.14"])
+def test_no_pinned_source_build_on_torch_213_and_later(monkeypatch, torch_mm):
+    # causal-conv1d 1.6.1 / mamba-ssm 2.3.1 build at C++17; torch 2.13+ headers need C++20, so the
+    # build is a certain multi-minute failure: only the prebuilt wheel serves these.
+    host = _Host(monkeypatch, env = {**_CUDA, "torch_mm": torch_mm}, wheel_url = False)
+    assert host.install() is False
+    assert host.builds == []
+    assert any("cannot be built from source" in message for message in host.statuses)
+
+
+def test_torch_212_keeps_the_source_fallback(monkeypatch):
+    host = _Host(monkeypatch, env = {**_CUDA, "torch_mm": "2.12"}, head = False, build_ok = True)
+    assert host.install() is True
+    assert len(host.builds) == 1

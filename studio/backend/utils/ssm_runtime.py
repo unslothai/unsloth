@@ -33,6 +33,7 @@ from utils.wheel_utils import (
     direct_wheel_url,
     install_wheel,
     is_windows_wheel_env,
+    pinned_source_build_supported,
     probe_torch_wheel_env,
     url_exists,
 )
@@ -783,6 +784,15 @@ def _install_kernel_locked(
         _emit(
             status_cb,
             f"No usable prebuilt {display_name} for this torch; using the model's torch path.",
+        )
+        return False
+    if not pinned_source_build_supported(env):
+        # The pinned sources build at C++17 and torch 2.13+ needs C++20: a certain failure after
+        # minutes of compiling, so only the prebuilt wheel serves this torch.
+        _emit(
+            status_cb,
+            f"No prebuilt {display_name} for torch {env.get('torch_mm')} on this machine, and it "
+            "cannot be built from source for it; using the model's torch path.",
         )
         return False
 

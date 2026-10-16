@@ -85,6 +85,7 @@ from utils.wheel_utils import (
     flash_attn_wheel_url,
     install_wheel,
     is_windows_wheel_env,
+    pinned_source_build_supported,
     probe_torch_wheel_env,
     url_exists,
 )
@@ -1570,6 +1571,15 @@ def _attempt_package_install(
     if not allow_source_build:
         _send_status(event_queue, f"No usable prebuilt {display_name} for this torch; skipping it")
         return False
+    if pypi_version is not None and not pinned_source_build_supported(env):
+        # The pinned causal-conv1d / mamba-ssm sources build at C++17 and torch 2.13+ needs
+        # C++20: a certain failure after minutes of compiling.
+        _send_status(
+            event_queue,
+            f"No prebuilt {display_name} for torch {env.get('torch_mm')}, and it cannot be built "
+            "from source for it; skipping it",
+        )
+        return False
 
     is_hip = env and env.get("hip_version")
     if is_hip and not shutil.which("hipcc"):
@@ -1734,9 +1744,10 @@ def _ensure_mamba_ssm(
     essential: bool = True,
 ) -> None:
     # `required` is the config-resolved answer (resolved_model_is_ssm); the name is the fallback.
-    # `essential`: the model cannot load without it (Nemotron-H, Falcon-H1, Granite-4.0-H). The
-    # others have a torch path and get mamba-ssm only as a prebuilt wheel where unsloth_zoo keeps
-    # its fast path on, never as a source build.
+    # `essential`: the model cannot load without it (Nemotron-H, Falcon-H1, Granite-4.0-H), so a
+    # missing mamba-ssm stops the run here with the error a chat load gives, not deep in the model
+    # load. The others have a torch path and get mamba-ssm only as a prebuilt wheel where
+    # unsloth_zoo keeps its fast path on, never as a source build.
     if required is None:
         required = _model_is_ssm(model_name)
     if not required:
@@ -1744,6 +1755,11 @@ def _ensure_mamba_ssm(
 
     if sys.platform == "win32" and importlib.util.find_spec("triton") is None:
         # mamba_ssm imports triton at load and the wheel goes in --no-deps.
+        if essential:
+            raise RuntimeError(
+                "mamba-ssm, required by this Mamba model, needs Triton on Windows "
+                "(the triton-windows package); install it and reload the model."
+            )
         _send_status(event_queue, "mamba-ssm needs Triton on Windows (triton-windows); skipping it")
         return
 
@@ -1755,11 +1771,20 @@ def _ensure_mamba_ssm(
             return
 
     logger.info("SSM model detected; setting up mamba-ssm after causal-conv1d")
-    _install_package_wheel_first(
+    installed = _install_package_wheel_first(
         event_queue = event_queue,
         **_pinned_kernel_kwargs(MAMBA_SSM),
         allow_source_build = essential,
     )
+    if essential and not installed:
+        env = probe_torch_wheel_env(timeout = 30, include_windows = True)
+        if env and (env.get("cuda_version") or env.get("cuda_major") or env.get("hip_version")):
+            # As inference: a CUDA / ROCm torch that could not get it. A CPU / XPU torch has no
+            # kernel to install and is left to the model's own check.
+            raise RuntimeError(
+                "Could not install mamba-ssm, required by this Mamba model. If this machine is "
+                "offline, run `unsloth install-kernels` once while online, then retry."
+            )
 
 
 def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:

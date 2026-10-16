@@ -131,12 +131,12 @@ _UNSLOTH_PREBUILT_VERSIONS = {
     "mamba_ssm": "2.3.2.post1",
 }
 
-# platform_tag -> (cxx11abi field, published interpreters or None for any). The Windows cu130 torch also reports cxx11abi True; Windows publishes cp313 GIL builds only, and so does linux_aarch64 (upstream's aarch64 wheels stop at torch 2.10).
+# platform_tag -> (cxx11abi field, published interpreters or None for any). The Windows cu130 torch also reports cxx11abi True. Only what the release actually carries: torch 2.13 / 2.14 are published for cp313 GIL builds on every platform (the workflow can build cp311 / cp312 cells, but none has been published, and a URL for one is a 404 in front of the fallback).
 _UNSLOTH_PREBUILT_PLATFORMS: dict[str, tuple[str, frozenset[str] | None]] = {
-    "linux_x86_64": ("TRUE", None),
+    "linux_x86_64": ("TRUE", frozenset({"cp313"})),
     "win_amd64": ("TRUE", frozenset({"cp313"})),
     "linux_aarch64": ("TRUE", frozenset({"cp313"})),
-    "win_arm64": ("TRUE", frozenset({"cp311", "cp312", "cp313"})),
+    "win_arm64": ("TRUE", frozenset({"cp313"})),
 }
 
 # (platform, torch minor) cells outside _UNSLOTH_PREBUILT_TORCH_MM, with their interpreters. Upstream's torch2.10 wheels (and their 2.11 / 2.12 reuse above) have no Windows asset, so win_amd64 torch 2.10, 2.11 and 2.12 are ours; an existing install keeps its minor (a fresh one takes 2.13 on cp313), hence three interpreters.
@@ -250,6 +250,22 @@ def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | No
     return f"{UNSLOTH_PREBUILT_RELEASE_BASE_URL}/{UNSLOTH_PREBUILT_RELEASE_TAG}/{filename}"
 
 
+# The newest torch the pinned causal-conv1d 1.6.1 / mamba-ssm 2.3.1 compile against: torch 2.13
+# raised its headers to C++20 and both build at C++17 (the prebuilt workflow moved to
+# causal-conv1d 1.7.0 and patches mamba-ssm for it, see .github/scripts/patch_mamba_cxx20.py).
+PINNED_SOURCE_BUILD_MAX_TORCH = (2, 12)
+
+
+def pinned_source_build_supported(env: dict[str, str] | None) -> bool:
+    """Whether a source build of the pinned causal-conv1d / mamba-ssm (or their upstream wheels)
+    can work with this torch; from torch 2.13 on only our prebuilt wheels can."""
+    try:
+        major, minor = (int(part) for part in str((env or {}).get("torch_mm") or "").split(".")[:2])
+    except ValueError:
+        return True  # unknown: leave the decision to the build, as before
+    return (major, minor) <= PINNED_SOURCE_BUILD_MAX_TORCH
+
+
 def direct_wheel_url(
     *,
     filename_prefix: str,
@@ -265,8 +281,8 @@ def direct_wheel_url(
     ours = unsloth_prebuilt_wheel_url(filename_prefix = filename_prefix, env = env)
     if ours is not None:
         return ours
-    # No upstream release has a Windows asset.
-    if is_windows_wheel_env(env):
+    # No upstream release has a Windows asset, nor one for torch 2.13 or later (see above).
+    if is_windows_wheel_env(env) or not pinned_source_build_supported(env):
         return None
 
     filename = (

@@ -1545,7 +1545,10 @@ def test_windows_mamba_ssm_needs_triton(monkeypatch):
     install_mock = mock.Mock(return_value = True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
     monkeypatch.setattr(worker.importlib.util, "find_spec", lambda name, *a: None)
-    worker._ensure_mamba_ssm(event_queue = [], model_name = "tiiuae/Falcon-H1-0.5B-Instruct")
+    # A family with a torch path skips it; one that needs it stops (its own test below).
+    worker._ensure_mamba_ssm(
+        event_queue = [], model_name = "ai21labs/Jamba-v0.1", required = True, essential = False
+    )
     install_mock.assert_not_called()
     assert any("triton-windows" in message for message in statuses)
 
@@ -1764,7 +1767,11 @@ def test_optional_mamba_ssm_never_source_builds(monkeypatch, essential):
         "run",
         lambda cmd, **k: builds.append(cmd) or subprocess.CompletedProcess(cmd, 1, ""),
     )
-    worker._ensure_mamba_ssm([], "ai21labs/Jamba-v0.1", required = True, essential = essential)
+    if essential:
+        with pytest.raises(RuntimeError, match = "required by this Mamba model"):
+            worker._ensure_mamba_ssm([], "ai21labs/Jamba-v0.1", required = True, essential = True)
+    else:
+        worker._ensure_mamba_ssm([], "ai21labs/Jamba-v0.1", required = True, essential = False)
     assert bool([cmd for cmd in builds if "mamba-ssm==" in " ".join(cmd)]) is essential
 
 
@@ -1859,3 +1866,62 @@ def test_a_peer_finishing_the_install_while_waiting_is_success(monkeypatch):
         event_queue = [], **worker._pinned_kernel_kwargs(worker.CAUSAL_CONV1D)
     )
     assert not attempt.called
+
+
+@pytest.mark.parametrize("torch_mm", ["2.13", "2.14"])
+def test_no_pinned_source_build_on_torch_213_and_later(monkeypatch, torch_mm):
+    monkeypatch.setattr(worker.sys, "platform", "linux")
+    monkeypatch.setattr(
+        worker,
+        "probe_torch_wheel_env",
+        lambda **k: {"cuda_version": "12.8", "cuda_major": "12", "torch_mm": torch_mm},
+    )
+    monkeypatch.setattr(worker, "direct_wheel_url", lambda **k: None)
+    statuses = []
+    monkeypatch.setattr(worker, "_send_status", lambda queue, message: statuses.append(message))
+    builds = []
+    monkeypatch.setattr(worker._sp, "run", lambda cmd, **k: builds.append(cmd))
+    assert (
+        worker._attempt_package_install(
+            event_queue = [], **worker._pinned_kernel_kwargs(worker.CAUSAL_CONV1D)
+        )
+        is False
+    )
+    assert builds == []
+    assert any("cannot be built from source" in message for message in statuses)
+
+
+# A model that cannot load without mamba-ssm stops the run with the error a chat load gives, not
+# deep inside the model load.
+
+
+def test_a_required_hybrid_without_mamba_ssm_stops_training(monkeypatch):
+    monkeypatch.setattr(worker.sys, "platform", "linux")
+    monkeypatch.setattr(worker, "_install_package_wheel_first", lambda **k: False)
+    with pytest.raises(RuntimeError, match = "Could not install mamba-ssm, required"):
+        worker._ensure_mamba_ssm([], "tiiuae/Falcon-H1-0.5B", required = True, essential = True)
+
+
+def test_a_required_hybrid_on_windows_without_triton_stops_training(monkeypatch):
+    monkeypatch.setattr(worker.sys, "platform", "win32")
+    monkeypatch.setattr(
+        worker.importlib.util, "find_spec", lambda name, *a: None if name == "triton" else object()
+    )
+    with pytest.raises(RuntimeError, match = "triton-windows"):
+        worker._ensure_mamba_ssm([], "tiiuae/Falcon-H1-0.5B", required = True, essential = True)
+
+
+@pytest.mark.parametrize(
+    "essential, env",
+    [
+        (False, {"cuda_version": "12.8"}),  # optional: the torch path
+        (True, {"cuda_version": "", "hip_version": ""}),  # CPU / XPU torch: nothing to install
+    ],
+)
+def test_no_stop_for_optional_families_or_a_non_cuda_torch(monkeypatch, essential, env):
+    monkeypatch.setattr(worker.sys, "platform", "linux")
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
+    monkeypatch.setattr("utils.ssm_runtime._mamba_ssm_floor_reason", lambda: None)
+    monkeypatch.setattr(worker, "_install_package_wheel_first", lambda **k: False)
+    monkeypatch.setattr(worker, "probe_torch_wheel_env", lambda **k: env)
+    worker._ensure_mamba_ssm([], "ai21labs/Jamba-v0.1", required = True, essential = essential)
