@@ -397,7 +397,7 @@ T4_MIB = 15360
 
 @pytest.fixture
 def calls(monkeypatch):
-    seen = {"torch": 0, "list": 0, "uuid_query_fails": False, "list_fails": False}
+    seen = {"torch": 0, "list": 0, "uuid_query_fails": False, "list_fails": False, "list_empty": False}
     run = mod.subprocess.run
 
     def counting_run(cmd, *args, **kwargs):
@@ -406,6 +406,8 @@ def calls(monkeypatch):
                 seen["list"] += 1
                 if seen["list_fails"]:
                     return types.SimpleNamespace(returncode = 9, stdout = "", stderr = "")
+                if seen["list_empty"]:
+                    return types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
             if seen["uuid_query_fails"] and "--query-gpu=index,uuid" in cmd:
                 return types.SimpleNamespace(returncode = 1, stdout = "", stderr = "")
         return run(cmd, *args, **kwargs)
@@ -612,3 +614,65 @@ def test_a_lowercase_uuid_reads_the_slice(host, monkeypatch, mask, expected, chi
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
     assert LlamaCppBackend._get_gpu_memory() == [expected]
     assert LlamaCppBackend._pinned_child_visibility([0]) == child
+
+
+def test_an_empty_listing_is_a_failed_probe(host, monkeypatch, calls):
+    now = [1000.0]
+    monkeypatch.setattr(nvidia.time, "monotonic", lambda: now[0])
+    host(TWO_SLICES, [38000], None)
+    assert nvidia.get_mig_gpu_indices() == {0}
+    now[0] += 61
+    calls["list_empty"] = True
+    assert nvidia.get_mig_gpu_indices() == {0}
+    assert nvidia._mig_indices_cache[3] is False
+    calls["list_empty"] = False
+    now[0] += nvidia._MIG_FAILURE_RETRY_S
+    assert nvidia.get_mig_gpu_indices() == {0}
+    assert calls["list"] == 3
+
+
+def test_a_superseded_listing_is_not_cached(host, monkeypatch, calls):
+    monkeypatch.setenv("UNSLOTH_GPU_QUERY_CACHE", "1")
+    host(TWO_SLICES, [38000], None)
+    assert nvidia.get_physical_gpu_count(gpu_rows_only = True) == 1
+    assert nvidia._listing_taken_at(1e9, _smi_list(TWO_SLICES)) is not None
+    assert nvidia._listing_taken_at(1e9, _smi_list([(GPU0, [])])) is None
+    # The query hands back an older listing than the one the cache now holds.
+    real = nvidia.gpu_query.run_nvidia_smi
+
+    def stale(argv, **kw):
+        real(argv, **kw)
+        return types.SimpleNamespace(returncode = 0, stdout = _smi_list([(GPU0, [])]), stderr = "")
+
+    monkeypatch.setattr(nvidia, "_mig_indices_cache", None)
+    monkeypatch.setattr(nvidia.gpu_query, "run_nvidia_smi", stale)
+    assert nvidia.get_mig_gpu_indices() == set()
+    assert nvidia._mig_indices_cache is None
+
+
+class TestAnEmptyEntryEndsAUuidMask:
+    @pytest.mark.parametrize(
+        "mask, expected",
+        [
+            (f",{GPU1}", [(0, 1, 1)]),
+            (f"{GPU2},,{GPU1}", [(2, 40000, A100_MIB)]),
+            (f"{GPU2},{GPU1},", [(1, 30000, A100_MIB), (2, 40000, A100_MIB)]),
+        ],
+    )
+    def test_the_cli_rows(self, host, monkeypatch, calls, mask, expected):
+        host([(GPU0, []), (GPU1, []), (GPU2, [])], [39000, 30000, 40000], None)
+        monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+        assert LlamaCppBackend._get_gpu_memory() == expected
+        if mask.startswith(","):
+            # Nothing visible: no uuid order or uuid pin is derived from the rows.
+            monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", True)
+            assert LlamaCppBackend._smi_uuid_mask_order() is None
+            assert LlamaCppBackend._smi_uuids_for(mask, [1]) is None
+
+    @pytest.mark.parametrize(
+        "mask, expected", [(f",{GPU1}", []), (f"{GPU1},,{GPU2}", ["1"]), ("1,,2", ["1"])]
+    )
+    def test_the_nvml_rows(self, host, monkeypatch, mask, expected):
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+        assert [r["index"] for r in LlamaCppBackend._nvml_rows_visible(MIXED_NVML)] == expected

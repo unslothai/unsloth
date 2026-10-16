@@ -15002,12 +15002,14 @@ class LlamaCppBackend:
             ]
             return min(slices, key = free_mib) if slices else r
 
-        tokens = [t.strip() for t in (raw or "").split(",") if t.strip()]
+        tokens = [t.strip() for t in (raw or "").split(",")] if raw else []
         picked: list[dict] = []
         if raw is None:
             picked = [as_cuda_sees(r) for r in parents]
         seen: set[int] = set()
         for token in tokens:
+            if not token:
+                break  # an empty entry ends the mask, as CUDA reads it
             prefix = re.match(r"\+?\d+", token)
             # Case-insensitive, as the nvidia-smi uuid matcher reads the same mask.
             low = token.lower()

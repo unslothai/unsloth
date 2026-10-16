@@ -59,11 +59,10 @@ def _uuid_visible_ordinal_map(
     parent_cuda_visible_devices: Optional[str], gpu_rows: list[tuple[int, str]]
 ) -> Optional[dict[int, int]]:
     """Resolve an ordered full-GPU UUID mask against nvidia-smi rows."""
-    tokens = [
-        token.strip().lower()
-        for token in (parent_cuda_visible_devices or "").split(",")
-        if token.strip()
-    ]
+    tokens = [token.strip().lower() for token in (parent_cuda_visible_devices or "").split(",")]
+    # CUDA stops at the first empty entry: a leading one hides every GPU, so leave it unresolved.
+    if "" in tokens:
+        tokens = tokens[: tokens.index("")]
     if not tokens or any(not token.startswith("gpu-") for token in tokens):
         return None
 
@@ -140,9 +139,9 @@ def get_physical_gpu_count(gpu_rows_only: bool = False) -> Optional[int]:
         )
         if result.returncode == 0 and result.stdout.strip():
             # Same listing get_mig_gpu_indices parses: publish it so memory polls reuse it.
-            _store_mig_gpu_indices(
-                _parse_mig_gpu_indices(result.stdout), gen, at = _listing_taken_at(started)
-            )
+            at = _listing_taken_at(started, result.stdout)
+            if at is not None:
+                _store_mig_gpu_indices(_parse_mig_gpu_indices(result.stdout), gen, at = at)
             lines = result.stdout.strip().splitlines()
             if gpu_rows_only:
                 return sum(1 for line in lines if line.startswith("GPU "))
@@ -176,14 +175,17 @@ def _store_mig_gpu_indices(
         _mig_indices_cache = (gen, time.monotonic() if at is None else at, indices, answered)
 
 
-def _listing_taken_at(started: float) -> float:
-    """When the ``-L`` answer just read was produced: the gpu_query entry's start when it
-    served a cached one, else when this query began."""
+def _listing_taken_at(started: float, stdout: Any) -> Optional[float]:
+    """When the ``-L`` answer ``stdout`` was produced: the start of the gpu_query entry
+    holding exactly that answer, or when this query began with the cache off. None when
+    the cache no longer holds it (a newer listing replaced it): not safe to publish."""
+    if not gpu_query.enabled():
+        return started
     try:
-        at = gpu_query.answered_at([_nvidia_smi_executable(), "-L"])
+        at = gpu_query.answered_at([_nvidia_smi_executable(), "-L"], stdout)
     except Exception:
-        at = None
-    return started if at is None else min(at, started)
+        return None
+    return None if at is None else min(at, started)
 
 
 def _parse_mig_gpu_indices(stdout: Any) -> frozenset[int]:
@@ -218,18 +220,21 @@ def get_mig_gpu_indices() -> set[int]:
         if now - hit[1] < (ttl if hit[3] else min(ttl, _MIG_FAILURE_RETRY_S)):
             return set(hit[2])
     gen = gpu_query._static_gen
-    started = time.monotonic()
-    indices = _query_mig_gpu_indices()
-    if indices is None:
+    answer = _query_mig_gpu_indices()
+    if answer is None:
         last = hit[2] if hit is not None and hit[0] == gen else frozenset()
         _store_mig_gpu_indices(last, gen, at = time.monotonic(), answered = False)
         return set(last)
-    _store_mig_gpu_indices(indices, gen, at = _listing_taken_at(started))
+    indices, at = answer
+    if at is not None:
+        _store_mig_gpu_indices(indices, gen, at = at)
     return set(indices)
 
 
-def _query_mig_gpu_indices() -> Optional[frozenset[int]]:
-    """The parsed listing, or None when nvidia-smi could not answer."""
+def _query_mig_gpu_indices() -> Optional[tuple[frozenset[int], Optional[float]]]:
+    """The parsed listing and when it was taken (None: superseded, do not cache), or None
+    when nvidia-smi could not answer. Empty output is a failed answer, as in gpu_query."""
+    started = time.monotonic()
     try:
         result = gpu_query.run_nvidia_smi(
             [_nvidia_smi_executable(), "-L"],
@@ -243,9 +248,9 @@ def _query_mig_gpu_indices() -> Optional[frozenset[int]]:
         )
     except Exception:
         return None
-    if result.returncode != 0:
+    if result.returncode != 0 or not isinstance(result.stdout, str) or not result.stdout.strip():
         return None
-    return _parse_mig_gpu_indices(result.stdout)
+    return _parse_mig_gpu_indices(result.stdout), _listing_taken_at(started, result.stdout)
 
 
 def get_primary_gpu_utilization() -> dict[str, Any]:
