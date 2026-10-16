@@ -765,9 +765,9 @@ def patch_sft_trainer() -> None:
         installed = _INSTALLED_PARALLELISM_CONFIG[1] if _INSTALLED_PARALLELISM_CONFIG else None
         if installed is None or getattr(state, "parallelism_config", None) is not installed:
             return original_save_model(self, *args, **kwargs)
-        # transformers < 5 checks parallelism_config before FSDP and would skip the FSDP2 state dict
-        # gather; save under the config the user had, as FSDP2 without CP does.
-        state.parallelism_config = _INSTALLED_PARALLELISM_CONFIG[0]
+        # transformers < 5 takes any non-None parallelism_config before FSDP and skips the FSDP2 state
+        # dict gather, so save without one; even a user dp_shard config would take that branch.
+        state.parallelism_config = None
         try:
             return original_save_model(self, *args, **kwargs)
         finally:

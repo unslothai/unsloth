@@ -45,7 +45,7 @@ def _accelerator_less_import():
     spec.loader.exec_module(importlib.util.module_from_spec(spec))
 
 
-def _worker(rank, port, out_dir):
+def _worker(rank, port, out_dir, user_config):
     _accelerator_less_import()
     os.environ.update(
         RANK = str(rank),
@@ -75,6 +75,11 @@ def _worker(rank, port, out_dir):
             parallelism_config = None,
             fsdp_plugin = types.SimpleNamespace(state_dict_type = "FULL_STATE_DICT"),
         )
+        if user_config:
+            # A dp_shard only ParallelismConfig the user passed: still non-None for transformers 4.x.
+            from accelerate.parallelism_config import ParallelismConfig
+
+            state.parallelism_config = ParallelismConfig(dp_shard_size = 2)
         cp._install_fsdp2_parallelism_config(state, manager)
         installed = state.parallelism_config
 
@@ -150,12 +155,13 @@ def _worker(rank, port, out_dir):
         dist.destroy_process_group()
 
 
-def test_save_model_gathers_fsdp2_lora_under_context_parallel(tmp_path):
+@pytest.mark.parametrize("user_config", [False, True])
+def test_save_model_gathers_fsdp2_lora_under_context_parallel(tmp_path, user_config):
     import json
 
     import torch.multiprocessing as mp
 
-    mp.spawn(_worker, args = (_free_port(), str(tmp_path)), nprocs = 2, join = True)
+    mp.spawn(_worker, args = (_free_port(), str(tmp_path), user_config), nprocs = 2, join = True)
     with open(tmp_path / "result.json") as f:
         results = json.load(f)
     for r in results:
