@@ -102,7 +102,7 @@ def run_embedding(monkeypatch, tmp_path):
     monkeypatch.setattr(worker, "_start_worker_stop_poller", lambda *a, **k: None)
     monkeypatch.setattr(worker, "_emit_resource_provenance", lambda *a, **k: None)
 
-    def run(csv_text):
+    def run(csv_text, error = None, **config):
         path = tmp_path / "pairs.csv"
         path.write_text(csv_text)
         events = []
@@ -115,12 +115,13 @@ def run_embedding(monkeypatch, tmp_path):
                 "local_datasets": [str(path)],
                 "output_dir": "embedding-csv-cells",
                 "max_steps": 1,
+                **config,
             },
         )
         errors = [event["error"] for event in events if event["type"] == "error"]
-        assert errors == []
+        assert errors == ([error] if error else [])
         warnings = [event["message"] for event in events if event["type"] == "warning"]
-        return trained["train_dataset"], warnings
+        return trained.get("train_dataset"), warnings
 
     return run
 
@@ -154,3 +155,30 @@ def test_embedding_csv_score_column_still_reaches_the_trainer_as_numbers(run_emb
         {"sentence1": "A dog runs.", "sentence2": "Rain falls.", "score": 0.0},
     ]
     assert warnings == []
+
+
+def test_embedding_csv_label_columns_parse_like_pandas(run_embedding):
+    dataset, _ = run_embedding("s1,s2,label,score\naa,bb,True, 0.5\ncc,dd,False,0.25 \n")
+
+    assert dataset.to_list() == [
+        {"s1": "aa", "s2": "bb", "label": 1.0, "score": 0.5},
+        {"s1": "cc", "s2": "dd", "label": 0.0, "score": 0.25},
+    ]
+
+
+def test_embedding_csv_with_no_text_left_fails_instead_of_training_nothing(run_embedding):
+    run_embedding(
+        "s1,s2,\naa,bb,\ncc,dd,\n",
+        error = "Failed to load dataset: All 2 rows have an empty text cell.",
+    )
+
+
+def test_embedding_csv_slice_counts_rows_of_the_file(run_embedding):
+    dataset, warnings = run_embedding(
+        "q,a\nq0,a0\nq1,\nq2,a2\nq3,a3\nq4,a4\n",
+        dataset_slice_start = 1,
+        dataset_slice_end = 3,
+    )
+
+    assert dataset.to_list() == [{"q": "q2", "a": "a2"}, {"q": "q3", "a": "a3"}]
+    assert warnings == ["Dropped 1 of 3 rows because a text cell was empty."]
