@@ -114,10 +114,42 @@ class DiffusionTrainer(UnslothTrainer):
         self._diffusion_metrics = defaultdict(list)
         diffusion_compile_mode(args)  # reject a bad value before any work
         super().__init__(model, args, *pos, **kwargs)
-        # The loss is ours, so the Trainer must scale it for gradient accumulation itself.
-        self.model_accepts_loss_kwargs = False
+        # A globally normalized loss already includes gradient accumulation in its denominator.
+        self.model_accepts_loss_kwargs = self._uses_global_masked_tokens()
         if diffusion_compile_mode(args) == "full" and profile.compile_backbone:
             compile_backbone_layers(unwrap_diffusion_model(self.model))
+
+    def _uses_global_masked_tokens(self):
+        return getattr(self.diffusion_profile, "loss_normalization", None) == "global_masked_tokens"
+
+    def get_batch_samples(
+        self,
+        epoch_iterator,
+        num_batches,
+        device = None,
+    ):
+        if not self._uses_global_masked_tokens():
+            return super().get_batch_samples(epoch_iterator, num_batches, device)
+
+        # Labels count eligible targets, not the random subset used by the diffusion loss.
+        # Keep only inputs and noise for the window; forwards/backwards still run one microbatch at a time.
+        batch_samples = []
+        counts = []
+        for _ in range(num_batches):
+            try:
+                inputs = next(epoch_iterator)
+            except StopIteration:
+                break
+            inputs = self._prepare_inputs(inputs)
+            prepared = self.diffusion_profile.prepare_batch(self.model, inputs, self.args)
+            batch_samples.append({**inputs, "_diffusion_masked_batch": prepared})
+            counts.append(prepared[3].sum())
+        if not counts:
+            return batch_samples, None
+        num_items_in_batch = torch.stack(counts).sum()
+        if self.args.average_tokens_across_devices and self.args.world_size > 1:
+            num_items_in_batch = self.accelerator.gather(num_items_in_batch).sum()
+        return batch_samples, num_items_in_batch
 
     def compute_loss(
         self,
@@ -129,6 +161,13 @@ class DiffusionTrainer(UnslothTrainer):
         loss, outputs, metrics = self.diffusion_profile.compute_loss(
             model, inputs, self.args, num_items_in_batch = num_items_in_batch
         )
+        if (
+            self._uses_global_masked_tokens()
+            and num_items_in_batch is not None
+            and self.args.average_tokens_across_devices
+        ):
+            # DDP averages gradients; a denominator gathered across ranks needs a summed numerator.
+            loss = loss * self.accelerator.num_processes
         mode = "train" if model.training else "eval"
         # Kept on device; one host sync per log() instead of one per metric per micro-batch.
         for key, value in (metrics or {}).items():
