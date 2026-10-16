@@ -1777,6 +1777,14 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             # trigger the mutually-exclusive param checks (trl grpo_config.py#L499-L502).
             if not isinstance(training_args, TrainingArguments):
                 config = config_class(**config_dict)
+            elif not isinstance(training_args, config_class):
+                # A plain TrainingArguments (the old notebook shape): trl rebuilds its config from
+                # to_dict(), which drops anything set as an attribute, so build it here the way trl
+                # would, moved kwargs included. to_dict() masks hub_token.
+                dict_args = training_args.to_dict()
+                dict_args["hub_token"] = training_args.hub_token
+                dict_args.pop("push_to_hub_token", None)
+                config = config_class(**{**dict_args, **additional_config_kwargs})
             else:
                 # Every trl config subclasses TrainingArguments, so this is the branch real calls take and
                 # config_dict was going nowhere: set the moved values on the caller's config rather than rebuild it.

@@ -561,3 +561,31 @@ def test_auto_packing_failure_still_leaves_the_wrapper_installed():
             assert guarded, "_patch_sft_trainer_auto_packing must be wrapped in try/except"
             return
     raise AssertionError("_patch_trl_trainer not found")
+
+
+def test_a_plain_training_arguments_keeps_the_moved_kwargs(tmp_path):
+    """The old notebook shape: transformers.TrainingArguments plus SFT kwargs on the trainer. trl
+    rebuilds a plain TrainingArguments with SFTConfig(**args.to_dict()), which drops anything set
+    as an attribute, so packing, the text field and the length used to fall back to defaults."""
+    from transformers import TrainingArguments
+
+    Trainer, config_class = _wrapped_recording()
+    args = TrainingArguments(output_dir = str(tmp_path), report_to = [], hub_token = "hf_FAKE")
+
+    trainer = Trainer(
+        model = _Bare(),
+        args = args,
+        packing = True,
+        max_length = 4096,
+        dataset_text_field = "body",
+    )
+
+    seen = trainer.args
+    if not isinstance(seen, config_class):
+        # What trl's SFTTrainer does with a plain TrainingArguments.
+        rebuilt = seen.to_dict()
+        rebuilt["hub_token"] = seen.hub_token
+        seen = config_class(**rebuilt)
+    assert (seen.packing, seen.max_length, seen.dataset_text_field) == (True, 4096, "body")
+    assert seen.hub_token == "hf_FAKE"
+    assert seen.output_dir == str(tmp_path)
