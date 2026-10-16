@@ -1246,25 +1246,51 @@ def _plan_placement(
             resident_floor = _kv_floor_at(
                 layout, opts, kv_bytes_floor, n_ctx, resident_ctx, resident_knobs.n_parallel
             )
-            return _finish(
-                layout,
-                opts,
-                resident_ctx,
-                [],
-                False,
-                host_ram_bytes,
-                quantised = resident_quantised,
-                kv_bytes_floor = resident_floor if resident_floor is not None else 0,
-                knobs = resident_knobs,
-                kv_layer_weights = kv_layer_weights,
-                requested_ctx = n_ctx,
-                reason = (
-                    f"shrank context {n_ctx} -> {min(shrunk, n_ctx)} to keep every tensor "
-                    "resident, which outruns a larger spilled context"
-                ),
+            # max_context_for prices the POOLED budget, and a resident plan pins -ngl -1 --fit off
+            # with llama.cpp's default split, so one card's row share can still overflow it. The
+            # same per-device test _plan_at applies; a miss falls through to the ladder below.
+            uneven = (
+                _per_device_shortfall(
+                    layout,
+                    opts,
+                    resident_ctx,
+                    {},
+                    False,
+                    vram_bytes_per_device,
+                    quantised = resident_quantised,
+                    kv_bytes_floor = resident_floor if resident_floor is not None else 0,
+                    split_weights_per_device = split_weights_per_device or vram_bytes_per_device,
+                    kv_layer_weights = kv_layer_weights,
+                    extra_on_device0 = _outside_layout_bytes(opts, resident_knobs),
+                    n_seq = resident_knobs.n_parallel,
+                )
+                if len(vram_bytes_per_device) > 1
+                else None
             )
+            if uneven is None:
+                return _finish(
+                    layout,
+                    opts,
+                    resident_ctx,
+                    [],
+                    False,
+                    host_ram_bytes,
+                    quantised = resident_quantised,
+                    kv_bytes_floor = resident_floor if resident_floor is not None else 0,
+                    knobs = resident_knobs,
+                    kv_layer_weights = kv_layer_weights,
+                    requested_ctx = n_ctx,
+                    reason = (
+                        f"shrank context {n_ctx} -> {min(shrunk, n_ctx)} to keep every tensor "
+                        "resident, which outruns a larger spilled context"
+                    ),
+                )
 
     declined: Optional[Plan] = None
+    # A multi-device _plan_at that could not show a per-device fit returns an unpriced abstain
+    # where the single-device path returns None, so it is kept as the answer of last resort and
+    # the search goes on: the quantised cache or a smaller context may place on every card.
+    unplaced: Optional[Plan] = None
     for quantised in _kv_modes(opts):
         plan = _plan_at(
             layout,
@@ -1280,6 +1306,9 @@ def _plan_placement(
         )
         if plan is None:
             continue
+        if _unplaced(plan):
+            unplaced = unplaced or plan
+            continue
         if not (plan.declined_by_gate and may_shrink and not plan.veto):
             return plan
         declined = declined or plan
@@ -1290,9 +1319,12 @@ def _plan_placement(
     # above it, the answer is --fit on at the context asked for, as at the first attempt. A load
     # that placed at that context returned above; a shorter request is not affected.
     requested_slot_ctx = n_ctx if opts.kv_unified else n_ctx // max(1, opts.n_parallel)
+    # Like _cost_gate, only when there is a fitter to leave it to: under a user split across
+    # several devices common/fit.cpp aborts, so "--fit on" would be the launch as typed.
     if (
         may_shrink
         and opts.require_cost_win
+        and opts.rank_against_fitter
         and layout.is_moe
         and opts.moe_long_prompt_ctx > 0
         and requested_slot_ctx >= opts.moe_long_prompt_ctx
@@ -1310,7 +1342,7 @@ def _plan_placement(
 
     if may_shrink and len(vram_bytes_per_device) > 1 and layout.has_swa:
         may_shrink = False
-        if declined is None:
+        if declined is None and unplaced is None:
             return Plan(
                 reason = (
                     "the load does not fit at the requested context and a windowed cache "
@@ -1348,7 +1380,7 @@ def _plan_placement(
             )
             top = min(hi, n_ctx) // 256 * 256
             hi = top
-            if declined is not None and hi >= n_ctx:
+            if (declined is not None or unplaced is not None) and hi >= n_ctx:
                 hi = (n_ctx - step) // 256 * 256
             rungs: list[int] = []
             ctx = hi
@@ -1380,11 +1412,18 @@ def _plan_placement(
                 # here too, at the context asked for, as it does at the first attempt above.
                 if plan is not None and plan.veto:
                     return replace(plan, n_ctx = n_ctx)
+                # A per-device miss on one rung says nothing about the rungs below it: the pooled
+                # ceiling is an upper bound, not a per-device fit.
+                if plan is not None and _unplaced(plan):
+                    unplaced = unplaced or replace(plan, n_ctx = n_ctx)
+                    continue
                 if plan is not None and not plan.declined_by_gate:
                     return plan
 
     if declined is not None:
         return declined
+    if unplaced is not None:
+        return unplaced
 
     if budget <= 0:
         return Plan(reason = "no creditable VRAM after per-device overhead and reserved allocations")
@@ -1407,6 +1446,13 @@ def _plan_placement(
             "keeping mmap so llama.cpp can page rather than be OOM-killed. "
             "A smaller quant or a shorter context is the fix, not more offload"
         ),
+    )
+
+
+def _unplaced(plan: Plan) -> bool:
+    """``_plan_at``'s multi-device abstain: no per-device fit shown, nothing priced or gated."""
+    return (
+        not plan.priced and not plan.changed and not plan.declined_by_gate and not plan.insufficient
     )
 
 
