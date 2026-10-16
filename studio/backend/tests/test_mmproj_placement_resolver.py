@@ -408,3 +408,41 @@ def test_a_zero_offload_launch_keeps_gpus_for_an_earlier_projector_device(
 ):
     cmd = ["/fake/llama-server", "-m", "m.gguf", "--mmproj", "p.gguf", "-ngl", "0", *extra_args]
     assert LlamaCppBackend._zero_offload_keeps_gpu_visible(cmd, env) is expected
+
+
+# --- and for every main / draft device name ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, expected",
+    [
+        # arg.cpp parses each --device / -devd / LLAMA_ARG_DEVICE as it reads it (env
+        # first, then argv; parse_device_list), so a GPU before a final none must resolve.
+        (["--mmproj-device", "none", "--device", "CUDA0", "--device", "none"], {}, True),
+        (["--mmproj-device", "none", "-dev=CUDA0", "-dev", "none"], {}, True),
+        (["--mmproj-device", "none", "--device", "none"], {"LLAMA_ARG_DEVICE": "CUDA0"}, True),
+        (
+            [
+                "--mmproj-device",
+                "none",
+                "--spec-draft-device",
+                "CUDA0",
+                "--spec-draft-device",
+                "none",
+            ],
+            {},
+            True,
+        ),
+        (["--mmproj-device", "none", "-devd", "CUDA0", "--device-draft=none"], {}, True),
+        # Controls: only none / cpu ever named.
+        (["--mmproj-device", "none", "--device", "none", "-devd", "none"], {}, False),
+        (["--mmproj-device", "none", "--device", "cpu"], {"LLAMA_ARG_DEVICE": "none"}, False),
+        (["--mmproj-device", "none"], {}, False),
+    ],
+)
+def test_a_zero_offload_launch_keeps_gpus_for_an_earlier_main_or_draft_device(
+    extra_args, env, expected
+):
+    cmd = ["/fake/llama-server", "-m", "m.gguf", "--mmproj", "p.gguf", "-ngl", "0", *extra_args]
+    assert LlamaCppBackend._cmd_has_gpu_device_pin(cmd, env) is expected
+    assert LlamaCppBackend._zero_offload_keeps_gpu_visible(cmd, env) is expected

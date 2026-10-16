@@ -2140,3 +2140,66 @@ def test_inherited_owner_paths_get_the_same_managed_check(monkeypatch, tmp_path)
     fake = str(tmp_path / "ws/models--unsloth--B-GGUF/snapshots/x/B-Q4_K_M.gguf")
     with pytest.raises(HTTPException):
         routes._resolve_inherited_extra_args(LoadRequest(model_path = fake), config, fake, None)
+
+
+# --- every device value arg.cpp parses must resolve in the child's mask -------------------
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [
+        ["--mmproj-device", "none", "--device", "CUDA0", "--device", "none"],
+        ["--mmproj-device", "none", "--spec-draft-device", "CUDA0", "--spec-draft-device", "none"],
+    ],
+    ids = ["main", "draft"],
+)
+def test_a_zero_offload_load_keeps_an_overridden_gpu_device_visible(tmp_path, extras):
+    """parse_device_list (common/arg.cpp) resolves each --device / -devd value as it reads
+    it, so CUDA_VISIBLE_DEVICES=-1 fails the earlier CUDA0 with "invalid device" though
+    the final none places nothing on the card."""
+    backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
+    env = _launch(
+        backend, gguf, n_ctx = 4096, gpu_memory_mode = "manual", gpu_layers = 0, extra_args = extras
+    )["env"]
+    assert env.get("CUDA_VISIBLE_DEVICES") != "-1", env.get("CUDA_VISIBLE_DEVICES")
+
+
+def test_a_zero_offload_load_with_only_none_devices_still_hides_the_gpus(tmp_path):
+    # Control: nothing named a GPU, so the deliberate CPU-only mask stands.
+    backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
+    env = _launch(
+        backend,
+        gguf,
+        n_ctx = 4096,
+        gpu_memory_mode = "manual",
+        gpu_layers = 0,
+        extra_args = ["--mmproj-device", "none", "--device", "none", "-devd", "none"],
+    )["env"]
+    assert env.get("CUDA_VISIBLE_DEVICES") == "-1"
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [
+        ["--mmproj-offload", "--mmproj-device", "CUDA1", "--mmproj-device", "none"],
+        ["--mmproj-offload", "-mmdev=CUDA1", "-mmdev", "none"],
+    ],
+    ids = ["separate", "inline"],
+)
+def test_a_pinned_mask_widens_for_an_overridden_projector_device(tmp_path, extras):
+    """The final none puts the projector on the host, so the planner fits the model on
+    GPU 0 alone; arg.cpp still resolves the earlier CUDA1, which a mask of 0 hides
+    ("invalid device"). The widening covers every parsed occurrence."""
+    backend, gguf = _backend(
+        tmp_path,
+        memory = [(0, 12_000, 24_000), (1, 12_000, 24_000)],
+        model_bytes = 8 * GIB,
+        mmproj_bytes = 6 * GIB,
+    )
+    backend._resolve_visible_physical_ids = lambda *_a, **_kw: [0, 1]
+    got = _launch(backend, gguf, n_ctx = 4096, extra_args = extras)
+    cmd, env = got["cmd"], got["env"]
+    assert env.get("CUDA_VISIBLE_DEVICES") == "0,1", env.get("CUDA_VISIBLE_DEVICES")
+    # The main model stays on the card the planner chose; the projector stays on the host.
+    assert cmd[len(cmd) - 1 - cmd[::-1].index("--device") + 1] == "CUDA0"
+    assert "none" in cmd[cmd.index("--device") - 2 : cmd.index("--device")], cmd
