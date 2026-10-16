@@ -21,7 +21,11 @@ test("the panel X hides the panel instead of turning RAG off", () => {
 test("turning RAG on, picking a source or switching chats shows the panel again", () => {
   assert.match(store, /ragEnabled,\n\s*ragPanelHidden: false,/);
   assert.match(store, /ragSource,\n\s*ragPanelHidden: false,/);
-  assert.match(bar, /setRagPanelHidden\(false\);\n\s*\}, \[threadItemId\]\);/);
+  // Only a real chat switch: a remount in the same chat (the first send moves the composer) keeps it hidden.
+  assert.match(
+    bar,
+    /if \(panelThreadItemId !== null && panelThreadItemId !== threadItemId\) \{\n\s*useChatRuntimeStore\.getState\(\)\.setRagPanelHidden\(false\);\n\s*\}\n\s*panelThreadItemId = threadItemId;/,
+  );
   assert.match(thread, /if \(ragEnabled && ragPanelHidden\) \{\n\s*setRagPanelHidden\(false\);\n\s*return;/);
   // Compare's + menu too: the regular view stays mounted behind it.
   assert.match(
