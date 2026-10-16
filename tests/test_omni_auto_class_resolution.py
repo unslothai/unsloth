@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Auto-class resolution for omni checkpoints, and what it must NOT move.
-
-`Qwen/Qwen3-Omni-30B-A3B-Instruct` names `Qwen3OmniMoeForConditionalGeneration`
-and so reads as a VLM, but transformers registers `qwen3_omni_moe` only under
-`AutoModelForTextToWaveform`. Every other auto class raises "Unrecognized
-configuration class" on it, which is a hard load failure before the weights are
-touched.
-
-The resolver is consulted ONLY when the already-chosen class has no mapping, so
-these tests spend as much effort on the models that must keep taking exactly
-the branch they take today as on the one that changes.
-"""
+"""The omni resolver runs only if the chosen auto class has no mapping, leaving other branches as-is."""
 
 import pytest
 
@@ -50,7 +39,6 @@ def test_omni_resolves_to_the_class_its_family_registered():
     config = _omni_config()
     resolved = _resolve_omni_auto_model(config)
     assert resolved is not None
-    # and it really maps, rather than merely being a different name to fail on
     assert resolve_model_class(resolved, config) is not None
 
 
@@ -104,7 +92,7 @@ class _CannotAnswer:
 
 
 class _WrongSignature:
-    def get_input_embeddings(self, input_ids):  # remote code does this
+    def get_input_embeddings(self, input_ids):
         raise AssertionError("must not be reached")
 
 
@@ -116,9 +104,9 @@ class _Normal:
 @pytest.mark.parametrize(
     "model, expected",
     [
-        (_CannotAnswer(), None),  # transformers 5 base impl raises
-        (_WrongSignature(), None),  # TypeError, not AttributeError
-        (object(), None),  # method absent entirely
+        (_CannotAnswer(), None),
+        (_WrongSignature(), None),
+        (object(), None),
         (_Normal(), "embeddings"),
     ],
 )
@@ -147,7 +135,6 @@ def test_offload_embedding_declines_a_model_it_cannot_inspect(requested, capsys)
     assert _resolve_offload_embedding(_NoEmbeddings(), requested) is False
     printed = capsys.readouterr().out
     if requested == "auto":
-        # the default declines silently: nobody asked for it
         assert "Not offloading embeddings" not in printed
     else:
         assert "Not offloading embeddings" in printed
@@ -163,7 +150,6 @@ def test_omni_reaches_the_vllm_guard_rather_than_the_language_model_path():
     assert not hasattr(config, "vision_config"), "premise: vision lives under thinker_config"
     assert "qwen3_omni_moe" not in VLLM_SUPPORTED_VLM, "premise: vLLM does not support it"
 
-    # what is_vlm_config now computes for it
     resolved = _resolve_omni_auto_model(config)
     is_vlm = resolved in [IMAGE_TEXT_CLASS]
     needs_processor = is_vlm or resolved in _multimodal_auto_classes()
@@ -219,7 +205,7 @@ def test_a_getter_that_cannot_take_zero_arguments_is_skipped():
         def get_input_embeddings(self, input_ids):
             raise AssertionError("must not be reached")
 
-    _tiny(WrongSignature).enable_input_require_grads()  # must not raise
+    _tiny(WrongSignature).enable_input_require_grads()
 
 
 def test_a_normal_model_still_gets_its_hook():
@@ -233,3 +219,51 @@ def test_a_normal_model_still_gets_its_hook():
     model = _tiny(Normal)
     model.enable_input_require_grads()
     assert model.embed._forward_hooks, "the input-gradient hook must be registered"
+
+
+class _Routed(Exception):
+    pass
+
+
+def _route(tmp_path, monkeypatch, config):
+    import json
+    import unsloth.models.loader as loader
+
+    (tmp_path / "config.json").write_text(json.dumps(config.to_dict()))
+
+    def capture(*args, **kwargs):
+        raise _Routed(kwargs.get("auto_model"))
+
+    monkeypatch.setattr(loader.FastBaseModel, "from_pretrained", staticmethod(capture))
+    # Its pinned host buffer needs an accelerator; CPU CI has none.
+    monkeypatch.setattr(loader, "apply_unsloth_gradient_checkpointing", lambda value, *args: value)
+    # The load repoints transformers' LOSS_MAPPING at Unsloth's Triton loss for the whole process
+    # before the route is captured. Routing needs none of it, and left behind it sends every later
+    # CPU forward with labels in this worker into Triton (test_omni_text_only_load failed that way).
+    monkeypatch.setattr(loader, "patch_loss_functions", lambda *args, **kwargs: None)
+    with pytest.raises(_Routed) as routed:
+        loader.FastModel.from_pretrained(str(tmp_path), load_in_4bit = False)
+    return routed.value.args[0]
+
+
+@pytest.mark.parametrize(
+    "architecture", ["Qwen2_5OmniModel", "Qwen2_5OmniForConditionalGeneration"]
+)
+def test_qwen2_5_omni_routes_to_a_multimodal_class(tmp_path, monkeypatch, architecture):
+    """Qwen/Qwen2.5-Omni-3B / -7B name `Qwen2_5OmniModel` and nest vision under thinker_config (#2325)."""
+    config_class = getattr(transformers, "Qwen2_5OmniConfig", None)
+    if config_class is None:
+        pytest.skip("this transformers has no Qwen2.5-Omni")
+    config = config_class()
+    config.architectures = [architecture]
+    auto_model = _route(tmp_path, monkeypatch, config)
+    assert auto_model is not transformers.AutoModelForCausalLM
+    assert resolve_model_class(auto_model, config) is not None
+
+
+def test_a_text_checkpoint_still_routes_to_causal_lm(tmp_path, monkeypatch):
+    config = transformers.Qwen2Config(
+        hidden_size = 8, num_hidden_layers = 1, num_attention_heads = 1, intermediate_size = 8
+    )
+    config.architectures = ["Qwen2ForCausalLM"]
+    assert _route(tmp_path, monkeypatch, config) is transformers.AutoModelForCausalLM

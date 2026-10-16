@@ -35,6 +35,14 @@ def test_the_shell_is_isolated():
     assert "X-Unsloth-Browser-Kind" in browser_mod.EXPOSED_HEADERS
 
 
+def test_the_shells_page_may_go_fullscreen_and_nothing_more():
+    shell = browser_mod._FRAME_HTML
+    assert 'page.setAttribute("sandbox", "allow-scripts allow-forms");' in shell
+    assert 'page.setAttribute("allowfullscreen", "");' in shell
+    assert "allow-same-origin" not in shell
+    assert 'setAttribute("allow",' not in shell and "page.allow" not in shell
+
+
 def test_the_print_shell_runs_only_its_own_script():
     import base64
     import hashlib
@@ -85,6 +93,56 @@ def test_the_shell_guards():
     # Links and forms go through the proxy only when the page's own handlers leave them alone.
     assert shell.count("unlessCancelled(event, ") == 2
     assert "requestSubmit = " not in shell
+
+
+def test_the_shell_tells_the_panel_when_the_sandbox_refuses_a_feature():
+    # Checked in Chromium, Firefox and WebKit, as this suite has no browser to run the shell in.
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    assert boot.count('post({ type: "needsBrowser" });') == 1
+    for guard in (
+        "if (refused) return;",
+        'for (const name of ["open", "deleteDatabase", "databases"])',
+        "IDBFactory.prototype[name] = function (...args) {",
+        'if (error?.name !== "SecurityError") return false;',
+        "refusals.add(error);",
+        'return name === "databases" ? result.catch(',
+        "if (event.error ? refusals.has(event.error) : indexedDbThrew) tellRefused();",
+        "if (refusals.has(event.reason)) tellRefused();",
+        'for (const type of ["fullscreenerror", "webkitfullscreenerror"])',
+        "if (!document.fullscreenEnabled) tellRefused();",
+    ):
+        assert guard in boot, guard
+    assert boot.index("IDBFactory.prototype[name] = ") < boot.index("const shellPathname")
+    assert "securityError(" not in boot
+    # The page may replace DOMException or Promise before it touches IndexedDB.
+    assert "instanceof DOMException" not in boot and "instanceof Promise" not in boot
+
+
+def test_the_shell_counts_the_pages_requests_and_maps_srcdoc_paths():
+    shell = browser_mod._FRAME_HTML
+    # Inside boot, where cfg and post exist, before any page script can capture fetch.
+    assert "/* BROWSER_NETWORK_JS */" not in shell
+    assert shell.index("const nativeFetch = window.fetch.bind(window);") < shell.index(
+        "const shellPathname"
+    )
+    for guard in (
+        "return nativeFetch(input, init).finally(done);",
+        "/^(?:about:)?srcdoc(?=[?#]|$)/",
+    ):
+        assert guard in shell, guard
+
+
+def test_the_shells_base_follows_the_router_only_without_a_page_base():
+    # A real browser resolves against the document URL when the page has no <base>; checked in
+    # Chromium, as this suite has no browser to run the shell in.
+    shell = browser_mod._FRAME_HTML
+    assert "ownBase: data.ownBase === true" in shell
+    assert "anyOrigin: data.anyOrigin === true" in shell
+    assert 'cfg.url && !cfg.ownBase ? document.querySelector("base") : null' in shell
+    assert shell.index("pageUrl = next;") < shell.index(
+        'routedBase?.setAttribute("href", pageUrl);'
+    )
 
 
 def test_annotate_code_is_sent_only_when_annotating():
@@ -204,7 +262,38 @@ def test_html_comes_back_as_json_with_its_final_url(monkeypatch):
     assert response.headers["x-unsloth-browser-kind"] == "html"
     payload = json.loads(response.body)
     assert payload["url"] == payload["base"] == "https://example.com/final"
+    assert payload["ownBase"] is False
+    assert payload["anyOrigin"] is False
     assert "<title>x</title>" in payload["html"]
+
+
+@pytest.mark.parametrize(
+    "allow, any_origin", [("*", True), ("null", True), ("https://a.test", False)]
+)
+def test_a_page_whose_site_answers_any_origin_says_so(monkeypatch, allow, any_origin):
+    # The shell then leaves the page's own-site requests to the browser, which can read them.
+    _fetch(
+        monkeypatch,
+        (None, b"<html></html>", "text/html"),
+        {"url": "https://example.com/", "charset": "utf-8", "allow_origin": allow},
+    )
+    assert json.loads(_call(url = "example.com").body)["anyOrigin"] is any_origin
+
+
+def test_a_page_base_equal_to_its_url_is_still_its_own(monkeypatch):
+    # <base href="/"> on the site root: the shell must keep it fixed when the router moves.
+    _fetch(
+        monkeypatch,
+        (None, b'<html><head><base href="/"></head></html>', "text/html"),
+        {"url": "https://example.com/", "charset": "utf-8"},
+    )
+    payload = json.loads(_call(url = "example.com").body)
+    assert payload["url"] == payload["base"] == "https://example.com/"
+    assert payload["ownBase"] is True
+    assert browser_mod._prepare_page('<base href="">', "https://example.com/a")[1] == (
+        "https://example.com/a"
+    )
+    assert browser_mod._prepare_page('<base target="_blank">', "https://example.com/a")[1] is None
 
 
 def test_raw_text_is_transcoded_from_its_charset(monkeypatch):
@@ -429,6 +518,7 @@ def test_bot_checks_are_told_apart_from_plain_refusals():
     assert not _is_bot_check(503, headers(Server = "cloudflare"))
     assert not _is_bot_check(404, headers(Server = "cloudflare"))
     assert not _is_bot_check(403, headers(Server = "nginx"))
+    assert not _is_bot_check(403, headers(Server = "cloudflare", cf_cache_status = "DYNAMIC"))
 
 
 def test_a_byte_order_mark_decides_the_encoding():

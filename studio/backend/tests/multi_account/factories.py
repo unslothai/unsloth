@@ -163,6 +163,19 @@ CORE_FACTORIES = {
     "routes.chat_history:PATCH:/projects/{project_id}": Factory(
         "project", {"name": EDITED}, fragment = EDITED
     ),
+    "routes.chat_history:DELETE:/projects/{project_id}/working-folder": Factory(
+        "project", fragment = SENTINEL
+    ),
+    # Host folders are owner-only: a managed account is refused before its project is looked up.
+    "routes.chat_history:PUT:/projects/{project_id}/working-folder": Factory(
+        "project",
+        {"nativePathLease": "matrix"},
+        right = (403,),
+        wrong = (403,),
+        # No desktop grant can be minted here, so the owner's own project stops at the grant check.
+        self_expected = (400,),
+        reason = "owner-only route: a managed account gets 403 whether or not the project is its own",
+    ),
     "routes.training_history:GET:/runs/{run_id}": Factory("training", fragment = SENTINEL),
     "routes.training_history:PATCH:/runs/{run_id}": Factory(
         "training", {"display_name": EDITED}, fragment = EDITED

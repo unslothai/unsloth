@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+export { AUTH_SESSION_CLEARED_EVENT } from "../../../src/features/auth/session-events.ts";
 export type AuthFetchHandler = (
   input: string,
   init?: RequestInit,
@@ -31,11 +32,13 @@ export function useIsAccountOwner(): boolean {
   return true;
 }
 
-export const AUTH_SESSION_CLEARED_EVENT = "unsloth:auth-session-cleared";
 let authSessionEpoch = 0;
 export function getAuthSessionEpoch(): number {
   return authSessionEpoch;
 }
 export function bumpAuthSessionEpoch(): void {
   authSessionEpoch += 1;
+}
+export function isAccountOwner(): boolean {
+  return true;
 }

@@ -21,7 +21,7 @@ function rules(css: string): [string, string][] {
   ]);
 }
 
-test("dark menus find their dialog or picker by sibling, not body:has()", async () => {
+test("dark menus take their dialog or picker glow from an attribute, not a sibling or body:has()", async () => {
   const css = rules(await readSrcAsync("index.css"));
   const context = css.filter(
     ([, body]) =>
@@ -30,7 +30,8 @@ test("dark menus find their dialog or picker by sibling, not body:has()", async 
   assert.ok(context.length >= 3, "the glow and lift context rules are present");
   for (const [selector] of context) {
     assert.doesNotMatch(selector, /body:has\(/, selector);
-    assert.match(selector, /~ \*/, selector);
+    assert.doesNotMatch(selector, /[~+]/, selector);
+    assert.match(selector, /\[data-dropdown-glow/, selector);
   }
 });
 

@@ -23,6 +23,7 @@ from pydantic import (
     Field,
     StrictBool,
     StrictInt,
+    StrictStr,
     StringConstraints,
     ValidationError,
     field_validator,
@@ -89,7 +90,7 @@ from utils.helper_precache_settings import (
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
 )
-from utils import systemone_settings
+from utils import first_token_timeout, sandbox_memory_limit, systemone_settings, tool_result_limit
 from utils.download_transport_settings import (
     get_download_transport_mode,
     set_download_transport_mode,
@@ -163,6 +164,7 @@ from utils.keyless_api_access import (
     get_keyless_api_access_settings,
     set_keyless_api_access,
 )
+from utils.mcp_access import forced_by_env, is_mcp_enabled, set_mcp_enabled
 from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
     get_preview_sharing_enabled,
@@ -181,6 +183,8 @@ from utils.current_date_prompt_settings import (
 )
 from utils.lan_access_settings import (
     lan_access_status,
+    normalize_lan_access_addresses,
+    save_lan_access_addresses,
     save_lan_access_port,
     set_lan_access_auto_start,
     start_lan_access,
@@ -199,6 +203,7 @@ from utils.embedding_model_settings import (
     get_rag_embedding_model,
     get_stored_embedding_model,
     reset_rag_embedding_model,
+    set_embedding_device,
     set_rag_embedding_model,
     validate_embedding_model,
 )
@@ -581,6 +586,21 @@ class UploadLimitResponse(BaseModel):
     default_upload_size_mb: int
     min_upload_size_mb: int = MIN_UPLOAD_LIMIT_MB
     max_allowed_upload_size_mb: int = MAX_UPLOAD_LIMIT_MB
+
+
+class ToolResultLimitPayload(BaseModel):
+    max_chars: StrictInt = Field(
+        ..., ge = tool_result_limit.MIN_MAX_CHARS, le = tool_result_limit.MAX_MAX_CHARS
+    )
+
+
+class ToolResultLimitResponse(BaseModel):
+    # The cap before a small context window lowers it.
+    max_chars: int
+    default_chars: int = tool_result_limit.DEFAULT_MAX_CHARS
+    min_chars: int = tool_result_limit.MIN_MAX_CHARS
+    max_allowed_chars: int = tool_result_limit.MAX_MAX_CHARS
+    locked_by_environment: bool = False
 
 
 class HuggingFaceTokenPayload(BaseModel):
@@ -976,6 +996,9 @@ class ModelOverridePayload(BaseModel):
     engine_parallelism: Optional[Literal["tensor", "pipeline", "data"]] = None
     engine_precision: Optional[Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"]] = None
     engine: Optional[Literal["auto", "vllm", "sglang"]] = None
+    engine_kv_cache_dtype: Optional[Literal["auto", "fp8"]] = None
+    engine_seed: Optional[int] = Field(default = None, ge = 0, le = 2**31 - 1)
+    engine_gpu_memory_utilization: Optional[float] = Field(default = None, ge = 0.05, le = 0.99)
     # None leaves the stored value alone (the UI has no control for flags); [] clears them.
     llama_extra_args: Optional[list[str]] = None
     # ge=1: the setter drops a falsy value, so reject 0 here instead of discarding it silently.
@@ -998,6 +1021,7 @@ class ModelOverridePayload(BaseModel):
 
     speculative_type: Optional[str] = Field(default = None, max_length = 32)
     spec_draft_n_max: Optional[int] = Field(default = None, ge = 1, le = 16)
+    spec_draft_model: Optional[str] = Field(default = None, max_length = 1024)
     # Parallel decode slots (llama-server --parallel), GGUF-only; None follows the server default.
     n_parallel: Optional[int] = Field(default = None, ge = PARALLEL_SLOTS_MIN, le = PARALLEL_SLOTS_MAX)
     reasoning_budget: Optional[int] = Field(default = None, ge = -1, le = 2_147_483_647)
@@ -1020,9 +1044,12 @@ class ModelOverridePayload(BaseModel):
     # The reasoning pair came later than the four, so a build that mirrors them can still
     # predate it: its own flag, same contract.
     mirrors_reasoning_budget: bool = False
+    mirrors_spec_draft_model: bool = False
     tensor_parallel: bool = False
     disable_vision: bool = False
     mlx_int8_prefill: bool = False
+    # Default-engine 16-bit load; only False is stored.
+    load_in_4bit: bool = True
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
     chat_template_override: Optional[str] = None
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
@@ -1484,6 +1511,68 @@ def update_upload_limit(
     return _upload_limit_response(limit_mb)
 
 
+class FirstTokenTimeoutPayload(BaseModel):
+    minutes: StrictInt = Field(ge = 0, le = first_token_timeout.MAX_MINUTES)
+
+
+class FirstTokenTimeoutResponse(FirstTokenTimeoutPayload):
+    default_minutes: int = first_token_timeout.DEFAULT_MINUTES
+    max_minutes: int = first_token_timeout.MAX_MINUTES
+
+
+@_shared_settings_router.get("/first-token-timeout", response_model = FirstTokenTimeoutResponse)
+def get_first_token_timeout(current_subject: str = Depends(get_current_subject)):
+    return FirstTokenTimeoutResponse(minutes = first_token_timeout.get_minutes())
+
+
+@_owner_settings_router.put("/first-token-timeout", response_model = FirstTokenTimeoutResponse)
+def update_first_token_timeout(
+    payload: FirstTokenTimeoutPayload, current_subject: str = Depends(get_current_subject)
+):
+    first_token_timeout.set_minutes(payload.minutes)
+    return FirstTokenTimeoutResponse(minutes = payload.minutes)
+
+
+def _tool_result_limit_response() -> ToolResultLimitResponse:
+    return ToolResultLimitResponse(
+        max_chars = tool_result_limit.effective_max_chars(),
+        locked_by_environment = tool_result_limit.locked_by_environment(),
+    )
+
+
+@_shared_settings_router.get("/tool-result-limit", response_model = ToolResultLimitResponse)
+def get_tool_result_limit(
+    current_subject: str = Depends(get_current_subject),
+) -> ToolResultLimitResponse:
+    return _tool_result_limit_response()
+
+
+@_owner_settings_router.put("/tool-result-limit", response_model = ToolResultLimitResponse)
+def update_tool_result_limit(
+    payload: ToolResultLimitPayload, current_subject: str = Depends(get_current_subject)
+) -> ToolResultLimitResponse:
+    """Save how many characters of one tool result the model reads. Applies from the next tool call."""
+    if tool_result_limit.locked_by_environment():
+        raise HTTPException(
+            status_code = 409,
+            detail = f"{tool_result_limit.MAX_CHARS_ENV} is set in the environment Unsloth runs in, which decides this.",
+        )
+    try:
+        max_chars = tool_result_limit.set_max_chars(payload.max_chars)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid tool output limit."),
+            event = "settings.update_tool_result_limit_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.tool_result_limit_updated subject=%s max_chars=%s", current_subject, max_chars
+    )
+    return _tool_result_limit_response()
+
+
 @_shared_settings_router.get("/helper-precache", response_model = HelperPrecacheResponse)
 def get_helper_precache(
     current_subject: str = Depends(get_current_subject),
@@ -1522,13 +1611,15 @@ def _decision_description(checkpoint, mlx: bool) -> str:
 def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
     from core.systemone import laya_runtime
 
-    if getattr(checkpoint, "layout", "laya") == laya_runtime.GGUF:
+    only_mlx = getattr(checkpoint, "backend", None) == laya_runtime.MLX
+    if only_mlx or getattr(checkpoint, "layout", "laya") == laya_runtime.GGUF:
+        only = {} if only_mlx else {"llama_cpp_only": True}
         # Selectable under a PyTorch runtime: the runtime row then says to switch it.
         try:
             laya_runtime.select(checkpoint, preference = "auto")
         except laya_runtime.Unavailable as exc:
-            return {"llama_cpp_only": True, "available": False, "unavailable_reason": exc.message}
-        return {"llama_cpp_only": True}
+            return {**only, "available": False, "unavailable_reason": exc.message}
+        return only
     if reason is None or getattr(checkpoint, "layout", "laya") != "clef":
         return {}
     # llama.cpp serves Clef without CUDA or ROCm, and so does the MLX engine on Apple Silicon.
@@ -2288,6 +2379,54 @@ def update_openai_auto_switch(
     )
 
 
+class ModelAliasEntry(BaseModel):
+    name: str
+    model: str
+
+
+class ModelAliasesPayload(BaseModel):
+    aliases: list[ModelAliasEntry] = Field(default_factory = list)
+
+
+class ModelAliasesResponse(BaseModel):
+    aliases: list[ModelAliasEntry]
+
+
+@_owner_settings_router.get("/model-aliases", response_model = ModelAliasesResponse)
+def get_model_aliases_setting(
+    current_subject: str = Depends(get_current_subject),
+) -> ModelAliasesResponse:
+    from utils.model_aliases import get_model_aliases
+    return ModelAliasesResponse(aliases = get_model_aliases())
+
+
+@_owner_settings_router.put("/model-aliases", response_model = ModelAliasesResponse)
+async def update_model_aliases_setting(
+    payload: ModelAliasesPayload, current_subject: str = Depends(get_current_subject)
+) -> ModelAliasesResponse:
+    from core.systemone import catalog as decision_catalog
+    from routes.inference import _openai_catalog_objects
+    from utils.model_aliases import set_model_aliases
+
+    # Decision ids (clef, laya-multilingual) are reserved even while that API is off.
+    objects = await _openai_catalog_objects()
+    model_ids = [o["id"] for o in objects if isinstance(o.get("id"), str)]
+    model_ids += list(decision_catalog.CHECKPOINTS)
+    try:
+        aliases = await asyncio.to_thread(
+            set_model_aliases, [entry.model_dump() for entry in payload.aliases], model_ids
+        )
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc, fallback = "Invalid model alias."),
+            event = "settings.update_model_aliases_failed",
+            log = logger,
+        ) from exc
+    return ModelAliasesResponse(aliases = aliases)
+
+
 @_account_settings_router.get(
     "/openai-auto-switch/overrides", response_model = ModelOverridesResponse
 )
@@ -2496,6 +2635,7 @@ def update_openai_auto_switch_override(
                 "fill_absent_fields",
                 "mirrors_server_tuning",
                 "mirrors_reasoning_budget",
+                "mirrors_spec_draft_model",
             },
             exclude_none = True,
         )
@@ -2506,10 +2646,12 @@ def update_openai_auto_switch_override(
                 not payload.tensor_parallel
                 and not payload.disable_vision
                 and not payload.mlx_int8_prefill
+                and payload.load_in_4bit
                 and not {
                     key: value
                     for key, value in saved_fields.items()
-                    if key not in ("tensor_parallel", "disable_vision", "mlx_int8_prefill")
+                    if key
+                    not in ("tensor_parallel", "disable_vision", "mlx_int8_prefill", "load_in_4bit")
                 }
             )
         if requested_extra_args is None and not is_removal:
@@ -2571,10 +2713,16 @@ def update_openai_auto_switch_override(
         # legacy contract is a payload carrying only model_id, which leaves remove None.
         _tuning_fields = ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram")
         _reasoning_fields = ("reasoning_budget", "reasoning_budget_message")
-        _kept_tuning = {name: getattr(payload, name) for name in _tuning_fields + _reasoning_fields}
+        _drafter_fields = ("spec_draft_model",)
+        _kept_tuning = {
+            name: getattr(payload, name)
+            for name in _tuning_fields + _reasoning_fields + _drafter_fields
+        }
         # Each group is carried only for a client that does not mirror it.
-        _carried_fields = (() if payload.mirrors_server_tuning else _tuning_fields) + (
-            () if payload.mirrors_reasoning_budget else _reasoning_fields
+        _carried_fields = (
+            (() if payload.mirrors_server_tuning else _tuning_fields)
+            + (() if payload.mirrors_reasoning_budget else _reasoning_fields)
+            + (() if payload.mirrors_spec_draft_model else _drafter_fields)
         )
         if _carried_fields and not is_removal:
             # The same spellings the extra-args carry-over walks: a cached repo is not an ordinary folded match,
@@ -2699,12 +2847,23 @@ def update_openai_auto_switch_override(
                 engine = payload.engine
                 if payload.engine is not None or is_removal
                 else get_model_override(target_id).get("engine"),
+                **{
+                    field: getattr(payload, field)
+                    if field in fields_set or is_removal
+                    else get_model_override(target_id).get(field)
+                    for field in (
+                        "engine_kv_cache_dtype",
+                        "engine_seed",
+                        "engine_gpu_memory_utilization",
+                    )
+                },
                 max_seq_length = max_seq_length,
                 custom_context_length = custom_context_length,
                 kv_cache_dtype = payload.kv_cache_dtype,
                 mlx_kv_quant = payload.mlx_kv_quant,
                 speculative_type = payload.speculative_type,
                 spec_draft_n_max = payload.spec_draft_n_max,
+                spec_draft_model = _kept_tuning["spec_draft_model"],
                 n_parallel = payload.n_parallel,
                 reasoning_budget = (
                     None
@@ -2725,6 +2884,7 @@ def update_openai_auto_switch_override(
                 tensor_parallel = payload.tensor_parallel,
                 disable_vision = payload.disable_vision,
                 mlx_int8_prefill = payload.mlx_int8_prefill,
+                load_in_4bit = payload.load_in_4bit,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,
                 gpu_layers = payload.gpu_layers,
@@ -2771,10 +2931,26 @@ class EmbeddingModelResponse(BaseModel):
     loaded: bool = False
     # Whether ANY embedder is resident.
     backend_loaded: bool = False
+    embedding_device: Literal["auto", "cpu", "gpu"] = "auto"
+    # RAG_EMBED_DEVICE names a device, so Settings shows it read-only.
+    embedding_device_locked: bool = False
+
+
+class EmbeddingDevicePayload(BaseModel):
+    device: Literal["auto", "cpu", "gpu"]
+
+
+def _embedding_device_state() -> tuple[str, bool]:
+    from core.rag import config as rag_config
+    try:
+        return rag_config.embed_device_preference(), rag_config.embed_device_locked()
+    except Exception:  # noqa: BLE001 - probe must never block reading settings
+        return "auto", False
 
 
 def _embedding_model_response() -> EmbeddingModelResponse:
     model = get_rag_embedding_model()
+    device, device_locked = _embedding_device_state()
     return EmbeddingModelResponse(
         embedding_model = model,
         embedding_gguf_repo = effective_gguf_repo_for_embedding_model(model),
@@ -2783,6 +2959,8 @@ def _embedding_model_response() -> EmbeddingModelResponse:
         is_custom = get_stored_embedding_model() is not None,
         loaded = _embedder_is_loaded(model),
         backend_loaded = _any_embedder_is_loaded(),
+        embedding_device = device,
+        embedding_device_locked = device_locked,
     )
 
 
@@ -3749,6 +3927,29 @@ def unload_embedding_model(
     return _embedding_model_response()
 
 
+@_owner_settings_router.put("/embedding-model/device", response_model = EmbeddingModelResponse)
+def update_embedding_device(
+    payload: EmbeddingDevicePayload, current_subject: str = Depends(get_current_subject)
+) -> EmbeddingModelResponse:
+    """Run the embedder on the CPU, the GPU, or the hardware default, for every embedding model. The vectors
+    keep their embedding space, so indexed documents stay searchable. A failed GPU start falls back to CPU."""
+    from core.rag import config as rag_config
+
+    if rag_config.embed_device_locked():
+        raise HTTPException(
+            status_code = 409, detail = "The embedding device is set by RAG_EMBED_DEVICE."
+        )
+    if set_embedding_device(payload.device):
+        from core.rag import embeddings
+
+        # The resident embedder stays on its old device until rebuilt; the next index or search rebuilds it.
+        embeddings.release_backend()
+    logger.info(
+        "settings.embedding_device_updated subject=%s device=%s", current_subject, payload.device
+    )
+    return _embedding_model_response()
+
+
 @_owner_settings_router.delete("/embedding-model", response_model = EmbeddingModelResponse)
 def reset_embedding_model(
     current_subject: str = Depends(get_current_subject),
@@ -3782,6 +3983,17 @@ class KeylessApiAccessResponse(BaseModel):
     scope: Literal["off", "inference", "full"]
     tools: bool
     exposure: Optional[Literal["colab", "public_url", "private_lan", "network"]] = None
+
+
+class McpAccessPayload(BaseModel):
+    enabled: StrictBool
+
+
+class McpAccessResponse(BaseModel):
+    enabled: bool
+    forced_by_env: bool
+    # Display only: where an agent should point. Agents connect to whatever address reaches this server.
+    url: str
 
 
 class PreviewSharingPayload(BaseModel):
@@ -3914,6 +4126,22 @@ class LanAccessPortPayload(BaseModel):
     port: Optional[StrictInt] = Field(ge = 1, le = 65535)
 
 
+class LanAccessAddressesPayload(BaseModel):
+    # required, so a body that forgets the field cannot silently reset the choice to Automatic
+    addresses: Optional[list[StrictStr]]
+
+    @field_validator("addresses")
+    @classmethod
+    def _bindable(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        normalized = normalize_lan_access_addresses(value)
+        return list(normalized) if normalized is not None else None
+
+
+class LanAccessAddress(BaseModel):
+    address: str
+    public: bool = False
+
+
 class LanAccessResponse(BaseModel):
     state: Literal["off", "online", "error"]
     urls: list[str] = []
@@ -3923,6 +4151,9 @@ class LanAccessResponse(BaseModel):
 
     configured_port: Optional[int] = None
     active_port: Optional[int] = None
+    configured_addresses: Optional[list[str]] = None
+    available_addresses: list[LanAccessAddress] = []
+    configured_public_addresses: list[str] = []
     managed_by: Optional[Literal["launch", "settings"]] = None
     can_start: bool
     can_stop: bool
@@ -4009,6 +4240,25 @@ def update_lan_access_port(
         "settings.lan_access_port_updated subject=%s port=%s",
         current_subject,
         payload.port if payload.port is not None else "automatic",
+    )
+    return response
+
+
+@_owner_settings_router.put("/lan-access/addresses", response_model = LanAccessResponse)
+def update_lan_access_addresses(
+    request: Request,
+    payload: LanAccessAddressesPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    try:
+        response = LanAccessResponse(**save_lan_access_addresses(request.app, payload.addresses))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info(
+        "settings.lan_access_addresses_updated subject=%s addresses=%s",
+        current_subject,
+        ",".join(payload.addresses) if payload.addresses is not None else "automatic",
     )
     return response
 
@@ -4160,6 +4410,46 @@ def update_keyless_api_access(
         access_exposure(request.app.state),
     )
     return _keyless_api_access_response(request)
+
+
+def _require_ui_session_for_mcp(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
+    """MCP admits API keys, so a key (or a keyless caller) must not be the thing that opens it."""
+    if via_api_key:
+        raise HTTPException(
+            status_code = 403, detail = "Agent access (MCP) can only be changed from the Unsloth UI."
+        )
+
+
+def _mcp_access_response(request: Request) -> McpAccessResponse:
+    return McpAccessResponse(
+        enabled = is_mcp_enabled(),
+        forced_by_env = forced_by_env(),
+        url = str(request.base_url).rstrip("/") + "/mcp/",
+    )
+
+
+@_owner_settings_router.get("/mcp-access", response_model = McpAccessResponse)
+def get_mcp_access(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session_for_mcp),
+) -> McpAccessResponse:
+    return _mcp_access_response(request)
+
+
+@_owner_settings_router.put("/mcp-access", response_model = McpAccessResponse)
+def update_mcp_access(
+    request: Request,
+    payload: McpAccessPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session_for_mcp),
+) -> McpAccessResponse:
+    """Turn agent access over MCP on or off for the whole installation."""
+    if forced_by_env():
+        raise HTTPException(status_code = 409, detail = "Set by UNSLOTH_STUDIO_ENABLE_MCP.")
+    enabled = set_mcp_enabled(payload.enabled)
+    logger.info("settings.mcp_access_updated subject=%s enabled=%s", current_subject, enabled)
+    return _mcp_access_response(request)
 
 
 def _is_bundled_avatar_url(value: str) -> bool:
@@ -4781,6 +5071,9 @@ class SandboxWindowsStatus(BaseModel):
     prepare_repeats_after_restart: bool = True
     # True: MXC runs in Windows' built-in container (BaseContainer); False: this Windows has none; None: unknown.
     builtin_container: Optional[bool] = None
+    # Set only when a Windows update adds the built-in container: this PC's build and the first one with it.
+    windows_build: Optional[str] = None
+    builtin_container_build: Optional[str] = None
 
 
 class SandboxSetupStatus(BaseModel):
@@ -4793,12 +5086,24 @@ class SandboxSetupStatus(BaseModel):
     can_run: bool = False
 
 
+class SandboxMemoryStatus(BaseModel):
+    # GiB the next sandboxed run is capped at; None = no cap.
+    limit_gb: Optional[int] = None
+    saved_gb: int
+    default_gb: int
+    min_gb: int
+    max_gb: int
+    locked_by_environment: bool
+
+
 class SandboxStatusResponse(BaseModel):
     platform: str
     python: SandboxToolStatus
     terminal: SandboxToolStatus
     terminal_shell: Optional[str] = None
     windows: Optional[SandboxWindowsStatus] = None
+    # None off Linux, where the rlimit never applied.
+    memory: Optional[SandboxMemoryStatus] = None
     setup: Optional[SandboxSetupStatus] = None
     checked_at: float
     grants_restored: Optional[int] = None
@@ -4809,6 +5114,11 @@ class SandboxSettingsPayload(BaseModel):
 
     allow_dacl_fallback: Optional[StrictBool] = None
     persistent_read_grants: Optional[StrictBool] = None
+    memory_limit_gb: Optional[StrictInt] = Field(
+        default = None,
+        ge = sandbox_memory_limit.MIN_MEMORY_LIMIT_GB,
+        le = sandbox_memory_limit.MAX_MEMORY_LIMIT_GB,
+    )
 
 
 class SandboxSetupPayload(BaseModel):
@@ -4899,6 +5209,7 @@ def _sandbox_windows_status() -> SandboxWindowsStatus:
     if installed:
         steps = mxc_runtime.probe_host_prep_steps(env = mxc_adapter._control_environment())
         missing = None if steps is None else list(steps)
+    update = sandbox_setup_plan.windows_builtin_container_update()
     return SandboxWindowsStatus(
         runtime_installed = installed,
         runtime_unsupported = sandbox_setup_plan.windows_runtime_unsupported(),
@@ -4911,6 +5222,8 @@ def _sandbox_windows_status() -> SandboxWindowsStatus:
             mxc_read_grants.PERSISTENT_GRANTS_ENV
         ),
         host_prep_missing = missing,
+        windows_build = update[0] if update else None,
+        builtin_container_build = update[1] if update else None,
     )
 
 
@@ -4994,11 +5307,30 @@ def _sandbox_setup_status(available: bool) -> Optional[SandboxSetupStatus]:
     )
 
 
+def _sandbox_memory_status() -> Optional[SandboxMemoryStatus]:
+    import sys
+
+    # Linux only: Windows never set this rlimit, and on macOS setrlimit(RLIMIT_AS) fails once the forked child
+    # already maps more than the cap, so tool runs there were never capped.
+    if sys.platform != "linux":
+        return None
+    return SandboxMemoryStatus(
+        limit_gb = sandbox_memory_limit.effective_memory_limit_gb(),
+        saved_gb = sandbox_memory_limit.saved_memory_limit_gb(),
+        default_gb = sandbox_memory_limit.DEFAULT_MEMORY_LIMIT_GB,
+        min_gb = sandbox_memory_limit.MIN_MEMORY_LIMIT_GB,
+        max_gb = sandbox_memory_limit.MAX_MEMORY_LIMIT_GB,
+        locked_by_environment = sandbox_memory_limit.locked_by_environment(),
+    )
+
+
 def _for_request(status: SandboxStatusResponse, request: Request) -> SandboxStatusResponse:
     """Blocking. The setup button: a direct local request, or a Linux install that prompts nobody here."""
     from core.inference import sandbox_setup_plan
     from utils.client_ip import is_direct_local_request
 
+    # Read per request, not from the probe cache: a save must show at once.
+    status = status.model_copy(update = {"memory": _sandbox_memory_status()})
     setup = status.setup
     if setup is None:
         return status
@@ -5038,6 +5370,10 @@ def _sandbox_apply(payload: SandboxSettingsPayload) -> Optional[int]:
     from core.inference import mxc_policy, mxc_read_grants
     from utils import mxc_isolation_settings as saved
 
+    if payload.memory_limit_gb is not None:
+        sandbox_memory_limit.set_memory_limit_gb(payload.memory_limit_gb)
+        # The route refuses it beside the Windows switches, so the MXC state below is untouched.
+        return None
     if payload.allow_dacl_fallback is not None:
         saved.set_dacl_fallback_setting(payload.allow_dacl_fallback)
     if payload.persistent_read_grants is not None:
@@ -5083,13 +5419,27 @@ async def update_sandbox_settings(
     # Host policy: changed at the console, never by an API key the owner happens to hold.
     _ui_session: None = Depends(_require_ui_session),
 ) -> SandboxStatusResponse:
-    """Save the Windows MXC opt-in and the persistent read grant choice. Applies to the next launch."""
+    """Save the Windows MXC opt-in, the persistent read grant choice, or the Linux memory limit. Applies to the next
+    launch."""
     import sys
 
     from core.inference import mxc_policy, mxc_read_grants
     from utils import mxc_isolation_settings as saved
 
-    if sys.platform != "win32":
+    windows_fields = (
+        payload.allow_dacl_fallback is not None or payload.persistent_read_grants is not None
+    )
+    if payload.memory_limit_gb is not None:
+        if sys.platform != "linux":
+            raise HTTPException(
+                status_code = 409, detail = "The sandbox memory limit only applies on Linux."
+            )
+        if sandbox_memory_limit.locked_by_environment():
+            raise HTTPException(
+                status_code = 409,
+                detail = f"{sandbox_memory_limit.MEMORY_LIMIT_ENV} is set in the environment Unsloth runs in, which decides this.",
+            )
+    if sys.platform != "win32" and (windows_fields or payload.memory_limit_gb is None):
         raise HTTPException(status_code = 409, detail = "These settings only apply on Windows.")
     locks = (
         (payload.allow_dacl_fallback, mxc_policy.DACL_FALLBACK_ENV),
@@ -5113,10 +5463,11 @@ async def update_sandbox_settings(
             log = logger,
         ) from exc
     logger.info(
-        "settings.sandbox_updated subject=%s dacl=%s grants=%s",
+        "settings.sandbox_updated subject=%s dacl=%s grants=%s memory_gb=%s",
         current_subject,
         payload.allow_dacl_fallback,
         payload.persistent_read_grants,
+        payload.memory_limit_gb,
     )
     status = await asyncio.to_thread(_for_request, status, request)
     return status.model_copy(update = {"grants_restored": restored})

@@ -86,7 +86,7 @@ ALLOW_LOCAL_PREQUANT_PATH_ENV = "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH"
 # local. Registered under the name the PICKLE records, which for a re-exported class is not the class's own
 # ``__module__`` (``torchao.quantization.Float8Tensor`` really lives in
 # ``...quantize_.workflows.float8.float8_tensor``), so both spellings are listed. Names a given torchao lacks are
-# skipped rather than raised: the set spans every release ``install_python_stack`` pins (0.14, 0.16, 0.17) and an
+# skipped rather than raised: the set spans every release ``install_python_stack`` pins or pinned (0.14 to 0.18) and an
 # absent class could not have produced a loadable checkpoint here anyway. Adding a scheme means adding its
 # constructors here; forgetting warns and falls back to dense-quantise, never a silent unpickle.
 _PREQUANT_SAFE_GLOBALS: tuple[tuple[str, str], ...] = (
@@ -1010,11 +1010,17 @@ def resolve_prequant_source(
         # Family-declared name first when there is one, then the derived chain, which puts the
         # safetensors spelling ahead of the pickle. Order-preserving dedup so a family that declares
         # exactly what the chain would derive does not make the downloader ask twice for it.
-        declared = (preferred,) if preferred else ()
+        # Declared names are the default repo's files; a variant repo gets its own spelling of each.
+        variant_repo = _is_variant_prequant_repo(fam, repo_id)
+        if variant_repo and preferred:
+            declared = (prequant_repo_filename(repo_id, scheme, ".safetensors"),)
+        else:
+            declared = (preferred,) if preferred else ()
         # rotated artifact (hosted) first, only in its own repo; the plain chain stays behind it (offline, older caches)
         from .diffusion_transformer_quant import (
             convrot_prequant_filename,
             convrot_prequant_repo,
+            convrot_prequant_variant_repo,
             int8_convrot_enabled,
         )
 
@@ -1022,6 +1028,13 @@ def resolve_prequant_source(
         rotated = convrot_prequant_filename(scheme, fam_name)
         rotated_repo = convrot_prequant_repo(scheme, fam_name)
         if (
+            variant_repo
+            and convrot_prequant_variant_repo(scheme, fam_name, repo_id)
+            and int8_convrot_enabled(fam_name)
+        ):
+            # A variant repo listed as hosting its own rotated build, named like its derived chain.
+            declared = (prequant_repo_filename(repo_id, scheme, "-ConvRot.safetensors"),) + declared
+        elif (
             rotated
             and rotated_repo
             and str(repo_id).strip().lower() == rotated_repo.lower()
@@ -1042,6 +1055,23 @@ def resolve_prequant_source(
             declared_filenames = declared,
         )
     return None
+
+
+def _is_variant_prequant_repo(fam: Any, repo_id: Optional[str]) -> bool:
+    """Whether ``repo_id`` is one of ``fam``'s per-base variant repos and not one of its default repos."""
+    key = str(repo_id or "").strip().lower()
+    if not key:
+        return False
+    try:
+        defaults = {str(r).strip().lower() for _s, r in getattr(fam, "prequant_repos", ()) or ()}
+        variants = {
+            str(e[2]).strip().lower()
+            for e in getattr(fam, "prequant_variant_repos", ()) or ()
+            if len(e) == 3
+        }
+    except Exception:  # noqa: BLE001 - a malformed table keeps the declared names, today's behaviour
+        return False
+    return key in variants and key not in defaults
 
 
 def _comfy_prequant_family(fam: Any) -> bool:
@@ -1232,7 +1262,11 @@ def declares_nvfp4_checkpoint(model_path: Optional[str]) -> bool:
     return raw.rstrip("/\\").lower().endswith("-nvfp4")
 
 
+# Legacy (read-only): hashes torchao internals, so v1 only matches the torchao generation that wrote it.
 FINGERPRINT_ALGO = "md5-packed-v1"
+# Stored under ``canonical_modules``, not ``modules``: older loaders would refuse it as a v1 mismatch.
+CANONICAL_FINGERPRINT_ALGO = "md5-canonical-v2"
+CANONICAL_FINGERPRINT_KEY = "canonical_modules"
 
 # Payload attrs per torchao class NAME, hash order; unlisted reads "not covered", never "equal".
 _FINGERPRINT_PAYLOAD: dict = {
@@ -1313,6 +1347,187 @@ def packed_weight_fingerprint(state_dict: Any, *, select: Any = None) -> dict:
         "modules": modules,
         "skipped": skipped,
     }
+
+
+# torchao class name -> (role, attr); ("inner", attr) unwraps. Roles are version neutral (``q`` = int_data / qdata).
+_CANONICAL_PARTS: dict = {
+    "LinearActivationQuantizedTensor": (("inner", "original_weight_tensor"),),
+    "AffineQuantizedTensor": (("inner", "tensor_impl"),),
+    "PlainAQTTensorImpl": (("q", "int_data"), ("scale", "scale"), ("zero_point", "zero_point")),
+    "Int8Tensor": (
+        ("q", "qdata"),
+        ("scale", "scale"),
+        ("zero_point", "zero_point"),
+        ("act_quant_scale", "act_quant_scale"),
+        ("act_quant_zero_point", "act_quant_zero_point"),
+        ("act_pre_scale", "act_pre_scale"),
+    ),
+    "Float8Tensor": (("q", "qdata"), ("scale", "scale")),
+    "NVFP4Tensor": (("q", "qdata"), ("scale", "scale"), ("per_tensor_scale", "per_tensor_scale")),
+    "MXTensor": (("q", "qdata"), ("scale", "scale")),
+}
+_CANONICAL_ROLE_ORDER = (
+    "q",
+    "scale",
+    "zero_point",
+    "per_tensor_scale",
+    "act_quant_scale",
+    "act_quant_zero_point",
+    "act_pre_scale",
+)
+_ZERO_POINT_ROLES = ("zero_point", "act_quant_zero_point")
+
+
+def _canonical_parts(tensor: Any, depth: int = 0) -> Optional[dict]:
+    spec = _CANONICAL_PARTS.get(type(tensor).__name__)
+    if spec is None or depth > 4:
+        return None
+    parts: dict = {}
+    for role, attr in spec:
+        value = getattr(tensor, attr, None)
+        if value is None:
+            continue
+        if role == "inner":
+            inner = _canonical_parts(value, depth + 1)
+            if inner is None:
+                return None
+            parts.update(inner)
+        else:
+            parts[role] = value
+    return parts if "q" in parts else None
+
+
+def _all_zero(value: Any, torch: Any) -> bool:
+    try:
+        return not bool(torch.any(value.detach() != 0))
+    except Exception:  # noqa: BLE001 - unknown: hash it
+        return False
+
+
+def _canonical_bytes(role: str, value: Any, torch: Any) -> bytes:
+    """Version-stable bytes: ``q`` as stored; others flattened to float32 (exact for stored scales) / int64 zero point."""
+    t = value.detach()
+    if role == "q":
+        head = f"q:{str(t.dtype).replace('torch.', '')}:{tuple(t.shape)}".encode("utf-8")
+        return head + _packed_bytes(t, torch)
+    t = t.reshape(-1)
+    if role in _ZERO_POINT_ROLES:
+        t = t.to(torch.int64)
+    elif t.is_floating_point() and t.dtype is not torch.float64:
+        t = t.to(torch.float32)
+    head = f"{role}:{str(t.dtype).replace('torch.', '')}:{t.numel()}".encode("utf-8")
+    return head + _packed_bytes(t, torch)
+
+
+def canonical_weight_digest(tensor: Any) -> Optional[str]:
+    """Version-neutral md5 of one quantized weight (None if unmodelled); an all-zero zero point equals none."""
+    import hashlib
+
+    import torch
+
+    parts = _canonical_parts(tensor)
+    if parts is None:
+        return None
+    digest = hashlib.md5()
+    for role in _CANONICAL_ROLE_ORDER:
+        value = parts.get(role)
+        if value is None or (role in _ZERO_POINT_ROLES and _all_zero(value, torch)):
+            continue
+        digest.update(_canonical_bytes(role, value, torch))
+    return digest.hexdigest()
+
+
+def canonical_weight_fingerprint(state_dict: Any, *, select: Any = None) -> dict:
+    modules: dict = {}
+    skipped: list = []
+    items = state_dict.items() if hasattr(state_dict, "items") else ()
+    for key, tensor in items:
+        if key != "weight" and not str(key).endswith(".weight"):
+            continue
+        if select is not None and not select(str(key)):
+            continue
+        try:
+            value = canonical_weight_digest(tensor)
+        except Exception:  # noqa: BLE001 -- an unreadable payload is uncovered, never a raise
+            value = None
+        if value is None:
+            skipped.append(key)
+        else:
+            modules[key] = value
+    return {
+        "algo": CANONICAL_FINGERPRINT_ALGO,
+        "count": len(modules),
+        CANONICAL_FINGERPRINT_KEY: modules,
+        "skipped": skipped,
+    }
+
+
+_V1_INT8_PREFIXES = (
+    ("original_weight_tensor", "tensor_impl", "int_data"),  # torchao <= 0.17
+    ("qdata",),  # torchao >= 0.18 Int8Tensor
+)
+
+
+def _v1_cross_generation_match(
+    tensor: Any,
+    recorded: str,
+    hint: Optional[list] = None,
+) -> bool:
+    """Whether v1 digest ``recorded`` matches this int8 weight in any torchao generation's layout.
+
+    Every variant hashes the full ``q`` and scale bytes, so changed values still fail. ``hint`` caches
+    the last matching layout to try first."""
+    import hashlib
+
+    import torch
+
+    parts = _canonical_parts(tensor)
+    if parts is None or set(parts) - {"q", "scale", "zero_point"} or "scale" not in parts:
+        return False
+    q, scale = parts["q"], parts["scale"].detach()
+    if q.dtype is not torch.int8 or q.dim() != 2:
+        return False
+    zp = parts.get("zero_point")
+    if zp is not None and not _all_zero(zp, torch):
+        return False
+    n = q.shape[0]
+    scales = {"stored": scale}
+    for dtype in (torch.float32, torch.bfloat16):
+        if scale.dtype is not dtype:
+            cast = scale.to(dtype)
+            if torch.equal(cast.to(scale.dtype), scale):
+                scales[str(dtype)] = cast
+    zero_points = {"none": None, "int8_zeros": torch.zeros(n, 1, dtype = torch.int8)}
+    if zp is not None:
+        zero_points["stored"] = zp
+    layouts = [
+        (p, sk, zk) for p in range(len(_V1_INT8_PREFIXES)) for sk in scales for zk in zero_points
+    ]
+    if hint and hint[0] in layouts:
+        layouts.remove(hint[0])
+        layouts.insert(0, hint[0])
+    q_bytes = _packed_bytes(q, torch)
+    bases: dict = {}
+    for layout in layouts:
+        prefix, sk, zk = layout
+        if prefix not in bases:
+            base = hashlib.md5()
+            for name in _V1_INT8_PREFIXES[prefix]:
+                base.update(name.encode("utf-8"))
+            base.update(q_bytes)
+            bases[prefix] = base
+        digest = bases[prefix].copy()
+        digest.update(b"scale")
+        digest.update(_packed_bytes(scales[sk], torch))
+        z = zero_points[zk]
+        if z is not None:
+            digest.update(b"zero_point")
+            digest.update(_packed_bytes(z, torch))
+        if digest.hexdigest() == recorded:
+            if hint is not None:
+                hint[:] = [layout]
+            return True
+    return False
 
 
 FINGERPRINT_MODE_ENV = "UNSLOTH_PREQUANT_FINGERPRINT"
@@ -1396,8 +1611,10 @@ def _verify_packed_fingerprint(
     A full pass is remembered per file (real path, size, mtime, recorded fingerprint) in the Studio cache, so later
     loads of the same unchanged file skip the md5 of every weight; any change to the file checks in full again."""
     block = (metadata or {}).get("fingerprint")
-    expected = (block or {}).get("modules") if isinstance(block, dict) else None
-    if not expected:
+    block = block if isinstance(block, dict) else {}
+    canonical = bool(block.get(CANONICAL_FINGERPRINT_KEY))
+    expected = block.get(CANONICAL_FINGERPRINT_KEY) if canonical else block.get("modules")
+    if not expected or not isinstance(expected, dict):
         return True
     mode = _fingerprint_mode()
     marker = _verified_marker(path, expected) if path is not None and mode == "full" else None
@@ -1415,13 +1632,16 @@ def _verify_packed_fingerprint(
             )
         return True
     try:
-        actual = (
-            packed_weight_fingerprint(
-                state_dict,
-                select = _fingerprint_sampled if mode == "sample" else None,
-            ).get("modules")
-            or {}
-        )
+        select = _fingerprint_sampled if mode == "sample" else None
+        if canonical:
+            actual = (
+                canonical_weight_fingerprint(state_dict, select = select).get(
+                    CANONICAL_FINGERPRINT_KEY
+                )
+                or {}
+            )
+        else:
+            actual = packed_weight_fingerprint(state_dict, select = select).get("modules") or {}
     except Exception as exc:  # noqa: BLE001 -- an uncomputable fingerprint checks nothing
         _warn(logger, "fingerprint", exc)
         return True
@@ -1437,14 +1657,31 @@ def _verify_packed_fingerprint(
         return True
     checked = [k for k in expected if mode != "sample" or _fingerprint_sampled(k)]
     differing = sorted(k for k in checked if actual.get(k) != expected[k])
+    reencoded = 0
+    if differing and not canonical and hasattr(state_dict, "get"):
+        still = []
+        hint: list = []
+        for key in differing:
+            try:
+                crossed = _v1_cross_generation_match(state_dict.get(key), expected[key], hint)
+            except Exception:  # noqa: BLE001 -- not re-encodable: a real mismatch
+                crossed = False
+            if not crossed:
+                still.append(key)
+        reencoded = len(differing) - len(still)
+        differing = still
     counted = mode != "sample" and len(actual) != len(expected)
     if not differing and not counted:
         if logger is not None:
             logger.info(
-                "diffusion.prequant: fingerprint verified (%d of %d quantized weights, %s)",
+                "diffusion.prequant: fingerprint verified (%d of %d quantized weights, %s, %s%s)",
                 len(checked),
                 len(expected),
                 mode,
+                CANONICAL_FINGERPRINT_ALGO if canonical else FINGERPRINT_ALGO,
+                f"; {reencoded} matched in another torchao generation's layout"
+                if reencoded
+                else "",
             )
         _remember_verified(marker)
         return True
@@ -1462,12 +1699,281 @@ def _verify_packed_fingerprint(
     return False
 
 
+HEADER_PROBE_ENV = "UNSLOTH_PREQUANT_HEADER_PROBE"
+_HEADER_PROBE_TTL_S = 600.0
+# Keyed by request values, so bounded: memo drops expired then LRU entries, the said-set its oldest.
+_HEADER_PROBE_MAX = 256
+_HEADER_PROBE_MEMO: dict = {}
+_HEADER_PROBE_SAID: dict = {}
+_HEADER_PROBE_LOCK = _threading.Lock()
+
+
+def _memo_get(key: Any, now: float) -> Any:
+    """The live memo entry for ``key`` (refreshed as most recent), or None; an expired one is dropped.
+    Offline-cache verdicts (``key[0] == "local"``) never expire: the file under them cannot change
+    without changing the key. Caller holds the lock."""
+    hit = _HEADER_PROBE_MEMO.pop(key, None)
+    if hit is None:
+        return None
+    if key[0] != "local" and now - hit[0] >= _HEADER_PROBE_TTL_S:
+        return None
+    _HEADER_PROBE_MEMO[key] = hit
+    return hit
+
+
+def _memo_put(key: Any, value: Any, now: float) -> None:
+    """Insert ``key``, then trim expired entries and the oldest beyond ``_HEADER_PROBE_MAX``. Caller holds the lock."""
+    _HEADER_PROBE_MEMO.pop(key, None)
+    _HEADER_PROBE_MEMO[key] = value
+    for old in [
+        k
+        for k, (at, _) in _HEADER_PROBE_MEMO.items()
+        if k[0] != "local" and now - at >= _HEADER_PROBE_TTL_S
+    ]:
+        del _HEADER_PROBE_MEMO[old]
+    while len(_HEADER_PROBE_MEMO) > _HEADER_PROBE_MAX:
+        del _HEADER_PROBE_MEMO[next(iter(_HEADER_PROBE_MEMO))]
+
+
+def _token_fingerprint(token: Optional[str]) -> str:
+    """A short one-way tag for ``token`` (empty when none), so memo keys never hold the secret."""
+    if not token:
+        return ""
+    import hashlib
+
+    return hashlib.sha256(str(token).encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _said_first(said: Any) -> bool:
+    """Whether ``said`` is new (warn) rather than a repeat (info); remembers at most ``_HEADER_PROBE_MAX``.
+    Caller holds the lock."""
+    first = said not in _HEADER_PROBE_SAID
+    _HEADER_PROBE_SAID.pop(said, None)
+    _HEADER_PROBE_SAID[said] = True
+    while len(_HEADER_PROBE_SAID) > _HEADER_PROBE_MAX:
+        del _HEADER_PROBE_SAID[next(iter(_HEADER_PROBE_SAID))]
+    return first
+
+
+def _cached_snapshot_current(repo_id: str, local: str, token: Optional[str]) -> Optional[bool]:
+    """Whether the Hub still serves the cached ``local`` snapshot of its file: True / False, or None when
+    unanswerable (not a Hub-cache path, no network, no etag nor commit), which keeps the cached verdict.
+    One HEAD, no range read. The blob name is the file's etag and the snapshot directory its commit, so
+    either matching proves the cache is what ``hf_hub_download`` would open; an unrelated commit to the
+    repo leaves the etag equal and costs no re-read."""
+    import os
+
+    parts = os.path.normpath(local).split(os.sep)
+    if len(parts) < 3 or parts[-3] != "snapshots":
+        return None
+    commit, name = parts[-2], parts[-1]
+    blob = os.path.basename(os.path.realpath(local))
+    from .prequant_header_probe import hub_file_revision
+
+    current = hub_file_revision(repo_id, name, token = token)
+    if current is None or current == "missing":
+        return None if current is None else False
+    etag, hub_commit = current
+    if (etag and etag == blob) or (hub_commit and hub_commit == commit):
+        return True
+    if etag or hub_commit:
+        return False
+    return None
+
+
+class _CollectWarnings:
+    def __init__(self) -> None:
+        self.lines: list = []
+
+    def warning(self, fmt: str, *args: Any) -> None:
+        self.lines.append(fmt % args if args else fmt)
+
+    def info(self, *args: Any, **kwargs: Any) -> None:
+        pass
+
+    debug = info
+
+
+def _probe_logger(logger: Any) -> Any:
+    if logger is not None:
+        return logger
+    try:
+        from loggers import get_logger
+        return get_logger(__name__)
+    except Exception:  # noqa: BLE001 - no Studio logger: the stdlib one
+        import logging
+        return logging.getLogger(__name__)
+
+
+def hosted_prequant_refusal(
+    source: Any,
+    scheme: str,
+    *,
+    base: Optional[str] = None,
+    min_features: Optional[int] = None,
+    fast_accum: Optional[bool] = None,
+    component: Optional[str] = None,
+    hf_token: Optional[str] = None,
+    cache_dir: Optional[str] = None,
+    local_files_only: bool = False,
+    logger: Any = None,
+) -> Optional[str]:
+    """Why hosted ``source`` would be refused, from its header alone (no weight download).
+
+    Only a ``.safetensors`` checkpoint has a header this reads. The candidate names are walked in the
+    resolver's order (safetensors ahead of the pickle), and when the first one that exists is a
+    ``.pt`` the answer is None: a pickle is never opened here, so it is judged by the loader after its
+    download, as before. A parsed header whose typed fields cannot be validated IS a refusal, since
+    the loader would refuse it too.
+
+    None when usable or unreadable: unknown is never a refusal. Never raises."""
+    import os
+    import time
+
+    if (os.environ.get(HEADER_PROBE_ENV) or "").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    if getattr(source, "kind", None) != "repo" or not scheme:
+        return None
+    saved_failure = getattr(_LAST_FAILURE, "text", None)
+    try:
+        names = [
+            n
+            for n in candidate_filenames_of(source)
+            if restricted_prequant_load_supported(scheme, n)
+        ]
+        if not names:
+            return None
+        local = cached_checkpoint_path(source, cache_dir = cache_dir, names = names)
+        # A ``scoped_local_files_only`` load is offline too: a cache miss must not become Hub requests.
+        offline = bool(local_files_only or _LOCAL_FILES_ONLY.get() or hub_offline())
+        if local is None and offline:
+            return None
+        request = (scheme, base or "", min_features, fast_accum, component or "")
+        # Keyed by credentials: an anonymous 401 (unknown) must not stand in for the authenticated probe.
+        auth = _token_fingerprint(hf_token)
+        if local is not None:
+            try:
+                st = os.stat(local)
+                # Offline the cached file is what loads; online it may have been re-uploaded, so revalidate.
+                key = (
+                    "local" if offline else "cached",
+                    os.path.realpath(local),
+                    st.st_size,
+                    st.st_mtime_ns,
+                    request,
+                    "" if offline else auth,
+                )
+            except OSError:
+                return None
+        else:
+            key = ("hub", source.location, tuple(names), request, auth)
+        now = time.monotonic()
+        with _HEADER_PROBE_LOCK:
+            hit = _memo_get(key, now)
+        if hit is not None:
+            return hit[1]
+
+        from .prequant_header_probe import read_hub_checkpoint_header, read_local_checkpoint_header
+
+        header, name = None, None
+        # False when the Hub could not answer (401/403, network): not memoised, so the next probe retries.
+        answered = True
+        hub_names = names
+        from .prequant_safetensors import is_safetensors_checkpoint
+
+        # Only a safetensors header is ever read, so a cached pickle is "unknown" and not worth a HEAD.
+        if local is not None and not offline and is_safetensors_checkpoint(local):
+            if _cached_snapshot_current(source.location, local, hf_token) is False:
+                # Judge what the download would fetch; a name now 404ing falls through to the next one.
+                cached_name = os.path.basename(local)
+                at = names.index(cached_name) if cached_name in names else -1
+                hub_names, local = (names[at:] if at >= 0 else [cached_name]), None
+        if local is not None:
+            header, name = read_local_checkpoint_header(local), os.path.basename(local)
+        else:
+            for candidate in hub_names:
+                header, exists = read_hub_checkpoint_header(
+                    source.location, candidate, token = hf_token
+                )
+                if exists is False:
+                    continue
+                answered = exists is not None
+                name = candidate
+                break
+        reason = None
+        if header is not None:
+            collect = _CollectWarnings()
+            try:
+                if not isinstance(header["metadata"], dict):
+                    raise ValueError("metadata is not a JSON object")
+                ok = _validate_checkpoint(
+                    {"format": header["format"], "metadata": header["metadata"]},
+                    scheme,
+                    base or "",
+                    collect,
+                    min_features = min_features,
+                    fast_accum = fast_accum,
+                    component = component,
+                    metadata_only = True,
+                )
+            except Exception as exc:  # noqa: BLE001 - a PARSED header the loader cannot validate
+                # The loader raises on it too, so this is a refusal, not "unknown".
+                ok = False
+                collect.lines.insert(
+                    0, f"malformed checkpoint metadata ({type(exc).__name__}: {exc})"[:300]
+                )
+            if not ok:
+                reason = (collect.lines[0] if collect.lines else "incompatible metadata").replace(
+                    "diffusion.prequant: ", ""
+                )
+                said = (source.location, name, reason)
+                with _HEADER_PROBE_LOCK:
+                    first = _said_first(said)
+                where = (
+                    "cached file"
+                    if local is not None
+                    else f"{(header.get('size') or 0) / 1e9:.1f} GB file, not downloaded"
+                )
+                (_probe_logger(logger).warning if first else _probe_logger(logger).info)(
+                    "diffusion.prequant: skipping hosted %s checkpoint %s/%s (%s; read %d header "
+                    "bytes): %s; using the fallback path instead",
+                    scheme,
+                    source.location,
+                    name,
+                    where,
+                    int(header.get("bytes_read") or 0),
+                    reason,
+                )
+        with _HEADER_PROBE_LOCK:
+            if answered:
+                _memo_put(key, (now, reason), now)
+        return reason
+    except Exception:  # noqa: BLE001 - a probe that cannot answer leaves today's behaviour
+        return None
+    finally:
+        _LAST_FAILURE.text = saved_failure
+
+
+def _planning_min_features(min_features: Optional[int]) -> Optional[int]:
+    if min_features is not None:
+        return min_features
+    try:
+        from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES
+        return DEFAULT_MIN_LINEAR_FEATURES
+    except Exception:  # noqa: BLE001 - no quant module: skip the check, as before
+        return None
+
+
 def usable_prequant_source(
     fam: Any,
     scheme: str,
     *,
     path_override: Optional[str] = None,
     base_repo: Optional[str] = None,
+    local_files_only: bool = False,
+    hf_token: Optional[str] = None,
+    cache_dir: Optional[str] = None,
+    min_features: Optional[int] = None,
 ) -> Optional[PrequantSource]:
     """``resolve_prequant_source``, but a local path counts only when the loader would accept it:
     inside the allowlist AND present on disk AND baked for THIS scheme. Otherwise resolves to None
@@ -1487,6 +1993,13 @@ def usable_prequant_source(
     primary artifact is safetensors is usable on an install that could not open a pickle at all, and
     resolving first is what lets the source say so. Any one loadable name is enough, since the
     resolver tries them in order and the first that exists wins.
+
+    ``local_files_only`` / ``hf_token`` / ``cache_dir`` are the load's own, handed to the hosted header
+    probe so planning asks exactly what the loader will: an offline load makes no Hub request here
+    either, and a gated repo is read with the caller's token. ``base_repo`` doubles as the base the
+    probe checks ``base_model_id`` against, as ``load_prequantized_transformer`` does. ``min_features``
+    defaults to ``DEFAULT_MIN_LINEAR_FEATURES``, the Linear filter every loader of these checkpoints
+    enforces, so a header baked under another filter is refused here rather than after its download.
     """
     src = resolve_prequant_source(fam, scheme, path_override = path_override, base_repo = base_repo)
     if src is None:
@@ -1518,7 +2031,8 @@ def usable_prequant_source(
         # the dense shards, then resolve neither file.
         if (
             not any(n in declared for n in readable)
-            and cached_checkpoint_path(src, names = readable, online = False) is None
+            and cached_checkpoint_path(src, cache_dir = cache_dir, names = readable, online = False)
+            is None
         ):
             return None
     if src.kind == "path":
@@ -1536,6 +2050,21 @@ def usable_prequant_source(
                     return None
             except Exception:  # noqa: BLE001 -- unreadable: the scheme check above already decided
                 pass
+    # Refused metadata = no source, judged with the loader's base and fetch rules, so planning stages dense.
+    if (
+        src.kind == "repo"
+        and hosted_prequant_refusal(
+            src,
+            scheme,
+            base = base_repo,
+            min_features = _planning_min_features(min_features),
+            hf_token = hf_token,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+        )
+        is not None
+    ):
+        return None
     return src
 
 
@@ -1741,6 +2270,23 @@ def load_prequantized_transformer(
             )
             return None
 
+        if source.kind == "repo":
+            refusal = hosted_prequant_refusal(
+                source,
+                scheme,
+                base = base,
+                min_features = min_features,
+                fast_accum = fast_accum,
+                component = component,
+                hf_token = hf_token,
+                cache_dir = cache_dir,
+                local_files_only = local_files_only,
+                logger = logger,
+            )
+            if refusal is not None:
+                _LAST_FAILURE.text = _ABS_PATH.sub("", f"ValueError: {refusal}")[:300]
+                return None
+
         path = _resolve_checkpoint_path(
             source,
             hf_token,
@@ -1860,8 +2406,13 @@ def load_prequantized_transformer(
             apply_activation_rotation(transformer, metadata, logger = logger)
 
             if scheme == "nvfp4":
+                from .diffusion_nvfp4_act_quant import install_nvfp4_act_quant_patch
                 from .diffusion_nvfp4_linear import convert_nvfp4_backend
+
+                # Layers left on torchao quantise activations through NVFP4Tensor.to_nvfp4 at run time.
+                install_nvfp4_act_quant_patch(logger)
                 from .diffusion_nvfp4_ops import select_nvfp4_backend
+
                 convert_nvfp4_backend(
                     transformer, metadata, select_nvfp4_backend(device), logger = logger
                 )
@@ -2406,12 +2957,14 @@ def _validate_checkpoint(
     min_features: Optional[int] = None,
     fast_accum: Optional[bool] = None,
     component: Optional[str] = None,
+    metadata_only: bool = False,
 ) -> bool:
-    """Reject a wrong format / scheme / base / filter / denoiser; absent ``min_features`` / ``fast_accum`` pass."""
+    """Reject a wrong format / scheme / base / filter / denoiser; absent ``min_features`` / ``fast_accum`` pass.
+    ``metadata_only`` skips the checks that need tensors."""
     if not isinstance(ckpt, dict) or ckpt.get("format") not in PREQUANT_FORMATS:
         _warn(logger, scheme, ValueError("unrecognised pre-quant checkpoint format"))
         return False
-    if "state_dict" not in ckpt:
+    if "state_dict" not in ckpt and not metadata_only:
         _warn(logger, scheme, ValueError("pre-quant checkpoint has no state_dict"))
         return False
     meta = ckpt.get("metadata") or {}
@@ -2445,7 +2998,11 @@ def _validate_checkpoint(
     # predates any metadata field we could stamp -- and "absent is accepted for back-compat", the convention every
     # check above follows, is exactly wrong here. Reading the tensors is fail-closed and needs no format bump.
     # Unless the floor is the only difference: it is not weight data, so ``_repair_legacy_checkpoint`` writes it in.
-    if holds_fp8 and not _fp8_activation_floor_present(ckpt.get("state_dict"), logger, warn = False):
+    if (
+        holds_fp8
+        and not metadata_only
+        and not _fp8_activation_floor_present(ckpt.get("state_dict"), logger, warn = False)
+    ):
         if not _fp8_activation_floor_restorable(ckpt.get("state_dict")):
             _fp8_activation_floor_present(ckpt.get("state_dict"), logger)
             return False
@@ -2495,7 +3052,9 @@ def _validate_checkpoint(
                 logger,
                 scheme,
                 ValueError(
-                    f"checkpoint exclude_name_tokens {ckpt_excludes!r} do not cover the runtime {expected!r}"
+                    "checkpoint built under an older exclusion list (missing "
+                    f"{sorted(set(expected) - set(ckpt_excludes or ())) if isinstance(ckpt_excludes, (list, tuple)) else ckpt_excludes!r}"
+                    f"): checkpoint exclude_name_tokens {ckpt_excludes!r} do not cover the runtime {expected!r}"
                 ),
             )
             return False

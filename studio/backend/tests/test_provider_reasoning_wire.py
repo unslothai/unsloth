@@ -138,7 +138,8 @@ def test_local_servers_get_template_toggle_and_effort(provider_type):
         provider_type, "openai/gpt-oss-20b", reasoning_effort = "xhigh", enable_thinking = True
     )
     assert body["chat_template_kwargs"] == {"enable_thinking": True}
-    assert body["reasoning_effort"] == "high"
+    # A vLLM whose version cannot be read leaves a wider level to the template's own default.
+    assert body.get("reasoning_effort") == ("high" if provider_type == "llama_cpp" else None)
     body = _body(provider_type, "Qwen/Qwen3-14B", enable_thinking = False)
     assert body["chat_template_kwargs"] == {"enable_thinking": False}
     # vLLM through 0.16 types reasoning_effort as low | medium | high, so off never goes top-level.
@@ -198,7 +199,10 @@ def test_gemini_families_past_three_use_thinking_level():
         top_p = 0.95,
         max_tokens = 64,
     )
-    assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "medium"}
+    assert body["generationConfig"]["thinkingConfig"] == {
+        "thinkingLevel": "medium",
+        "includeThoughts": True,
+    }
     body = _body(
         "gemini",
         "gemini-4-pro",
@@ -207,7 +211,10 @@ def test_gemini_families_past_three_use_thinking_level():
         top_p = 0.95,
         max_tokens = 64,
     )
-    assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
+    assert body["generationConfig"]["thinkingConfig"] == {
+        "thinkingLevel": "low",
+        "includeThoughts": True,
+    }
     body = _body(
         "gemini",
         "gemini-2.5-flash",
@@ -244,15 +251,17 @@ def test_anthropic_models_outside_the_spec_take_the_adaptive_shape():
 def test_gemma_on_gemini_toggles_with_thinking_level_not_budget():
     sampling = {"temperature": 0.7, "top_p": 0.95, "max_tokens": 64}
     body = _body("gemini", "gemma-4-31b-it", enable_thinking = True, **sampling)
-    assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "high"}
+    assert body["generationConfig"]["thinkingConfig"] == {
+        "thinkingLevel": "high",
+        "includeThoughts": True,
+    }
     body = _body("gemini", "gemma-4-26b-a4b-it", enable_thinking = False, **sampling)
     assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "minimal"}
     body = _body("gemini", "gemma-4-31b-it", **sampling)
     assert "thinkingConfig" not in body.get("generationConfig", {})
 
 
-# Wire proof for older Claude models, run against a mocked Anthropic stream rather than the live API. Anthropic documents
-# adaptive thinking as a 400 on Claude 4.5 and earlier, and budget_tokens as the only thinking mode there:
+# Claude 4.5 and earlier reject adaptive thinking and require budget_tokens.
 # https://platform.claude.com/docs/en/build-with-claude/extended-thinking
 @pytest.mark.parametrize(
     "model,effort,budget",

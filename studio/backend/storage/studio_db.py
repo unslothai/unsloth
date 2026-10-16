@@ -18,6 +18,7 @@ import platform
 import re
 import shutil
 import sqlite3
+import stat
 import threading
 import time
 from contextlib import contextmanager
@@ -29,6 +30,7 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, Optional
 
 
 from core import chat_originals
+from storage import sqlite_gate
 from utils.account_context import is_owner_context
 from utils.paths import (
     ensure_account_dir,
@@ -141,33 +143,8 @@ def contains_sensitive_path_component(path: str) -> bool:
 _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
 
-# SQLite 3.51.0-3.51.1 deadlocks when one thread's WAL close (unixIsSharingShmNode) races another
-# thread's open or close of the same file: they take the VFS and inode mutexes in opposite order
-# (fixed in 3.51.2, #10022). Gating only close() still deadlocks; opens must share the lock.
-# Reentrant: a GC finalizer can close a pooled connection inside a gated connect on this thread.
-_CONNECTION_GATE = threading.RLock()
-
-
-def _reset_connection_gate_after_fork() -> None:
-    global _CONNECTION_GATE
-    _CONNECTION_GATE = threading.RLock()
-
-
-if hasattr(os, "register_at_fork"):
-    os.register_at_fork(after_in_child = _reset_connection_gate_after_fork)
-
-
-class _StudioDbConnection(sqlite3.Connection):
-    # A connection dropped without close() is finalized natively and bypasses this gate.
-    def close(self) -> None:
-        with _CONNECTION_GATE:
-            super().close()
-
-
-def connect_studio_db(database: str | os.PathLike[str], **kwargs: Any) -> sqlite3.Connection:
-    """sqlite3.connect for studio.db, with opens and closes serialized process-wide."""
-    with _CONNECTION_GATE:
-        return sqlite3.connect(str(database), factory = _StudioDbConnection, **kwargs)
+# Opens and closes serialized process-wide against the SQLite 3.51.0-3.51.1 deadlock (#10022).
+connect_studio_db = sqlite_gate.connect
 
 
 _SQLITE_IN_CHUNK_SIZE = 900
@@ -482,6 +459,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     }
     if "root_path" not in chat_project_cols:
         conn.execute("ALTER TABLE chat_projects ADD COLUMN root_path TEXT")
+    # The user's folder, never deleted; only root_path (Studio's own) is removed on project delete.
+    if "working_folder" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN working_folder TEXT")
+    if "working_folder_identity" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN working_folder_identity TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_projects_archived_updated_at ON chat_projects(archived, updated_at)"
     )
@@ -1020,6 +1002,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    document_source_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(research_document_sources)").fetchall()
+    }
+    if "kind" not in document_source_cols:
+        conn.execute("ALTER TABLE research_document_sources ADD COLUMN kind TEXT")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS research_events (
@@ -2149,6 +2136,8 @@ def _chat_project_from_row(row: sqlite3.Row) -> dict:
         "instructions": data.get("instructions") or "",
         "rootPath": root_path or None,
         "sandboxPath": os.path.join(root_path, "sandbox") if root_path else None,
+        "workingFolder": data.get("working_folder") or None,
+        "workingFolderIdentity": data.get("working_folder_identity") or None,
         "archived": bool(data["archived"]),
         "createdAt": data["created_at"],
         "updatedAt": data["updated_at"],
@@ -2281,6 +2270,7 @@ def update_chat_thread(
     expected_title: Optional[str] = None,
     expected_opening_message_id: Optional[str] = None,
     settings_write: Optional[dict] = None,
+    preserve_title_modified_at: bool = False,
 ) -> Optional[dict]:
     """Patch a thread. With expected_title, the write only lands while the row still holds that title,
     so a concurrent rename wins instead of being lost. expected_opening_message_id guards a title
@@ -2332,11 +2322,14 @@ def update_chat_thread(
             "fork_title_base = CASE WHEN title = ? THEN fork_title_base ELSE NULL END"
         )
         values.append(patch.get("title"))
-    # Stamp real renames, moves and (un)archives. The CASE reads the pre-update row.
+    # Generated title refreshes preserve recency. Moves and (un)archives still stamp it.
+    # The CASE reads the pre-update row.
     edited = [
         (column, value)
         for key, (column, value) in allowed.items()
-        if key in patch and key in ("title", "projectId", "archived")
+        if key in patch
+        and key in ("title", "projectId", "archived")
+        and not (key == "title" and preserve_title_modified_at)
     ]
     if edited:
         changed = " OR ".join(f"{column} IS NOT ?" for column, _ in edited)
@@ -2530,6 +2523,237 @@ def list_chat_threads(
         ).fetchall()
         # the snapshot is only read when a thread is opened, so it is left out of the listing.
         return [_chat_thread_from_row(row, include_settings = False) for row in rows]
+    finally:
+        conn.close()
+
+
+SIDEBAR_ROWS_CURSOR_VERSION = 2
+SIDEBAR_ROWS_MAX_LIMIT = 200
+
+_SIDEBAR_ROW_ID_SQL = "COALESCE(NULLIF(pair_id, ''), id)"
+_SIDEBAR_ACTIVITY_SQL = "COALESCE(updated_at, created_at)"
+
+
+class SidebarCursorError(ValueError):
+    """A cursor this listing did not issue, or one issued for another sort."""
+
+
+def encode_sidebar_cursor(payload: dict) -> str:
+    raw = json.dumps({"v": SIDEBAR_ROWS_CURSOR_VERSION, **payload}, separators = (",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def decode_sidebar_cursor(cursor: str, sort: str) -> dict:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
+    except (binascii.Error, UnicodeError, ValueError) as exc:
+        raise SidebarCursorError("Malformed cursor") from exc
+    if not isinstance(payload, dict) or payload.get("v") != SIDEBAR_ROWS_CURSOR_VERSION:
+        raise SidebarCursorError("Unsupported cursor version")
+    if payload.get("s") != sort:
+        raise SidebarCursorError("Cursor was issued for another sort")
+    keys = ("o",) if sort == "manual" else ("u", "c", "r")
+    # SQLite binds 64-bit integers only; the exclusive lower bound keeps `-r` in range too
+    if not all(type(v) is int and -(2**63) < v < 2**63 for v in map(payload.get, keys)):
+        raise SidebarCursorError("Malformed cursor")
+    if sort == "manual" and payload["o"] < 0:
+        raise SidebarCursorError("Malformed cursor")
+    return payload
+
+
+def list_chat_sidebar_rows(
+    *,
+    archived: bool = False,
+    project_id: str | None = None,
+    unfiled_only: bool = False,
+    include_ids: list[str] | None = None,
+    exclude_ids: list[str] | None = None,
+    sort: str = "updated",
+    manual_order: list[str] | None = None,
+    limit: int = 20,
+    cursor: str | None = None,
+) -> dict:
+    """One page of sidebar rows, grouped (before the limit) and ordered as the frontend's groupThreads
+    does. `updated` pages by keyset; `manual` follows applyManualOrder and pages by offset."""
+    position = decode_sidebar_cursor(cursor, sort) if cursor else None
+
+    filters: list[str] = []
+    filter_values: list[object] = []
+    if include_ids is not None:
+        # a row id, or any member thread id: a running compare pane names its pair by its own id. Only a
+        # pane on this side of the archive filter counts, as the full list filters panes before matching
+        filters.append(
+            "(rows.row_id IN (SELECT value FROM json_each(?)) OR rows.row_id IN ("
+            f"SELECT {_SIDEBAR_ROW_ID_SQL} FROM chat_threads WHERE id IN (SELECT value FROM json_each(?))"
+            " AND (COALESCE(archived, 0) <> 0) = ?))"
+        )
+        filter_values += [json.dumps(include_ids), json.dumps(include_ids), 1 if archived else 0]
+    if exclude_ids:
+        filters.append("rows.row_id NOT IN (SELECT value FROM json_each(?))")
+        filter_values.append(json.dumps(exclude_ids))
+    if project_id is not None:
+        filters.append("rows.project_id = ?")
+        filter_values.append(project_id)
+    if unfiled_only:
+        filters.append("rows.project_id IS NULL")
+
+    # Last occurrence wins, as `new Map(order.map((id, i) => [id, i]))` does.
+    ranks_json = json.dumps(manual_order or []) if sort == "manual" else "[]"
+    base = f"""
+        WITH members AS (
+            SELECT {_SIDEBAR_ROW_ID_SQL} AS row_id,
+                   CASE WHEN COALESCE(pair_id, '') <> '' THEN 1 ELSE 0 END AS is_pair,
+                   title,
+                   NULLIF(project_id, '') AS project_id,
+                   created_at,
+                   {_SIDEBAR_ACTIVITY_SQL} AS activity_at,
+                   NULLIF(modified_at, 0) AS modified_at,
+                   CASE WHEN COALESCE(forked_from_thread_id, '') <> '' THEN 1 ELSE 0 END AS is_fork,
+                   rowid AS member_rowid,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY {_SIDEBAR_ROW_ID_SQL}
+                       ORDER BY {_SIDEBAR_ACTIVITY_SQL} DESC, created_at DESC, rowid ASC
+                   ) AS member_rank
+            FROM chat_threads
+            WHERE (COALESCE(archived, 0) <> 0) = ?
+        ),
+        rows AS (
+            SELECT row_id,
+                   MAX(is_pair) AS is_pair,
+                   MAX(created_at) AS created_at,
+                   MAX(activity_at) AS updated_at,
+                   MAX(modified_at) AS modified_at,
+                   MAX(CASE WHEN member_rank = 1 THEN title END) AS title,
+                   MAX(CASE WHEN member_rank = 1 THEN project_id END) AS project_id,
+                   MAX(CASE WHEN member_rank = 1 THEN is_fork END) AS is_fork,
+                   -- groupThreads sorts stably, so rows tied on updatedAt keep list order: their newest
+                   -- member's created_at DESC, then storage order.
+                   MAX(CASE WHEN member_rank = 1 THEN created_at END) AS lead_created_at,
+                   MAX(CASE WHEN member_rank = 1 THEN member_rowid END) AS lead_rowid
+            FROM members
+            GROUP BY row_id
+        ),
+        ranks AS (
+            SELECT value AS row_id, MAX(CAST(key AS INTEGER)) AS manual_rank
+            FROM json_each(?)
+            GROUP BY value
+        ),
+        eligible AS (
+            SELECT rows.*, ranks.manual_rank
+            FROM rows LEFT JOIN ranks ON ranks.row_id = rows.row_id
+            {"WHERE " + " AND ".join(filters) if filters else ""}
+        )
+    """
+    base_values: list[object] = [1 if archived else 0, ranks_json, *filter_values]
+
+    page_values = list(base_values)
+    if sort == "updated":
+        where = ""
+        if position is not None:
+            where = "WHERE (updated_at, lead_created_at, -lead_rowid) < (?, ?, ?)"
+            page_values += [position["u"], position["c"], -position["r"]]
+        page_sql = (
+            f"{base} SELECT * FROM (SELECT *, COUNT(*) OVER () AS total FROM eligible) {where} "
+            "ORDER BY updated_at DESC, lead_created_at DESC, lead_rowid ASC LIMIT ?"
+        )
+        page_values.append(limit + 1)
+    else:
+        offset = position["o"] if position is not None else 0
+        page_sql = (
+            f"{base} SELECT *, COUNT(*) OVER () AS total FROM eligible "
+            "ORDER BY manual_rank IS NOT NULL, manual_rank ASC, updated_at DESC, lead_created_at DESC, lead_rowid ASC "
+            "LIMIT ? OFFSET ?"
+        )
+        page_values += [limit + 1, offset]
+
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN")
+        page = conn.execute(page_sql, page_values).fetchall()
+        if page:
+            total = page[0]["total"]
+        else:
+            total = conn.execute(f"{base} SELECT COUNT(*) FROM eligible", base_values).fetchone()[0]
+        has_more = len(page) > limit
+        page = page[:limit]
+        members_by_row: dict[str, list[sqlite3.Row]] = {row["row_id"]: [] for row in page}
+        if page:
+            row_ids = json.dumps(list(members_by_row))
+            for member in conn.execute(
+                f"""
+                SELECT id, {_SIDEBAR_ROW_ID_SQL} AS row_id, NULLIF(model_id, '') AS model_id, title
+                FROM chat_threads
+                WHERE (COALESCE(archived, 0) <> 0) = ?
+                  AND (
+                      pair_id IN (SELECT value FROM json_each(?))
+                      OR (COALESCE(pair_id, '') = '' AND id IN (SELECT value FROM json_each(?)))
+                  )
+                ORDER BY {_SIDEBAR_ACTIVITY_SQL} DESC, created_at DESC, rowid ASC
+                """,
+                (1 if archived else 0, row_ids, row_ids),
+            ):
+                members_by_row[member["row_id"]].append(member)
+        conn.commit()
+    finally:
+        conn.close()
+
+    rows: list[dict] = []
+    for row in page:
+        members = members_by_row[row["row_id"]]
+        model_ids: list[str] = []
+        for member in members:
+            if member["model_id"] and member["model_id"] not in model_ids:
+                model_ids.append(member["model_id"])
+        item: dict[str, Any] = {
+            "id": row["row_id"],
+            "type": "compare" if row["is_pair"] else "single",
+            "threadIds": [member["id"] for member in members],
+            "title": row["title"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+            "projectId": row["project_id"],
+        }
+        if row["modified_at"]:
+            item["modifiedAt"] = row["modified_at"]
+        if model_ids:
+            item["modelIds"] = model_ids
+        if not row["is_pair"]:
+            item["isFork"] = bool(row["is_fork"])
+        else:
+            item["threadTitles"] = [member["title"] or "" for member in members]
+        rows.append(item)
+
+    next_cursor = None
+    if has_more and page:
+        if sort == "updated":
+            last = page[-1]
+            next_cursor = encode_sidebar_cursor(
+                {
+                    "s": "updated",
+                    "u": last["updated_at"],
+                    "c": last["lead_created_at"],
+                    "r": last["lead_rowid"],
+                }
+            )
+        else:
+            offset = (position["o"] if position is not None else 0) + len(page)
+            next_cursor = encode_sidebar_cursor({"s": "manual", "o": offset})
+    return {"rows": rows, "nextCursor": next_cursor, "hasMore": has_more, "total": total}
+
+
+def lookup_chat_sidebar_row_ids(thread_ids: list[str]) -> dict[str, str]:
+    """The sidebar row each existing thread belongs to; unknown ids are left out."""
+    if not thread_ids:
+        return {}
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            f"SELECT id, {_SIDEBAR_ROW_ID_SQL} AS row_id FROM chat_threads "
+            "WHERE id IN (SELECT value FROM json_each(?))",
+            (json.dumps(thread_ids),),
+        ).fetchall()
+        return {row["id"]: row["row_id"] for row in rows}
     finally:
         conn.close()
 
@@ -2998,6 +3222,52 @@ def update_chat_project(id: str, patch: dict) -> Optional[dict]:
         conn.close()
 
 
+def set_chat_project_working_folder(
+    id: str,
+    path: Optional[str],
+    identity: Optional[tuple[int, int]] = None,
+) -> Optional[dict]:
+    """The managed workspace is kept, so switching back finds its files."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE chat_projects SET working_folder = ?, working_folder_identity = ?, "
+            "updated_at = ? WHERE id = ?",
+            (
+                path or None,
+                f"{identity[0]}:{identity[1]}" if path and identity else None,
+                int(time.time() * 1000),
+                id,
+            ),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (id,)).fetchone()
+        return _chat_project_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def available_project_working_folder(project: Optional[dict]) -> Optional[str]:
+    """None unless still the picked directory: the identity check stops a new dir at the old path inheriting the grant."""
+    path = (project or {}).get("workingFolder")
+    if not path or not is_owner_context():
+        return None
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(st.st_mode):
+        return None
+    identity = (project or {}).get("workingFolderIdentity")
+    if identity and identity != f"{st.st_dev}:{st.st_ino}":
+        return None
+    real = os.path.realpath(path)
+    # Reached through a new ancestor link, the same inode sits somewhere else: not the folder picked.
+    if os.path.normcase(real) != os.path.normcase(path):
+        return None
+    return real
+
+
 def ensure_chat_project_workspace(id: str) -> Optional[dict]:
     project = get_chat_project(id)
     if project is None:
@@ -3035,13 +3305,43 @@ def get_chat_project(id: str) -> Optional[dict]:
 
 
 def list_chat_projects(include_archived: bool = False) -> list[dict]:
+    """Projects with `lastActivityAt`: their own last edit or newest unarchived chat, whichever is later."""
     conn = get_connection()
     try:
-        where = "" if include_archived else "WHERE archived = 0"
+        where = "" if include_archived else "WHERE p.archived = 0"
         rows = conn.execute(
-            f"SELECT * FROM chat_projects {where} ORDER BY updated_at DESC"
+            f"""
+            SELECT p.*,
+                   MAX(
+                       COALESCE(p.updated_at, p.created_at),
+                       COALESCE(chats.last_chat_at, 0)
+                   ) AS last_activity_at
+            FROM chat_projects p
+            LEFT JOIN (
+                -- one row per sidebar row, as the sidebar groups it: a compare pair's activity is its
+                -- newest pane's and counts for that pane's project only
+                SELECT project_id, MAX(row_activity) AS last_chat_at
+                FROM (
+                    SELECT NULLIF(project_id, '') AS project_id,
+                           MAX({_SIDEBAR_ACTIVITY_SQL}) OVER (PARTITION BY {_SIDEBAR_ROW_ID_SQL}) AS row_activity,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY {_SIDEBAR_ROW_ID_SQL}
+                               ORDER BY {_SIDEBAR_ACTIVITY_SQL} DESC, created_at DESC, rowid ASC
+                           ) AS member_rank
+                    FROM chat_threads
+                    WHERE COALESCE(archived, 0) = 0
+                )
+                WHERE member_rank = 1 AND project_id IS NOT NULL
+                GROUP BY project_id
+            ) chats ON chats.project_id = p.id
+            {where}
+            ORDER BY p.updated_at DESC
+            """
         ).fetchall()
-        return [_chat_project_from_row(row) for row in rows]
+        return [
+            {**_chat_project_from_row(row), "lastActivityAt": row["last_activity_at"]}
+            for row in rows
+        ]
     finally:
         conn.close()
 

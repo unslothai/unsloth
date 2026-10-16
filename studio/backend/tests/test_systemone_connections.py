@@ -505,7 +505,7 @@ def test_a_system_one_model_list_explains_what_went_wrong(upstream, reply, detai
 def test_studio_lists_its_decision_models_only_when_asked(monkeypatch, studio):
     from routes import inference
 
-    async def chat_catalog():
+    async def chat_catalog(quant_pins = False):
         return [{"id": "unsloth/Qwen3-0.6B", "object": "model"}]
 
     monkeypatch.setattr(inference, "_openai_catalog_objects", chat_catalog)

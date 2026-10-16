@@ -280,7 +280,7 @@ def test_no_mirror_is_a_companion_only_repo():
 # Vendor bases the catalog offers before their unsloth mirror exists on the Hub. A mirror row for a
 # repo that is not there would 404 every fetch it redirects, so the table cannot lead the upload;
 # this names the gap instead of letting the check below go red on every PR until it closes.
-_MIRRORS_NOT_YET_PUBLISHED: frozenset[str] = frozenset()
+_MIRRORS_NOT_YET_PUBLISHED: frozenset[str] = frozenset({"qwen/qwen-image-2.1-turbo"})
 
 
 def test_every_third_party_bf16_pipeline_the_catalog_offers_is_mirrored():
@@ -2852,6 +2852,85 @@ def test_generate_other_family_never_passes_cfg_trunc_ratio(fake_runtime, tmp_pa
     backend.generate(prompt = "a sloth", steps = 9, guidance = 0.0)
     call = backend._state.pipe.last_kwargs
     assert call["cfg_trunc_ratio"] is None
+
+
+_TURBO_GRID = [1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568]
+
+
+class _FakeFlowScheduler:
+    def __init__(self, **config):
+        self.config = dict(config)
+
+    @classmethod
+    def from_config(cls, config, **overrides):
+        return cls(**{**config, **overrides})
+
+
+class _FakeGridPipe(_FakePipe):
+    """A QwenImage21Pipeline on the pinned diffusers: takes ``sigmas``, but its config never holds ``sample_sigmas``
+    (an extra key there breaks DiffusionPipeline.components, so group offload fails and the load dies)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.config = {}
+        self.scheduler = _FakeFlowScheduler(
+            shift = 1.0, use_dynamic_shifting = False, shift_terminal = None
+        )
+
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        sigmas = None,
+        callback_on_step_end = None,
+        **kwargs,
+    ):
+        self.last_kwargs = {"prompt": prompt, "sigmas": sigmas, **kwargs}
+        return types.SimpleNamespace(images = [_FakeImage()])
+
+
+class _FakeGridPipeline:
+    @classmethod
+    def from_pretrained(cls, base, **kwargs):
+        return _FakeGridPipe()
+
+
+def _load_grid_pipeline(backend, tmp_path, monkeypatch, **manifest):
+    import diffusers
+
+    monkeypatch.setattr(diffusers, "Lumina2Pipeline", _FakeGridPipeline, raising = False)
+    # Stand in for a family whose ComfyUI template sets a static shift.
+    monkeypatch.setattr("core.inference.diffusion.comfy_flow_shift_for", lambda *a, **k: 3.0)
+    _write_pipeline(tmp_path, "Lumina2Pipeline", **manifest)
+    backend.load_pipeline(str(tmp_path), family_override = "lumina-2")
+    return backend._state.pipe
+
+
+def test_checkpoint_sample_sigmas_drive_the_schedule(fake_runtime, tmp_path, monkeypatch):
+    # The pinned diffusers drops Turbo's model_index.json grid; the backend carries it and passes it to every render.
+    backend = DiffusionBackend()
+    pipe = _load_grid_pipeline(backend, tmp_path, monkeypatch, sample_sigmas = _TURBO_GRID)
+    assert "sample_sigmas" not in pipe.config
+    assert pipe.scheduler.config["shift"] == 1.0  # not rebuilt at the static shift
+
+    backend.generate(prompt = "a sloth", steps = 8, guidance = 1.0)
+    assert pipe.last_kwargs["sigmas"] == _TURBO_GRID
+    # Another step count follows the same curve: same endpoints, still decreasing.
+    backend.generate(prompt = "a sloth", steps = 4, guidance = 1.0)
+    four = pipe.last_kwargs["sigmas"]
+    assert len(four) == 4 and four[0] == _TURBO_GRID[0] and four[-1] == _TURBO_GRID[-1]
+    assert all(b < a for a, b in zip(four, four[1:]))
+
+
+def test_checkpoint_without_sample_sigmas_keeps_the_static_shift(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Qwen/Qwen-Image-2.1 and every other checkpoint: no grid, so the ComfyUI shift and the linear ramp stay as on main.
+    backend = DiffusionBackend()
+    pipe = _load_grid_pipeline(backend, tmp_path, monkeypatch)
+    assert pipe.scheduler.config["shift"] == 3.0
+    backend.generate(prompt = "a sloth", steps = 8, guidance = 1.0)
+    assert pipe.last_kwargs["sigmas"] is None
 
 
 def test_begin_load_rejects_concurrent(monkeypatch):
@@ -7159,6 +7238,7 @@ def test_diffusion_status_response_carries_resolved():
             "reason": "blackwell",
             "artifact": None,
             "replaced": None,
+            "steps": None,
         }
     }
     # Absent by default (nothing resolved / native engine).
@@ -7181,7 +7261,12 @@ def test_diffusion_status_response_carries_requested_precision():
     }
     resp = DiffusionStatusResponse(loaded = True, resolved = rec)
     assert resp.model_dump()["resolved"] == {
-        "transformer_quant": {**rec["transformer_quant"], "artifact": None, "replaced": None}
+        "transformer_quant": {
+            **rec["transformer_quant"],
+            "artifact": None,
+            "replaced": None,
+            "steps": None,
+        }
     }
 
 
@@ -11717,7 +11802,7 @@ def _upscale_with_tiling_vae(backend, monkeypatch, **kw):
 
     vae = _TilingVae()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
-    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: False)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None, pipe = None: False)
     seen = {}
     real_call = _FakeImg2ImgPipe.__call__
 
@@ -11753,7 +11838,7 @@ def test_generate_upscale_that_fits_is_not_tiled(fake_runtime, tmp_path, monkeyp
 
     vae = _TilingVae()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
-    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: False)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None, pipe = None: False)
     backend.generate(prompt = "a sloth", steps = 4, seed = 1, init_image = _png_b64(512), upscale = 2.0)
     assert vae.calls == []
 
@@ -11766,7 +11851,7 @@ def test_generate_upscale_restores_the_vae_when_the_render_fails(
 
     vae = _TilingVae()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
-    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: False)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None, pipe = None: False)
 
     def _boom(self, **kwargs):
         raise RuntimeError("decode failed")
@@ -11782,7 +11867,7 @@ def test_generate_upscale_on_math_only_attention_still_refuses(fake_runtime, tmp
 
     backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", _TilingVae(), raising = False)
-    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: True)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None, pipe = None: True)
     with pytest.raises(ValueError) as excinfo:
         backend.generate(prompt = "a sloth", steps = 4, seed = 1, init_image = _png_b64(1024), upscale = 2.0)
     message = str(excinfo.value)
@@ -11809,7 +11894,7 @@ def test_generate_windows_batch_prices_tiles_at_the_batch_without_slicing(
     backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
     vae = vae_cls()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
-    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: False)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None, pipe = None: False)
     monkeypatch.setattr(dmod.sys, "platform", "win32")
     kw = dict(prompt = "a sloth", steps = 4, init_image = _png_b64(1024), upscale = 2.0, seeds = [1, 2])
     if vae_cls is _TilingVae:
@@ -11836,7 +11921,7 @@ def test_generate_upscale_refuses_when_the_vae_tiling_does_not_engage(
     backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
     vae = _BrokenTilingVae()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
-    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: False)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None, pipe = None: False)
     calls = []
     real_call = _FakeImg2ImgPipe.__call__
 
@@ -13584,6 +13669,49 @@ def test_plan_memory_prices_cached_dense_shards_over_a_cached_precast(monkeypatc
     assert plan.estimates["model_dense_mib"] == 4350
 
 
+@pytest.mark.parametrize("exact", [True, False])
+def test_mps_prices_the_int8_encoder_over_cached_dense_shards(monkeypatch, tmp_path, exact):
+    # #11792: a 48 GB Mac with 27 GB free that loaded Qwen-Image-2.1 before still holds the dense encoder.
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_memory import DeviceMemory, unified_memory_shortfall_message
+
+    snapshot = _base_snapshot_with_sizes(
+        tmp_path,
+        monkeypatch,
+        {
+            "text_encoder/model.safetensors": 16722,
+            "vae/diffusion_pytorch_model.safetensors": 650,
+        },
+    )
+    monkeypatch.setattr(
+        dmod,
+        "settled_snapshot_device_memory",
+        lambda t: DeviceMemory("mps", "mps", "unified_memory", 27 * 1024, 48 * 1024),
+    )
+    monkeypatch.setattr(dmod, "estimate_image_runtime_mib", lambda **kw: 8192)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_precast_text_encoder_mib",
+        staticmethod(lambda *a, **k: (8916, ("text_encoder",), exact)),
+    )
+    target = types.SimpleNamespace(device = "mps", backend = "mps", supports_model_cpu_offload = False)
+    plan = DiffusionBackend()._plan_memory(
+        target,
+        None,
+        "bfl/base",
+        types.SimpleNamespace(name = "qwen-image-2.1"),
+        None,
+        False,
+        kind = "gguf",
+        transformer_resident_override_mib = 4005,
+        base_local_dir = str(snapshot),
+        text_encoder_quant = "int8",
+    )
+    # The int8 file is fetched inside the load, after this check, so an uncached one is priced the same way.
+    assert plan.estimates["text_encoder_dense_mib"] == 8916
+    assert unified_memory_shortfall_message(plan) is None
+
+
 def test_cached_dense_shards_keep_the_24g_denoiser_resident(monkeypatch, tmp_path):
     from core.inference import diffusion as dmod
     from core.inference.diffusion_memory import OFFLOAD_GROUP, DeviceMemory
@@ -13771,6 +13899,27 @@ def test_precast_text_encoder_mib_reads_the_cached_checkpoint(monkeypatch, tmp_p
         DiffusionBackend._precast_text_encoder_mib(fam, "Qwen/Qwen-Image-2.1", target, "none")
         is None
     )
+
+
+def test_precast_text_encoder_mib_prices_an_uncached_int8_encoder_on_mps(monkeypatch):
+    # The int8 file is fetched inside the load, after the unified-memory check, so it is uncached there (#11792).
+    import torch
+
+    from core.inference import diffusion_prequant as pq
+    from core.inference.diffusion_auto_policy import family_bf16_components_gb
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_te_prequant import TE_INT8_CONVROT_BUDGET_SCALE
+
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    monkeypatch.setattr(pq, "prefer_cached_pickle_twins", lambda repo, names, **k: names)
+    monkeypatch.setattr(pq, "first_cached_as_resolved", lambda *a, **k: None)
+    target = types.SimpleNamespace(device = "mps", dtype = torch.bfloat16, backend = "mps")
+    mib, components, exact = DiffusionBackend._precast_text_encoder_mib(
+        fam, "Qwen/Qwen-Image-2.1", target, "int8"
+    )
+    dense_gb = family_bf16_components_gb(fam, "Qwen/Qwen-Image-2.1")[1]
+    assert (components, exact) == (("text_encoder",), False)
+    assert mib == int(dense_gb * 1000**3 * TE_INT8_CONVROT_BUDGET_SCALE) // (1024 * 1024)
 
 
 def test_precast_text_encoder_mib_prices_hidreams_standalone_fourth_encoder(monkeypatch, tmp_path):

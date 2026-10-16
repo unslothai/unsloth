@@ -71,9 +71,11 @@ def runtime_unavailable_reason() -> str | None:
 
 
 def llama_cpp_only(name: Any) -> bool:
-    """A GGUF-only catalog entry: llama.cpp serves it without PyTorch."""
+    """A catalog entry served without PyTorch: a GGUF by llama.cpp, an MLX-only entry by unsloth-zoo's MLX engine."""
     from core.systemone.catalog import CHECKPOINTS
-    return getattr(CHECKPOINTS.get(name), "layout", None) == "gguf"
+
+    entry = CHECKPOINTS.get(name)
+    return getattr(entry, "layout", None) == "gguf" or getattr(entry, "backend", None) == "mlx"
 
 
 def get_enabled() -> bool:
@@ -99,7 +101,13 @@ def get_device() -> str:
     if device_locked():
         return "gpu" if _env(ENV_DEVICE).lower() in ("gpu", "auto") else "cpu"
     stored = _owner_setting(DEVICE_KEY)
-    return stored if stored in DEVICES else "cpu"
+    if stored in DEVICES:
+        return stored
+    from utils.hardware.hardware import DeviceType, get_device as detected_device
+
+    # Only where unloading gives all of Laya's memory back: its own process, or MLX.
+    gpu = (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX)
+    return "gpu" if detected_device() in gpu else "cpu"
 
 
 def clef_device() -> str:

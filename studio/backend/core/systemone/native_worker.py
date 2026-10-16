@@ -314,7 +314,7 @@ class NativeClefAgent:
         cancelled: Callable[[], bool] | None = None,
         clef_answers: bool = True,
     ):
-        from core.inference.llama_cpp import LlamaCppBackend
+        from core.inference.llama_cpp import LlamaCppBackend, _llama_server_key_via_env
         from utils.process_lifetime import (
             adopt_pid,
             child_popen_kwargs,
@@ -352,7 +352,13 @@ class NativeClefAgent:
         self._log_path: Path | None = None
         if is_process_shutting_down():
             raise NativeError("Studio is shutting down; llama.cpp was not started.")
-        self._key_file = _write_key(self._key)
+        if _llama_server_key_via_env():
+            key_argv = []
+            env["LLAMA_API_KEY"] = self._key
+        else:
+            self._key_file = _write_key(self._key)
+            # Through a file, not argv: a command line is readable by every process of this user.
+            key_argv = ["--api-key-file", str(self._key_file)]
         self.command = [
             binary,
             "-m",
@@ -364,9 +370,7 @@ class NativeClefAgent:
             "127.0.0.1",
             "--port",
             str(self.port),
-            # Through a file, not argv: a command line is readable by every process of this user.
-            "--api-key-file",
-            str(self._key_file),
+            *key_argv,
             "--parallel",
             "1",
             # A decision reads every token in one ubatch: -ub bounds the longest state served.

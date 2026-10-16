@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The base-vs-head installer comparer has to be able to fail.
-
-This is the lane that answers "did hardening break anything", and its whole value rests on one
-property: that a real change produces a non-zero exit. A comparer whose normalisation has drifted
-wide reports "no differences" forever and every hardening PR after it ships unverified, with a green
-check saying the opposite.
-
-So the failure direction is tested first here, and harder than the pass direction. The pass
-direction matters too, but only because a lane that fails on every run gets disabled, which costs
-the same coverage by a slower route.
-"""
+"""The base-vs-head comparer must exit non-zero on a real change, or hardening PRs ship unverified."""
 
 from __future__ import annotations
 
@@ -53,9 +43,7 @@ SHORTCUTS = [
     }
 ]
 
-# `bom` is part of this because the collector always writes it for a contract it could read
-# (Collect-InstallerEvidence.ps1:242-250), and the comparer now requires it: a fixture that is
-# thinner than the real evidence is how a test passes without exercising the check it names.
+# The collector always writes `bom` and the comparer requires it, so fixtures include it.
 ARTIFACTS = {
     "files": {
         "launch-studio.ps1": {
@@ -67,7 +55,6 @@ ARTIFACTS = {
     "rewrittenOnSecondRun": [],
 }
 
-# The installer's own exit status, which the workflow records because nothing else sees it.
 RUN = {"side": "base", "installExit": 0, "secondInstallExit": 0}
 
 
@@ -81,9 +68,6 @@ def _write(
 ) -> Path:
     directory.mkdir(parents = True, exist_ok = True)
     (directory / "transcript.txt").write_text(transcript, encoding = "utf-8")
-    # Defaults to the first-run text. The reinstall prints something different on a real runner, but
-    # what these fixtures need is a second-run transcript that exists and that matches its opposite
-    # side unless a test deliberately changes it.
     (directory / "transcript-second-run.txt").write_text(
         transcript if second is None else second, encoding = "utf-8"
     )
@@ -115,11 +99,6 @@ def _run(base: Path, head: Path) -> subprocess.CompletedProcess:
         text = True,
         timeout = 120,
     )
-
-
-# ---------------------------------------------------------------------------
-# It must be able to fail
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -186,11 +165,6 @@ def test_a_second_run_that_rewrites_files_is_reported(tmp_path: Path) -> None:
     assert "second time" in result.stdout
 
 
-# ---------------------------------------------------------------------------
-# It must not fail on noise, or it gets disabled
-# ---------------------------------------------------------------------------
-
-
 def test_known_noise_does_not_fail(tmp_path: Path) -> None:
     noisy = "\n".join(
         [
@@ -220,6 +194,51 @@ def test_winget_spinner_frames_do_not_fail(tmp_path: Path) -> None:
     assert result.returncode == 0, f"spinner frames failed the lane: {result.stdout}"
 
 
+def test_winget_partial_progress_frames_do_not_fail(tmp_path: Path) -> None:
+    """How many partly filled download bars winget leaves in the log depends on the network."""
+    full = "  ██████████████████████████████  17.2 MB / 17.2 MB"
+    lines = BASELINE.split("\n")
+    base_bars = ["  █████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  5.1 MB / 17.2 MB", full]
+    head_bars = [
+        "  ██████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  3.0 MB / 17.2 MB",
+        "  █████████████████████▒▒▒▒▒▒▒▒▒  70%",
+        full,
+    ]
+    base = _write(tmp_path / "base", transcript = "\n".join(lines[:1] + base_bars + lines[1:]))
+    head = _write(tmp_path / "head", transcript = "\n".join(lines[:1] + head_bars + lines[1:]))
+    result = _run(base, head)
+    assert result.returncode == 0, f"partial progress frames failed the lane: {result.stdout}"
+
+
+def test_a_repeated_full_bar_does_not_fail(tmp_path: Path) -> None:
+    """winget can redraw the finished bar once more; a second copy right after the first is noise."""
+    full = "  ██████████████████████████████  17.2 MB / 17.2 MB"
+    lines = BASELINE.split("\n")
+    base = _write(tmp_path / "base", transcript = "\n".join(lines[:1] + [full, full] + lines[1:]))
+    head = _write(tmp_path / "head", transcript = "\n".join(lines[:1] + [full] + lines[1:]))
+    result = _run(base, head)
+    assert result.returncode == 0, f"a repeated full bar failed the lane: {result.stdout}"
+
+
+def test_a_second_download_still_compares(tmp_path: Path) -> None:
+    """Two downloads leave two full bars with a "Downloading" line between them; losing one is reported."""
+    full = "  ██████████████████████████████  17.2 MB / 17.2 MB"
+    lines = BASELINE.split("\n")
+    twice = [full, "Downloading https://example.invalid/uv.zip", full]
+    base = _write(tmp_path / "base", transcript = "\n".join(lines[:1] + twice + lines[1:]))
+    head = _write(tmp_path / "head", transcript = "\n".join(lines[:1] + twice[:2] + lines[1:]))
+    assert _run(base, head).returncode == 2
+
+
+def test_a_download_that_never_finishes_still_compares(tmp_path: Path) -> None:
+    """The full bar a finished download ends on is kept, so losing it is reported."""
+    lines = BASELINE.split("\n")
+    full = "  ██████████████████████████████  17.2 MB / 17.2 MB"
+    base = _write(tmp_path / "base", transcript = "\n".join(lines[:1] + [full] + lines[1:]))
+    head = _write(tmp_path / "head", transcript = "\n".join(lines[:1] + lines[1:]))
+    assert _run(base, head).returncode == 2
+
+
 def test_a_dash_line_with_text_still_compares(tmp_path: Path) -> None:
     """Only a bare frame is dropped: winget's own "  - Packages" list is output the user reads."""
     base = _write(tmp_path / "base", transcript = BASELINE + "\n  - Packages")
@@ -236,11 +255,6 @@ def test_version_drift_is_normalised_but_still_printed(tmp_path: Path) -> None:
     assert (
         "version drift in the first-run transcript" in result.stdout and "0.12.4" in result.stdout
     )
-
-
-# ---------------------------------------------------------------------------
-# VOID is not a pass
-# ---------------------------------------------------------------------------
 
 
 def test_missing_evidence_is_void_and_not_a_pass(tmp_path: Path) -> None:
@@ -281,11 +295,6 @@ def test_void_and_different_have_distinct_exit_codes() -> None:
     assert void.exit_code() == 3
     assert different.exit_code() == 2
     assert cmp.Verdict().exit_code() == 0
-
-
-# ---------------------------------------------------------------------------
-# The comparer's own controls
-# ---------------------------------------------------------------------------
 
 
 def test_the_self_test_passes() -> None:
@@ -329,12 +338,7 @@ def test_the_shortcut_fields_compared_include_the_launch_contract() -> None:
 
 
 def test_a_single_shortcut_serialised_as_an_object_still_compares(tmp_path: Path) -> None:
-    """ConvertTo-Json unwraps a one-element collection into a bare object.
-
-    Observed while smoke-running the collector: with one shortcut found, shortcuts.json was an
-    object rather than an array. Iterating that yields dictionary *keys*, so two different launch
-    contracts would have compared as agreement for entirely the wrong reason.
-    """
+    """A single-element ConvertTo-Json output is a bare object, so iterating it yields dict keys."""
     base = _write(tmp_path / "base")
     (base / "shortcuts.json").write_text(json.dumps(SHORTCUTS[0]), encoding = "utf-8")
     head = _write(tmp_path / "head")
@@ -351,12 +355,7 @@ def test_a_single_shortcut_serialised_as_an_object_still_compares(tmp_path: Path
 
 
 def test_a_symmetric_collection_failure_is_void_not_a_pass(tmp_path: Path) -> None:
-    """The hole this closes was live: two sides that both failed to read any shortcut reported
-    "1 compared, every field equal" and exited zero.
-
-    Collection failures are symmetric far more often than behaviour changes are, because they come
-    from the host and both sides share it.
-    """
+    """Symmetric collection failures on both sides must void the comparison, not pass it as equal."""
     failed = [{"name": "<collection failed>", "error": "could not create WScript.Shell"}]
     base = _write(tmp_path / "base", shortcuts = failed)
     head = _write(tmp_path / "head", shortcuts = failed)
@@ -365,14 +364,7 @@ def test_a_symmetric_collection_failure_is_void_not_a_pass(tmp_path: Path) -> No
     assert "prove nothing" in result.stdout
 
 
-# ---------------------------------------------------------------------------
-# The installer's exit status
-# ---------------------------------------------------------------------------
-#
-# The transcript does not carry it, and it is the only thing that separates a pass from the most
-# likely shared failure this lane will ever see. A mirror outage, a runner image change, a Defender
-# definition push: each fails both installs at the same point, printing the same lines, leaving the
-# same empty manifests. Everything the comparer looks at then matches.
+# Shared failures (mirror outage, image change) match on both sides; exit status breaks the tie.
 
 
 def test_two_installers_that_both_failed_are_void_not_a_pass(tmp_path: Path) -> None:
@@ -416,13 +408,7 @@ def test_an_unusable_exit_status_is_void(tmp_path: Path, bad) -> None:
     assert _run(base, head).returncode == 3
 
 
-# ---------------------------------------------------------------------------
-# An error in the artifact manifest is not data
-# ---------------------------------------------------------------------------
-#
-# The shortcut side of this was already closed. The artifact side was not, and it fails more
-# quietly: the entry keeps its key and loses only its `content`, so the content check skips it and
-# the file that goes uncompared is the one whose text is the contract.
+# An errored artifact entry loses only `content`, so it would silently skip comparison.
 
 
 def test_an_unreadable_artifact_is_void_not_a_skipped_comparison(tmp_path: Path) -> None:
@@ -460,11 +446,6 @@ def test_content_captured_on_one_side_only_is_void(tmp_path: Path) -> None:
     base = _write(tmp_path / "base")
     head = _write(tmp_path / "head", artifacts = half)
     assert _run(base, head).returncode == 3
-
-
-# ---------------------------------------------------------------------------
-# Evidence of the wrong shape was not measured
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("blob", ['"nothing here"', "42", '["Unsloth.lnk"]'])
@@ -506,11 +487,6 @@ def test_a_byte_order_mark_does_not_hide_a_real_change(tmp_path: Path) -> None:
     result = _run(base, head)
     assert result.returncode == 2
     assert "Bypass" in result.stdout
-
-
-# ---------------------------------------------------------------------------
-# The normalisers, and how far each one reaches
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -602,16 +578,8 @@ def test_the_shortcut_note_is_not_suppressed_by_a_transcript_difference(tmp_path
     assert "every field equal" in result.stdout
 
 
-# ---------------------------------------------------------------------------
-# The collector, run for real
-# ---------------------------------------------------------------------------
-
-
 def test_the_collector_parses_and_emits_json_the_comparer_accepts(tmp_path: Path) -> None:
-    """`ConvertTo-Json` unwraps a one-element collection and 5.1 has no `-AsArray`, so the collector
-    forces the array itself. Run rather than reasoned about: the shape of that file is the one thing
-    that decides whether a single shortcut is compared as a shortcut or as a bag of dictionary keys.
-    """
+    """The collector forces the array: ConvertTo-Json unwraps one element and PS 5.1 lacks -AsArray."""
     sys.path.insert(0, str(REPO / "tests" / "_shared"))
     from unsloth_pwsh_runner import PWSH, run_pwsh  # noqa: PLC0415
 
@@ -657,20 +625,13 @@ Write-Output 'COLLECTOR-OK'
     shortcuts = json.loads((out / "shortcuts.json").read_text(encoding = "utf-8-sig"))
     assert isinstance(shortcuts, list), f"shortcuts.json is not a list: {shortcuts!r}"
 
-    # Off Windows there is no WScript.Shell, so the collector records an error rather than data.
-    # That is the shape the comparer must call VOID, and the one that used to compare equal to
-    # itself and exit zero.
+    # Off Windows there is no WScript.Shell; the collector records an error the comparer must VOID.
     artifacts = json.loads((out / "artifacts.json").read_text(encoding = "utf-8-sig"))
     verdict = cmp.Verdict()
     cmp.compare_shortcuts(shortcuts, shortcuts, verdict)
     cmp.compare_artifacts(artifacts, artifacts, verdict)
     assert verdict.is_void, "the collector's own failure output did not read as VOID"
     assert verdict.exit_code() == 3
-
-
-# ---------------------------------------------------------------------------
-# The lane must actually be in a mode where there is something to measure
-# ---------------------------------------------------------------------------
 
 
 def _differential_workflow() -> dict:
@@ -680,17 +641,7 @@ def _differential_workflow() -> dict:
 
 
 def test_the_lane_never_installs_in_env_override_mode() -> None:
-    """Setting UNSLOTH_STUDIO_HOME silently removes the shortcut comparison entirely.
-
-    `install.ps1` selects `StudioRedirectMode = 'env'` from that variable, and
-    `New-StudioShortcuts` then returns before writing any `.lnk`, because in that mode a shortcut
-    can point at a deleted workspace. Both manifests come back empty, so the comparison that would
-    see a changed `-WindowStyle` or `-ExecutionPolicy` -- the pair this entire effort is about --
-    compares nothing. It does not even fail loudly: empty against empty is equal.
-
-    Isolation was the reason it was there, and it is not needed: base and head are separate matrix
-    legs on separate throwaway runners.
-    """
+    """Setting UNSLOTH_STUDIO_HOME skips shortcut writes, so the comparison compares empty against empty."""
     workflow = _differential_workflow()
     offenders = []
     for job_name, job in workflow["jobs"].items():
@@ -706,12 +657,7 @@ def test_the_lane_never_installs_in_env_override_mode() -> None:
 
 
 def test_a_desktop_and_a_start_menu_shortcut_stay_separate() -> None:
-    """Same file name, two locations. Keyed on the name alone they collapse into one entry.
-
-    A normal install writes `Unsloth Studio.lnk` to both the Desktop and the Start Menu. If one
-    stopped being created and the survivor kept its fields, both sides still held one identical key
-    and the comparer reported equality, which is precisely the regression it exists to catch.
-    """
+    """Shortcut keys need the location: Unsloth Studio.lnk on Desktop and Start Menu would collapse."""
     both = [
         {"name": "Unsloth Studio.lnk", "root": "Desktop", "targetPath": "p", "arguments": "a"},
         {"name": "Unsloth Studio.lnk", "root": "Programs", "targetPath": "p", "arguments": "a"},
@@ -728,16 +674,8 @@ def test_a_desktop_and_a_start_menu_shortcut_stay_separate() -> None:
 
 
 def test_unmeasured_idempotency_is_void_not_a_note() -> None:
-    """`None` and `[]` are different answers and the collector keeps them apart deliberately.
-
-    `[]` means measured and nothing was rewritten; `None` means not measured. Treating the second
-    as optional evidence let the lane report equality while one of its four advertised contracts
-    had never been checked, which is what happens when the first collector, or the non-terminating
-    Copy-Item ahead of the second install, fails while everything after it succeeds.
-    """
-    # Deliberately well-formed and identical apart from the missing idempotency evidence, so the
-    # only thing that can void this is the thing under test. An empty `files` map voids for its own
-    # reason and would let this pass without the fix.
+    """None means not measured and voids the check; [] means measured with no rewrites. Keep them apart."""
+    # Identical apart from missing idempotency evidence, so only the thing under test can void it.
     complete = {
         "studioHome": "X",
         "files": {
@@ -769,20 +707,12 @@ def test_unmeasured_idempotency_is_void_not_a_note() -> None:
 
 
 def test_the_lane_overlays_the_checkout_so_setup_ps1_is_the_candidates() -> None:
-    """Without the overlay both legs run the RELEASED studio/setup.ps1 and agree about nothing.
-
-    `install.ps1` installs `unsloth` from PyPI, and the `studio setup` handoff resolves its scripts
-    from that wheel, so a change to studio/setup.ps1 or studio/setup.bat -- both of which are
-    triggers for this very workflow -- would never execute. install.ps1:7172-7185 documents the
-    mechanism and the overlay is the supported CI answer to it.
-    """
+    """Without the overlay, both legs run the released studio/setup.ps1 from PyPI, not the checkout's."""
     workflow = _differential_workflow()
     installs = [
         step
         for job in workflow["jobs"].values()
         for step in (job.get("steps") or [])
-        # Steps that EXECUTE it, not ones that merely name the file (the commit-picking step
-        # mentions it in a path list).
         if "-File ./install.ps1" in str(step.get("run", ""))
     ]
     assert installs, "no step invokes install.ps1 any more"
@@ -796,18 +726,12 @@ def test_the_lane_overlays_the_checkout_so_setup_ps1_is_the_candidates() -> None
 
 
 def test_the_collector_is_given_the_data_directory_too() -> None:
-    """On a normal-profile install the launcher is written outside $StudioHome.
-
-    `$appDir = $StudioDataDir` (install.ps1:2971) and in that mode `$StudioDataDir` is
-    `%LOCALAPPDATA%\\Unsloth Studio`, so a collector pointed only at `$StudioHome` never sees
-    launch-studio.ps1 and a candidate that changes only its generated contents passes.
-    """
+    """Pass the data directory too: normal-profile installs write the launcher outside $StudioHome."""
     workflow = _differential_workflow()
     calls = [
         step
         for job in workflow["jobs"].values()
         for step in (job.get("steps") or [])
-        # Invocations, not the step that copies the tools into place.
         if "& (Join-Path $env:UNSLOTH_EVIDENCE_TOOLS 'Collect-InstallerEvidence.ps1')"
         in str(step.get("run", ""))
     ]
@@ -820,14 +744,7 @@ def test_the_collector_is_given_the_data_directory_too() -> None:
 
 
 def test_a_contract_that_moved_without_changing_its_bytes_is_a_difference() -> None:
-    """The collector records where it found each contract, and the comparer never read it.
-
-    Each contract is probed at several supported locations, so a candidate that writes
-    `studio.conf` to `share\\studio.conf` instead of the install root keeps both the manifest key
-    and every byte of the content. Comparing content alone calls that agreement, while everything
-    that opens the file now has to look somewhere else. That is exactly the layout change `foundAt`
-    was added to make observable.
-    """
+    """Compare foundAt too: a contract moved elsewhere with identical bytes is a real difference."""
 
     def side(found_at: str) -> dict:
         return {
@@ -847,13 +764,8 @@ def test_a_contract_that_moved_without_changing_its_bytes_is_a_difference() -> N
 
 
 def test_the_collector_builds_shortcut_timestamps_before_it_compares_them() -> None:
-    """The shortcut half of the idempotency check read a map that did not exist yet.
-
-    `$shortcutWrites` was constructed after the `CompareAgainst` block that reads it, so under
-    `Set-StrictMode -Version Latest` the loop either saw no keys or threw into the catch that voids
-    the measurement. Either way an installer regression that calls Save() unconditionally and
-    rewrites identical .lnk files left `rewrittenOnSecondRun` empty and could pass.
-    """
+    """Build $shortcutWrites before CompareAgainst reads it; under StrictMode the early read hides
+    rewrites."""
     script = (
         Path(__file__).resolve().parents[2]
         / ".github"
@@ -870,13 +782,7 @@ def test_the_collector_builds_shortcut_timestamps_before_it_compares_them() -> N
 
 
 def test_a_shortcut_description_change_is_a_difference() -> None:
-    """The tooltip is collected, is user-visible, and was excluded from the comparison.
-
-    `install.ps1` sets the shortcut Description and reads it back when deciding whether an existing
-    shortcut is already correct, so a candidate that changes only that value leaves both installs
-    succeeding, the transcript identical and idempotency clean. With `description` outside the
-    compared field set the two manifests matched and the lane returned PASS.
-    """
+    """Shortcut Description must be a compared field, or a description-only change passes as equal."""
 
     def side(description: str) -> list[dict]:
         return [
@@ -903,13 +809,8 @@ def test_a_shortcut_description_change_is_a_difference() -> None:
 
 
 def test_the_collector_treats_a_second_run_shortcut_creation_as_a_write() -> None:
-    """A reinstall that creates a shortcut is a second-run write, and it measured as nothing.
-
-    The loop read the first run's timestamp for each key it found now. A key with no prior entry
-    got a null timestamp and fell through both branches, so a candidate that failed to create the
-    shortcut on the first install and created it on the second produced an empty
-    `rewrittenOnSecondRun` and a final manifest indistinguishable from a normal run.
-    """
+    """A shortcut created on a second run must count as a write; a key with no prior timestamp was
+    missed."""
     script = (
         Path(__file__).resolve().parents[2]
         / ".github"
@@ -928,13 +829,7 @@ def test_the_collector_treats_a_second_run_shortcut_creation_as_a_write() -> Non
 
 
 def test_a_contract_missing_on_both_sides_is_void_not_agreement() -> None:
-    """Absence on both sides is the one kind of agreement that proves nothing.
-
-    The collector used to skip a contract it could not find at any supported location, so a shim
-    writer that fails the same way on two identical runners, or an endpoint policy that deletes the
-    same generated file, removed it from BOTH manifests. The other entries kept the maps non-empty,
-    the key sets matched, and the run reported agreement about a file it never looked at.
-    """
+    """Missing on both sides must void the comparison, not count as agreement about a file never checked."""
     missing = {
         "studioHome": "X",
         "files": {
@@ -964,12 +859,7 @@ def test_a_contract_missing_on_both_sides_is_void_not_agreement() -> None:
 
 
 def test_two_roots_with_the_same_leaf_name_stay_distinct() -> None:
-    """The per-user and the common Desktop are both called `Desktop`.
-
-    Keying the root on `Split-Path -Leaf` mapped them to one label, and every Start Menu entry to
-    `Programs` however deeply nested, so moving `Unsloth Studio.lnk` from the user's desktop to the
-    public one, or into a Programs subdirectory, kept the same key with identical fields.
-    """
+    """Keying roots on `Split-Path -Leaf` merged the per-user and common Desktop into one key."""
     script = (
         Path(__file__).resolve().parents[2]
         / ".github"
@@ -984,27 +874,18 @@ def test_two_roots_with_the_same_leaf_name_stay_distinct() -> None:
     assert (
         "root             = (Split-Path $root -Leaf)" not in text
     ), "the shortcut root is still keyed on the leaf name alone"
-    # The nested case: the name has to carry the path relative to its root, not just the file name.
     assert "$file.FullName.Substring($root.Length)" in text, (
         "a shortcut nested under Programs is still keyed on its bare file name, so a move into or "
         "out of a subdirectory is invisible"
     )
 
-    # And the two keys must genuinely differ once the labels do.
     assert cmp._shortcut_key(
         {"name": "Unsloth Studio.lnk", "root": "UserDesktop"}
     ) != cmp._shortcut_key({"name": "Unsloth Studio.lnk", "root": "CommonDesktop"})
 
 
 def test_every_collected_contract_is_one_the_windows_installer_writes() -> None:
-    """A contract Windows never writes turns the missing-contract VOID into a permanent VOID.
-
-    `studio.conf` was in the list and is only ever written by `install.sh`; `install.ps1` and
-    `studio/setup.ps1` merely `Test-Path` it. That was harmless while an unresolved contract was
-    silently skipped, and became fatal as soon as absence started being recorded as a collection
-    error, because then every clean normal-profile Windows run voided on a file that is correct to
-    be absent. This lane runs on windows-latest only, so the list has to stay Windows-specific.
-    """
+    """`studio.conf` is written only by `install.sh`, so the Windows contract list must not include it."""
     repo = Path(__file__).resolve().parents[2]
     script = (repo / ".github" / "scripts" / "Collect-InstallerEvidence.ps1").read_text(
         encoding = "utf-8"
@@ -1018,8 +899,7 @@ def test_every_collected_contract_is_one_the_windows_installer_writes() -> None:
         (repo / name).read_text(encoding = "utf-8", errors = "ignore")
         for name in ("install.ps1", "studio/setup.ps1")
     )
-    # Move-Item counts: unsloth.cmd is written atomically, WriteAllBytes to a temp then renamed
-    # onto the destination, so the destination variable never appears next to a write API.
+    # unsloth.cmd is written to a temp then renamed, so Move-Item counts as a write.
     writers = (
         "Set-Content",
         "Out-File",
@@ -1029,8 +909,6 @@ def test_every_collected_contract_is_one_the_windows_installer_writes() -> None:
         "Move-Item",
     )
     for contract in contracts:
-        # The file name is assigned to a variable and that VARIABLE is what gets written, so the
-        # check follows the assignment rather than looking for the literal next to a write call.
         holders = set(
             re.findall(r"\$(\w+)\s*=\s*Join-Path[^\n]*" + re.escape(contract), windows_sources)
         )
@@ -1050,12 +928,7 @@ def test_every_collected_contract_is_one_the_windows_installer_writes() -> None:
 
 
 def test_a_launcher_that_loses_its_bom_is_a_difference() -> None:
-    """Encoding is part of the contract and `Get-Content -Raw` decodes it away.
-
-    The shortcut runs `launch-studio.ps1` under Windows PowerShell 5.1, which reads a file with no
-    BOM as ANSI, so a candidate that stops writing the UTF-8 BOM breaks every install whose paths
-    carry non-ASCII characters. The text is identical, so content comparison called it agreement.
-    """
+    """PowerShell 5.1 reads a BOM-less launcher as ANSI, so the UTF-8 BOM is part of the contract."""
 
     def side(bom: str) -> dict:
         return {
@@ -1082,12 +955,7 @@ def test_a_launcher_that_loses_its_bom_is_a_difference() -> None:
 
 
 def test_version_drift_in_a_generated_file_is_reported() -> None:
-    """The normaliser exists so drift does not fail the lane, not so it disappears.
-
-    The transcript and shortcut comparisons both call `report_version_drift` on the raw text before
-    normalising. The generated-file comparison normalised without it, so a launcher retargeted from
-    one Python to another returned PASS with nothing said at all.
-    """
+    """Generated-file comparison must call `report_version_drift` on the raw text before normalising."""
 
     def side(version: str) -> dict:
         return {
@@ -1112,15 +980,7 @@ def test_version_drift_in_a_generated_file_is_reported() -> None:
 
 
 def test_a_launcher_that_expects_the_wrong_install_id_is_reported() -> None:
-    """The launcher refuses a backend whose studio_root_id is not the one it was built with.
-
-    `install.ps1` persists the ID and bakes the same value into the generated launcher as
-    `$_ExpectedStudioRootId`, which the launcher compares against the backend's `studio_root_id`
-    before accepting it. If a candidate makes those diverge Studio never starts, and nothing else
-    here can see it: the two IDs legitimately differ between base and head, so a cross-side
-    comparison is meaningless, and the transcript normaliser rewrites every 64-character hex token,
-    so the launcher contents compare equal regardless.
-    """
+    """The launcher's `$_ExpectedStudioRootId` must match the persisted ID; normalising hex hides it."""
 
     def side(persisted: str, embedded: str) -> dict:
         return {
@@ -1151,12 +1011,7 @@ def test_a_launcher_that_expects_the_wrong_install_id_is_reported() -> None:
 
 
 def test_a_malformed_artifact_entry_is_void_not_skipped() -> None:
-    """The same collector runs on both legs, so malformed evidence is malformed symmetrically.
-
-    A non-object entry was skipped, which left both file maps non-empty and their key sets matching
-    while nothing about that contract was compared at all. The run then reported agreement. The
-    shortcut manifest and the top-level manifests are already validated this way; this one was not.
-    """
+    """A non-object artifact entry must void the run, not be skipped, or nothing about it is compared."""
 
     def side(entry) -> dict:
         return {
@@ -1188,26 +1043,19 @@ def test_a_malformed_artifact_entry_is_void_not_skipped() -> None:
 
 
 def test_the_trigger_only_lists_files_this_lane_actually_runs() -> None:
-    """A workflow that starts on a file it never reads reports PASS about an untested change.
-
-    `studio/setup.bat` and `scripts/uninstall.ps1` were in the trigger while the measurement only
-    invokes `install.ps1`, which hands off to `studio/setup.ps1`. A PR touching either produced
-    identical evidence on both legs, because neither file was ever read, and a green differential
-    lane that did not exercise the change is worse than no lane at all.
-    """
+    """Trigger paths must only list files this lane actually runs, or changes to others pass untested."""
     import yaml as _yaml
 
     repo = Path(__file__).resolve().parents[2]
     path = repo / ".github" / "workflows" / "windows-installer-differential-ci.yml"
     workflow = _yaml.safe_load(path.read_text(encoding = "utf-8"))
-    # `on` parses as the boolean True in YAML 1.1, which is what PyYAML implements.
+    # `on` parses as boolean True in YAML 1.1 (PyYAML).
     triggers = workflow.get("on", workflow.get(True))
     paths = triggers["pull_request"]["paths"]
 
     body = path.read_text(encoding = "utf-8")
     for script in ("studio/setup.bat", "scripts/uninstall.ps1"):
         if script in paths:
-            # Only legitimate if something in the workflow actually invokes it.
             assert re.search(
                 re.escape(Path(script).name) + r"[^\n]*(&|Start-Process|cmd|-File)", body
             ), (
@@ -1218,13 +1066,7 @@ def test_the_trigger_only_lists_files_this_lane_actually_runs() -> None:
 
 
 def test_generated_scripts_are_not_normalised_like_console_output() -> None:
-    """`normalise_transcript` is built for captured output and destroys script content.
-
-    It drops blank lines, rstrips every line, and discards lines beginning with runner noise such
-    as `Run `, `shell: ` or `env:`. Applied to a generated script each of those hides a real change:
-    trailing whitespace in a CMD `set` value is part of the value, a dropped blank line changes a
-    here-string, and an echoed line starting with `Run ` is content rather than noise.
-    """
+    """Console normalisation drops blank lines and rstrips each line, which are real content in a script."""
 
     def side(body: str) -> dict:
         return {
@@ -1253,7 +1095,6 @@ def test_generated_scripts_are_not_normalised_like_console_output() -> None:
         cmp.compare_artifacts(side(before), side(after), verdict)
         assert verdict.differences, f"{what} was normalised away and compared equal"
 
-    # And the volatile values must still be normalised, or every run would differ.
     same = cmp.Verdict()
     cmp.compare_artifacts(
         side("echo C:\\Users\\r\\AppData\\Local\\Temp\\unsloth-aaaaaa\\x\n"),
@@ -1264,12 +1105,7 @@ def test_generated_scripts_are_not_normalised_like_console_output() -> None:
 
 
 def test_a_reinstall_only_output_change_is_reported(tmp_path: Path) -> None:
-    """The failure mode the second-run transcript exists to catch.
-
-    The workflow has always captured `transcript-second-run.txt` and the comparer never read it, so
-    a candidate that changes what a REINSTALL prints -- the one population every existing user is in
-    -- left the first-run transcripts identical and the artifacts untouched and the lane said PASS.
-    """
+    """The comparer must read `transcript-second-run.txt`, or a change to what a reinstall prints passes."""
     base = _write(tmp_path / "base")
     head = _write(tmp_path / "head", second = BASELINE + "\n  warning        already installed\n")
     result = _run(base, head)
@@ -1288,18 +1124,10 @@ def test_a_missing_second_run_transcript_is_void_not_a_pass(tmp_path: Path) -> N
 
 
 def test_script_normalisation_does_not_erase_a_changed_port_or_limit(tmp_path: Path) -> None:
-    """The transcript rules are wrong for a generated file.
-
-    `<port>` and `<size>` exist because a console transcript reports the port Studio bound and the
-    bytes a download moved. Inside `launch-studio.ps1` the same text is behaviour, and rewriting
-    both sides to the same token made a retargeted health probe and a changed upload limit compare
-    equal.
-    """
+    """Transcript port and size tokens must not hide a changed port or limit in a generated script."""
     before = "$url = 'http://127.0.0.1:8888/api/health'\nset LIMIT=10MB\n"
     after = "$url = 'http://127.0.0.1:9999/api/health'\nset LIMIT=20MB\n"
     assert cmp.normalise_script(before) != cmp.normalise_script(after)
-    # And the control: the values that DO vary between two installs of two commits still go, or the
-    # lane would report a difference on every clean run.
     root = "a" * 64
     assert cmp.normalise_script(f"$expected = '{root}'") == cmp.normalise_script(
         "$expected = '" + "b" * 64 + "'"
@@ -1310,15 +1138,7 @@ def test_script_normalisation_does_not_erase_a_changed_port_or_limit(tmp_path: P
 
 
 def test_a_shortcut_the_second_run_deletes_is_recorded(tmp_path: Path) -> None:
-    """Run, not reasoned about: the collector is driven with a first-run manifest whose shortcut is
-    gone by the second run.
-
-    The idempotency loop walked the CURRENT shortcut keys, so a shortcut that existed after the
-    first install and was deleted by the second was never looked at. The second collector overwrites
-    shortcuts.json with the final state, so a candidate that creates an extra shortcut on a fresh
-    install and removes it on reinstall ended with manifests matching the base and an empty
-    `rewrittenOnSecondRun`: a PASS on a shortcut the user watched disappear.
-    """
+    """Walk the first run's shortcut keys too, or a shortcut the second run deletes is never recorded."""
     sys.path.insert(0, str(REPO / "tests" / "_shared"))
     from unsloth_pwsh_runner import PWSH, run_pwsh  # noqa: PLC0415
 
@@ -1415,13 +1235,7 @@ def _collect(tmp_path: Path, home_names: list[str], first_files: dict) -> list:
 
 
 def test_a_transient_top_level_artifact_is_reported(tmp_path: Path) -> None:
-    """The idempotency loop walked the two content contracts only.
-
-    Every top-level name is already in the manifest, so a candidate that creates a file or directory
-    on a fresh install and removes it on reinstall was invisible: the second collector overwrites
-    artifacts.json with the post-reinstall tree, both final manifests match the base, and the lane
-    reported PASS on an install that left an extra artifact behind.
-    """
+    """Check every top-level name after reinstall, or an artifact that reinstall removes goes unseen."""
     rewritten = _collect(tmp_path, ["kept"], {"kept": {"present": True}, "gone": {"present": True}})
     assert any("gone (removed by the second run)" == e for e in rewritten), rewritten
     assert not any(
@@ -1438,14 +1252,7 @@ def test_an_empty_first_run_map_invents_no_phantom_key(tmp_path: Path) -> None:
 
 
 def test_an_unrelated_label_does_not_restart_the_two_installs() -> None:
-    """`labeled` fires for every label, and the concurrency group cancels in progress.
-
-    Reading the PR's whole label list meant that adding any label to a PR that already carried
-    `installer-differential` evaluated true and started the lane again, which with
-    `cancel-in-progress` on a pull request cancels a measurement that is already running. The `labeled` event
-    has to look at the label that was just applied; `synchronize` still reads the full list, because
-    there no single label was applied.
-    """
+    """The labeled event must check only the label just applied, or cancel-in-progress kills a live run."""
     body = (REPO / ".github" / "workflows" / "windows-installer-differential-ci.yml").read_text(
         encoding = "utf-8"
     )
@@ -1455,15 +1262,11 @@ def test_an_unrelated_label_does_not_restart_the_two_installs() -> None:
         "github.event.label.name" in gate
     ), "the gate never reads the label that was applied, so any label restarts two clean installs"
     assert '[ "$ACTION" = "labeled" ]' in gate, "there is no branch for the labeled event"
-    # And the full-list check has to survive for synchronize, or a labelled PR stops being
-    # re-measured as it is pushed to.
     assert '"installer-differential"' in gate
     assert gate.index('[ "$ACTION" = "labeled" ]') < gate.index(
         "grep -q"
     ), "the full label list is consulted before the labeled branch, so the branch cannot help"
-    # And the step gate alone is not enough. Workflow concurrency is evaluated before any job runs,
-    # so an unrelated label took the group and cancelled the installs already in flight however
-    # quickly the step then decided to do nothing. The group has to separate those events.
+    # Concurrency is evaluated before any job, so an unrelated label could cancel in-flight installs.
     group = body[body.index("concurrency:") : body.index("env:", body.index("concurrency:"))]
     assert "github.event.label.name" in group, (
         "the concurrency group does not distinguish the label, so an unrelated label still cancels "
@@ -1474,13 +1277,7 @@ def test_an_unrelated_label_does_not_restart_the_two_installs() -> None:
 
 
 def test_installer_output_that_looks_like_a_runner_header_survives() -> None:
-    """The normaliser dropped any line beginning with `Run `, and the installers print several.
-
-    `transcript.txt` is the child `powershell.exe` stream teed by the workflow
-    (windows-installer-differential-ci.yml:273-274), so GitHub's `Run `, `shell: ` and `env:` step
-    headers never enter it. The rule therefore removed genuine user-visible guidance from both sides,
-    and changing or dropping one of those lines compared equal.
-    """
+    """Lines beginning `Run ` are installer output, not runner headers, and must survive normalisation."""
     real = [
         "       Run install.ps1 without --tauri for custom-root shell installs,",
         "    Run 'setx HIP_VISIBLE_DEVICES 1' and reopen your terminal",
@@ -1490,11 +1287,9 @@ def test_installer_output_that_looks_like_a_runner_header_survives() -> None:
     ]
     kept = cmp.normalise_transcript("\n".join(real))
     assert len(kept) == len(real), f"normalisation dropped installer output: {kept!r}"
-    # And a changed one has to show up as a difference.
     changed = list(real)
     changed[0] = changed[0].replace("without --tauri", "with --tauri")
     assert cmp.normalise_transcript("\n".join(real)) != cmp.normalise_transcript("\n".join(changed))
-    # The control: what the runner really injects, at column 0, still goes.
     assert cmp.normalise_transcript("##[group]Install\n::endgroup::\n##[debug]x") == []
 
 
@@ -1514,13 +1309,7 @@ def test_the_lines_this_rule_used_to_eat_are_really_in_the_installers() -> None:
 
 
 def test_a_manual_dispatch_compares_against_the_default_branch() -> None:
-    """`HEAD~1` answers a narrower question than the input documents.
-
-    `base_ref` advertises "the PR merge base, or main". For a manual dispatch with no input the
-    resolver picked `HEAD~1`, so on a feature branch with more than one commit an installer change
-    older than one commit sat in both trees and the lane reported PASS without ever comparing it
-    against the default branch.
-    """
+    """A manual dispatch with no input must use the default branch as base, not `HEAD~1`."""
     body = (REPO / ".github" / "workflows" / "windows-installer-differential-ci.yml").read_text(
         encoding = "utf-8"
     )
@@ -1530,12 +1319,7 @@ def test_a_manual_dispatch_compares_against_the_default_branch() -> None:
     assert (
         'merge-base "$default_tip"' in step
     ), "the manual-dispatch path does not take a merge base against the default branch"
-    # HEAD~1 may remain only as a last resort, and only with the difference stated. Keyed on the
-    # command rather than on the string, which also appears in the comment explaining why it was
-    # wrong.
-    # Every use of HEAD~1 has to say what it is. Two are legitimate now: the default branch, where
-    # the previous commit IS the intended baseline, and the fallback where the default branch could
-    # not be resolved at all, which is a degradation and says so as a warning.
+    # HEAD~1 is legitimate only on the default branch or as a warned fallback.
     lines = step.splitlines()
     for i, line in enumerate(lines):
         if "rev-parse HEAD~1" not in line:
@@ -1548,38 +1332,26 @@ def test_a_manual_dispatch_compares_against_the_default_branch() -> None:
 
 
 def test_a_default_branch_run_gets_a_distinct_base() -> None:
-    """The weekly health run and a dispatch from main both have head == the default branch tip.
-
-    Taking the merge base of the default branch with itself yields head, and the same-commit guard
-    then VOIDs the run, so the advertised weekly health run could never reach the measurement jobs.
-    On the default branch the baseline is the previous commit, which is the right question for a run
-    whose job is to show the lane still works.
-    """
+    """On the default branch, base is the previous commit: the merge base equals head and voids the run."""
     body = (REPO / ".github" / "workflows" / "windows-installer-differential-ci.yml").read_text(
         encoding = "utf-8"
     )
     assert "schedule:" in body, "there is no scheduled run any more, so this test is describing"
     step = body[body.index("name: Pick the two commits") :]
     step = step[: step.index("- name:", 10)]
-    # Keyed on the message, not on the comparison: the same-commit GUARD tests `$base` = `$head`
-    # too, so asserting on the expression alone is satisfied by the very code this is about.
+    # Keyed on the message: the same-commit guard also compares `$base` and `$head`.
     assert "the tip of $DEFAULT_BRANCH" in step, (
         "nothing notices that the merge base resolved to head, so every scheduled run VOIDs before "
         "it reaches the measurement jobs"
     )
-    # And it has to be handled BEFORE the guard that aborts on a same-commit pair.
     assert step.index("the tip of $DEFAULT_BRANCH") < body.index(
         "base and head are the same commit"
     ), "the same-commit guard runs before the default-branch case is handled"
-    # The resolution has to actually change the base, or the guard still fires.
     after = step[step.index("the tip of $DEFAULT_BRANCH") :]
     assert (
         "rev-parse HEAD~1" in after[:900]
     ), "the default-branch case is detected and then does not pick a different baseline"
-    # And it has to be decided by comparing head with the fetched TIP. Head being an ancestor of the
-    # default branch also makes the merge base equal head -- a dispatch at an older main commit, or a
-    # branch with no commits of its own -- and substituting HEAD~1 there measures two adjacent
-    # historical commits and can report PASS for a comparison nobody asked for.
+    # Compare head with the fetched tip; an ancestor check would substitute HEAD~1 wrongly.
     assert '[ "$head" = "$default_tip" ]' in step, (
         "the health-run baseline is chosen from the merge base equalling head, which is also true "
         "for any commit that is merely an ancestor of the default branch"
@@ -1588,13 +1360,7 @@ def test_a_default_branch_run_gets_a_distinct_base() -> None:
 
 
 def test_an_empty_shortcut_object_is_void_not_one_compared(tmp_path: Path) -> None:
-    """`{}` is an object, so it survived every shape check and became one `<unnamed>` shortcut.
-
-    Both sides then held the same key with the same absent fields, and the run reported "1 compared,
-    every field equal" and exited zero without a launch contract having been measured. The workflow
-    runs the candidate collector on both legs on purpose, so a schema regression is symmetric and
-    this is the shape it takes.
-    """
+    """An empty shortcut object `{}` must void the run, not count as one `<unnamed>` shortcut compared."""
     base = _write(tmp_path / "base", shortcuts = [{}])
     head = _write(tmp_path / "head", shortcuts = [{}])
     result = _run(base, head)
@@ -1615,11 +1381,7 @@ def test_a_shortcut_with_a_name_but_no_launch_contract_is_void(tmp_path: Path) -
 
 
 def test_a_content_contract_with_no_content_on_either_side_is_void(tmp_path: Path) -> None:
-    """Both sides listing `launch-studio.ps1` as `{}` compared nothing and passed.
-
-    The asymmetry check is false when neither side has `content`, and the comparison below it is
-    false for the same reason, so the loop fell through with the entry uncompared.
-    """
+    """A content contract with no `content` on either side must void, not fall through uncompared."""
     artifacts = copy.deepcopy(ARTIFACTS)
     artifacts["files"]["launch-studio.ps1"] = {}
     base = _write(tmp_path / "base", artifacts = artifacts)
@@ -1627,20 +1389,13 @@ def test_a_content_contract_with_no_content_on_either_side_is_void(tmp_path: Pat
     result = _run(base, head)
     assert result.returncode == 3, result.stdout + result.stderr
     assert "whose text is the contract" in result.stdout, result.stdout
-    # The control: with content present on both sides the same pair is a clean pass, so the new
-    # rule is not simply voiding everything.
     ok_base = _write(tmp_path / "ok-base")
     ok_head = _write(tmp_path / "ok-head")
     assert _run(ok_base, ok_head).returncode == 0
 
 
 def test_a_shortcut_argument_change_is_not_normalised_away(tmp_path: Path) -> None:
-    """Shortcut fields were run through the CONSOLE normaliser.
-
-    `--limit 10MB` becoming `20MB`, a timeout moving from `10.0s` to `30.0s`, or a port written into
-    the command line are the launch contract, not download noise, and `normalise_line` rewrote both
-    sides to the same token so the lane reported every field equal.
-    """
+    """Shortcut arguments are the launch contract, so the console normaliser must not rewrite them."""
 
     def _sc(arguments: str) -> list[dict]:
         return [
@@ -1662,8 +1417,6 @@ def test_a_shortcut_argument_change_is_not_normalised_away(tmp_path: Path) -> No
     result = _run(base, head)
     assert result.returncode == 2, result.stdout + result.stderr
     assert "arguments" in result.stdout and "20MB" in result.stdout, result.stdout
-    # The control: what really does vary between two installs of two commits still goes, or the lane
-    # would report a difference on every clean run.
     same_base = _write(
         tmp_path / "sb", shortcuts = _sc("-File C:\\Temp\\unsloth-probe-0a1b2c3d\\l.ps1")
     )
@@ -1686,19 +1439,7 @@ def test_missing_bom_metadata_is_void_not_skipped(tmp_path: Path) -> None:
 
 
 def test_no_rev_parse_fallback_can_echo_its_argument() -> None:
-    """`git rev-parse` prints an argument it cannot resolve to STDOUT before failing.
-
-    So `base="$(git rev-parse "$X" 2>/dev/null || git rev-parse FETCH_HEAD)"` captured the literal
-    `main^{commit}` AND the fallback's SHA, and `$base` became two lines. `base_ref=main` is the
-    documented input and hits it every time, because a checkout has `origin/main` and no local
-    `main`. Reproduced in a scratch repository before fixing:
-
-        $ out=$(git rev-parse "main^{commit}" 2>/dev/null || git rev-parse HEAD)
-        main^{commit}
-        69691fa0f5b84f2cc802bf7ff3950a674213a9e6
-
-    `--verify --quiet` prints nothing on failure, so every rev-parse that has a fallback uses it.
-    """
+    """`git rev-parse` echoes an unresolvable argument to stdout, so use `--verify --quiet` in fallbacks."""
     body = (REPO / ".github" / "workflows" / "windows-installer-differential-ci.yml").read_text(
         encoding = "utf-8"
     )

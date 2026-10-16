@@ -280,3 +280,27 @@ test("trying an RL objective keeps the SFT-only toggles for the next SFT run", (
   assert.equal(store.getState().trainOnCompletions, true);
   assert.equal(store.getState().packing, true);
 });
+
+test("duplicate keeps a run's early stopping patience", async () => {
+  setAuthFetchHandler(() => modelResponse());
+  store.getState().restoreRunConfig({
+    model_name: "org/model",
+    hf_dataset: "org/data",
+    eval_steps: 0.1,
+    early_stopping_patience: 3,
+  });
+  await settle();
+  assert.equal(store.getState().earlyStoppingPatience, 3);
+  assert.equal(
+    buildTrainingStartPayload(store.getState(), null).early_stopping_patience,
+    3,
+  );
+
+  store.getState().restoreRunConfig({
+    model_name: "org/model",
+    hf_dataset: "org/data",
+    eval_steps: 0.1,
+  });
+  await settle();
+  assert.equal(store.getState().earlyStoppingPatience, 0);
+});

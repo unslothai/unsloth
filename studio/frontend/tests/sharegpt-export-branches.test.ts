@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 import * as liveThreadHead from "../src/features/chat/utils/live-thread-head.ts";
 import { orderByParentChain } from "../src/features/chat/utils/message-order.ts";
@@ -86,6 +86,7 @@ function loadExporters(
     getStoredChatThread: async () => undefined,
     settleThreadScopedSettingsForCopy: async () => {},
     ...liveThreadHead,
+    savedBranchHead: () => undefined,
     orderByParentChain,
     exportFormatIncludesSiblings,
     ndjsonBody,

@@ -64,7 +64,7 @@ def _device() -> str:
 
     The trade is small at these sizes: one 128-token chunk takes 18.7ms on CPU against 5.2ms on
     CUDA. Bulk indexing is where it shows (batch 64: 445 chunks/s on CPU against 3174/s), and
-    ``RAG_EMBED_DEVICE=gpu`` opts back in for a large corpus.
+    Settings (GPU) or ``RAG_EMBED_DEVICE=gpu`` opts back in for a large corpus.
 
     This reads the same setting as the llama-server backend but resolves ``auto`` differently, which
     is intended: that backend offloads inside its own subprocess, where the context dies with the
@@ -611,7 +611,21 @@ def _get(model_name: str | None = None):
                 # Re-emit in finally: a load that raises after transformers wrote its report is exactly when a
                 # MISSING or MISMATCH line matters.
                 try:
-                    _model = SentenceTransformer(load_target, **st_kwargs)
+                    try:
+                        _model = SentenceTransformer(load_target, **st_kwargs)
+                    except Exception as exc:  # noqa: BLE001 - e.g. CUDA OOM beside a resident chat model
+                        # Retry on CPU before encode()'s llama-server fallback, which changes the embedding space.
+                        if device == "cpu" or config.embed_device_requires_gpu():
+                            raise
+                        logger.warning(
+                            "loading embedding model %s on %s failed (%s); retrying on CPU",
+                            name,
+                            device,
+                            exc,
+                        )
+                        st_kwargs["device"] = "cpu"
+                        st_kwargs["model_kwargs"] = dtype_kwargs(_load_dtype("cpu", name))
+                        _model = SentenceTransformer(load_target, **st_kwargs)
                 finally:
                     _emit_load_reports(report)
             _name = name

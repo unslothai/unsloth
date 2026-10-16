@@ -319,8 +319,8 @@ async def _noop_reject(*_args, **_kwargs):
     return None
 
 
-def _run_hook(model = "some/model"):
-    asyncio.run(inference_route._maybe_auto_switch_model(model, object(), "tester"))
+def _run_hook(model = "some/model", **kwargs):
+    asyncio.run(inference_route._maybe_auto_switch_model(model, object(), "tester", **kwargs))
 
 
 def test_flag_off_never_loads(monkeypatch):
@@ -617,7 +617,7 @@ def test_responses_endpoint_wires_auto_switch_before_streaming_dispatch():
     src = inspect.getsource(inference_route.openai_responses)
     assert "_maybe_auto_switch_model" in src
     hook_at = src.index("_maybe_auto_switch_model")
-    assert src.index("if payload.stream:") < hook_at
+    assert src.index("if payload.stream or connection is not None:") < hook_at
     assert hook_at < src.index("_responses_stream")
 
 
@@ -723,6 +723,185 @@ def test_local_gguf_entry_filters_non_gguf_and_recurses(tmp_path):
     (repo / "snapshots" / "abc" / "BF16" / "model-BF16.gguf").write_text("x")
     e2 = resolver._local_gguf_entry("org/repo", SimpleNamespace(path = str(repo), source = "hf_cache"))
     assert e2 is not None and e2.variants
+
+
+def test_local_gguf_entry_uses_the_variantless_same_quant_default(tmp_path):
+    alpha = tmp_path / "alpha-Q4_K_M.gguf"
+    beta_one = tmp_path / "beta-Q4_K_M-00001-of-00002.gguf"
+    beta_two = tmp_path / "beta-Q4_K_M-00002-of-00002.gguf"
+    alpha.write_bytes(b"x" * 100)
+    beta_one.write_bytes(b"x" * 60)
+    beta_two.write_bytes(b"x" * 60)
+
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+
+    assert entry is not None
+    assert entry.variants[0] == "Q4_K_M"
+    assert resolver._resolve_from_index("local/model", {"local/model": entry})[1] == "Q4_K_M"
+
+
+def test_local_gguf_entry_does_not_publish_a_torn_sibling_build(tmp_path):
+    (tmp_path / "alpha-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "beta-Q4_K_M-00001-of-00002.gguf").write_bytes(b"x" * 200)
+
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+
+    assert entry is not None
+    assert entry.variants == ("Q4_K_M",)
+
+
+def test_local_gguf_entry_keeps_a_split_build_linked_to_its_complete_set(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    for index in (1, 2):
+        (store / f"beta-Q4_K_M-0000{index}-of-00002.gguf").write_bytes(b"x" * 60)
+    folder = tmp_path / "models"
+    folder.mkdir()
+    (folder / "alpha-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    try:
+        (folder / "beta-Q4_K_M-00001-of-00002.gguf").symlink_to(
+            store / "beta-Q4_K_M-00001-of-00002.gguf"
+        )
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(folder)))
+
+    assert entry is not None
+    assert len(entry.variants) == 2
+
+
+def test_local_gguf_entry_keeps_the_preferred_quant_over_a_larger_sibling_build(tmp_path):
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x" * 50)
+    (tmp_path / "alpha-F16.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "beta-F16.gguf").write_bytes(b"x" * 120)
+
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+
+    assert entry is not None
+    assert entry.variants[0] == "Q4_K_M"
+
+
+def test_a_torn_build_key_misses_instead_of_serving_its_sibling(tmp_path, monkeypatch):
+    (tmp_path / "alpha-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "beta-Q4_K_M-00001-of-00002.gguf").write_bytes(b"x" * 200)
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+    assert entry is not None and "beta-q4_k_m" in entry.withheld
+
+    index = {"local/model": entry}
+    assert resolver._resolve_from_index("local/model:beta-Q4_K_M", index) is None
+    assert resolver._resolve_from_index("local/model:latest", index)[1] == "Q4_K_M"
+    torn_first = resolver._LocalGgufEntry(
+        "local/model",
+        str(tmp_path),
+        ("beta-Q4_K_M",),
+        aliases = (("q4_k_m", "beta-Q4_K_M"),),
+        withheld = ("q4_k_m",),
+    )
+    assert resolver._resolve_from_index("local/model:Q4_K_M", {"local/model": torn_first}) is None
+
+    monkeypatch.setattr(resolver, "_scan", (1.0, index))
+    loaded = _FakeBackend(loaded_id = "local/model", hf_variant = "Q4_K_M")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    assert inference_route._loaded_satisfies("local/model:beta-Q4_K_M") is False
+    assert inference_route._loaded_satisfies("local/model:latest") is True
+
+
+def test_a_build_stem_still_resolves_after_its_sibling_is_removed(tmp_path):
+    (tmp_path / "alpha-F16.gguf").write_bytes(b"x" * 80)
+    (tmp_path / "beta-F16.gguf").write_bytes(b"x" * 80)
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x" * 40)
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+    assert "beta-F16" in entry.variants
+
+    (tmp_path / "alpha-F16.gguf").unlink()
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+
+    resolved = resolver._resolve_from_index("local/model:beta-F16", {"local/model": entry})
+    assert resolved is not None and resolved[1] == "F16"
+    assert entry.aliases == ()
+
+
+def test_a_filename_build_key_still_resolves_after_its_sibling_is_removed(tmp_path):
+    (tmp_path / "0-model-F16.gguf").write_bytes(b"x" * 80)
+    (tmp_path / "F16.gguf").write_bytes(b"x" * 80)
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x" * 40)
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+    assert "F16.gguf" in entry.variants
+
+    (tmp_path / "0-model-F16.gguf").unlink()
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+
+    resolved = resolver._resolve_from_index("local/model:F16.gguf", {"local/model": entry})
+    assert resolved is not None and resolved[1] == "F16"
+
+
+def test_a_deleted_build_stem_misses_instead_of_serving_its_sibling(tmp_path, monkeypatch):
+    (tmp_path / "alpha-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "beta-Q4_K_M.gguf").write_bytes(b"x" * 90)
+    (tmp_path / "beta-Q4_K_M.gguf").unlink()
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+    index = {"local/model": entry}
+
+    assert resolver._resolve_from_index("local/model:beta-Q4_K_M", index) is None
+    assert resolver._resolve_from_index("local/model:alpha-Q4_K_M", index)[1] == "Q4_K_M"
+    assert resolver._resolve_from_index("local/model:latest", index)[1] == "Q4_K_M"
+
+    monkeypatch.setattr(resolver, "_scan", (1.0, index))
+    loaded = _FakeBackend(loaded_id = "local/model", hf_variant = "Q4_K_M")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    assert inference_route._loaded_satisfies("local/model:beta-Q4_K_M") is False
+    assert inference_route._loaded_satisfies("local/model:alpha-Q4_K_M") is True
+
+
+def test_a_deleted_quant_directory_build_is_withheld(tmp_path, monkeypatch):
+    (tmp_path / "Q4_K_M").mkdir()
+    (tmp_path / "Q4_K_M" / "alpha-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    entry = resolver._local_gguf_entry("custom-model", SimpleNamespace(path = str(tmp_path)))
+    index = {"custom-model": entry}
+    pin = "custom-model:Q4_K_M/beta-Q4_K_M"
+
+    assert resolver._resolve_from_index(pin, index) is None
+    monkeypatch.setattr(resolver, "_scan", (1.0, index))
+    assert resolver.local_gguf_withheld(pin) is True
+    assert resolver.local_gguf_withheld("custom-model:latest") is False
+
+
+def test_a_quant_directory_build_pin_is_authorized_by_its_base_model(monkeypatch):
+    from fastapi import HTTPException
+
+    def _refuse(_name):
+        raise HTTPException(status_code = 404, detail = "Model not found")
+
+    async def _no_catalog():
+        return None
+
+    async def _no_token(*_args):
+        return False
+
+    pinned = "custom-model:Q4_K_M/beta-Q4_K_M"
+    monkeypatch.setattr(inference_route.account_access, "require_model_access", _refuse)
+    monkeypatch.setattr(inference_route, "_cached_local_catalog", _no_catalog)
+    monkeypatch.setattr(inference_route, "_caller_token_authorizes_download", _no_token)
+    monkeypatch.setattr(
+        inference_route,
+        "_own_local_model_for_alias",
+        lambda alias: "/models/custom" if alias == "custom-model" else None,
+    )
+    scans = []
+
+    def _pinned(requested, allow_scan = True):
+        scans.append(allow_scan)
+        return "Q4_K_M/beta-Q4_K_M" if requested == pinned else None
+
+    monkeypatch.setattr(resolver, "local_gguf_pinned_variant", _pinned)
+
+    asyncio.run(inference_route._require_named_model_access(pinned))
+    # a cold index after restart must not refuse the pin, so this lookup may scan
+    assert scans[-1] is True
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(inference_route._require_named_model_access("custom-model:Q4_K_M/other"))
+    assert refused.value.status_code == 404
 
 
 def test_local_gguf_entry_labels_a_quantless_filename_as_the_picker_does(tmp_path):
@@ -4410,6 +4589,8 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         audio_preflight = None,
         image_preflight = None,
         tool_images_only = False,
+        serves_npu = False,
+        npu_request_check = None,
     ):
         captured.update(
             require_vision = require_vision,
@@ -4544,6 +4725,7 @@ def test_completions_rejects_ignored_params_without_switch(monkeypatch, extra, p
         {"echo": False, "suffix": "", "best_of": 1},
         {"echo": None, "suffix": None, "best_of": None},
         {"best_of": 2, "n": 2},
+        {"best_of": 2, "n_cmpl": 2},
     ],
 )
 def test_completions_default_ignored_params_still_proxy(monkeypatch, extra):
@@ -4614,6 +4796,32 @@ def test_require_vision_rejects_text_target_before_switch(monkeypatch):
         )
     assert exc.value.status_code == 400
     assert rec.calls == []  # rejected before the load
+
+
+def test_anthropic_text_target_rejection_names_the_image_block(monkeypatch):
+    from models.inference import AnthropicImageBlock, AnthropicMessage, AnthropicMessagesRequest
+
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend("org/A-GGUF"), ("/local/B.gguf", "Q8_0", "org/B-GGUF")
+    )
+    monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p, _v = None, _i = True: False)
+    image = AnthropicImageBlock(
+        type = "image", source = {"type": "base64", "media_type": "image/png", "data": "AAAA"}
+    )
+    payload = AnthropicMessagesRequest(
+        model = "org/B-GGUF",
+        max_tokens = 16,
+        messages = [
+            AnthropicMessage(role = "user", content = "hi"),
+            AnthropicMessage(role = "assistant", content = "hello"),
+            AnthropicMessage(role = "user", content = [{"type": "text", "text": "what?"}, image]),
+        ],
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.anthropic_messages(payload, object(), "tester"))
+    assert exc.value.status_code == 400
+    assert exc.value.detail["error"]["message"].startswith("messages.2.content.1.image: ")
+    assert rec.calls == []
 
 
 def test_require_vision_allows_vision_target(monkeypatch):
@@ -4814,36 +5022,62 @@ def test_count_tokens_rejects_malformed_tool_before_switch(monkeypatch):
     assert rec.calls == []
 
 
-def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
+@pytest.mark.parametrize(
+    "image, server_tools, device, gguf_only, reason",
+    [
+        (True, False, "mlx", True, "Cannot count tokens for messages containing images."),
+        ("mcp", False, "mlx", True, "Cannot count tokens for messages containing images."),
+        (False, True, "mlx", False, None),
+        (False, False, "mlx", False, None),
+        (False, False, "cuda", True, None),
+    ],
+    ids = ["image", "mcp_replay", "server_tools", "mlx_text", "transformers"],
+)
+def test_count_tokens_forwards_vision_guard_to_switch(
+    monkeypatch, image, server_tools, device, gguf_only, reason
+):
     # Codex P2: an image /v1/messages/count_tokens naming a text-only GGUF must
     # carry the same require_vision guard as /messages, so it can't evict a loaded
-    # vision model for a swap that can't serve the request.
+    # vision model for a swap that can't serve the request. A non-GGUF target is
+    # loaded only when the resident-MLX count can price the request.
+    from utils.hardware import DeviceType
+
     captured = {}
 
-    async def _capture(
-        model,
-        request,
-        subject,
-        *,
-        require_vision = False,
-        claim_resident = True,
-        require_audio_input = False,
-        gguf_only = False,
-    ):
-        captured["require_vision"] = require_vision
-        captured["claim_resident"] = claim_resident
-        captured["gguf_only"] = gguf_only
+    async def _capture(model, request, subject, **kwargs):
+        captured.update(kwargs)
         raise _Reached()
 
-    monkeypatch.setattr(inference_route, "_anthropic_request_has_image", lambda p, **_: True)
+    from core.inference import mcp_images
+    from models.inference import AnthropicMessage
+
+    monkeypatch.setattr(
+        inference_route, "_anthropic_request_has_image", lambda p, **_: image is True
+    )
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
+    monkeypatch.setattr("utils.hardware.get_device", lambda: DeviceType(device))
     payload = _anthropic_payload_with_tools(None)  # no tools -> tool validation passes
+    payload.enable_tools = server_tools
+    if image == "mcp":
+        envelope = json.dumps([{"data": "QUJD", "mimeType": "image/png"}])
+        call = {"type": "tool_use", "id": "toolu_0", "name": "mcp__shot__capture", "input": {}}
+        result = {
+            "type": "tool_result",
+            "tool_use_id": "toolu_0",
+            "content": "out\n" + mcp_images.SENTINEL + envelope,
+        }
+        payload.messages += [
+            AnthropicMessage(role = "assistant", content = [call]),
+            AnthropicMessage(role = "user", content = [result]),
+        ]
     with pytest.raises(_Reached):
         asyncio.run(inference_route.anthropic_count_tokens(payload, object(), "tester"))
-    assert captured["require_vision"] is True
+    assert captured["require_vision"] is (image is True)
     assert captured["claim_resident"] is False
-    # llama.cpp serves this endpoint alone, so a non-GGUF swap must not be attempted.
-    assert captured["gguf_only"] is True
+    assert captured["gguf_only"] is gguf_only
+    assert (
+        reason in captured["gguf_only_reason"] if reason else captured["gguf_only_reason"] is None
+    )
 
 
 # ── /chat/count_tokens: what the recount prices ───────────────────
@@ -6357,56 +6591,6 @@ def test_no_model_loaded_detail_appends_hint_only_when_off(monkeypatch):
     assert inference_route._no_model_loaded_detail(base) == base
 
 
-def _run_responses_stream_no_model(
-    monkeypatch,
-    *,
-    enabled,
-    active_model_name,
-    resolves_to = None,
-):
-    # Drive _responses_stream's GGUF-not-loaded guard. Returns (status, detail).
-    from models.inference import ResponsesRequest, ChatMessage
-
-    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: enabled)
-    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda name: resolves_to)
-    monkeypatch.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: _FakeBackend(loaded_id = None)
-    )
-    monkeypatch.setattr(
-        inference_route,
-        "get_inference_backend",
-        lambda: type("_B", (), {"active_model_name": active_model_name})(),
-    )
-    payload = ResponsesRequest(model = "unsloth/Qwen3.5-4B-GGUF", stream = True)
-    messages = [ChatMessage(role = "user", content = "hi")]
-    with pytest.raises(HTTPException) as exc:
-        asyncio.run(inference_route._responses_stream(payload, messages, None))
-    return exc.value.status_code, exc.value.detail
-
-
-def test_responses_stream_hint_matches_toggle_regardless_of_active_model(monkeypatch):
-    # The hint attaches whenever the toggle is off, whatever is active. With it on the name
-    # resolved to nothing local, so 404 rather than 400.
-    off_status, hinted = _run_responses_stream_no_model(
-        monkeypatch, enabled = False, active_model_name = None
-    )
-    assert off_status == 400
-    assert "Model auto-switch" in hinted
-
-    on_status, on = _run_responses_stream_no_model(
-        monkeypatch, enabled = True, active_model_name = None
-    )
-    assert on_status == 404
-    assert "Model auto-switch" not in on
-    assert "unsloth/Qwen3.5-4B-GGUF" in on
-
-    non_gguf_status, non_gguf_loaded = _run_responses_stream_no_model(
-        monkeypatch, enabled = False, active_model_name = "unsloth/Llama-3.2-1B-Instruct"
-    )
-    assert non_gguf_status == 400
-    assert "Model auto-switch" in non_gguf_loaded
-
-
 def _wire_unloaded_chat(
     monkeypatch,
     *,
@@ -6639,23 +6823,6 @@ def test_chat_undownloaded_model_uses_the_openai_envelope(monkeypatch):
     assert err["param"] == "model"
 
 
-def test_gguf_only_paths_keep_the_generic_error_for_the_resident_non_gguf_model(monkeypatch):
-    # resolve_local_gguf misses a resident Transformers model the catalog does list, so
-    # "not downloaded" would contradict itself.
-    resident = "unsloth/Qwen3.5-4B-GGUF"  # the id _run_responses_stream_no_model asks for
-
-    async def _catalog():
-        return [{"id": resident}]
-
-    monkeypatch.setattr(inference_route, "_openai_catalog_objects", _catalog)
-    status, detail = _run_responses_stream_no_model(
-        monkeypatch, enabled = True, active_model_name = resident
-    )
-    assert status == 400
-    assert "requires a GGUF model" in detail
-    assert "not downloaded" not in detail
-
-
 def test_completions_keeps_the_generic_error_for_the_resident_non_gguf_model(monkeypatch):
     # Same contradiction on the raw-body surface, via _auto_switch_from_request_body.
 
@@ -6675,18 +6842,6 @@ def test_completions_keeps_the_generic_error_for_the_resident_non_gguf_model(mon
     assert exc.value.status_code == 503
     assert exc.value.detail.startswith("No GGUF model loaded.")
     assert "not downloaded" not in exc.value.detail
-
-
-def test_responses_stream_keeps_generic_error_when_target_is_local(monkeypatch):
-    # Resolves locally yet nothing is loaded: the switch failed, so keep the generic 400.
-    status, detail = _run_responses_stream_no_model(
-        monkeypatch,
-        enabled = True,
-        active_model_name = None,
-        resolves_to = ("/p/A", "Q4_K_M", "unsloth/Qwen3.5-4B-GGUF"),
-    )
-    assert status == 400
-    assert "not downloaded" not in detail
 
 
 # ── idle-unload KV persistence (slot save/restore) ──────────────────
@@ -7315,6 +7470,17 @@ def test_spec_draft_n_max_only_stored_for_mtp_modes():
     # never takes effect.
     ngram = settings.normalize_model_override({"speculative_type": "ngram", "spec_draft_n_max": 4})
     assert "spec_draft_n_max" not in ngram
+
+
+def test_mlx_speculative_modes_and_drafter_survive_to_the_load():
+    stored = {"spec_draft_n_max": 4, "spec_draft_model": " d "}
+    for mode, is_gguf, kept in (
+        ("eagle3", False, {"spec_draft_n_max": 4, "spec_draft_model": "d"}),
+        ("eagle3", True, {}),
+    ):
+        entry = settings.normalize_model_override({"speculative_type": mode, **stored})
+        kwargs = settings.model_override_load_kwargs(entry, is_gguf = is_gguf)
+        assert kwargs == kept | ({} if is_gguf else {"speculative_type": mode})
 
 
 def test_resolve_fit_max_seq_length_hands_sizing_to_fit_under_manual_auto_layers():
@@ -8741,6 +8907,21 @@ def test_two_local_paths_differing_only_in_case_are_not_the_same_model(monkeypat
     assert inference_route._loaded_satisfies("unsloth/qwen3-4b-gguf") is True
 
 
+def test_a_cold_index_does_not_answer_a_build_stem_with_the_resident_sibling(monkeypatch):
+    # alpha-Q4_K_M is resident under the bare Q4_K_M key; before the first scan nothing can
+    # pin beta-Q4_K_M, so the resident sibling must not count as serving it (#13957).
+    loaded = _FakeBackend(loaded_id = "local/model")
+    loaded.hf_variant = "Q4_K_M"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    assert inference_route._loaded_satisfies("local/model:beta-Q4_K_M") is False
+    assert inference_route._loaded_satisfies("local/model:latest") is True
+    assert inference_route._loaded_satisfies("local/model:Q4_K_M") is True
+
+    monkeypatch.setattr(resolver, "_scan", (1.0, {}))
+    assert inference_route._loaded_satisfies("local/model:beta-Q4_K_M") is True
+
+
 def test_abs_path_ids_are_recognised_in_either_platform_spelling():
     """Path() follows the running OS, so a Windows host read "/home/me/x.gguf" as
     relative and a POSIX host read "C:\\models\\x.gguf" the same way, and either
@@ -9936,6 +10117,8 @@ def test_a_video_request_labels_the_switch_refusal_video(monkeypatch):
         audio_preflight = None,
         image_preflight = None,
         tool_images_only = False,
+        serves_npu = False,
+        npu_request_check = None,
     ):
         captured.update(
             require_vision = require_vision,
@@ -10565,9 +10748,30 @@ def test_an_embedding_checkpoint_is_not_switchable(tmp_path):
     assert resolver.local_servable_model(info) is None
 
 
-def test_streaming_responses_refuses_a_non_gguf_swap(monkeypatch):
-    # Codex P1: _responses_stream reads llama.cpp alone, so a streaming Responses
-    # request naming a non-GGUF model unloaded the resident GGUF and then 400'd.
+_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+
+
+@pytest.mark.parametrize(
+    "stream, text, images, mlx_host",
+    [
+        (True, None, [_PNG, _PNG], True),
+        (True, None, ["ftp://example.com/a.png"], True),
+        (True, {"format": {"type": "json_object"}}, [], True),
+        (True, {"format": {"type": "json_object"}}, [], False),
+        (False, {"format": {"type": "json_object"}}, [], False),
+    ],
+)
+def test_streaming_responses_refuses_before_load_what_chat_refuses(
+    monkeypatch, stream, text, images, mlx_host
+):
+    # Either source may serve the stream, so its switch carries chat's image facts (a
+    # one-image non-GGUF target refuses two, or a URL it cannot fetch). A grammar-constrained
+    # text.format pins the switch to GGUF only off an MLX host, where the non-GGUF target is
+    # transformers. Non-streaming leaves its preflight to chat.
+    import utils.hardware as hardware
+
+    device = hardware.DeviceType.MLX if mlx_host else hardware.DeviceType.CUDA
+    monkeypatch.setattr(hardware, "get_device", lambda: device)
     captured = {}
 
     async def _capture(model, request, subject, **kwargs):
@@ -10575,20 +10779,45 @@ def test_streaming_responses_refuses_a_non_gguf_swap(monkeypatch):
         raise RuntimeError("reached the switch")
 
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
-    for streaming in (True, False):
-        captured.clear()
-        payload = _responses_payload(stream = streaming)
-        with pytest.raises(RuntimeError):
-            asyncio.run(inference_route.openai_responses(payload, object(), "tester"))
-        # Only the streaming branch preflights here, and it must pin GGUF. The
-        # non-streaming one delegates its preflight to the chat route, whose own
-        # switch is right NOT to pin, so it passes no gguf_only at all. Asserting
-        # the key is absent rather than falsy keeps that distinction: `.get(...,
-        # False)` would also pass if the streaming branch stopped sending it.
-        if streaming:
-            assert captured["gguf_only"] is True
-        else:
-            assert "gguf_only" not in captured
+    parts = [{"type": "input_text", "text": "hi"}]
+    parts += [{"type": "input_image", "image_url": url} for url in images]
+    payload = ResponsesRequest(
+        model = "org/B", stream = stream, text = text, input = [{"role": "user", "content": parts}]
+    )
+    with pytest.raises(RuntimeError):
+        asyncio.run(inference_route.openai_responses(payload, object(), "tester"))
+    pinned = stream and text is not None and not mlx_host
+    assert captured.get("gguf_only", False) is pinned
+    assert ("grammar engine" in (captured.get("gguf_only_reason") or "")) is pinned
+    if images:
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(
+                inference_route._preflight_image_for_switch(captured["image_preflight"], False)
+            )
+        assert exc.value.status_code == 400
+
+
+def test_streaming_responses_setup_failures_leave_nothing_behind(monkeypatch):
+    # A cancel while the stream is being built still closes the monitor entry.
+    from starlette.requests import Request
+
+    async def _switch(*_a, **_kw):
+        pass
+
+    async def _cancelled(*_a, **_kw):
+        raise asyncio.CancelledError
+
+    finished = []
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _switch)
+    monkeypatch.setattr(inference_route, "_responses_stream", _cancelled)
+    monkeypatch.setattr(inference_route.api_monitor, "start", lambda **_kw: "m")
+    monkeypatch.setattr(inference_route.api_monitor, "finish", lambda *a: finished.append(a))
+    request = Request({"type": "http", "headers": [], "path": "/v1/responses", "method": "POST"})
+
+    payload = ResponsesRequest(stream = True, input = "hi")
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(inference_route.openai_responses(payload, request, "tester"))
+    assert finished == [("m", "cancelled")]
 
 
 def test_a_pickle_checkpoint_is_not_switchable(tmp_path):
@@ -12330,3 +12559,337 @@ def test_tensor_split_requires_matching_gpu_ids_at_the_settings_boundary(ids):
         settings_route.ModelOverridePayload(
             model_id = "org/split-GGUF", gpu_ids = ids, tensor_split = [3, 1]
         )
+
+
+_NPU_MODEL = "lemonade:qwen3-0.6b-FLM"
+
+
+def test_an_npu_model_named_by_a_request_switches_when_on(monkeypatch):
+    # The GGUF resolver cannot find an NPU id, so this used to 404 even with the switch on.
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    _run_hook(_NPU_MODEL, serves_npu = True)
+    assert [call.model_path for call in rec.calls] == [_NPU_MODEL]
+
+
+def test_an_npu_switch_loads_with_the_saved_context_length(monkeypatch):
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    monkeypatch.setattr(
+        settings,
+        "get_model_override",
+        lambda model_id: {"max_seq_length": 16384} if model_id == _NPU_MODEL else {},
+    )
+    _run_hook(_NPU_MODEL, serves_npu = True)
+    assert [(call.model_path, call.max_seq_length) for call in rec.calls] == [(_NPU_MODEL, 16384)]
+
+
+def test_a_deferred_npu_switch_leaves_the_model_preview_owned(monkeypatch):
+    # Chat defers its claim and can still reject after the switch (n > 1 on the NPU); unmarked, the
+    # NPU model then read as Studio-owned and every public preview got 503.
+    _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    monkeypatch.setattr(inference_route, "_preview_resident_ident", None)
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            _NPU_MODEL, object(), "tester", claim_resident = False, serves_npu = True
+        )
+    )
+    assert inference_route._get_preview_resident() == _NPU_MODEL
+
+
+def test_an_npu_switch_keeps_the_setting_read_on_entry(monkeypatch):
+    # Turned off mid-request, a second read loaded nothing and the resident GGUF answered instead.
+    _, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    state = {"on": True}
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: state["on"])
+    refuse = inference_route._refuse_unservable_npu_switch
+
+    async def _refuse_then_turn_off(*args, **kwargs):
+        await refuse(*args, **kwargs)
+        state["on"] = False
+
+    monkeypatch.setattr(inference_route, "_refuse_unservable_npu_switch", _refuse_then_turn_off)
+    _run_hook(_NPU_MODEL, serves_npu = True)
+    assert [call.model_path for call in rec.calls] == [_NPU_MODEL]
+
+
+def test_an_npu_model_named_with_the_switch_off_says_how_to_load_it(monkeypatch):
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None, enabled = False)
+    with pytest.raises(HTTPException) as excinfo:
+        _run_hook(_NPU_MODEL)
+    assert excinfo.value.status_code == 404
+    assert "Switch model by request" in str(excinfo.value.detail)
+    assert rec.calls == []
+
+
+def test_a_resident_npu_model_is_not_reloaded(monkeypatch):
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    monkeypatch.setattr(inference_route, "_loaded_satisfies", lambda model: model == _NPU_MODEL)
+    _run_hook(_NPU_MODEL, serves_npu = True)
+    assert rec.calls == []
+
+
+def test_messages_with_an_npu_model_loaded_names_it(monkeypatch):
+    # "No GGUF model loaded" read as "nothing is loaded" while the NPU model was serving.
+    from models.inference import AnthropicMessagesRequest
+
+    _wired(monkeypatch, _FakeBackend(None), None, enabled = False)
+    monkeypatch.setattr(inference_route, "_automatic_model_load_may_run", lambda: False)
+    monkeypatch.setattr(
+        inference_route,
+        "_resident_npu_model",
+        lambda: SimpleNamespace(model_path = _NPU_MODEL),
+    )
+    request = SimpleNamespace(
+        state = SimpleNamespace(), url = SimpleNamespace(path = "/v1/messages"), method = "POST"
+    )
+    payload = AnthropicMessagesRequest(max_tokens = 16, messages = [{"role": "user", "content": "hi"}])
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.anthropic_messages(payload, request, "tester"))
+    assert excinfo.value.status_code == 400
+    assert _NPU_MODEL in excinfo.value.detail
+    assert "No GGUF model loaded" not in excinfo.value.detail
+
+
+def test_messages_with_switching_on_and_an_npu_model_loaded_names_it(monkeypatch):
+    # The early check is skipped once automatic loads may run; the later one must say the same.
+    from models.inference import AnthropicMessagesRequest
+
+    _wired(monkeypatch, _FakeBackend(None), None, enabled = True)
+    monkeypatch.setattr(
+        inference_route,
+        "_resident_npu_model",
+        lambda: SimpleNamespace(model_path = _NPU_MODEL, id = "qwen3-0.6b-FLM"),
+    )
+    monkeypatch.setattr(inference_route, "_loaded_satisfies", lambda model: model == _NPU_MODEL)
+    request = SimpleNamespace(
+        state = SimpleNamespace(), url = SimpleNamespace(path = "/v1/messages"), method = "POST"
+    )
+    payload = AnthropicMessagesRequest(
+        model = _NPU_MODEL, max_tokens = 16, messages = [{"role": "user", "content": "hi"}]
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.anthropic_messages(payload, request, "tester"))
+    assert excinfo.value.status_code == 400
+    assert _NPU_MODEL in str(excinfo.value.detail)
+
+
+def _npu_catalog_entry(
+    monkeypatch,
+    *,
+    vision,
+    tools = False,
+):
+    from core.inference import npu_backend as nb
+    class _Npu:
+        def loadable_model(self, model_id):
+            return SimpleNamespace(id = model_id, vision = vision, tools = tools)
+
+    monkeypatch.setattr(nb, "get_npu_backend", lambda: _Npu())
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "words"),
+    [
+        ({"serves_npu": False}, "serves /v1/chat/completions only"),
+        ({"gguf_only": True}, "serves /v1/chat/completions only"),
+        ({"require_audio_input": True}, "takes no audio or video input"),
+        ({"require_video": True}, "takes no audio or video input"),
+        ({"require_vision": True}, "cannot read images"),
+    ],
+)
+def test_a_request_the_npu_model_cannot_serve_never_switches(monkeypatch, kwargs, words):
+    # Loading first evicted the resident GGUF, then the endpoint failed on the NPU model anyway.
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    _npu_catalog_entry(monkeypatch, vision = False)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                _NPU_MODEL, object(), "tester", **{"serves_npu": True, **kwargs}
+            )
+        )
+    assert excinfo.value.status_code == 400
+    assert words in str(excinfo.value.detail)
+    assert rec.calls == []
+    assert backend.model_identifier == "unsloth/A-GGUF"
+
+
+@pytest.mark.parametrize(
+    ("fields", "param"),
+    [
+        (
+            {"tools": [{"type": "function", "function": {"name": "f", "parameters": {}}}]},
+            "tools",
+        ),
+        ({"n": 2}, "n"),
+    ],
+)
+def test_a_chat_request_the_npu_model_would_refuse_never_switches(monkeypatch, fields, param):
+    # NPU chat checked these only after the switch had already evicted the resident GGUF.
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    _npu_catalog_entry(monkeypatch, vision = False, tools = False)
+    payload = _chat_request(model = _NPU_MODEL, **fields)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert excinfo.value.status_code == 400
+    assert param in str(excinfo.value.detail)
+    assert rec.calls == []
+    assert backend.model_identifier == "unsloth/A-GGUF"
+
+
+@pytest.mark.parametrize("route", ["/v1/responses", "/v1/messages"])
+def test_a_route_the_npu_model_cannot_serve_never_switches_to_it(monkeypatch, route):
+    # Both routes relax gguf_only for in-process models, so the NPU switch evicted the GGUF first.
+    from starlette.requests import Request
+
+    from models.inference import AnthropicMessagesRequest
+
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    _npu_catalog_entry(monkeypatch, vision = True, tools = True)
+    request = Request({"type": "http", "headers": [], "path": route, "method": "POST"})
+    if route == "/v1/responses":
+        payload = ResponsesRequest(model = _NPU_MODEL, stream = True, input = "hi")
+        call = inference_route.openai_responses(payload, request, "tester")
+    else:
+        payload = AnthropicMessagesRequest(
+            model = _NPU_MODEL, max_tokens = 16, messages = [{"role": "user", "content": "hi"}]
+        )
+        call = inference_route.anthropic_messages(payload, request, "tester")
+    with pytest.raises(Exception) as excinfo:
+        asyncio.run(call)
+    assert rec.calls == []
+    assert backend.model_identifier == "unsloth/A-GGUF"
+    assert isinstance(excinfo.value, HTTPException) and excinfo.value.status_code == 400
+    assert "serves /v1/chat/completions only" in str(excinfo.value.detail)
+
+
+def test_an_mcp_image_request_never_switches_to_an_npu_model(monkeypatch):
+    # NPU chat runs no MCP tool loop, so it refused the image only after evicting the GGUF.
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    _npu_catalog_entry(monkeypatch, vision = True, tools = True)
+
+    async def _an_mcp_image(*_args):
+        return object()
+
+    monkeypatch.setattr(inference_route, "_request_mcp_image", _an_mcp_image)
+    payload = _chat_request(model = _NPU_MODEL)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert excinfo.value.status_code == 400
+    assert "MCP" in str(excinfo.value.detail)
+    assert rec.calls == []
+    assert backend.model_identifier == "unsloth/A-GGUF"
+
+
+def test_an_image_request_switches_to_a_vision_npu_model(monkeypatch):
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    _npu_catalog_entry(monkeypatch, vision = True)
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            _NPU_MODEL, object(), "tester", require_vision = True, serves_npu = True
+        )
+    )
+    assert [call.model_path for call in rec.calls] == [_NPU_MODEL]
+
+
+def test_a_cancelled_request_never_switches_to_an_npu_model(monkeypatch):
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    cancel = threading.Event()
+    cancel.set()
+    request = SimpleNamespace(state = SimpleNamespace(generation_cancel_event = cancel))
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(_NPU_MODEL, request, "tester", serves_npu = True)
+        )
+    assert excinfo.value.status_code == 409
+    assert rec.calls == []
+
+
+def test_a_tool_result_image_never_switches_to_a_text_only_npu_model(monkeypatch):
+    # A text-only GGUF reads a tool-result image as a note; NPU chat rejects it after the load.
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    _npu_catalog_entry(monkeypatch, vision = False)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                _NPU_MODEL,
+                object(),
+                "tester",
+                require_vision = True,
+                tool_images_only = True,
+                serves_npu = True,
+            )
+        )
+    assert "cannot read images" in str(excinfo.value.detail)
+    assert rec.calls == []
+
+
+def test_an_npu_switch_counts_as_a_queued_switch_while_it_loads(monkeypatch):
+    # Uncounted, a GGUF switch waiting on the lock this one holds kept its drain from finishing.
+    _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    seen = []
+
+    async def _load(*_args, **_kwargs):
+        seen.append(inference_route._switch_waiter_count())
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _load)
+    _run_hook(_NPU_MODEL, serves_npu = True)
+    assert seen == [1]
+    assert inference_route._switch_waiter_count() == 0
+
+
+@pytest.mark.parametrize("reload", [False, True], ids = ["switch", "idle reload"])
+def test_completions_echo_to_a_gguf_target_is_refused_before_it_loads_on_mlx(monkeypatch, reload):
+    from utils import hardware
+
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.MLX)
+    if reload:
+        _, rec = _wired(monkeypatch, _FakeBackend(None), None, enabled = False)
+        _stash(monkeypatch)
+    else:
+        _, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("/p/B", "Q8_0", "org/B-GGUF"))
+    body = {"model": "org/B-GGUF", "prompt": "hi", "echo": True}
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_completions(_json_body_request(body), "tester"))
+    assert exc.value.detail["error"]["param"] == "echo" and rec.calls == []
+
+
+def test_completions_switch_admits_an_mlx_target_only_for_what_it_serves(monkeypatch):
+    from utils import hardware
+
+    seen = []
+
+    async def _switch(_request, _subject, **kw):
+        seen.append(kw)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(inference_route, "_should_validate_before_switch", lambda: True)
+    monkeypatch.setattr(inference_route, "_auto_switch_from_request_body", _switch)
+    for device, body in (
+        (hardware.DeviceType.MLX, {"prompt": {"prompt_string": "p"}}),
+        (hardware.DeviceType.MLX, {"prompt": "p", "echo": True}),
+        (hardware.DeviceType.MLX, {"prompt": "p", "typical_p": 0.5}),
+        (hardware.DeviceType.CUDA, {"prompt": "p"}),
+        (hardware.DeviceType.CUDA, {"prompt": "p", "typical_p": 0.5}),
+    ):
+        monkeypatch.setattr(hardware, "get_device", lambda: device)
+        with pytest.raises(RuntimeError):
+            asyncio.run(inference_route.openai_completions(_json_body_request(body), "tester"))
+    assert [(kw["gguf_only"], kw["gguf_only_reason"]) for kw in seen] == [
+        (False, None),
+        (False, None),
+        (True, "'typical_p' is not supported for MLX models."),
+        (True, None),
+        # A GGUF-only host keeps the GGUF refusal: no MLX reason, no grammar compiled.
+        (True, None),
+    ]
+
+
+def test_completions_on_mlx_refuses_an_audio_cpp_target_before_it_loads(monkeypatch):
+    from utils import hardware
+
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.MLX)
+    target = "audio-cpp/audio.cpp-gguf/HTDemucs-6stems-GGUF"
+    _, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), (target, None, target))
+    body = {"model": target, "prompt": "hello"}
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_completions(_json_body_request(body), "tester"))
+    assert exc.value.status_code == 400 and rec.calls == []

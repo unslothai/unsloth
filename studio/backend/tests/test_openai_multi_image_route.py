@@ -127,14 +127,42 @@ def test_what_cannot_be_served_is_answered_as_a_bad_request(
 def test_an_image_reaches_the_backend_in_a_mode_it_can_be_handed_over_in(
     monkeypatch, mode, container
 ):
-    """The first three reopen in a mode PNG cannot write and must convert; RGBA must not."""
+    """All arrive as RGB; the first three reopen in a mode PNG cannot write."""
     part = _part(Image.new(mode, (16, 16)), container = container)
 
     delivered = _call(monkeypatch, [ChatMessage(role = "user", content = [part])]).calls[0]["image"]
 
-    assert delivered.mode == ("RGBA" if mode == "RGBA" else "RGB")
+    assert delivered.mode == "RGB"
     # The boundary itself, not a claim about which modes it takes.
     delivered.save(io.BytesIO(), format = "PNG")
+
+
+def _ink_on_nothing(mode):
+    image = Image.new("RGBA", (200, 60), (0, 0, 0, 0))
+    image.paste((0, 0, 0, 255), (20, 20, 180, 40))
+    return image.convert(mode)
+
+
+@pytest.mark.parametrize("mode", ["RGBA", "LA", "P"])
+def test_dark_ink_on_a_transparent_image_stays_visible_to_the_model(monkeypatch, mode):
+    turn = [ChatMessage(role = "user", content = [_part(_ink_on_nothing(mode))])]
+
+    delivered = _call(monkeypatch, turn).calls[0]["image"]
+
+    seen = delivered.convert("RGB")
+    assert seen.getpixel((5, 5)) == (255, 255, 255)
+    assert seen.getpixel((100, 30)) == (0, 0, 0)
+
+
+def test_an_opaque_photo_reaches_the_model_unchanged(monkeypatch):
+    source = Image.new("RGB", (32, 32), (30, 140, 200))
+    source.paste((250, 240, 10), (0, 0, 16, 16))
+    turn = [ChatMessage(role = "user", content = [_part(source)])]
+
+    delivered = _call(monkeypatch, turn).calls[0]["image"]
+
+    assert delivered.mode == "RGB"
+    assert delivered.tobytes() == source.tobytes()
 
 
 def test_each_image_is_decoded_once_for_a_request_that_rebuilds_the_conversation(monkeypatch):

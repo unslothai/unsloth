@@ -90,6 +90,7 @@ export function TrainingHyperparametersSection({
     useShallow((state) => ({
       epochs: state.epochs,
       isDecision: state.modelType === "decision",
+      isEmbedding: state.isEmbeddingModel || state.modelType === "embeddings",
       optimizerType: state.optimizerType,
       lrSchedulerType: state.lrSchedulerType,
       batchSize: state.batchSize,
@@ -98,6 +99,7 @@ export function TrainingHyperparametersSection({
       warmupSteps: state.warmupSteps,
       saveSteps: state.saveSteps,
       evalSteps: state.evalSteps,
+      earlyStoppingPatience: state.earlyStoppingPatience,
       randomSeed: state.randomSeed,
       setOptimizerType: state.setOptimizerType,
       setLrSchedulerType: state.setLrSchedulerType,
@@ -108,6 +110,7 @@ export function TrainingHyperparametersSection({
       setEpochs: state.setEpochs,
       setSaveSteps: state.setSaveSteps,
       setEvalSteps: state.setEvalSteps,
+      setEarlyStoppingPatience: state.setEarlyStoppingPatience,
       setRandomSeed: state.setRandomSeed,
     })),
   );
@@ -409,6 +412,25 @@ export function TrainingHyperparametersSection({
                 className="w-28 font-mono"
               />
             </ParamsRow>
+            {!store.isDecision && !store.isEmbedding && (
+              <ParamsRow
+                label={t("studio.params.earlyStoppingPatience")}
+                tooltip={t("studio.params.earlyStoppingPatienceTooltip")}
+              >
+                <Input
+                  type="number"
+                  step="1"
+                  min="0"
+                  max="1000"
+                  disabled={store.evalSteps <= 0}
+                  value={store.earlyStoppingPatience}
+                  onChange={(event) =>
+                    store.setEarlyStoppingPatience(Number(event.target.value))
+                  }
+                  className="w-28 font-mono"
+                />
+              </ParamsRow>
+            )}
             <ParamsRow
               label={t("studio.params.seed")}
               tooltip={t("studio.params.seedTooltip")}

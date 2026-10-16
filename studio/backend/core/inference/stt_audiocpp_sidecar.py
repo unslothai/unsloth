@@ -14,6 +14,7 @@ the timestamps and speakers a model produces.
 
 from __future__ import annotations
 
+import functools
 import json
 import subprocess
 import tempfile
@@ -37,6 +38,7 @@ from core.inference.audio_cpp_models import (
     AudioCppModelError,
     CompanionModel,
     downloaded_models,
+    family_from_names,
     forget,
     parse_identifier,
     require_runnable,
@@ -50,9 +52,11 @@ from core.inference.audio_cpp_server import (
     AudioCppServer,
     AudioCppStartCancelledError,
     AudioCppUnavailableError,
+    runtime_runs_on_cpu,
 )
 from core.inference.stt_ggml_sidecar import _pcm_to_wav_bytes
 from core.inference.stt_sidecar import (
+    QWEN3_ASR_LANGUAGE_NAMES,
     STT_KEEP_ALIVE_SECONDS,
     SttAudioDecodeError,
     SttLoadCancelledError,
@@ -92,6 +96,43 @@ _TIMESTAMP_OPTIONS = {
     "audio_chunk_mode": "fixed",
     "qwen3_asr.preserve_punctuation": "true",
 }
+
+# model_specs/nemotron_asr.json "languages"; the prompt dictionary also keys en/es/fr/pt/no.
+_NEMOTRON_ASR_LOCALES = (
+    "ar-AR", "bg-BG", "cs-CZ", "da-DK", "de-DE", "el-GR", "en-GB", "en-US", "es-ES", "es-US",
+    "et-EE", "fi-FI", "fr-CA", "fr-FR", "he-IL", "hi-IN", "hr-HR", "hu-HU", "it-IT", "ja-JP",
+    "ko-KR", "lt-LT", "lv-LV", "mt-MT", "nb-NO", "nl-NL", "nn-NO", "pl-PL", "pt-BR", "pt-PT",
+    "ro-RO", "ru-RU", "sk-SK", "sl-SI", "sv-SE", "th-TH", "tr-TR", "uk-UA", "vi-VN", "zh-CN",
+)  # fmt: skip
+
+
+@functools.lru_cache(maxsize = 256)
+def _nemotron_language(language: str, code: str) -> Optional[str]:
+    """The prompt key Nemotron takes for ``language``; any other string fails the request."""
+    tag = language.strip().replace("_", "-").lower()
+    primary = tag.split("-", 1)[0]
+    for matches in (
+        [locale for locale in _NEMOTRON_ASR_LOCALES if locale.lower() == tag],
+        [locale for locale in _NEMOTRON_ASR_LOCALES if locale.split("-", 1)[0].lower() == primary],
+        [locale for locale in _NEMOTRON_ASR_LOCALES if normalize_whisper_language(locale) == code],
+    ):
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            return code
+    return None
+
+
+def _runtime_language(family: str, language: Optional[str]) -> Optional[str]:
+    """``language`` in the form ``family`` reads it, or None to let the model detect it."""
+    code = normalize_whisper_language(language)
+    if not code:
+        return None
+    if family == "qwen3_asr":
+        return QWEN3_ASR_LANGUAGE_NAMES.get(code)
+    if family == "nemotron_asr":
+        return _nemotron_language(language, code)
+    return code
 
 
 class SttEngineUnavailableError(SttUnavailableError):
@@ -173,9 +214,7 @@ def resolve_audio_cpp_stt_model(
         )
     found = resolve(base, variant or ref_variant, hf_token, network = network)
     if found is None and not network:
-        raise SttModelNotDownloadedError(
-            f"STT model '{base}' is not downloaded. Download it in Settings, then Voice, before loading it."
-        )
+        raise SttModelNotDownloadedError(f"STT model '{base}' is not downloaded yet.")
     if found is None:
         raise SttModelIdError(
             f"STT model '{model}' is not an audio GGUF the audio runtime can transcribe with."
@@ -188,8 +227,7 @@ def resolve_audio_cpp_stt_model(
             row = resolve(base, None, hf_token, network = False)
             if row is not None and row.task == "asr" and row.unsupported is None:
                 raise SttModelNotDownloadedError(
-                    f"STT model '{base}' ({variant or ref_variant}) is not downloaded. Download "
-                    "it in Settings, then Voice, before loading it."
+                    f"STT model '{base}' ({variant or ref_variant}) is not downloaded yet."
                 ) from exc
         raise SttModelIdError(str(exc)) from exc
     return found
@@ -557,6 +595,18 @@ def _launches_on_cpu(entry: AudioCppModel, force_cpu: bool) -> bool:
     return force_cpu or _training_active() or entry.family in CPU_ONLY_FAMILIES
 
 
+def _same_placement(on_cpu: bool, entry: AudioCppModel, force_cpu: bool) -> bool:
+    """Whether a server on the CPU (or not) is where a launch now would put ``entry``."""
+    wants_cpu = _launches_on_cpu(entry, force_cpu)
+    if on_cpu == wants_cpu:
+        return True
+    # A GPU build with no visible GPU runs on the CPU either way, so training starting or ending moves nothing.
+    try:
+        return on_cpu and runtime_runs_on_cpu()
+    except Exception:  # noqa: BLE001 - an unreadable runtime keeps the old reload
+        return False
+
+
 class AudioCppSttSidecar:
     """Owns one audiocpp_server serving an ASR model and proxies dictation to it."""
 
@@ -639,6 +689,15 @@ class AudioCppSttSidecar:
             return self._loading_model if self._loading else None
 
     @property
+    def holds_timestamp_aligner(self) -> bool:
+        """Whether the forced aligner is open, or may be opened by a load in flight: neither names it
+        as the loaded model, so a folder-scoped delete guard would miss it."""
+        if self._aligned and self._server_alive():
+            return True
+        loading = self.loading_model
+        return bool(loading) and family_from_names([loading]) in _ALIGNED_FAMILIES
+
+    @property
     def keep_alive_seconds(self) -> float:
         return self._keep_alive_seconds
 
@@ -689,8 +748,9 @@ class AudioCppSttSidecar:
         if current is None:
             return False
         try:
-            # Row ids on both sides: a legacy key and its folder id name the same model.
-            return current == acm_row_id(expected)
+            # Row ids on both sides: a legacy key and its folder id name the same model,
+            # and hub ids match case-insensitively.
+            return current.casefold() == acm_row_id(expected).casefold()
         except Exception:  # noqa: BLE001 - an unresolvable name is not this model
             return False
 
@@ -763,8 +823,7 @@ class AudioCppSttSidecar:
             return audio_cpp_files.materialize(model)
         except FileNotFoundError:
             raise SttModelNotDownloadedError(
-                f"STT model '{model.display_name}' ({model.variant.key}) is not downloaded. "
-                "Download it in Settings, then Voice, before loading it."
+                f"STT model '{model.display_name}' ({model.variant.key}) is not downloaded yet."
             ) from None
         except AudioCppUnavailableError as exc:
             # A path the runtime cannot open (Windows MAX_PATH) is a runtime limit, not a missing download.
@@ -849,7 +908,7 @@ class AudioCppSttSidecar:
                 and self._model == entry
                 and self._forced_cpu == force_cpu
                 # A server training moved to the CPU goes back to the GPU once training ends.
-                and self._launched_cpu == _launches_on_cpu(entry, force_cpu)
+                and _same_placement(self._launched_cpu, entry, force_cpu)
                 and (self._aligned or not aligned)
             ):
                 self._loaded_as = _reported_name(model, entry)
@@ -898,7 +957,7 @@ class AudioCppSttSidecar:
                 self._model = entry
                 self._loaded_as = _reported_name(model, entry)
                 self._forced_cpu = force_cpu
-                self._launched_cpu = run_on_cpu
+                self._launched_cpu = server.backend == "cpu"
                 self._aligned = aligned
                 self._schedule_idle_unload_locked()
             finally:
@@ -978,7 +1037,10 @@ class AudioCppSttSidecar:
                 )
                 _notify(on_phase, "transcribing")
                 payload = self._post_details(
-                    path, lang, cancel_event, dict(_TIMESTAMP_OPTIONS) if aligned else {}
+                    path,
+                    _runtime_language(entry.family, language),
+                    cancel_event,
+                    dict(_TIMESTAMP_OPTIONS) if aligned else {},
                 )
                 if cancel_event is not None and cancel_event.is_set():
                     raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -1037,8 +1099,7 @@ class AudioCppSttSidecar:
             except AudioCppRequestError as exc:
                 if "language" not in body or not 400 <= exc.status < 500:
                     raise
-                # English-only families (Moonshine, Nemotron, Parakeet) reject a language option; a
-                # dictation language preference is a hint, so transcribe without it rather than fail.
+                # A dictation language is a hint: transcribe without it rather than fail.
                 logger.info(
                     "audio.cpp: %s rejected language %r (%s); retrying without it",
                     server.model.family,

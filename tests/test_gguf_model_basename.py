@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""GGUF filenames must never carry a directory, drive or UNC prefix (#7897).
-
-When a LoRA's base model is a local Windows directory, ``config._name_or_path`` has
-no forward slash, so the old ``split("/")[-1]`` kept the whole path as the model
-name. Joining that onto the output directory relocated the file, because
-``ntpath.join`` discards its first argument when the second carries a drive:
-
-    ntpath.join(r"C:\\exp\\_gguf", r"D:\\M\\X.Q5_K_M.gguf") == r"D:\\M\\X.Q5_K_M.gguf"
-
-The GGUF landed next to the base model and Unsloth logged ``(none)``.
-
-These run on Linux and still assert the Windows answers, deliberately:
-``os.path.basename`` returns the whole ``D:\\...`` string on POSIX, so a fix built
-on it would pass here while Windows stayed broken.
-"""
+"""Strip any drive or directory from the model name; ntpath.join would move the GGUF out of its dir."""
 
 from __future__ import annotations
 
@@ -33,10 +19,7 @@ _SAVE_PY = _REPO_ROOT / "unsloth" / "save.py"
 
 
 def _load_helper():
-    """Exec just ``_model_basename`` out of save.py: save.py cannot be imported
-    without the full ML stack, and the helper is pure string/stat logic. Same ast
-    lift as test_export_capability.py.
-    """
+    """Lifts _model_basename out of save.py with ast, since importing save.py needs the full ML stack."""
     src = _SAVE_PY.read_text(encoding = "utf-8")
     tree = ast.parse(src)
     for node in tree.body:
@@ -51,11 +34,9 @@ def _load_helper():
     )
 
 
-# Table A: the basename contract.
-# (label, config._name_or_path, expected model_name) Rows marked REGRESSION must be byte-identical to the old
-# .split("/")[-1].
+# (label, config._name_or_path, expected model_name). REGRESSION rows must match the old
+# .split("/")[-1] byte for byte.
 _TABLE_A = [
-    # -- REGRESSION rows: behaviour must not change -------------------------
     ("hf_id", "unsloth/Qwen3-8B", "Qwen3-8B"),
     ("hf_id_nested", "meta-llama/Llama-2-7b-hf", "Llama-2-7b-hf"),
     ("bare_name", "Qwen3-8B", "Qwen3-8B"),
@@ -63,7 +44,6 @@ _TABLE_A = [
     ("posix_rel", "./models/MyModel", "MyModel"),
     ("wsl_mount", "/mnt/d/Models/MyModel", "MyModel"),
     ("win_forward_slashes", "D:/Models/MyModel", "MyModel"),
-    # -- BUG rows: broken today ---------------------------------------------
     ("posix_trailing_sep", "/home/u/models/MyModel/", "MyModel"),
     ("win_drive_abs", r"D:\Models\Merged Models\MyModel", "MyModel"),
     ("win_drive_trailing", "D:\\Models\\MyModel\\", "MyModel"),
@@ -77,7 +57,7 @@ _TABLE_A = [
     ("win_short_name", r"C:\Models\MYMODE~1", "MYMODE~1"),
     ("win_double_dot_name", r"C:\Models\MyModel..v2", "MyModel..v2"),
     ("repeated_seps", "D:\\Models\\\\MyModel", "MyModel"),
-    # -- degenerate rows: must never yield "" (a hidden .Q4_K_M.gguf) --------
+    # degenerate rows: must never yield "" (a hidden .Q4_K_M.gguf)
     ("drive_root", "D:\\", "model"),
     ("bare_drive", "D:", "model"),
     ("empty", "", "model"),
@@ -143,7 +123,6 @@ def test_helper_is_idempotent():
         assert helper(once) == once
 
 
-# The join arithmetic this protects (real ntpath, no mocking).
 _GGUF_DIR = r"C:\Users\u\.unsloth\exports\MyModel\_tmp_model_ab12_gguf"
 
 
@@ -153,11 +132,7 @@ _GGUF_DIR = r"C:\Users\u\.unsloth\exports\MyModel\_tmp_model_ab12_gguf"
     ids = [row[0] for row in _TABLE_A if row[0] not in _REGRESSION_LABELS],
 )
 def test_quantize_output_stays_inside_gguf_directory(label, name_or_path, _expected):
-    """save.py:2073 joins the stem onto gguf_directory. Prove it cannot escape.
-
-    Exact arithmetic from _quantize_one: the unfixed stem silently relocates the
-    output to another drive/UNC share, the fixed stem stays put.
-    """
+    """A stem with a drive or UNC prefix would relocate the GGUF out of gguf_directory."""
     stem = _load_helper()(name_or_path)
     out = ntpath.join(_GGUF_DIR, f"{stem}.Q5_K_M.gguf")
     assert (
@@ -199,10 +174,7 @@ def test_lora_gguf_path_shares_the_helper():
 
 
 def test_helper_is_module_level_and_adds_no_locals_to_the_gguf_entrypoint():
-    """save.py does `arguments = dict(locals())` and splats it into
-    unsloth_generic_save(**arguments). Any NEW local bound before that line
-    becomes an unexpected keyword argument and breaks every GGUF export on
-    every OS, so the helper must live at module level."""
+    """The GGUF entrypoint splats locals(), so the helper must be module-level, not a new local."""
     src = _SAVE_PY.read_text(encoding = "utf-8")
     tree = ast.parse(src)
 
@@ -236,8 +208,7 @@ def test_helper_is_module_level_and_adds_no_locals_to_the_gguf_entrypoint():
                     return True
         return False
 
-    # Locals bound before `arguments = dict(locals())`. Names bound only in a branch
-    # that always returns/raises (the save_method="lora" early exit) never reach it.
+    # Names bound only in a branch that always returns (save_method="lora") never reach `arguments`.
     bound: set[str] = set()
     saw_snapshot = False
     for stmt in fn.body:
@@ -254,7 +225,6 @@ def test_helper_is_module_level_and_adds_no_locals_to_the_gguf_entrypoint():
         "if that changed, this guard needs updating"
     )
 
-    # Names deleted from `arguments` before the splat.
     deleted = set(re.findall(r'del\s+arguments\[[\'"](\w+)[\'"]\]', body))
 
     params = {a.arg for a in fn.args.args} | {a.arg for a in fn.args.kwonlyargs}
