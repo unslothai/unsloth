@@ -806,7 +806,8 @@ function ChatFilesPanel({
               title={compact ? "Expand files" : "Collapse files"}
             >
               <HugeiconsIcon
-                icon={compact ? ChevronDownStandardIcon : ChevronUpStandardIcon}
+                // The panel opens upward from the composer, so up expands and down collapses.
+                icon={compact ? ChevronUpStandardIcon : ChevronDownStandardIcon}
                 strokeWidth={1.75}
                 style={HEADER_ICON}
               />

@@ -6281,7 +6281,7 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 }
 
 .unsloth-files-panel-action {
-	@apply inline-flex h-8 shrink-0 items-center rounded-full border px-3.5 text-ui-13 text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50;
+	@apply inline-flex h-7 shrink-0 items-center rounded-full border px-3 text-ui-12 text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50;
 	border-color: color-mix(in oklab, var(--foreground) 14%, transparent);
 }
 .unsloth-files-panel-action:hover {
