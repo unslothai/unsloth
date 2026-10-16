@@ -116,6 +116,8 @@ _POLICY_OVERFETCH = 4
 _DISABLE_DNS_PINNING_ENV = "UNSLOTH_STUDIO_DISABLE_DNS_PINNING"
 # How a lookup that found no address starts, as opposed to a refused one.
 _RESOLVE_FAILED = "Failed to resolve host"
+# A proxied lookup's share of the budget: a resolver that drops queries must leave time for the proxy.
+_PROXIED_LOOKUP_TIMEOUT = 5.0
 
 # Splits the UI source-map from the result; loops strip it (like __IMAGES__).
 RAG_SOURCES_SENTINEL = "\n__RAG_SOURCES__:"
@@ -16249,7 +16251,7 @@ def _fetch_hop_timeout(timeout, deadline):
     return remaining if timeout is None else min(timeout, remaining)
 
 
-def _resolve_with_budget(hostname, port, deadline, cancel_event):
+def _resolve_with_budget(hostname, port, deadline, cancel_event, lookup_timeout = None):
     """``_validate_and_resolve_host`` bounded by the overall fetch budget. ``getaddrinfo`` is
     blocking with no deadline of its own, so a slow resolver (or a request cancelled before
     dispatch) could run past the budget. Resolve on a daemon thread and poll the budget so the
@@ -16258,8 +16260,9 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
     budget_error = _fetch_budget_exceeded(deadline, cancel_event)
     if budget_error is not None:
         return False, budget_error, []
-    if deadline is None and cancel_event is None:
+    if deadline is None and cancel_event is None and lookup_timeout is None:
         return _validate_and_resolve_host(hostname, port)
+    gave_up = None if lookup_timeout is None else time.monotonic() + lookup_timeout
 
     result: "queue.Queue" = queue.Queue(maxsize = 1)
 
@@ -16274,6 +16277,8 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
         budget_error = _fetch_budget_exceeded(deadline, cancel_event)
         if budget_error is not None:
             return False, budget_error, []
+        if gave_up is not None and time.monotonic() >= gave_up:
+            return False, f"{_RESOLVE_FAILED}: no answer for {hostname!r} in time", []
         try:
             return result.get(timeout = 0.05)
         except queue.Empty:
@@ -16728,13 +16733,19 @@ def _fetch_url_raw(
             proxied = _explicit_proxy_applies(cp.scheme, validated_netloc)
             # Resolved after routing: a name that reaches the proxy may resolve only there (proxy-only networks),
             # and a poisoned answer here never gets used. Non-public answers are refused either way.
+            named = proxied and proxy_hostname
+            lookup_timeout = None
+            if named:
+                lookup_timeout = _PROXIED_LOOKUP_TIMEOUT
+                if deadline is not None:
+                    lookup_timeout = min(lookup_timeout, max(0.0, deadline - time.monotonic()) / 2)
             ok, reason, pinned_ips = _resolve_with_budget(
                 current_host,
                 cp.port or (443 if cp.scheme == "https" else 80),
                 deadline,
                 cancel_event,
+                lookup_timeout,
             )
-            named = proxied and proxy_hostname
             if not ok and not (named and reason.startswith(_RESOLVE_FAILED)):
                 return reason, "", ""
             if named:
