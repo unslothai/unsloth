@@ -8595,7 +8595,10 @@ def _fake_hf_api(
             files_metadata = False,
             token = None,
         ):
-            return _FakeInfo(repos[repo_id], (shas or {}).get(repo_id))
+            # The listing now asks a base's unsloth mirror, which carries the same files: answer it from the
+            # upstream's canned listing unless a test describes the mirror itself.
+            key = repo_id if repo_id in repos else canonical_base(repo_id)
+            return _FakeInfo(repos[key], (shas or {}).get(key))
 
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
     # Download-plan tests describe their cache state explicitly. Never let a developer's real

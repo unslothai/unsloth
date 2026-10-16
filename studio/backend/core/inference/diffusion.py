@@ -425,6 +425,12 @@ def _record_revision(out: Optional[dict[str, str]], repo_id: str, info: Any) -> 
         out[repo_id] = sha
 
 
+def _listing_extra(listing_repo: str, rfilename: str) -> bool:
+    """A file an artifact mirror ships beside the upstream folders that no pipeline load reads (its sample renders);
+    the root checkpoints are already excluded by every listing filter's top-level rule."""
+    return mirror_hosts_artifacts(listing_repo) and rfilename.split("/", 1)[0] in ("samples", "assets")
+
+
 def hub_cache_dir() -> str:
     """The cache root every loader call must be pinned to. diffusers resolves an unset cache_dir
     through huggingface_hub's import-time constant, which a mid-session cache-folder change does
@@ -4930,8 +4936,9 @@ class DiffusionBackend:
             return 0, []
         from huggingface_hub import HfApi
 
-        # No swap on purpose: the Hub gates only the BYTE endpoint, so model_info answers anonymously and the mirror
-        # lists the same names. _prefetch_files swaps when it pulls.
+        # Metadata comes from the repo the bytes will: the base's unsloth mirror unless the upstream already holds
+        # them (prefer_ungated_mirror), so a fresh install asks the vendor nothing, and a cached upstream keeps the
+        # listing and the commit pin its cache probe needs.
         from .diffusion_te_prequant import is_prequant_covered_weight
 
         api = HfApi()
@@ -4993,11 +5000,13 @@ class DiffusionBackend:
                     repo_id, hf_token, files = ("model_index.json",)
                 )
                 info, components, picked = _pipeline_listing(metadata_repo)
+                picked = [s for s in picked if not _listing_extra(metadata_repo, s.rfilename)]
                 base_files = [s.rfilename for s in picked]
                 fetch_repo = prefer_ungated_mirror(repo_id, hf_token, files = base_files)
                 if fetch_repo.lower() != metadata_repo.lower():
                     metadata_repo = fetch_repo
                     info, components, picked = _pipeline_listing(metadata_repo)
+                    picked = [s for s in picked if not _listing_extra(metadata_repo, s.rfilename)]
                     base_files = [s.rfilename for s in picked]
                 total = sum(s.size or 0 for s in picked)
                 if fetch_repos_out is not None:
@@ -5035,10 +5044,28 @@ class DiffusionBackend:
                 def base_filter(rfilename: str) -> bool:
                     return _base_file_downloaded(rfilename, include_transformer = include_transformer)
 
-            base_info = api.model_info(base_repo, files_metadata = True, token = hf_token)
-            _record_revision(revisions_out, base_repo, base_info)
+            def _base_listing(listing_repo: str) -> list[Any]:
+                info = api.model_info(listing_repo, files_metadata = True, token = hf_token)
+                # Under the repo it describes: a mirror's commit says nothing about a cached upstream snapshot.
+                _record_revision(revisions_out, listing_repo, info)
+                return [s for s in info.siblings if not _listing_extra(listing_repo, s.rfilename)]
+
+            # Same two-step choice as the pipeline listing above: "any weight cached" picks the listing repo, the exact
+            # companion set then picks the repo they come from, and a different answer re-lists from that repo. The
+            # plan still takes its own fetch decision from the final file list.
+            listing_repo = prefer_ungated_mirror(base_repo, hf_token)
+            base_siblings = _base_listing(listing_repo)
+            wanted = [
+                s.rfilename
+                for s in base_siblings
+                if _base_file_downloaded(s.rfilename, include_transformer = False)
+            ]
+            fetch_repo = prefer_ungated_mirror(base_repo, hf_token, files = wanted)
+            if fetch_repo.lower() != listing_repo.lower():
+                listing_repo = fetch_repo
+                base_siblings = _base_listing(listing_repo)
             if callable(include_transformer):
-                kept = [s.rfilename for s in base_info.siblings if not _dense_te_shard(s.rfilename)]
+                kept = [s.rfilename for s in base_siblings if not _dense_te_shard(s.rfilename)]
                 companions = tuple(
                     f for f in kept if _base_file_downloaded(f, include_transformer = False)
                 )
@@ -5054,7 +5081,7 @@ class DiffusionBackend:
             counted = {gguf_filename} if base_repo == repo_id and gguf_filename else set()
             base_bytes = 0
             base_sizes: dict[str, int] = {}
-            for s in base_info.siblings:
+            for s in base_siblings:
                 if not base_filter(s.rfilename) or _dense_te_shard(s.rfilename):
                     continue
                 if s.rfilename in counted:
@@ -5069,7 +5096,6 @@ class DiffusionBackend:
                 sizes_out[base_repo] = sizes_out.get(base_repo, 0) + base_bytes
             if file_sizes_out is not None:
                 file_sizes_out.setdefault(base_repo, {}).update(base_sizes)
-            _record_revision(revisions_out, base_repo, base_info)
         except Exception as exc:  # noqa: BLE001 - estimate is best-effort
             logger.warning("diffusion.size_estimate_failed: %s", exc)
             # Recorded so a caller that must not guess (media auto-switch refuses rather than download) can tell a
