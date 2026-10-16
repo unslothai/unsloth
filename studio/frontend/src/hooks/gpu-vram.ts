@@ -410,6 +410,41 @@ export function resolveGpuVramUsedGb(
   return Number.isFinite(aggregate) ? (aggregate as number) : null;
 }
 
+/** `resolveGpuVramUsedGb` plus the devices the figure covers, which a readout must size itself against. When the
+ * only unreported devices share host memory (a Windows ROCm iGPU beside discrete cards), the reporting cards are
+ * summed on their own rather than the whole tile going Unknown. An unreported discrete card still means unknown. */
+export function resolveGpuVramUsage<
+  T extends VramReportingDevice & MemoryTotalDevice,
+>(
+  gpu:
+    | (Omit<VramReportingGpu, "devices"> & { devices?: T[] })
+    | null
+    | undefined,
+): { usedGb: number | null; devices: T[] } {
+  const devices = gpu?.devices ?? [];
+  const usedGb = resolveGpuVramUsedGb(gpu);
+  if (usedGb !== null) {
+    return { usedGb, devices };
+  }
+  const known = devices.filter((device) =>
+    Number.isFinite(device.vram_used_gb),
+  );
+  const onlySharedUnknown = devices.every(
+    (device) =>
+      Number.isFinite(device.vram_used_gb) || sharesHostMemoryDevice(device),
+  );
+  if (known.length === 0 || !onlySharedUnknown) {
+    return { usedGb: null, devices };
+  }
+  return {
+    usedGb: known.reduce(
+      (sum, device) => sum + (device.vram_used_gb as number),
+      0,
+    ),
+    devices: known,
+  };
+}
+
 /** The loader's default VRAM fraction (`_CTX_FIT_VRAM_FRACTION`). */
 export const DEFAULT_VRAM_FRACTION = 0.97;
 /** The loader's floor reserve (`_VRAM_FLOOR_RESERVE_MIB`), in GB. */
