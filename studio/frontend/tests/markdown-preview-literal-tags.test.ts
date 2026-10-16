@@ -9,7 +9,7 @@ import * as jsxRuntime from "react/jsx-runtime";
 import * as streamdown from "streamdown";
 import * as streamdownMath from "@streamdown/math";
 import * as streamdownMermaid from "@streamdown/mermaid";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 import type * as ComposerDraftPreviewModule from "../src/components/assistant-ui/composer-draft-preview.tsx";
 import { createCodePlugin } from "../src/components/assistant-ui/code-plugin.ts";

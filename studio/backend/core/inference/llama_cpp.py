@@ -822,6 +822,7 @@ _UNRECOVERABLE_LOCAL_ERRNOS = frozenset(
 _SPEC_KIND_CAPABILITY: dict[str, str] = {
     "dspark": "supports_dspark",
     "dflash": "supports_dflash",
+    "eagle3": "supports_eagle3",
     "mtp": "supports_mtp",
 }
 
@@ -3311,11 +3312,11 @@ def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str]
 
 
 # Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3", "lilicorr")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 # Human label per resolved spec mode, for launch logging and the UI notice.
-_DRAFTER_DISPLAY_LABELS = {"dspark": "DSpark", "dflash": "DFlash"}
+_DRAFTER_DISPLAY_LABELS = {"dspark": "DSpark", "dflash": "DFlash", "eagle3": "EAGLE-3"}
 
 
 def _drafter_path_kind(path: str) -> Optional[str]:
@@ -3421,7 +3422,7 @@ def _is_root_dflash_drafter_path(path: str) -> bool:
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
 _GGUF_KNOWN_QUANT_RE = re.compile(
     r"(UD-)?"
-    r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"((?:MX|NV)FP[0-9]+(?:_[A-Z0-9]+)*"
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
@@ -7449,6 +7450,9 @@ _LAZY_READ_TENSORS: dict[str, tuple[str, ...]] = {
     "qwen4exp": ("per_layer_token_embd.weight",),
 }
 _LAZY_READ_AUTO_MIN_BYTES = 4 * 1024**3
+# Embedded NextN/MTP heads llama.cpp skips at load unless --spec-type draft-mtp, measured:
+# Nemotron 3.5 Super loads 2987 MiB less with MTP off (b11642 + ggml-org#30520).
+_NEXTN_SKIPPED_WITHOUT_MTP_ARCHS = frozenset({"nemotron_h_moe"})
 # --tensor-read-lazy predates ggml-org/llama.cpp#27969; a build reads only its own spelling.
 _LAZY_MODE_SPELLINGS: dict[str, tuple[frozenset[str], str]] = {
     "--lazy-mode": (frozenset({"-lzm", "--lazy-mode"}), "LLAMA_ARG_LAZY_MODE"),
@@ -7625,6 +7629,7 @@ _CANONICAL_SPEC_MODES = {
     "auto",
     "mtp",
     "dspark",
+    "eagle3",
     "dflash",
     "ngram",
     "mtp+ngram",
@@ -7636,11 +7641,31 @@ _LEGACY_SPEC_MODE_MAP = {
     "draft-mtp": "mtp",
     "draft-dspark": "dspark",
     "draft-dflash": "dflash",
+    "draft-eagle3": "eagle3",
     "ngram-mod": "ngram",
     "none": "off",
     "disable": "off",
     "disabled": "off",
 }
+
+
+def _trained_drafter_sidecar(model_path):
+    """(eagle3 drafter path, MTP head trained, draft steps) from the drafter.json a Studio export
+    wrote beside the GGUF."""
+    if not model_path:
+        return None, False, None
+    try:
+        from core.export.drafter_export import eagle3_sidecar_path, gguf_drafter_sidecar
+
+        info = gguf_drafter_sidecar(model_path) or {}
+        try:
+            steps = max(1, int(info["draft_steps"])) if info.get("draft_steps") else None
+        except (TypeError, ValueError):
+            steps = None
+        return eagle3_sidecar_path(model_path), bool(info.get("mtp_trained")), steps
+    except Exception as exc:
+        logger.debug("Could not read a drafter manifest beside %s: %s", model_path, exc)
+        return None, False, None
 
 
 def _canonicalize_spec_mode(value):
@@ -8169,11 +8194,27 @@ _INKLING_REASONING_EFFORT = {
 }
 
 
+# Muse Spark's template accepts only low/medium/high/xhigh and raise_exception()s on
+# anything else, so a "none" or "max" request would fail the render. It cannot turn
+# reasoning off: "none" and "minimal" take the smallest budget, "max" the largest.
+_MUSE_SPARK_REASONING_EFFORT = {
+    "none": "low",
+    "minimal": "low",
+    "max": "xhigh",
+}
+
+
 def _coerce_reasoning_effort(architecture, kwargs: dict) -> dict:
     if architecture == "inkling":
         effort = kwargs.get("reasoning_effort")
         if isinstance(effort, str):
             mapped = _INKLING_REASONING_EFFORT.get(effort.strip().lower())
+            if mapped is not None:
+                kwargs["reasoning_effort"] = mapped
+    elif architecture == "muse-spark":
+        effort = kwargs.get("reasoning_effort")
+        if isinstance(effort, str):
+            mapped = _MUSE_SPARK_REASONING_EFFORT.get(effort.strip().lower())
             if mapped is not None:
                 kwargs["reasoning_effort"] = mapped
     return kwargs
@@ -8546,6 +8587,8 @@ class LlamaCppBackend:
         self._expert_feed_forward_length: Optional[int] = None
         self._expert_shared_feed_forward_length: Optional[int] = None
         self._expert_shared_count: Optional[int] = None
+        # Nemotron 3.5: routed experts run in this latent width, not n_embd.
+        self._moe_latent_size: Optional[int] = None
         # Gemma 3n / Gemma 4 per-layer input embedding width.
         self._embedding_length_per_layer_input: Optional[int] = None
         self._vocab_size: Optional[int] = None
@@ -10387,6 +10430,7 @@ class LlamaCppBackend:
                 "supports_mtp": False,
                 "supports_dspark": False,
                 "supports_dflash": False,
+                "supports_eagle3": False,
                 "mtp_probe_inconclusive": True,
                 "ngram_mod_flavor": None,
                 "supports_ngram_mod": False,
@@ -10451,6 +10495,7 @@ class LlamaCppBackend:
         mtp_token: Optional[str] = None
         supports_dspark = False
         supports_dflash = False
+        supports_eagle3 = False
         ngram_mod_flavor: Optional[str] = None
         spec_draft_n_max_flag: Optional[str] = None
         spec_draft_n_max_default: Optional[int] = None
@@ -10627,6 +10672,9 @@ class LlamaCppBackend:
                     r"(?<![a-z0-9_-])draft-dspark(?![a-z0-9_-])",
                     spec_help.lower(),
                 )
+            )
+            supports_eagle3 = bool(
+                re.search(r"(?<![a-z0-9_-])draft-eagle3(?![a-z0-9_-])", spec_help.lower())
             )
             # Same word-boundary match as DSpark: draft-dflash only exists on
             # builds that carry the arch, and emitting a --spec-type the binary
@@ -10810,6 +10858,7 @@ class LlamaCppBackend:
             "supports_mtp": supports_mtp,
             "supports_dspark": bool(supports_dspark and saw_spec_type and probe_ok),
             "supports_dflash": bool(supports_dflash and saw_spec_type and probe_ok),
+            "supports_eagle3": bool(supports_eagle3 and saw_spec_type and probe_ok),
             "mtp_probe_inconclusive": mtp_probe_inconclusive,
             "ngram_mod_flavor": ngram_mod_flavor,
             "supports_ngram_mod": ngram_mod_flavor is not None,
@@ -11025,10 +11074,13 @@ class LlamaCppBackend:
         return total
 
     @staticmethod
-    def _gguf_scan_tensor_bytes(path: str) -> "tuple[Optional[str], dict[str, int], int]":
+    def _gguf_scan_tensor_bytes(
+        path: str, also: Optional[Callable[[str], bool]] = None
+    ) -> "tuple[Optional[str], dict[str, int], int]":
         """(architecture, lazy-read candidate bytes by name, routed expert bytes) from one
         GGUF header. Streamed: ``GGUFReader`` materialises the vocabulary under the load
-        lock. A quant type gguf predates is sized from the next tensor's offset."""
+        lock. A quant type gguf predates is sized from the next tensor's offset. Names
+        ``also`` accepts are kept by name too, routed experts included."""
         from gguf.constants import GGML_QUANT_SIZES
         from core.inference.offload_layout import _BLOCK_RE, _MOE_EXPERT_RE
 
@@ -11064,11 +11116,12 @@ class LlamaCppBackend:
                 ggml_type = struct.unpack("<I", f.read(4))[0]
                 offset = struct.unpack("<Q", f.read(8))[0]
                 offsets.append(offset)
-                block_match = _BLOCK_RE.match(raw_name.decode("utf-8", "replace"))
-                is_expert = bool(block_match and _MOE_EXPERT_RE.match(block_match.group(2)))
-                if not is_expert and raw_name not in wanted:
-                    continue
                 name = raw_name.decode("utf-8", "replace")
+                block_match = _BLOCK_RE.match(name)
+                is_expert = bool(block_match and _MOE_EXPERT_RE.match(block_match.group(2)))
+                kept = also is not None and also(name)
+                if not is_expert and raw_name not in wanted and not kept:
+                    continue
                 block = GGML_QUANT_SIZES.get(ggml_type)
                 if block is None:
                     unsized.append((name, offset))
@@ -11076,7 +11129,7 @@ class LlamaCppBackend:
                 size = math.prod(dims) // block[0] * block[1]
                 if is_expert:
                     experts += size
-                else:
+                if not is_expert or kept:
                     named[name] = size
             if unsized:
                 data_start = -(-f.tell() // alignment) * alignment
@@ -11086,9 +11139,10 @@ class LlamaCppBackend:
                     later = ordered[bisect.bisect_right(ordered, offset) :]
                     size = max(0, (later[0] if later else data_end) - offset)
                     block_match = _BLOCK_RE.match(name)
-                    if block_match and _MOE_EXPERT_RE.match(block_match.group(2)):
+                    is_expert = bool(block_match and _MOE_EXPERT_RE.match(block_match.group(2)))
+                    if is_expert:
                         experts += size
-                    else:
+                    if not is_expert or (also is not None and also(name)):
                         named[name] = size
         return architecture, named, experts
 
@@ -11126,6 +11180,38 @@ class LlamaCppBackend:
             result = None
         self._gguf_tensor_scan_cache = (key, result)
         return result
+
+    def _unloaded_nextn_bytes(self, model_path: Optional[str]) -> int:
+        """Bytes of the embedded NextN/MTP blocks llama.cpp leaves unloaded without
+        ``--spec-type draft-mtp`` (nextn_flags marks them TENSOR_SKIP unless load_mtp).
+        Only for architectures measured to skip them; 0 when unknown or unreadable."""
+        from core.inference.offload_layout import _BLOCK_RE, split_shard_paths
+
+        nextn = int(getattr(self, "_nextn_predict_layers", None) or 0)
+        n_blocks = int(getattr(self, "_n_layers", None) or 0)
+        if (
+            not model_path
+            or nextn <= 0
+            or n_blocks <= nextn
+            or getattr(self, "_architecture", None) not in _NEXTN_SKIPPED_WITHOUT_MTP_ARCHS
+        ):
+            return 0
+        first = n_blocks - nextn
+
+        def in_head(name: str) -> bool:
+            match = _BLOCK_RE.match(name)
+            return bool(match) and int(match.group(1)) >= first
+
+        try:
+            return sum(
+                size
+                for p in (split_shard_paths(model_path) or [model_path])
+                for name, size in self._gguf_scan_tensor_bytes(p, also = in_head)[1].items()
+                if in_head(name)
+            )
+        except Exception as e:  # missing shard or truncated header: discount nothing
+            logger.debug("NextN block scan failed for %s (%s)", model_path, e)
+            return 0
 
     def _lazy_read_host_bytes(
         self,
@@ -13662,10 +13748,18 @@ class LlamaCppBackend:
             return {}
 
     @classmethod
-    def _cuda_sm_gate_error(cls, binary: Optional[str] = None) -> Optional[str]:
+    def _cuda_sm_gate_error(
+        cls,
+        binary: Optional[str] = None,
+        gpu_indices: Optional[Iterable[int]] = None,
+    ) -> Optional[str]:
         """Error message when every visible GPU is OLDER than the oldest arch the
         installed CUDA bundle was built for, or None to proceed. Fails open on
         unknown coverage or caps.
+
+        ``gpu_indices`` (physical ids the child is pinned to) tightens "every
+        visible" to "any pinned": the child places work on each pinned card, so one
+        too-old card aborts the load even beside a supported one.
 
         Only the too-old direction is broken. The bundles compile plain arch
         numbers, so each fatbin carries PTX beside its cubins, and the driver JITs
@@ -13684,7 +13778,12 @@ class LlamaCppBackend:
             return None
         caps = cls._cuda_compute_caps()
         oldest = min(supported)
-        if not caps or any(sm >= oldest for sm in caps.values()):
+        if gpu_indices is not None:
+            pinned = {int(i) for i in gpu_indices}
+            caps = {idx: sm for idx, sm in caps.items() if idx in pinned and sm < oldest}
+        elif any(sm >= oldest for sm in caps.values()):
+            return None
+        if not caps:
             return None
         present = ", ".join(f"GPU {idx} is sm_{sm}" for idx, sm in sorted(caps.items()))
         # The updater cannot replace a pinned LLAMA_SERVER_PATH or a llama-server
@@ -13694,6 +13793,30 @@ class LlamaCppBackend:
             f"newer, but {present} -- it was likely installed on a machine with a "
             f"newer GPU, so {cls._runtime_remedy(binary)}."
         )
+
+    @classmethod
+    def _cuda_sm_gate_keep(
+        cls, binary: Optional[str], gpus: list[tuple[int, int, int]]
+    ) -> list[tuple[int, int, int]]:
+        """``gpus`` minus the CUDA cards older than the installed bundle's oldest
+        arch, so auto placement cannot pin one beside a supported card (RTX 4090 +
+        GTX 1060 under an sm_75+ build). Unchanged on unknown coverage or caps, and
+        when no card survives: the gate then refuses with its own message."""
+        supported = cls._installed_llama_cuda_sms(binary)
+        if supported is None or not gpus:
+            return gpus
+        caps = cls._cuda_compute_caps()
+        oldest = min(supported)
+        kept = [g for g in gpus if caps.get(g[0], oldest) >= oldest]
+        if not kept or len(kept) == len(gpus):
+            return gpus
+        for idx, _free, _total in gpus:
+            if caps.get(idx, oldest) < oldest:
+                logger.warning(
+                    f"Skipping GPU {idx} (sm_{caps[idx]}): installed llama.cpp "
+                    f"build only has GPU code for sm_{oldest} and newer"
+                )
+        return kept
 
     @classmethod
     def _arch_gate_survivors(cls, binary: Optional[str] = None) -> list[int]:
@@ -14852,13 +14975,19 @@ class LlamaCppBackend:
     def _nvml_rows_visible(rows: list[dict]) -> list[dict]:
         """The NVML rows CUDA_VISIBLE_DEVICES permits, in mask order: an index or a GPU-/MIG-
         uuid prefix per entry, as the CUDA runtime reads it. An entry naming no single device
-        ends the mask there: "0,2,-1,1" exposes 0 and 2, "-1" alone hides every GPU. A GPU in
-        MIG mode is one slice to CUDA (the first, when the mask does not name one), so its
-        first slice row stands in for the parent's whole-card memory, and a second slice of
-        the same card is dropped: the rows are keyed by physical index, and one slice per
-        card is what the driver exposed before R570 and what the child is pinned to."""
+        ends the mask there: "0,2,-1,1" exposes 0 and 2, "-1" alone hides every GPU, and a
+        repeated index empties it, as CUDA does. A GPU in MIG mode is one row backed by one
+        slice, which the child is pinned to: the first slice the mask names, else the one with
+        the least free memory, so the budget never exceeds the device the child gets (R570+
+        enumerates every slice, but one per card is sized and pinned)."""
         raw = os.environ.get("CUDA_VISIBLE_DEVICES")
         parents = [r for r in rows if not r.get("mig")]
+
+        def free_mib(r: dict) -> int:
+            try:
+                return int(r.get("memory_free_mib") or 0)
+            except (TypeError, ValueError):
+                return 0
 
         def as_cuda_sees(r: dict) -> dict:
             if r.get("mig"):
@@ -14866,31 +14995,35 @@ class LlamaCppBackend:
             slices = [
                 s for s in rows if s.get("mig") and str(s.get("index")) == str(r.get("index"))
             ]
-            return slices[0] if slices else r
+            return min(slices, key = free_mib) if slices else r
 
         tokens = [t.strip() for t in (raw or "").split(",") if t.strip()]
         picked: list[dict] = []
         if raw is None:
             picked = [as_cuda_sees(r) for r in parents]
+        seen: set[int] = set()
         for token in tokens:
-            if token.isdigit():
-                hits = [r for r in parents if str(r.get("index")) == token]
-            elif token.startswith("GPU-"):
+            prefix = re.match(r"\+?\d+", token)
+            if token.startswith("GPU-"):
                 hits = [r for r in parents if str(r.get("uuid", "")).startswith(token)]
             elif token.startswith("MIG-"):
                 # A MIG- entry names a slice row the probe lists under its parent.
                 hits = [
                     r for r in rows if r.get("mig") and str(r.get("uuid", "")).startswith(token)
                 ]
+            elif prefix:
+                # CUDA reads an index strtoul-style: "1gpu2" is GPU 1.
+                index = int(prefix.group())
+                if index in seen:
+                    return []
+                seen.add(index)
+                hits = [r for r in parents if str(r.get("index")) == str(index)]
             else:
                 hits = []
             if len(hits) != 1:
                 break
-            picked.extend(
-                r
-                for r in map(as_cuda_sees, hits)
-                if str(r.get("index")) not in {str(p.get("index")) for p in picked}
-            )
+            if str(hits[0].get("index")) not in {str(p.get("index")) for p in picked}:
+                picked.append(as_cuda_sees(hits[0]))
         return picked
 
     @staticmethod
@@ -14915,6 +15048,52 @@ class LlamaCppBackend:
         if by_index and all(i in by_index for i in ids):
             return ",".join(by_index[i] for i in ids)
         return ",".join(str(i) for i in ids)
+
+    @staticmethod
+    def _pinned_child_visibility(gpu_indices) -> Optional[str]:
+        """``_child_visibility_for``, or None when the inherited CUDA mask must stand: a MIG
+        or unresolvable UUID mask the ids cannot be mapped back to, where a numeric pin would
+        be re-read against the whole host (a card the parent hid, or the whole MIG card)."""
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if (
+            LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is False
+            and cvd is not None
+            and cvd.strip()
+            and LlamaCppBackend._visibility_mask_is_unmappable()
+        ):
+            # Torch ordinals: map through the mask itself, never through NVML rows cached by
+            # an earlier probe (their indices are physical, so ordinal 0 could name another slice).
+            return LlamaCppBackend._mig_tokens_for_ordinals(cvd, gpu_indices)
+        mask = LlamaCppBackend._child_visibility_for(gpu_indices)
+        if (
+            cvd is not None
+            and cvd.strip()
+            and mask == ",".join(str(int(i)) for i in gpu_indices)
+            and LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES") is None
+            and LlamaCppBackend._visibility_mask_is_unmappable()
+        ):
+            return LlamaCppBackend._mig_tokens_for_ordinals(cvd, gpu_indices)
+        return mask
+
+    @staticmethod
+    def _mig_tokens_for_ordinals(cvd: str, gpu_indices) -> Optional[str]:
+        """The inherited MIG- entries behind torch ordinals, or None (keep the whole mask). Only
+        when torch enumerated every entry, so ordinal i is entry i in mask order."""
+        tokens = [t.strip() for t in cvd.split(",") if t.strip()]
+        if LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is not False or not all(
+            t.startswith("MIG-") for t in tokens
+        ):
+            return None
+        try:
+            import torch
+            if torch.cuda.device_count() != len(tokens):
+                return None
+            ids = [int(i) for i in gpu_indices]
+        except Exception:
+            return None
+        if not ids or len(set(ids)) != len(ids) or not all(0 <= i < len(tokens) for i in ids):
+            return None
+        return ",".join(tokens[i] for i in ids)
 
     @staticmethod
     def _get_gpu_memory_nvml() -> list[tuple[int, int, int]]:
@@ -14998,6 +15177,7 @@ class LlamaCppBackend:
             return LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
         # ── NVIDIA via nvidia-smi ────────────────────────────────────
         unsized_ids: list[int] = []
+        mig_card_rows: list[tuple[int, int, int]] = []
         try:
             from utils.hardware import gpu_query
 
@@ -15018,6 +15198,10 @@ class LlamaCppBackend:
             )
             if result.returncode == 0:
                 allowed = LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES")
+                if allowed is None and (os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip():
+                    # CUDA's numeric-prefix reading ("1gpu2" is 1, "0,1,abc" is 0,1).
+                    _ids = LlamaCppBackend._resolve_visible_physical_ids()
+                    allowed = set(_ids) if _ids is not None else None
                 gpus: list[tuple[int, int, int]] = []
                 for line in result.stdout.strip().splitlines():
                     parts = [p.strip() for p in line.split(",")]
@@ -15047,8 +15231,27 @@ class LlamaCppBackend:
                     gpus.append((idx, free_mib, total_mib))
                 # Match the docstring's sort-by-id guarantee (driver order isn't).
                 gpus.sort(key = lambda g: g[0])
+                _cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+                if allowed is None and _cvd is not None and _cvd.strip():
+                    # A MIG / unresolvable UUID mask names devices these rows cannot be
+                    # matched to: listing every card sizes against GPUs the parent hid.
+                    # The NVML branch names slices and uuids.
+                    gpus = []
+                elif gpus:
+                    from utils.hardware import nvidia
+                    mig = nvidia.get_mig_gpu_indices() & {g[0] for g in gpus}
+                    if mig:
+                        # A MIG card's row is the whole card: swap in its NVML slice reading,
+                        # keeping the whole cards. No reading at all: the later probes decide,
+                        # then these rows as before.
+                        slices = {g[0]: g for g in LlamaCppBackend._get_gpu_memory_nvml()}
+                        mig_card_rows = gpus
+                        gpus = [slices.get(g[0], g) if g[0] in mig else g for g in gpus]
+                        gpus = [g for g in gpus if g[0] not in mig or g[0] in slices]
                 if gpus:
                     LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
+                    if for_llama_server:
+                        gpus = LlamaCppBackend._cuda_sm_gate_keep(binary, gpus)
                     # The CLI row is the carve-out, not the pool. Discrete rows unchanged.
                     return LlamaCppBackend._widen_integrated_cuda_rows(gpus)
         except Exception as e:
@@ -15058,6 +15261,8 @@ class LlamaCppBackend:
         nvml_gpus = LlamaCppBackend._get_gpu_memory_nvml()
         if nvml_gpus:
             LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
+            if for_llama_server:
+                nvml_gpus = LlamaCppBackend._cuda_sm_gate_keep(binary, nvml_gpus)
             # nvidia-smi IS NVML: same carve-out, same PCI indexing, same correction.
             return LlamaCppBackend._widen_integrated_cuda_rows(nvml_gpus)
 
@@ -15070,6 +15275,9 @@ class LlamaCppBackend:
 
         # ── Torch fallback (covers AMD ROCm and missing nvidia-smi) ──
         gpus = LlamaCppBackend._get_gpu_memory_torch(binary, for_llama_server)
+        if not gpus and mig_card_rows:
+            LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
+            return LlamaCppBackend._widen_integrated_cuda_rows(mig_card_rows)
         if gpus or not (for_llama_server and unsized_ids):
             return gpus
         return LlamaCppBackend._tegra_unified_memory_rows(unsized_ids)
@@ -18317,13 +18525,16 @@ class LlamaCppBackend:
             return verify_rows
         ub = max(1, int(self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch))
         width = self._compute_activation_width()
-        if drafter_path:
-            db = self._draft_backend_for(drafter_path)
+        db = self._draft_backend_for(drafter_path) if drafter_path else None
+        if db is not None:
             draft_width = getattr(db, "_compute_activation_width", lambda: 0)()
             if draft_width > 0:
                 width = draft_width + 2 * (getattr(self, "_embedding_length", None) or 0)
         activations = int(width * ub * 4 * self._COMPUTE_BUFFER_SAFETY)
-        return verify_rows + max(0, ub * 2 * n_ctx + activations - self._MTP_DRAFT_COMPUTE_BYTES)
+        spec = verify_rows + max(0, ub * 2 * n_ctx + activations - self._MTP_DRAFT_COMPUTE_BYTES)
+        if getattr(db, "_architecture", None) == "dflash":
+            spec = max(spec, self._DFLASH_DRAFT_COMPUTE_BYTES)
+        return spec
 
     def _spec_verify_rows_bytes(self, n_parallel: int, spec_draft_n_max: int) -> int:
         """Target output rows for verified draft tokens, wherever the drafter runs."""
@@ -18409,6 +18620,11 @@ class LlamaCppBackend:
     # at which "does it fit" means "does every layer stay on the GPU".
     _MMPROJ_FIT_FLOOR_CTX = 8192
     _MTP_DRAFT_COMPUTE_BYTES = 224 * 1024 * 1024  # MTP draft decode graph beyond its KV
+    # A DFlash/DSpark draft context re-reserves a flat block graph once the drafter initialises,
+    # independent of n_ctx. Measured on llama.cpp b11642, draft graph + target verify graph:
+    # Nemotron 3.5 Bolt DSpark (block 8) 528.5 + 44 MiB, LiLiCorr (block 8, SWA 1024) 307 + 60 MiB.
+    # The _MTP_DRAFT_COMPUTE_BYTES floor is charged beside this, so the floor is the excess over it.
+    _DFLASH_DRAFT_COMPUTE_BYTES = 349 * 1024 * 1024
     # Draft depth to budget when the extras own the spec block and the probe cannot
     # read the build's own default off its --help. Shipped values are 3
     # (common_params_speculative_draft::n_max) and 16; take the deeper, since the
@@ -18469,7 +18685,9 @@ class LlamaCppBackend:
             shared = dim("_expert_shared_feed_forward_length") or (
                 n_ff_exp * dim("_expert_shared_count")
             )
-            widths.append(n_used * (2 * n_embd + 3 * n_ff_exp) + 3 * shared)
+            # Nemotron 3.5 routes experts through a moe_latent_size projection.
+            n_embd_exp = dim("_moe_latent_size") or n_embd
+            widths.append(n_used * (2 * n_embd_exp + 3 * n_ff_exp) + 3 * shared)
         inner = dim("_ssm_inner_size")
         if inner > 0:
             conv_in = inner + 2 * (dim("_ssm_group_count") or 1) * dim("_ssm_state_size")
@@ -19463,6 +19681,7 @@ class LlamaCppBackend:
         self._expert_feed_forward_length = None
         self._expert_shared_feed_forward_length = None
         self._expert_shared_count = None
+        self._moe_latent_size = None
         self._embedding_length_per_layer_input = None
         self._vocab_size = None
         self._kv_key_length = None
@@ -19588,6 +19807,7 @@ class LlamaCppBackend:
                                         f"{arch}.expert_feed_forward_length": "expert_feed_forward_length",
                                         f"{arch}.expert_shared_feed_forward_length": "expert_shared_feed_forward_length",
                                         f"{arch}.expert_shared_count": "expert_shared_count",
+                                        f"{arch}.moe_latent_size": "moe_latent_size",
                                         f"{arch}.embedding_length_per_layer_input": "embedding_length_per_layer_input",
                                         f"{arch}.attention.key_length": "kv_key_length",
                                         f"{arch}.attention.value_length": "kv_value_length",
@@ -19656,6 +19876,12 @@ class LlamaCppBackend:
                                     self._feed_forward_length = max(
                                         self._feed_forward_length_by_layer
                                     )
+                                elif (
+                                    attr in ("expert_used_count", "expert_feed_forward_length")
+                                    and val_a
+                                ):
+                                    # Per-layer on Nemotron 3.5 Bolt; the widest layer sizes the graph.
+                                    setattr(self, f"_{attr}", max(int(x) for x in val_a))
                             else:
                                 self._gguf_skip_value(f, vtype)
                         else:
@@ -26660,6 +26886,12 @@ class LlamaCppBackend:
                         _user_mtp_via_extras
                         or (_auto_studio_mtp and _mtp_effective not in ("dspark", "dflash"))
                     )
+                    # Without draft-mtp the embedded head is never loaded, so its blocks
+                    # leave the weights the fit prices (about 3 GB on Nemotron 3.5 Super).
+                    if not _engaged_is_mtp:
+                        _nextn_unloaded = self._unloaded_nextn_bytes(model_path)
+                        gguf_size -= _nextn_unloaded
+                        model_size -= _nextn_unloaded
                     # The recurrent rollback copies are a WIDER set than that copy
                     # (_TARGET_ROLLBACK_SPEC_TYPES): DSpark and DFlash pay them too,
                     # and draft-simple is the one engaged draft mode that does not,
@@ -31707,8 +31939,14 @@ class LlamaCppBackend:
                 # read as GPU-bearing there, only the resolved argv knows. Still
                 # before every spawn below and outside the fit's try/except, so the
                 # refusal cannot be swallowed into the --fit on fallback.
+                # Pinned ids are checked against nvidia-smi's caps only in its index space
+                # (torch-fallback ordinals are not); otherwise "any visible", as before.
+                _sm_gate_ids_are_pci = not is_vulkan_backend and _p2p_ids_are_pci
                 if not (_cpu_only_zero_offload or _arch_gate_forced_cpu):
-                    _sm_gate = self._cuda_sm_gate_error(binary)
+                    # Pinned launches check the pinned cards, not "any visible".
+                    _sm_gate = self._cuda_sm_gate_error(
+                        binary, gpu_indices if _sm_gate_ids_are_pci else None
+                    )
                     if _sm_gate:
                         raise RuntimeError(_sm_gate)
                 # The arch gate emptying the pool lands here for the same reason
@@ -31830,11 +32068,21 @@ class LlamaCppBackend:
                             "numbering; fitted the pinned mask to them: %s",
                             _companion_widen,
                         )
-                    self._emit_child_gpu_visibility(
-                        env,
-                        LlamaCppBackend._child_visibility_for(_pin_ids),
-                        prefer_rocr = True,
-                    )
+                        # The widened mask can add a card the gate above never saw.
+                        if _sm_gate_ids_are_pci:
+                            _sm_gate = self._cuda_sm_gate_error(binary, _pin_ids)
+                            if _sm_gate:
+                                raise RuntimeError(_sm_gate)
+                    _child_mask = LlamaCppBackend._pinned_child_visibility(_pin_ids)
+                    if _child_mask is None:
+                        logger.info(
+                            "Keeping the inherited CUDA_VISIBLE_DEVICES=%s: GPU ids %s "
+                            "cannot be mapped to it.",
+                            os.environ.get("CUDA_VISIBLE_DEVICES"),
+                            _pin_ids,
+                        )
+                    else:
+                        self._emit_child_gpu_visibility(env, _child_mask, prefer_rocr = True)
                     _child_gpu_physical_ids = tuple(int(i) for i in _pin_ids)
                     _launch_pinned_ids = list(_pin_ids)
                 elif not is_vulkan_backend and not gpu_ids:
@@ -33544,6 +33792,8 @@ class LlamaCppBackend:
                 _spec_requested_dflash = any(
                     "draft-dflash" in str(t).lower() for t in spec_flags
                 ) or _extra_args_requests_dflash(extra_args, env = _launch_spec_env)
+                # A paired EAGLE-3 drafter (Studio export) can abort the server the same way.
+                _spec_requested_eagle3 = any("draft-eagle3" in str(t).lower() for t in spec_flags)
                 # Any MTP launch, not only tensor: a respawn would replay a drafter that
                 # aborts every decode (#13253). Cleared if the MTP-drop fallback wins.
                 _mtp_active_for_launched_server = bool(_spec_requested_mtp)
@@ -33625,7 +33875,12 @@ class LlamaCppBackend:
                 _spec_cpu_replay_cmd: Optional[List[str]] = None
                 if (
                     not healthy
-                    and (_spec_requested_mtp or _spec_requested_dspark or _spec_requested_dflash)
+                    and (
+                        _spec_requested_mtp
+                        or _spec_requested_dspark
+                        or _spec_requested_dflash
+                        or _spec_requested_eagle3
+                    )
                     and not _load_cancelled()
                 ):
                     _spec_cpu_replay_cmd = list(_last_spawn_cmd)
@@ -34376,6 +34631,8 @@ class LlamaCppBackend:
         embedded_mtp_partial_offload: bool = False,
         draft_device: Optional[str] = None,
         mtp_drafter_unloadable: bool = False,
+        eagle3_draft_path: Optional[str] = None,
+        mtp_trained: Optional[bool] = None,
     ) -> List[str]:
         """Return the llama-server flag list for the requested spec mode.
 
@@ -34426,6 +34683,12 @@ class LlamaCppBackend:
         self._spec_draft_n_max = None
         self._speculative_type = None
         self._spec_fallback_reason = None
+        # A drafter trained with the fine-tune and exported beside this GGUF (drafter.json).
+        trained_steps = None
+        if eagle3_draft_path is None or mtp_trained is None:
+            sidecar_eagle3, sidecar_trained, trained_steps = _trained_drafter_sidecar(model_path)
+            eagle3_draft_path = eagle3_draft_path or sidecar_eagle3
+            mtp_trained = sidecar_trained if mtp_trained is None else mtp_trained
 
         # Canonical UI-facing requested mode (legacy values mapped via
         # _canonicalize_spec_mode).
@@ -34454,8 +34717,13 @@ class LlamaCppBackend:
         _mtp_size_b = _extract_model_size_b(model_identifier)
         # The sub-3B regression is an embedded-head cost; a separate drafter
         # (Gemma) is a cheap standalone model that wins below 3B, so exempt it.
+        # A head the user trained with this fine-tune is what they asked to draft with, so the
+        # size floor (a stock-head cost measurement) and the MLA default-off below do not apply.
         _mtp_too_small = (
-            _mtp_size_b is not None and _mtp_size_b < _MTP_MIN_SIZE_B and not bool(mtp_draft_path)
+            _mtp_size_b is not None
+            and _mtp_size_b < _MTP_MIN_SIZE_B
+            and not bool(mtp_draft_path)
+            and not mtp_trained
         )
         # Drafterless Gemma (name-only MTP, no embedded head), or any quant whose only
         # drafter was dropped as unopenable: emitting MTP would abort llama-server, so
@@ -34477,6 +34745,7 @@ class LlamaCppBackend:
             and not bool(mtp_draft_path)
             and not _mla_mtp_auto_enabled()
             and not _arch_has_fast_mla_mtp(getattr(self, "_architecture", None))
+            and not mtp_trained
         )
 
         if user_owns_spec_type:
@@ -34500,6 +34769,49 @@ class LlamaCppBackend:
         # and under Auto neither the requested mode nor the resolved
         # _speculative_type ("default" after a fallback) still carries the kind.
         _auto_mode = (canonical_mode or "auto") == "auto"
+        if canonical_mode == "eagle3" or (
+            _auto_mode and eagle3_draft_path and caps.get("supports_eagle3")
+        ):
+            self._spec_drafter_kind = "eagle3"
+            if not caps.get("supports_eagle3"):
+                logger.warning(
+                    "EAGLE-3 requested but llama-server lacks --spec-type draft-eagle3; "
+                    "loading without speculative decoding."
+                )
+                flags.append("--spec-default")
+                self._speculative_type = "default"
+                self._spec_fallback_reason = "binary_no_mtp"
+                return flags
+            if not eagle3_draft_path:
+                logger.warning(
+                    "EAGLE-3 requested but no trained eagle3-*.gguf drafter sits next to this "
+                    "model; loading without speculative decoding."
+                )
+                flags.append("--spec-default")
+                self._speculative_type = "default"
+                self._spec_fallback_reason = "drafter_not_found"
+                return flags
+            draft_n_max = (
+                int(spec_draft_n_max) if spec_draft_n_max is not None else (trained_steps or 3)
+            )
+            if spec_draft_n_max is not None:
+                self._spec_draft_n_max = draft_n_max
+            n_max_flag = caps.get("spec_draft_n_max_flag") or "--spec-draft-n-max"
+            flags.extend(
+                [
+                    "--model-draft",
+                    eagle3_draft_path,
+                    "--spec-type",
+                    "draft-eagle3",
+                    str(n_max_flag),
+                    str(draft_n_max),
+                ]
+            )
+            if draft_device:
+                flags.extend(["--spec-draft-device", draft_device])
+            self._speculative_type = "draft-eagle3"
+            logger.info("Spec decoding: draft-eagle3 using %s", eagle3_draft_path)
+            return flags
         if canonical_mode == "dspark" or (
             _auto_mode and dspark_draft_path and caps.get("supports_dspark")
         ):
@@ -34519,6 +34831,8 @@ class LlamaCppBackend:
                 n = int(spec_draft_n_max)
                 self._spec_draft_n_max = n
                 return n
+            if mtp_trained and trained_steps and self._spec_drafter_kind == "mtp":
+                return trained_steps  # the depth the exported head was trained for
             return 2 if gpus else 3
 
         def _emit_dspark() -> None:

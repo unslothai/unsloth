@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -384,6 +385,78 @@ def resolve_selected_cuda_ordinal(
             return -1
 
     return max(ordinals, key = lambda ordinal: (_free_vram(ordinal), -ordinal))
+
+
+_UNPLANNED = object()
+# Set by an auto-switch for its locality check and the load it starts (both copy this context), so free VRAM
+# moving in between cannot rank the load onto a card whose precision picks an artifact the check never saw.
+# A pinned None is a decision too (keep the current device), so the backend fallbacks honour it.
+_PLANNED_ORDINAL: ContextVar[Any] = ContextVar("media_planned_gpu_ordinal", default = _UNPLANNED)
+
+# Free-VRAM readings this close are noise, so the lower ordinal keeps an idle uniform host on card 0.
+_AUTO_FREE_TIE_BYTES = 256 * 1024**2
+
+
+def resolve_auto_cuda_ordinal() -> Optional[int]:
+    """The torch ordinal an AUTOMATIC diffusion load should run on, or None to keep the current device.
+
+    Bare "cuda" is the current device, PCI slot 0 under Studio's PCI_BUS_ID order, so on a multi-GPU host
+    the load budgeted against that card alone and offloaded to RAM beside an idle bigger one (#8235). Neither
+    engine shards, so this picks ONE card: most free VRAM, like ``auto_select_gpu_ids`` and Ollama's
+    single-GPU fit, ties to the lowest ordinal. Read from nvidia-smi alone (no CUDA context per card, so no
+    torch fallback) and keyed through the parent-visible list, so a mask keeps deciding which cards exist.
+
+    None on one visible card (unchanged), a UUID/MIG mask (no physical ids), ROCm (an APU's free reading is the
+    shared host pool, which would outrank a discrete card), a CUDA order other than nvidia-smi's (its rows are
+    then not torch's ordinals), an integrated GPU (its rows are a carve-out or N/A, and its real budget is the
+    shared host pool), missing nvidia-smi telemetry and any failure. Never raises. Only cards at least as
+    capable as the current one compete. A pinned plan (auto-switch, or the route's own ranking) is returned
+    as is.
+    """
+    planned = _PLANNED_ORDINAL.get()
+    if planned is not _UNPLANNED:
+        return planned
+    try:
+        from utils.hardware import hardware as hw
+
+        if hw.IS_ROCM:
+            return None
+        visible = hw.get_parent_visible_gpu_ids()
+        if len(visible) < 2 or not hw._cuda_order_matches_smi():
+            return None
+        if hw._integrated_cuda_rows(visible)[0]:
+            return None
+        result = hw._smi_visible_utilization(hw._get_parent_visible_gpu_spec())
+        devices = (result or {}).get("devices", [])
+        from utils.hardware import nvidia
+
+        caps = nvidia.get_compute_capabilities()
+    except Exception:  # noqa: BLE001 -- automatic placement falls back to the current device
+        return None
+    # CUDA stops a mask at an entry naming no card ("0,99,1" is just 0), so later ids are not ordinals.
+    if not {d.get("index") for d in devices} >= set(visible):
+        return None
+    # Only cards at least as capable as the current one (ordinal 0): a freer older card can lack the
+    # installed torch's kernels or a precision the request needs, where the current card works today.
+    floor = caps.get(visible[0])
+    if floor is None:
+        return None
+    free_by_ordinal: dict[int, float] = {}
+    for device in devices:
+        index, total, used = (
+            device.get("index"),
+            device.get("vram_total_gb"),
+            device.get("vram_used_gb"),
+        )
+        if index not in visible or total is None or used is None:
+            continue
+        if caps.get(index, (0, 0)) < floor:
+            continue
+        free_by_ordinal[visible.index(index)] = max(float(total) - float(used), 0.0) * 1024**3
+    if not free_by_ordinal:
+        return None
+    best = max(free_by_ordinal.values())
+    return min(o for o, free in free_by_ordinal.items() if best - free <= _AUTO_FREE_TIE_BYTES)
 
 
 @contextmanager

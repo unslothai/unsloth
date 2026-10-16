@@ -173,8 +173,8 @@ def Gemma2Attention_fast_forward(
         kv_seq_len += past_key_value[0].shape[-2]
 
     device_index = Q.device.index
-    cos = self.rotary_emb.multi_gpu_cos_cached[device_index]
-    sin = self.rotary_emb.multi_gpu_sin_cached[device_index]
+    # get_cached builds this device's cache on first use.
+    cos, sin = self.rotary_emb.get_cached(kv_seq_len, device_index)
 
     rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
     if rope_position_ids is not None:
@@ -315,7 +315,9 @@ def Gemma2DecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, gemma = True)
+        hidden_states = fast_rms_layernorm(
+            self.input_layernorm, hidden_states, gemma = True, save_output = True
+        )
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states = hidden_states,
             causal_mask = causal_mask,
@@ -332,7 +334,7 @@ def Gemma2DecoderLayer_fast_forward(
 
         residual = hidden_states
         hidden_states = fast_rms_layernorm(
-            self.pre_feedforward_layernorm, hidden_states, gemma = True
+            self.pre_feedforward_layernorm, hidden_states, gemma = True, save_output = True
         )
         hidden_states = self.mlp(hidden_states)
         hidden_states = fast_rms_layernorm(
