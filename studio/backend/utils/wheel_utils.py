@@ -250,6 +250,40 @@ def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | No
     return f"{UNSLOTH_PREBUILT_RELEASE_BASE_URL}/{UNSLOTH_PREBUILT_RELEASE_TAG}/{filename}"
 
 
+# The cells the pinned upstream releases publish (causal-conv1d v1.6.1.post4, mamba-ssm v2.3.1,
+# identical for both): (platform, CUDA major, cxx11abi) -> torch minors, each for cp310-cp313.
+# Read from the two release asset lists; anything else (CUDA 13 before torch 2.9, aarch64 before
+# 2.7, an abiFALSE torch after 2.6, any interpreter outside cp310-cp313) is a URL that 404s in
+# front of the source fallback, so it resolves to nothing instead.
+_UPSTREAM_SSM_PINS = {
+    "causal_conv1d": CAUSAL_CONV1D_PACKAGE_VERSION,
+    "mamba_ssm": MAMBA_SSM_PACKAGE_VERSION,
+}
+_UPSTREAM_SSM_CELLS: dict[tuple[str, str, str], frozenset[str]] = {
+    ("linux_x86_64", "11", "FALSE"): frozenset({"2.6"}),
+    ("linux_x86_64", "11", "TRUE"): frozenset({"2.6", "2.7"}),
+    ("linux_x86_64", "12", "FALSE"): frozenset({"2.6"}),
+    ("linux_x86_64", "12", "TRUE"): frozenset({"2.6", "2.7", "2.8", "2.9", "2.10"}),
+    ("linux_x86_64", "13", "TRUE"): frozenset({"2.9", "2.10"}),
+    ("linux_aarch64", "12", "TRUE"): frozenset({"2.7", "2.8", "2.9", "2.10"}),
+    ("linux_aarch64", "13", "TRUE"): frozenset({"2.9", "2.10"}),
+}
+_UPSTREAM_SSM_PYTHONS = frozenset({"cp310", "cp311", "cp312", "cp313"})
+
+
+def _upstream_ssm_cell_published(filename_prefix: str, package_version: str, env: dict) -> bool:
+    if _UPSTREAM_SSM_PINS.get(filename_prefix) != package_version:
+        return True  # not a pinned release this table describes: unchanged
+    torch_mm = prebuilt_wheel_torch_mm(str(env.get("torch_mm")))
+    cell = (str(env.get("platform_tag")), str(env.get("cuda_major")), str(env.get("cxx11abi")))
+    python_tag = env.get("python_tag")
+    return (
+        torch_mm in _UPSTREAM_SSM_CELLS.get(cell, frozenset())
+        and python_tag in _UPSTREAM_SSM_PYTHONS
+        and (env.get("abi_tag") or python_tag) == python_tag
+    )
+
+
 # The newest torch the pinned causal-conv1d 1.6.1 / mamba-ssm 2.3.1 compile against: torch 2.13
 # raised its headers to C++20 and both build at C++17 (the prebuilt workflow moved to
 # causal-conv1d 1.7.0 and patches mamba-ssm for it, see .github/scripts/patch_mamba_cxx20.py).
@@ -283,6 +317,8 @@ def direct_wheel_url(
         return ours
     # No upstream release has a Windows asset, nor one for torch 2.13 or later (see above).
     if is_windows_wheel_env(env) or not pinned_source_build_supported(env):
+        return None
+    if not _upstream_ssm_cell_published(filename_prefix, package_version, env):
         return None
 
     filename = (

@@ -975,3 +975,76 @@ def test_release_lookups_do_not_pass_arg_to_gh_jq():
     )
     assert "--jq --arg" not in workflow
     assert workflow.count("== env.TAG") == 2
+
+
+# The wheels on causal-conv1d v1.6.1.post4 and mamba v2.3.1 (identical cells for both), read from
+# the two release asset lists: (platform, CUDA major, cxx11abi, torch minor), each for cp310-cp313.
+_UPSTREAM_PUBLISHED = {
+    ("linux_x86_64", "11", "FALSE", "2.6"),
+    ("linux_x86_64", "11", "TRUE", "2.6"),
+    ("linux_x86_64", "11", "TRUE", "2.7"),
+    ("linux_x86_64", "12", "FALSE", "2.6"),
+    *(("linux_x86_64", "12", "TRUE", t) for t in ("2.6", "2.7", "2.8", "2.9", "2.10")),
+    *(("linux_x86_64", "13", "TRUE", t) for t in ("2.9", "2.10")),
+    *(("linux_aarch64", "12", "TRUE", t) for t in ("2.7", "2.8", "2.9", "2.10")),
+    *(("linux_aarch64", "13", "TRUE", t) for t in ("2.9", "2.10")),
+}
+_UPSTREAM_PINS = {
+    "causal_conv1d": (
+        "1.6.1",
+        "v1.6.1.post4",
+        "https://github.com/Dao-AILab/causal-conv1d/releases/download",
+    ),
+    "mamba_ssm": ("2.3.1", "v2.3.1", "https://github.com/state-spaces/mamba/releases/download"),
+}
+
+
+def test_every_upstream_url_the_resolver_can_emit_is_published():
+    """CUDA 13 before torch 2.9, aarch64 before 2.7, abiFALSE after 2.6, torch 2.13+ and any
+    interpreter outside cp310-cp313 have no upstream asset: no URL, not a 404."""
+    published = {
+        f"{prefix}-{version}+cu{cuda}torch{torch_mm}cxx11abi{abi}-{py}-{py}-{platform}.whl"
+        for platform, cuda, abi, torch_mm in _UPSTREAM_PUBLISHED
+        for prefix, (version, _, _) in _UPSTREAM_PINS.items()
+        for py in ("cp310", "cp311", "cp312", "cp313")
+    }
+    emitted = set()
+    for platform in ("linux_x86_64", "linux_aarch64"):
+        for cuda in ("11", "12", "13"):
+            for abi in ("TRUE", "FALSE"):
+                for torch_mm in (
+                    "2.5",
+                    "2.6",
+                    "2.7",
+                    "2.8",
+                    "2.9",
+                    "2.10",
+                    "2.11",
+                    "2.12",
+                    "2.13",
+                    "2.14",
+                ):
+                    for py in ("cp39", "cp310", "cp311", "cp312", "cp313", "cp314"):
+                        probe = env(
+                            torch_mm = torch_mm,
+                            cuda_major = cuda,
+                            cxx11abi = abi,
+                            python_tag = py,
+                            platform_tag = platform,
+                        )
+                        probe["cuda_version"] = f"{cuda}.0"
+                        for prefix, (version, tag, base) in _UPSTREAM_PINS.items():
+                            url = wheel_utils.direct_wheel_url(
+                                filename_prefix = prefix,
+                                package_version = version,
+                                release_tag = tag,
+                                release_base_url = base,
+                                env = probe,
+                            )
+                            if url is None or url.startswith(OUR_BASE):
+                                continue
+                            assert url.startswith(f"{base}/{tag}/"), url
+                            emitted.add(url.rsplit("/", 1)[1])
+    assert emitted <= published, sorted(emitted - published)
+    # And nothing published is lost (torch 2.11 / 2.12 reuse the 2.10 wheels).
+    assert emitted == published
