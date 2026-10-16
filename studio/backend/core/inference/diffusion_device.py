@@ -508,6 +508,7 @@ def auto_cuda_ranking_possible() -> bool:
     """
     try:
         from utils.hardware import hardware as hw
+
         # Resolve first: a cold get_device() is what sets IS_ROCM.
         device = hw.get_device()
         if hw.IS_ROCM or device != hw.DeviceType.CUDA:
