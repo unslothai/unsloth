@@ -142,7 +142,6 @@ export function DimensionSelect({
   onOpenChange?: (open: boolean) => void;
   onChange: (value: number) => void;
   options: number[];
-  // Brings a typed value onto the model's grid and range.
   snap: (value: number) => number;
 }) {
   // Typing is held in a draft so a half-entered number is not snapped mid-keystroke.

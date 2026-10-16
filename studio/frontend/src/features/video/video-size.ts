@@ -121,7 +121,7 @@ export function fitVideoSize(
     limits.maxPixels,
     Math.max(limits.minPixels, width * height),
   );
-  // Every grid height paired with the widths around it, scored on ratio first, then area.
+  // Grid search, ratio weighted over area.
   let best: [number, number] | null = null;
   let bestScore = Number.POSITIVE_INFINITY;
   for (let h = m; h <= MAX_VIDEO_SIDE; h += m) {

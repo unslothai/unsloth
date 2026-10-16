@@ -209,7 +209,6 @@ def test_a_custom_size_on_the_multiple_and_inside_the_band_is_accepted():
     validate_video_request_shape(LTX2, width = 1024, height = 576, num_frames = 97)
     validate_video_request_shape(LTX2, width = 576, height = 1024)
     validate_video_request_shape(LTX2, width = 640, height = 640)
-    # The grid is the family's own: 848 is on a /16 grid and off LTX-2's /32 one.
     validate_video_request_shape(
         replace(LTX2, resolution_multiple = 16), width = 848, height = 480, num_frames = 97
     )
@@ -230,7 +229,6 @@ def test_a_size_outside_the_area_band_or_too_narrow_is_refused():
     assert max_pixels == 1216 * 704
     assert min_pixels == 768 * 512
     assert max_aspect == 4.0
-    # Larger than the largest preset: a memory plan budgeted at that preset would not hold.
     with pytest.raises(ValueError, match = "pixels"):
         validate_video_request_shape(LTX2, width = 1280, height = 1024)
     with pytest.raises(ValueError, match = "pixels"):
