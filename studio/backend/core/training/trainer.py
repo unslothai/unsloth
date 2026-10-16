@@ -60,7 +60,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable, Union
 from datasets import Dataset
 from core.training.eval_dataset import evaluation_enabled
-from core.training.rl import rl_log_metrics
+from core.training.rl import rl_log_metrics, with_reward_isolation
 from utils.datasets.audio_decode import ensure_audio_decoding
 from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 from utils.hf_dataset_options import hf_dataset_split_instruction_names
@@ -1028,7 +1028,10 @@ class UnslothTrainer:
                     grad_norm = grad_norm,
                     num_tokens = num_tokens,
                     eval_loss = logs.get("eval_loss", None),
-                    rl_metrics = rl_log_metrics(logs),
+                    rl_metrics = with_reward_isolation(
+                        rl_log_metrics(logs),
+                        getattr(trainer_ref.trainer, "_unsloth_reward_isolation", None),
+                    ),
                     is_run_summary = is_run_summary,
                     offload = trainer_ref._offload_snapshot(),
                     status_message = "",

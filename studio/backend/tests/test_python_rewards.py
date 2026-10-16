@@ -108,7 +108,7 @@ def test_reward_funcs_keep_spec_order_and_accept_plain_strings(tmp_path, monkeyp
     ]
     created = []
 
-    def unstarted(python):
+    def unstarted(python, mode):
         created.append(RewardWorker(python, mode = "full"))
         return created[-1]
 
@@ -300,3 +300,62 @@ def test_python_rewards_keep_every_dataset_column():
         raw, "grpo", {"question": "prompt", "solution": "answer"}, keep_columns = ("*",)
     )
     assert sorted(shaped.column_names) == ["answer", "board", "level", "prompt"]
+
+
+@pytest.fixture
+def no_os_sandbox(monkeypatch):
+    # Stands in for a Linux host without bubblewrap (stock Colab, most containers), on any runner.
+    from core.inference import os_sandbox
+
+    monkeypatch.setattr(
+        os_sandbox,
+        "capability_snapshot",
+        lambda **kw: os_sandbox.SandboxCapability(
+            backend = "bubblewrap",
+            available = False,
+            reason = "bubblewrap is not installed",
+            remediation = "Install bubblewrap.",
+        ),
+    )
+
+
+LEN_REWARD = "def reward(completions, **kw):\n    return [len(c[0]['content']) for c in completions]\n"
+
+
+def test_a_training_run_refuses_python_rewards_without_the_os_sandbox(no_os_sandbox):
+    specs = [{**_spec("py-len", LEN_REWARD), "weight": 1.0}]
+    with pytest.raises(PythonRewardError, match = "need the OS sandbox") as err:
+        rl._reward_funcs(
+            specs, RewardWorker, python_rewards.make_python_reward_funcs, rewards.make_reward_func
+        )
+    assert "Install bubblewrap." in str(err.value)
+    assert '"auto"' in str(err.value)
+
+
+def test_opting_into_software_safeguards_runs_and_reports_it(no_os_sandbox):
+    specs = [{**_spec("py-len", LEN_REWARD), "weight": 1.0}]
+    isolation, created = {}, []
+
+    def tracked(python, mode):
+        created.append(RewardWorker(python, mode = mode))
+        return created[-1]
+
+    funcs = rl._reward_funcs(
+        specs,
+        tracked,
+        python_rewards.make_python_reward_funcs,
+        rewards.make_reward_func,
+        mode = "auto",
+        isolation = isolation,
+    )
+    try:
+        assert funcs[0](prompts = ["p"], completions = ["abc"]) == [3.0]
+    finally:
+        for worker in created:
+            worker.close()
+    assert isolation == {"backend": "software-safeguards", "os_isolation": False}
+    metrics = rl.with_reward_isolation({"reward": 1.0}, isolation)
+    assert metrics[rl.REWARD_ISOLATION_METRIC] == 0.0
+    # A summary log with no RL keys stays empty rather than becoming an isolation-only point.
+    assert rl.with_reward_isolation(None, isolation) is None
+    assert rl.with_reward_isolation({"reward": 1.0}, None) == {"reward": 1.0}

@@ -35,6 +35,8 @@ _AUTO_ROLE_NAMES = {
     "rejected": ("rejected", "dispreferred"),
     "system": ("system", "system_prompt"),
 }
+PYTHON_REWARD_ISOLATION_FIELD = "grpo_python_reward_isolation"
+REWARD_ISOLATION_METRIC = "sandbox/python_rewards_os_isolation"
 DEFAULT_BETA = {"dpo": 0.1, "orpo": 0.1, "grpo": 0.0}
 # variant -> (loss_type, importance_sampling_level). dapo is TRL's and Unsloth's default; gspo is
 # sequence-level ratios with the dr_grpo normaliser, as in the Unsloth vision GRPO notebooks.
@@ -236,18 +238,46 @@ def rl_lengths(objective: str, max_seq_length: int, settings: dict) -> tuple[int
     return prompt, max(16, min(completion, max_seq_length - prompt))
 
 
-def _reward_funcs(reward_specs, worker_cls, make_python, make_rule) -> list:
-    """In ``reward_specs`` order, since TRL pairs ``reward_weights`` with them by position."""
+def _reward_funcs(
+    reward_specs, worker_cls, make_python, make_rule, *, mode = "required", isolation = None
+) -> list:
+    """In ``reward_specs`` order, since TRL pairs ``reward_weights`` with them by position.
+    ``mode`` is the os_sandbox mode: ``required`` refuses a host without OS isolation, ``auto``
+    is the user's opt-in to software safeguards. The worker's isolation is copied into ``isolation``."""
+    from core.inference.os_sandbox import SandboxUnavailableError
+    from core.training.python_rewards import PythonRewardError
+
     python = [s for s in reward_specs if s.get("kind") == "python"]
     python_funcs = {}
     if python:
-        worker = worker_cls(python).start()
-        logger.info("Python rewards run with %s", worker.isolation)
+        try:
+            worker = worker_cls(python, mode = mode).start()
+        except SandboxUnavailableError as exc:
+            raise PythonRewardError(
+                f"Python rewards need the OS sandbox, and it is not available here ({exc}). "
+                f"{exc.remediation or ''} To run them with software safeguards only, which do not "
+                "stop a reward from reading your files, writing outside its folder or using the "
+                f"network, set {PYTHON_REWARD_ISOLATION_FIELD} to \"auto\"."
+            ) from exc
+        if worker.isolation.get("os_isolation"):
+            logger.info("Python rewards run with %s", worker.isolation)
+        else:
+            logger.warning("Python rewards run WITHOUT OS isolation (%s)", worker.isolation)
+        if isolation is not None:
+            isolation.update(worker.isolation)
         python_funcs = dict(zip((s["name"] for s in python), make_python(python, worker)))
     return [
         python_funcs[s["name"]] if s.get("kind") == "python" else make_rule(s)
         for s in reward_specs
     ]
+
+
+def with_reward_isolation(metrics: Optional[dict], isolation: Optional[dict]) -> Optional[dict]:
+    """Add the Python reward worker's isolation (1 = OS sandbox, 0 = software safeguards only)
+    to a step's RL metrics, so /status and the stored history say which one the run had."""
+    if not metrics or not isolation:
+        return metrics
+    return {**metrics, REWARD_ISOLATION_METRIC: 1.0 if isolation.get("os_isolation") else 0.0}
 
 
 def build_rl_trainer(
@@ -269,6 +299,7 @@ def build_rl_trainer(
     max_prompt_length, max_completion_length = rl_lengths(objective, max_seq_length, settings)
     beta = settings.get("beta")
     beta = DEFAULT_BETA[objective] if beta is None else float(beta)
+    reward_isolation: dict = {}
 
     # SFT-only keys from the shared config builder.
     base = {
@@ -343,7 +374,12 @@ def build_rl_trainer(
             "train_dataset": train_dataset,
             "processing_class": tokenizer,
             "reward_funcs": _reward_funcs(
-                reward_specs, RewardWorker, make_python_reward_funcs, make_reward_func
+                reward_specs,
+                RewardWorker,
+                make_python_reward_funcs,
+                make_reward_func,
+                mode = "auto" if settings.get("python_reward_isolation") == "auto" else "required",
+                isolation = reward_isolation,
             ),
         }
         trainer_cls = trl.GRPOTrainer
@@ -352,4 +388,7 @@ def build_rl_trainer(
 
     if eval_dataset is not None:
         kwargs["eval_dataset"] = eval_dataset
-    return trainer_cls(**kwargs)
+    trainer = trainer_cls(**kwargs)
+    if reward_isolation:
+        trainer._unsloth_reward_isolation = reward_isolation
+    return trainer

@@ -27,3 +27,10 @@ test("KL is charted once any step measures drift", () => {
   assert.ok(keys.has("kl"));
   assert.ok(keys.has("reward"));
 });
+
+test("the Python reward isolation flag is not charted", () => {
+  const keys = rlChartKeys([
+    { step: 1, values: { reward: 1, "sandbox/python_rewards_os_isolation": 0 } },
+  ]);
+  assert.deepEqual([...keys], ["reward"]);
+});

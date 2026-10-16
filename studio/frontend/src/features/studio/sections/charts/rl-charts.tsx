@@ -12,7 +12,10 @@ import {
 } from "@/components/ui/chart";
 import type { ChartConfig } from "@/components/ui/chart";
 import type { RlMetricPoint } from "@/features/training";
-import { rlChartKeys } from "@/features/training/lib/rl-chart-keys";
+import {
+  REWARD_ISOLATION_KEY,
+  rlChartKeys,
+} from "@/features/training/lib/rl-chart-keys";
 import { type TranslationKey, useT } from "@/i18n";
 import { type ReactElement, useMemo } from "react";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
@@ -263,14 +266,24 @@ export function RlChartsGrid({
     [history, t],
   );
 
+  const noOsSandbox =
+    history[history.length - 1]?.values[REWARD_ISOLATION_KEY] === 0;
+
   if (cards.length === 0) {
     return null;
   }
   return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-      {cards.map((spec) => (
-        <RlChartCard key={spec.id} spec={spec} data={data} />
-      ))}
-    </div>
+    <>
+      {noOsSandbox && (
+        <p className="text-ui-11p5 text-amber-700 dark:text-amber-300">
+          {t("rl.rewards.isolationSoftware")}
+        </p>
+      )}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        {cards.map((spec) => (
+          <RlChartCard key={spec.id} spec={spec} data={data} />
+        ))}
+      </div>
+    </>
   );
 }

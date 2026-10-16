@@ -2186,6 +2186,7 @@ async def start_training(
                 "system_prompt": (request.rl_system_prompt or "").strip() or None,
                 "mask_truncated_completions": request.grpo_mask_truncated_completions,
                 "epsilon_high": request.grpo_epsilon_high,
+                "python_reward_isolation": request.grpo_python_reward_isolation,
             },
             "reward_specs": reward_specs,
             "finetune_vision_layers": request.finetune_vision_layers,

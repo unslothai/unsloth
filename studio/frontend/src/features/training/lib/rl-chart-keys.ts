@@ -5,11 +5,16 @@ import type { RlMetricPoint } from "../types/runtime";
 
 /** Metric keys worth a chart. KL stays out while every value is 0: with beta 0 TRL never
  * measures it, so a flat line would read as "no drift" when nothing was computed. */
+export const REWARD_ISOLATION_KEY = "sandbox/python_rewards_os_isolation";
+
 export function rlChartKeys(history: readonly RlMetricPoint[]): Set<string> {
   const keys = new Set<string>();
   let klMeasured = false;
   for (const point of history) {
     for (const [key, value] of Object.entries(point.values)) {
+      if (key.startsWith("sandbox/")) {
+        continue;
+      }
       if (key === "kl") {
         klMeasured ||= value !== 0;
       } else {

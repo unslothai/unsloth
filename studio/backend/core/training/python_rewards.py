@@ -4,8 +4,8 @@
 """Python rewards: user code scored in one long-lived worker inside the OS sandbox.
 
 The worker is launched through the same ``os_sandbox`` path as the chat Python tool (MXC on
-Windows, bubblewrap on Linux, Seatbelt on macOS) in ``auto`` mode, so a host without OS
-isolation falls back to the software safeguards and the run records which one it got.
+Windows, bubblewrap on Linux, Seatbelt on macOS). A training run asks for ``required`` unless the
+user opted into ``auto`` (software safeguards), and records which one it got in its RL metrics.
 """
 
 from __future__ import annotations

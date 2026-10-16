@@ -656,6 +656,11 @@ class TrainingStartRequest(BaseModel):
         allow_inf_nan = False,
         description = "Upper clip bound (DAPO clip-higher). Null uses epsilon.",
     )
+    grpo_python_reward_isolation: Literal["required", "auto"] = Field(
+        "required",
+        description = "Python rewards: 'required' refuses to start without the OS sandbox; 'auto' "
+        "falls back to software safeguards, which do not isolate files, network or processes.",
+    )
     grpo_rewards: List[RewardSelection] = Field(
         default_factory = list, max_length = 16, description = "Library rewards for GRPO"
     )

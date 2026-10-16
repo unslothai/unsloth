@@ -90,6 +90,12 @@ def test_request_defaults_to_sft_so_saved_configs_load_unchanged():
     assert TrainingStartRequest(**BASE).objective == "sft"
 
 
+def test_python_rewards_require_the_os_sandbox_unless_the_run_opts_out():
+    assert TrainingStartRequest(**BASE).grpo_python_reward_isolation == "required"
+    with pytest.raises(ValidationError):
+        TrainingStartRequest(**BASE, grpo_python_reward_isolation = "full")
+
+
 @pytest.mark.parametrize(
     "extra, message",
     [
