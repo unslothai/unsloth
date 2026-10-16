@@ -12,8 +12,8 @@ export interface FreshRankable {
 }
 
 const DAY_MS = 86_400_000;
-/** Higher sinks older models faster; 1.7 still keeps a week-old hit above a day-old model nobody likes. */
-const GRAVITY = 1.7;
+/** Higher sinks older models faster; 1.6 still keeps a week-old hit above a day-old model nobody likes. */
+const GRAVITY = 1.6;
 const AGE_OFFSET_DAYS = 2;
 const TREND_OFFSET = 2;
 /** At least this many likes, nearly all of them recent, before likes may vouch for the date. */
