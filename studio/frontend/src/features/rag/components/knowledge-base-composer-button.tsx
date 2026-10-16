@@ -7,7 +7,8 @@ import {
 } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { FileDatabaseIcon, SidebarTopIcon } from "@hugeicons/core-free-icons";
+import { FileDatabaseIcon } from "@hugeicons/core-free-icons";
+import { FileGlyph } from "@/lib/file-icon";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
@@ -168,11 +169,11 @@ export function KnowledgeBaseComposerButton({
             {/* The way back to a panel its X hid, while retrieval carries on. */}
             {ragPanelHidden ? (
               <>
-                <DropdownMenuItem onSelect={() => setRagPanelHidden(false)}>
-                  <HugeiconsIcon icon={SidebarTopIcon} strokeWidth={2} />
+                <DropdownMenuItem onSelect={() => setRagPanelHidden(false)} className="gap-2.5">
+                  <FileGlyph strokeWidth={1.75} />
                   <span className="truncate">Show files</span>
                   {ragPanelFileCount > 0 ? (
-                    <span className="ml-auto rounded-full bg-muted px-1.5 text-ui-11 tabular-nums text-muted-foreground">
+                    <span className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-muted px-1.5 text-ui-12 font-medium tabular-nums text-muted-foreground">
                       {ragPanelFileCount}
                     </span>
                   ) : null}
