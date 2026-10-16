@@ -171,8 +171,12 @@ export const BUDGET = {
   // (6,788,764 -> 6,790,997 B raw, 2,041,243 -> 2,042,101 B transfer against 5e5511027, one machine and build,
   // Node 24, chunk count unchanged at 95). Lazy-loading the dialog cost more (2.7 KB transfer) and a 96th
   // startup chunk, so it is imported statically and the budget raised by that growth.
-  transferBytes: 2_042_291,
-  rawBytes: 6_791_181,
+  // The Hub fit filter judging safetensors rows on the badge's VRAM estimate adds 195 B raw / 56 B transfer
+  // (6,791,021 -> 6,791,216 B raw, 2,042,078 -> 2,042,134 B transfer against ec411c3f74, one machine and build,
+  // Node 22, chunk count unchanged at 95). It is a synchronous predicate over a module already in the startup set,
+  // so there is nothing to load lazily; raised by that growth.
+  transferBytes: 2_042_347,
+  rawBytes: 6_791_376,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
