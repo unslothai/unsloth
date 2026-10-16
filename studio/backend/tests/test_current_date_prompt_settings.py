@@ -228,7 +228,6 @@ class TestExternalProviderMessages:
     @pytest.mark.parametrize("provider_type", ("llama_cpp", "vllm", "lemonade"))
     def test_template_servers_still_date_a_system_turn_studio_composed(self, provider_type):
         import routes.inference as inference
-
         out = inference._prepend_current_date_to_messages(
             [{"role": "system", "content": "Be terse."}, {"role": "user", "content": "hi"}],
             provider_type = provider_type,
