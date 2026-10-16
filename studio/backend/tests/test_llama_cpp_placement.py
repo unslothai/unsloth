@@ -4544,6 +4544,42 @@ def test_a_larger_pass_through_parallel_is_not_certified_resident(
 @pytest.mark.parametrize(
     "extra_args, env, expect_ub",
     [
+        (["-ncmoe", "4"], {}, ["2048"]),
+        # std::stoi (common/arg.cpp) reads the leading digits: four layers' experts on the CPU.
+        (["-ncmoe", "4abc"], {}, ["2048"]),
+        (["--n-cpu-moe", "4 layers"], {}, ["2048"]),
+        ([], {"LLAMA_ARG_N_CPU_MOE": "4abc"}, ["2048"]),
+        # Controls: zero places nothing, so the fitter's resident verdict stands.
+        (["-ncmoe", "0"], {}, []),
+        ([], {"LLAMA_ARG_N_CPU_MOE": "0abc"}, []),
+    ],
+    ids = [
+        "argv_count",
+        "argv_prefix",
+        "argv_long_prefix",
+        "env_prefix",
+        "argv_zero",
+        "env_zero_prefix",
+    ],
+)
+def test_a_pass_through_cpu_moe_count_is_not_certified_resident(
+    tmp_path, _discrete_linux_host, monkeypatch, extra_args, env, expect_ub
+):
+    """An explicit CPU-MoE count keeps those experts in host RAM whatever the fitter would
+    do, so the spill micro-batch still applies; a numeric-prefix count is the same count."""
+    monkeypatch.delenv("LLAMA_ARG_N_CPU_MOE", raising = False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    backend, gguf = _fit_on_moe(tmp_path, 88_000)
+    cmd = _launch(backend, gguf, n_ctx = 8192, n_parallel = 1, extra_args = extra_args)["cmd"]
+
+    assert cmd[cmd.index("--fit") + 1] == "on", cmd
+    assert _ubatch_values(cmd) == expect_ub, cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, expect_ub",
+    [
         (["--moe-cache-mib", "4096"], {}, ["2048"]),
         (["--moe-cache-mib", "auto"], {}, ["2048"]),
         (["--moe-cache-mib=auto"], {}, ["2048"]),
