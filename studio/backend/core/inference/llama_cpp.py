@@ -33949,6 +33949,14 @@ class LlamaCppBackend:
                         )
                     return stripped
 
+                # What the PLANNED argv carried, fixed before any spawn: a revocation can run on
+                # a spawn's own argv (the startup-failure retry) and again on a later argv an
+                # outer retry derives from `cmd`, which still carries the plan. Read from the
+                # live locals, the second one saw them already cleared by the first and left
+                # the plan's DirectIO, page-lock gap and checkpoint pair in place.
+                _plan_kept_every_layer_at_launch = _spill_keeps_every_layer_on_gpu
+                _plan_ckpt_emitted_at_launch = list(_auto_ckpt_emitted)
+
                 def _revoke_spill_plan(
                     run_cmd,
                     why,
@@ -33963,7 +33971,8 @@ class LlamaCppBackend:
                     reverted = self._drop_tensor_spill(run_cmd, why)
                     if reverted is run_cmd:
                         return run_cmd
-                    _plan_kept_every_layer = _spill_keeps_every_layer_on_gpu
+                    # The plan was found in THIS argv, so this argv carries what it did.
+                    _plan_kept_every_layer = _plan_kept_every_layer_at_launch
                     _spill_keeps_every_layer_on_gpu = False
                     # A plan that kept every layer on the card skipped the page-lock, and the
                     # --fit on placement this hands back may leave weights in host RAM: re-arm
@@ -33981,24 +33990,26 @@ class LlamaCppBackend:
                             f"revoked ({why})",
                             clear_record = False,
                         )
-                        if not _mem_host_resident:
-                            _mem_host_resident = True
-                            self._memory_mlock_applicable = True
-                            if _mem_should_mlock:
-                                reverted = [
-                                    *reverted,
-                                    *(
-                                        ["--load-mode", "mmap+mlock"]
-                                        if server_caps.get("supports_load_mode")
-                                        else ["--mlock"]
-                                    ),
-                                ]
-                                self._memory_policy_active = True
-                                logger.info(
-                                    "Model Memory: re-applying the page-lock; the tensor-spill "
-                                    "plan that kept every layer on the GPU was revoked (%s).",
-                                    why,
-                                )
+                        _mem_host_resident = True
+                        self._memory_mlock_applicable = True
+                        _rearm_lock = (
+                            ["--load-mode", "mmap+mlock"]
+                            if server_caps.get("supports_load_mode")
+                            else ["--mlock"]
+                        )
+                        # Keyed on the argv, not on _mem_host_resident: an earlier revocation of
+                        # another argv already set that, and this one still lacks the lock.
+                        if (
+                            _mem_should_mlock
+                            and _without_subsequence(reverted, _rearm_lock) == reverted
+                        ):
+                            reverted = [*reverted, *_rearm_lock]
+                            self._memory_policy_active = True
+                            logger.info(
+                                "Model Memory: re-applying the page-lock; the tensor-spill "
+                                "plan that kept every layer on the GPU was revoked (%s).",
+                                why,
+                            )
                     # So does the plan's load mode: the fitter can put far more on the host than
                     # the plan did, so a retry that keeps "none" turns a pageable fallback into a
                     # host-RAM OOM.
@@ -34012,9 +34023,12 @@ class LlamaCppBackend:
                             pass
                         # The checkpoint cap is per slot and was decided at the plan's count; the
                         # same re-decide the single-sequence and arch-crash retries make.
-                        if _auto_ckpt_emitted:
-                            reverted = self._without_flag_pairs(reverted, _auto_ckpt_emitted)
-                            _auto_ckpt_emitted = []
+                        # The plan's own pair as well as the current one: after an earlier
+                        # revocation of another argv, _auto_ckpt_emitted names that argv's pair.
+                        reverted = self._without_flag_pairs(
+                            reverted, [*_plan_ckpt_emitted_at_launch, *_auto_ckpt_emitted]
+                        )
+                        _auto_ckpt_emitted = []
                         _auto_ctx_checkpoints = _decide_auto_ctx_checkpoints()
                         _auto_ckpt_emitted = _emit_auto_ctx_checkpoints(reverted)
                     # The restored argv may carry --kv-unified again (_spill_plan_append), and the
