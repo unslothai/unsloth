@@ -27,6 +27,7 @@ import {
   scheduleFormComplete,
   scheduleFromForm,
   summarizeSchedule,
+  titleFromPrompt,
 } from "../src/features/scheduled-tasks/schedule.ts";
 
 // ICU puts a narrow no-break space before AM/PM; compare the words, not the spacing.
@@ -322,4 +323,13 @@ test("a refused request carries the server's reason", async () => {
   await assert.rejects(c.api.updateScheduledTask("t1", { enabled: true }), {
     message: "Pick a time in the future.",
   });
+});
+
+test("a task left unnamed is named after its instructions' first line", () => {
+  assert.equal(titleFromPrompt("  What's the weather today?\nIn Paris."), "What's the weather today?");
+  assert.equal(titleFromPrompt("Summarize   three\tpapers"), "Summarize three papers");
+  const long = "Write a short upbeat note to start the day with three ideas for staying focused";
+  const title = titleFromPrompt(long);
+  assert.ok(title.endsWith("…") && title.length <= 61, title);
+  assert.ok(long.startsWith(title.slice(0, -1)), "cut at a word, from the start");
 });

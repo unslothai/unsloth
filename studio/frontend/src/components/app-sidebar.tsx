@@ -366,6 +366,8 @@ type NavRowDef = {
   badge?: string;
   // Something new behind the row; its icon carries the dot, and More repeats it while unpinned.
   dot?: boolean;
+  // A "+" that makes a new one of the row's things, offered in More when the row is unpinned.
+  newAction?: { label: string; run: () => void };
   onClick: () => void;
   onIntent?: () => void;
   className?: string;
@@ -959,6 +961,7 @@ function MoreMenuItem({
   tooltip,
   badge,
   spinner,
+  newAction,
   onSelect,
   onIntent,
 }: {
@@ -969,6 +972,7 @@ function MoreMenuItem({
   tooltip?: string;
   badge?: string;
   spinner?: boolean;
+  newAction?: NavRowDef["newAction"];
   onSelect: () => void;
   onIntent?: () => void;
 }) {
@@ -980,12 +984,30 @@ function MoreMenuItem({
       onSelect={onSelect}
       onPointerEnter={disabled ? undefined : onIntent}
       onFocus={disabled ? undefined : onIntent}
-      className={cn(active && "bg-accent/60")}
+      className={cn("group/more-item", active && "bg-accent/60")}
     >
       <HugeiconsIcon icon={icon} strokeWidth={1.75} />
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {badge && <Badge variant="secondary">{badge}</Badge>}
       {spinner && <Spinner className="size-3.5 shrink-0 text-muted-foreground" />}
+      {newAction && (
+        <button
+          type="button"
+          aria-label={newAction.label}
+          title={newAction.label}
+          // The item selects on click and pointer-up; the plus is its own action, not the row's.
+          onPointerDown={(event) => event.stopPropagation()}
+          onPointerUp={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            newAction.run();
+          }}
+          className="-my-1 -mr-1 ml-auto flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition-opacity hover:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:text-foreground group-hover/more-item:opacity-100 group-data-[highlighted]/more-item:opacity-100 focus-visible:opacity-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(pointer:coarse)]:opacity-100"
+        >
+          <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-4" />
+        </button>
+      )}
     </DropdownMenuItem>
   );
 }
@@ -3340,6 +3362,14 @@ export function AppSidebar() {
         preloadSilently(router.preloadRoute({ to: "/projects" }));
       },
       className: "group/projects-item relative",
+      newAction: {
+        label: "New project",
+        run: () => {
+          setMoreOpen(false);
+          setProjectCreateMoveTarget(null);
+          setCreatingProject(true);
+        },
+      },
       // The inline "new project" affordance only fits a real row.
       children: (
         <button
@@ -3508,6 +3538,32 @@ export function AppSidebar() {
       onIntent: () => {
         preloadSilently(router.preloadRoute({ to: "/tasks" }));
       },
+      className: "group/tasks-item relative",
+      newAction: {
+        label: t("scheduledTasks.newTask"),
+        run: () => {
+          setMoreOpen(false);
+          navigateFromRow({ to: "/tasks", search: { create: true } });
+          closeMobileIfOpen();
+        },
+      },
+      // Same inline "+" as Projects: opens the new-task dialog on the Scheduled page.
+      children: (
+        <button
+          type="button"
+          aria-label={t("scheduledTasks.newTask")}
+          onClick={(e) => {
+            e.stopPropagation();
+            navigateFromRow({ to: "/tasks", search: { create: true } });
+            closeMobileIfOpen();
+          }}
+          className="sidebar-row-action group-hover/tasks-item:opacity-100 group-hover/tasks-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-data-[collapsible=icon]:hidden"
+        >
+          <span className="sidebar-row-action-glyph">
+            <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-4" />
+          </span>
+        </button>
+      ),
     },
   };
   // The Projects row repeats the section, so it only earns its place while the section is absent.
@@ -6332,6 +6388,7 @@ export function AppSidebar() {
                             disabled={rowState.disabled}
                             tooltip={rowState.tooltip}
                             spinner={rowState.spinner}
+                            newAction={row.newAction}
                             onSelect={row.onClick}
                             onIntent={row.onIntent}
                           />

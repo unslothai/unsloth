@@ -38,6 +38,7 @@ import {
   sameSchedule,
   scheduleFormComplete,
   scheduleFromForm,
+  titleFromPrompt,
   weekdayName,
 } from "./schedule";
 import { useScheduledTasksStore } from "./store";
@@ -107,7 +108,8 @@ export function TaskDialog({
   const [busy, setBusy] = useState(false);
   // An edit keeps the zone the task was made in; a new task takes this browser's.
   const timezone = task?.timezone ?? browserTimeZone();
-  const valid = title.trim() !== "" && prompt.trim() !== "" && scheduleFormComplete(form);
+  const valid = prompt.trim() !== "" && scheduleFormComplete(form);
+  const finalTitle = title.trim() || titleFromPrompt(prompt);
 
   const patchForm = (patch: Partial<ScheduleForm>) => setForm((current) => ({ ...current, ...patch }));
   const toggleDay = (day: number) =>
@@ -127,12 +129,12 @@ export function TaskDialog({
       if (task) {
         // Only what changed: a rename must not move a run that is already due.
         const patch: ScheduledTaskPatch = {};
-        if (title.trim() !== task.title) patch.title = title.trim();
+        if (finalTitle !== task.title) patch.title = finalTitle;
         if (prompt.trim() !== task.prompt) patch.prompt = prompt.trim();
         if (!sameSchedule(schedule, task.schedule)) patch.schedule = schedule;
         if (Object.keys(patch).length > 0) await update(task.id, patch);
       } else {
-        await create({ title: title.trim(), prompt: prompt.trim(), schedule, timezone });
+        await create({ title: finalTitle, prompt: prompt.trim(), schedule, timezone });
       }
       onClose();
     } catch (error) {
@@ -173,10 +175,9 @@ export function TaskDialog({
             value={title}
             onChange={(event) => setTitle(event.target.value)}
             maxLength={120}
-            autoFocus={true}
             disabled={busy}
             placeholder={t("scheduledTasks.form.namePlaceholder")}
-            className="h-12 rounded-none border-none bg-transparent px-5 text-ui-15 font-medium shadow-none focus-visible:ring-0 dark:bg-transparent"
+            className="h-12 rounded-none border-none bg-transparent px-5 text-ui-15 font-medium shadow-none focus-visible:ring-0 dark:bg-transparent dark:focus-visible:bg-transparent"
           />
           <Textarea
             id={`${ids}-prompt`}
@@ -186,9 +187,10 @@ export function TaskDialog({
             onChange={(event) => setPrompt(event.target.value)}
             maxLength={20_000}
             rows={5}
+            autoFocus={true}
             disabled={busy}
             placeholder={t("scheduledTasks.form.instructionsPlaceholder")}
-            className="max-h-60 min-h-32 resize-none rounded-none border-none bg-transparent px-5 py-3.5 text-ui-15 shadow-none focus-visible:ring-0 dark:bg-transparent"
+            className="max-h-60 min-h-32 resize-none rounded-none border-none bg-transparent px-5 py-3.5 text-ui-15 shadow-none focus-visible:ring-0 dark:bg-transparent dark:focus-visible:bg-transparent"
           />
         </div>
         <p id={`${ids}-prompt-hint`} className="sr-only">

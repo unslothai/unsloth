@@ -4199,10 +4199,11 @@ export const en = {
       createTitle: "New scheduled task",
       editTitle: "Edit scheduled task",
       name: "Name",
-      namePlaceholder: "Morning motivation",
+      // Left blank, the name is taken from the first line of the instructions.
+      namePlaceholder: "Name (optional)",
       instructions: "Instructions",
       instructionsHint: "Sent to the model each time the task runs.",
-      instructionsPlaceholder: "Write me a short, upbeat note to start the day.",
+      instructionsPlaceholder: "Instructions…",
       repeat: "Repeat",
       once: "Once",
       daily: "Daily",

@@ -138,6 +138,9 @@ export function ScheduledTaskRunNotifier() {
         notifyChatHistoryUpdated();
         useChatNavigationStore.getState().markThreadsUnread(threadIds);
       }
+      window.dispatchEvent(new Event(SCHEDULED_TASK_RUNS_FINISHED_EVENT));
+      const runs = runsToAnnounce(finished);
+      if (runs.length === 0) return;
       useUnseenScheduledRuns.getState().markFinished(
         runs.map((run) => ({
           taskId: run.taskId,
@@ -145,9 +148,6 @@ export function ScheduledTaskRunNotifier() {
         })),
         pathnameRef.current === "/tasks",
       );
-      window.dispatchEvent(new Event(SCHEDULED_TASK_RUNS_FINISHED_EVENT));
-      const runs = runsToAnnounce(finished);
-      if (runs.length === 0) return;
       if (runs.length > INDIVIDUAL_TOASTS) {
         toast(translate("scheduledTasks.toast.many", { count: runs.length }), {
           action: { label: translate("scheduledTasks.toast.view"), onClick: openTasks },

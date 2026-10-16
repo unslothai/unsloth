@@ -247,7 +247,11 @@ function TaskRow({
             clearUnseen(task.id);
             void act(() => runNow(task.id), "runFailed");
           }}
-          className={ROW_BUTTON}
+          // Shown on hover or keyboard focus; touch has no hover, so it stays there.
+          className={cn(
+            ROW_BUTTON,
+            "opacity-0 group-hover/task-row:opacity-100 group-focus-within/task-row:opacity-100 [@media(pointer:coarse)]:opacity-100",
+          )}
         >
           <PlayIcon strokeWidth={1.75} className="size-4" />
         </button>
@@ -331,7 +335,12 @@ export function TasksPage() {
   // ?edit=<id>: open that task once the list has it, then drop the parameter so closing the
   // dialog or reloading does not open it again.
   const navigate = useNavigate();
-  const editId = useSearch({ strict: false }).edit;
+  const { edit: editId, create } = useSearch({ strict: false });
+  useEffect(() => {
+    if (!create) return;
+    setEditing(null);
+    void navigate({ to: "/tasks", search: {}, replace: true });
+  }, [create, navigate]);
   useEffect(() => {
     if (!editId || status !== "ready") return;
     const target = tasks.find((task) => task.id === editId);
@@ -458,7 +467,7 @@ export function TasksPage() {
         </div>
       ) : (
         <div className="mt-10 flex flex-col">
-          <div className="flex items-center justify-between pb-2 pl-5 pr-3">
+          <div className="flex items-center justify-between px-5 pb-2">
             <h2 className="text-ui-13 font-medium text-muted-foreground">
               {t("scheduledTasks.upcoming")}
             </h2>
