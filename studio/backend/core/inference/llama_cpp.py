@@ -6976,6 +6976,59 @@ def _widen_pin_ids_for_companion_devices(
 _DRAFT_OVERRIDE_TENSOR_FLAGS = frozenset(
     {"-otd", "--override-tensor-draft", "--spec-draft-override-tensor"}
 )
+# The drafter's CPU-MoE twins (common/arg.cpp): both push into
+# params.speculative.draft.tensor_buft_overrides exactly as -otd does.
+_DRAFT_CPU_MOE_FLAGS = frozenset({"--spec-draft-cpu-moe", "-cmoed", "--cpu-moe-draft"})
+_DRAFT_CPU_MOE_COUNT_FLAGS = frozenset(
+    {"--spec-draft-n-cpu-moe", "--spec-draft-ncmoe", "-ncmoed", "--n-cpu-moe-draft"}
+)
+# Current spellings first; the *_DRAFT ones are what builds before the speculative params
+# refactor (ggml-org/llama.cpp#22397) read.
+_DRAFT_CPU_MOE_ENVS = ("LLAMA_ARG_SPEC_DRAFT_CPU_MOE", "LLAMA_ARG_CPU_MOE_DRAFT")
+_DRAFT_CPU_MOE_COUNT_ENVS = ("LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE", "LLAMA_ARG_N_CPU_MOE_DRAFT")
+
+
+def _stoi_prefix(value: Optional[str]) -> Optional[int]:
+    """``std::stoi``: leading whitespace skipped, an optional sign, then the longest digit
+    run (trailing text ignored); None where it throws (no digits)."""
+    match = re.match(r"\s*([+-]?\d+)", str(value or ""))
+    return int(match.group(1)) if match else None
+
+
+def _draft_cpu_moe_count_not_zero(value: Optional[str]) -> bool:
+    """Whether a draft CPU-MoE count is anything but a parsed 0. Positive places drafter
+    experts on the CPU; negative or unparseable makes arg.cpp throw, so the child never
+    runs the placement anything here priced: conservative either way."""
+    return _stoi_prefix(value) != 0
+
+
+def _draft_tensors_placed_off_card(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """True when the separate drafter's TENSOR placement is set: ``-otd``, ``-cmoed``, a
+    non-zero ``-ncmoed``, or an env twin of the last two (``-otd`` has none).
+
+    The drafter twin of ``_args_place_tensors_on_cpu`` / ``_env_places_tensors_on_cpu``:
+    any ``-otd`` counts, a count only when it is not 0. llama.cpp applies the env first
+    and argv on top, and every one of these appends overrides, so either side placing
+    anything is enough: a later ``-ncmoed 0`` does not undo an earlier count."""
+    values = [str(raw) for raw in extra_args or ()]
+    for i, raw in enumerate(values):
+        flag = _flag_name(raw)
+        if flag in _DRAFT_OVERRIDE_TENSOR_FLAGS or flag in _DRAFT_CPU_MOE_FLAGS:
+            return True
+        if flag in _DRAFT_CPU_MOE_COUNT_FLAGS:
+            _, eq, inline = raw.partition("=")
+            if _draft_cpu_moe_count_not_zero(
+                inline if eq else (values[i + 1] if i + 1 < len(values) else "")
+            ):
+                return True
+    source = os.environ if env is None else env
+    # Raw is_truthy (common/arg.cpp): no stripping, no case folding.
+    return any(source.get(name) in _LLAMA_ARG_TRUE_VALUES for name in _DRAFT_CPU_MOE_ENVS) or any(
+        source.get(name) is not None and _draft_cpu_moe_count_not_zero(source.get(name))
+        for name in _DRAFT_CPU_MOE_COUNT_ENVS
+    )
 
 
 def _named_gpu_device(value: Optional[str]) -> bool:
@@ -30668,6 +30721,10 @@ class LlamaCppBackend:
                     # carries the drafter whole while its tail and that tail's KV stay in
                     # host RAM.
                     _spill_inputs["draft_split_across_host"] = _draft_split_across_host
+                    # A CPU-pinned drafter the estimator cannot price: the fit abstains on it
+                    # (mtp_unsized below), and the plan would otherwise admit it as 0 bytes of
+                    # host RAM in host_ram_unpriced_bytes and pin --load-mode none on that.
+                    _spill_inputs["cpu_draft_unsized"] = _cpu_draft_spill_bytes is None
                     _spill_inputs["env_mmproj_bytes"] = (
                         0
                         if _fit_env_mmproj_on_host
@@ -31418,6 +31475,12 @@ class LlamaCppBackend:
                 self._spill_plan_restore = {}
                 self._spill_plan_append = []
                 _spill_ctx_locals_before = None
+                # The devices, in order, the plan's --tensor-split is positional over; [] when it
+                # emitted none or they cannot be named. The proactive arch gate reads it.
+                _spill_plan_device_ids: list[int] = []
+                # Set when that gate takes the plan's split out from under its --fit off: the
+                # first spawn then revokes the plan, as the reactive arch-crash retry does.
+                _arch_gate_voids_plan = False
                 # A spill plan that moved no weight (fewer slots, the projector on the CPU, the
                 # draft dropped, a shorter context) pins every layer on the GPU.
                 _spill_keeps_every_layer_on_gpu = False
@@ -31576,6 +31639,19 @@ class LlamaCppBackend:
                     )
                     if _spill_flags:
                         self._spill_plan_flags = _spill_flags
+                        if "--tensor-split" in _spill_flags:
+                            # The rows _planned_tensor_spill kept, in its order: shared devices
+                            # out, a gpu_indices pin applied.
+                            _pin_view = (_spill_inputs or {}).get("gpu_indices")
+                            _shared_view = set((_spill_inputs or {}).get("shared_gpu_ids") or ())
+                            _spill_plan_device_ids = [
+                                int(_idx)
+                                for _idx, _free in (_spill_inputs or {}).get("gpus") or ()
+                                if _idx not in _shared_view
+                                and (_pin_view is None or _idx in set(_pin_view))
+                            ]
+                            if len(_spill_plan_device_ids) != len(_spill.device_layer_counts):
+                                _spill_plan_device_ids = []
                         if "--tensor-split" in _spill_flags or (
                             _user_split_in_force and len(_spill.device_layer_counts) > 1
                         ):
@@ -33537,12 +33613,32 @@ class LlamaCppBackend:
                     # by construction, an explicit pick taking the arm above.
                     _survivors = self._arch_gate_survivors(binary)
                     if _survivors:
+                        # The spill plan's split is positional over the devices it planned on,
+                        # which come from the same gated probe: when they ARE the survivors, in
+                        # order, the mask's re-indexing lines up with it and it stays. Any other
+                        # set leaves --fit off pinning a placement nothing priced, so the first
+                        # spawn revokes the plan (_arch_gate_voids_plan), like the arch-crash retry.
+                        _plan_split = "--tensor-split" in self._spill_plan_flags
+                        _plan_split_survives = _plan_split and _spill_plan_device_ids == [
+                            int(_idx) for _idx in _survivors
+                        ]
                         # The manual ratio was validated against the FULL visible
                         # count and masking re-indexes the survivors under it -- the
                         # positional mismatch _without_tensor_split exists for. Drop it
                         # and let llama.cpp split the survivors by free VRAM.
-                        _gated_cmd = self._without_tensor_split(cmd)
-                        if _gated_cmd is not None:
+                        _gated_cmd = (
+                            None if _plan_split_survives else self._without_tensor_split(cmd)
+                        )
+                        if _gated_cmd is not None and _plan_split:
+                            cmd = _gated_cmd
+                            _arch_gate_voids_plan = True
+                            logger.info(
+                                "Tensor spill: the arch gate leaves GPU(s) %s, not the %s the "
+                                "plan's --tensor-split was sized for; revoking the plan.",
+                                _survivors,
+                                _spill_plan_device_ids or "devices",
+                            )
+                        elif _gated_cmd is not None:
                             logger.warning(
                                 "Dropping the manual --tensor-split: it was sized "
                                 "for every visible GPU, and the installed build "
@@ -33975,6 +34071,8 @@ class LlamaCppBackend:
                     # and projector placement, and each retry changes one of them.
                     if label:
                         run_cmd = _revoke_spill_plan(run_cmd, label.lstrip("-") or "retry")
+                    elif _arch_gate_voids_plan:
+                        run_cmd = _revoke_spill_plan(run_cmd, "arch gate")
                     # The cache only rides the first pinned launch: every retry re-places.
                     if label or not _argv_loads_pinned(run_cmd, env):
                         run_cmd = self._drop_moe_cache(
@@ -38285,8 +38383,9 @@ class LlamaCppBackend:
             or _extra_args_draft_device_pin(extra_args)
             # Draft tensor overrides re-place the drafter's weights the seam charges, whole,
             # on the GPU: -otd .*=CPU puts them in host RAM no term of the plan pays for, and a
-            # partial pattern moves a share nothing here can name.
-            or _extra_args_set_any_flag(extra_args, _DRAFT_OVERRIDE_TENSOR_FLAGS)
+            # partial pattern moves a share nothing here can name. -cmoed / -ncmoed N and their
+            # env twins append the same overrides.
+            or _draft_tensors_placed_off_card(extra_args, source_env)
             # A projector on a named card, the projector's twin of the draft pin: its bytes
             # ride extra_resident_bytes, booked onto device 0, while llama.cpp loads it on the
             # card named. cpu/none keep it off every card.
@@ -38414,6 +38513,11 @@ class LlamaCppBackend:
             logger.debug(
                 "Tensor spill: declined, a fixed -ngld splits the drafter between the GPU "
                 "and host RAM, which nothing here can size"
+            )
+            return None
+        if inputs.get("cpu_draft_unsized"):
+            logger.debug(
+                "Tensor spill: declined, a CPU-pinned drafter's host footprint cannot be sized"
             )
             return None
 
