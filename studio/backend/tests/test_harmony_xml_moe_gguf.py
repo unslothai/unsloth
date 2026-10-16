@@ -300,7 +300,13 @@ def test_other_architectures_still_forward_none():
 _PARSER_MARKER = b'<rfl:parameter name="'
 
 
-def _install(tmp_path, *, server = b"", common = None, common_name = "libllama-common.so.0.7.0"):
+def _install(
+    tmp_path,
+    *,
+    server = b"",
+    common = None,
+    common_name = "libllama-common.so.0.7.0",
+):
     bin_dir = tmp_path / "build" / "bin"
     bin_dir.mkdir(parents = True)
     server_bin = bin_dir / "llama-server"
@@ -349,7 +355,9 @@ def test_tools_are_offered_when_the_library_sits_in_a_sibling_lib_dir(tmp_path):
 def test_an_unknown_server_withholds_tools(monkeypatch):
     from core.inference.llama_cpp import LlamaCppBackend
 
-    monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda **_: None))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda **_: None)
+    )
     backend = _launched(ARCH, None)
     assert not backend.supports_tools
     assert not backend.supports_tool_passthrough
@@ -359,7 +367,9 @@ def test_a_server_found_before_launch_is_read(tmp_path, monkeypatch):
     from core.inference.llama_cpp import LlamaCppBackend
 
     binary = _install(tmp_path, common = _PARSER_MARKER)
-    monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda **_: binary))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda **_: binary)
+    )
     assert _launched(ARCH, None).supports_tools
 
 
@@ -411,7 +421,9 @@ def _backend():
 def test_header_reads_architecture_window_pattern_and_withholds_tools(monkeypatch):
     from core.inference.llama_cpp import LlamaCppBackend
 
-    monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda **_: None))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda **_: None)
+    )
     backend = _backend()
     assert backend._architecture == ARCH
     assert backend._sliding_window == 512
