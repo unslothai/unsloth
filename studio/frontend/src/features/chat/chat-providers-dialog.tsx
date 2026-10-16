@@ -25,11 +25,11 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import { WifiHighIcon } from "@/components/wifi-high-icon";
 import {
   Delete02Icon,
   Edit03Icon,
   PlusSignIcon,
+  Wifi02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -2442,7 +2442,7 @@ export function ChatProvidersSettings({
                         title="Check connection"
                         aria-label={`Check ${provider.name}`}
                       >
-                        <HugeiconsIcon icon={WifiHighIcon} className="size-4" />
+                        <HugeiconsIcon icon={Wifi02Icon} className="size-4" />
                       </Button>
                       <Button
                         type="button"

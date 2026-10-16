@@ -11,7 +11,6 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { WifiHighIcon } from "@/components/wifi-high-icon";
 import { type TranslationKey, useT } from "@/i18n";
 import { useHubSource } from "@/lib/hf-endpoint";
 import { MicIcon } from "@/lib/mic-icon";
@@ -30,6 +29,7 @@ import {
   EnergyRectangleIcon,
   InternetIcon,
   HelpCircleIcon,
+  HomeWifiIcon,
   LibrariesIcon,
   PaintBrush02Icon,
   Search01Icon,
@@ -226,7 +226,7 @@ const TABS: TabDef[] = [
   {
     id: "remote-lan",
     labelKey: "settings.tabs.remoteLan",
-    icon: WifiHighIcon,
+    icon: HomeWifiIcon,
   },
   {
     id: "connections",
