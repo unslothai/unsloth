@@ -4,8 +4,8 @@
 """Build an int8 ConvRot weight-only text-encoder checkpoint for the Unsloth TE prequant path.
 
 Every decoder projection of the dense encoder (q/k/v/o and gate/up/down in each
-``model.language_model.layers.N``) is rotated by the group-256 Hadamard and stored int8 with a
-float32 per-output-channel scale (``diffusion_te_prequant.quantize_int8_convrot_weight``); the
+``model.language_model.layers.N``, or ``model.layers.N`` for a text-only Qwen3) is rotated by
+the group-256 Hadamard and stored int8 with a float32 per-output-channel scale (``diffusion_te_prequant.quantize_int8_convrot_weight``); the
 vision tower, embedding table and norms are copied bf16, bit for bit; ``lm_head`` is left out
 (the pipelines that load this file read hidden states only). Each quantized Linear carries a
 ``<name>.comfy_quant`` JSON blob naming the format, and the header is the plain-tensor container
@@ -17,6 +17,13 @@ same source and group give a byte-identical file.
   python scripts/build_te_int8_convrot_checkpoint.py \\
       --base Qwen/Qwen-Image-2.1 --family qwen-image-2.1 \\
       --out Qwen-Image-2.1-text_encoder-INT8-ConvRot.safetensors
+
+``--load transformers`` builds any other encoder from the module the pipeline instantiates (``--te-class``, default
+the config's architecture): the dense encoder is loaded with ``from_pretrained`` and its runtime state dict is
+written, so the keys are the ones the loader's strict ``load_state_dict`` expects even where a checkpoint stores an
+older layout (Qwen2.5-VL's ``model.layers`` / ``visual``). Every Linear whose module name matches
+``diffusion_te_prequant.TE_INT8_CONVROT_LINEAR`` is quantized: decoder q/k/v/o + gate/up/down (Qwen, Llama, Mistral,
+Gemma; never a vision tower, which names its blocks differently) and T5's SelfAttention q/k/v/o + DenseReluDense.
 """
 
 from __future__ import annotations
@@ -31,7 +38,7 @@ from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parent.parent / "studio" / "backend"
 DECODER_LINEAR = re.compile(
-    r"^model\.language_model\.layers\.\d+\.(self_attn\.[qkvo]_proj|mlp\.(gate|up|down)_proj)\.weight$"
+    r"^model\.(language_model\.)?layers\.\d+\.(self_attn\.[qkvo]_proj|mlp\.(gate|up|down)_proj)\.weight$"
 )
 
 
@@ -89,7 +96,18 @@ def main(argv = None) -> int:
         "--device", default = "cuda" if os.environ.get("CUDA_VISIBLE_DEVICES") != "" else "cpu"
     )
     p.add_argument("--hf-token", default = None)
+    p.add_argument(
+        "--load",
+        choices = ("shards", "transformers", "ideogram4"),
+        default = "shards",
+        help = "ideogram4: build the encoder with Studio's Ideogram 4 loader (vendor fp8 + weight_scale "
+        "dequantized to a bf16 Qwen3VLModel), then quantize it like --load transformers",
+    )
+    p.add_argument("--te-class", default = None, help = "transformers class to load (--load transformers)")
+    p.add_argument("--base-model-id", default = None, help = "base_model_id to record (default: --base)")
     args = p.parse_args(argv)
+    if args.load in ("transformers", "ideogram4"):
+        return _main_transformers(args)
 
     sys.path.insert(0, str(BACKEND))
     import safetensors
@@ -136,9 +154,9 @@ def main(argv = None) -> int:
                 else:
                     tensors[name] = tensor.to(torch.bfloat16).contiguous()
     if not quantized:
-        raise SystemExit("no decoder projections matched; is this a Qwen3-VL text encoder?")
+        raise SystemExit("no decoder projections matched; is this a Qwen3 / Qwen3-VL text encoder?")
     metadata = {
-        "base_model_id": args.base,
+        "base_model_id": args.base_model_id or args.base,
         "family": args.family,
         "scheme": "int8",
         "component": args.component,
@@ -175,6 +193,107 @@ def main(argv = None) -> int:
                 "bytes": out.stat().st_size,
                 "sha256": digest.hexdigest(),
                 "quantized_linears": quantized,
+                "tensors": len(names),
+            }
+        )
+    )
+    return 0
+
+
+def _main_transformers(args) -> int:
+    """``--load transformers``: quantize the runtime state dict of the encoder class the pipeline builds."""
+    sys.path.insert(0, str(BACKEND))
+    import safetensors
+    import torch
+    import transformers
+
+    from core.inference.diffusion_te_prequant import (
+        TE_INT8_CONVROT_LINEAR,
+        TE_PREQUANT_FORMAT_INT8_CONVROT,
+        quantize_int8_convrot_weight,
+    )
+    from core.inference.prequant_safetensors import UNSLOTH_FORMAT_KEY, UNSLOTH_METADATA_KEY
+
+    src = args.src or args.base
+    if args.load == "ideogram4":
+        if args.component != "text_encoder":
+            raise SystemExit("--load ideogram4 reads <base>/text_encoder only")
+        from core.inference.diffusion_ideogram4 import load_ideogram4_text_encoder
+
+        # The exact module the runtime builds (from_pretrained cannot read the vendor fp8 layout).
+        encoder = load_ideogram4_text_encoder(src, torch.bfloat16, hf_token = args.hf_token).eval()
+        te_class = type(encoder).__name__
+    else:
+        kwargs = {"token": args.hf_token, "torch_dtype": torch.bfloat16}
+        if not args.src:
+            kwargs["subfolder"] = args.component
+        config = transformers.AutoConfig.from_pretrained(
+            src, **{k: v for k, v in kwargs.items() if k != "torch_dtype"}
+        )
+        te_class = args.te_class or (getattr(config, "architectures", None) or [None])[0]
+        encoder = getattr(transformers, te_class).from_pretrained(src, **kwargs).eval()
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    quant = {"format": "int8_tensorwise", "convrot": True, "convrot_groupsize": args.group}
+    blob = torch.tensor(list(json.dumps(quant).encode("utf-8")), dtype = torch.uint8)
+    linears = {
+        name
+        for name, module in encoder.named_modules()
+        if isinstance(module, torch.nn.Linear) and TE_INT8_CONVROT_LINEAR.search(name)
+    }
+    tensors: dict = {}
+    for name, tensor in encoder.state_dict().items():
+        if name == "lm_head.weight":
+            continue
+        prefix = name[: -len(".weight")] if name.endswith(".weight") else None
+        if prefix in linears:
+            q, scale = quantize_int8_convrot_weight(tensor.to(device), args.group)
+            tensors[name] = q.cpu().contiguous()
+            tensors[prefix + ".weight_scale"] = scale.cpu().contiguous()
+            tensors[prefix + ".comfy_quant"] = blob.clone()
+        else:
+            tensors[name] = tensor.detach().to("cpu", torch.bfloat16 if tensor.is_floating_point() else tensor.dtype)
+            tensors[name] = tensors[name].contiguous().clone()
+    if not linears:
+        raise SystemExit(f"no Linear in {te_class} matched TE_INT8_CONVROT_LINEAR")
+    metadata = {
+        "base_model_id": args.base_model_id or args.base,
+        "family": args.family,
+        "scheme": "int8",
+        "component": args.component,
+        "te_class": te_class,
+        "torch_dtype": "bfloat16",
+        "quant": dict(
+            quant, weight_only = True, scale = "per_output_channel_absmax_over_127", linears = len(linears)
+        ),
+        "lm_head": "dropped",
+        "torch_version": torch.__version__,
+        "transformers_version": transformers.__version__,
+        "safetensors_version": safetensors.__version__,
+    }
+    names = sorted(tensors)
+    header = {
+        UNSLOTH_FORMAT_KEY: TE_PREQUANT_FORMAT_INT8_CONVROT,
+        UNSLOTH_METADATA_KEY: json.dumps(metadata, sort_keys = True),
+        "tensor_names": json.dumps(names),
+    }
+    header.update({name: json.dumps({"_type": "Tensor"}) for name in names})
+    out = Path(args.out)
+    out.parent.mkdir(parents = True, exist_ok = True)
+    tmp = out.with_name(out.name + ".tmp")
+    _write_safetensors(tmp, tensors, header)
+    os.replace(tmp, out)
+    digest = hashlib.sha256()
+    with open(out, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 24), b""):
+            digest.update(chunk)
+    print(
+        json.dumps(
+            {
+                "out": str(out),
+                "bytes": out.stat().st_size,
+                "sha256": digest.hexdigest(),
+                "te_class": te_class,
+                "quantized_linears": len(linears),
                 "tensors": len(names),
             }
         )

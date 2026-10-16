@@ -238,6 +238,8 @@ def test_download_plan_drops_the_base_encoder_a_comfy_file_replaces(tmp_path, mo
         model_kind = "single_file",
         allow_device_probe = False,
         memory_verdict = False,
+        # z-image defaults to its hosted int8 ConvRot encoder, which a bf16 file never displaces; pin the dense one
+        text_encoder_quant = "none",
     )
     assert "text_encoder" in seen["skip_te_components"]
 
@@ -270,7 +272,9 @@ def test_the_mlx_plan_keeps_the_base_encoder_it_always_opens(tmp_path, monkeypat
         model_kind = "gguf",
         allow_device_probe = False,
     )
-    backend.download_plan(str(models / "diffusion_models"), memory_verdict = False, **pick)
+    backend.download_plan(
+        str(models / "diffusion_models"), memory_verdict = False, text_encoder_quant = "none", **pick
+    )
     mb.MlxDiffusionBackend().download_plan(str(models / "diffusion_models"), **pick)
     mb.MlxDiffusionBackend().download_plan(
         str(models / "diffusion_models"), text_encoder_files = [te], **pick

@@ -928,7 +928,7 @@ def fake_runtime(monkeypatch):
 
     monkeypatch.setattr(
         "core.inference.diffusion.load_ideogram4_pipeline",
-        lambda repo_id, dtype, hf_token = None, check_cancelled = None: _FakePipe(),
+        lambda repo_id, dtype, hf_token = None, check_cancelled = None, text_encoder = None: _FakePipe(),
     )
 
     monkeypatch.setitem(sys.modules, "torch", torch)
@@ -3956,6 +3956,7 @@ def test_pipeline_kind_assembles_krea_and_ideogram_from_the_mirror(fake_runtime,
         dtype,
         hf_token = None,
         check_cancelled = None,
+        text_encoder = None,
     ):
         seen["ideogram"] = repo_id
         return _FakePipe()
@@ -13941,21 +13942,31 @@ def test_precast_text_encoder_mib_prices_hidreams_standalone_fourth_encoder(monk
     snap.mkdir(parents = True)
     with open(snap / te_candidate_filenames(source)[0], "wb") as fh:
         fh.truncate(7700 * 1024 * 1024)
+    # text_encoder_3 is FLUX.1's T5-XXL, served from FLUX.1's hosted text_encoder_2 file; cache it too.
+    t5 = te_prequant_sources(
+        fam, te_quant_mode = "fp8", target = target, components = ("text_encoder_3",)
+    )["text_encoder_3"]
+    t5_repo = live / ("models--" + t5.location.replace("/", "--"))
+    (t5_repo / "refs").mkdir(parents = True)
+    (t5_repo / "refs" / "main").write_text(rev)
+    (t5_repo / "snapshots" / rev).mkdir(parents = True)
+    with open(t5_repo / "snapshots" / rev / te_candidate_filenames(t5)[0], "wb") as fh:
+        fh.truncate(5000 * 1024 * 1024)
     assert DiffusionBackend._precast_text_encoder_mib(
         fam, "HiDream-ai/HiDream-I1-Full", target, "fp8"
-    ) == (7700, ("text_encoder_4",), True)
+    ) == (12700, ("text_encoder_3", "text_encoder_4"), True)
+    (t5_repo / "snapshots" / rev / te_candidate_filenames(t5)[0]).unlink()
 
     (snap / te_candidate_filenames(source)[0]).unlink()
     from core.inference.diffusion_hidream import HIDREAM_LLAMA_BF16_BYTES
     from core.inference.diffusion_te_prequant import TE_PREQUANT_BUDGET_SCALE
 
-    assert DiffusionBackend._precast_text_encoder_mib(
+    mib, components, exact = DiffusionBackend._precast_text_encoder_mib(
         fam, "HiDream-ai/HiDream-I1-Full", target, "fp8"
-    ) == (
-        int(HIDREAM_LLAMA_BF16_BYTES * TE_PREQUANT_BUDGET_SCALE) // (1024 * 1024),
-        ("text_encoder_4",),
-        False,
     )
+    # Neither file is cached now: both are priced from the tables, the Llama from its own bf16 size.
+    assert (components, exact) == (("text_encoder_3", "text_encoder_4"), False)
+    assert mib > int(HIDREAM_LLAMA_BF16_BYTES * TE_PREQUANT_BUDGET_SCALE) // (1024 * 1024)
 
 
 def test_precast_text_encoder_mib_prices_an_uncached_checkpoint_from_the_family_table(
@@ -14852,7 +14863,9 @@ def test_gguf_offload_swap_on_mps_keeps_the_gguf(fake_runtime, tmp_path, monkeyp
     from core.inference.diffusion_transformer_quant import dense_transformer_supported
 
     monkeypatch.setattr(dmod, "dense_transformer_supported", dense_transformer_supported)
-    status = _load_gguf(backend, tmp_path)
+    # z-image defaults to its hosted int8 ConvRot encoder, which this offline fixture does not carry; MPS budgets
+    # for that file alone, so the encoder is not what is under test here.
+    status = _load_gguf(backend, tmp_path, text_encoder_quant = "none")
     assert calls == []
     assert status["transformer_quant"] is None
 

@@ -176,8 +176,14 @@ class DiffusionFamily:
     # ``family_prequant_filename``.
     prequant_filenames: tuple[tuple[str, ...], ...] = field(default_factory = tuple)
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id). Layerwise-fp8 only: the cast is
-    # deterministic, so the artifact is bit-identical while skipping the dense TE download.
-    te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # deterministic, so the artifact is bit-identical while skipping the dense TE download. An optional fourth element
+    # names the component the hosted file was built as, when this family loads another family's bytes into a
+    # different slot (HiDream's text_encoder_3 is FLUX.1's text_encoder_2).
+    te_prequant_repos: tuple[tuple[str, ...], ...] = field(default_factory = tuple)
+    # The same rows for a VARIANT base whose encoder is a different model, as (base_repo, scheme, component, repo_id):
+    # FLUX.2 klein 9B carries Qwen3-8B where the family base carries Qwen3-4B. A load of that base (or one in its
+    # equivalence group) resolves these rows only; ``te_prequant_repos`` keeps serving the family base.
+    te_prequant_variant_repos: tuple[tuple[str, str, str, str], ...] = field(default_factory = tuple)
     # The text-encoder scheme an UNSET request resolves to on this family, or None to keep the released bf16 encoder.
     # Opt-in per family rather than implied by ``te_prequant_repos``, because hosting an artifact says the cast is
     # reproducible, not that its conditioning is good enough to hand someone who asked for nothing. These encoders are
@@ -378,6 +384,14 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/FLUX.2-klein-4B-FP8"),
             ("fp8", "unsloth/FLUX.2-klein-4B-FP8"),
         ),
+        # Stock Qwen3-4B pre-cast fp8, the int8 ConvRot encoder's fallback (in
+        # diffusion_te_prequant.TE_INT8_CONVROT_FILES); the distilled and base 4B repos ship the same bytes.
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/FLUX.2-klein-4B-FP8"),),
+        # The 9B pair carries stock Qwen3-8B, a different model, so it has its own files (int8 ConvRot in
+        # diffusion_te_prequant.TE_INT8_CONVROT_VARIANT_FILES).
+        te_prequant_variant_repos = (
+            ("black-forest-labs/FLUX.2-klein-9B", "fp8", "text_encoder", "unsloth/FLUX.2-klein-9B-FP8"),
+        ),
         aliases = ("flux2-klein",),
         # A local ComfyUI file has no card tag, so without these a 9B pick got the 4B base and was refused.
         named_variant_bases = (
@@ -461,6 +475,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         uses_negative_prompt = False,
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-Kontext-dev",
+        # FLUX.1's pre-cast T5-XXL: Kontext ships the same text_encoder_2 shards (sha256 compared 2026-10-16).
+        te_prequant_repos = (("fp8", "text_encoder_2", "unsloth/FLUX.1-schnell-FP8"),),
         aliases = ("flux.1-kontext-dev", "flux1-kontext", "flux-kontext", "kontext"),
         edit = True,
         # Native: FLUX.1's VAE + CLIP-L / T5-XXL, the source as a reference image (sd.cpp docs/kontext.md).
@@ -498,6 +514,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "QwenImageEditPlusPipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image-Edit-2511",
+        # Qwen-Image's pre-cast Qwen2.5-VL-7B: every edit release (original, 2509, 2511) ships the same text_encoder/
+        # shards. The vision tower is cast too, and the edit path runs it.
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
         cfg_kwarg = "true_cfg_scale",
         aliases = (
             "qwen-image-edit-2511",
@@ -541,6 +560,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "QwenImageLayeredPipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image-Layered",
+        # Qwen-Image's pre-cast Qwen2.5-VL-7B: the layered release ships the same text_encoder/ shards.
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image_layered", "qwenimagelayered"),
         edit = True,
@@ -802,7 +823,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # must quantize its own dense weights.
         prequant_excluded_bases = ("tongyi-mai/z-image",),
         # Pre-cast Qwen3-4B TE (8.04 -> 4.41 GB), shared with the undistilled base (byte-identical encoder). NOT
-        # shared with flux.2-klein-4B: klein TE retrained layer 35 MLP (up/down_proj maxdiff 0.86 vs this checkpoint).
+        # shared with flux.2-klein-4B: klein ships stock Qwen3-4B (sha256-identical to unsloth/Qwen3-4B), while this
+        # encoder is Z-Image's own variant of it (layer 35 MLP up/down_proj maxdiff 0.86 against klein's).
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Z-Image-Turbo-FP8"),),
         aliases = ("zimage", "z_image"),
         # LoRA training via the DiT trainer (bf16); defaults to the prequant nf4 repo for QLoRA
@@ -922,8 +944,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # refuses the Full artifact only after the plan has dropped their released shards.
         prequant_excluded_bases = ("hidream-ai/hidream-i1-dev", "hidream-ai/hidream-i1-fast"),
         # Pre-cast Llama-3.1-8B TE4 (16.1 -> 8.1 GB). The generic TE pass only covers text_encoder.._3, so TE4 engages
-        # via hidream_te4_kwargs.
-        te_prequant_repos = (("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),),
+        # via hidream_te4_kwargs. text_encoder_3 is FLUX.1's T5-XXL byte for byte (sha256 compared 2026-10-16, Full and
+        # Dev), so it loads FLUX.1's hosted text_encoder_2 file: 9.52 -> 5.90 GB.
+        te_prequant_repos = (
+            ("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),
+            ("fp8", "text_encoder_3", "unsloth/FLUX.1-schnell-FP8", "text_encoder_2"),
+        ),
         pipeline_class = "HiDreamImagePipeline",
         transformer_class = "HiDreamImageTransformer2DModel",
         base_repo = "HiDream-ai/HiDream-I1-Full",
@@ -941,6 +967,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         uses_negative_prompt = False,
         transformer_class = "Ideogram4Transformer2DModel",
         base_repo = "ideogram-ai/ideogram-4-fp8",
+        # Qwen3-VL-8B, built from the vendor's per-channel-scaled fp8 shards dequantized to bf16 (what a dense load
+        # runs): layerwise fp8 here, int8 ConvRot in diffusion_te_prequant.TE_INT8_CONVROT_FILES.
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/ideogram-4-FP8"),),
         aliases = ("ideogram4", "ideogram-v4", "ideogram"),
         # Two DiTs assembled per-component, so no transformer-only single-file / GGUF load.
         pipeline_only = True,
@@ -2391,7 +2420,8 @@ def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
             loadable.add(fam.deploy_base_repo)
         loadable.update(repo for _scheme, repo in fam.prequant_repos)
         loadable.update(repo for _base, _scheme, repo in fam.prequant_variant_repos)
-        loadable.update(repo for _scheme, _component, repo in fam.te_prequant_repos)
+        loadable.update(row[2] for row in fam.te_prequant_repos)
+        loadable.update(row[3] for row in fam.te_prequant_variant_repos)
     companions.update(repo for repo, _f, _k in _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
     return frozenset(r.strip().lower() for r in companions - loadable if r)
 
@@ -2403,7 +2433,8 @@ def prequant_only_repo_ids() -> frozenset[str]:
     for fam in _FAMILIES:
         hosted.update(repo for _scheme, repo in fam.prequant_repos)
         hosted.update(repo for _base, _scheme, repo in fam.prequant_variant_repos)
-        hosted.update(repo for _scheme, _component, repo in fam.te_prequant_repos)
+        hosted.update(row[2] for row in fam.te_prequant_repos)
+        hosted.update(row[3] for row in fam.te_prequant_variant_repos)
         bases.add(fam.base_repo)
         bases.update(fam.train_base_repos)
         if fam.deploy_base_repo:
@@ -2432,13 +2463,11 @@ def prequant_repo_role(
         if repo.strip().lower() == key:
             bases.append(fam.base_repo)
             schemes.append(scheme)
-    te = sorted(
-        {
-            scheme
-            for scheme, _component, repo in fam.te_prequant_repos
-            if repo.strip().lower() == key
-        }
-    )
+    te = sorted({row[0] for row in fam.te_prequant_repos if row[2].strip().lower() == key})
+    te_variant = [row for row in fam.te_prequant_variant_repos if row[3].strip().lower() == key]
+    te = sorted({*te, *(row[1] for row in te_variant)})
+    if te_variant and not bases:
+        bases.extend(known.get(row[0].lower(), row[0]) for row in te_variant)
     if te and not bases:
         bases.append(fam.base_repo)
     return tuple(dict.fromkeys(bases)), tuple(sorted(set(schemes))), tuple(te)

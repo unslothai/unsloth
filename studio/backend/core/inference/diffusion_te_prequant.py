@@ -25,6 +25,7 @@ None and the caller falls back to the dense download + cast. Inert with nothing 
 
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass, replace
 from typing import Any, Iterable, Optional
@@ -48,14 +49,88 @@ TE_PREQUANT_FORMAT_INT8_CONVROT = "unsloth_prequant_text_encoder_int8_convrot_v1
 # family -> {component: (repo_id, filename)}. ComfyUI's qwen3vl_8b_int8_convrot scheme: decoder projections int8 in the
 # group-256 Hadamard basis + fp32 per-row scale; vision tower, embedding, norms bf16; no lm_head. Built by
 # scripts/build_te_int8_convrot_checkpoint.py.
-TE_INT8_CONVROT_FILES: dict[str, dict[str, tuple[str, str]]] = {
+_T5_INT8 = ("unsloth/FLUX.1-schnell-FP8", "FLUX.1-schnell-text_encoder_2-INT8-ConvRot.safetensors")
+_QWEN25VL_INT8 = ("unsloth/Qwen-Image-FP8", "Qwen-Image-text_encoder-INT8-ConvRot.safetensors")
+
+TE_INT8_CONVROT_FILES: dict[str, dict[str, tuple[str, ...]]] = {
     "qwen-image-2.1": {
         "text_encoder": (
             "unsloth/Qwen-Image-2.1-FP8",
             "Qwen-Image-2.1-text_encoder-INT8-ConvRot.safetensors",
         ),
     },
+    # Qwen3-4B (Qwen3ForCausalLM, ``model.layers``), stock weights: the same build as above on a text-only Qwen3. The
+    # distilled and base 4B repos ship identical bytes, so one file serves both.
+    "flux.2-klein": {
+        "text_encoder": (
+            "unsloth/FLUX.2-klein-4B-FP8",
+            "FLUX.2-klein-4B-text_encoder-INT8-ConvRot.safetensors",
+        ),
+    },
+    # The rest are built with ``--load transformers`` from the class the pipeline instantiates, so their keys are that
+    # class's runtime state dict. One file per distinct encoder; byte-identical encoders share it through
+    # ``_TE_EQUIVALENT_BASES``. T5-XXL (FLUX.1 schnell / dev / Krea / Kontext): all seven projections per block int8.
+    "flux.1": {"text_encoder_2": _T5_INT8},
+    "flux.1-kontext": {"text_encoder_2": _T5_INT8},
+    # Mistral-Small-3.2-24B (the Mistral3 conditional-generation class): the Pixtral vision tower and projector stay bf16.
+    "flux.2-dev": {
+        "text_encoder": ("unsloth/FLUX.2-dev-FP8", "FLUX.2-dev-text_encoder-INT8-ConvRot.safetensors"),
+    },
+    # Qwen2.5-VL-7B, shared by every Qwen-Image release and HunyuanImage-2.1; the vision tower stays bf16 (edit runs
+    # it).
+    "qwen-image": {"text_encoder": _QWEN25VL_INT8},
+    "qwen-image-edit": {"text_encoder": _QWEN25VL_INT8},
+    "qwen-image-layered": {"text_encoder": _QWEN25VL_INT8},
+    "hunyuanimage-2.1": {"text_encoder": _QWEN25VL_INT8},
+    # Z-Image's own Qwen3-4B, as the bare Qwen3Model the pipeline builds
+    "z-image": {
+        "text_encoder": ("unsloth/Z-Image-Turbo-FP8", "Z-Image-Turbo-text_encoder-INT8-ConvRot.safetensors"),
+    },
+    # Krea's Qwen3-VL-4B, as Qwen3VLModel
+    "krea-2": {
+        "text_encoder": ("unsloth/Krea-2-Turbo-FP8", "Krea-2-Turbo-text_encoder-INT8-ConvRot.safetensors"),
+    },
+    # HiDream-I1: text_encoder_3 is FLUX.1's T5-XXL (the third element names the component the file was built as), and
+    # text_encoder_4 the Llama-3.1-8B-Instruct mirror, assembled by diffusion_hidream.hidream_te4_kwargs.
+    "hidream-i1": {
+        "text_encoder_3": (*_T5_INT8, "text_encoder_2"),
+        "text_encoder_4": (
+            "unsloth/HiDream-I1-Full-FP8",
+            "HiDream-I1-Full-text_encoder_4-INT8-ConvRot.safetensors",
+        ),
+    },
+    # Ideogram 4's Qwen3-VL-8B (Qwen3VLModel), from the vendor fp8 shards dequantized the way the dense load does
+    "ideogram-4": {
+        "text_encoder": ("unsloth/ideogram-4-FP8", "ideogram-4-text_encoder-INT8-ConvRot.safetensors"),
+    },
+    # Gemma-2-2B (Gemma2Model), stored fp32 on the Hub
+    "lumina-2": {
+        "text_encoder": ("unsloth/Lumina-Image-2.0-FP8", "Lumina-Image-2.0-text_encoder-INT8-ConvRot.safetensors"),
+    },
 }
+
+# family -> lowercased variant base -> {component: (repo_id, filename)}, for a variant whose encoder is a different
+# model from the family base's (FLUX.2 klein 9B: Qwen3-8B, not Qwen3-4B). Looked up by the base the family view
+# carries (``te_prequant_sources_for_base`` swaps it in), so the family base keeps the table above.
+TE_INT8_CONVROT_VARIANT_FILES: dict[str, dict[str, dict[str, tuple[str, str]]]] = {
+    "flux.2-klein": {
+        "black-forest-labs/flux.2-klein-9b": {
+            "text_encoder": (
+                "unsloth/FLUX.2-klein-9B-FP8",
+                "FLUX.2-klein-9B-text_encoder-INT8-ConvRot.safetensors",
+            ),
+        },
+    },
+}
+
+# Module names of the Linears an int8 ConvRot file stores int8: decoder q/k/v/o + gate/up/down of a Qwen / Llama /
+# Mistral / Gemma stack (``...layers.N.``; vision towers name their blocks ``blocks`` / ``attention`` and stay bf16)
+# and T5's SelfAttention q/k/v/o + DenseReluDense wi_0/wi_1/wo. The builder quantizes exactly these and the loader
+# refuses a file that leaves one of them dense.
+TE_INT8_CONVROT_LINEAR = re.compile(
+    r"(?:^|\.)layers\.\d+\.(?:self_attn\.[qkvo]_proj|mlp\.(?:gate|up|down)_proj)$"
+    r"|(?:^|\.)block\.\d+\.layer\.\d+\.(?:SelfAttention\.[qkvo]|DenseReluDense\.(?:wi_0|wi_1|wo))$"
+)
 
 # The scheme the loaded FILE carried ("fp8" / "int8"), so quantize_text_encoders never re-casts an int8 encoder.
 TE_PREQUANT_SCHEME_ATTR = "_unsloth_te_prequant_scheme"
@@ -85,9 +160,14 @@ def quantize_int8_convrot_weight(weight: Any, group_size: int = 256) -> tuple[An
     return torch.round(rotated / scale).clamp(-127, 127).to(torch.int8), scale
 
 
-def family_te_int8_convrot(fam: Any, component: str) -> Optional[tuple[str, str]]:
-    """``(repo_id, filename)`` of the family's hosted int8 ConvRot encoder for ``component``, or None."""
+def family_te_int8_convrot(fam: Any, component: str) -> Optional[tuple[str, ...]]:
+    """``(repo_id, filename)`` of the family's hosted int8 ConvRot encoder for ``component``, or None. A family view
+    carrying a variant base with its own encoder (``TE_INT8_CONVROT_VARIANT_FILES``) gets that variant's file only."""
     name = str(getattr(fam, "name", fam) or "").strip().lower()
+    base = str(getattr(fam, "base_repo", "") or "").strip().lower()
+    variant = TE_INT8_CONVROT_VARIANT_FILES.get(name, {}).get(base)
+    if variant is not None:
+        return variant.get(component)
     return TE_INT8_CONVROT_FILES.get(name, {}).get(component)
 
 
@@ -132,6 +212,16 @@ TE_PREQUANT_BUDGET_SCALE = 0.65
 # The int8 ConvRot encoder alone (no fp8 fallback to cover): Qwen-Image-2.1's is 9,349,769,248 bytes against
 # 17,534,339,488 for the dense encoder, 0.533, rounded up.
 TE_INT8_CONVROT_BUDGET_SCALE = 0.56
+# Per family where the default under-states: an encoder whose bf16 embedding table is a large share of it keeps more
+# bytes dense. Lumina-2's Gemma-2-2B file is 3,207,382,688 bytes against the 5.23 GB bf16 equivalent of its fp32 Hub
+# copy (0.613), Krea-2's Qwen3-VL-4B 5,247,054,376 against 8.88 GB dense (0.591); both rounded up.
+_TE_INT8_CONVROT_BUDGET_SCALES = {"lumina-2": 0.62, "krea-2": 0.60}
+
+
+def te_int8_convrot_budget_scale(fam: Any) -> float:
+    """Fraction of the bf16 encoder the family's int8 ConvRot file occupies, for memory budgeting."""
+    name = str(getattr(fam, "name", fam) or "").strip().lower()
+    return _TE_INT8_CONVROT_BUDGET_SCALES.get(name, TE_INT8_CONVROT_BUDGET_SCALE)
 
 
 def te_prequant_budget_scale(
@@ -166,7 +256,7 @@ def te_prequant_budget_scale(
     if not sources:
         return 1.0
     if _int8_convrot_only(te_quant_mode, target):
-        return TE_INT8_CONVROT_BUDGET_SCALE
+        return te_int8_convrot_budget_scale(fam)
     return TE_PREQUANT_BUDGET_SCALE
 
 
@@ -194,6 +284,11 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
         {
             "qwen/qwen-image",
             "qwen/qwen-image-2512",
+            # The edit and layered releases republish the same four shards (sha256 compared 2026-10-16).
+            "qwen/qwen-image-edit",
+            "qwen/qwen-image-edit-2509",
+            "qwen/qwen-image-edit-2511",
+            "qwen/qwen-image-layered",
             "hunyuanvideo-community/hunyuanimage-2.1-diffusers",
         }
     ),
@@ -204,27 +299,47 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
             "qwen/qwen-image-2.1-turbo",
         }
     ),
-    # Qwen3-4B: identical sha256 across the Krea-2 pair (compared 2026-08-25)
+    # Qwen3-VL-4B (Krea's own weights, not FLUX.3's): identical sha256 across the Krea-2 pair (compared 2026-08-25)
     frozenset(
         {
             "krea/krea-2-turbo",
             "krea/krea-2-raw",
         }
     ),
+    # T5-XXL: 2 shards, 9,524,648,584 bytes, identical sha256 across every FLUX.1 release (text_encoder_2; Kontext
+    # re-verified 2026-10-16) and HiDream-I1 Full / Dev / Fast, which ship the same bytes as text_encoder_3 (the
+    # family's te_prequant_repos row names the hosted file's component). The CLIP-L files differ between the two, which
+    # is safe only because no CLIP is hosted: a group vouches for the components that have hosted files.
     frozenset(
         {
             "black-forest-labs/flux.1-schnell",
             "black-forest-labs/flux.1-dev",
             "black-forest-labs/flux.1-krea-dev",
+            "black-forest-labs/flux.1-kontext-dev",
             "hidream-ai/hidream-i1-full",
+            "hidream-ai/hidream-i1-dev",
+            "hidream-ai/hidream-i1-fast",
         }
     ),
-    # T5-XXL (text_encoder_2): 2 shards, 9,524,648,584 bytes, identical sha256 across every FLUX.1 release; HiDream-I1
-    # ships the same bytes as text_encoder_3 (cross-component mapping is not wired yet).
+    # Z-Image's own Qwen3-4B (not stock, unlike FLUX.2 klein 4B's): identical sha256 across Turbo and base
     frozenset(
         {
             "tongyi-mai/z-image-turbo",
             "tongyi-mai/z-image",
+        }
+    ),
+    # Stock Qwen3-4B (= unsloth/Qwen3-4B): the distilled and base FLUX.2 klein 4B repos ship identical shards
+    frozenset(
+        {
+            "black-forest-labs/flux.2-klein-4b",
+            "black-forest-labs/flux.2-klein-base-4b",
+        }
+    ),
+    # Stock Qwen3-8B (= unsloth/Qwen3-8B): likewise for the 9B pair (compared 2026-10-16)
+    frozenset(
+        {
+            "black-forest-labs/flux.2-klein-9b",
+            "black-forest-labs/flux.2-klein-base-9b",
         }
     ),
 )
@@ -255,6 +370,9 @@ class TePrequantSource:
     # Names to try after ``filename``, in order, when the repo does not carry it. Only the "repo"
     # kind uses this: a local path either exists or it does not.
     fallback_filenames: tuple = ()
+    # The component the hosted FILE was built as, when another family loads the same bytes under a different slot
+    # (HiDream's text_encoder_3 is FLUX.1's text_encoder_2). None = the component it is loaded into.
+    component: Optional[str] = None
 
 
 def int8_convrot_te_runs_on(target: Any) -> bool:
@@ -340,17 +458,26 @@ def family_te_prequant_repo(fam: Any, scheme: str, component: str) -> Optional[s
     Reads the family's ``te_prequant_repos`` (scheme, component, repo_id) triples; the field
     is optional on both DiffusionFamily and VideoFamily, so one resolver serves both loaders.
     """
+    entry = _family_te_prequant_entry(fam, scheme, component)
+    return entry[0] if entry else None
+
+
+def _family_te_prequant_entry(fam: Any, scheme: str, component: str) -> Optional[tuple[str, str]]:
+    """``(repo_id, hosted_component)`` of the row for ``(scheme, component)``. A row may carry a fourth element naming
+    the component the hosted file was built as (another family's slot for the same bytes)."""
     from .diffusion_nvfp4_flag import nvfp4_blocked
 
     if nvfp4_blocked(scheme):
         return None
     for entry in getattr(fam, "te_prequant_repos", ()) or ():
         try:
-            entry_scheme, entry_component, repo_id = entry
+            entry_scheme, entry_component, repo_id, *rest = entry
         except Exception:  # noqa: BLE001 - a malformed entry must not break the load
             continue
+        if len(rest) > 1 or not isinstance(repo_id, str):
+            continue
         if entry_scheme == scheme and entry_component == component:
-            return repo_id
+            return repo_id, (rest[0] if rest else component)
     return None
 
 
@@ -375,7 +502,7 @@ def resolve_te_prequant_source(
         hosted = family_te_int8_convrot(fam, component)
         if hosted is None:
             return None
-        repo_id, filename = hosted
+        repo_id, filename, *hosted_component = hosted
         fp8 = resolve_te_prequant_source(fam, component, "fp8")
         from .diffusion_text_encoder_trim import family_trims_lm_head
 
@@ -390,15 +517,18 @@ def resolve_te_prequant_source(
             location = repo_id,
             filename = filename,
             fallback_filenames = tuple(n for n in fallback if n != filename),
+            component = hosted_component[0] if hosted_component else None,
         )
-    repo_id = family_te_prequant_repo(fam, scheme, component)
-    if repo_id:
-        names = te_prequant_repo_filenames(repo_id, component, scheme)
+    entry = _family_te_prequant_entry(fam, scheme, component)
+    if entry:
+        repo_id, hosted_component = entry
+        names = te_prequant_repo_filenames(repo_id, hosted_component, scheme)
         return TePrequantSource(
             kind = "repo",
             location = repo_id,
             filename = names[0],
             fallback_filenames = names[1:],
+            component = hosted_component if hosted_component != component else None,
         )
     return None
 
@@ -472,7 +602,11 @@ def te_prequant_sources_for_base(
     the artifact before checkpoint metadata could reject it. Components loaded from their own
     standalone repos may map both sides of this comparison through
     ``standalone_component_bases``.
+
+    A variant base whose encoder is a different model (``te_prequant_variant_repos``) resolves
+    against that variant's rows and files only, never the family base's.
     """
+    fam = te_variant_family_view(fam, base)
     sources = te_prequant_sources(
         fam,
         te_quant_mode = te_quant_mode,
@@ -488,6 +622,32 @@ def te_prequant_sources_for_base(
         if checkpoint_base and selected_base and te_base_equivalent(checkpoint_base, selected_base):
             compatible[component] = source
     return compatible
+
+
+def te_variant_family_view(fam: Any, base: Optional[str]) -> Any:
+    """``fam`` as seen by a load of ``base``: unchanged unless ``base`` is (equivalent to) a variant listed in the
+    family's ``te_prequant_variant_repos``, in which case a copy whose ``base_repo`` is that variant and whose
+    ``te_prequant_repos`` are that variant's rows. ``family_te_int8_convrot`` keys its variant table on the same base,
+    so the copy can never resolve the family base's encoder for a variant that ships another model."""
+    rows = getattr(fam, "te_prequant_variant_repos", ()) or ()
+    if not rows or not base:
+        return fam
+    registered = str(getattr(fam, "base_repo", "") or "")
+    if registered and te_base_equivalent(registered, base):
+        return fam
+    for variant in dict.fromkeys(str(row[0]) for row in rows if row):
+        if te_base_equivalent(variant, base):
+            import dataclasses
+            import types
+
+            own = tuple(tuple(row[1:]) for row in rows if row and str(row[0]) == variant)
+            try:
+                return dataclasses.replace(fam, base_repo = variant, te_prequant_repos = own)
+            except Exception:  # noqa: BLE001 - not a dataclass: no pre-cast encoder rather than the wrong one
+                return types.SimpleNamespace(
+                    name = getattr(fam, "name", None), base_repo = variant, te_prequant_repos = own
+                )
+    return fam
 
 
 # Weight files a dense encoder folder holds. Everything else (config.json, the shard index, tokenizer JSON) is kept
@@ -596,7 +756,9 @@ def load_prequant_text_encoder(
         if file_scheme != scheme and not (scheme == "int8" and file_scheme == "fp8"):
             _warn(logger, scheme, ValueError(f"checkpoint scheme {file_scheme!r} != {scheme!r}"))
             return None
-        if not _validate_checkpoint(ckpt, file_scheme, component, base, logger):
+        if not _validate_checkpoint(
+            ckpt, file_scheme, getattr(source, "component", None) or component, base, logger
+        ):
             return None
         state_dict = ckpt["state_dict"]
         te_class = (ckpt.get("metadata") or {}).get("te_class")
@@ -850,9 +1012,8 @@ def _te_prequant_pipe_kwargs(
                 encoder = load_prequant_text_encoder(
                     base,
                     component,
-                    TePrequantSource(
-                        kind = "repo",
-                        location = source.location,
+                    replace(
+                        source,
                         filename = fp8_names[0],
                         fallback_filenames = fp8_names[1:],
                     ),
@@ -921,7 +1082,13 @@ def _build_int8_convrot_encoder(
     import torch
     from accelerate import init_empty_weights
 
-    from .diffusion_text_encoder_trim import LM_HEAD_KEY, trim_text_encoder
+    from .diffusion_text_encoder_trim import (
+        LM_HEAD_KEY,
+        _no_logits_head_class,
+        config_ties_lm_head,
+        is_trimmed,
+        trim_text_encoder,
+    )
     from .video_minimax_h3_te import (
         H3_TE_CONVROT_GROUP,
         _int8_convrot_linear_class,
@@ -929,9 +1096,6 @@ def _build_int8_convrot_encoder(
         _validate_comfy_quant,
     )
 
-    if not trim:
-        # The file has no lm_head; a build that keeps one would load it random.
-        raise ValueError("the int8 ConvRot encoder carries no lm_head and needs the lm_head trim")
     if LM_HEAD_KEY in state_dict:
         raise ValueError("the int8 ConvRot encoder unexpectedly carries an lm_head")
     scale_suffix, quant_suffix = ".weight_scale", ".comfy_quant"
@@ -941,7 +1105,17 @@ def _build_int8_convrot_encoder(
     # include_buffers=False: rotary inv_freq buffers are built for real; parameters arrive via assign=True.
     with init_empty_weights(include_buffers = False):
         encoder = encoder_cls(config)
-    trim_text_encoder(encoder)
+    if getattr(encoder, "lm_head", None) is not None and not trim:
+        # The file has no lm_head; a build that keeps one would load it random. A headless encoder class (T5,
+        # Gemma2Model, Qwen3Model, Qwen3VLModel) has nothing to drop.
+        raise ValueError("the int8 ConvRot encoder carries no lm_head and needs the lm_head trim")
+    if trim:
+        trim_text_encoder(encoder)
+    if getattr(encoder, "lm_head", None) is not None and not is_trimmed(encoder) and config_ties_lm_head(config):
+        # A tied head (FLUX.3's Qwen3-VL-4B) is kept by the trim, but this file has no lm_head key for it and the
+        # family reads hidden states only, so drop it here: a meta head would fail the strict load below.
+        head = encoder.lm_head
+        encoder.lm_head = _no_logits_head_class()(head.in_features, head.out_features)
     linear_cls = _int8_convrot_linear_class()
     for prefix in quantized:
         blob = state_dict.pop(prefix + quant_suffix, None)
@@ -981,16 +1155,20 @@ def _build_int8_convrot_encoder(
         ):
             state_dict[key] = tensor.to(dtype)
     # A dense decoder projection would load as bf16 and outgrow the budget this path is priced at.
-    language_model = getattr(getattr(encoder, "model", None), "language_model", None)
-    layers = getattr(language_model, "layers", None)
-    if layers is None:
-        raise ValueError("encoder has no model.language_model.layers")
-    dense = [n for n, m in layers.named_modules() if isinstance(m, torch.nn.Linear)]
+    dense = [
+        n
+        for n, m in encoder.named_modules()
+        if isinstance(m, torch.nn.Linear) and TE_INT8_CONVROT_LINEAR.search(n)
+    ]
     if dense:
         raise ValueError(
             f"{len(dense)} decoder projection(s) are not quantized in this artifact, e.g. {sorted(dense)[0]}"
         )
     encoder.load_state_dict(state_dict, strict = True, assign = True)
+    # assign=True untied a tied embedding pair (T5's shared / encoder.embed_tokens); re-tie it, as the fp8 path does.
+    tie = getattr(encoder, "tie_weights", None)
+    if callable(tie):
+        tie()
     stranded = _meta_tensor_names(encoder)
     if stranded:
         raise ValueError(f"{len(stranded)} tensor(s) still on the meta device, e.g. {stranded[0]}")

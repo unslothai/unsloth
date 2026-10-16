@@ -79,9 +79,10 @@ def hidream_te4_kwargs(
 
             mode = normalize_te_quant(te_quant_mode)
             denied = getattr(precision, "_te_family_denied", None)
+            # int8 takes the hosted int8 ConvRot file (its fp8 file behind it); neither runs without fp8 support here.
             fp8_engages = (
-                mode == TE_QUANT_FP8
-                and te_quant_supported(target, mode)
+                mode in (TE_QUANT_FP8, "int8")
+                and te_quant_supported(target, TE_QUANT_FP8)
                 and not (callable(denied) and denied(getattr(fam, "name", None), mode))
             )
         except Exception:  # noqa: BLE001 -- quant probe failure keeps the dense bf16 path
@@ -101,14 +102,17 @@ def hidream_te4_kwargs(
             standalone_component_bases = {"text_encoder_4": HIDREAM_LLAMA_REPO},
         ).get("text_encoder_4")
         if source is not None:
+            scheme = "int8" if normalize_te_quant(te_quant_mode) == "int8" else "fp8"
             encoder = load_prequant_text_encoder(
                 HIDREAM_LLAMA_REPO,
                 "text_encoder_4",
                 source,
                 dtype = dtype,
                 hf_token = hf_token,
-                scheme = "fp8",
+                scheme = scheme,
                 logger = logger,
+                # The int8 file carries no lm_head; the pipeline reads hidden states only.
+                trim_lm_head = scheme == "int8",
                 # The Llama TE4 lives in its own standalone repo (config at the root), and the pipeline needs hidden
                 # states/attentions from its forward.
                 config_subfolder = "",

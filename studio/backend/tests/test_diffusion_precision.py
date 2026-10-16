@@ -274,12 +274,30 @@ def test_quantize_int8_uses_family_keep_bf16_schedule(monkeypatch):
     monkeypatch.setattr(
         dp, "_cast_int8_selective", lambda enc, tgt, first, last: calls.append((enc, first, last))
     )
+    # A family with a schedule and no hosted int8 ConvRot file (qwen-image now hosts one, so it never takes this path).
+    monkeypatch.setitem(dp._TE_INT8_SKIP, "scheduled-family", (6, 6))
     te = object()
     pipe = types.SimpleNamespace(text_encoder = te)
-    outcome = quantize_text_encoders(pipe, _target(), mode = "int8", family = "qwen-image")
+    outcome = quantize_text_encoders(pipe, _target(), mode = "int8", family = "scheduled-family")
     assert outcome.mode == TE_QUANT_INT8
     assert outcome.status == "applied"
     assert calls == [(te, 6, 6)]
+
+
+def test_int8_on_a_family_hosting_an_int8_file_never_takes_the_torchao_cast(monkeypatch):
+    # qwen-image has a keep-bf16 schedule AND a hosted int8 ConvRot file: an int8 request whose file did not engage
+    # (the fp8 sibling or the dense encoder loaded) is the fp8 cast, never torchao on top of a pre-cast encoder.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    monkeypatch.setattr(dp, "_cast_int8_selective", lambda *a: pytest.fail("torchao int8 cast"))
+    fp8_calls: list = []
+    monkeypatch.setattr(dp, "_cast_fp8", lambda enc, tgt: fp8_calls.append(enc))
+    te = object()
+    outcome = quantize_text_encoders(
+        types.SimpleNamespace(text_encoder = te), _target(), mode = "int8", family = "qwen-image"
+    )
+    assert (outcome.mode, outcome.status) == (TE_QUANT_FP8, "fell_back")
+    assert "int8 ConvRot text encoder is not available" in outcome.reason
+    assert fp8_calls == [te]
 
 
 def test_quantize_int8_unknown_family_falls_back_to_fp8(monkeypatch):
@@ -572,9 +590,10 @@ def test_int8_without_a_schedule_reports_fp8_as_the_effective_mode():
     # host whose torchao cannot do int8 while fp8 still works, every unscheduled family died.
     assert effective_te_quant(TE_QUANT_INT8, "z-image-turbo") == TE_QUANT_FP8
     assert effective_te_quant(TE_QUANT_INT8, None) == TE_QUANT_FP8
-    # A family WITH a schedule really does run int8, so the gate must keep asking about int8.
-    assert effective_te_quant(TE_QUANT_INT8, "qwen-image") == TE_QUANT_INT8
-    assert effective_te_quant(TE_QUANT_INT8, "Flux.2-Dev") == TE_QUANT_INT8
+    # A family hosting an int8 ConvRot file loads it as plain tensors (fp8 behind it), so the gate asks about fp8 even
+    # where a keep-bf16 schedule exists.
+    assert effective_te_quant(TE_QUANT_INT8, "qwen-image") == TE_QUANT_FP8
+    assert effective_te_quant(TE_QUANT_INT8, "Flux.2-Dev") == TE_QUANT_FP8
     # Every other mode is its own effective mode, and absent stays absent.
     assert effective_te_quant(TE_QUANT_FP8_DYNAMIC, "z-image-turbo") == TE_QUANT_FP8_DYNAMIC
     assert effective_te_quant(None, "qwen-image") is None

@@ -128,7 +128,10 @@ def effective_te_quant(mode: Optional[str], family: Optional[str]) -> Optional[s
     unsupported while fp8 still works.
     """
     normalized = normalize_te_quant(mode)
-    if normalized == TE_QUANT_INT8 and _TE_INT8_SKIP.get((family or "").lower()) is None:
+    if normalized == TE_QUANT_INT8 and (
+        _TE_INT8_SKIP.get((family or "").lower()) is None or _family_hosts_te_int8(family)
+    ):
+        # A family hosting an int8 ConvRot file loads it as plain tensors (no torchao), with its fp8 file behind it.
         return TE_QUANT_FP8
     return normalized
 
@@ -274,10 +277,21 @@ def quantize_text_encoders(
             "hosted int8 ConvRot weight-only text encoder",
             RESOLVED_APPLIED,
         )
+    if mode == TE_QUANT_INT8 and hosted_int8 and _hosts_te_int8_for_all_but_small(family, hosted_int8, present):
+        # FLUX.1's CLIP-L, HunyuanImage's ByT5: the hosted file covers the big encoder, and casting a sub-GB pooled /
+        # glyph encoder in place would be a runtime-only conversion the file does not carry. Leave them bf16.
+        dense = [a for a in present if a not in hosted_int8]
+        return TEQuantOutcome(
+            TE_QUANT_INT8,
+            f"hosted int8 ConvRot weight-only {', '.join(hosted_int8)}; {', '.join(dense)} kept bf16",
+            RESOLVED_APPLIED,
+        )
     downgrade_reason = ""
     skip: Optional[tuple[int, int]] = None
     if mode == TE_QUANT_INT8:
-        skip = _TE_INT8_SKIP.get((family or "").lower())
+        # A family that hosts an int8 ConvRot file never falls back to the torchao cast: the file did not engage, so
+        # its fp8 sibling (or the fp8 cast) is what the resolver already chose.
+        skip = None if _family_hosts_te_int8(family) else _TE_INT8_SKIP.get((family or "").lower())
         if skip is None:
             _note(logger, f"int8 has no keep-bf16 schedule for family '{family}'; using fp8")
             mode = TE_QUANT_FP8
@@ -369,6 +383,19 @@ def _hosted_te_scheme(encoder: Any) -> Optional[str]:
 
     value = getattr(encoder, TE_PREQUANT_SCHEME_ATTR, None)
     return value if isinstance(value, str) else None
+
+
+def _hosts_te_int8_for_all_but_small(family: Optional[str], hosted: list, present: list) -> bool:
+    """Whether every encoder the family hosts an int8 ConvRot file for loaded from it, so the rest are the small
+    companions the family deliberately leaves dense."""
+    try:
+        from .diffusion_te_prequant import TE_INT8_CONVROT_FILES
+
+        # HiDream's text_encoder_4 is assembled outside the attributes this pass walks.
+        listed = set(TE_INT8_CONVROT_FILES.get((family or "").strip().lower(), {})) & set(_TEXT_ENCODER_ATTRS)
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(listed) and listed <= set(hosted) and set(hosted) < set(present)
 
 
 def _family_hosts_te_int8(family: Optional[str]) -> bool:

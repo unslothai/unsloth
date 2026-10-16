@@ -217,7 +217,7 @@ def test_int8_source_prefers_the_convrot_file_then_the_fp8_one():
     assert INT8_NAME not in tpq.te_candidate_filenames(fp8)
     # Families without a hosted int8 encoder resolve nothing for int8, as before.
     assert (
-        tpq.te_prequant_sources(get_family("qwen-image"), te_quant_mode = "int8", target = CUDA_BF16)
+        tpq.te_prequant_sources(get_family("sdxl"), te_quant_mode = "int8", target = CUDA_BF16)
         == {}
     )
 
