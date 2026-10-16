@@ -424,6 +424,31 @@ def test_activity_lists_runs_finished_since_a_cursor(client):
     ]
     assert later["activeRuns"] == 0
     assert later["nextRunAt"] == ms("2026-10-14T09:00:00+00:00")
+    assert later["more"] is False
+
+
+def test_activity_pages_through_more_runs_than_one_answer_holds(client, monkeypatch):
+    monkeypatch.setattr(db, "ACTIVITY_LIMIT", 2)
+    # A second apart, so no two runs share the page boundary's millisecond.
+    clock = iter(range(1_000, 100_000, 1_000))
+    monkeypatch.setattr(db, "now_ms", lambda: next(clock))
+    make_task()
+    finished = []
+    for _ in range(3):
+        db.request_run("task-1")
+        _task, run = db.claim_next(db.now_ms(), "worker", next_run_for)
+        db.finish_run(run["id"], "worker", status = "failed", error_code = "empty")
+        finished.append(run["id"])
+
+    first = client.get("/api/scheduled-tasks/runs", params = {"since": 0}).json()
+    assert [run["id"] for run in first["runs"]] == finished[:2]
+    assert first["more"] is True
+    rest = client.get(
+        "/api/scheduled-tasks/runs", params = {"since": first["runs"][-1]["finishedAt"]}
+    ).json()
+    # The boundary run comes again, then the one the first answer had no room for.
+    assert [run["id"] for run in rest["runs"]] == finished[1:]
+    assert rest["more"] is False
 
 
 # ── Running a task ───────────────────────────────────────────────
@@ -527,6 +552,30 @@ def test_a_task_deleted_mid_run_writes_no_chat(monkeypatch):
     scheduler.worker_id = "worker-under-test"
     asyncio.run(scheduler._execute(OWNER, task, run))
 
+    assert studio_db.list_chat_threads() == []
+
+
+def test_a_task_deleted_while_its_chat_is_saved_keeps_no_chat(monkeypatch):
+    task, run = claim_manual_run()
+
+    async def answer(app, task, run, cancel_event):
+        return Answer(content = "Just in time?", reasoning = "", model = "gemma-3")
+
+    save_chat = scheduler_module.save_chat
+
+    def save_then_delete(*args):
+        thread_id = save_chat(*args)
+        # Past the existence check and the save, but before the run settles.
+        db.delete_task(task["id"])
+        return thread_id
+
+    monkeypatch.setattr(scheduler_module, "generate_answer", answer)
+    monkeypatch.setattr(scheduler_module, "save_chat", save_then_delete)
+    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
+    scheduler.worker_id = "worker-under-test"
+    asyncio.run(scheduler._execute(OWNER, task, run))
+
+    assert db.get_task(task["id"]) is None
     assert studio_db.list_chat_threads() == []
 
 

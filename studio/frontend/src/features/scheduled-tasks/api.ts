@@ -56,6 +56,8 @@ export type ScheduledTaskPatch = Partial<ScheduledTaskInput> & { enabled?: boole
 export interface ScheduledTaskActivity {
   now: number;
   runs: FinishedScheduledTaskRun[];
+  /** More runs finished after these: ask again from the last one's `finishedAt`. */
+  more: boolean;
   activeRuns: number;
   nextRunAt: number | null;
 }

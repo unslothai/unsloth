@@ -304,10 +304,17 @@ def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_a
         )
     except Exception:
         # Never leave an empty chat behind.
-        with contextlib.suppress(Exception):
-            studio_db.delete_chat_threads([thread_id])
+        _discard_chat(thread_id)
         raise
     return thread_id
+
+
+def _discard_chat(thread_id: str) -> None:
+    from storage import studio_db
+    try:
+        studio_db.delete_chat_threads([thread_id])
+    except Exception:
+        logger.exception("scheduled_tasks.discard_chat_failed")
 
 
 class ScheduledTaskScheduler:
@@ -467,8 +474,15 @@ class ScheduledTaskScheduler:
         finally:
             heartbeat.cancel()
             self._active = None
+            settled: Optional[bool] = None
             try:
-                await asyncio.to_thread(db.finish_run, run["id"], self.worker_id, **outcome)
+                settled = await asyncio.to_thread(
+                    db.finish_run, run["id"], self.worker_id, **outcome
+                )
             except Exception:
                 # Left running, the stale-run sweep settles it.
                 logger.exception("scheduled_tasks.finish_failed")
+            # Deleting a task deletes its runs in the same transaction, so a run that is gone by
+            # the time it settles lost to a deletion, even one that landed after the check above.
+            if settled is False and outcome.get("thread_id"):
+                await asyncio.to_thread(_discard_chat, outcome["thread_id"])

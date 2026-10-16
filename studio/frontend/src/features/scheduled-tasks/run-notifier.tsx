@@ -3,7 +3,13 @@
 
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
-import { hasSettledAuthSession } from "@/features/auth";
+import {
+  AUTH_SESSION_STORED_EVENT,
+  getAuthSessionEpoch,
+  getAuthToken,
+  hasSettledAuthSession,
+  sessionAccount,
+} from "@/features/auth";
 import { notifyChatHistoryUpdated, useChatNavigationStore } from "@/features/chat";
 import { translate } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
@@ -15,28 +21,34 @@ import {
   SCHEDULED_TASKS_CHANGED_EVENT,
   SCHEDULED_TASK_RUNS_FINISHED_EVENT,
   type SeenRuns,
-  advanceSeenRuns,
+  collectFinishedRuns,
   nextPollDelay,
   readSeenRuns,
   runErrorText,
 } from "./results";
 
-const SEEN_KEY = "unsloth_scheduled_tasks_seen";
+// One record per account: another account's cursor would pass over this one's results.
+const SEEN_KEY_PREFIX = "unsloth_scheduled_tasks_seen:";
 // More than this at once, e.g. on reopening Studio, and one toast speaks for them all.
 const INDIVIDUAL_TOASTS = 2;
 const RECHECK_MS = 500;
 
-function loadSeen(): SeenRuns | null {
+/** The signed-in account the record belongs to. A token that names none shares one record. */
+function currentAccount(): string {
+  return sessionAccount(getAuthToken())?.username ?? "";
+}
+
+function loadSeen(account: string): SeenRuns | null {
   try {
-    return readSeenRuns(localStorage.getItem(SEEN_KEY), Date.now());
+    return readSeenRuns(localStorage.getItem(SEEN_KEY_PREFIX + account), Date.now());
   } catch {
     return null;
   }
 }
 
-function saveSeen(seen: SeenRuns): void {
+function saveSeen(account: string, seen: SeenRuns): void {
   try {
-    localStorage.setItem(SEEN_KEY, JSON.stringify(seen));
+    localStorage.setItem(SEEN_KEY_PREFIX + account, JSON.stringify(seen));
   } catch {
     // Without storage the next launch only announces runs from then on.
   }
@@ -99,7 +111,9 @@ export function ScheduledTaskRunNotifier() {
     // A change made while a poll is in flight, whose answer may predate it.
     let recheckAfterPoll = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    let seen = loadSeen();
+    // Whose record `seen` is; loaded on the first poll of each account.
+    let account: string | null = null;
+    let seen: SeenRuns | null = null;
 
     const openChat = (threadId: string) =>
       void navigateRef.current({ to: "/chat", search: { thread: threadId } });
@@ -152,16 +166,25 @@ export function ScheduledTaskRunNotifier() {
         schedule(IDLE_POLL_MS);
         return;
       }
+      const owner = currentAccount();
+      if (owner !== account) {
+        account = owner;
+        seen = loadSeen(owner);
+      }
+      const epoch = getAuthSessionEpoch();
       polling = true;
       try {
-        const activity = await getScheduledTaskActivity(seen?.since ?? null);
+        const result = await collectFinishedRuns(seen, getScheduledTaskActivity);
         if (disposed) return;
-        const announced = new Set(seen?.ids);
-        const fresh = activity.runs.filter((run) => !announced.has(run.id));
-        seen = advanceSeenRuns(seen, activity.now, fresh.map((run) => run.id));
-        saveSeen(seen);
-        if (fresh.length > 0) announce(fresh);
-        schedule(nextPollDelay(activity));
+        // Signed out or into another account meanwhile: the answer was the previous account's.
+        if (getAuthSessionEpoch() !== epoch || currentAccount() !== owner) {
+          recheckAfterPoll = true;
+          return;
+        }
+        seen = result.seen;
+        saveSeen(owner, seen);
+        if (result.fresh.length > 0) announce(result.fresh);
+        schedule(nextPollDelay(result.last));
       } catch {
         schedule(IDLE_POLL_MS);
       } finally {
@@ -181,6 +204,8 @@ export function ScheduledTaskRunNotifier() {
       if (document.visibilityState === "visible") recheck();
     };
     window.addEventListener(SCHEDULED_TASKS_CHANGED_EVENT, recheck);
+    // A sign-in hears what finished for that account now, not after the idle poll.
+    window.addEventListener(AUTH_SESSION_STORED_EVENT, recheck);
     window.addEventListener("focus", recheck);
     document.addEventListener("visibilitychange", onVisible);
     void poll();
@@ -188,6 +213,7 @@ export function ScheduledTaskRunNotifier() {
       disposed = true;
       if (timer !== null) clearTimeout(timer);
       window.removeEventListener(SCHEDULED_TASKS_CHANGED_EVENT, recheck);
+      window.removeEventListener(AUTH_SESSION_STORED_EVENT, recheck);
       window.removeEventListener("focus", recheck);
       document.removeEventListener("visibilitychange", onVisible);
     };

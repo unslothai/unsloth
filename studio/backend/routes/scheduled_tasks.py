@@ -97,6 +97,8 @@ class ScheduledTaskList(BaseModel):
 class ScheduledTaskActivity(BaseModel):
     now: int
     runs: list[FinishedScheduledTaskRun]
+    # More runs finished after these: ask again from the last one's finishedAt.
+    more: bool = False
     activeRuns: int
     nextRunAt: Optional[int] = None
 

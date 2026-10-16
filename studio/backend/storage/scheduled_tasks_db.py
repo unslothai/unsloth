@@ -474,17 +474,22 @@ def list_runs(task_id: str, limit: int = RUN_HISTORY_LIMIT) -> list[dict]:
         conn.close()
 
 
-# A reopened Studio announces at most a day of results. Each task runs at most once a day and an
-# account has at most MAX_TASKS, so a day fits in one answer.
+# Finished runs per answer. Scheduled runs alone fit, at most one a day per task, but Run now has
+# no such bound, so a client pages through the rest (see ``more``).
 ACTIVITY_LIMIT = 200
 
 
-def activity(since: Optional[int], limit: int = ACTIVITY_LIMIT) -> dict:
+def activity(since: Optional[int]) -> dict:
     """What a client watching for results needs: runs finished at or after ``since`` (oldest
-    first, each with its task's title), how many are queued or running, and the next run time."""
+    first, each with its task's title), how many are queued or running, and the next run time.
+
+    At most ACTIVITY_LIMIT runs; ``more`` says there are others, which a call from the last
+    run's ``finishedAt`` returns (repeating any that finished in that same millisecond).
+    """
     conn = get_connection()
     try:
         runs: list[dict] = []
+        more = False
         if since is not None:
             rows = conn.execute(
                 """
@@ -493,15 +498,19 @@ def activity(since: Optional[int], limit: int = ACTIVITY_LIMIT) -> dict:
                 WHERE r.finished_at IS NOT NULL AND r.finished_at >= ?
                 ORDER BY r.finished_at, r.rowid LIMIT ?
                 """,
-                (since, limit),
+                (since, ACTIVITY_LIMIT + 1),
             ).fetchall()
-            runs = [{**_run_from_row(row), "taskTitle": row["task_title"]} for row in rows]
+            more = len(rows) > ACTIVITY_LIMIT
+            runs = [
+                {**_run_from_row(row), "taskTitle": row["task_title"]}
+                for row in rows[:ACTIVITY_LIMIT]
+            ]
         (active,) = conn.execute(
             f"SELECT COUNT(*) FROM scheduled_task_runs WHERE status IN {_ACTIVE}"
         ).fetchone()
         (next_run_at,) = conn.execute(
             "SELECT MIN(next_run_at) FROM scheduled_tasks WHERE enabled = 1"
         ).fetchone()
-        return {"runs": runs, "activeRuns": active, "nextRunAt": next_run_at}
+        return {"runs": runs, "more": more, "activeRuns": active, "nextRunAt": next_run_at}
     finally:
         conn.close()

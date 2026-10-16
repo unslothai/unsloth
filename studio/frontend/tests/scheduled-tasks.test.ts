@@ -11,6 +11,7 @@ import {
   CATCH_UP_MS,
   IDLE_POLL_MS,
   advanceSeenRuns,
+  collectFinishedRuns,
   nextPollDelay,
   readSeenRuns,
   runErrorText,
@@ -152,6 +153,8 @@ test("the results poll looks quickly while a run is going and again just after o
   assert.equal(nextPollDelay({ now: 0, activeRuns: 0, nextRunAt: 1_000 }), 4_000);
   assert.equal(nextPollDelay({ now: 10_000, activeRuns: 0, nextRunAt: 0 }), ACTIVE_POLL_MS);
   assert.equal(nextPollDelay({ now: 0, activeRuns: 0, nextRunAt: 3_600_000 }), IDLE_POLL_MS);
+  // Results still to be read: the next page comes soon.
+  assert.equal(nextPollDelay({ now: 0, activeRuns: 0, nextRunAt: null, more: true }), ACTIVE_POLL_MS);
 });
 
 test("announcing resumes from a stored record only within the catch-up window", () => {
@@ -168,16 +171,65 @@ test("announcing resumes from a stored record only within the catch-up window", 
 });
 
 test("the record moves on every poll, a minute behind the server, and remembers what it announced", () => {
-  const first = advanceSeenRuns(null, 600_000, []);
+  const answer = (now: number) => ({ now, runs: [], more: false });
+  const first = advanceSeenRuns(null, answer(600_000), []);
   assert.deepEqual(first, { since: 540_000, ids: [] });
-  const second = advanceSeenRuns(first, 900_000, ["run-1"]);
+  const second = advanceSeenRuns(first, answer(900_000), ["run-1"]);
   assert.deepEqual(second, { since: 840_000, ids: ["run-1"] });
   // A poll answered by a server clock behind the record never moves it back.
-  assert.equal(advanceSeenRuns(second, 700_000, []).since, 840_000);
-  const many = Array.from({ length: 60 }, (_, index) => `run-${index}`);
-  const capped = advanceSeenRuns(second, 900_000, many).ids;
-  assert.equal(capped.length, 50);
-  assert.equal(capped.at(-1), "run-59");
+  assert.equal(advanceSeenRuns(second, answer(700_000), []).since, 840_000);
+  const many = Array.from({ length: 260 }, (_, index) => `run-${index}`);
+  const capped = advanceSeenRuns(second, answer(900_000), many).ids;
+  assert.equal(capped.length, 200);
+  assert.equal(capped.at(-1), "run-259");
+});
+
+function finished(id: string, finishedAt: number): ScheduledTasksApi.FinishedScheduledTaskRun {
+  return {
+    id,
+    taskId: "task-1",
+    source: "manual",
+    status: "succeeded",
+    scheduledFor: null,
+    createdAt: finishedAt,
+    startedAt: finishedAt,
+    finishedAt,
+    threadId: `chat-${id}`,
+    model: null,
+    errorCode: null,
+    error: null,
+    taskTitle: "Morning brief",
+  };
+}
+
+test("results past one answer are read a page at a time and announced once", async () => {
+  const runs = [finished("a", 1_000), finished("b", 2_000), finished("c", 3_000)];
+  const asked: (number | null)[] = [];
+  // Two runs a page, and `since` is inclusive, so the next page repeats the boundary run.
+  const fetchAnswer = async (since: number | null) => {
+    asked.push(since);
+    const after = runs.filter((run) => since !== null && (run.finishedAt ?? 0) >= since);
+    return { now: 100_000, runs: after.slice(0, 2), more: after.length > 2, activeRuns: 0, nextRunAt: null };
+  };
+  const { fresh, seen, last } = await collectFinishedRuns({ since: 0, ids: [] }, fetchAnswer);
+  assert.deepEqual(asked, [0, 2_000]);
+  assert.deepEqual(fresh.map((run) => run.id), ["a", "b", "c"]);
+  assert.deepEqual(seen, { since: 40_000, ids: ["a", "b", "c"] });
+  assert.equal(last.more, false);
+});
+
+test("a backlog longer than one poll reads is picked up again shortly", async () => {
+  let pages = 0;
+  const endless = async () => {
+    pages += 1;
+    return { now: 100_000, runs: [finished(`run-${pages}`, pages)], more: true, activeRuns: 0, nextRunAt: null };
+  };
+  const { fresh, seen, last } = await collectFinishedRuns(null, endless);
+  assert.equal(pages, 10);
+  assert.equal(fresh.length, 10);
+  // Up to the last run read, not the server's present, so nothing after it is skipped.
+  assert.equal(seen.since, 10);
+  assert.equal(nextPollDelay(last), ACTIVE_POLL_MS);
 });
 
 test("a failed run is worded from its error code, else from the server's text", () => {
