@@ -10609,6 +10609,14 @@ def _resident_npu_model():
     return npu.loaded_model if npu is not None else None
 
 
+def _unindexed_build_stem(variant: str) -> bool:
+    """Whether *variant* may name a same-quant build (``beta-Q4_K_M``) the cold index cannot place yet."""
+    from core.inference.local_model_resolver import index_is_built
+    from hub.utils.gguf import extract_quant_token
+
+    return not index_is_built() and extract_quant_token(variant) is not None
+
+
 def _loaded_satisfies(requested: str) -> bool:
     """Whether what is serving right now actually answers to *requested*.
 
@@ -10645,6 +10653,19 @@ def _loaded_satisfies(requested: str) -> bool:
             return _ollama_request_is_resident(requested, llama_backend)
         if not _matches_any(requested, candidates) and not _matches_any(base, candidates):
             return False
+        if variant and not looks_like_quant(variant):
+            from core.inference.local_model_resolver import (
+                local_gguf_pinned_variant,
+                local_gguf_withheld,
+            )
+
+            pinned_variant = local_gguf_pinned_variant(requested, allow_scan = False)
+            if pinned_variant is not None:
+                return _same_local_build(
+                    base, getattr(llama_backend, "hf_variant", None) or "", pinned_variant
+                )
+            if _unindexed_build_stem(variant) or local_gguf_withheld(requested):
+                return False
         if not looks_like_quant(variant):
             return True
         return (getattr(llama_backend, "hf_variant", None) or "").lower() == variant.lower()
@@ -10652,13 +10673,25 @@ def _loaded_satisfies(requested: str) -> bool:
     active = getattr(backend, "active_model_name", None)
     if not active:
         return False
+    matches = _matches_any(
+        base, [active, public_model_id(active), getattr(backend, "_openai_advertised_id", None)]
+    )
+    if not matches:
+        return False
     # Only llama.cpp carries a quant identity, so this backend can only match on the repo.
     if looks_like_quant(variant):
         return False
+    if variant:
+        from core.inference.local_model_resolver import (
+            local_gguf_pinned_variant,
+            local_gguf_withheld,
+        )
+        if local_gguf_pinned_variant(requested, allow_scan = False) is not None:
+            return False
+        if _unindexed_build_stem(variant) or local_gguf_withheld(requested):
+            return False
     # The alias too: auto-switch records the repo id there, not in active_model_name.
-    return _matches_any(
-        base, [active, public_model_id(active), getattr(backend, "_openai_advertised_id", None)]
-    )
+    return True
 
 
 def _loaded_identity_satisfies(requested: str) -> bool:
@@ -10767,10 +10800,15 @@ def _norm_path(value: str) -> str:
     return os.path.normcase(str(value)).replace("\\", "/").rstrip("/")
 
 
-def _resident_quant_is(variant: Optional[str]) -> bool:
+def _resident_quant_is(variant: Optional[str], base: Optional[str] = None) -> bool:
     """Whether the loaded GGUF is that exact quant."""
     resident = getattr(get_llama_cpp_backend(), "hf_variant", None) or ""
-    return bool(variant) and resident.lower() == variant.strip().lower()
+    return bool(variant) and _same_local_build(base, resident, variant)
+
+
+def _same_local_build(base: Optional[str], resident: str, wanted: str) -> bool:
+    from core.inference.local_model_resolver import local_gguf_same_build
+    return local_gguf_same_build(base, resident, wanted)
 
 
 def _blob_identity(identity: Optional[tuple]) -> Optional[tuple]:
@@ -10966,6 +11004,8 @@ async def _reject_unservable_model(
     gguf_hub_repo = looks_like_gguf_hub_repo_id(base)
     from core.inference.local_model_resolver import (
         index_is_built,
+        local_gguf_pinned_variant,
+        local_gguf_withheld,
         recently_downloaded,
         resolve_local_gguf,
         warm_index_soon,
@@ -11022,12 +11062,23 @@ async def _reject_unservable_model(
                 warm_index_soon()
                 still_indexing = True
                 resolved = None
+        if resolved is not None:
+            # canonical even for a quant-shaped key: a saved build key can be re-keyed
+            pinned_variant = local_gguf_pinned_variant(requested_model, allow_scan = False)
+            if pinned_variant is not None:
+                variant = pinned_variant
+                quantified = True
+        elif local_gguf_withheld(requested_model):
+            # names a build that cannot be served, so no sibling may answer for it
+            quantified = True
         # A manual load stores the on-disk path the resolver advertises under an alias,
         # so match on the path too. Quants of one repo share a directory, so the path
         # alone cannot tell them apart: without the variant check an explicit :Q8_0
         # would be answered by a resident Q4_K_M.
         # Off-loop: reads the Transformers singleton, and the llama.cpp short-circuits above
         # skip the offloaded reads, so on a restart this built the singleton on the loop.
+        # the resolver's colon base: split_model_ref keeps a slash-qualified pin whole
+        index_base = requested_model.rpartition(":")[0] or base
         resolved_is_resident = (
             resolved is not None
             and (
@@ -11036,7 +11087,7 @@ async def _reject_unservable_model(
                 )
             )[1]
         )
-        if resolved_is_resident and (not quantified or _resident_quant_is(variant)):
+        if resolved_is_resident and (not quantified or _resident_quant_is(variant, index_base)):
             return
         downloaded = resolved is not None
         # /v1/models may have advertised this id off its own scan while the index is cold.
@@ -11054,7 +11105,7 @@ async def _reject_unservable_model(
                 )
             )[1]
         )
-        if advertised_is_resident and (not quantified or _resident_quant_is(variant)):
+        if advertised_is_resident and (not quantified or _resident_quant_is(variant, index_base)):
             return
         # The exact ref may miss on the quant alone, so ask about the repo too.
         here = (
@@ -11149,6 +11200,17 @@ async def _require_named_model_access(
     if alias:
         await _cached_local_catalog()
         if await asyncio.to_thread(_own_local_model_for_alias, alias) is not None:
+            return
+        # split_model_ref keeps a quant-directory build pin (custom:Q4_K_M/beta-Q4_K_M) whole
+        from core.inference.local_model_resolver import local_gguf_pinned_variant
+
+        pinned_base = named_model.rpartition(":")[0].strip().lower()
+        if (
+            pinned_base
+            and pinned_base != alias
+            and await asyncio.to_thread(local_gguf_pinned_variant, named_model) is not None
+            and await asyncio.to_thread(_own_local_model_for_alias, pinned_base) is not None
+        ):
             return
     if await _caller_token_authorizes_download(named_model, fastapi_request):
         return
@@ -11433,6 +11495,7 @@ async def _maybe_auto_switch_model(
     )
     from core.inference.local_model_resolver import (
         local_gguf_companion_roots,
+        local_gguf_pinned_variant,
         local_gguf_companion_state,
         local_target_is_gguf,
         resolve_local_gguf_for_switch,
@@ -11705,7 +11768,11 @@ async def _maybe_auto_switch_model(
         # _loaded_satisfies and the resolver read it. Treating it as a quant tears down
         # a serving Q8 to load the preferred Q4 for a request either satisfies.
         _, _requested_variant = split_model_ref(requested_model)
-        bare = not looks_like_quant(_requested_variant)
+        # the index pin also covers directory-qualified keys split_model_ref cannot parse
+        bare = (
+            not looks_like_quant(_requested_variant)
+            and local_gguf_pinned_variant(requested_model, allow_scan = False) is None
+        )
 
         ollama_target = target_is_gguf and is_ollama_manifest_ref(target_id)
         ollama_source_identity = (
