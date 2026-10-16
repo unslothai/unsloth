@@ -10069,6 +10069,10 @@ _TEXT_ONLY_PROVIDER_TYPES = frozenset({"cohere", "deepseek", "mistral"})
 # registry default: no model catalog exists to check the configured endpoint.
 _MIXED_CATALOG_PROVIDER_TYPES = frozenset({"huggingface", "openrouter", "qwen", "qwencloud"})
 
+# Mixed catalogs whose models.dev namespace answers vision per model. Mirrors
+# CATALOG_VISION_PROVIDER_TYPES in studio/frontend/src/features/chat/external-providers.ts.
+_CATALOG_VISION_NAMESPACES = {"qwencloud": "qwen"}
+
 
 def _external_takes_mcp_images(
     provider_type,
@@ -10091,6 +10095,13 @@ def _external_takes_mcp_images(
     if model and model in capabilities:
         return bool(capabilities[model].get("vision"))
     if provider_type in _MIXED_CATALOG_PROVIDER_TYPES:
+        namespace = _CATALOG_VISION_NAMESPACES.get(provider_type)
+        if namespace and model:
+            from routes.providers import cached_catalog_model_inputs
+
+            inputs = cached_catalog_model_inputs(namespace, model)
+            if inputs is not None:
+                return "image" in inputs
         # Vision for the family, unknown for this model: an image would be sent to
         # something that may not take one, and the failure lands mid-run.
         return False

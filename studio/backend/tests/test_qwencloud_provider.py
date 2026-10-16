@@ -137,3 +137,16 @@ def test_qwencloud_vision_models_keep_mcp_pictures():
     for model in info["default_models"]:
         assert _external_takes_mcp_images("qwencloud", True, model, info) is True, model
     assert _external_takes_mcp_images("qwencloud", True, "glm-5.3", info) is False
+
+
+def test_qwencloud_reads_vision_from_the_model_catalog(monkeypatch):
+    info = get_provider_info("qwencloud")
+    catalog = {
+        "fetched_at": 0,
+        "providers": {"qwen": {"qwen3-vl-plus": {"input": ["text", "image"]}, "qwen3.7-max": {"input": ["text"]}}},
+    }
+    monkeypatch.setattr(providers_route, "_model_catalog_cache", catalog)
+    assert _external_takes_mcp_images("qwencloud", True, "qwen3-vl-plus", info) is True
+    assert _external_takes_mcp_images("qwencloud", True, "qwen3.7-max", info) is False
+    assert _external_takes_mcp_images("qwencloud", True, "glm-5.3", info) is False
+    assert _external_takes_mcp_images("qwen", True, "qwen3-vl-plus", get_provider_info("qwen")) is False
