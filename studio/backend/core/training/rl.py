@@ -35,6 +35,7 @@ _AUTO_ROLE_NAMES = {
     "rejected": ("rejected", "dispreferred"),
     "system": ("system", "system_prompt"),
 }
+_RL_ROW_KEYS = ("prompt", "answer", "chosen", "rejected")
 PYTHON_REWARD_ISOLATION_FIELD = "grpo_python_reward_isolation"
 REWARD_ISOLATION_METRIC = "sandbox/python_rewards_os_isolation"
 DEFAULT_BETA = {"dpo": 0.1, "orpo": 0.1, "grpo": 0.0}
@@ -166,9 +167,10 @@ def format_rl_dataset(
     if not columns:
         raise ValueError(f"{objective.upper()} training needs a dataset with known columns.")
     roles = resolve_role_columns(columns, objective, mapping)
-    # "*": Python rewards can read any column, so keep them all.
+    # "*": Python rewards can read any column, so keep them all. A role column stays under its own
+    # name too, since a rule's compare_to may name the column mapped to answer.
     wanted = columns if "*" in keep_columns else keep_columns
-    extra = [c for c in wanted if c in columns and c not in roles.values()]
+    extra = [c for c in wanted if c in columns and c not in _RL_ROW_KEYS]
 
     def convert(row: dict) -> dict:
         prompt = _as_messages(row[roles["prompt"]], "user")

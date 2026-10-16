@@ -78,6 +78,7 @@ def test_unfenced_and_crlf_python_bodies_parse():
         ("import os\n", "reward", "named 'reward'"),
         ("def other(completions): return []\n", "reward", "named 'reward'"),
         ("def reward(c): return []\n", "not an identifier", "entry must be"),
+        ("async def reward(completions): return []\n", "reward", "is async"),
     ],
 )
 def test_bad_python_rewards_are_refused(code, entry, message):
@@ -299,7 +300,20 @@ def test_python_rewards_keep_every_dataset_column():
     shaped, _ = rl.format_rl_dataset(
         raw, "grpo", {"question": "prompt", "solution": "answer"}, keep_columns = ("*",)
     )
-    assert sorted(shaped.column_names) == ["answer", "board", "level", "prompt"]
+    assert sorted(shaped.column_names) == [
+        "answer", "board", "level", "prompt", "question", "solution"
+    ]
+
+
+def test_a_rule_can_compare_to_the_column_mapped_as_answer():
+    from datasets import Dataset
+
+    raw = Dataset.from_list([{"question": "q", "solution": "72"}])
+    shaped, _ = rl.format_rl_dataset(
+        raw, "grpo", {"question": "prompt", "solution": "answer"}, keep_columns = ("solution",)
+    )
+    assert shaped[0]["solution"] == "72"
+    assert shaped[0]["answer"] == "72"
 
 
 @pytest.fixture

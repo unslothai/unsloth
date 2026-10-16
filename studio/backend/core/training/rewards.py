@@ -230,11 +230,15 @@ def validate_python(code: Any, entry: Any) -> str:
         tree = ast.parse(code)
     except SyntaxError as exc:
         raise RewardError(f"Python syntax error on line {exc.lineno}: {exc.msg}") from exc
-    if not any(
-        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == entry
+    defs = [
+        node
         for node in tree.body
-    ):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == entry
+    ]
+    if not defs:
         raise RewardError(f"The code does not define a top-level function named '{entry}'.")
+    if isinstance(defs[-1], ast.AsyncFunctionDef):
+        raise RewardError(f"'{entry}' is async; rewards are called directly, so use a plain def.")
     return code + "\n"
 
 
