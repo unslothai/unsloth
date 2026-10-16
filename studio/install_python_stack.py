@@ -2480,19 +2480,21 @@ def _linux_amd_gfx_from_lspci(beside_krackan2: bool = False) -> "str | None":
         return None
     if result.returncode != 0:
         return None
+    # A Krackan Point 2 line (gfx1153, no Linux torch wheel) is only the fallback: a covered
+    # adapter later in the list still answers, as for the CPU-name case.
+    krackan2 = beside_krackan2
     for line in result.stdout.splitlines():
         if not re.search(r"VGA compatible controller|3D controller|Display controller", line, re.I):
             continue
         if not re.search(r"AMD|ATI", line):
             continue
         if re.search(_LINUX_KRACKAN2_NAME_RE, line, re.IGNORECASE):
-            if beside_krackan2:
-                continue
-            return "gfx1153"
+            krackan2 = True
+            continue
         arch = _gfx_arch_from_gpu_name(line)
-        if arch and not (beside_krackan2 and arch in ("gfx1152", "gfx1153")):
+        if arch and not (krackan2 and arch in ("gfx1152", "gfx1153")):
             return arch
-    return None
+    return "gfx1153" if krackan2 and not beside_krackan2 else None
 
 
 def _is_wsl() -> bool:

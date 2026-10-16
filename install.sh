@@ -5378,10 +5378,10 @@ _infer_linux_amd_gfx_arch() {
         _amd_disp=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
         while IFS= read -r _ln; do
             [ -n "$_ln" ] || continue
+            # A Krackan Point 2 line is only the fallback: a covered adapter later still answers.
             if printf '%s\n' "$_ln" | grep -Eqi "$_krackan2_ere"; then
-                [ -n "${_k2:-}" ] && continue
-                echo gfx1153
-                return 0
+                _k2=1
+                continue
             fi
             if _gfx=$(_infer_amd_gfx_arch_from_gpu_name "$_ln"); then
                 # With the Krackan Point 2 CPU, its own iGPU line (Krackan names) is not a peer.

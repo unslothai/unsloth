@@ -498,3 +498,55 @@ _NAVI31_LINE = (
 def test_setup_sh_runtime_less_summary_names_gfx1153(gpu_name, lspci, expected, tmp_path):
     # No rocminfo / amd-smi: the summary still warns for a lone Krackan Point 2, never beside a covered peer.
     assert _setup_unsupported_lookup(gpu_name, lspci, tmp_path) == expected
+
+
+# ── Codex round 2: lspci gfx1153 is a fallback; setup.sh forwards gfx1153 ───
+
+
+def _python_lspci(lines, monkeypatch):
+    monkeypatch.setattr(stack_mod.shutil, "which", lambda _n: "/usr/bin/lspci")
+    out = "\n".join(lines)
+    monkeypatch.setattr(
+        stack_mod.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, out, "")
+    )
+    return stack_mod._linux_amd_gfx_from_lspci()
+
+
+@pytest.mark.parametrize(
+    "lines,expected",
+    [([_K2_LINE, _NAVI31_LINE], "gfx1100"), ([_NAVI31_LINE, _K2_LINE], "gfx1100"), ([_K2_LINE], "gfx1153")],
+)
+def test_python_lspci_gfx1153_is_only_the_fallback(lines, expected, monkeypatch):
+    assert _python_lspci(lines, monkeypatch) == expected
+
+
+@_POSIX
+@pytest.mark.parametrize(
+    "lines,expected",
+    [([_K2_LINE, _NAVI31_LINE], "gfx1100"), ([_NAVI31_LINE, _K2_LINE], "gfx1100"), ([_K2_LINE], "gfx1153")],
+)
+def test_install_sh_lspci_gfx1153_is_only_the_fallback(tmp_path, lines, expected):
+    # Generic CPU name: only lspci can answer.
+    assert _sh_infer(tmp_path, "model name : AMD EPYC\n", lspci = "\n".join(lines))[0] == expected
+
+
+@_POSIX
+@pytest.mark.parametrize(
+    "unsup,setup_gfx,expected",
+    [("gfx1153", "", "gfx1153"), ("gfx1010", "", ""), ("gfx1010, gfx1153", "", ""), ("gfx1153", "gfx1153", "gfx1153")],
+)
+def test_setup_sh_forwards_an_inferred_gfx1153_to_llama_cpp(unsup, setup_gfx, expected):
+    # The forwarding below the summary passes _setup_gfx as --rocm-gfx; gfx1153 keeps a HIP bundle.
+    source = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
+    start = source.index("        # gfx1153 keeps its llama.cpp HIP bundle")
+    end = source.index("        fi\n", start) + len("        fi\n")
+    script = (
+        "step() { :; }\n"
+        + f"_setup_unsup_gfx='{unsup}'\n_setup_gfx='{setup_gfx}'\n"
+        + source[start:end]
+        + '\nprintf "GFX:%s\\n" "$_setup_gfx"\n'
+    )
+    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True, timeout = 30)
+    assert out.stdout.strip().rsplit("GFX:", 1)[-1] == expected, out
+    # That value is what reaches the prebuilt installer (--rocm-gfx implies --has-rocm there).
+    assert '    if [ -n "${_setup_gfx:-}" ]; then\n        _PREBUILT_CMD+=(--rocm-gfx "$_setup_gfx")' in source
