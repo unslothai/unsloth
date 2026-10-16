@@ -50,6 +50,7 @@ import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { ApiModelLoadControls } from "./components/api-model-load-controls";
 import { SavedModelSettingsPanel } from "./components/saved-model-settings";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
+import { ToolbarTooltip } from "./components/toolbar-tooltip";
 import { unloadResident } from "./unload-resident";
 import {
   type MonitorStatusFilter,
@@ -745,92 +746,102 @@ export function ApiMonitorPage(): ReactElement {
             onUnloadActive={unloadActiveModel}
             unloading={unloading}
           />
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setPaused(!paused)}
-            className="h-9 gap-1.5 rounded-full"
+          <ToolbarTooltip
+            label={paused ? "Resume the live feed" : "Pause the live feed"}
           >
-            <HugeiconsIcon
-              icon={paused ? PlayIcon : PauseIcon}
-              strokeWidth={1.75}
-              className="size-4"
-            />
-            {paused ? "Resume" : "Pause"}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => void unloadActiveModel()}
-            disabled={unloading || modelLoading || !data?.active_model}
-            title={
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setPaused(!paused)}
+              className="h-9 gap-1.5 rounded-full"
+            >
+              <HugeiconsIcon
+                icon={paused ? PlayIcon : PauseIcon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+              {paused ? "Resume" : "Pause"}
+            </Button>
+          </ToolbarTooltip>
+          <ToolbarTooltip
+            label={
               data?.active_model
                 ? `Eject ${data.active_model} and free its VRAM`
                 : "No model is loaded"
             }
-            className="h-9 gap-1.5 rounded-full"
           >
-            <HugeiconsIcon
-              icon={RemoveCircleIcon}
-              strokeWidth={1.75}
-              className="size-4"
-            />
-            {unloading ? "Ejecting" : "Eject"}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={refresh}
-            disabled={refreshing}
-            title="Refresh"
-            aria-label="Refresh"
-            className="size-9 rounded-full p-0"
-          >
-            <HugeiconsIcon
-              icon={Refresh01Icon}
-              strokeWidth={1.75}
-              className={cn("size-4", refreshing && "animate-spin")}
-            />
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={entries.length === 0}
-            onClick={() => {
-              setSelectedId(null);
-              void clear();
-            }}
-            title="Clear log"
-            aria-label="Clear log"
-            className="size-9 rounded-full p-0"
-          >
-            <HugeiconsIcon
-              icon={Delete02Icon}
-              strokeWidth={1.75}
-              className="size-4"
-            />
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() =>
-              useSettingsDialogStore.getState().openDialog("api-keys")
-            }
-            title="API settings"
-            aria-label="API settings"
-            className="size-9 rounded-full p-0"
-          >
-            <HugeiconsIcon
-              icon={Settings02Icon}
-              strokeWidth={1.75}
-              className="size-4"
-            />
-          </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void unloadActiveModel()}
+              disabled={unloading || modelLoading || !data?.active_model}
+              className="h-9 gap-1.5 rounded-full"
+            >
+              <HugeiconsIcon
+                icon={RemoveCircleIcon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+              {unloading ? "Ejecting" : "Eject"}
+            </Button>
+          </ToolbarTooltip>
+          <ToolbarTooltip label="Refresh">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={refresh}
+              disabled={refreshing}
+              aria-label="Refresh"
+              className="size-9 rounded-full p-0"
+            >
+              <HugeiconsIcon
+                icon={Refresh01Icon}
+                strokeWidth={1.75}
+                className={cn("size-4", refreshing && "animate-spin")}
+              />
+            </Button>
+          </ToolbarTooltip>
+          <ToolbarTooltip label="Clear log">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={entries.length === 0}
+              onClick={() => {
+                setSelectedId(null);
+                void clear();
+              }}
+              aria-label="Clear log"
+              className="size-9 rounded-full p-0"
+            >
+              <HugeiconsIcon
+                icon={Delete02Icon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+            </Button>
+          </ToolbarTooltip>
+          <ToolbarTooltip label="API settings">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                useSettingsDialogStore.getState().openDialog("api-keys")
+              }
+              aria-label="API settings"
+              className="size-9 rounded-full p-0"
+            >
+              <HugeiconsIcon
+                icon={Settings02Icon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+            </Button>
+          </ToolbarTooltip>
         </div>
       </header>
 
