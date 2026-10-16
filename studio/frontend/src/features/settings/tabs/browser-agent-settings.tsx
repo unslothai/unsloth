@@ -197,7 +197,8 @@ export function BrowserAgentSettings() {
   const enabled = useBrowserAgentStore((state) => state.enabled);
   const historyAccess = useBrowserAgentStore((state) => state.historyAccess);
   const scriptAccess = useBrowserAgentStore((state) => state.scriptAccess);
-  const { setEnabled, setHistoryAccess, setScriptAccess } = useBrowserAgentStore.getState();
+  const showCursor = useBrowserAgentStore((state) => state.showCursor);
+  const { setEnabled, setHistoryAccess, setScriptAccess, setShowCursor } = useBrowserAgentStore.getState();
   return (
     <>
       <SettingsSection title={t("browser.agentSettings.title")}>
@@ -233,6 +234,9 @@ export function BrowserAgentSettings() {
               <SelectItem value="never">{t("browser.agentSettings.never")}</SelectItem>
             </SelectContent>
           </Select>
+        </SettingsRow>
+        <SettingsRow label={t("browser.agentSettings.cursor")} description={t("browser.agentSettings.cursorDescription")}>
+          <Switch aria-label={t("browser.agentSettings.cursor")} checked={showCursor} onCheckedChange={setShowCursor} />
         </SettingsRow>
       </SettingsSection>
       <PermissionsTable />

@@ -38,6 +38,26 @@ from ._utils import (
     set_module_gradient_checkpointing,
     switch_training_mode,
 )
+
+try:
+    from unsloth_zoo.fused_losses.cross_entropy_loss import unsloth_fsdp_unshard
+except ImportError:  # unsloth_zoo predating the helper (unsloth-zoo#1751)
+
+    @torch.compiler.disable
+    def _fsdp_unshard(module):
+        module.unshard()
+
+    def unsloth_fsdp_unshard(module):
+        if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+            return
+        FSDPModule = getattr(sys.modules.get("torch.distributed.fsdp"), "FSDPModule", None)
+        if FSDPModule is None:
+            return
+        for submodule in module.modules():
+            if isinstance(submodule, FSDPModule):
+                _fsdp_unshard(submodule)
+
+
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
@@ -280,6 +300,18 @@ def _unfreeze_modules_to_save(model) -> None:
                 trainable.to(dtype = torch.float32)
             trainable.requires_grad_(True)
         module.original_module.requires_grad_(False)
+
+
+def _norm_modules_to_save(model, name) -> bool:
+    """Every module PEFT's endswith rule wraps for this entry is a norm (fast kernel has dW, #13594)."""
+    if type(name) is not str or not name:
+        return False
+    matched = [
+        type(module).__name__
+        for key, module in model.named_modules(remove_duplicate = False)
+        if key.endswith(name)
+    ]
+    return bool(matched) and all("Norm" in cls for cls in matched)
 
 
 def _ensure_cache_is_dynamic(past_key_values):
@@ -1756,6 +1788,8 @@ def CausalLM_fast_forward(fast_forward_inference):
         hidden_states = outputs[0]
 
         bsz, q_len, hd = hidden_states.shape
+        # FSDP2 shards an untied lm_head in its own group, gathered only when lm_head is called.
+        unsloth_fsdp_unshard(self.lm_head)
         lm_head = self.lm_head.weight
         lm_head_device = lm_head.device
 
@@ -4293,9 +4327,11 @@ class FastLlamaModel:
                     train_lm_head = True
                 elif leaf == "embed_tokens":
                     train_embed_tokens = True
-                else:
+                elif not _norm_modules_to_save(model, module):
                     raise TypeError(
-                        f"Unsloth: Module = {module} is not allowed. Only 'lm_head' and 'embed_tokens' is allowed."
+                        f"Unsloth: Module = {module} is not allowed. Only 'lm_head', 'embed_tokens' and "
+                        "normalization layers (e.g. 'input_layernorm', 'norm') are allowed. "
+                        "To fully train other modules, load and call get_peft_model through FastModel."
                     )
         if isinstance(modules_to_save, (tuple, list)):
             modules_to_save = list(set(modules_to_save))
@@ -4369,6 +4405,7 @@ class FastLlamaModel:
             bias = bias,
             task_type = TaskType.CAUSAL_LM if not is_classification else TaskType.SEQ_CLS,
             layers_to_transform = layers_to_transform,
+            layers_pattern = layers_pattern,
             init_lora_weights = init_lora_weights,
             loftq_config = loftq_config,
             use_rslora = use_rslora,
