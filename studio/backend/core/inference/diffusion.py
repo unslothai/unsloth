@@ -1256,6 +1256,9 @@ class _LoadingState:
     # ONE named file: the scan counts what this load adds, not every byte already in the repo.
     asset_files: tuple[tuple[str, str, int, int], ...] = ()
     account_id: Optional[str] = None
+    # The single file this load reads from ``repo_id``, so progress through an artifact mirror counts that one
+    # checkpoint rather than every sibling quant cached beside it.
+    gguf_filename: Optional[str] = None
     # (expected_bytes, downloaded) once every expected byte was on disk.
     finalized_scan: Optional[tuple[int, int]] = None
 
@@ -3888,7 +3891,10 @@ class DiffusionBackend:
             self._cancel_event = cancel_event
             # Seed with the family fallback; the worker resolves the real base and updates this.
             self._loading = _LoadingState(
-                repo_id = repo_id, base_repo = fam.base_repo, account_id = current_account_id()
+                repo_id = repo_id,
+                base_repo = fam.base_repo,
+                account_id = current_account_id(),
+                gguf_filename = gguf_filename,
             )
 
         account_thread(
@@ -4316,6 +4322,15 @@ class DiffusionBackend:
             # the very thing that selects the mirror, to the mirror's live bytes, pushing the bar to 100% / finalizing
             # mid-download.
             downloaded = self._companion_progress_bytes(companion or loading.repo_id)
+        elif loading.gguf_filename and mirror_hosts_artifacts(loading.repo_id):
+            # A GGUF picked straight from an artifact mirror: the repo is also the companion, and also holds sibling
+            # quants and sample renders the plan never counted. The selected file, the pipeline folders and the
+            # in-flight blobs are what this load downloads.
+            downloaded = self._cache_file_bytes(
+                loading.repo_id, loading.gguf_filename
+            ) + self._companion_progress_bytes(loading.repo_id)
+            if companion and companion.lower() != loading.repo_id.lower():
+                downloaded += self._companion_progress_bytes(companion)
         else:
             downloaded = self._cache_bytes(loading.repo_id)
             if companion and companion != loading.repo_id:

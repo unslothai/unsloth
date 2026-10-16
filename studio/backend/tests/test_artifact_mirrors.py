@@ -359,3 +359,83 @@ def test_every_artifact_mirror_is_refused_as_a_pipeline_pick(repo):
     with pytest.raises(ValueError, match = "pre-quantised") as excinfo:
         DiffusionBackend().validate_load_request(repo, model_kind = "pipeline")
     assert df.canonical_base(repo).lower() in str(excinfo.value).lower()
+
+
+def test_progress_of_a_gguf_picked_from_an_artifact_mirror_counts_only_what_it_loads(monkeypatch, tmp_path):
+    """unsloth/Z-Image-GGUF is both the pick and its base's companion repo. A sibling quant and the sample renders
+    already cached there are not part of this load; the selected quant, the pipeline folders and the in-flight blob
+    are."""
+    from core.inference.diffusion import _LoadingState
+
+    repo = "unsloth/Z-Image-GGUF"
+    pipeline = {"model_index.json": 7, "vae/diffusion_pytorch_model.safetensors": 300}
+    _snapshot(
+        tmp_path,
+        repo,
+        {
+            **pipeline,
+            "z-image-Q4_K_M.gguf": 5_000,
+            "z-image-Q8_0.gguf": 80_000,
+            "samples/q4.png": 20_000,
+            "assets/preview.png": 20_000,
+        },
+    )
+    blobs = tmp_path / f"models--{repo.replace('/', '--')}" / "blobs"
+    blobs.mkdir(parents = True, exist_ok = True)
+    (blobs / "def.incomplete").write_bytes(b"\0" * 1_000)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_cache_repo_dirs",
+        staticmethod(lambda repo_id: [tmp_path / f"models--{repo_id.replace('/', '--')}"]),
+    )
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(
+        repo_id = repo,
+        base_repo = "Tongyi-MAI/Z-Image",
+        fetch_repo = repo,
+        gguf_filename = "z-image-Q4_K_M.gguf",
+        expected_bytes = 50_000,
+    )
+    progress = backend.load_progress()
+    assert progress["phase"] == "downloading"
+    assert progress["bytes_downloaded"] == 5_000 + sum(pipeline.values()) + 1_000
+
+
+def test_a_gguf_and_its_folders_split_across_cache_roots_make_one_sized_gguf_row(monkeypatch, tmp_path):
+    """The quant cached in one root, the base's folders (fetched after a cache-folder change) in the other: both
+    cached-model scans and On Device show one GGUF row counting the folders, never a separate folders row."""
+    from types import SimpleNamespace
+
+    from hub.services.models import cache_inventory, local_inventory
+
+    repo = "unsloth/Z-Image-GGUF"
+    gguf_root, folder_root = tmp_path / "old", tmp_path / "live"
+    folders = {**_FOLDERS, **_DENOISER}
+    in_gguf_root = _cache_repo(gguf_root, repo, {"z-image-Q4_K_M.gguf": 5_000})
+    in_folder_root = _cache_repo(folder_root, repo, folders)
+    folder_bytes = sum(v for k, v in folders.items() if k != "model_index.json")
+
+    scans = [SimpleNamespace(repos = [in_gguf_root]), SimpleNamespace(repos = [in_folder_root])]
+    monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: scans)
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan, "is_snapshot_partial", lambda *_a, **_k: False
+    )
+    monkeypatch.setattr(cache_inventory, "_cached_row_task", lambda *_a, **_k: "text-to-image")
+    assert [
+        r for r in cache_inventory._scan_cached_models(active_hub_cache = folder_root) if r["repo_id"] == repo
+    ] == []
+    gguf_rows = [
+        r for r in cache_inventory._scan_cached_gguf(active_hub_cache = folder_root) if r["repo_id"] == repo
+    ]
+    assert len(gguf_rows) == 1
+    assert gguf_rows[0]["size_bytes"] > 5_000 + folder_bytes
+
+    merged = local_inventory._merge_artifact_mirror_roots(
+        [
+            (gguf_root, local_inventory._scan_hf_cache(gguf_root)),
+            (folder_root, local_inventory._scan_hf_cache(folder_root)),
+        ]
+    )
+    rows = [r for r in merged if r.model_id == repo]
+    assert [r.model_format for r in rows] == ["gguf"]
+    assert rows[0].size_bytes > 5_000 + folder_bytes
