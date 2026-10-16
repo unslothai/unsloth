@@ -52,13 +52,15 @@ const printBlocks = (css: string): string[] => {
   return blocks;
 };
 
-test("one rule, gated on the html attribute, inside the utilities layer", () => {
-  const rules = INDEX_CSS.split(GATE).slice(1);
-  assert.equal(rules.length, 1, "exactly one gated rule");
-  const at = INDEX_CSS.indexOf(GATE);
+test("the windowed rule stays gated inside the utilities layer", () => {
+  const rules = INDEX_CSS.split(GATE).slice(1)
+    .map((rule) => rule.slice(0, rule.indexOf("}")))
+    .filter((rule) => rule.includes("[data-unsloth-fence-windowed]"));
+  assert.equal(rules.length, 1, "exactly one gated windowed rule");
+  const at = INDEX_CSS.indexOf(GATE + rules[0]);
   const [open, close] = layerBounds(INDEX_CSS, "utilities");
   assert.ok(at > open && at < close, "inside @layer utilities, where the visible override lives");
-  const rule = rules[0].slice(0, rules[0].indexOf("}"));
+  const rule = rules[0];
   assert.ok(rule.includes(".aui-thread-root"), "scoped to the chat thread");
   assert.ok(rule.includes('[data-streamdown="code-block"]:not([data-incomplete])'), "settled fences only");
   assert.ok(rule.includes(':not([data-incomplete]) > [data-unsloth-fence-windowed] {'), "the box around the windowed body: a skipped scroller drops its scrollbar in Chromium and its padding in Firefox, so the body itself would come back taller than it was skipped");
@@ -74,7 +76,7 @@ test("the wrapper keeps the visible override and the body keeps the DOM contract
     "the flicker rule on the wrapper stays",
   );
   const body = DEFER.slice(DEFER.indexOf("export const FenceBody = memo("));
-  assert.ok(/<div\s*data-unsloth-fence-windowed=\{lineWindow === null \|\| !measured \? undefined : "true"\}\s*ref=\{wrapper\}\s*>\s*<div\s*className=\{joinClasses\([\s\S]*?\)\}\s*data-language=\{language \?\? undefined\}\s*data-streamdown="code-block-body"\s*ref=\{surface\}/.test(body), "the window hook sits on a box that does not scroll, around a body that keeps streamdown's markup and the measuring ref");
+  assert.ok(/data-unsloth-fence-windowed=\{lineWindow === null \|\| !measured \? undefined : "true"\}\s*ref=\{wrapper\}\s*>\s*<div\s*className=\{joinClasses\([\s\S]*?\)\}\s*data-language=\{language \?\? undefined\}\s*data-streamdown="code-block-body"\s*ref=\{surface\}/.test(body), "the window hook sits on a box that does not scroll, around a body that keeps streamdown's markup and the measuring ref");
   assert.ok(!/contentVisibility:\s*"hidden"|display:\s*"none"/.test(body), "no line may be hidden from the engine");
 });
 
@@ -144,4 +146,17 @@ test("the widening anchor stops at a skipped subtree instead of forcing it to re
   const loop = pick.slice(pick.indexOf("for (const child of anchor.children)"));
   assert.ok(loop.indexOf("child.checkVisibility({ contentVisibilityAuto: true })") < loop.indexOf("child.getBoundingClientRect()"), "the child is asked before its rect is read, because the skipping element itself passes the check");
   assert.match(loop, /if \(child\.checkVisibility\(\)\) return anchor;\s*continue;/, "a skipped child makes its parent the anchor; a boxless child is skipped");
+});
+
+test("full-token paint containment reserves no substitute height and clears for print", () => {
+  const selector = `${GATE} .aui-thread-root [data-unsloth-fence-paint]`;
+  const at = INDEX_CSS.indexOf(selector);
+  assert.ok(at >= 0);
+  const [open, close] = layerBounds(INDEX_CSS, "utilities");
+  assert.ok(at > open && at < close);
+  const rule = INDEX_CSS.slice(at + selector.length, INDEX_CSS.indexOf("}", at) + 1);
+  assert.match(rule, /^\s*\{\s*contain: paint;\s*\}$/);
+  const print = printBlocks(INDEX_CSS).find((block) => block.includes("[data-unsloth-fence-paint]"));
+  assert.ok(print);
+  assert.match(print, /\[data-unsloth-fence-paint\]\s*\{\s*contain: none !important;\s*\}/);
 });

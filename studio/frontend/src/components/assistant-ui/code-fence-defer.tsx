@@ -1494,6 +1494,11 @@ export const FenceBody = memo(function FenceBody({
         <span className="ml-1 font-mono lowercase">{language}</span>
       </div>
       <div
+        data-unsloth-fence-paint={
+          !isIncomplete && !windowing && tokens.length > WINDOW_CAP_LINES
+            ? "true"
+            : undefined
+        }
         data-unsloth-fence-windowed={lineWindow === null || !measured ? undefined : "true"}
         ref={wrapper}
       >

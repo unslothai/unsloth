@@ -3,10 +3,16 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
+import * as React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import ts from "typescript";
 
 import {
   isBlankLine,
+  lineRendered,
   plainLineText,
+  WINDOW_CAP_LINES,
 } from "../src/components/assistant-ui/code-fence-window.ts";
 
 import { readSrc } from "./helpers/kit.ts";
@@ -342,3 +348,67 @@ test("no positional pseudo-class sits above .relative or button in a selector", 
   );
 });
 
+test("paint containment is limited to large completed full-token bodies", () => {
+  const parsed = ts.createSourceFile("code-fence-defer.tsx", DEFER, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const declaration = parsed.statements
+    .filter(ts.isVariableStatement)
+    .flatMap((statement) => [...statement.declarationList.declarations])
+    .find((node) => ts.isIdentifier(node.name) && node.name.text === "FenceBody");
+  assert.ok(declaration);
+  const { outputText } = ts.transpileModule(
+    `const ${declaration.getText(parsed)}; exports.render = FenceBody;`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React } },
+  );
+  type Token = { content: string };
+  type BodyProps = {
+    isIncomplete: boolean | undefined;
+    language: string | null;
+    result: { tokens: Token[][] } | null;
+    source: string;
+    windowing: boolean;
+  };
+  const context = {
+    exports: {} as { render: React.ComponentType<BodyProps> },
+    React,
+    memo: React.memo,
+    useMemo: React.useMemo,
+    useRef: React.useRef,
+    useLineWindow: () => ({ window: null, pins: null, measured: false }),
+    lineRendered,
+    WINDOW_CAP_LINES,
+    joinClasses: (...parts: (string | null)[]) => parts.filter(Boolean).join(" "),
+    CODE_CLASS: "",
+    PRE_CLASS: "",
+    FenceShell: ({ source }: { source: string }) => React.createElement("pre", null, source),
+    FenceLine: ({ line, windowed }: { line: Token[]; windowed: boolean }) =>
+      React.createElement("span", { "data-highlighted": String(windowed) }, plainLineText(line)),
+  };
+  runInNewContext(outputText, context);
+  const count = WINDOW_CAP_LINES + 1;
+  for (const [lines, incomplete, windowing, missing, contained] of [
+    [WINDOW_CAP_LINES, false, false, false, false],
+    [count, false, false, false, true],
+    [count, undefined, false, false, true],
+    [count, true, false, false, false],
+    [count, false, true, false, false],
+    [count, false, false, true, false],
+    [0, false, false, false, false],
+  ] as const) {
+    const tokens = Array.from({ length: lines }, (_, i) => [{ content: `line_${i};` }]);
+    const html = renderToStaticMarkup(React.createElement(context.exports.render, {
+      isIncomplete: incomplete,
+      language: "text",
+      result: missing ? null : { tokens },
+      source: "fallback",
+      windowing,
+    }));
+    assert.equal(html.includes('data-unsloth-fence-paint="true"'), contained,
+      JSON.stringify({ lines, incomplete, windowing, missing }));
+    if (!missing && lines > 0) {
+      assert.equal((html.match(/data-highlighted="true"/g) ?? []).length, lines);
+      for (const [token] of tokens) assert.ok(html.includes(`>${token.content}</span>`));
+    } else {
+      assert.match(html, /<pre>fallback<\/pre>/);
+    }
+  }
+});
