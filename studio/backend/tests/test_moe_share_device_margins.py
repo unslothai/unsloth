@@ -183,3 +183,28 @@ def test_a_projector_turned_back_on_is_charged_to_the_card(
     assert "--mmproj" in cmd, cmd
     assert seen and seen[-1] == pytest.approx(0.0, abs = 1e-3), seen
     assert not _has_moe_cache(cmd), cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--no-mmproj-offload", "--mmproj-device", "CUDA0"], {}),
+        (["--mmproj-device", "CUDA0"], {"LLAMA_ARG_MMPROJ_OFFLOAD": "0"}),
+    ],
+    ids = ["argv_named_after_no_offload", "argv_named_over_env_no_offload"],
+)
+def test_a_named_projector_device_after_offload_off_is_unpriced(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    """A named --mmproj-device turns GPU offload back on (mmproj_use_gpu = true, common/arg.cpp)
+    after an earlier offload-off left the budgeted projector at 0 bytes. The named-device
+    abstention ran only when that size was positive, so the share read a full residency and
+    the -ub 2048 raise was withheld; unknown keeps the raise and adds no cache."""
+    _set_env(monkeypatch, env)
+    seen = _spy_shares(monkeypatch)
+    _backend, cmd = _projector_launch(tmp_path, monkeypatch, extra_args)
+
+    assert "--mmproj" in cmd, cmd
+    assert not seen, seen
+    assert cmd[cmd.index("--ubatch-size") + 1] == "2048", cmd
+    assert not _has_moe_cache(cmd), cmd
