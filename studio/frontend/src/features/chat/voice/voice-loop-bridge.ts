@@ -27,6 +27,8 @@ export type VoiceMode = "off" | "configuring" | "active";
 let voiceMode: VoiceMode = "off";
 
 let voiceToggle: (() => void) | null = null;
+// A toggle clicked before the lazy loop mounted; it runs once the loop registers.
+let voiceTogglePending = false;
 let voiceThreadReset: (() => void) | null = null;
 let voiceResume: (() => void) | null = null;
 let voiceBargeIn: (() => void) | null = null;
@@ -78,15 +80,25 @@ export function setVoiceMode(next: VoiceMode): void {
 /** Registered by the mounted loop. Pass null on teardown. */
 export function registerVoiceToggle(fn: (() => void) | null): void {
   voiceToggle = fn;
+  if (fn && voiceTogglePending) {
+    voiceTogglePending = false;
+    fn();
+  }
 }
 
 /**
  * Drive the same off/configuring/active toggle the plus menu uses -- from the orb
  * overlay's close button, its Esc handler, or the chat page's thread-switch reset.
- * A no-op while the loop is unmounted.
+ * Before the lazy loop has mounted, the toggle waits for it instead of being lost;
+ * audio is then primed after the click rather than inside it.
  */
 export function requestVoiceToggle(): void {
-  voiceToggle?.();
+  if (voiceToggle) {
+    voiceToggle();
+    return;
+  }
+  voiceTogglePending = true;
+  void loadVoiceMode();
 }
 
 /** Called by the mounted voice loop. Pass null on teardown. */
