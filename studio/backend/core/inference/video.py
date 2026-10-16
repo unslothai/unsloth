@@ -251,7 +251,6 @@ from .video_minimax_h3 import (
     h3_transformer_task,
 )
 from .video_minimax_h3_te import (
-    H3_LEGACY_TE_QUANT_REPO,
     H3_TE_QUANT_DEFAULT,
     H3_TE_QUANT_REPO,
     h3_te_quant_scheme,
@@ -1125,7 +1124,7 @@ def _detect_load_family(
     )
     if fam is not None and fam.name == "ltx-2.5" and not ltx_file:
         from .video_ltx25 import LTX25_SINGLE_FILE_REPO, is_ltx25_single_file_base
-        if is_ltx25_single_file_base(repo_id):
+        if is_ltx25_single_file_base(repo_id, fold_mirror = False):
             # No model_index.json there: a pipeline load would stage ~29 GB of companions and then fail.
             raise ValueError(
                 f"'{repo_id}' ships LTX-2.5 as single files, not a Diffusers pipeline. Pick one of its DiT files "
@@ -3470,7 +3469,6 @@ class VideoBackend:
         from .video_minimax_h3 import (
             H3_COMPONENT_REPO,
             H3_GGUF_REPO,
-            H3_LEGACY_COMPONENT_REPO,
             is_h3_native,
         )
 
@@ -3478,7 +3476,7 @@ class VideoBackend:
         # Both ids: an install may hold the components under either the mirror or the repack it was mirrored from, and
         # whichever one this load reads must be protected.
         claimed_assets = (
-            (H3_GGUF_REPO, H3_COMPONENT_REPO, H3_LEGACY_COMPONENT_REPO) if h3_native else ()
+            (H3_GGUF_REPO, H3_COMPONENT_REPO) if h3_native else ()
         )
         # Claim the hosted LTX-2.3 FP8 DiT repo with _loading.
         if _ltx23_prequant_serves_on_card(
@@ -3712,10 +3710,7 @@ class VideoBackend:
                     # from the repack, and a claim over only the mirror would leave the entry this load is reading
                     # deletable mid-fetch.
                     if h3_te_scheme:
-                        self._loading.asset_repos = self._loading.asset_repos + (
-                            H3_TE_QUANT_REPO,
-                            H3_LEGACY_TE_QUANT_REPO,
-                        )
+                        self._loading.asset_repos = self._loading.asset_repos + (H3_TE_QUANT_REPO,)
                     # Dense shards dropped: a delete of the seeded repo mid-fetch strands the load.
                     if skip_transformer_weights:
                         claimed = self._denoiser_prequant_repo_ids(
@@ -3986,7 +3981,6 @@ class VideoBackend:
         from .video_minimax_h3 import (
             H3_COMPONENT_REPO,
             H3_GGUF_REPO,
-            H3_LEGACY_COMPONENT_REPO,
             h3_component_metadata_repo,
             h3_download_error,
             h3_text_encoder_filename,
@@ -4011,7 +4005,6 @@ class VideoBackend:
                 self._loading.asset_repos = (
                     H3_GGUF_REPO,
                     H3_COMPONENT_REPO,
-                    H3_LEGACY_COMPONENT_REPO,
                 )
 
         if cancel_event.is_set():
@@ -6532,10 +6525,9 @@ class VideoBackend:
         from .video_minimax_h3 import (
             H3_COMPONENT_REPO,
             H3_GGUF_REPO,
-            H3_LEGACY_COMPONENT_REPO,
         )
 
-        return (repo_id, H3_GGUF_REPO, H3_COMPONENT_REPO, H3_LEGACY_COMPONENT_REPO)
+        return (repo_id, H3_GGUF_REPO, H3_COMPONENT_REPO)
 
     # ── the load itself ──────────────────────────────────────────────────────
 

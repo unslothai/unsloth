@@ -50,12 +50,10 @@ def _shared_setup_2():
 
 
 def _shared_setup_3():
-    from core.inference.video_minimax_h3 import (
-        H3_COMPONENT_REPO,
-        H3_GGUF_REPO,
-        H3_LEGACY_COMPONENT_REPO,
-    )
-    return H3_COMPONENT_REPO, H3_GGUF_REPO, H3_LEGACY_COMPONENT_REPO
+    from core.inference.video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
+
+    # The third slot was the Comfy-Org repack the components came from; a video load never reads it any more.
+    return H3_COMPONENT_REPO, H3_GGUF_REPO, None
 
 
 def _shared_setup_4(monkeypatch, tmp_path):
@@ -1081,7 +1079,7 @@ def test_loading_repo_ids_guards_in_flight_delete():
     assert backend.loading_repo_ids() == ()  # idle: nothing to guard
     backend._loading = _VideoLoadingState(repo_id = "org/ckpt", base_repo = "Lightricks/LTX-2")
     # The base's unsloth mirror too: that is the id the fetch actually pulls into.
-    assert set(backend.loading_repo_ids()) == {"org/ckpt", "Lightricks/LTX-2", "unsloth/LTX-2"}
+    assert set(backend.loading_repo_ids()) == {"org/ckpt", "Lightricks/LTX-2", "unsloth/LTX-2-FP8"}
     # An errored load is no longer in flight, so the files are safe to delete.
     backend._loading = _VideoLoadingState(
         repo_id = "org/ckpt", base_repo = "Lightricks/LTX-2", error = "boom"
@@ -3813,7 +3811,7 @@ def test_h3_native_load_claims_the_companion_repos_before_the_preflight(monkeypa
     from core.inference import video as video_mod
     from core.inference import sd_cpp_backend, sd_cpp_engine
 
-    H3_COMPONENT_REPO, H3_GGUF_REPO, H3_LEGACY_COMPONENT_REPO = _shared_setup_3()
+    H3_COMPONENT_REPO, H3_GGUF_REPO, _ = _shared_setup_3()
 
     class _Api:
         def __init__(self, **_kwargs):
@@ -3868,11 +3866,8 @@ def test_h3_native_load_claims_the_companion_repos_before_the_preflight(monkeypa
         gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
     )
 
-    # Every id a component source can resolve to, not one resolved answer: the two VAEs are
-    # resolved independently, so an interrupted pre-move pull can leave one on the repack and the
-    # other on the mirror, and a claim naming either alone leaves the other deletable mid-load.
-    # Same triple begin_load publishes.
-    assert seen == [(H3_GGUF_REPO, H3_COMPONENT_REPO, H3_LEGACY_COMPONENT_REPO)]
+    # Every repo a component is read from (never the Comfy-Org repack). Same pair begin_load publishes.
+    assert seen == [(H3_GGUF_REPO, H3_COMPONENT_REPO)]
 
 
 def test_begin_load_publishes_the_h3_companion_claim_with_the_loading_state(
@@ -3885,7 +3880,7 @@ def test_begin_load_publishes_the_h3_companion_claim_with_the_loading_state(
     import threading
     from types import SimpleNamespace
 
-    H3_COMPONENT_REPO, H3_GGUF_REPO, H3_LEGACY_COMPONENT_REPO = _shared_setup_3()
+    H3_COMPONENT_REPO, H3_GGUF_REPO, _ = _shared_setup_3()
 
     backend = VideoBackend()
     # Never started: the window under test is before the load thread is scheduled.
@@ -3934,9 +3929,23 @@ def test_begin_load_publishes_the_hosted_ltx23_fp8_claim_with_the_loading_state(
         )
         return backend.loading_repo_ids()
 
+    # Read off the asset claim, not loading_repo_ids(): the pick's own bf16 file is now fetched from that same repo
+    # (it carries Lightricks/LTX-2.3's files), so the delete guard names it either way.
+    def _asset(**kwargs):
+        backend = VideoBackend()
+        backend.begin_load(
+            "Lightricks/LTX-2.3",
+            gguf_filename = "ltx-2.3-22b-distilled.safetensors",
+            family_override = "ltx-2",
+            model_kind = "single_file",
+            **kwargs,
+        )
+        return backend._loading.asset_repos
+
     assert "unsloth/LTX-2.3-FP8" in _claimed(transformer_quant = "fp8")
-    assert "unsloth/LTX-2.3-FP8" not in _claimed()
-    assert "unsloth/LTX-2.3-FP8" not in _claimed(transformer_quant = "fp8", memory_mode = "balanced")
+    assert "unsloth/LTX-2.3-FP8" in _asset(transformer_quant = "fp8")
+    assert "unsloth/LTX-2.3-FP8" not in _asset()
+    assert "unsloth/LTX-2.3-FP8" not in _asset(transformer_quant = "fp8", memory_mode = "balanced")
 
 
 def test_begin_load_claims_no_companion_repos_for_a_non_h3_family(fake_runtime, monkeypatch):
@@ -3945,7 +3954,7 @@ def test_begin_load_claims_no_companion_repos_for_a_non_h3_family(fake_runtime, 
     import threading
     from types import SimpleNamespace
 
-    H3_COMPONENT_REPO, H3_GGUF_REPO, H3_LEGACY_COMPONENT_REPO = _shared_setup_3()
+    H3_COMPONENT_REPO, H3_GGUF_REPO, _ = _shared_setup_3()
 
     backend = VideoBackend()
     monkeypatch.setattr(
@@ -5358,7 +5367,7 @@ def test_h3_native_load_publishes_the_companion_repos_while_downloading(monkeypa
     from core.inference import video as video_mod
     from core.inference import sd_cpp_backend, sd_cpp_engine
 
-    H3_COMPONENT_REPO, H3_GGUF_REPO, H3_LEGACY_COMPONENT_REPO = _shared_setup_3()
+    H3_COMPONENT_REPO, H3_GGUF_REPO, _ = _shared_setup_3()
 
     class _Api:
         def __init__(self, **_kwargs):
@@ -5643,7 +5652,7 @@ def test_h3_native_loaded_repo_ids_cover_the_companion_repos():
     # so deleting either On Device while H3 is loaded must be refused.
     from core.inference.video import _VideoLoadState
 
-    H3_COMPONENT_REPO, H3_GGUF_REPO, H3_LEGACY_COMPONENT_REPO = _shared_setup_3()
+    H3_COMPONENT_REPO, H3_GGUF_REPO, _ = _shared_setup_3()
 
     backend = VideoBackend()
     assert backend.loaded_repo_ids() == ()
@@ -5660,14 +5669,10 @@ def test_h3_native_loaded_repo_ids_cover_the_companion_repos():
         engine = "sd_cpp",
         gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
     )
-    # Both component ids: the components moved to our own mirror, but an install whose cache
-    # predates that move still reads them from the repack under the old id, and the delete guard
-    # has to cover whichever one this load is actually holding.
     assert backend.loaded_repo_ids() == (
         "leejet/MiniMax-H3-GGUF",
         H3_GGUF_REPO,
         H3_COMPONENT_REPO,
-        H3_LEGACY_COMPONENT_REPO,
     )
     # A diffusers load holds its weights in memory, and base_repo already names its repo.
     object.__setattr__(backend._state, "engine", "diffusers")
@@ -6444,104 +6449,6 @@ def test_every_h3_asset_comes_from_an_unsloth_repo(monkeypatch):
     assert not offenders, f"H3 would download from a repo we do not control: {offenders}"
 
 
-def test_the_h3_legacy_ids_are_the_ones_the_shared_table_names():
-    """The constants the delete-cached claims read must be the table's own answer.
-
-    The claims name `H3_LEGACY_*` directly, while the source resolvers go through
-    `_SD_CPP_LEGACY_SOURCES`. If those two ever disagree the claim protects one repo while the
-    load reads another, which is the exact mid-load deletion the claim exists to stop.
-    """
-    from core.inference.diffusion_families import legacy_source_repo
-    from core.inference.video_minimax_h3 import H3_COMPONENT_REPO, H3_LEGACY_COMPONENT_REPO
-    from core.inference.video_minimax_h3_te import H3_LEGACY_TE_QUANT_REPO, H3_TE_QUANT_REPO
-
-    assert legacy_source_repo(H3_COMPONENT_REPO) == H3_LEGACY_COMPONENT_REPO
-    assert legacy_source_repo(H3_TE_QUANT_REPO) == H3_LEGACY_TE_QUANT_REPO
-
-
-def test_the_h3_components_fall_back_to_a_cache_that_predates_the_move(monkeypatch):
-    """An install holding the old repack's bytes must not re-download them.
-
-    The HF cache is keyed by repo id, so repointing the constant alone re-fetches ~5.8 GB on
-    upgrade and fails outright offline. The bytes are identical either way.
-    """
-    from core.inference import diffusion_families
-    from core.inference import video_minimax_h3 as h3
-
-    monkeypatch.setattr(diffusion_families, "_upstream_is_cached", lambda *a, **k: True)
-    assert h3.h3_component_source() == h3.H3_LEGACY_COMPONENT_REPO
-    files = dict(h3_files := h3.h3_native_hub_files("minimax_h3_fl2va_pruned-Q2_K.gguf"))
-    assert files[h3.H3_LEGACY_COMPONENT_REPO] in (h3.H3_VIDEO_VAE, h3.H3_AUDIO_VAE)
-    assert len(h3_files) == 4
-
-    monkeypatch.setattr(diffusion_families, "_upstream_is_cached", lambda *a, **k: False)
-    assert h3.h3_component_source() == h3.H3_COMPONENT_REPO
-
-
-def test_the_h3_component_probe_counts_the_other_cache_root(monkeypatch):
-    """A repack left behind by a cache-folder change still counts.
-
-    The native fetch passes `reuse_other_cache_root`, so bytes under huggingface_hub's
-    import-time root really are reusable -- but only the OLD repo id can reach them. A live-root
-    only probe (`cache_holds_files`) calls them absent, picks the mirror and re-pulls ~5.8 GB;
-    offline it fails outright, which is the whole failure this fallback exists to prevent.
-    """
-    from core.inference import diffusion_families
-    from core.inference import video_minimax_h3 as h3
-
-    seen: list[dict] = []
-
-    def _probe(
-        repo_id,
-        files = None,
-        *,
-        other_root = False,
-    ):
-        seen.append({"repo": repo_id, "files": tuple(files or ()), "other_root": other_root})
-        return other_root  # cached ONLY in the root the live-root probe cannot see
-
-    monkeypatch.setattr(diffusion_families, "_upstream_is_cached", _probe)
-    assert h3.h3_component_source() == h3.H3_LEGACY_COMPONENT_REPO
-    assert seen and seen[0]["other_root"] is True
-    assert seen[0]["repo"] == h3.H3_LEGACY_COMPONENT_REPO
-    assert set(seen[0]["files"]) == {h3.H3_VIDEO_VAE, h3.H3_AUDIO_VAE}
-
-
-def test_the_h3_conditioner_falls_back_to_a_cache_that_predates_the_move(monkeypatch):
-    """The 27 GB int8 conditioner needs the same fallback the VAEs got, for a worse failure.
-
-    `H3_TE_QUANT_REPO` used to alias the repack, so an install that pulled the artifact before the
-    move holds it under the old id. Re-pointing the constant alone re-downloads 27 GB online, and
-    offline leaves the pipeline with no encoder at all: the load that asks for this artifact has
-    already dropped the dense encoder shards from its pull, so there is nothing to fall back to.
-    """
-    from core.inference import diffusion_families
-    from core.inference import video_minimax_h3_te as te
-
-    asked: list[tuple] = []
-
-    def _probe(
-        repo_id,
-        files = None,
-        *,
-        other_root = False,
-    ):
-        asked.append((repo_id, tuple(files or ()), other_root))
-        return True
-
-    monkeypatch.setattr(diffusion_families, "_upstream_is_cached", _probe)
-    assert te.h3_te_quant_source("int8") == te.H3_LEGACY_TE_QUANT_REPO
-    assert asked == [
-        (te.H3_LEGACY_TE_QUANT_REPO, (te.H3_TE_QUANT_FILES["int8"],), True)
-    ], "the conditioner must be probed by its own filename, in both cache roots"
-
-    monkeypatch.setattr(diffusion_families, "_upstream_is_cached", lambda *a, **k: False)
-    assert te.h3_te_quant_source("int8") == te.H3_TE_QUANT_REPO
-    # A scheme with no hosted artifact has nothing to probe and never leaves the mirror.
-    assert te.h3_te_quant_source(None) == te.H3_TE_QUANT_REPO
-    assert te.h3_te_quant_source("nvfp4") == te.H3_TE_QUANT_REPO
-
-
 def test_the_native_h3_vaes_come_from_a_local_bundle_when_it_has_them(tmp_path):
     """A local clone of the mirror is self-contained, so nothing may go to the Hub.
 
@@ -6602,94 +6509,6 @@ def _legacy_cache_holding(monkeypatch, names):
         return bool(files) and set(files) <= set(names)
 
     monkeypatch.setattr(diffusion_families, "_upstream_is_cached", _probe)
-
-
-def test_a_pre_move_cache_holding_one_vae_still_gets_reused_for_that_one(monkeypatch, tmp_path):
-    """The two VAEs are fetched one at a time, so the source is decided one at a time.
-
-    A pre-move pull interrupted between them leaves the 5.2 GB video VAE under the old id and
-    nothing else. Deciding the pair together calls the old id useless and re-downloads the file
-    already on disk, or fails offline.
-    """
-    from core.inference.video import VideoBackend
-    from core.inference.video_minimax_h3 import (
-        H3_AUDIO_VAE,
-        H3_COMPONENT_REPO,
-        H3_GGUF_REPO,
-        H3_LEGACY_COMPONENT_REPO,
-        H3_VIDEO_VAE,
-        h3_component_source,
-        h3_native_hub_files,
-    )
-
-    gguf = "minimax_h3_fl2va_pruned-Q2_K.gguf"
-    qwen = "qwen3vl_32b_minimax_h3-Q2_K_M.gguf"
-    _legacy_cache_holding(monkeypatch, {H3_VIDEO_VAE})
-
-    assert h3_component_source(H3_VIDEO_VAE) == H3_LEGACY_COMPONENT_REPO
-    assert h3_component_source(H3_AUDIO_VAE) == H3_COMPONENT_REPO
-    assert VideoBackend._h3_native_requests(H3_GGUF_REPO, gguf, qwen) == (
-        (H3_GGUF_REPO, gguf),
-        (H3_GGUF_REPO, qwen),
-        (H3_LEGACY_COMPONENT_REPO, H3_VIDEO_VAE),
-        (H3_COMPONENT_REPO, H3_AUDIO_VAE),
-    )
-    assert dict(h3_native_hub_files(gguf))[H3_LEGACY_COMPONENT_REPO] == H3_VIDEO_VAE
-
-    # And with a local bundle carrying the other one, nothing is left for the network at all.
-    bundle = tmp_path / "MiniMax-H3-GGUF"
-    (bundle / "vae").mkdir(parents = True)
-    for name in (gguf, qwen, H3_AUDIO_VAE):
-        (bundle / name).write_bytes(b"x")
-    assert VideoBackend._h3_native_requests(str(bundle), gguf, qwen) == (
-        (str(bundle), gguf),
-        (str(bundle), qwen),
-        (H3_LEGACY_COMPONENT_REPO, H3_VIDEO_VAE),
-        (str(bundle), H3_AUDIO_VAE),
-    )
-
-
-def test_the_plan_sizes_a_cached_repack_from_the_repo_we_control(monkeypatch):
-    """A repack that is gone must not fail a plan for a load its own cache still satisfies.
-
-    `model_info` on the repack raises once it is renamed or taken down, which is the failure the
-    move exists to survive, and one raising call fails the WHOLE native plan: `plan_failed` makes
-    every locality-dependent caller (media auto-switch) refuse a load that would have worked. The
-    two copies are byte identical, so the size comes from the mirror while the entry keeps the id
-    the bytes are read from.
-    """
-    from core.inference.video_minimax_h3 import (
-        H3_AUDIO_VAE,
-        H3_LEGACY_COMPONENT_REPO,
-        H3_VIDEO_VAE,
-    )
-
-    _legacy_cache_holding(monkeypatch, {H3_VIDEO_VAE, H3_AUDIO_VAE})
-    # Only the mirror answers: asking the repack raises KeyError, exactly as a taken-down repo
-    # would raise from the Hub.
-    _plan_api(
-        monkeypatch,
-        {
-            "unsloth/MiniMax-H3-GGUF": [
-                _PlanSibling("minimax_h3_fl2va-Q4_K_M.gguf", 19),
-                _PlanSibling("qwen3vl_32b_minimax_h3-Q4_K_M.gguf", 18),
-                _PlanSibling(H3_VIDEO_VAE, 5),
-                _PlanSibling(H3_AUDIO_VAE, 1),
-            ],
-        },
-    )
-
-    plan = VideoBackend._h3_native_download_plan(
-        "unsloth/MiniMax-H3-GGUF", "minimax_h3_fl2va-Q4_K_M.gguf", hf_token = None
-    )
-    assert not plan.get("plan_failed")
-    by_repo = {entry["repo_id"]: entry for entry in plan["entries"]}
-    # The VAEs are staged under the id they will be read from, at the mirror's sizes.
-    assert sorted(by_repo[H3_LEGACY_COMPONENT_REPO]["files"]) == sorted(
-        [H3_VIDEO_VAE, H3_AUDIO_VAE]
-    )
-    assert by_repo[H3_LEGACY_COMPONENT_REPO]["bytes"] == 6
-    assert plan["required_bytes"] == 43
 
 
 def test_the_h3_native_repo_matches_the_family_gguf_repo():

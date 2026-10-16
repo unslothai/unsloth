@@ -1255,27 +1255,30 @@ _UNGATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
 )
 _MIRROR_PAIRS: tuple[tuple[str, str], ...] = _GATED_MIRROR_PAIRS + _UNGATED_MIRROR_PAIRS
 
-# The VIDEO bases (video_families), mirrored on the same terms: complete byte-identical copies, the upstream LICENSE
-# kept, a NOTICE where the licence asks for one. Every video component (transformer, text encoder, tokenizer, VAE,
-# audio VAE, connectors, upsampler, scheduler) is fetched from the base or from an unsloth/* artifact repo, so these
-# rows are what keep a video load inside unsloth/*. Kept OUT of ``_MIRROR_PAIRS``: that tuple is the IMAGE companion
-# table (hub/utils/companion_assets reads it to decide which cached repos an image checkpoint can strand), while these
-# feed only the id lookups below, so mirror_repo / canonical_base / prefer_ungated_mirror answer for video ids and
-# nothing image-side changes. HunyuanVideo-1.5 is deliberately absent: its Tencent Hunyuan Community licence is limited
-# to a Territory that excludes the EU, UK and South Korea, which a public Hub repo cannot honour (the same reason
-# HunyuanImage-2.1 has no mirror).
+# The VIDEO bases (video_families). No separate mirror repo: the official files Studio loads (the diffusers folders,
+# bf16 transformer included, or the single files of a split release) are copied byte-identical, at their upstream
+# paths, into the EXISTING unsloth repo of that model -- its -FP8 repo, or -GGUF when there is no -FP8 -- beside the
+# upstream LICENSE and the NOTICE the licence asks for. The listing selectors skip that repo's own root checkpoints
+# (.pt, root .safetensors, .gguf, samples/), so it serves as the base. MiniMax-H3 already has a complete copy.
+# Kept OUT of ``_MIRROR_PAIRS``: that tuple is the IMAGE companion table (hub/utils/companion_assets reads it to decide
+# which cached repos an image checkpoint can strand), while these feed only the id lookups below, so mirror_repo /
+# canonical_base / prefer_ungated_mirror answer for video ids and nothing image-side changes.
+# Absent on purpose: HunyuanVideo-1.5, whose Tencent Hunyuan Community licence is limited to a Territory that excludes
+# the EU, UK and South Korea, which a public Hub repo cannot honour (the reason HunyuanImage-2.1 has no mirror either);
+# and Wan2.1-T2V-1.3B / -14B, for which no unsloth repo exists to carry the files.
 _VIDEO_GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
-    ("Lightricks/LTX-2.5-Diffusers", "unsloth/LTX-2.5-Diffusers"),
-    ("Lightricks/LTX-2.5", "unsloth/LTX-2.5"),
+    ("Lightricks/LTX-2.5-Diffusers", "unsloth/LTX-2.5-FP8"),
+    # The split single-file release (text_encoders/, vae/, latent_upscale_models/, diffusion_models/ bf16 DiTs). In the
+    # GGUF repo because the FP8 repo already carries the Diffusers pack, and one repo cannot stand for two upstreams.
+    ("Lightricks/LTX-2.5", "unsloth/LTX-2.5-GGUF"),
 )
 _VIDEO_UNGATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
-    ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", "unsloth/Wan2.2-TI2V-5B-Diffusers"),
-    ("Wan-AI/Wan2.2-T2V-A14B-Diffusers", "unsloth/Wan2.2-T2V-A14B-Diffusers"),
-    ("Wan-AI/Wan2.1-T2V-1.3B-Diffusers", "unsloth/Wan2.1-T2V-1.3B-Diffusers"),
-    ("Wan-AI/Wan2.1-T2V-14B-Diffusers", "unsloth/Wan2.1-T2V-14B-Diffusers"),
+    ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", "unsloth/Wan2.2-TI2V-5B-FP8"),
+    ("Wan-AI/Wan2.2-T2V-A14B-Diffusers", "unsloth/Wan2.2-T2V-A14B-FP8"),
     # LTX-2 is the base of the ltx-2 family AND the source of LTX-2.3's scheduler, Gemma3 text encoder and tokenizer.
-    ("Lightricks/LTX-2", "unsloth/LTX-2"),
-    ("Lightricks/LTX-2.3", "unsloth/LTX-2.3"),
+    ("Lightricks/LTX-2", "unsloth/LTX-2-FP8"),
+    # LTX-2.3 ships single files only (the bf16 dev / distilled / distilled-1.1 DiTs a pick names).
+    ("Lightricks/LTX-2.3", "unsloth/LTX-2.3-FP8"),
     ("MiniMaxAI/MiniMax-H3", "unsloth/MiniMax-H3"),
 )
 _VIDEO_MIRROR_PAIRS: tuple[tuple[str, str], ...] = _VIDEO_GATED_MIRROR_PAIRS + _VIDEO_UNGATED_MIRROR_PAIRS
@@ -1458,7 +1461,8 @@ def cache_holds_files(repo_id: str, files: Sequence[str]) -> bool:
 # Lowercased unsloth mirror -> the community repack the tables named before it. The mirrors are byte identical, so an
 # existing install that already pulled the repack holds the very same bytes under the OLD repo key: the HF cache is
 # keyed by repo id, so re-pointing the table alone would re-download up to tens of GB on upgrade and fail outright
-# offline.
+# offline. IMAGE rows only: the video rows (Comfy-Org/MiniMax-H3, QuantStack/Wan2.2-TI2V-5B-GGUF) are gone, since
+# a video load never reads from a Comfy or third-party repack, not even bytes already cached under one.
 _SD_CPP_LEGACY_SOURCES: dict[str, str] = {
     "unsloth/flux-text-encoders": "comfyanonymous/flux_text_encoders",
     "unsloth/qwen-image-comfyui": "Comfy-Org/Qwen-Image_ComfyUI",
@@ -1466,12 +1470,6 @@ _SD_CPP_LEGACY_SOURCES: dict[str, str] = {
     "unsloth/flux.2-dev-comfyui": "Comfy-Org/flux2-dev",
     "unsloth/z-image-turbo-comfyui": "Comfy-Org/z_image_turbo",
     "unsloth/flux.2-klein-9b-comfyui": "Comfy-Org/vae-text-encorder-for-flux-klein-9b",
-    "unsloth/wan2.2-ti2v-5b-gguf": "QuantStack/Wan2.2-TI2V-5B-GGUF",
-    # MiniMax-H3, where only PART of the mirror came from the repack: the two VAEs now sit beside the denoisers in the
-    # GGUF repo, and the int8 ConvRot conditioner beside the other prequantized checkpoints. That is why every caller
-    # passes the exact file list -- a denoiser the repack never carried simply misses the probe and keeps the mirror.
-    "unsloth/minimax-h3-gguf": "Comfy-Org/MiniMax-H3",
-    "unsloth/minimax-h3-fp8": "Comfy-Org/MiniMax-H3",
 }
 
 

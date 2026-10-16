@@ -461,7 +461,7 @@ def load_latent_upsampler(
 # ── the split single-file layout as its own base ────────────────────────────
 
 
-def is_ltx25_single_file_base(base: Optional[str]) -> bool:
+def is_ltx25_single_file_base(base: Optional[str], *, fold_mirror: bool = True) -> bool:
     """Whether ``base`` is the split single-file release (hub id) or a local folder with its layout (the encoder file
     and the conv VAE beside the DiTs), rather than a Diffusers pack."""
     text = (base or "").strip()
@@ -472,7 +472,10 @@ def is_ltx25_single_file_base(base: Optional[str]) -> bool:
         return (path / LTX25_SINGLE_TEXT_ENCODER).is_file() and (
             path / LTX25_SINGLE_VIDEO_VAE
         ).is_file()
-    # Its byte-identical unsloth mirror is the same release: the fetch sites hand the mirror id to the assembly.
+    if not fold_mirror:
+        return text.lower() == LTX25_SINGLE_FILE_REPO.lower()
+    # The fetch sites hand the assembly the repo carrying the release's byte-identical files (unsloth/LTX-2.5-GGUF).
+    # ``fold_mirror=False`` is for a PICK's own repo: a GGUF picked from that repo keeps the Diffusers base.
     from .diffusion_families import canonical_base
 
     return canonical_base(text).lower() == LTX25_SINGLE_FILE_REPO.lower()
@@ -501,7 +504,7 @@ def ltx25_single_file_companions(
 
 def ltx25_default_base(repo_id: Optional[str]) -> Optional[str]:
     """A DiT picked from the single-file release (or a local copy of it) uses that release as its base."""
-    return repo_id if is_ltx25_single_file_base(repo_id) else None
+    return repo_id if is_ltx25_single_file_base(repo_id, fold_mirror = False) else None
 
 
 def ltx25_companion_path(

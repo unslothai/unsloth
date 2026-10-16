@@ -802,9 +802,9 @@ LTX23_PREQUANT_RESIDENT_GB = 19.06
 
 
 # The hosted DiT REPLACES the file's own, so the file must be the official one (a same-named fine-tune would be swapped silently).
-# The official repo and its byte-identical unsloth mirror (diffusion_families._VIDEO_MIRROR_PAIRS): a pick of
-# Lightricks/LTX-2.3 is FETCHED from the mirror, so the file it lands on sits under the mirror's cache dir.
-LTX23_PREQUANT_SOURCE_REPOS = frozenset({"lightricks/ltx-2.3", "unsloth/ltx-2.3"})
+# The official repo and the unsloth repo carrying its byte-identical files (diffusion_families._VIDEO_MIRROR_PAIRS): a
+# pick of Lightricks/LTX-2.3 is FETCHED from there, so the file it lands on sits under that repo's cache dir.
+LTX23_PREQUANT_SOURCE_REPOS = frozenset({"lightricks/ltx-2.3", "unsloth/ltx-2.3-fp8"})
 _LTX23_HUB_REPO_DIRS = frozenset(
     "models--" + r.replace("/", "--") for r in LTX23_PREQUANT_SOURCE_REPOS
 )
