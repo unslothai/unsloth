@@ -37,9 +37,17 @@ CASES = [
 ]
 
 
-def _module(kind, width, train, device = "cuda", bias = True):
+def _module(
+    kind,
+    width,
+    train,
+    device = "cuda",
+    bias = True,
+):
     g = torch.Generator().manual_seed(width)
-    weight = torch.nn.Parameter(torch.randn(width, generator = g).to(device, DTYPE), requires_grad = train)
+    weight = torch.nn.Parameter(
+        torch.randn(width, generator = g).to(device, DTYPE), requires_grad = train
+    )
     b = torch.nn.Parameter(torch.randn(width, generator = g).to(device, DTYPE), requires_grad = train)
     return weight, (b if kind == "ln" and bias else None)
 
@@ -61,7 +69,12 @@ def _clear(weight, bias):
             p.grad = None
 
 
-def _inputs(width, rows = 300, device = "cuda", seed = 0):
+def _inputs(
+    width,
+    rows = 300,
+    device = "cuda",
+    seed = 0,
+):
     g = torch.Generator().manual_seed(seed)
     return (
         torch.randn(2, rows, width, generator = g).to(device, DTYPE),
@@ -80,7 +93,9 @@ def test_warm_eager_call_skips_triton_dispatch(monkeypatch, kind, width, gemma, 
     calls = []
     run = triton.runtime.jit.JITFunction.run
     monkeypatch.setattr(
-        triton.runtime.jit.JITFunction, "run", lambda self, *a, **k: calls.append(self) or run(self, *a, **k)
+        triton.runtime.jit.JITFunction,
+        "run",
+        lambda self, *a, **k: calls.append(self) or run(self, *a, **k),
     )
     got = _step(kind, gemma, x, weight, bias, dy)
     assert calls == [], [c.__name__ for c in calls]
@@ -89,12 +104,16 @@ def test_warm_eager_call_skips_triton_dispatch(monkeypatch, kind, width, gemma, 
 
 
 @pytest.mark.skipif(not getattr(torch.library, "triton_op", None), reason = "needs triton_op")
-@pytest.mark.parametrize("kind,width,gemma", [("rms", 128, False), ("rms", 4096, True), ("ln", 1000, False)])
+@pytest.mark.parametrize(
+    "kind,width,gemma", [("rms", 128, False), ("rms", 4096, True), ("ln", 1000, False)]
+)
 def test_compiled_calls_never_use_fast_launch(monkeypatch, kind, width, gemma):
     calls = []
     for module in (rms_layernorm, layernorm):
         real = module.launch
-        monkeypatch.setattr(module, "launch", lambda *a, real = real, **k: calls.append(a[0]) or real(*a, **k))
+        monkeypatch.setattr(
+            module, "launch", lambda *a, real = real, **k: calls.append(a[0]) or real(*a, **k)
+        )
     # fp32: T4 cannot trace bf16 Triton.
     weight = torch.nn.Parameter(torch.randn(width, device = "cuda"))
     bias = torch.nn.Parameter(torch.randn(width, device = "cuda"))
@@ -167,7 +186,7 @@ def test_launches_follow_the_current_stream(kind, width, gemma, train):
         assert torch.equal(a, b)
 
 
-@pytest.mark.skipif(torch.cuda.device_count() < 2, reason = "needs two GPUs")
+@pytest.mark.skipif(not has_real_cuda() or torch.cuda.device_count() < 2, reason = "needs two GPUs")
 @pytest.mark.parametrize("train", [False, True], ids = ["frozen", "trainable"])
 @pytest.mark.parametrize("kind,width,gemma", CASES)
 def test_second_device_with_first_current(kind, width, gemma, train):

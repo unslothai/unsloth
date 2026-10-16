@@ -191,6 +191,11 @@ from unsloth_zoo.gradient_checkpointing import (
     unpatch_unsloth_gradient_checkpointing,
     unpatch_unsloth_smart_gradient_checkpointing,
 )
+
+try:
+    from unsloth_zoo.gradient_checkpointing import non_reentrant_offload_hooks
+except ImportError:  # older unsloth_zoo
+    non_reentrant_offload_hooks = None
 import torch.utils.checkpoint as torch_checkpoint
 import transformers.modeling_utils as hf_modeling_utils
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
@@ -2998,6 +3003,15 @@ def _offload_activation_unpack(packed):
     return x if device is None else x.to(device, non_blocking = True)
 
 
+def _offload_activation_hooks():
+    # The zoo hooks copy on a side stream; the fallback queues the copy on the compute stream.
+    if non_reentrant_offload_hooks is not None:
+        return non_reentrant_offload_hooks()
+    return torch.autograd.graph.saved_tensors_hooks(
+        _offload_activation_pack, _offload_activation_unpack
+    )
+
+
 _NON_REENTRANT_GC_MODEL_TYPES = ("deepseek_v41",)
 
 
@@ -4466,6 +4480,13 @@ class FastBaseModel:
                     f"({type(_exc).__name__}: {_exc})."
                 )
         _install_bnb_nf4_override()
+        # head_dim 512 layers (Gemma-4 globals) otherwise fall to SDPA's efficient / math kernels.
+        # Lazy: the kernel module defines Triton autotuners, which need a driver at import.
+        from ..kernels.large_head_attention import (
+            patch_large_head_attention as _patch_large_head_attention,
+        )
+
+        _patch_large_head_attention(model)
         return _mark_requested_float32(model, user_float32), tokenizer
 
     @staticmethod
@@ -4636,6 +4657,7 @@ class FastBaseModel:
 
         # Only a regex generated here may be widened to expert submodules below.
         _target_modules_auto_regex = False
+        _target_modules_from_explicit_list = False
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,
@@ -4669,16 +4691,26 @@ class FastBaseModel:
                         "finetune_(vision|language|attention|mlp) filters; adapters "
                         "attach only where both select."
                     )
-                target_modules = get_peft_regex(
-                    model,
-                    finetune_vision_layers = finetune_vision_layers,
-                    finetune_language_layers = finetune_language_layers,
-                    finetune_attention_modules = finetune_attention_modules,
-                    finetune_mlp_modules = finetune_mlp_modules,
-                    target_modules = list(target_modules),
-                    **_audio_kwargs,
-                )
+                try:
+                    target_modules = get_peft_regex(
+                        model,
+                        finetune_vision_layers = finetune_vision_layers,
+                        finetune_language_layers = finetune_language_layers,
+                        finetune_attention_modules = finetune_attention_modules,
+                        finetune_mlp_modules = finetune_mlp_modules,
+                        target_modules = list(target_modules),
+                        **_audio_kwargs,
+                    )
+                except RuntimeError:
+                    # Mixtral's [w1, w2, w3]: block_sparse_moe has no MLP tag, so Zoo matches nothing.
+                    expert_regex = None
+                    if finetune_language_layers and finetune_mlp_modules:
+                        expert_regex = native_expert_only_regex(model, target_modules)
+                    if expert_regex is None:
+                        raise
+                    target_modules = expert_regex
                 _target_modules_auto_regex = True
+                _target_modules_from_explicit_list = True
 
         if hasattr(model, "vllm_engine"):
             if (
@@ -4723,6 +4755,7 @@ class FastBaseModel:
                 target_modules,
                 _moe_module_detect,
                 auto_regex = _target_modules_auto_regex and bool(finetune_language_layers),
+                explicit_leaves = _target_modules_from_explicit_list and bool(finetune_mlp_modules),
             )
         )
         if _expert_submodule_leaves:
@@ -4977,9 +5010,7 @@ class FastBaseModel:
                 kwargs["use_reentrant"] = False
                 if not _offload:
                     return _orig_checkpoint(function, *args, **kwargs)
-                with torch.autograd.graph.saved_tensors_hooks(
-                    _offload_activation_pack, _offload_activation_unpack
-                ):
+                with _offload_activation_hooks():
                     return _orig_checkpoint(function, *args, **kwargs)
 
             _nonre_checkpoint._unsloth_original = _orig_checkpoint

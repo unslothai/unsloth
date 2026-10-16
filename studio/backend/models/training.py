@@ -783,6 +783,32 @@ class TrainingJobResponse(BaseModel):
     error_code: Optional[str] = Field(None, description = "Stable error code if status is 'error'")
 
 
+class TokenPreviewRequest(BaseModel):
+    """How a training run would tokenize and mask a few dataset rows, or ``text`` when given. Only
+    the model's tokenizer is read, never its weights."""
+
+    model_name: str = Field(..., min_length = 1)
+    model_type: Optional[str] = None
+    load_in_4bit: bool = True
+    dataset_name: Optional[str] = None
+    subset: Optional[str] = None
+    train_split: Optional[str] = None
+    dataset_local_path: Optional[str] = None
+    dataset_known_cached: bool = False
+    format_type: str = "auto"
+    custom_format_mapping: Optional[Dict[str, Any]] = None
+    train_on_completions: bool = False
+    is_cpt: bool = False
+    max_seq_length: int = Field(2048, ge = 1, le = 1_048_576)
+    num_samples: int = Field(3, ge = 1, le = 8)
+    seed: int = 0
+    text: Optional[str] = Field(None, max_length = 200_000)
+    # The dataset's format from an earlier preview, so typed text gets the template and markers it would.
+    final_format: Optional[str] = None
+
+    _resolve_the_handles = field_validator("model_name", "dataset_name")(_resolve_inventory_handle)
+
+
 class TrainingStartRequestStatus(BaseModel):
     start_request_id: str
     job_id: str

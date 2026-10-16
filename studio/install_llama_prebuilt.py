@@ -2776,7 +2776,11 @@ def _list_rocm_gfx_targets(out: str) -> list[str]:
     return _tokens
 
 
-def _pick_rocm_gfx_target(out: str, rocr_filtered: bool = False) -> str | None:
+def _pick_rocm_gfx_target(
+    out: str,
+    rocr_filtered: bool = False,
+    hip_filtered: bool = False,
+) -> str | None:
     """Choose the gfx target rocminfo / hipinfo report for the active GPU.
 
     A bare first-match picked the wrong device on mixed APU + dGPU hosts (Strix Halo gfx1151
@@ -2789,10 +2793,22 @@ def _pick_rocm_gfx_target(out: str, rocr_filtered: bool = False) -> str | None:
     same rule and gfx906 exclusion as _amd_prefer_discrete_gfx in install.sh / studio/setup.sh;
     an all-integrated host keeps its own arch. A mask is never second-guessed at ANY value,
     including one this cannot resolve: HIP_VISIBLE_DEVICES=N is the #7624 / #7669 workaround.
+
+    hip_filtered: the output came from a HIP application (Windows hipinfo), which HIP_VISIBLE_DEVICES
+    / CUDA_VISIBLE_DEVICES already filtered and renumbered, so the selected device is survivor 0.
     """
     _tokens = _list_rocm_gfx_targets(out)
     if not _tokens:
         return None
+
+    # hipinfo is already filtered by HIP_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES (never ROCR on
+    # Windows): with either set, the selected device is survivor 0.
+    if hip_filtered:
+        _hip_vis = os.environ.get("HIP_VISIBLE_DEVICES")
+        if _hip_vis is None:
+            _hip_vis = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if _hip_vis is not None:
+            return None if _hip_vis.strip() in ("", "-1") else _tokens[0]
 
     _vis_raw = None
     # rocminfo output is already ROCr-filtered and renumbered: only HIP-layer masks index it.
@@ -3171,7 +3187,9 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                     has_rocm = True
                     # hipinfo reports "gcnArchName: gfx1100" -- extract if present
                     rocm_gfx_targets = _list_rocm_gfx_targets(_result.stdout)
-                    rocm_gfx_target = _pick_rocm_gfx_target(_result.stdout)
+                    rocm_gfx_target = _pick_rocm_gfx_target(
+                        _result.stdout, hip_filtered = _cmd[0] == "hipinfo"
+                    )
                     break
         # Note: amdhip64.dll presence alone is NOT treated as GPU evidence
         # since the HIP SDK can be installed without an AMD GPU.

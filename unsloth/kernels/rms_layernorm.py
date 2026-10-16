@@ -83,7 +83,9 @@ def _rms_backward_row(
     GEMMA: tl.constexpr,
     dW_acc,
     TRAIN_W: tl.constexpr,
+    FROM_Y: tl.constexpr,
 ):
+    # FROM_Y: X holds the forward output Y, and normed = Y / W (r still scales dX).
     dY += row_idx * dY_row_stride
     X += row_idx * X_row_stride
     r += row_idx * r_row_stride
@@ -98,7 +100,11 @@ def _rms_backward_row(
     W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
 
     inv_var = tl.load(r).to(tl.float32)
-    normed = X_row * inv_var
+    if FROM_Y:
+        # Masked lanes would be 0 / 0.
+        normed = tl.where(mask, X_row / (W_row + 1.0 if GEMMA else W_row), 0.0)
+    else:
+        normed = X_row * inv_var
     if TRAIN_W:
         # dW before the row sum so the fp32 dY row is not held across it (fewer registers, all programs resident).
         if GEMMA:
@@ -138,6 +144,7 @@ def _rms_layernorm_backward(
     LONG_INDEXING: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     TRAIN_W: tl.constexpr,
+    FROM_Y: tl.constexpr,
 ):
     """
     Fast RMS Layernorm kernel for the backward pass
@@ -172,6 +179,7 @@ def _rms_layernorm_backward(
                 GEMMA,
                 dW_acc,
                 True,
+                FROM_Y,
             )
         tl.store(dW + pid * n_cols + col_offsets, dW_acc, mask = mask)
     else:
@@ -192,6 +200,7 @@ def _rms_layernorm_backward(
             GEMMA,
             0.0,
             False,
+            FROM_Y,
         )
 
 
@@ -201,6 +210,7 @@ _rms_layernorm_backward = triton.heuristics(
         "GEMMA": lambda args: bool(args["GEMMA"]),
         "LONG_INDEXING": lambda args: bool(args["LONG_INDEXING"]),
         "TRAIN_W": lambda args: bool(args["TRAIN_W"]),
+        "FROM_Y": lambda args: bool(args["FROM_Y"]),
     }
 )(_rms_layernorm_backward)
 
@@ -334,6 +344,7 @@ def _rms_backward_rows_block(
     BLOCK_SIZE: tl.constexpr,
     ROWS: tl.constexpr,
     WARPS: tl.constexpr,
+    FROM_Y: tl.constexpr,
 ):
     col_offsets = tl.arange(0, BLOCK_SIZE)
     row_mask = rows < n_rows
@@ -349,7 +360,11 @@ def _rms_backward_rows_block(
     W_row = tl.load(W + col_offsets, mask = col_mask, other = 0).to(tl.float32)
 
     inv_var = tl.load(r + rows, mask = row_mask, other = 0).to(tl.float32)
-    normed = X_rows * inv_var[:, None]
+    if FROM_Y:
+        normed = X_rows / (W_row[None, :] + 1.0 if GEMMA else W_row[None, :])
+        normed = tl.where(mask, normed, 0.0)
+    else:
+        normed = X_rows * inv_var[:, None]
 
     if GEMMA:
         dY_W = dY_rows * (W_row[None, :] + 1.0)
@@ -391,6 +406,7 @@ def _rms_layernorm_backward_rows(
     WARPS: tl.constexpr,
     LONG_INDEXING: tl.constexpr,
     TRAIN_W: tl.constexpr,
+    FROM_Y: tl.constexpr,
 ):
     pid = tl.program_id(0)
     if LONG_INDEXING:
@@ -416,6 +432,7 @@ def _rms_layernorm_backward_rows(
                 BLOCK_SIZE,
                 ROWS,
                 WARPS,
+                FROM_Y,
             )
         col_offsets = tl.arange(0, BLOCK_SIZE)
         tl.store(dW + pid * n_cols + col_offsets, dW_acc, mask = col_offsets < n_cols)
@@ -436,6 +453,7 @@ def _rms_layernorm_backward_rows(
             BLOCK_SIZE,
             ROWS,
             WARPS,
+            FROM_Y,
         )
 
 
@@ -709,6 +727,7 @@ def _rms_backward(
     wrap,
     multirow = None,
     train_w = False,
+    from_y = False,
 ):
     # Non-Gemma writes dX over dY (the kernel ignores dX); Gemma writes into dX.
     n_rows, n_cols = dY.shape
@@ -742,6 +761,7 @@ def _rms_backward(
                     WARPS = WARPS,
                     LONG_INDEXING = long,
                     TRAIN_W = train_w,
+                    FROM_Y = from_y,
                 ),
                 device,
                 num_warps = num_warps,
@@ -778,6 +798,7 @@ def _rms_backward(
             LONG_INDEXING = long,
             BLOCK_SIZE = BLOCK_SIZE,
             TRAIN_W = train_w,
+            FROM_Y = from_y,
         ),
         device,
         num_warps = num_warps,
@@ -807,6 +828,29 @@ def _rms_sum_partials(partials, W, wrap):
 
 _eager_kernel = lambda kernel: kernel
 
+# Opt-in: save the output Y (which LoRA_QKV / LoRA_MLP already hold) instead of the input X and
+# recompute normed = Y / W in backward. Saves one T x D activation per norm; dX is no longer bitwise.
+_SAVE_OUTPUT = os.environ.get("UNSLOTH_RMSNORM_SAVE_OUTPUT", "0") == "1"
+
+
+def _save_output_ok(W, gemma, dtype):
+    # Y / W needs |W| (|1 + W| for Gemma) clear of 0 and fp16 Y not subnormal. Cached per weight version.
+    key = (W._version, W.data_ptr(), gemma, dtype)
+    cached = getattr(W, "_unsloth_save_output", None)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    if W.device.type == "cuda" and torch.cuda.is_current_stream_capturing():
+        # .item() would sync inside CUDA graph capture: save X for this call, check eagerly later.
+        return False
+    with torch.no_grad():
+        w = W.float() + 1.0 if gemma else W.float()
+        ok = bool((w.isfinite().all() & (w.abs().amin() >= 16 * torch.finfo(dtype).tiny)).item())
+    try:
+        W._unsloth_save_output = (key, ok)
+    except Exception:
+        pass
+    return ok
+
 
 class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
@@ -816,6 +860,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         W: torch.Tensor,
         eps: float,
         gemma: bool = False,
+        save_output: bool = False,
     ):
         shape = X.shape
         dim: int = shape[-1]
@@ -826,8 +871,22 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
             Y, r = _rms_forward(X, W, eps, gemma, _eager_kernel)
         ctx.eps = eps
         ctx.GEMMA = gemma
-        ctx.save_for_backward(X, W, r)
-        return Y.view(*shape)
+        Y = Y.view(*shape)
+        # save_output: the caller guarantees nothing writes into Y (an untracked Triton write would
+        # corrupt dX silently). Only frozen W: a trained W changes every step.
+        ctx.FROM_Y = (
+            save_output
+            and _SAVE_OUTPUT
+            and not ctx.needs_input_grad[1]
+            and _save_output_ok(W, gemma, Y.dtype)
+        )
+        ctx.save_for_backward(Y if ctx.FROM_Y else X, W, r)
+        if ctx.FROM_Y:
+            # LoRA_QKV / LoRA_MLP then do not overwrite Y with their dX, nor views of it (tiled MLP).
+            Y._unsloth_rmsnorm_saved = True
+            if Y._base is not None:
+                Y._base._unsloth_rmsnorm_saved = True
+        return Y
 
     @staticmethod
     def backward(ctx, dY: torch.Tensor):
@@ -835,6 +894,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         dim: int = shape[-1]
         dY = dY.reshape(-1, dim).contiguous()
         X, W, r = ctx.saved_tensors
+        X = X.view(-1, dim)
         dX = torch.empty_like(dY) if ctx.GEMMA else dY
         with torch_gpu_device(dY.device):
             dW = _rms_backward(
@@ -847,9 +907,10 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
                 ctx.GEMMA,
                 _eager_kernel,
                 train_w = ctx.needs_input_grad[1],
+                from_y = ctx.FROM_Y,
             )
         dX = dX.view(*shape)
-        return dX, dW, None, None
+        return dX, dW, None, None, None
 
 
 # Compiled graphs take these ops: same kernels, fresh outputs (the Function writes dX over dY).
@@ -946,27 +1007,34 @@ if _TRACEABLE:
 
 
 @torch.compiler.disable
-def _fast_rms_layernorm_untraced(X, W, eps, gemma):
-    return Fast_RMS_Layernorm.apply(X, W, eps, gemma)
+def _fast_rms_layernorm_untraced(
+    X,
+    W,
+    eps,
+    gemma,
+    save_output = False,
+):
+    return Fast_RMS_Layernorm.apply(X, W, eps, gemma, save_output)
 
 
 def fast_rms_layernorm(
     layernorm,
     X: torch.Tensor,
     gemma: bool = False,
+    save_output: bool = False,
 ):
     W: torch.Tensor = layernorm.weight
     eps: float = (
         layernorm.variance_epsilon if hasattr(layernorm, "variance_epsilon") else layernorm.eps
     )
     if not torch.compiler.is_compiling():
-        return Fast_RMS_Layernorm.apply(X, W, eps, gemma)
+        return Fast_RMS_Layernorm.apply(X, W, eps, gemma, save_output)
     if (
         not _TRACEABLE
         or X.device.type != "cuda"
         or (X.dtype == torch.bfloat16 and not _BF16_TRACEABLE)
     ):
-        return _fast_rms_layernorm_untraced(X, W, eps, gemma)
+        return _fast_rms_layernorm_untraced(X, W, eps, gemma, save_output)
     shape = X.shape
     Y, _ = torch.ops.unsloth.rms_layernorm(
         X.reshape(-1, shape[-1]).contiguous(), W.contiguous(), eps, gemma

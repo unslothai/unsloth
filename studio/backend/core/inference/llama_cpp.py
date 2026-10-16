@@ -8194,11 +8194,27 @@ _INKLING_REASONING_EFFORT = {
 }
 
 
+# Muse Spark's template accepts only low/medium/high/xhigh and raise_exception()s on
+# anything else, so a "none" or "max" request would fail the render. It cannot turn
+# reasoning off: "none" and "minimal" take the smallest budget, "max" the largest.
+_MUSE_SPARK_REASONING_EFFORT = {
+    "none": "low",
+    "minimal": "low",
+    "max": "xhigh",
+}
+
+
 def _coerce_reasoning_effort(architecture, kwargs: dict) -> dict:
     if architecture == "inkling":
         effort = kwargs.get("reasoning_effort")
         if isinstance(effort, str):
             mapped = _INKLING_REASONING_EFFORT.get(effort.strip().lower())
+            if mapped is not None:
+                kwargs["reasoning_effort"] = mapped
+    elif architecture == "muse-spark":
+        effort = kwargs.get("reasoning_effort")
+        if isinstance(effort, str):
+            mapped = _MUSE_SPARK_REASONING_EFFORT.get(effort.strip().lower())
             if mapped is not None:
                 kwargs["reasoning_effort"] = mapped
     return kwargs
@@ -13732,10 +13748,18 @@ class LlamaCppBackend:
             return {}
 
     @classmethod
-    def _cuda_sm_gate_error(cls, binary: Optional[str] = None) -> Optional[str]:
+    def _cuda_sm_gate_error(
+        cls,
+        binary: Optional[str] = None,
+        gpu_indices: Optional[Iterable[int]] = None,
+    ) -> Optional[str]:
         """Error message when every visible GPU is OLDER than the oldest arch the
         installed CUDA bundle was built for, or None to proceed. Fails open on
         unknown coverage or caps.
+
+        ``gpu_indices`` (physical ids the child is pinned to) tightens "every
+        visible" to "any pinned": the child places work on each pinned card, so one
+        too-old card aborts the load even beside a supported one.
 
         Only the too-old direction is broken. The bundles compile plain arch
         numbers, so each fatbin carries PTX beside its cubins, and the driver JITs
@@ -13754,7 +13778,12 @@ class LlamaCppBackend:
             return None
         caps = cls._cuda_compute_caps()
         oldest = min(supported)
-        if not caps or any(sm >= oldest for sm in caps.values()):
+        if gpu_indices is not None:
+            pinned = {int(i) for i in gpu_indices}
+            caps = {idx: sm for idx, sm in caps.items() if idx in pinned and sm < oldest}
+        elif any(sm >= oldest for sm in caps.values()):
+            return None
+        if not caps:
             return None
         present = ", ".join(f"GPU {idx} is sm_{sm}" for idx, sm in sorted(caps.items()))
         # The updater cannot replace a pinned LLAMA_SERVER_PATH or a llama-server
@@ -13764,6 +13793,30 @@ class LlamaCppBackend:
             f"newer, but {present} -- it was likely installed on a machine with a "
             f"newer GPU, so {cls._runtime_remedy(binary)}."
         )
+
+    @classmethod
+    def _cuda_sm_gate_keep(
+        cls, binary: Optional[str], gpus: list[tuple[int, int, int]]
+    ) -> list[tuple[int, int, int]]:
+        """``gpus`` minus the CUDA cards older than the installed bundle's oldest
+        arch, so auto placement cannot pin one beside a supported card (RTX 4090 +
+        GTX 1060 under an sm_75+ build). Unchanged on unknown coverage or caps, and
+        when no card survives: the gate then refuses with its own message."""
+        supported = cls._installed_llama_cuda_sms(binary)
+        if supported is None or not gpus:
+            return gpus
+        caps = cls._cuda_compute_caps()
+        oldest = min(supported)
+        kept = [g for g in gpus if caps.get(g[0], oldest) >= oldest]
+        if not kept or len(kept) == len(gpus):
+            return gpus
+        for idx, _free, _total in gpus:
+            if caps.get(idx, oldest) < oldest:
+                logger.warning(
+                    f"Skipping GPU {idx} (sm_{caps[idx]}): installed llama.cpp "
+                    f"build only has GPU code for sm_{oldest} and newer"
+                )
+        return kept
 
     @classmethod
     def _arch_gate_survivors(cls, binary: Optional[str] = None) -> list[int]:
@@ -15119,6 +15172,8 @@ class LlamaCppBackend:
                 gpus.sort(key = lambda g: g[0])
                 if gpus:
                     LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
+                    if for_llama_server:
+                        gpus = LlamaCppBackend._cuda_sm_gate_keep(binary, gpus)
                     # The CLI row is the carve-out, not the pool. Discrete rows unchanged.
                     return LlamaCppBackend._widen_integrated_cuda_rows(gpus)
         except Exception as e:
@@ -15128,6 +15183,8 @@ class LlamaCppBackend:
         nvml_gpus = LlamaCppBackend._get_gpu_memory_nvml()
         if nvml_gpus:
             LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
+            if for_llama_server:
+                nvml_gpus = LlamaCppBackend._cuda_sm_gate_keep(binary, nvml_gpus)
             # nvidia-smi IS NVML: same carve-out, same PCI indexing, same correction.
             return LlamaCppBackend._widen_integrated_cuda_rows(nvml_gpus)
 
@@ -19738,7 +19795,10 @@ class LlamaCppBackend:
                                     self._feed_forward_length = max(
                                         self._feed_forward_length_by_layer
                                     )
-                                elif attr in ("expert_used_count", "expert_feed_forward_length") and val_a:
+                                elif (
+                                    attr in ("expert_used_count", "expert_feed_forward_length")
+                                    and val_a
+                                ):
                                     # Per-layer on Nemotron 3.5 Bolt; the widest layer sizes the graph.
                                     setattr(self, f"_{attr}", max(int(x) for x in val_a))
                             else:
@@ -31798,8 +31858,14 @@ class LlamaCppBackend:
                 # read as GPU-bearing there, only the resolved argv knows. Still
                 # before every spawn below and outside the fit's try/except, so the
                 # refusal cannot be swallowed into the --fit on fallback.
+                # Pinned ids are checked against nvidia-smi's caps only in its index space
+                # (torch-fallback ordinals are not); otherwise "any visible", as before.
+                _sm_gate_ids_are_pci = not is_vulkan_backend and _p2p_ids_are_pci
                 if not (_cpu_only_zero_offload or _arch_gate_forced_cpu):
-                    _sm_gate = self._cuda_sm_gate_error(binary)
+                    # Pinned launches check the pinned cards, not "any visible".
+                    _sm_gate = self._cuda_sm_gate_error(
+                        binary, gpu_indices if _sm_gate_ids_are_pci else None
+                    )
                     if _sm_gate:
                         raise RuntimeError(_sm_gate)
                 # The arch gate emptying the pool lands here for the same reason
@@ -31921,6 +31987,11 @@ class LlamaCppBackend:
                             "numbering; fitted the pinned mask to them: %s",
                             _companion_widen,
                         )
+                        # The widened mask can add a card the gate above never saw.
+                        if _sm_gate_ids_are_pci:
+                            _sm_gate = self._cuda_sm_gate_error(binary, _pin_ids)
+                            if _sm_gate:
+                                raise RuntimeError(_sm_gate)
                     self._emit_child_gpu_visibility(
                         env,
                         LlamaCppBackend._child_visibility_for(_pin_ids),

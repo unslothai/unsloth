@@ -425,9 +425,14 @@ def test_diffusion_capability_labeled_image_video_gen():
         "features/hub/lib/model-type-filter.ts",
         "features/hub/lib/view-models.ts",
     ):
-        src = _read(rel)
-        assert "Image to text" not in src, rel
-        assert "Image/video gen" in src, rel
+        assert "Image to text" not in _read(rel), rel
+    assert '{ value: "diffusion", label: "Image/video gen" }' in _read(
+        "features/hub/lib/model-type-filter.ts"
+    )
+    # The Hub filter splits the capability into its two generator kinds (#13749).
+    hub = _read("features/hub/lib/view-models.ts")
+    assert '{ value: "image-gen", label: "Image gen" }' in hub
+    assert '{ value: "video-gen", label: "Video gen" }' in hub
 
 
 def test_active_model_config_round_trips_gpu_fields():
@@ -2772,6 +2777,20 @@ def test_model_config_keeps_storage_and_load_identities_separate():
     assert "model_path: target.id," in config_page
 
 
+def _python_regex_source(source: str, name: str) -> str:
+    """The pattern string a module compiles into `name`, adjacent literals joined as Python joins them."""
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == name for t in node.targets)
+            and isinstance(node.value, ast.Call)
+            and node.value.args
+            and isinstance(node.value.args[0], ast.Constant)
+        ):
+            return node.value.args[0].value
+    raise AssertionError(f"{name} is no longer a re.compile of a literal pattern")
+
+
 def test_backfill_splits_a_quant_suffix_the_way_the_backend_does():
     """Split quant suffixes the way the backend does: a colon in a path is not a quant separator."""
     identity = " ".join(_read("features/model-picker/model-config/model-identity.ts").split())
@@ -2789,9 +2808,23 @@ def test_backfill_splits_a_quant_suffix_the_way_the_backend_does():
     assert "def split_quant_suffix(" in backend, "the rule this mirrors"
     assert "_BPW_SUFFIX" in backend and "bpw" in identity
     assert "extract_quant_label(filename).casefold()" in backend, "the label rule"
-    quants = _read_backend("core/inference/llama_cpp.py")
-    for token in ("MXFP", "IQ", "TQ", "BF16", "F16", "F32"):
-        assert token in quants and token in identity, token
+    # The known-quant pattern itself, not tokens from it: #13899 widened MXFP to (?:MX|NV)FP in all
+    # three places, which a literal "MXFP" check read as a drift. What has to hold is that the
+    # frontend, the hub scanner and the llama.cpp backend spell one pattern, and that it still
+    # recognises each quant family.
+    patterns = {
+        "llama_cpp.py": _python_regex_source(
+            _read_backend("core/inference/llama_cpp.py"), "_GGUF_KNOWN_QUANT_RE"
+        ),
+        "gguf.py": _python_regex_source(_read_backend("hub/utils/gguf.py"), "_GGUF_QUANT_RE"),
+        "model-identity.ts": re.search(r'const QUANT_TOKEN_SOURCE =\s*"([^"]+)";', identity).group(
+            1
+        ),
+    }
+    assert len(set(patterns.values())) == 1, patterns
+    known = re.compile(f"^(?:{patterns['gguf.py']})$", re.IGNORECASE)
+    for quant in ("MXFP4", "NVFP4", "IQ4_XS", "TQ1_0", "Q4_K_M", "Q8_0", "BF16", "F16", "F32"):
+        assert known.match(quant), quant
     gguf = _read_backend("hub/utils/gguf.py")
     assert "def extract_quant_label(" in gguf and "def _gguf_stem(" in gguf
     assert "function ggufQuantLabel(" in identity and "function ggufStem(" in identity

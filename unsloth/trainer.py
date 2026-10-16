@@ -940,7 +940,19 @@ class UnslothTrainingArguments(TrainingArguments):
         self.q_galore_config = q_galore_config
         self.embedding_learning_rate = embedding_learning_rate
         self.loraplus_lr_ratio = loraplus_lr_ratio
+        # Not fields of the pristine SFTConfig captured at import.
+        context_parallel = {
+            "context_parallel_size": kwargs.pop("context_parallel_size", 1),
+            "context_parallel_backend": kwargs.pop("context_parallel_backend", "ring"),
+            "context_parallel_rotate_method": kwargs.pop(
+                "context_parallel_rotate_method", "allgather"
+            ),
+        }
+        fields = getattr(TrainingArguments, "__dataclass_fields__", {})
+        kwargs.update({k: v for k, v in context_parallel.items() if k in fields})
         super().__init__(*args, **kwargs)
+        for key, value in context_parallel.items():
+            setattr(self, key, value)
         self.embedding_learning_rate = embedding_learning_rate
         self.loraplus_lr_ratio = loraplus_lr_ratio
         if self.eval_steps is not None and self.eval_strategy != "steps":
@@ -1851,12 +1863,16 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 # several classes, so a "yes" from the resolved one is not proof about the
                 # instance. A correct "no" has already turned both flags off, which is the
                 # condition the post-init check skips on, so leaving it armed is free.
+        is_ring_context_parallel = (getattr(config_arg, "context_parallel_size", 1) or 1) > 1 and (
+            getattr(config_arg, "context_parallel_backend", None) or "ring"
+        ) == "ring"
         # Read before __init__: the compiled trainer ends it with model.for_inference(), which sets the flag.
         eval_logits_wanted = os.environ.get(
             "UNSLOTH_RETURN_LOGITS", "0"
         ) == "1" or _wants_eval_logits(original_init, args, kwargs)
         blocked = (
             (data_collator is not None)
+            or is_ring_context_parallel
             or (is_processor and not processor_text_only)
             or is_auto_processor_vlm
             or is_vision_dataset
@@ -1872,6 +1888,9 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 setattr(config_arg, "packing", False)
             if hasattr(config_arg, "padding_free"):
                 setattr(config_arg, "padding_free", False)
+        # TRL resolves eval_packing on its own; packed eval batches would hit ring attention's varlen refusal.
+        if is_ring_context_parallel and getattr(config_arg, "eval_packing", None):
+            setattr(config_arg, "eval_packing", False)
 
         if blocked and requested_pack:
             reason = "custom data collator"
@@ -1887,6 +1906,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = "hybrid linear-attention model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
+            elif is_ring_context_parallel:
+                reason = "ring context parallelism"
             elif forward_rejects_packing:
                 # Name the real blocker, else this falls through to the
                 # UNSLOTH_RETURN_LOGITS branch and points at an unset flag. For a string
