@@ -533,7 +533,6 @@ class TestOrdinaryHostsKeepTheirReadings:
             assert LlamaCppBackend._get_gpu_memory() == [(0, 14000, A100_MIB)]
         assert calls["list"] == 1
 
-
     def test_a_raised_physical_count_probe_leaves_mig_unknown(self, host, monkeypatch, calls):
         host([(GPU0, [])], [14000], None)
         assert nvidia.get_mig_gpu_indices_or_none() == frozenset()
