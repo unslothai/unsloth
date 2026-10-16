@@ -102,6 +102,8 @@ enum Upstream {
 enum Refusal {
     Private,
     Unreachable,
+    /// The proxy itself can't be reached, so the next route may be tried.
+    ProxyDown,
 }
 
 fn parse(head: &str) -> Option<Request> {
@@ -148,16 +150,29 @@ fn parse(head: &str) -> Option<Request> {
     })
 }
 
-/// The system's proxy settings, in order: proxy variables, else macOS or Windows settings.
-fn system_proxies() -> Vec<Matcher> {
+/// How the system routes pages.
+#[derive(Default)]
+struct Proxies {
+    /// A PAC script, which decides before `fixed` unless it can't be fetched or run.
+    #[cfg(target_os = "macos")]
+    pac: Option<pac::Pac>,
+    /// Fixed settings, in order: proxy variables, else macOS or Windows settings.
+    fixed: Vec<Matcher>,
+}
+
+fn system_proxies() -> Proxies {
     #[cfg(windows)]
     if let Some(proxies) = windows_per_protocol() {
-        return vec![proxies];
+        return Proxies {
+            fixed: vec![proxies],
+        };
     }
     #[cfg(target_os = "macos")]
     let proxies = macos_proxies(|name| std::env::var(name).ok());
     #[cfg(not(target_os = "macos"))]
-    let proxies = vec![Matcher::from_system()];
+    let proxies = Proxies {
+        fixed: vec![Matcher::from_system()],
+    };
     proxies
 }
 
@@ -174,12 +189,7 @@ struct Settings {
 /// overrides its own setting.
 #[cfg(any(target_os = "macos", windows, test))]
 fn with_variables(settings: Settings, env: &impl Fn(&str) -> Option<String>) -> Matcher {
-    let variable = |names: [&str; 2]| {
-        names
-            .into_iter()
-            .filter_map(env)
-            .find(|value| !value.is_empty())
-    };
+    let variable = |names| variable(env, names);
     Matcher::builder()
         .all(variable(["ALL_PROXY", "all_proxy"]).unwrap_or_default())
         .http(variable(["HTTP_PROXY", "http_proxy"]).unwrap_or(settings.http))
@@ -188,10 +198,18 @@ fn with_variables(settings: Settings, env: &impl Fn(&str) -> Option<String>) -> 
         .build()
 }
 
-/// macOS' proxy settings, read here rather than by hyper-util, which skips the SOCKS proxy and the
-/// exceptions and can't parse an IPv6 host. The SOCKS proxy serves what HTTP(S) ones don't cover.
+#[cfg(any(target_os = "macos", windows, test))]
+fn variable(env: &impl Fn(&str) -> Option<String>, names: [&str; 2]) -> Option<String> {
+    names
+        .into_iter()
+        .filter_map(env)
+        .find(|value| !value.is_empty())
+}
+
+/// macOS' proxy settings, read here rather than by hyper-util, which skips PAC, the SOCKS proxy and
+/// the exceptions and can't parse an IPv6 host. The SOCKS proxy serves what HTTP(S) ones don't cover.
 #[cfg(target_os = "macos")]
-fn macos_proxies(env: impl Fn(&str) -> Option<String>) -> Vec<Matcher> {
+fn macos_proxies(env: impl Fn(&str) -> Option<String>) -> Proxies {
     use system_configuration::core_foundation::array::CFArray;
     use system_configuration::core_foundation::base::{CFType, TCFType};
     use system_configuration::core_foundation::number::CFNumber;
@@ -203,21 +221,39 @@ fn macos_proxies(env: impl Fn(&str) -> Option<String>) -> Vec<Matcher> {
         .build()
         .and_then(|store| store.get_proxies())
     else {
-        return vec![with_variables(Settings::default(), &env)];
+        return Proxies {
+            pac: None,
+            fixed: vec![with_variables(Settings::default(), &env)],
+        };
+    };
+    let number = |key| {
+        proxies
+            .find(key)
+            .and_then(|value| value.downcast::<CFNumber>())
+            .and_then(|value| value.to_i32())
+    };
+    let text = |key| {
+        proxies
+            .find(key)
+            .and_then(|value| value.downcast::<CFString>())
+            .map(|value| value.to_string())
     };
     let proxy = |enable: CFStringRef, host: CFStringRef, port: CFStringRef| {
-        let number = |key| {
-            proxies
-                .find(key)
-                .and_then(|value| value.downcast::<CFNumber>())
-                .and_then(|value| value.to_i32())
-        };
         if number(enable) != Some(1) {
             return None;
         }
-        let host = proxies.find(host)?.downcast::<CFString>()?.to_string();
-        Some(authority(&host, number(port)))
+        Some(authority(&text(host)?, number(port)))
     };
+    let pac = unsafe {
+        if number(kSCPropNetProxiesProxyAutoConfigEnable) != Some(1) {
+            None
+        } else {
+            text(kSCPropNetProxiesProxyAutoConfigJavaScript)
+                .map(|script| pac::Source::Script(script.into()))
+                .or_else(|| text(kSCPropNetProxiesProxyAutoConfigURLString).map(pac::Source::Url))
+        }
+    };
+    let pac = pac.map(|source| pac::Pac::new(source, &env));
     let exceptions = proxies
         .find(unsafe { kSCPropNetProxiesExceptionsList })
         .and_then(|value| value.downcast::<CFArray>())
@@ -254,14 +290,10 @@ fn macos_proxies(env: impl Fn(&str) -> Option<String>) -> Vec<Matcher> {
             kSCPropNetProxiesSOCKSPort,
         )
     };
-    let no = ["NO_PROXY", "no_proxy"]
-        .into_iter()
-        .filter_map(&env)
-        .find(|value| !value.is_empty())
-        .unwrap_or_else(|| settings.bypass.clone());
-    let mut matchers = vec![with_variables(settings, &env)];
-    matchers.extend(socks.map(|address| socks_fallback(&address, &no)));
-    matchers
+    let no = variable(&env, ["NO_PROXY", "no_proxy"]).unwrap_or_else(|| settings.bypass.clone());
+    let mut fixed = vec![with_variables(settings, &env)];
+    fixed.extend(socks.map(|address| socks_fallback(&address, &no)));
+    Proxies { pac, fixed }
 }
 
 /// `host[:port]`, with an IPv6 host bracketed as a URI needs.
@@ -345,18 +377,35 @@ fn per_protocol(
     Some(with_variables(settings, &env))
 }
 
-/// The first system proxy that covers `request`. HTTP and SOCKS5 proxies are chained.
-fn system_proxy(proxies: &[Matcher], request: &Request) -> Option<Upstream> {
-    let destination: http::Uri = match &request.forward {
-        Some(forward) => forward.url.as_str().parse().ok()?,
+/// Where `request` may go, in order: through a system proxy, or direct (`None`).
+async fn routes(proxies: &Proxies, request: &Request) -> Vec<Option<Upstream>> {
+    let destination: Option<http::Uri> = match &request.forward {
+        Some(forward) => forward.url.as_str().parse().ok(),
         // Tunnels carry TLS, so they take the HTTPS proxy.
         None => format!("https://{}:{}/", request.host, request.port)
             .parse()
-            .ok()?,
+            .ok(),
     };
+    let Some(destination) = destination else {
+        return vec![None];
+    };
+    #[cfg(target_os = "macos")]
+    if let Some(pac) = proxies.pac.as_ref().filter(|pac| pac.decides(&destination)) {
+        // As Safari asks, without a default port (CFNetwork drops the path and query itself).
+        let url = Url::parse(&destination.to_string())
+            .map_or_else(|_| destination.to_string(), String::from);
+        if let Some(routes) = pac::routes(pac, &url).await {
+            return routes;
+        }
+    }
+    vec![system_proxy(&proxies.fixed, &destination)]
+}
+
+/// The first fixed setting that covers `destination`. HTTP and SOCKS5 proxies are chained.
+fn system_proxy(proxies: &[Matcher], destination: &http::Uri) -> Option<Upstream> {
     let intercept = proxies
         .iter()
-        .find_map(|proxies| proxies.intercept(&destination))?;
+        .find_map(|proxies| proxies.intercept(destination))?;
     let uri = intercept.uri();
     let address = |default| {
         format!(
@@ -446,12 +495,18 @@ async fn connect_via(
         Upstream::Http { address, auth } => (address, auth),
         Upstream::Socks { address, .. } => (address, &None),
     };
-    tokio::time::timeout(TIMEOUT, async {
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    // Running out of time before the proxy answers the dial means it's down: the next route may go.
+    let mut stream = tokio::time::timeout_at(deadline, async {
         refuse_private_answers(&host, request.port).await?;
         let addresses = tokio::net::lookup_host(address.as_str())
             .await
-            .map_err(|_| Refusal::Unreachable)?;
-        let mut stream = dial(addresses).await?;
+            .map_err(|_| Refusal::ProxyDown)?;
+        dial(addresses).await.map_err(|_| Refusal::ProxyDown)
+    })
+    .await
+    .unwrap_or(Err(Refusal::ProxyDown))?;
+    tokio::time::timeout_at(deadline, async {
         if let Upstream::Socks { auth, .. } = upstream {
             socks_connect(&mut stream, &host, request.port, auth.as_ref())
                 .await
@@ -592,7 +647,7 @@ async fn read_head(client: &mut TcpStream) -> Option<(String, Vec<u8>)> {
     }
 }
 
-async fn serve(mut client: TcpStream, proxies: Vec<Matcher>) {
+async fn serve(mut client: TcpStream, proxies: Proxies) {
     let Ok(Some((head, rest))) = tokio::time::timeout(TIMEOUT, read_head(&mut client)).await else {
         return;
     };
@@ -600,13 +655,19 @@ async fn serve(mut client: TcpStream, proxies: Vec<Matcher>) {
         let _ = reply(&mut client, "400 Bad Request").await;
         return;
     };
-    let via = system_proxy(&proxies, &request);
-    let opened = match &via {
-        Some(via) => connect_via(via, &request).await,
-        None => connect(&request.host, request.port)
-            .await
-            .map(|stream| (stream, Vec::new())),
-    };
+    let (mut via, mut opened) = (None, Err(Refusal::Unreachable));
+    for route in routes(&proxies, &request).await {
+        opened = match &route {
+            Some(route) => connect_via(route, &request).await,
+            None => connect(&request.host, request.port)
+                .await
+                .map(|stream| (stream, Vec::new())),
+        };
+        via = route;
+        if !matches!(opened, Err(Refusal::ProxyDown)) {
+            break;
+        }
+    }
     let (mut upstream, early) = match opened {
         Ok(opened) => opened,
         Err(Refusal::Private) => {
@@ -614,7 +675,7 @@ async fn serve(mut client: TcpStream, proxies: Vec<Matcher>) {
             let _ = reply(&mut client, "403 Forbidden").await;
             return;
         }
-        Err(Refusal::Unreachable) => {
+        Err(Refusal::Unreachable | Refusal::ProxyDown) => {
             let _ = reply(&mut client, "502 Bad Gateway").await;
             return;
         }
@@ -642,6 +703,199 @@ async fn serve(mut client: TcpStream, proxies: Vec<Matcher>) {
 async fn reply(client: &mut TcpStream, status: &str) -> std::io::Result<()> {
     let response = format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     client.write_all(response.as_bytes()).await
+}
+
+/// PAC scripts, fetched directly (they're often served by a local proxy app or the intranet) and
+/// run by CFNetwork, as Safari runs them.
+#[cfg(target_os = "macos")]
+mod pac {
+    use super::{authority, variable, Upstream, ADDRESS_TIMEOUT};
+    use hyper_util::client::proxy::matcher::Matcher;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use system_configuration::core_foundation::array::{CFArray, CFArrayRef};
+    use system_configuration::core_foundation::base::{CFType, TCFType};
+    use system_configuration::core_foundation::dictionary::CFDictionary;
+    use system_configuration::core_foundation::error::{CFError, CFErrorRef};
+    use system_configuration::core_foundation::number::CFNumber;
+    use system_configuration::core_foundation::string::{CFString, CFStringRef};
+    use system_configuration::core_foundation::url::{CFURLCreateWithString, CFURLRef, CFURL};
+    use tokio::sync::Mutex;
+
+    const SCRIPT_TTL: Duration = Duration::from_secs(60);
+
+    #[link(name = "CFNetwork", kind = "framework")]
+    extern "C" {
+        fn CFNetworkCopyProxiesForAutoConfigurationScript(
+            script: CFStringRef,
+            url: CFURLRef,
+            error: *mut CFErrorRef,
+        ) -> CFArrayRef;
+        static kCFProxyTypeKey: CFStringRef;
+        static kCFProxyHostNameKey: CFStringRef;
+        static kCFProxyPortNumberKey: CFStringRef;
+        static kCFProxyTypeNone: CFStringRef;
+        static kCFProxyTypeHTTP: CFStringRef;
+        static kCFProxyTypeHTTPS: CFStringRef;
+        static kCFProxyTypeSOCKS: CFStringRef;
+    }
+
+    pub(super) enum Source {
+        Url(String),
+        Script(Arc<str>),
+    }
+
+    pub(super) struct Pac {
+        source: Source,
+        /// Proxy variables, which override the script for their protocols.
+        variables: Matcher,
+        /// NO_PROXY, which keeps its hosts from the script: a stand-in proxy minus the list.
+        bypass: Matcher,
+    }
+
+    impl Pac {
+        pub(super) fn new(source: Source, env: &impl Fn(&str) -> Option<String>) -> Pac {
+            let variable = |names| variable(env, names).unwrap_or_default();
+            Pac {
+                source,
+                variables: Matcher::builder()
+                    .all(variable(["ALL_PROXY", "all_proxy"]))
+                    .http(variable(["HTTP_PROXY", "http_proxy"]))
+                    .https(variable(["HTTPS_PROXY", "https_proxy"]))
+                    .build(),
+                bypass: Matcher::builder()
+                    .all("http://pac.invalid")
+                    .no(variable(["NO_PROXY", "no_proxy"]))
+                    .build(),
+            }
+        }
+
+        /// Whether the script routes `destination`, which the fixed settings route otherwise.
+        pub(super) fn decides(&self, destination: &http::Uri) -> bool {
+            self.variables.intercept(destination).is_none()
+                && self.bypass.intercept(destination).is_some()
+        }
+    }
+
+    /// The script's routes for `url`, `None` meaning direct; nothing if it can't be had or run.
+    pub(super) async fn routes(pac: &Pac, url: &str) -> Option<Vec<Option<Upstream>>> {
+        let script = match &pac.source {
+            Source::Url(location) => script(location).await?,
+            Source::Script(script) => script.clone(),
+        };
+        let url = url.to_string();
+        let run = tokio::task::spawn_blocking(move || evaluate(&script, &url));
+        tokio::time::timeout(ADDRESS_TIMEOUT, run)
+            .await
+            .ok()?
+            .ok()?
+    }
+
+    struct Fetched {
+        location: String,
+        at: Instant,
+        script: Option<Arc<str>>,
+    }
+
+    async fn script(location: &str) -> Option<Arc<str>> {
+        // Held across the fetch, so a page's many connections fetch the script once.
+        static CACHE: Mutex<Option<Fetched>> = Mutex::const_new(None);
+        let mut cache = CACHE.lock().await;
+        if let Some(fetched) = &*cache {
+            if fetched.location == location && fetched.at.elapsed() < SCRIPT_TTL {
+                return fetched.script.clone();
+            }
+        }
+        let script = fetch(location).await.map(Arc::from);
+        if script.is_none() {
+            log::info!("browser proxy couldn't fetch the PAC script at {location}");
+        }
+        *cache = Some(Fetched {
+            location: location.to_string(),
+            at: Instant::now(),
+            script: script.clone(),
+        });
+        script
+    }
+
+    async fn fetch(location: &str) -> Option<String> {
+        let client = crate::loopback_http::client(ADDRESS_TIMEOUT).ok()?;
+        let response = client.get(location).send().await.ok()?;
+        response.error_for_status().ok()?.text().await.ok()
+    }
+
+    /// The entries that are DIRECT or a proxy this one can chain to, in order.
+    fn evaluate(script: &str, url: &str) -> Option<Vec<Option<Upstream>>> {
+        let (script, url) = (CFString::new(script), CFString::new(url));
+        unsafe {
+            let url = CFURLCreateWithString(
+                std::ptr::null(),
+                url.as_concrete_TypeRef(),
+                std::ptr::null(),
+            );
+            if url.is_null() {
+                return None;
+            }
+            let url = CFURL::wrap_under_create_rule(url);
+            let mut error: CFErrorRef = std::ptr::null_mut();
+            let proxies = CFNetworkCopyProxiesForAutoConfigurationScript(
+                script.as_concrete_TypeRef(),
+                url.as_concrete_TypeRef(),
+                &mut error,
+            );
+            if proxies.is_null() {
+                if !error.is_null() {
+                    let error = CFError::wrap_under_create_rule(error);
+                    log::info!("browser proxy couldn't run the PAC script: {error}");
+                }
+                return None;
+            }
+            let proxies: CFArray<CFDictionary<CFString, CFType>> =
+                CFArray::wrap_under_create_rule(proxies);
+            let mut routes = Vec::new();
+            for proxy in proxies.iter() {
+                let text = |key| proxy.find(key).and_then(|v| v.downcast::<CFString>());
+                let Some(kind) = text(kCFProxyTypeKey) else {
+                    continue;
+                };
+                let is = |other| kind == CFString::wrap_under_get_rule(other);
+                if is(kCFProxyTypeNone) {
+                    routes.push(None);
+                    continue;
+                }
+                let (socks, default_port) = if is(kCFProxyTypeSOCKS) {
+                    (true, 1080)
+                } else if is(kCFProxyTypeHTTP) || is(kCFProxyTypeHTTPS) {
+                    (false, 80)
+                } else {
+                    continue;
+                };
+                let Some(host) = text(kCFProxyHostNameKey) else {
+                    continue;
+                };
+                let port = proxy
+                    .find(kCFProxyPortNumberKey)
+                    .and_then(|v| v.downcast::<CFNumber>())
+                    .and_then(|v| v.to_i32());
+                let address = authority(&host.to_string(), Some(port.unwrap_or(default_port)));
+                routes.push(Some(match socks {
+                    true => Upstream::Socks {
+                        address,
+                        auth: None,
+                    },
+                    false => Upstream::Http {
+                        address,
+                        auth: None,
+                    },
+                }));
+            }
+            // An empty answer means direct, as browsers read one.
+            if routes.is_empty() {
+                routes.push(None);
+            }
+            Some(routes)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -778,7 +1032,15 @@ mod tests {
         exchange_all(vec![proxies], request).await
     }
 
-    async fn exchange_all(proxies: Vec<Matcher>, request: &str) -> String {
+    async fn exchange_all(fixed: Vec<Matcher>, request: &str) -> String {
+        let proxies = Proxies {
+            fixed,
+            ..Default::default()
+        };
+        exchange_via(proxies, request).await
+    }
+
+    async fn exchange_via(proxies: Proxies, request: &str) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut client = TcpStream::connect(listener.local_addr().unwrap())
             .await
@@ -902,5 +1164,108 @@ mod tests {
         let (name, port, sent) = seen.await.unwrap();
         assert_eq!((name.as_str(), port), (UNRESOLVABLE, 80));
         assert!(sent.starts_with("GET /a HTTP/1.1\r\n"), "{sent}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn pac_scripts_decide_before_fixed_settings() {
+        let script = r#"function FindProxyForURL(url, host) {
+            if (host == "h.example") return "PROXY 127.0.0.1:1; DIRECT";
+            if (host == "s.example") return "SOCKS 127.0.0.1:2";
+            return "DIRECT";
+        }"#;
+        let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let location = format!("http://{}/proxy.pac", server.local_addr().unwrap());
+        // Answers once, so only a cached script serves the later pages.
+        tokio::spawn(async move {
+            let (mut stream, _) = server.accept().await.unwrap();
+            read_head(&mut stream).await;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+                script.len()
+            );
+            stream.write_all((head + script).as_bytes()).await.unwrap();
+        });
+        let env = |name: &str| match name {
+            "HTTP_PROXY" => Some("http://127.0.0.1:8".to_string()),
+            "NO_PROXY" => Some("n.example".to_string()),
+            _ => None,
+        };
+        let pac = |source| Some(pac::Pac::new(source, &env));
+        let fixed = || vec![Matcher::builder().all("http://127.0.0.1:9").build()];
+        let proxies = Proxies {
+            pac: pac(pac::Source::Url(location)),
+            fixed: fixed(),
+        };
+        let to = |host| parse(&tunnel(&format!("{host}:443"))).unwrap();
+        let http = |address: &str| {
+            Some(Upstream::Http {
+                address: address.into(),
+                auth: None,
+            })
+        };
+        assert_eq!(
+            routes(&proxies, &to("h.example")).await,
+            [http("127.0.0.1:1"), None]
+        );
+        let socks = Upstream::Socks {
+            address: "127.0.0.1:2".into(),
+            auth: None,
+        };
+        assert_eq!(routes(&proxies, &to("s.example")).await, [Some(socks)]);
+        assert_eq!(routes(&proxies, &to("d.example")).await, [None]);
+        // Proxy variables and NO_PROXY take precedence, as over the other settings.
+        let plain = parse("GET http://h.example/ HTTP/1.1\r\n\r\n").unwrap();
+        assert_eq!(routes(&proxies, &plain).await, [http("127.0.0.1:9")]);
+        assert_eq!(
+            routes(&proxies, &to("n.example")).await,
+            [http("127.0.0.1:9")]
+        );
+        let broken = Proxies {
+            pac: pac(pac::Source::Script("not a script(".into())),
+            fixed: fixed(),
+        };
+        assert_eq!(
+            routes(&broken, &to("h.example")).await,
+            [http("127.0.0.1:9")]
+        );
+        // The script sees the URL Safari would give it.
+        let by_url = "function FindProxyForURL(url) { return url == 'https://h.example/' ? 'PROXY 127.0.0.1:3' : 'DIRECT'; }";
+        let no_env = |_: &str| None;
+        let proxies = Proxies {
+            pac: Some(pac::Pac::new(pac::Source::Script(by_url.into()), &no_env)),
+            fixed: vec![],
+        };
+        assert_eq!(
+            routes(&proxies, &to("h.example")).await,
+            [http("127.0.0.1:3")]
+        );
+        // A proxy that can't be reached gives way to the next route; one that refuses doesn't.
+        let address = |(proxies, _): (Matcher, JoinHandle<_>)| {
+            let proxy = proxies
+                .intercept(&"https://a.example/".parse().unwrap())
+                .unwrap();
+            format!(
+                "{}:{}",
+                proxy.uri().host().unwrap(),
+                proxy.uri().port_u16().unwrap()
+            )
+        };
+        let working = address(system_proxy_answering("HTTP/1.1 200 OK\r\n\r\nhello").await);
+        let refusing = address(system_proxy_answering("HTTP/1.1 407 Proxy Auth\r\n\r\n").await);
+        for (first, expected) in [
+            (refusing.as_str(), "HTTP/1.1 502"),
+            ("127.0.0.1:1", "HTTP/1.1 200"),
+        ] {
+            let script = format!(
+                "function FindProxyForURL() {{ return 'PROXY {first}; PROXY {working}'; }}"
+            );
+            let proxies = Proxies {
+                pac: pac(pac::Source::Script(script.into())),
+                fixed: vec![],
+            };
+            let response = exchange_via(proxies, &tunnel(&format!("{UNRESOLVABLE}:443"))).await;
+            assert!(response.starts_with(expected), "{first}: {response}");
+        }
     }
 }
