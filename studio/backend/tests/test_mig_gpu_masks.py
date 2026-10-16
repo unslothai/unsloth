@@ -395,30 +395,34 @@ def test_mig_overlay_skips_a_non_cuda_backend(host, monkeypatch):
 T4_MIB = 15360
 
 
+@pytest.fixture
+def calls(monkeypatch):
+    seen = {"torch": 0, "list": 0, "uuid_query_fails": False, "list_fails": False}
+    run = mod.subprocess.run
+
+    def counting_run(cmd, *args, **kwargs):
+        if cmd and os.path.basename(str(cmd[0])) == "nvidia-smi":
+            if "-L" in cmd:
+                seen["list"] += 1
+                if seen["list_fails"]:
+                    return types.SimpleNamespace(returncode = 9, stdout = "", stderr = "")
+            if seen["uuid_query_fails"] and "--query-gpu=index,uuid" in cmd:
+                return types.SimpleNamespace(returncode = 1, stdout = "", stderr = "")
+        return run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(mod.subprocess, "run", counting_run)
+
+    def torch_probe(*a, **k):
+        seen["torch"] += 1
+        return [(0, 1, 1)]
+
+    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory_torch", staticmethod(torch_probe))
+    return seen
+
+
 class TestOrdinaryHostsKeepTheirReadings:
     """Whole-GPU uuid masks and plain polls on hosts without MIG behave as before MIG support."""
 
-    @pytest.fixture
-    def calls(self, monkeypatch):
-        seen = {"torch": 0, "list": 0, "uuid_query_fails": False}
-        run = mod.subprocess.run
-
-        def counting_run(cmd, *args, **kwargs):
-            if cmd and os.path.basename(str(cmd[0])) == "nvidia-smi":
-                if "-L" in cmd:
-                    seen["list"] += 1
-                if seen["uuid_query_fails"] and "--query-gpu=index,uuid" in cmd:
-                    return types.SimpleNamespace(returncode = 1, stdout = "", stderr = "")
-            return run(cmd, *args, **kwargs)
-
-        monkeypatch.setattr(mod.subprocess, "run", counting_run)
-
-        def torch_probe(*a, **k):
-            seen["torch"] += 1
-            return [(0, 1, 1)]
-
-        monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory_torch", staticmethod(torch_probe))
-        return seen
 
     @pytest.mark.parametrize("token", [GPU0, GPU0[:12], GPU0.lower()])
     def test_a_uuid_mask_under_fastest_first_reads_its_card(self, host, monkeypatch, calls, token):
@@ -519,3 +523,64 @@ class TestOrdinaryHostsKeepTheirReadings:
         for _ in range(3):
             assert LlamaCppBackend._get_gpu_memory() == [(0, 14000, A100_MIB)]
         assert calls["list"] == 1
+
+
+class TestMigListingFreshness:
+    @pytest.fixture
+    def clock(self, monkeypatch):
+        now = [1000.0]
+        monkeypatch.setattr(nvidia.time, "monotonic", lambda: now[0])
+        return now
+
+    def test_a_cached_listing_keeps_its_age(self, host, monkeypatch, clock, calls):
+        monkeypatch.setenv("UNSLOTH_GPU_QUERY_CACHE", "1")
+        host(TWO_SLICES, [38000], None)
+        assert nvidia.get_physical_gpu_count(gpu_rows_only = True) == 1
+        monkeypatch.setattr(nvidia, "_mig_indices_cache", None)
+        clock[0] += 59
+        # Served from gpu_query's own cache: stamped with that answer's time, not now.
+        assert nvidia.get_mig_gpu_indices() == {0}
+        assert calls["list"] == 1
+        assert nvidia._mig_indices_cache[1] == 1000.0
+        clock[0] += 2
+        assert nvidia.get_mig_gpu_indices() == {0}
+        assert calls["list"] == 2
+
+    def test_a_failed_listing_keeps_the_last_answer_and_backs_off(
+        self, host, monkeypatch, clock, calls
+    ):
+        host(TWO_SLICES, [38000], None)
+        assert nvidia.get_mig_gpu_indices() == {0}
+        clock[0] += 61
+        calls["list_fails"] = True
+        assert nvidia.get_mig_gpu_indices() == {0}
+        for _ in range(3):
+            assert nvidia.get_mig_gpu_indices() == {0}
+        assert calls["list"] == 2
+        clock[0] += nvidia._MIG_FAILURE_RETRY_S
+        calls["list_fails"] = False
+        host([(GPU0, [])], [38000], None)
+        assert nvidia.get_mig_gpu_indices() == set()
+        assert calls["list"] == 3
+
+    def test_a_cold_failure_is_retried_after_the_backoff(self, host, monkeypatch, clock, calls):
+        host(TWO_SLICES, [38000], None)
+        calls["list_fails"] = True
+        assert nvidia.get_mig_gpu_indices() == set()
+        assert nvidia.get_mig_gpu_indices() == set()
+        assert calls["list"] == 1
+        calls["list_fails"] = False
+        clock[0] += nvidia._MIG_FAILURE_RETRY_S
+        assert nvidia.get_mig_gpu_indices() == {0}
+        assert calls["list"] == 2
+
+
+def test_a_reordered_uuid_mask_orders_the_pinned_child(host, monkeypatch):
+    host([(GPU0, []), (GPU1, []), (GPU2, [])], [39000, 30000, 40000], None)
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", f"{GPU2},{GPU1}")
+    LlamaCppBackend._get_gpu_memory()
+    # Auto fit hands ascending ids; the launch reorders them (and their shares) to the mask.
+    assert LlamaCppBackend._inherited_child_gpu_order([1, 2]) == [2, 1]
+    assert LlamaCppBackend._pinned_child_visibility([2, 1]) == f"{GPU2},{GPU1}"
+    assert LlamaCppBackend._inherited_child_gpu_order([2]) is None

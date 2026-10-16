@@ -369,6 +369,16 @@ def _fallback(key: tuple, kind: str) -> Optional[subprocess.CompletedProcess]:
     return None
 
 
+def answered_at(argv: Sequence[str], *, text_mode: bool = True) -> Optional[float]:
+    """Monotonic start of the cached answer for ``argv`` in this static generation, or None."""
+    key = (subprocess.run, _resolved(argv[0]), tuple(argv), text_mode)
+    with _lock:
+        entry = _cache.get(key)
+        if entry is None or entry.result is None or entry.static_gen != _static_gen:
+            return None
+        return entry.at
+
+
 def run_nvidia_smi(
     argv: Sequence[str],
     *,

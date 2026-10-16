@@ -11907,6 +11907,10 @@ class LlamaCppBackend:
         """
         inherited = LlamaCppBackend._resolve_visible_physical_ids()
         if not inherited:
+            # A uuid mask the ordinal resolvers leave open (FASTEST_FIRST) still orders
+            # the cards the memory probe matched by uuid.
+            inherited = LlamaCppBackend._smi_uuid_mask_order()
+        if not inherited:
             return None
         wanted = [int(i) for i in pinned_ids]
         ordered = [i for i in inherited if i in set(wanted)]
@@ -15079,6 +15083,18 @@ class LlamaCppBackend:
                 return uuids
             return LlamaCppBackend._mig_tokens_for_ordinals(cvd, gpu_indices)
         return mask
+
+    @staticmethod
+    def _smi_uuid_mask_order() -> Optional[list[int]]:
+        """Physical ids of a whole-GPU uuid mask in mask order, from the last nvidia-smi
+        rows; None unless the probe's ids are physical and every token matched a row."""
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is not True or not (cvd or "").strip():
+            return None
+        from utils.hardware import nvidia
+
+        visible = nvidia._uuid_visible_ordinal_map(cvd, LlamaCppBackend._SMI_UUID_ROWS)
+        return sorted(visible, key = visible.__getitem__) if visible else None
 
     @staticmethod
     def _smi_uuids_for(cvd: str, gpu_indices) -> Optional[str]:
