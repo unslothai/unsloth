@@ -1124,7 +1124,9 @@ def _detect_load_family(
     )
     if fam is not None and fam.name == "ltx-2.5" and not ltx_file:
         from .video_ltx25 import LTX25_SINGLE_FILE_REPO, is_ltx25_single_file_base
-        if is_ltx25_single_file_base(repo_id, fold_mirror = False):
+        # Mirror-folded: the carrier (unsloth/LTX-2.5-GGUF) has no model_index.json either. Only a FILE pick keeps
+        # the unfolded check (ltx25_default_base), so a GGUF from the carrier keeps the Diffusers base.
+        if is_ltx25_single_file_base(repo_id):
             # No model_index.json there: a pipeline load would stage ~29 GB of companions and then fail.
             raise ValueError(
                 f"'{repo_id}' ships LTX-2.5 as single files, not a Diffusers pipeline. Pick one of its DiT files "
@@ -1412,6 +1414,25 @@ class _PlannedFetch(NamedTuple):
     names: frozenset
     listing: str
     sha: Optional[str] = None
+    # The cache blob keys of ``names`` (LFS sha256, else the git blob id): an in-flight ``<etag>.incomplete`` counts
+    # only when it is one of these.
+    etags: frozenset = frozenset()
+
+
+def _sibling_etag(sibling: Any) -> Optional[str]:
+    """The key huggingface_hub names a sibling's cache blob by: the LFS sha256, else the git blob id."""
+    lfs = getattr(sibling, "lfs", None)
+    sha = getattr(lfs, "sha256", None) or (lfs.get("sha256") if isinstance(lfs, dict) else None)
+    return sha or getattr(sibling, "blob_id", None) or None
+
+
+def _planned_etags(info: Any, names: Any) -> frozenset:
+    wanted = set(names)
+    return frozenset(
+        tag
+        for sibling in (getattr(info, "siblings", None) or [])
+        if sibling.rfilename in wanted and (tag := _sibling_etag(sibling))
+    )
 
 
 _FETCH_CHECKPOINT = "checkpoint"
@@ -1635,6 +1656,48 @@ def _video_fetch_repo(
     return prefer_ungated_mirror(repo_id, hf_token, files = files)
 
 
+def _h3_mirrored_component_sources(
+    pipe: Any,
+    base: Optional[str],
+    fetch_repo: Optional[str],
+    *,
+    local_files_only: bool,
+    cache_dir: Optional[str] = None,
+) -> dict[str, str]:
+    """``{component: source}`` sending every modular spec that names ``base`` (either side of its mirror pair) to
+    ``fetch_repo``, the repo the base was staged from, as ``load_components(pretrained_model_name_or_path = ...)``.
+    Offline, tokenizer / processor specs resolve to that repo's cached snapshot folder (as
+    ``offline_component_sources`` does). Empty when nothing is redirected: a local base, no mirror in play, or a
+    spec naming a different repo (a derivative's own encoder keeps its source)."""
+    from .diffusion_families import _is_local_path
+
+    if not base or not fetch_repo or _is_local_path(fetch_repo):
+        return {}
+    specs = getattr(pipe, "_component_specs", None)
+    if not isinstance(specs, dict):
+        return {}
+    from .diffusion_offline_source import _is_tokenizer_or_processor, offline_snapshot_source
+
+    want = _h3_te_canonical(base)
+    out: dict[str, str] = {}
+    for name, spec in specs.items():
+        source = getattr(spec, "pretrained_model_name_or_path", None)
+        if not isinstance(source, str) or not source or source == fetch_repo:
+            continue
+        if _h3_te_canonical(source) != want:
+            continue
+        target = fetch_repo
+        if _is_tokenizer_or_processor(getattr(spec, "type_hint", None)):
+            target = offline_snapshot_source(
+                fetch_repo,
+                getattr(spec, "subfolder", None),
+                local_files_only = local_files_only,
+                cache_dir = cache_dir,
+            )
+        out[name] = target
+    return out
+
+
 def _video_cached_completeness(repo_id: str) -> int:
     """How complete ``repo_id``'s cached diffusers snapshot is in the live root (the one ``from_pretrained`` reads):
     the number of ``model_index.json`` (or H3's ``modular_model_index.json``) components whose folder holds a file and
@@ -1647,11 +1710,7 @@ def _video_cached_completeness(repo_id: str) -> int:
         best = -1
         for rev in _cached_revisions(Path(hub_cache_dir()), repo_id):
             index = next(
-                (
-                    rev / n
-                    for n in ("model_index.json", "modular_model_index.json")
-                    if (rev / n).is_file()
-                ),
+                (rev / n for n in ("model_index.json", "modular_model_index.json") if (rev / n).is_file()),
                 None,
             )
             if index is None:
@@ -1671,9 +1730,7 @@ def _video_cached_completeness(repo_id: str) -> int:
                     continue
                 complete = True
                 for shard_index in folder.glob("*.index.json"):
-                    weight_map = (
-                        json.loads(shard_index.read_text(encoding = "utf-8")).get("weight_map") or {}
-                    )
+                    weight_map = json.loads(shard_index.read_text(encoding = "utf-8")).get("weight_map") or {}
                     if not all((folder / name).is_file() for name in set(weight_map.values())):
                         complete = False
                         break
@@ -3834,9 +3891,7 @@ class VideoBackend:
                 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
                 partner = moe_partner_filename(kwargs["gguf_filename"])
-                fetch_partner = bool(
-                    getattr(fam, "is_moe", False) and kind != "pipeline" and partner
-                )
+                fetch_partner = bool(getattr(fam, "is_moe", False) and kind != "pipeline" and partner)
                 # One choice for the pick and its partner expert, settled on both names, so they come from one repo and
                 # progress reads that repo for both.
                 checkpoint_repo = _video_fetch_repo(
@@ -5817,25 +5872,34 @@ class VideoBackend:
                         total += int(sibling.size)
                         names.add(sibling.rfilename)
                 planned[_FETCH_CHECKPOINT] = _PlannedFetch(
-                    frozenset(names), listing, getattr(info, "sha", None)
+                    frozenset(names),
+                    listing,
+                    getattr(info, "sha", None),
+                    _planned_etags(info, names),
                 )
             if base and not Path(base).expanduser().exists():
                 listing = _video_listing_repo(base)
                 info = api.model_info(listing, files_metadata = True)
                 base_files = self._base_download_files(
-                    info,
-                    kind,
-                    ltx23 = ltx23,
-                    skip_te_components = skip_te_components,
-                    skip_transformer_weights = skip_transformer_weights,
-                    skip_transformer_components = skip_transformer_components,
-                    h3_task = h3_task,
-                    ltx25_dev = ltx25_dev,
-                    ltx25_shards = self._ltx25_plan_shards(info, _video_listing_repo(base), hf_token),
-                )
+                        info,
+                        kind,
+                        ltx23 = ltx23,
+                        skip_te_components = skip_te_components,
+                        skip_transformer_weights = skip_transformer_weights,
+                        skip_transformer_components = skip_transformer_components,
+                        h3_task = h3_task,
+                        ltx25_dev = ltx25_dev,
+                        ltx25_shards = self._ltx25_plan_shards(
+                            info, _video_listing_repo(base), hf_token
+                        ),
+                    )
                 total += sum(size for _, size in base_files)
+                base_names = frozenset(name for name, _ in base_files)
                 planned[_FETCH_BASE] = _PlannedFetch(
-                    frozenset(name for name, _ in base_files), listing, getattr(info, "sha", None)
+                    base_names,
+                    listing,
+                    getattr(info, "sha", None),
+                    _planned_etags(info, base_names),
                 )
             if planned_files is not None:
                 planned_files.update(planned)
@@ -6592,11 +6656,14 @@ class VideoBackend:
         repo_id: Optional[str],
         files: Optional[frozenset[str]] = None,
         revision: Optional[str] = None,
+        etags: frozenset = frozenset(),
     ) -> int:
         """Bytes of ``repo_id`` currently in the HF blob cache (progress polling).
 
-        ``files`` narrows it to the planned names plus the in-flight ``*.incomplete`` blobs, which have no name yet: a
-        carrier repo also caches its own root FP8 / GGUF files, which the estimate never counted. Names are read from
+        ``files`` narrows it to the planned names plus the in-flight ``<etag>.incomplete`` blobs whose key is in
+        ``etags`` (a stale or concurrent partial of an unplanned file, e.g. a carrier's own checkpoint, is skipped;
+        an unidentifiable one is never counted): a carrier repo also caches its own root FP8 / GGUF files, which the
+        estimate never counted. Names are read from
         ONE revision, so a superseded snapshot holding an older file of the same name does not count: ``revision``
         when given (the commit the plan was sized from), else the one ``refs/main`` names (written before the blobs
         download, so a fresh revision reads as empty until its files land), else every snapshot for a cache with no
@@ -6637,8 +6704,10 @@ class VideoBackend:
                         except OSError:
                             continue
                 blobs = folder / "blobs"
-                if blobs.is_dir():
+                if blobs.is_dir() and etags:
                     for blob in blobs.glob("*.incomplete"):
+                        if blob.name[: -len(".incomplete")] not in etags:
+                            continue
                         try:
                             total += blob.stat().st_size
                         except OSError:
@@ -6675,6 +6744,7 @@ class VideoBackend:
             # physical repo (a pipeline pick, or a carrier's checkpoint beside the base it mirrors, read from the same
             # side) are merged into ONE scan so a shared name or in-flight blob is counted once.
             scans: dict[str, set[str]] = {}
+            tags: dict[str, set[str]] = {}
             pins: dict[str, Optional[str]] = {}
             for role, logical, is_checkpoint in (
                 (_FETCH_CHECKPOINT, loading.repo_id, True),
@@ -6693,8 +6763,9 @@ class VideoBackend:
                 # Two roles disagreeing on the commit fall back to refs/main rather than scanning twice.
                 pins[rid] = sha if rid not in pins or pins[rid] == sha else None
                 scans.setdefault(rid, set()).update(plan.names)
+                tags.setdefault(rid, set()).update(getattr(plan, "etags", ()) or ())
             downloaded = sum(
-                self._cache_bytes(rid, frozenset(names), pins.get(rid))
+                self._cache_bytes(rid, frozenset(names), pins.get(rid), frozenset(tags.get(rid, ())))
                 for rid, names in scans.items()
             )
         else:
@@ -9120,6 +9191,14 @@ class VideoBackend:
         offline_sources = offline_component_sources(
             pipe, local_files_only = local_files_only, cache_dir = hub_cache_dir()
         )
+        # The index is byte identical, so every spec still names the upstream id; load_components would read those
+        # from the vendor repo under a different cache key than the mirror the base was staged into.
+        offline_sources = {
+            **offline_sources,
+            **_h3_mirrored_component_sources(
+                pipe, base, fetch_base, local_files_only = local_files_only, cache_dir = hub_cache_dir()
+            ),
+        }
         pipe.load_components(
             workflow = workflow,
             dtype = dtype,
