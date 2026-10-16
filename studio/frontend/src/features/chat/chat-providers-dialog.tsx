@@ -465,6 +465,11 @@ export function ChatProvidersSettings({
     : `${availableModels.length} models`;
   const modelSearchInputClassName =
     "h-8 w-full bg-background/55 text-xs placeholder:text-muted-foreground/65 focus-visible:border-border focus-visible:ring-0";
+  // The list grows with its rows and only scrolls past 20 (rows are min-h-9, plus 1px dividers).
+  const modelListClassName =
+    filteredAvailableModels.length > 20
+      ? "max-h-[calc(var(--spacing)*180+20px)] divide-y divide-border/50 overflow-y-auto scroll-rounded rounded-md bg-muted/25"
+      : "divide-y divide-border/50 overflow-hidden rounded-md bg-muted/25";
 
   useEffect(() => {
     providersRef.current = providers;
@@ -2110,16 +2115,16 @@ export function ChatProvidersSettings({
                             </Button>
                           </div>
                         </div>
-                        <ul className="max-h-56 overflow-y-auto scroll-rounded rounded-md bg-muted/25 p-1">
+                        <ul className={modelListClassName}>
                           {filteredAvailableModels.length === 0 ? (
-                            <li className="px-2.5 py-2 text-xs text-muted-foreground">
+                            <li className="px-3 py-2.5 text-xs text-muted-foreground">
                               No matching models
                             </li>
                           ) : (
                             filteredAvailableModels.map((model, index) => (
                               <li
                                 key={model}
-                                className="flex cursor-pointer items-center gap-2.5 rounded-[7px] px-2.5 py-1.5 hover:bg-muted/50"
+                                className="flex min-h-9 cursor-pointer items-center gap-2.5 px-3 py-1.5 hover:bg-muted/45"
                                 onClick={() => toggleModel(model)}
                               >
                                 <Checkbox
@@ -2199,16 +2204,16 @@ export function ChatProvidersSettings({
                             </Button>
                           </div>
                         </div>
-                        <ul className="max-h-56 overflow-y-auto scroll-rounded rounded-md bg-muted/25 p-1">
+                        <ul className={modelListClassName}>
                           {filteredAvailableModels.length === 0 ? (
-                            <li className="px-2.5 py-2 text-xs text-muted-foreground">
+                            <li className="px-3 py-2.5 text-xs text-muted-foreground">
                               No matching models
                             </li>
                           ) : (
                             filteredAvailableModels.map((model, index) => (
                               <li
                                 key={model}
-                                className="flex cursor-pointer items-center gap-2.5 rounded-[7px] px-2.5 py-1.5 hover:bg-muted/50"
+                                className="flex min-h-9 cursor-pointer items-center gap-2.5 px-3 py-1.5 hover:bg-muted/45"
                                 onClick={() => toggleModel(model)}
                               >
                                 <Checkbox
