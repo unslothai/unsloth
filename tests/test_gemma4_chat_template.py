@@ -263,3 +263,13 @@ def test_a_closed_tool_turn_reopens_the_model_turn(name, opener):
     msgs[1]["content"] = "Let me check."
     out = _render_hf(name, msgs, tools = TOOLS, add_generation_prompt = True)
     assert out.endswith("Let me check.<turn|>\n" + opener)
+
+
+@pytest.mark.parametrize("name", ["gemma4_template", "gemma4_thinking_template"])
+def test_object_tool_result_renders_its_fields(name):
+    msgs = [dict(m) for m in TOOL_CONVO[:3]]
+    msgs[2]["content"] = {"temperature": 18, "sky": "sunny"}
+    out = _render_hf(name, msgs, tools = TOOLS, add_generation_prompt = True)
+    assert out.endswith(
+        '<|tool_response>response:get_weather{sky:<|"|>sunny<|"|>,temperature:18}<tool_response|>'
+    )

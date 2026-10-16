@@ -1167,7 +1167,7 @@ gemma4_template = \
                     {%- endif -%}
                 {%- endfor -%}
                 {%- set tool_body = follow.get('content') -%}
-                {%- if tool_body is sequence and tool_body is not string -%}
+                {%- if tool_body is sequence and tool_body is not string and tool_body is not mapping -%}
                     {%- set ns_txt = namespace(s='') -%}
                     {%- for part in tool_body -%}
                         {%- if part.get('type') == 'text' -%}
@@ -1501,7 +1501,7 @@ gemma4_thinking_template = \
                     {%- endif -%}
                 {%- endfor -%}
                 {%- set tool_body = follow.get('content') -%}
-                {%- if tool_body is sequence and tool_body is not string -%}
+                {%- if tool_body is sequence and tool_body is not string and tool_body is not mapping -%}
                     {%- set ns_txt = namespace(s='') -%}
                     {%- for part in tool_body -%}
                         {%- if part.get('type') == 'text' -%}
