@@ -20,6 +20,7 @@ import types
 from pathlib import Path
 
 import pytest
+from real_accelerator import has_real_cuda
 
 torch = pytest.importorskip("torch")
 trl = pytest.importorskip("trl")
@@ -587,7 +588,7 @@ def test_kto_scores_the_common_length_when_the_model_truncates():
     assert stand_in.shape[:2] == (2, 5)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a second device for the head")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a second device for the head")
 def test_kto_returns_on_the_hidden_state_device():
     # A dispatched model hands hidden states back on its input device while the head sits elsewhere.
     ns = _helpers()
