@@ -2,10 +2,12 @@
 
 import ast
 import asyncio
+import importlib
 import builtins
 import contextlib
 import copy
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -33,10 +35,55 @@ FUSIONS = (
     "residual_norm_handoff",
     "packed_gated_delta",
 )
-# Fused scopes zoo's own generate.py enters that Studio does not wrap itself, so they get no
-# _mlx_fused_* helper and stay out of the FUSIONS parametrisations: unsloth_zoo #1757 added
-# fused_verify_attention around speculative verify. The stub still has to answer them.
+# Fused scopes Studio never wired by hand, so they get no _mlx_fused_* helper and stay out of the
+# FUSIONS parametrisations: unsloth_zoo #1757 added fused_verify_attention around speculative verify.
+# The stub still has to answer them.
 ZOO_ONLY_FUSIONS = ("verify_attention",)
+
+
+def _zoo_registry():
+    """The stub's INFERENCE_SCOPES in zoo's order: (scope name, call traits it serves[, opt-in switch])."""
+    return [
+        *((f"fused_{name}", ()) for name in FUSIONS[:5]),
+        ("nax_quantized_linear", ()),
+        ("dense_prefill_linear", ()),
+        *((f"fused_{name}", ()) for name in FUSIONS[5:]),
+        ("exact_speculative_verify", ("speculative",)),
+        ("fused_verify_attention", ("speculative",)),
+    ]
+
+
+def _stub_inference_scopes(module):
+    """zoo's inference_scopes over the stub: each registered scope is looked up by name when entered,
+    so a test that replaces a stub scope sees it entered through the registry."""
+
+    @contextmanager
+    def inference_scopes(
+        model = None,
+        call = None,
+        *,
+        int8_prefill = None,
+        on_error = None,
+        _modules = None,
+    ):
+        # The call-shape replay below passes placeholders; anything but a tuple serves every scope.
+        traits = set(call) if isinstance(call, tuple) else None
+        with contextlib.ExitStack() as stack:
+            for name, serves, *opt_in in module.INFERENCE_SCOPES:
+                if traits is not None and serves and traits.isdisjoint(serves):
+                    continue
+                if opt_in and opt_in[0] and os.environ.get(opt_in[0]) != "1":
+                    continue
+                args = (int8_prefill,) if name == "nax_quantized_linear" else ()
+                try:
+                    stack.enter_context(getattr(module, name)(model, *args))
+                except Exception as error:
+                    if on_error is None:
+                        raise
+                    on_error(name, error)
+            yield model
+
+    return inference_scopes
 
 
 @pytest.fixture(autouse = True)
@@ -49,6 +96,8 @@ def mlx_inference_patches(monkeypatch, native_vlm_generation_context):
         setattr(module, f"fused_{name}", _neutral_scope)
     for name, helper in PLAIN_HELPERS.items():
         setattr(module, name, helper)
+    module.INFERENCE_SCOPES = _zoo_registry()
+    module.inference_scopes = _stub_inference_scopes(module)
     module.__getattr__ = _neutral_zoo_helper
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", module)
     return module
@@ -87,10 +136,10 @@ def _neutral_zoo_helper(name):
     """Every other public helper zoo's generate.py enters around a model is neutral too.
 
     unsloth_zoo #1541 added nax_quantized_linear to that import list, and a stub holding only the
-    fused_* names failed every real-model test on macOS with an ImportError. fused_* stay explicit,
-    so a test that deletes one still sees it missing.
+    fused_* names failed every real-model test on macOS with an ImportError. fused_* and
+    inference_scopes stay explicit, so a test that deletes one still sees it missing.
     """
-    if name.startswith("_") or name.startswith("fused_"):
+    if name.startswith("_") or name.startswith("fused_") or name == "inference_scopes":
         raise AttributeError(name)
     return _neutral_scope
 
@@ -376,6 +425,185 @@ def test_mlx_audio_input_generation_survives_every_fusion_refusing(
         )
     ) == ["H", "e", "l"]
     assert Counter(refused) == Counter(dict.fromkeys(FUSIONS, 1))
+
+
+class _Ids(list):
+    def tolist(self):
+        return list(self)
+
+
+def _run_studio_site(site, monkeypatch):
+    """Drive one of Studio's own MLX generation paths once, on fakes."""
+    from core.inference import mlx_inference
+
+    backend = mlx_inference.MLXInferenceBackend()
+    if site == "text":
+        backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7]}, [])
+        tokenizer = backend._tokenizer
+        _install_fake_fast_mlx(monkeypatch, [])
+        sys.modules["mlx.core"].clear_cache = lambda: None
+        config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
+        assert backend.load_model(config)
+        backend._tokenizer = tokenizer
+        assert list(backend.generate_chat_response(messages = [{"role": "user", "content": "p"}]))
+    elif site.startswith("vision"):
+        if site == "vision-drafted":
+            pytest.importorskip("mlx_lm")
+            utils = types.ModuleType("mlx_vlm.utils")
+            utils.prepare_inputs = lambda *_a, **_k: {"input_ids": [_Ids([7])]}
+            monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+            backend._speculative_draft = SimpleNamespace(
+                draft_kind = "mtp", draft_n = 1, draft_n_accepted = 1, prepare = lambda *_a: None
+            )
+        assert "draft_model" in _drive_vlm_generation(backend, monkeypatch) or site == "vision"
+    elif site == "audio":
+        fake_vlm = types.ModuleType("mlx_vlm")
+        fake_vlm.stream_generate = lambda *_a, **_k: iter(
+            [SimpleNamespace(text = "H", prompt_tokens = 3, generation_tokens = 1)]
+        )
+        monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
+        monkeypatch.setattr(mlx_inference, "_render_registered_vlm_prompt", lambda *_a, **_k: "P")
+        backend._model, backend._processor = _audio_model(), _audio_processor()
+        backend.active_model_name, backend.models = "m", {"m": {"audio_type": "audio_vlm"}}
+        response = backend.generate_audio_input_response(
+            messages = [{"role": "user", "content": "?"}],
+            system_prompt = "",
+            audio_array = [0.0, 0.1],
+            max_new_tokens = 1,
+        )
+        assert list(response) == ["H"]
+    else:
+        generate = types.ModuleType("mlx_lm.generate")
+        generate.BatchGenerator = lambda *_a, **_k: SimpleNamespace(close = lambda: None)
+        backend._model, backend._tokenizer = SimpleNamespace(), SimpleNamespace(eos_token_ids = [2])
+        with (
+            monkeypatch.context() as patch
+        ):  # only while it is built: mlx_lm itself imports from it
+            patch.setitem(sys.modules, "mlx_lm.generate", generate)
+            mlx_inference._TextBatchSession(backend, width = 2).close()
+
+
+@pytest.fixture(params = ["stub", "zoo"])
+def zoo_registry(request, monkeypatch, mlx_inference_patches):
+    """Register scopes in zoo's registry only, entered through the stub's composer or zoo's own."""
+    if request.param == "stub":
+        register = lambda name, serves = (), opt_in = None: (
+            mlx_inference_patches.INFERENCE_SCOPES.append((name, serves, opt_in))
+        )
+        return register
+    monkeypatch.delitem(sys.modules, "unsloth_zoo.mlx.inference")
+    try:
+        zoo = importlib.import_module("unsloth_zoo.mlx.inference")
+    except Exception as error:
+        pytest.skip(f"unsloth_zoo.mlx.inference is not importable here: {error}")
+    finally:
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", mlx_inference_patches)
+    if not hasattr(zoo, "INFERENCE_SCOPES"):
+        pytest.skip("this unsloth_zoo has no inference scope registry")
+    monkeypatch.setattr(zoo, "INFERENCE_SCOPES", [])
+    monkeypatch.setattr(mlx_inference_patches, "inference_scopes", zoo.inference_scopes)
+
+    def register(
+        name,
+        serves = (),
+        opt_in = None,
+    ):
+        scope = getattr(mlx_inference_patches, name)
+        enter = lambda model, *args, _modules: scope(model, *args)
+        enter.__name__ = name
+        zoo.INFERENCE_SCOPES.append(zoo.InferenceScope(enter, frozenset(serves), opt_in))
+
+    return register
+
+
+@pytest.mark.parametrize("site", ["text", "vision", "vision-drafted", "audio", "text-batch"])
+def test_a_scope_zoo_registers_reaches_each_studio_site_with_no_studio_change(
+    monkeypatch, mlx_inference_patches, zoo_registry, site
+):
+    from core.inference import mlx_inference
+
+    entered = []
+
+    def scope(name):
+        @contextmanager
+        def enter(model, *_args):
+            entered.append(name)
+            yield model
+
+        return enter
+
+    traits = ("speculative", "vision", "audio", "batch")
+    for name, serves, opt_in in (
+        ("every", (), None),
+        *((trait, (trait,), None) for trait in traits),
+        ("switched_off", (), "UNSLOTH_MLX_STUDIO_TEST_SCOPE"),
+    ):
+        setattr(mlx_inference_patches, name, scope(name))
+        zoo_registry(name, serves, opt_in)
+    monkeypatch.delenv("UNSLOTH_MLX_STUDIO_TEST_SCOPE", raising = False)
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    _run_studio_site(site, monkeypatch)
+    assert mlx_inference._MLX_FUSION_UNAVAILABLE == set()  # the registry and every scope entered
+    call = {
+        "text": (),
+        "vision": ("vision",),
+        "vision-drafted": ("speculative", "vision"),
+        "audio": ("vision", "audio"),
+        "text-batch": ("batch",),
+    }[site]
+    assert entered == ["every", *call]
+
+
+def test_an_older_zoo_without_the_registry_keeps_the_hand_wired_scopes(
+    monkeypatch, mlx_inference_patches
+):
+    from core.inference import mlx_inference
+
+    entered = []
+    for name in (*(f"fused_{name}" for name in FUSIONS), "exact_speculative_verify"):
+        monkeypatch.setattr(
+            mlx_inference_patches,
+            name,
+            lambda model, name = name: entered.append(name) or contextlib.nullcontext(model),
+        )
+    monkeypatch.delattr(mlx_inference_patches, "inference_scopes")
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    fused = [f"fused_{name}" for name in FUSIONS]
+    for site, want in (
+        ("text-batch", []),
+        ("audio", fused),
+        ("vision-drafted", [*fused, "exact_speculative_verify"]),
+    ):
+        entered.clear()
+        _run_studio_site(site, monkeypatch)
+        assert entered == want, site
+    assert mlx_inference._MLX_FUSION_UNAVAILABLE == set()
+
+
+@pytest.mark.parametrize("dead", [False, True], ids = ["refused", "dead-queue"])
+@pytest.mark.parametrize("failing", ["inference_scopes", "fused_moe_router"])
+def test_a_registry_or_scope_that_fails_to_enter_keeps_the_request_native(
+    monkeypatch, mlx_inference_patches, failing, dead
+):
+    """The whole registry is guarded like each scope in it: logged once, unless the Metal queue died."""
+    from core.inference import mlx_inference
+
+    message = "[METAL] Command buffer execution failed: Caused GPU Timeout Error" if dead else "no"
+
+    @contextmanager
+    def broken(*_a, **_k):
+        raise RuntimeError(message)
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(mlx_inference_patches, failing, broken)
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    if dead:
+        with pytest.raises(RuntimeError, match = "METAL"):
+            _run_studio_site("audio", monkeypatch)
+        assert mlx_inference._MLX_FUSION_UNAVAILABLE == set()
+    else:
+        _run_studio_site("audio", monkeypatch)
+        assert [key[0] for key in mlx_inference._MLX_FUSION_UNAVAILABLE] == [failing]
 
 
 def _zoo_inference_imports():
@@ -3896,13 +4124,16 @@ def test_int8_prefill_reloads_on_change_and_reports_why_it_is_off(mlx_inference_
     assert status(True, object())["active"] and status(False, object())["scope"] is None
 
 
+@pytest.mark.parametrize("registry", [True, False], ids = ["zoo-registry", "older-zoo"])
 @pytest.mark.parametrize("requested,available", [(True, True), (True, False), (False, True)])
 def test_int8_prefill_is_the_outermost_scope_of_generation_pinned_off_when_inactive(
-    monkeypatch, mlx_inference_patches, requested, available
+    monkeypatch, mlx_inference_patches, requested, available, registry
 ):
     from core.inference import mlx_inference
 
     events = _int8_zoo(mlx_inference_patches, available = available)
+    if not registry:
+        monkeypatch.delattr(mlx_inference_patches, "inference_scopes")
 
     @contextmanager
     def fusion(_model):
@@ -3938,10 +4169,13 @@ def test_int8_prefill_is_the_outermost_scope_of_generation_pinned_off_when_inact
     assert list(backend._generate_vlm(*args, 1.0, None)) == ["ok"]
 
     active = requested and available
-    assert events == [("int8", active)] + [("fusion", None)] * len(FUSIONS) + [
-        ("stream", None),
-        ("int8_exit", active),
-    ]
+    # Zoo's registry enters the NAX scope again in its own place; the outer decision holds there too.
+    fusions = [("fusion", None)] * len(FUSIONS)
+    if registry:
+        fusions[5:5] = [("int8", active)]
+    assert events == [("int8", active), *fusions, ("stream", None)] + [("int8_exit", active)] * (
+        1 + registry
+    )
 
     def broken(model, int8_prefill = None):
         raise ImportError("skewed zoo")
@@ -5747,7 +5981,9 @@ def test_a_speculative_load_drafts_eligible_single_replies(monkeypatch):
         finally:
             verify_scope.append("closed")
 
-    monkeypatch.setattr(mlx_inference, "_mlx_exact_speculative_verify", exact_verify)
+    monkeypatch.setattr(
+        sys.modules["unsloth_zoo.mlx.inference"], "exact_speculative_verify", exact_verify
+    )
     draft = SimpleNamespace(draft_kind = "mtp", draft_n = 6, draft_n_accepted = 4)
     draft.prepare = (
         lambda ids, sampling, given: prepared.append((ids, sampling.temperature, sampling.top_k))
