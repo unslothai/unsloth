@@ -233,6 +233,24 @@ def test_tool_round_gets_one_empty_channel_and_stays_a_prefix():
     assert out == prompt + "Done.<turn|>\n"
 
 
+def test_reasoning_after_a_tool_result_is_kept_and_stays_a_prefix():
+    call = {"id": "c1", "type": "function", "function": {"name": "f", "arguments": {"x": 1}}}
+    msgs = [
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": None, "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+        {"role": "assistant", "content": "Done.", "reasoning_content": "r"},
+    ]
+    tmpl = NS["gemma4_empty_thought_template"]
+    out = _render(tmpl, msgs)
+    assert out.endswith('<tool_response|><|channel>thought\nr\n<channel|>Done.<turn|>\n')
+    assert out.count(EMPTY) == 1
+    full = _render(tmpl, msgs, enable_thinking = True)
+    prompt = _render(tmpl, msgs[:3], enable_thinking = True, add_generation_prompt = True)
+    assert prompt.endswith("<tool_response|><|channel>thought\n")
+    assert full.startswith(prompt)
+
+
 def test_roles_must_alternate_still_raises():
     with pytest.raises(TemplateError):
         _render(NS["gemma4_empty_thought_template"], [{"role": "assistant", "content": "x"}])

@@ -231,3 +231,35 @@ def test_tool_calling_conversation_renders_like_gemma4(name):
 def test_generation_after_tool_result_continues_the_model_turn(name):
     out = _render_hf(name, TOOL_CONVO[:3], tools = TOOLS, add_generation_prompt = True)
     assert out == TOOL_SYSTEM + TOOL_ROUND
+
+
+@pytest.mark.parametrize("name", ["gemma4_template", "gemma4_thinking_template"])
+def test_tool_responses_on_the_assistant_message_render_like_tool_messages(name):
+    call = TOOL_CONVO[1]["tool_calls"]
+    merged = [
+        TOOL_CONVO[0],
+        {
+            "role": "assistant",
+            "tool_calls": call,
+            "tool_responses": [{"name": "get_weather", "response": "sunny"}],
+            "content": "It is sunny.",
+        },
+    ]
+    assert _render_hf(name, merged, tools = TOOLS) == _render_hf(name, TOOL_CONVO, tools = TOOLS)
+    pending = [TOOL_CONVO[0], {k: v for k, v in merged[1].items() if k != "content"}]
+    out = _render_hf(name, pending, tools = TOOLS, add_generation_prompt = True)
+    assert out == TOOL_SYSTEM + TOOL_ROUND
+
+
+@pytest.mark.parametrize(
+    "name, opener",
+    [
+        ("gemma4_template", "<|turn>model\n"),
+        ("gemma4_thinking_template", "<|turn>model\n<|channel>thought\n<channel|>"),
+    ],
+)
+def test_a_closed_tool_turn_reopens_the_model_turn(name, opener):
+    msgs = [dict(m) for m in TOOL_CONVO[:3]]
+    msgs[1]["content"] = "Let me check."
+    out = _render_hf(name, msgs, tools = TOOLS, add_generation_prompt = True)
+    assert out.endswith("Let me check.<turn|>\n" + opener)

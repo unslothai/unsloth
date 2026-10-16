@@ -1148,13 +1148,17 @@ gemma4_template = \
             {{- '}<tool_call|>' -}}
         {%- endfor -%}
         {%- set ns_tool.tool_response = false -%}
+        {%- for tool_response in message.get('tool_responses') or [] -%}
+            {{- format_tool_response_block(tool_response['name'] | default('unknown', true), tool_response['response']) -}}
+            {%- set ns_tool.tool_response = true -%}
+        {%- endfor -%}
         {%- set ns_scan = namespace(stopped=false, next_role=none) -%}
         {%- for k in range(loop.index0 + 1, loop_messages | length) -%}
             {%- if ns_scan.stopped -%}
             {%- elif loop_messages[k]['role'] != 'tool' -%}
                 {%- set ns_scan.stopped = true -%}
                 {%- set ns_scan.next_role = loop_messages[k]['role'] -%}
-            {%- else -%}
+            {%- elif not message.get('tool_responses') -%}
                 {%- set follow = loop_messages[k] -%}
                 {%- set ns_tname = namespace(name=follow.get('name') or 'unknown') -%}
                 {%- for tc in ns_tool.tool_calls -%}
@@ -1221,6 +1225,7 @@ gemma4_template = \
         {{- '<|tool_response>' -}}
     {%- elif ns_scan.next_role != 'assistant' and (captured_content | trim | length > 0 or ns_scan.next_role) -%}
         {{- '<turn|>\n' -}}
+        {%- set ns_tool.tool_calls = false -%}
     {%- endif -%}
     {%- endif -%}
 {%- endfor -%}
@@ -1477,13 +1482,17 @@ gemma4_thinking_template = \
             {{- '}<tool_call|>' -}}
         {%- endfor -%}
         {%- set ns_tool.tool_response = false -%}
+        {%- for tool_response in message.get('tool_responses') or [] -%}
+            {{- format_tool_response_block(tool_response['name'] | default('unknown', true), tool_response['response']) -}}
+            {%- set ns_tool.tool_response = true -%}
+        {%- endfor -%}
         {%- set ns_scan = namespace(stopped=false, next_role=none) -%}
         {%- for k in range(loop.index0 + 1, loop_messages | length) -%}
             {%- if ns_scan.stopped -%}
             {%- elif loop_messages[k]['role'] != 'tool' -%}
                 {%- set ns_scan.stopped = true -%}
                 {%- set ns_scan.next_role = loop_messages[k]['role'] -%}
-            {%- else -%}
+            {%- elif not message.get('tool_responses') -%}
                 {%- set follow = loop_messages[k] -%}
                 {%- set ns_tname = namespace(name=follow.get('name') or 'unknown') -%}
                 {%- for tc in ns_tool.tool_calls -%}
@@ -1550,6 +1559,7 @@ gemma4_thinking_template = \
         {{- '<|tool_response>' -}}
     {%- elif ns_scan.next_role != 'assistant' and (captured_content | trim | length > 0 or ns_scan.next_role) -%}
         {{- '<turn|>\n' -}}
+        {%- set ns_tool.tool_calls = false -%}
     {%- endif -%}
     {%- endif -%}
 {%- endfor -%}
@@ -1574,13 +1584,13 @@ DEFAULT_SYSTEM_MESSAGE["gemma4-thinking"] = None
 # 26B-A4B / 31B generate after an empty thought channel their template omits from history; final-turn reasoning fills it.
 _gemma4_model_turn = "{{ '<|turn>' + role + '\n' }}\n"
 gemma4_empty_thought_template = gemma4_thinking_template.replace(
-    _gemma4_model_turn,
-    _gemma4_model_turn + \
+    _gemma4_model_turn + "    {%- endif -%}\n",
+    _gemma4_model_turn + "    {%- endif -%}\n" + \
 """    {%- if role == "model" -%}
         {%- set thinking_text = message.get('reasoning') or message.get('reasoning_content') -%}
         {%- if thinking_text and loop.index0 > ns_turn.last_user_idx -%}
             {{ '<|channel>thought\n' + thinking_text + '\n<channel|>' }}
-        {%- elif not thinking -%}
+        {%- elif not thinking and not continues -%}
             {{ '<|channel>thought\n<channel|>' }}
         {%- endif -%}
     {%- endif -%}
