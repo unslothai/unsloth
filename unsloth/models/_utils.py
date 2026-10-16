@@ -8497,8 +8497,8 @@ def _ignore_block_swap_params_for_ddp(model):
 
 
 def _block_swap_for_trainer_backend(trainer):
-    """DDP: ignore swapped weights. FSDP / DeepSpeed (invisible at load, so "auto" planned for DDP):
-    refuse, since sharding would flatten the 0-element placeholders."""
+    """DDP: ignore swapped weights. FSDP / DeepSpeed (invisible at load): refuse any block swap, since
+    sharding flattens the 0-element placeholders the swap later rebinds."""
     model = getattr(trainer, "model", None)
     backend = (
         "FSDP"
@@ -8521,6 +8521,14 @@ def _block_swap_for_trainer_backend(trainer):
             f"Unsloth: offload_layers = 'auto' (this rank swapped {swapped} decoder layers to host "
             f"RAM) cannot be combined with {backend}, which shards the weights itself and cannot wrap "
             "swapped layers. Load with offload_layers = 0 (and get_peft_model(offload_layers = 0)), "
+            f"or launch without {backend}."
+        )
+    # An explicit count swaps the same layers on every rank, so every rank refuses alike.
+    if swapped:
+        raise ValueError(
+            f"Unsloth: offload_layers = {swapped} (decoder layers swapped to host RAM) cannot be "
+            f"combined with {backend}, which shards the weights itself and cannot wrap swapped "
+            "layers. Load with offload_layers = 0 (and get_peft_model(offload_layers = 0)), "
             f"or launch without {backend}."
         )
     return []

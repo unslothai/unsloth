@@ -98,6 +98,7 @@ from .diffusion_device import (
     install_frame_pad_fix,
     pin_cuda_ordinal,
     placed_cuda_ordinal,
+    resolve_auto_cuda_ordinal,
     resolve_diffusion_device_target,
     resolve_selected_cuda_ordinal,
 )
@@ -3828,8 +3829,8 @@ class DiffusionBackend:
         # on another.
         if gpu_ordinal is None:
             gpu_ordinal = (
-                resolve_selected_cuda_ordinal(gpu_ids)
-                if gpu_ids and resolve_diffusion_device_target().device == "cuda"
+                (resolve_selected_cuda_ordinal(gpu_ids) if gpu_ids else resolve_auto_cuda_ordinal())
+                if resolve_diffusion_device_target().device == "cuda"
                 else None
             )
         fam = self.validate_load_request(

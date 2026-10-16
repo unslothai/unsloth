@@ -60,22 +60,25 @@ def _check(norm, reference, dtype):
 @pytest.mark.gpu
 @pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
 @pytest.mark.parametrize("gemma", [False, True])
+@pytest.mark.parametrize("save_output", [False, True])
+@pytest.mark.parametrize("train_weight", [False, True])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
-def test_rms_layernorm_backward_leaves_shared_grad_alone(gemma, dtype):
+def test_rms_layernorm_backward_leaves_shared_grad_alone(gemma, save_output, train_weight, dtype):
     from unsloth.kernels.rms_layernorm import Fast_RMS_Layernorm
 
-    W = (1.0 + 0.1 * torch.randn(256, device = "cuda")).to(dtype)
-    norm = lambda x: Fast_RMS_Layernorm.apply(x, W, 1e-6, gemma)
+    W = (1.0 + 0.1 * torch.randn(256, device = "cuda")).to(dtype).requires_grad_(train_weight)
+    norm = lambda x: Fast_RMS_Layernorm.apply(x, W, 1e-6, gemma, save_output)
     _check(norm, lambda x: _rms_fp64(x, W, gemma), dtype)
 
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
+@pytest.mark.parametrize("train_weight", [False, True])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
-def test_layernorm_backward_leaves_shared_grad_alone(dtype):
+def test_layernorm_backward_leaves_shared_grad_alone(train_weight, dtype):
     from unsloth.kernels.layernorm import Fast_Layernorm
 
-    W = (1.0 + 0.1 * torch.randn(256, device = "cuda")).to(dtype)
-    b = (0.1 * torch.randn(256, device = "cuda")).to(dtype)
+    W = (1.0 + 0.1 * torch.randn(256, device = "cuda")).to(dtype).requires_grad_(train_weight)
+    b = (0.1 * torch.randn(256, device = "cuda")).to(dtype).requires_grad_(train_weight)
     norm = lambda x: Fast_Layernorm.apply(x, W, b, 1e-6)
     _check(norm, lambda x: _ln_fp64(x, W, b), dtype)
