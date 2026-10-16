@@ -222,9 +222,8 @@ function VariantRow({
         title={isBase ? "Baseline" : "Make this the baseline"}
         className={cn(
           "grid size-6 shrink-0 place-items-center rounded-full transition-colors",
-          isBase
-            ? "text-foreground"
-            : "text-transparent group-hover:text-muted-foreground/60 hover:!text-foreground",
+          // The chart already labels the baseline, so the star only shows on hover.
+          "text-transparent group-hover:text-muted-foreground/60 hover:!text-foreground focus-visible:text-foreground",
         )}
       >
         <HugeiconsIcon

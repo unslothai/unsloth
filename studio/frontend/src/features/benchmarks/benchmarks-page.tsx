@@ -27,6 +27,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { HistoryGrid } from "./components/history-grid";
@@ -407,6 +408,14 @@ export function BenchmarksPage(): ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the resolved window
   }, [contextSweep, maxContext]);
   const [tab, setTab] = useState<BenchTab>("benchmark");
+  const resultsRef = useRef<HTMLDivElement | null>(null);
+  // Switching tabs keeps the scroll, and below 72rem the chart sits above the preview, so bring it up.
+  const showResults = useCallback(() => {
+    setTab("benchmark");
+    window.requestAnimationFrame(() =>
+      resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    );
+  }, []);
 
   useEffect(() => {
     if (!runsLoaded) void refreshRuns();
@@ -455,7 +464,7 @@ export function BenchmarksPage(): ReactElement {
       metadataError={rowsError}
       onRetryMetadata={retryShape}
       onRun={() => void start()}
-      onViewRun={() => setTab("benchmark")}
+      onViewRun={showResults}
     />
   );
 
@@ -513,7 +522,10 @@ export function BenchmarksPage(): ReactElement {
                 <div className="hidden @6xl/bench:sticky @6xl/bench:top-6 @6xl/bench:col-start-3 @6xl/bench:row-start-1 @6xl/bench:block">
                   {preview}
                 </div>
-                <div className="flex min-w-0 flex-col gap-4 @3xl/bench:col-start-2 @3xl/bench:row-start-1">
+                <div
+                  ref={resultsRef}
+                  className="flex min-w-0 scroll-mt-6 flex-col gap-4 @3xl/bench:col-start-2 @3xl/bench:row-start-1"
+                >
                   {shown ? (
                     <div
                       key={shown.id}
@@ -566,7 +578,7 @@ export function BenchmarksPage(): ReactElement {
             <HistoryGrid
               onOpen={(id) => {
                 void selectRun(id);
-                setTab("benchmark");
+                showResults();
               }}
             />
           </TabsContent>
