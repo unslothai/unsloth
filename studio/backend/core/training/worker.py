@@ -1438,7 +1438,13 @@ def _reject_install(event_queue: Any, pypi_name: str, display_name: str, reason:
 
 
 def _install_package_wheel_first(
-    *, event_queue: Any, import_name: str, display_name: str, pypi_name: str, **kwargs: Any
+    *,
+    event_queue: Any,
+    import_name: str,
+    display_name: str,
+    pypi_name: str,
+    required: bool = False,
+    **kwargs: Any,
 ) -> bool:
     """Install a fast-path package, wheel first, and never leave an unusable one behind. The two
     "touch nothing" guards run here, outside the cleanup: an already-working package returns
@@ -1454,19 +1460,36 @@ def _install_package_wheel_first(
         logger.info("Skipping %s installation while offline", display_name)
         return False
 
-    from utils.kernel_install import kernel_install_lock
+    # The runtime's failed-attempt memo (same key): the eager install and the fast-path hook, or a
+    # chat load in the same process, never repeat a failed (possibly half-hour) build.
+    from utils.ssm_runtime import _FAILED_INSTALLS, _failure_key
+
+    failure_key = _failure_key(import_name)
+    if failure_key in _FAILED_INSTALLS:
+        logger.info("%s already failed to install in this process; not retrying", display_name)
+        return False
+
+    from utils.kernel_install import (
+        KERNEL_LOCK_WAIT,
+        OPTIONAL_KERNEL_LOCK_WAIT,
+        kernel_install_lock,
+    )
 
     # One install per package and environment at a time, across Studio workers: precheck, install,
     # verify and cleanup are one transaction, or a failed peer could remove what another verified.
+    # An optional acceleration does not hold a run for a peer's half-hour build.
     with kernel_install_lock(
         import_name,
         on_wait = lambda: _send_status(
             event_queue, f"Waiting for another process installing {display_name}..."
         ),
+        wait_seconds = KERNEL_LOCK_WAIT if required else OPTIONAL_KERNEL_LOCK_WAIT,
     ) as held:
         if not held:
             _send_status(
-                event_queue, f"Another process is still installing {display_name}; skipping it"
+                event_queue,
+                f"Could not take the {display_name} install lock (another process is installing "
+                "it, or the lock is unavailable); continuing without it",
             )
             return False
         if _is_importable(import_name):
@@ -1484,6 +1507,7 @@ def _install_package_wheel_first(
             return installed
         finally:
             if not installed:
+                _FAILED_INSTALLS.add(failure_key)
                 _reject_install(event_queue, pypi_name, display_name, "will not import")
 
 
@@ -1770,6 +1794,7 @@ def _ensure_mamba_ssm(
         event_queue = event_queue,
         **_pinned_kernel_kwargs(MAMBA_SSM),
         allow_source_build = essential,
+        required = essential,
     )
 
 

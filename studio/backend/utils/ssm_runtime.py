@@ -464,7 +464,7 @@ def _dependency_target(model_load_target: str, adapter_base: str | None) -> str:
 
 # Configs read for the kernel decision, per process: a load's preflight, its _handle_load and each
 # kernel share one read (a cold Hub read can take seconds).
-_MODEL_CONFIGS: dict[tuple[str, str | None], dict | None] = {}
+_MODEL_CONFIGS: dict[tuple[str, str | None], dict] = {}
 
 
 def _resolved_model_config(model_load_target: str, hf_token: str | None) -> dict | None:
@@ -477,7 +477,8 @@ def _resolved_model_config(model_load_target: str, hf_token: str | None) -> dict
     except Exception as exc:
         logger.debug("Could not inspect model config for SSM kernels: %s", exc)
         model_config = None
-    model_config = model_config if isinstance(model_config, dict) else None
+    if not isinstance(model_config, dict):
+        return None  # a miss may be transient: read again next time
     _MODEL_CONFIGS[key] = model_config
     return model_config
 
@@ -840,6 +841,7 @@ def _install_kernel(
     run: Callable[..., Any],
     newly_installed: list[str] | None = None,
     allow_source_build: bool = True,
+    required: bool = False,
 ) -> bool:
     """Install one kernel wheel-first, then (when *allow_source_build*) a HIP-aware PyPI source build
     (never on Windows). Returns True iff importable afterwards; idempotent (no-op when already
@@ -861,41 +863,60 @@ def _install_kernel(
         logger.info("%s already failed to install in this process; not retrying", display_name)
         return False
 
-    from utils.kernel_install import kernel_install_lock
+    from utils.kernel_install import (
+        KERNEL_LOCK_WAIT,
+        OPTIONAL_KERNEL_LOCK_WAIT,
+        kernel_install_lock,
+    )
 
     with kernel_install_lock(
         import_name,
         on_wait = lambda: _emit(
             status_cb, f"Waiting for another process installing {display_name}..."
         ),
+        # An optional acceleration does not hold a load for a peer's half-hour build.
+        wait_seconds = KERNEL_LOCK_WAIT if required else OPTIONAL_KERNEL_LOCK_WAIT,
     ) as held:
         if not held:
-            _emit(status_cb, f"Another process is still installing {display_name}; skipping it.")
+            _emit(
+                status_cb,
+                f"Could not take the {display_name} install lock (another process is installing "
+                "it, or the lock is unavailable); continuing without it.",
+            )
             return False
-        # Another process may have installed it while this one waited.
+        # Another process may have installed it while this one waited: new to this worker all the
+        # same, so its already-imported modeling modules are refreshed or restarted.
         if _is_importable(import_name):
             logger.info("%s installed by another process", display_name)
-            return True
-        installed = _install_kernel_locked(
-            import_name = import_name,
-            display_name = display_name,
-            pypi_name = pypi_name,
-            package_version = package_version,
-            release_tag = release_tag,
-            release_base_url = release_base_url,
-            status_cb = status_cb,
-            run = run,
-            allow_source_build = allow_source_build,
-        )
-        if installed is None:
-            return False  # nothing attempted (unsupported torch backend)
-        if installed:
             if newly_installed is not None:
                 newly_installed.append(import_name)
             return True
-        _remove_broken(pypi_name, display_name, run)
-        _FAILED_INSTALLS.add(failure_key)
-        return False
+        installed: bool | None = False
+        try:
+            installed = _install_kernel_locked(
+                import_name = import_name,
+                display_name = display_name,
+                pypi_name = pypi_name,
+                package_version = package_version,
+                release_tag = release_tag,
+                release_base_url = release_base_url,
+                status_cb = status_cb,
+                run = run,
+                allow_source_build = allow_source_build,
+            )
+        except Exception as exc:
+            # An installer that cannot even start (OSError) fails like any other attempt.
+            logger.warning("Installing %s failed: %s", display_name, exc, exc_info = True)
+            installed = False
+        finally:
+            if installed is False:
+                _remove_broken(pypi_name, display_name, run)
+                _FAILED_INSTALLS.add(failure_key)
+        if installed is None:
+            return False  # nothing attempted (unsupported torch backend)
+        if installed and newly_installed is not None:
+            newly_installed.append(import_name)
+        return bool(installed)
 
 
 def _install_kernel_locked(
@@ -1069,6 +1090,8 @@ def ensure_ssm_runtime(
             run = run,
             newly_installed = installed,
             allow_source_build = allow_source_build,
+            # Nemotron-H, Falcon-H1, Granite-4.0-H wait out a peer's install; the rest move on.
+            required = mamba_ssm_required,
         )
 
     # causal-conv1d first: SSM modeling files lazy-import it, and mamba-ssm's fast path uses it.

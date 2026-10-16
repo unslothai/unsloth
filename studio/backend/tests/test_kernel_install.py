@@ -20,6 +20,8 @@ if str(_BACKEND) not in sys.path:
 
 from utils import kernel_install  # noqa: E402
 
+_REAL_LOCK_PATH = kernel_install._kernel_lock_path
+
 _REPO = _BACKEND.parent.parent
 _PT = "https://download.pytorch.org/whl"
 _CC1D = "https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.6.1.post4"
@@ -141,7 +143,12 @@ _COLAB_XFORMERS = f"{_PT}/cu130/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.
 
 
 @pytest.fixture(autouse = True)
-def _nothing_installed_and_online(monkeypatch):
+def _nothing_installed_and_online(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        kernel_install, "_kernel_lock_path", lambda name: str(tmp_path / f"{name}.lock")
+    )
+    # Every copy of the module (and any child process) uses the test's folder too.
+    monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", str(tmp_path / "locks"))
     # Tests that need an installed distribution say so; the host's own packages and offline
     # switches must not decide them.
     monkeypatch.setattr(kernel_install, "_installed_version", lambda distribution: None)
@@ -996,7 +1003,80 @@ def test_the_kernel_lock_is_exclusive_bounded_and_beats_while_waiting(tmp_path, 
         assert again is True  # released
 
 
-def test_the_kernel_lock_is_per_environment(monkeypatch):
-    first = kernel_install._kernel_lock_path("causal_conv1d")
-    monkeypatch.setattr(kernel_install.sys, "prefix", "/some/other/venv")
-    assert kernel_install._kernel_lock_path("causal_conv1d") != first
+def test_the_kernel_lock_is_per_environment(monkeypatch, tmp_path):
+    monkeypatch.delenv("UNSLOTH_KERNEL_LOCK_DIR", raising = False)
+    first_env, other_env = tmp_path / "a", tmp_path / "b"
+    first_env.mkdir()
+    other_env.mkdir()
+    monkeypatch.setattr(kernel_install.sys, "prefix", str(first_env))
+    first = _REAL_LOCK_PATH("causal_conv1d")
+    monkeypatch.setattr(kernel_install.sys, "prefix", str(other_env))
+    assert _REAL_LOCK_PATH("causal_conv1d") != first
+
+
+def test_the_lock_lives_beside_the_environment_when_writable(monkeypatch, tmp_path):
+    monkeypatch.delenv("UNSLOTH_KERNEL_LOCK_DIR", raising = False)
+    env = tmp_path / "venv"
+    env.mkdir()
+    monkeypatch.setattr(kernel_install.sys, "prefix", str(env))
+    assert _REAL_LOCK_PATH("mamba_ssm") == str(env / ".unsloth-kernel-locks" / "mamba_ssm.lock")
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason = "POSIX permissions, non-root")
+def test_a_read_only_environment_falls_back_to_one_temp_lock(monkeypatch, tmp_path):
+    monkeypatch.delenv("UNSLOTH_KERNEL_LOCK_DIR", raising = False)
+    env = tmp_path / "venv"
+    env.mkdir()
+    env.chmod(0o555)
+    try:
+        monkeypatch.setattr(kernel_install.sys, "prefix", str(env))
+        monkeypatch.setattr("tempfile.tempdir", str(tmp_path / "tmp"))
+        (tmp_path / "tmp").mkdir()
+        first = _REAL_LOCK_PATH("mamba_ssm")
+        assert first.startswith(str(tmp_path / "tmp")) and first == _REAL_LOCK_PATH("mamba_ssm")
+    finally:
+        env.chmod(0o755)
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason = "POSIX permissions, non-root")
+def test_a_lock_that_cannot_be_opened_installs_nothing(monkeypatch, tmp_path):
+    lock = tmp_path / "ro.lock"
+    lock.write_text("")
+    lock.chmod(0o444)
+    monkeypatch.setattr(kernel_install, "_kernel_lock_path", lambda name: str(lock))
+    with kernel_install.kernel_install_lock("causal_conv1d", wait_seconds = 0) as held:
+        assert held is False
+
+
+def test_a_lock_the_filesystem_cannot_take_installs_nothing(monkeypatch, tmp_path):
+    import errno
+
+    monkeypatch.setattr(kernel_install, "_kernel_lock_path", lambda name: str(tmp_path / "x.lock"))
+
+    def _no_locks(*args):
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr("fcntl.flock", _no_locks)
+    with kernel_install.kernel_install_lock("causal_conv1d", wait_seconds = 0) as held:
+        assert held is False
+
+
+def test_the_cli_installs_under_the_studio_lock(uv, monkeypatch, capsys):
+    import contextlib
+
+    uv(False)
+    taken = []
+
+    @contextlib.contextmanager
+    def _busy(name, **kwargs):
+        taken.append(name)
+        yield False
+
+    monkeypatch.setattr(kernel_install, "kernel_install_lock", _busy)
+    run = _Runner([], capability = "9 0")
+    assert (
+        kernel_install.install_kernel("causal_conv1d", _COLAB, run = run, exists = lambda url: True)
+        == 0
+    )
+    assert taken == ["causal_conv1d"] and run.installer_calls == []
+    assert "install lock" in capsys.readouterr().out

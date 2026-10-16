@@ -34,7 +34,7 @@ not_on_windows = pytest.mark.skipif(
 
 
 @pytest.fixture(autouse = True)
-def _clear_offline_environment(monkeypatch):
+def _clear_offline_environment(monkeypatch, tmp_path):
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     monkeypatch.delenv("UV_OFFLINE", raising = False)
@@ -56,6 +56,15 @@ def _clear_offline_environment(monkeypatch):
         },
     )
     monkeypatch.setattr(worker, "url_exists", lambda url: False)
+    # Per-process memo and the environment's lock file: each test is its own process here.
+    from utils import kernel_install, ssm_runtime
+
+    monkeypatch.setattr(ssm_runtime, "_FAILED_INSTALLS", set())
+    monkeypatch.setattr(
+        kernel_install, "_kernel_lock_path", lambda name: str(tmp_path / f"{name}.lock")
+    )
+    # Every copy of the module (and any child process) uses the test's folder too.
+    monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", str(tmp_path / "locks"))
 
 
 @pytest.fixture(autouse = True)
@@ -671,6 +680,7 @@ def test_mamba_ssm_path_preserves_wheel_first_install_args(monkeypatch):
         release_tag = worker.MAMBA_SSM.release_tag,
         release_base_url = "https://github.com/state-spaces/mamba/releases/download",
         allow_source_build = True,
+        required = True,
     )
 
 
@@ -1939,3 +1949,52 @@ def test_no_stop_for_optional_families_or_a_non_cuda_torch(monkeypatch, essentia
     monkeypatch.setattr(worker, "_install_package_wheel_first", lambda **k: False)
     monkeypatch.setattr(worker, "probe_torch_wheel_env", lambda **k: env)
     worker._ensure_mamba_ssm([], "ai21labs/Jamba-v0.1", required = True, essential = essential)
+
+
+def test_the_eager_install_and_the_hook_share_one_failed_attempt(monkeypatch):
+    # A failed (possibly 30-minute HIP) build is never repeated in one worker, nor after a chat
+    # load in the same process already failed it.
+    attempts = []
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
+    monkeypatch.setattr(
+        worker, "_attempt_package_install", lambda **k: attempts.append(k["import_name"]) or False
+    )
+    monkeypatch.setattr(worker, "_reject_install", lambda *a, **k: None)
+    for _caller in ("eager", "hook"):
+        assert (
+            worker._install_package_wheel_first(
+                event_queue = [], **worker._pinned_kernel_kwargs(worker.CAUSAL_CONV1D)
+            )
+            is False
+        )
+    assert attempts == ["causal_conv1d"]
+
+    from utils import ssm_runtime
+
+    ssm_runtime._FAILED_INSTALLS.add(ssm_runtime._failure_key("mamba_ssm"))
+    worker._install_package_wheel_first(
+        event_queue = [], **worker._pinned_kernel_kwargs(worker.MAMBA_SSM)
+    )
+    assert attempts == ["causal_conv1d"]
+
+
+@pytest.mark.parametrize("required, budget", [(False, 120), (True, 2400)])
+def test_training_waits_long_only_for_a_required_kernel(monkeypatch, required, budget):
+    import contextlib
+
+    from utils import kernel_install
+
+    seen = {}
+
+    @contextlib.contextmanager
+    def _lock(name, **kwargs):
+        seen.update(kwargs)
+        yield False
+
+    monkeypatch.setattr(kernel_install, "kernel_install_lock", _lock)
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
+    monkeypatch.setattr(worker, "_send_status", lambda queue, message: None)
+    worker._install_package_wheel_first(
+        event_queue = [], required = required, **worker._pinned_kernel_kwargs(worker.MAMBA_SSM)
+    )
+    assert seen["wait_seconds"] == budget

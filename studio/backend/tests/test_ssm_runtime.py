@@ -26,7 +26,7 @@ _REAL_MAMBA_SSM_FLOOR_REASON = ssm_runtime._mamba_ssm_floor_reason
 
 
 @pytest.fixture(autouse = True)
-def _clear_offline_environment(monkeypatch):
+def _clear_offline_environment(monkeypatch, tmp_path):
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     monkeypatch.delenv("UV_OFFLINE", raising = False)
@@ -36,6 +36,13 @@ def _clear_offline_environment(monkeypatch):
     monkeypatch.setattr(ssm_runtime, "_MODEL_CONFIGS", {})
     monkeypatch.setattr(ssm_runtime, "_REMOTE_SOURCES", {})
     monkeypatch.setattr(ssm_runtime, "_NATIVE_MODELING_CACHE", {})
+    from utils import kernel_install
+
+    monkeypatch.setattr(
+        kernel_install, "_kernel_lock_path", lambda name: str(tmp_path / f"{name}.lock")
+    )
+    # Every copy of the module (and any child process) uses the test's folder too.
+    monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", str(tmp_path / "locks"))
     # This host's GPU must not decide the optional-mamba floor; its own tests set it.
     monkeypatch.setattr(ssm_runtime, "_mamba_ssm_floor_reason", lambda: None)
     # Nor its torch build: a CUDA torch unless a test says otherwise.
@@ -1452,7 +1459,7 @@ def test_a_lock_held_past_the_bound_installs_nothing(monkeypatch):
     monkeypatch.setattr(kernel_install, "kernel_install_lock", _busy)
     assert host.install() is False
     assert host.wheels == [] and host.commands == []
-    assert any("Another process" in message for message in host.statuses)
+    assert any("install lock" in message for message in host.statuses)
 
 
 @pytest.mark.parametrize(
@@ -1774,3 +1781,98 @@ def test_native_modeling_is_read_from_the_installed_transformers(monkeypatch, tm
 )
 def test_the_unconditional_import_scan(source, fatal):
     assert ssm_runtime._imports_mamba_ssm_unconditionally(source) is fatal
+
+
+# ── final-audit items (PR #13971) ────────────────────────────────────────────────────────────────
+
+
+def test_a_native_granite_4_tiny_preview_loads_with_a_warning(monkeypatch, tmp_path):
+    # ibm-granite/granite-4.0-tiny-preview: model_type granitemoehybrid, native in transformers.
+    _failing_mamba(monkeypatch)
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda t: t == "granitemoehybrid")
+    statuses = []
+    target = _checkpoint(tmp_path, "granitemoehybrid", name = "granite-4.0-tiny-preview")
+    kernels, _ = ssm_runtime.provision_ssm_kernels(
+        "ibm-granite/granite-4.0-tiny-preview", target, None, status_cb = statuses.append
+    )
+    assert kernels.mamba_ssm_required and not kernels.mamba_ssm_fatal
+    assert any("Warning: could not install mamba-ssm" in message for message in statuses)
+
+
+def test_a_transient_config_miss_is_read_again(monkeypatch):
+    reads = iter([None, {"model_type": "qwen3_5"}])
+    calls = []
+
+    def _load(target, token):
+        calls.append(target)
+        return next(reads)
+
+    monkeypatch.setattr("utils.transformers_version._load_config_json", _load)
+    assert ssm_runtime.resolve_ssm_kernels("acme/m", "acme/m", None).causal_conv1d is False
+    assert ssm_runtime.resolve_ssm_kernels("acme/m", "acme/m", None).causal_conv1d is True
+    assert ssm_runtime.resolve_ssm_kernels("acme/m", "acme/m", None).causal_conv1d is True
+    assert calls == ["acme/m", "acme/m"]  # the successful read is the one remembered
+
+
+def test_a_kernel_a_peer_installed_counts_as_new_to_this_worker(monkeypatch):
+    from utils import kernel_install
+
+    host = _Host(monkeypatch, env = _CUDA)
+
+    @contextlib.contextmanager
+    def _lock(name, **kwargs):
+        host.imports.add(name)  # a peer installed it while this process waited
+        yield True
+
+    monkeypatch.setattr(kernel_install, "kernel_install_lock", _lock)
+    newly = []
+    assert ssm_runtime._install_kernel(**_kernel_kwargs(), run = host.run, newly_installed = newly)
+    assert newly == ["causal_conv1d"]  # so inference refreshes or restarts its modeling modules
+
+
+@pytest.mark.parametrize("required, budget", [(False, 120), (True, 2400)])
+def test_optional_accelerations_wait_briefly_for_a_peer(monkeypatch, required, budget):
+    from utils import kernel_install
+
+    seen = {}
+
+    @contextlib.contextmanager
+    def _lock(name, **kwargs):
+        seen.update(kwargs)
+        yield False
+
+    host = _Host(monkeypatch, env = _CUDA)
+    monkeypatch.setattr(kernel_install, "kernel_install_lock", _lock)
+    host.install(required = required)
+    assert seen["wait_seconds"] == budget
+
+
+def test_ensure_waits_long_only_for_the_required_families(monkeypatch):
+    budgets = {}
+    monkeypatch.setattr(
+        ssm_runtime,
+        "_install_kernel",
+        lambda **k: budgets.setdefault((k["import_name"], k["required"]), True),
+    )
+    monkeypatch.setattr(ssm_runtime.importlib.util, "find_spec", lambda *a, **k: object())
+    ssm_runtime.ensure_ssm_runtime(
+        "q", wants_causal_conv1d = True, is_ssm = False, mamba_ssm_required = False
+    )
+    ssm_runtime.ensure_ssm_runtime(
+        "f", wants_causal_conv1d = True, is_ssm = True, mamba_ssm_required = True
+    )
+    assert set(budgets) == {("causal_conv1d", False), ("causal_conv1d", True), ("mamba_ssm", True)}
+
+
+def test_an_installer_that_cannot_start_still_cleans_up_and_is_remembered(monkeypatch):
+    host = _Host(monkeypatch, env = _CUDA, head = True)
+    host.installed.add("causal_conv1d")  # a broken copy left by an earlier attempt
+
+    def _cannot_start(url, **kwargs):
+        raise OSError("uv: No such file or directory")
+
+    monkeypatch.setattr(ssm_runtime, "install_wheel", _cannot_start)
+    assert host.install() is False
+    assert any("uninstall" in cmd for cmd in host.commands)  # cleanup ran
+    assert host.install() is False
+    assert len([cmd for cmd in host.commands if "uninstall" in cmd]) == 1  # not retried

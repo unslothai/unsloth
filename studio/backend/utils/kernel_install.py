@@ -218,11 +218,29 @@ _LOCK_CONTENDED = frozenset(
 )
 
 
+# How long an optional acceleration (causal-conv1d, an optional mamba-ssm wheel, flash-attn) waits
+# for another process's install of it before the load goes on without it.
+OPTIONAL_KERNEL_LOCK_WAIT = 120
+
+
 def _kernel_lock_path(name: str) -> str:
+    """The one lock file for installing *name* into this environment, shared by every entry point
+    that installs or removes it (Studio workers, setup, ``unsloth install-kernels``): beside the
+    environment when it is writable, else one per environment in the temp folder."""
     import hashlib
     import tempfile
 
-    # One lock per environment and kernel: two Studio workers sharing a venv, never two venvs.
+    override = os.environ.get("UNSLOTH_KERNEL_LOCK_DIR")
+    if override:
+        os.makedirs(override, exist_ok = True)
+        return os.path.join(override, f"{name}.lock")
+    folder = os.path.join(sys.prefix, ".unsloth-kernel-locks")
+    try:
+        os.makedirs(folder, exist_ok = True)
+        if os.access(folder, os.W_OK):
+            return os.path.join(folder, f"{name}.lock")
+    except OSError:
+        pass
     env = hashlib.sha256(os.path.realpath(sys.prefix).encode("utf-8")).hexdigest()[:16]
     folder = os.path.join(tempfile.gettempdir(), "unsloth-kernel-locks")
     os.makedirs(folder, exist_ok = True)
@@ -238,16 +256,18 @@ def kernel_install_lock(
     beat_seconds: float = 60.0,
 ) -> Iterator[bool]:
     """Hold the cross-process lock for installing kernel *name* into this environment, covering the
-    whole precheck / install / verify / cleanup transaction. Yields True when held, False when
-    another process kept it past *wait_seconds* (the caller then installs nothing). A filesystem
-    that cannot lock at all yields True: there is nothing to coordinate with. *on_wait* is called
-    when the wait starts and every *beat_seconds* while it lasts."""
+    whole precheck / install / verify / cleanup transaction. Yields True when held, False when it
+    is not: another process kept it past *wait_seconds*, or the lock cannot be opened or taken at
+    all. Either way the caller installs nothing rather than race a peer unguarded. *on_wait* is
+    called when the wait starts and every *beat_seconds* while it lasts."""
     import time
 
     try:
         handle = open(_kernel_lock_path(name), "a+b")
-    except OSError:
-        yield True
+    except OSError as exc:
+        logger_message = f"Unsloth: cannot open the {name} install lock ({exc}); not installing it."
+        print(logger_message, file = sys.stderr)
+        yield False
         return
     held = False
     try:
@@ -266,12 +286,14 @@ def kernel_install_lock(
                 break
             except (OSError, ImportError) as exc:
                 if not isinstance(exc, OSError) or exc.errno not in _LOCK_CONTENDED:
-                    break  # cannot lock here at all
+                    print(
+                        f"Unsloth: cannot take the {name} install lock ({exc}); not installing it.",
+                        file = sys.stderr,
+                    )
+                    break
                 now = time.monotonic()
                 if now >= deadline:
-                    handle.close()
-                    yield False
-                    return
+                    break
                 if on_wait is not None and now >= next_beat:
                     next_beat = now + beat_seconds
                     try:
@@ -279,7 +301,7 @@ def kernel_install_lock(
                     except Exception:
                         pass
                 time.sleep(0.5)
-        yield True
+        yield held
     finally:
         if held:
             try:
@@ -578,37 +600,46 @@ def install_kernel(
     if dry_run:
         print(shown)
         return 0
-    if _loads(check, run):
-        print(f"Unsloth: {name} already installed and loads.")
+    # The lock Studio's workers take for the same kernel: never install or remove it under a
+    # running load's precheck / verify.
+    with kernel_install_lock(
+        name, on_wait = lambda: print(f"Unsloth: waiting for another process installing {name}...")
+    ) as held:
+        if not held:
+            return skip(f"Unsloth: could not take the {name} install lock; not installing it.")
+        if _loads(check, run):
+            print(f"Unsloth: {name} already installed and loads.")
+            return 0
+        failures: list[subprocess.CompletedProcess] = []
+        outcome = install_prebuilt(
+            url,
+            install = install_wheel,
+            verify = lambda: _loads(check, run),
+            on_failed = lambda _installer, result: failures.append(result),
+            use_uv = True,
+            uv_needs_system = _outside_venv(),
+            reinstall = True,
+            run = run,
+        )
+        if outcome == "failed":
+            print(
+                f"Unsloth: installing {name} from {shown} failed; using the torch fallback.\n"
+                + failures[-1].stdout[-2000:].replace(url, shown)
+            )
+            return 1
+        if outcome == "rejected":
+            # A wheel that imports but whose extension cannot load would be picked up and crash later.
+            removed = (
+                "removed it"
+                if _uninstall(distribution, run)
+                else f"run `pip uninstall {distribution}`"
+            )
+            print(
+                f"Unsloth: {name} from {shown} does not load with {torch_desc}; {removed}, using the torch fallback."
+            )
+            return 1
+        print(f"Unsloth: installed {name} ({shown.rsplit('/', 1)[-1]}).")
         return 0
-    failures: list[subprocess.CompletedProcess] = []
-    outcome = install_prebuilt(
-        url,
-        install = install_wheel,
-        verify = lambda: _loads(check, run),
-        on_failed = lambda _installer, result: failures.append(result),
-        use_uv = True,
-        uv_needs_system = _outside_venv(),
-        reinstall = True,
-        run = run,
-    )
-    if outcome == "failed":
-        print(
-            f"Unsloth: installing {name} from {shown} failed; using the torch fallback.\n"
-            + failures[-1].stdout[-2000:].replace(url, shown)
-        )
-        return 1
-    if outcome == "rejected":
-        # A wheel that imports but whose extension cannot load would be picked up and crash later.
-        removed = (
-            "removed it" if _uninstall(distribution, run) else f"run `pip uninstall {distribution}`"
-        )
-        print(
-            f"Unsloth: {name} from {shown} does not load with {torch_desc}; {removed}, using the torch fallback."
-        )
-        return 1
-    print(f"Unsloth: installed {name} ({shown.rsplit('/', 1)[-1]}).")
-    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

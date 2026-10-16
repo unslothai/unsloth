@@ -9,6 +9,7 @@ moves, setup still removes an installed copy whose compiled extension no longer 
 from __future__ import annotations
 
 import ast
+import contextlib
 import re
 import subprocess
 import sys
@@ -100,12 +101,18 @@ class _Kernels:
         return True
 
 
+@contextlib.contextmanager
+def _free_lock(name, **kwargs):
+    yield True
+
+
 def _run_stale_check(monkeypatch, host: _Kernels, **flags):
     monkeypatch.setattr(ips, "NO_TORCH", flags.get("no_torch", False))
     monkeypatch.setattr(ips, "IS_MACOS", flags.get("macos", False))
     monkeypatch.setattr(ips, "_installed_distribution_version", host.version)
     monkeypatch.setattr(ips, "_uninstall_distribution", host.uninstall)
     monkeypatch.setattr(ips, "_count_install_action", lambda: None)
+    monkeypatch.setattr(ips, "kernel_install_lock", flags.get("lock", _free_lock))
     warnings = []
     monkeypatch.setattr(ips, "_step", lambda label, value, color_fn = None: warnings.append(value))
     monkeypatch.setattr(ips, "_note", lambda message, color_fn = None: warnings.append(message))
@@ -181,3 +188,15 @@ def test_the_kernel_cli_still_provisions_both_ahead_of_time():
     from utils import kernel_install
     assert {"causal_conv1d", "mamba_ssm"} <= set(kernel_install.KERNELS)
     assert callable(kernel_install.install_kernel)
+
+
+def test_a_busy_install_lock_keeps_the_kernel(monkeypatch):
+    # A Studio load verifying a fresh install holds this lock: never remove it underneath that.
+    @contextlib.contextmanager
+    def _busy(name, **kwargs):
+        yield False
+
+    host = _Kernels({"causal-conv1d": False})
+    warnings = _run_stale_check(monkeypatch, host, lock = _busy)
+    assert host.removed == []
+    assert any("install lock is busy" in message for message in warnings)

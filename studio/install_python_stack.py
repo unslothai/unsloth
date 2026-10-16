@@ -55,6 +55,7 @@ from backend.utils.kernel_install import (
     KERNELS,
     gpu_below_flash_attn_floor,
     install_prebuilt,
+    kernel_install_lock,
     uninstall_command,
 )
 from backend.utils.wheel_utils import (
@@ -8732,10 +8733,18 @@ def _remove_stale_ssm_kernels() -> None:
             _note(f"could not check {name} (exit {probe.returncode}); kept it: {tail}")
             continue
         _count_install_action()
-        try:
-            removed = _uninstall_distribution(distribution)
-        except OSError:
-            removed = False
+        # Under the lock Studio's workers and `unsloth install-kernels` take for this kernel, so
+        # a load verifying a fresh install never has it removed underneath it.
+        with kernel_install_lock(name) as held:
+            if not held:
+                _note(
+                    f"{name} does not load with this torch, but its install lock is busy; kept it"
+                )
+                continue
+            try:
+                removed = _uninstall_distribution(distribution)
+            except OSError:
+                removed = False
         if removed:
             _step("warning", f"{name} does not load with this torch; removed it ({tail})", _warn)
         else:
