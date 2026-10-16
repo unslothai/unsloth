@@ -4629,6 +4629,25 @@ class TestAnthropicMessagesToolRouting:
             "blockedDomains": ["reddit.com"],
         }
 
+    def test_web_search_domain_entries_with_a_path_limit_by_domain(self, monkeypatch):
+        backend = _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [
+                {
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "allowed_domains": ["docs.python.org/3/library", "example.com/*"],
+                }
+            ],
+        )
+
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+        assert backend.calls[0][1]["website_policy"] == {
+            "allowedDomains": ["docs.python.org", "example.com"],
+            "blockedDomains": [],
+        }
+
     def test_web_search_without_domain_limits_is_unrestricted(self, monkeypatch):
         backend = _mock_backend(monkeypatch)
         payload = _basic_payload(tools = [{"type": "web_search_20250305", "name": "web_search"}])

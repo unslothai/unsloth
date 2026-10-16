@@ -42262,6 +42262,13 @@ def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
     return requested
 
 
+def _anthropic_domain_entry(entry):
+    # Anthropic accepts an optional path ("example.com/blog", "example.com/*"); Studio limits by domain.
+    if isinstance(entry, str) and "://" not in entry:
+        return entry.split("/", 1)[0]
+    return entry
+
+
 def _anthropic_website_policy(tools: Optional[list]) -> Optional[dict]:
     from core.inference.web_access_policy import normalize_website_policy
 
@@ -42271,12 +42278,16 @@ def _anthropic_website_policy(tools: Optional[list]) -> Optional[dict]:
             td = tool if isinstance(tool, dict) else tool.model_dump()
             if _STUDIO_ANTHROPIC_TOOL_ALIASES.get(td.get("type")) != "web_search":
                 continue
-            declared = normalize_website_policy(
-                {
-                    "allowedDomains": td.get("allowed_domains") or [],
-                    "blockedDomains": td.get("blocked_domains") or [],
-                }
-            )
+            declared = {}
+            for key, field in (
+                ("allowedDomains", "allowed_domains"),
+                ("blockedDomains", "blocked_domains"),
+            ):
+                entries = td.get(field) or []
+                if isinstance(entries, list):
+                    entries = [_anthropic_domain_entry(entry) for entry in entries]
+                declared[key] = entries
+            declared = normalize_website_policy(declared)
             for key in policy:
                 policy[key] += declared[key]
         policy = normalize_website_policy(policy)
