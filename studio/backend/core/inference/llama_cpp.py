@@ -15143,6 +15143,29 @@ class LlamaCppBackend:
         return gpus
 
     @staticmethod
+    def _whole_gpu_mask_rows(
+        cvd: str, uuid_rows: list[tuple[int, str]], physical_ids: set[int]
+    ) -> Optional[set[int]]:
+        """Physical rows behind a whole-GPU uuid mask the ordinal resolvers left open.
+        A uuid names its card whatever CUDA_DEVICE_ORDER says. One card without MIG is
+        the only device any valid whole-GPU mask can name. None for a MIG mask or a
+        token no row matches, so the caller keeps its conservative path."""
+        from utils.hardware import nvidia
+
+        tokens = [t.strip().lower() for t in cvd.split(",") if t.strip()]
+        if not tokens or any(not t.startswith("gpu-") for t in tokens):
+            return None
+        if uuid_rows:
+            visible = nvidia._uuid_visible_ordinal_map(cvd, uuid_rows)
+            return set(visible) if visible is not None else None
+        # No uuid column: only a lone card without MIG is unambiguous.
+        if len(tokens) == 1 and len(physical_ids) == 1:
+            (only,) = physical_ids
+            if only not in nvidia.get_mig_gpu_indices():
+                return {only}
+        return None
+
+    @staticmethod
     def _get_gpu_memory(
         binary: Optional[str] = None, *, for_llama_server: bool = False
     ) -> list[tuple[int, int, int]]:
@@ -15185,7 +15208,9 @@ class LlamaCppBackend:
             result = gpu_query.run_nvidia_smi(
                 [
                     "nvidia-smi",
-                    "--query-gpu=index,memory.free,memory.total",
+                    # uuid in the same call: a whole-GPU uuid mask resolves without
+                    # CUDA_DEVICE_ORDER or a second query.
+                    "--query-gpu=index,memory.free,memory.total,uuid",
                     "--format=csv,noheader,nounits",
                 ],
                 capture_output = True,
@@ -15197,16 +15222,19 @@ class LlamaCppBackend:
                 **_windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:
+                from utils.hardware import nvidia
+
                 allowed = LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES")
-                if allowed is None and (os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip():
-                    # CUDA's numeric-prefix reading ("1gpu2" is 1, "0,1,abc" is 0,1).
-                    _ids = LlamaCppBackend._resolve_visible_physical_ids()
-                    allowed = set(_ids) if _ids is not None else None
-                gpus: list[tuple[int, int, int]] = []
+                _cvd = (os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip()
+                rows: list[tuple[int, int, int]] = []
+                unsized_rows: list[int] = []
+                uuid_rows: list[tuple[int, str]] = []
                 for line in result.stdout.strip().splitlines():
                     parts = [p.strip() for p in line.split(",")]
                     if len(parts) < 2:
                         continue
+                    if len(parts) >= 4 and parts[0].isdigit() and parts[3]:
+                        uuid_rows.append((int(parts[0]), parts[3]))
                     # Index and free required; skip a bad line rather than abandon
                     # the probe to the torch fallback.
                     try:
@@ -15214,8 +15242,8 @@ class LlamaCppBackend:
                         free_mib = int(parts[1])
                     except ValueError:
                         # Jetson answers "[N/A]": no dedicated VRAM (#4862).
-                        if parts[0].isdigit() and (allowed is None or int(parts[0]) in allowed):
-                            unsized_ids.append(int(parts[0]))
+                        if parts[0].isdigit():
+                            unsized_rows.append(int(parts[0]))
                         continue
                     # Total parsed separately: a two-column line or a non-integer
                     # total ("N/A" on MIG/vGPU) keeps the GPU at total 0 (fit uses
@@ -15226,19 +15254,25 @@ class LlamaCppBackend:
                             total_mib = int(parts[2])
                         except ValueError:
                             total_mib = 0
-                    if allowed is not None and idx not in allowed:
-                        continue
-                    gpus.append((idx, free_mib, total_mib))
+                    rows.append((idx, free_mib, total_mib))
+                if allowed is None and _cvd:
+                    allowed = LlamaCppBackend._whole_gpu_mask_rows(
+                        _cvd, uuid_rows, {r[0] for r in rows} | set(unsized_rows)
+                    )
+                if allowed is None and _cvd:
+                    # CUDA's numeric-prefix reading ("1gpu2" is 1, "0,1,abc" is 0,1).
+                    _ids = LlamaCppBackend._resolve_visible_physical_ids()
+                    allowed = set(_ids) if _ids is not None else None
+                unsized_ids = [i for i in unsized_rows if allowed is None or i in allowed]
+                gpus = [r for r in rows if allowed is None or r[0] in allowed]
                 # Match the docstring's sort-by-id guarantee (driver order isn't).
                 gpus.sort(key = lambda g: g[0])
-                _cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-                if allowed is None and _cvd is not None and _cvd.strip():
+                if allowed is None and _cvd:
                     # A MIG / unresolvable UUID mask names devices these rows cannot be
                     # matched to: listing every card sizes against GPUs the parent hid.
                     # The NVML branch names slices and uuids.
                     gpus = []
                 elif gpus:
-                    from utils.hardware import nvidia
                     mig = nvidia.get_mig_gpu_indices() & {g[0] for g in gpus}
                     if mig:
                         # A MIG card's row is the whole card: swap in its NVML slice reading,

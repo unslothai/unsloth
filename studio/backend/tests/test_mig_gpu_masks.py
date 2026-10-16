@@ -102,9 +102,15 @@ def host(tmp_path, monkeypatch):
         query = next((a for a in cmd if a.startswith("--query-gpu=")), "")
         if query == "--query-gpu=index,uuid":
             return ok("".join(f"{i}, {u}\n" for i, (u, _) in enumerate(state["cards"])))
-        if query == "--query-gpu=index,memory.free,memory.total":
+        if query.startswith("--query-gpu=index,memory.free,memory.total"):
             # Whole-card numbers, also for a card in MIG mode.
-            return ok("".join(f"{i}, {f}, {A100_MIB}\n" for i, f in enumerate(state["free"])))
+            uuids = [u for u, _ in state["cards"]] if query.endswith(",uuid") else None
+            return ok(
+                "".join(
+                    f"{i}, {f}, {A100_MIB}" + (f", {uuids[i]}" if uuids else "") + "\n"
+                    for i, f in enumerate(state["free"])
+                )
+            )
         return types.SimpleNamespace(returncode = 1, stdout = "", stderr = "")
 
     monkeypatch.setattr(mod.subprocess, "run", run)
@@ -361,6 +367,9 @@ class TestMigSlicesAreNotGpus:
         host(MIXED, [0, 0, 0], None)
         assert nvidia.get_mig_gpu_indices() == {0}
         host([(GPU0, []), (GPU1, [("1g.5gb", MIG0A)])], [0, 0], None)
+        # Cached until the inventory generation moves (hotplug, driver reset).
+        assert nvidia.get_mig_gpu_indices() == {0}
+        nvidia.gpu_query.invalidate_static("test")
         assert nvidia.get_mig_gpu_indices() == {1}
 
 
@@ -380,3 +389,90 @@ def test_mig_overlay_skips_a_non_cuda_backend(host, monkeypatch):
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.XPU)
     devices = [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 2.0}]
     assert hw._with_mig_instance_memory(devices) == devices
+
+
+T4_MIB = 15360
+
+
+class TestOrdinaryHostsKeepTheirReadings:
+    """Whole-GPU uuid masks and plain polls on hosts without MIG behave as before MIG support."""
+
+    @pytest.fixture
+    def calls(self, monkeypatch):
+        seen = {"torch": 0, "list": 0, "uuid_query_fails": False}
+        run = mod.subprocess.run
+
+        def counting_run(cmd, *args, **kwargs):
+            if cmd and os.path.basename(str(cmd[0])) == "nvidia-smi":
+                if "-L" in cmd:
+                    seen["list"] += 1
+                if seen["uuid_query_fails"] and "--query-gpu=index,uuid" in cmd:
+                    return types.SimpleNamespace(returncode = 1, stdout = "", stderr = "")
+            return run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(mod.subprocess, "run", counting_run)
+
+        def torch_probe(*a, **k):
+            seen["torch"] += 1
+            return [(0, 1, 1)]
+
+        monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory_torch", staticmethod(torch_probe))
+        return seen
+
+    @pytest.mark.parametrize("token", [GPU0, GPU0[:12], GPU0.lower()])
+    def test_a_uuid_mask_under_fastest_first_reads_its_card(self, host, monkeypatch, calls, token):
+        host([(GPU0, [])], [14000], None)
+        monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", token)
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 14000, A100_MIB)]
+        assert calls["torch"] == 0
+
+    def test_a_uuid_mask_reads_its_card_when_the_uuid_query_fails(self, host, monkeypatch, calls):
+        host([(GPU0, [])], [14000], None)
+        calls["uuid_query_fails"] = True
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", GPU0)
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 14000, A100_MIB)]
+        assert calls["torch"] == 0
+
+    def test_a_multi_gpu_uuid_mask_under_fastest_first_keeps_only_its_cards(
+        self, host, monkeypatch, calls
+    ):
+        host([(GPU0, []), (GPU1, []), (GPU2, [])], [39000, 30000, 40000], None)
+        monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", f"{GPU2},{GPU1}")
+        assert LlamaCppBackend._get_gpu_memory() == [(1, 30000, A100_MIB), (2, 40000, A100_MIB)]
+        assert calls["torch"] == 0
+
+    def test_an_unknown_uuid_still_reads_nothing_from_the_cli(self, host, monkeypatch, calls):
+        host([(GPU0, []), (GPU1, [])], [39000, 30000], None)
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", GPU2)
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 1, 1)]
+
+    def test_a_lone_card_without_a_uuid_column(self, host):
+        host([(GPU0, [])], [14000], None)
+        assert LlamaCppBackend._whole_gpu_mask_rows(GPU0, [], {0}) == {0}
+        assert LlamaCppBackend._whole_gpu_mask_rows(f"{GPU0},{GPU1}", [], {0}) is None
+        assert LlamaCppBackend._whole_gpu_mask_rows(MIG0A, [], {0}) is None
+        nvidia.gpu_query.invalidate_static("test")
+        host(TWO_SLICES, [38000], None)
+        assert LlamaCppBackend._whole_gpu_mask_rows(GPU0, [], {0}) is None
+
+    def test_memory_polls_reuse_one_mig_listing(self, host, calls):
+        host([(GPU0, [])], [14000], None)
+        devices = [{"index": 0, "vram_total_gb": 15.0, "vram_used_gb": 1.0}]
+        for _ in range(3):
+            assert LlamaCppBackend._get_gpu_memory() == [(0, 14000, A100_MIB)]
+            assert hw._with_mig_instance_memory(devices) == devices
+        assert calls["list"] == 1
+
+    def test_the_physical_count_probe_publishes_the_mig_set(self, host, monkeypatch, calls):
+        monkeypatch.setattr(hw, "IS_ROCM", False)
+        monkeypatch.setattr(hw, "_physical_gpu_count", None)
+        monkeypatch.setattr(hw, "_physical_gpu_count_from_smi", False)
+        monkeypatch.setattr(hw, "_physical_gpu_count_checked_at", None, raising = False)
+        host([(GPU0, [])], [14000], None)
+        assert hw.get_physical_gpu_count() == 1
+        assert calls["list"] == 1
+        for _ in range(3):
+            assert LlamaCppBackend._get_gpu_memory() == [(0, 14000, A100_MIB)]
+        assert calls["list"] == 1

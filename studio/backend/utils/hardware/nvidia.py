@@ -137,6 +137,8 @@ def get_physical_gpu_count(gpu_rows_only: bool = False) -> Optional[int]:
             **_windows_hidden_subprocess_kwargs(),
         )
         if result.returncode == 0 and result.stdout.strip():
+            # Same listing get_mig_gpu_indices parses: publish it so memory polls reuse it.
+            _store_mig_gpu_indices(_parse_mig_gpu_indices(result.stdout))
             lines = result.stdout.strip().splitlines()
             if gpu_rows_only:
                 return sum(1 for line in lines if line.startswith("GPU "))
@@ -150,10 +152,51 @@ def get_physical_gpu_count(gpu_rows_only: bool = False) -> Optional[int]:
     return None
 
 
+_MIG_INDICES_TTL_S = 60.0
+# (static generation, monotonic stamp, indices); empty sets and failures are cached too.
+_mig_indices_cache: Optional[tuple[int, float, frozenset[int]]] = None
+
+
+def _store_mig_gpu_indices(indices: frozenset[int]) -> None:
+    global _mig_indices_cache
+    _mig_indices_cache = (gpu_query._static_gen, time.monotonic(), indices)
+
+
+def _parse_mig_gpu_indices(stdout: Any) -> frozenset[int]:
+    if not isinstance(stdout, str):
+        return frozenset()
+    indices: set[int] = set()
+    current: Optional[int] = None
+    for line in stdout.splitlines():
+        if line.startswith("GPU "):
+            head = line[4:].split(":", 1)[0].strip()
+            current = int(head) if head.isdecimal() else None
+        elif current is not None and line.strip().startswith("MIG "):
+            indices.add(current)
+    return frozenset(indices)
+
+
 def get_mig_gpu_indices() -> set[int]:
     """Physical indices of GPUs with MIG instances (indented ``MIG`` rows under their
     ``GPU N:`` row in ``nvidia-smi -L``). CUDA sees such a card as one slice, so its
-    ``--query-gpu`` memory is the whole card's, not the device's. Empty on failure."""
+    ``--query-gpu`` memory is the whole card's, not the device's. Empty on failure.
+
+    Read on every memory poll, so the parsed set (empty included) is cached for a TTL and
+    dropped with the static generation (hotplug, driver reset); the physical count probe
+    refreshes it from the same listing."""
+    hit = _mig_indices_cache
+    if (
+        hit is not None
+        and hit[0] == gpu_query._static_gen
+        and time.monotonic() - hit[1] < _MIG_INDICES_TTL_S
+    ):
+        return set(hit[2])
+    indices = _query_mig_gpu_indices()
+    _store_mig_gpu_indices(indices)
+    return set(indices)
+
+
+def _query_mig_gpu_indices() -> frozenset[int]:
     try:
         result = gpu_query.run_nvidia_smi(
             [_nvidia_smi_executable(), "-L"],
@@ -166,18 +209,10 @@ def get_mig_gpu_indices() -> set[int]:
             **_windows_hidden_subprocess_kwargs(),
         )
     except Exception:
-        return set()
-    if result.returncode != 0 or not isinstance(result.stdout, str):
-        return set()
-    indices: set[int] = set()
-    current: Optional[int] = None
-    for line in result.stdout.splitlines():
-        if line.startswith("GPU "):
-            head = line[4:].split(":", 1)[0].strip()
-            current = int(head) if head.isdecimal() else None
-        elif current is not None and line.strip().startswith("MIG "):
-            indices.add(current)
-    return indices
+        return frozenset()
+    if result.returncode != 0:
+        return frozenset()
+    return _parse_mig_gpu_indices(result.stdout)
 
 
 def get_primary_gpu_utilization() -> dict[str, Any]:
