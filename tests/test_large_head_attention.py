@@ -385,3 +385,77 @@ def test_install_sits_beneath_the_packed_router(monkeypatch):
         assert packed._ORIG_SDPA[0]._unsloth_original is inner
     finally:
         ALL_ATTENTION_FUNCTIONS["sdpa"] = saved
+
+
+def test_autotune_skips_the_flush_buffer_benchmarker():
+    # Triton's default benchmarker allocates a 256 MB L2 flush buffer, enough to OOM a model that fits.
+    for kernel in (LH._lh_fwd, LH._lh_bwd_dq, LH._lh_bwd_dkdv):
+        assert kernel.do_bench is LH._bench_in_place
+
+
+def test_self_check_oom_falls_back_to_sdpa(monkeypatch):
+    def oom(*args, **kwargs):
+        raise torch.cuda.OutOfMemoryError("CUDA out of memory.")
+
+    monkeypatch.setattr(LH, "large_head_attention", oom)
+    key = (str(torch.device("cpu")), torch.float32)
+    monkeypatch.setitem(LH._SELF_CHECK, key, None)
+    LH._SELF_CHECK.pop(key)
+    assert LH._self_check(torch.device("cpu"), torch.float32) is False
+    assert LH._SELF_CHECK[key] is False
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+def test_autotune_of_a_new_shape_adds_no_flush_buffer():
+    dtype = _cuda_dtype()
+    # G = 3 is not used elsewhere in this file, so this call autotunes fwd and bwd from scratch.
+    q = torch.randn(1, 6, 40, 512, device = "cuda", dtype = dtype, requires_grad = True)
+    k = torch.randn(1, 2, 40, 512, device = "cuda", dtype = dtype, requires_grad = True)
+    v = torch.randn(1, 2, 40, 512, device = "cuda", dtype = dtype, requires_grad = True)
+    lo, hi = LH._dense_intervals(1, 40, True, q.device)
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
+    base = torch.cuda.memory_allocated()
+    LH.large_head_attention(q, k, v, lo, hi).float().sum().backward()
+    torch.cuda.synchronize()
+    assert torch.cuda.max_memory_allocated() - base < 32 * 1024**2
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+def test_router_falls_back_to_sdpa_on_kernel_oom(monkeypatch):
+    calls, original = _sentinel()
+    router = LH._make_router(original)
+    dtype = _cuda_dtype()
+    assert LH._self_check(torch.device("cuda", torch.cuda.current_device()), dtype) is True
+
+    def oom(*args, **kwargs):
+        raise torch.cuda.OutOfMemoryError("CUDA out of memory.")
+
+    monkeypatch.setattr(LH, "_attention", oom)
+    q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = dtype)
+    kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = dtype)
+    before = LH.LARGE_HEAD_ENGAGED["fallback"]
+    assert router(_Module(), q, kv, kv, None)[0] == "original"
+    assert LH.LARGE_HEAD_ENGAGED["fallback"] == before + 1 and len(calls) == 1
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+def test_router_skips_the_mask_scan_when_it_cannot_use_the_result(monkeypatch):
+    # The scan needs a host sync: inference masks would pay it on every layer, and a failed self
+    # check makes the result unusable.
+    def scan(*args, **kwargs):
+        raise AssertionError("mask scanned")
+
+    calls, original = _sentinel()
+    router = LH._make_router(original)
+    device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
+    assert LH._self_check(device, dtype) is True
+    monkeypatch.setattr(LH, "intervals_from_mask", scan)
+    q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = dtype)
+    kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = dtype)
+    with torch.inference_mode():
+        mask = _causal(24).cuda()[None, None]
+        assert router(_Module(), q, kv, kv, mask)[0] == "original"
+    monkeypatch.setitem(LH._SELF_CHECK, (str(device), dtype), False)
+    assert router(_Module(), q, kv, kv, _causal(24).cuda()[None, None])[0] == "original"
+    assert len(calls) == 2
