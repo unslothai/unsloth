@@ -12,15 +12,25 @@ from core.training.rl_samples import SampleRecorder, record_samples
 from core.training.training import TrainingBackend
 
 SPECS = [{"name": "format", "weight": 1.0}, {"name": "correct", "weight": 2.0}]
-PROMPTS = [[{"role": "system", "content": "s"}, {"role": "user", "content": "What is 48 + 24?"}]] * 4
+PROMPTS = [
+    [{"role": "system", "content": "s"}, {"role": "user", "content": "What is 48 + 24?"}]
+] * 4
 COMPLETIONS = [[{"role": "assistant", "content": f"answer {i}"}] for i in range(4)]
 
 
 def _funcs():
-    def format(prompts = None, completions = None, **kw):
+    def format(
+        prompts = None,
+        completions = None,
+        **kw,
+    ):
         return [0.5, 0.0, 0.5, 0.0]
 
-    def correct(prompts = None, completions = None, **kw):
+    def correct(
+        prompts = None,
+        completions = None,
+        **kw,
+    ):
         return [2.0, 2.0, None, float("nan")]
 
     return [format, correct]
@@ -64,7 +74,9 @@ def test_no_sink_leaves_the_functions_alone():
 def test_groups_are_throttled():
     now = [0.0]
     sent = []
-    recorder = SampleRecorder(["format", "correct"], [1.0, 2.0], sent.append, 2, min_interval = 10, clock = lambda: now[0])
+    recorder = SampleRecorder(
+        ["format", "correct"], [1.0, 2.0], sent.append, 2, min_interval = 10, clock = lambda: now[0]
+    )
     funcs = [recorder.wrap(i, f) for i, f in enumerate(_funcs())]
     _run(funcs)
     now[0] = 5.0
@@ -89,11 +101,20 @@ def test_long_text_is_trimmed():
     for f in funcs:
         f(prompts = ["p" * 5_000] * 4, completions = long)
     assert len(sent[0]["items"][0]["completion"]) == rl_samples.MAX_COMPLETION_CHARS + 1
-    assert sent[0]["prompt"].startswith("…") and len(sent[0]["prompt"]) == rl_samples.MAX_PROMPT_CHARS + 1
+    assert (
+        sent[0]["prompt"].startswith("…")
+        and len(sent[0]["prompt"]) == rl_samples.MAX_PROMPT_CHARS + 1
+    )
 
 
 def _sample_event(step):
-    return {"type": "samples", "step": step, "prompt": "q", "answer": "72", "items": [{"completion": "c", "rewards": {"r": 1.0}, "total": 1.0}]}
+    return {
+        "type": "samples",
+        "step": step,
+        "prompt": "q",
+        "answer": "72",
+        "items": [{"completion": "c", "rewards": {"r": 1.0}, "total": 1.0}],
+    }
 
 
 def test_the_backend_keeps_the_newest_groups_in_order():

@@ -19,7 +19,12 @@ MAX_COMPLETION_CHARS = 6_000
 MAX_ANSWER_CHARS = 500
 
 
-def _text(value: Any, limit: int, *, last: bool = False) -> str:
+def _text(
+    value: Any,
+    limit: int,
+    *,
+    last: bool = False,
+) -> str:
     if isinstance(value, list):
         turns = [m for m in value if isinstance(m, dict)]
         if last:
@@ -64,7 +69,11 @@ class SampleRecorder:
         name = self.names[index]
         is_last = index == len(self.names) - 1
 
-        def recorded(prompts = None, completions = None, **kwargs):
+        def recorded(
+            prompts = None,
+            completions = None,
+            **kwargs,
+        ):
             scores = func(prompts = prompts, completions = completions, **kwargs)
             try:
                 self._scores[name] = list(scores or [])

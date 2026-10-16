@@ -245,8 +245,7 @@ def _reward_funcs(reward_specs, worker_cls, make_python, make_rule) -> list:
         logger.info("Python rewards run with %s", worker.isolation)
         python_funcs = dict(zip((s["name"] for s in python), make_python(python, worker)))
     return [
-        python_funcs[s["name"]] if s.get("kind") == "python" else make_rule(s)
-        for s in reward_specs
+        python_funcs[s["name"]] if s.get("kind") == "python" else make_rule(s) for s in reward_specs
     ]
 
 
@@ -345,7 +344,9 @@ def build_rl_trainer(
             "train_dataset": train_dataset,
             "processing_class": tokenizer,
             "reward_funcs": record_samples(
-                _reward_funcs(reward_specs, RewardWorker, make_python_reward_funcs, make_reward_func),
+                _reward_funcs(
+                    reward_specs, RewardWorker, make_python_reward_funcs, make_reward_func
+                ),
                 reward_specs,
                 sample_sink,
                 args.num_generations,
