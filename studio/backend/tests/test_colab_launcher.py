@@ -552,6 +552,25 @@ def test_a_fresh_uv_is_called_by_path_until_the_terminal_picks_it_up():
     assert cl.setup_commands("signed_out", has_uv = False) == ["colab --auth oauth2 sessions"]
 
 
+def test_sign_in_names_the_uv_bin_colab_the_probe_found(monkeypatch):
+    # Runner.argv puts ~/.local/bin first, so the probe can find a colab the user's PATH lacks.
+    assert cl.setup_commands("signed_out", cli = "/home/u/.local/bin/colab") == [
+        "~/.local/bin/colab --auth oauth2 sessions"
+    ]
+    assert cl.setup_commands("signed_out", cli = "/usr/bin/colab") == ["colab --auth oauth2 sessions"]
+    probe = chr(10).join(
+        [
+            "UNSLOTH_PROBE uv=yes",
+            "UNSLOTH_PROBE cli=/home/u/.local/bin/colab",
+            "UNSLOTH_PROBE auth=none",
+        ]
+    )
+    monkeypatch.setattr(cl, "run_shell", FakeColab(probe = probe))
+    cap = cl.capability(cl.Runner("native"))
+    assert cap["state"] == "signed_out"
+    assert cap["setup"] == ["~/.local/bin/colab --auth oauth2 sessions"]
+
+
 def test_the_kernel_client_repair_brings_uv_when_it_is_missing():
     # A colab installed some other way (pip, pipx) can be probed with no uv on PATH.
     repair = cl.setup_commands("kernel_client", has_uv = False)

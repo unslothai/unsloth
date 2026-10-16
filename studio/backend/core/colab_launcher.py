@@ -319,7 +319,12 @@ def classify(text: str) -> Optional[str]:
     return None
 
 
-def setup_commands(state: str, *, has_uv: bool = True) -> list[str]:
+def setup_commands(
+    state: str,
+    *,
+    has_uv: bool = True,
+    cli: Optional[str] = None,
+) -> list[str]:
     # A fresh uv lands in ~/.local/bin, which the terminal that ran its installer may not have
     # on PATH yet, so the commands after it name that directory.
     bin_dir = "" if has_uv else "~/.local/bin/"
@@ -340,7 +345,9 @@ def setup_commands(state: str, *, has_uv: bool = True) -> list[str]:
             "'jupyter-kernel-client @ git+https://github.com/googlecolab/jupyter-kernel-client.git'",
         ]
     if state == "signed_out":
-        return ["colab --auth oauth2 sessions"]
+        # The probe may have found colab only through the ~/.local/bin that Runner.argv adds.
+        uv_bin = bool(cli) and cli.endswith("/.local/bin/colab")
+        return [f"{'~/.local/bin/' if uv_bin else ''}colab --auth oauth2 sessions"]
     return []
 
 
@@ -410,7 +417,8 @@ def capability(runner: Optional[Runner] = None) -> dict:
         "state": state,
         "ready": state == "ready",
         "message": message,
-        "setup": setup_commands(state, has_uv = has_uv),
+        "setup": setup_commands(state, has_uv = has_uv, cli = facts.get("cli")),
+        "cli": facts.get("cli"),
     }
 
 
@@ -614,7 +622,7 @@ def _run_job(job: LaunchJob) -> None:
                     "other Colab sessions (browser tabs count too) and retry."
                 )
             if kind == "auth":
-                job.setup = setup_commands("signed_out")
+                job.setup = setup_commands("signed_out", cli = cap.get("cli"))
                 raise LaunchError("Colab rejected the saved Google sign-in. Sign in again.")
             raise LaunchError(f"colab new failed: {_last_line(result.output)}")
 
