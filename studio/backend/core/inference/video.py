@@ -1400,6 +1400,9 @@ class _VideoLoadingState:
     # Canonical (upstream, lowercased) id -> the side of its mirror pair this load actually FETCHES from, recorded by
     # each fetch site once it has settled the choice against the exact file names. load_progress counts only that side.
     fetch_repos: dict[str, str] = field(default_factory = dict)
+    # Same key -> the file names ``expected_bytes`` was summed over (identical on both sides of a pair). load_progress
+    # counts only these, so a carrier repo's own cached FP8 / GGUF root files never inflate a base pull.
+    fetch_files: dict[str, frozenset[str]] = field(default_factory = dict)
 
 
 def _physical_card_name(ordinal: Optional[int]) -> "tuple[Optional[str], Optional[int]]":
@@ -1593,11 +1596,73 @@ def _video_fetch_repo(
     # ``checkpoint``: the user-selected file itself. The opt-out folds a mirror back onto its upstream only for BASE
     # components; an unsloth carrier repo's own root FP8 / GGUF checkpoints do not exist upstream, so a pick stays in
     # the repo it was selected from.
-    if checkpoint and os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
+    no_mirror = bool(os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip())
+    if checkpoint and no_mirror:
         return repo_id
-    from .diffusion_families import prefer_ungated_mirror
+    from .diffusion_families import (
+        _is_local_path,
+        _upstream_is_cached,
+        mirror_repo,
+        prefer_ungated_mirror,
+    )
 
+    mirror = None if no_mirror or _is_local_path(repo_id) else mirror_repo(repo_id)
+    if mirror:
+        if files:
+            # Every video fetch passes ``reuse_other_cache_root``, so an upstream complete under EITHER root is reused
+            # rather than re-staged under the mirror (a cache-folder change leaves it in the import-time root).
+            if _upstream_is_cached(repo_id, tuple(files), other_root = True):
+                return repo_id
+        else:
+            # No names to check (assembly, an offline load, progress): the any-weight default would keep a partial
+            # upstream over a complete mirror. Pick the side whose cached snapshot is more complete; upstream on a tie.
+            up, mir = _video_cached_completeness(repo_id), _video_cached_completeness(mirror)
+            if up >= 0 or mir >= 0:
+                return repo_id if up >= mir else mirror
     return prefer_ungated_mirror(repo_id, hf_token, files = files)
+
+
+def _video_cached_completeness(repo_id: str) -> int:
+    """How complete ``repo_id``'s cached diffusers snapshot is in the live root (the one ``from_pretrained`` reads):
+    the number of ``model_index.json`` (or H3's ``modular_model_index.json``) components whose folder holds a file and
+    whose shard indexes are fully present, best revision. -1 without a cached index. Local stat only, never raises."""
+    try:
+        import json
+
+        from .diffusion_families import _cached_revisions
+
+        best = -1
+        for rev in _cached_revisions(Path(hub_cache_dir()), repo_id):
+            index = next(
+                (rev / n for n in ("model_index.json", "modular_model_index.json") if (rev / n).is_file()),
+                None,
+            )
+            if index is None:
+                continue
+            components = []
+            for key, value in json.loads(index.read_text(encoding = "utf-8")).items():
+                if key.startswith("_") or not isinstance(value, (list, tuple)) or not value:
+                    continue
+                if value[0] in (None, "null"):
+                    continue
+                spec = value[2] if len(value) == 3 and isinstance(value[2], dict) else {}
+                components.append(spec.get("subfolder") or key)
+            score = 0
+            for key in components:
+                folder = rev / key
+                if not folder.is_dir() or not any(p.is_file() for p in folder.iterdir()):
+                    continue
+                complete = True
+                for shard_index in folder.glob("*.index.json"):
+                    weight_map = json.loads(shard_index.read_text(encoding = "utf-8")).get("weight_map") or {}
+                    if not all((folder / name).is_file() for name in set(weight_map.values())):
+                        complete = False
+                        break
+                score += complete
+            best = max(best, score)
+        return best
+    except Exception:  # noqa: BLE001 -- an unreadable cache scores as absent
+        return -1
 
 
 def _video_listing_repo(repo_id: str) -> str:
@@ -3715,10 +3780,13 @@ class VideoBackend:
                 h3_te_scheme = h3_te_scheme,
                 local_files_only = local_files_only,
                 ltx25_dev = ltx25_dev,
+                planned_files = (planned_files := {}),
             )
             with self._lock:
                 if self._load_token == token and self._loading is not None:
                     self._loading.base_repo = base
+                    if hasattr(self._loading, "fetch_files"):
+                        self._loading.fetch_files = planned_files
                     # The conditioner artifact comes from a THIRD repo, neither repo_id nor base_repo, so without this
                     # the delete-cached guard would let it be deleted out from under the in-flight fetch (or out from
                     # under the assembly, while the base snapshot that no longer carries a dense encoder is still coming
@@ -3822,10 +3890,13 @@ class VideoBackend:
                         h3_te_scheme = h3_te_scheme,
                         local_files_only = local_files_only,
                         ltx25_dev = ltx25_dev,
+                        planned_files = (planned_files := {}),
                     )
                     with self._lock:
                         if self._load_token == token and self._loading is not None:
                             self._loading.expected_bytes = expected
+                            if hasattr(self._loading, "fetch_files"):
+                                self._loading.fetch_files = planned_files
             # Only a pre-cast checkpoint actually on disk earns the dense skip below.
             te_skipped = self._fetch_te_prequant(
                 te_sources,
@@ -4778,7 +4849,10 @@ class VideoBackend:
                 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
                 path = Path(
                     hf_hub_download_with_xet_fallback(
-                        base,
+                        # The repo the base pull reads: a fresh install fetches the index from the mirror, never the
+                        # vendor id.
+                        _video_fetch_repo(base, hf_token, files = ("modular_model_index.json",))
+                        or base,
                         "modular_model_index.json",
                         hf_token,
                         cache_dir = hub_cache_dir(),
@@ -5685,6 +5759,7 @@ class VideoBackend:
         h3_te_scheme: Optional[str] = None,
         local_files_only: bool = False,
         ltx25_dev: bool = False,
+        planned_files: Optional[dict[str, frozenset[str]]] = None,
     ) -> Optional[int]:
         """Total bytes this load will pull (checkpoint + companions), or None.
 
@@ -5712,17 +5787,17 @@ class VideoBackend:
             skip_te_components = tuple(self._te_prequant_hub_files(te_sources or {}, api))
             if self._h3_te_quant_hub_files(h3_te_scheme, api)[1]:
                 skip_te_components = skip_te_components + ("text_encoder",)
+            planned: dict[str, set[str]] = {}
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 info = api.model_info(_video_listing_repo(repo_id), files_metadata = True)
                 wanted = _checkpoint_files(gguf_filename, kind)
                 for sibling in info.siblings or []:
                     if sibling.rfilename in wanted and sibling.size:
                         total += int(sibling.size)
+                        planned.setdefault(_video_fetch_key(repo_id), set()).add(sibling.rfilename)
             if base and not Path(base).expanduser().exists():
                 info = api.model_info(_video_listing_repo(base), files_metadata = True)
-                total += sum(
-                    size
-                    for _, size in self._base_download_files(
+                base_files = self._base_download_files(
                         info,
                         kind,
                         ltx23 = ltx23,
@@ -5735,7 +5810,12 @@ class VideoBackend:
                             info, _video_listing_repo(base), hf_token
                         ),
                     )
+                total += sum(size for _, size in base_files)
+                planned.setdefault(_video_fetch_key(base), set()).update(
+                    name for name, _ in base_files
                 )
+            if planned_files is not None:
+                planned_files.update({key: frozenset(names) for key, names in planned.items()})
             return total or None
         except Exception:  # noqa: BLE001 -- progress totals are best-effort only
             return None
@@ -6484,8 +6564,12 @@ class VideoBackend:
             if isinstance(recorded, dict):
                 recorded[_video_fetch_key(logical)] = fetched
 
-    def _cache_bytes(self, repo_id: Optional[str]) -> int:
+    def _cache_bytes(self, repo_id: Optional[str], files: Optional[frozenset[str]] = None) -> int:
         """Bytes of ``repo_id`` currently in the HF blob cache (progress polling).
+
+        ``files`` narrows it to the planned names (their snapshot entries, any revision) plus the in-flight
+        ``*.incomplete`` blobs, which have no name yet: a carrier repo also caches its own root FP8 / GGUF files,
+        which the estimate never counted.
 
         Walks the repo's cache directory directly instead of ``scan_cache_dir``:
         the scanner skips in-flight ``*.incomplete`` blobs, so during a multi-GB
@@ -6499,9 +6583,32 @@ class VideoBackend:
             folder = Path(hub_cache_dir()) / ("models--" + repo_id.strip().replace("/", "--"))
             if not folder.is_dir():
                 return 0
-            total = 0
-            for root, _dirs, files in os.walk(folder):
+            if files is not None:
+                seen: set[str] = set()
+                total = 0
+                snapshots = folder / "snapshots"
+                revisions = [p for p in snapshots.iterdir() if p.is_dir()] if snapshots.is_dir() else []
                 for name in files:
+                    for rev in revisions:
+                        entry = rev / name
+                        try:
+                            blob = os.path.realpath(entry)
+                            if entry.is_file() and blob not in seen:
+                                seen.add(blob)
+                                total += os.path.getsize(blob)
+                        except OSError:
+                            continue
+                blobs = folder / "blobs"
+                if blobs.is_dir():
+                    for blob in blobs.glob("*.incomplete"):
+                        try:
+                            total += blob.stat().st_size
+                        except OSError:
+                            continue
+                return int(total)
+            total = 0
+            for root, _dirs, names in os.walk(folder):
+                for name in names:
                     try:
                         path = os.path.join(root, name)
                         # Snapshot entries are symlinks into blobs/; skip them so a blob is not counted twice.
@@ -6532,7 +6639,11 @@ class VideoBackend:
                     key,
                     fetch_repos.get(key) or _video_fetch_repo(rid, checkpoint = is_checkpoint) or rid,
                 )
-        downloaded = sum(self._cache_bytes(rid) for rid in dict.fromkeys(reading.values()))
+        planned = dict(getattr(loading, "fetch_files", None) or {})
+        downloaded = sum(
+            self._cache_bytes(rid, planned[key]) if key in planned else self._cache_bytes(rid)
+            for key, rid in reading.items()
+        )
         expected = loading.expected_bytes
         phase = "downloading"
         if not expected:

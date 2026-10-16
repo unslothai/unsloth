@@ -430,3 +430,99 @@ def test_ltx25_estimate_reads_shard_indexes_from_the_listing_mirror(empty_cache,
         "Lightricks/LTX-2.5-Diffusers", None, "Lightricks/LTX-2.5-Diffusers", None, "pipeline"
     )
     assert seen == ["unsloth/LTX-2.5-FP8"]
+
+
+def _snapshot(root, repo, files):
+    """A cached revision of ``repo`` under ``root`` holding ``files`` (name -> bytes)."""
+    folder = root / ("models--" + repo.replace("/", "--"))
+    (folder / "refs").mkdir(parents = True, exist_ok = True)
+    (folder / "refs" / "main").write_text("b" * 40)
+    for name, data in files.items():
+        path = folder / "snapshots" / ("b" * 40) / name
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_bytes(data)
+    return folder
+
+
+_INDEX = (
+    b'{"_class_name": "LTX2Pipeline", "vae": ["diffusers", "AutoencoderKL"],'
+    b' "transformer": ["diffusers", "LTX2Transformer"], "scheduler": ["diffusers", "S"]}'
+)
+_COMPLETE = {
+    "model_index.json": _INDEX,
+    "vae/diffusion_pytorch_model.safetensors": b"v",
+    "transformer/diffusion_pytorch_model.safetensors": b"t",
+    "scheduler/scheduler_config.json": b"{}",
+}
+
+
+def test_nameless_choice_prefers_the_complete_mirror_over_a_partial_upstream(empty_cache, monkeypatch):
+    upstream, mirror = "Lightricks/LTX-2", "unsloth/LTX-2-FP8"
+    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
+    _snapshot(empty_cache, upstream, {"model_index.json": _INDEX, "vae/diffusion_pytorch_model.safetensors": b"v"})
+    _snapshot(empty_cache, mirror, _COMPLETE)
+    # Offline assembly has no names: the complete mirror wins over the partial upstream.
+    assert video_mod._video_fetch_repo(upstream) == mirror
+    # An equally complete upstream keeps being used.
+    _snapshot(empty_cache, upstream, _COMPLETE)
+    assert video_mod._video_fetch_repo(upstream) == upstream
+
+
+def test_named_choice_reuses_an_upstream_complete_in_the_fallback_root(empty_cache):
+    upstream = "Lightricks/LTX-2"
+    _snapshot(empty_cache / "other", upstream, _COMPLETE)
+    names = list(_COMPLETE)
+    assert video_mod._video_fetch_repo(upstream, files = names) == upstream
+    assert video_mod._video_fetch_repo(upstream, files = names + ["missing.safetensors"]) == "unsloth/LTX-2-FP8"
+
+
+def test_progress_counts_only_planned_files_of_a_carrier_repo(empty_cache, monkeypatch):
+    upstream, mirror = "Lightricks/LTX-2", "unsloth/LTX-2-FP8"
+    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
+    folder = _snapshot(
+        empty_cache,
+        mirror,
+        {"model_index.json": b"{}", "Model-FP8.safetensors": b"x" * 1000},  # the carrier's own root checkpoint
+    )
+    (folder / "blobs").mkdir()
+    (folder / "blobs" / "abc.incomplete").write_bytes(b"y" * 5)
+    backend = video_mod.VideoBackend()
+    backend._loading = video_mod._VideoLoadingState(
+        repo_id = upstream, base_repo = upstream, expected_bytes = 100
+    )
+    backend._loading.fetch_repos = {"lightricks/ltx-2": mirror}
+    backend._loading.fetch_files = {
+        "lightricks/ltx-2": frozenset({"model_index.json", "transformer/diffusion_pytorch_model.safetensors"})
+    }
+    progress = backend.load_progress()
+    assert progress["phase"] == "downloading"
+    assert progress["downloaded_bytes"] == 2 + 5  # model_index.json + the in-flight blob
+
+
+def test_estimate_reports_the_planned_names(empty_cache, monkeypatch):
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _RecordingApi)
+    backend = video_mod.VideoBackend()
+    monkeypatch.setattr(backend, "_te_prequant_hub_files", lambda *a, **k: ())
+    monkeypatch.setattr(backend, "_h3_te_quant_hub_files", lambda *a, **k: ((), ()))
+    planned: dict = {}
+    backend._estimate_download_bytes(
+        "Lightricks/LTX-2", None, "Lightricks/LTX-2", None, "pipeline", planned_files = planned
+    )
+    assert "Model-FP8.safetensors" not in planned["lightricks/ltx-2"]
+    assert "transformer/diffusion_pytorch_model.safetensors" in planned["lightricks/ltx-2"]
+
+
+def test_h3_staging_index_is_read_from_the_mirror(empty_cache, monkeypatch):
+    seen: list = []
+
+    def _download(repo, name, token, **_kw):
+        seen.append(repo)
+        path = empty_cache / name
+        path.write_text('{"text_encoder": ["x", "Y", {"pretrained_model_name_or_path": "MiniMaxAI/MiniMax-H3"}]}')
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+    assert video_mod.VideoBackend._h3_te_base_index_source("MiniMaxAI/MiniMax-H3", None) == "MiniMaxAI/MiniMax-H3"
+    assert seen == ["unsloth/MiniMax-H3"]
