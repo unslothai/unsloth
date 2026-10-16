@@ -102,7 +102,11 @@ def run_embedding(monkeypatch, tmp_path):
     monkeypatch.setattr(worker, "_start_worker_stop_poller", lambda *a, **k: None)
     monkeypatch.setattr(worker, "_emit_resource_provenance", lambda *a, **k: None)
 
-    def run(csv_text, error = None, **config):
+    def run(
+        csv_text,
+        error = None,
+        **config,
+    ):
         path = tmp_path / "pairs.csv"
         path.write_text(csv_text)
         events = []

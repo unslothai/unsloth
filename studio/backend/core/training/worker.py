@@ -5698,7 +5698,9 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                     batched = True,
                     features = Features({**dataset.features, column: Value("float64")}),
                 )
-            csv_text_columns[:] = [column for column in dataset.column_names if column not in labels]
+            csv_text_columns[:] = [
+                column for column in dataset.column_names if column not in labels
+            ]
             return dataset
 
         if hf_dataset:
