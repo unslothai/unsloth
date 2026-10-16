@@ -852,6 +852,13 @@ export const hi = {
       // Header of the menu's section-visibility toggles.
       show: "दिखाएँ",
       newSection: "नया सेक्शन",
+      deleteAllChats: "सभी चैट हटाएं",
+      deleteAllChatsTitle: "सभी चैट हटाएं?",
+      deleteAllChatsDescription: "इस डिवाइस पर सभी चैट स्थायी रूप से हटाएं। यह पूर्ववत नहीं किया जा सकता।",
+      deleteAllChatsDone: "{count} चैट हटाई गईं।",
+      deleteAllChatsNothingCleared: "हटाने के लिए कोई चैट नहीं।",
+      deleteAllChatsFailed: "सभी चैट हटाने में विफल।",
+      deleteAllChatsPartial: "{deleted} चैट हटाई गईं, {failed} नहीं हटाई जा सकीं।",
     },
     // User-made sidebar sections that group chats and projects.
     sections: {

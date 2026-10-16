@@ -850,6 +850,13 @@ export const ja = {
       // Header of the menu's section-visibility toggles.
       show: "表示",
       newSection: "新しいセクション",
+      deleteAllChats: "すべてのチャットを削除",
+      deleteAllChatsTitle: "すべてのチャットを削除しますか？",
+      deleteAllChatsDescription: "このデバイスのすべてのチャットを完全に削除します。この操作は元に戻せません。",
+      deleteAllChatsDone: "{count}件のチャットを削除しました。",
+      deleteAllChatsNothingCleared: "削除するチャットがありません。",
+      deleteAllChatsFailed: "すべてのチャットの削除に失敗しました。",
+      deleteAllChatsPartial: "{deleted}件のチャットを削除しました。{failed}件は削除できませんでした。",
     },
     // User-made sidebar sections that group chats and projects.
     sections: {

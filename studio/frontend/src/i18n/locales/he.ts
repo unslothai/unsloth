@@ -928,6 +928,13 @@ export const he = {
       sortPinnedChats: "מיון צ'אטים מוצמדים",
       show: "הצג",
       newSection: "מקטע חדש",
+      deleteAllChats: "מחק את כל הצ'אטים",
+      deleteAllChatsTitle: "למחוק את כל הצ'אטים?",
+      deleteAllChatsDescription: "מחק לצמיתות את כל הצ'אטים במכשיר זה. לא ניתן לבטל.",
+      deleteAllChatsDone: "{count} צ'אטים נמחקו.",
+      deleteAllChatsNothingCleared: "אין צ'אטים למחיקה.",
+      deleteAllChatsFailed: "נכשל במחיקת כל הצ'אטים.",
+      deleteAllChatsPartial: "{deleted} צ'אטים נמחקו, {failed} לא ניתן למחוק.",
     },
     sections: {
       createTitle: "מקטע חדש",

@@ -755,6 +755,13 @@ export const it = {
       // Header of the menu's section-visibility toggles.
       show: "Mostra",
       newSection: "Nuova sezione",
+      deleteAllChats: "Elimina tutte le chat",
+      deleteAllChatsTitle: "Eliminare tutte le chat?",
+      deleteAllChatsDescription: "Elimina definitivamente tutte le chat su questo dispositivo. Non è possibile annullare.",
+      deleteAllChatsDone: "{count} chat eliminate.",
+      deleteAllChatsNothingCleared: "Nessuna chat da eliminare.",
+      deleteAllChatsFailed: "Impossibile eliminare tutte le chat.",
+      deleteAllChatsPartial: "{deleted} chat eliminate, {failed} non è stato possibile eliminare.",
     },
     // User-made sidebar sections that group chats and projects.
     sections: {

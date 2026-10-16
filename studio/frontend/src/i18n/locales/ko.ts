@@ -848,6 +848,13 @@ export const ko = {
       // Header of the menu's section-visibility toggles.
       show: "표시",
       newSection: "새 섹션",
+      deleteAllChats: "모든 채팅 삭제",
+      deleteAllChatsTitle: "모든 채팅을 삭제하시겠습니까?",
+      deleteAllChatsDescription: "이 기기의 모든 채팅을 영구적으로 삭제합니다. 되돌릴 수 없습니다.",
+      deleteAllChatsDone: "{count}개의 채팅을 삭제했습니다.",
+      deleteAllChatsNothingCleared: "삭제할 채팅이 없습니다.",
+      deleteAllChatsFailed: "모든 채팅 삭제에 실패했습니다.",
+      deleteAllChatsPartial: "{deleted}개의 채팅을 삭제했습니다. {failed}개는 삭제하지 못했습니다.",
     },
     // User-made sidebar sections that group chats and projects.
     sections: {
