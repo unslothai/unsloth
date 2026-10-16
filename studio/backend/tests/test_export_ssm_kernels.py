@@ -48,11 +48,20 @@ def test_a_cpu_or_mlx_export_makes_no_extra_connectivity_probe(
     assert ("load",) in order
 
 
-def test_a_cuda_export_still_opens_the_window_to_install(monkeypatch, tmp_path):
+@pytest.mark.parametrize("device_backend", ["cuda", "cpu", "mlx"])
+def test_provisioning_adds_no_connectivity_window(monkeypatch, tmp_path, device_backend):
+    # Same window count as 9f5b13325: provisioning rides the activation window.
+    order = _run_export(monkeypatch, tmp_path, {"device_backend": device_backend})
+    windows = [step for step in order if step[0] == "window"]
+    assert windows == [("window", "activating transformers"), ("window", None)]
+
+
+def test_a_cuda_export_installs_inside_the_activation_window(monkeypatch, tmp_path):
     order = _run_export(monkeypatch, tmp_path, {"device_backend": "cuda"})
-    assert order.index(("window", "installing SSM kernels")) < order.index(
-        ("provision", True, True)
-    )
+    activation = order.index(("window", "activating transformers"))
+    provision = order.index(("provision", True, True))
+    assert activation < provision < order.index(("import",))
+    assert not any(step[0] == "window" for step in order[activation + 1 : provision])
 
 
 def _run_export(monkeypatch, tmp_path, extra_config):

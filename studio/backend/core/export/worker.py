@@ -656,6 +656,19 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
             )
             return
 
+        # Before Unsloth and the modeling import: transformers captures its kernel gates at import,
+        # and some remote modeling code (Nemotron-H) cannot import at all without mamba-ssm. Inside
+        # the activation window, so it adds no Hub reachability probe of its own; an MLX / CPU /
+        # macOS export installs nothing.
+        if not _provision_ssm_kernels(
+            checkpoint_path,
+            config.get("base_model") or None,
+            config.get("hf_token"),
+            resp_queue,
+            config.get("device_backend"),
+        ):
+            return
+
     # Importable Triton isn't enough on AMD: its clang-cl JIT also needs the MSVC CRT headers (#7595).
     if sys.platform == "win32":
         from core._msvc_env import gate_torch_compile_on_windows
@@ -665,21 +678,6 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     from core._torchao_stub import install_torchao_windows_rocm_real_or_stub
 
     install_torchao_windows_rocm_real_or_stub()
-
-    # Before Unsloth and the modeling import: transformers captures its kernel gates at import, and
-    # some remote modeling code (Nemotron-H) cannot import at all without mamba-ssm.
-    # Decided before the connectivity window: an MLX / CPU / macOS export installs nothing, so it
-    # makes no extra Hub reachability probe either.
-    if _export_uses_cuda_kernels(config.get("device_backend")):
-        with _offline_window_if_unreachable(step = "installing SSM kernels"):
-            if not _provision_ssm_kernels(
-                checkpoint_path,
-                config.get("base_model") or None,
-                config.get("hf_token"),
-                resp_queue,
-                config.get("device_backend"),
-            ):
-                return
 
     try:
         _send_response(
