@@ -196,6 +196,9 @@ class Runner:
     distro: Optional[str] = None
 
     def argv(self, script: str) -> list[str]:
+        # uv puts its tools (a repaired or fresh colab) in ~/.local/bin, which a login shell
+        # may not have on PATH; first, so it wins over an older pip-installed colab.
+        script = 'export PATH="$HOME/.local/bin:$PATH"; ' + script
         if self.kind == "wsl":
             return [
                 shutil.which("wsl.exe") or "wsl.exe",
