@@ -74,6 +74,18 @@ def _has_activation_fake_quantizer(proj):
     return False
 
 
+def _may_overwrite_input(X):
+    # Backward writes dX into X; not when an RMSNorm saved X (its output) for its own backward,
+    # including through a view of it (tiled MLP chunks).
+    if _is_compiling():
+        return True
+    base = X._base
+    return not (
+        getattr(X, "_unsloth_rmsnorm_saved", False)
+        or (base is not None and getattr(base, "_unsloth_rmsnorm_saved", False))
+    )
+
+
 class LoRA_MLP(torch.autograd.Function):
     """
     ### LoRA weights
@@ -157,7 +169,7 @@ class LoRA_MLP(torch.autograd.Function):
             _backward_function,
         )
         ctx.save_for_backward(gateA, gateB, upA, upB, downA, downB, X, e, g)
-        ctx.inplace = inplace
+        ctx.inplace = inplace and _may_overwrite_input(X)
         return i
 
     @staticmethod
@@ -485,7 +497,7 @@ class LoRA_QKV(torch.autograd.Function):
             VA,
             VB,
         )
-        ctx.inplace = inplace
+        ctx.inplace = inplace and _may_overwrite_input(X)
         return Q, K, V
 
     @staticmethod

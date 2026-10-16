@@ -1,10 +1,4 @@
-"""GPU-free test for the fast_generate slow-mode guard in _utils.py.
-
-When fast_inference=False, model.fast_generate falls back to HuggingFace generate, so vLLM-only
-inputs must be rejected with a clear message instead of leaking into transformers.generate. Covers
-a string prompt, a vLLM {"prompt":..., "multi_modal_data":...} dict, SamplingParams passed both
-positionally and as a kwarg, and a normal tokenized call passing through.
-"""
+"""With fast_inference=False, vLLM-only inputs must be rejected, not leak into HF generate."""
 
 import ast, functools, os
 
@@ -53,15 +47,14 @@ def _rejects(fn, needle):
 
 def test_fast_generate_slow_guard():
     w, _ = _wrapper()
-    # reject every vLLM-only shape
     assert _rejects(lambda: w("hello"), "fast_inference=True")
     assert _rejects(
         lambda: w({"prompt": "hi", "multi_modal_data": {"image": None}}), "fast_inference=True"
     )
     assert _rejects(lambda: w(["a", "b"]), "fast_inference=True")
-    assert _rejects(lambda: w([{"prompt": "hi"}]), "fast_inference=True")  # list of prompt dicts
+    assert _rejects(lambda: w([{"prompt": "hi"}]), "fast_inference=True")
     assert _rejects(lambda: w({"prompt_token_ids": [1, 2, 3]}), "fast_inference=True")
-    assert _rejects(lambda: w(prompts = "hello"), "fast_inference=True")  # vLLM `prompts` kwarg
+    assert _rejects(lambda: w(prompts = "hello"), "fast_inference=True")
     assert _rejects(lambda: w(prompts = [{"prompt": "hi"}]), "fast_inference=True")
     assert _rejects(lambda: w(prompt_token_ids = [1, 2, 3]), "fast_inference=True")
     assert _rejects(lambda: w(prompts = [1, 2, 3]), "fast_inference=True")
@@ -72,11 +65,10 @@ def test_fast_generate_slow_guard():
     assert _rejects(lambda: w({"prompt": "hi"}, [_SamplingParams()]), "sampling_params")
     assert _rejects(lambda: w(sampling_params = object()), "sampling_params")
 
-    # pass normal tokenized calls with no false positives
     w, state = _wrapper()
     assert w(input_ids = "TOKENS", max_new_tokens = 8) == "ok" and state.get("hit")
-    assert w([1, 2, 3], max_new_tokens = 8) == "ok"  # positional token ids
-    assert w([], max_new_tokens = 8) == "ok"  # empty positional
+    assert w([1, 2, 3], max_new_tokens = 8) == "ok"
+    assert w([], max_new_tokens = 8) == "ok"
     print("13 reject + 3 pass fast_generate slow-mode guard cases passed")
 
 

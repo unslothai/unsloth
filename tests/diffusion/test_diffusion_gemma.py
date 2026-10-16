@@ -139,9 +139,8 @@ def test_parity_with_trl_reference(model, prediction_type):
     for a, b in zip(our_grads, ref_grads):
         if a is None or b is None:
             assert a is None and b is None
-        elif prediction_type == "mean":
-            torch.testing.assert_close(a, b, rtol = 1e-5, atol = 1e-7)
         else:
+            # Right-aligned prefix cache slots reorder the attention sums: ~1.5e-7 apart on near-zero grads.
             torch.testing.assert_close(a, b, rtol = 1e-5, atol = 1e-6)
 
 
@@ -195,6 +194,45 @@ def test_loss_through_distributed_wrapper(model):
     torch.manual_seed(0)
     wrapped = DIFFUSION_GEMMA_PROFILE.compute_loss(_DistributedLike(model), batch, _args())[0]
     torch.testing.assert_close(wrapped, plain)
+
+
+@pytest.mark.parametrize("attn", ["eager", "sdpa"])
+def test_decoder_sees_the_prefix_window_inference_sees(attn):
+    # The encoder runs on the whole sequence, but sliding decoder layers must keep the window ending at the
+    # sampled block, as inference does after encoding only the prefix.
+    cfg = transformers.AutoConfig.from_pretrained(TINY)
+    cfg.text_config.sliding_window = 8
+    m = transformers.DiffusionGemmaForBlockDiffusion.from_pretrained(
+        TINY, config = cfg, dtype = torch.float32, attn_implementation = attn
+    ).train()
+    m._unsloth_diffusion_eos_token_id = 1
+    rows = [(5, 100), (40, 70), (3, 20), (60, 60)]
+    batch = _batch(cfg.text_config.vocab_size, cfg.canvas_length, max_length = 120, rows = rows)
+    seen = {}
+    forward = m.forward
+
+    def spy(**kw):
+        out = forward(**kw)
+        seen.update(kw = kw, logits = out.logits.detach())
+        return out
+
+    m.forward = spy
+    torch.manual_seed(5)
+    DIFFUSION_GEMMA_PROFILE.compute_loss(
+        m, batch, _args(max_length = 120, diffusion_self_conditioning_p = 0.0)
+    )
+    del m.forward
+    kw = seen["kw"]
+    encoder_len = kw["decoder_position_ids"][:, 0].tolist()
+    assert max(encoder_len) > cfg.text_config.sliding_window
+    with torch.no_grad():
+        for i, n in enumerate(encoder_len):
+            ref = m(
+                input_ids = batch["input_ids"][i : i + 1, :n],
+                decoder_input_ids = kw["decoder_input_ids"][i : i + 1],
+                decoder_position_ids = kw["decoder_position_ids"][i : i + 1],
+            ).logits
+            torch.testing.assert_close(seen["logits"][i : i + 1], ref, rtol = 1e-5, atol = 1e-5)
 
 
 def test_row_without_supervised_tokens_adds_no_canvas_loss(model):
