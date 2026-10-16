@@ -49,7 +49,7 @@ test("parameter ranges are inclusive and exclude unknown counts only when active
   ]) {
     assert.equal(matchesRange(count, 2e9, 8e9), false);
   }
-  assert.equal(hasModelSearchFilters({ organizationsOnly: false }), false);
+  assert.equal(hasModelSearchFilters({ uploaders: undefined }), false);
   assert.equal(hasModelSearchFilters({ minParams: 0 }), true);
 });
 
@@ -96,7 +96,7 @@ test("combined filters use actual parameters, GGUF context, and organization own
         maxParams: 8e9,
         minContext: 32768,
         maxContext: 131072,
-        organizationsOnly: true,
+        uploaders: ["unsloth", "organization"],
       },
       async (path) => {
         requests.push(path);
@@ -362,4 +362,29 @@ test("rejected Unsloth rows stop delaying other publishers after a bounded scan"
   );
   assert.equal(rows.length, limit + 1);
   assert.deepEqual(rows.at(-1), { name: "Qwen/match" });
+});
+
+test("uploaders split Unsloth, other organizations and personal accounts", async () => {
+  const rows = [
+    { name: "unsloth/a" },
+    { name: "Qwen/b" },
+    { name: "someone/c" },
+  ];
+  const requests: string[] = [];
+  const fetchJson = async (path: string) => {
+    requests.push(path);
+    return path.includes("/organizations/Qwen/") ? {} : null;
+  };
+  const names = async (uploaders: ("unsloth" | "organization" | "personal")[]) =>
+    (await collect(filterModelListing(listing(rows), { uploaders }, fetchJson)))
+      .filter(Boolean)
+      .map((m) => (m as { name: string }).name);
+  assert.deepEqual(await names(["personal"]), ["someone/c"]);
+  assert.deepEqual(await names(["unsloth", "personal"]), ["unsloth/a", "someone/c"]);
+  assert.deepEqual(await names(["organization"]), ["Qwen/b"]);
+  requests.length = 0;
+  // Organizations and personal accounts together need no lookup.
+  assert.deepEqual(await names(["organization", "personal"]), ["Qwen/b", "someone/c"]);
+  assert.deepEqual(await names(["unsloth"]), ["unsloth/a"]);
+  assert.deepEqual(requests, []);
 });

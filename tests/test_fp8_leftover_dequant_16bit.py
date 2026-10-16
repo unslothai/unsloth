@@ -325,7 +325,7 @@ def test_per_tensor_scale_on_a_3d_stack_is_chunked(monkeypatch):
     from unsloth.models import loader_utils
 
     E, M, N = 8, 32, 32
-    # Budget of exactly two experts, so a chunked pass is visibly different from one that is not.
+    # Budget of exactly two experts, so a chunked pass is visibly different.
     monkeypatch.setattr(loader_utils, "_FP8_LEFTOVER_MAX_CHUNK", 2 * M * N)
     torch.manual_seed(4)
     q = torch.randn(E, M, N).to(_FP8)
@@ -380,7 +380,7 @@ def test_a_transposed_block_grid_is_turned_around_by_the_configured_block_size()
     raw = (torch.arange(8, dtype = torch.float32).reshape(4, 2) + 1).to(_FP8_DTYPES[0])
     scale = torch.tensor([[2.0], [4.0]])  # canonical (2, 1): rows blocks x col blocks
     expected = _fp8_scale_grid_dequant(raw, scale, torch.float32, block_size = (2, 2))
-    stored_transposed = scale.t().contiguous()  # (1, 2)
+    stored_transposed = scale.t().contiguous()
     assert torch.equal(_orient_block_scale(stored_transposed, 4, 2, (2, 2)), scale)
     out = _fp8_scale_grid_dequant(raw, stored_transposed, torch.float32, block_size = (2, 2))
     assert torch.equal(out, expected)

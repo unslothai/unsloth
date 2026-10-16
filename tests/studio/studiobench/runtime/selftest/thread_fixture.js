@@ -1,49 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-// A SYNTHETIC THREAD, with a switch on how it mounts.
-// This exists so the readiness gate can be shown PASSING on a correctly virtualised thread and
-// FAILING on a broken one, in a real browser, against the real `scene/dom.js` adapter and the
-// real `runtime/readiness.py` probe.
-// It reproduces exactly the contract the shipping app publishes and the gate reads
-// (`.aui-thread-root`, `.aui-thread-viewport`, `[data-role]`, `.aui-thread-scroll-to-bottom`
-// with its `invisible` toggle, the composer textarea) and nothing else. It is not a replica of
-// Unsloth and can say nothing about the app's own timing.
+// A synthetic thread with switchable mount modes, so the readiness gate can be shown passing and
+// failing in a real browser. It mirrors only the app's DOM contract, not its timing.
 
 (() => {
   const MODES = [
-    // Everything mounted, the way the app ships today.
     "full",
-    // Mounting still in progress: the first K messages, growing. The state the gate exists to
-    // refuse, and the one the old count-based gate did correctly refuse.
     "mounting",
-    // A correct window: the tail of the thread, aria-setsize/aria-posinset published, anchored at
-    // the bottom, head materialising when you scroll to the top.
     "windowed",
-    // A window with no aria-setsize. Nothing outside the app can learn how long this thread is.
     "windowed_no_total",
-    // A window over the HEAD of the thread rather than its end: settled, correct total, last message nowhere.
     "windowed_at_top",
-    // A window at the end with a correct total published and a store that only holds what is
-    // mounted. Indistinguishable from `windowed` while you stand at the bottom, which is why the
-    // completeness probe walks to the top.
+    // Looks like `windowed` at the bottom; only the completeness probe's walk to the top catches it.
     "windowed_lost_head",
-    // A store that kept the first page AND the last page and lost the middle. The head marker
-    // arrives when you scroll to the top, so the marker check alone calls it complete; the ordinals
-    // run 1,2,3 then 16,17,18, which is the loss.
+    // Keeps first and last page only; the marker check passes, the ordinals reveal the gap.
     "windowed_lost_middle",
-    // The same correct window with the ordinals written directly on the [data-role] element instead
-    // of a row wrapper. Both placements must be accepted.
     "windowed_flat",
-    // THE THREE MALFORMED ORDINAL CONTRACTS. Each publishes aria-posinset on every mounted row,
-    // enough for a gate that only counts attributes, and each publishes numbers that are not
-    // positions, so nothing outside the app can locate the mounted window.
-    // Every row says 0. The attribute is there and out of range: aria-posinset is 1-based.
+    // Malformed ordinal contracts. Zero: aria-posinset is 1-based.
     "windowed_zero_ordinals",
-    // Every row says the same number, so six mounted rows claim one position between them.
     "windowed_duplicate_ordinals",
-    // A window at the BOTTOM of an 18-message thread numbered 1..6: the index within the window
-    // published as the position in the thread. The likeliest of the three to be written by
-    // accident, and the one that makes a window at the end look like a window at the start.
+    // Window index published as the thread position, the likeliest accidental bug.
     "windowed_from_one",
   ];
 
@@ -58,7 +33,7 @@
 
     build(opts) {
       const mode = opts.mode;
-      const turns = opts.turns;          // user/assistant pairs
+      const turns = opts.turns;
       const windowSize = opts.windowSize || 6;
       const total = turns * 2;
       document.body.innerHTML = "";
@@ -88,8 +63,6 @@
       root.appendChild(composer);
       document.body.appendChild(root);
 
-      // Every message the 'store' holds. `windowed_lost_head` throws most of them away, which is the
-      // data loss the completeness probe looks for.
       const ROW_PX = 120;
       let store = [];
       for (let i = 0; i < turns; i += 1) {
@@ -98,9 +71,6 @@
       }
       const declaredTotal = total;
       if (mode === "windowed_lost_head") store = store.slice(-windowSize);
-      // THE HEAD AND THE TAIL, AND NOTHING BETWEEN THEM. Half a window at each end, so the store is
-      // exactly one window long and every scroll position mounts all of it: the first message is
-      // always there for the marker check, and the hole is always there for the ordinals.
       if (mode === "windowed_lost_middle") {
         const keep = Math.max(1, Math.floor(windowSize / 2));
         store = store.slice(0, keep).concat(store.slice(-keep));
@@ -108,9 +78,6 @@
 
       const state = { mode, store, declaredTotal, windowSize, ROW_PX, total };
 
-      // WHAT EACH ROW PUBLISHES AS ITS POSITION. Everything but the three malformed modes publishes
-      // the message's real position, which is what aria-posinset means; the malformed ones each
-      // publish a different sort of non-position, so the gate can be shown refusing each separately.
       function publishedPos(message, indexInWindow) {
         if (mode === "windowed_zero_ordinals") return 0;
         if (mode === "windowed_duplicate_ordinals") return state.declaredTotal;
@@ -128,10 +95,7 @@
           el.setAttribute("data-role", m.role);
           el.style.cssText = "height:" + ROW_PX + "px;overflow:hidden;";
           el.textContent = m.text;
-          // WHERE THE SHIPPING VIRTUALIZER PUTS THE ORDINALS: on the positioned row wrapper, not the
-          // message. `thread-message-virtualizer.tsx` renders an absolutely positioned div per item with
-          // `ThreadPrimitive.MessageByIndex` inside, so the wrapper is the member of the set. `wrapped`
-          // reproduces that; the unwrapped placement is kept because the gate must accept both.
+          // The shipping virtualizer puts ordinals on the row wrapper; the gate must accept both placements.
           if (publishTotals && mode !== "windowed_flat") {
             const row = document.createElement("div");
             row.setAttribute("aria-setsize", String(state.declaredTotal));
@@ -146,9 +110,7 @@
           }
           list.appendChild(el);
         }
-        // Spacers, so the scroll extent describes the WHOLE thread even though only a window is mounted.
-        // A virtualizer that omits these has a scrollbar that lies, one of the behavioural invariants in
-        // analysis/behaviour.py.
+        // Spacers keep the scroll extent equal to the whole thread.
         const above = mode === "full" || mode === "mounting" ? 0 : startIndex * ROW_PX;
         const below =
           mode === "full" || mode === "mounting"
@@ -164,10 +126,6 @@
       }
 
       state.renderWindowAround = (scrollTop) => {
-        // A store SHORTER than the thread it claims cannot be indexed by the thread's own indices:
-        // `windowed_lost_middle` holds one window's worth for an eighteen-message thread, so every
-        // scroll position mounts the same rows and the ordinals are the only thing saying which
-        // messages they are.
         if (mode === "windowed_lost_middle") {
           const start = Math.max(
             0,
@@ -180,8 +138,6 @@
           0,
           Math.min(state.declaredTotal - windowSize, Math.floor(scrollTop / ROW_PX)),
         );
-        // `windowed_lost_head` only has the tail in its store, so an index into the full thread has to
-        // be translated; it will simply have nothing to show near the top.
         const offset = mode === "windowed_lost_head" ? state.declaredTotal - state.store.length : 0;
         render(Math.max(0, first - offset), windowSize, true);
       };
@@ -190,9 +146,6 @@
         render(0, state.store.length, false);
         pin();
       } else if (mode === "mounting") {
-        // GROWING: one message every 250ms from the head, never finishing inside the window any test
-        // gives it. The count, element count and scroll height climb, and the last message is never
-        // reached.
         let n = 1;
         render(0, n, false);
         pin();
@@ -210,9 +163,6 @@
         render(state.store.length - windowSize, windowSize, false);
         pin();
       } else {
-        // windowed, windowed_flat, windowed_lost_head, windowed_lost_middle and the three
-        // malformed-ordinal modes are all a window at the END of the thread, differing only in what
-        // they publish about it.
         render(Math.max(0, state.store.length - windowSize), windowSize, true);
         pin();
         viewport.addEventListener("scroll", () => {
@@ -223,11 +173,7 @@
           );
         });
       }
-      // COPY-FROM-STORE, the shipping fix, reproduced on the same contract. Mirrors `decideThreadCopy`
-      // in thread-copy-from-store.ts: intervene only when the selection spans the whole mounted list
-      // AND the store holds more than is mounted. The unit tests there stub `containsNode`; this is
-      // the only place the REAL Selection semantics are exercised.
-      // Full path: studio/frontend/src/components/assistant-ui/thread-copy-from-store.ts.
+      // Mirrors decideThreadCopy in thread-copy-from-store.ts with real Selection semantics.
       if (opts.copyFromStore) {
         viewport.addEventListener("copy", (event) => {
           const selection = window.getSelection();
@@ -248,7 +194,6 @@
     },
   };
 
-  // The two-rAF paint promise the real harness installs from instruments/frames.js. The completeness probe awaits it.
   if (!window.__sbNextPaint) {
     window.__sbNextPaint = () =>
       new Promise((resolve) =>
