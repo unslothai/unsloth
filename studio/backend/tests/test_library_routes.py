@@ -584,6 +584,28 @@ def test_a_sandbox_file_of_a_chat_whose_id_has_a_colon_is_reachable(client, sign
     assert _items(client)[0] == {}
 
 
+def test_a_chats_files_stay_listed_after_it_is_moved_into_a_project(
+    client, signed_in, monkeypatch, tmp_path
+):
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects home"))
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    _sandbox_chat("a.txt", b"mine")
+    folder = _folder(client, "Charts", None)
+    _patch(client, id = _SANDBOX_A, name = "Chart", favorite = True, folderId = folder)
+    studio_db.upsert_chat_project(
+        {"id": "p-lib", "name": "Research", "createdAt": 1, "updatedAt": 1}
+    )
+    studio_db.update_chat_thread("t-lib", {"projectId": "p-lib"})
+    library.invalidate_listing()
+    item = _items(client)[0][_SANDBOX_A]
+    assert (item["name"], item["favorite"], item["folderId"]) == ("Chart", True, folder)
+    assert item["threadId"] == "t-lib"
+    assert _download(client, _SANDBOX_A).content == b"mine"
+    assert _delete(client, _SANDBOX_A) == 200
+
+
 def test_a_sandbox_file_written_twice_in_a_second_is_a_new_version(client, signed_in, monkeypatch):
     monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
     _directory, path = _sandbox_chat("frame.png", b"one")
