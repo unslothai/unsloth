@@ -3083,7 +3083,7 @@ def test_audio_page_local_filename_pick_uses_audio_cpp(hub, tmp_path, family, fi
     weights = folder / filename
     weights.write_bytes(_gguf_bytes(family = family))
     listing = asyncio.run(get_gguf_variants_response(str(folder)))
-    # Audio sends the advertised filename, including .gguf, as gguf_variant.
+    # audio uses the advertised .gguf filename as gguf_variant.
     selected = next(v for v in listing.variants if v.filename == filename)
     config = ModelConfig.from_identifier(str(folder), gguf_variant = selected.filename)
 

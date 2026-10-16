@@ -3314,26 +3314,16 @@ def _direct_gguf_for_variant(
     variant: str,
     model_root: Optional[str] = None,
 ) -> Optional[str]:
-    """A loose ``.gguf`` file resolved by the quant it already is, or None.
-
-    A marker-less parent leaves ``detect_gguf_model`` loading the file itself, so a
-    request naming its own quant must resolve too, or load and gate disagree. Only that
-    one label matches (companions still refused); any other quant finds nothing.
-
-    Case-insensitive, mirroring llama.cpp's own resolution (``_gguf_files_for_variant``):
-    a lowercase ``--gguf-variant`` must resolve here too, or the load evicts the resident
-    model on the transformers path before failing.
-    """
+    """resolve a ``.gguf`` by case-insensitive filename or quant labels to match load gating."""
     f = Path(path).expanduser()
     if f.suffix.lower() != ".gguf" or not f.is_file():
         return None
     context = f"{f.parent.name}/{f.name}"
     quant = _extract_quant_label(context)
     fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", f.name.rsplit(".", 1)[0])
-    # The hub extractor drops the -bpw modifier, so accept the shorter label it advertises.
+    # the hub extractor drops the -bpw modifier, so accept its shorter advertised label.
     stripped = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", quant, flags = re.IGNORECASE)
-    # The listing can also name it by another of its own tokens (the hub extractor prefers the
-    # K-quant in F16-checkpoint-Q4_K_M), and only this file could be meant, so any token resolves.
+    # accept any token because the hub extractor prefers K-quants in composite filenames.
     stem_tokens = [
         f"{m.group(1) or ''}{m.group(2)}"
         for m in _GGUF_KNOWN_QUANT_RE.finditer(fallback_variant.rsplit("/", 1)[-1])
@@ -3348,13 +3338,7 @@ def _find_local_gguf_by_variant(
     variant: str,
     model_root: Optional[str] = None,
 ) -> Optional[str]:
-    """Find the GGUF matching a quant label, stem or exact relative filename.
-
-    For sharded GGUFs (multiple files sharing a quant label), returns the
-    first shard (sorted by name), which is what ``llama-server -m`` expects.
-
-    Returns the absolute path, or ``None`` if no match.
-    """
+    """match a GGUF quant, stem, or relative filename and return llama-server's first shard."""
     p = _resolve_gguf_dir(Path(directory))
     if p is None:
         return _direct_gguf_for_variant(directory, variant, model_root)
@@ -3364,10 +3348,7 @@ def _find_local_gguf_by_variant(
         else _registered_custom_model_root(directory)
     )
 
-    # Recurse so variants under a quant-named subdir (``BF16/foo-BF16-00001-of-00002.gguf``)
-    # are found. Match the relative path so the quant label can come from the dir name.
-    # The Audio picker sends the advertised filename as gguf_variant. Keep its
-    # relative path so equal basenames in different subdirectories cannot cross-match.
+    # preserve Audio variant paths during recursive search to prevent basename cross-matches
     literal_selector = str(variant)
     path_selector = literal_selector.replace("\\", "/")
     selectors = (
@@ -3386,9 +3367,7 @@ def _find_local_gguf_by_variant(
             continue
         quant = _extract_quant_label(rel)
         fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", rel.rsplit(".", 1)[0])
-        # Listings advertise the bpw-stripped spelling, and the hub extractor can prefer another
-        # token of the same BASENAME (F16-checkpoint-Q4_K_M advertises Q4_K_M), so both label this
-        # file -- but never a parent's quant: Q8_0/model-Q4_K_M.gguf IS the Q4_K_M file.
+        # bpw-stripped labels and basename quant tokens identify the file, never a parent quant.
         stripped = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", quant, flags = re.IGNORECASE)
         basename_stem = fallback_variant.rsplit("/", 1)[-1]
         stem_tokens = [
@@ -3400,9 +3379,7 @@ def _find_local_gguf_by_variant(
         ) or _is_big_endian_gguf_path(rel, quant):
             continue
         matches.append(f)
-        # A repo holding several checkpoints at one quant offers a row per checkpoint,
-        # and only one of them is this variant's. Name order alone would hand a request
-        # for the repo-root ``Q6_K`` the alphabetically earlier ``distilled/`` copy.
+        # exact ownership prevents a repo-root quant from selecting an earlier subdirectory copy.
         if literal_selector == rel:
             literal_exact.append(f)
         elif _variant_matches(literal_selector, rel):
