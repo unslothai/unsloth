@@ -212,17 +212,20 @@ def nonfloat_frozen_unmanaged():
     """While FSDP2 shards on torch < 2.8: leave frozen non-float parameters (uint8 Params4bit) out of
     every unit, as accelerate >= 1.14 does with `ignored_params` on torch >= 2.7. torch < 2.8 asserts one
     original dtype over all of a unit's parameters, so uint8 next to float LoRA weights cannot be sharded."""
-    import importlib
+    modules = []
+    try:
+        from torch.distributed.fsdp._fully_shard import _fully_shard as _fully_shard_module
+        modules.append(_fully_shard_module)
+    except Exception:
+        pass
+    try:
+        from torch.distributed.fsdp._fully_shard import _fsdp_init as _fsdp_init_module
+        modules.append(_fsdp_init_module)
+    except Exception:
+        pass
 
     patched = []
-    for path in (
-        "torch.distributed.fsdp._fully_shard._fully_shard",
-        "torch.distributed.fsdp._fully_shard._fsdp_init",
-    ):
-        try:
-            module = importlib.import_module(path)
-        except Exception:
-            continue
+    for module in modules:
         original = getattr(module, "_get_managed_states", None)
         if original is None:
             continue
