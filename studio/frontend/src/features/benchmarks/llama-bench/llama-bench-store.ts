@@ -5,6 +5,7 @@
 // around it, so leaving the tab mid-run still puts chat's model back afterwards.
 
 import {
+  type InferenceStatusResponse,
   getInferenceStatus,
   loadModel,
   useChatRuntimeStore,
@@ -45,6 +46,11 @@ interface LlamaBenchState {
   error: string | null;
   runs: SavedLlamaBenchRun[];
   shownId: string | null;
+  /** Chat's model before the swap, persisted so a reload mid-run can still put it back. */
+  pendingRestore: {
+    original: InferenceStatusResponse;
+    originalLoad: ReturnType<typeof chatBaseLoad>;
+  } | null;
   setConfig: (patch: Partial<LlamaBenchConfig>) => void;
   refresh: () => Promise<void>;
   start: (model: string | null, variant: string | null) => Promise<void>;
@@ -54,6 +60,22 @@ interface LlamaBenchState {
 }
 
 const POLL_MISS_LIMIT = 30;
+
+async function putChatBack(
+  set: (s: Partial<LlamaBenchState>) => void,
+  get: () => LlamaBenchState,
+): Promise<void> {
+  const pending = get().pendingRestore;
+  if (!pending) return;
+  set({ phase: "restoring", pendingRestore: null });
+  await restore(pending.original, pending.originalLoad).catch((err) =>
+    set({
+      error: `The run finished, but chat's model didn't load back: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    }),
+  );
+}
 
 async function pollUntilDone(
   set: (s: Partial<LlamaBenchState>) => void,
@@ -86,6 +108,7 @@ export const useLlamaBenchStore = create<LlamaBenchState>()(
       error: null,
       runs: [],
       shownId: null,
+      pendingRestore: null,
       setConfig: (patch) => set({ config: { ...get().config, ...patch } }),
       refresh: async () => {
         const [status, runs] = await Promise.all([
@@ -93,17 +116,17 @@ export const useLlamaBenchStore = create<LlamaBenchState>()(
           listLlamaBenchRuns().catch(() => get().runs),
         ]);
         set({ available: status?.available ?? null, runs });
-        // A run started in another tab or before a reload: follow it.
-        if (status?.job && get().phase === "idle") {
-          set({ job: status.job });
-          if (status.job.status === "running") {
-            set({ phase: "running" });
-            try {
-              await pollUntilDone(set);
-            } finally {
-              set({ phase: "idle", runs: await listLlamaBenchRuns().catch(() => get().runs) });
-            }
-          }
+        if (!status || get().phase !== "idle") return;
+        // A run started in another tab or before a reload: follow it, then put chat's model back.
+        if (status.job) set({ job: status.job });
+        const running = status.job?.status === "running";
+        if (!running && !get().pendingRestore) return;
+        set({ phase: "running" });
+        try {
+          if (running) await pollUntilDone(set);
+          await putChatBack(set, get);
+        } finally {
+          set({ phase: "idle", runs: await listLlamaBenchRuns().catch(() => get().runs) });
         }
       },
       start: async (model, variant) => {
@@ -128,6 +151,7 @@ export const useLlamaBenchStore = create<LlamaBenchState>()(
               (variant ?? null) !== (status.gguf_variant ?? null))
           ) {
             touched = true;
+            if (original.active_model) set({ pendingRestore: { original, originalLoad } });
             await loadModel(
               {
                 ...chatBaseLoad({
@@ -149,6 +173,7 @@ export const useLlamaBenchStore = create<LlamaBenchState>()(
           const job = await startLlamaBench(get().config);
           // The server unloaded chat's model to give llama-bench the GPU.
           touched = true;
+          if (original.active_model) set({ pendingRestore: { original, originalLoad } });
           set({ job, phase: "running" });
           const done = await pollUntilDone(set);
           if (done?.status === "error")
@@ -157,14 +182,8 @@ export const useLlamaBenchStore = create<LlamaBenchState>()(
           set({ error: err instanceof Error ? err.message : String(err) });
         } finally {
           if (touched && original.active_model) {
-            set({ phase: "restoring" });
-            await restore(original, originalLoad).catch((err) =>
-              set({
-                error: `The run finished, but chat's model didn't load back: ${
-                  err instanceof Error ? err.message : String(err)
-                }`,
-              }),
-            );
+            set({ pendingRestore: { original, originalLoad } });
+            await putChatBack(set, get);
           }
           set({
             phase: "idle",
@@ -186,7 +205,7 @@ export const useLlamaBenchStore = create<LlamaBenchState>()(
     }),
     {
       name: "unsloth-llama-bench",
-      partialize: (s) => ({ config: s.config }),
+      partialize: (s) => ({ config: s.config, pendingRestore: s.pendingRestore }),
     },
   ),
 );
