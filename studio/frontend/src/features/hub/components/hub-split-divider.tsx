@@ -43,7 +43,6 @@ function readStoredWidth(): number | null {
   }
 }
 
-/** The split list pane's width in px, or null for the default responsive width. */
 export function useHubSplitWidth(): {
   width: number | null;
   setWidth: (px: number | null) => void;
@@ -76,10 +75,6 @@ type HubSplitDividerProps = {
   onWidthChange: (px: number | null) => void;
 };
 
-/**
- * Draggable edge between the split list and detail panes. Arrow keys resize;
- * Home or a double-click restores the default width.
- */
 export function HubSplitDivider({
   paneRef,
   width,
@@ -104,7 +99,6 @@ export function HubSplitDivider({
     };
   }, [paneRef]);
 
-  // Keeps the separator's aria values in step with the rendered width.
   useEffect(() => {
     const pane = paneRef.current;
     if (!pane?.parentElement) return;
@@ -172,7 +166,7 @@ export function HubSplitDivider({
     }
     pendingRef.current = clamp(drag.startWidth + delta);
     if (frameRef.current) return;
-    // Painted straight onto the pane, one write per frame; the page re-renders only on release.
+    // One paint per frame; the page re-renders only on release.
     frameRef.current = requestAnimationFrame(() => {
       frameRef.current = 0;
       paneRef.current?.style.setProperty(
@@ -182,8 +176,7 @@ export function HubSplitDivider({
     });
   };
 
-  // Release, cancel and lost capture all commit what was painted, so the pane
-  // never keeps a width that state and storage do not hold.
+  // Cancel and lost capture commit too, else the pane keeps an unsaved painted width.
   const finishDrag = (event: PointerEvent<HTMLButtonElement>) => {
     const drag = dragRef.current;
     if (!drag) return;

@@ -13,11 +13,7 @@ export function clampSplitListWidth(px: number, totalPx: number): number {
   return Math.min(Math.max(px, SPLIT_LIST_MIN_PX), splitListMax(totalPx));
 }
 
-/**
- * Width after an arrow key, stepped from the RENDERED width: a stored width
- * wider than the window allows is shown clamped, and stepping from it would
- * clamp straight back to the same edge.
- */
+// Steps from the RENDERED width: a stored width past the max renders clamped.
 export function keyboardSplitWidth(
   renderedPx: number,
   key: string,

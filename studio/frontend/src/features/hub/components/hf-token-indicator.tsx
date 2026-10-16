@@ -117,9 +117,7 @@ export function HfTokenIndicator({
               : "text-destructive-foreground",
           )}
         >
-          {/* Disc and glyph share one SVG: a CSS background and an inline SVG snap
-              to the pixel grid separately, leaving the glyph up to 1px off centre
-              at fractional interface scales or browser zoom. */}
+          {/* One SVG: a CSS background and an inline SVG pixel-snap apart, off centre at fractional scales. */}
           <svg
             aria-hidden="true"
             viewBox="0 0 22 22"
