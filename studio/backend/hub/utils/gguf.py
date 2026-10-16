@@ -1005,14 +1005,14 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo], *repo_ids: objec
                 f"{token} · {_variant_scope_label(variant.filename, with_stem = collides)}"
             )
         elif root_label and "/" not in variant.filename.replace("\\", "/"):
-            # Else the root quant reads as the default checkpoint.
+            # root quant labels identify the default checkpoint
             variant.display_label = f"{variant.quant} · {root_label}"
 
 
 def group_gguf_variant_files(
     entries, keys: Optional[dict[str, str]] = None
 ) -> dict[str, tuple[str, int]]:
-    """map each variant key to the loader's first shard set and its total bytes. *keys* overrides the key of the paths it names."""
+    """group each variant's first shard set and size, with optional path-specific keys."""
 
     def key_of(path: str) -> str:
         return (keys or {}).get(path) or gguf_variant_key(path)
@@ -1466,7 +1466,7 @@ def list_local_gguf_variants(
 
     main_files: list[tuple[str, int]] = []
     has_vision = False
-    # Match the cache dir of ANY H3 bundle repo: the aggregation runs over whichever mirror the user actually downloaded. A whole SEGMENT, not a substring: "models--unsloth--MiniMax-H3-GGUF-mirror" (and -v2, -i1) contains the marker while being an ordinary chat repo, and the denoiser filter then left it with no quants, which withholds the auto-switch entry so a downloaded model 404s.
+    # match H3 bundle caches by full path segment so similarly named chat repos keep their quants
     path_segments = root.as_posix().lower().split("/")
     segments = set(path_segments)
     h3_bundle_repo = next(
@@ -1474,7 +1474,7 @@ def list_local_gguf_variants(
     )
 
     for file in sorted(iter_gguf_files(root, recursive = True)):
-        # Off by default: the Hub lists the dangling link an evicted blob leaves, so a user can see and clean that quant. Only a caller advertising what it loads excludes it.
+        # keep dangling cache links visible for cleanup unless the caller requires loadable files
         if require_existing_files and not _is_existing_file(file):
             continue
         if h3_bundle_repo and not _is_selectable_repo_gguf(h3_bundle_repo, file.name):
@@ -1482,7 +1482,7 @@ def list_local_gguf_variants(
         if is_imatrix_filename(file.name):
             continue
         if is_mmproj_filename(file.name):
-            # Header metadata distinguishes vision projectors from audio-only ones, read only when Windows reports the file fully present: opening a cloud placeholder would recall it during discovery.
+            # inspect complete local projectors only because opening a Windows cloud placeholder recalls it
             try:
                 info = file.stat()
                 has_vision = has_vision or (
@@ -1506,7 +1506,7 @@ def list_local_gguf_variants(
             continue
         main_files.append((rel, size))
 
-    # Outside the HF cache no remote listing has to agree with these keys, so builds sharing a quant (five NVFP4 builds in one custom folder, #13926) each keep a row instead of all but the first being hidden. The first keeps the bare quant, so a pin on it still names the same file.
+    # custom folders split shared-quant builds; HF caches keep remote keys, and the first keeps the bare key
     keys = (
         None
         if any(
@@ -1529,7 +1529,7 @@ def list_local_gguf_variants(
 
 
 def _label_split_builds(variants: list[GgufVariantInfo], keys: dict[str, str]) -> None:
-    """Name every build of a quant that *keys* split into several rows by its file, the bare-keyed first one included, so none of them reads as the quant alone."""
+    """label all rows for a quant split across builds, including the bare-keyed first build."""
     split = {
         variant.filename
         for variant in variants
@@ -1540,7 +1540,7 @@ def _label_split_builds(variants: list[GgufVariantInfo], keys: dict[str, str]) -
         token = quant_token_with_bpw(variant.filename)
         if token is None or token.lower() not in split_tokens:
             continue
-        # A directory-qualified sibling keeps its directory label; only the split builds are renamed.
+        # directory-qualified siblings keep their existing directory labels
         if variant.filename not in split and variant.quant.lower() != token.lower():
             continue
         scope = _variant_scope_label(variant.filename, with_stem = True)

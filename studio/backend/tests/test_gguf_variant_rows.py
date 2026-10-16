@@ -1149,23 +1149,20 @@ def test_every_branch_derives_the_default_from_the_root_rows():
         types.SimpleNamespace(filename = "model-Q6_K.gguf", quant = "Q6_K"),
     ]
     assert service._default_variant_candidates(rows) == ["model-Q6_K.gguf"]
-    # Nothing at the root falls back to the whole set rather than answering nothing.
+    # empty root candidates fall back to all rows.
     assert service._default_variant_candidates(rows[:1]) == ["distilled/model-Q6_K.gguf"]
-    # No branch may call pick_best_gguf on the raw filenames any more.
+    # guards every response branch against selecting from raw filenames.
     source = inspect.getsource(service)
-    # Whitespace-insensitive: the formatter may wrap a call across lines.
+    # accepts formatter line wrapping.
     assert len(re.findall(r"pick_best_gguf\(\s*_default_variant_candidates\(", source)) == 1
     assert len(re.findall(r"default_variant = _default_variant_key\(", source)) == 5
     assert "pick_best_gguf(filenames)" not in source
-    # The default is the chosen row's own key; a custom folder's stem key is not its file's (#13926).
+    # custom folders use the selected row key because stem keys need not identify the file (#13926).
     assert "gguf_variant_key(best) if best" not in source
 
 
 def test_the_kv_cache_estimate_sizes_one_shard_family():
-    """A snapshot holding the same quant twice (QwQ-32B's two BF16 shard sets) would report double
-    the weights the loader opens, which /kv-cache-estimate turns into a false exceeds-memory
-    warning -- and which can make a snapshot look "more complete" purely for holding a redundant
-    copy. Same rule group_gguf_variant_files applies."""
+    """only one duplicate BF16 shard family contributes to the kv-cache estimate."""
     from routes.models import _one_shard_family_of
 
     duplicated = [

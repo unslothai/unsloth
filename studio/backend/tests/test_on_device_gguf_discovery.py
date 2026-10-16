@@ -210,7 +210,6 @@ def test_an_explicit_non_hub_folder_keeps_its_local_listing(cached_model, tmp_pa
 
 
 def test_an_explicit_folder_marks_every_build_at_one_quant_ready(cached_model, tmp_path):
-    # A custom folder keys a second build at one quant by its file (#13926); that row is as ready as the first.
     local = tmp_path / "local-model"
     local.mkdir()
     for name in (MAIN, f"other-{QUANT}.gguf"):

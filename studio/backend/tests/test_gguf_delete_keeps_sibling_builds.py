@@ -69,7 +69,7 @@ def test_a_custom_folder_lists_every_build_at_one_quant(tmp_path):
     from routes.models import _resolve_quant_gguf
     from utils.models.model_config import _find_local_gguf_by_variant
 
-    # No remote listing has to agree with a custom folder's keys, so every build keeps a row (#13926).
+    # custom folders have no remote listing to constrain their keys, so every build keeps a row (#13926).
     folder = tmp_path / "esatapedico" / "Qwen3.8-27B-NVFP4-MTP-GGUF"
     folder.mkdir(parents = True)
     names = [f"Qwen3.8-27B-NVFP4-MTP-{build}.gguf" for build in ("HIGHEST", "LOW", "MID-HIGH_enru")]
@@ -77,13 +77,11 @@ def test_a_custom_folder_lists_every_build_at_one_quant(tmp_path):
         (folder / name).write_bytes(b"x" * 64)
     variants, _ = list_local_gguf_variants(str(folder))
     listed = {v.quant: v.filename for v in variants}
-    # The first build keeps the bare quant, so a pin made before still names the same file.
+    # the first build keeps the bare quant so existing pins still name the same file
     assert listed == {"NVFP4": names[0], **{name[: -len(".gguf")]: name for name in names[1:]}}
     for quant, filename in listed.items():
         assert Path(_find_local_gguf_by_variant(str(folder), quant)).name == filename
-        # The memory estimate prices the file the row loads.
         assert Path(_resolve_quant_gguf(str(folder), quant, True)[0]).name == filename
-    # Every build is named, the bare-keyed first one too.
     assert {v.display_label for v in variants} == {
         f"NVFP4 · {name[: -len('.gguf')]}" for name in names
     }
@@ -146,7 +144,7 @@ def test_split_build_labels_leave_other_rows_alone(tmp_path):
         "m-Q8_0.gguf": None,
     }
 
-    # Two builds in one quant folder: the folder alone names neither.
+    # two builds in one quant folder cannot be distinguished by the folder alone
     quant_dir = tmp_path / "quant-dir" / "Q4_K_M"
     quant_dir.mkdir(parents = True)
     for name in ("a-Q4_K_M.gguf", "b-Q4_K_M.gguf"):

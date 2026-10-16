@@ -1065,25 +1065,17 @@ class VariantsAnswer(NamedTuple):
     # False when the caller may not read this repo's caches, for a reader that falls back
     # to the repo id rather than ``context_source``.
     cache_authorized: bool = True
-    # Per-quant copy the listing answered from, for a reader that resolves each row's metadata
-    # from the quant's own cache rather than one shared directory.
+    # per-quant source for resolving row metadata when one shared directory cannot answer
     variant_context_sources: Optional[dict[str, str]] = None
 
 
 def _default_variant_candidates(variants, repo_id: Optional[str] = None) -> list[str]:
-    """Filenames the automatic default may be picked from: ``default_gguf_scope`` of the rows.
-
-    Every branch here must apply it: ``pick_best_gguf`` is order-sensitive among equal siblings.
-    """
+    """return scoped filenames in the order used by the automatic default picker."""
     return [v.filename for v in default_gguf_scope(variants, repo_id, key = lambda v: v.quant)]
 
 
 def _default_variant_key(variants, repo_id: Optional[str] = None) -> Optional[str]:
-    """The key of the row the automatic default picks, as listed rather than re-derived from its file.
-
-    A custom folder keys a second build at one quant by its stem (#13926), so ``gguf_variant_key`` of
-    that build's file names the first build instead.
-    """
+    """return the listed default key because custom-folder builds can share a derived quant key."""
     best = pick_best_gguf(_default_variant_candidates(variants, repo_id))
     if not best:
         return None
@@ -1094,12 +1086,7 @@ def _default_variant_key(variants, repo_id: Optional[str] = None) -> Optional[st
 async def _audio_cpp_variants_answer(
     repo_id: str, hf_token: Optional[str], offline: bool
 ) -> Optional[VariantsAnswer]:
-    """The listing for an audio.cpp umbrella folder row or package repo, else None.
-
-    An umbrella folder (``audio-cpp/audio.cpp-gguf/<Folder>``) is not a repo the generic lister can
-    read, and a package's quants are component mixes plus config files, which grouping GGUFs by quant
-    would split into meaningless rows. Single-file audio.cpp repos list like any GGUF repo.
-    """
+    """group audio.cpp umbrella and package components; generic single-file repos return None."""
     from core.inference import audio_cpp_models
 
     text = (repo_id or "").strip()
@@ -1438,16 +1425,12 @@ async def get_gguf_variants_answer(
             has_vision: bool,
             complete = None,
         ) -> GgufVariantsResponse:
-            """*complete* is the set of quants whose shards are all on disk; None reports every row
-            downloaded. A quant short a shard stays listed to resume or delete, but is not offered
-            as ready, since the loader would ask llama-server for files that are not there.
-            """
+            """mark *complete* quants ready, keep incomplete rows manageable, and treat None as all ready."""
 
             def _downloaded(v) -> bool:
-                # An unlabelled quant cannot be judged, so it is kept as ready.
+                # unlabelled quants cannot be judged and remain ready
                 return complete is None or not v.quant or v.quant in complete
 
-            # The default comes from the ready rows; with none ready every row is the fallback.
             ready = [v for v in variants if _downloaded(v)]
             default_variant = _default_variant_key(ready or variants, repo_id)
 
@@ -1646,11 +1629,7 @@ async def get_gguf_variants_answer(
                 }
             )
 
-        # Load-path parity: from_identifier resolves existence-first, so a marker-less relative name that
-        # exists here is a local model, not a Hub id, and a direct .gguf file loads without the metadata
-        # siblings. It normalizes first, so every question below asks about the same path: under WSL
-        # C:\models\qwen maps to /mnt/c/models/qwen, and probing the raw spelling would report a working
-        # model unloadable.
+        # normalize once so discovery and loading classify relative, WSL, and direct GGUF paths alike
         local_id = _loader_normalize_path(repo_id) if is_local_path(repo_id) else repo_id
         local_target = None
         try:
@@ -1817,7 +1796,7 @@ async def get_gguf_variants_answer(
                 )
                 return _locally_resolved(response, snapshot) if offline else response
             if local_path and is_local_path(local_path):
-                # A named Hub snapshot remains a cache read, even on the filesystem fallback.
+                # named Hub snapshots remain cache reads during filesystem fallback
                 cached_ref = cached_repo_ref_for_path(local_path)
                 if cached_ref is not None and hub_cached_read_refused(
                     hf_token,
@@ -1830,7 +1809,7 @@ async def get_gguf_variants_answer(
                 variants, has_vision = list_local_gguf_variants(local_path)
                 if variants or has_vision:
                     answered_from[0] = local_path
-                    # Same reason as the is_local_path branch above.
+                    # torn quants remain ready when their resolver-selected files are servable
                     complete = _complete_with_servable(
                         local_path, _complete_quants_under(local_path), variants
                     )
@@ -1897,12 +1876,10 @@ async def get_gguf_variants_answer(
                 return fallback
             raise
 
-        # siblings is None only when the lister answered from its own repo-wide cache; falling through is
-        # deliberate, since readiness still counts against this request's own cache.
+        # repo-wide cache answers still use this request's cache to determine readiness
         if siblings is None:
             if not cache_reads_authorized:
-                # `variants` is already the cache's answer, so declining a second one is
-                # not enough; falling through would serialize the first.
+                # falling through would expose the first cache answer despite rejecting the second read
                 raise HTTPException(
                     status_code = 404,
                     detail = "No GGUF variants available without Hub authorization.",
@@ -1913,14 +1890,11 @@ async def get_gguf_variants_answer(
 
         default_variant = _default_variant_key(variants, repo_id)
 
-        # Per-snapshot accounting: split GGUFs need every shard together, sizes are max across snapshots
-        # so shared blobs are not double-counted, and keys are lowercased since cache casing can differ.
+        # snapshot totals keep shard sets intact, take maximum sizes, and compare keys case-insensitively
         cached_snapshots: list[tuple[dict[str, int], dict[str, int]]] = []
-        # A gated repo can list its files publicly, so reaching here is not authorization:
-        # everything below reads the local caches, and would report `downloaded`, `partial`
-        # and remaining bytes for the operator's copy to a caller the other paths refuse.
+        # public listings do not authorize exposing a caller's cached download and partial state
         if _is_valid_repo_id(repo_id) and cache_reads_authorized:
-            # A pinned row resolves inside one directory, so nothing else counts as downloaded.
+            # pinned rows resolve inside one snapshot and ignore other cached copies
             scoped_snapshots = (
                 [snapshot_scope]
                 if snapshot_scope is not None
@@ -2462,7 +2436,7 @@ async def get_gguf_variants_answer(
                 variants[key] = detail
             response.variants = list(variants.values())
             response.has_vision = response.has_vision or any(s.has_vision for s in sources.values())
-            # Merging changes the scope, so re-pick the default; prefer ready rows over partial ones.
+            # merged sources require a new default that prefers ready rows
             if sources or not response.default_variant:
                 ready = [v for v in response.variants if v.downloaded and not v.partial]
                 response.default_variant = _default_variant_key(ready or response.variants, repo_id)
