@@ -12,7 +12,14 @@ import utils.hardware.hardware as hw
 import utils.hardware.nvidia as nvidia
 
 
-def _linux_inventory(monkeypatch, tmp_path, *, name = None, kfd = ("110503",), rocm = ()):
+def _linux_inventory(
+    monkeypatch,
+    tmp_path,
+    *,
+    name = None,
+    kfd = ("110503",),
+    rocm = (),
+):
     """One AMD sysfs record through the real inventory refresh, KFD nodes from a fixture."""
     nodes = tmp_path / "nodes"
     for i, version in enumerate(("0", *kfd)):

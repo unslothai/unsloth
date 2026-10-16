@@ -353,7 +353,9 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
                         continue
                     if _gfx:
                         device["gfx_candidates"] = _gfx
-                    elif re.search(_LINUX_KRACKAN2_NAME_RE, device.get("name") or "", re.IGNORECASE):
+                    elif re.search(
+                        _LINUX_KRACKAN2_NAME_RE, device.get("name") or "", re.IGNORECASE
+                    ):
                         # Classified here, once per refresh, not on every health poll.
                         device["gfx_candidates"] = ["gfx1153"]
             devices.extend(sysfs_devices)
@@ -374,7 +376,6 @@ def _linux_kfd_gfx1153_candidates() -> list[str]:
     """KFD gfx targets when they include a gfx1153, else []. Without rocminfo or amd-smi this is the only reading that names a Krackan Point 2, which the Linux installers leave on CPU torch on purpose; any other arch keeps the conservative no-candidates answer. Never raises."""
     try:
         from utils.hardware.amd import amd_kfd_gpu_gfx_targets
-
         targets = amd_kfd_gpu_gfx_targets() or []
     except Exception as e:
         logger.debug("KFD gfx target probe failed: %s", e)
