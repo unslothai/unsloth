@@ -2782,8 +2782,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     _pk_len = _pk_keep.sum(dim = 1)
                     _pk_len_cpu = _pk_len.tolist()  # single GPU->CPU sync, reused below
                     _pk_nz_cpu = [_n for _n in _pk_len_cpu if _n > 0]
-                    _pk_flat = input_ids[_pk_keep].unsqueeze(0)
-                    _pk_T = _pk_flat.shape[1]
+                    _pk_T = sum(_pk_nz_cpu)
                     _pk_L = input_ids.shape[1]
                     _pk_W = logits_to_keep + max_left_pad
                     _pk_maxseg = max(_pk_nz_cpu) if _pk_nz_cpu else 0
@@ -2792,25 +2791,28 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         getattr(unwrapped_model, "config", None), "sliding_window", None
                     )
                     _pk_sw_ok = not (isinstance(_pk_sw, int) and _pk_sw > 0 and _pk_maxseg > _pk_sw)
-                    # Per-row completion mask (same as the loss); prompt-only rows count as inactive.
-                    _pk_cmask = create_completion_attention_mask(
-                        input_ids[:, -_pk_W:], left_pad_tokens_per_prompt, max_left_pad, _pk_pad
-                    )
-                    _pk_active = int(_pk_cmask.any(dim = 1).sum())
                     # Skip the packed forward entirely at known-unsafe lengths, avoiding a wasted pass or OOM.
                     _pk_unsafe = getattr(
                         unwrapped_model, "_unsloth_seq_packing_nograd_unsafe_T", None
                     )
                     # Cap the flattened forward at one padded [batch_size, seq_len] mini-batch's token budget; anything larger uses the chunked padded loop.
                     _pk_cap = batch_size * seq_len
-                    if (
+                    # Decided from the host lengths alone, so a capped batch skips the flatten and the active-row sync below.
+                    _pk_fits = (
                         _pk_T >= 2
                         and _pk_T <= _pk_cap
                         and len(_pk_nz_cpu) > 0
                         and _pk_sw_ok
                         and not (_pk_unsafe is not None and _pk_T >= _pk_unsafe)
-                        and (_pk_ok is True or _pk_active >= 2)
-                    ):
+                    )
+                    if _pk_fits:
+                        _pk_flat = input_ids[_pk_keep].unsqueeze(0)
+                        # Per-row completion mask (same as the loss); prompt-only rows count as inactive.
+                        _pk_cmask = create_completion_attention_mask(
+                            input_ids[:, -_pk_W:], left_pad_tokens_per_prompt, max_left_pad, _pk_pad
+                        )
+                        _pk_active = int(_pk_cmask.any(dim = 1).sum())
+                    if _pk_fits and (_pk_ok is True or _pk_active >= 2):
                         _pk_pos = (_pk_keep.cumsum(dim = 1) - 1)[_pk_keep].unsqueeze(0)
                         _pk_chunks = max(1, total_rows * multiplier)
                         _pk_nz_idx = _pk_keep.nonzero(
@@ -3073,6 +3075,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 zipped_inputs = []
             else:
                 _pk_hidden = _pk_sel = _pk_result = _pk_ref = None
+                # Index buffers of a declined packed batch would otherwise live through the padded loop.
+                _pk_keep = _pk_len = _pk_flat = _pk_pos = _pk_cmask = None
+                _pk_nz_idx = _pk_within = _pk_cstart = _pk_ctgt = _pk_tgt = _pk_ids = _pk_cm = None
 
             with _get_inference_mode_context_manager(model):
                 for (
