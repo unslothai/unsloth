@@ -299,6 +299,23 @@ _HIDREAM_BF16_WHEN_RESIDENT = (
     "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail"
 )
 
+# FLUX.3 Klein's encoder is Qwen3-VL-4B-Instruct (byte-identical), read by sd.cpp through --llm with hidden states 4..32.
+# References go through the VAE, not the vision tower, so editing needs no projector. Q8_0 rather than Q4_K_M: the
+# encoder quant dominates the error here. Against a BF16 DiT + BF16 encoder render (sd.cpp, 4 prompts, 1024, same
+# seeds, B200), LPIPS-alex mean with the Q8_0 DiT is 0.031 (Q8_0 encoder) vs 0.080 (Q4_K_M) on the distilled model and
+# 0.008 vs 0.082 on the base; with UD-Q4_K_XL 0.068 vs 0.090 and 0.110 vs 0.109. 4.28 GB against 2.50 GB.
+_FLUX3_SD_CPP_TEXT_ENCODERS = (
+    (
+        "unsloth/Qwen3-VL-4B-Instruct-GGUF",
+        "Qwen3-VL-4B-Instruct-Q8_0.gguf",
+        "llm",
+    ),
+)
+# FLUX.3 landed upstream in master-968 (leejet/stable-diffusion.cpp#2143), after builds were in the wild. The model
+# version name is in every sd-cli / sd-server that can run it and in none before.
+_FLUX3_SD_CPP_ARCH_MARKER = "Flux.3 Image Klein"
+
+
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry
 # covers Turbo/full, schnell/dev.
 _FAMILIES: tuple[DiffusionFamily, ...] = (
@@ -474,6 +491,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # fp8 denoiser, measured on B200, against the estimator's 8192 MiB per megapixel: 0.11 covers the quantised
         # figure.
         condition_pixel_weight = 0.11,
+        # Native (sd.cpp) assets, the same set as the distilled entry: see there.
+        sd_cpp_vae = ("unsloth/flux-3-image-klein-base-FP8", "vae/diffusion_pytorch_model.safetensors"),
+        sd_cpp_text_encoders = _FLUX3_SD_CPP_TEXT_ENCODERS,
+        sd_cpp_sampling_method = "euler",
+        sd_cpp_arch_marker = _FLUX3_SD_CPP_ARCH_MARKER,
     ),
     DiffusionFamily(
         name = "flux.3-klein",
@@ -509,6 +531,15 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         max_condition_images = 10,
         dimension_multiple = 16,
         condition_pixel_weight = 0.11,
+        # Native (sd.cpp) assets. sd.cpp reads the unsloth/flux-3-image-klein[-base]-GGUF denoisers as published
+        # (BFL tensor names, detected from emb_in.image + txt_mode_blocks). The VAE is the FLUX.2 VAE, byte-identical
+        # in both FP8 repos and in unsloth/FLUX.2-VAE (sha256 d64f3a68...), taken from this family's own FP8 repo,
+        # which prequant_repos keeps loadable. sd.cpp detects its layout itself, so no --vae-format.
+        sd_cpp_vae = ("unsloth/flux-3-image-klein-FP8", "vae/diffusion_pytorch_model.safetensors"),
+        sd_cpp_text_encoders = _FLUX3_SD_CPP_TEXT_ENCODERS,
+        # sd.cpp's documented invocation (docs/flux3.md). No flow shift: its scheduler already applies FLUX.3's 6.93.
+        sd_cpp_sampling_method = "euler",
+        sd_cpp_arch_marker = _FLUX3_SD_CPP_ARCH_MARKER,
     ),
     # FLUX.2-dev: full (non-distilled) FLUX.2 on the Mistral Flux2Pipeline, so its own entry. Gated base,
     # text-to-image only; sd-cli takes the Mistral encoder from unsloth/FLUX.2-dev-ComfyUI and the VAE from

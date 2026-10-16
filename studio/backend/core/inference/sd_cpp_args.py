@@ -38,6 +38,9 @@ _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     # that also turns on Qwen2-VL's vision path, so it is the wrong door even though both names
     # reach the same field.
     "qwen-image-2.1": ("--llm",),
+    # Qwen3-VL-4B through --llm, as qwen-image-2.1.
+    "flux.3-klein": ("--llm",),
+    "flux.3-klein-base": ("--llm",),
     "flux.1": ("--clip_l", "--t5xxl"),
     "flux.1-kontext": ("--clip_l", "--t5xxl"),
 }
