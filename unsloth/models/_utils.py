@@ -3853,6 +3853,16 @@ def _cache_device_capability(get_device_capability):
     if getattr(get_device_capability, "_unsloth_per_device_cache", False):
         return get_device_capability
 
+    # One visible device: every spelling names it, so the plain C-level cache is exact and fastest.
+    try:
+        single_device = torch.cuda.device_count() <= 1
+    except Exception:
+        single_device = False
+    if single_device:
+        cached = functools.cache(get_device_capability)
+        cached._unsloth_per_device_cache = True
+        return cached
+
     cache = {}
 
     @functools.wraps(get_device_capability)
