@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 import {
   Select,
   SelectContent,
@@ -24,11 +25,11 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
+import { WifiHighIcon } from "@/components/wifi-high-icon";
 import {
   Delete02Icon,
   Edit03Icon,
   PlusSignIcon,
-  Wifi02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -465,11 +466,13 @@ export function ChatProvidersSettings({
     : `${availableModels.length} models`;
   const modelSearchInputClassName =
     "h-8 w-full bg-background/55 text-xs placeholder:text-muted-foreground/65 focus-visible:border-border focus-visible:ring-0";
-  // The list grows with its rows and only scrolls past 20 (rows are min-h-9, plus 1px dividers).
-  const modelListClassName =
-    filteredAvailableModels.length > 20
-      ? "max-h-[calc(var(--spacing)*180+20px)] divide-y divide-border/50 overflow-y-auto scroll-rounded"
-      : "divide-y divide-border/50";
+  // Full-bleed rows of the Models card (-mx-4 undoes the body padding). The list grows with its rows
+  // and only scrolls past 20 (rows are min-h-9, plus 1px dividers).
+  const modelListClassName = cn(
+    "-mx-4 divide-y divide-border/60 border-border/60 border-y last:-mb-4 last:border-b-0",
+    filteredAvailableModels.length > 20 &&
+      "max-h-[calc(var(--spacing)*180+20px)] overflow-y-auto",
+  );
 
   useEffect(() => {
     providersRef.current = providers;
@@ -2117,14 +2120,14 @@ export function ChatProvidersSettings({
                         </div>
                         <ul className={modelListClassName}>
                           {filteredAvailableModels.length === 0 ? (
-                            <li className="px-2 py-2.5 text-xs text-muted-foreground">
+                            <li className="px-4 py-2.5 text-xs text-muted-foreground">
                               No matching models
                             </li>
                           ) : (
                             filteredAvailableModels.map((model, index) => (
                               <li
                                 key={model}
-                                className="flex min-h-9 cursor-pointer items-center gap-2.5 px-2 py-1.5 hover:bg-muted/45"
+                                className="flex min-h-9 cursor-pointer items-center gap-2.5 px-4 py-1.5 hover:bg-muted/35"
                                 onClick={() => toggleModel(model)}
                               >
                                 <Checkbox
@@ -2206,14 +2209,14 @@ export function ChatProvidersSettings({
                         </div>
                         <ul className={modelListClassName}>
                           {filteredAvailableModels.length === 0 ? (
-                            <li className="px-2 py-2.5 text-xs text-muted-foreground">
+                            <li className="px-4 py-2.5 text-xs text-muted-foreground">
                               No matching models
                             </li>
                           ) : (
                             filteredAvailableModels.map((model, index) => (
                               <li
                                 key={model}
-                                className="flex min-h-9 cursor-pointer items-center gap-2.5 px-2 py-1.5 hover:bg-muted/45"
+                                className="flex min-h-9 cursor-pointer items-center gap-2.5 px-4 py-1.5 hover:bg-muted/35"
                                 onClick={() => toggleModel(model)}
                               >
                                 <Checkbox
@@ -2438,7 +2441,7 @@ export function ChatProvidersSettings({
                         title="Check connection"
                         aria-label={`Check ${provider.name}`}
                       >
-                        <HugeiconsIcon icon={Wifi02Icon} className="size-4" />
+                        <HugeiconsIcon icon={WifiHighIcon} className="size-4" />
                       </Button>
                       <Button
                         type="button"

@@ -21,6 +21,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { WifiHighIcon } from "@/components/wifi-high-icon";
 import { usePlatformStore } from "@/config/env";
 import {
   loadLanAccess,
@@ -50,7 +51,7 @@ import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import { Copy01Icon, QrCodeIcon, Wifi01Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon, QrCodeIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import QRCode from "react-qr-code";
@@ -434,7 +435,7 @@ export function LanAccessSection() {
         <div className="flex min-w-0 items-start gap-3">
           <div className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40">
             <HugeiconsIcon
-              icon={Wifi01Icon}
+              icon={WifiHighIcon}
               className="size-4 text-foreground"
             />
           </div>
