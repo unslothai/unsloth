@@ -42,6 +42,7 @@ import {
   useRlWorkspaceStore,
   useTrainingConfigStore,
 } from "@/features/training";
+import { pythonRewardRow } from "@/features/training/lib/rl-roles";
 import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
@@ -301,22 +302,6 @@ function ImportRewardDialog({
   );
 }
 
-// Row 1 the way training passes it: unmapped columns as-is, the answer as "answer".
-function trainingRow(
-  previewRow: Record<string, unknown> | null,
-  mapping: Record<string, string>,
-  reference: string,
-): Record<string, string> {
-  const row: Record<string, string> = {};
-  for (const [column, value] of Object.entries(previewRow ?? {})) {
-    if (!mapping[column]) {
-      row[column] = previewCell(value);
-    }
-  }
-  row.answer = reference;
-  return row;
-}
-
 function CodeDialog({
   record,
   onOpenChange,
@@ -406,7 +391,12 @@ export function RewardsSection(): ReactElement {
       return;
     }
     try {
-      const row = trainingRow(previewRow, mapping, reference);
+      const row = pythonRewardRow(
+        Object.fromEntries(
+          Object.entries(previewRow ?? {}).map(([k, v]) => [k, previewCell(v)]),
+        ),
+        reference,
+      );
       const prompt = promptColumn
         ? previewCell(previewRow?.[promptColumn])
         : "";
@@ -430,7 +420,7 @@ export function RewardsSection(): ReactElement {
       setIsolation(null);
       setPreviewError(err instanceof Error ? err.message : String(err));
     }
-  }, [rewards, completion, reference, previewRow, promptColumn, mapping]);
+  }, [rewards, completion, reference, previewRow, promptColumn]);
 
   // Score live, a beat after the last edit.
   useEffect(() => {

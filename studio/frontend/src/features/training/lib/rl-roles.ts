@@ -66,3 +66,21 @@ export function missingRlRoles(
   );
   return RL_REQUIRED_ROLES[objective].filter((role) => !mapped.has(role));
 }
+
+// Mirrors _RL_ROW_KEYS in rl.py: TRL fills these itself, every other column reaches a Python reward.
+const RL_ROW_KEYS = new Set(["prompt", "answer", "chosen", "rejected"]);
+
+/** Row 1 the way GRPO training hands it to a Python reward, mapped role columns included. */
+export function pythonRewardRow(
+  row: Record<string, string>,
+  answer: string,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [column, value] of Object.entries(row)) {
+    if (!RL_ROW_KEYS.has(column)) {
+      out[column] = value;
+    }
+  }
+  out.answer = answer;
+  return out;
+}

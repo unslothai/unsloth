@@ -313,10 +313,13 @@ def preview_python_scores(
     text: str,
     row: dict[str, Any],
     prompt: Optional[str] = None,
+    owner: Optional[str] = None,
 ) -> tuple[dict[str, Optional[float]], dict[str, Any]]:
     """Score one reply for the Try it box. The worker is kept warm for a couple of minutes,
     since the box re-scores on every edit."""
-    key = json.dumps([[s["name"], s["entry"], s["code"]] for s in specs], sort_keys = True)
+    # Keyed by owner too: a warm worker keeps the reward's module state, which must not carry
+    # one account's rows into another account's scores.
+    key = json.dumps([owner, [[s["name"], s["entry"], s["code"]] for s in specs]], sort_keys = True)
     with _preview_lock:
         if _preview["timer"] is not None:
             _preview["timer"].cancel()

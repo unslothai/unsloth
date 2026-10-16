@@ -7,7 +7,7 @@ import test from "node:test";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { missingRlRoles, resolveRlMapping } = await import(
+const { missingRlRoles, pythonRewardRow, resolveRlMapping } = await import(
   "../src/features/training/lib/rl-roles.ts"
 );
 
@@ -35,5 +35,16 @@ test("explicit roles win over name matching, and a stale column is ignored", () 
   assert.deepEqual(
     resolveRlMapping("orpo", ["prompt", "chosen", "good", "bad"], mapping),
     { good: "chosen", bad: "rejected", prompt: "prompt" },
+  );
+});
+
+test("a Python reward preview row keeps mapped columns, as GRPO training does", () => {
+  // solution is mapped to answer: training keeps it under its own name for a Python reward.
+  assert.deepEqual(
+    pythonRewardRow(
+      { question: "q", solution: "72", prompt: "p", id: "7" },
+      "72",
+    ),
+    { question: "q", solution: "72", id: "7", answer: "72" },
   );
 });

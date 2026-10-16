@@ -280,6 +280,27 @@ def test_preview_reports_a_broken_python_reward_as_a_400(client):
     assert "ZeroDivisionError" in response.json()["detail"]
 
 
+def test_a_warm_preview_worker_is_not_shared_across_accounts(client):
+    # Module state survives between previews of one account; another account gets a fresh worker.
+    md = _python_md(
+        "calls",
+        "seen = []\n\n"
+        "def reward(completions, **kw):\n"
+        "    seen.append(1)\n"
+        "    return [float(len(seen))] * len(completions)\n",
+    )
+
+    def preview(subject):
+        client.app.dependency_overrides[get_current_subject] = lambda: subject
+        response = client.post(
+            "/api/rewards/preview", json = {"rewards": [{"markdown": md}], "completion": "x"}
+        )
+        assert response.status_code == 200, response.text
+        return response.json()["scores"][0]["score"]
+
+    assert [preview("alice"), preview("alice"), preview("bob")] == [1.0, 2.0, 1.0]
+
+
 def _os_sandbox_available() -> bool:
     import sys
 

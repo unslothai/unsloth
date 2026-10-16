@@ -126,7 +126,12 @@ def preview_rewards(
             else:
                 raise RewardError("Each preview item needs a name or markdown.")
         results, isolation = preview_scores(
-            specs, payload.completion, payload.reference, payload.row, payload.prompt
+            specs,
+            payload.completion,
+            payload.reference,
+            payload.row,
+            payload.prompt,
+            owner = current_subject,
         )
     except RewardError as exc:
         raise _http_error(exc) from exc
