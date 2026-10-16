@@ -29,10 +29,7 @@ import {
 // Streamdown's copy and download find the table through this attribute, so the wrapper keeps it.
 const TABLE_WRAPPER = "table-wrapper";
 
-/**
- * The table's horizontal scroller. Flags which edges hide more columns so CSS fades them, and
- * publishes the scrollbar's height so the fade stops above it.
- */
+// Flags the edges hiding columns (CSS fades them) and the scrollbar height the fade stops above.
 function TableScroll({
   children,
   className,
@@ -79,10 +76,6 @@ function TableScroll({
   );
 }
 
-/**
- * Markdown tables drawn inline, without Streamdown's card and toolbar row: copy, download and
- * expand float over the header's right end on hover, and expand opens the table in a dialog.
- */
 export function MarkdownTable({
   children,
   className,

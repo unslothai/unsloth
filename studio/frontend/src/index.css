@@ -39,7 +39,6 @@
 	[data-slot="window-titlebar"][data-viewport-backdrop-tone="strong"]::after {
 		background: rgb(0 0 0 / 40%);
 	}
-	/* An expanded chat table dims the page behind it further still. */
 	[data-slot="window-titlebar"][data-viewport-backdrop-tone="dense"]::after {
 		background: rgb(0 0 0 / 70%);
 	}
@@ -4423,15 +4422,13 @@ html[data-chat-font] .aui-root {
 		}
 	}
 
-	/* Markdown tables (markdown-table.tsx): rules only, no card. These selectors outrank the
-	   cell classes Streamdown hard-codes (text-sm, nowrap header, tinted thead, divide-y). */
+	/* Chat tables (markdown-table.tsx); these outrank Streamdown's hard-coded cell classes. */
 	.aui-md-table {
 		position: relative;
 		margin-block: calc(1rem * var(--ui-space-scale, 1));
 	}
 
-	/* Wide tables scroll inside the column instead of widening it. An edge hiding more columns
-	   fades out (TableScroll sets the flags); the second mask layer keeps the scrollbar opaque. */
+	/* The second mask layer keeps the scrollbar opaque under the fade. */
 	.aui-md-table-scroll {
 		--md-table-fade-start: 0px;
 		--md-table-fade-end: 0px;
@@ -4503,7 +4500,6 @@ html[data-chat-font] .aui-root {
 		font-weight: 600;
 	}
 
-	/* Copy, download and expand float over the header's right end; touch screens keep them shown. */
 	.aui-md-table-actions {
 		position: absolute;
 		top: calc(0.25rem * var(--ui-space-scale, 1));
@@ -5211,8 +5207,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	background: oklch(0.67 0 0 / 0.5);
 }
 
-/* Chat tables keep a classic scrollbar, so a wide one shows it scrolls before it is touched;
-   overlay scrollbars stay hidden until then. */
+/* Classic, not overlay: a wide chat table shows it scrolls before it is touched. */
 @supports selector(::-webkit-scrollbar) {
 	.aui-md-table-scroll,
 	.dark .aui-md-table-scroll {
