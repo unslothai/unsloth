@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "vite",
     "build": "node scripts/typecheck.mjs && vite build",
-    "lint": "node --require ./scripts/eslint-typescript6.cjs ./node_modules/eslint/bin/eslint.js .",
+    "lint": "eslint .",
     "preview": "vite preview",
     "test": "node --experimental-strip-types --test \"tests/**/*.test.ts\"",
     "bundle:check": "node --experimental-strip-types scripts/check-bundle-budget.ts",
