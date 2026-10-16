@@ -281,3 +281,33 @@ def test_on_device_lists_an_artifact_mirror_as_its_checkpoint_only(tmp_path, cac
     assert [(r.model_format, r.partial, r.companion_prefetch) for r in released] == [
         (r.model_format, r.partial, r.companion_prefetch) for r in baseline
     ]
+
+
+def test_load_progress_through_an_artifact_mirror_counts_only_the_pipeline_part(monkeypatch, tmp_path):
+    """A bf16 Turbo load fetches only the diffusers folders of unsloth/Qwen-Image-2.1-Turbo-FP8, so expected_bytes
+    counts only those. FP8 / INT8 checkpoints already cached at the repo root must not count toward progress, while
+    the blob downloading right now must."""
+    from core.inference.diffusion import _LoadingState
+
+    pipeline = {
+        "model_index.json": 7,
+        "vae/diffusion_pytorch_model.safetensors": 300,
+        "text_encoder/model.safetensors": 600,
+    }
+    _snapshot(tmp_path, _FP8_REPO, {**pipeline, "qwen-image-2.1-turbo-fp8.safetensors": 50_000})
+    blobs = tmp_path / f"models--{_FP8_REPO.replace('/', '--')}" / "blobs"
+    blobs.mkdir(parents = True, exist_ok = True)
+    (blobs / "abc.incomplete").write_bytes(b"\0" * 1_000)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_cache_repo_dirs",
+        staticmethod(lambda repo_id: [tmp_path / f"models--{repo_id.replace('/', '--')}"]),
+    )
+    backend = DiffusionBackend()
+    base = "Qwen/Qwen-Image-2.1-Turbo"
+    backend._loading = _LoadingState(
+        repo_id = base, base_repo = base, fetch_repo = _FP8_REPO, expected_bytes = 10_000
+    )
+    progress = backend.load_progress()
+    assert progress["phase"] == "downloading"
+    assert progress["bytes_downloaded"] == sum(pipeline.values()) + 1_000

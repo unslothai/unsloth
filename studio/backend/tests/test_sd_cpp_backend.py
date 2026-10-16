@@ -2896,3 +2896,40 @@ def test_only_managed_cpu_binaries_count_as_cpu_only(monkeypatch):
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: None)
     monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: None)
     assert bk.sd_cpp_binaries_all_cpu() is False
+
+
+def test_a_t5_index_from_the_old_cache_root_gets_its_shards_beside_it(monkeypatch, tmp_path):
+    """After a cache-folder change the T5 index resolves from the old root while its shards land in the active one.
+    sd-cli reads the shards beside the index, so the load links them there instead of refusing a cache that holds
+    every file (an offline user could not repair it by re-downloading)."""
+    import json
+    from pathlib import Path
+
+    _no_cache(monkeypatch)
+    b = _shared_setup_4(monkeypatch)
+    old_root, live_root = tmp_path / "old", tmp_path / "live"
+
+    def fake_download(repo, fn, tok, **k):
+        root = old_root if fn.endswith(".safetensors.index.json") else live_root
+        path = root / repo.replace("/", "--") / fn
+        path.parent.mkdir(parents = True, exist_ok = True)
+        if fn.endswith(".safetensors.index.json"):
+            shards = [f.rsplit("/", 1)[-1] for _r, f, kind in specs if kind == "t5xxl_shard"]
+            path.write_text(json.dumps({"weight_map": {str(i): n for i, n in enumerate(shards)}}))
+        else:
+            path.write_bytes(b"shard:" + fn.encode())
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", fake_download)
+    fam = detect_family("flux.1")
+    specs = b._asset_specs("unsloth/FLUX.1-dev-GGUF", "flux1-dev-Q4_K_M.gguf", fam)
+    shard_files = [f for _r, f, kind in specs if kind == "t5xxl_shard"]
+    assert len(shard_files) == 2
+
+    paths = b._fetch_assets(specs, None, local_files_only = True)
+
+    index = Path(paths["t5xxl"])
+    assert index.is_relative_to(old_root)
+    for fn in shard_files:
+        beside = index.parent / fn.rsplit("/", 1)[-1]
+        assert beside.read_bytes() == b"shard:" + fn.encode()

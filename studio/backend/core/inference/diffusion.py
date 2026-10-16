@@ -4312,11 +4312,11 @@ class DiffusionBackend:
             # Full pipeline: base IS the repo, so count it once. Summing would add the upstream's stale partial blobs,
             # the very thing that selects the mirror, to the mirror's live bytes, pushing the bar to 100% / finalizing
             # mid-download.
-            downloaded = self._cache_bytes(companion or loading.repo_id)
+            downloaded = self._companion_progress_bytes(companion or loading.repo_id)
         else:
             downloaded = self._cache_bytes(loading.repo_id)
             if companion and companion != loading.repo_id:
-                downloaded += self._cache_bytes(companion)
+                downloaded += self._companion_progress_bytes(companion)
         # Repos read before files (_run_load stores files first), so every repo seen has its file entry.
         asset_repos = loading.asset_repos
         asset_files = loading.asset_files
@@ -5777,7 +5777,16 @@ class DiffusionBackend:
         return best
 
     @staticmethod
-    def _cache_bytes(repo_id: str, *, pipeline_only: bool = False) -> int:
+    def _companion_progress_bytes(repo_id: str) -> int:
+        """``_cache_bytes`` for the repo a load's pipeline bytes land in. An artifact mirror
+        (``mirror_hosts_artifacts``) also holds root GGUF / prequant checkpoints the plan never counted, so only
+        its diffusers part is scanned, plus the in-flight blobs, which are this load's own pipeline files."""
+        if mirror_hosts_artifacts(repo_id):
+            return DiffusionBackend._cache_bytes(repo_id, pipeline_only = True, in_flight = True)
+        return DiffusionBackend._cache_bytes(repo_id)
+
+    @staticmethod
+    def _cache_bytes(repo_id: str, *, pipeline_only: bool = False, in_flight: bool = False) -> int:
         """Bytes of ``repo_id`` on disk across every cache root, for progress and the pipeline plan.
 
         Scoped per root to the revision that root serves (``refs/main``), because ``blobs/`` is
@@ -5788,7 +5797,8 @@ class DiffusionBackend:
 
         ``pipeline_only`` counts just the diffusers part of the snapshot (``model_index.json`` and the component
         folders), for a repo that also carries root GGUF / prequant checkpoints the pipeline never reads. Blobs
-        that cannot be attributed to a path are left out there.
+        that cannot be attributed to a path are left out there, unless ``in_flight`` asks for the
+        ``*.incomplete`` ones: a load's progress counts what it is downloading right now.
 
         Keyed by blob filename, not summed per root: a blob is named after the file's etag, so a
         copy present in both roots counts once. Scanning only the live root reports 0 for a load a
@@ -5814,7 +5824,7 @@ class DiffusionBackend:
                     for entry in blobs:
                         _add(entry.name, entry)
                 continue
-            if not pipeline_only:
+            if not pipeline_only or in_flight:
                 for entry in blobs:
                     if entry.name.endswith(".incomplete"):
                         _add(entry.name, entry)

@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -2573,6 +2574,40 @@ def _assert_shards_beside_index(kind: str, path: str) -> None:
         )
 
 
+def _colocate_shards(index_path: str, fetched: dict[str, str]) -> None:
+    """Put every shard an encoder index names beside it, when the shard was fetched into the OTHER cache root.
+
+    ``_fetch_assets`` resolves each file through either root, so after a cache-folder change the index can come from
+    the old root while its shards land in the active one. sd-cli only looks beside the index, and an offline user
+    cannot repair that by re-downloading, so each missing shard is linked (else copied) into the index's snapshot
+    directory, under the name the repo itself gives it. ``fetched`` maps a shard's file name to the path it was
+    resolved to. Best-effort: anything left missing is reported by ``_assert_shards_beside_index``."""
+    if not str(index_path).endswith(".safetensors.index.json"):
+        return
+    try:
+        with open(index_path, encoding = "utf-8") as fh:
+            shards = set((json.load(fh).get("weight_map") or {}).values())
+    except (OSError, ValueError):
+        return
+    parent = Path(index_path).parent
+    for shard in sorted(shards):
+        target = parent / shard
+        source = fetched.get(shard)
+        if target.exists() or not source or not Path(source).is_file():
+            continue
+        real = Path(source).resolve()
+        for place in (
+            lambda: os.symlink(real, target),
+            lambda: os.link(real, target),
+            lambda: shutil.copyfile(real, target),
+        ):
+            try:
+                place()
+                break
+            except OSError:
+                continue
+
+
 def _fetch_repo_map(assets: list[tuple[str, str, str]], hf_token: Optional[str]) -> dict[str, str]:
     """upstream asset repo -> the repo to actually fetch from (its ungated mirror, or itself).
     Decided per REPO over its whole file list, the same input ``download_plan`` uses, so staging
@@ -3879,6 +3914,8 @@ class SdCppDiffusionBackend:
         # Callers without a per-load event (tests, direct use) fall back to the current one.
         cancel = cancel_event if cancel_event is not None else self._cancel_event
         paths: dict[str, str] = {}
+        # Shard file name -> where it resolved: the kind repeats per shard, so ``paths`` keeps only the last one.
+        shard_paths: dict[str, str] = {}
         # This backend fetches the ASSET repos, never the base, and some are gated, so the swap goes here. Decided per
         # REPO over its whole file list, exactly as download_plan does, so the load pulls from the repo the manager
         # already staged.
@@ -3925,6 +3962,8 @@ class SdCppDiffusionBackend:
                         f"page to fetch it."
                     ) from exc
             paths[kind] = path
+            if kind.endswith("_shard"):
+                shard_paths[fn.rsplit("/", 1)[-1]] = path
             with self._lock:
                 if self._loading is not None:
                     try:
@@ -3932,6 +3971,7 @@ class SdCppDiffusionBackend:
                     except OSError:
                         pass
         for kind, path in paths.items():
+            _colocate_shards(path, shard_paths)
             _assert_shards_beside_index(kind, path)
         return paths
 
