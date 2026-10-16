@@ -60,10 +60,14 @@ const CAPABILITY_ICONS: Record<HubCapabilityFilter, IconSvgElement | null> = {
   "video-gen": FlimSlateIcon,
 };
 
-// One rhythm in scaled units: gap-4 between sections (the popover's 8px padding plus 2 more
-// above the first and below Reset all), pb-2 from a title to its controls.
-const SECTION_LABEL =
-  "flex w-full items-center justify-between px-3 pb-2 text-ui-12 text-muted-foreground";
+// Every gap is 17px (scaled): between sections, above the first title past the popover's 8px
+// padding, and on both sides of Reset all. Text sits at leading-[1.25], Inter's own text box, so
+// the gaps measure to the glyphs rather than to line-height padding.
+const TEXT_BOX = "leading-[1.25]";
+const SECTION_LABEL = cn(
+  "flex w-full items-center justify-between px-3 pb-2 text-ui-12 text-muted-foreground",
+  TEXT_BOX,
+);
 const PICKED_FILL =
   "bg-[color-mix(in_oklab,var(--foreground)_calc(9%*var(--contrast-wash-gain,1)),var(--popover))] dark:bg-[color-mix(in_srgb,var(--accent),white_8%)]";
 const UNPICKED_FILL =
@@ -599,7 +603,7 @@ export function ModelSearchFiltersControl({
         // Reset all in view; flex children would otherwise shrink the separators away.
         className="hub-menu-instant hub-composer-menu menu-soft-surface gap-0 overflow-hidden w-[calc(392px*var(--ui-space-scale,1))] max-w-[calc(100vw-1rem)] ring-0"
       >
-        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain pt-2 pb-4 [scrollbar-width:thin]">
+        <div className="flex min-h-0 flex-1 flex-col gap-4.25 overflow-y-auto overscroll-contain pt-2.25 pb-4.25 [scrollbar-width:thin]">
           {modelSections && (
             <>
               <fieldset>
@@ -752,12 +756,13 @@ export function ModelSearchFiltersControl({
           />
         </div>
         <div aria-hidden={true} className="mx-3 h-px shrink-0 bg-border" />
-        {/* The h-6 button's 4px above and below its text completes the gap on each side. */}
+        {/* With the h-6 button's 5px around its text, 12px above and 4px plus the popover's 8px below. */}
         <div className="flex shrink-0 items-center justify-end px-3 pt-3 pb-1">
           <Button
             type="button"
             variant="ghost"
             size="xs"
+            className={TEXT_BOX}
             disabled={!filtered}
             onClick={onReset}
           >
