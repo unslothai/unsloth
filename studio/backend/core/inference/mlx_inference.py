@@ -919,13 +919,31 @@ def _mlx_scope_refused(name, error):
     _mlx_fusion_unavailable(name, error)
 
 
+# What Studio entered by hand before Zoo's registry; a Zoo without it keeps exactly these.
+_MLX_LEGACY_SCOPES = (
+    "fused_moe_gate_up",
+    "fused_decode_conv_silu",
+    "fused_residual_norm",
+    "fused_moe_router",
+    "fused_moe_routed_experts",
+    "fused_residual_norm_handoff",
+    "fused_packed_gated_delta",
+)
+
+
 @contextmanager
 def _mlx_inference_scopes(model, call, int8_prefill):
     """Hold the Zoo scopes for a generation described by `call`, Zoo's call traits. Zoo picks them, so
-    a scope it registers reaches this path with no change here. A Zoo without the registry runs unfused."""
+    a scope it registers reaches this path with no change here. A Zoo without the registry keeps the
+    scopes Studio listed before it (none for the text batch)."""
     compose = _mlx_inference_patch("inference_scopes")
     with ExitStack() as scope:
-        if compose is not None:
+        if compose is None and "batch" not in call:
+            for name in _MLX_LEGACY_SCOPES:
+                scope.enter_context(_mlx_optional_fusion(name, model))
+            if "speculative" in call:
+                scope.enter_context(_mlx_optional_fusion("exact_speculative_verify", model))
+        elif compose is not None:
             try:
                 scope.enter_context(
                     compose(
@@ -5139,9 +5157,8 @@ class MLXInferenceBackend:
         # Capture chat_template_info for the worker IPC reply and route capability classification.
         self._populate_chat_template_info(model_name, native_template)
 
-        # The worker owns fixed base weights until unload; adapter requests stay scoped. A Zoo without
-        # the registry runs unfused.
-        if not is_lora and _mlx_inference_patch("inference_scopes") is not None:
+        # The worker owns fixed base weights until unload; adapter requests stay scoped.
+        if not is_lora:
             self._model_fusion.enter_context(_mlx_optional_fusion("fused_moe_gate_up", model))
         # Every rank of a distributed load must run each forward together.
         if not is_distributed:

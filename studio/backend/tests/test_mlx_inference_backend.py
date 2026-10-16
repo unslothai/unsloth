@@ -629,11 +629,12 @@ def test_a_scope_zoo_registers_reaches_each_studio_site_with_no_studio_change(
     assert entered == ["every", *call]
 
 
-def test_an_older_zoo_without_the_registry_loads_and_generates_unfused(
+def test_an_older_zoo_without_the_registry_keeps_the_scopes_studio_listed(
     monkeypatch, mlx_inference_patches
 ):
     from core.inference import mlx_inference
 
+    pytest.importorskip("mlx_lm")  # the drafted vision site imports zoo's generate
     entered = []
     for name in (*(f"fused_{name}" for name in FUSIONS), "exact_speculative_verify"):
         monkeypatch.setattr(
@@ -649,9 +650,22 @@ def test_an_older_zoo_without_the_registry_loads_and_generates_unfused(
     assert backend.load_model(
         SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
     )
+    legacy = [f"fused_{name}" for name in FUSIONS]
+    # The load-time gate/up pack, then each site as Studio entered it before the registry.
+    want = {
+        "load": ["fused_moe_gate_up"],
+        "text": ["fused_moe_gate_up", *legacy],
+        "vision": legacy,
+        "vision-drafted": [*legacy, "exact_speculative_verify"],
+        "audio": legacy,
+        "text-batch": [],
+    }
+    assert entered == want["load"]
     for site in ("text", "vision", "vision-drafted", "audio", "text-batch"):
+        entered.clear()
         _run_studio_site(site, monkeypatch)
-    assert entered == [] and mlx_inference._MLX_FUSION_UNAVAILABLE == set()
+        assert entered == want[site], site
+    assert mlx_inference._MLX_FUSION_UNAVAILABLE == set()
 
 
 @pytest.mark.parametrize("dead", [False, True], ids = ["refused", "dead-queue"])
@@ -4243,7 +4257,7 @@ def test_int8_prefill_is_the_outermost_scope_of_generation_pinned_off_when_inact
 
     active = requested and available
     # Zoo's registry enters the NAX scope again in its own place; the outer decision holds there too.
-    fusions = [("fusion", None)] * len(FUSIONS) if registry else []
+    fusions = [("fusion", None)] * len(FUSIONS)
     if registry:
         fusions[5:5] = [("int8", active)]
     assert events == [("int8", active), *fusions, ("stream", None)] + [("int8_exit", active)] * (
