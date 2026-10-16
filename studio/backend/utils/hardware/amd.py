@@ -118,7 +118,9 @@ def _run_amd_smi(
             # The driver's System32 amd-smi.exe exits 0 with "Invalid platform" on stderr when it can't run (wmic gone on newer Windows), popping a DiskPart prompt each time; never spawn it again.
             logger.info(
                 "amd-smi exited 0 with no output (%s); GPU utilization polling via amd-smi disabled",
-                (result.stderr or "").strip().splitlines()[-1] if (result.stderr or "").strip() else "no stderr",
+                (result.stderr or "").strip().splitlines()[-1]
+                if (result.stderr or "").strip()
+                else "no stderr",
             )
             _amd_smi_disabled = True
         else:
