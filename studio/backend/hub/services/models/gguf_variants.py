@@ -1424,12 +1424,29 @@ async def get_gguf_variants_answer(
             variants,
             has_vision: bool,
             complete = None,
+            context_root: Optional[str] = None,
         ) -> GgufVariantsResponse:
             """mark *complete* quants ready, keep incomplete rows manageable, and treat None as all ready."""
 
             def _downloaded(v) -> bool:
                 # unlabelled quants cannot be judged and remain ready
                 return complete is None or not v.quant or v.quant in complete
+
+            if context_root:
+                root = Path(context_root).expanduser()
+                rows_by_legacy_key: dict[str, list] = {}
+                for variant in variants:
+                    if variant.quant and variant.filename and _downloaded(variant):
+                        rows_by_legacy_key.setdefault(
+                            gguf_variant_key(variant.filename).lower(), []
+                        ).append(variant)
+                for rows in rows_by_legacy_key.values():
+                    if len(rows) < 2:
+                        continue
+                    for variant in rows:
+                        source = root if root.is_file() else root / variant.filename
+                        if source.is_file():
+                            variant_context_sources[variant.quant.lower()] = str(source)
 
             ready = [v for v in variants if _downloaded(v)]
             default_variant = _default_variant_key(ready or variants, repo_id)
@@ -1674,7 +1691,9 @@ async def get_gguf_variants_answer(
             answered_locally[0] = True
             # Surface the resolution so the CLI gate matches the local resolver's exact labels rather than the
             # id's shape, and no client mirrors its grammar.
-            return _local_response(repo_id, variants, has_vision, complete).model_copy(
+            return _local_response(
+                repo_id, variants, has_vision, complete, context_root = local_id
+            ).model_copy(
                 update = {
                     "resolved_locally": True,
                     "loadable_variants": _loadable_variants(local_id, variants),
@@ -1813,7 +1832,9 @@ async def get_gguf_variants_answer(
                     complete = _complete_with_servable(
                         local_path, _complete_quants_under(local_path), variants
                     )
-                    return _local_response(repo_id, variants, has_vision, complete)
+                    return _local_response(
+                        repo_id, variants, has_vision, complete, context_root = local_path
+                    )
             partial = _quants_from_state(repo_id, hub_cache) if cache_reads_authorized else None
             if partial is not None:
                 variants, has_vision = partial

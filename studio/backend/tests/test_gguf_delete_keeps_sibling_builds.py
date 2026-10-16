@@ -87,6 +87,38 @@ def test_a_custom_folder_lists_every_build_at_one_quant(tmp_path):
     }
 
 
+def test_each_custom_build_reads_context_from_its_own_file(tmp_path, monkeypatch):
+    import asyncio
+
+    from routes import models as models_route
+
+    names = ["alpha-Q4_K_M.gguf", "beta-Q4_K_M.gguf"]
+    for name in names:
+        (tmp_path / name).write_bytes(b"x")
+    contexts = {names[0]: 4096, names[1]: 8192}
+    reads = []
+
+    async def read_context(model, _is_local):
+        source = Path(model)
+        reads.append(source)
+        return contexts.get(source.name, 1024)
+
+    monkeypatch.setattr(models_route, "_read_native_context_length_bounded", read_context)
+    response = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = str(tmp_path),
+            prefer_local_cache = True,
+            hf_token = None,
+            hf_token_header = None,
+            current_subject = "test-user",
+            via_api_key = False,
+        )
+    )
+
+    assert {variant.filename: variant.context_length for variant in response.variants} == contexts
+    assert set(reads) == {tmp_path, *(tmp_path / name for name in names)}
+
+
 def test_a_bare_named_sibling_cannot_collide_with_the_legacy_quant_key(tmp_path):
     import asyncio
 
