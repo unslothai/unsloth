@@ -160,7 +160,9 @@ def test_the_flux3_pin_is_main_with_the_merged_flux3_support():
     assert line.endswith("@d42ebf9c6e0b46103b74283f5324357a67acaa04"), line
     assert "ec288418a5efa32e9fd49eb7b193babce920a106" not in line
     assert re.search(
-        r"^# archive-sha256: c46925a12c1b64340272dbd4c5d72a4298ecd4c96cad2c9d549b85a99ffb491f$", text, re.M
+        r"^# archive-sha256: c46925a12c1b64340272dbd4c5d72a4298ecd4c96cad2c9d549b85a99ffb491f$",
+        text,
+        re.M,
     )
 
 

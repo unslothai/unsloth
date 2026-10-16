@@ -531,6 +531,12 @@ def test_preflight_refuses_int8_on_mps_when_the_lm_head_is_kept(monkeypatch):
     fam = next(f for f in _FAMILIES if f.name == "flux.3-klein")
     with pytest.raises(RuntimeError, match = "text_encoder_quant"):
         d.DiffusionBackend._assert_precision_for_target(
-            None, fam, types.SimpleNamespace(device = "mps", dtype = torch.bfloat16),
-            model_kind = "pipeline", pinned = None, te_mode = "int8", memory_mode = None, cpu_offload = False,
+            None,
+            fam,
+            types.SimpleNamespace(device = "mps", dtype = torch.bfloat16),
+            model_kind = "pipeline",
+            pinned = None,
+            te_mode = "int8",
+            memory_mode = None,
+            cpu_offload = False,
         )

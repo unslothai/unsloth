@@ -1461,9 +1461,10 @@ def test_companion_staging_is_scoped_to_the_folders_flux3_loads(tmp_path, monkey
         discover_text_encoders = False,
     )
     # Staged from the ungated unsloth mirror of the gated BFL repo, never from BFL itself.
-    assert {e["repo_id"] for e in plan["entries"]} & {DISTILLED, "unsloth/flux-3-image-klein-FP8"} == {
-        "unsloth/flux-3-image-klein-FP8"
-    }
+    assert {e["repo_id"] for e in plan["entries"]} & {
+        DISTILLED,
+        "unsloth/flux-3-image-klein-FP8",
+    } == {"unsloth/flux-3-image-klein-FP8"}
     files = sorted(
         f
         for e in plan["entries"]
@@ -1902,7 +1903,9 @@ def test_only_a_seeded_flux3_snapshot_is_mapped_to_its_repo(tmp_path):
     assert flux3_seeded_cache_repo(manifest) is None
 
 
-def test_a_snapshot_staged_for_the_int8_encoder_seed_is_still_a_seeded_snapshot(tmp_path, monkeypatch):
+def test_a_snapshot_staged_for_the_int8_encoder_seed_is_still_a_seeded_snapshot(
+    tmp_path, monkeypatch
+):
     # te_quant_auto is int8 ConvRot on both families, so a normally staged snapshot holds neither the dense
     # transformer shards nor the dense text-encoder shards. Rejecting it read as UNSIZED_MISSING and blocked the
     # media auto-switch; the planner, asked of the repo, decides whether the encoder seed is cached.
@@ -1986,9 +1989,14 @@ def test_the_block_graph_drops_the_prompt_upsampler_step(monkeypatch, with_upsam
     class _Blocks:
         def __init__(self):
             steps = ["text_encoder", "vae_encoder", "denoise", "decode"]
-            self.sub_blocks = dict.fromkeys((["prompt_upsampler"] if with_upsampler else []) + steps)
+            self.sub_blocks = dict.fromkeys(
+                (["prompt_upsampler"] if with_upsampler else []) + steps
+            )
 
     monkeypatch.setattr(diffusers, FLUX3_DISTILLED_BLOCKS, _Blocks, raising = False)
     assert list(flux3_blocks(FLUX3_DISTILLED_BLOCKS).sub_blocks) == [
-        "text_encoder", "vae_encoder", "denoise", "decode"
+        "text_encoder",
+        "vae_encoder",
+        "denoise",
+        "decode",
     ]

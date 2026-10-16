@@ -675,6 +675,7 @@ def _flux3_pipeline_index(
         # The gated vendor repo's manifest is read from its byte-identical unsloth mirror (pure table lookup), so a
         # load that fetches everything from the mirror does not also probe, and 401 on, the vendor repo.
         from core.inference.diffusion_families import prefer_ungated_mirror
+
         source = prefer_ungated_mirror(repo_id, token, files = (FLUX3_INDEX,))
         local = _local_gguf_path(repo_id, FLUX3_INDEX)
         if local is None and source != repo_id:
