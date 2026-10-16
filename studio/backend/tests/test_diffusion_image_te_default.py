@@ -688,8 +688,12 @@ def _table_env(monkeypatch, device, present, keep_head):
         monkeypatch.setenv(KEEP_LM_HEAD_ENV, "1")
     else:
         monkeypatch.delenv(KEEP_LM_HEAD_ENV, raising = False)
-    # fp8 runs on the CUDA card only; MPS and CPU do not
-    monkeypatch.setattr(prec, "te_quant_supported", lambda target, mode: getattr(target, "device", None) == "cuda")
+    import core.inference.diffusion as D
+
+    # fp8 runs on the CUDA card only; MPS and CPU do not. diffusion.py imports the helper by name, so patch both.
+    supported = lambda target, mode: getattr(target, "device", None) == "cuda"
+    monkeypatch.setattr(prec, "te_quant_supported", supported)
+    monkeypatch.setattr(D, "te_quant_supported", supported)
     monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda sources: present)
     return _DEVICES[device]
 
