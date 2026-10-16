@@ -129,8 +129,8 @@ def test_compiled_calls_never_use_fast_launch(monkeypatch, kind, width, gemma):
     torch.compile(fn, fullgraph = True)(x).sum().backward()
     assert calls == []
     assert x.grad is not None and weight.grad is not None
-    fn(x.detach().requires_grad_()).sum().backward()  # eager: same module, launch() taken
-    assert calls
+    fn(x.detach().requires_grad_()).sum().backward()  # eager: launch() only when fast launch is on
+    assert bool(calls) == FAST
 
 
 @pytest.mark.parametrize("train", [False, True], ids = ["frozen", "trainable"])
