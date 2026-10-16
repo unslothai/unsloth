@@ -485,15 +485,22 @@ def _rocm_fp8e4nv_kernel_supported(device):
     return arch in ("gfx940", "gfx941", "gfx942", "gfx950")
 
 
+def _triton_release():
+    # Compiled decode steps trace the gates below; torch 2.7 dynamo graph breaks inside packaging's Version.
+    try:
+        major, minor = triton.__version__.split(".")[:2]
+        return int(major), int(minor)
+    except Exception:
+        return Version(triton.__version__).release[:2]
+
+
 @functools.lru_cache(maxsize = None)
 def _fp8_gemv_miscompiles(device):
     # Triton 3.3 miscompiles this GEMV on Blackwell (garbage rows at BLOCK_N 4/8); 3.4 is exact.
     if torch.version.hip is not None:
         return False
     try:
-        return torch.cuda.get_device_capability(device) >= (10, 0) and Version(
-            triton.__version__
-        ).release[:2] < (3, 4)
+        return torch.cuda.get_device_capability(device) >= (10, 0) and _triton_release() < (3, 4)
     except Exception:
         return True
 
@@ -573,7 +580,23 @@ def can_use_fp8_rowwise_gemv(X, weight, weight_scale):
         return False
     if torch.is_grad_enabled() and (X.requires_grad or weight.requires_grad):
         return False
-    return not _fp8_kernel_unsupported(weight) and not _fp8_gemv_miscompiles(weight.device)
+    if _fp8_kernel_unsupported(weight):
+        return False
+    if not _fp8_gemv_miscompiles(weight.device):
+        return True
+    # Triton 3.3 on Blackwell is exact at BLOCK_N 1 (N <= 4096). Measured on RTX PRO 6000 it beats
+    # dequant + matmul when N >= 256 or K <= 4096; fewer rows over a longer K leave most SMs idle.
+    N, K = weight.shape
+    return N <= 4096 and (N >= 256 or K <= 4096) and _triton_builds_blackwell()
+
+
+@functools.lru_cache(maxsize = None)
+def _triton_builds_blackwell():
+    # Triton 3.2 bundles a ptxas without sm_100 / sm_120.
+    try:
+        return _triton_release() >= (3, 3)
+    except Exception:
+        return False
 
 
 def fp8_rowwise_gemv(X, weight, weight_scale):
