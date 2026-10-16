@@ -173,8 +173,9 @@ export interface VideoLoadRequest {
   // CUDA / ROCm physical indices this load may use; omit for automatic. Neither engine shards a
   // checkpoint, so several cards resolve to the one with the most free VRAM.
   gpu_ids?: number[];
-  // Text-encoder precision (omit to keep the dense bf16 encoder). Refused with a 409 when the host cannot run it.
-  text_encoder_quant?: "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
+  // Text-encoder precision. Omit for the family default (the hosted quantized encoder ComfyUI's template matches);
+  // "none" keeps the dense bf16 encoder. An explicit scheme is refused with a 409 when the host cannot run it.
+  text_encoder_quant?: "none" | "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
 }
 
 /** One reference video, with the soundtrack MiniMax-H3 conditions on alongside it. */

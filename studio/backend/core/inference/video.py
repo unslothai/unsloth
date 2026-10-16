@@ -193,6 +193,7 @@ from .diffusion_precision import (
     effective_te_quant,
     normalize_te_quant,
     quantize_text_encoders,
+    resolve_te_quant_request,
     te_quant_needs_resident_weights,
     te_quant_supported,
     te_quant_unsupported_reason,
@@ -302,6 +303,19 @@ def resolve_video_model_kind(gguf_filename: Optional[str], model_kind: Optional[
     if not gguf_filename:
         return "pipeline"
     return "gguf" if gguf_filename.strip().lower().endswith(".gguf") else "single_file"
+
+
+def video_te_quant_request(fam: Any, text_encoder_quant: Optional[str]) -> tuple[Optional[str], bool]:
+    """``(request, auto_selected)``: an unset / "auto" encoder request on a family with ``te_quant_auto`` becomes that
+    scheme; anything else comes back as given, raw, because MiniMax-H3 and LTX-2.5 read the raw tri-state themselves.
+
+    ``auto_selected`` keeps the pick from being treated as a request the caller made: nobody asked for it, so a host
+    that cannot run it (fp8 below cc 8.9, a hosted file that is not there) gets the dense encoder, never a refusal."""
+    auto_scheme = getattr(fam, "te_quant_auto", None)
+    if not auto_scheme:
+        return text_encoder_quant, False
+    mode, auto = resolve_te_quant_request(text_encoder_quant, auto_scheme)
+    return (mode, True) if auto else (text_encoder_quant, False)
 
 
 def assert_video_precision_available(
@@ -3555,10 +3569,12 @@ class VideoBackend:
                 fam, kind, kwargs.get("gguf_filename"), kwargs.get("h3_task")
             )
             # An fp8 encoder request loads a hosted pre-cast checkpoint, so neither the estimate nor the pull includes
-            # those dense shards.
+            # those dense shards. Resolved through the family default the loader applies, so an unset request on a
+            # family whose default is a hosted encoder does not stage the dense one. kwargs keep the RAW request.
+            te_planned, _ = video_te_quant_request(fam, kwargs.get("text_encoder_quant"))
             te_sources = self._te_prequant_sources(
                 fam,
-                kwargs.get("text_encoder_quant"),
+                te_planned,
                 kwargs.get("gpu_ordinal"),
                 base = base,
             )
@@ -3590,7 +3606,7 @@ class VideoBackend:
                 transformer_quant = kwargs.get("transformer_quant"),
                 speed_mode = kwargs.get("speed_mode"),
                 memory_mode = kwargs.get("memory_mode"),
-                text_encoder_quant = kwargs.get("text_encoder_quant"),
+                text_encoder_quant = te_planned,
                 gpu_ordinal = kwargs.get("gpu_ordinal"),
                 hf_token = kwargs.get("hf_token"),
                 ltx25_dev = ltx25_dev,
@@ -5709,6 +5725,9 @@ class VideoBackend:
         h3_task = _h3_single_file_task(fam, kind, gguf_filename, h3_task)
         # A dev LTX-2.5 load is single stage and never opens the latent upsampler.
         ltx25_dev = _ltx25_dev_load(fam, kind, gguf_filename, repo_id, display_repo_id)
+        # The family default the loader applies to an unset encoder request, so the plan stages the hosted encoder
+        # instead of the dense shards the load would not open. H3 keeps reading the raw request below.
+        te_planned, _ = video_te_quant_request(fam, text_encoder_quant)
         # The same resolution the load makes, so an H3 auto pick the loader will serve from a hosted checkpoint is not
         # staged dense here first: that is 66.3 GB the panel downloads and the load never opens, and the replacement
         # would then arrive outside this plan.
@@ -5733,7 +5752,7 @@ class VideoBackend:
             transformer_quant = transformer_quant,
             speed_mode = load_kwargs.get("speed_mode"),
             memory_mode = load_kwargs.get("memory_mode"),
-            text_encoder_quant = text_encoder_quant,
+            text_encoder_quant = te_planned,
             gpu_ordinal = load_kwargs.get("gpu_ordinal"),
             hf_token = hf_token,
             ltx25_dev = ltx25_dev,
@@ -5855,7 +5874,7 @@ class VideoBackend:
             # Pre-cast encoders first: only a checkpoint that really resolves earns the right to drop the dense shards
             te_sources = self._te_prequant_sources(
                 fam,
-                text_encoder_quant,
+                te_planned,
                 load_kwargs.get("gpu_ordinal"),
                 base = base,
             )
@@ -6566,6 +6585,23 @@ class VideoBackend:
 
         target = self._device_target(gpu_ordinal)
         device = target.device
+        # Text-encoder tri-state, resolved once here so the memory plan, the pre-cast injection and the dense cast below
+        # see one decision: unset / "auto" takes the family's te_quant_auto (the hosted encoder ComfyUI's template
+        # matches), "none" / "off" keep the released one, an explicit scheme pins itself. An automatic pick this card
+        # cannot run is dropped rather than refused.
+        text_encoder_quant_requested = text_encoder_quant
+        text_encoder_quant, text_encoder_quant_auto = video_te_quant_request(fam, text_encoder_quant)
+        if text_encoder_quant_auto:
+            from . import diffusion_precision as _precision
+
+            if _precision.te_quant_supported(target, text_encoder_quant):
+                logger.info(
+                    "video.text_encoder_quant: '%s' selected automatically for %s (unset request)",
+                    text_encoder_quant,
+                    fam.name,
+                )
+            else:
+                text_encoder_quant = None
         # FlashInfer only serves hosted pre-quantised denoisers. Modular H3 installs below; a conventional load installs
         # after its live-memory plan keeps the seed (a capacity-settled seed can still be dropped).
         _nvfp4_install_wanted = (
@@ -7731,6 +7767,7 @@ class VideoBackend:
         if (
             (text_encoder_quant_engaged is None or text_encoder_outcome.partial)
             and normalize_te_quant(text_encoder_quant) is not None
+            and not text_encoder_quant_auto
             and not precision_fallback_allowed()
         ):
             del pipe
@@ -8132,9 +8169,14 @@ class VideoBackend:
                         else transformer_quant_decline_status,
                     ),
                     "text_encoder_quant": (
-                        text_encoder_quant,
+                        # The RAW request: an automatic pick must not read as a scheme the caller pinned.
+                        text_encoder_quant_requested,
                         text_encoder_quant_engaged or "off",
-                        text_encoder_outcome.reason
+                        (
+                            f"{text_encoder_outcome.reason or 'engaged'} (selected automatically: the family default)"
+                            if text_encoder_quant_auto and text_encoder_quant_engaged is not None
+                            else text_encoder_outcome.reason
+                        )
                         or (
                             "dense text encoder quantised in place"
                             if text_encoder_quant_engaged is not None

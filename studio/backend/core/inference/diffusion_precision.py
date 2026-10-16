@@ -286,11 +286,13 @@ def quantize_text_encoders(
                 "(it degrades large encoders without one), so fp8 was used instead"
             )
             if _family_hosts_te_int8(family):
+                from .diffusion_te_prequant import _TE_INT8_HEADLESS_FAMILIES
                 from .diffusion_text_encoder_trim import KEEP_LM_HEAD_ENV, family_trims_lm_head
                 downgrade_reason = (
                     f"{KEEP_LM_HEAD_ENV} keeps lm_head, which the int8 ConvRot text encoder does not carry, "
                     "so fp8 was used instead"
                     if not family_trims_lm_head(family)
+                    and (family or "").strip().lower() not in _TE_INT8_HEADLESS_FAMILIES
                     else "the hosted int8 ConvRot text encoder is not available (not published yet, offline, "
                     "or refused, see the server log), so fp8 was used instead"
                 )
