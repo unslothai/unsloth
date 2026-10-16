@@ -871,7 +871,7 @@ def _assert_local_base_is_pipeline(
     allow_modular: bool = False,
     excluded_components: Sequence[str] = (),
     config_only_model_components: bool = False,
-    fixed_component_folders: Optional[Mapping[str, str]] = None,
+    fixed_component_folders: Optional[Mapping[str, tuple[str, str, str]]] = None,
 ) -> None:
     """A companion ``base_repo`` fed to ``from_pretrained(base)`` (or ``config=base``) must be a
     diffusers PIPELINE directory (has ``model_index.json``). ``_is_trusted_diffusion_repo`` accepts
@@ -1155,6 +1155,11 @@ def _generation_chunks(
     if layer_count or is_flux3_family(family):
         return [[job] for job in jobs]
     return chunk_jobs(jobs, batch_size)
+
+
+def _base_manifest_name(fam: Any) -> str:
+    """The pipeline index a base repo carries: FLUX.3 ships only ``modular_model_index.json``."""
+    return FLUX3_INDEX if is_flux3_family(fam) else "model_index.json"
 
 
 def _te_quant_for_supplied_encoders(requested: Optional[str]) -> Optional[str]:
@@ -3323,10 +3328,12 @@ class DiffusionBackend:
         fetch_base: Optional[str] = None,
         base_local_dir: Optional[str] = None,
         local_files_only: bool = False,
+        manifest: str = "model_index.json",
     ) -> Optional[str]:
         """Stage the shards a seeded plan left out of the pull; returns the snapshot dir to assemble
         from, or None for the hub id. ``from_pretrained`` treats a local dir as terminal, so a
-        failed seed has nothing."""
+        failed seed has nothing. ``manifest`` is the base's pipeline index (FLUX.3's is the modular one), fetched
+        with the shards so the top-up resolves the same snapshot."""
         files = [name for name in (skipped or ()) if name]
         if not files:
             return base_local_dir
@@ -3339,7 +3346,7 @@ class DiffusionBackend:
             repo_id,
             None,
             base,
-            [*files, "model_index.json"],
+            [*files, manifest],
             hf_token,
             fetch_base = fetch_base,
             local_files_only = local_files_only,
@@ -3446,7 +3453,8 @@ class DiffusionBackend:
             except (IndexError, ValueError, OSError):
                 root = ""
             roots.add(root)
-            if rfilename == "model_index.json":
+            # FLUX.3's manifest is the modular one; either marks the snapshot the companions were staged into.
+            if rfilename in ("model_index.json", FLUX3_INDEX):
                 snapshot_root = root or None
         # Only hand back a snapshot the whole set lives in; otherwise the hub id resolves each file through its own
         # root as before.
@@ -3831,7 +3839,9 @@ class DiffusionBackend:
         # Probe the repo the load will FETCH from: refusing the upstream id would reject the gated picks the ungated
         # mirror rescues, and the swap is pure, so it decides the same here as on the load thread. Only the raise
         # matters; _run_load recomputes the excused snapshot.
-        _assert_base_repo_accessible(prefer_ungated_mirror(base, hf_token), hf_token)
+        _assert_base_repo_accessible(
+            prefer_ungated_mirror(base, hf_token), hf_token, _base_manifest_name(fam)
+        )
         # Same reasoning for the FLUX.2 size pairing, and this is the only place it can be caught before a teardown:
         # the loader's own guard opens the downloaded checkpoint, so it fires after ~19 GB of base shards AND after
         # the resident pipeline was freed. Metadata only, and fails open on anything it cannot read. The UPSTREAM
@@ -4200,7 +4210,10 @@ class DiffusionBackend:
             # metadata, so no byte has moved yet. Returns a snapshot dir when it excused the base off a copy only the
             # import-time root holds.
             base_snapshot = _assert_base_repo_accessible(
-                fetch_base, kwargs.get("hf_token"), local_files_only = local_files_only
+                fetch_base,
+                kwargs.get("hf_token"),
+                _base_manifest_name(fam),
+                local_files_only = local_files_only,
             )
             # And the same size-pairing preflight the plan and the route run, here because a direct begin_load (a
             # saved config, the deploy path) reaches neither. Still metadata only, so it lands before _prefetch_files
@@ -5350,7 +5363,7 @@ class DiffusionBackend:
         fetch_base = fetch_repos.get(base) or prefer_ungated_mirror(
             base, hf_token, files = base_files
         )
-        _assert_base_repo_accessible(fetch_base, hf_token)
+        _assert_base_repo_accessible(fetch_base, hf_token, _base_manifest_name(fam))
         entries: list[dict[str, Any]] = []
         checkpoint_bytes = 0
         if gguf_filename:
@@ -7654,6 +7667,7 @@ class DiffusionBackend:
                                         fetch_base = fetch_base,
                                         base_local_dir = _base_local_dir,
                                         local_files_only = local_files_only,
+                                        manifest = _base_manifest_name(fam),
                                     )
                                     # A pipeline plan prices CACHED bytes, and the plan above saw companions only
                                     # (transformer/ was skipped). Re-plan now the dense shards are back, else an

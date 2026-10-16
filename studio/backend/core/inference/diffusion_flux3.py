@@ -44,12 +44,13 @@ FLUX3_INDEX = "modular_model_index.json"
 # lives with the encoder), whatever source a modular spec names. Nothing else in the manifest is loaded: since
 # 2026-10-16 the official manifests also list the optional prompt upsampler (``prompt_upsampler`` /
 # ``prompt_upsampler_processor``, from the separate ~19 GB flux-3-image-klein-pup repo), which an image load never
-# needs. Validation and the locality checks read this map, so they require exactly what will load.
+# needs. Validation and the locality checks read this map, so they require exactly what will load: every one of
+# these folders (the loader opens all of them, listed in the manifest or not), and nothing else.
 FLUX3_COMPONENT_FOLDERS = {
-    "text_encoder": "text_encoder",
-    "tokenizer": "text_encoder",
-    "transformer": "transformer",
-    "vae": "vae",
+    "text_encoder": ("text_encoder", "transformers", "Qwen3VLForConditionalGeneration"),
+    "tokenizer": ("text_encoder", "transformers", "Qwen3VLProcessor"),
+    "transformer": ("transformer", "diffusers", "Flux3Transformer2DModel"),
+    "vae": ("vae", "diffusers", "AutoencoderKLFlux2"),
 }
 
 

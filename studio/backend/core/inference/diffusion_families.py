@@ -1619,9 +1619,10 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("kontext", 20, 2.5),  # editing: before the generic flux.1
     ("flux.1", 20, 3.5),
     ("flux1", 20, 3.5),
-    # FLUX.3 Image Klein, ComfyUI's templates (Comfy-Org/workflow_templates): the base's CFG template is 25 steps at
-    # 3.5 (euler / simple); the distilled flow-map checkpoint 16 steps at CFG 1 (the edit template and the BFL
-    # reference; the t2i template's 15-step er_sde is a sampler this backend does not run). Base first.
+    # FLUX.3 Image Klein, ComfyUI's templates (black-forest-labs/flux-3-image-klein-comfy, workflows/): the base t2i
+    # and edit templates run 25 steps at CFG 3.5 (euler / simple; a note suggests 50 for better quality), the distilled
+    # edit template 16 steps at CFG 1 and the distilled t2i template 15. The distilled default is 16, the edit
+    # template's and the BFL reference's. Base first.
     # Every registered alias plus the canonical family names (an opaque path resolves through the family).
     ("flux.3-klein-base", 25, 3.5),
     ("flux-3-image-klein-base", 25, 3.5),
@@ -2023,15 +2024,15 @@ def local_pipeline_components_are_complete(
     *,
     excluded_components: Sequence[str] = (),
     config_only_model_components: bool = False,
-    fixed_component_folders: Optional[Mapping[str, str]] = None,
+    fixed_component_folders: Optional[Mapping[str, tuple[str, str, str]]] = None,
 ) -> bool:
     """Check local component presence and known Diffusers/Transformers serialization layouts.
 
-    ``fixed_component_folders`` is for a loader that reads a fixed set of components from fixed folders of this
-    root (FLUX.3's assembler): exactly the components it maps are checked, each at ``root/<folder>``, and a modular
-    spec's ``pretrained_model_name_or_path`` / ``repo`` / ``subfolder`` is ignored. Manifest entries outside the
-    map are not loaded, so they are not required either (FLUX.3's optional prompt upsampler, hosted in another
-    repo). The check then matches what will load."""
+    ``fixed_component_folders`` (``{component: (folder, library, class)}``) is for a loader that reads a fixed set
+    of components from fixed folders of this root whatever the manifest lists (FLUX.3's assembler). Exactly those
+    are checked, each at ``root/<folder>``, whether or not the manifest names them, minus ``excluded_components``;
+    every other manifest entry and every spec source is ignored, since none of it is loaded (FLUX.3's optional
+    prompt upsampler lives in another repo). The manifest still has to be readable and name a pipeline class."""
     if filename not in {"model_index.json", "modular_model_index.json"}:
         return False
     base = Path(root).expanduser()
@@ -2039,6 +2040,21 @@ def local_pipeline_components_are_complete(
     class_name = payload.get("_class_name")
     if not isinstance(class_name, str) or not class_name.strip():
         return False
+    if fixed_component_folders is not None:
+        try:
+            checked = [
+                (name, spec)
+                for name, spec in fixed_component_folders.items()
+                if name not in excluded_components
+            ]
+            return bool(checked) and all(
+                _local_pipeline_component_is_complete(
+                    base / folder, library, cls, config_only_model_components
+                )
+                for _name, (folder, library, cls) in checked
+            )
+        except OSError:
+            return False
     caller_supplied = _CALLER_SUPPLIED_COMPONENTS.get(class_name, frozenset())
     declared = False
     try:
@@ -2056,16 +2072,12 @@ def local_pipeline_components_are_complete(
                 name in caller_supplied and not (base / name).exists()
             ):
                 continue
-            if fixed_component_folders is not None and name not in fixed_component_folders:
-                continue
             declared = True
             component = base / name
             source = spec[2] if filename == "modular_model_index.json" and len(spec) >= 3 else None
             source = source if isinstance(source, dict) else {}
             repo = source.get("pretrained_model_name_or_path") or source.get("repo")
-            if fixed_component_folders is not None:
-                component = base / fixed_component_folders[name]
-            elif isinstance(repo, str) and repo.strip():
+            if isinstance(repo, str) and repo.strip():
                 # A modular spec may load the component from another repo or folder instead.
                 repo = repo.strip()
                 subfolder = source.get("subfolder")

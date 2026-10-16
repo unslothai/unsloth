@@ -746,6 +746,9 @@ def _modular_base(tmp_path):
         (folder / "config.json").write_text("{}")
         (folder / "model.safetensors").write_bytes(b"\0" * 16)
         index[component] = [lib, cls, {"subfolder": component, "type_hint": [lib, cls]}]
+    # The processor the loader reads from text_encoder/, as in the official repos.
+    for asset in ("tokenizer.json", "tokenizer_config.json", "preprocessor_config.json"):
+        (root / "text_encoder" / asset).write_text("{}")
     (root / "modular_model_index.json").write_text(json.dumps(index))
     return root
 
@@ -1166,3 +1169,114 @@ def test_the_download_plan_never_selects_the_upsampler(with_upsampler):
         explicit_components = _explicit_pipeline_components(_family(FLUX3_KLEIN_FAMILY_NAME)),
     )
     assert selected == frozenset(FLUX3_COMPONENTS)
+
+
+# ── review round 5 ───────────────────────────────────────────────────────────
+@pytest.mark.parametrize("missing", ["text_encoder", "vae", "transformer", "tokenizer"])
+def test_every_fixed_folder_is_required_even_when_the_manifest_omits_it(tmp_path, missing):
+    # load_flux3_pipeline opens text_encoder/ (encoder and processor), transformer/ and vae/ whatever the manifest
+    # lists, so a manifest that drops an entry must not let its missing folder through.
+    from core.inference.diffusion_families import local_pipeline_components_are_complete
+    from core.inference.diffusion_flux3 import FLUX3_COMPONENT_FOLDERS
+
+    root = _official_layout(tmp_path, "distilled", True)
+    index = json.loads((root / "modular_model_index.json").read_text())
+    index.pop(missing)
+    (root / "modular_model_index.json").write_text(json.dumps(index))
+    check = lambda **kw: local_pipeline_components_are_complete(  # noqa: E731
+        root, "modular_model_index.json", fixed_component_folders = FLUX3_COMPONENT_FOLDERS, **kw
+    )
+    assert check()  # the folders are all there: an omitted entry alone is fine
+    folder = FLUX3_COMPONENT_FOLDERS[missing][0]
+    for f in (root / folder).iterdir():
+        f.unlink()
+    assert not check()
+    if missing == "transformer":
+        # A GGUF supplies the denoiser: its folder is not needed then.
+        assert check(excluded_components = ("transformer",))
+
+
+def test_the_base_access_probe_reads_the_modular_manifest(tmp_path, monkeypatch):
+    # A cached gated FLUX.3 base with no usable token: the probe must recognise the cached snapshot by the manifest
+    # FLUX.3 actually ships, or the load is refused although every file is local.
+    import huggingface_hub
+    from huggingface_hub.errors import GatedRepoError
+    from core.inference import diffusion as d
+
+    cache = tmp_path / "hub"
+    snap = cache / "models--black-forest-labs--flux-3-image-klein" / "snapshots" / "abc"
+    snap.mkdir(parents = True)
+    (snap / "modular_model_index.json").write_text("{}")
+    (cache / "models--black-forest-labs--flux-3-image-klein" / "refs").mkdir()
+    (cache / "models--black-forest-labs--flux-3-image-klein" / "refs" / "main").write_text("abc")
+    monkeypatch.setattr(d, "hub_cache_dir", lambda: str(cache))
+
+    class _Api:
+        def model_info(self, *a, **k):
+            raise GatedRepoError("gated", response = SimpleNamespace(status_code = 401, headers = {}, request = None))
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+    assert d._base_manifest_name(_family(FLUX3_KLEIN_FAMILY_NAME)) == "modular_model_index.json"
+    assert d._base_manifest_name(_family("flux.2-klein")) == "model_index.json"
+    d._assert_base_repo_accessible(DISTILLED, None, d._base_manifest_name(_family(FLUX3_KLEIN_FAMILY_NAME)))
+    # Every call site in the loader names the manifest instead of the conventional default.
+    import ast
+    import inspect
+
+    calls = [
+        n
+        for n in ast.walk(ast.parse(inspect.getsource(d.DiffusionBackend)))
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_assert_base_repo_accessible"
+    ]
+    assert len(calls) == 3
+    for call in calls:
+        assert len(call.args) >= 3 and "_base_manifest_name" in ast.unparse(call.args[2])
+
+
+def test_restoring_skipped_shards_fetches_the_modular_manifest(monkeypatch, tmp_path):
+    from core.inference.diffusion import DiffusionBackend
+
+    seen = {}
+    be = DiffusionBackend()
+
+    def fake_prefetch(repo_id, gguf, base, files, token, **kw):
+        seen["files"] = list(files)
+        return str(tmp_path)
+
+    monkeypatch.setattr(be, "_prefetch_files", fake_prefetch)
+    out = be._restore_skipped_transformer_shards(
+        DISTILLED,
+        DISTILLED,
+        ["transformer/diffusion_pytorch_model-00001-of-00002.safetensors"],
+        None,
+        base_local_dir = str(tmp_path),
+        manifest = "modular_model_index.json",
+    )
+    assert out == str(tmp_path)
+    assert seen["files"][-1] == "modular_model_index.json" and "model_index.json" not in seen["files"]
+
+
+def test_the_prefetch_hands_back_the_snapshot_of_a_modular_manifest(monkeypatch, tmp_path):
+    # The staged dir is recognised by FLUX.3's own manifest, so the restore and the assemblies can load off it.
+    import utils.hf_xet_fallback as xf
+    from core.inference.diffusion import DiffusionBackend
+
+    snap = tmp_path / "snapshots" / "abc"
+
+    def fake_download(repo, name, token, **kw):
+        path = snap / name
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text("{}")
+        return str(path)
+
+    monkeypatch.setattr(xf, "hf_hub_download_with_xet_fallback", fake_download)
+    be = DiffusionBackend()
+    root = be._prefetch_files(
+        DISTILLED,
+        None,
+        DISTILLED,
+        ["modular_model_index.json", "vae/config.json", "text_encoder/config.json"],
+        None,
+        fetch_base = DISTILLED,
+    )
+    assert root == str(snap)
