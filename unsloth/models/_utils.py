@@ -7354,7 +7354,9 @@ def validate_loftq_config(
     signature = str(inspect.signature(LoraConfig))
     SUPPORTS_LOFTQ = "loftq_config" in signature
 
-    if lora_dropout != 0:
+    from ..kernels.fast_lora import FUSED_LORA_DROPOUT
+
+    if lora_dropout != 0 and not FUSED_LORA_DROPOUT:
         logger.warning_once(
             f"Unsloth: Dropout = 0 is supported for fast patching. You are using dropout = {lora_dropout}.\n"
             f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
