@@ -1825,6 +1825,23 @@ def test_a_sibling_quant_in_the_same_directory_is_not_the_resident_one(monkeypat
     assert asyncio.run(inference_route._reject_unservable_model("org/model:Q4_K_M", _Req())) is None
 
 
+def test_a_sibling_build_stem_is_not_the_resident_one(monkeypatch):
+    entry = resolver._LocalGgufEntry("org/model", "/models/model", ("Q4_K_M", "beta-Q4_K_M"))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/model": entry}))
+    loaded = _Loaded("org/model", "Q4_K_M")
+    loaded.gguf_path = "/models/model/alpha-Q4_K_M.gguf"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    monkeypatch.setattr(inference_route, "_unavailable_model_message", _fake_unavailable_message)
+
+    with pytest.raises(HTTPException):
+        asyncio.run(inference_route._reject_unservable_model("org/model:beta-Q4_K_M", _Req()))
+
+
 def test_a_remote_tag_that_names_no_quant_picks_the_preferred_one(hub):
     # ":latest" and ":8b" name no quant, so remote admission must default-select like a
     # bare repo id (as the local resolver does) instead of 404ing on a non-quant.
@@ -1946,7 +1963,9 @@ def test_a_split_build_stem_switches_away_from_the_resident_sibling(monkeypatch)
     loads: list = []
 
     async def _record_load(request, *args, **kwargs):
-        loads.append(getattr(request, "gguf_variant", None))
+        variant = getattr(request, "gguf_variant", None)
+        loads.append(variant)
+        loaded.hf_variant = variant
 
     monkeypatch.setattr(inference_route, "_load_model_impl", _record_load)
     monkeypatch.setattr(
