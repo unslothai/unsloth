@@ -57,6 +57,16 @@ def test_find_gguf_in_dir_matches_a_same_quant_build_key(tmp_path):
     assert _find_gguf_in_dir(tmp_path, "Q4_K_M") == alpha
 
 
+def test_find_gguf_in_dir_matches_a_filename_build_key(tmp_path):
+    first = tmp_path / "0-model-Q4_K_M.gguf"
+    bare = tmp_path / "Q4_K_M.gguf"
+    first.write_bytes(b"GGUF")
+    bare.write_bytes(b"GGUF")
+
+    assert _find_gguf_in_dir(tmp_path, "Q4_K_M.gguf") == bare
+    assert _find_gguf_in_dir(tmp_path, "Q4_K_M") == first
+
+
 def test_find_gguf_in_dir_without_variant_prefers_largest_model(tmp_path):
     smaller = tmp_path / "a-model-Q4_K_M.gguf"
     larger = tmp_path / "z-model-Q8_0.gguf"

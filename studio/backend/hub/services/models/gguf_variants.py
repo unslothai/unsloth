@@ -1477,7 +1477,12 @@ async def get_gguf_variants_answer(
                             ),
                             None,
                         )
-                        if selected is not None:
+                        # the loader-detected row only wins inside the bare id's default scope
+                        if (
+                            selected is not None
+                            and selected.filename
+                            in _default_variant_candidates(ready or variants, repo_id)
+                        ):
                             default_variant = selected.quant
                     except (OSError, RuntimeError, ValueError):
                         pass

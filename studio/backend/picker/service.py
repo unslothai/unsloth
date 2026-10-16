@@ -261,7 +261,7 @@ def _variant_matches(relative_path: str, needle: str) -> bool:
 
     # The variant's own key first: in a repo holding several checkpoints at one quant
     # the bare label names every one of them, so it cannot pick between them.
-    if gguf_variant_key(relative_path).lower() == needle:
+    if gguf_variant_key(relative_path).lower() == needle or relative_path.lower() == needle:
         return True
     # custom folders key a second same-quant build by its file family (#13926)
     if gguf_variant_family(relative_path).lower() == needle:
