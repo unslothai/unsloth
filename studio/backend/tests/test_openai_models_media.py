@@ -275,6 +275,21 @@ def test_media_index_keeps_same_quant_custom_builds(tmp_path, monkeypatch):
     assert picks["local-image:q4_k_m"].gguf_filename == names[0]
     assert picks["local-image:beta-q4_k_m"].gguf_filename == names[1]
 
+    marked = mmi._mark_ambiguous_builds(picks)
+    beta = marked["local-image:beta-q4_k_m"]
+    assert beta.ambiguous
+    assert mmi.satisfied_by(
+        {
+            "loaded": True,
+            "repo_id": str(tmp_path),
+            "gguf_variant": "Q4_K_M",
+            "gguf_filename": names[1],
+            "model_kind": "gguf",
+        },
+        "local-image:beta-q4_k_m",
+        beta,
+    )
+
 
 def test_media_index_keeps_the_legacy_fallback_quant_alias(tmp_path, monkeypatch):
     filename = "flux1-dev-fp16.gguf"
@@ -287,6 +302,36 @@ def test_media_index_keeps_the_legacy_fallback_quant_alias(tmp_path, monkeypatch
 
     assert picks["local-image:flux1-dev-fp16"].gguf_filename == filename
     assert picks["local-image:fp16"].gguf_filename == filename
+
+
+def test_legacy_media_alias_does_not_replace_a_current_exact_key(tmp_path, monkeypatch):
+    legacy = "flux1-dev-fp16.gguf"
+    exact = "fp16.gguf"
+    for filename in (legacy, exact):
+        (tmp_path / filename).write_bytes(b"x")
+    info = _Info("local-image", "Local Image", path = str(tmp_path), task = "text-to-image")
+    monkeypatch.setattr(mmi, "_loader_can_open", lambda *_args: True)
+
+    picks = {}
+    assert mmi._add_gguf_picks(picks, info, (info.id,), tmp_path, tmp_path)
+
+    assert picks["local-image:flux1-dev-fp16"].gguf_filename == legacy
+    assert picks["local-image:fp16"].gguf_filename == exact
+
+
+def test_media_bare_id_matches_variantless_local_file_ranking(tmp_path, monkeypatch):
+    alpha = "alpha-Q4_K_M.gguf"
+    beta = "beta-Q4_K_M-00001-of-00002.gguf"
+    (tmp_path / alpha).write_bytes(b"x" * 100)
+    (tmp_path / beta).write_bytes(b"x" * 60)
+    (tmp_path / "beta-Q4_K_M-00002-of-00002.gguf").write_bytes(b"x" * 60)
+    info = _Info("local-image", "Local Image", path = str(tmp_path), task = "text-to-image")
+    monkeypatch.setattr(mmi, "_loader_can_open", lambda *_args: True)
+
+    picks = {}
+    assert mmi._add_gguf_picks(picks, info, (info.id,), tmp_path, tmp_path)
+
+    assert picks["local-image"].gguf_filename == alpha
 
 
 def test_edit_only_checkpoints_are_not_offered_for_text_to_image(monkeypatch):

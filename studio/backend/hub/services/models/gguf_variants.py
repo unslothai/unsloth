@@ -1453,6 +1453,33 @@ async def get_gguf_variants_answer(
 
             ready = [v for v in variants if _downloaded(v)]
             default_variant = _default_variant_key(ready or variants, repo_id)
+            if context_root:
+                if any(len(rows) > 1 for rows in rows_by_legacy_key.values()):
+                    try:
+                        from utils.models.model_config import detect_gguf_model
+
+                        detected = detect_gguf_model(str(root))
+                        relative = (
+                            Path(detected).relative_to(source_root).as_posix() if detected else None
+                        )
+                        selected = next(
+                            (
+                                variant
+                                for variant in ready or variants
+                                if variant.filename == relative
+                                and len(
+                                    rows_by_legacy_key.get(
+                                        gguf_variant_key(variant.filename).lower(), []
+                                    )
+                                )
+                                > 1
+                            ),
+                            None,
+                        )
+                        if selected is not None:
+                            default_variant = selected.quant
+                    except (OSError, RuntimeError, ValueError):
+                        pass
 
             return GgufVariantsResponse(
                 repo_id = response_repo_id,

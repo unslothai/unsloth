@@ -188,6 +188,22 @@ def test_ready_sibling_keeps_its_context_when_the_other_build_is_partial(tmp_pat
     assert set(reads) == {tmp_path, tmp_path / ready}
 
 
+def test_default_build_matches_variantless_local_file_ranking(tmp_path):
+    import asyncio
+
+    from hub.services.models.gguf_variants import get_gguf_variants_response
+
+    alpha = "alpha-Q4_K_M.gguf"
+    beta = "beta-Q4_K_M-00001-of-00002.gguf"
+    (tmp_path / alpha).write_bytes(b"x" * 100)
+    (tmp_path / beta).write_bytes(b"x" * 60)
+    (tmp_path / "beta-Q4_K_M-00002-of-00002.gguf").write_bytes(b"x" * 60)
+
+    response = asyncio.run(get_gguf_variants_response(str(tmp_path), prefer_local_cache = True))
+
+    assert response.default_variant == "Q4_K_M"
+
+
 def test_a_bare_named_sibling_cannot_collide_with_the_legacy_quant_key(tmp_path):
     import asyncio
 
