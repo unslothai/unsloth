@@ -12,8 +12,9 @@
   ``raise_exception``s on any other string, so the OpenAI ``none`` sentinel failed the
   render. The model cannot turn reasoning off, so ``none`` takes the smallest budget.
 - Tools: the template declares tools and the model calls them with Harmony headers and
-  XML argument bodies (``<|constrain|>xml``), which llama-server's gpt-oss parser rejects
-  with a 500 mid-stream. Studio withholds tools for the architecture so chat still works.
+  XML argument bodies (``<|constrain|>xml``). A llama-server without a parser for that
+  format falls back to the gpt-oss parser, which rejects it with a 500 mid-stream, so
+  Studio offers tools only when the server's llama-common carries that parser.
 - Memory: 43 of 52 layers are 512-token sliding-window layers and 49 of 52 blocks are
   MoE; the KV estimate and the offload layout must price them that way.
 """
@@ -296,15 +297,86 @@ def test_other_architectures_still_forward_none():
 # ---------------------------------------------------------------- tools
 
 
-def test_tools_are_withheld_for_the_architecture():
-    backend = _shim()
+_PARSER_MARKER = b'<rfl:parameter name="'
+
+
+def _install(tmp_path, *, server = b"", common = None, common_name = "libllama-common.so.0.7.0"):
+    bin_dir = tmp_path / "build" / "bin"
+    bin_dir.mkdir(parents = True)
+    server_bin = bin_dir / "llama-server"
+    server_bin.write_bytes(b"\x7fELF" + server)
+    if common is not None:
+        (bin_dir / common_name).write_bytes(b"\x7fELF" + common)
+    return str(server_bin)
+
+
+def _launched(architecture, binary):
+    backend = _shim(architecture = architecture)
+    backend._launch_binary_revision = (binary, 1, 1) if binary else ()
+    return backend
+
+
+def test_tools_are_withheld_on_a_server_without_the_parser(tmp_path):
+    binary = _install(tmp_path, common = b"gpt-oss peg-native <|constrain|>")
+    backend = _launched(ARCH, binary)
     assert not backend.supports_tools
     assert not backend.supports_tool_passthrough
 
 
+@pytest.mark.parametrize(
+    "common_name", ["libllama-common.so.0.7.0", "libllama-common.dylib", "llama-common.dll"]
+)
+def test_tools_are_offered_when_llama_common_has_the_parser(tmp_path, common_name):
+    binary = _install(tmp_path, common = b"..." + _PARSER_MARKER + b"...", common_name = common_name)
+    backend = _launched(ARCH, binary)
+    assert backend.supports_tools
+    assert backend.supports_tool_passthrough
+
+
+def test_tools_are_offered_by_a_static_server_with_the_parser(tmp_path):
+    backend = _launched(ARCH, _install(tmp_path, server = _PARSER_MARKER))
+    assert backend.supports_tools and backend.supports_tool_passthrough
+
+
+def test_tools_are_offered_when_the_library_sits_in_a_sibling_lib_dir(tmp_path):
+    binary = _install(tmp_path)
+    lib_dir = tmp_path / "build" / "lib"
+    lib_dir.mkdir()
+    (lib_dir / "libllama-common.so").write_bytes(_PARSER_MARKER)
+    assert _launched(ARCH, binary).supports_tools
+
+
+def test_an_unknown_server_withholds_tools(monkeypatch):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda **_: None))
+    backend = _launched(ARCH, None)
+    assert not backend.supports_tools
+    assert not backend.supports_tool_passthrough
+
+
+def test_a_server_found_before_launch_is_read(tmp_path, monkeypatch):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    binary = _install(tmp_path, common = _PARSER_MARKER)
+    monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda **_: binary))
+    assert _launched(ARCH, None).supports_tools
+
+
+def test_a_rebuilt_library_is_reread(tmp_path):
+    import os
+
+    binary = _install(tmp_path, common = b"old build")
+    assert not _launched(ARCH, binary).supports_tools
+    lib = Path(binary).parent / "libllama-common.so.0.7.0"
+    lib.write_bytes(b"new build " + _PARSER_MARKER)
+    os.utime(lib, ns = (lib.stat().st_atime_ns, lib.stat().st_mtime_ns + 10**9))
+    assert _launched(ARCH, binary).supports_tools
+
+
 @pytest.mark.parametrize("architecture", ["gpt-oss", "qwen3moe", None])
-def test_other_architectures_keep_their_tools(architecture):
-    backend = _shim(architecture = architecture)
+def test_other_architectures_keep_their_tools(architecture, tmp_path):
+    backend = _launched(architecture, _install(tmp_path))
     assert backend.supports_tools
     assert backend.supports_tool_passthrough
 
@@ -336,7 +408,10 @@ def _backend():
     return _backend_from_gguf(ARCH, _FIELDS, general = {"tokenizer.chat_template": TEMPLATE})
 
 
-def test_header_reads_architecture_window_pattern_and_withholds_tools():
+def test_header_reads_architecture_window_pattern_and_withholds_tools(monkeypatch):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda **_: None))
     backend = _backend()
     assert backend._architecture == ARCH
     assert backend._sliding_window == 512

@@ -8211,11 +8211,47 @@ _MINIMAL_FLOOR_REASONING_EFFORT = {
     "none": "minimal",
 }
 
-# Architectures whose templates emit tool calls llama-server's chat parser cannot read
-# yet: one Harmony-style template declares tools and replies with Harmony headers carrying XML
-# argument bodies (<|constrain|>xml), which the gpt-oss parser rejects with a 500
-# mid-stream. Studio withholds tools for them so plain chat keeps working.
-_TOOL_CALLS_UNPARSED_ARCHS = frozenset({"beam"})
+# Architectures whose tool calls only some llama-server builds can parse, keyed to a
+# literal the parser carries. One Harmony-style template replies with a ` to=NAME` header
+# and XML argument bodies (<|constrain|>xml, <rfl:parameter name="...">); builds without
+# a parser for that format fall back to the gpt-oss parser, which rejects it with a 500
+# mid-stream. Studio withholds tools on those builds so plain chat keeps working.
+_TOOL_CALL_PARSER_MARKERS = {"beam": b"rfl:parameter"}
+
+
+def _server_has_tool_call_parser(server_bin: Optional[str], marker: bytes) -> bool:
+    """Whether the llama-server at ``server_bin`` carries ``marker`` in its chat parser.
+
+    The parser lives in llama-common: a shared library next to the binary in Unsloth's
+    prebuilts (libllama-common.so / .dylib, llama-common.dll), or the binary itself in a
+    static build. Read the bytes rather than spawning the server. Fails closed: an
+    unreadable or missing binary withholds tools, since the failure mode is a 500."""
+    if not server_bin:
+        return False
+    try:
+        real = os.path.realpath(server_bin)
+    except (OSError, ValueError):
+        return False
+    bin_dir = os.path.dirname(real)
+    candidates = [real]
+    for lib_dir in (bin_dir, os.path.join(os.path.dirname(bin_dir), "lib")):
+        try:
+            names = sorted(os.listdir(lib_dir))
+        except OSError:
+            continue
+        candidates += [
+            os.path.join(lib_dir, n)
+            for n in names
+            if "llama-common" in n or "llama-server-impl" in n
+        ]
+    for path in candidates:
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        if os.path.isfile(path) and _binary_has_marker(path, st.st_mtime_ns, st.st_size, marker):
+            return True
+    return False
 
 
 def _coerce_reasoning_effort(architecture, kwargs: dict) -> dict:
@@ -9476,7 +9512,7 @@ class LlamaCppBackend:
         # frames are dropped by the agentic tool loop; never route it through tools.
         if self._is_diffusion:
             return False
-        if getattr(self, "_architecture", None) in _TOOL_CALLS_UNPARSED_ARCHS:
+        if not self._server_parses_tool_calls():
             return False
         return self._supports_tools
 
@@ -9486,9 +9522,23 @@ class LlamaCppBackend:
         # per-step canvas frames), but client passthrough skips that loop, so it uses
         # the real _supports_tools. Both are off where llama-server cannot parse the
         # template's tool calls: a 400 up front beats a 500 after generation.
-        if getattr(self, "_architecture", None) in _TOOL_CALLS_UNPARSED_ARCHS:
+        if not self._server_parses_tool_calls():
             return False
         return self._supports_tools
+
+    def _server_parses_tool_calls(self) -> bool:
+        """False only for an architecture whose call format this llama-server cannot parse."""
+        marker = _TOOL_CALL_PARSER_MARKERS.get(getattr(self, "_architecture", None))
+        if marker is None:
+            return True
+        revision = getattr(self, "_launch_binary_revision", None) or ()
+        binary = revision[0] if revision else None
+        if not binary:
+            try:
+                binary = self._exec_path_for_launch(self._find_llama_server_binary())
+            except Exception:
+                binary = None
+        return _server_has_tool_call_parser(binary, marker)
 
     @property
     def cache_type_kv(self) -> Optional[str]:
