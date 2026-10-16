@@ -24,14 +24,14 @@ TUNNEL = "https://quiet-otter.trycloudflare.com"
 READY_PROBE = "UNSLOTH_PROBE uv=yes\nUNSLOTH_PROBE cli=/root/.local/bin/colab\nUNSLOTH_PROBE auth=oauth2\nUNSLOTH_PROBE sessions_rc=0\n[colab] No active sessions found on server."
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def isolated_databases(tmp_path, monkeypatch):
     studio_db = tmp_path / "studio.db"
     monkeypatch.setattr(auth_storage, "DB_PATH", tmp_path / "auth.db")
     monkeypatch.setattr(auth_storage, "_credential_encryption_key_cache", None)
     for module in (credential_secrets, linked_instances_db):
         monkeypatch.setattr(module, "studio_db_path", lambda: studio_db)
-        monkeypatch.setattr(module, "ensure_dir", lambda p: p.mkdir(parents=True, exist_ok=True))
+        monkeypatch.setattr(module, "ensure_dir", lambda p: p.mkdir(parents = True, exist_ok = True))
         monkeypatch.setattr(module, "_schema_ready", set())
     monkeypatch.setattr(
         credential_secrets,
@@ -50,10 +50,10 @@ class FakeColab:
     def __init__(
         self,
         *,
-        probe=READY_PROBE,
-        new=(0, "[colab] Session READY."),
-        install=None,
-        start=None,
+        probe = READY_PROBE,
+        new = (0, "[colab] Session READY."),
+        install = None,
+        start = None,
     ):
         self.probe = probe
         self.new = new
@@ -78,10 +78,10 @@ class FakeColab:
         runner,
         script,
         *,
-        stdin=None,
+        stdin = None,
         timeout,
-        on_line=None,
-        cancel=None,
+        on_line = None,
+        cancel = None,
     ):
         if script == cl.PROBE_SCRIPT:
             kind, (rc, out) = "probe", (0, self.probe)
@@ -116,8 +116,8 @@ class FakeColab:
         return [k for k, _ in self.calls]
 
 
-def _job(name="colab-l4", gpu="L4") -> cl.LaunchJob:
-    return cl.LaunchJob(id="j", name=name, gpu=gpu, session=f"unsloth-{name}")
+def _job(name = "colab-l4", gpu = "L4") -> cl.LaunchJob:
+    return cl.LaunchJob(id = "j", name = name, gpu = gpu, session = f"unsloth-{name}")
 
 
 def test_parse_link_reads_the_marker_line():
@@ -184,7 +184,7 @@ def test_status_not_found_exits_zero_but_is_not_alive():
     ],
 )
 def test_capability_states(monkeypatch, probe, state, setup_has):
-    monkeypatch.setattr(cl, "run_shell", FakeColab(probe=probe))
+    monkeypatch.setattr(cl, "run_shell", FakeColab(probe = probe))
     cap = cl.capability(cl.Runner("wsl", "Ubuntu-24.04"))
     assert cap["state"] == state
     assert cap["ready"] is (state == "ready")
@@ -197,7 +197,7 @@ def test_capability_states(monkeypatch, probe, state, setup_has):
 
 def test_capability_with_uv_skips_the_uv_installer(monkeypatch):
     monkeypatch.setattr(
-        cl, "run_shell", FakeColab(probe="UNSLOTH_PROBE uv=yes\nUNSLOTH_PROBE cli=missing")
+        cl, "run_shell", FakeColab(probe = "UNSLOTH_PROBE uv=yes\nUNSLOTH_PROBE cli=missing")
     )
     assert cl.capability()["setup"] == [
         "uv tool install google-colab-cli",
@@ -282,7 +282,7 @@ def test_launch_links_the_vm_and_never_exposes_the_key(monkeypatch):
 
 
 def test_a_key_in_ordinary_output_is_redacted(monkeypatch):
-    fake = FakeColab(install=(0, f"echo {REMOTE_KEY}\n" + cl.INSTALL_OK))
+    fake = FakeColab(install = (0, f"echo {REMOTE_KEY}\n" + cl.INSTALL_OK))
     monkeypatch.setattr(cl, "run_shell", fake)
     job = _job()
     cl._run_job(job)
@@ -291,7 +291,7 @@ def test_a_key_in_ordinary_output_is_redacted(monkeypatch):
 
 def test_install_that_exits_zero_without_the_marker_fails_and_stops_the_vm(monkeypatch):
     fake = FakeColab(
-        install=(0, "Traceback (most recent call last):\nCalledProcessError: git clone")
+        install = (0, "Traceback (most recent call last):\nCalledProcessError: git clone")
     )
     monkeypatch.setattr(cl, "run_shell", fake)
     job = _job()
@@ -304,9 +304,9 @@ def test_install_that_exits_zero_without_the_marker_fails_and_stops_the_vm(monke
 
 
 def test_capacity_error_names_the_gpu_and_stops(monkeypatch):
-    fake = FakeColab(new=(1, "HTTP 412 Precondition Failed: TooManyAssignments"))
+    fake = FakeColab(new = (1, "HTTP 412 Precondition Failed: TooManyAssignments"))
     monkeypatch.setattr(cl, "run_shell", fake)
-    job = _job(gpu="H100", name="colab-h100")
+    job = _job(gpu = "H100", name = "colab-h100")
     cl._run_job(job)
     assert job.state == "failed" and "no H100" in job.error
     assert fake.kinds()[-1] == "stop"
@@ -314,7 +314,7 @@ def test_capacity_error_names_the_gpu_and_stops(monkeypatch):
 
 def test_start_error_is_reported_and_stops(monkeypatch):
     fake = FakeColab(
-        start=(
+        start = (
             0,
             cl.LINK_MARKER
             + json.dumps({"error": "RuntimeError: the Cloudflare tunnel did not produce a URL"}),
@@ -328,7 +328,7 @@ def test_start_error_is_reported_and_stops(monkeypatch):
 
 
 def test_not_signed_in_fails_before_allocating(monkeypatch):
-    fake = FakeColab(probe="UNSLOTH_PROBE cli=/c\nUNSLOTH_PROBE auth=none")
+    fake = FakeColab(probe = "UNSLOTH_PROBE cli=/c\nUNSLOTH_PROBE auth=none")
     monkeypatch.setattr(cl, "run_shell", fake)
     job = _job()
     cl._run_job(job)
@@ -422,8 +422,8 @@ def test_start_launch_runs_in_the_background_and_allows_one_at_a_time(monkeypatc
 
 
 def test_vm_scripts_are_valid_python():
-    compile(cl.INSTALL_SCRIPT.format(repo=cl.REPO_URL, branch=cl.REPO_BRANCH), "install", "exec")
-    start = cl.START_SCRIPT.format(launcher=cl.LAUNCHER_SCRIPT)
+    compile(cl.INSTALL_SCRIPT.format(repo = cl.REPO_URL, branch = cl.REPO_BRANCH), "install", "exec")
+    start = cl.START_SCRIPT.format(launcher = cl.LAUNCHER_SCRIPT)
     compile(start, "start", "exec")
     compile(cl.LAUNCHER_SCRIPT, "launcher", "exec")
     assert "--env" not in start
@@ -469,7 +469,7 @@ def test_a_cancel_racing_the_ready_transition_never_leaves_a_cancelled_vm_runnin
     fake = FakeColab()
     monkeypatch.setattr(cl, "run_shell", fake)
     monkeypatch.setattr(cl.linked_instances_db, "create_instance", real_create)
-    job = _job(name="colab-t4", gpu="T4")
+    job = _job(name = "colab-t4", gpu = "T4")
     monkeypatch.setattr(cl, "_job", job)
     real_add = job.add
 
@@ -484,7 +484,7 @@ def test_a_cancel_racing_the_ready_transition_never_leaves_a_cancelled_vm_runnin
     assert "stop" not in fake.kinds()
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
 def test_the_probe_reads_a_signed_in_cli_without_gnu_timeout(tmp_path):
     # Stock macOS has no `timeout`; a signed-in CLI must still probe as signed in.
     bindir = tmp_path / "bin"
@@ -496,18 +496,18 @@ def test_the_probe_reads_a_signed_in_cli_without_gnu_timeout(tmp_path):
     for script in bindir.iterdir():
         script.chmod(0o755)
     token = tmp_path / ".config" / "colab-cli" / "token.json"
-    token.parent.mkdir(parents=True)
+    token.parent.mkdir(parents = True)
     token.write_text("{}")
     out = subprocess.run(
         [shutil.which("bash"), "-c", cl.PROBE_SCRIPT],
-        env={
+        env = {
             "PATH": str(bindir),
             "HOME": str(tmp_path),
             "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
         },
-        capture_output=True,
-        text=True,
-        timeout=60,
+        capture_output = True,
+        text = True,
+        timeout = 60,
     ).stdout
     assert "UNSLOTH_PROBE auth=oauth2" in out
     assert "UNSLOTH_PROBE sessions_rc=0" in out, out
@@ -527,7 +527,7 @@ def test_stop_during_the_ready_transition_still_stops_the_vm(monkeypatch):
             # Read first, then let the Stop through: the window between the check and ready.
             seen = super().is_set()
             if job.stage == "linking" and not stopper:
-                stopper.append(threading.Thread(target=cl.stop_session, args=(job.session,)))
+                stopper.append(threading.Thread(target = cl.stop_session, args = (job.session,)))
                 stopper[0].start()
                 stopper[0].join(0.3)
             return seen
@@ -540,36 +540,42 @@ def test_stop_during_the_ready_transition_still_stops_the_vm(monkeypatch):
 
 def test_a_fresh_uv_is_called_by_path_until_the_terminal_picks_it_up():
     # astral's installer writes ~/.local/bin, which the terminal that ran it may not have on PATH.
-    assert cl.setup_commands("missing_cli", has_uv=False) == [
+    assert cl.setup_commands("missing_cli", has_uv = False) == [
         "curl -LsSf https://astral.sh/uv/install.sh | sh",
         "~/.local/bin/uv tool install google-colab-cli",
         "~/.local/bin/colab --auth oauth2 sessions",
     ]
-    assert cl.setup_commands("missing_cli", has_uv=True) == [
+    assert cl.setup_commands("missing_cli", has_uv = True) == [
         "uv tool install google-colab-cli",
         "colab --auth oauth2 sessions",
     ]
-    assert cl.setup_commands("signed_out", has_uv=False) == ["colab --auth oauth2 sessions"]
+    assert cl.setup_commands("signed_out", has_uv = False) == ["colab --auth oauth2 sessions"]
 
 
 def test_the_kernel_client_repair_brings_uv_when_it_is_missing():
     # A colab installed some other way (pip, pipx) can be probed with no uv on PATH.
-    repair = cl.setup_commands("kernel_client", has_uv=False)
+    repair = cl.setup_commands("kernel_client", has_uv = False)
     assert repair[0] == "curl -LsSf https://astral.sh/uv/install.sh | sh"
     assert repair[1].startswith("~/.local/bin/uv tool install --force google-colab-cli --with ")
     assert cl.setup_commands("kernel_client")[0].startswith("uv tool install --force")
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
-def test_a_colab_in_the_uv_bin_dir_is_found_without_it_on_path(tmp_path, monkeypatch):
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+def test_a_colab_in_the_uv_bin_dir_is_found_without_it_on_path(tmp_path):
     # The setup and repair steps install colab into ~/.local/bin; later probes must see it
     # even when the shell's PATH does not include that directory.
     local_bin = tmp_path / ".local" / "bin"
-    local_bin.mkdir(parents=True)
+    local_bin.mkdir(parents = True)
     colab = local_bin / "colab"
     colab.write_text(f"#!/bin/sh{NL}echo ok{NL}")
     colab.chmod(0o755)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("PATH", os.path.dirname(shutil.which("bash")))
-    result = cl.run_shell(cl.Runner("native"), "command -v colab", timeout=60)
-    assert result.output.strip().endswith("colab"), result.output
+    bash = shutil.which("bash")
+    argv = cl.Runner("native").argv("command -v colab")
+    out = subprocess.run(
+        [bash, *argv[1:]],
+        env = {**os.environ, "HOME": str(tmp_path), "PATH": os.path.dirname(bash)},
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    ).stdout
+    assert out.strip().endswith(".local/bin/colab"), out
