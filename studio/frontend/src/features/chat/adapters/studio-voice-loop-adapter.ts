@@ -18,6 +18,7 @@ import {
   detectSpeech,
   loadVadModel,
 } from "@/features/chat/voice/vad-client";
+import { judgeTurnComplete } from "@/features/chat/voice/voice-models-client";
 import {
   isVoicePlaybackActive,
   requestVoiceBargeAbort,
@@ -151,6 +152,14 @@ function isHallucinatedTranscript(text: string): boolean {
 // The unfinished fragment carried across listen() sessions; the re-arm clears
 // the composer, so the text lives here until the turn is whole.
 let heldTurn: { text: string; at: number } | null = null;
+
+// The word list is sure when it says "unfinished" (it ends on a dangling word) and
+// unsure otherwise, so the judge only gets the unsure ones. No judge: the list's call.
+async function turnUnfinished(text: string): Promise<boolean> {
+  if (looksUnfinished(text)) return true;
+  const p = await judgeTurnComplete(text);
+  return p !== null && p < 0.5;
+}
 
 /** Drop a fragment waiting for its continuation: a thread switch or voice going off. */
 export function clearHeldTurn(): void {
@@ -384,7 +393,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         }
         if (
           transcript &&
-          looksUnfinished(transcript) &&
+          (await turnUnfinished(transcript)) &&
           performance.now() - (heldTurn?.at ?? performance.now()) <
             CONTINUATION_MAX_MS
         ) {

@@ -26331,6 +26331,64 @@ async def vad_detect(
     return JSONResponse(content = result)
 
 
+# Voice mode's small text models: is the turn finished, what filler to say, what an interruption means.
+class VoiceJudgeRequest(BaseModel):
+    text: str
+
+
+class VoiceFillerRequest(BaseModel):
+    text: str
+    prev_q: bool = False
+
+
+class VoiceInterjectRequest(BaseModel):
+    prompt: str
+    utterance: str
+    elapsed_s: float = 2.0
+
+
+def _voice_model_or_503(name: str):
+    from core.inference.voice_models import get_voice_models
+
+    models = get_voice_models()
+    if not models.available(name):
+        raise HTTPException(status_code = 503, detail = f"Voice {name} model is unavailable: {models.reason(name)}")
+    return models
+
+
+@studio_router.get("/voice/models/status")
+async def voice_models_status(current_subject: str = Depends(get_current_subject)):
+    from core.inference.voice_models import get_voice_models
+
+    return JSONResponse(content = await asyncio.to_thread(get_voice_models().status))
+
+
+@studio_router.post("/voice/judge")
+async def voice_judge(payload: VoiceJudgeRequest, current_subject: str = Depends(get_current_subject)):
+    """``{p_complete, ms}``: P(the user has finished the turn) for the transcript so far."""
+    models = await asyncio.to_thread(_voice_model_or_503, "judge")
+    t0 = time.perf_counter()
+    p = await asyncio.to_thread(models.judge, payload.text)
+    return JSONResponse(content = {"p_complete": round(p, 4), "ms": round((time.perf_counter() - t0) * 1000, 2)})
+
+
+@studio_router.post("/voice/filler")
+async def voice_filler(payload: VoiceFillerRequest, current_subject: str = Depends(get_current_subject)):
+    """``{say, class, confidence, phrase, slot, echo, ms}``: the filler to speak while the reply is generated."""
+    models = await asyncio.to_thread(_voice_model_or_503, "filler")
+    return JSONResponse(content = await asyncio.to_thread(models.filler, payload.text, payload.prev_q))
+
+
+@studio_router.post("/voice/interject")
+async def voice_interject(payload: VoiceInterjectRequest, current_subject: str = Depends(get_current_subject)):
+    """``{action, confidence, probs, merged_prompt, ms}``: restart, ignore or queue an utterance mid-reply."""
+    models = await asyncio.to_thread(_voice_model_or_503, "interject")
+    t0 = time.perf_counter()
+    result = await asyncio.to_thread(models.interject, payload.prompt, payload.utterance, payload.elapsed_s)
+    result["ms"] = round((time.perf_counter() - t0) * 1000, 2)
+    return JSONResponse(content = result)
+
+
 # =====================================================================
 
 # OpenAI-Compatible Chat Completions  (/chat/completions)

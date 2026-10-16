@@ -36,6 +36,10 @@ import {
   toolKindOf,
   type ToolKind,
 } from "@/features/chat/voice/thinking-filler";
+import {
+  fillerFromModel,
+  interjectAction,
+} from "@/features/chat/voice/voice-models-client";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { deriveOrbState } from "@/features/chat/voice/orb-state";
 import {
@@ -197,6 +201,23 @@ export const VoiceEngine: FC = () => {
     attempt(1);
   }, []);
 
+  // Speech that landed while the model was still thinking and the interject model
+  // called a separate question: held here and sent once the reply has been heard.
+  const queuedUtteranceRef = useRef<string | null>(null);
+  const submitRef = useRef<() => void>(() => {});
+  const runStartedAtRef = useRef(0);
+  const onPlaybackEnd = useCallback(() => {
+    const queued = queuedUtteranceRef.current;
+    if (queued && voiceModeRef.current === "active") {
+      queuedUtteranceRef.current = null;
+      const composer = auiRef.current.composer();
+      if (composer.getState().dictation) composer.stopDictation();
+      composer.setText(queued);
+      submitRef.current();
+      return;
+    }
+    resumeListen();
+  }, [resumeListen]);
   const {
     isSpeaking,
     isPlaying,
@@ -209,7 +230,7 @@ export const VoiceEngine: FC = () => {
     primeAudio,
     pausePlayback,
     resumePlayback,
-  } = useTtsPlayer(resumeListen);
+  } = useTtsPlayer(onPlaybackEnd);
   isSpeakingRef.current = isSpeaking;
   isPlayingRef.current = isPlaying;
   useEffect(() => {
@@ -297,40 +318,10 @@ export const VoiceEngine: FC = () => {
     return "";
   }, []);
 
-  // Submit a transcript. The adapter has already committed it into the composer
-  // via its onSpeech(isFinal) callback, so here we just end dictation and send it;
-  // the run-lifecycle effect then speaks the reply and re-arms the mic.
-  const submitTranscript = useCallback(() => {
-    if (voiceModeRef.current !== "active") return;
+  // Send an utterance: cut whatever is playing, cancel the run it supersedes, and
+  // fold it into one coalesced prompt with any other bubbles still unanswered.
+  const commitUtterance = useCallback((text: string) => {
     const composer = auiRef.current.composer();
-    if (composer.getState().dictation) composer.stopDictation();
-    const text = composer.getState().text.trim();
-    if (!text) {
-      // Nothing was said: a no-speech finish, or the half-duplex close the
-      // run-start effect does. Neither is a barge-in, so leave a playing reply
-      // alone -- cutting here is what truncated it after the first word. Just
-      // re-arm; resumeListen defers that until the reply has finished speaking.
-      resumeListen();
-      return;
-    }
-    // Decide the thinking filler for this turn now, so the run's request can tell
-    // the model what was said. A reply that ended in a question wants a short
-    // answer, so no filler there.
-    const prevReply = latestAssistantText().trimEnd();
-    const decision = predictFiller(text, {
-      prevAssistantAskedQuestion: prevReply.endsWith("?"),
-    });
-    setPendingFiller(decision);
-    clearFiller();
-    if (decision.say) {
-      fillerRef.current = {
-        phrase: decision.phrase,
-        timer: null,
-        queued: false,
-        spokenAt: null,
-        stage2Done: false,
-      };
-    }
     // Barge-in: the instant the user speaks, cut the audio and the in-flight run.
     // This utterance supersedes whatever the model was saying. Cover the tail
     // clip (isPlaying) too, not just an active streaming session (isSpeaking).
@@ -432,7 +423,90 @@ export const VoiceEngine: FC = () => {
       () => fireCoalescedRun(0),
       VOICE_COALESCE_MS,
     );
-  }, [resumeListen, stop, latestAssistantText, clearFiller]);
+  }, [resumeListen, stop]);
+
+  // Text of the trailing user bubbles (one coalesced prompt may be several).
+  const lastUserPrompt = useCallback((): string => {
+    const messages = auiRef.current.thread().getState().messages;
+    const parts: string[] = [];
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.role !== "user") {
+        if (parts.length > 0) break;
+        continue;
+      }
+      let text = "";
+      for (const part of msg.content as ReadonlyArray<{ type: string; text?: string }>) {
+        if (part.type === "text" && part.text) text += part.text;
+      }
+      if (text) parts.unshift(text);
+    }
+    return parts.join(" ");
+  }, []);
+
+  // Submit a transcript. The adapter has already committed it into the composer
+  // via its onSpeech(isFinal) callback, so here we just end dictation and send it;
+  // the run-lifecycle effect then speaks the reply and re-arms the mic.
+  const submitTranscript = useCallback(() => {
+    if (voiceModeRef.current !== "active") return;
+    const composer = auiRef.current.composer();
+    if (composer.getState().dictation) composer.stopDictation();
+    const text = composer.getState().text.trim();
+    if (!text) {
+      // Nothing was said: a no-speech finish, or the half-duplex close the
+      // run-start effect does. Neither is a barge-in, so leave a playing reply
+      // alone -- cutting here is what truncated it after the first word. Just
+      // re-arm; resumeListen defers that until the reply has finished speaking.
+      resumeListen();
+      return;
+    }
+    // Decide the thinking filler for this turn now, so the run's request can tell
+    // the model what was said. A reply that ended in a question wants a short
+    // answer, so no filler there.
+    const prevReply = latestAssistantText().trimEnd();
+    const prevAskedQuestion = prevReply.endsWith("?");
+    const applyFiller = (decision: ReturnType<typeof predictFiller>) => {
+      setPendingFiller(decision);
+      clearFiller();
+      if (decision.say) {
+        fillerRef.current = {
+          phrase: decision.phrase,
+          timer: null,
+          queued: false,
+          spokenAt: null,
+          stage2Done: false,
+        };
+      }
+    };
+    applyFiller(predictFiller(text, { prevAssistantAskedQuestion: prevAskedQuestion }));
+    // The trained model overrides the word rules when it answers before the run
+    // starts (the coalesce window); once the filler is queued it stays.
+    void fillerFromModel(text, prevAskedQuestion).then((fromModel) => {
+      if (!fromModel || fillerRef.current?.queued) return;
+      if (auiRef.current.thread().getState().isRunning && fillerRef.current?.timer) return;
+      applyFiller(fromModel);
+    });
+    const thread = auiRef.current.thread();
+    // Speech while the model is still thinking (no reply text yet) is not always a
+    // barge-in: the interject model says whether it changes the request, is a
+    // separate question to hold for after the reply, or is nothing to act on.
+    if (thread.getState().isRunning && latestAssistantIsReasoning()) {
+      const elapsedS = (Date.now() - runStartedAtRef.current) / 1000;
+      void interjectAction(lastUserPrompt(), text, elapsedS).then((action) => {
+        if (voiceModeRef.current !== "active") return;
+        if (action === "ignore" || action === "queue") {
+          if (action === "queue") queuedUtteranceRef.current = text;
+          composer.setText("");
+          resumeListen();
+          return;
+        }
+        commitUtterance(text);
+      });
+      return;
+    }
+    commitUtterance(text);
+  }, [resumeListen, stop, latestAssistantText, latestAssistantIsReasoning, lastUserPrompt, clearFiller, commitUtterance]);
+
 
   // Sync derived orb state to the store so VoiceOrb can read it without prop-drilling.
   // The priority order itself lives in deriveOrbState, which is pure and tested.
@@ -567,6 +641,7 @@ export const VoiceEngine: FC = () => {
         // on the first complete sentence, not after the whole reply.
         beginStreamRef.current();
         streamBegunRef.current = true;
+        runStartedAtRef.current = Date.now();
         const filler = fillerRef.current;
         if (filler && !filler.queued && !filler.timer) {
           filler.timer = setTimeout(() => {
@@ -702,6 +777,7 @@ export const VoiceEngine: FC = () => {
       clearHeldTurn();
       clearFiller();
       setPendingFiller(null);
+      queuedUtteranceRef.current = null;
       stop();
       const composer = auiRef.current.composer();
       if (composer.getState().dictation) composer.stopDictation();
@@ -727,6 +803,7 @@ export const VoiceEngine: FC = () => {
     clearHeldTurn();
     clearFiller();
     setPendingFiller(null);
+    queuedUtteranceRef.current = null;
     stop();
     const composer = auiRef.current.composer();
     if (composer.getState().dictation) composer.stopDictation();
@@ -804,6 +881,7 @@ export const VoiceEngine: FC = () => {
     };
   }, [pausePlayback, resumePlayback]);
 
+  submitRef.current = submitTranscript;
   useEffect(() => {
     registerVoiceSubmit(submitTranscript);
     return () => {
