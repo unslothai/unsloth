@@ -32,13 +32,27 @@ export function composerColumnInset(
     : viewport.rtl
       ? [scrollbar, 0]
       : [0, scrollbar];
-  const contentLeft =
-    viewport.left + viewport.borderLeft + gutterLeft + viewport.paddingLeft;
-  const contentRight =
-    viewport.right - viewport.borderRight - gutterRight - viewport.paddingRight;
+  return composerInsetFromColumn(
+    {
+      left:
+        viewport.left + viewport.borderLeft + gutterLeft + viewport.paddingLeft,
+      right:
+        viewport.right -
+        viewport.borderRight -
+        gutterRight -
+        viewport.paddingRight,
+    },
+    dock,
+  );
+}
+
+export function composerInsetFromColumn(
+  column: { left: number; right: number },
+  dock: { left: number; right: number },
+): { left: number; right: number } {
   return {
-    left: Math.max(0, contentLeft - dock.left),
-    right: Math.max(0, dock.right - contentRight),
+    left: Math.max(0, column.left - dock.left),
+    right: Math.max(0, dock.right - column.right),
   };
 }
 
