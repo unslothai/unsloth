@@ -851,7 +851,6 @@ def test_context_free_never_spawns_amd_smi_on_windows_without_a_hip_sdk(monkeypa
         raise FileNotFoundError("no amd-smi should be spawned here")
 
     monkeypatch.setattr(amd, "platform", types.SimpleNamespace(system = lambda: "Windows"))
-    monkeypatch.setattr(amd, "_hip_sdk_present", lambda: False)
     monkeypatch.setattr(amd.shutil, "which", lambda _n: r"C:\rocm\bin\amd-smi.exe")
     monkeypatch.setattr(amd.subprocess, "run", _spy)
     monkeypatch.delenv("UNSLOTH_ENABLE_AMD_SMI", raising = False)
@@ -880,12 +879,12 @@ def test_context_free_never_spawns_amd_smi_on_windows_without_a_hip_sdk(monkeypa
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "the guard is Windows-only")
-def test_amd_smi_is_refused_on_a_real_windows_host_without_a_hip_sdk():
+def test_amd_smi_is_refused_on_a_real_windows_host_unless_opted_in():
     # The test above fakes the platform. This one runs the same predicate against
     # the real OS, PATH and environment, so the guard is pinned where it applies.
     from utils.hardware import amd
-    if amd._hip_sdk_present() or os.environ.get("UNSLOTH_ENABLE_AMD_SMI"):
-        pytest.skip("this host may legitimately run amd-smi un-elevated")
+    if os.environ.get("UNSLOTH_ENABLE_AMD_SMI"):
+        pytest.skip("amd-smi explicitly opted in")
     assert amd._amd_smi_allowed() is False
 
 
