@@ -386,6 +386,16 @@ def _quantize_text_encoders(
             f"the hosted {label} text encoder {why}, so the automatic default kept the dense bf16 encoder",
             RESOLVED_FELL_BACK,
         )
+    if picked_automatically:
+        # The automatic default is the hosted file and nothing more: a sibling it does not replace (Kontext's CLIP-L)
+        # stays bf16 rather than taking a runtime cast nobody measured. The hosted encoders arrive with their hooks.
+        hosted = [a for a in present if _hosted_te_scheme(getattr(pipe, a)) == mode]
+        dense = [a for a in present if a not in hosted]
+        return TEQuantOutcome(
+            mode,
+            f"hosted {mode} {', '.join(hosted)}" + (f"; {', '.join(dense)} kept bf16" if dense else ""),
+            RESOLVED_APPLIED,
+        )
     downgrade_reason = ""
     skip: Optional[tuple[int, int]] = None
     if mode == TE_QUANT_INT8:

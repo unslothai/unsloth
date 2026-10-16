@@ -1087,3 +1087,63 @@ def test_no_pick_budgets_above_origin_main_with_the_file_confirmed(key, monkeypa
     target = CUDA_BF16 if device == "cuda" else MPS_TARGET
     scale = tpq.te_prequant_budget_scale(fam, te_quant_mode = mode, target = target, base = fam.base_repo)
     assert scale <= _ORIGIN_MAIN_BUDGET_SCALE[key] + 1e-9
+
+
+# ---- review round 6 ---------------------------------------------------------------------------------------------
+
+
+def _kontext_pipe():
+    clip, t5 = torch.nn.Linear(4, 4), torch.nn.Linear(4, 4)
+    setattr(t5, tpq.TE_PREQUANT_SCHEME_ATTR, "fp8")
+    return types.SimpleNamespace(text_encoder = clip, text_encoder_2 = t5)
+
+
+def test_the_automatic_fp8_default_leaves_an_unhosted_sibling_bf16(monkeypatch):
+    import core.inference.diffusion_precision as prec
+
+    monkeypatch.setattr(prec, "te_quant_supported", lambda *a, **k: True)
+    monkeypatch.setattr(prec, "_cast_fp8", lambda *a, **k: pytest.fail("runtime fp8 cast under an automatic pick"))
+    mode, auto = resolve_te_quant_request(None, _fam("flux.1-kontext").te_quant_auto)
+    assert auto and mode == "fp8"
+    out = prec.quantize_text_encoders(_kontext_pipe(), CUDA_BF16, mode = mode, family = "flux.1-kontext")
+    assert out.mode == "fp8" and out.status == prec.RESOLVED_APPLIED and "text_encoder kept bf16" in out.reason
+
+
+def test_an_explicit_fp8_still_casts_the_sibling_as_on_origin_main(monkeypatch):
+    import core.inference.diffusion_precision as prec
+
+    monkeypatch.setattr(prec, "te_quant_supported", lambda *a, **k: True)
+    cast = []
+    monkeypatch.setattr(prec, "_cast_fp8", lambda enc, tgt: cast.append(enc))
+    pipe = _kontext_pipe()
+    out = prec.quantize_text_encoders(pipe, CUDA_BF16, mode = "fp8", family = "flux.1-kontext")
+    assert out.mode == "fp8" and pipe.text_encoder in cast
+
+
+@pytest.mark.parametrize("device", ["cuda", "mps"])
+@pytest.mark.parametrize("name, sibling", [("hunyuanimage-2.1", 0.8), ("flux.1", 0.25), ("hidream-i1", 3.3)])
+def test_int8_budget_scales_only_the_hosted_encoder(name, sibling, device, monkeypatch):
+    from core.inference.diffusion_auto_policy import family_bf16_components_gb
+
+    target = _table_env(monkeypatch, device, True, False)
+    fam = _fam(name)
+    total = family_bf16_components_gb(fam, fam.base_repo)[1]
+    file_scale = (
+        tpq.te_int8_convrot_budget_scale(fam) if device == "mps" else tpq.TE_PREQUANT_BUDGET_SCALE
+    )
+    scale = tpq.te_prequant_budget_scale(fam, te_quant_mode = "int8", target = target, base = fam.base_repo)
+    assert scale * total == pytest.approx(sibling + (total - sibling) * file_scale)
+
+
+def test_the_uncached_precast_price_leaves_out_the_dense_sibling(monkeypatch):
+    from core.inference import diffusion_prequant as pq
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.diffusion_auto_policy import family_bf16_components_gb
+
+    _table_env(monkeypatch, "mps", True, False)
+    monkeypatch.setattr(pq, "prefer_cached_pickle_twins", lambda repo, names, **k: names)
+    monkeypatch.setattr(pq, "first_cached_as_resolved", lambda *a, **k: None)
+    fam = _fam("hunyuanimage-2.1")
+    mib, _components, _exact = DiffusionBackend._precast_text_encoder_mib(fam, fam.base_repo, MPS_TARGET, "int8")
+    hosted = family_bf16_components_gb(fam, fam.base_repo)[1] - 0.8
+    assert mib == int(hosted * 1000**3 * tpq.te_int8_convrot_budget_scale(fam)) // (1024 * 1024)

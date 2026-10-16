@@ -299,9 +299,52 @@ def te_prequant_budget_scale(
     if _auto_pick(te_quant_mode) and not te_prequant_sources_confirmed(sources):
         # An automatic default whose hosted file is not confirmed loads the DENSE encoder, so budget that.
         return 1.0
-    if _int8_convrot_only(te_quant_mode, target):
-        return te_int8_convrot_budget_scale(fam)
-    return TE_PREQUANT_BUDGET_SCALE
+    scale = (
+        te_int8_convrot_budget_scale(fam)
+        if _int8_convrot_only(te_quant_mode, target)
+        else TE_PREQUANT_BUDGET_SCALE
+    )
+    return _with_dense_siblings(fam, base, te_quant_mode, scale)
+
+
+# GB of each family's bf16 text-encoder term (diffusion_auto_policy._FAMILY_BF16_GB) held by companions no hosted file
+# replaces: FLUX.1's CLIP-L, HunyuanImage-2.1's ByT5, HiDream's CLIP-L + CLIP-G. They stay bf16 under a hosted int8
+# file and under an automatic pick (an explicit fp8 still casts them, as before), so the scale must not shrink them.
+_TE_DENSE_SIBLING_GB = {
+    "flux.1": 0.25,
+    "flux.1-kontext": 0.25,
+    "hunyuanimage-2.1": 0.8,
+    "hidream-i1": 3.3,
+}
+
+
+def te_dense_sibling_gb(fam: Any, te_quant_mode: Any) -> float:
+    """GB of the family's text-encoder term that stays dense bf16 beside a hosted pre-cast file for this pick."""
+    try:
+        from .diffusion_precision import TE_QUANT_INT8, normalize_te_quant
+
+        if normalize_te_quant(te_quant_mode) != TE_QUANT_INT8 and not _auto_pick(te_quant_mode):
+            return 0.0
+    except Exception:  # noqa: BLE001
+        return 0.0
+    return _TE_DENSE_SIBLING_GB.get(str(getattr(fam, "name", "") or "").strip().lower(), 0.0)
+
+
+def _with_dense_siblings(fam: Any, base: Optional[str], te_quant_mode: Any, scale: float) -> float:
+    """``scale`` applied to the hosted share of the encoder term only; the dense siblings keep their full size."""
+    sibling = te_dense_sibling_gb(fam, te_quant_mode)
+    if sibling <= 0.0:
+        return scale
+    try:
+        from .diffusion_auto_policy import family_bf16_components_gb
+
+        table = family_bf16_components_gb(fam, base)
+        total = float(table[1]) if table else 0.0
+    except Exception:  # noqa: BLE001
+        total = 0.0
+    if total <= sibling:
+        return scale
+    return (sibling + (total - sibling) * scale) / total
 
 
 def explicit_int8_takes_hosted_file(
