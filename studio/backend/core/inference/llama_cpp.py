@@ -23450,29 +23450,29 @@ class LlamaCppBackend:
 
         if not any(_flag(arg) in ("--mmproj", "-mm") for arg in args):
             return None
-        # Argv and environment at arg.cpp's own precedence. Two placements the
-        # spelling list below cannot see: LLAMA_ARG_NO_MMPROJ_OFFLOAD (falsey on
-        # presence alone) and the `disabled` token. Either already has the projector in
-        # host RAM, so respawning cannot clear the allocation failure and costs the
-        # caller the real error, which only surfaces when this returns None.
+        # Where the projector really runs, in arg.cpp's last-wins order over env, then
+        # argv: --[no-]mmproj-offload, --mmproj-device / -mmdev and their env twins
+        # (LLAMA_ARG_NO_MMPROJ_OFFLOAD is falsey on presence alone). A named device
+        # after an offload-off turns the offload back on (mmproj_use_gpu = true), and
+        # device none turns it off whatever came before. Host RAM already: respawning
+        # cannot clear the allocation failure and costs the caller the real error, which
+        # only surfaces when this returns None.
         #
-        # Only a resolved False means "already on CPU". An explicit --mmproj-offload is
-        # overridden deliberately: this is crash recovery, and the alternative is
-        # losing vision altogether.
-        if _resolved_mmproj_offload(args, env or {}) is False:
+        # An explicit --mmproj-offload or GPU name is overridden deliberately: this is
+        # crash recovery, and the alternative is losing vision altogether.
+        placement = _mmproj_placement(args, env or {})
+        if placement == "host":
             return None
-        placements = [
-            _flag(arg) for arg in args if _flag(arg) in ("--mmproj-offload", "--no-mmproj-offload")
-        ]
-        if not placements:
+        if placement is None:
             # Colloquial spellings arg.cpp itself rejects: `no` parses as neither truthy
             # nor falsey, so common_params_parse throws and the child never starts, which
-            # no retry can fix. Kept as a deliberate superset of the resolution above
-            # rather than tightened, so a value that used to skip the futile retry still
-            # does.
+            # no retry can fix. Kept as a deliberate superset, so a value that used to
+            # skip the futile retry still does.
             env_value = str((env or {}).get(_MMPROJ_OFFLOAD_ENV_VAR) or "").strip().lower()
             if env_value in ("0", "false", "off", "no"):
                 return None
+        # Appended last, so it beats every earlier placement token: mmproj_use_gpu =
+        # false, and clip.cpp only reads mmproj_device while use_gpu is set.
         return args + ["--no-mmproj-offload"]
 
     @staticmethod
