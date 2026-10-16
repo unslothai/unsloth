@@ -96,6 +96,9 @@ enum Upstream {
         address: String,
         auth: Option<(String, String)>,
     },
+    /// What a Windows PAC script's `SOCKS` names, as WinINet and Chromium read it.
+    #[cfg(any(windows, test))]
+    Socks4 { address: String },
 }
 
 #[derive(Debug, PartialEq)]
@@ -153,23 +156,23 @@ fn parse(head: &str) -> Option<Request> {
 /// How the system routes pages.
 #[derive(Default)]
 struct Proxies {
-    /// A PAC script, which decides before `fixed` unless it can't be fetched or run.
-    #[cfg(target_os = "macos")]
+    /// A PAC script, which decides before `fixed` unless it can't be found or run.
+    #[cfg(any(target_os = "macos", windows))]
     pac: Option<pac::Pac>,
     /// Fixed settings, in order: proxy variables, else macOS or Windows settings.
     fixed: Vec<Matcher>,
 }
 
 fn system_proxies() -> Proxies {
-    #[cfg(windows)]
-    if let Some(proxies) = windows_per_protocol() {
-        return Proxies {
-            fixed: vec![proxies],
-        };
-    }
     #[cfg(target_os = "macos")]
     let proxies = macos_proxies(|name| std::env::var(name).ok());
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    let proxies = Proxies {
+        pac: pac::configured()
+            .map(|source| pac::Pac::new(source, &|name: &str| std::env::var(name).ok())),
+        fixed: vec![windows_per_protocol().unwrap_or_else(Matcher::from_system)],
+    };
+    #[cfg(not(any(target_os = "macos", windows)))]
     let proxies = Proxies {
         fixed: vec![Matcher::from_system()],
     };
@@ -297,7 +300,7 @@ fn macos_proxies(env: impl Fn(&str) -> Option<String>) -> Proxies {
 }
 
 /// `host[:port]`, with an IPv6 host bracketed as a URI needs.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 fn authority(host: &str, port: Option<i32>) -> String {
     let host = match host.parse::<std::net::Ipv6Addr>() {
         Ok(_) => format!("[{host}]"),
@@ -389,9 +392,9 @@ async fn routes(proxies: &Proxies, request: &Request) -> Vec<Option<Upstream>> {
     let Some(destination) = destination else {
         return vec![None];
     };
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     if let Some(pac) = proxies.pac.as_ref().filter(|pac| pac.decides(&destination)) {
-        // As Safari asks, without a default port (CFNetwork drops the path and query itself).
+        // As browsers ask, without a default port.
         let url = Url::parse(&destination.to_string())
             .map_or_else(|_| destination.to_string(), String::from);
         if let Some(routes) = pac::routes(pac, &url).await {
@@ -494,6 +497,8 @@ async fn connect_via(
     let (address, http_auth) = match upstream {
         Upstream::Http { address, auth } => (address, auth),
         Upstream::Socks { address, .. } => (address, &None),
+        #[cfg(any(windows, test))]
+        Upstream::Socks4 { address } => (address, &None),
     };
     let deadline = tokio::time::Instant::now() + TIMEOUT;
     // Running out of time before the proxy answers the dial means it's down: the next route may go.
@@ -507,10 +512,16 @@ async fn connect_via(
     .await
     .unwrap_or(Err(Refusal::ProxyDown))?;
     tokio::time::timeout_at(deadline, async {
-        if let Upstream::Socks { auth, .. } = upstream {
-            socks_connect(&mut stream, &host, request.port, auth.as_ref())
-                .await
-                .ok_or(Refusal::Unreachable)?;
+        let socks = match upstream {
+            Upstream::Http { .. } => None,
+            Upstream::Socks { auth, .. } => {
+                Some(socks_connect(&mut stream, &host, request.port, auth.as_ref()).await)
+            }
+            #[cfg(any(windows, test))]
+            Upstream::Socks4 { .. } => Some(socks4_connect(&mut stream, &host, request.port).await),
+        };
+        if let Some(connected) = socks {
+            connected.ok_or(Refusal::Unreachable)?;
             return Ok((stream, Vec::new()));
         }
         if request.forward.is_some() {
@@ -628,6 +639,33 @@ async fn socks_connect(
     Some(())
 }
 
+/// A SOCKS4a CONNECT that names `host`, so the proxy resolves it. SOCKS4 has no IPv6.
+#[cfg(any(windows, test))]
+async fn socks4_connect(stream: &mut TcpStream, host: &Host<String>, port: u16) -> Option<()> {
+    let mut connect = vec![4, 1];
+    connect.extend_from_slice(&port.to_be_bytes());
+    match host {
+        Host::Ipv4(ip) => {
+            connect.extend_from_slice(&ip.octets());
+            connect.push(0);
+        }
+        Host::Domain(name) => {
+            connect.extend_from_slice(&[0, 0, 0, 1, 0]);
+            connect.extend_from_slice(name.as_bytes());
+            connect.push(0);
+        }
+        Host::Ipv6(_) => return None,
+    }
+    stream.write_all(&connect).await.ok()?;
+    let mut reply = [0u8; 8];
+    stream.read_exact(&mut reply).await.ok()?;
+    if reply[1] != 0x5a {
+        log::info!("SOCKS4 proxy answered {} for {host}:{port}", reply[1]);
+        return None;
+    }
+    Some(())
+}
+
 async fn read_head(client: &mut TcpStream) -> Option<(String, Vec<u8>)> {
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -705,25 +743,34 @@ async fn reply(client: &mut TcpStream, status: &str) -> std::io::Result<()> {
     client.write_all(response.as_bytes()).await
 }
 
-/// PAC scripts, fetched directly (they're often served by a local proxy app or the intranet) and
-/// run by CFNetwork, as Safari runs them.
-#[cfg(target_os = "macos")]
+/// PAC scripts, run as the system's own browser runs them: on macOS fetched here (directly, since a
+/// local proxy app or the intranet often serves them) and run by CFNetwork; on Windows found and
+/// run by WinHTTP, which also discovers them (WPAD).
+#[cfg(any(target_os = "macos", windows))]
 mod pac {
-    use super::{authority, variable, Upstream, ADDRESS_TIMEOUT};
+    use super::{variable, Upstream, ADDRESS_TIMEOUT};
     use hyper_util::client::proxy::matcher::Matcher;
-    use std::sync::Arc;
-    use std::time::{Duration, Instant};
-    use system_configuration::core_foundation::array::{CFArray, CFArrayRef};
-    use system_configuration::core_foundation::base::{CFType, TCFType};
-    use system_configuration::core_foundation::dictionary::CFDictionary;
-    use system_configuration::core_foundation::error::{CFError, CFErrorRef};
-    use system_configuration::core_foundation::number::CFNumber;
-    use system_configuration::core_foundation::string::{CFString, CFStringRef};
-    use system_configuration::core_foundation::url::{CFURLCreateWithString, CFURLRef, CFURL};
-    use tokio::sync::Mutex;
+    #[cfg(windows)]
+    pub(super) use winhttp::configured;
+    #[cfg(target_os = "macos")]
+    use {
+        super::authority,
+        std::sync::Arc,
+        std::time::{Duration, Instant},
+        system_configuration::core_foundation::array::{CFArray, CFArrayRef},
+        system_configuration::core_foundation::base::{CFType, TCFType},
+        system_configuration::core_foundation::dictionary::CFDictionary,
+        system_configuration::core_foundation::error::{CFError, CFErrorRef},
+        system_configuration::core_foundation::number::CFNumber,
+        system_configuration::core_foundation::string::{CFString, CFStringRef},
+        system_configuration::core_foundation::url::{CFURLCreateWithString, CFURLRef, CFURL},
+        tokio::sync::Mutex,
+    };
 
+    #[cfg(target_os = "macos")]
     const SCRIPT_TTL: Duration = Duration::from_secs(60);
 
+    #[cfg(target_os = "macos")]
     #[link(name = "CFNetwork", kind = "framework")]
     extern "C" {
         fn CFNetworkCopyProxiesForAutoConfigurationScript(
@@ -741,8 +788,13 @@ mod pac {
     }
 
     pub(super) enum Source {
+        #[cfg(target_os = "macos")]
         Url(String),
+        #[cfg(target_os = "macos")]
         Script(Arc<str>),
+        /// Windows' automatic configuration: discovery when `detect`, then the script at `url`.
+        #[cfg(windows)]
+        Automatic { detect: bool, url: Option<String> },
     }
 
     pub(super) struct Pac {
@@ -779,24 +831,38 @@ mod pac {
 
     /// The script's routes for `url`, `None` meaning direct; nothing if it can't be had or run.
     pub(super) async fn routes(pac: &Pac, url: &str) -> Option<Vec<Option<Upstream>>> {
-        let script = match &pac.source {
-            Source::Url(location) => script(location).await?,
-            Source::Script(script) => script.clone(),
-        };
         let url = url.to_string();
-        let run = tokio::task::spawn_blocking(move || evaluate(&script, &url));
-        tokio::time::timeout(ADDRESS_TIMEOUT, run)
+        #[cfg(target_os = "macos")]
+        let run = {
+            let script = match &pac.source {
+                Source::Url(location) => script(location).await?,
+                Source::Script(script) => script.clone(),
+            };
+            move || evaluate(&script, &url)
+        };
+        #[cfg(windows)]
+        let run = {
+            let Source::Automatic {
+                detect,
+                url: script,
+            } = &pac.source;
+            let (detect, script) = (*detect, script.clone());
+            move || winhttp::evaluate(detect, script.as_deref(), &url)
+        };
+        tokio::time::timeout(ADDRESS_TIMEOUT, tokio::task::spawn_blocking(run))
             .await
             .ok()?
             .ok()?
     }
 
+    #[cfg(target_os = "macos")]
     struct Fetched {
         location: String,
         at: Instant,
         script: Option<Arc<str>>,
     }
 
+    #[cfg(target_os = "macos")]
     async fn script(location: &str) -> Option<Arc<str>> {
         // Held across the fetch, so a page's many connections fetch the script once.
         static CACHE: Mutex<Option<Fetched>> = Mutex::const_new(None);
@@ -818,6 +884,7 @@ mod pac {
         script
     }
 
+    #[cfg(target_os = "macos")]
     async fn fetch(location: &str) -> Option<String> {
         let client = crate::loopback_http::client(ADDRESS_TIMEOUT).ok()?;
         let response = client.get(location).send().await.ok()?;
@@ -825,6 +892,7 @@ mod pac {
     }
 
     /// The entries that are DIRECT or a proxy this one can chain to, in order.
+    #[cfg(target_os = "macos")]
     fn evaluate(script: &str, url: &str) -> Option<Vec<Option<Upstream>>> {
         let (script, url) = (CFString::new(script), CFString::new(url));
         unsafe {
@@ -894,6 +962,242 @@ mod pac {
                 routes.push(None);
             }
             Some(routes)
+        }
+    }
+
+    #[cfg(windows)]
+    mod winhttp {
+        use super::super::{authority, Upstream, ADDRESS_TIMEOUT};
+        use super::Source;
+        use std::ffi::c_void;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::mpsc::{sync_channel, SyncSender};
+        use std::sync::{Mutex, OnceLock};
+        use std::time::{Duration, Instant};
+        use windows_sys::Win32::Foundation::GlobalFree;
+        use windows_sys::Win32::Networking::WinHttp::*;
+
+        // Discovery that found nothing is remembered, so pages don't each wait on it again.
+        const FAILURE_TTL: Duration = Duration::from_secs(300);
+        const ERROR_IO_PENDING: u32 = 997;
+        const ERROR_TIMEOUT: u32 = 1460;
+        const ERROR_WINHTTP_UNABLE_TO_DOWNLOAD_SCRIPT: u32 = 12167;
+
+        /// Lookups in flight, by the context their callback gets; one that timed out is gone.
+        static PENDING: Mutex<Vec<(usize, SyncSender<u32>)>> = Mutex::new(Vec::new());
+
+        struct Handle(*mut c_void);
+        // WinHTTP handles may be used from any thread.
+        unsafe impl Send for Handle {}
+        unsafe impl Sync for Handle {}
+
+        impl Drop for Handle {
+            fn drop(&mut self) {
+                unsafe { WinHttpCloseHandle(self.0) };
+            }
+        }
+
+        /// Internet Options' automatic configuration for this user, if any is on.
+        pub(in crate::browser_proxy) fn configured() -> Option<Source> {
+            let mut config: WINHTTP_CURRENT_USER_IE_PROXY_CONFIG = unsafe { std::mem::zeroed() };
+            if unsafe { WinHttpGetIEProxyConfigForCurrentUser(&mut config) } == 0 {
+                return None;
+            }
+            let url = unsafe { text(config.lpszAutoConfigUrl) };
+            for owned in [
+                config.lpszAutoConfigUrl,
+                config.lpszProxy,
+                config.lpszProxyBypass,
+            ] {
+                if !owned.is_null() {
+                    unsafe { GlobalFree(owned.cast()) };
+                }
+            }
+            let detect = config.fAutoDetect != 0;
+            (detect || url.is_some()).then_some(Source::Automatic { detect, url })
+        }
+
+        /// One asynchronous session, fetching scripts directly; WinHTTP caches what it finds in it.
+        fn session() -> Option<&'static Handle> {
+            static SESSION: OnceLock<Option<Handle>> = OnceLock::new();
+            SESSION
+                .get_or_init(|| unsafe {
+                    let agent = wide("Unsloth Studio");
+                    let flags = WINHTTP_FLAG_ASYNC;
+                    let handle = WinHttpOpen(
+                        agent.as_ptr(),
+                        WINHTTP_ACCESS_TYPE_NO_PROXY,
+                        std::ptr::null(),
+                        std::ptr::null(),
+                        flags,
+                    );
+                    if handle.is_null() {
+                        return None;
+                    }
+                    let events = WINHTTP_CALLBACK_FLAG_GETPROXYFORURL_COMPLETE
+                        | WINHTTP_CALLBACK_FLAG_REQUEST_ERROR;
+                    WinHttpSetStatusCallback(handle, Some(completed), events, 0);
+                    Some(Handle(handle))
+                })
+                .as_ref()
+        }
+
+        unsafe extern "system" fn completed(
+            _handle: *mut c_void,
+            context: usize,
+            status: u32,
+            info: *mut c_void,
+            _length: u32,
+        ) {
+            let error = match status {
+                WINHTTP_CALLBACK_STATUS_GETPROXYFORURL_COMPLETE => 0,
+                WINHTTP_CALLBACK_STATUS_REQUEST_ERROR if !info.is_null() => unsafe {
+                    (*info.cast::<WINHTTP_ASYNC_RESULT>()).dwError
+                },
+                _ => return,
+            };
+            let Ok(mut pending) = PENDING.lock() else {
+                return;
+            };
+            if let Some(index) = pending.iter().position(|(id, _)| *id == context) {
+                let _ = pending.swap_remove(index).1.send(error);
+            }
+        }
+
+        /// The entries that are DIRECT or a proxy this one can chain to, in order.
+        pub(super) fn evaluate(
+            detect: bool,
+            script: Option<&str>,
+            url: &str,
+        ) -> Option<Vec<Option<Upstream>>> {
+            static FAILED: Mutex<Option<(String, Instant)>> = Mutex::new(None);
+            let key = format!("{detect} {script:?}");
+            let failed = FAILED.lock().ok()?;
+            if failed
+                .as_ref()
+                .is_some_and(|(failed, at)| *failed == key && at.elapsed() < FAILURE_TTL)
+            {
+                return None;
+            }
+            drop(failed);
+            match resolve(detect, script, url) {
+                Ok(routes) => Some(routes),
+                Err(error) => {
+                    log::info!("browser proxy couldn't use the automatic proxy setup: {error}");
+                    let missing = [
+                        ERROR_WINHTTP_AUTODETECTION_FAILED,
+                        ERROR_WINHTTP_UNABLE_TO_DOWNLOAD_SCRIPT,
+                    ];
+                    if missing.contains(&error) {
+                        *FAILED.lock().ok()? = Some((key, Instant::now()));
+                    }
+                    None
+                }
+            }
+        }
+
+        fn resolve(
+            detect: bool,
+            script: Option<&str>,
+            url: &str,
+        ) -> Result<Vec<Option<Upstream>>, u32> {
+            let (url, script) = (wide(url), script.map(wide));
+            let session = session().ok_or(0u32)?;
+            let mut resolver = std::ptr::null_mut();
+            let error = unsafe { WinHttpCreateProxyResolver(session.0, &mut resolver) };
+            if error != 0 {
+                return Err(error);
+            }
+            let resolver = Handle(resolver);
+            let mut flags = 0;
+            if detect {
+                flags |= WINHTTP_AUTOPROXY_AUTO_DETECT;
+            }
+            if script.is_some() {
+                flags |= WINHTTP_AUTOPROXY_CONFIG_URL;
+            }
+            let options = WINHTTP_AUTOPROXY_OPTIONS {
+                dwFlags: flags,
+                dwAutoDetectFlags: if detect {
+                    WINHTTP_AUTO_DETECT_TYPE_DHCP | WINHTTP_AUTO_DETECT_TYPE_DNS_A
+                } else {
+                    0
+                },
+                lpszAutoConfigUrl: script
+                    .as_ref()
+                    .map_or(std::ptr::null(), |script| script.as_ptr()),
+                lpvReserved: std::ptr::null_mut(),
+                dwReserved: 0,
+                fAutoLogonIfChallenged: 1,
+            };
+            static NEXT: AtomicUsize = AtomicUsize::new(1);
+            let context = NEXT.fetch_add(1, Ordering::Relaxed);
+            let (sender, done) = sync_channel(1);
+            PENDING.lock().map_err(|_| 0u32)?.push((context, sender));
+            let started =
+                unsafe { WinHttpGetProxyForUrlEx(resolver.0, url.as_ptr(), &options, context) };
+            let error = match started {
+                ERROR_IO_PENDING => done.recv_timeout(ADDRESS_TIMEOUT).unwrap_or(ERROR_TIMEOUT),
+                error => error,
+            };
+            if let Ok(mut pending) = PENDING.lock() {
+                pending.retain(|(id, _)| *id != context);
+            }
+            if error != 0 {
+                return Err(error);
+            }
+            let mut result = WINHTTP_PROXY_RESULT {
+                cEntries: 0,
+                pEntries: std::ptr::null_mut(),
+            };
+            let error = unsafe { WinHttpGetProxyResult(resolver.0, &mut result) };
+            if error != 0 {
+                return Err(error);
+            }
+            let entries = match result.pEntries.is_null() {
+                true => &[][..],
+                false => unsafe {
+                    std::slice::from_raw_parts(result.pEntries, result.cEntries as usize)
+                },
+            };
+            let mut routes: Vec<_> = entries.iter().filter_map(route).collect();
+            unsafe { WinHttpFreeProxyResult(&mut result) };
+            // An empty answer means direct, as browsers read one.
+            if routes.is_empty() {
+                routes.push(None);
+            }
+            Ok(routes)
+        }
+
+        fn route(entry: &WINHTTP_PROXY_RESULT_ENTRY) -> Option<Option<Upstream>> {
+            if entry.fProxy == 0 {
+                return Some(None);
+            }
+            let host = unsafe { text(entry.pwszProxy) }?;
+            let address = authority(&host, Some(i32::from(entry.ProxyPort)));
+            match entry.ProxyScheme {
+                WINHTTP_INTERNET_SCHEME_HTTP => Some(Some(Upstream::Http {
+                    address,
+                    auth: None,
+                })),
+                WINHTTP_INTERNET_SCHEME_SOCKS => Some(Some(Upstream::Socks4 { address })),
+                // An HTTPS proxy wants TLS to the proxy itself, which this one doesn't speak.
+                _ => None,
+            }
+        }
+
+        fn wide(text: &str) -> Vec<u16> {
+            text.encode_utf16().chain(Some(0)).collect()
+        }
+
+        unsafe fn text(pointer: *const u16) -> Option<String> {
+            if pointer.is_null() {
+                return None;
+            }
+            let length = (0..)
+                .take_while(|&i| unsafe { *pointer.add(i) } != 0)
+                .count();
+            String::from_utf16(unsafe { std::slice::from_raw_parts(pointer, length) }).ok()
         }
     }
 }
@@ -1136,6 +1440,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn socks4_tunnels_name_the_host() {
+        for (answer, opened) in [(0x5a, true), (0x5b, false)] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap().to_string();
+            let seen = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut connect = vec![0u8; 10 + UNRESOLVABLE.len()];
+                stream.read_exact(&mut connect).await.unwrap();
+                stream
+                    .write_all(&[0, answer, 0, 0, 0, 0, 0, 0])
+                    .await
+                    .unwrap();
+                connect
+            });
+            let request = parse(&tunnel(&format!("{UNRESOLVABLE}:443"))).unwrap();
+            let result = connect_via(&Upstream::Socks4 { address }, &request).await;
+            assert_eq!(result.is_ok(), opened, "{answer}");
+            let mut expected = vec![4, 1, 1, 187, 0, 0, 0, 1, 0];
+            expected.extend_from_slice(UNRESOLVABLE.as_bytes());
+            expected.push(0);
+            assert_eq!(seen.await.unwrap(), expected);
+        }
+    }
+
+    #[tokio::test]
     async fn tunnels_go_through_a_socks_proxy_by_name() {
         let (address, seen) = socks_proxy(false).await;
         let proxies = Matcher::builder()
@@ -1267,5 +1596,62 @@ mod tests {
             let response = exchange_via(proxies, &tunnel(&format!("{UNRESOLVABLE}:443"))).await;
             assert!(response.starts_with(expected), "{first}: {response}");
         }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_automatic_setup_decides_before_fixed_settings() {
+        let script = r#"function FindProxyForURL(url, host) {
+            if (host == "h.example") return "PROXY 127.0.0.1:1; DIRECT";
+            if (host == "s.example") return "SOCKS 127.0.0.1:2";
+            if (url == "https://u.example/") return "PROXY 127.0.0.1:3";
+            return "DIRECT";
+        }"#;
+        let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let location = format!("http://{}/proxy.pac", server.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = server.accept().await {
+                read_head(&mut stream).await;
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+                    script.len()
+                );
+                let _ = stream.write_all((head + script).as_bytes()).await;
+            }
+        });
+        let proxies = |url: &str| Proxies {
+            pac: Some(pac::Pac::new(
+                pac::Source::Automatic {
+                    detect: false,
+                    url: Some(url.into()),
+                },
+                &|_: &str| None,
+            )),
+            fixed: vec![Matcher::builder().all("http://127.0.0.1:9").build()],
+        };
+        let to = |host| parse(&tunnel(&format!("{host}:443"))).unwrap();
+        let http = |address: &str| {
+            Some(Upstream::Http {
+                address: address.into(),
+                auth: None,
+            })
+        };
+        let socks = Upstream::Socks4 {
+            address: "127.0.0.1:2".into(),
+        };
+        let found = proxies(&location);
+        for (host, expected) in [
+            ("h.example", vec![http("127.0.0.1:1"), None]),
+            ("s.example", vec![Some(socks)]),
+            ("u.example", vec![http("127.0.0.1:3")]),
+            ("d.example", vec![None]),
+        ] {
+            assert_eq!(routes(&found, &to(host)).await, expected, "{host}");
+        }
+        let missing = proxies("http://127.0.0.1:1/proxy.pac");
+        assert_eq!(
+            routes(&missing, &to("h.example")).await,
+            [http("127.0.0.1:9")]
+        );
     }
 }
