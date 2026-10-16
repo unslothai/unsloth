@@ -730,8 +730,7 @@ class GroupedGemm(torch.autograd.Function):
         assert (
             not ctx.fuse_mul_post
         ), "fused_mul should only be used for inference, not for training"
-        # A frozen W (LoRA, dequantized quantized experts) or X needs no gradient: skip its kernel and
-        # its (E, N, K) / activation sized buffer, as autograd would for torch._grouped_mm.
+        # Frozen W (LoRA, dequantized experts) or X: skip its kernel and buffer, as autograd does for _grouped_mm.
         dX_only = ctx.dX_only or not ctx.needs_input_grad[1]
         dW_only = ctx.dW_only or not ctx.needs_input_grad[0]
         if dX_only and dW_only:

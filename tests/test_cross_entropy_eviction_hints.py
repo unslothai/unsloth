@@ -75,7 +75,6 @@ def test_chunked_cross_entropy_skips_the_hint_on_sm90_and_sm100(capability, monk
 def test_chunked_cross_entropy_streams_logits_from_volta(capability, monkeypatch):
     evict = _policy(capability, monkeypatch)
     assert evict == "evict_first"
-    # Each target's own lowering: sm_80+ adds an L2 cache policy to the load.
     assert (
         "ld.global.L1::evict_first"
         in _compile(evict, capability[0] * 10 + capability[1]).asm["ptx"]

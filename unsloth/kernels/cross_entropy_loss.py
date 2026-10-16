@@ -115,8 +115,7 @@ _cross_entropy_forward = triton.heuristics(
 
 @functools.lru_cache(maxsize = None)
 def _chunked_evict_at(device_type, index):
-    # Chunks are read once: evict_first is faster on T4 / L4 / A100, slower on H100 (sm_90) and B200
-    # (sm_100); ROCm unmeasured.
+    # Read-once chunks: evict_first helps T4 / L4 / A100, hurts H100 and B200; ROCm unmeasured.
     if device_type != "cuda" or torch.version.hip is not None:
         return ""
     return "" if torch.cuda.get_device_capability(index)[0] in (9, 10) else "evict_first"

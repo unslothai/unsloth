@@ -136,7 +136,6 @@ def test_compiled_calls_never_use_fast_launch(monkeypatch, kind, width, gemma):
 @pytest.mark.parametrize("train", [False, True], ids = ["frozen", "trainable"])
 @pytest.mark.parametrize("kind,gemma", [("rms", False), ("rms", True), ("ln", False)])
 def test_launcher_off_calls_triton_directly(monkeypatch, kind, gemma, train):
-    # HIP and UNSLOTH_TRITON_FAST_LAUNCH=0: no detour through launch(), as before the fast path.
     calls = []
     for module in (rms_layernorm, layernorm):
         real = module.launch
