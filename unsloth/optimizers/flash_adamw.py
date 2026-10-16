@@ -171,9 +171,8 @@ def _is_marked_in_optim_args(args):
 
 
 def _is_marked(args):
-    return _has_placeholder_optim(args) and (
-        getattr(args, "_unsloth_flash_adamw", False) or _has_marker_token(args)
-    )
+    # The optim_args token alone decides, so an in place `args.optim_args = None` switches back.
+    return _is_marked_in_optim_args(args)
 
 
 def _strip_marker(optim_args):

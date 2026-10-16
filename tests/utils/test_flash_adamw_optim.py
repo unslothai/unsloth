@@ -331,6 +331,18 @@ def test_adamw_flash_switch_back_to_adamw(stub_flashoptim, make_args, monkeypatc
     assert optimizer_cls is torch.optim.AdamW
 
 
+@pytest.mark.parametrize("make_args", [_sft_config, _unsloth_args])
+def test_adamw_flash_switch_back_in_place(stub_flashoptim, make_args, monkeypatch):
+    from transformers import Trainer
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    args = make_args(optim = "adamw_flash")
+    args.optim = "adamw_torch"
+    args.optim_args = None
+    optimizer_cls, _ = Trainer.get_optimizer_cls_and_kwargs(args)
+    assert optimizer_cls is torch.optim.AdamW
+
+
 def test_adamw_flash_platform_checked_before_import(monkeypatch):
     import unsloth.optimizers.flash_adamw as flash_adamw
 
