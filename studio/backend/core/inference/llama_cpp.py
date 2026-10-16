@@ -5796,7 +5796,9 @@ def _argv_keeps_projector_on_gpu(
     )
     if not from_argv and not from_env:
         return False
-    return _resolved_mmproj_offload(tokens, env_map) is not False
+    # The ordered resolver: a named device after an offload-off is back on a device,
+    # and device none after an offload-on is in host RAM.
+    return _mmproj_placement(tokens, env_map) != "host"
 
 
 def _paravirtual_mmproj_pinnable(server_caps: Mapping[str, object]) -> bool:
@@ -5912,15 +5914,19 @@ def _mmproj_env_is_audio_only(path: Optional[str]) -> bool:
 # option and takes the last occurrence, so naming either one in the pass-through
 # extras is the user taking ownership of the placement.
 _MMPROJ_OFFLOAD_FLAGS: frozenset = frozenset({"--mmproj-offload", "--no-mmproj-offload"})
+# The projector-device option: ``none`` clears mmproj_use_gpu, any other name sets it
+# and pins that device (common/arg.cpp), so it places the projector just as surely.
+_MMPROJ_DEVICE_FLAGS: frozenset = frozenset({"--mmproj-device", "-mmdev"})
 
 
 def _extra_args_set_mmproj_offload(extra_args: Optional[Sequence[str]]) -> bool:
-    """True when the pass-through extras name either projector-placement spelling.
+    """True when the pass-through extras name any projector-placement option: either
+    offload spelling or ``--mmproj-device`` / ``-mmdev``.
 
     Matched through _flag_name rather than by string equality: arg.cpp folds
     underscores to dashes before matching, so --mmproj_offload is the same flag.
     """
-    return _extra_args_set_any_flag(extra_args, _MMPROJ_OFFLOAD_FLAGS)
+    return _extra_args_set_any_flag(extra_args, _MMPROJ_OFFLOAD_FLAGS | _MMPROJ_DEVICE_FLAGS)
 
 
 def _extra_args_mmproj_offload_value(extra_args: Optional[Sequence[str]]) -> Optional[bool]:
@@ -6015,7 +6021,8 @@ def requested_video_fps(
 
 
 def _env_sets_mmproj_offload(env: Optional[Mapping[str, str]] = None) -> bool:
-    """True when the child's environment names the projector placement at all.
+    """True when the child's environment names the projector placement at all: either
+    offload spelling or ``MTMD_BACKEND_DEVICE`` (the ``--mmproj-device`` twin).
 
     Ownership, not value: a value arg.cpp parses as neither truthy nor falsey throws
     out of common_params_parse, and a caller whose load is about to fail on their own
@@ -6025,7 +6032,7 @@ def _env_sets_mmproj_offload(env: Optional[Mapping[str, str]] = None) -> bool:
     source = os.environ if env is None else env
     return any(
         source.get(name) is not None
-        for name in (_MMPROJ_OFFLOAD_ENV_VAR, _MMPROJ_OFFLOAD_NEG_ENV_VAR)
+        for name in (_MMPROJ_OFFLOAD_ENV_VAR, _MMPROJ_OFFLOAD_NEG_ENV_VAR, "MTMD_BACKEND_DEVICE")
     )
 
 
@@ -6054,36 +6061,28 @@ def _env_mmproj_offload_value(env: Optional[Mapping[str, str]] = None) -> Option
 def _resolved_mmproj_offload(
     extra_args: Optional[Sequence[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[bool]:
-    """Where the projector actually ends up, over extras and environment together.
+    """Whether the projector is offloaded, over extras and environment together.
 
-    Same precedence the child applies: environment first, then argv on top, so a
-    pass-through flag wins over an inherited variable.
-
-    With both offload spellings silent, a projector device of exactly ``none``
-    (--mmproj-device / -mmdev, else MTMD_BACKEND_DEVICE) is host RAM too: common/arg.cpp
-    clears mmproj_use_gpu for that value. Only the silent case reads it, so an explicit
-    offload keeps the answer it had (an --mmproj-offload beside it stays on the GPU
-    side, which over- rather than under-charges VRAM). Any other device name leaves
-    None.
+    The boolean view of ``_mmproj_placement``, the one placement resolver: False for host
+    RAM, True for a device (the model's first or a named one), None when nothing places
+    it (silence on every placement option) or arg.cpp would throw on the value.
     """
-    from_args = _extra_args_mmproj_offload_value(extra_args)
-    offload = from_args if from_args is not None else _env_mmproj_offload_value(env)
-    if offload is not None:
-        return offload
-    source = os.environ if env is None else env
-    device = _extra_args_device(extra_args, {"--mmproj-device", "-mmdev"})
-    if device is None:
-        device = source.get("MTMD_BACKEND_DEVICE")
-    return False if device == "none" else None
-
-
-_MMPROJ_DEVICE_FLAGS: frozenset = frozenset({"--mmproj-device", "-mmdev"})
+    if not (_extra_args_set_mmproj_offload(extra_args) or _env_sets_mmproj_offload(env)):
+        return None
+    placement = _mmproj_placement(extra_args, env)
+    return None if placement is None else placement != "host"
 
 
 def _mmproj_placement(
-    extra_args: Optional[Sequence[str]], env: Optional[Mapping[str, str]] = None
+    extra_args: Optional[Sequence[str]],
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    studio_cpu_pin: bool = False,
 ) -> Optional[str]:
     """Where the projector runs, replaying common/arg.cpp's last-wins order.
+
+    The one projector-placement resolver: every budget, guard, retry and detector reads
+    the placement through this (or ``_resolved_mmproj_offload``, its boolean view).
 
     Env twins first, in option order (LLAMA_ARG_MMPROJ_OFFLOAD, then MTMD_BACKEND_DEVICE),
     then argv left to right. --[no-]mmproj-offload sets mmproj_use_gpu; --mmproj-device
@@ -6091,7 +6090,14 @@ def _mmproj_placement(
     offloaded; ``"default"`` = offloaded to the model's first device (devices.front());
     ``"named"`` = pinned to a device by name (a CPU name is rejected by
     parse_device_list); ``None`` = unreadable.
+
+    ``studio_cpu_pin``: Studio appends its own ``--no-mmproj-offload`` after the
+    pass-through extras (the automatic or paravirtual CPU pin), so it is the final token
+    and the projector is in host RAM whatever came before (clip.cpp only reads the
+    device while mmproj_use_gpu is set). An unreadable value still throws first.
     """
+    if studio_cpu_pin:
+        extra_args = [*(extra_args or ()), "--no-mmproj-offload"]
     source = os.environ if env is None else env
     on_gpu, named, unreadable = True, False, False
     env_offload = _env_mmproj_offload_value(source)
@@ -24388,8 +24394,8 @@ class LlamaCppBackend:
             "-ngld",
             "--gpu-layers-draft",
             "--n-gpu-layers-draft",
-            "--mmproj-offload",
-            "--no-mmproj-offload",
+            *_MMPROJ_OFFLOAD_FLAGS,
+            *_MMPROJ_DEVICE_FLAGS,
         }
         child_env = os.environ if env is None else env
         placement_eligible = intent.gpu_memory_mode == "auto" or (
@@ -24408,10 +24414,11 @@ class LlamaCppBackend:
                 for name in (
                     *cls._CPU_FALLBACK_MAIN_PLACEMENT_ENV_VARS,
                     "LLAMA_ARG_N_GPU_LAYERS_DRAFT",
-                    "LLAMA_ARG_MMPROJ_OFFLOAD",
                     "GGML_BACKEND_PATH",
                 )
             )
+            # Any projector-placement variable, on presence (_env_sets_mmproj_offload).
+            and not _env_sets_mmproj_offload(child_env)
         )
 
     @classmethod
@@ -26444,11 +26451,10 @@ class LlamaCppBackend:
                     # room for VRAM nothing occupies. The RESOLVED value decides, not just
                     # ownership: arg.cpp reads the env before argv, so the environment
                     # places the projector just as surely as the flag.
+                    # The ordered resolver (env, then argv, last wins): a later
+                    # --mmproj-device none is host RAM, a later named device is back on
+                    # a GPU even after --no-mmproj-offload.
                     _user_mmproj_offload = _resolved_mmproj_offload(extra_args)
-                    # The resolver keeps an explicit --mmproj-offload's answer; a later
-                    # --mmproj-device none (argv after env, left to right) still wins.
-                    if _mmproj_placement(extra_args) == "host":
-                        _user_mmproj_offload = False
                     mmproj_size = (
                         self._mmproj_vram_bytes(launch_mmproj_path)
                         if (effective_is_vision and _user_mmproj_offload is not False)
@@ -27330,10 +27336,12 @@ class LlamaCppBackend:
                         # that downgrade is the non-circular order; making the check
                         # pin-aware would decide TP from a pin decided from TP.
                         and _paravirtual_mmproj_pinnable(server_caps)
-                        # Last-wins on the placement pair, so whoever named either
-                        # spelling owns it. The environment counts: arg.cpp applies
-                        # set_env before argv, so --no-mmproj-offload here would
-                        # OVERWRITE LLAMA_ARG_MMPROJ_OFFLOAD=1, not lose to it.
+                        # Last-wins on the placement options, so whoever named either
+                        # offload spelling or a projector device owns it. The
+                        # environment counts: arg.cpp applies set_env before argv, so
+                        # --no-mmproj-offload here would OVERWRITE
+                        # LLAMA_ARG_MMPROJ_OFFLOAD=1 or MTMD_BACKEND_DEVICE, not lose
+                        # to it.
                         and not _extra_args_set_mmproj_offload(extra_args)
                         and not _env_sets_mmproj_offload()
                     ):
@@ -28915,7 +28923,14 @@ class LlamaCppBackend:
                             _env_mmproj = None
                         # Where the projector really runs, in arg.cpp's last-wins order over
                         # --[no-]mmproj-offload, --mmproj-device / -mmdev and their env twins.
-                        _mmproj_place = _mmproj_placement(_child_extras, _child_env)
+                        # Studio's own CPU pin is appended after the extras: the final token.
+                        _mmproj_place = _mmproj_placement(
+                            _child_extras,
+                            _child_env,
+                            studio_cpu_pin = bool(
+                                _mmproj_cpu_pinned and launch_mmproj_path and effective_is_vision
+                            ),
+                        )
                         _mmproj_host_bytes = 0
                         # A named device may be a companion card gpu_ids exposes
                         # (_widen_pin_ids_for_companion_devices); a CPU name fails
@@ -29441,11 +29456,17 @@ class LlamaCppBackend:
                     _fit_env_mmproj_unsized = bool(_fit_env_mmproj_url) or (
                         bool(_fit_env_mmproj) and _fit_env_mmproj_bytes <= 0
                     )
-                    # Host-resident when the resolved offload says CPU, the same split
-                    # the resolved projector gets.
+                    # Host-resident when the ordered placement says CPU, the same split
+                    # the resolved projector gets. Studio's own CPU pin is appended after
+                    # the extras, so it is the final token.
+                    _fit_mmproj_studio_pin = bool(
+                        _mmproj_cpu_pinned and launch_mmproj_path and effective_is_vision
+                    )
                     _fit_env_mmproj_on_host = (
-                        _resolved_mmproj_offload(_fit_extras, _fit_env) is False
-                        or _mmproj_placement(_fit_extras, _fit_env) == "host"
+                        _mmproj_placement(
+                            _fit_extras, _fit_env, studio_cpu_pin = _fit_mmproj_studio_pin
+                        )
+                        == "host"
                     )
                     _fit_model_size = model_size
                     if _fit_env_mmproj_unsized:
@@ -29472,10 +29493,15 @@ class LlamaCppBackend:
                     # mmproj_pinned_bytes, which this fit charges to host RAM, so there
                     # is nothing to split. Both resolutions must agree, the budget's
                     # (model_size) and this view's (inherited projector).
+                    # Studio's automatic pin took the projector out of model_size the
+                    # same way (mmproj_size 0, bytes to mmproj_pinned_bytes).
                     _fit_mmproj_known_host = bool(
-                        _mmproj_placement(_fit_extras, _fit_env) == "host"
-                        and _fit_env_mmproj_on_host
-                        and (not launch_mmproj_path or _user_mmproj_offload is False)
+                        _fit_env_mmproj_on_host
+                        and (
+                            not launch_mmproj_path
+                            or _user_mmproj_offload is False
+                            or (_fit_mmproj_studio_pin and not mmproj_size)
+                        )
                     )
                     if (
                         _fit_mmproj_device is not None
@@ -35320,10 +35346,10 @@ class LlamaCppBackend:
         (--spec-draft-ngl 0 / --spec-draft-device cpu) doesn't count."""
         _args = [str(a) for a in cmd]
         if any(a.startswith("--mmproj") or _flag_name(a) == "-mm" for a in _args):
-            # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates the whole
-            # GPU backend on it, so the projector holds no VRAM. Last flag wins.
-            _off = [a for a in _args if a in ("--mmproj-offload", "--no-mmproj-offload")]
-            if not _off or _off[-1] != "--no-mmproj-offload":
+            # Host placement clears mmproj_use_gpu and clip.cpp gates the whole GPU
+            # backend on it, so the projector holds no VRAM. The ordered resolver: env,
+            # then argv, last wins over --[no-]mmproj-offload and --mmproj-device.
+            if _mmproj_placement(_args, env or {}) != "host":
                 return True
         if _extra_args_mtp_draft_path(cmd, env) is None:
             return False

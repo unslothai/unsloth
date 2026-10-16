@@ -5399,18 +5399,22 @@ def test_a_projector_none_with_a_conflicting_placement_keeps_the_split(
         ([], {"MTMD_BACKEND_DEVICE": "none"}, False),
         (["--no-mmproj-offload"], {}, False),
         (["--mmproj-device", "none", "--mmproj-offload"], {}, True),
-        (["--mmproj-offload", "--mmproj-device", "none"], {}, True),
-        (["--mmproj-device", "none"], {"LLAMA_ARG_MMPROJ_OFFLOAD": "1"}, True),
-        (["--mmproj-device", "none", "-mmdev", "CUDA1"], {}, None),
-        (["--mmproj-device", "CUDA1"], {"MTMD_BACKEND_DEVICE": "none"}, None),
-        (["--mmproj-device", "NONE"], {}, None),
-        ([], {"MTMD_BACKEND_DEVICE": "CPU"}, None),
+        # Device none after an offload-on clears mmproj_use_gpu (last wins).
+        (["--mmproj-offload", "--mmproj-device", "none"], {}, False),
+        (["--mmproj-device", "none"], {"LLAMA_ARG_MMPROJ_OFFLOAD": "1"}, False),
+        # Any other name sets mmproj_use_gpu: offloaded, to that device.
+        (["--mmproj-device", "none", "-mmdev", "CUDA1"], {}, True),
+        (["--mmproj-device", "CUDA1"], {"MTMD_BACKEND_DEVICE": "none"}, True),
+        (["--no-mmproj-offload", "--mmproj-device", "CUDA0"], {}, True),
+        (["--mmproj-device", "NONE"], {}, True),
+        ([], {"MTMD_BACKEND_DEVICE": "CPU"}, True),
         ([], {}, None),
     ],
 )
 def test_the_resolved_projector_offload_reads_device_none(extra_args, env, expected):
-    """Device none is host RAM only where both offload spellings are silent; an explicit
-    offload keeps its (conservative) answer."""
+    """The boolean view of the ordered placement (env, then argv, last wins): device none
+    is host RAM whatever came before it, a named device is offloaded even after an
+    offload-off, and only silence on every placement option is None."""
     assert llama_cpp_module._resolved_mmproj_offload(extra_args, env) is expected
 
 
