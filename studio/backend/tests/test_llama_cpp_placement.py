@@ -4431,9 +4431,13 @@ def _fit_on_moe(
         (["--fit-target", "512"], {}, []),
         ([], {"LLAMA_ARG_FIT_TARGET": "512"}, []),
         ([], {"LLAMA_ARG_FIT_TARGET": "0"}, []),
-        # Applied positionally, so the entry this card gets is unknown: abstain.
-        (["--fit-target", "512,4096"], {}, ["2048"]),
-        ([], {"LLAMA_ARG_FIT_TARGET": "512,4096"}, ["2048"]),
+        # Applied by device index; a one-device child reads entry 0 only (common/fit.cpp).
+        (["--fit-target", "512,4096"], {}, []),
+        ([], {"LLAMA_ARG_FIT_TARGET": "512,4096"}, []),
+        (["--fit-target", "4096,512"], {}, ["2048"]),
+        # An RPC server is device 0 (src/llama.cpp), so this card's entry is unknown: abstain.
+        (["--fit-target", "512,4096", "--rpc", "127.0.0.1:50052"], {}, ["2048"]),
+        (["--fit-target", "512", "--rpc", "127.0.0.1:50052"], {}, []),
     ],
     ids = [
         "default_margin",
@@ -4442,6 +4446,9 @@ def _fit_on_moe(
         "env_zero_target",
         "argv_per_device_list",
         "env_per_device_list",
+        "argv_per_device_list_higher_first",
+        "argv_per_device_list_rpc",
+        "argv_uniform_target_rpc",
     ],
 )
 def test_a_lower_fit_target_is_the_fitters_margin(
