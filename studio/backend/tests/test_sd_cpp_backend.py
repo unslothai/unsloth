@@ -1323,25 +1323,29 @@ def test_lists_accelerator_device_reads_the_ggml_device_list(monkeypatch):
     assert bk.sd_cpp_lists_accelerator_device(None) is False
 
 
-def test_supports_graph_cut_needs_both_flags_and_fails_closed(monkeypatch):
-    # The opposite default to the H3 gate: sd-cli exits non-zero on an unknown option, so "cannot tell" must not emit these.
+def test_graph_cut_options_support_legacy_and_current_builds_and_fail_closed(monkeypatch):
+    # unknown flags fail closed because sd-cli rejects them.
     monkeypatch.setattr(
         bk,
         "_sd_cpp_probe_output",
         lambda *_a: "  --max-vram         budget\n  --stream-layers    residency\n",
     )
-    assert bk.sd_cpp_supports_graph_cut("/existing/sd-cli") is True
+    assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == {"--max-vram", "--stream-layers"}
 
-    # --stream-layers is a no-op without --max-vram, so half a build is not a build to emit on.
+    # current builds stream automatically and reject the removed --stream-layers flag.
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: "  --max-vram budget\n")
+    assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == {"--max-vram"}
+
+    # --stream-layers requires --max-vram, so a partial advertisement emits neither.
     monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: "  --stream-layers    residency\n")
-    assert bk.sd_cpp_supports_graph_cut("/existing/sd-cli") is False
+    assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == frozenset()
 
     monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: _PRE_H3_HELP)
-    assert bk.sd_cpp_supports_graph_cut("/existing/sd-cli") is False
+    assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == frozenset()
 
     monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: None)
-    assert bk.sd_cpp_supports_graph_cut("/existing/sd-cli") is False
-    assert bk.sd_cpp_supports_graph_cut(None) is False
+    assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == frozenset()
+    assert bk.sd_cpp_graph_cut_options(None) == frozenset()
 
 
 def test_device_name_for_ordinal_reads_the_ggml_device_list(monkeypatch):
@@ -1547,6 +1551,90 @@ def _run_server_load(
         hf_token = None,
         _load_token = 1,
     )
+
+
+def test_paravirtual_mac_load_records_the_cpu_device(monkeypatch):
+    # The command builders force --backend cpu on a paravirtual Metal GPU, so state/status must say cpu, not mps.
+    import core.inference.sd_cpp_args as sd_cpp_args
+
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: True)
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = "mps")
+    assert b._state.device == "cpu" and b.status()["device"] == "cpu"
+    # A CPU-backend abort is then not retried as a GPU-placement problem.
+    assert (
+        b._restart_server_on_cpu_backend(
+            b._state, "unsupported op 'MUL_MAT' ggml_abort", threading.Event()
+        )
+        is None
+    )
+
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: False)
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "mps")
+    assert b._state.device == "mps"
+
+
+@pytest.mark.parametrize("accelerator", ["vulkan", "auto"])
+def test_cpu_torch_on_the_vulkan_build_offloads_by_default(monkeypatch, accelerator):
+    # #13666: the card's VRAM was never measured, so auto streams weights instead of assuming they fit.
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: accelerator)
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "cpu")
+    if accelerator == "vulkan":
+        assert b._state.device == "vulkan"
+        assert "--offload-to-cpu" in b._state.offload_flags
+    else:
+        assert b._state.device == "cpu"
+        assert b._state.offload_flags == ()
+
+
+@pytest.mark.parametrize("lands", [True, False])
+def test_cpu_torch_placement_follows_a_deferred_vulkan_install(monkeypatch, lands):
+    # The deferred upgrade may land the Vulkan build or keep the resident CPU one; place for what runs.
+    installed = {"accelerator": "cpu"}
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: installed["accelerator"])
+
+    def _upgrade(self, server_binary, **_kw):
+        if lands:
+            installed["accelerator"] = "vulkan"
+        return server_binary
+
+    monkeypatch.setattr(SdCppDiffusionBackend, "_upgraded_or_refused", _upgrade)
+    monkeypatch.setattr(
+        SdCppDiffusionBackend, "_resolved_accelerator", staticmethod(lambda card = None: "vulkan")
+    )
+    monkeypatch.setattr(bk, "_managed_tree_in_use", lambda: True)  # a resident server defers it
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "cpu")
+    assert b._state.device == ("vulkan" if lands else "cpu")
+    assert ("--offload-to-cpu" in b._state.offload_flags) is lands
+
+
+@pytest.mark.parametrize("listed,expected", [("vulkan", "vulkan"), (None, "cpu")])
+def test_an_unowned_build_on_cpu_torch_places_by_its_device_listing(monkeypatch, listed, expected):
+    # SD_SERVER_PATH builds carry no install record; their --list-devices says what they render on.
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: None)
+    monkeypatch.setattr(bk, "sd_cpp_listed_device", lambda binary, *a, **k: (listed, None))
+    monkeypatch.setattr(
+        SdCppDiffusionBackend, "_resolved_accelerator", staticmethod(lambda card = None: "vulkan")
+    )
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "cpu")
+    assert b._state.device == expected
+
+
+@pytest.mark.parametrize("device,expected", [("cuda", "cpu"), ("xpu", "cpu"), ("mps", "mps")])
+def test_the_cpu_build_on_a_gpu_torch_places_on_cpu(monkeypatch, device, expected):
+    # The ladder can leave a CUDA / XPU torch on the CPU build; the macOS bundle is recorded cpu
+    # but renders on Metal.
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: "cpu")
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = device)
+    assert b._state.device == expected
+    if expected == "cpu":
+        assert b._state.offload_flags == ()
 
 
 def test_server_load_spawns_once_and_status_reports_mode(monkeypatch):
@@ -2110,7 +2198,7 @@ def test_generate_treats_zero_strength_controlnet_as_disabled(cn_strength):
 
 
 def test_generate_rejects_image_conditioned_on_native_engine():
-    # img2img / inpaint / reference / upscale are diffusers-only; a native call with an init image gets a clean ValueError, not a silent txt2img.
+    # image-conditioned generation is diffusers-only; native calls must fail, not use txt2img.
     b = _loaded_backend(engine = _FakeEngine())
     with pytest.raises(ValueError, match = "not yet supported on the native"):
         b.generate(prompt = "x", steps = 4, seed = 1, init_image = "data:image/png;base64,AAAA")
@@ -2121,14 +2209,28 @@ def test_status_native_reports_supports_controlnet_false():
     assert b.status()["supports_controlnet"] is False
 
 
+def test_native_negative_prompt_reaches_sd_cli_only_when_cfg_runs():
+    klein = _loaded_backend("flux.2-klein")
+    assert klein.status()["supports_negative_prompt"] is True
+    kw = dict(prompt = "a fox", negative_prompt = "text", width = 256, height = 256, steps = 4, seed = 1)
+    out = klein.generate(guidance = 4.0, **kw)
+    assert klein._engine.calls[-1][1].negative_prompt == "text"
+    assert out["negative_prompt"] == "text"
+    out = klein.generate(guidance = 1.0, **kw)
+    assert klein._engine.calls[-1][1].negative_prompt is None
+    assert out["negative_prompt"] is None
+
+    flux = _loaded_backend("flux.1")
+    assert flux.status()["supports_negative_prompt"] is False
+    out = flux.generate(guidance = 3.5, **kw)
+    assert flux._engine.calls[-1][1].negative_prompt is None
+    assert out["negative_prompt"] is None
+
+
 def test_a_cached_community_repack_is_reused_instead_of_re_downloading_the_mirror(
     monkeypatch, tmp_path
 ):
-    """Repointing the tables at unsloth mirrors would re-pull tens of GB on upgrade.
-
-    The HF cache is keyed by repo id, so an install that already holds the byte-identical repack
-    has it filed under the OLD id: the mirror's namespace is empty, the fetch re-downloads, and an
-    offline load fails outright over bytes already on disk."""
+    """reuse repo-id-keyed legacy caches to avoid redownloads and keep offline loads working."""
     from core.inference.diffusion_families import prefer_cached_legacy_source
     from core.inference.sd_cpp_backend import _fetch_repo_map
 
@@ -2618,3 +2720,140 @@ def test_a_rejected_concurrent_load_cannot_move_the_family_the_worker_validates_
     other.join(timeout = 5)
     seen["worker"] = backend._loading_family
     assert seen["worker"] is worker_family, "another thread's family reached this worker"
+
+
+def test_server_failure_drops_a_cached_sd_cli_of_the_failed_build(monkeypatch):
+    # An earlier one-shot load cached the Vulkan sd-cli; the Vulkan server now fails and the
+    # recorded failure moves the preferred build to CPU, so the fallback must not reuse the cache.
+    b = SdCppDiffusionBackend()
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+
+    class _BadServer:
+        def __init__(self, binary):
+            pass
+
+        def start(self, *a, **k):
+            raise RuntimeError("ggml_vulkan: No devices found")
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(bk, "SdCppServer", _BadServer)
+    fake = _FakeEngine()
+    fake.binary = "/vk/sd-cli"
+    _shared_setup_1(b, fake, monkeypatch)
+    monkeypatch.setattr(b, "_resolve_engine", SdCppDiffusionBackend._resolve_engine.__get__(b))
+    b._engine = fake
+    accelerators = {"/vk/sd-cli": "vulkan", "/cpu/sd-cli": "cpu"}
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: accelerators.get(binary))
+    monkeypatch.setattr(b, "_resolved_accelerator", lambda card = None: "cpu")
+    asked = []
+
+    def _ensure(**kwargs):
+        asked.append(kwargs.get("accelerator"))
+        return "/cpu/sd-cli"
+
+    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", _ensure)
+    monkeypatch.setattr(b, "_refuse_incapable_build", lambda *_a, **_k: None)
+
+    class _CpuEngine(_FakeEngine):
+        def __init__(self, binary):
+            super().__init__()
+            self.binary = binary
+
+    monkeypatch.setattr(bk, "SdCppEngine", _CpuEngine)
+    fam = detect_family("z-image")
+    b._load_token = 1
+    _shared_setup_2(b, fam)
+    assert asked == ["cpu"]
+    assert b._state is not None and b._state.mode == "oneshot"
+    assert b._state.sd_accelerator == "cpu"
+
+
+def test_a_deferred_cuda_upgrade_keeps_the_selected_card(monkeypatch):
+    # A CUDA load starts on the resident CPU bundle (placed on the CPU) and the deferred upgrade then
+    # lands the CUDA build: the server must still be pinned to the card the route selected.
+    b = SdCppDiffusionBackend()
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "ensure_sd_server_binary", lambda **_k: "/x/sd-server")
+    started = []
+
+    class _Server:
+        def __init__(self, binary):
+            pass
+
+        def start(self, *a, **k):
+            started.append(k.get("offload"))
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(bk, "SdCppServer", _Server)
+    fake = _FakeEngine()
+    _shared_setup_1(b, fake, monkeypatch)
+    monkeypatch.setattr(
+        bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cuda")
+    )
+    installed = {"/x/sd-server": "cpu"}
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: installed.get(binary))
+
+    def _upgrade(server_binary, **_k):
+        installed["/x/sd-server"] = "cuda"
+        return server_binary
+
+    monkeypatch.setattr(b, "_upgraded_or_refused", _upgrade)
+    monkeypatch.setattr(b, "_resolved_accelerator", lambda card = None: "cuda")
+    pins = []
+    monkeypatch.setattr(
+        bk,
+        "_offload_with_device_pin_impl",
+        lambda offload, binary, ordinal: pins.append(ordinal) or list(offload),
+    )
+    # The resident CPU bundle is in use, so _resolve_backend defers the upgrade to the teardown.
+    monkeypatch.setattr(bk, "_managed_tree_in_use", lambda: True)
+    fam = detect_family("z-image")
+    b._load_token = 1
+    b._run_load(
+        repo_id = "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z.gguf",
+        base = fam.base_repo,
+        fam = fam,
+        hf_token = None,
+        _load_token = 1,
+        gpu_ordinal = 1,
+    )
+    assert started, "the server must start"
+    assert pins and all(p == 1 for p in pins), pins
+    assert b._state is not None and b._state.device == "cuda"
+
+
+def test_the_arbiter_preflight_reads_the_cli_behind_an_unowned_server(monkeypatch):
+    # SD_SERVER_PATH names a build the installer does not own; the router can drop it and run
+    # the managed sd-cli, so that CLI's record is the answer.
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/custom/sd-server")
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: "/managed/sd-cli")
+    records = {"/managed/sd-cli": "vulkan"}
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: records.get(binary))
+    assert bk.managed_sd_cpp_accelerator() == "vulkan"
+    records["/custom/sd-server"] = "cpu"
+    assert bk.managed_sd_cpp_accelerator() == "cpu"
+    records.clear()
+    assert bk.managed_sd_cpp_accelerator() is None
+
+
+def test_only_managed_cpu_binaries_count_as_cpu_only(monkeypatch):
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/custom/sd-server")
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: "/managed/sd-cli")
+    records = {"/managed/sd-cli": "cpu"}
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: records.get(binary))
+    # The unowned SD_SERVER_PATH build may render on a GPU.
+    assert bk.sd_cpp_binaries_all_cpu() is False
+    records["/custom/sd-server"] = "cpu"
+    assert bk.sd_cpp_binaries_all_cpu() is True
+    records["/managed/sd-cli"] = "vulkan"
+    assert bk.sd_cpp_binaries_all_cpu() is False
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: None)
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: None)
+    assert bk.sd_cpp_binaries_all_cpu() is False

@@ -92,7 +92,6 @@ def test_auto_and_other_schemes_never_go_native(rocm, scheme):
     "target",
     [
         _target(device = "cpu"),
-        _target(device = "mps"),
         _target(device = "xpu"),
         _target(dtype = torch.float16),
         _target(dtype = torch.float32),
@@ -103,7 +102,7 @@ def test_non_cuda_or_non_bf16_is_never_native_even_on_rocm(rocm, target):
     assert tq.native_quant_scheme(target, "int8") is None
 
 
-@pytest.mark.parametrize("device", ["cuda", "cpu", "mps", "xpu"])
+@pytest.mark.parametrize("device", ["cuda", "cpu", "xpu"])
 def test_nvidia_and_other_hosts_are_never_native_without_offload(nvidia, device):
     assert not tq.native_quant_host(_target(device = device))
     for scheme in ("int8", "fp8", "nvfp4", "mxfp8", "auto"):
@@ -135,7 +134,6 @@ def test_nvidia_takes_native_int8_only_under_offload(nvidia, scheme, offload, ex
     "target",
     [
         _target(device = "cpu"),
-        _target(device = "mps"),
         _target(device = "xpu"),
         _target(dtype = torch.float16),
         _target(dtype = torch.float32),
@@ -314,6 +312,28 @@ def test_int_mm_matches_the_dense_layer():
     x = torch.randn(2, 24, 256, dtype = torch.bfloat16)
     ref = lin(x).float()
     got = layer._forward_int_mm(x)
+    assert got.shape == ref.shape and got.dtype == torch.bfloat16
+    assert ((got.float() - ref).norm() / ref.norm()).item() < 0.03
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA torch._int_mm")
+@pytest.mark.parametrize("compiled", [False, True])
+def test_int_mm_takes_a_transposed_activation_without_rotation(compiled):
+    # cuBLASLt runs int8 GEMMs only on a row-major activation. A patch-embed style [B, C, S] -> [B, S, C] view is
+    # column-major, and Inductor keeps that layout for the int8 codes even through an explicit .contiguous().
+    torch.manual_seed(0)
+    lin = torch.nn.Linear(256, 128).to("cuda", torch.bfloat16)
+    layer = nq.native_linear_class()(lin, "int8", act_int8 = True)
+
+    def run(x):
+        return layer(x.flatten(2).transpose(1, 2).contiguous())
+
+    x = torch.randn(1, 256, 5, 7, 31, device = "cuda", dtype = torch.bfloat16)  # 1085 tokens, odd
+    ref = lin(x.flatten(2).transpose(1, 2)).float()
+    if compiled:
+        torch._dynamo.reset()
+        run = torch.compile(run)
+    got = run(x) if compiled else layer(x.flatten(2).transpose(1, 2))
     assert got.shape == ref.shape and got.dtype == torch.bfloat16
     assert ((got.float() - ref).norm() / ref.norm()).item() < 0.03
 

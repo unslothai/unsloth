@@ -21,6 +21,8 @@ logger = get_logger(__name__)
 CHAT = "chat"
 DIFFUSION = "diffusion"
 VIDEO = "video"
+# A Decision API llama.cpp server on the GPU (the PyTorch Clef worker is not arbitrated).
+DECISIONS = "decisions"
 
 _lock = threading.Lock()
 _owner: Optional[str] = None
@@ -92,9 +94,19 @@ def _evict_video() -> None:
     get_video_backend().unload()
 
 
+def _evict_decisions() -> None:
+    from core.systemone.laya_runtime import evict_for_gpu
+    evict_for_gpu()
+
+
 # Patchable in tests via monkeypatch.setitem. Ownership is exclusive, so acquire_for's evict-the-current-owner
 # generalises to any number of owners.
-_EVICTORS = {CHAT: _evict_chat, DIFFUSION: _evict_diffusion, VIDEO: _evict_video}
+_EVICTORS = {
+    CHAT: _evict_chat,
+    DIFFUSION: _evict_diffusion,
+    VIDEO: _evict_video,
+    DECISIONS: _evict_decisions,
+}
 
 
 class GpuOwnerBusyError(RuntimeError):

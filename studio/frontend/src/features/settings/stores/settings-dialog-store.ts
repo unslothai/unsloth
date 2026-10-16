@@ -32,16 +32,31 @@ export type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 export type SettingsScrollTarget =
   | "about-updates"
+  | "api-keys-audio-api"
   | "api-keys-decision-api"
   | "appearance-sidebar-nav"
   | "chat-composer"
   | "browser-html-network"
   | "general-hub"
+  | "general-rag-embedding"
   /** Old name of sandbox-permissions, from when Permissions lived in General. */
   | "general-permissions"
   | "library-storage"
   | "resources-caches"
+  | "sandbox-os"
   | "sandbox-permissions";
+
+export interface AudioApiRequest {
+  workflow:
+    | "speak"
+    | "clone"
+    | "edit"
+    | "convert"
+    | "music"
+    | "separate"
+    | "transcribe";
+  model: string | null;
+}
 
 /** Which archive the Data tab should open straight into. */
 export type ArchivedShelf = "chats" | "images" | "videos" | "audio";
@@ -72,15 +87,22 @@ interface SettingsDialogState {
   // Set when something asks for one connection's settings (the picker's Connected group gear).
   // ConnectionsTab hands it to the form, then clears it. Same lifetime as archivedRequested.
   connectionRequested: string | null;
+  // The Audio API card applies it, then clears it. Same lifetime as archivedRequested.
+  audioApiRequested: AudioApiRequest | null;
+  decisionTryRequested: string | null;
   openDialog: (tab?: SettingsTab, options?: OpenDialogOptions) => void;
   openArchivedChats: () => void;
   openArchivedMedia: (shelf: Exclude<ArchivedShelf, "chats">) => void;
   /** Open Connections with `providerId`'s edit form already up. */
   openConnectionSettings: (providerId: string) => void;
+  openAudioApi: (request: AudioApiRequest) => void;
+  consumeAudioApiRequest: () => void;
   consumeArchivedChatsRequest: () => void;
   openLogs: (family?: string, sourcePath?: string | null) => void;
   consumeLogFamilyRequest: () => void;
   consumeConnectionRequest: () => void;
+  openDecisionTry: (model: string) => void;
+  consumeDecisionTryRequest: () => void;
   consumeScrollTarget: (target: SettingsScrollTarget) => void;
   closeDialog: () => void;
   setActiveTab: (tab: SettingsTab) => void;
@@ -138,13 +160,16 @@ function loadInitialTab(): SettingsTab {
 const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
   "chat-composer": "chat",
   "about-updates": "about",
+  "api-keys-audio-api": "api-keys",
   "api-keys-decision-api": "api-keys",
   "appearance-sidebar-nav": "appearance",
   "browser-html-network": "browser",
   "general-hub": "general",
+  "general-rag-embedding": "general",
   "general-permissions": "sandbox",
   "library-storage": "library",
   "resources-caches": "resources",
+  "sandbox-os": "sandbox",
   "sandbox-permissions": "sandbox",
 };
 
@@ -180,6 +205,7 @@ function requestsFor(state: SettingsDialogState, tab: SettingsTab) {
       tab === "debugging" ? state.logSourcePathRequested : null,
     connectionRequested:
       tab === "connections" ? state.connectionRequested : null,
+    audioApiRequested: tab === "api-keys" ? state.audioApiRequested : null,
   };
 }
 
@@ -207,6 +233,8 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   logSourcePathRequested: null,
   logRequestSeq: 0,
   connectionRequested: null,
+  audioApiRequested: null,
+  decisionTryRequested: null,
   openDialog: (requestedTab, options) =>
     set((state) => {
       const { tab, target } = resolveScrollRequest(requestedTab, options?.scrollTarget);
@@ -221,6 +249,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
         logFamilyRequested: pending.logFamilyRequested,
         logSourcePathRequested: pending.logSourcePathRequested,
         connectionRequested: pending.connectionRequested,
+        audioApiRequested: pending.audioApiRequested,
         ...focusForOpen(state, options?.focusFallback, options?.opener),
       };
     }),
@@ -233,6 +262,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       logFamilyRequested: null,
       logSourcePathRequested: null,
       connectionRequested: null,
+      audioApiRequested: null,
       ...focusForOpen(state),
     })),
   openArchivedMedia: (shelf) =>
@@ -244,6 +274,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       logFamilyRequested: null,
       logSourcePathRequested: null,
       connectionRequested: null,
+      audioApiRequested: null,
       ...focusForOpen(state),
     })),
   openConnectionSettings: (providerId) =>
@@ -255,8 +286,22 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       logFamilyRequested: null,
       logSourcePathRequested: null,
       connectionRequested: providerId,
+      audioApiRequested: null,
       ...focusForOpen(state),
     })),
+  openAudioApi: (request) =>
+    set((state) => ({
+      open: true,
+      activeTab: "api-keys",
+      scrollTarget: "api-keys-audio-api",
+      archivedRequested: null,
+      logFamilyRequested: null,
+      logSourcePathRequested: null,
+      connectionRequested: null,
+      audioApiRequested: request,
+      ...focusForOpen(state),
+    })),
+  consumeAudioApiRequest: () => set({ audioApiRequested: null }),
   consumeArchivedChatsRequest: () => set({ archivedRequested: null }),
   openLogs: (family, sourcePath) =>
     set((state) => ({
@@ -268,11 +313,25 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       logSourcePathRequested: sourcePath ?? null,
       logRequestSeq: state.logRequestSeq + 1,
       connectionRequested: null,
+      audioApiRequested: null,
       ...focusForOpen(state),
     })),
   consumeLogFamilyRequest: () =>
     set({ logFamilyRequested: null, logSourcePathRequested: null }),
   consumeConnectionRequest: () => set({ connectionRequested: null }),
+  openDecisionTry: (model) =>
+    set((state) => ({
+      open: true,
+      activeTab: "api-keys",
+      scrollTarget: "api-keys-decision-api",
+      archivedRequested: null,
+      logFamilyRequested: null,
+      logSourcePathRequested: null,
+      connectionRequested: null,
+      decisionTryRequested: model,
+      ...focusForOpen(state),
+    })),
+  consumeDecisionTryRequest: () => set({ decisionTryRequested: null }),
   consumeScrollTarget: (target) =>
     set((state) => ({
       scrollTarget: state.scrollTarget === target ? null : state.scrollTarget,
@@ -288,6 +347,8 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       logFamilyRequested: null,
       logSourcePathRequested: null,
       connectionRequested: null,
+      audioApiRequested: null,
+      decisionTryRequested: null,
     }),
   setActiveTab: (tab) => {
     try {

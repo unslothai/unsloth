@@ -6,8 +6,9 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from utils.datasets.cells import text_cell_check
-from utils.datasets.format_detection import detect_dataset_format
+from utils.datasets.cells import text_cell_check, unwrap_message_column
+from utils.datasets.format_detection import detect_dataset_format, has_message_prompt_completion
+from utils.datasets.pretokenized import PRETOKENIZED_FORMAT, is_pretokenized_dataset
 
 
 def _first_row(dataset) -> Optional[dict]:
@@ -338,6 +339,14 @@ def detect_custom_format_heuristic(dataset):
             if col not in mapping and is_context_column(col):
                 mapping[col] = "system"
                 break
+    if has_message_prompt_completion(dataset):
+        mapping = {
+            col: role
+            for col, role in mapping.items()
+            if role == "system" and col not in {"messages", "conversations", "texts"}
+        }
+        mapping.update({"prompt": "user", "completion": "assistant"})
+        has_user = has_assistant = True
     return mapping if has_user and has_assistant else None
 
 
@@ -787,6 +796,18 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                 "multimodal_columns": multimodal_info.get("multimodal_columns"),
                 **audio_fields,
             }
+        if is_pretokenized_dataset(dataset):
+            return {
+                "requires_manual_mapping": False,
+                "detected_format": PRETOKENIZED_FORMAT,
+                "columns": columns,
+                "suggested_mapping": None,
+                "detected_image_column": None,
+                "detected_text_column": None,
+                "is_image": multimodal_info["is_image"],
+                "multimodal_columns": multimodal_info.get("multimodal_columns"),
+                **audio_fields,
+            }
         return {
             "requires_manual_mapping": True,
             "detected_format": "unknown",
@@ -861,12 +882,14 @@ def _standardize_sharegpt_row(row: dict[str, Any], chat_column: str) -> dict[str
 
 def format_dataset_preview(dataset):
     detected = detect_dataset_format(dataset)
-    if detected.get("format") != "sharegpt":
-        return dataset
     chat_column = detected.get("chat_column")
-    if not isinstance(chat_column, str):
+    if (
+        detected.get("format") not in ("chatml", "sharegpt")
+        or not isinstance(chat_column, str)
+        or not hasattr(dataset, "map")
+    ):
         return dataset
-
-    if hasattr(dataset, "map"):
+    dataset = unwrap_message_column(dataset, chat_column)
+    if detected["format"] == "sharegpt":
         return dataset.map(lambda row: _standardize_sharegpt_row(row, chat_column))
     return dataset

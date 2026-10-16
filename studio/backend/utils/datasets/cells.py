@@ -3,6 +3,8 @@
 
 """Turning raw dataset cells into the text we are willing to train on."""
 
+import json
+import math
 from pathlib import Path
 
 # Feature ids tagging each column of a CSV read by `csv_as_text_kwargs`.
@@ -17,6 +19,16 @@ _NA_CELLS = frozenset(
 )
 
 
+def _finite(value):
+    if isinstance(value, dict):
+        return {key: _finite(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_finite(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
 def cell_text(value):
     """The text to train on for a single Alpaca-style dataset cell.
 
@@ -25,12 +37,12 @@ def cell_text(value):
     arrives as 1.0. Untreated, the first trains the word None and the second
     raises on .strip(). NaN counts as blank too: Arrow normalises a blank
     numeric cell to null, but a dataset built straight from pandas need not have
-    passed through Arrow.
+    passed through Arrow. A dict or list cell trains as JSON, not its Python repr.
     """
     if value is None:
         return ""
     if isinstance(value, dict) and {"text", "answer_start"} <= value.keys():
-        # SQuAD-style `answers` span: train the first answer, as _extract_column_value does.
+        # match _extract_column_value by training the first SQuAD answer.
         answer = value["text"]
         if isinstance(answer, list):
             answer = answer[0] if answer else None
@@ -39,7 +51,88 @@ def cell_text(value):
         return value
     if isinstance(value, float) and value != value:
         return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(_finite(value), ensure_ascii = False, default = str)
     return str(value)
+
+
+_SHAREGPT_ROLES = {"human": "user", "gpt": "assistant"}
+
+
+def _message(turn):
+    if not isinstance(turn, dict):
+        return None
+    if {"role", "content"} <= turn.keys():
+        return turn
+    if turn.get("role") == "assistant" and "tool_calls" in turn:
+        return {**turn, "content": None}
+    if {"from", "value"} <= turn.keys():
+        return {"role": _SHAREGPT_ROLES.get(turn["from"], turn["from"]), "content": turn["value"]}
+    return None
+
+
+def wrapped_messages(value):
+    if isinstance(value, dict) and len(value) == 1:
+        (inner,) = value.values()
+        if inner is None or isinstance(inner, list):
+            return inner
+    return value
+
+
+def unwrap_message_column(
+    dataset,
+    column,
+    batch_size = 1000,
+):
+    features = getattr(dataset, "features", None)
+    feature = features.get(column) if features else None
+    if column is None or (features and not (isinstance(feature, dict) and len(feature) == 1)):
+        return dataset
+    if features:
+        from datasets import Features
+        (inner,) = feature.values()
+        features = Features({**features, column: inner})
+    return dataset.map(
+        lambda batch: {column: [wrapped_messages(value) for value in batch[column]]},
+        batched = True,
+        batch_size = batch_size,
+        features = features,
+    )
+
+
+def message_list_columns(dataset):
+    features = getattr(dataset, "features", None) or {}
+    columns = set()
+    for column, feature in features.items():
+        if isinstance(feature, dict) and len(feature) == 1:
+            (feature,) = feature.values()
+        item = getattr(feature, "feature", None)
+        if item is None and isinstance(feature, list) and len(feature) == 1:
+            item = feature[0]
+        if isinstance(item, dict) and (
+            {"role", "content"} <= item.keys() or {"from", "value"} <= item.keys()
+        ):
+            columns.add(column)
+    return columns
+
+
+def cell_turns(
+    value,
+    role,
+    empty_is_messages = False,
+):
+    turns = wrapped_messages(value)
+    if turns is None and value is not None and empty_is_messages:
+        turns = []
+    messages = [_message(turn) for turn in turns] if isinstance(turns, list) else [None]
+    if (messages or empty_is_messages) and all(message is not None for message in messages):
+        return [
+            message
+            if message["content"] is None and message.get("tool_calls")
+            else {**message, "content": cell_text(message["content"])}
+            for message in messages
+        ]
+    return [{"role": role, "content": cell_text(value)}]
 
 
 def _column_ids(dataset) -> dict:
@@ -48,12 +141,12 @@ def _column_ids(dataset) -> dict:
 
 
 def typed_csv_columns(dataset) -> frozenset:
-    """CSV columns the csv loader would have typed: numbers, booleans or only missing cells."""
+    """CSV columns inferred as numbers, booleans, or all missing by the loader."""
     return frozenset(column for column, tag in _column_ids(dataset).items() if tag == _CSV_TYPED)
 
 
 def text_cell_check(dataset):
-    """`(column, cell) -> bool`: False for CSV cells the csv loader would not read as strings."""
+    """`(column, cell) -> bool`: `False` for CSV cells the loader would not parse as strings."""
     ids = _column_ids(dataset)
 
     def is_text(column, cell):

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { useChatRuntimeStore } from "@/features/chat";
 import { requestFind } from "@/features/find-in-page";
 import { zoomScopeFromChord } from "@/features/interface-zoom";
 import { useT } from "@/i18n";
@@ -11,8 +12,11 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { memo, useCallback, useEffect, useState } from "react";
 import { fileNameFromUrl, hostOf } from "./address";
+import { agentDownloadRule, stricterDownloadRule } from "./agent/agent-store";
 import { BrowserFetchError, type BrowserPage, fetchBrowserPage } from "./api";
 import { proxiedFavicon } from "./favicon";
+import { saveBrowserDownload } from "./downloads";
+import { canShowFile } from "./file-kind";
 import { FileView } from "./file-view";
 import { BROWSER_FIND_TARGET, pageLoadedForFind, receiveFindResult } from "./find";
 import { useBrowserHistoryStore } from "./history-store";
@@ -21,6 +25,7 @@ import { useNativeBrowser } from "./native-view";
 import { NewTabPage } from "./new-tab-page";
 import { useBrowserPrefsStore } from "./prefs-store";
 import { fitZoomToPage, zoomTab } from "./zoom";
+import { frameNotice } from "./frame-message";
 import type { FrameMessage } from "./page-frame";
 import { PageFrame } from "./page-frame";
 import {
@@ -63,24 +68,39 @@ function safeFavicon(url: string | null): string | null {
   }
 }
 
+function pageAddress(tab: BrowserTab | undefined): string | undefined {
+  const entry = tab ? currentEntry(tab) : null;
+  return tab && entry?.kind === "web" ? (tab.displayUrl ?? entry.url) : undefined;
+}
+
+// Per tab, whether its current load began beside a temporary chat: a reload keeps its entry.
+const temporaryLoads = new Map<string, boolean>();
+
+function loadTemporary(tabId: string, entry: BrowserEntry): boolean {
+  return (entry.kind === "web" && entry.temporary === true) || temporaryLoads.get(tabId) === true;
+}
+
 function useFrameMessages(tabId: string, origin: string | null) {
   const t = useT();
   return useCallback(
     (message: FrameMessage) => {
       const store = useBrowserStore.getState();
       switch (message.type) {
-        case "navigate":
+        case "navigate": {
+          const from = pageAddress(store.tabs.find((candidate) => candidate.id === tabId));
           if (message.newTab) {
             store.openUrl(message.url, {
               newTab: true,
               background: message.background && !useBrowserPrefsStore.getState().switchToNewTabs,
               method: message.method,
               body: message.body,
+              from,
             });
           } else {
-            store.navigate(tabId, message, { replace: message.replace });
+            store.navigate(tabId, { url: message.url, method: message.method, body: message.body, from }, { replace: message.replace });
           }
           break;
+        }
         case "external":
           openExternalLink(message.url);
           break;
@@ -92,7 +112,7 @@ function useFrameMessages(tabId: string, origin: string | null) {
           const favicon = safeFavicon(message.favicon);
           // Kept by site, so Recents, History and Suggested show it once the tab is gone.
           if (favicon && tab && entry?.kind === "web") {
-            useBrowserHistoryStore.getState().recordIcon(hostOf(tab.displayUrl ?? entry.url), favicon);
+            useBrowserHistoryStore.getState().recordIcon(hostOf(tab.displayUrl ?? entry.url), favicon, loadTemporary(tabId, entry));
           }
           if (favicon && entry) {
             void proxiedFavicon(favicon).then((icon) => {
@@ -102,7 +122,7 @@ function useFrameMessages(tabId: string, origin: string | null) {
           }
           // POST results can't be revisited, so they stay out of history.
           if (tab && entry?.kind === "web" && entry.method !== "POST") {
-            useBrowserHistoryStore.getState().recordVisit(tab.displayUrl ?? entry.url, message.title);
+            useBrowserHistoryStore.getState().recordVisit(tab.displayUrl ?? entry.url, message.title, loadTemporary(tabId, entry));
           }
           break;
         }
@@ -120,23 +140,38 @@ function useFrameMessages(tabId: string, origin: string | null) {
           store.reload(tabId);
           break;
         case "upload":
-        case "scriptNavigation": {
-          const tab = store.tabs.find((candidate) => candidate.id === tabId);
-          const entry = tab ? currentEntry(tab) : null;
-          const url = tab?.displayUrl ?? (entry?.kind === "web" ? entry.url : null);
-          toast(t(message.type === "upload" ? "browser.error.upload" : "browser.error.scriptNavigation"), {
-            action: url ? { label: t("browser.openExternal"), onClick: () => openExternalLink(url) } : undefined,
+        case "scriptNavigation":
+        case "needsBrowser": {
+          // Read at click time: the notice can outlive a pushState to another route.
+          const pageUrl = () => {
+            const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+            const entry = tab ? currentEntry(tab) : null;
+            return tab?.displayUrl ?? (entry?.kind === "web" ? entry.url : null);
+          };
+          const shown = pageUrl();
+          toast(t(`browser.error.${message.type}`), {
+            ...frameNotice(message.type, tabId),
+            action: shown
+              ? { label: t("browser.openExternal"), onClick: () => openExternalLink(pageUrl() ?? shown) }
+              : undefined,
           });
           break;
         }
-        case "shortcut":
-          if (message.key === "l") store.focusAddress();
-          else if (message.key === "f") requestFind(BROWSER_FIND_TARGET);
-          else if (message.key === "t") store.newTab();
-          else if (message.key === "w") store.closeTab(tabId);
-          else if (message.key === "r") store.reload(tabId);
-          else if (message.key === "d") store.bookmarkPage();
+        case "shortcut": {
+          const { key } = message;
+          const run = () => {
+            if (key === "l") store.focusAddress();
+            else if (key === "f") requestFind(BROWSER_FIND_TARGET);
+            else if (key === "t") store.newTab();
+            else if (key === "w") store.closeTab(tabId);
+            else if (key === "r") store.reload(tabId);
+            else if (key === "d") store.bookmarkPage();
+          };
+          // A full screen page covers the panel; leave it first so the shortcut's result shows.
+          if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined).then(run);
+          else run();
           break;
+        }
         case "zoom":
           // A key goes through the scope, so the View menu repeating it doesn't zoom twice.
           if (message.wheel) zoomTab(tabId, message.direction);
@@ -150,7 +185,7 @@ function useFrameMessages(tabId: string, origin: string | null) {
 
 // Stands in for the app name while translating, so it can be a link.
 const APP_MARK = "\u0000";
-const DESKTOP_APP_URL = "https://github.com/unslothai/unsloth";
+const DESKTOP_APP_URL = "https://github.com/unslothai/unsloth#-get-started";
 
 function PageError({
   url,
@@ -233,20 +268,40 @@ function WebPage({
   const blocked = state.status === "error" && state.resubmit === true;
   const pageOrigin = state.status === "ready" ? new URL(state.page.url).origin : null;
   const onFrameMessage = useFrameMessages(tab.id, pageOrigin);
+  // A notice's action opens the tab's current address, so it goes with the page it is about.
+  useEffect(
+    () => () => {
+      for (const type of ["upload", "scriptNavigation", "needsBrowser"] as const) {
+        toast.dismiss(frameNotice(type, tab.id).id);
+      }
+    },
+    [tab.id],
+  );
   const updateTab = useBrowserStore((store) => store.updateTab);
   const reload = useBrowserStore((store) => store.reload);
 
   useEffect(() => {
+    temporaryLoads.set(tab.id, entry.temporary === true || useChatRuntimeStore.getState().incognito);
     const show = (page: BrowserPage) => {
       if (page.kind === "raw") {
         const name = page.fileName ?? fileNameFromUrl(page.url);
         setPageDownload(tab.id, { blob: page.blob, name, contentType: page.contentType });
         fitZoomToPage(tab.id, true);
-        updateTab(tab.id, { loading: false, title: name, displayUrl: page.url, documentType: page.contentType });
-        if (method !== "POST") useBrowserHistoryStore.getState().recordVisit(page.url, name);
+        updateTab(tab.id, {
+          loading: false,
+          title: name,
+          displayUrl: page.url,
+          documentType: page.contentType,
+          pageError: false,
+        });
+        if (method !== "POST") useBrowserHistoryStore.getState().recordVisit(page.url, name, loadTemporary(tab.id, entry));
       } else {
         fitZoomToPage(tab.id, false);
-        updateTab(tab.id, { title: hostOf(page.url), displayUrl: page.url === url ? null : page.url });
+        updateTab(tab.id, {
+          title: hostOf(page.url),
+          displayUrl: page.url === url ? null : page.url,
+          pageError: false,
+        });
       }
     };
     const cached = cachedPage(entry);
@@ -255,7 +310,7 @@ function WebPage({
       return () => setPageDownload(tab.id, null);
     }
     if (blocked) {
-      updateTab(tab.id, { loading: false, title: hostOf(url) });
+      updateTab(tab.id, { loading: false, title: hostOf(url), pageError: true });
       return;
     }
     if (method === "POST") {
@@ -264,11 +319,22 @@ function WebPage({
     }
     const controller = new AbortController();
     updateTab(tab.id, { loading: true });
-    fetchBrowserPage({ url, method, body }, controller.signal)
+    // Now, not when the file arrives: a slow download can outlast the agent's run.
+    const agentRuleAtStart = agentDownloadRule(tab.id, entry.from ?? url, url);
+    fetchBrowserPage({ url, method, body, errorPage: true }, controller.signal)
       .then((page) => {
         cachePage(entry, page);
         setState({ status: "ready", page });
         show(page);
+        // unsupported files download only on fresh loads, so revisiting the tab does not prompt again.
+        if (page.kind === "raw") {
+          const name = page.fileName ?? fileNameFromUrl(page.url);
+          if (!canShowFile(name, page.contentType)) {
+            // use the sender or requested address, not the redirect target, so another site's permission cannot apply.
+            void saveBrowserDownload({ blob: page.blob, name, contentType: page.contentType, url: page.url, site: entry.from ?? url, temporary: loadTemporary(tab.id, entry) || undefined, agentRule: stricterDownloadRule(agentRuleAtStart, agentDownloadRule(tab.id, entry.from ?? url, page.url)) });
+            if (entry.kind === "web" && entry.from) useBrowserStore.getState().leaveDownload(tab.id, entry);
+          }
+        }
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -277,7 +343,7 @@ function WebPage({
           message: error instanceof Error ? error.message : String(error),
           botCheck: error instanceof BrowserFetchError && error.botCheck,
         });
-        updateTab(tab.id, { loading: false, title: hostOf(url) });
+        updateTab(tab.id, { loading: false, title: hostOf(url), pageError: true });
       });
     return () => {
       controller.abort();
@@ -311,6 +377,8 @@ function WebPage({
       html={page.html}
       url={page.url}
       base={page.base}
+      ownBase={page.ownBase === true}
+      anyOrigin={page.anyOrigin === true}
       refresh={page.refresh}
       title={tab.title || hostOf(page.url)}
       tabId={tab.id}

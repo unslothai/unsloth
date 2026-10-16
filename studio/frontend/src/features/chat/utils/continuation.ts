@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  type GeminiAnswerReplayPart,
+  type GeminiContinuationReplayTurn,
+  type GeminiThoughtReplayPart,
+  parseGeminiAnswerReplayParts,
+  parseGeminiContinuationReplayTurns,
+  parseGeminiThoughtReplayParts,
+} from "../gemini-thought-replay.ts";
 import type { ProviderCompactionContentPart } from "../types/api";
 import { providerCompactionPart } from "./provider-compaction.ts";
 
@@ -26,14 +34,17 @@ export type IncompleteInfo = {
 };
 
 /** Whether a finished turn left anything on screen, which is what separates `empty` from a
- *  real answer. Non-text parts (tool calls, images, sources) always count; text has to be
- *  more than whitespace. */
+ *  real answer. Structured parts (tool calls, images, sources) always count; text and
+ *  reasoning have to contain more than whitespace. */
 export function hasRenderableContent(
   content: readonly { type: string; text?: string }[],
 ): boolean {
-  return content.some(
-    (part) => part.type !== "text" || (part.text ?? "").trim().length > 0,
-  );
+  return content.some((part) => {
+    if (part.type === "text" || part.type === "reasoning") {
+      return (part.text ?? "").trim().length > 0;
+    }
+    return true;
+  });
 }
 
 const INCOMPLETE_REASONS: readonly IncompleteReason[] = [
@@ -247,10 +258,13 @@ export function budgetImpliesTruncation({
 /** Mirrors the backend guard: tool calls block; reasoning-only needs `thought`. */
 export function isContinuableContent(
   content: readonly unknown[] | undefined,
-  { thought = false }: { thought?: boolean } = {},
+  {
+    thought = false,
+    replay = false,
+  }: { thought?: boolean; replay?: boolean } = {},
 ): boolean {
   if (!content) {
-    return false;
+    return replay;
   }
   let hasText = false;
   let hasReasoning = false;
@@ -271,7 +285,7 @@ export function isContinuableContent(
     }
     return false;
   }
-  return hasText || (thought && hasReasoning);
+  return hasText || (thought && hasReasoning) || replay;
 }
 
 /** Reasoning is kept only when it all precedes the answer, as reasoning_content does. */
@@ -380,6 +394,12 @@ export type ContinuationRequest = {
   /** Gemini text-part thoughtSignature from the turn being resumed: the sibling run drops the
    *  original assistant message, so replaying it here keeps the history signed. */
   thoughtSignature?: string;
+  /** Signed Gemini thought-summary parts from the turn being resumed. */
+  thoughtParts?: GeminiThoughtReplayPart[];
+  /** Exact Gemini answer-part boundaries from the turn being resumed. */
+  answerParts?: GeminiAnswerReplayPart[];
+  /** Gemini responses hidden behind the merged continuation bubble, in provider order. */
+  geminiReplayTurns?: GeminiContinuationReplayTurn[];
   providerCompaction?: ProviderCompactionContentPart;
   providerCompactionAfterToolCalls?: number;
   providerCompactionProviderType?: string;
@@ -454,6 +474,9 @@ export function readContinuationRequest(
         reasoning?: unknown;
         reasoningDuration?: unknown;
         thoughtSignature?: unknown;
+        thoughtParts?: unknown;
+        answerParts?: unknown;
+        geminiReplayTurns?: unknown;
         providerCompaction?: unknown;
         providerCompactionAfterToolCalls?: unknown;
         providerCompactionProviderType?: unknown;
@@ -466,11 +489,22 @@ export function readContinuationRequest(
     typeof request?.reasoning === "string" && request.reasoning.trim()
       ? request.reasoning
       : "";
-  if (!partial && !reasoning) {
+  const signature = request?.thoughtSignature;
+  const thoughtParts = parseGeminiThoughtReplayParts(request?.thoughtParts);
+  const answerParts = parseGeminiAnswerReplayParts(request?.answerParts);
+  const geminiReplayTurns = parseGeminiContinuationReplayTurns(
+    request?.geminiReplayTurns,
+  );
+  const hasGeminiReplay = Boolean(
+    (typeof signature === "string" && signature) ||
+      thoughtParts.length > 0 ||
+      answerParts.length > 0 ||
+      geminiReplayTurns.length > 0,
+  );
+  if (!partial && !reasoning && !hasGeminiReplay) {
     return null;
   }
   const duration = request?.reasoningDuration;
-  const signature = request?.thoughtSignature;
   return {
     partial,
     ...(reasoning ? { reasoning } : {}),
@@ -483,6 +517,9 @@ export function readContinuationRequest(
     ...(typeof signature === "string" && signature
       ? { thoughtSignature: signature }
       : {}),
+    ...(thoughtParts.length > 0 ? { thoughtParts } : {}),
+    ...(answerParts.length > 0 ? { answerParts } : {}),
+    ...(geminiReplayTurns.length > 0 ? { geminiReplayTurns } : {}),
     ...providerCompactionFields(request),
   };
 }

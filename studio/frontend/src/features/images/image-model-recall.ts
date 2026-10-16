@@ -9,6 +9,9 @@ export interface RememberedImageModel {
   filename?: string;
   // An opaque pipeline reloads only under the family it was loaded with.
   familyOverride?: string;
+  // Supplied text-encoder / VAE files: status names only basenames, so a recall must carry the paths.
+  textEncoderFiles?: string[];
+  vaeFile?: string;
 }
 
 const KEY = "unsloth:images:last-model";
@@ -25,6 +28,11 @@ export function readImageModel(): RememberedImageModel | null {
     )
       return null;
     const family = explicitFamily(value.familyOverride);
+    const encoders = Array.isArray(value.textEncoderFiles)
+      ? value.textEncoderFiles.filter(
+          (f: unknown): f is string => typeof f === "string" && f.length > 0,
+        )
+      : [];
     return {
       repoId: value.repoId,
       kind: value.kind,
@@ -32,6 +40,10 @@ export function readImageModel(): RememberedImageModel | null {
         ? { filename: value.filename }
         : {}),
       ...(family ? { familyOverride: family } : {}),
+      ...(encoders.length > 0 ? { textEncoderFiles: encoders } : {}),
+      ...(typeof value.vaeFile === "string" && value.vaeFile
+        ? { vaeFile: value.vaeFile }
+        : {}),
     };
   } catch {
     return null;
@@ -60,5 +72,22 @@ export function matchesRememberedModel(
     status.repo_id === model.repoId &&
     status.model_kind === model.kind &&
     (model.kind === "pipeline" || status.gguf_filename === model.filename)
+  );
+}
+
+const basename = (path: string): string => path.split(/[\\/]/).pop() ?? path;
+
+/** Whether the resident build's component files (basenames, from status) are the remembered paths. */
+export function componentFilesMatch(
+  model: Pick<RememberedImageModel, "textEncoderFiles" | "vaeFile">,
+  componentFiles: Record<string, string> | null | undefined,
+): boolean {
+  const remembered = [...(model.textEncoderFiles ?? []), ...(model.vaeFile ? [model.vaeFile] : [])]
+    .map(basename)
+    .sort();
+  const resident = Object.values(componentFiles ?? {}).sort();
+  return (
+    remembered.length === resident.length &&
+    remembered.every((name, i) => name === resident[i])
   );
 }

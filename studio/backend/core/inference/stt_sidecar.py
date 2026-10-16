@@ -266,6 +266,41 @@ def normalize_whisper_language(language: Optional[str]) -> Optional[str]:
     return _WHISPER_LANGUAGE_ALIASES.get(primary, primary)
 
 
+# Whisper code -> Qwen3-ASR prompt name (config.support_languages; audio.cpp qwen3_asr/assets.cpp).
+QWEN3_ASR_LANGUAGE_NAMES = {
+    "ar": "Arabic",
+    "cs": "Czech",
+    "da": "Danish",
+    "de": "German",
+    "el": "Greek",
+    "en": "English",
+    "es": "Spanish",
+    "fa": "Persian",
+    "fi": "Finnish",
+    "fr": "French",
+    "hi": "Hindi",
+    "hu": "Hungarian",
+    "id": "Indonesian",
+    "it": "Italian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "mk": "Macedonian",
+    "ms": "Malay",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "pt": "Portuguese",
+    "ro": "Romanian",
+    "ru": "Russian",
+    "sv": "Swedish",
+    "th": "Thai",
+    "tl": "Filipino",
+    "tr": "Turkish",
+    "vi": "Vietnamese",
+    "yue": "Cantonese",
+    "zh": "Chinese",
+}
+
+
 def _stt_quiet_window_end(decoded_audio, start: int, window: int) -> Optional[int]:
     """Return a nearby quiet window boundary, or None when speech fills it."""
     import numpy as np
@@ -345,8 +380,18 @@ def resolve_model_repo(model_id: str) -> str:
 
 def can_translate(model: Optional[str]) -> bool:
     """Whether Whisper's translate task works on this id. The turbo checkpoints were fine-tuned for transcription
-    only and answer in the source language when asked to translate."""
-    return "turbo" not in (model or DEFAULT_STT_MODEL).lower()
+    only and answer in the source language when asked to translate, as do mlx-audio checkpoints."""
+    if "turbo" in (model or DEFAULT_STT_MODEL).lower():
+        return False
+    from core.inference.stt_mlx import mlx_stt_available
+
+    if not model or model in STT_MODELS or not mlx_stt_available():
+        return True
+    try:
+        snapshot = _find_complete_cached_snapshot(model)
+    except Exception:  # noqa: BLE001 - an unreadable id is refused later, by the load
+        return True
+    return snapshot is None or _is_whisper_config(_read_json_object(snapshot / "config.json"))
 
 
 def _is_whisper_config(config: object) -> bool:
@@ -489,11 +534,16 @@ def _safe_snapshot_for_revision(repo: str, revision: str) -> Optional[Path]:
     return candidate_resolved
 
 
+def _is_servable_config(config: object) -> bool:
+    from core.inference.stt_mlx import is_mlx_stt_config
+    return _is_whisper_config(config) or is_mlx_stt_config(config)
+
+
 def _snapshot_usable(model_id: str, snapshot: Path) -> bool:
     if not _snapshot_is_complete(snapshot):
         return False
     if model_id not in STT_MODELS:
-        return _is_whisper_config(_read_json_object(snapshot / "config.json"))
+        return _is_servable_config(_read_json_object(snapshot / "config.json"))
     return True
 
 
@@ -682,6 +732,17 @@ def is_model_downloaded(model: Optional[str]) -> bool:
         return False
 
 
+def _remember_completed_download(
+    completed_download_ids: list[str], download_id: Optional[str], *, cancelled: bool
+) -> bool:
+    """Keep enough successful attempt ids for delayed UI pollers to settle."""
+    if cancelled or download_id is None:
+        return False
+    completed_download_ids.append(download_id)
+    del completed_download_ids[:-8]
+    return True
+
+
 class _SnapshotDownloadState:
     """Tracks one background snapshot_download of a dictation repository.
 
@@ -694,6 +755,8 @@ class _SnapshotDownloadState:
         self._thread: Optional[threading.Thread] = None
         self._process: Optional[subprocess.Popen] = None
         self._model_id: Optional[str] = None
+        self._download_id: Optional[str] = None
+        self._completed_download_ids: list[str] = []
         self._repo: Optional[str] = None
         self._revision: Optional[str] = None
         self._hub_cache: Optional[Path] = None
@@ -710,6 +773,8 @@ class _SnapshotDownloadState:
             snapshot = {
                 "downloading": downloading,
                 "model": self._model_id if downloading else None,
+                "download_id": self._download_id,
+                "completed_download_ids": list(self._completed_download_ids),
                 "error": self._error,
                 "cancelled": self._cancelled,
                 # Which model the cancel applies to. "model" goes None once the worker thread stops, so a settled
@@ -729,13 +794,24 @@ class _SnapshotDownloadState:
         snapshot["bytes_done"] = self._downloaded_bytes(*captured) if show_progress else None
         return snapshot
 
-    def cancel(self) -> bool:
+    def cancel(
+        self,
+        model_id: Optional[str] = None,
+        download_id: Optional[str] = None,
+    ) -> bool:
         """Stop an in-flight download. False when none was running.
 
         Partial blobs stay cached, so a restart resumes from them.
         """
         with self._lock:
             if self._thread is None or not self._thread.is_alive():
+                return False
+            if self._download_id in self._completed_download_ids:
+                return False
+            if download_id is not None:
+                if self._download_id != download_id:
+                    return False
+            elif model_id is not None and self._model_id != model_id:
                 return False
             self._cancelled = True
             process = self._process
@@ -814,14 +890,14 @@ class _SnapshotDownloadState:
         model_id: str,
         hf_token: Optional[str] = None,
         revision: Optional[str] = None,
-    ) -> None:
+    ) -> str:
         model_id = resolve_model_id(model_id)
         hub_cache = _capture_stt_hub_cache()
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 if self._model_id == model_id:
                     if not self._cancelled:
-                        return
+                        return str(self._download_id)
                     raise SttModelIdError(
                         f"'{model_id}' is still cancelling; try again in a moment."
                     )
@@ -830,6 +906,7 @@ class _SnapshotDownloadState:
                     "downloading; wait for it to finish."
                 )
             self._model_id = model_id
+            self._download_id = uuid.uuid4().hex
             self._repo = resolve_model_repo(model_id)
             self._revision = None
             self._hub_cache = hub_cache
@@ -846,6 +923,7 @@ class _SnapshotDownloadState:
             )
             self._thread = thread
             thread.start()
+            return str(self._download_id)
 
     def _run(
         self,
@@ -921,7 +999,11 @@ class _SnapshotDownloadState:
                 )
             _write_revision_record(repo, revision)
             with self._lock:
-                self._complete = True
+                self._complete = _remember_completed_download(
+                    self._completed_download_ids,
+                    self._download_id,
+                    cancelled = self._cancelled,
+                )
         except Exception as exc:
             with self._lock:
                 if not self._cancelled:
@@ -939,16 +1021,20 @@ def start_model_download(
     model: Optional[str],
     hf_token: Optional[str] = None,
     revision: Optional[str] = None,
-) -> None:
-    _download_state.start(resolve_model_id(model), hf_token, revision = revision)
+) -> str:
+    return _download_state.start(resolve_model_id(model), hf_token, revision = revision)
 
 
 def download_status() -> dict:
     return _download_state.status()
 
 
-def cancel_model_download() -> bool:
-    return _download_state.cancel()
+def cancel_model_download(model: Optional[str] = None, download_id: Optional[str] = None) -> bool:
+    try:
+        model_id = resolve_model_id(model) if model is not None else None
+    except SttModelIdError:
+        return False
+    return _download_state.cancel(model_id, download_id)
 
 
 def _training_active() -> bool:
@@ -1147,21 +1233,26 @@ def _decode_audio_bounded(audio: bytes, cancel_event = None):
         with _av_open(av, io.BytesIO(audio)) as container:
             if not container.streams.audio:
                 raise SttAudioDecodeError("Could not decode the audio.")
-            frames = iter(container.decode(audio = 0))
-            while True:
-                try:
-                    frame = next(frames)
-                except StopIteration:
-                    break
-                except InvalidDataError:
-                    continue
-                if cancel_event is not None and cancel_event.is_set():
-                    raise SttTranscriptionCancelledError("Transcription cancelled.")
-                frame.pts = None
-                fifo.write(frame)
-                if fifo.samples >= 500000:
-                    for resampled in resampler.resample(fifo.read()):
-                        write_frame(resampled)
+            try:
+                for packet in container.demux(audio = 0):
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise SttTranscriptionCancelledError("Transcription cancelled.")
+                    try:
+                        frames = packet.decode()
+                    except InvalidDataError:
+                        continue
+                    for frame in frames:
+                        frame.pts = None
+                        fifo.write(frame)
+                        if fifo.samples >= 500000:
+                            for resampled in resampler.resample(fifo.read()):
+                                write_frame(resampled)
+            except (SttAudioTooLongError, SttTranscriptionCancelledError):
+                raise
+            except (FFmpegError, ValueError, RuntimeError) as exc:
+                if not (sample_count or fifo.samples):
+                    raise
+                logger.info("STT decode stopped early: %s", exc)
             if fifo.samples > 0:
                 for resampled in resampler.resample(fifo.read()):
                     write_frame(resampled)
@@ -1399,18 +1490,25 @@ class WhisperSttSidecar:
         holding memory that nothing else knows about: dropping it here is what would let this failed
         load read as nothing resident.
         """
+        from core.inference.stt_mlx import is_mlx_stt_config
         from core.inference.stt_transformers_worker import (
             InProcessWhisperEngine,
             SttWorkerSpawnError,
             WhisperWorker,
         )
 
+        mlx = is_mlx_stt_config(_read_json_object(Path(snapshot_path) / "config.json"))
         worker = WhisperWorker()
         try:
             # start() kills its own child on any failure, including cancellation.
-            worker.start(str(snapshot_path), device, _dtype_name(dtype), cancel_event)
+            if mlx:
+                worker.start(
+                    str(snapshot_path), device, _dtype_name(dtype), cancel_event, runtime = "mlx"
+                )
+            else:
+                worker.start(str(snapshot_path), device, _dtype_name(dtype), cancel_event)
         except SttWorkerSpawnError as exc:
-            if device != "cpu":
+            if device != "cpu" or mlx:
                 raise
             logger.warning(
                 "No dictation worker process could be started (%s); "
@@ -1459,18 +1557,23 @@ class WhisperSttSidecar:
                 )
         snapshot_path = _find_complete_cached_snapshot(model_id)
         if snapshot_path is None:
-            raise SttModelNotDownloadedError(
-                f"STT model '{model_id}' is not downloaded. "
-                "Download it in Settings, then Voice, before loading it."
-            )
+            raise SttModelNotDownloadedError(f"STT model '{model_id}' is not downloaded yet.")
 
         if model_id in STT_MODELS:
             return _CachedSttSnapshot(path = snapshot_path, is_multilingual = True)
 
-        if not _is_whisper_config(_read_json_object(snapshot_path / "config.json")):
+        config = _read_json_object(snapshot_path / "config.json")
+        if not _is_servable_config(config):
             raise SttModelCompatibilityError(
                 f"STT model '{model_id}' is not a compatible Transformers Whisper model."
             )
+        if not _is_whisper_config(config):
+            from core.inference.stt_mlx import ships_custom_code
+            if ships_custom_code(snapshot_path):
+                raise SttModelCompatibilityError(
+                    f"STT model '{model_id}' ships its own code, which dictation does not run."
+                )
+            return _CachedSttSnapshot(path = snapshot_path, is_multilingual = None)
         generation_config = _read_json_object(snapshot_path / "generation_config.json")
         is_multilingual = generation_config.get("is_multilingual")
         if isinstance(is_multilingual, bool):
@@ -1533,8 +1636,7 @@ class WhisperSttSidecar:
                 snapshot_path = cached.path
                 if snapshot_path is None:
                     raise SttModelNotDownloadedError(
-                        f"STT model '{model_id}' is not downloaded. "
-                        "Download it in Settings, then Voice, before loading it."
+                        f"STT model '{model_id}' is not downloaded yet."
                     )
                 self._raise_if_load_cancelled(cancel_event)
                 device, dtype = _pick_device(preference)
@@ -1550,8 +1652,7 @@ class WhisperSttSidecar:
 
                 def not_downloaded(cause: BaseException) -> SttModelNotDownloadedError:
                     return SttModelNotDownloadedError(
-                        f"STT model '{model_id}' is not downloaded. "
-                        "Download it in Settings, then Voice, before loading it."
+                        f"STT model '{model_id}' is not downloaded yet."
                     )
 
                 retry_on_cpu = False
@@ -1817,10 +1918,10 @@ class WhisperSttSidecar:
         current = self._model_id
         if current is None:
             return False
-        if current == expected:
+        if current.casefold() == expected.casefold():
             return True
         try:
-            return current == resolve_model_id(expected)
+            return current.casefold() == resolve_model_id(expected).casefold()
         except Exception:  # noqa: BLE001 - an unresolvable name is not this model
             return False
 

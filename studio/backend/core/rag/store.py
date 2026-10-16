@@ -12,6 +12,7 @@ partition key.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sqlite3
@@ -481,7 +482,7 @@ def add_chunks(
     ``vectors`` parallels ``chunks``; optional ``regions`` (also parallel) holds
     per-chunk PDF highlight rects, stored as JSON."""
     if len(vectors):
-        rag_db.ensure_vec(conn, len(vectors[0]))
+        rag_db.ensure_vec(conn, len(vectors[0]), document_id)
     vec_rowids: list[int] = []
     for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
         chunk_id = f"{document_id}:{chunk.chunk_index}"
@@ -490,8 +491,9 @@ def add_chunks(
         conn.execute(
             "INSERT OR REPLACE INTO chunks("
             "id, document_id, scope, chunk_index, text, page_number, "
-            "source_page_index, token_count, kind, pdf_regions_json) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "source_page_index, page_char_start, page_char_end, token_count, "
+            "whole_document_token_count, kind, pdf_regions_json) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 chunk_id,
                 document_id,
@@ -500,7 +502,10 @@ def add_chunks(
                 chunk.text,
                 chunk.page_number,
                 chunk.source_page_index,
+                getattr(chunk, "page_char_start", None),
+                getattr(chunk, "page_char_end", None),
                 chunk.token_count,
+                getattr(chunk, "whole_document_token_count", None),
                 getattr(chunk, "kind", "text"),
                 regions_json,
             ),
@@ -515,8 +520,77 @@ def add_chunks(
                 (scope, chunk_id, _f32(vector)),
             ).lastrowid
         )
+    # Another writer's width change may have marked this document while it was encoding.
+    rag_db.restore_dropped_identity(conn, document_id)
     conn.commit()
     _remember_vec_rowids(conn, document_id, vec_rowids)
+
+
+def replace_document_vectors(
+    conn: sqlite3.Connection,
+    document_id: str,
+    stale_model: str | None,
+    chunk_ids: list[str],
+    vectors,
+    identity: str,
+    model_name: str,
+) -> bool:
+    """Swap a document's vectors in place and stamp ``identity``, keeping its id and chunk ids.
+
+    Writes only while the row is still the one that was encoded: present, still under
+    ``stale_model``, with the same chunks, and ``model_name`` still the configured model. A delete,
+    a re-upload, another re-embed or a model switch in between wins, and False is returned."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute(
+            "SELECT scope, embedding_model FROM documents WHERE id=?", (document_id,)
+        ).fetchone()
+        current = [
+            r["id"]
+            for r in conn.execute(
+                "SELECT id FROM chunks WHERE document_id=? ORDER BY chunk_index", (document_id,)
+            )
+        ]
+        if (
+            row is None
+            or row["embedding_model"] != stale_model
+            or current != list(chunk_ids)
+            or len(vectors) != len(current)
+            or not current
+            # Uncached, under the write lock: old-width vectors would drop every row the new model wrote.
+            or config.effective_embedding_model(fresh = True) != model_name
+        ):
+            conn.rollback()
+            return False
+        scope = row["scope"]
+        rag_db.ensure_vec(conn, len(vectors[0]), document_id)
+        # One partition scan for the document's rows ('; sorts right after ':'), then delete by rowid.
+        stale_rowids = [
+            r["rowid"]
+            for r in conn.execute(
+                "SELECT rowid FROM chunks_vec WHERE scope=? AND chunk_id > ? AND chunk_id < ?",
+                (scope, f"{document_id}:", f"{document_id};"),
+            )
+        ]
+        for start in range(0, len(stale_rowids), _ID_BATCH):
+            batch = stale_rowids[start : start + _ID_BATCH]
+            conn.execute(
+                f"DELETE FROM chunks_vec WHERE rowid IN ({','.join('?' * len(batch))})", batch
+            )
+        rowids = [
+            conn.execute(
+                "INSERT INTO chunks_vec(scope, chunk_id, embedding) VALUES(?,?,?)",
+                (scope, chunk_id, _f32(vector)),
+            ).lastrowid
+            for chunk_id, vector in zip(current, vectors)
+        ]
+        conn.execute("UPDATE documents SET embedding_model=? WHERE id=?", (identity, document_id))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    _remember_vec_rowids(conn, document_id, rowids)
+    return True
 
 
 def delete_document(
@@ -555,9 +629,11 @@ def _copy_chunk_rows(
     conn.execute(
         "INSERT INTO chunks("
         "id, document_id, scope, chunk_index, text, page_number, "
-        "source_page_index, token_count, kind, pdf_regions_json) "
+        "source_page_index, page_char_start, page_char_end, token_count, "
+        "whole_document_token_count, kind, pdf_regions_json) "
         "SELECT ? || ':' || chunk_index, ?, ?, chunk_index, text, page_number, "
-        "source_page_index, token_count, kind, pdf_regions_json "
+        "source_page_index, page_char_start, page_char_end, token_count, "
+        "whole_document_token_count, kind, pdf_regions_json "
         "FROM chunks WHERE document_id=?",
         (target_id, target_id, scope, source_id),
     )
@@ -836,6 +912,19 @@ def search_dense(
     written before identities carried a backend match on the model name alone, and
     NULL-model legacy documents are assumed current, matching the ingestion dedupe
     rule."""
+    # One snapshot for the KNN and the identity filter, as in search_lexical: a re-embed swap committed
+    # between them would pass an old-space distance under the new identity.
+    own_read_txn = not conn.in_transaction
+    if own_read_txn:
+        conn.execute("BEGIN")
+    try:
+        return _search_dense(conn, scope, vector, k, embedding_model)
+    finally:
+        if own_read_txn:
+            conn.commit()
+
+
+def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_model: str | None):
     if not rag_db.vec_table_exists(conn):
         return []
     dim = rag_db.vec_table_dim(conn)
@@ -874,7 +963,13 @@ def search_dense(
             ).fetchall()
             kept[s] = _drop_incompatible(
                 conn,
-                [(r["chunk_id"], 1.0 - r["distance"]) for r in rows],
+                # A NaN vector written by an fp16 embedder reads back as a NULL distance: skip it, or the
+                # subtraction raises and the whole retrieval fails.
+                [
+                    (r["chunk_id"], 1.0 - r["distance"])
+                    for r in rows
+                    if r["distance"] is not None and math.isfinite(r["distance"])
+                ],
                 embedding_model,
                 untagged,
             )
@@ -932,7 +1027,9 @@ def count_untagged_documents(conn: sqlite3.Connection) -> int:
     behind the user's back, so this exists to say how many are in that state."""
     tags = " ".join(f"AND embedding_model NOT LIKE '{t}:%'" for t in config.EMBEDDING_IDENTITY_TAGS)
     row = conn.execute(
-        f"SELECT COUNT(*) AS n FROM documents WHERE embedding_model IS NOT NULL {tags}"
+        f"SELECT COUNT(*) AS n FROM documents WHERE embedding_model IS NOT NULL {tags} "
+        "AND embedding_model NOT LIKE ?",
+        (rag_db.VECTORS_DROPPED + "%",),
     ).fetchone()
     return int(row["n"]) if row else 0
 
@@ -966,7 +1063,9 @@ def all_chunks_for_scope(conn: sqlite3.Connection, scope) -> list[dict]:
     placeholders = ",".join("?" * len(scopes))
     rows = conn.execute(
         f"SELECT c.id, c.text, c.document_id, c.chunk_index, c.page_number, "
-        f"c.token_count, d.filename, d.created_at "
+        f"c.source_page_index, c.page_char_start, c.page_char_end, c.token_count, "
+        f"c.whole_document_token_count, "
+        f"d.filename, d.created_at "
         f"FROM chunks c JOIN documents d ON d.id=c.document_id "
         f"WHERE c.scope IN ({placeholders}) AND d.status='completed' "
         f"AND NOT EXISTS "
@@ -981,14 +1080,17 @@ def all_chunks_for_scope(conn: sqlite3.Connection, scope) -> list[dict]:
 
 def scope_token_estimate(conn: sqlite3.Connection, scope) -> int:
     """Upper-bound token total for a scope's completed chunks without hydrating text.
-    Mirrors ``all_chunks_for_scope`` + the ``tool._row_token_count`` fallback (stored
-    count, else length/4), so the whole-doc budget can be checked before loading text."""
+    Mirrors ``all_chunks_for_scope`` + whole-document token budgeting (unique stored
+    count, else full stored count, else length/4), so the budget can be checked before loading text."""
     scopes = _scopes(scope)
     if not scopes:
         return 0
     placeholders = ",".join("?" * len(scopes))
     row = conn.execute(
-        f"SELECT COALESCE(SUM(CASE WHEN c.token_count > 0 THEN c.token_count "
+        f"SELECT COALESCE(SUM(CASE "
+        f"WHEN c.whole_document_token_count IS NOT NULL "
+        f"THEN MAX(0, c.whole_document_token_count) "
+        f"WHEN c.token_count > 0 THEN c.token_count "
         f"ELSE MAX(1, length(COALESCE(c.text, '')) / 4) END), 0) AS total "
         f"FROM chunks c JOIN documents d ON d.id=c.document_id "
         f"WHERE c.scope IN ({placeholders}) AND d.status='completed' "

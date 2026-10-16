@@ -1,0 +1,3607 @@
+{
+ "auto_static_skip_by_base": {
+  "flux.1": {
+   "black-forest-labs/FLUX.1-schnell": null
+  },
+  "flux.1-kontext": {
+   "black-forest-labs/FLUX.1-Kontext-dev": null
+  },
+  "flux.2-dev": {
+   "black-forest-labs/FLUX.2-dev": null
+  },
+  "flux.2-klein": {
+   "black-forest-labs/FLUX.2-klein-4B": null,
+   "black-forest-labs/FLUX.2-klein-9B": null,
+   "black-forest-labs/FLUX.2-klein-base-4B": {
+    "default": 2,
+    "max": 3,
+    "steps": 50
+   },
+   "black-forest-labs/FLUX.2-klein-base-9B": null
+  },
+  "hidream-i1": {
+   "HiDream-ai/HiDream-I1-Full": null
+  },
+  "hunyuanimage-2.1": {
+   "hunyuanvideo-community/HunyuanImage-2.1-Diffusers": {
+    "max": 2,
+    "steps": 50
+   }
+  },
+  "hunyuanvideo-1.5": {
+   "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v": {
+    "max": 2,
+    "steps": 50
+   }
+  },
+  "hunyuanvideo-1.5-720p": {
+   "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v": null
+  },
+  "ideogram-4": {
+   "ideogram-ai/ideogram-4-fp8": null
+  },
+  "krea-2": {
+   "krea/Krea-2-Turbo": null
+  },
+  "ltx-2": {
+   "Lightricks/LTX-2": null
+  },
+  "ltx-2.5": {
+   "Lightricks/LTX-2.5-Diffusers": null
+  },
+  "lumina-2": {
+   "Alpha-VLLM/Lumina-Image-2.0": null
+  },
+  "minimax-h3": {
+   "MiniMaxAI/MiniMax-H3": {
+    "max": 2,
+    "steps": 30
+   }
+  },
+  "qwen-image": {
+   "Qwen/Qwen-Image": {
+    "default": 2,
+    "max": 3,
+    "steps": 20
+   }
+  },
+  "qwen-image-2.1": {
+   "Qwen/Qwen-Image-2.1": {
+    "default": 3,
+    "max": 3,
+    "steps": 25
+   },
+   "Qwen/Qwen-Image-2.1-Turbo": null
+  },
+  "qwen-image-edit": {
+   "Qwen/Qwen-Image-Edit-2511": null
+  },
+  "qwen-image-layered": {
+   "Qwen/Qwen-Image-Layered": null
+  },
+  "sdxl": {
+   "stabilityai/stable-diffusion-xl-base-1.0": null
+  },
+  "wan2.1-t2v-1.3b": {
+   "Wan-AI/Wan2.1-T2V-1.3B-Diffusers": null
+  },
+  "wan2.1-t2v-14b": {
+   "Wan-AI/Wan2.1-T2V-14B-Diffusers": null
+  },
+  "wan2.2-t2v-a14b": {
+   "Wan-AI/Wan2.2-T2V-A14B-Diffusers": null
+  },
+  "wan2.2-ti2v-5b": {
+   "Wan-AI/Wan2.2-TI2V-5B-Diffusers": {
+    "default": 2,
+    "max": 3,
+    "steps": 50
+   }
+  },
+  "z-image": {
+   "Tongyi-MAI/Z-Image-Turbo": null
+  }
+ },
+ "defaults": {
+  "flux.1": [
+   4,
+   0.0
+  ],
+  "flux.1-kontext": [
+   20,
+   2.5
+  ],
+  "flux.2-dev": [
+   20,
+   4.0
+  ],
+  "flux.2-klein": [
+   4,
+   1.0
+  ],
+  "hidream-i1": [
+   50,
+   5.0
+  ],
+  "hunyuanimage-2.1": [
+   50,
+   3.25
+  ],
+  "hunyuanvideo-1.5": {
+   "fields": [
+    20,
+    6.0
+   ],
+   "resolved": [
+    20,
+    6.0
+   ]
+  },
+  "hunyuanvideo-1.5-720p": {
+   "fields": [
+    20,
+    6.0
+   ],
+   "resolved": [
+    20,
+    6.0
+   ]
+  },
+  "ideogram-4": [
+   20,
+   7.0
+  ],
+  "krea-2": [
+   8,
+   0.0
+  ],
+  "ltx-2": {
+   "fields": [
+    40,
+    4.0
+   ],
+   "resolved": [
+    40,
+    4.0
+   ]
+  },
+  "ltx-2.5": {
+   "fields": [
+    8,
+    1.0
+   ],
+   "resolved": [
+    8,
+    1.0
+   ]
+  },
+  "lumina-2": [
+   50,
+   4.0
+  ],
+  "minimax-h3": {
+   "fields": [
+    30,
+    1.0
+   ],
+   "resolved": [
+    30,
+    1.0
+   ]
+  },
+  "qwen-image": [
+   20,
+   4.0
+  ],
+  "qwen-image-2.1": [
+   25,
+   1.0
+  ],
+  "qwen-image-edit": [
+   40,
+   4.0
+  ],
+  "qwen-image-layered": [
+   20,
+   2.5
+  ],
+  "sdxl": [
+   25,
+   7.0
+  ],
+  "wan2.1-t2v-1.3b": {
+   "fields": [
+    30,
+    6.0
+   ],
+   "resolved": [
+    30,
+    6.0
+   ]
+  },
+  "wan2.1-t2v-14b": {
+   "fields": [
+    20,
+    6.0
+   ],
+   "resolved": [
+    20,
+    6.0
+   ]
+  },
+  "wan2.2-t2v-a14b": {
+   "fields": [
+    20,
+    3.5
+   ],
+   "resolved": [
+    20,
+    3.5
+   ]
+  },
+  "wan2.2-ti2v-5b": {
+   "fields": [
+    20,
+    5.0
+   ],
+   "resolved": [
+    20,
+    5.0
+   ]
+  },
+  "z-image": [
+   8,
+   0.0
+  ]
+ },
+ "flags": {
+  "flux.1": {
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": [
+    [
+     8,
+     0
+    ],
+    [
+     8,
+     9
+    ],
+    [
+     12,
+     0
+    ]
+   ]
+  },
+  "flux.1-kontext": {
+   "cudnn_benchmark": true,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": [
+    [
+     8,
+     0
+    ],
+    [
+     8,
+     9
+    ],
+    [
+     12,
+     0
+    ]
+   ]
+  },
+  "flux.2-dev": {
+   "cudnn_benchmark": true,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": []
+  },
+  "flux.2-klein": {
+   "cudnn_benchmark": true,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": []
+  },
+  "hidream-i1": {
+   "cudnn_benchmark": true,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": []
+  },
+  "hunyuanimage-2.1": {
+   "cudnn_benchmark": true,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": []
+  },
+  "hunyuanvideo-1.5": {
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": []
+  },
+  "hunyuanvideo-1.5-720p": {
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": []
+  },
+  "ideogram-4": {
+   "cudnn_benchmark": true,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": []
+  },
+  "krea-2": {
+   "cudnn_benchmark": true,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": []
+  },
+  "ltx-2": {
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": true,
+   "filter_reduction_configs_archs": []
+  },
+  "ltx-2.5": {
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": true,
+   "filter_reduction_configs_archs": []
+  },
+  "lumina-2": {
+   "cudnn_benchmark": true,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": []
+  },
+  "minimax-h3": {
+   "cudnn_benchmark": true,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": []
+  },
+  "qwen-image": {
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": [
+    [
+     8,
+     0
+    ],
+    [
+     8,
+     9
+    ],
+    [
+     12,
+     0
+    ]
+   ]
+  },
+  "qwen-image-2.1": {
+   "cudnn_benchmark": true,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": []
+  },
+  "qwen-image-edit": {
+   "cudnn_benchmark": true,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": [
+    [
+     8,
+     0
+    ],
+    [
+     8,
+     9
+    ],
+    [
+     12,
+     0
+    ]
+   ]
+  },
+  "qwen-image-layered": {
+   "cudnn_benchmark": true,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": [
+    [
+     8,
+     0
+    ],
+    [
+     8,
+     9
+    ],
+    [
+     12,
+     0
+    ]
+   ]
+  },
+  "sdxl": {
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": []
+  },
+  "wan2.1-t2v-1.3b": {
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": []
+  },
+  "wan2.1-t2v-14b": {
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": []
+  },
+  "wan2.2-t2v-a14b": {
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": []
+  },
+  "wan2.2-ti2v-5b": {
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": []
+  },
+  "z-image": {
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": [
+    [
+     8,
+     0
+    ],
+    [
+     8,
+     9
+    ],
+    [
+     12,
+     0
+    ]
+   ]
+  }
+ },
+ "per_family": {
+  "": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": null,
+   "preview_key": null,
+   "te_int8_effective": "fp8"
+  },
+  " qwen-image ": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed",
+     "txt_in",
+     "add_q_proj",
+     "add_k_proj",
+     "add_v_proj",
+     "to_add_out",
+     "txt_mlp"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": "qwen_image",
+   "te_int8_effective": "fp8"
+  },
+  "<None>": {
+   "auto": {
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "bf16": {
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "fp8": {
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   }
+  },
+  "QWEN-IMAGE": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed",
+     "txt_in",
+     "add_q_proj",
+     "add_k_proj",
+     "add_v_proj",
+     "to_add_out",
+     "txt_mlp"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": "qwen_image",
+   "te_int8_effective": "int8"
+  },
+  "flux.1": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": "flux1",
+   "te_int8_effective": "fp8"
+  },
+  "flux.1-kontext": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": "flux1",
+   "te_int8_effective": "fp8"
+  },
+  "flux.2-dev": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": "flux2",
+   "te_int8_effective": "int8"
+  },
+  "flux.2-klein": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": "flux2",
+   "te_int8_effective": "fp8"
+  },
+  "hidream-i1": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail",
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": null,
+   "te_int8_effective": "fp8"
+  },
+  "hunyuanimage-2.1": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": null,
+   "te_int8_effective": "fp8"
+  },
+  "hunyuanvideo-1.5": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed",
+     "context_embedder",
+     "image_embedder",
+     "add_q_proj",
+     "add_k_proj",
+     "add_v_proj",
+     "to_add_out",
+     "ff_context"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": [
+     "image_embedder",
+     "context_embedder_2"
+    ]
+   },
+   "page": "video",
+   "preview_key": "hv15",
+   "te_int8_effective": "fp8"
+  },
+  "hunyuanvideo-1.5-720p": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed",
+     "context_embedder",
+     "image_embedder",
+     "add_q_proj",
+     "add_k_proj",
+     "add_v_proj",
+     "to_add_out",
+     "ff_context"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": [
+     "image_embedder",
+     "context_embedder_2"
+    ]
+   },
+   "page": "video",
+   "preview_key": "hv15",
+   "te_int8_effective": "fp8"
+  },
+  "ideogram-4": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": null,
+   "te_int8_effective": "fp8"
+  },
+  "krea-2": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": null,
+   "te_int8_effective": "fp8"
+  },
+  "ltx-2": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed",
+     "audio",
+     "av_cross_attn",
+     "adaln"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "video",
+   "preview_key": "ltx2",
+   "te_int8_effective": "fp8"
+  },
+  "ltx-2.5": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": true,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [
+     "unsloth/LTX-2.5-FP8"
+    ],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed",
+     "audio",
+     "av_cross_attn",
+     "adaln"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "video",
+   "preview_key": "ltx2",
+   "te_int8_effective": "fp8"
+  },
+  "lumina-2": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail",
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": null,
+   "te_int8_effective": "fp8"
+  },
+  "minimax-h3": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed",
+     "adaln_proj"
+    ],
+    "pad": [
+     "context_embedder",
+     "token_refiner"
+    ],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "video",
+   "preview_key": null,
+   "te_int8_effective": "fp8"
+  },
+  "qwen-image": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed",
+     "txt_in",
+     "add_q_proj",
+     "add_k_proj",
+     "add_v_proj",
+     "to_add_out",
+     "txt_mlp"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": "qwen_image",
+   "te_int8_effective": "int8"
+  },
+  "qwen-image-2.1": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": true,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": "Qwen-Image-2.1-INT8-ConvRot.safetensors",
+    "convrot_repo": "unsloth/Qwen-Image-2.1-FP8",
+    "convrot_spec": [
+     256,
+     [
+      "attn.to_q",
+      "attn.to_k",
+      "attn.to_v",
+      "attn.to_out.0",
+      "img_mlp.gate_layer",
+      "img_mlp.proj",
+      "img_mlp.out"
+     ]
+    ],
+    "convrot_variant_repos": [
+     "unsloth/Qwen-Image-2.1-Turbo-FP8",
+     "unsloth/qwen-image-2.1-turbo-fp8"
+    ],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed",
+     "txt_in"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": "qwen_image_21",
+   "te_int8_effective": "fp8"
+  },
+  "qwen-image-edit": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed",
+     "txt_in",
+     "add_q_proj",
+     "add_k_proj",
+     "add_v_proj",
+     "to_add_out",
+     "txt_mlp"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": "qwen_image",
+   "te_int8_effective": "int8"
+  },
+  "qwen-image-layered": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed",
+     "txt_in",
+     "add_q_proj",
+     "add_k_proj",
+     "add_v_proj",
+     "to_add_out",
+     "txt_mlp"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": null,
+   "te_int8_effective": "int8"
+  },
+  "sdxl": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": "sdxl",
+   "te_int8_effective": "fp8"
+  },
+  "unknown-family": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": null,
+   "te_int8_effective": "fp8"
+  },
+  "wan2.1-t2v-1.3b": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "video",
+   "preview_key": null,
+   "te_int8_effective": "fp8"
+  },
+  "wan2.1-t2v-14b": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "video",
+   "preview_key": null,
+   "te_int8_effective": "fp8"
+  },
+  "wan2.2-t2v-a14b": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "video",
+   "preview_key": null,
+   "te_int8_effective": "fp8"
+  },
+  "wan2.2-ti2v-5b": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "video",
+   "preview_key": "wan22_5b",
+   "te_int8_effective": "fp8"
+  },
+  "z-image": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": true,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": "Z-Image-Turbo-INT8-ConvRot.safetensors",
+    "convrot_repo": "unsloth/Z-Image-Turbo-FP8",
+    "convrot_spec": [
+     256,
+     [
+      "attention.to_q",
+      "attention.to_k",
+      "attention.to_v",
+      "attention.to_out.0",
+      "feed_forward.w1",
+      "feed_forward.w2",
+      "feed_forward.w3",
+      "cap_embedder.1"
+     ]
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": "zimage",
+   "te_int8_effective": "fp8"
+  }
+ },
+ "tables": {
+  "auto_static_skip": {
+   "black-forest-labs/flux.1-dev": {
+    "max": 3,
+    "steps": 28
+   },
+   "black-forest-labs/flux.1-krea-dev": {
+    "default": 2,
+    "max": 3,
+    "steps": 28
+   },
+   "black-forest-labs/flux.2-klein-base-4b": {
+    "default": 2,
+    "max": 3,
+    "steps": 50
+   },
+   "hunyuanvideo-community/hunyuanimage-2.1-diffusers": {
+    "max": 2,
+    "steps": 50
+   },
+   "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v": {
+    "max": 2,
+    "steps": 50
+   },
+   "minimaxai/minimax-h3": {
+    "max": 2,
+    "steps": 30
+   },
+   "qwen/qwen-image": {
+    "default": 2,
+    "max": 3,
+    "steps": 20
+   },
+   "qwen/qwen-image-2.1": {
+    "default": 3,
+    "max": 3,
+    "steps": 25
+   },
+   "wan-ai/wan2.2-ti2v-5b-diffusers": {
+    "default": 2,
+    "max": 3,
+    "steps": 50
+   }
+  },
+  "content_video_families": [
+   "hunyuanvideo-1.5",
+   "hunyuanvideo-1.5-720p",
+   "ltx-2",
+   "ltx-2.5",
+   "minimax-h3",
+   "wan2.1-t2v-1.3b",
+   "wan2.1-t2v-14b",
+   "wan2.2-t2v-a14b",
+   "wan2.2-ti2v-5b"
+  ],
+  "family_auto_bf16_when_resident": {
+   "hidream-i1": "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail",
+   "lumina-2": "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail"
+  },
+  "family_auto_prefer": {
+   "flux.1": {
+    "backend": null,
+    "consumer_ok": false,
+    "floor": [
+     10,
+     0
+    ],
+    "gated": true,
+    "schemes": [
+     "int8",
+     "fp8",
+     "nvfp4",
+     "mxfp8"
+    ]
+   },
+   "qwen-image": {
+    "backend": null,
+    "consumer_ok": false,
+    "floor": [
+     10,
+     0
+    ],
+    "gated": true,
+    "schemes": [
+     "int8",
+     "fp8",
+     "nvfp4",
+     "mxfp8"
+    ]
+   },
+   "qwen-image-2.1": {
+    "backend": null,
+    "consumer_ok": false,
+    "floor": [
+     10,
+     0
+    ],
+    "gated": true,
+    "schemes": [
+     "int8",
+     "fp8",
+     "nvfp4",
+     "mxfp8"
+    ]
+   },
+   "wan2.2-t2v-a14b": {
+    "backend": "flashinfer",
+    "consumer_ok": false,
+    "floor": [
+     10,
+     0
+    ],
+    "gated": false,
+    "schemes": [
+     "nvfp4",
+     "int8",
+     "fp8",
+     "mxfp8"
+    ]
+   },
+   "z-image": {
+    "backend": null,
+    "consumer_ok": false,
+    "floor": [
+     10,
+     0
+    ],
+    "gated": true,
+    "schemes": [
+     "int8",
+     "fp8",
+     "nvfp4",
+     "mxfp8"
+    ]
+   }
+  },
+  "family_scheme_deny": {
+   "qwen-image": [
+    "mxfp8",
+    "nvfp4"
+   ],
+   "qwen-image-edit": [
+    "mxfp8",
+    "nvfp4"
+   ],
+   "qwen-image-layered": [
+    "mxfp8",
+    "nvfp4"
+   ]
+  },
+  "family_train_scheme_deny": {
+   "minimax-h3": [
+    "fp8",
+    "mxfp8"
+   ],
+   "qwen-image": [
+    "fp8"
+   ],
+   "qwen-image-edit": [
+    "fp8"
+   ]
+  },
+  "int8_exclude_base": [
+   "norm",
+   "_mod",
+   "modulation",
+   "timestep_embed",
+   "guidance_embed",
+   "time_text_embed",
+   "pooled",
+   "time_embed"
+  ],
+  "int8_family_convrot": {
+   "qwen-image-2.1": [
+    256,
+    [
+     "attn.to_q",
+     "attn.to_k",
+     "attn.to_v",
+     "attn.to_out.0",
+     "img_mlp.gate_layer",
+     "img_mlp.proj",
+     "img_mlp.out"
+    ]
+   ],
+   "z-image": [
+    256,
+    [
+     "attention.to_q",
+     "attention.to_k",
+     "attention.to_v",
+     "attention.to_out.0",
+     "feed_forward.w1",
+     "feed_forward.w2",
+     "feed_forward.w3",
+     "cap_embedder.1"
+    ]
+   ]
+  },
+  "int8_family_convrot_default_on": [
+   "ltx-2.5",
+   "qwen-image-2.1",
+   "z-image"
+  ],
+  "int8_family_convrot_filename": {
+   "qwen-image-2.1": "Qwen-Image-2.1-INT8-ConvRot.safetensors",
+   "z-image": "Z-Image-Turbo-INT8-ConvRot.safetensors"
+  },
+  "int8_family_convrot_repo": {
+   "qwen-image-2.1": "unsloth/Qwen-Image-2.1-FP8",
+   "z-image": "unsloth/Z-Image-Turbo-FP8"
+  },
+  "int8_family_convrot_variant_repos": {
+   "ltx-2.5": [
+    "unsloth/LTX-2.5-FP8"
+   ],
+   "qwen-image-2.1": [
+    "unsloth/Qwen-Image-2.1-Turbo-FP8"
+   ]
+  },
+  "int8_family_exclude": {
+   "hunyuanvideo-1.5": [
+    "context_embedder",
+    "image_embedder",
+    "add_q_proj",
+    "add_k_proj",
+    "add_v_proj",
+    "to_add_out",
+    "ff_context"
+   ],
+   "hunyuanvideo-1.5-720p": [
+    "context_embedder",
+    "image_embedder",
+    "add_q_proj",
+    "add_k_proj",
+    "add_v_proj",
+    "to_add_out",
+    "ff_context"
+   ],
+   "ltx-2": [
+    "audio",
+    "av_cross_attn",
+    "adaln"
+   ],
+   "ltx-2.3": [
+    "audio",
+    "av_cross_attn",
+    "adaln"
+   ],
+   "ltx-2.5": [
+    "audio",
+    "av_cross_attn",
+    "adaln"
+   ],
+   "minimax-h3": [
+    "adaln_proj"
+   ],
+   "qwen-image": [
+    "txt_in",
+    "add_q_proj",
+    "add_k_proj",
+    "add_v_proj",
+    "to_add_out",
+    "txt_mlp"
+   ],
+   "qwen-image-2.1": [
+    "txt_in"
+   ],
+   "qwen-image-edit": [
+    "txt_in",
+    "add_q_proj",
+    "add_k_proj",
+    "add_v_proj",
+    "to_add_out",
+    "txt_mlp"
+   ],
+   "qwen-image-layered": [
+    "txt_in",
+    "add_q_proj",
+    "add_k_proj",
+    "add_v_proj",
+    "to_add_out",
+    "txt_mlp"
+   ]
+  },
+  "int8_family_pad": {
+   "minimax-h3": [
+    "context_embedder",
+    "token_refiner"
+   ]
+  },
+  "nvfp4_family_zero_row": {
+   "hunyuanvideo-1.5": [
+    "image_embedder",
+    "context_embedder_2"
+   ],
+   "hunyuanvideo-1.5-720p": [
+    "image_embedder",
+    "context_embedder_2"
+   ]
+  },
+  "preview_family_factors": {
+   "flux.1": "flux1",
+   "flux.1-kontext": "flux1",
+   "flux.2-dev": "flux2",
+   "flux.2-klein": "flux2",
+   "hunyuanvideo-1.5": "hv15",
+   "hunyuanvideo-1.5-720p": "hv15",
+   "ltx-2": "ltx2",
+   "ltx-2.5": "ltx2",
+   "qwen-image": "qwen_image",
+   "qwen-image-2.1": "qwen_image_21",
+   "qwen-image-edit": "qwen_image",
+   "sdxl": "sdxl",
+   "wan2.2-ti2v-5b": "wan22_5b",
+   "z-image": "zimage"
+  },
+  "te_int8_skip": {
+   "flux.2-dev": [
+    3,
+    0
+   ],
+   "qwen-image": [
+    6,
+    6
+   ],
+   "qwen-image-edit": [
+    6,
+    6
+   ],
+   "qwen-image-layered": [
+    6,
+    6
+   ]
+  },
+  "train_family_labels": {
+   "flux.1": "FLUX.1-dev",
+   "flux.2-dev": "FLUX.2-dev",
+   "flux.2-klein": "FLUX.2 Klein",
+   "krea-2": "Krea 2",
+   "ltx-2": "LTX-2",
+   "minimax-h3": "MiniMax-H3",
+   "qwen-image": "Qwen-Image",
+   "sdxl": "SDXL",
+   "wan2.2-ti2v-5b": "Wan2.2 TI2V 5B",
+   "z-image": "Z-Image"
+  },
+  "trainable_video_families": [
+   "ltx-2",
+   "minimax-h3",
+   "wan2.2-ti2v-5b"
+  ],
+  "trusted_image_repos": [
+   "alpha-vllm/lumina-image-2.0",
+   "black-forest-labs/flux.1-dev",
+   "black-forest-labs/flux.1-kontext-dev",
+   "black-forest-labs/flux.1-krea-dev",
+   "black-forest-labs/flux.1-schnell",
+   "black-forest-labs/flux.2-dev",
+   "black-forest-labs/flux.2-klein-4b",
+   "black-forest-labs/flux.2-klein-9b",
+   "black-forest-labs/flux.2-klein-base-4b",
+   "black-forest-labs/flux.2-klein-base-9b",
+   "hidream-ai/hidream-i1-dev",
+   "hidream-ai/hidream-i1-fast",
+   "hidream-ai/hidream-i1-full",
+   "hunyuanvideo-community/hunyuanimage-2.1-diffusers",
+   "ideogram-ai/ideogram-4-fp8",
+   "ideogram-ai/ideogram-4-nf4",
+   "ideogram-ai/ideogram-4-nf4-diffusers",
+   "krea/krea-2-raw",
+   "krea/krea-2-turbo",
+   "qwen/qwen-image",
+   "qwen/qwen-image-2.1",
+   "qwen/qwen-image-2.1-turbo",
+   "qwen/qwen-image-2512",
+   "qwen/qwen-image-edit-2511",
+   "qwen/qwen-image-layered",
+   "stabilityai/sdxl-turbo",
+   "stabilityai/stable-diffusion-xl-base-1.0",
+   "tongyi-mai/z-image",
+   "tongyi-mai/z-image-turbo"
+  ],
+  "trusted_video_repos": [
+   "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v",
+   "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-720p_t2v",
+   "lightricks/ltx-2",
+   "lightricks/ltx-2.3",
+   "lightricks/ltx-2.3-fp8",
+   "lightricks/ltx-2.5",
+   "lightricks/ltx-2.5-diffusers",
+   "minimaxai/minimax-h3",
+   "wan-ai/wan2.1-t2v-1.3b-diffusers",
+   "wan-ai/wan2.1-t2v-14b-diffusers",
+   "wan-ai/wan2.2-t2v-a14b-diffusers",
+   "wan-ai/wan2.2-ti2v-5b-diffusers"
+  ],
+  "untiled_bytes_per_frame_latent_pixel": {
+   "ltx-2": 115343.36,
+   "ltx-2.5": 115343.36
+  },
+  "untiled_bytes_per_latent_pixel": {
+   "wan2.1-t2v-1.3b": 629145.6,
+   "wan2.1-t2v-14b": 629145.6,
+   "wan2.2-t2v-a14b": 629145.6,
+   "wan2.2-ti2v-5b": 2621440.0
+  },
+  "untiled_output_scale": {
+   "wan2.1-t2v-1.3b": [
+    8,
+    4
+   ],
+   "wan2.1-t2v-14b": [
+    8,
+    4
+   ],
+   "wan2.2-t2v-a14b": [
+    8,
+    4
+   ],
+   "wan2.2-ti2v-5b": [
+    16,
+    4
+   ]
+  },
+  "untiled_temporal_scale": {
+   "ltx-2": 8,
+   "ltx-2.5": 8
+  }
+ },
+ "untiled_decode_bytes": {
+  "": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ],
+  " qwen-image ": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ],
+  "QWEN-IMAGE": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ],
+  "hunyuanvideo-1.5": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ],
+  "hunyuanvideo-1.5-720p": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ],
+  "ltx-2": [
+   23751504691,
+   47503009382,
+   195696158310,
+   391392316620,
+   12281760972,
+   24563521945
+  ],
+  "ltx-2.5": [
+   23751504691,
+   47503009382,
+   195696158310,
+   391392316620,
+   12281760972,
+   24563521945
+  ],
+  "minimax-h3": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ],
+  "unknown-family": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ],
+  "wan2.1-t2v-1.3b": [
+   4007337984,
+   8014675968,
+   5083398144,
+   10166796288,
+   594874368,
+   1189748736
+  ],
+  "wan2.1-t2v-14b": [
+   4007337984,
+   8014675968,
+   5083398144,
+   10166796288,
+   594874368,
+   1189748736
+  ],
+  "wan2.2-t2v-a14b": [
+   4007337984,
+   8014675968,
+   5083398144,
+   10166796288,
+   594874368,
+   1189748736
+  ],
+  "wan2.2-ti2v-5b": [
+   16683663360,
+   33367326720,
+   21071790080,
+   42143580160,
+   2471772160,
+   4943544320
+  ]
+ }
+}

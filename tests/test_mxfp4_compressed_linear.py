@@ -39,7 +39,7 @@ try:
     # Releases before MXFP4 (0.12.x, which vllm 0.11.2 pins) reject its config outright.
     HAS_CT = any(f.value == "mxfp4-pack-quantized" for f in CompressionFormat)
     if HAS_CT:
-        # compressed-tensors < 0.16 (the newest on torch 2.6) has the format but its decompress raises.
+        # compressed-tensors < 0.16 (the newest on torch 2.6) has the format but decompress raises.
         from compressed_tensors.compressors import BaseCompressor
         from compressed_tensors.quantization import QuantizationArgs, QuantizationScheme
         BaseCompressor.get_value_from_registry("mxfp4-pack-quantized").decompress(
@@ -74,7 +74,7 @@ try:
     HAS_ZOO_PACKED_SAVE = hasattr(_zoo_mxfp4, "_densified_module_names")
 except Exception:
     HAS_ZOO_PACKED_SAVE = False
-# Without the zoo save support (unsloth-zoo#1371) the packed route declines by design.
+# Without the zoo packed save support the packed route declines by design.
 needs_zoo_packed_save = pytest.mark.skipif(
     not HAS_ZOO_PACKED_SAVE, reason = "needs unsloth-zoo's packed-module save support"
 )
@@ -171,7 +171,7 @@ def test_zoo_kernel_and_torch_path_agree():
 def test_forward_and_input_gradient_are_exact_and_save_only_packed_bytes(device, bias, monkeypatch):
     import unsloth.models.mxfp4_compressed_linear as mcl
 
-    # The decode + cuBLAS route is bit-exact; skinny inputs on CUDA take the fused GEMM (tested below).
+    # The decode + cuBLAS route is bit-exact; skinny CUDA inputs take the fused GEMM.
     monkeypatch.setattr(mcl, "_FUSED_MAX_ROWS", 0)
     torch.manual_seed(0)
     out_f, in_f = 96, 64
@@ -192,7 +192,6 @@ def test_forward_and_input_gradient_are_exact_and_save_only_packed_bytes(device,
         ya = module(xa)
     yb = ref(xb)
     assert torch.equal(ya, yb)
-    # Only the uint8 packed bytes and scales are kept for backward, never a float weight.
     assert saved and all(t.dtype == torch.uint8 for t in saved), [t.dtype for t in saved]
     g = torch.randn_like(ya)
     ya.backward(g)
@@ -442,7 +441,7 @@ def test_dtype_casts_keep_the_packed_bytes_and_set_the_decode_dtype():
         module.weight_packed, before[0]
     )
     assert torch.equal(module.weight_scale, before[1])
-    # `weight` (what PEFT and the fast paths read) decodes in the model's dtype, not always bf16.
+    # `weight` (read by PEFT and the fast paths) decodes in the model's dtype, not always bf16.
     assert module.weight.dtype == torch.float16
     assert torch.equal(module.weight.float(), module.dequantize_weight(torch.bfloat16).float())
 
@@ -472,7 +471,7 @@ def test_fast_lora_paths_get_the_packed_bytes_and_a_decoder_not_a_16bit_weight()
     model = peft.get_peft_model(Block(), peft.LoraConfig(r = 4, target_modules = ["proj", "dense"]))
     proj = model.base_model.model.proj
     W, quant_state, A, B, scale = get_lora_parameters(proj)
-    # The fused kernels save W for backward: it must be the packed bytes, never a 16-bit decode.
+    # W saved for backward must be the packed bytes, never a 16-bit decode.
     assert W is proj.base_layer.weight_packed and A is not None
     assert getattr(quant_state, "_unsloth_packed_weight_state", False)
     dense = proj.base_layer.dequantize_weight()
@@ -627,7 +626,7 @@ def test_peft_merge_densifies_exactly_and_unmerge_restores_the_packed_bytes():
         packed_model.merge_adapter()
         dense_model.merge_adapter()
         merged_base = packed_model.base_model.model[0].base_layer
-        # The delta lands in a real weight (a write into a fresh decode would be lost).
+        # The delta must land in a real weight: a write into a fresh decode would be lost.
         assert type(merged_base) is nn.Linear and "weight_packed" not in merged_base._parameters
         assert torch.equal(merged_base.weight, dense_model.base_model.model[0].base_layer.weight)
         merged = packed_model(x)
@@ -827,7 +826,7 @@ def test_mxfp4_checkpoint_stays_packed_and_matches_its_bf16_decode(
     import unsloth.models.mxfp4_compressed_linear as mcl
 
     with torch.no_grad():
-        # 16 rows run the fused MXFP4 GEMM: bf16-rounding-level; the decode + cuBLAS route is bit-exact.
+        # 16 rows run the fused MXFP4 GEMM (bf16-rounding level); decode + cuBLAS is bit-exact.
         fused = model_a(input_ids = ids).logits
         want = model_b(input_ids = ids).logits
         torch.testing.assert_close(fused.float(), want.float(), atol = 5e-2, rtol = 2e-2)
@@ -836,7 +835,6 @@ def test_mxfp4_checkpoint_stays_packed_and_matches_its_bf16_decode(
     losses_a = _lora_losses(model_a)
     from unsloth.kernels import apply_lora_o, apply_lora_qkv
 
-    # The fused LoRA kernels take packed bases: weight_packed + a decoder, never a held 16-bit weight.
     for layer in model_a.model.layers:
         assert "_unsloth_forward" in layer.mlp.__dict__ or "forward" in layer.mlp.__dict__
         assert getattr(layer.self_attn, "apply_qkv", None) is apply_lora_qkv
@@ -957,7 +955,7 @@ def test_an_explicit_decompress_request_keeps_the_stock_route(request_kwargs, tm
 
     packed_dir, bf16_dir = _write_tiny_mxfp4_llama(str(tmp_path))
     assert install_compressed_tensors_keep_packed()
-    # On the GPU when there is one: an earlier FastLanguageModel load patches Llama's forward.
+    # GPU when present: an earlier FastLanguageModel load patches Llama's forward.
     device = "cuda:0" if has_real_cuda() else "cpu"
     model = AutoModelForCausalLM.from_pretrained(
         packed_dir,

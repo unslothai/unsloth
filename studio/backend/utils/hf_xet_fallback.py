@@ -23,6 +23,8 @@ from __future__ import annotations
 import os
 import threading
 import time
+from contextlib import nullcontext
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -56,6 +58,7 @@ def _gpu_present() -> bool:
 
     Only torch is consulted (already imported by the time any download helper runs), and any
     failure answers False so a genuinely torch-less host keeps the light-init retry below.
+    MPS does not count: unsloth_zoo's full init rejects it, so the light path is the only one there.
     """
     try:
         import torch
@@ -63,7 +66,6 @@ def _gpu_present() -> bool:
         return False
     for probe in (
         lambda: torch.cuda.is_available(),
-        lambda: torch.backends.mps.is_available(),
         lambda: torch.xpu.is_available(),
     ):
         try:
@@ -83,6 +85,37 @@ def _gate_torch_stack(reason: str) -> None:
         pass
 
 
+def _media_import_window(reason: str):
+    try:
+        from utils.torch_warmup import hold_media_import_window
+    except Exception:  # noqa: BLE001
+        return nullcontext()
+    return hold_media_import_window(reason)
+
+
+def _import_light(module_name: str) -> Any:
+    """``unsloth_zoo.<name>`` from the init-free ``unsloth_zoo_downloads`` (unsloth-zoo#1752), else ``None``.
+
+    An already-loaded ``unsloth_zoo.<name>`` wins, keeping its identity (and test doubles).
+    """
+    import sys as _sys
+
+    module = _sys.modules.get(module_name)
+    if module is not None and not getattr(
+        getattr(module, "__spec__", None), "_initializing", False
+    ):
+        return module
+    try:
+        from unsloth_zoo_downloads import hf_xet_fallback, hf_xet_health, hf_xet_tuning
+    except Exception:  # noqa: BLE001 - absent on older zoo releases: take the full-init path
+        return None
+    return {
+        "unsloth_zoo.hf_xet_fallback": hf_xet_fallback,
+        "unsloth_zoo.hf_xet_health": hf_xet_health,
+        "unsloth_zoo.hf_xet_tuning": hf_xet_tuning,
+    }.get(module_name)
+
+
 def _load_shared() -> bool:
     """Import ``unsloth_zoo.hf_xet_fallback`` on demand; return True if available. Deferred so
     importing this module at worker startup does not pull transformers in before the sidecar is
@@ -90,45 +123,18 @@ def _load_shared() -> bool:
     global _shared, _shared_available, _shared_import_error
     if _shared_available is not None:
         return _shared_available
+    light = _import_light("unsloth_zoo.hf_xet_fallback")
+    if light is not None:
+        with _load_lock:
+            if _shared_available is None:
+                _shared, _shared_available, _shared_import_error = light, True, None
+            return _shared_available
     # Outside _load_lock: a thread waiting on the warm must not hold up the env-var bookkeeping.
     _gate_torch_stack("unsloth_zoo.hf_xet_fallback import")
-    with _load_lock:
-        if _shared_available is not None:
-            return _shared_available
-        try:
-            import unsloth_zoo.hf_xet_fallback as shared
-
-            _shared = shared
-            _shared_available = True
-            _shared_import_error = None
-            return True
-        except Exception as exc:  # noqa: BLE001 - any import failure must degrade, not crash
-            # unsloth_zoo's __init__ runs torch/GPU detection, which raises on a torch-less/GPU-less
-            # host. The download helper needs none of it, so retry via UNSLOTH_ZOO_DISABLE_GPU_INIT.
-            _shared_import_error = exc
-            import os as _os
-
-            # ...but ONLY on a host that really has no accelerator. That flag makes unsloth_zoo take its MLX/CPU path,
-            # injecting triton and bitsandbytes STUBS into sys.modules for the process. On a working GPU box those stubs
-            # raise from the first CUDA-only kernel, turning a healthy GPU into 500s.
-            if _gpu_present():
-                _shared_available = False
-                import logging as _logging
-
-                _logging.getLogger(__name__).warning(
-                    "unsloth_zoo.hf_xet_fallback unavailable (%s); the Xet stall watchdog is "
-                    "disabled. Not retrying under UNSLOTH_ZOO_DISABLE_GPU_INIT because this host "
-                    "has an accelerator and that path would stub out triton/bitsandbytes for the "
-                    "whole process.",
-                    exc,
-                )
-                return False
-
-            global _gpu_init_override_depth
-            _prev_gpu_init = _os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
-            _ours = _prev_gpu_init != "1"
-            _gpu_init_override_depth += _ours
-            _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = "1"
+    with _media_import_window("unsloth_zoo.hf_xet_fallback import"):
+        with _load_lock:
+            if _shared_available is not None:
+                return _shared_available
             try:
                 import unsloth_zoo.hf_xet_fallback as shared
 
@@ -136,24 +142,58 @@ def _load_shared() -> bool:
                 _shared_available = True
                 _shared_import_error = None
                 return True
-            except Exception as exc2:  # noqa: BLE001 - degrade so Unsloth still boots with plain HF
-                _shared_import_error = exc2
-                _shared_available = False
-                import logging as _logging
+            except Exception as exc:  # noqa: BLE001 - any import failure must degrade, not crash
+                # unsloth_zoo's __init__ runs torch/GPU detection, which raises on a torch-less/GPU-less
+                # host. The download helper needs none of it, so retry via UNSLOTH_ZOO_DISABLE_GPU_INIT.
+                _shared_import_error = exc
+                import os as _os
 
-                _logging.getLogger(__name__).warning(
-                    "unsloth_zoo.hf_xet_fallback unavailable (%s); the Xet stall watchdog is "
-                    "disabled. Install/upgrade unsloth_zoo (and its torch dependency) to "
-                    "re-enable automatic Xet -> HTTP download recovery.",
-                    _shared_import_error,
-                )
-                return False
-            finally:
-                if _prev_gpu_init is None:
-                    _os.environ.pop("UNSLOTH_ZOO_DISABLE_GPU_INIT", None)
-                else:
-                    _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = _prev_gpu_init
-                _gpu_init_override_depth -= _ours
+                # ...but NOT on a CUDA/XPU host (see _gpu_present). That flag makes unsloth_zoo take its MLX/CPU path,
+                # injecting triton and bitsandbytes STUBS into sys.modules for the process. On a working GPU box those stubs
+                # raise from the first CUDA-only kernel, turning a healthy GPU into 500s.
+                if _gpu_present():
+                    _shared_available = False
+                    import logging as _logging
+
+                    _logging.getLogger(__name__).warning(
+                        "unsloth_zoo.hf_xet_fallback unavailable (%s); the Xet stall watchdog is "
+                        "disabled. Not retrying under UNSLOTH_ZOO_DISABLE_GPU_INIT because this host "
+                        "has an accelerator and that path would stub out triton/bitsandbytes for the "
+                        "whole process.",
+                        exc,
+                    )
+                    return False
+
+                global _gpu_init_override_depth
+                _prev_gpu_init = _os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
+                _ours = _prev_gpu_init != "1"
+                _gpu_init_override_depth += _ours
+                _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = "1"
+                try:
+                    import unsloth_zoo.hf_xet_fallback as shared
+
+                    _shared = shared
+                    _shared_available = True
+                    _shared_import_error = None
+                    return True
+                except Exception as exc2:  # noqa: BLE001 - degrade so Unsloth still boots with plain HF
+                    _shared_import_error = exc2
+                    _shared_available = False
+                    import logging as _logging
+
+                    _logging.getLogger(__name__).warning(
+                        "unsloth_zoo.hf_xet_fallback unavailable (%s); the Xet stall watchdog is "
+                        "disabled. Install/upgrade unsloth_zoo (and its torch dependency) to "
+                        "re-enable automatic Xet -> HTTP download recovery.",
+                        _shared_import_error,
+                    )
+                    return False
+                finally:
+                    if _prev_gpu_init is None:
+                        _os.environ.pop("UNSLOTH_ZOO_DISABLE_GPU_INIT", None)
+                    else:
+                        _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = _prev_gpu_init
+                    _gpu_init_override_depth -= _ours
 
 
 # Memoising the FAILURE is the point: on a zoo predating these modules the import can never start
@@ -187,49 +227,101 @@ def _load_optional(module_name: str) -> Any:
     if cached is not _UNTRIED:
         return cached
 
-    _gate_torch_stack(f"{module_name} import")
-    try:
-        module = importlib.import_module(module_name)
-        _optional_modules[module_name] = module
-        return module
-    except Exception as exc:  # noqa: BLE001 - an older/absent unsloth_zoo must degrade, not crash
-        first_error = exc
+    light = _import_light(module_name)
+    if light is not None:
+        _optional_modules[module_name] = light
+        return light
 
-    # Deliberately the SAME lock _load_shared uses: interleaved save/set/restore would leave
-    # UNSLOTH_ZOO_DISABLE_GPU_INIT set for the life of the process (see _load_lock).
-    with _load_lock:
-        cached = _optional_modules.get(module_name, _UNTRIED)
-        if cached is not _UNTRIED:
-            return cached
-        global _gpu_init_override_depth
-        previous = _os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
-        ours = previous != "1"
-        # Claim BEFORE the write, release AFTER the restore.
-        _gpu_init_override_depth += ours
+    _gate_torch_stack(f"{module_name} import")
+    with _media_import_window(f"{module_name} import"):
         try:
-            _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = "1"
+            module = importlib.import_module(module_name)
+            _optional_modules[module_name] = module
+            return module
+        except Exception as exc:  # noqa: BLE001 - an older/absent unsloth_zoo must degrade, not crash
+            first_error = exc
+
+        # Deliberately the SAME lock _load_shared uses: interleaved save/set/restore would leave
+        # UNSLOTH_ZOO_DISABLE_GPU_INIT set for the life of the process (see _load_lock).
+        with _load_lock:
+            cached = _optional_modules.get(module_name, _UNTRIED)
+            if cached is not _UNTRIED:
+                return cached
+            # Same rule as _load_shared: the retry's triton/bitsandbytes stubs stay in sys.modules for good.
+            if _gpu_present():
+                import sys as _sys
+
+                # A zoo __init__ failing late leaves the submodules it already ran (hf_xet_tuning) in sys.modules.
+                module = _sys.modules.get(module_name)
+                # Still executing in another thread: never memoise a half-built module.
+                if getattr(getattr(module, "__spec__", None), "_initializing", False):
+                    module = None
+                if module is None:
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        "%s unavailable (%s); not retrying under UNSLOTH_ZOO_DISABLE_GPU_INIT because this host has an "
+                        "accelerator and that path would stub out triton/bitsandbytes for the whole process.",
+                        module_name,
+                        first_error,
+                    )
+                _optional_modules[module_name] = module
+                return module
+            global _gpu_init_override_depth
+            previous = _os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
+            ours = previous != "1"
+            # Claim BEFORE the write, release AFTER the restore.
+            _gpu_init_override_depth += ours
             try:
-                module = importlib.import_module(module_name)
-            except Exception as exc:  # noqa: BLE001
-                import logging as _logging
-                _logging.getLogger(__name__).debug(
-                    "%s unavailable (%s; with GPU init disabled: %s)", module_name, first_error, exc
-                )
-                module = None
+                _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = "1"
+                try:
+                    module = importlib.import_module(module_name)
+                except Exception as exc:  # noqa: BLE001
+                    import logging as _logging
+                    _logging.getLogger(__name__).debug(
+                        "%s unavailable (%s; with GPU init disabled: %s)",
+                        module_name,
+                        first_error,
+                        exc,
+                    )
+                    module = None
+                finally:
+                    if previous is None:
+                        _os.environ.pop("UNSLOTH_ZOO_DISABLE_GPU_INIT", None)
+                    else:
+                        _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = previous
             finally:
-                if previous is None:
-                    _os.environ.pop("UNSLOTH_ZOO_DISABLE_GPU_INIT", None)
-                else:
-                    _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = previous
-        finally:
-            _gpu_init_override_depth -= ours
-        _optional_modules[module_name] = module
-        return module
+                _gpu_init_override_depth -= ours
+            _optional_modules[module_name] = module
+            return module
+
+
+@dataclass(frozen = True)
+class _EnvXetHealth:
+    use_xet: bool
+    reason: str
+    source: str = "forced"
+
+    def __bool__(self) -> bool:
+        return self.use_xet
+
+
+def _env_xet_health() -> Any:
+    """The env checks atop ``unsloth_zoo.hf_xet_health.xet_health``, for when that module cannot load: without
+    them Auto picks Xet and the worker gets ``HF_HUB_DISABLE_XET=0`` over the operator's ``1``."""
+
+    def _on(name: str) -> bool:
+        return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+    if _on("UNSLOTH_DISABLE_XET") or _on("UNSLOTH_STABLE_DOWNLOADS") or _on("HF_HUB_DISABLE_XET"):
+        return _EnvXetHealth(False, "Xet disabled by environment")
+    if _on("UNSLOTH_FORCE_XET"):
+        return _EnvXetHealth(True, "Xet forced by environment")
+    return None
 
 
 def _xet_health_from(module: Any, **kwargs: Any) -> Any:
     if module is None:
-        return None
+        return _env_xet_health()
     try:
         return module.xet_health(**kwargs)
     except Exception as exc:  # noqa: BLE001
@@ -952,6 +1044,7 @@ def hf_hub_download_with_xet_fallback(
     cache_dir: Optional[str] = None,
     reuse_other_cache_root: bool = False,
     local_files_only: bool = False,
+    gguf_header_delta: bool = False,
 ) -> str:
     """Single-file download via the shared fallback with Unsloth's marker-aware HTTP-retry prep.
     ``force_download`` re-fetches a newer blob over a cached one (Unsloth's model-update path).
@@ -971,7 +1064,11 @@ def hf_hub_download_with_xet_fallback(
     already cleared it. Routed THROUGH the other root rather than returned raw, so the ref still
     resolves and a republished file is picked up; the blob is reused, and offline/401
     hf_hub_download keeps the failed HEAD and serves the cached pointer. Off for
-    ``force_download``, whose point is to re-fetch."""
+    ``force_download``, whose point is to re-fetch.
+
+    ``gguf_header_delta`` (opt-in, Images / Video GGUF loads only) rebuilds a GGUF whose new revision changed only its
+    header from the cached older copy (``hub.utils.gguf_header_delta``); no network unless that file is missing for
+    the target commit and an older snapshot holds it."""
     if cache_dir is None:
         from utils.hf_cache_settings import get_hf_cache_paths
         cache_dir = str(get_hf_cache_paths().hub_cache)
@@ -1010,6 +1107,22 @@ def hf_hub_download_with_xet_fallback(
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("Cancelled")
         return path
+    if gguf_header_delta and str(filename).lower().endswith(".gguf"):
+        # A rebuilt file has the Hub's sha256, so it already is the newer blob a forced fetch wants.
+        try:
+            from hub.utils.gguf_header_delta import prepare_media_gguf
+            if prepare_media_gguf(
+                repo_id,
+                filename,
+                token,
+                repo_type = repo_type,
+                revision = revision,
+                cache_dir = cache_dir,
+                cancel_event = cancel_event,
+            ).placed:
+                force_download = False
+        except Exception:  # noqa: BLE001 - an optimisation only: the normal download follows
+            pass
     # Omit rather than forward None: an older unsloth_zoo hands `interval` straight to Event.wait()
     optional: dict[str, Any] = {}
     if stall_timeout is not None:

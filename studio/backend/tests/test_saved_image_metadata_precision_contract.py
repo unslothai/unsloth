@@ -494,9 +494,7 @@ def test_the_persisted_recipe_records_the_engaged_build_not_the_load_request(eng
     assert meta["model_kind"] == "gguf"
     assert meta["gguf_filename"] == "z-image-Q4_K_M.gguf"
 
-    # ...and again through the response model, because that is what the Recipe popover reads.
-    # The dict above is pre-serialization: a GalleryImage that stops declaring these fields has
-    # FastAPI silently strip them from the wire while every assertion above still passes.
+    # the Recipe popover reads GalleryImage fields that FastAPI strips when undeclared.
     body = gen.json()["images"][0]
     for field, expected in (
         ("transformer_quant", _EngagedBackend.engaged),
@@ -509,13 +507,34 @@ def test_the_persisted_recipe_records_the_engaged_build_not_the_load_request(eng
         )
 
 
-def test_the_openai_route_persists_the_same_build(engaged_client):
-    """The other supported way to make an image.
+def test_the_recipe_records_only_the_negative_prompt_the_backend_applied(
+    engaged_client, monkeypatch
+):
+    client, backend, saved = engaged_client
+    load = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "unsloth/Z-Image-Turbo-GGUF", "gguf_filename": "z-image-Q4_K_M.gguf"},
+    )
+    assert load.status_code == 200, load.text
+    body = {"prompt": "a sloth", "negative_prompt": "text, watermark", "guidance": 4.0, "seed": 7}
 
-    /v1/images/generations goes through the same backend and the same gallery, and its recipe
-    was missing every build key -- so an image made through an OpenAI client listed with no
-    quant, no kind and no filename while the contract above stayed green.
-    """
+    gen = client.post("/api/inference/images/generate", json = body)
+    assert gen.status_code == 200, gen.text
+    assert saved[-1]["negative_prompt"] is None
+    assert gen.json()["images"][0].get("negative_prompt") is None
+
+    ignoring = backend.generate
+    monkeypatch.setattr(
+        backend,
+        "generate",
+        lambda **kw: {**ignoring(**kw), "negative_prompt": kw["negative_prompt"]},
+    )
+    gen = client.post("/api/inference/images/generate", json = body)
+    assert gen.status_code == 200, gen.text
+    assert saved[-1]["negative_prompt"] == "text, watermark"
+
+
+def test_the_openai_route_persists_the_same_build(engaged_client):
     client, backend, saved = engaged_client
     load = client.post(
         "/api/inference/images/load",

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The large-head-dim flex routing: decoder-only scoping, opt-outs, config-driven detection,
-and why the mask is always present under Unsloth's compiled mask wrapper."""
+and when Unsloth's mask wrapper skips the causal mask."""
 
 import pytest
 
@@ -96,7 +96,6 @@ def test_force_enable_refuses_an_explicit_opt_out():
     )
     u._FLEX_SUPPORT_FORCED.clear()
     assert u._enable_flex_attention_support(cls, "t5gemma2") is False
-    # and it must not have mutated the class on the way out
     assert u._declares_flex_support(cls) is False
 
 
@@ -141,7 +140,6 @@ def test_head_dim_derived_from_hidden_size_when_absent(_no_env):
 
 
 def test_per_layer_head_dims_take_the_maximum(_no_env):
-    # 5.x per_layer_config: the largest layer decides.
     cfg = _Cfg(
         model_type = "fake",
         head_dim = 128,
@@ -157,7 +155,6 @@ def test_per_layer_head_dims_take_the_maximum(_no_env):
 
 
 def test_a_homogeneous_small_config_is_unaffected_by_the_per_layer_read(_no_env):
-    # 4.x configs have no per_layer_config at all; the global head_dim must still decide.
     assert (
         u._prefers_flex_for_head_dim(_Cfg(model_type = "fake", head_dim = 128, num_attention_heads = 8))
         is False
@@ -246,7 +243,6 @@ def test_forcing_flex_that_cannot_be_scoped_keeps_flash_attention(monkeypatch, m
 
 
 def test_forcing_the_env_var_cannot_override_an_architecture_opt_out(monkeypatch):
-    # a deliberate _supports_flex_attn = False still wins over the env var
     monkeypatch.setenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, "1")
     cls = _real_model_class(
         "transformers.models.t5gemma2.modeling_t5gemma2", "T5Gemma2ForConditionalGeneration"
@@ -255,9 +251,8 @@ def test_forcing_the_env_var_cannot_override_an_architecture_opt_out(monkeypatch
     assert u._enable_flex_attention_support(cls, "t5gemma2") is False
 
 
-# Upstream skips the mask for an unpadded batch, but `_ignore_causal_mask_sdpa` returns False
-# while tracing, so Unsloth's compiled create_causal_mask always builds one. Pins both halves,
-# and that with UNSLOTH_COMPILE_DISABLE=1 the uncompiled wrapper keeps upstream's skip.
+# `_ignore_causal_mask_sdpa` returns False while tracing, so a compiled create_causal_mask always
+# builds a mask; unsloth-zoo#1575 restores upstream's unpadded skip by running eagerly.
 
 
 def _mask_for(
@@ -266,9 +261,13 @@ def _mask_for(
     q_len = 64,
     head_dim = 256,
     bsz = 2,
+    position_ids = "arange",
 ):
+    import inspect
+
     import torch
     import transformers as T
+    from transformers import masking_utils
 
     cfg = T.LlamaConfig(
         hidden_size = 2048,
@@ -279,13 +278,39 @@ def _mask_for(
         vocab_size = 128,
     )
     cfg._attn_implementation = "sdpa"
-    return create(
-        config = cfg,
-        inputs_embeds = torch.zeros(bsz, q_len, cfg.hidden_size, dtype = torch.bfloat16),
-        attention_mask = attention_mask,
-        past_key_values = None,
-        position_ids = torch.arange(q_len).unsqueeze(0).expand(bsz, -1),
+    # Upstream signature, not the wrapper's: <= 5.1 `input_embeds` + `cache_position`, 5.9 no cache.
+    original = getattr(
+        masking_utils, "_unsloth_original_create_causal_mask", masking_utils.create_causal_mask
     )
+    parameters = inspect.signature(original).parameters
+    embeds_name = "input_embeds" if "input_embeds" in parameters else "inputs_embeds"
+    if isinstance(position_ids, str):
+        position_ids = torch.arange(q_len).unsqueeze(0).expand(bsz, -1)
+    kwargs = {
+        "config": cfg,
+        embeds_name: torch.zeros(bsz, q_len, cfg.hidden_size, dtype = torch.bfloat16),
+        "attention_mask": attention_mask,
+        "past_key_values": None,
+        "position_ids": position_ids,
+    }
+    if "cache_position" in parameters:
+        kwargs["cache_position"] = torch.arange(q_len)
+    return create(**kwargs)
+
+
+def _padded_masks():
+    import torch
+
+    right = torch.ones(2, 64, dtype = torch.long)
+    right[0, -8:] = 0
+    left = torch.ones(2, 64, dtype = torch.long)
+    left[0, :8] = 0
+    return right, left
+
+
+def _packed_position_ids():
+    import torch
+    return torch.arange(32).repeat(2).unsqueeze(0).expand(2, -1)
 
 
 def _uncompiled_create_causal_mask():
@@ -297,34 +322,43 @@ def _uncompiled_create_causal_mask():
     return original
 
 
+def _wrapper_skips_unpadded_masks():
+    """Whether the installed unsloth_zoo has the unpadded causal-mask skip (unsloth-zoo#1575)."""
+    try:
+        from unsloth_zoo.temporary_patches import misc
+    except Exception:
+        return False
+    return hasattr(misc, "CAUSAL_MASK_SKIP_STATS") and hasattr(misc, "_maskless_causal_arguments")
+
+
+def _skip_count():
+    from unsloth_zoo.temporary_patches.misc import CAUSAL_MASK_SKIP_STATS
+    return CAUSAL_MASK_SKIP_STATS["skipped"]
+
+
+@pytest.fixture
+def _skip_on(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_SKIP_CAUSAL_MASK", raising = False)
+
+
 def test_upstream_skips_the_mask_for_an_unpadded_batch():
     import torch
 
     create = _uncompiled_create_causal_mask()
-    assert _mask_for(create, None) is None
+    # transformers 4.x treats any position_ids as possibly packed and keeps the mask.
+    assert _mask_for(create, None, position_ids = None) is None
     assert _mask_for(create, torch.ones(2, 64, dtype = torch.long)) is None
 
 
 def test_upstream_still_materialises_a_mask_when_padded():
-    import torch
-
     create = _uncompiled_create_causal_mask()
-    right = torch.ones(2, 64, dtype = torch.long)
-    right[0, -8:] = 0
-    left = torch.ones(2, 64, dtype = torch.long)
-    left[0, :8] = 0
+    right, left = _padded_masks()
     assert _mask_for(create, right) is not None
     assert _mask_for(create, left) is not None
 
 
 def _mask_wrapper_is_compiled():
-    """Whether the installed create_causal_mask wrapper calls a compiled function.
-
-    Read off the wrapper rather than UNSLOTH_COMPILE_DISABLE: unsloth_zoo decides once, when it
-    patches at import, and a test module can flip the variable later in the same process. With
-    the switch set, zoo still installs the wrapper (its keyword fixes apply) around the
-    uncompiled original, which is what it stashes.
-    """
+    """Reads the installed wrapper, not UNSLOTH_COMPILE_DISABLE, since zoo decides once at import."""
     import inspect
 
     from transformers import masking_utils
@@ -339,25 +373,63 @@ def _mask_wrapper_is_compiled():
     return inner is not original
 
 
-def test_our_compiled_wrapper_is_what_defeats_the_skip():
-    """Pins the cause, so this is a deliberate trade and not an accident nobody noticed."""
+def test_compiled_wrapper_skips_the_mask_for_an_unpadded_batch(_skip_on):
+    """An unpadded, cache-free SDPA batch gets no mask, so SDPA can take its is_causal kernels."""
+    import torch
     from transformers import masking_utils
 
-    # Skips when the pair does not stash the original or the wrapper cannot be read.
     if not _mask_wrapper_is_compiled():
         pytest.skip("the mask wrapper calls the uncompiled original in this run")
-    assert _mask_for(masking_utils.create_causal_mask, None) is not None
+    create = masking_utils.create_causal_mask
+    if not _wrapper_skips_unpadded_masks():
+        # Older unsloth_zoo: tracing makes `_ignore_causal_mask_sdpa` refuse, so the mask is built.
+        assert _mask_for(create, None) is not None
+        return
+    before = _skip_count()
+    assert _mask_for(create, None) is None
+    assert _mask_for(create, torch.ones(2, 64, dtype = torch.long)) is None
+    assert _skip_count() == before + 2
 
 
-def test_an_uncompiled_wrapper_keeps_the_upstream_skip():
-    """The other half of the cause: without compilation the wrapper changes nothing here.
+def test_compiled_wrapper_keeps_the_mask_when_padded_or_packed(_skip_on):
+    from transformers import masking_utils
 
-    unsloth-zoo#1335 made the wrapper install under UNSLOTH_COMPILE_DISABLE=1 too, around the
-    uncompiled original. The mask is then skipped exactly as upstream skips it, so a
-    materialised mask on an unpadded batch comes from compiling, not from wrapping.
-    """
+    create = masking_utils.create_causal_mask
+    right, left = _padded_masks()
+    before = _skip_count() if _wrapper_skips_unpadded_masks() else None
+    assert _mask_for(create, right) is not None
+    assert _mask_for(create, left) is not None
+    assert _mask_for(create, None, position_ids = _packed_position_ids()) is not None
+    if before is not None:
+        assert _skip_count() == before
+
+
+def test_kill_switch_keeps_the_mask_for_an_unpadded_batch(monkeypatch):
+    import torch
+    from transformers import masking_utils
+
+    if not _wrapper_skips_unpadded_masks():
+        pytest.skip("this unsloth_zoo has no unpadded causal-mask skip")
+    if not _mask_wrapper_is_compiled():
+        pytest.skip("uncompiled, the original skips the mask itself")
+    monkeypatch.setenv("UNSLOTH_SKIP_CAUSAL_MASK", "0")
+    create = masking_utils.create_causal_mask
+    before = _skip_count()
+    assert _mask_for(create, None) is not None
+    assert _mask_for(create, torch.ones(2, 64, dtype = torch.long)) is not None
+    assert _skip_count() == before
+
+
+def test_an_uncompiled_wrapper_keeps_the_upstream_skip(_skip_on):
+    """Uncompiled, the mask wrapper skips exactly when upstream does, on padded and unpadded batches."""
+    import torch
     from transformers import masking_utils
 
     if _mask_wrapper_is_compiled():
         pytest.skip("the mask wrapper is compiled in this run")
-    assert _mask_for(masking_utils.create_causal_mask, None) is None
+    create = masking_utils.create_causal_mask
+    assert _mask_for(create, None, position_ids = None) is None
+    assert _mask_for(create, torch.ones(2, 64, dtype = torch.long)) is None
+    right, left = _padded_masks()
+    assert _mask_for(create, right) is not None
+    assert _mask_for(create, left) is not None

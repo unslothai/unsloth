@@ -417,7 +417,11 @@ def _has_non_gguf_weights(path: Path) -> bool:
     try:
         # Only the safetensors arm needs the check: a weight ".bin" is recognised by its name prefix, which a
         # "._" already fails.
-        if any(not is_appledouble_metadata(f) for f in path.glob("*.safetensors")):
+        from core.inference.diffusion_lora import is_image_lora_file
+        if any(
+            not is_appledouble_metadata(f) and not is_image_lora_file(f)
+            for f in path.glob("*.safetensors")
+        ):
             return True
         return any(_is_weight_bin(f.name) for f in path.glob("*.bin"))
     except OSError:
@@ -433,10 +437,13 @@ def _servable_gguf_names(directory: Path) -> list[str]:
     """The ``.gguf`` names in *directory* that count as a model being present there. An imatrix is
     calibration data, not a model artifact; mmproj and MTP drafters DO count, since they are
     companions of a real model and presence is all they decide."""
+    from core.inference.diffusion_lora import is_image_lora_file
     return [
         p.name
         for p in directory.glob("*.gguf")
-        if not is_appledouble_metadata(p) and not _is_imatrix_path(p.name)
+        if not is_appledouble_metadata(p)
+        and not _is_imatrix_path(p.name)
+        and not is_image_lora_file(p)
     ]
 
 
@@ -455,7 +462,12 @@ def _is_gguf_companion_only_dir(path: Path) -> bool:
         return False
 
 
-def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[LocalModelInfo]:
+def _scan_models_dir(
+    models_dir: Path,
+    *,
+    limit: int | None = None,
+    loose_files: bool = False,
+) -> List[LocalModelInfo]:
     if not models_dir.exists() or not models_dir.is_dir():
         return []
 
@@ -519,6 +531,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
             ),
         )
     if limit is None or len(found) < limit:
+        from core.inference.diffusion_lora import is_image_lora_file
         for gguf_file in models_dir.glob("*.gguf"):
             if limit is not None and len(found) >= limit:
                 break
@@ -527,6 +540,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
                 gguf_file.is_file()
                 and _is_main_gguf_filename(gguf_file.name)
                 and not is_appledouble_metadata(gguf_file)
+                and not is_image_lora_file(gguf_file)
             ):
                 try:
                     updated_at = gguf_file.stat().st_mtime
@@ -543,9 +557,21 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
                     ),
                 )
 
+    # Several loose checkpoints: one row per file (the folder rescue below needs exactly one).
+    from core.inference.diffusion import resolve_local_single_file
+    from hub.utils.comfy_models import loose_diffusion_checkpoints
+
+    sole = resolve_local_single_file(str(models_dir)) if not (found or loose_files) else None
+    loose = [] if sole is not None else loose_diffusion_checkpoints(models_dir)
+
     # A scan folder can also point at a BARE single-file checkpoint dir (one loose .safetensors,
     # no configs): both checks reject it, but resolve_local_single_file loads it.
-    if not found and (limit is None or limit > 0) and _has_non_gguf_weights(models_dir):
+    if (
+        not found
+        and not loose
+        and (limit is None or limit > 0)
+        and _has_non_gguf_weights(models_dir)
+    ):
         try:
             updated_at = models_dir.stat().st_mtime
         except OSError:
@@ -557,6 +583,24 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
                 path = str(models_dir),
                 source = "models_dir",
                 model_format = _dir_model_format(models_dir),
+                updated_at = updated_at,
+            ),
+        )
+
+    for checkpoint in loose:
+        if limit is not None and len(found) >= limit:
+            break
+        try:
+            updated_at = checkpoint.stat().st_mtime
+        except OSError:
+            continue
+        found.append(
+            LocalModelInfo(
+                id = str(checkpoint),
+                display_name = checkpoint.stem,
+                path = str(checkpoint),
+                source = "models_dir",
+                model_format = None,
                 updated_at = updated_at,
             ),
         )
@@ -677,6 +721,8 @@ def _scan_lmstudio_dir(
             ),
         ]
 
+    from core.inference.diffusion_lora import is_image_lora_file
+
     found: List[LocalModelInfo] = []
     for child in lm_dir.iterdir():
         try:
@@ -685,6 +731,7 @@ def _scan_lmstudio_dir(
                     _is_main_gguf_filename(child.name)
                     and child.is_file()
                     and not is_appledouble_metadata(child)
+                    and not is_image_lora_file(child)
                 ):
                     try:
                         updated_at = child.stat().st_mtime
@@ -727,7 +774,7 @@ def _scan_lmstudio_dir(
                             bool(_servable_gguf_names(model_dir))
                             or (model_dir / "config.json").exists()
                             or any(
-                                not is_appledouble_metadata(p)
+                                not is_appledouble_metadata(p) and not is_image_lora_file(p)
                                 for p in model_dir.glob("*.safetensors")
                             )
                         )
@@ -753,6 +800,7 @@ def _scan_lmstudio_dir(
                         _is_main_gguf_filename(model_dir.name)
                         and model_dir.is_file()
                         and not is_appledouble_metadata(model_dir)
+                        and not is_image_lora_file(model_dir)
                     ):
                         try:
                             updated_at = model_dir.stat().st_mtime
@@ -868,6 +916,36 @@ def _scan_nested_compat_rows(
             if len(existing) + len(found) >= limit:
                 return found
     return found
+
+
+def _with_comfy_compat_rows(
+    folder_path: Path, existing: List[LocalModelInfo], *, limit: int
+) -> List[LocalModelInfo]:
+    """``existing`` plus a ComfyUI root's denoiser-folder rows, minus the role folders themselves
+    (the ``publisher/model`` scan lists them as models; they are containers)."""
+    from hub.utils.comfy_models import comfy_dit_scan_roots, comfy_role_dirs
+
+    role_dirs = comfy_role_dirs(folder_path)
+    if role_dirs:
+        existing = [
+            m for m in existing if os.path.normcase(os.path.realpath(m.path)) not in role_dirs
+        ]
+    seen = {(m.path, m.model_format) for m in existing}
+    found: List[LocalModelInfo] = []
+    roots = comfy_dit_scan_roots(folder_path)
+    scanned = {os.path.normcase(str(root)) for root in roots}
+    for root in roots:
+        if len(existing) + len(found) >= limit:
+            break
+        for row in _scan_models_dir(
+            root, limit = limit - len(existing) - len(found), loose_files = True
+        ):
+            key = (row.path, row.model_format)
+            if key in seen or os.path.normcase(row.path) in scanned:
+                continue
+            seen.add(key)
+            found.append(row)
+    return existing + found
 
 
 def collect_local_models(
@@ -1008,6 +1086,7 @@ def collect_local_models(
                 _generic += _scan_nested_compat_rows(
                     folder_path, _generic, limit = _MAX_MODELS_PER_FOLDER
                 )
+            _generic = _with_comfy_compat_rows(folder_path, _generic, limit = _MAX_MODELS_PER_FOLDER)
             custom_models = []
             for model in _generic:
                 path = Path(model.path)
@@ -2351,12 +2430,15 @@ async def get_model_config(
     hf_token: Optional[str] = Query(None),
     prefer_local_cache: bool = False,
     local_path: Optional[str] = None,
+    as_decision: bool = False,
     header_hf_token: Optional[str] = Depends(get_hf_token),
     allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    """Get configuration for a specific model (wraps load_model_defaults)."""
+    """Get configuration for a specific model (wraps load_model_defaults).
+
+    ``as_decision`` asks for a text or vision LLM as a decision model: a fresh Clef head on it."""
     # An API-key caller is shown a filesystem-backed row under an opaque `ref:` handle and hands
     # it back here, where it would otherwise read as a Hugging Face id.
     from core.inference.npu_backend import is_npu_model_path
@@ -2487,6 +2569,15 @@ async def get_model_config(
                         max_position_embeddings = _get_max_position_embeddings(_to_ns(_cfg))
                 except Exception:
                     pass
+
+            if (
+                as_decision
+                and not is_decision
+                and not (is_embedding or is_lora or audio_type is not None)
+            ):
+                from utils.models.model_config import load_llm_decision_defaults
+                is_decision, layout = True, "llm"
+                config_dict = load_llm_decision_defaults()
 
             logger.info(
                 f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, audio_type_known={audio_type_definitive}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
@@ -3103,7 +3194,7 @@ async def scan_diffusion_loras(
     """
     from core.inference import diffusion_lora
 
-    entries = diffusion_lora.list_loras(family = family)
+    entries = await asyncio.to_thread(diffusion_lora.list_loras, family = family)
     if account_access.managed_account():
         entries = await asyncio.to_thread(account_access.filter_model_rows, entries)
     return {
@@ -3116,6 +3207,7 @@ async def scan_diffusion_loras(
                 "families": list(e.families),
                 "size_bytes": e.size_bytes,
                 "weight_default": e.weight_default,
+                "fine_tuned": e.fine_tuned,
             }
             for e in entries
         ],
@@ -3289,30 +3381,30 @@ def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
     deleted_bytes = 0
     from hub.utils.gguf import remove_appledouble_sidecar
 
+    from hub.utils.gguf import gguf_variant_keys_by_checkpoint
+
+    weights: list[tuple[Path, str]] = []
     for path in root.rglob("*"):
         if not path.is_file() or not _is_main_gguf_filename(path.name):
             continue
-        # Counted as a model if left in, so the reported count would follow the walk order; it still goes
-        # below, as metadata of the file it belongs to. Proven metadata only.
+        # proven AppleDouble metadata is removed with its weight, not counted as a model.
         if is_appledouble_metadata(path):
             continue
-        # Keyed on the path, not the basename: a repo holding several checkpoints at
-        # one quant would otherwise delete every one of them for a single row.
-        from utils.models.model_config import _gguf_variant_key
-
         try:
             relative = path.relative_to(root).as_posix()
         except ValueError:
             relative = path.name
-        if _gguf_variant_key(relative).lower() != variant.lower():
+        weights.append((path, relative))
+    # checkpoint-qualified keys isolate sibling builds that share a quant.
+    keys = gguf_variant_keys_by_checkpoint(relative for _path, relative in weights)
+    for path, relative in weights:
+        if keys[relative].lower() != variant.lower():
             continue
         try:
             deleted_bytes += path.stat().st_size
         except OSError:
             pass
         path.unlink()
-        # Skipped by the walk above, so this is its only chance to be reclaimed. Its bytes count
-        # toward what was freed even though it is not counted as a model.
         deleted_bytes += remove_appledouble_sidecar(path)
         deleted_count += 1
     return deleted_count, deleted_bytes
@@ -3326,11 +3418,7 @@ async def delete_finetuned_model(
     gguf_variant: Optional[str] = Body(None),
     current_subject: str = Depends(get_current_subject),
 ):
-    """Delete an Unsloth-trained or exported model from disk.
-
-    Only paths under Unsloth's outputs/exports roots are accepted.
-    Exported GGUF entries can delete one quant variant at a time.
-    """
+    """delete an Unsloth output, or one quant from an exported GGUF, within approved roots."""
     if source not in {"training", "exported"}:
         raise HTTPException(
             status_code = 400,
@@ -4751,6 +4839,7 @@ async def get_gguf_variants(
                 dependencies_resolved = bool(getattr(response, "dependencies_resolved", False)),
                 loadable_variants = getattr(response, "loadable_variants", None),
                 loadable = getattr(response, "loadable", None),
+                variant_format = getattr(response, "variant_format", None),
             ),
             via_api_key = via_api_key,
         )
@@ -5648,6 +5737,27 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
     raise HTTPException(status_code = 404, detail = "Cached model path not found")
 
 
+def _resolve_cached_path_for_row(repo_id: str, variant: Optional[str]) -> Path:
+    """``_resolve_cached_model_path`` for a picker row id. An audio.cpp umbrella folder row resolves
+    to its own variant's file, or without a variant to its folder, never the repo's snapshot root."""
+    from core.inference.audio_cpp_models import cached_folder_target, folder_snapshot_dir
+
+    folder = cached_folder_target(repo_id, variant)
+    if folder is None:
+        if not _is_valid_repo_id(repo_id):
+            raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
+        return _resolve_cached_model_path(repo_id, variant)
+    umbrella, keys = folder
+    if not keys:
+        raise HTTPException(status_code = 404, detail = "Model not found in cache")
+    if variant:
+        return _resolve_cached_model_path(umbrella, keys[0])
+    path = folder_snapshot_dir(repo_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Cached model path not found")
+    return path
+
+
 class CachedModelPathResponse(BaseModel):
     path: str
     is_dir: bool
@@ -5662,9 +5772,7 @@ async def get_cached_model_path(
     """Absolute on-disk path of a cached repo or one of its GGUF variants."""
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_model_access, repo_id)
-    if not _is_valid_repo_id(repo_id):
-        raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
-    path = await asyncio.to_thread(_resolve_cached_model_path, repo_id, variant.strip() or None)
+    path = await asyncio.to_thread(_resolve_cached_path_for_row, repo_id, variant.strip() or None)
     return {"path": str(path), "is_dir": path.is_dir()}
 
 
@@ -5680,10 +5788,8 @@ async def reveal_cached_model(
         await asyncio.to_thread(account_access.require_model_access, repo_id)
     from utils.paths.path_utils import reveal_in_file_manager
 
-    if not _is_valid_repo_id(repo_id):
-        raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
     variant = (variant or "").strip() or None
-    path = await asyncio.to_thread(_resolve_cached_model_path, repo_id, variant)
+    path = await asyncio.to_thread(_resolve_cached_path_for_row, repo_id, variant)
     try:
         await asyncio.to_thread(reveal_in_file_manager, path)
     except Exception as e:
@@ -5707,7 +5813,7 @@ async def list_checkpoints(
     outputs_dir = account_access.private_directory(outputs_dir, "outputs")
     try:
         resolved_outputs_dir = str(resolve_output_dir(outputs_dir))
-        raw_models = scan_checkpoints(outputs_dir = resolved_outputs_dir)
+        raw_models = scan_checkpoints(outputs_dir = resolved_outputs_dir, include_decision = True)
 
         models = [
             ModelCheckpoints(

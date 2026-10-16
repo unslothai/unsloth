@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import bisect
 import codecs
 import hashlib
+import hmac
 import html as _html
 import json
 import re
 import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from typing import Literal, Optional
 from urllib.parse import quote, urljoin, urlsplit
@@ -25,10 +28,18 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject
-from core.inference.tools import _USER_AGENTS, _fetch_url_raw, _normalize_url_scheme
+from core.inference.tools import (
+    _USER_AGENTS,
+    _WHATWG_CHARSET_CODECS,
+    _fetch_url_raw,
+    _normalize_url_scheme,
+    _sniff_meta_charset,
+)
+from core.inference.web_access_policy import normalize_domain
 from loggers import get_logger
+from routes.browser_network import BROWSER_NETWORK_JS
 
-# Same embedders as the canvas shell.
+# same embedders as the canvas shell.
 from routes.inference import _ARTIFACT_PREVIEW_FRAME_ANCESTORS as _FRAME_ANCESTORS
 
 logger = get_logger(__name__)
@@ -52,6 +63,34 @@ _HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
 # Own pool, so slow sites can't starve chat inference's default executor.
 _FETCH_POOL = ThreadPoolExecutor(max_workers = 8, thread_name_prefix = "browser-fetch")
 _DISCONNECT_POLL_S = 0.25
+# Pages' requests to their own sites (/request); a pool of their own, so a busy page can't hold up page loads.
+_REQUEST_POOL = ThreadPoolExecutor(max_workers = 8, thread_name_prefix = "browser-request")
+# Queued plus running; held until the worker ends, which a disconnect does not cut short, so a page
+# that aborts and resends can't pile request bodies up behind a stalled site.
+_PAGE_REQUEST_SLOTS = threading.BoundedSemaphore(64)
+_MAX_PAGE_REQUEST_BODY = 1024 * 1024
+_MAX_PAGE_RESPONSE_BYTES = 10 * 1024 * 1024
+_HEADER_NAME_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]{1,256}")
+# Fetch's forbidden methods and request headers: no page can send them, so neither does this.
+_FORBIDDEN_METHODS = frozenset({"CONNECT", "TRACE", "TRACK"})
+_FORBIDDEN_REQUEST_HEADERS = frozenset(
+    "accept-charset accept-encoding access-control-request-headers access-control-request-method "
+    "connection content-length cookie cookie2 date dnt expect host keep-alive origin referer "
+    "set-cookie te trailer transfer-encoding upgrade user-agent via".split()
+)
+# Fetch drops these, and the request's Origin, when a redirect turns a write into a bodiless GET.
+_REQUEST_BODY_HEADERS = frozenset(
+    "content-encoding content-language content-location content-type".split()
+)
+# What a page reads of a CORS response besides the headers it names in Access-Control-Expose-Headers.
+_CORS_SAFELISTED_RESPONSE_HEADERS = frozenset(
+    "cache-control content-language content-length content-type expires last-modified pragma".split()
+)
+# Unreadable by any page (Set-Cookie) or about the hop, not the response. Content-Length and
+# Content-Encoding stay: browsers show them with a decoded body too.
+_HIDDEN_RESPONSE_HEADERS = frozenset(
+    "set-cookie set-cookie2 connection keep-alive proxy-connection te trailer transfer-encoding upgrade".split()
+)
 
 # Quoted values are bounded and a bare "<" ends a tag, so stripping stays linear on hostile pages.
 _TAG_BODY = r"""(?:[^<>"']|"[^"]{0,4096}"|'[^']{0,4096}')*>"""
@@ -65,7 +104,59 @@ _CONTENT_ATTR_RE = re.compile(
 _REFRESH_RE = re.compile(
     r"^\s*(\d+(?:\.\d+)?)\s*(?:[;,]\s*(?:url\s*=\s*)?['\"]?([^'\"]*)['\"]?)?", re.IGNORECASE
 )
-_META_CHARSET_RE = re.compile(rb"""<meta[^<>]+charset\s*=\s*["']?([\w:.-]+)""", re.IGNORECASE)
+# The sandbox's opaque origin fails CORS module loads: self-contained modules are inlined, ones with imports keep src.
+_MODULE_SCRIPT_RE = re.compile(r"<script\b" + _TAG_BODY + r"\s*</script\s*>", re.IGNORECASE)
+# One start-tag attribute; quoted values are skipped whole so a name inside a value isn't matched.
+_TAG_ATTR_RE = re.compile(r"""([^\s/>][^\s/>=]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*)))?|/""")
+_FETCH_ATTRS = frozenset({"src", "integrity", "crossorigin"})
+# Imports resolve against the module URL. "/" after import may start a comment; after from it may be division (keeping the tag is the safe side).
+_MODULE_IMPORT_RE = re.compile(r"""(?<![\w$.])(?:import\b\s*[{*("'`\w$./]|from\s*["'`/])""")
+_MAX_AGE_RE = re.compile(r"(?:^|[\s,])(s-maxage|max-age)\s*=\s*\"?(\d+)", re.IGNORECASE)
+_SCRIPT_OPEN_RE = re.compile(r"<script", re.IGNORECASE)
+# Text, not markup: comments, raw-text/RCDATA/noscript/template content, and other tags' attribute values.
+_INERT_START_RE = re.compile(
+    r"<!--|<(script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext|template)\b"
+    + _TAG_BODY
+    + r"|<[a-z][^\s/>]*"
+    + _TAG_BODY,
+    re.IGNORECASE,
+)
+_TEMPLATE_TAG_RE = re.compile(r"<(/)?template(?=[\s/>])", re.IGNORECASE)
+_CLOSING_TAG_RES = {
+    name: re.compile(rf"</{name}(?=[\s/>])", re.IGNORECASE)
+    for name in (
+        "script",
+        "style",
+        "textarea",
+        "title",
+        "xmp",
+        "iframe",
+        "noembed",
+        "noframes",
+        "noscript",
+    )
+}
+# The JavaScript MIME types a module script may be served as (WHATWG MIME Sniffing).
+_JS_TYPES = frozenset(
+    "application/ecmascript application/javascript application/x-ecmascript "
+    "application/x-javascript text/ecmascript text/javascript text/javascript1.0 "
+    "text/javascript1.1 text/javascript1.2 text/javascript1.3 text/javascript1.4 "
+    "text/javascript1.5 text/jscript text/livescript text/x-ecmascript text/x-javascript".split()
+)
+# Strongest last, for Subresource Integrity's "strongest algorithm wins".
+_SRI_ALGORITHMS = ("sha256", "sha384", "sha512")
+_MAX_INLINED_MODULES = 6
+_MAX_MODULE_BYTES = 2 * 1024 * 1024
+_MODULE_TIMEOUT_S = 8
+# Separate from _FETCH_POOL, whose workers wait on these.
+_MODULE_POOL = ThreadPoolExecutor(max_workers = 4, thread_name_prefix = "browser-module")
+# (url, integrity, credentials) -> (expiry, code or None); kept only while the response says fresh, failures never.
+_MODULE_CACHE: "OrderedDict[tuple[str, str, bool], tuple[float, Optional[str]]]" = OrderedDict()
+_MODULE_CACHE_LOCK = threading.Lock()
+_MODULE_CACHE_TTL_S = 600
+_MODULE_CACHE_ENTRIES = 128
+_MODULE_CACHE_CHARS = 16 * 1024 * 1024
+_module_cache_chars = 0
 
 # https only (http could hit local services; WebKit lacks local network protection). The sandbox
 # (no allow-same-origin) isolates pages; the injected script submits forms.
@@ -89,6 +180,200 @@ _FRAME_CSP = (
     "treat-as-public-address"
 )
 
+# Opaque origins throw on storage and cookies: these keep a site's data in the panel (page-storage.ts) for the session.
+_PAGE_STORAGE_JS = r"""
+        // Past the panel's quota (page-storage.ts) a value stays in this page only.
+        const kept = (key, value) => key.length + value.length <= 131072;
+        // Numbered so the panel's echo of an older write can't undo a newer one still on its way.
+        let writes = 0;
+        const sync = (area, key, value) => {
+          const seq = ++writes;
+          const store = pageStores[area];
+          if (key === null) {
+            store.clearedAt = seq;
+            store.latest.clear();
+          } else store.latest.set(key, seq);
+          post({
+            type: "storage", area, key, url: pageUrl, seq,
+            value: key !== null && value !== null && kept(key, value) ? value : null,
+          });
+        };
+        const pageStores = {};
+        const pageStore = (area) => {
+          const data = new Map(cfg.storage?.[area] || []);
+          const store = {
+            data,
+            latest: new Map(),
+            acked: new Map(),
+            clearedAt: 0,
+            clearAcked: 0,
+            set: (key, value) => {
+              data.set(key, value);
+              sync(area, key, value);
+            },
+            // Always sent: another tab may have written the key since this page loaded.
+            remove: (key) => {
+              data.delete(key);
+              sync(area, key, null);
+            },
+            clear: () => {
+              data.clear();
+              sync(area, null, null);
+            },
+          };
+          pageStores[area] = store;
+          return store;
+        };
+        const text = (value) => value === null || typeof value === "string";
+        const storages = {};
+        window.addEventListener("message", (event) => {
+          const data = event.data;
+          if (event.source !== parent || !data || data.type !== "unsloth:browser-command") return;
+          // Clearing browsing data empties the open page's copy too. The clear is sent back after any write
+          // still on its way to the panel, so that write can't refill the cleared store.
+          if (data.command === "clearStorage") {
+            for (const [area, store] of Object.entries(pageStores)) {
+              store.data.clear();
+              sync(area, null, null);
+            }
+          }
+          // Another open page of this site changed its data, as other tabs do in a browser.
+          else if (data.command === "storageSync" && (data.area === "local" || data.area === "cookie") && text(data.key) && text(data.value)) {
+            const store = pageStores[data.area];
+            if (!store) return;
+            // This page's write or clear of the key is still on its way: its own echo settles the key.
+            const pending = (key) =>
+              store.clearedAt > store.clearAcked || (key !== null && (store.latest.get(key) ?? 0) > (store.acked.get(key) ?? 0));
+            const oldValue = data.key === null ? null : (store.data.get(data.key) ?? null);
+            if (data.own === true) {
+              const seq = Number(data.seq) || 0;
+              if (data.key === null) store.clearAcked = Math.max(store.clearAcked, seq);
+              else store.acked.set(data.key, Math.max(store.acked.get(data.key) ?? 0, seq));
+              // Refused by the panel's quota: the value stays in this page only.
+              if (data.refused === true) return;
+              if (store.clearedAt > seq || (data.key !== null && (store.latest.get(data.key) ?? 0) > seq)) return;
+              if (data.key === null) {
+                // Keys written after the clear stay.
+                for (const key of Array.from(store.data.keys())) if ((store.latest.get(key) ?? 0) <= seq) store.data.delete(key);
+                return;
+              }
+              if (data.value === null && oldValue !== null && !kept(data.key, oldValue)) return;
+            } else if (data.key === null ? Array.from(store.data.keys()).some(pending) : pending(data.key)) {
+              if (data.key !== null) return;
+              for (const key of Array.from(store.data.keys())) if (!pending(key)) store.data.delete(key);
+              return;
+            }
+            // Like a browser, a write that changes nothing fires no event (two pages could echo it forever).
+            if (data.key === null ? !store.data.size : oldValue === data.value) return;
+            if (data.key === null) store.data.clear();
+            else if (data.value === null) store.data.delete(data.key);
+            else store.data.set(data.key, data.value);
+            // This page's own write, coming back in order to settle a race with another page: no event.
+            if (data.area === "local" && data.own !== true) {
+              try {
+                const url = typeof data.url === "string" ? data.url : "";
+                const change = new StorageEvent("storage", { key: data.key, oldValue, newValue: data.value, url });
+                // The init dictionary only takes a real Storage, so sites' `storageArea === localStorage` checks need this.
+                Object.defineProperty(change, "storageArea", { value: storages.local });
+                window.dispatchEvent(change);
+              } catch {}
+            }
+          }
+        });
+        for (const [name, area] of [["localStorage", "local"], ["sessionStorage", "session"]]) {
+          try { void window[name]; } catch {
+            const store = pageStore(area);
+            const methods = {
+              get length() { return store.data.size; },
+              key: (i) => Array.from(store.data.keys())[i] ?? null,
+              getItem: (k) => store.data.get(String(k)) ?? null,
+              setItem: (k, v) => store.set(String(k), String(v)),
+              removeItem: (k) => store.remove(String(k)),
+              clear: store.clear,
+              [Symbol.toStringTag]: "Storage",
+            };
+            // Keys are properties too, as on Storage: sites read and write localStorage.theme.
+            const named = (key) => typeof key === "string" && !(key in methods) && store.data.has(key);
+            const storage = new Proxy(Object.create(methods), {
+              get: (_, key) => (named(key) ? store.data.get(key) : Reflect.get(methods, key)),
+              set: (_, key, value) => {
+                if (typeof key === "string") store.set(key, String(value));
+                return true;
+              },
+              has: (_, key) => named(key) || key in methods,
+              deleteProperty: (_, key) => {
+                if (named(key)) store.remove(key);
+                return true;
+              },
+              ownKeys: () => Array.from(store.data.keys()),
+              getOwnPropertyDescriptor: (_, key) =>
+                named(key) ? { value: store.data.get(key), writable: true, enumerable: true, configurable: true } : undefined,
+            });
+            storages[area] = storage;
+            try { Object.defineProperty(window, name, { value: storage, configurable: true }); } catch {}
+          }
+        }
+        // Keyed "<name>=<path>" (a name has no "="), valued "<deadline>|<value>": a cookie keeps its
+        // path and its Max-Age or Expires across pages.
+        const cookies = pageStore("cookie");
+        const pagePath = () => {
+          try { return new URL(pageUrl).pathname; } catch { return "/"; }
+        };
+        const defaultPath = (path) => (path.startsWith("/") && path.lastIndexOf("/") > 0 ? path.slice(0, path.lastIndexOf("/")) : "/");
+        const pathMatch = (scope, path) =>
+          path === scope || (path.startsWith(scope) && (scope.endsWith("/") || path[scope.length] === "/"));
+        const setCookie = (raw) => {
+          const [pair, ...attributes] = String(raw).split(";");
+          const at = pair.indexOf("=");
+          const name = at < 0 ? "" : pair.slice(0, at).trim();
+          const value = (at < 0 ? pair : pair.slice(at + 1)).trim();
+          if ((!name && !value) || name.length + value.length > 4096) return;
+          let maxAge = null, expires = null, path = null, domain = "";
+          for (const attribute of attributes) {
+            const eq = attribute.indexOf("=");
+            const key = (eq < 0 ? attribute : attribute.slice(0, eq)).trim().toLowerCase();
+            const setting = eq < 0 ? "" : attribute.slice(eq + 1).trim();
+            if (key === "max-age" && /^-?\d+$/.test(setting)) maxAge = Number(setting);
+            else if (key === "expires") expires = Date.parse(setting);
+            else if (key === "path" && setting.startsWith("/")) path = setting;
+            else if (key === "domain") domain = setting.replace(/^\./, "").toLowerCase();
+          }
+          if (domain) {
+            let host = "";
+            try { host = new URL(pageUrl).hostname; } catch {}
+            // A browser refuses a Domain the page isn't on; one it is on still stays with this site only.
+            if (host !== domain && !host.endsWith("." + domain)) return;
+          }
+          const id = name + "=" + (path ?? defaultPath(pagePath()));
+          const deadline = maxAge !== null ? Date.now() + maxAge * 1000 : expires !== null && !Number.isNaN(expires) ? expires : null;
+          if (deadline !== null && deadline <= Date.now()) cookies.remove(id);
+          else cookies.set(id, (deadline ?? "") + "|" + value);
+        };
+        const liveCookies = () => {
+          const path = pagePath();
+          const live = [];
+          for (const [id, stored] of cookies.data) {
+            const at = stored.indexOf("|");
+            if (at > 0 && Number(stored.slice(0, at)) <= Date.now()) {
+              cookies.remove(id);
+              continue;
+            }
+            const eq = id.indexOf("=");
+            const scope = id.slice(eq + 1);
+            if (pathMatch(scope, path)) live.push([scope.length, eq ? id.slice(0, eq) + "=" + stored.slice(at + 1) : stored.slice(at + 1)]);
+          }
+          // Longer paths first, as browsers order them.
+          return live.sort((a, b) => b[0] - a[0]).map(([, cookie]) => cookie).join("; ");
+        };
+        try {
+          Object.defineProperty(document, "cookie", {
+            get: liveCookies,
+            set: setCookie,
+            configurable: true,
+          });
+        } catch {}
+"""
+
 # Page shell: injects <base> and a script turning navigations into panel messages. The page is a
 # srcdoc child; the shell then sets frame-src 'none' on itself so the child can't be navigated
 # (it keeps its own policy copy, so embeds still load), independent of the embedder's policy.
@@ -109,6 +394,9 @@ _FRAME_HTML = r"""<!doctype html>
         // about:srcdoc has an opaque origin, and data: and blob: URLs share it.
         const shellOrigin = location.origin === "null" ? null : location.origin;
         let pageUrl = cfg.url || location.href;
+        // Without a <base> of its own a document's base is its URL, so the shell's follows the router:
+        // relative links and requests after a pushState resolve as in a browser.
+        const routedBase = cfg.url && !cfg.ownBase ? document.querySelector("base") : null;
         const post = (message) => parent.postMessage({ source: "unsloth-browser", ...message }, "*");
         // URLs built from location point at this shell; map them to the page's site.
         const toPage = (url) => {
@@ -159,27 +447,44 @@ _FRAME_HTML = r"""<!doctype html>
           if (!cfg.url && new URL(url).origin === shellOrigin) return;
           post({ type: "navigate", url, newTab: Boolean(newTab), background: Boolean(background) });
         };
-        const fallbackStorage = () => {
-          const data = new Map();
-          return {
-            get length() { return data.size; },
-            key: (i) => Array.from(data.keys())[i] ?? null,
-            getItem: (k) => data.has(String(k)) ? data.get(String(k)) : null,
-            setItem: (k, v) => void data.set(String(k), String(v)),
-            removeItem: (k) => void data.delete(String(k)),
-            clear: () => data.clear(),
-          };
+        /* PAGE_STORAGE_JS */
+        let refused = false;
+        const tellRefused = () => {
+          if (refused) return;
+          refused = true;
+          post({ type: "needsBrowser" });
         };
-        // Opaque origins throw on storage and cookies; stub them so pages don't crash.
-        for (const name of ["localStorage", "sessionStorage"]) {
-          try { void window[name]; } catch {
-            try { Object.defineProperty(window, name, { value: fallbackStorage(), configurable: true }); } catch {}
-          }
+        // Only IndexedDB's refusals: a refused service worker or cache rarely breaks a page.
+        const refusals = new WeakSet();
+        // Other sites' scripts report errors as "Script error." with no error, so IndexedDB's is noted as thrown.
+        let indexedDbThrew = false;
+        const refusedByIndexedDb = (error) => {
+          if (error?.name !== "SecurityError") return false;
+          refusals.add(error);
+          return true;
+        };
+        for (const name of ["open", "deleteDatabase", "databases"]) {
+          const original = IDBFactory.prototype[name];
+          if (typeof original !== "function") continue;
+          IDBFactory.prototype[name] = function (...args) {
+            try {
+              const result = original.apply(this, args);
+              return name === "databases" ? result.catch((error) => { refusedByIndexedDb(error); throw error; }) : result;
+            } catch (error) {
+              if (refusedByIndexedDb(error)) {
+                indexedDbThrew = true;
+                setTimeout(() => { indexedDbThrew = false; });
+              }
+              throw error;
+            }
+          };
         }
-        try {
-          let jar = "";
-          Object.defineProperty(document, "cookie", { get: () => jar, set: () => {}, configurable: true });
-        } catch {}
+        window.addEventListener("error", (event) => { if (event.error ? refusals.has(event.error) : indexedDbThrew) tellRefused(); });
+        window.addEventListener("unhandledrejection", (event) => { if (refusals.has(event.reason)) tellRefused(); });
+        for (const type of ["fullscreenerror", "webkitfullscreenerror"]) {
+          document.addEventListener(type, () => { if (!document.fullscreenEnabled) tellRefused(); }, true);
+        }
+        /* BROWSER_NETWORK_JS */
         const shellPathname = location.pathname;
         // Throttle to 200 ms: some sites replaceState per scroll.
         let reportedUrl = pageUrl;
@@ -195,13 +500,21 @@ _FRAME_HTML = r"""<!doctype html>
         };
         for (const [method, original] of [["pushState", originalPush], ["replaceState", originalReplace]]) {
           history[method] = function (state, title, url) {
-            let next = url != null ? resolve(String(url)) : null;
+            const raw = url != null ? String(url) : null;
+            let next = raw !== null ? resolve(raw) : null;
+            // A router that builds its URL from location.pathname gets "srcdoc": put the page's path back.
+            const fromShell = raw !== null && /^(?:about:)?srcdoc(?=[?#]|$)/.exec(raw);
+            if (fromShell && cfg.url) {
+              const page = new URL(pageUrl);
+              next = new URL(page.pathname + raw.slice(fromShell[0].length), page.origin).href;
+            }
             // A router re-asserting the shell's own path is not a navigation.
             if (next && new URL(next).pathname === shellPathname) next = null;
             try { original.call(this, state, title, next ? shellPath(next) : undefined); }
             catch { original.call(this, state, title); }
             if (next) {
               pageUrl = next;
+              routedBase?.setAttribute("href", pageUrl);
               reportUrl();
             }
           };
@@ -430,7 +743,7 @@ _FRAME_HTML = r"""<!doctype html>
         // Annotate: the panel marks parts of the page to ask about (_ANNOTATE_JS). Its code comes from
         // the panel when annotate mode turns on, so pages never annotated don't parse it. Until then
         // only the latest on/off and numbering are kept, to apply once it is installed.
-        let annotation = null, wanted = null, numbers = null;
+        let annotation = null, wanted = null, numbers = null, agent = null;
         const install = (code) => {
           if (annotation || typeof code !== "string" || code.length > 262144) return;
           try { annotation = compile("post", code)(post); } catch { return; }
@@ -594,11 +907,23 @@ _FRAME_HTML = r"""<!doctype html>
           }
           else if (data.command === "annotateForget") annotation?.forget(Number(data.id));
           else if (data.command === "annotateNumbers") annotation ? annotation.number(data.numbers) : (numbers = data.numbers);
-          else if (data.command === "zoom") applyZoom(data.value);
+          else if (data.command === "zoom") {
+            applyZoom(data.value);
+            // A zoom fires no scroll or resize, so marks are redrawn here.
+            annotation?.redraw();
+          }
           else if (data.command === "mute") setMuted(data.on === true);
           else if (data.command === "find" && typeof data.query === "string" && data.query.length <= 1000) finder.search(data.query);
           else if (data.command === "findStep") finder.step(data.delta === -1 ? -1 : 1);
           else if (data.command === "snapshot") post({ type: "snapshot", html: snapshot() });
+          else if (data.command === "agent" && typeof data.id === "string") {
+            // Browser use: the panel's agent code (agent/page-agent.ts), installed on first use.
+            if (!agent && typeof data.code === "string" && data.code.length <= 262144) {
+              // Its own return value, not window's key: a page script can set that key first.
+              try { agent = compile("return " + data.code)() || null; } catch {}
+            }
+            post({ type: "agent", id: data.id, installed: Boolean(agent), result: agent ? agent.run(data.op || {}) : null });
+          }
         });
         // The panel may have asked for annotate before this page could hear it.
         post({ type: "annotate", event: "ready" });
@@ -627,11 +952,12 @@ _FRAME_HTML = r"""<!doctype html>
         }
         // Only the parent may drive the shell, once.
         if (!data || data.type !== "unsloth:browser-html" || typeof data.html !== "string") return;
-        const cfg = { url: data.url || null, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true };
+        const cfg = { url: data.url || null, ownBase: data.ownBase === true, anyOrigin: data.anyOrigin === true, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true, storage: data.storage || null };
         const base = data.base ? `<base href="${escapeAttr(data.base)}">` : "";
         const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
         page = document.createElement("iframe");
         page.setAttribute("sandbox", "allow-scripts allow-forms");
+        page.setAttribute("allowfullscreen", "");
         page.srcdoc = inject(data.html, base + script);
         document.body.appendChild(page);
         // A script navigation the page's hooks missed (no Navigation API) hits the lock below; the
@@ -650,6 +976,9 @@ _FRAME_HTML = r"""<!doctype html>
     </script>
   </body>
 </html>"""
+
+_FRAME_HTML = _FRAME_HTML.replace("/* BROWSER_NETWORK_JS */", BROWSER_NETWORK_JS.strip(), 1)
+_FRAME_HTML = _FRAME_HTML.replace("/* PAGE_STORAGE_JS */", _PAGE_STORAGE_JS.strip(), 1)
 
 # Annotate, the body of a function of `post` that the page shell's `install` runs on the panel's
 # request: while it is on, pointer input is the panel's, and the page only reports the block under
@@ -734,13 +1063,21 @@ _ANNOTATE_JS = r"""
             }
             return document.documentElement;
           };
-          // Where a mark is now: around what it marks, or its blank area, moved with its anchor.
+          // Where a mark is now: a drag as drawn, a click around its target, a blank area by its anchor.
           const markBox = (mark) => {
-            if (mark.ranges) return boxOf(mark.ranges);
-            const { element, dx, dy, width, height } = mark.anchor;
+            if (mark.ranges) {
+              const box = boxOf(mark.ranges);
+              if (!box || !mark.frame) return box;
+              // Scale by the zoom change since the drag, as the content did.
+              const { dx, dy, width, height, zoom } = mark.frame;
+              const k = zoomOf() / zoom;
+              return { left: box.left + PAD + dx * k, top: box.top + PAD + dy * k, width: width * k, height: height * k };
+            }
+            const { element, dx, dy, width, height, zoom } = mark.anchor;
             if (!element.isConnected) return null;
             const rect = element.getBoundingClientRect();
-            return { left: rect.left + dx, top: rect.top + dy, width, height };
+            const k = zoomOf() / zoom;
+            return { left: rect.left + dx * k, top: rect.top + dy * k, width: width * k, height: height * k };
           };
           const boxOf = (ranges) => {
             let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
@@ -841,18 +1178,23 @@ _ANNOTATE_JS = r"""
             marks.set(id, mark);
             send("mark", { id, rect: mark.at, ...details });
           };
-          const addMark = (ranges) => {
+          const addMark = (ranges, area = null) => {
             if (!ranges || !ranges.length) return;
             const quote = quoteOf(ranges);
             const picture = pictureOf(ranges);
             if (!quote && picture === null) return;
-            createMark({ ranges }, { quote, image: picture !== null, alt: picture || "", area: false });
+            // Keep a drag's box as drawn, not shrunk to its text.
+            const content = area && boxOf(ranges);
+            const frame = content
+              ? { dx: area.left - content.left - PAD, dy: area.top - content.top - PAD, width: area.width, height: area.height, zoom: zoomOf() }
+              : null;
+            createMark({ ranges, frame }, { quote, image: picture !== null, alt: picture || "", area: false });
           };
           // An area with nothing in it marks that part of the page itself.
           const addArea = (area) => {
             const element = anchorOf(area);
             const rect = element.getBoundingClientRect();
-            const anchor = { element, dx: area.left - rect.left, dy: area.top - rect.top, width: area.width, height: area.height };
+            const anchor = { element, dx: area.left - rect.left, dy: area.top - rect.top, width: area.width, height: area.height, zoom: zoomOf() };
             createMark({ anchor }, { quote: "", image: false, alt: "", area: true });
           };
           // The panel numbers the marks, matching the order they take in the chat.
@@ -922,7 +1264,7 @@ _ANNOTATE_JS = r"""
             send("up");
             if (box) {
               const ranges = blocksIn(new DOMRect(box.left, box.top, box.width, box.height));
-              ranges.length ? addMark(ranges) : addArea(box);
+              ranges.length ? addMark(ranges, box) : addArea(box);
             }
             else if (pin !== null) send("open", { id: pin });
             else addMark(blockAt(document.elementFromPoint(event.clientX, event.clientY) || event.target));
@@ -973,7 +1315,7 @@ _ANNOTATE_JS = r"""
             pending = press = hover = lastMove = overlay = root = null;
             marks.clear();
           };
-          return { start, stop, forget, number };
+          return { start, stop, forget, number, redraw };
 """
 
 
@@ -1043,8 +1385,9 @@ class BrowserFetchRequest(BaseModel):
     url: str = Field(..., min_length = 1, max_length = 8192)
     method: Literal["GET", "POST"] = "GET"
     body: Optional[str] = Field(default = None, max_length = 1024 * 1024)
-    # Smaller cap for favicons, so an icon can't be 50 MB.
+    # favicon callers can lower the 50 MB fetch cap.
     max_bytes: Optional[int] = Field(default = None, ge = 1, le = _MAX_BROWSER_FETCH_BYTES)
+    error_page: bool = False
 
 
 _BOMS = (
@@ -1054,34 +1397,47 @@ _BOMS = (
 )
 
 
-# Browsers read these labels as windows-1252 (WHATWG Encoding), which fills 0x80-0x9F with quotes and dashes.
-_WINDOWS_1252_LABELS = frozenset(
-    "ansi_x3.4-1968 ascii cp1252 cp819 csisolatin1 ibm819 iso-8859-1 iso-ir-100 iso8859-1 iso88591 "
-    "iso_8859-1 iso_8859-1:1987 l1 latin1 latin-1 us-ascii windows-1252 x-cp1252".split()
-)
+# headers may name UTF-16; meta labels map it to UTF-8 through the shared table.
+_HEADER_CODECS = {
+    **_WHATWG_CHARSET_CODECS,
+    **dict.fromkeys(
+        "csunicode iso-10646-ucs-2 ucs-2 unicode unicodefeff utf-16 utf-16le".split(), "utf-16"
+    ),
+    "unicodefffe": "utf-16-be",
+    "utf-16be": "utf-16-be",
+    "latin-1": "cp1252",
+}
 
 
-def _codec(label: str) -> str:
-    label = label.strip().lower()
-    return "cp1252" if label in _WINDOWS_1252_LABELS else label
+def _codec(label: Optional[str], table: dict = _HEADER_CODECS) -> Optional[str]:
+    return table.get(label.strip().lower()) if label else None
+
+
+def _raw_codec(label: Optional[str]) -> Optional[str]:
+    codec = _codec(label)
+    if codec or not label:
+        return codec
+    try:
+        return codecs.lookup(label).name
+    except (LookupError, ValueError):
+        return None
 
 
 def _decode_html(raw: bytes, charset: Optional[str]) -> str:
-    # A byte order mark wins over any declared charset, as in browsers.
+    # byte order marks override declared charsets, matching browsers.
     for bom, codec in _BOMS:
         if raw.startswith(bom):
             return raw.decode(codec, errors = "replace")
-    candidates = [_codec(charset)] if charset else []
-    sniffed = _META_CHARSET_RE.search(raw[:4096])
-    if sniffed:
-        candidates.append(_codec(sniffed.group(1).decode("ascii", "ignore")))
-    candidates.append("utf-8")
-    for candidate in candidates:
-        try:
-            return raw.decode(candidate)
-        except (LookupError, UnicodeDecodeError):
-            continue
-    # Unlabelled and not UTF-8: windows-1252, as browsers default to.
+    labelled = _codec(charset)
+    if labelled is None:
+        labelled = _sniff_meta_charset(raw[:4096], "text/html")
+    if labelled:
+        return raw.decode(labelled, errors = "replace")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    # browsers use U+FFFD for bad bytes in labelled pages and windows-1252 for unlabelled pages.
     return raw.decode("cp1252", errors = "replace")
 
 
@@ -1092,19 +1448,21 @@ def _attr(match: "re.Match[str] | None") -> Optional[str]:
 
 
 def _join(base: str, href: str) -> Optional[str]:
-    """``urljoin``, or None for an address it cannot parse (``http://[bad``)."""
+    """return None when ``urljoin`` cannot parse an address such as ``http://[bad``."""
     try:
         return urljoin(base, href.strip())
     except ValueError:
         return None
 
 
-def _prepare_page(page: str, url: str) -> tuple[str, str, Optional[dict]]:
-    """Return ``(page, base_url, refresh)`` with <base>, CSP and refresh meta tags removed."""
-    base_url = url
+def _prepare_page(page: str, url: str) -> tuple[str, Optional[str], Optional[dict]]:
+    """Return ``(page, base_url, refresh)`` with <base>, CSP and refresh meta tags removed; ``base_url``
+    is None when the page declares no base."""
+    base_url = None
     for tag in _BASE_TAG_RE.findall(page):
         href = _attr(_ATTR_HREF_RE.search(tag))
-        if href:
+        # href="" is a base too, frozen at the document's URL (HTML: the base element).
+        if href is not None:
             base_url = _join(url, href) or url
             break
     page = _BASE_TAG_RE.sub("", page)
@@ -1125,7 +1483,7 @@ def _prepare_page(page: str, url: str) -> tuple[str, str, Optional[dict]]:
             parsed = _REFRESH_RE.match(_attr(_CONTENT_ATTR_RE.search(tag)) or "")
             if parsed and parsed.group(2) and refresh is None:
                 delay = float(parsed.group(1))
-                target = _join(base_url, parsed.group(2))
+                target = _join(base_url or url, parsed.group(2))
                 if delay <= _MAX_REFRESH_DELAY_S and target:
                     refresh = {"delay": delay, "url": target}
             return ""
@@ -1142,6 +1500,217 @@ _STUDIO_HEADERS = {"X-Unsloth-Studio": "1"}
 def _studio_headers(host: str) -> dict:
     host = host.lower().rstrip(".")
     return _STUDIO_HEADERS if host == "unsloth.ai" or host.endswith(".unsloth.ai") else {}
+
+
+def _integrity_ok(body: bytes, integrity: str) -> bool:
+    """Whether ``body`` matches the tag's SRI ``integrity``; inlining drops the attribute, so check here."""
+    hashes: dict[str, list[str]] = {}
+    for token in integrity.split():
+        algorithm, _, value = token.partition("-")
+        algorithm = algorithm.lower()
+        if algorithm in _SRI_ALGORITHMS and value:
+            hashes.setdefault(algorithm, []).append(value.split("?", 1)[0])
+    if not hashes:
+        # No metadata the browser understands: it loads the script unchecked.
+        return True
+    algorithm = max(hashes, key = _SRI_ALGORITHMS.index)
+    digest = base64.b64encode(hashlib.new(algorithm, body).digest()).decode("ascii")
+    return any(hmac.compare_digest(digest, value) for value in hashes[algorithm])
+
+
+def _fresh_for(cache_control: Optional[str], age: Optional[str]) -> float:
+    """Seconds a response may be reused by this shared cache; ``private``/``no-cache`` rule it out."""
+    directives = (cache_control or "").lower()
+    if any(word in directives for word in ("no-store", "no-cache", "private")):
+        return 0
+    lifetimes = dict((name.lower(), int(value)) for name, value in _MAX_AGE_RE.findall(directives))
+    lifetime = lifetimes.get("s-maxage", lifetimes.get("max-age", 0))
+    try:
+        lifetime -= max(int(age or 0), 0)
+    except ValueError:
+        pass
+    return float(min(max(lifetime, 0), _MODULE_CACHE_TTL_S))
+
+
+def _module_cached(key: tuple[str, str, bool]) -> tuple[bool, Optional[str]]:
+    with _MODULE_CACHE_LOCK:
+        hit = _MODULE_CACHE.get(key)
+        if hit is None or time.monotonic() >= hit[0]:
+            return False, None
+        _MODULE_CACHE.move_to_end(key)
+        return True, hit[1]
+
+
+def _cache_module(key: tuple[str, str, bool], code: Optional[str], fresh_for: float) -> None:
+    global _module_cache_chars
+    size = len(code or "")
+    if fresh_for <= 0 or size > _MODULE_CACHE_CHARS // 4:
+        return
+    with _MODULE_CACHE_LOCK:
+        old = _MODULE_CACHE.pop(key, None)
+        if old is not None:
+            _module_cache_chars -= len(old[1] or "")
+        _MODULE_CACHE[key] = (time.monotonic() + fresh_for, code)
+        _module_cache_chars += size
+        while (
+            len(_MODULE_CACHE) > _MODULE_CACHE_ENTRIES or _module_cache_chars > _MODULE_CACHE_CHARS
+        ):
+            _, (_, dropped) = _MODULE_CACHE.popitem(last = False)
+            _module_cache_chars -= len(dropped or "")
+
+
+def _fetch_module(
+    url: str,
+    integrity: str,
+    credentials: bool,
+    deadline: float,
+    cancel_event: Optional[threading.Event],
+) -> Optional[str]:
+    """A self-contained module's code, safe to inline; None to leave its tag alone."""
+    key = (url, integrity, credentials)
+    found, code = _module_cached(key)
+    if found:
+        return code
+    meta: dict = {}
+    try:
+        error, body, content_type = _fetch_url_raw(
+            url,
+            timeout = _MODULE_TIMEOUT_S,
+            extra_headers = {"User-Agent": _BROWSER_UA, "Accept": "*/*"},
+            deadline = deadline,
+            raw_bytes_max = _MAX_MODULE_BYTES,
+            meta_out = meta,
+            cancel_event = cancel_event,
+            host_headers = _studio_headers,
+        )
+    except Exception as exc:
+        logger.warning("browser_module_fetch_failed", error = type(exc).__name__)
+        return None
+    if error is not None or not isinstance(body, bytes):
+        return None
+    # Redirected to http: tamperable, and the frame's upgrade-insecure-requests wouldn't run it either.
+    if not str(meta.get("url") or url).lower().startswith("https://"):
+        return None
+    code = None
+    allow_origin = (meta.get("allow_origin") or "").strip()
+    # ACAO * or null already loads from the sandbox (where SRI is enforced too).
+    loads_itself = allow_origin in ("*", "null") and not credentials
+    if content_type in _JS_TYPES and not loads_itself and _integrity_ok(body, integrity):
+        # Browsers decode module scripts as UTF-8 whatever the header says.
+        text = body.decode("utf-8", errors = "replace")
+        # Imports would resolve against the page; "<!--" then "<script" keeps an inline tag open.
+        if not _MODULE_IMPORT_RE.search(text) and not (
+            "<!--" in text and _SCRIPT_OPEN_RE.search(text)
+        ):
+            code = re.sub(r"</(script)", r"<\\/\1", text, flags = re.IGNORECASE)
+    # Only the final hop's headers are known, so a redirected answer isn't cached.
+    redirected = str(meta.get("url") or url) != url
+    fresh_for = 0 if redirected else _fresh_for(meta.get("cache_control"), meta.get("age"))
+    _cache_module(key, code, fresh_for)
+    return code
+
+
+def _inert_spans(page: str) -> list[tuple[int, int]]:
+    """Spans of ``page`` that are text, not markup, in order, read front to back as the parser does."""
+    spans: list[tuple[int, int]] = []
+    at = 0
+    while match := _INERT_START_RE.search(page, at):
+        if match.group(0).startswith("<!--"):
+            close = page.find("-->", match.end())
+            end = len(page) if close < 0 else close + 3
+            spans.append((match.start(), end))
+        elif match.group(1) is None:
+            end = match.end()
+            spans.append((match.start(), end))
+        elif match.group(1).lower() == "template":
+            depth, close = 1, None
+            for tag in _TEMPLATE_TAG_RE.finditer(page, match.end()):
+                depth += -1 if tag.group(1) else 1
+                if depth == 0:
+                    close = tag
+                    break
+            end = close.end() if close else len(page)
+            spans.append((match.end(), close.start() if close else len(page)))
+        else:
+            name = match.group(1).lower()
+            close = (
+                None if name == "plaintext" else _CLOSING_TAG_RES[name].search(page, match.end())
+            )
+            end = close.end() if close else len(page)
+            spans.append((match.end(), close.start() if close else len(page)))
+        at = max(end, match.end())
+    return spans
+
+
+def _open_tag(script: str) -> str:
+    """A script element's start tag, from a match of _MODULE_SCRIPT_RE."""
+    return script[: script.lower().rindex("</script")].rstrip()
+
+
+def _script_attrs(open_tag: str) -> list[tuple[str, str, str]]:
+    """A ``<script ...>`` start tag's attributes as ``(lowercase name, value, source text)``."""
+    attrs = []
+    for match in _TAG_ATTR_RE.finditer(open_tag, len("<script"), len(open_tag) - 1):
+        if match.group(1) is None:
+            continue
+        value = next((group for group in match.groups()[1:] if group is not None), "")
+        attrs.append((match.group(1).lower(), _html.unescape(value), match.group(0)))
+    return attrs
+
+
+def _inline_module_scripts(
+    page: str,
+    base_url: str,
+    cancel_event: Optional[threading.Event] = None,
+) -> str:
+    """Inline the page's self-contained module scripts, which the sandbox can't load itself."""
+    tags: list[tuple[re.Match[str], str, str, bool]] = []
+    inert: Optional[list[tuple[int, int]]] = None
+    for match in _MODULE_SCRIPT_RE.finditer(page):
+        attrs: dict[str, str] = {}
+        for name, value, _text in _script_attrs(_open_tag(match.group(0))):
+            # The first of a repeated attribute is the one that counts.
+            attrs.setdefault(name, value)
+        if attrs.get("type", "").strip().lower() != "module":
+            continue
+        src = attrs.get("src")
+        url = _join(base_url, src) if src else None
+        if not url or not url.lower().startswith("https://"):
+            continue
+        # A tag inside text (comment, textarea, style...) stays; inlined code could end that element.
+        if inert is None:
+            inert = _inert_spans(page)
+        at = bisect.bisect_right(inert, (match.start(), len(page))) - 1
+        if at >= 0 and inert[at][0] <= match.start() < inert[at][1]:
+            continue
+        credentials = attrs.get("crossorigin", "").strip().lower() == "use-credentials"
+        tags.append((match, url, attrs.get("integrity", ""), credentials))
+        if len(tags) == _MAX_INLINED_MODULES:
+            break
+    if not tags:
+        return page
+    deadline = time.monotonic() + _MODULE_TIMEOUT_S
+    codes = list(
+        _MODULE_POOL.map(lambda tag: _fetch_module(*tag[1:], deadline, cancel_event), tags)
+    )
+    parts: list[str] = []
+    end = 0
+    room = _MAX_BROWSER_HTML_BYTES - len(page.encode("utf-8"))
+    for (match, *_), code in zip(tags, codes):
+        size = len(code.encode("utf-8")) if code is not None else 0
+        if code is None or size > room:
+            continue
+        room -= size
+        kept = (
+            text
+            for name, _value, text in _script_attrs(_open_tag(match.group(0)))
+            if name not in _FETCH_ATTRS
+        )
+        open_tag = "".join(["<script", *(" " + text for text in kept), ">"])
+        parts += [page[end : match.start()], open_tag, code, "</script>"]
+        end = match.end()
+    parts.append(page[end:])
+    return "".join(parts)
 
 
 def _fetch(
@@ -1162,12 +1731,13 @@ def _fetch(
         meta_out = meta,
         cancel_event = cancel_event,
         host_headers = _studio_headers,
+        error_page = request.error_page,
     )
     return error, body if isinstance(body, bytes) else b"", content_type, meta
 
 
 def _attachment_name(meta: dict) -> Optional[str]:
-    """The server's name for a download, as a bare file name."""
+    """server-provided download name reduced to a bare file name."""
     name = meta.get("filename")
     if not isinstance(name, str):
         return None
@@ -1176,11 +1746,20 @@ def _attachment_name(meta: dict) -> Optional[str]:
 
 
 def _build_response(
-    url: str, error: Optional[str], body: bytes, content_type: str, meta: dict
+    url: str,
+    error: Optional[str],
+    body: bytes,
+    content_type: str,
+    meta: dict,
+    cancel_event: Optional[threading.Event] = None,
 ) -> Response:
-    """Build the panel's response. Runs in the fetch pool to keep large pages off the event loop."""
-    if error is not None:
-        # The host only: a page address can carry a sign-in token.
+    """build the panel response in the fetch pool to keep large pages off the event loop."""
+    looks_html = not content_type and body[:512].lstrip().lower().startswith(
+        (b"<!doctype html", b"<html")
+    )
+    is_html = content_type in _HTML_TYPES or looks_html
+    if error is not None and (meta.get("bot_check") or not (is_html and body.strip())):
+        # log the host only because page URLs can carry sign-in tokens.
         try:
             host = urlsplit(url).hostname
         except ValueError:
@@ -1191,31 +1770,38 @@ def _build_response(
         raise HTTPException(status_code = 502, detail = error)
 
     final_url = meta.get("url") or url
-    looks_html = not content_type and body[:512].lstrip().lower().startswith(
-        (b"<!doctype html", b"<html")
-    )
-    if content_type in _HTML_TYPES or looks_html:
+    if is_html:
         if len(body) > _MAX_BROWSER_HTML_BYTES:
             raise HTTPException(
                 status_code = 502,
                 detail = f"(page exceeds the {_MAX_BROWSER_HTML_BYTES} byte limit for the panel)",
             )
-        page, base_url, refresh = _prepare_page(_decode_html(body, meta.get("charset")), final_url)
-        payload = {"url": final_url, "base": base_url, "refresh": refresh, "html": page}
+        page, own_base, refresh = _prepare_page(_decode_html(body, meta.get("charset")), final_url)
+        base_url = own_base or final_url
+        page = _inline_module_scripts(page, base_url, cancel_event)
+        payload = {
+            "url": final_url,
+            "base": base_url,
+            "ownBase": own_base is not None,
+            # Its site answers any origin, the sandbox's too: the page's requests to it stay native.
+            "anyOrigin": (meta.get("allow_origin") or "").strip() in ("*", "null"),
+            "refresh": refresh,
+            "html": page,
+        }
         return Response(
             content = json.dumps(payload, ensure_ascii = False).encode("utf-8"),
             media_type = "application/json",
             headers = {KIND_HEADER: "html"},
         )
-    charset = meta.get("charset")
+    codec = _raw_codec(meta.get("charset"))
     textual = content_type.startswith("text/") or content_type.endswith(
         ("json", "xml", "javascript")
     )
-    if textual and charset and charset.lower().replace("_", "-") not in ("utf-8", "utf8"):
-        # Text in another encoding goes out as UTF-8, the encoding the response is labelled with.
+    if textual and codec and codec != "utf-8":
+        # transcode text to UTF-8 to match the response label.
         try:
-            body = body.decode(_codec(charset), errors = "replace").encode("utf-8")
-        except LookupError:
+            body = body.decode(codec, errors = "replace").encode("utf-8")
+        except (LookupError, UnicodeError, ValueError):
             pass
     return Response(
         content = body,
@@ -1223,29 +1809,285 @@ def _build_response(
         headers = {
             KIND_HEADER: "raw",
             URL_HEADER: quote(final_url, safe = ":/?#[]@!$&'()*+,;=%~"),
-            # Never rendered on Studio's origin.
+            # never rendered on Studio's origin
             "Content-Security-Policy": "sandbox",
             **({NAME_HEADER: quote(name, safe = "")} if (name := _attachment_name(meta)) else {}),
         },
     )
 
 
+class BrowserPageRequest(BaseModel):
+    # The page's address as the panel loaded it; the request must be to its origin.
+    page: str = Field(..., min_length = 1, max_length = 8192)
+    url: str = Field(..., min_length = 1, max_length = 8192)
+    method: str = Field(default = "GET", pattern = r"^[A-Za-z]{1,16}$")
+    headers: list[tuple[str, str]] = Field(default_factory = list, max_length = 64)
+    # Base64.
+    body: Optional[str] = Field(default = None, max_length = 4 * (_MAX_PAGE_REQUEST_BODY // 3 + 1))
+    # Fetch's redirect mode: "error" fails at a redirect, "manual" stops there (an opaque redirect).
+    redirect: Literal["follow", "error", "manual"] = "follow"
+    # Fetch's integrity metadata; a body that doesn't match is a network error.
+    integrity: str = Field(default = "", max_length = 4096)
+
+
+def _origin(url: str) -> Optional[tuple[str, str, int]]:
+    """``(scheme, host, port)``, the host named as _fetch_url_raw names it to host_headers."""
+    try:
+        parts = urlsplit(url)
+        scheme = parts.scheme.lower()
+        if scheme not in ("http", "https") or not parts.hostname:
+            return None
+        return (
+            scheme,
+            normalize_domain(parts.hostname),
+            parts.port or (443 if scheme == "https" else 80),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _cors_safelisted(name: str, value: str) -> bool:
+    """Fetch's CORS-safelisted request-header, for the headers a bodiless GET carries."""
+    lowered = name.lower()
+    unsafe = any(
+        (ord(char) < 0x20 and char != "\t") or char in '"():<>?@[\\]{}\x7f' for char in value
+    )
+    if len(value) > 128:
+        return False
+    if lowered == "accept":
+        return not unsafe
+    if lowered in ("accept-language", "content-language"):
+        return bool(re.fullmatch(r"[0-9A-Za-z *,.;=-]*", value))
+    if lowered == "range":
+        return bool(re.fullmatch(r"bytes=[0-9]+-[0-9]*", value))
+    if lowered == "content-type":
+        essence = value.split(";", 1)[0].strip().lower()
+        return not unsafe and essence in (
+            "application/x-www-form-urlencoded",
+            "multipart/form-data",
+            "text/plain",
+        )
+    return False
+
+
+def _allowed_header(name: str, value: str) -> bool:
+    lowered = name.lower()
+    return (
+        bool(_HEADER_NAME_RE.fullmatch(name))
+        and lowered not in _FORBIDDEN_REQUEST_HEADERS
+        and not lowered.startswith(("proxy-", "sec-"))
+        and "\r" not in value
+        and "\n" not in value
+    )
+
+
+def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) -> dict:
+    """The page's request, made as its browser would make a same-origin one; every status is the page's."""
+    origin = _origin(request.page)
+    if origin is None or _origin(request.url) != origin:
+        raise HTTPException(status_code = 403, detail = "Only requests to the page's own site.")
+    method = request.method.upper()
+    if method in _FORBIDDEN_METHODS:
+        raise HTTPException(status_code = 400, detail = f"{method} is not allowed.")
+    body = None
+    if request.body is not None and method not in ("GET", "HEAD"):
+        try:
+            body = base64.b64decode(request.body, validate = True)
+        except ValueError:
+            raise HTTPException(status_code = 400, detail = "The body is not base64.")
+        if len(body) > _MAX_PAGE_REQUEST_BODY:
+            raise HTTPException(status_code = 413, detail = "The body is too large.")
+    # setRequestHeader combines a repeated name, in any case, into one value, as Headers does.
+    own: dict[str, str] = {}
+    named: dict[str, str] = {}
+    for name, value in request.headers:
+        if not _allowed_header(name, value):
+            continue
+        first = named.setdefault(name.lower(), name)
+        own[first] = f"{own[first]}, {value}" if first in own else value
+    scheme, host, port = origin
+    default_port = 443 if scheme == "https" else 80
+    serialized_origin = f"{scheme}://" + (f"[{host}]" if ":" in host else host)
+    serialized_origin += "" if port == default_port else f":{port}"
+    # Typed addresses can keep non-ASCII text, which no header can carry; a browser sends it encoded.
+    page = urlsplit(request.page)
+    path = (page.path or "/") + (f"?{page.query}" if page.query else "")
+    # What a browser adds to a same-origin request: Referer (the default policy keeps the whole
+    # address), fetch metadata, and Origin on anything but GET and HEAD.
+    added = {
+        "Referer": serialized_origin + quote(path, safe = ":/?#[]@!$&'()*+,;=%~"),
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+    }
+    if method not in ("GET", "HEAD"):
+        added["Origin"] = serialized_origin
+    if "accept" not in named:
+        added["Accept"] = "*/*"
+    if "accept-language" not in named:
+        added["Accept-Language"] = "en-US,en;q=0.9"
+    page_headers = {**added, **own}
+    # Whether every hop so far stayed on the page's origin. Once one leaves it, only the page's
+    # CORS-safelisted headers go on (Range, never Authorization), since the rest would need a preflight
+    # this can't make; and the request is a CORS one carrying Origin: the page's, or "null" once a hop
+    # went from one other origin to another (Fetch's redirect-taint).
+    hops = {
+        "same_origin": True,
+        "stopped": False,
+        "last": origin,
+        "origin": serialized_origin,
+        "rewritten": False,
+        "redirected": False,
+    }
+
+    def allowed(allow_origin: Optional[str]) -> bool:
+        return (allow_origin or "").strip() in ("*", hops["origin"])
+
+    def on_redirect(url: str, hop_method: str, has_body: bool, headers) -> Optional[str]:
+        if request.redirect != "follow":
+            hops["stopped"] = True
+            return "Redirected, and the request asked not to follow."
+        # Mixed content: an https page never reads what came over plain http, so that hop is never sent.
+        if scheme == "https" and urlsplit(url).scheme.lower() != "https":
+            return "Redirected from https to an insecure address."
+        # A browser CORS-checks each response from another site, a redirect too, before following it.
+        if not hops["same_origin"] and not allowed(headers.get("Access-Control-Allow-Origin")):
+            return "Redirected through a site that does not allow it."
+        hops["redirected"] = True
+        hops["rewritten"] = hops["rewritten"] or hop_method != method
+        last, hops["last"] = hops["last"], _origin(url)
+        if hops["last"] != last and last != origin:
+            hops["origin"] = "null"
+        if hops["last"] == origin and hops["same_origin"]:
+            return None
+        hops["same_origin"] = False
+        # A browser preflights anything but a bare GET or HEAD to another origin; this can't, so a
+        # write is refused before it is sent rather than after it reached the other site.
+        if hop_method not in ("GET", "HEAD") or has_body:
+            return "Redirected a write to another site."
+        return None
+
+    def host_headers(current_host: str) -> dict:
+        own_headers = page_headers
+        if hops["rewritten"]:
+            own_headers = {
+                name: value
+                for name, value in own_headers.items()
+                if name.lower() not in _REQUEST_BODY_HEADERS and name != "Origin"
+            }
+        if not hops["same_origin"]:
+            own_headers = {
+                **{
+                    name: value
+                    for name, value in own_headers.items()
+                    if _cors_safelisted(name, value)
+                },
+                "Origin": hops["origin"],
+            }
+            # The default referrer policy sends another site only the page's origin.
+            own_headers["Referer"] = serialized_origin + "/"
+        return {**_studio_headers(current_host), **own_headers}
+
+    meta: dict = {}
+    error, raw, _content_type = _fetch_url_raw(
+        request.url,
+        timeout = _FETCH_TIMEOUT_S,
+        extra_headers = {"User-Agent": _BROWSER_UA},
+        deadline = time.monotonic() + _FETCH_TIMEOUT_S,
+        raw_bytes_max = _MAX_PAGE_RESPONSE_BYTES,
+        post_data = body,
+        meta_out = meta,
+        cancel_event = cancel_event,
+        host_headers = host_headers,
+        method = method,
+        any_status = True,
+        on_redirect = on_redirect,
+    )
+    # "manual" gets an opaque redirect: no status, headers or body reach the page.
+    if hops["stopped"] and request.redirect == "manual":
+        return {
+            "opaqueRedirect": True,
+            "status": 0,
+            "statusText": "",
+            "url": request.url,
+            "headers": [],
+            "body": "",
+        }
+    status = meta.get("status")
+    if not isinstance(status, int) or not isinstance(raw, bytes):
+        raise HTTPException(status_code = 502, detail = error or "The request failed.")
+    if not 200 <= status <= 599:
+        raise HTTPException(status_code = 502, detail = f"HTTP {status}.")
+    if not _integrity_ok(raw, request.integrity):
+        raise HTTPException(status_code = 502, detail = "The body does not match its integrity.")
+    final_url = meta.get("url") or request.url
+    headers = [
+        (name, value)
+        for name, value in meta.get("headers") or []
+        if name.lower() not in _HIDDEN_RESPONSE_HEADERS
+    ]
+    # Redirected through another site, it is a CORS request, as in a browser: read only with the
+    # consent of the site that answered, and only the headers it exposes.
+    if not hops["same_origin"]:
+        if not allowed(meta.get("allow_origin")):
+            raise HTTPException(status_code = 502, detail = "Redirected to another site.")
+        exposed = {
+            name.strip().lower()
+            for header, value in headers
+            if header.lower() == "access-control-expose-headers"
+            for name in value.split(",")
+        }
+        # Credentials are never sent, so "*" exposes every header.
+        if "*" not in exposed:
+            headers = [
+                (name, value)
+                for name, value in headers
+                if name.lower() in _CORS_SAFELISTED_RESPONSE_HEADERS or name.lower() in exposed
+            ]
+    return {
+        "status": status,
+        "statusText": meta.get("reason") or "",
+        "url": final_url,
+        "headers": [[name, value] for name, value in headers],
+        "body": base64.b64encode(raw).decode("ascii"),
+        # Fetch's response.redirected and type: a chain back to the page's origin stays "cors".
+        "redirected": hops["redirected"],
+        "cors": not hops["same_origin"],
+    }
+
+
 def _fetch_and_build(request: BrowserFetchRequest, cancel_event: threading.Event) -> Response:
     error, body, content_type, meta = _fetch(request, cancel_event)
-    return _build_response(request.url, error, body, content_type, meta)
+    return _build_response(request.url, error, body, content_type, meta, cancel_event)
 
 
-@router.post("/fetch")
-async def browser_fetch(
-    request: BrowserFetchRequest,
+async def _run_in_pool(
+    pool: ThreadPoolExecutor,
+    work,
+    request,
     http_request: Request,
-    current_subject: str = Depends(get_current_subject),
+    slots = None,
 ):
-    """Fetch a page: HTML as JSON for the shell, anything else raw with its content type."""
-    request.url = _normalize_url_scheme(request.url.strip())
+    """``work(request, cancel_event)`` in ``pool``, cancelled when the client goes away; ``slots`` bounds the calls queued or running."""
+    if slots is not None and not slots.acquire(blocking = False):
+        raise HTTPException(status_code = 503, detail = "Too many requests in flight.")
     cancel_event = threading.Event()
     loop = asyncio.get_running_loop()
-    task = loop.run_in_executor(_FETCH_POOL, _fetch_and_build, request, cancel_event)
+    if slots is not None:
+        held = work
+
+        def work(request, cancel_event):
+            try:
+                return held(request, cancel_event)
+            finally:
+                slots.release()
+
+    try:
+        task = loop.run_in_executor(pool, work, request, cancel_event)
+    except BaseException:
+        if slots is not None:
+            slots.release()
+        raise
     try:
         while True:
             done, _ = await asyncio.wait({task}, timeout = _DISCONNECT_POLL_S)
@@ -1256,6 +2098,29 @@ async def browser_fetch(
                 raise HTTPException(status_code = 499, detail = "Client closed request")
     finally:
         cancel_event.set()
+
+
+@router.post("/fetch")
+async def browser_fetch(
+    request: BrowserFetchRequest,
+    http_request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Fetch a page: HTML as JSON for the shell, anything else raw with its content type."""
+    request.url = _normalize_url_scheme(request.url.strip())
+    return await _run_in_pool(_FETCH_POOL, _fetch_and_build, request, http_request)
+
+
+@router.post("/request")
+async def browser_page_request(
+    request: BrowserPageRequest,
+    http_request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """A page's fetch or XHR to its own site, which its opaque-origin sandbox can't make (browser_network.py)."""
+    return await _run_in_pool(
+        _REQUEST_POOL, _page_request, request, http_request, slots = _PAGE_REQUEST_SLOTS
+    )
 
 
 @router.get("/print", include_in_schema = False)

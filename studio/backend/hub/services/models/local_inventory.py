@@ -109,10 +109,17 @@ def _http_error(status_code: int, detail: str):
     return HTTPException(status_code = status_code, detail = detail)
 
 
+def _is_image_lora_file(path: Path) -> bool:
+    from core.inference.diffusion_lora import is_image_lora_file
+    return is_image_lora_file(path)
+
+
 def _is_immediate_model_weight_file(path: Path) -> bool:
     if is_appledouble_metadata(path):
         return False
     suffix = path.suffix.lower()
+    if suffix in (".safetensors", ".gguf") and _is_image_lora_file(path):
+        return False
     if suffix == ".safetensors":
         return True
     if suffix == ".gguf":
@@ -389,6 +396,7 @@ def _scan_models_dir(
                 and child.suffix.lower() == ".gguf"
                 and child.is_file()
                 and not is_appledouble_metadata(child)
+                and not _is_image_lora_file(child)
             )
             if not is_dir and not is_gguf_file:
                 continue
@@ -411,7 +419,51 @@ def _scan_models_dir(
             rows = rows[: max(0, limit - len(found))]
         found.extend(rows)
 
+    if limit is None or len(found) < limit:
+        found.extend(
+            loose_diffusion_checkpoint_rows(
+                models_dir,
+                limit = None if limit is None else limit - len(found),
+                entry_limit = entry_limit,
+            )
+        )
     return found
+
+
+def loose_diffusion_checkpoint_rows(
+    folder: Path,
+    *,
+    limit: int | None = None,
+    entry_limit: int | None = None,
+) -> List[LocalModelInfo]:
+    from hub.utils.comfy_models import loose_diffusion_checkpoints
+
+    rows: List[LocalModelInfo] = []
+    for path in loose_diffusion_checkpoints(folder, entry_limit = entry_limit):
+        if limit is not None and len(rows) >= limit:
+            break
+        try:
+            stat_result = path.stat()
+        except OSError:
+            continue
+        rows.append(
+            model_common._local_model_info(
+                scan_path = path,
+                load_path = path,
+                source = "models_dir",
+                model_format = "unknown",
+                artifact_kind = "single_file_checkpoint",
+                updated_at = stat_result.st_mtime,
+                size_bytes = stat_result.st_size,
+            )
+        )
+    return rows
+
+
+def _is_loose_diffusion_checkpoint_row(model: LocalModelInfo) -> bool:
+    return model.artifact_kind == "single_file_checkpoint" and model.path.lower().endswith(
+        ".safetensors"
+    )
 
 
 def _safe_is_dir(path: Path) -> bool:
@@ -650,12 +702,14 @@ def _scan_hf_cache(
         )
         # Denoiser-less pipeline (a GGUF's borrowed VAE / encoder): partial so no picker loads it, flagged so the Hub offers no Continue.
         if not snapshot_partial and hf_cache_scan.snapshot_pipeline_missing_denoiser(
-            hf_cache_scan.latest_snapshot_dir(repo_dir)
+            latest_snapshot := hf_cache_scan.latest_snapshot_dir(repo_dir)
         ):
+            # Some denoiser shards on disk is a torn download, not a prefetch: partial, but not flagged.
+            companion_prefetch = not hf_cache_scan.snapshot_denoiser_has_weights(latest_snapshot)
             rows = [
                 row
                 if row.model_format == "gguf"
-                else row.model_copy(update = {"companion_prefetch": True})
+                else row.model_copy(update = {"companion_prefetch": companion_prefetch})
                 for row in _apply_format_aware_partial(
                     rows, snapshot_partial = True, gguf_partial = gguf_partial
                 )
@@ -710,6 +764,7 @@ def _scan_lmstudio_dir(
                     child.suffix.lower() == ".gguf"
                     and child.is_file()
                     and not is_appledouble_metadata(child)
+                    and not _is_image_lora_file(child)
                 ):
                     try:
                         updated_at = child.stat().st_mtime
@@ -764,6 +819,7 @@ def _scan_lmstudio_dir(
                         model_dir.suffix.lower() == ".gguf"
                         and model_dir.is_file()
                         and not is_appledouble_metadata(model_dir)
+                        and not _is_image_lora_file(model_dir)
                     ):
                         try:
                             updated_at = model_dir.stat().st_mtime
@@ -1154,9 +1210,18 @@ def _scan_custom_folder(
 
     def _is_supported(m: LocalModelInfo) -> bool:
         # A diffusers pipeline keeps its weights in component subdirs, so its root lands as "unknown"; judge it on its shape rather than on a format the layout cannot report.
-        if m.model_format in supported_formats:
+        if m.model_format in supported_formats or _is_loose_diffusion_checkpoint_row(m):
             return True
         return _is_diffusers_pipeline_dir(Path(m.path))
+
+    # A ComfyUI root / models/: its denoiser folders are scanned like nested roots.
+    from hub.utils.comfy_models import comfy_dit_scan_roots
+
+    comfy_roots = tuple(
+        root for root in comfy_dit_scan_roots(folder_path) if root not in nested_roots
+    )
+    if comfy_roots:
+        nested_roots = (*nested_roots, *comfy_roots)
 
     generic = [
         m
@@ -1514,6 +1579,38 @@ def add_scan_folder_response(path: str, recursive: Optional[bool] = None) -> dic
         invalidate_index()
         warm_index_soon()
     return folder
+
+
+LAUNCH_MODELS_DIRS_ENV = "UNSLOTH_STUDIO_MODELS_DIRS"
+
+
+def register_launch_scan_folders(raw: Optional[str] = None) -> list[str]:
+    """Add the ``unsloth studio --models-dir`` folders (os.pathsep-joined) as Custom Folders.
+    Re-launching with the same folder is a no-op; a rejected folder is logged, never fatal."""
+    if raw is None:
+        raw = os.environ.get(LAUNCH_MODELS_DIRS_ENV, "")
+    added: list[str] = []
+    for path in (p.strip() for p in raw.split(os.pathsep)):
+        if not path:
+            continue
+        try:
+            folder, inserted = add_scan_folder_with_status(_coerce_scan_folder_path(path))
+        except ValueError as e:
+            logger.warning(
+                "--models-dir folder skipped: %s (path=%s)",
+                scrub_paths(e),
+                short_path_for_log(path),
+            )
+            continue
+        if inserted:
+            added.append(folder["path"])
+            logger.info(
+                "Scan folder added from --models-dir: %s", short_path_for_log(folder["path"])
+            )
+    if added:
+        from core.inference.local_model_resolver import invalidate_index
+        invalidate_index()
+    return added
 
 
 def remove_scan_folder_response(folder_id: int) -> dict:

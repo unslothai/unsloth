@@ -191,32 +191,40 @@ test("the two update cards do not drift apart", () => {
 });
 
 test("the llama.cpp card takes the desktop updater's floor only with its changelog open", () => {
-  // A collapsed changelog leaves nothing for the floor to protect.
   const slot = LLAMA.slice(
     LLAMA.indexOf("pointer-events-auto flex "),
     LLAMA.indexOf('data-testid="llama-update-banner"'),
   );
-  // The constants match the desktop card, though their gates differ.
-  for (const floor of [
-    "min-h-[calc(117px+93px*var(--ui-font-scale,1))]",
-    "min-h-[calc(24px+224px*var(--ui-font-scale,1))]",
+  // each bundled component after the first adds one 18px text-xs row to the shared floor.
+  for (const [base, text] of [
+    ["117px", "93px"],
+    ["24px", "224px"],
   ]) {
-    assert.ok(slot.includes(floor) && TAURI.includes(floor));
+    assert.ok(
+      TAURI.includes(`min-h-[calc(${base}+${text}*var(--ui-font-scale,1))]`),
+    );
+    assert.ok(
+      slot.includes(
+        `min-h-[calc(${base}+(${text}+18px*var(--llama-update-extra-rows,0))*var(--ui-font-scale,1))]`,
+      ),
+    );
   }
+  assert.match(
+    slot,
+    /"--llama-update-extra-rows":\s*Math\.max\(\s*rows\.length - 1,\s*0\s*\)/,
+  );
   assert.match(slot, /max-\[383px\]:min-h-\[calc\(24px/);
   assert.match(
     slot,
     /changelogPanelOpen\s*\n?\s*\?\s*"min-h-\[calc\(117px/,
     "the floor is back on every state of the card, including the collapsed one",
   );
-  // The floor and panel share the same predicate.
   assert.match(LLAMA, /\{changelogPanelOpen &&/);
   assert.match(
     slot,
     /"shrink-0"/,
     "with no notes to give up, the card must hold its height and let the rail scroll",
   );
-  // Only the conditional branch may carry a floor.
   assert.doesNotMatch(classes(LLAMA, "pointer-events-auto flex "), /min-h-/);
   assert.doesNotMatch(slot, /\bmin-h-0\b/);
   assert.ok(LLAMA.includes("max-w-[calc(448px*var(--ui-space-scale,1))]"));

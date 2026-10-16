@@ -21,6 +21,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Optional
 
+# The auto-switch pin lives in diffusion_device, so every resolve_auto_cuda_ordinal caller sees it.
+from core.inference.diffusion_device import _PLANNED_ORDINAL, _UNPLANNED
 from core.inference.gpu_arbiter import DIFFUSION, VIDEO
 from core.inference.media_model_index import MediaModelPick
 from core.inference.media_switch_backends import backend_for
@@ -83,10 +85,13 @@ def normalized_pick(pick: MediaModelPick) -> MediaModelPick:
     ``single_file`` load and then resolve that family's companions. Planning the un-normalized
     pick describes a local pipeline with nothing to fetch, and misses those companions.
     """
-    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion import resolve_local_single_file, split_local_checkpoint_path
 
     if pick.model_kind or pick.gguf_filename:
         return pick
+    split = split_local_checkpoint_path(pick.model_path)
+    if split is not None:
+        return replace(pick, model_path = split[0], gguf_filename = split[1], model_kind = "single_file")
     sole = resolve_local_single_file(pick.model_path)
     if sole is None:
         return pick
@@ -243,11 +248,22 @@ def planners_for(owner: str, pick: MediaModelPick) -> list:
     if fam is None:
         return [backend_for(owner)]
     kind = resolve_model_kind(pick.gguf_filename, pick.model_kind)
-    predicted = predict_engine(fam, model_kind = kind)
+    predicted = predict_engine(fam, model_kind = kind, gguf_filename = pick.gguf_filename)
     names = [predicted]
     if predicted == ENGINE_SD_CPP and not native_binary_installed():
         names.append(ENGINE_DIFFUSERS)
     return [engine_for(name) for name in names]
+
+
+def pin_planned_gpu_ordinal(ordinal: Optional[int]) -> Any:
+    """Carry ``ordinal`` into this context's plan and load; returns the reset token."""
+    return _PLANNED_ORDINAL.set(ordinal)
+
+
+def planned_gpu_ordinal() -> tuple[bool, Optional[int]]:
+    """(True, ordinal) when this context carries a pinned automatic ordinal, else (False, None)."""
+    ordinal = _PLANNED_ORDINAL.get()
+    return (False, None) if ordinal is _UNPLANNED else (True, ordinal)
 
 
 def plan_gpu_ordinal() -> Optional[int]:
@@ -256,14 +272,17 @@ def plan_gpu_ordinal() -> Optional[int]:
     Automatic precision is chosen per card, and a different card can select a different hosted
     pre-quantized artifact, which a plan plotted against the default device would omit.
     """
+    pinned, ordinal = planned_gpu_ordinal()
+    if pinned:
+        return ordinal
     from core.inference.diffusion_device import (
+        resolve_auto_cuda_ordinal,
         resolve_diffusion_device_target,
-        resolve_selected_cuda_ordinal,
     )
 
     if resolve_diffusion_device_target().device != "cuda":
         return None
-    return resolve_selected_cuda_ordinal(None)
+    return resolve_auto_cuda_ordinal()
 
 
 def _pipeline_components_present(root: Path) -> bool:
@@ -536,6 +555,8 @@ __all__ = [
     "is_edit_only",
     "missing_download_bytes",
     "normalized_pick",
+    "pin_planned_gpu_ordinal",
     "plan_gpu_ordinal",
+    "planned_gpu_ordinal",
     "planners_for",
 ]

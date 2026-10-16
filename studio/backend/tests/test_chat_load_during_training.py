@@ -8,6 +8,7 @@ perform (HF auto reuses the loader's selector, HF explicit applies a per-GPU
 floor, GGUF sizes from on-disk weights, LoRA 4-bit->16-bit flips resolved first)
 and leaves non-training/external loads untouched."""
 
+import tempfile
 import asyncio
 import importlib.util
 import sys
@@ -629,11 +630,32 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         classify.assert_called_once_with(config)
         self.assertEqual(captured, [])
 
-    def test_manual_diffusion_keeps_single_device_training_guard(self):
-        captured = []
-        config = SimpleNamespace(is_gguf = True)
+    def _guard_diffusion_pick(
+        self,
+        captured,
+        fit = None,
+        gguf_file = None,
+        **kwargs,
+    ):
+        config = SimpleNamespace(is_gguf = True, gguf_file = gguf_file)
+        backend = SimpleNamespace(
+            diffusion_split_supported = lambda: True,
+            _find_diffusion_assets = lambda: (["python"], "/bin/vs", None),
+        )
+        fits = []
         with (
+            patch.object(
+                self.route.LlamaCppBackend,
+                "_diffusion_fit_gpus",
+                side_effect = lambda *a: fits.append(a) or fit,
+            ),
+            patch.object(
+                self.route.LlamaCppBackend,
+                "_get_gguf_size_bytes",
+                side_effect = lambda _p: 9 * 1024**3,
+            ),
             patch.object(self.route, "_classify_diffusion_gguf", return_value = True),
+            patch.object(self.route, "get_llama_cpp_backend", return_value = backend),
             patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
             patch.object(
                 self.route.LlamaCppBackend,
@@ -648,10 +670,42 @@ class TestChatLoadGuardRoute(unittest.TestCase):
                 decision = (True, {"mode": "single_device"}),
                 gpu_memory_mode = "manual",
                 requested_gpu_ids = [3, 1],
+                **kwargs,
             )
+        return fits
+
+    def test_manual_diffusion_split_keeps_single_device_training_guard(self):
+        # An explicit layer count runs on the lowest picked GPU only.
+        captured = []
+        self._guard_diffusion_pick(captured, gpu_layers = 20)
         self.assertEqual(len(captured), 1)
         self.assertEqual(captured[0]["single_device_gpu"], "1")
         self.assertEqual(captured[0]["requested_gpu_ids"], [3, 1])
+
+    def test_auto_layers_diffusion_split_is_budgeted_on_its_gpus(self):
+        # Without a layer count the runner splits what GPU 1 cannot hold (#6347): the
+        # guard budgets the GPUs that same decision picks, from the launcher's weight bytes
+        # (the GGUF file), not the context-inclusive estimate.
+        captured = []
+        with tempfile.NamedTemporaryFile(suffix = ".gguf") as f:
+            fits = self._guard_diffusion_pick(captured, fit = [1, 3], gguf_file = f.name)
+        self.assertEqual(fits, [(9 * 1024**3, [3, 1], "1", "/bin/vs")])
+        self.assertIsNone(captured[0]["single_device_gpu"])
+        self.assertEqual(captured[0]["requested_gpu_ids"], [1, 3])
+
+    def test_auto_layers_diffusion_pick_that_fits_one_gpu_keeps_its_budget(self):
+        captured = []
+        with tempfile.NamedTemporaryFile(suffix = ".gguf") as f:
+            self._guard_diffusion_pick(captured, fit = None, gguf_file = f.name)
+        self.assertEqual(captured[0]["single_device_gpu"], "1")
+        self.assertEqual(captured[0]["requested_gpu_ids"], [3, 1])
+
+    def test_diffusion_gguf_not_on_disk_keeps_the_single_device_budget(self):
+        # Nothing to read the launcher's weight size from: stay on the stricter budget.
+        captured = []
+        fits = self._guard_diffusion_pick(captured, fit = [1, 3])
+        self.assertEqual(fits, [])
+        self.assertEqual(captured[0]["single_device_gpu"], "1")
 
     def _guard_zero_layer(self, *, diffusion_kind, captured):
         """Drive the guard with a manual zero-layer split and a shim that has --ngl."""
@@ -1491,6 +1545,15 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             classmethod(lambda cls, binary = None: {"supports_dspark": supported}),
         )
 
+    @staticmethod
+    def _eagle3_capable(supported):
+        from core.inference.llama_cpp import LlamaCppBackend
+        return patch.object(
+            LlamaCppBackend,
+            "probe_server_capabilities",
+            classmethod(lambda cls, binary = None: {"supports_eagle3": supported}),
+        )
+
     def test_local_dspark_sidecar_is_only_counted_when_requested(self):
         import tempfile
 
@@ -1529,6 +1592,44 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(off_gb, 2000 / (1024**3), places = 9)
         self.assertAlmostEqual(dspark_gb, 5000 / (1024**3), places = 9)
         self.assertAlmostEqual(extras_gb, 5000 / (1024**3), places = 9)
+
+    def test_local_eagle3_drafter_paired_by_the_export_is_charged(self):
+        """A Studio export's drafter.json pairs an EAGLE-3 GGUF that Auto attaches at launch."""
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            target.write_bytes(b"x" * 2000)
+            (p / "eagle3-model-F16.gguf").write_bytes(b"y" * 3000)
+            cfg = SimpleNamespace(
+                gguf_file = str(target),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = None,
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
+            ):
+                with self._eagle3_capable(True):
+                    bare = self.route._estimate_gguf_required_gb(cfg, speculative_type = "auto")
+                    (p / "drafter.json").write_text(
+                        json.dumps({"strategy": "eagle3", "files": ["eagle3-model-F16.gguf"]})
+                    )
+                    auto = self.route._estimate_gguf_required_gb(cfg, speculative_type = "auto")
+                    off = self.route._estimate_gguf_required_gb(cfg, speculative_type = "off")
+                # A binary without draft-eagle3 never opens the sidecar.
+                with self._eagle3_capable(False):
+                    incapable = self.route._estimate_gguf_required_gb(
+                        cfg, speculative_type = "eagle3"
+                    )
+        self.assertAlmostEqual(bare, 2000 / (1024**3), places = 9)
+        self.assertAlmostEqual(auto, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(off, 2000 / (1024**3), places = 9)
+        self.assertAlmostEqual(incapable, 2000 / (1024**3), places = 9)
 
     def test_forced_dspark_on_an_incapable_binary_charges_no_drafter_at_all(self):
         """The loader's DSpark branch falls back to --spec-default, which loads no
@@ -1643,6 +1744,147 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             "probe_server_capabilities",
             classmethod(lambda cls, binary = None: {"supports_dflash": supported}),
         )
+
+    def test_auto_prices_the_mtp_sidecar_under_tensor_split(self):
+        """#11308: Auto on tensor split launches the loadable MTP sidecar, so it is the one charged."""
+        import tempfile
+
+        import core.inference.llama_cpp as llama_cpp_module
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            sidecar = p / "dflash-kquant.gguf"
+            mtp = p / "MTP" / "mtp-model.gguf"
+            mtp.parent.mkdir()
+            target.write_bytes(b"x" * 2000)
+            sidecar.write_bytes(b"y" * 3000)
+            mtp.write_bytes(b"z" * 5000)
+            cfg = _gguf_cfg(
+                gguf_file = str(target),
+                gguf_dflash_file = str(sidecar),
+                gguf_mtp_file = str(mtp),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+
+            from core.inference.llama_cpp import LlamaCppBackend
+
+            def _caps(mtp_token = "draft-mtp"):
+                return patch.object(
+                    LlamaCppBackend,
+                    "probe_server_capabilities",
+                    classmethod(
+                        lambda cls, binary = None: {"supports_dflash": True, "mtp_token": mtp_token}
+                    ),
+                )
+
+            def _estimate(
+                loads,
+                mtp_token = "draft-mtp",
+                **kw,
+            ):
+                with (
+                    patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                    patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
+                    patch.object(
+                        llama_cpp_module, "_mtp_drafter_loads_standalone", lambda _p: loads
+                    ),
+                    _caps(mtp_token),
+                ):
+                    return self.route._estimate_gguf_required_gb(cfg, speculative_type = "auto", **kw)
+
+            def _resident(**kw):
+                with (
+                    patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                    patch.object(
+                        llama_cpp_module, "_mtp_drafter_loads_standalone", lambda _p: True
+                    ),
+                    _caps(),
+                ):
+                    return self.route._gguf_resident_file_gb(cfg, speculative_type = "auto", **kw)
+
+            resident_tensor = _resident(tensor_parallel = True)
+            resident_layer = _resident()
+            tensor = _estimate(True, tensor_parallel = True)
+            tensor_extras = _estimate(True, llama_extra_args = ["-sm", "tensor"])
+            layer = _estimate(True)
+            unloadable = _estimate(False, tensor_parallel = True)
+            no_mtp_binary = _estimate(True, mtp_token = None, tensor_parallel = True)
+        self.assertAlmostEqual(tensor, 7000 / (1024**3), places = 9)
+        self.assertAlmostEqual(tensor_extras, 7000 / (1024**3), places = 9)
+        self.assertAlmostEqual(layer, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(unloadable, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(no_mtp_binary, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(resident_tensor, 7000 / (1024**3), places = 9)
+        self.assertAlmostEqual(resident_layer, 5000 / (1024**3), places = 9)
+
+    def test_auto_drops_a_neox_dflash_charge_on_an_mrope_vision_load(self):
+        """#13511: Auto launches no DFlash drafter that an image would break, so none is charged."""
+        import struct
+        import tempfile
+
+        def _header(path, arch, kv, size):
+            entries = [("general.architecture", arch), *kv.items()]
+            out = [struct.pack("<IIQQ", 0x46554747, 3, 0, len(entries))]
+            for key, val in entries:
+                out.append(struct.pack("<Q", len(key)) + key.encode())
+                if isinstance(val, str):
+                    out.append(struct.pack("<IQ", 8, len(val)) + val.encode())
+                elif isinstance(val, bool):
+                    out.append(struct.pack("<I?", 7, val))
+                else:
+                    out.append(
+                        struct.pack("<IIQ", 9, 5, len(val)) + struct.pack(f"<{len(val)}i", *val)
+                    )
+            blob = b"".join(out)
+            path.write_bytes(blob + b"\0" * (size - len(blob)))
+            return str(path)
+
+        sections = [11, 11, 10, 0]
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = _header(
+                p / "model.gguf", "qwen35", {"qwen35.rope.dimension_sections": sections}, 2000
+            )
+            neox = _header(p / "dflash-neox.gguf", "dflash", {}, 3000)
+            mrope = _header(
+                p / "dflash-mrope.gguf",
+                "dflash",
+                {"dflash.rope.dimension_sections": sections},
+                3000,
+            )
+            mmproj = _header(p / "mmproj-F16.gguf", "clip", {"clip.has_vision_encoder": True}, 7000)
+
+            from core.inference.llama_cpp import LlamaCppBackend
+
+            def _estimate(dflash, **kw):
+                cfg = _gguf_cfg(
+                    gguf_file = target,
+                    gguf_dflash_file = dflash,
+                    gguf_mmproj_file = mmproj,
+                    gguf_hf_repo = None,
+                    gguf_variant = None,
+                )
+                with (
+                    patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                    patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
+                    patch.object(
+                        LlamaCppBackend,
+                        "probe_server_capabilities",
+                        classmethod(lambda cls, binary = None: {"supports_dflash": True}),
+                    ),
+                ):
+                    return self.route._estimate_gguf_required_gb(cfg, **kw)
+
+            auto_neox = _estimate(neox, speculative_type = "auto")
+            auto_mrope = _estimate(mrope, speculative_type = "auto")
+            auto_neox_vision_off = _estimate(neox, speculative_type = "auto", disable_vision = True)
+            forced_neox = _estimate(neox, speculative_type = "dflash")
+        self.assertAlmostEqual(auto_neox, 9000 / (1024**3), places = 9)
+        self.assertAlmostEqual(auto_mrope, 12000 / (1024**3), places = 9)
+        self.assertAlmostEqual(auto_neox_vision_off, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(forced_neox, 12000 / (1024**3), places = 9)
 
     def test_extra_args_drafter_is_charged_once_when_it_is_the_local_sidecar(self):
         """--model-draft usually names the very sidecar discovery already found,

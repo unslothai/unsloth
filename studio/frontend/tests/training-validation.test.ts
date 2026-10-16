@@ -346,3 +346,62 @@ test("a vision model still cannot start from S3", () => {
     },
   );
 });
+
+test("training validation lets LoRA and CPT continue from a saved adapter (#13140)", () => {
+  const adapter = {
+    ...validConfig,
+    selectedModel: "/outputs/run/checkpoint-30",
+    modelFormat: "adapter" as const,
+  };
+  for (const trainingMethod of ["lora", "qlora", "cpt"] as const) {
+    assert.deepEqual(
+      validateTrainingConfig({ ...adapter, trainingMethod } as never, "linux"),
+      { ok: true, errorKey: null },
+    );
+  }
+});
+
+test("training validation refuses an adapter where a fresh adapter would be built", () => {
+  const adapter = {
+    ...validConfig,
+    selectedModel: "/outputs/run/checkpoint-30",
+    modelFormat: "adapter" as const,
+  };
+  const refused = { ok: false, errorKey: "studio.modelPicker.reasonAdapter" };
+  assert.deepEqual(
+    validateTrainingConfig(
+      { ...adapter, trainingMethod: "full" } as never,
+      "linux",
+    ),
+    refused,
+  );
+  assert.deepEqual(
+    validateTrainingConfig(
+      { ...adapter, modelType: "decision" } as never,
+      "linux",
+    ),
+    refused,
+  );
+  assert.deepEqual(
+    validateTrainingConfig(
+      { ...adapter, isEmbeddingModel: true } as never,
+      "linux",
+    ),
+    refused,
+  );
+  assert.deepEqual(validateTrainingConfig(adapter as never, "mac"), refused);
+});
+
+test("training validation refuses continuing a Hub adapter repo", () => {
+  assert.deepEqual(
+    validateTrainingConfig(
+      {
+        ...validConfig,
+        selectedModel: "org/adapter",
+        modelFormat: "adapter",
+      } as never,
+      "linux",
+    ),
+    { ok: false, errorKey: "studio.modelPicker.reasonAdapter" },
+  );
+});

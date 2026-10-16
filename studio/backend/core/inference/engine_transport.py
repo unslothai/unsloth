@@ -52,8 +52,17 @@ def engine_messages(messages):
 def engine_request_timeout():
     """The llama-server first-token deadline: long prefill, queueing or a non-streamed
     reply routinely outlast a fixed short read timeout."""
-    from routes.inference import _first_token_timeout_s
-    return httpx.Timeout(_first_token_timeout_s(), connect = 5)
+    from routes.inference import (
+        _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        _OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV,
+        _finite_positive_float_env,
+    )
+
+    # Not the saved GGUF limit: this one read timeout also bounds mid-response stalls here.
+    value = _finite_positive_float_env(
+        _OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV, _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+    )
+    return httpx.Timeout(_DEFAULT_FIRST_TOKEN_TIMEOUT_S if value is None else value, connect = 5)
 
 
 def stream_chat_events(base_url, headers, payload, cancelled):
