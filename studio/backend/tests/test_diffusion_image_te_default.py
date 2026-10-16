@@ -1147,3 +1147,50 @@ def test_the_uncached_precast_price_leaves_out_the_dense_sibling(monkeypatch):
     mib, _components, _exact = DiffusionBackend._precast_text_encoder_mib(fam, fam.base_repo, MPS_TARGET, "int8")
     hosted = family_bf16_components_gb(fam, fam.base_repo)[1] - 0.8
     assert mib == int(hosted * 1000**3 * tpq.te_int8_convrot_budget_scale(fam)) // (1024 * 1024)
+
+
+# ---- review round 7 ---------------------------------------------------------------------------------------------
+
+
+def test_hidream_is_the_only_family_with_more_than_one_hosted_int8_encoder():
+    assert [n for n, comps in tpq.TE_INT8_CONVROT_FILES.items() if len(comps) > 1] == ["hidream-i1"]
+
+
+def _hidream_partial(monkeypatch, device, te4_present):
+    target = _table_env(monkeypatch, device, True, False)
+    # TE3's T5 file is confirmed; TE4's Llama file only when te4_present
+    monkeypatch.setattr(
+        tpq,
+        "te_prequant_sources_confirmed",
+        lambda sources: te4_present or "text_encoder_4" not in sources,
+    )
+    return target
+
+
+@pytest.mark.parametrize("device", ["cuda", "mps"])
+def test_explicit_hidream_int8_with_one_hosted_file_missing_refuses_in_preflight(device, monkeypatch):
+    target = _hidream_partial(monkeypatch, device, te4_present = False)
+    fam = _fam("hidream-i1")
+    from core.inference.diffusion import DiffusionBackend
+
+    with pytest.raises(RuntimeError, match = "text_encoder_4 \\(HiDream-I1-Full-text_encoder_4-INT8-ConvRot.safetensors\\).*fp8.*Dense \\(bf16\\)"):
+        DiffusionBackend()._assert_precision_for_target(
+            fam, target, model_kind = "pipeline", pinned = None, te_mode = "int8", memory_mode = None,
+            cpu_offload = False, base_repo = fam.base_repo,
+        )
+
+
+def test_explicit_hidream_int8_with_both_files_passes_preflight(monkeypatch):
+    target = _hidream_partial(monkeypatch, "mps", te4_present = True)
+    fam = _fam("hidream-i1")
+    import core.inference.diffusion_precision as prec
+
+    assert prec.preflight_te_quant("int8", fam, fam.base_repo, target) is None
+
+
+def test_explicit_hidream_int8_with_neither_file_is_not_a_partial_refusal(monkeypatch):
+    import core.inference.diffusion_precision as prec
+
+    target = _table_env(monkeypatch, "cuda", False, False)
+    fam = _fam("hidream-i1")
+    assert prec.preflight_te_quant("int8", fam, fam.base_repo, target) == "fp8"

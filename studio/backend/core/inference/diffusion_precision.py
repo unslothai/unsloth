@@ -173,10 +173,26 @@ def preflight_te_quant(
     family = getattr(fam, "name", None)
     if normalized != TE_QUANT_INT8:
         return effective_te_quant(normalized, family)
-    from .diffusion_te_prequant import explicit_int8_takes_hosted_file
+    from .diffusion_te_prequant import (
+        TE_INT8_CONVROT_FILES,
+        explicit_int8_hosted_components,
+        explicit_int8_takes_hosted_file,
+    )
 
     if explicit_int8_takes_hosted_file(fam, base, target, supplied = supplied or ()):
         return None
+    takes = explicit_int8_hosted_components(fam, base, target, supplied = supplied or ())
+    missing = [c for c, ok in takes.items() if not ok]
+    if missing and len(missing) < len(takes):
+        # Some encoders would load their hosted int8 file and the rest fall back (HiDream: T5 int8 beside an fp8
+        # Llama), a mixed build quantize_text_encoders refuses only after the download and the eviction. Refuse here.
+        files = TE_INT8_CONVROT_FILES.get((family or "").strip().lower(), {})
+        named = ", ".join(f"{c} ({files[c][1]})" if c in files and len(files[c]) > 1 else c for c in missing)
+        raise RuntimeError(
+            f"Text encoder precision int8 needs the hosted int8 ConvRot file for every {family} text encoder, but "
+            f"{named} is not available here while the others are, so the encoders would load at mixed precisions. "
+            "Choose fp8 for all of them, or Dense (bf16)."
+        )
     if _family_hosts_te_int8(family):
         if _TE_INT8_SKIP.get((family or "").lower()) is not None and torchao_quantize_importable():
             return TE_QUANT_INT8

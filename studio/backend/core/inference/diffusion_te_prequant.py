@@ -347,6 +347,48 @@ def _with_dense_siblings(fam: Any, base: Optional[str], te_quant_mode: Any, scal
     return (sibling + (total - sibling) * scale) / total
 
 
+def explicit_int8_hosted_components(
+    fam: Any,
+    base: Optional[str],
+    target: Any,
+    *,
+    supplied: Iterable[str] = (),
+) -> dict[str, bool]:
+    """``{component: takes its hosted int8 ConvRot file}`` for every encoder ``fam`` hosts one for that no supplied
+    encoder replaces (HiDream's text_encoder_4 included): the device runs the file, the lm_head trim is on (else the
+    resolver puts fp8 first), the base matches the file's, and the file is confirmed (on disk, or listed by the
+    Hub)."""
+    name = str(getattr(fam, "name", "") or "").strip().lower()
+    out: dict[str, bool] = {}
+    for component in TE_INT8_CONVROT_FILES.get(name, {}):
+        if component in set(supplied or ()):
+            continue
+        try:
+            standalone: dict[str, str] = {}
+            if component == "text_encoder_4":
+                from .diffusion_hidream import HIDREAM_LLAMA_REPO
+
+                standalone = {"text_encoder_4": HIDREAM_LLAMA_REPO}
+            # TE4 is matched against its own standalone repo, the rest against the selected base.
+            component_base = standalone.get(component) or base or getattr(fam, "base_repo", "")
+            got = te_prequant_sources_for_base(
+                fam,
+                str(component_base or ""),
+                te_quant_mode = "int8",
+                target = target,
+                components = (component,),
+                **({"standalone_component_bases": standalone} if standalone else {}),
+            ).get(component)
+            out[component] = bool(
+                got is not None
+                and not (got.kind == "repo" and _is_fp8_te_name(got.filename))
+                and te_prequant_sources_confirmed({component: replace(got, fallback_filenames = ())})
+            )
+        except Exception:  # noqa: BLE001 - unanswerable: not granted
+            out[component] = False
+    return out
+
+
 def explicit_int8_takes_hosted_file(
     fam: Any,
     base: Optional[str],
@@ -355,45 +397,14 @@ def explicit_int8_takes_hosted_file(
     supplied: Iterable[str] = (),
 ) -> bool:
     """Whether an explicit int8 request on ``fam`` / ``base`` will load the hosted int8 ConvRot file for EVERY
-    encoder the family hosts one for (HiDream's text_encoder_4 included) on ``target``: the device runs the file,
-    the lm_head trim is on (else the resolver puts fp8 first), the base matches the file's, no supplied encoder
-    replaces it, and the file is confirmed (on disk, or listed by the Hub). Preflight, precision and the HiDream TE4
-    gate all ask this, so none of them grants the plain-tensor int8 path to a load that will not take it."""
-    try:
-        name = str(getattr(fam, "name", "") or "").strip().lower()
-        hosted = [c for c in TE_INT8_CONVROT_FILES.get(name, {}) if c not in set(supplied or ())]
-        if not hosted or len(hosted) != len(TE_INT8_CONVROT_FILES.get(name, {})):
-            return False
-        extra: dict[str, Any] = {"components": tuple(hosted)}
-        if "text_encoder_4" in hosted:
-            from .diffusion_hidream import HIDREAM_LLAMA_REPO
-            extra["standalone_component_bases"] = {"text_encoder_4": HIDREAM_LLAMA_REPO}
-        sources: dict[str, TePrequantSource] = {}
-        for component in hosted:
-            # TE4 is matched against its own standalone repo, the rest against the selected base.
-            component_base = (
-                extra.get("standalone_component_bases", {}).get(component)
-                or base
-                or getattr(fam, "base_repo", "")
-            )
-            got = te_prequant_sources_for_base(
-                fam,
-                str(component_base or ""),
-                te_quant_mode = "int8",
-                target = target,
-                components = (component,),
-                **(
-                    {"standalone_component_bases": extra["standalone_component_bases"]}
-                    if component == "text_encoder_4"
-                    else {}
-                ),
-            ).get(component)
-            if got is None or (got.kind == "repo" and _is_fp8_te_name(got.filename)):
-                return False
-            sources[component] = replace(got, fallback_filenames = ())
-        return te_prequant_sources_confirmed(sources)
-    except Exception:  # noqa: BLE001 - unanswerable: not granted
+    encoder the family hosts one for (see ``explicit_int8_hosted_components``), with none replaced by a supplied
+    encoder. Preflight, precision and the HiDream TE4 gate all ask this, so none of them grants the plain-tensor int8
+    path to a load that will not take it."""
+    name = str(getattr(fam, "name", "") or "").strip().lower()
+    if not TE_INT8_CONVROT_FILES.get(name):
         return False
+    takes = explicit_int8_hosted_components(fam, base, target, supplied = supplied)
+    return len(takes) == len(TE_INT8_CONVROT_FILES[name]) and all(takes.values())
 
 
 def _auto_pick(te_quant_mode: Any) -> bool:
