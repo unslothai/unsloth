@@ -3,7 +3,8 @@
 
 """What Unsloth adds around accelerate's `fsdp2_prepare_model` (which already wraps per block,
 keeps the [norm, lm_head] tail gathered, groups tied embeddings). `UNSLOTH_FSDP2_ACCELERATE_DEFAULTS=1`
-skips the mixed precision fill and the last-block setting.
+skips the mixed precision fill and the last-block setting. bitsandbytes 4-bit (QLoRA) weights are
+sharded too, keeping their QuantState (`fsdp2_qlora.py`).
 """
 
 import contextlib
@@ -424,10 +425,23 @@ def install_fsdp2_prepare_hook():
 
     @functools.wraps(original)
     def fsdp2_prepare_model(accelerator, model, *args, **kwargs):
-        fill_fsdp2_mixed_precision(accelerator)
-        unify_trainable_dtypes(accelerator, model)
-        unify_frozen_dtypes(accelerator, model)
-        model = original(accelerator, model, *args, **kwargs)
+        from .fsdp2_qlora import fsdp2_qlora_wrap
+
+        # The 4-bit fallback to uint8 storage first: float-packed weights would count as frozen
+        # 16-bit weights in the dtype unification.
+        with fsdp2_qlora_wrap(model, original) as qlora:
+            fill_fsdp2_mixed_precision(accelerator)
+            unify_trainable_dtypes(accelerator, model)
+            unify_frozen_dtypes(accelerator, model)
+            model = original(accelerator, model, *args, **kwargs)
+        if qlora is not None:
+            note = "" if qlora["patched"] else f" FSDPParam was not patched: {qlora['reason']}."
+            if qlora.get("reverted"):
+                note += f" {qlora['reverted']} float-packed weights kept as uint8, which this wrap preserves."
+            _print_rank0(
+                f"Unsloth: FSDP2 QLoRA: {qlora['params4bit']} 4-bit weights packed as "
+                f"{'/'.join(qlora['storage'])} ({qlora['converted']} repacked from uint8).{note}"
+            )
         after_fsdp2_wrap(accelerator, model)
         return model
 
