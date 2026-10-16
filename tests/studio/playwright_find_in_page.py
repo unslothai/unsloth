@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Exercise find-in-page in real browsers and degraded engine modes.
-
-The Node suite covers pure indexing. This harness covers browser-only chords, geometry,
-highlights, fallback selection, and visibility behavior.
-
-    SMOKE_ENGINES=chromium,firefox,webkit python3 tests/studio/playwright_find_in_page.py
-
-The modes emulate missing highlight support, legacy visibility options, and no visibility API."""
+"""Find-in-page in real browsers, plus degraded modes without highlight or visibility API."""
 
 import json
 import os
@@ -42,15 +35,12 @@ PLATFORMS = {
 }
 MOD = {"macOS": "Meta", "Windows": "Control", "Linux": "Control"}
 
-# Drop the highlight registry before the app loads, so the bar takes the
-# selection fallback exactly as it does on an engine that never had one.
 NO_HIGHLIGHT_API = """
 delete window.Highlight;
 try { delete CSS.highlights; } catch (e) { /* getter-only on some engines */ }
 """
 
-# An engine from before the option rename: it answers only checkVisibilityCSS
-# and checkOpacity, and ignores the modern spellings the way Web IDL does.
+# Pre-rename engines answer only checkVisibilityCSS/checkOpacity and ignore modern option names.
 LEGACY_CHECK_VISIBILITY = """
 const real = Element.prototype.checkVisibility;
 Element.prototype.checkVisibility = function (options) {
@@ -68,9 +58,7 @@ Element.prototype.checkVisibility = function (options) {
 };
 """
 
-# An engine with no checkVisibility at all, which is Safari below 17.4 and the
-# WebKitGTK the desktop build is handed. The optional call answers undefined
-# there, and read as "not false" it put every display: none subtree back in.
+# Safari < 17.4 and desktop WebKitGTK lack checkVisibility; an undefined answer must not read as visible.
 NO_CHECK_VISIBILITY = """
 delete Element.prototype.checkVisibility;
 """
@@ -103,8 +91,6 @@ def state(page) -> dict:
 
 def open_bar(page, mod: str) -> None:
     page.keyboard.press(f"{mod}+f")
-    # The production bar crosses a lazy boundary so the first open can include
-    # one dev-server transform. Assert that it resolves, not that Vite is warm.
     page.wait_for_function(
         "() => window.__findSmoke.state().open",
         timeout = 10000,
@@ -116,19 +102,47 @@ def settle(
     condition: str,
     *,
     timeout: int = 10000,
+    arg = None,
 ) -> None:
-    """Give `condition` until `timeout` to hold, and do not fail here if it never does.
-
-    A flat sleep before reading the state asserts the runner's speed alongside the
-    behaviour, and a busy runner failed the chord re-focus check on a build that only
-    touched a PowerShell script. Waiting on the condition lets a slow machine take its
-    time, while a genuinely broken one spends the timeout and then fails on the SAME check
-    with the same message, so nothing is swallowed here.
-    """
+    """Waits on the condition rather than a flat sleep, so a slow runner is not failed by timing."""
     try:
-        page.wait_for_function(condition, timeout = timeout)
+        page.wait_for_function(condition, arg = arg, timeout = timeout)
     except PlaywrightTimeout:
         pass
+
+
+def frames(page) -> None:
+    """Let the commit that just changed state reach layout and paint (two animation frames)."""
+    page.evaluate(
+        "() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
+    )
+
+
+# The counter is empty while a query is pending and reads `active/count` (`0/0` for no match)
+# once it has settled, so a non-empty counter is the bar's own "search done" signal.
+COUNTED = "() => !!window.__findSmoke.counter()"
+COUNTER_IS = "expected => window.__findSmoke.counter() === expected"
+SEARCH_HAS = "text => (document.querySelector('[role=\"search\"]')?.innerText ?? '').includes(text)"
+COUNTER_MOVED = "prev => { const c = window.__findSmoke.counter(); return !!c && c !== prev; }"
+
+
+def settled_counter(page) -> str | None:
+    """Wait for the typed query to settle and paint, then read its counter.
+
+    The first settled render can still show the previous query's results (the search runs in an
+    effect after it), so give that effect two more frames to land before reading."""
+    settle(page, COUNTED)
+    frames(page)
+    frames(page)
+    return counter(page)
+
+
+def step(page, key: str) -> None:
+    """Press a walk key and wait for the active match to move (every query here has many)."""
+    before = counter(page)
+    page.keyboard.press(key)
+    settle(page, COUNTER_MOVED, arg = before)
+    frames(page)
 
 
 def close_bar(page) -> None:
@@ -147,7 +161,6 @@ def check_chord(page, engine: str, mode: str, mod: str) -> None:
         page.locator('[role="search"]').count() == 1,
     )
 
-    # Re-pressing the chord keeps the search open and returns focus to its field.
     page.evaluate("() => document.activeElement?.blur()")
     check(
         engine,
@@ -173,14 +186,13 @@ def check_chord(page, engine: str, mode: str, mod: str) -> None:
 def check_counting(page, engine: str, mode: str, mod: str) -> None:
     open_bar(page, mod)
     page.keyboard.type("unsloth")
-    page.wait_for_timeout(500)
-    shown = counter(page)
+    shown = settled_counter(page)
     check(engine, mode, "a query is counted", bool(shown), f"counter={shown!r}")
 
-    # An off-route workspace is kept mounted under `inert`; its matches must not
-    # be counted or walked to.
+    # An off-route workspace stays mounted under `inert`; its matches must not count.
     page.evaluate("() => window.__findSmoke.setWorkspace('other')")
-    page.wait_for_timeout(700)
+    settle(page, COUNTER_MOVED, arg = shown)
+    frames(page)
     other = counter(page)
     check(
         engine,
@@ -190,7 +202,8 @@ def check_counting(page, engine: str, mode: str, mod: str) -> None:
         f"{shown!r} -> {other!r}",
     )
     page.evaluate("() => window.__findSmoke.setWorkspace('chat')")
-    page.wait_for_timeout(700)
+    settle(page, COUNTER_IS, arg = shown)
+    frames(page)
     check(
         engine,
         mode,
@@ -201,14 +214,69 @@ def check_counting(page, engine: str, mode: str, mod: str) -> None:
     close_bar(page)
 
 
+def check_close_preserves_position(page, engine: str, mode: str, mod: str) -> None:
+    search_page = new_page(page.context)
+    try:
+        for outer_scroll in (False, True):
+            search_page.evaluate("outer => window.__findSmoke.setOuterScroll(outer)", outer_scroll)
+            origin = search_page.locator("[data-find-scope] .mx-auto > .rounded-xl").first
+            origin.evaluate("element => { element.tabIndex = 0; }")
+            for dismiss in ("Escape", "button"):
+                origin.focus()
+                open_bar(search_page, mod)
+                field = search_page.locator('[role="search"] input')
+                field.fill("")
+                search_page.wait_for_function("() => !window.__findSmoke.counter()")
+                field.fill("unsloth")
+                search_page.wait_for_function("() => !!window.__findSmoke.counter()")
+                start = search_page.evaluate("() => window.__findSmoke.counter()")
+                for _ in range(10):
+                    field.press("Enter")
+                # Wait for all ten steps to land: the active match ten places on, wrapping.
+                settle(
+                    search_page,
+                    """start => {
+                      const [a, n] = start.split('/').map(Number);
+                      return window.__findSmoke.counter() === `${((a - 1 + 10) % n) + 1}/${n}`;
+                    }""",
+                    arg = start,
+                )
+                frames(search_page)
+                before = search_page.evaluate("() => window.__findSmoke.scrollTop()")
+                if dismiss == "Escape":
+                    close_bar(search_page)
+                else:
+                    search_page.get_by_role("button", name = "Close find", exact = True).click()
+                search_page.wait_for_function("() => !window.__findSmoke.state().open")
+                search_page.evaluate(
+                    "() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
+                )
+                after = search_page.evaluate("() => window.__findSmoke.scrollTop()")
+                layout = "outer scroller" if outer_scroll else "chat scroller"
+                check(
+                    engine,
+                    mode,
+                    f"{dismiss} preserves the search position in the {layout}",
+                    before > 500 and abs(after - before) <= 1,
+                    f"scrollTop {before} -> {after}",
+                )
+                check(
+                    engine,
+                    mode,
+                    f"{dismiss} restores focus in the {layout}",
+                    origin.evaluate("element => document.activeElement === element"),
+                )
+    finally:
+        search_page.close()
+
+
 def check_walk(page, engine: str, mode: str, mod: str) -> None:
     open_bar(page, mod)
     page.keyboard.type("unsloth")
-    page.wait_for_timeout(500)
+    settled_counter(page)
     start = page.evaluate("() => window.__findSmoke.scrollTop()")
     for _ in range(6):
-        page.keyboard.press("Enter")
-        page.wait_for_timeout(120)
+        step(page, "Enter")
     moved = page.evaluate("() => window.__findSmoke.scrollTop()")
     check(
         engine,
@@ -219,8 +287,7 @@ def check_walk(page, engine: str, mode: str, mod: str) -> None:
     )
 
     # Shift+Enter walks back.
-    page.keyboard.press("Shift+Enter")
-    page.wait_for_timeout(200)
+    step(page, "Shift+Enter")
     check(
         engine,
         mode,
@@ -234,14 +301,28 @@ def check_walk(page, engine: str, mode: str, mod: str) -> None:
 def check_streaming(page, engine: str, mode: str, mod: str) -> None:
     open_bar(page, mod)
     page.keyboard.type("unsloth")
-    page.wait_for_timeout(500)
+    settled_counter(page)
     for _ in range(4):
-        page.keyboard.press("Enter")
-        page.wait_for_timeout(120)
+        step(page, "Enter")
     before_scroll = page.evaluate("() => window.__findSmoke.scrollTop()")
     before_count = counter(page)
-    page.evaluate("() => window.__findSmoke.stream('a streamed unsloth reply', 5)")
-    page.wait_for_timeout(1600)
+    reply = "a streamed unsloth reply"
+    page.evaluate("text => window.__findSmoke.stream(text, 5)", reply)
+    # Done streaming, and the reindex that counts the new match has landed.
+    settle(
+        page,
+        """([text, prev]) => {
+          const rows = document.querySelectorAll('[data-streamed]');
+          const last = rows[rows.length - 1];
+          const c = window.__findSmoke.counter();
+          return last?.textContent === text && !!c && c !== prev;
+        }""",
+        arg = [reply, before_count],
+    )
+    # Observation window, not a readiness guess: one more reindex interval (300 ms) must pass
+    # without the reader being scrolled, since a later reindex is where a jump would come from.
+    page.wait_for_timeout(350)
+    frames(page)
     check(
         engine,
         mode,
@@ -254,7 +335,7 @@ def check_streaming(page, engine: str, mode: str, mod: str) -> None:
         mode,
         "a streamed reply does not move the reader",
         page.evaluate("() => window.__findSmoke.scrollTop()") == before_scroll,
-        f"scrollTop {before_scroll} -> " f"{page.evaluate('() => window.__findSmoke.scrollTop()')}",
+        f"scrollTop {before_scroll} -> {page.evaluate('() => window.__findSmoke.scrollTop()')}",
     )
     close_bar(page)
 
@@ -264,7 +345,7 @@ def check_paint_and_teardown(page, engine: str, mode: str, mod: str) -> None:
     has_api = page.evaluate("() => typeof CSS !== 'undefined' && !!CSS.highlights")
     open_bar(page, mod)
     page.keyboard.type("unsloth")
-    page.wait_for_timeout(500)
+    settled_counter(page)
 
     if has_api:
         painted = page.evaluate(
@@ -279,11 +360,7 @@ def check_paint_and_teardown(page, engine: str, mode: str, mod: str) -> None:
             str(painted),
         )
     else:
-        # No registry, so the bar falls back to selecting the active match. Whether that selection
-        # survives is the engine's call - Gecko keeps it, WebKit and Blink drop it to give the caret
-        # back - so the invariant here is the one that is not negotiable: the field still works.
-        # Moving the selection out from under a focused field used to swallow every keystroke after
-        # the first, which froze the query at one character on exactly the engines that land here.
+        # Engines differ on keeping the fallback selection; the invariant is that the field keeps accepting input.
         typed = page.evaluate("() => document.querySelector('[role=\"search\"] input')?.value")
         check(
             engine,
@@ -319,8 +396,13 @@ def check_paint_and_teardown(page, engine: str, mode: str, mod: str) -> None:
 def check_modal_gate(page, engine: str, mode: str, mod: str) -> None:
     """A modal backgrounds the scope, and the chord must go back to the browser."""
     page.evaluate("() => window.__findSmoke.setModal(true)")
-    page.wait_for_timeout(250)
+    settle(
+        page,
+        "() => document.querySelector('[data-find-scope]')?.getAttribute('aria-hidden') === 'true'",
+    )
     page.keyboard.press(f"{mod}+f")
+    # Observation window, not a readiness guess: the bar must NOT open, so give it the time an
+    # open would take (its chunk is already loaded by the earlier probes).
     page.wait_for_timeout(250)
     check(
         engine,
@@ -329,7 +411,7 @@ def check_modal_gate(page, engine: str, mode: str, mod: str) -> None:
         state(page).get("open") is False,
     )
     page.evaluate("() => window.__findSmoke.setModal(false)")
-    page.wait_for_timeout(250)
+    settle(page, "() => !document.querySelector('[data-find-scope]')?.hasAttribute('aria-hidden')")
     open_bar(page, mod)
     check(
         engine,
@@ -368,11 +450,10 @@ def check_hidden_text(page, engine: str, mode: str, mod: str) -> None:
       scope.appendChild(wrapper);
     }"""
     )
-    page.wait_for_timeout(500)
+    frames(page)
     open_bar(page, mod)
     page.keyboard.type("zqxjkvbrmp")
-    page.wait_for_timeout(700)
-    shown = counter(page)
+    shown = settled_counter(page)
     check(
         engine,
         mode,
@@ -415,15 +496,11 @@ def check_content_visibility_reveal(page, engine: str, mode: str, mod: str) -> N
         planted == 140,
         f"placeholder height={planted}",
     )
-    page.wait_for_timeout(600)
+    frames(page)
     open_bar(page, mod)
-    # Inserted whole, the way a paste arrives, rather than typed. Typing hides this: every
-    # keystroke reveals again, and those repeats do by accident what the fix does on purpose.
-    # One change is what a paste, an Enter, or a click on the walk button each produce.
+    # Insert whole like a paste: typing reveals on every keystroke and would hide the bug.
     page.keyboard.insert_text("zqxjcvneedle")
-    page.wait_for_timeout(1200)
-    where = page.evaluate(
-        """() => {
+    where_js = """() => {
       const p = [...document.querySelectorAll('#cv-probe p')]
         .find((n) => n.textContent.includes('zqxjcvneedle'));
       const r = p.getBoundingClientRect();
@@ -432,7 +509,10 @@ def check_content_visibility_reveal(page, engine: str, mode: str, mod: str) -> N
                real: Math.round(document.getElementById('cv-probe').getBoundingClientRect().height),
                inViewport: r.top >= 0 && r.bottom <= window.innerHeight };
     }"""
-    )
+    # Wait for exactly what is asserted below: the block rendered and its match on screen.
+    settle(page, f"() => {{ const w = ({where_js})(); return w.real > 1000 && w.inViewport; }}")
+    frames(page)
+    where = page.evaluate(where_js)
     check(
         engine,
         mode,
@@ -466,11 +546,11 @@ def check_spelling_variants(page, engine: str, mode: str, mod: str) -> None:
     }"""
     )
     check(engine, mode, "the planted text really is decomposed", planted is True)
-    page.wait_for_timeout(500)
+    frames(page)
     open_bar(page, mod)
-    # Typed composed, against text written decomposed.
     page.keyboard.type("caf\u00e9 vbnmqz")
-    page.wait_for_timeout(700)
+    settle(page, COUNTER_IS, arg = "1/1")
+    frames(page)
     shown = counter(page)
     check(
         engine,
@@ -479,8 +559,6 @@ def check_spelling_variants(page, engine: str, mode: str, mod: str) -> None:
         shown == "1/1",
         f"counter={shown!r}",
     )
-    # Only the registry path exposes a range; fallback selection is intentionally released so the
-    # field remains usable.
     if page.evaluate("() => typeof CSS !== 'undefined' && !!CSS.highlights"):
         covers = page.evaluate(
             """() => {
@@ -505,7 +583,8 @@ def check_typing_burst(page, engine: str, mode: str, mod: str) -> None:
     open_bar(page, mod)
     field = page.locator('[role="search"] input')
     field.fill("")
-    page.wait_for_timeout(150)
+    settle(page, COUNTER_IS, arg = "")
+    frames(page)
     page.evaluate(
         """() => {
       window.__findSmokePaints = 0;
@@ -527,9 +606,8 @@ def check_typing_burst(page, engine: str, mode: str, mod: str) -> None:
     )
     page.keyboard.type("doing", delay = 10)
     immediate = field.input_value()
-    page.wait_for_timeout(400)
+    shown = settled_counter(page)
     paints = page.evaluate("() => window.__findSmokePaints")
-    shown = counter(page)
     check(
         engine,
         mode,
@@ -558,16 +636,22 @@ def check_reverted_query_repaints(page, engine: str, mode: str, mod: str) -> Non
         "() => !!window.__findSmoke.counter()",
         timeout = 10000,
     )
-    page.wait_for_timeout(150)
+    frames(page)
     before = page.evaluate(
         """() => CSS.highlights.has('unsloth-find') &&
           CSS.highlights.has('unsloth-find-active')"""
     )
     field.press("End")
     field.type("x")
+    # Deliberate: the Backspace has to land inside the 100 ms settle window.
     page.wait_for_timeout(20)
     field.press("Backspace")
-    page.wait_for_timeout(250)
+    settle(
+        page,
+        """() => CSS.highlights.has('unsloth-find') && CSS.highlights.has('unsloth-find-active')
+          && !!window.__findSmoke.counter()""",
+    )
+    frames(page)
     after = page.evaluate(
         """() => ({
           painted: CSS.highlights.has('unsloth-find') &&
@@ -593,7 +677,7 @@ def check_pending_query_stays_unpainted(page, engine: str, mode: str, mod: str) 
     field = page.locator('[role="search"] input')
     field.fill("unsloth")
     page.wait_for_function("() => !!window.__findSmoke.counter()", timeout = 10000)
-    page.wait_for_timeout(150)
+    frames(page)
     field.press("End")
     field.type("x")
     page.evaluate(
@@ -623,7 +707,7 @@ def check_pending_query_stays_unpainted(page, engine: str, mode: str, mod: str) 
         and not pending["painted"],
         f"pending state={pending}",
     )
-    page.wait_for_timeout(150)
+    settled_counter(page)
     close_bar(page)
     page.evaluate("() => document.getElementById('pending-repaint-probe')?.remove()")
 
@@ -642,7 +726,7 @@ def check_katex_mutation_reindexes(page, engine: str, mode: str, mod: str) -> No
       scope.appendChild(host);
     }"""
     )
-    page.wait_for_timeout(500)
+    frames(page)
     open_bar(page, mod)
     page.locator('[role="search"] input').fill("mutablekatex")
     page.wait_for_function(
@@ -652,7 +736,8 @@ def check_katex_mutation_reindexes(page, engine: str, mode: str, mod: str) -> No
     page.evaluate(
         "() => { document.querySelector('#probe-katex-mutation .katex-html').textContent = 'changedkatex'; }"
     )
-    page.wait_for_timeout(900)
+    settle(page, COUNTER_IS, arg = "0/0")
+    frames(page)
     after = counter(page)
     check(
         engine,
@@ -677,18 +762,16 @@ def check_skip_attribute(page, engine: str, mode: str, mod: str) -> None:
       scope.appendChild(panel);
     }"""
     )
-    page.wait_for_timeout(500)
+    frames(page)
     open_bar(page, mod)
     page.keyboard.type("wqzlmxtvbn")
-    page.wait_for_timeout(700)
-    before = counter(page)
+    before = settled_counter(page)
     check(engine, mode, "the planted panel is counted", bool(before), f"{before!r}")
 
-    # Adding the attribute is the direction that used to be filtered out of the
-    # observer's own batch, leaving the region counted until something else
-    # happened to mutate.
+    # Adding the attribute used to be filtered out of the observer's own batch.
     page.evaluate("() => document.getElementById('probe-skip')?.setAttribute('data-find-skip', '')")
-    page.wait_for_timeout(900)
+    settle(page, COUNTER_MOVED, arg = before)
+    frames(page)
     after = counter(page)
     check(
         engine,
@@ -703,6 +786,7 @@ def check_skip_attribute(page, engine: str, mode: str, mod: str) -> None:
 
 def run_page(page, engine: str, mode: str, mod: str) -> None:
     for probe in (
+        check_close_preserves_position,
         check_chord,
         check_counting,
         check_walk,
@@ -894,7 +978,8 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
           }));
         }""",
     )
-    page.wait_for_timeout(500)
+    settle(page, SEARCH_HAS, arg = "1/8")
+    frames(page)
     check(
         engine,
         mode,
@@ -922,7 +1007,8 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
         "() => window.__findSmoke.stream("
         "'definitely-no-such-match definitely-no-such-match', 1)",
     )
-    page.wait_for_timeout(1600)
+    settle(page, SEARCH_HAS, arg = "1/2")
+    frames(page)
     check(
         engine,
         mode,
@@ -932,7 +1018,8 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
     )
     loaded = page.locator('[role="search"] input')
     loaded.fill("unsloth")
-    page.wait_for_timeout(500)
+    settle(page, SEARCH_HAS, arg = "1/28")
+    frames(page)
     check(
         engine,
         mode,
@@ -956,7 +1043,8 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
         state = "detached",
         timeout = max(15000, ENTRY_DELAY_MS + 10000),
     )
-    page.wait_for_timeout(500)
+    settle(page, SEARCH_HAS, arg = "1/28")
+    frames(page)
     check(
         engine,
         mode,
@@ -974,6 +1062,8 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
     loading.wait_for(state = "visible", timeout = 5000)
     field = loading.locator("input")
     field.dispatch_event("compositionstart", {"data": "u"})
+    # Observation window, not a readiness guess: the composition has to hold the loading input
+    # mounted for the whole entry delay, so the wait spans it.
     page.wait_for_timeout(ENTRY_DELAY_MS + 500)
     check(
         engine,
@@ -1026,6 +1116,7 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
             "cancelable": True,
         },
     )
+    # Observation window: a composing Escape must NOT close the session.
     page.wait_for_timeout(100)
     check(
         engine,
@@ -1043,7 +1134,7 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
     loading.wait_for(state = "visible", timeout = 5000)
     page.locator("[data-find-scope]").click(position = {"x": 20, "y": 200})
     page.keyboard.press("Escape")
-    page.wait_for_timeout(100)
+    settle(page, "() => !document.querySelector('[role=\"search\"]')")
     check(
         engine,
         mode,
@@ -1071,7 +1162,6 @@ def run_engine(pw, engine: str) -> None:
             browser.close()
         return
     try:
-        # The platform sweep, on the engine's own capabilities.
         for platform, (nav_platform, agent) in PLATFORMS.items():
             context = browser.new_context(user_agent = agent)
             context.add_init_script(
@@ -1082,8 +1172,6 @@ def run_engine(pw, engine: str) -> None:
             run_page(page, engine, platform, MOD[platform])
             context.close()
 
-        # The two degraded engines, on one platform each: what they exercise is
-        # the capability, and the platform sweep above already covered the chord.
         for mode, script in (
             ("no-highlight-api", NO_HIGHLIGHT_API),
             ("legacy-checkVisibility", LEGACY_CHECK_VISIBILITY),

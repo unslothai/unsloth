@@ -55,15 +55,18 @@ test("the canvas, viewer and downloads read only the original", () => {
   const canvas = between(page, ") : selected && selectedSrc ? (", ") : selected ? (");
   assert.ok(canvas.includes("src={selectedSrc}"));
   for (const format of ["png", "jpeg", "webp"]) {
-    assert.ok(canvas.includes(`downloadImage(selectedSrc, selected, "${format}")`));
+    assert.ok(canvas.includes(`downloadImage(selected, "${format}", selectedSrc)`));
   }
   assert.ok(!canvas.includes("thumbById"));
   assert.ok(!canvas.includes("selectedThumb"));
 
   const quickDownload = between(page, "const handleQuickDownload = useCallback(", "const stripReorder");
   assert.ok(quickDownload.includes("srcById[image.id]"));
-  assert.ok(quickDownload.includes("fetchGalleryBlob(image.url)"));
   assert.ok(!quickDownload.includes("thumbById"));
+  // Without a cached original, the download fetches the full PNG, never a thumbnail.
+  const download = between(page, "async function downloadImage(", "\n}\n");
+  assert.ok(download.includes("fetchGalleryBlob(image.url)"));
+  assert.ok(!download.includes("thumb"));
 });
 
 test("the thumbnail placeholder offers no action that needs the original", () => {

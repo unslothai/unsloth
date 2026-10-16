@@ -23,6 +23,14 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const engine = useChatRuntimeStore((s) => s.params.engine ?? "auto");
   const engineParallelism = useChatRuntimeStore((s) => s.params.engineParallelism ?? "tensor");
   const enginePrecision = useChatRuntimeStore((s) => s.params.enginePrecision ?? "auto");
+  const engineKvCacheDtype = useChatRuntimeStore(
+    (s) => s.params.engineKvCacheDtype ?? "auto",
+  );
+  const engineSeed = useChatRuntimeStore((s) => s.params.engineSeed ?? null);
+  const engineGpuMemoryUtilization = useChatRuntimeStore(
+    (s) => s.params.engineGpuMemoryUtilization ?? null,
+  );
+  const loadIn4bit = useChatRuntimeStore((s) => s.params.loadIn4bit !== false);
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
   const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
@@ -122,10 +130,18 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       tensorParallel: tensorParallel ?? false,
       disableVision: disableVision ?? false,
       chatTemplateOverride: chatTemplateOverride ?? null,
+      ...(isGguf || isMlx ? {} : { loadIn4bit }),
     };
     if (!isGguf) {
       return engine === "vllm" || engine === "sglang"
-        ? { ...base, selectedGpuIds, selectedGpuIndexKind }
+        ? {
+            ...base,
+            engineKvCacheDtype,
+            engineSeed,
+            engineGpuMemoryUtilization,
+            selectedGpuIds,
+            selectedGpuIndexKind,
+          }
         : base;
     }
     return {
@@ -149,6 +165,10 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     engine,
     enginePrecision,
     engineParallelism,
+    engineKvCacheDtype,
+    engineSeed,
+    engineGpuMemoryUtilization,
+    loadIn4bit,
     customContextLength,
     kvCacheDtype,
     effectiveMlxKvQuant,

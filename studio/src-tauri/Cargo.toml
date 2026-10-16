@@ -24,7 +24,7 @@ tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.23"
-minisign-verify = "0.2.5"
+minisign-verify = "0.3.0"
 semver = "1"
 hmac = "0.13"
 sha2 = "0.11"
@@ -60,8 +60,8 @@ tokio = { version = "1", features = ["test-util"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", features = ["exception"] }
 
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAppearance", "NSButton", "NSControl", "NSResponder", "NSStatusBarButton", "NSStatusItem", "NSView", "NSBitmapImageRep", "NSImage", "NSImageRep", "NSPrintInfo", "NSPrintOperation", "NSWindow"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSError", "NSDictionary", "NSKeyValueCoding", "NSKeyValueObserving", "NSObject", "NSProcessInfo", "NSString", "NSURL", "NSURLRequest", "NSURLResponse", "NSData", "NSGeometry"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAppearance", "NSButton", "NSControl", "NSResponder", "NSStatusBarButton", "NSStatusItem", "NSView", "NSBitmapImageRep", "NSImage", "NSImageRep", "NSPrintInfo", "NSPrintOperation", "NSWindow", "NSWorkspace", "NSGraphics"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSError", "NSDictionary", "NSKeyValueCoding", "NSValue", "NSKeyValueObserving", "NSObject", "NSProcessInfo", "NSString", "NSURL", "NSURLRequest", "NSURLResponse", "NSData", "NSGeometry"] }
 # The browser panel's content rules (browser_webview.rs), snapshots and printing
 # (browser_capture.rs) and context menu downloads (browser_context_downloads.rs); wry already
 # builds this crate.
@@ -85,7 +85,7 @@ webview2-com = "0.39.1"
 winreg = "0.55"
 windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
 windows-core = "0.62.2"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell"] }
 
 [build-dependencies]
 tauri-build = { version = "~2.7.0", features = [] }

@@ -168,6 +168,7 @@ export const BenchChart = memo(function BenchChart({
   footer,
   svgRef,
   pending = [],
+  bare = false,
 }: {
   kind: ChartKind;
   rows: AggRow[];
@@ -179,12 +180,14 @@ export const BenchChart = memo(function BenchChart({
   svgRef?: RefObject<SVGSVGElement | null>;
   /** Rows still to come in a live run, drawn as placeholders under the measured ones. */
   pending?: PendingRow[];
+  /** On screen: no title, subtitle or fine print. The page around it already says them. */
+  bare?: boolean;
 }): ReactElement {
   const palette = useFamilyColors();
   const { ink, muted, grid, card } = useInk();
   const [tip, setTip] = useState<Tip | null>(null);
   const baseline = rows.find((r) => r.isBaseline) ?? null;
-  const head = subtitle ? 70 : 48;
+  const head = bare ? 8 : subtitle ? 70 : 48;
 
   let plotH: number;
   let body: ReactElement;
@@ -611,7 +614,7 @@ export const BenchChart = memo(function BenchChart({
     );
   }
 
-  const footLines = wrapFooter(footer);
+  const footLines = bare ? [] : wrapFooter(footer);
   const height =
     head +
     plotH +
@@ -648,10 +651,12 @@ export const BenchChart = memo(function BenchChart({
         onMouseLeave={() => setTip(null)}
       >
         <rect x={0} y={0} width={W} height={height} fill={card} />
-        <text x={24} y={30} fontSize={18} fontWeight={650} fill={ink}>
-          {title}
-        </text>
-        {subtitle && (
+        {!bare && (
+          <text x={24} y={30} fontSize={18} fontWeight={650} fill={ink}>
+            {title}
+          </text>
+        )}
+        {!bare && subtitle && (
           <text x={24} y={52} fontSize={12.5} fill={muted}>
             {subtitle}
           </text>

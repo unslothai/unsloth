@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -51,6 +52,74 @@ def test_protocol_lists_and_calls_local_agent():
         "content": [{"type": "text", "text": "completed: inspect this"}],
         "isError": False,
     }
+
+
+def test_main_advertises_the_routing_rule_only_with_auto_route(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(bridge, "serve", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.delenv("UNSLOTH_CLAUDE_SUBAGENT_AUTO_ROUTE", raising = False)
+    bridge.main()
+    assert captured.get("tool_description") is None
+    assert captured.get("instructions") is None
+
+    monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_AUTO_ROUTE", "1")
+    bridge.main()
+    initialized = bridge._response(
+        {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {}},
+        instructions = captured.get("instructions"),
+    )
+    assert "unsloth_agent tool" in initialized["result"]["instructions"]
+    assert "NotebookRead and Agent calls are blocked" in initialized["result"]["instructions"]
+    listed = bridge._response(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        tool_description = captured.get("tool_description"),
+        run_read_only_agent = lambda task: task,
+        read_only_tool_name = captured["read_only_tool_name"],
+    )
+    tools = {tool["name"]: tool["description"] for tool in listed["result"]["tools"]}
+    assert "calls are blocked" in tools["unsloth_agent"]
+    assert "codebase search" in tools["unsloth_agent"]
+    assert tools["unsloth_plan_agent"] == bridge._SUBAGENT_PLAN_DESCRIPTION
+
+
+def _failing_agent(message):
+    def run(*args, **kwargs):
+        raise RuntimeError(message)
+
+    return run
+
+
+def test_failed_local_run_unblocks_the_parent_until_the_next_success(tmp_path):
+    marker = tmp_path / "local-agent-failed"
+    run = bridge._with_fallback(_failing_agent("Connection refused"), str(marker))
+    with pytest.raises(RuntimeError) as failure:
+        run("task", threading.Event())
+    assert "Connection refused" in str(failure.value)
+    assert "unblocked" in str(failure.value)
+    assert marker.exists()
+    succeed = bridge._with_fallback(lambda task, event: "LOCAL_OK", str(marker))
+    assert succeed("task", threading.Event()) == "LOCAL_OK"
+    assert not marker.exists()
+
+    cancelled = threading.Event()
+    cancelled.set()
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        bridge._with_fallback(_failing_agent("cancelled"), str(marker))("task", cancelled)
+    assert not marker.exists()
+
+
+def test_main_wraps_both_tools_only_with_auto_route(monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setattr(bridge, "serve", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.delenv(bridge._CLAUDE_SUBAGENT_FALLBACK_ENV, raising = False)
+    bridge.main()
+    assert captured["run_agent"] is bridge.run_local_agent
+    monkeypatch.setenv(bridge._CLAUDE_SUBAGENT_FALLBACK_ENV, str(tmp_path / "local-agent-failed"))
+    monkeypatch.setattr(bridge, "run_local_agent", _failing_agent("down"))
+    bridge.main()
+    for name in ("run_agent", "run_read_only_agent"):
+        with pytest.raises(RuntimeError, match = "unblocked"):
+            captured[name]("task", threading.Event())
 
 
 def test_protocol_exposes_read_only_agent_for_claude_plan_mode():
@@ -187,7 +256,7 @@ def test_stdio_sigint_stops_the_running_local_agent(monkeypatch):
         assert task == "wait"
         started.set()
         assert cancel_event.wait(timeout = 1)
-        # Real Claude Code sends SIGINT twice. The second one must not abort cleanup.
+        # Real Claude Code sends SIGINT twice.
         handlers[bridge.signal.SIGINT](bridge.signal.SIGINT, None)
         cancelled.append(task)
         raise RuntimeError("The local Claude agent was cancelled.")
@@ -246,8 +315,8 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
     assert command[command.index("--settings") + 1] == str(settings_path)
     assert command[command.index("--permission-mode") + 1] == permission
     assert "--no-session-persistence" in command
-    disallowed = command[command.index("--disallowedTools") + 1]
-    assert disallowed == "AskUserQuestion,EnterPlanMode,ExitPlanMode"
+    assert command[command.index("--tools") + 1] == "Bash,Read,Edit,Write,Grep,Glob,NotebookEdit"
+    assert "--disallowedTools" not in command
     assert captured["cwd"] == str(tmp_path)
     assert captured["stdin"] is bridge.subprocess.DEVNULL
     assert captured["stdout"] is bridge.subprocess.PIPE
@@ -263,12 +332,12 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
     assert child_env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "32768"
     assert child_env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "32768"
     assert child_env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] == "90"
+    assert child_env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "8192"
     assert "ANTHROPIC_API_KEY" not in child_env
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in child_env
 
 
 def test_local_child_sheds_inherited_provider_routing(monkeypatch, tmp_path):
-    # inherited provider selectors must not override the local endpoint (#9864).
     captured = {}
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_BASE_URL", "http://127.0.0.1:8888")
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_API_KEY", "sk-unsloth-test")
@@ -346,10 +415,9 @@ def test_read_only_local_child_uses_plan_mode(monkeypatch, tmp_path):
     assert bridge.run_local_agent("plan this", read_only = True) == "PLAN_OK"
     command = captured["command"]
     assert command[command.index("--permission-mode") + 1] == "plan"
-    disallowed = command[command.index("--disallowedTools") + 1]
-    assert disallowed == "AskUserQuestion,EnterPlanMode,Edit,Write,NotebookEdit,Bash"
-    # Bash matters: plan mode routes it through a classifier served by this same local model, so
-    # without the deny a "read-only" child can still write files.
+    assert command[command.index("--tools") + 1] == "Read,Grep,Glob,ExitPlanMode"
+    # No Bash: plan mode routes it through a classifier served by this same local model, so a
+    # "read-only" child with Bash can still write files.
     prompt = command[command.index("--append-system-prompt") + 1]
     assert "read-only local coding subagent" in prompt
 
@@ -475,14 +543,38 @@ def test_stop_child_kills_survivors_after_leader_exit(monkeypatch, tmp_path):
     assert not marker.exists()
 
 
+def test_failed_child_reports_why_it_stopped_not_its_warnings(monkeypatch, tmp_path):
+    _stub_env(monkeypatch, tmp_path)
+    reason = "Autocompact is thrashing: the context refilled to the limit within 3 turns."
+
+    class Process:
+        pid = 1234
+        returncode = 1
+
+        def communicate(self, timeout):
+            payload = {
+                "is_error": True,
+                "terminal_reason": "rapid_refill_breaker",
+                "result": reason,
+            }
+            warning = '[claude-code:unrecognized_model] {"model":"unsloth/model-GGUF:Q4_K_M"}\n'
+            return json.dumps(payload), warning
+
+        def poll(self):
+            return self.returncode
+
+    monkeypatch.setattr(bridge.subprocess, "Popen", lambda *a, **k: Process())
+    with pytest.raises(RuntimeError) as failure:
+        bridge.run_local_agent("hello")
+    assert str(failure.value) == reason
+
+
 def test_result_parser_accepts_diagnostics_before_json():
     output = "connector warning\n" + json.dumps({"is_error": False, "result": "OK"})
     assert bridge._result_text(output) == "OK"
 
 
 def test_child_is_stopped_when_it_produces_nothing_before_the_deadline(monkeypatch, tmp_path):
-    # A local server that accepts and never answers used to block the child, and the parent waiting on
-    # it, indefinitely. Measured past 400s before this.
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_TIMEOUT", "0.3")
     _stub_env(monkeypatch, tmp_path)
     stopped = []
@@ -515,8 +607,7 @@ def test_timeout_can_be_disabled(monkeypatch):
 
 
 def test_local_child_is_spawned_through_the_shim_resolver(monkeypatch, tmp_path):
-    # Pins the wiring: a Windows .cmd must reach the npm parser, not Popen (#9167). The parser
-    # behaviour itself is covered in test_start.py.
+    # Pins the wiring (#9167); the parser itself is covered in test_start.py.
     _stub_env(monkeypatch, tmp_path)
     monkeypatch.setattr(bridge.shutil, "which", lambda _: r"C:\\nodejs\\claude.cmd")
     captured = {}
@@ -552,6 +643,5 @@ def test_local_child_is_spawned_through_the_shim_resolver(monkeypatch, tmp_path)
     assert arguments[0] == "--model"
     assert any("multi\nline\ntask" in argument for argument in arguments)
     assert environment is not None
-    # Popen spawns the resolver's argv, not the .cmd.
     assert captured["command"][0] == "C:\\nodejs\\node.exe"
     assert any("multi\nline\ntask" in part for part in captured["command"])

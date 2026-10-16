@@ -13,8 +13,8 @@ export function NpuSetupNotice({ catalog }: { catalog: NpuCatalog }) {
   return (
     <div className="flex flex-col gap-2 px-2.5 pb-2 text-xs">
       <p className="text-muted-foreground">
-        {status.hardware.name ?? "AMD NPU"}: FastFlowLM's own NPU builds, run
-        through Lemonade. GGUF models run on the GPU.
+        {status.hardware.name ?? "AMD NPU"} found. These models run on the NPU,
+        separately from the GPU models listed below.
       </p>
       {status.error || problems.length > 0 ? (
         <div className="flex gap-2 rounded-lg bg-destructive/10 p-2.5 text-destructive">
@@ -61,27 +61,6 @@ export function NpuSetupNotice({ catalog }: { catalog: NpuCatalog }) {
           <Spinner className="size-3.5 text-muted-foreground" />
         </div>
       ) : null}
-      <p className="text-ui-11 text-muted-foreground">
-        Powered by{" "}
-        <a
-          href="https://github.com/ROCm/FastFlowLM"
-          target="_blank"
-          rel="noreferrer"
-          className="underline underline-offset-2"
-        >
-          FastFlowLM
-        </a>{" "}
-        and{" "}
-        <a
-          href="https://github.com/lemonade-sdk/lemonade"
-          target="_blank"
-          rel="noreferrer"
-          className="underline underline-offset-2"
-        >
-          Lemonade
-        </a>
-        .
-      </p>
     </div>
   );
 }

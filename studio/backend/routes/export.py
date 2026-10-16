@@ -44,6 +44,7 @@ except ImportError:
 
 from models import (
     LoadCheckpointRequest,
+    ExportCancelRequest,
     ExportStatusResponse,
     ExportOperationResponse,
     ExportMergedModelRequest,
@@ -51,6 +52,7 @@ from models import (
     ExportGGUFRequest,
     ExportLoRAAdapterRequest,
     ConvertQ4NXRequest,
+    ExportDiffusionLoRARequest,
     LlmCompressorExportProbeResponse,
     ExportDecisionInfoResponse,
 )
@@ -144,12 +146,14 @@ async def load_checkpoint(
             base_model = base_model,
             max_seq_length = request.max_seq_length,
             load_in_4bit = load_in_4bit,
+            offload_layers = request.offload_layers,
             trust_remote_code = request.trust_remote_code,
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
             hf_token = export_hf_token,
             # A supplied token cannot say whether it came from a session or an API key.
             allow_ambient = allow_ambient,
             subject = current_subject,
+            op_id = request.op_id,
         )
 
         if not success:
@@ -199,7 +203,9 @@ async def cleanup_export_memory(current_subject: str = Depends(get_current_subje
 
 
 @router.post("/cancel", response_model = ExportOperationResponse)
-async def cancel_export(current_subject: str = Depends(get_current_subject)):
+async def cancel_export(
+    body: Optional[ExportCancelRequest] = None, current_subject: str = Depends(get_current_subject)
+):
     """Cancel the in-flight export by terminating its worker subprocess.
 
     Only the export subprocess is killed; training and inference run in their
@@ -208,7 +214,11 @@ async def cancel_export(current_subject: str = Depends(get_current_subject)):
     require_job_owner(get_export_backend())
     try:
         backend = get_export_backend()
-        cancelled = await asyncio.to_thread(backend.cancel_export)
+        expected = body.expected_op_id if body is not None else None
+        if expected is None:
+            cancelled = await asyncio.to_thread(backend.cancel_export)
+        else:
+            cancelled = await asyncio.to_thread(backend.cancel_export, expected_op_id = expected)
         return ExportOperationResponse(
             success = True,
             message = "Export cancelled" if cancelled else "No active export to cancel",
@@ -363,6 +373,20 @@ def _export_details(
         return {"output_path": output_path}
 
 
+def _with_drafter(
+    details: Optional[Dict[str, Any]], output_path: Optional[str]
+) -> Optional[Dict[str, Any]]:
+    """Adds the trained drafter an export carries (drafter.json), when there is one."""
+    try:
+        from core.export.drafter_export import export_drafter_details
+        drafter = export_drafter_details(output_path)
+    except Exception:
+        drafter = None
+    if drafter is None or details is None:
+        return details
+    return {**details, "drafter": drafter}
+
+
 def _decision_export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
     """A decision GGUF lands in the run folder's gguf/; not registered as a chat model folder."""
     if not output_path:
@@ -382,6 +406,7 @@ def _decision_export_details(output_path: Optional[str]) -> Optional[Dict[str, A
 async def get_decision_export_info(
     checkpoint_path: str = Query(..., description = "Local checkpoint folder"),
     current_subject: str = Depends(get_current_subject),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
 ):
     """GGUF export options for a decision model checkpoint (Clef / Laya); decision is null otherwise."""
     validate_job_paths({"checkpoint_path": checkpoint_path})
@@ -392,7 +417,20 @@ async def get_decision_export_info(
     except Exception as e:
         logger.warning(f"Could not inspect {checkpoint_path} for decision export: {e}")
         decision = None
-    return ExportDecisionInfoResponse(checkpoint_path = checkpoint_path, decision = decision)
+    from utils.models.diffusion_lm import diffusion_lm_export_limits
+
+    diffusion_lm = (
+        None
+        if decision is not None
+        else await asyncio.to_thread(
+            diffusion_lm_export_limits,
+            checkpoint_path,
+            hf_token_arg(None, allow_ambient_token = allow_ambient),
+        )
+    )
+    return ExportDecisionInfoResponse(
+        checkpoint_path = checkpoint_path, decision = decision, diffusion_lm = diffusion_lm
+    )
 
 
 @router.post("/export/merged", response_model = ExportOperationResponse)
@@ -423,6 +461,8 @@ async def export_merged_model(
             private = request.private,
             compressed_method = request.compressed_method,
             install_missing_dependencies = request.install_missing_dependencies,
+            expected_checkpoint = request.expected_checkpoint,
+            op_id = request.op_id,
         )
 
         if not success:
@@ -431,7 +471,10 @@ async def export_merged_model(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+            details = _with_drafter(
+                await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+                output_path,
+            ),
         )
     except HTTPException:
         raise
@@ -482,6 +525,8 @@ async def export_base_model(
             ),
             private = request.private,
             base_model_id = request.base_model_id,
+            expected_checkpoint = request.expected_checkpoint,
+            op_id = request.op_id,
         )
 
         if not success:
@@ -490,7 +535,10 @@ async def export_base_model(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+            details = _with_drafter(
+                await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+                output_path,
+            ),
         )
     except HTTPException:
         raise
@@ -536,6 +584,8 @@ async def export_gguf(
             imatrix_file = imatrix_file,
             private = request.private,
             npu_q4nx = request.npu_q4nx,
+            expected_checkpoint = request.expected_checkpoint,
+            op_id = request.op_id,
         )
 
         if not success:
@@ -544,7 +594,10 @@ async def export_gguf(
         if getattr(backend, "decision", None):
             details = await asyncio.to_thread(_decision_export_details, output_path)
         else:
-            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True)
+            details = _with_drafter(
+                await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+                output_path,
+            )
         return ExportOperationResponse(success = True, message = message, details = details)
     except HTTPException:
         raise
@@ -619,6 +672,51 @@ async def convert_q4nx(
     )
 
 
+@router.post("/export/diffusion-lora", response_model = ExportOperationResponse)
+async def export_diffusion_lora(
+    request: ExportDiffusionLoRARequest, current_subject: str = Depends(get_current_subject)
+):
+    """Save a copy of an image-generation LoRA (weights plus metadata sidecar) to a folder.
+
+    A plain file copy out of the Images LoRA catalog: no loaded model, GPU or export worker.
+    """
+    validate_job_paths(request.model_dump())
+
+    def run() -> str:
+        from core.inference.diffusion_lora import export_local_lora
+        from utils.paths import resolve_export_write_dir
+
+        out = export_local_lora(
+            request.lora_id, Path(resolve_export_write_dir(request.save_directory))
+        )
+        return str(out.resolve())
+
+    try:
+        output_path = await asyncio.to_thread(run)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code = 404, detail = str(e))
+    except ValueError as e:
+        raise HTTPException(status_code = 400, detail = str(e))
+    except OSError as e:
+        logger.error(f"Image LoRA export failed: {e}", exc_info = True)
+        raise HTTPException(status_code = 500, detail = "Failed to export image LoRA")
+
+    # Not routed through _export_details: a LoRA folder is not a chat model scan folder.
+    from utils.paths.storage_roots import exports_root
+
+    try:
+        shown = os.path.relpath(output_path, exports_root().resolve())
+        if shown.startswith(".."):
+            shown = output_path
+    except ValueError:
+        shown = output_path
+    return ExportOperationResponse(
+        success = True,
+        message = "Image LoRA exported",
+        details = {"output_path": shown},
+    )
+
+
 @router.post("/export/lora", response_model = ExportOperationResponse)
 async def export_lora_adapter(
     request: ExportLoRAAdapterRequest,
@@ -647,6 +745,8 @@ async def export_lora_adapter(
             gguf = request.gguf,
             gguf_outtype = request.gguf_outtype,
             adapter_format = request.adapter_format,
+            expected_checkpoint = request.expected_checkpoint,
+            op_id = request.op_id,
         )
 
         if not success:
@@ -655,7 +755,10 @@ async def export_lora_adapter(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+            details = _with_drafter(
+                await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+                output_path,
+            ),
         )
     except HTTPException:
         raise

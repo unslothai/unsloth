@@ -380,234 +380,216 @@ def test_is_mmproj_by_metadata_signals():
 # --- pairing_score -----------------------------------------------------
 
 
-def test_pairing_score_base_model_url_match():
-    weight = {
-        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
-    }
-    mmproj = {
-        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
-    }
-    assert pairing_score(weight, mmproj) == 100
+def _md(
+    url = None,
+    basename = None,
+    org = None,
+):
+    keys = (
+        "general.base_model.0.repo_url",
+        "general.basename",
+        "general.base_model.0.organization",
+    )
+    return {k: v for k, v in zip(keys, (url, basename, org)) if v is not None}
 
 
-def test_pairing_score_base_model_url_mismatch():
-    weight = {
-        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
-    }
-    mmproj = {
-        "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-3-9B",
-    }
-    assert pairing_score(weight, mmproj) == -1
-
-
-def test_pairing_score_base_model_url_derivative_repack_match():
-    weight = {
-        "general.basename": "gemma-4-26B-A4B-it",
-        "general.base_model.0.repo_url": (
-            "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-GGUF"
+# 100: same base repo, 90: derivative repo with matching basename, 80/60: basename fallbacks, -1: mismatch.
+@pytest.mark.parametrize(
+    "weight, mmproj, expected",
+    [
+        pytest.param(
+            _md(url = "https://huggingface.co/Qwen/Qwen3.5-9B"),
+            _md(url = "https://huggingface.co/Qwen/Qwen3.5-9B"),
+            100,
+            id = "base_model_url_match",
         ),
-    }
-    mmproj = {
-        "general.basename": "gemma-4-26B-A4B-it",
-        "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-26B-A4B-it",
-    }
-    assert pairing_score(weight, mmproj) == 90
-
-
-def test_pairing_score_base_model_url_derivative_quant_match():
-    weight = {
-        "general.basename": "gemma-4-26B-A4B-it",
-        "general.base_model.0.repo_url": (
-            "https://huggingface.co/vendor/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic"
+        pytest.param(
+            _md(url = "https://huggingface.co/Qwen/Qwen3.5-9B"),
+            _md(url = "https://huggingface.co/google/gemma-3-9B"),
+            -1,
+            id = "base_model_url_mismatch",
         ),
-    }
-    mmproj = {
-        "general.basename": "gemma-4-26B-A4B-it",
-        "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-26B-A4B-it",
-    }
-    assert pairing_score(weight, mmproj) == 90
+        pytest.param(
+            _md(
+                url = "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-GGUF",
+                basename = "gemma-4-26B-A4B-it",
+            ),
+            _md(
+                url = "https://huggingface.co/google/gemma-4-26B-A4B-it",
+                basename = "gemma-4-26B-A4B-it",
+            ),
+            90,
+            id = "base_model_url_derivative_repack_match",
+        ),
+        pytest.param(
+            _md(
+                url = "https://huggingface.co/vendor/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic",
+                basename = "gemma-4-26B-A4B-it",
+            ),
+            _md(
+                url = "https://huggingface.co/google/gemma-4-26B-A4B-it",
+                basename = "gemma-4-26B-A4B-it",
+            ),
+            90,
+            id = "base_model_url_derivative_quant_match",
+        ),
+        pytest.param(
+            _md(url = "https://github.com/acme/Model-VL-GGUF", basename = "Model-VL"),
+            _md(url = "https://gitlab.example.com/acme/Model-VL", basename = "Model-VL"),
+            90,
+            id = "derivative_url_handles_non_hf_hosts",
+        ),
+        pytest.param(
+            _md(url = "https://gitlab.example.com/acme/models/Model-VL-GGUF", basename = "Model-VL"),
+            _md(url = "https://gitlab.example.com/acme/models/Model-VL", basename = "Model-VL"),
+            90,
+            id = "derivative_url_handles_nested_namespaces",
+        ),
+        pytest.param(
+            _md(url = "acme/Model-VL-GGUF", basename = "Model-VL"),
+            _md(url = "acme/Model-VL", basename = "Model-VL"),
+            90,
+            id = "derivative_url_handles_bare_repo_ids",
+        ),
+        pytest.param(
+            _md(url = "acme.ai/Model-GGUF", basename = "Model"),
+            _md(url = "acme.ai/Model", basename = "Model"),
+            90,
+            id = "derivative_url_handles_dotted_bare_owner",
+        ),
+        pytest.param(
+            _md(
+                url = "https://huggingface.co/google/gemma-4-26B-A4B-it",
+                basename = "gemma-4-26B-A4B-it",
+            ),
+            _md(url = "https://huggingface.co/google/gemma-4-26B", basename = "gemma-4-26B"),
+            -1,
+            id = "derivative_url_rejects_basename_mismatch",
+        ),
+        pytest.param(
+            _md(url = "https://huggingface.co/Qwen/Qwen3.5-9B/"),
+            _md(url = "https://huggingface.co/Qwen/Qwen3.5-9B"),
+            100,
+            id = "base_model_url_trailing_slash_normalised",
+        ),
+        pytest.param(
+            _md(url = "http://huggingface.co/Qwen/Qwen3.5-9B.GIT"),
+            _md(url = "https://huggingface.co/Qwen/Qwen3.5-9B"),
+            100,
+            id = "base_model_url_scheme_and_git_normalised",
+        ),
+        pytest.param(
+            _md(url = "https://huggingface.co/acme/Model"),
+            _md(url = "acme/Model"),
+            100,
+            id = "hosted_and_bare_repo_ids_match",
+        ),
+        pytest.param(
+            _md(url = "https://github.com/acme/Model"),
+            _md(url = "acme/Model"),
+            -1,
+            id = "non_hf_url_and_bare_repo_ids_do_not_match",
+        ),
+        pytest.param(
+            _md(url = "https://huggingface.co/vendor/model-v2-GGUF"),
+            _md(url = "https://huggingface.co/vendor/model"),
+            -1,
+            id = "derivative_url_requires_basename_evidence",
+        ),
+        pytest.param(
+            _md(url = "https://huggingface.co/Qwen/Qwen3.5-9B", basename = "Qwen3.5"),
+            _md(url = "https://huggingface.co/Qwen/Qwen3.5", basename = "Qwen3.5"),
+            -1,
+            id = "rejects_arbitrary_slug_prefix",
+        ),
+        pytest.param(
+            _md(url = "org/ModelGGUF", basename = "Model"),
+            _md(url = "other/Model", basename = "Model"),
+            -1,
+            id = "rejects_qualifier_without_separator",
+        ),
+        pytest.param(
+            _md(url = "https://git.example.com/Org/Model", basename = "Model"),
+            _md(url = "https://git.example.com/org/model", basename = "Model"),
+            -1,
+            id = "preserves_case_sensitive_repo_paths",
+        ),
+        pytest.param(
+            _md(url = "Org/Model", basename = "Model"),
+            _md(url = "org/Model", basename = "Model"),
+            -1,
+            id = "preserves_case_sensitive_bare_repo_ids",
+        ),
+        pytest.param(
+            _md(url = "https://huggingface.co/org/model", basename = "model"),
+            _md(url = "https://huggingface.co/other/model-ft", basename = "model"),
+            -1,
+            id = "rejects_derivative_projector_for_base_weight",
+        ),
+        pytest.param(
+            _md(basename = "Nanonets-Ocr-S", org = "Nanonets"),
+            _md(basename = "Nanonets-Ocr-S", org = "Nanonets"),
+            80,
+            id = "basename_plus_org_fallback",
+        ),
+    ],
+)
+def test_pairing_score(weight, mmproj, expected):
+    assert pairing_score(weight, mmproj) == expected
 
 
-def test_pairing_score_derivative_url_handles_non_hf_hosts():
-    weight = {
-        "general.basename": "Model-VL",
-        "general.base_model.0.repo_url": "https://github.com/acme/Model-VL-GGUF",
-    }
-    mmproj = {
-        "general.basename": "Model-VL",
-        "general.base_model.0.repo_url": "https://gitlab.example.com/acme/Model-VL",
-    }
-    assert pairing_score(weight, mmproj) == 90
+@pytest.mark.parametrize(
+    "left,right",
+    [
+        (
+            "https://huggingface.co/google/gemma-4-12B-it",
+            "https://huggingface.co/google/gemma-4-12b-it",
+        ),
+        (
+            "HTTPS://HUGGINGFACE.CO/Google/Gemma-4-12B-it.git/",
+            "http://huggingface.co/google/gemma-4-12b-it",
+        ),
+        ("https://huggingface.co/Google/Gemma-4-12B-it", "google/gemma-4-12b-it"),
+        ("Google/Gemma-4-12B-it", "https://huggingface.co/google/gemma-4-12b-it"),
+    ],
+)
+def test_pairing_score_hf_repo_case_insensitive(left, right):
+    key = "general.base_model.0.repo_url"
+    assert pairing_score({key: left}, {key: right}) == 100
 
 
-def test_pairing_score_derivative_url_handles_nested_namespaces():
-    weight = {
-        "general.basename": "Model-VL",
-        "general.base_model.0.repo_url": ("https://gitlab.example.com/acme/models/Model-VL-GGUF"),
-    }
-    mmproj = {
-        "general.basename": "Model-VL",
-        "general.base_model.0.repo_url": "https://gitlab.example.com/acme/models/Model-VL",
-    }
-    assert pairing_score(weight, mmproj) == 90
+@pytest.mark.parametrize("host", ["huggingface.co", "huggingface.co.example.com"])
+def test_pairing_score_rejects_distinct_hf_repositories(host):
+    key = "general.base_model.0.repo_url"
+    assert (
+        pairing_score(
+            {key: f"https://{host}/google/gemma-4-12B-it"},
+            {key: f"https://{host}/google/gemma-4-27b-it"},
+        )
+        == -1
+    )
 
 
-def test_pairing_score_derivative_url_handles_bare_repo_ids():
-    weight = {
-        "general.basename": "Model-VL",
-        "general.base_model.0.repo_url": "acme/Model-VL-GGUF",
-    }
-    mmproj = {
-        "general.basename": "Model-VL",
-        "general.base_model.0.repo_url": "acme/Model-VL",
-    }
-    assert pairing_score(weight, mmproj) == 90
+def test_pairing_score_preserves_case_on_hf_lookalike_host():
+    key = "general.base_model.0.repo_url"
+    assert (
+        pairing_score(
+            {key: "https://huggingface.co.example.com/Google/Model"},
+            {key: "https://huggingface.co.example.com/google/model"},
+        )
+        == -1
+    )
 
 
-def test_pairing_score_derivative_url_handles_dotted_bare_owner():
-    weight = {
-        "general.basename": "Model",
-        "general.base_model.0.repo_url": "acme.ai/Model-GGUF",
-    }
-    mmproj = {
-        "general.basename": "Model",
-        "general.base_model.0.repo_url": "acme.ai/Model",
-    }
-    assert pairing_score(weight, mmproj) == 90
-
-
-def test_pairing_score_derivative_url_rejects_basename_mismatch():
-    weight = {
-        "general.basename": "gemma-4-26B-A4B-it",
-        "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-26B-A4B-it",
-    }
-    mmproj = {
-        "general.basename": "gemma-4-26B",
-        "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-26B",
-    }
-    assert pairing_score(weight, mmproj) == -1
-
-
-def test_pairing_score_base_model_url_trailing_slash_normalised():
-    weight = {
-        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B/",
-    }
-    mmproj = {
-        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
-    }
-    assert pairing_score(weight, mmproj) == 100
-
-
-def test_pairing_score_base_model_url_scheme_and_git_normalised():
-    weight = {
-        "general.base_model.0.repo_url": "http://huggingface.co/Qwen/Qwen3.5-9B.GIT",
-    }
-    mmproj = {
-        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
-    }
-    assert pairing_score(weight, mmproj) == 100
-
-
-def test_pairing_score_hosted_and_bare_repo_ids_match():
-    weight = {
-        "general.base_model.0.repo_url": "https://huggingface.co/acme/Model",
-    }
-    mmproj = {
-        "general.base_model.0.repo_url": "acme/Model",
-    }
-    assert pairing_score(weight, mmproj) == 100
-
-
-def test_pairing_score_non_hf_url_and_bare_repo_ids_do_not_match():
-    weight = {
-        "general.base_model.0.repo_url": "https://github.com/acme/Model",
-    }
-    mmproj = {
-        "general.base_model.0.repo_url": "acme/Model",
-    }
-    assert pairing_score(weight, mmproj) == -1
-
-
-def test_pairing_score_derivative_url_requires_basename_evidence():
-    weight = {
-        "general.base_model.0.repo_url": "https://huggingface.co/vendor/model-v2-GGUF",
-    }
-    mmproj = {
-        "general.base_model.0.repo_url": "https://huggingface.co/vendor/model",
-    }
-    assert pairing_score(weight, mmproj) == -1
-
-
-def test_pairing_score_rejects_arbitrary_slug_prefix():
-    weight = {
-        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
-        "general.basename": "Qwen3.5",
-    }
-    mmproj = {
-        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5",
-        "general.basename": "Qwen3.5",
-    }
-    assert pairing_score(weight, mmproj) == -1
-
-
-def test_pairing_score_rejects_qualifier_without_separator():
-    weight = {
-        "general.base_model.0.repo_url": "org/ModelGGUF",
-        "general.basename": "Model",
-    }
-    mmproj = {
-        "general.base_model.0.repo_url": "other/Model",
-        "general.basename": "Model",
-    }
-    assert pairing_score(weight, mmproj) == -1
-
-
-def test_pairing_score_preserves_case_sensitive_repo_paths():
-    weight = {
-        "general.base_model.0.repo_url": "https://git.example.com/Org/Model",
-        "general.basename": "Model",
-    }
-    mmproj = {
-        "general.base_model.0.repo_url": "https://git.example.com/org/model",
-        "general.basename": "Model",
-    }
-    assert pairing_score(weight, mmproj) == -1
-
-
-def test_pairing_score_preserves_case_sensitive_bare_repo_ids():
-    weight = {
-        "general.base_model.0.repo_url": "Org/Model",
-        "general.basename": "Model",
-    }
-    mmproj = {
-        "general.base_model.0.repo_url": "org/Model",
-        "general.basename": "Model",
-    }
-    assert pairing_score(weight, mmproj) == -1
-
-
-def test_pairing_score_rejects_derivative_projector_for_base_weight():
-    weight = {
-        "general.basename": "model",
-        "general.base_model.0.repo_url": "https://huggingface.co/org/model",
-    }
-    mmproj = {
-        "general.basename": "model",
-        "general.base_model.0.repo_url": "https://huggingface.co/other/model-ft",
-    }
-    assert pairing_score(weight, mmproj) == -1
-
-
-def test_pairing_score_basename_plus_org_fallback():
-    weight = {
-        "general.basename": "Nanonets-Ocr-S",
-        "general.base_model.0.organization": "Nanonets",
-    }
-    mmproj = {
-        "general.basename": "Nanonets-Ocr-S",
-        "general.base_model.0.organization": "Nanonets",
-    }
-    assert pairing_score(weight, mmproj) == 80
+def test_pairing_score_preserves_case_in_hf_file_paths():
+    key = "general.base_model.0.repo_url"
+    assert (
+        pairing_score(
+            {key: "https://huggingface.co/google/model/blob/main/Config.json"},
+            {key: "https://huggingface.co/google/model/blob/main/config.json"},
+        )
+        == -1
+    )
 
 
 def test_pairing_score_basename_only_fallback():

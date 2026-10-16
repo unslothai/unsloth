@@ -15,6 +15,17 @@ if str(_BACKEND) not in sys.path:
 import routes.inference as inf  # noqa: E402
 from core.inference import local_model_resolver as resolver  # noqa: E402
 import routes.models as models_mod
+import pytest
+
+
+@pytest.fixture(autouse = True)
+def _no_host_default_hf_cache(monkeypatch, tmp_path):
+    """/v1/models appends media rows from a scan that walks every known HF cache home, a host
+    HF_HOME and the platform default included; keep it off whatever the host has downloaded."""
+    from utils import hf_cache_settings
+
+    monkeypatch.delitem(hf_cache_settings._EXPLICIT_CACHE_ENV, "HF_HOME", raising = False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
 
 
 class _Info:
@@ -77,9 +88,11 @@ def test_catalog_lists_loaded_and_available(monkeypatch):
 
     # Loaded model is present, marked loaded, and keeps context fields.
     assert ids["Qwen3-Q4"]["loaded"] is True
+    assert ids["Qwen3-Q4"]["status"] == {"value": "loaded"}
     assert ids["Qwen3-Q4"]["context_length"] == 4096
     # Not-loaded GGUFs are listed too, with the quant a client appends to pin them.
     assert ids["Llama-8B-Q8"]["loaded"] is False
+    assert ids["Llama-8B-Q8"]["status"] == {"value": "unloaded"}
     assert ids["Llama-8B-Q8"]["quant"] == "Q8_0"
     # The HF-cache GGUF is listed despite model_format being unset.
     assert ids["org/Foo"]["loaded"] is False
@@ -152,6 +165,7 @@ def test_a_manually_loaded_non_gguf_model_has_one_catalog_row(monkeypatch):
             "owned_by": "unsloth-studio",
             "context_length": 8192,
             "loaded": True,
+            "status": {"value": "loaded"},
         }
     ]
 
@@ -269,6 +283,7 @@ def test_retrieve_loaded_model_skips_catalog_scan(monkeypatch):
     model = asyncio.run(inf.openai_retrieve_model("Qwen3-Q4", current_subject = "t"))
     assert model["id"] == "Qwen3-Q4"
     assert model["loaded"] is True
+    assert model["status"] == {"value": "loaded"}
 
 
 def test_cached_local_catalog_offloads_and_caches(monkeypatch):
@@ -587,6 +602,8 @@ def test_retrieve_resolves_an_on_disk_quant_pin(monkeypatch):
     assert model["id"] == "publisher/Qwen3:Q4_K_M"
     assert model["quant"] == "Q4_K_M"
     assert model["loaded"] is False
+    # Open WebUI's llama.cpp provider calls a row without status loaded.
+    assert model["status"] == {"value": "unloaded"}
 
 
 def test_retrieve_pin_of_the_resident_quant_keeps_its_loaded_fields(monkeypatch):
@@ -666,3 +683,117 @@ def test_retrieve_pin_404s_when_the_quant_or_model_is_not_listed(monkeypatch):
     _pin_setup(monkeypatch, [])
     with pytest.raises(HTTPException):
         _retrieve("publisher/Qwen3:Q4_K_M")
+
+
+def _multi_quant_listing(
+    monkeypatch,
+    llama,
+    quants = ("Q8_0", "Q4_K_M"),
+):
+    from core.inference.local_model_resolver import _LocalGgufEntry
+
+    repo = _Info("/hf/models--publisher--Qwen3", "Qwen3", model_id = "publisher/Qwen3")
+    repo.path = "/hf/models--publisher--Qwen3"
+    single = _Info("/hf/models--org--Foo", "Foo", model_id = "org/Foo")
+    single.path = "/hf/models--org--Foo"
+    mistral = _Info("/data/models/Mistral-7B", "Mistral-7B", is_gguf = False)
+    mistral.path = "/data/models/Mistral-7B"
+
+    async def _fake_catalog():
+        return [repo, single, mistral]
+
+    def _servable(info):
+        if not info.is_gguf:
+            return (False, ())
+        return (True, quants) if info is repo else (True, ("Q4_K_M",))
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
+    monkeypatch.setattr(resolver, "local_servable_model", _servable)
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: llama)
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
+    monkeypatch.setattr(inf, "_peek_inference_backend", lambda: None)
+    _index_holding(monkeypatch, quants)
+
+
+def _index_holding(monkeypatch, quants):
+    from core.inference.local_model_resolver import _LocalGgufEntry
+
+    index = {
+        "publisher/qwen3": _LocalGgufEntry(
+            "publisher/Qwen3", "/hf/models--publisher--Qwen3/snapshots/a", quants
+        )
+    }
+    monkeypatch.setattr(resolver, "_scan", (1.0, index))
+    monkeypatch.setattr(resolver, "_index", lambda: index)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+
+
+def _listed():
+    return asyncio.run(inf.openai_list_models(current_subject = "t"))["data"]
+
+
+def test_list_names_every_on_disk_quant_of_a_multi_quant_repo(monkeypatch):
+    # #9340: dropdown-only clients cannot type ":Q4_K_M", so each quant needs its own row.
+    _multi_quant_listing(monkeypatch, _FakeLlama(loaded = False))
+    ids = [m["id"] for m in _listed()]
+    at = ids.index("publisher/Qwen3")
+    assert ids[at : at + 3] == ["publisher/Qwen3", "publisher/Qwen3:Q8_0", "publisher/Qwen3:Q4_K_M"]
+    # One quant on disk, or no quant at all: the bare id already names it.
+    assert not [i for i in ids if i.startswith(("org/Foo:", "Mistral-7B:"))]
+    rows = {m["id"]: m for m in _listed()}
+    assert rows["publisher/Qwen3"]["quant"] == "Q8_0"
+    assert rows["publisher/Qwen3:Q4_K_M"] == {
+        "id": "publisher/Qwen3:Q4_K_M",
+        "object": "model",
+        "created": rows["publisher/Qwen3"]["created"],
+        "owned_by": "unsloth-studio",
+        "display_name": "Qwen3",
+        "loaded": False,
+        "status": {"value": "unloaded"},
+        "quant": "Q4_K_M",
+    }
+    # Every listed pin retrieves as the same object, so validating clients accept it.
+    # Less "created": each call stamps its own second.
+    for mid in ("publisher/Qwen3:Q8_0", "publisher/Qwen3:Q4_K_M"):
+        assert {**_retrieve(mid), "created": 0} == {**rows[mid], "created": 0}
+    # Internal callers (404 messages, retrieve) keep the bare catalog.
+    assert "publisher/Qwen3:Q8_0" not in {
+        m["id"] for m in asyncio.run(inf._openai_catalog_objects())
+    }
+
+
+def test_list_marks_only_the_resident_quant_pin_loaded(monkeypatch):
+    llama = _FakeLlama()
+    llama.model_identifier = "publisher/Qwen3"
+    llama.hf_variant = "Q4_K_M"
+    _multi_quant_listing(monkeypatch, llama)
+    monkeypatch.setattr(inf, "_llama_public_model_id", lambda _b: "publisher/Qwen3")
+    rows = {m["id"]: m for m in _listed()}
+    assert rows["publisher/Qwen3"]["loaded"] is True
+    assert rows["publisher/Qwen3:Q4_K_M"]["loaded"] is True
+    assert rows["publisher/Qwen3:Q4_K_M"]["context_length"] == 4096
+    assert rows["publisher/Qwen3:Q8_0"]["loaded"] is False
+    assert "context_length" not in rows["publisher/Qwen3:Q8_0"]
+    assert [m["id"] for m in _listed()].count("publisher/Qwen3:Q4_K_M") == 1
+
+
+def test_list_skips_a_quant_pin_the_resolver_would_not_honour(monkeypatch):
+    _multi_quant_listing(monkeypatch, _FakeLlama(loaded = False))
+    _index_holding(monkeypatch, ("Q8_0",))
+    ids = [m["id"] for m in _listed()]
+    assert "publisher/Qwen3:Q8_0" in ids
+    assert "publisher/Qwen3:Q4_K_M" not in ids
+
+
+def test_list_builds_the_index_for_quant_pins_only_when_it_never_was(monkeypatch):
+    # The index TTL is 5 s; rebuilding it per listing is the multi-root scan the catalog caches avoid.
+    _multi_quant_listing(monkeypatch, _FakeLlama(loaded = False))
+    monkeypatch.setattr(resolver, "_index", lambda: pytest.fail("listing rebuilt the index"))
+    assert "publisher/Qwen3:Q4_K_M" in [m["id"] for m in _listed()]
+
+    # Never built (first listing after start): build it, or a client that reads the list once
+    # at connect never sees a pin.
+    built = resolver._scan[1]
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    monkeypatch.setattr(resolver, "_index", lambda: built)
+    assert "publisher/Qwen3:Q4_K_M" in [m["id"] for m in _listed()]

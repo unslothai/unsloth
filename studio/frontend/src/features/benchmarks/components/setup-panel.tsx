@@ -222,9 +222,8 @@ function VariantRow({
         title={isBase ? "Baseline" : "Make this the baseline"}
         className={cn(
           "grid size-6 shrink-0 place-items-center rounded-full transition-colors",
-          isBase
-            ? "text-foreground"
-            : "text-transparent group-hover:text-muted-foreground/60 hover:!text-foreground",
+          // The chart already labels the baseline, so the star only shows on hover.
+          "text-transparent group-hover:text-muted-foreground/60 hover:!text-foreground focus-visible:text-foreground",
         )}
       >
         <HugeiconsIcon
@@ -413,9 +412,6 @@ export function SetupPanel({
       style={{ maxHeight: fitHeight ?? undefined }}
       className="corner-squircle flex min-w-0 flex-col gap-6 rounded-3xl bg-card px-5 pb-5 pt-4 ring-1 ease-out [&>*]:shrink-0 motion-safe:transition-[max-height] motion-safe:duration-300 ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] disabled:opacity-60"
     >
-      <span className="text-ui-11 font-medium tracking-nav text-muted-foreground">
-        Setup
-      </span>
         <Tabs
           value={kind}
           onValueChange={(v) => chooseKind(v as BenchKind)}
@@ -452,9 +448,6 @@ export function SetupPanel({
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-ui-11p5 leading-relaxed text-muted-foreground">
-              {SWEEP_BLURB[config.sweep]}
-            </p>
           </Field>
         ) : (
           <p className="-mt-3 text-ui-11p5 leading-relaxed text-muted-foreground">
@@ -565,7 +558,7 @@ export function SetupPanel({
 
         <Field
           label="Prompt"
-          hint="Each measured run sends one of these. Rotating them keeps ngram drafting honest."
+          hint={`Each measured run sends one of these. Rotating them keeps ngram drafting honest. ${prompts.find((p) => p.id === config.promptSet)?.hint ?? ""}`}
         >
           <Select
             value={config.promptSet}
@@ -587,11 +580,7 @@ export function SetupPanel({
               value={config.customPrompt}
               onChange={(customPrompt) => setConfig({ customPrompt })}
             />
-          ) : (
-            <p className="text-ui-11p5 text-muted-foreground">
-              {prompts.find((p) => p.id === config.promptSet)?.hint}
-            </p>
-          )}
+          ) : null}
         </Field>
 
         <Field

@@ -26,7 +26,7 @@ except Exception:
 if rl.distillation_chunked_jsd is None:
     pytest.skip("installed unsloth_zoo predates distillation_chunked_jsd", allow_module_level = True)
 
-# The two compute_loss layouts TRL shipped between 0.22.2 and 1.14.0, trimmed to the non-Liger branch.
+# The two compute_loss layouts TRL shipped between 0.22.2 and 1.14.0, non-Liger branch only.
 PROMPT_LAYOUT = """
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         student_outputs = model(
@@ -85,7 +85,7 @@ def test_installed_trl_layout_is_recognised():
             if isinstance(n, ast.FunctionDef) and n.name == "compute_loss"
         ]
         if not nodes:
-            continue  # a deprecation shim
+            continue
         source = ast.get_source_segment(text, nodes[0], padded = True)
         assert rl._unsloth_gkd_layout(source) is not None, f"{name}.compute_loss is not recognised"
         return
@@ -336,7 +336,7 @@ def test_forward_without_hidden_states_finishes_on_trl_math(monkeypatch):
     """A teacher that ignores the flag returns real logits; the call must still match TRL, densely."""
     vocab = 97
     student, teacher = _TinyLM(vocab, 16, 0.0, 1), _TinyLM(vocab, 24, 5.0, 2)
-    type(teacher)  # same class, so give this instance a forward that never returns hidden states
+    type(teacher)
     real_forward = teacher.forward
 
     def logits_only(input_ids, attention_mask):
@@ -517,7 +517,7 @@ def test_ddp_find_unused_with_trainable_head_falls_back():
     )
     torch.nn.Module.__init__(ddp)
     ddp.module, ddp.find_unused_parameters = student, True
-    ddp.forward = student.forward  # the stub has no process group
+    ddp.forward = student.forward
     trainer = _trainer(0.5, student, teacher)
     trainer.accelerator = types.SimpleNamespace(unwrap_model = lambda m: getattr(m, "module", m))
     layout = {"shift": "shift", "num_items_in_batch": False}
@@ -598,7 +598,6 @@ def test_left_padded_rows_score_as_if_unpadded(shift, monkeypatch):
     vocab, pad = 97, 0
     student, teacher = _MaskBlindLM(vocab, 16, 0.0, 1), _MaskBlindLM(vocab, 24, 0.0, 2)
     g = torch.Generator().manual_seed(0)
-    # (prompt, completion) lengths; row 2's completion starts before the padded prompt width.
     rows = [(5, 7), (3, 4), (2, 9)]
     width, prompt_width = max(p + c for p, c in rows), max(p for p, _ in rows)
     input_ids = torch.full((3, width), pad)
@@ -618,7 +617,6 @@ def test_left_padded_rows_score_as_if_unpadded(shift, monkeypatch):
     if shift == "prompt":
         scored[:, :prompt_width] = -100
 
-    # Reference: each row alone, pads stripped, TRL's own per-token JSD summed then averaged.
     monkeypatch.setenv("UNSLOTH_RETURN_HIDDEN_STATES", "0")
     total, count = 0.0, 0
     for i in range(3):
@@ -633,7 +631,6 @@ def test_left_padded_rows_score_as_if_unpadded(shift, monkeypatch):
         count += int((lab[:, 1:] != -100).sum())
     want = total / count
 
-    # Through the generated compute_loss: the chunked path, then TRL's own body as every fallback runs it.
     namespace = dict(vars(rl), GKDTrainer = GKDTrainer, empty_cache = lambda: None)
     source = PROMPT_LAYOUT if shift == "prompt" else SHIFT_LAYOUT
     exec(
@@ -661,3 +658,54 @@ def test_left_padded_rows_score_as_if_unpadded(shift, monkeypatch):
         width = int(keep.sum())
         assert torch.equal(liger["labels"][i, :width], labels[i, keep])
         assert torch.equal(liger["input_ids"][i, :width], input_ids[i, keep])
+
+
+class _Scaler:
+    def __init__(self, enabled):
+        self.enabled = enabled
+
+    def is_enabled(self):
+        return self.enabled
+
+    def get_scale(self):
+        return 65536.0
+
+
+def _spy_jsd(calls, accepts_scaler):
+    real = rl.distillation_chunked_jsd
+
+    def call(*args, **kwargs):
+        calls.append(dict(kwargs))
+        kwargs.pop("scaler", None)
+        return real(*args, **kwargs)
+
+    if accepts_scaler:
+        return lambda *args, scaler = None, **kwargs: call(*args, scaler = scaler, **kwargs)
+    return lambda *args, **kwargs: call(*args, **kwargs)
+
+
+@pytest.mark.parametrize("enabled", [True, False, None])
+@pytest.mark.parametrize("accepts_scaler", [True, False])
+def test_fp16_grad_scaler_reaches_the_chunked_jsd(enabled, accepts_scaler, monkeypatch):
+    # The zoo differentiates inside its forward: an unscaled FP16 grad underflows before scaler.scale(loss).backward().
+    vocab = 97
+    student, teacher = _TinyLM(vocab, 16, 0.0, 1), _TinyLM(vocab, 24, 0.0, 2)
+    trainer, inputs = _trainer(0.5, student, teacher), _inputs(vocab)
+    scaler = None if enabled is None else _Scaler(enabled)
+    trainer.accelerator = types.SimpleNamespace(unwrap_model = lambda m: m, scaler = scaler)
+    calls = []
+    monkeypatch.setattr(rl, "distillation_chunked_jsd", _spy_jsd(calls, accepts_scaler))
+    forwards = []
+    student.register_forward_hook(lambda *a: forwards.append(1))
+    got = rl._unsloth_gkd_chunked_loss(
+        trainer, student, inputs, None, {"shift": "prompt", "num_items_in_batch": False}
+    )
+    if enabled and not accepts_scaler:
+        assert got is None and not calls and not forwards
+        assert "unsloth_zoo JSD has no GradScaler support" in trainer._unsloth_gkd_chunked_fallbacks
+        return
+    assert got is not None and len(calls) == 1
+    if enabled:
+        assert calls[0]["scaler"] is scaler
+    else:
+        assert calls[0].get("scaler") is None
