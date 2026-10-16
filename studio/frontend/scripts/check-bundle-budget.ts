@@ -176,8 +176,13 @@ export const BUDGET = {
   // 95), with no single import doing it: Deep research under Tools in the + menu (#13959) took main over, and
   // the connection name and provider menu order (#13964) and the attachment card polish (#13970) add the rest.
   // Raised by that growth so main's margin stays where it was.
-  transferBytes: 2_042_593,
-  rawBytes: 6_791_928,
+  // R6V3 virtual-history startup budget. Fork PR #38: 106 eager chunks,
+  // 6,644.2 KiB raw and 2,004.3 KiB transfer (15 October 2026).
+  // The virtualizer and expensive tool cards stay lazy; eager growth comes
+  // from chat preferences, menu modes and their English UI strings.
+  // These thresholds carry modest build headroom; remeasure in this CI.
+  transferBytes: 2_065_000,
+  rawBytes: 6_820_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

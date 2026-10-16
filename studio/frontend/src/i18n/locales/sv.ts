@@ -2760,6 +2760,23 @@ export const sv = {
       },
     },
     chat: {
+      agentHistoryBufferDynamicLow: "Dynamisk buffert låg (högst 5 meddelanden)",
+      agentHistoryBufferDynamicHigh: "Dynamisk buffert hög (högst 32 meddelanden)",
+      agentHistoryBufferFixedLow: "Fast buffert låg (5 meddelanden)",
+      agentHistoryBufferFixedHigh: "Fast buffert hög (32 meddelanden)",
+      agentHistoryBufferDynamic: "Dynamiskt",
+      agentHistoryBufferFixed: "Fast",
+      agentHistoryModeOff: "Av",
+      agentHistoryModeLow: "Låg",
+      agentHistoryModeHigh: "Hög",
+      agentHistoryChatMode: "DOM-optimering",
+      agentHistoryInherit: "Använd global inställning",
+      agentHistoryLegacy: "Tidigare inställning",
+      agentHistoryGlobal: "Virtualisera chatthistorik",
+      agentHistoryGlobalDescription: "Rendera bara några få meddelanden åt gången i alla chattar. Hela historiken finns kvar; undantag per chatt har företräde.",
+      agentHistoryRows: "Synliga meddelanden per chatt",
+      agentHistoryRowsDescription: "Standardstorlek för det virtuella fönstret (5 rekommenderas). Chattens egna inställningar har företräde.",
+      agentHistoryJumpToLatest: "Gå till senaste meddelandet",
       groups: {
         conversations: {
           title: "Konversationer",

@@ -84,7 +84,23 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
               >
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent align="end">
+              <SelectContent
+                align="end"
+                onCloseAutoFocus={(event) => {
+                  // Radix restores focus to the select trigger after its closing
+                  // FocusScope unmounts. If the user has already moved into a
+                  // text editor, that delayed restoration would steal keystrokes.
+                  // Preserve intentional editor focus but keep Radix's normal
+                  // trigger restoration for keyboard-only select navigation.
+                  if (
+                    document.activeElement?.matches(
+                      'input, textarea, [contenteditable="true"], [role="textbox"]',
+                    )
+                  ) {
+                    event.preventDefault();
+                  }
+                }}
+              >
                 <SelectItem value="enter">Enter</SelectItem>
                 <SelectItem value="mod-enter-multiline">
                   {t("composerSettings.sendMultiline", { mod })}

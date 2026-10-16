@@ -2678,6 +2678,23 @@ export const he = {
       },
     },
     chat: {
+      agentHistoryBufferDynamicLow: "מאגר דינמי נמוך (עד 5 הודעות)",
+      agentHistoryBufferDynamicHigh: "מאגר דינמי גבוה (עד 32 הודעות)",
+      agentHistoryBufferFixedLow: "מאגר קבוע נמוך (5 הודעות)",
+      agentHistoryBufferFixedHigh: "מאגר קבוע גבוה (32 הודעות)",
+      agentHistoryBufferDynamic: "דינמי",
+      agentHistoryBufferFixed: "קבוע",
+      agentHistoryModeOff: "כבוי",
+      agentHistoryModeLow: "נמוך",
+      agentHistoryModeHigh: "גבוה",
+      agentHistoryChatMode: "אופטימיזציית DOM",
+      agentHistoryInherit: "השתמש בהגדרה הכללית",
+      agentHistoryLegacy: "הגדרה קודמת",
+      agentHistoryGlobal: "וירטואליזציה של היסטוריית הצ'אט",
+      agentHistoryGlobalDescription: "להציג רק מספר קטן של הודעות בכל צ'אט. ההיסטוריה המלאה נשמרת, והגדרות ייחודיות לצ'אט קודמות.",
+      agentHistoryRows: "הודעות גלויות בכל צ'אט",
+      agentHistoryRowsDescription: "גודל ברירת המחדל של חלון ההודעות (מומלץ 5). הגדרות לכל צ'אט קודמות.",
+      agentHistoryJumpToLatest: "מעבר להודעה האחרונה",
       groups: {
         conversations: {
           title: "שיחות",

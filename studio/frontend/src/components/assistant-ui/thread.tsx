@@ -49,6 +49,9 @@ import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-p
 import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-list";
 import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
+
+import { useAgentHistoryModeStore } from "@/features/chat/stores/agent-history-mode-store";
+import { agentHistoryLevelFor, agentHistoryWindowFor } from "@/features/chat/stores/agent-history-preference-policy";
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
 import { UserMessageActionBar, UserMessageFooter } from "@/components/assistant-ui/user-message-actions";
 import { useActionBarFocusReveal } from "@/components/assistant-ui/use-action-bar-focus-reveal";
@@ -76,12 +79,12 @@ import { withToolConfirmation } from "@/components/assistant-ui/tool-confirmatio
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
-import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-generation";
+
 import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
 import { ReadSkillToolUI } from "@/components/assistant-ui/tool-ui-read-skill";
 import { SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
 import { isRewindCommand, useRewindDialogStore } from "@/features/chat";
-import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
+
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
@@ -2047,6 +2050,14 @@ const renderThreadMessage = proplessSlot(ThreadMessage);
 
 // Memoized: chat-page renders this inline in a store-subscribing component, so a parent render
 // would otherwise reconcile the whole message list.
+// The bounded Agent History renderer is opt-in. Keep its sizable DOM/windowing
+// implementation out of the eager normal-chat startup bundle.
+const AgentHistoryScrollMessages = lazy(() =>
+  import("@/components/assistant-ui/agent-history-scroll-messages").then(
+    ({ AgentHistoryScrollMessages }) => ({ default: AgentHistoryScrollMessages }),
+  ),
+);
+
 export const Thread: FC<{
   hideComposer?: boolean;
   hideWelcome?: boolean;
@@ -2072,6 +2083,13 @@ export const Thread: FC<{
   );
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadId = targetThreadId ?? activeThreadId ?? null;
+  const agentHistoryLevel = useAgentHistoryModeStore((state) =>
+    agentHistoryLevelFor(state, threadId),
+  );
+  const agentHistoryEnabled = agentHistoryLevel !== "off";
+  const agentWindowRows = useAgentHistoryModeStore((state) =>
+    agentHistoryWindowFor(state, threadId),
+  );
   const aui = useAui();
   useThreadForkCounts();
   useTrackForkBoundaryAnchor(threadId);
@@ -2324,11 +2342,28 @@ export const Thread: FC<{
           completeProgressiveMounts. It takes the propless slot #9042 introduced, for the same
           reason: React's bail-out needs one shared element per row. See
           progressive-mount-controller.ts. */}
-          <ProgressiveMessages
-            renderMessage={renderThreadMessage}
-            resetKey={runtimeThreadId}
-            viewportRef={viewportElRef}
-          />
+          {agentHistoryEnabled ? (
+            <Suspense fallback={null}>
+              <AgentHistoryScrollMessages
+                renderMessage={renderThreadMessage}
+                resetKey={runtimeThreadId}
+                viewportRef={viewportElRef}
+                windowRows={agentWindowRows}
+                domLevel={agentHistoryLevel === "dynamic"
+                  ? "medium" : agentHistoryLevel === "low" || agentHistoryLevel === "dynamic-low"
+                    ? "low" : agentHistoryLevel === "high" || agentHistoryLevel === "dynamic-high"
+                      ? "high" : undefined}
+                fixedRowsStrict={agentHistoryLevel === "fixed-high"}
+                fixedViewportAdaptive={agentHistoryLevel === "fixed-low"}
+              />
+            </Suspense>
+          ) : (
+            <ProgressiveMessages
+              renderMessage={renderThreadMessage}
+              resetKey={runtimeThreadId}
+              viewportRef={viewportElRef}
+            />
+          )}
 
           {/* Bottom slack so the last message has room above the sticky
           scroll-to-bottom button (and floating composer in single mode),
@@ -2391,6 +2426,8 @@ export const Thread: FC<{
             ref={composedViewportRef}
             className={cn(
               "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
+              // Preserve normal-chat styling; only bounded history needs instant scroll.
+              agentHistoryEnabled && "scroll-auto",
               hideComposer
                 ? "pt-4"
                 : "[--thread-header-offset:calc(var(--studio-content-top-inset,0px)-var(--studio-chat-scroller-top,0px)+var(--studio-chat-header-height,48px))] mt-[var(--studio-chat-scroller-top,0px)] pt-[var(--thread-header-offset)]",
@@ -8174,10 +8211,29 @@ const PythonToolUIConfirmable = withToolConfirmation(PythonToolUI);
 const TerminalToolUIConfirmable = withToolConfirmation(TerminalToolUI);
 const CodeExecutionToolUIConfirmable =
   withToolConfirmation(CodeExecutionToolUI);
-const ImageGenerationToolUIConfirmable = withToolConfirmation(
-  ImageGenerationToolUI,
+// These tool cards are not used when opening a chat. Keep both lazy boundaries
+// at module scope (part component identities must remain stable across renders).
+// The generic tool card remains visible while the on-demand chunk is loading.
+const DeferredImageGenerationToolUI = lazy(() =>
+  import("@/components/assistant-ui/tool-ui-image-generation").then(
+    ({ ImageGenerationToolUI }) => ({ default: ImageGenerationToolUI }),
+  ),
 );
-const RenderHtmlToolUIConfirmable = withToolConfirmation(RenderHtmlToolUI);
+const DeferredRenderHtmlToolUI = lazy(() =>
+  import("@/components/assistant-ui/tool-ui-render-html").then(
+    ({ RenderHtmlToolUI }) => ({ default: RenderHtmlToolUI }),
+  ),
+);
+const ImageGenerationToolUIConfirmable = withToolConfirmation((props) => (
+  <Suspense fallback={<ToolFallback {...props} />}>
+    <DeferredImageGenerationToolUI {...props} />
+  </Suspense>
+));
+const RenderHtmlToolUIConfirmable = withToolConfirmation((props) => (
+  <Suspense fallback={<ToolFallback {...props} />}>
+    <DeferredRenderHtmlToolUI {...props} />
+  </Suspense>
+));
 // Read at render time, not module scope: the skill modules reach the chat barrel.
 const ReadSkillToolUIConfirmable = withToolConfirmation((props) => (
   <ReadSkillToolUI {...props} />
