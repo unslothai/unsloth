@@ -1983,8 +1983,12 @@ def test_flux3_reference_edits_use_the_measured_activations(monkeypatch):
 def test_the_block_graph_drops_the_prompt_upsampler_step(monkeypatch, with_upsampler):
     # diffusers#15058 puts a prompt upsampler step first in both auto block graphs; its text-to-image branch has no
     # trigger input, so it would run on every call and need the ~19 GB upsampler Studio never loads.
-    import diffusers
+    # flux3_blocks only looks the class up on the diffusers module, so a stub module stands in for it and the
+    # check runs on installs without diffusers too.
     from core.inference.diffusion_flux3 import FLUX3_DISTILLED_BLOCKS, flux3_blocks
+
+    diffusers = types.ModuleType("diffusers")
+    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
 
     class _Blocks:
         def __init__(self):
@@ -1993,7 +1997,7 @@ def test_the_block_graph_drops_the_prompt_upsampler_step(monkeypatch, with_upsam
                 (["prompt_upsampler"] if with_upsampler else []) + steps
             )
 
-    monkeypatch.setattr(diffusers, FLUX3_DISTILLED_BLOCKS, _Blocks, raising = False)
+    setattr(diffusers, FLUX3_DISTILLED_BLOCKS, _Blocks)
     assert list(flux3_blocks(FLUX3_DISTILLED_BLOCKS).sub_blocks) == [
         "text_encoder",
         "vae_encoder",

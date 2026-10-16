@@ -132,6 +132,96 @@
     "use_quant_conv": true
    }
   },
+  "flux.3-klein": {
+   "kind": "image",
+   "repo": "unsloth/flux-3-image-klein-FP8",
+   "revision": "0e7c103d8ffafb0d4ccd8d82122375c878cdaf4d",
+   "config": {
+    "_class_name": "AutoencoderKLFlux2",
+    "_diffusers_version": "0.41.0.dev0",
+    "act_fn": "silu",
+    "batch_norm_eps": 0.0001,
+    "batch_norm_momentum": 0.1,
+    "block_out_channels": [
+     128,
+     256,
+     512,
+     512
+    ],
+    "decoder_block_out_channels": null,
+    "down_block_types": [
+     "DownEncoderBlock2D",
+     "DownEncoderBlock2D",
+     "DownEncoderBlock2D",
+     "DownEncoderBlock2D"
+    ],
+    "force_upcast": true,
+    "in_channels": 3,
+    "latent_channels": 32,
+    "layers_per_block": 2,
+    "mid_block_add_attention": true,
+    "norm_num_groups": 32,
+    "out_channels": 3,
+    "patch_size": [
+     2,
+     2
+    ],
+    "sample_size": 1024,
+    "up_block_types": [
+     "UpDecoderBlock2D",
+     "UpDecoderBlock2D",
+     "UpDecoderBlock2D",
+     "UpDecoderBlock2D"
+    ],
+    "use_post_quant_conv": true,
+    "use_quant_conv": true
+   }
+  },
+  "flux.3-klein-base": {
+   "kind": "image",
+   "repo": "unsloth/flux-3-image-klein-base-FP8",
+   "revision": "b96dfc4e77c3f4412183348f90fd9fd4901102a3",
+   "config": {
+    "_class_name": "AutoencoderKLFlux2",
+    "_diffusers_version": "0.41.0.dev0",
+    "act_fn": "silu",
+    "batch_norm_eps": 0.0001,
+    "batch_norm_momentum": 0.1,
+    "block_out_channels": [
+     128,
+     256,
+     512,
+     512
+    ],
+    "decoder_block_out_channels": null,
+    "down_block_types": [
+     "DownEncoderBlock2D",
+     "DownEncoderBlock2D",
+     "DownEncoderBlock2D",
+     "DownEncoderBlock2D"
+    ],
+    "force_upcast": true,
+    "in_channels": 3,
+    "latent_channels": 32,
+    "layers_per_block": 2,
+    "mid_block_add_attention": true,
+    "norm_num_groups": 32,
+    "out_channels": 3,
+    "patch_size": [
+     2,
+     2
+    ],
+    "sample_size": 1024,
+    "up_block_types": [
+     "UpDecoderBlock2D",
+     "UpDecoderBlock2D",
+     "UpDecoderBlock2D",
+     "UpDecoderBlock2D"
+    ],
+    "use_post_quant_conv": true,
+    "use_quant_conv": true
+   }
+  },
   "flux.1-kontext": {
    "kind": "image",
    "repo": "unsloth/FLUX.1-Kontext-dev",
