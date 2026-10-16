@@ -180,12 +180,9 @@ def _add_gguf_picks(
     one id cannot mean different weights here than in the picker.
     """
     from core.inference.openai_auto_download import preferred_quant
-    from hub.utils.gguf import (
-        default_gguf_scope,
-        gguf_variant_key,
-        list_local_gguf_variants,
-    )
-    from utils.models.model_config import list_local_gguf_variants as list_legacy_variants
+    from hub.utils.gguf import default_gguf_scope, gguf_variant_key
+    from hub.utils.gguf import list_local_gguf_variants as list_build_variants
+    from utils.models.model_config import list_local_gguf_variants
 
     if load_dir.is_file():
         if load_dir.suffix.lower() != ".gguf":
@@ -203,8 +200,8 @@ def _add_gguf_picks(
             )
         return True
     # filenames come back relative to this directory, which is what the loader joins them onto
-    variants, _ = list_local_gguf_variants(str(load_dir))
-    legacy_variants, _ = list_legacy_variants(str(load_dir))
+    variants, _ = list_build_variants(str(load_dir))
+    legacy_variants, _ = list_local_gguf_variants(str(load_dir))
     legacy_quants = {variant.filename: variant.quant for variant in legacy_variants}
     by_quant = {v.quant: v for v in variants if v.quant}
     if not by_quant:
