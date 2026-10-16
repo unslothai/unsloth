@@ -166,8 +166,12 @@ def test_load_model_uses_the_argv_and_skips_an_unmappable_mask():
     at = src.index("_widen_pin_ids_for_companion_devices(")
     window = src[at - 400 : at + 200]
     assert "_visibility_mask_is_unmappable()" in window
-    assert 'env.get("LLAMA_ARG_DEVICE", "")' in window
+    # Every device name the child parses, env twins included: no LLAMA_ARG_DEVICE skip.
+    assert 'env.get("LLAMA_ARG_DEVICE", "")' not in window
     assert "allowed_ids = gpu_ids or None" in src[at : at + 300]
+    assert "env = env" in src[at : at + 300]
+    retry = src.index("_widen_pin_ids_for_companion_devices(", at + 1)
+    assert "env = env" in src[retry : retry + 300]
 
 
 def test_a_widened_explicit_pin_is_what_status_and_dedupe_see():
@@ -237,3 +241,215 @@ def test_the_arch_crash_retry_refits_companions_in_source():
     assert "_companion_fit_mask" in window
     assert "list(_companion_fit_mask)" in window
     assert '",".join(str(i) for i in _retry_mask)' in window
+
+
+# --- Every device name the child parses (r11): env twins and overridden occurrences ---
+
+_DEVICE_OPTION_NAMES = {
+    # common/arg.cpp: every option resolved through parse_device_list, with its env twin
+    "--device": "LLAMA_ARG_DEVICE",
+    "-dev": "LLAMA_ARG_DEVICE",
+    "--mmproj-device": "MTMD_BACKEND_DEVICE",
+    "-mmdev": "MTMD_BACKEND_DEVICE",
+    "--spec-draft-device": None,
+    "-devd": None,
+    "--device-draft": None,
+}
+
+
+def _unresolvable(cmd, env, mask_len):
+    """Device names llama.cpp would reject in a child seeing ``mask_len`` cards.
+
+    Written independently of the helper under test: env twins first, then every argv
+    occurrence; a value of exactly "none" is skipped (the -mmdev handler and
+    parse_device_list both special-case it)."""
+    values = [env[name] for name in ("LLAMA_ARG_DEVICE", "MTMD_BACKEND_DEVICE") if name in env]
+    for i, raw in enumerate(cmd):
+        head, eq, inline = raw.partition("=")
+        if head in _DEVICE_OPTION_NAMES:
+            values.append(inline if eq else cmd[i + 1])
+    bad = []
+    for value in values:
+        if value == "none":
+            continue
+        for name in value.split(","):
+            match = llama_cpp._GPU_DEVICE_TOKEN_RE.match(name.strip())
+            if not match or int(match.group(2)) >= mask_len:
+                bad.append(name)
+    return bad
+
+
+def _widen_env(
+    pin_ids,
+    cmd,
+    env,
+    inherited = None,
+    allowed_ids = None,
+):
+    cmd, env = list(cmd), dict(env)
+    widened, note = llama_cpp._widen_pin_ids_for_companion_devices(
+        cmd, pin_ids, inherited, allowed_ids = allowed_ids, env = env
+    )
+    return cmd, env, widened, note
+
+
+# (argv, env): a GPU 1 name parsed BEFORE the value that places, with the pin on GPU 0.
+_OVERRIDDEN_HIDDEN_CARD = [
+    pytest.param(
+        ["--mmproj-device", "none"], {"MTMD_BACKEND_DEVICE": "CUDA1"}, id = "env_mtmd-mmproj_none"
+    ),
+    pytest.param(["-mmdev", "none"], {"MTMD_BACKEND_DEVICE": "CUDA1"}, id = "env_mtmd-mmdev_none"),
+    pytest.param(
+        ["-mmdev=none"], {"MTMD_BACKEND_DEVICE": "ROCm1"}, id = "env_mtmd_rocm-mmdev_inline_none"
+    ),
+    pytest.param(
+        ["--mmproj-device", "CUDA0"], {"MTMD_BACKEND_DEVICE": "CUDA1"}, id = "env_mtmd-mmproj_gpu"
+    ),
+    pytest.param(["--device", "CUDA0"], {"LLAMA_ARG_DEVICE": "CUDA1"}, id = "env_device-device"),
+    pytest.param(["-dev", "CUDA0"], {"LLAMA_ARG_DEVICE": "CUDA1"}, id = "env_device-dev"),
+    pytest.param(["--device", "CUDA1", "--device", "CUDA0"], {}, id = "device-device"),
+    pytest.param(["-dev", "CUDA1", "--device=CUDA0"], {}, id = "dev-device_inline"),
+    pytest.param(["--device=CUDA0,CUDA1", "-dev", "CUDA0"], {}, id = "device_list-dev"),
+    pytest.param(["--device", "CUDA1", "--device", "none"], {}, id = "device-device_none"),
+    # Fixed in r10 (controls for the same matrix): argv companions.
+    pytest.param(["--mmproj-device", "CUDA1", "-mmdev", "none"], {}, id = "mmproj-mmdev_none"),
+    pytest.param(["--spec-draft-device", "CUDA1", "-devd", "none"], {}, id = "draft-devd_none"),
+    pytest.param(
+        ["--device-draft", "CUDA1", "--spec-draft-device", "none"], {}, id = "device_draft-draft_none"
+    ),
+]
+
+
+@pytest.mark.parametrize(("argv", "env"), _OVERRIDDEN_HIDDEN_CARD)
+def test_every_parsed_device_name_stays_resolvable_under_the_pin(argv, env):
+    cmd, child_env, pin, note = _widen_env([0], argv, env, inherited = [0, 1])
+    assert pin == [0, 1], "GPU 1 is parsed, so the child must see it"
+    assert note
+    assert _unresolvable(cmd, child_env, len(pin)) == []
+    # The value that places the main model is untouched or, absent, added on the pinned card.
+    assert llama_cpp._extra_args_main_device(cmd) in (None, "CUDA0", "none", "ROCm0") or (
+        child_env.get("LLAMA_ARG_DEVICE") is not None
+    )
+    final_main = llama_cpp._extra_args_main_device(cmd)
+    if final_main is None:
+        final_main = child_env.get("LLAMA_ARG_DEVICE")
+    assert final_main in ("CUDA0", "ROCm0", "none")
+
+
+@pytest.mark.parametrize(("argv", "env"), _OVERRIDDEN_HIDDEN_CARD)
+def test_the_arch_crash_retry_refits_every_parsed_device_name(argv, env):
+    # Widened [0] -> [0, 1]; GPU 0 crashes and the respawn runs on GPU 2. Each name is now
+    # in the crashed launch's numbering, env twins included, and must resolve again.
+    cmd, child_env, first, _ = _widen_env([0], argv, env, inherited = [0, 1, 2])
+    assert first == [0, 1]
+    if cmd[-2:] == ["--device", "CUDA0"] and "--device" not in argv[-2:]:
+        del cmd[-2:]
+    retry, _ = llama_cpp._widen_pin_ids_for_companion_devices(cmd, [2], first, env = child_env)
+    assert retry[0] == 2 and 1 in retry, "the respawn card leads; GPU 1 is still parsed"
+    assert _unresolvable(cmd, child_env, len(retry)) == []
+
+
+def test_an_inherited_final_main_device_keeps_control_and_the_companion_card_widens():
+    # LLAMA_ARG_DEVICE is the final main value here: the projector card still widens the
+    # mask, and no --device is appended over the env twin.
+    cmd, env, pin, note = _widen_env(
+        [0], ["--mmproj-device", "CUDA1"], {"LLAMA_ARG_DEVICE": "CUDA0"}
+    )
+    assert pin == [0, 1] and note
+    assert "--device" not in cmd
+    assert env["LLAMA_ARG_DEVICE"] == "CUDA0"
+    assert _unresolvable(cmd, env, len(pin)) == []
+
+
+def test_an_inherited_main_device_past_the_pin_is_not_moved():
+    cmd, env, pin, note = _widen_env(
+        [0], ["--mmproj-device", "CUDA2"], {"LLAMA_ARG_DEVICE": "CUDA1"}
+    )
+    assert (pin, note) == ([0], "")
+    assert cmd == ["--mmproj-device", "CUDA2"] and env == {"LLAMA_ARG_DEVICE": "CUDA1"}
+
+
+def test_an_inherited_projector_device_is_renumbered_in_the_env():
+    cmd, env, pin, _ = _widen_env(
+        [1], ["--mmproj-device", "none"], {"MTMD_BACKEND_DEVICE": "CUDA1"}
+    )
+    assert pin == [1]
+    assert env["MTMD_BACKEND_DEVICE"] == "CUDA0", "physical 1 is the child's CUDA0"
+    assert "--device" not in cmd
+
+
+@pytest.mark.parametrize(
+    ("argv", "env"),
+    [
+        pytest.param(
+            ["--mmproj-device", "none"], {"MTMD_BACKEND_DEVICE": "CUDA1"}, id = "env_mtmd-mmproj_none"
+        ),
+        pytest.param(
+            ["--mmproj-device", "CUDA0"], {"MTMD_BACKEND_DEVICE": "CUDA1"}, id = "env_mtmd-mmproj_gpu"
+        ),
+        pytest.param(["--mmproj-device", "CUDA1", "-mmdev", "none"], {}, id = "mmproj-mmdev_none"),
+        pytest.param(["-mmdev=CUDA1", "-mmdev", "CUDA0"], {}, id = "mmdev_inline-mmdev_gpu"),
+        pytest.param(
+            ["--spec-draft-device", "CUDA0,CUDA1", "-devd", "none"], {}, id = "draft_list-devd_none"
+        ),
+    ],
+)
+def test_explicit_gpu_ids_clear_an_overridden_name_they_exclude(argv, env):
+    # gpu_ids [0]: the excluded GPU 1 is never added, and the overridden value that named
+    # it places nothing, so it is cleared rather than left to fail the launch.
+    cmd, child_env, pin, note = _widen_env([0], argv, env, inherited = [0, 1], allowed_ids = [0])
+    assert pin == [0]
+    assert note
+    assert _unresolvable(cmd, child_env, 1) == []
+    assert cmd[-2:] == argv[-2:] or cmd[-1] == argv[-1], "the value that places is untouched"
+
+
+def test_explicit_gpu_ids_leave_a_final_excluded_name_alone():
+    cmd, env, pin, note = _widen_env([0], ["-mmdev", "none"], {}, allowed_ids = [0])
+    assert (pin, note, cmd) == ([0], "", ["-mmdev", "none"])
+    cmd, env, pin, note = _widen_env([0], [], {"MTMD_BACKEND_DEVICE": "CUDA1"}, [0, 1], [0])
+    assert (pin, note, env) == ([0], "", {"MTMD_BACKEND_DEVICE": "CUDA1"})
+
+
+@pytest.mark.parametrize(
+    ("argv", "env", "mmproj", "main_or_draft"),
+    [
+        ([], {"MTMD_BACKEND_DEVICE": "CUDA0"}, True, False),
+        (["--mmproj-device", "none"], {"MTMD_BACKEND_DEVICE": "CUDA0"}, True, False),
+        (["-mmdev", "CUDA0", "--mmproj-device", "none"], {}, True, False),
+        ([], {"LLAMA_ARG_DEVICE": "CUDA0"}, False, True),
+        (["--device", "none"], {"LLAMA_ARG_DEVICE": "CUDA0"}, False, True),
+        (["-dev", "CUDA0", "--device", "none"], {}, False, True),
+        (["--device-draft", "CUDA0", "-devd", "none"], {}, False, True),
+        (["--device", "none", "-mmdev", "none", "-devd", "none"], {}, False, False),
+        ([], {"MTMD_BACKEND_DEVICE": "none", "LLAMA_ARG_DEVICE": "none"}, False, False),
+    ],
+)
+def test_the_zero_offload_mask_reads_every_parsed_device_name(argv, env, mmproj, main_or_draft):
+    cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0", *argv]
+    backend = llama_cpp.LlamaCppBackend
+    assert backend._cmd_names_mmproj_device(cmd, env) is mmproj
+    assert backend._cmd_has_gpu_device_pin(cmd, env) is main_or_draft
+    assert backend._zero_offload_keeps_gpu_visible(cmd, env) is (mmproj or main_or_draft)
+
+
+def test_device_list_sites_follow_the_parsers_order():
+    sites = llama_cpp._device_list_sites(
+        ["-mmdev", "CUDA1", "--device=CUDA0", "-devd", "none", "--mmproj-device", "none", "-dev"],
+        {"MTMD_BACKEND_DEVICE": "CUDA2", "LLAMA_ARG_DEVICE": "CUDA3"},
+    )
+    assert [(s.group, s.env_name, s.value, s.final) for s in sites] == [
+        ("main", "LLAMA_ARG_DEVICE", "CUDA3", False),
+        ("mmproj", "MTMD_BACKEND_DEVICE", "CUDA2", False),
+        ("mmproj", None, "CUDA1", False),
+        ("main", None, "CUDA0", False),
+        ("draft", None, "none", True),
+        ("mmproj", None, "none", True),
+        ("main", None, "", True),
+    ]
+    # Every spelling arg.cpp declares for the three device-list options.
+    for flag, twin in _DEVICE_OPTION_NAMES.items():
+        (site,) = llama_cpp._device_list_sites([flag, "CUDA0"])
+        assert site.value == "CUDA0"
+        owner = next(o for o in llama_cpp._DEVICE_LIST_OPTIONS if flag in o[1])
+        assert owner[2] == twin
