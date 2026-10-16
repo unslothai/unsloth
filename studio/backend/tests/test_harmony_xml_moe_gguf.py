@@ -108,9 +108,9 @@ def test_default_pick_is_ud_q4_k_xl():
 
 # ---------------------------------------------------------------- sampling
 
-EXPECTED_SAMPLING = {
-    "temperature": 1.0,
-    "top_p": 1.0,
+EXPECTED_SAMPLING = {  # generation_config.json of the released checkpoint
+    "temperature": 0.7,
+    "top_p": 0.99,
     "top_k": -1,
     "min_p": 0.0,
 }
