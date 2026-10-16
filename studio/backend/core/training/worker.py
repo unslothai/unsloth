@@ -5450,10 +5450,12 @@ def _create_embedding_progress_callback(
 
 
 def _csv_number(cell):
+    from utils.datasets.cells import _NA_CELLS
+
     text = (cell or "").strip()
     if text.lower() in ("true", "false"):
         return float(text.lower() == "true")
-    return float(text) if text else None
+    return None if text in _NA_CELLS else float(text)
 
 
 def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> None:

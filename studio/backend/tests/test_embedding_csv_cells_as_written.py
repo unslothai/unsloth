@@ -186,3 +186,12 @@ def test_embedding_csv_slice_counts_rows_of_the_file(run_embedding):
 
     assert dataset.to_list() == [{"q": "q2", "a": "a2"}, {"q": "q3", "a": "a3"}]
     assert warnings == ["Dropped 1 of 3 rows because a text cell was empty."]
+
+
+def test_embedding_csv_score_na_marker_outside_the_slice_still_trains(run_embedding):
+    dataset, _ = run_embedding(
+        "s1,s2,score\naa,bb,0.5\ncc,dd,NA\n",
+        dataset_slice_end = 0,
+    )
+
+    assert dataset.to_list() == [{"s1": "aa", "s2": "bb", "score": 0.5}]
