@@ -10807,18 +10807,8 @@ def _resident_quant_is(variant: Optional[str], base: Optional[str] = None) -> bo
 
 
 def _same_local_build(base: Optional[str], resident: str, wanted: str) -> bool:
-    """Whether *resident* names *wanted*, verbatim or through *base*'s index (a build loaded by
-    its stem, ``alpha-Q4_K_M``, is the build the bare key ``Q4_K_M`` now names)."""
-    resident = (resident or "").strip().lower()
-    wanted = (wanted or "").strip().lower()
-    if resident == wanted:
-        return True
-    if not base or not resident:
-        return False
-    from core.inference.local_model_resolver import local_gguf_pinned_variant
-
-    canonical = local_gguf_pinned_variant(f"{base}:{resident}", allow_scan = False)
-    return canonical is not None and canonical.lower() == wanted
+    from core.inference.local_model_resolver import local_gguf_same_build
+    return local_gguf_same_build(base, resident, wanted)
 
 
 def _blob_identity(identity: Optional[tuple]) -> Optional[tuple]:

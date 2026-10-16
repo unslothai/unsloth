@@ -1435,6 +1435,29 @@ def test_management_unload_keeps_a_resident_of_another_quant_directory_build(
     assert calls == []
 
 
+def test_management_unload_releases_a_build_loaded_by_its_rekeyed_stem(monkeypatch, _no_local_gguf):
+    build = QWEN + ":Q4_K_M"
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **kwargs: ("/media/models/qwen/model.gguf", "Q4_K_M", QWEN),
+    )
+
+    def _pinned(requested, **kwargs):
+        return {build: "Q4_K_M", QWEN + ":beta-q4_k_m": "Q4_K_M"}.get(requested)
+
+    monkeypatch.setattr(_no_local_gguf, "local_gguf_pinned_variant", _pinned)
+    backend = _Backend()
+    backend.hf_variant = "beta-Q4_K_M"
+    pin = {"id": build, "object": "model", "loaded": False}
+    mod, calls = _management(backend = backend, catalog = CATALOG + [pin])
+
+    with _client(mod) as client:
+        assert client.post("/models/unload", json = {"model": build}).status_code == 200
+
+    assert calls != []
+
+
 def test_management_unload_of_a_bare_id_ignores_the_preferred_quant(monkeypatch, _no_local_gguf):
     """A bare id resolves to the preferred quant on disk, which need not be the resident one."""
     monkeypatch.setattr(

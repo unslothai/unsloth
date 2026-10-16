@@ -368,7 +368,10 @@ async def _unload_target(model_id: str, row: dict, pinned: bool) -> Optional[str
     base, suffix = split_model_ref(model_id)
     # Only a quant the caller named: a bare id resolves to the preferred quant, not the resident one.
     # The resolver's spelling of it, which maps a legacy label (BF16) onto the current quant.
-    from core.inference.local_model_resolver import local_gguf_pinned_variant
+    from core.inference.local_model_resolver import (
+        local_gguf_pinned_variant,
+        local_gguf_same_build,
+    )
 
     # not gated on suffix: split_model_ref cannot parse a directory-qualified build key
     wanted_variant = local_gguf_pinned_variant(model_id, allow_scan = False)
@@ -396,7 +399,9 @@ async def _unload_target(model_id: str, row: dict, pinned: bool) -> Optional[str
         if not named:
             continue
         # A pin names one quant: another one, or a backend with none, may sit in a kept slot instead.
-        if wanted_variant and (running_variant or "").lower() != wanted_variant.lower():
+        if wanted_variant and not local_gguf_same_build(
+            model_id.rpartition(":")[0], running_variant or "", wanted_variant
+        ):
             continue
         return running
     filling = inf.model_slots.visible_loading()

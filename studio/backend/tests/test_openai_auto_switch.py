@@ -854,6 +854,19 @@ def test_a_deleted_build_stem_misses_instead_of_serving_its_sibling(tmp_path, mo
     assert inference_route._loaded_satisfies("local/model:alpha-Q4_K_M") is True
 
 
+def test_a_deleted_quant_directory_build_is_withheld(tmp_path, monkeypatch):
+    (tmp_path / "Q4_K_M").mkdir()
+    (tmp_path / "Q4_K_M" / "alpha-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    entry = resolver._local_gguf_entry("custom-model", SimpleNamespace(path = str(tmp_path)))
+    index = {"custom-model": entry}
+    pin = "custom-model:Q4_K_M/beta-Q4_K_M"
+
+    assert resolver._resolve_from_index(pin, index) is None
+    monkeypatch.setattr(resolver, "_scan", (1.0, index))
+    assert resolver.local_gguf_withheld(pin) is True
+    assert resolver.local_gguf_withheld("custom-model:latest") is False
+
+
 def test_a_quant_directory_build_pin_is_authorized_by_its_base_model(monkeypatch):
     from fastapi import HTTPException
 

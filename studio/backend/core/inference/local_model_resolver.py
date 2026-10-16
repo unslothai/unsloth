@@ -1469,11 +1469,24 @@ def _names_missing_build(entry: _LocalGgufEntry, wanted: str) -> bool:
 
     return (
         entry.exact_builds
-        and not looks_like_quant(wanted)
+        and ("/" in wanted or not looks_like_quant(wanted))
         and extract_quant_token(wanted) is not None
         and all(v.lower() != wanted for v in entry.variants)
         and all(legacy != wanted for legacy, _ in (*entry.aliases, *entry.build_aliases))
     )
+
+
+def local_gguf_same_build(base: Optional[str], resident: str, wanted: str) -> bool:
+    """Whether *resident* names *wanted*, verbatim or through *base*'s index (a build loaded by
+    its stem, ``alpha-Q4_K_M``, is the build the bare key ``Q4_K_M`` now names)."""
+    resident = (resident or "").strip().lower()
+    wanted = (wanted or "").strip().lower()
+    if resident == wanted:
+        return True
+    if not base or not resident:
+        return False
+    canonical = local_gguf_pinned_variant(f"{base}:{resident}", allow_scan = False)
+    return canonical is not None and canonical.lower() == wanted
 
 
 def local_gguf_withheld(requested: str) -> bool:
