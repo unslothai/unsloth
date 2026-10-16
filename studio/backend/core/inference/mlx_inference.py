@@ -989,6 +989,24 @@ def _mlx_inference_scopes(model, call, int8_prefill):
         yield model
 
 
+def _mlx_warm_inference(model, int8_prefill):
+    """Zoo's warm-up generation, so the first request skips the scopes' kernel builds and first-use
+    checks. A Zoo without it, or a failed warm-up, leaves them to the first request."""
+    warm = _mlx_inference_patch("warm_inference")
+    if warm is None:
+        return
+    try:
+        warm(model, int8_prefill = int8_prefill)
+    except Exception as error:
+        if is_metal_queue_dead(error):
+            raise
+        logger.warning(
+            "MLX warm-up failed, so the first request runs it: %s: %s",
+            type(error).__name__,
+            error,
+        )
+
+
 def _int8_prefill_zoo():
     """unsloth_zoo's MLX inference module when it can run int8 prefill, else None."""
     try:
@@ -5171,6 +5189,10 @@ class MLXInferenceBackend:
         # The worker owns fixed base weights until unload; adapter requests stay scoped.
         if not is_lora:
             self._model_fusion.enter_context(_mlx_fused_moe_gate_up(model))
+        # Every rank of a distributed load must run each forward together.
+        if not is_distributed:
+            with mlx_rng_preserved(), self._int8_prefill_scope():
+                _mlx_warm_inference(model, self._int8_prefill["active"])
         logger.info("Model %s loaded successfully", model_name)
         return True
 

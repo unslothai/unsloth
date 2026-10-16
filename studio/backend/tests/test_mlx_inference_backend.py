@@ -136,10 +136,14 @@ def _neutral_zoo_helper(name):
     """Every other public helper zoo's generate.py enters around a model is neutral too.
 
     unsloth_zoo #1541 added nax_quantized_linear to that import list, and a stub holding only the
-    fused_* names failed every real-model test on macOS with an ImportError. fused_* and
-    inference_scopes stay explicit, so a test that deletes one still sees it missing.
+    fused_* names failed every real-model test on macOS with an ImportError. fused_*,
+    inference_scopes and warm_inference stay explicit, so a test that deletes one still sees it missing.
     """
-    if name.startswith("_") or name.startswith("fused_") or name == "inference_scopes":
+    if (
+        name.startswith("_")
+        or name.startswith("fused_")
+        or name in ("inference_scopes", "warm_inference")
+    ):
         raise AttributeError(name)
     return _neutral_scope
 
@@ -297,6 +301,78 @@ def test_mlx_fusion_failure_at_load_still_loads_the_model(monkeypatch, mlx_moe):
     assert backend.active_model_name == "fake/text"
     assert backend._model is not None
     assert backend.unload_model("fake/text")
+
+
+@pytest.mark.parametrize("outcome", ["warmed", "int8", "failed", "dead_queue", "distributed"])
+def test_a_load_warms_zoo_scopes_under_its_int8_decision(monkeypatch, mlx_moe, outcome):
+    from core.inference import mlx_inference
+
+    backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7, 8]}, [])
+    _install_fake_fast_mlx(monkeypatch, [])
+    sys.modules["mlx.core"].clear_cache = lambda: None
+    warnings = _capture_rng_warnings(monkeypatch, mlx_inference)
+    events = []
+
+    @contextmanager
+    def rng():
+        events.append("rng")
+        try:
+            yield
+        finally:
+            events.append("/rng")
+
+    @contextmanager
+    def gate_up(model, **_):
+        events.append("gate_up")
+        yield model
+
+    @contextmanager
+    def int8(
+        model,
+        int8_prefill = None,
+        **_,
+    ):
+        events.append(("int8", int8_prefill))
+        try:
+            yield model
+        finally:
+            events.append("/int8")
+
+    def warm(model, int8_prefill):
+        events.append(("warm", model is backend._model, int8_prefill))
+        if outcome == "failed":
+            raise RuntimeError("no headroom")
+        if outcome == "dead_queue":
+            raise RuntimeError("[METAL] Command buffer execution failed: Caused GPU Timeout Error.")
+
+    mlx_moe.fused_moe_gate_up, mlx_moe.nax_quantized_linear, mlx_moe.warm_inference = (
+        gate_up,
+        int8,
+        warm,
+    )
+    monkeypatch.setattr(mlx_inference, "mlx_rng_preserved", rng)
+    if outcome == "int8":
+        status = {"requested": True, "active": True, "reason": "", "scope": int8}
+        monkeypatch.setattr(mlx_inference, "_int8_prefill_status", lambda *_: status)
+    config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
+    group = SimpleNamespace(size = lambda: 2, rank = lambda: 0)
+    kwargs = (
+        {"parallel_mode": "tensor", "distributed_group": group} if outcome == "distributed" else {}
+    )
+    with (
+        pytest.raises(RuntimeError, match = "METAL")
+        if outcome == "dead_queue"
+        else contextlib.nullcontext()
+    ):
+        assert backend.load_model(config, **kwargs) is True
+    active = outcome == "int8"
+    warmed = (
+        []
+        if outcome == "distributed"
+        else ["rng", ("int8", active), ("warm", True, active), "/int8", "/rng"]
+    )
+    assert events == ["gate_up", *warmed]
+    assert any("MLX warm-up failed" in warning for warning in warnings) == (outcome == "failed")
 
 
 def test_mlx_fusion_that_refuses_everywhere_still_generates(monkeypatch, mlx_moe):
