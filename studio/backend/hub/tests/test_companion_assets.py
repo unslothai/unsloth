@@ -592,7 +592,11 @@ _EXAMPLE_VAE = "unsloth/FLUX.2-dev-example-vae"
 _EXAMPLE_REPACK = "some-org/FLUX.2-dev-example-repack"
 
 
-def _synthetic_legacy_row(monkeypatch, mirror = "unsloth/example-repack-mirror", repack = "some-org/example-repack"):
+def _synthetic_legacy_row(
+    monkeypatch,
+    mirror = "unsloth/example-repack-mirror",
+    repack = "some-org/example-repack",
+):
     """(repack, mirror) after adding a made-up mirror -> community repack row to the legacy table."""
     from core.inference import diffusion_families
 
@@ -1002,14 +1006,27 @@ def test_the_curated_bases_carry_the_whole_mirror_table():
 
 
 def test_a_turbo_checkpoint_does_not_depend_on_the_base_whose_name_it_contains():
-    """"zimage" is inside "zimageturbo": a substring match made a Turbo GGUF depend on Tongyi-MAI/Z-Image too, whose
+    """ "zimage" is inside "zimageturbo": a substring match made a Turbo GGUF depend on Tongyi-MAI/Z-Image too, whose
     mirror is now the Z-Image GGUF repo, so deleting that unrelated repo was refused while Turbo was installed."""
-    scans = [SimpleNamespace(repos = [_repo("unsloth/Z-Image-Turbo-GGUF", [("z-image-turbo-Q4_K_M.gguf", 5_000)])])]
+    scans = [
+        SimpleNamespace(
+            repos = [_repo("unsloth/Z-Image-Turbo-GGUF", [("z-image-turbo-Q4_K_M.gguf", 5_000)])]
+        )
+    ]
     required = companion_assets.required_companion_bases(scans)
     assert "tongyi-mai/z-image-turbo" in required
     assert "tongyi-mai/z-image" not in required
     assert "unsloth/z-image-gguf" not in required
-    scans = [SimpleNamespace(repos = [_repo("unsloth/Qwen-Image-Edit-2511-GGUF", [("qwen-image-edit-2511-Q4_K_M.gguf", 5_000)])])]
+    scans = [
+        SimpleNamespace(
+            repos = [
+                _repo(
+                    "unsloth/Qwen-Image-Edit-2511-GGUF",
+                    [("qwen-image-edit-2511-Q4_K_M.gguf", 5_000)],
+                )
+            ]
+        )
+    ]
     required = companion_assets.required_companion_bases(scans)
     assert "qwen/qwen-image-edit-2511" in required
     assert "qwen/qwen-image-edit" not in required
@@ -1019,16 +1036,24 @@ def test_a_turbo_checkpoint_does_not_depend_on_the_base_whose_name_it_contains()
 def test_an_artifact_mirror_checkpoint_still_protects_its_cached_upstream_base():
     """The GGUF repo canonicalises to its upstream now, but it is a checkpoint in its own right: a cached upstream
     base it loads from must keep it as a dependent, not be folded into the GGUF's own identity."""
-    scans = [SimpleNamespace(repos = [
-        _repo("unsloth/Z-Image-GGUF", [("z-image-Q4_K_M.gguf", 5_000)]),
-        _base_repo("Tongyi-MAI/Z-Image"),
-    ])]
+    scans = [
+        SimpleNamespace(
+            repos = [
+                _repo("unsloth/Z-Image-GGUF", [("z-image-Q4_K_M.gguf", 5_000)]),
+                _base_repo("Tongyi-MAI/Z-Image"),
+            ]
+        )
+    ]
     required = companion_assets.required_companion_bases(scans)
     assert required.get("tongyi-mai/z-image") == {"unsloth/Z-Image-GGUF"}
 
 
-@pytest.mark.parametrize("retired", ["unsloth/Z-Image-Turbo-ComfyUI", "unsloth/flux-text-encoders", "unsloth/FLUX.2-VAE"])
-def test_a_retired_comfy_companion_left_by_a_released_build_is_offered_for_cleanup(monkeypatch, retired):
+@pytest.mark.parametrize(
+    "retired", ["unsloth/Z-Image-Turbo-ComfyUI", "unsloth/flux-text-encoders", "unsloth/FLUX.2-VAE"]
+)
+def test_a_retired_comfy_companion_left_by_a_released_build_is_offered_for_cleanup(
+    monkeypatch, retired
+):
     """Released builds fetched the sd-cli VAEs and encoders from ComfyUI-built repacks. This build never reads them
     again, so on an upgraded install they are pure leftovers: they must stay recognised as companions (hidden from the
     pickers) and be offered by Free up space, not stranded."""

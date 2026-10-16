@@ -79,19 +79,26 @@ _NEW_PAIRS = (
 
 # Repacks built by ComfyUI (or its unsloth/* copies). No image load may fetch from one, not even through the
 # legacy-cache fallback.
-_COMFY_MADE: frozenset[str] = frozenset({
-    "unsloth/flux-text-encoders",
-    "unsloth/qwen-image-comfyui",
-    "unsloth/flux.2-vae",
-    "unsloth/flux.2-dev-comfyui",
-    "unsloth/z-image-turbo-comfyui",
-    "unsloth/flux.2-klein-9b-comfyui",
-})
+_COMFY_MADE: frozenset[str] = frozenset(
+    {
+        "unsloth/flux-text-encoders",
+        "unsloth/qwen-image-comfyui",
+        "unsloth/flux.2-vae",
+        "unsloth/flux.2-dev-comfyui",
+        "unsloth/z-image-turbo-comfyui",
+        "unsloth/flux.2-klein-9b-comfyui",
+    }
+)
 
 
 def _is_comfy(repo: str) -> bool:
     r = repo.lower()
-    return r in _COMFY_MADE or r.startswith(("comfy-org/", "comfyanonymous/")) or "comfyui" in r or "comfy" in r.split("/")[0]
+    return (
+        r in _COMFY_MADE
+        or r.startswith(("comfy-org/", "comfyanonymous/"))
+        or "comfyui" in r
+        or "comfy" in r.split("/")[0]
+    )
 
 
 @pytest.fixture(autouse = True)
@@ -192,7 +199,9 @@ def _image_catalog() -> str:
         Path(__file__).resolve().parents[2]
         / "frontend/src/features/model-picker/components/model-selector/model-catalog.ts"
     ).read_text(encoding = "utf-8")
-    images = text.split("export const IMAGE_CATALOG", 1)[1].split("export const VIDEO_CATALOG", 1)[0]
+    images = text.split("export const IMAGE_CATALOG", 1)[1].split("export const VIDEO_CATALOG", 1)[
+        0
+    ]
     # Comments name withdrawn repos (the old QuantStack HunyuanImage GGUF); only live code counts.
     return re.sub(r"^\s*//.*$", "", images, flags = re.M)
 
@@ -229,8 +238,12 @@ def test_every_image_catalog_row_fetches_from_unsloth():
 
 def test_every_quantised_catalog_row_takes_its_companions_from_unsloth():
     quantised = {repo for helper, repo in _catalog_rows() if helper in ("gguf", "bnb4bit")}
-    unmapped = sorted(r for r in quantised if r not in _CARD_BASES and not r.lower().startswith("ideogram-ai/"))
-    assert not unmapped, f"add the base_model card tag of these catalog rows to _CARD_BASES: {unmapped}"
+    unmapped = sorted(
+        r for r in quantised if r not in _CARD_BASES and not r.lower().startswith("ideogram-ai/")
+    )
+    assert (
+        not unmapped
+    ), f"add the base_model card tag of these catalog rows to _CARD_BASES: {unmapped}"
     bad = []
     for repo, base in _CARD_BASES.items():
         fam = detect_family(repo)
@@ -250,7 +263,9 @@ def test_licence_allowlist_is_still_needed():
         assert mirror_repo(repo) is None, f"{repo} is mirrored now; drop it from _LICENCE_BLOCKED"
     rows = {r.lower() for _h, r in _catalog_rows()}
     for repo in _THIRD_PARTY_DENOISER_ROWS:
-        assert repo in rows, f"the catalog no longer offers {repo}; drop it from _THIRD_PARTY_DENOISER_ROWS"
+        assert (
+            repo in rows
+        ), f"the catalog no longer offers {repo}; drop it from _THIRD_PARTY_DENOISER_ROWS"
 
 
 def test_no_image_asset_names_a_comfy_repack():
@@ -270,4 +285,9 @@ def test_sd_cpp_text_encoders_are_unsloth_ggufs_or_official_files():
     for fam, role, repo, fetch in _sd_cpp_fetch_ids():
         if role == "sd_cpp:vae":
             continue
-        assert fetch.lower().startswith("unsloth/") and not _is_comfy(fetch), (fam, role, repo, fetch)
+        assert fetch.lower().startswith("unsloth/") and not _is_comfy(fetch), (
+            fam,
+            role,
+            repo,
+            fetch,
+        )

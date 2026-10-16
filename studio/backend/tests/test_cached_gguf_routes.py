@@ -3348,7 +3348,11 @@ def test_cached_repo_task_never_offers_an_sd_cpp_companion_repo_as_a_model(tmp_p
         assert models_route._cached_repo_task(_pipeline_repo(repo_id, tmp_path)) is None, repo_id
 
     # The vendor bases that now serve the VAEs / encoders are real bases and must stay loadable.
-    for base in ("black-forest-labs/FLUX.1-schnell", "black-forest-labs/FLUX.2-dev", "Qwen/Qwen-Image"):
+    for base in (
+        "black-forest-labs/FLUX.1-schnell",
+        "black-forest-labs/FLUX.2-dev",
+        "Qwen/Qwen-Image",
+    ):
         assert base.lower() not in companions, base
     assert (
         models_route._cached_repo_task(_pipeline_repo("black-forest-labs/FLUX.1-schnell", tmp_path))

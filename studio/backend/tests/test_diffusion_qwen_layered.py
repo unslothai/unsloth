@@ -105,7 +105,8 @@ def layered(fake_runtime, tmp_path, monkeypatch):
 
     # A fresh install: nothing cached, so the companions come from the unsloth mirror, not this host's cache.
     monkeypatch.setattr(
-        "core.inference.diffusion_families._upstream_is_cached", lambda repo_id, files = None, **_k: False
+        "core.inference.diffusion_families._upstream_is_cached",
+        lambda repo_id, files = None, **_k: False,
     )
     monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
 

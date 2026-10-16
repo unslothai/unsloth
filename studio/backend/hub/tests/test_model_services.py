@@ -2788,7 +2788,9 @@ def test_a_companion_mirror_carries_the_flag_on_the_hub_row(monkeypatch, tmp_pat
 
     real = families.sd_cpp_companion_only_repo_ids
     monkeypatch.setattr(
-        families, "sd_cpp_companion_only_repo_ids", lambda: real() | {"unsloth/example-vae-companion"}
+        families,
+        "sd_cpp_companion_only_repo_ids",
+        lambda: real() | {"unsloth/example-vae-companion"},
     )
     row = _diffusion_scan(
         monkeypatch,
@@ -8546,9 +8548,15 @@ def test_a_gguf_repo_holding_its_bases_companions_is_not_listed_twice(monkeypatc
     (repo_path / "refs").mkdir(parents = True, exist_ok = True)
     (repo_path / "refs" / "main").write_text(_SNAPSHOT_SHA)
     revision = SimpleNamespace(files = files, snapshot_path = snapshot, commit_hash = _SNAPSHOT_SHA)
-    repo = SimpleNamespace(repo_id = repo_id, repo_type = "model", repo_path = repo_path, revisions = [revision])
-    monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])])
-    monkeypatch.setattr(cache_inventory.hf_cache_scan, "is_snapshot_partial", lambda *_a, **_k: False)
+    repo = SimpleNamespace(
+        repo_id = repo_id, repo_type = "model", repo_path = repo_path, revisions = [revision]
+    )
+    monkeypatch.setattr(
+        cache_inventory, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan, "is_snapshot_partial", lambda *_a, **_k: False
+    )
     monkeypatch.setattr(cache_inventory, "_cached_row_task", lambda *_a, **_k: "text-to-image")
     rows = cache_inventory._scan_cached_models(active_hub_cache = tmp_path / "hub")
     assert [r for r in rows if (r.get("repo_id") or r.get("id")) == repo_id] == []

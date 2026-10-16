@@ -1215,8 +1215,12 @@ def _scan_cached_models(
                 # A GGUF repo that also carries the official diffusers folders (it is the base's mirror): companions
                 # without the bf16 transformer are part of the GGUF row, not a second row whose delete would wipe the
                 # quants with them.
-                if has_main_gguf and _hosts_artifacts(repo_id) and hf_cache_scan.snapshot_pipeline_missing_denoiser(
-                    payload.payload_snapshot or snapshot_path
+                if (
+                    has_main_gguf
+                    and _hosts_artifacts(repo_id)
+                    and hf_cache_scan.snapshot_pipeline_missing_denoiser(
+                        payload.payload_snapshot or snapshot_path
+                    )
                 ):
                     skipped_gguf += 1
                     continue

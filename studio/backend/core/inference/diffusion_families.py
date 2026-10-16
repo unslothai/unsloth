@@ -298,8 +298,16 @@ _HIDREAM_BF16_WHEN_RESIDENT = (
 _FLUX1_SD_CPP_TEXT_ENCODERS: tuple[tuple[str, str, str], ...] = (
     ("black-forest-labs/FLUX.1-schnell", "text_encoder/model.safetensors", "clip_l"),
     ("black-forest-labs/FLUX.1-schnell", "text_encoder_2/model.safetensors.index.json", "t5xxl"),
-    ("black-forest-labs/FLUX.1-schnell", "text_encoder_2/model-00001-of-00002.safetensors", "t5xxl_shard"),
-    ("black-forest-labs/FLUX.1-schnell", "text_encoder_2/model-00002-of-00002.safetensors", "t5xxl_shard"),
+    (
+        "black-forest-labs/FLUX.1-schnell",
+        "text_encoder_2/model-00001-of-00002.safetensors",
+        "t5xxl_shard",
+    ),
+    (
+        "black-forest-labs/FLUX.1-schnell",
+        "text_encoder_2/model-00002-of-00002.safetensors",
+        "t5xxl_shard",
+    ),
 )
 
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry
@@ -2389,14 +2397,16 @@ _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS = (("unsloth/Qwen3-8B-GGUF", "Qwen3-8B-Q4_K
 # upgraded install still holds their bytes (up to ~70 GB), so they stay companion-only: hidden from the model pickers
 # and offered by Free up space once nothing pins them. Never fetched again. The Comfy-Org originals are NOT listed:
 # those repos also ship denoisers a user may load as single files, so they must stay ordinary cached repos.
-_RETIRED_SD_CPP_COMPANION_REPOS: frozenset[str] = frozenset({
-    "unsloth/flux-text-encoders",
-    "unsloth/qwen-image-comfyui",
-    "unsloth/flux.2-vae",
-    "unsloth/flux.2-dev-comfyui",
-    "unsloth/z-image-turbo-comfyui",
-    "unsloth/flux.2-klein-9b-comfyui",
-})
+_RETIRED_SD_CPP_COMPANION_REPOS: frozenset[str] = frozenset(
+    {
+        "unsloth/flux-text-encoders",
+        "unsloth/qwen-image-comfyui",
+        "unsloth/flux.2-vae",
+        "unsloth/flux.2-dev-comfyui",
+        "unsloth/z-image-turbo-comfyui",
+        "unsloth/flux.2-klein-9b-comfyui",
+    }
+)
 
 
 def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
@@ -2427,7 +2437,10 @@ def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
         loadable.update(repo for _base, _scheme, repo in fam.prequant_variant_repos)
         loadable.update(repo for _scheme, _component, repo in fam.te_prequant_repos)
     companions.update(repo for repo, _f, _k in _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
-    return frozenset(r.strip().lower() for r in companions - loadable if r) | _RETIRED_SD_CPP_COMPANION_REPOS
+    return (
+        frozenset(r.strip().lower() for r in companions - loadable if r)
+        | _RETIRED_SD_CPP_COMPANION_REPOS
+    )
 
 
 def prequant_only_repo_ids() -> frozenset[str]:

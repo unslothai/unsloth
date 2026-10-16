@@ -729,7 +729,10 @@ def test_the_moved_sd_cpp_assets_keep_their_upstream_relative_paths():
     ]
     for name in ("flux.1", "flux.1-kontext"):
         assert detect_family(name).sd_cpp_text_encoders == _FLUX1_SD_CPP_TEXT_ENCODERS, name
-        assert detect_family(name).sd_cpp_vae == ("black-forest-labs/FLUX.1-schnell", "ae.safetensors")
+        assert detect_family(name).sd_cpp_vae == (
+            "black-forest-labs/FLUX.1-schnell",
+            "ae.safetensors",
+        )
     # Klein 4B and Z-Image share one Qwen3-4B GGUF; FLUX.2-dev reads the Mistral-Small-3.2 GGUF.
     for name in ("flux.2-klein", "z-image"):
         [(repo, fn, kind)] = detect_family(name).sd_cpp_text_encoders
@@ -745,14 +748,21 @@ def test_the_moved_sd_cpp_assets_keep_their_upstream_relative_paths():
             "vae/diffusion_pytorch_model.safetensors",
         ), name
     # Z-Image decodes with the FLUX.1 autoencoder.
-    assert detect_family("z-image").sd_cpp_vae == ("black-forest-labs/FLUX.1-schnell", "ae.safetensors")
+    assert detect_family("z-image").sd_cpp_vae == (
+        "black-forest-labs/FLUX.1-schnell",
+        "ae.safetensors",
+    )
     for name in ("flux.2-klein", "flux.2-dev"):
         assert detect_family(name).sd_cpp_vae == (
             "black-forest-labs/FLUX.2-dev",
             "vae/diffusion_pytorch_model.safetensors",
         ), name
     # Each vendor VAE / encoder repo is reached through an unsloth mirror holding the same path.
-    for upstream in ("black-forest-labs/FLUX.1-schnell", "black-forest-labs/FLUX.2-dev", "Qwen/Qwen-Image"):
+    for upstream in (
+        "black-forest-labs/FLUX.1-schnell",
+        "black-forest-labs/FLUX.2-dev",
+        "Qwen/Qwen-Image",
+    ):
         assert (mirror_repo(upstream) or "").startswith("unsloth/"), upstream
 
 
