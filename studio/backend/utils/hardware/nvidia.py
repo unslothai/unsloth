@@ -156,7 +156,6 @@ def get_physical_gpu_count(gpu_rows_only: bool = False) -> Optional[int]:
     return None
 
 
-_MIG_INDICES_TTL_S = 60.0
 # A failed listing is retried after this, not on every poll.
 _MIG_FAILURE_RETRY_S = 5.0
 # (static generation, monotonic stamp, indices, answered); answered False is a failed probe.
@@ -204,13 +203,16 @@ def get_mig_gpu_indices() -> set[int]:
     ``--query-gpu`` memory is the whole card's, not the device's.
 
     Read on every memory poll, so the parsed set (empty included) is cached until the
-    listing is a TTL old, and dropped with the static generation (hotplug, driver reset);
+    listing is gpu_query's static TTL old, and dropped with the static generation (hotplug, driver reset);
     the physical count probe refreshes it from the same listing. A failed probe keeps the
     last answer of this generation (empty if none) and is retried after a short backoff."""
     hit = _mig_indices_cache
     now = time.monotonic()
     if hit is not None and hit[0] == gpu_query._static_gen:
-        if now - hit[1] < (_MIG_INDICES_TTL_S if hit[3] else _MIG_FAILURE_RETRY_S):
+        # Same lifetime as gpu_query's static inventory, so UNSLOTH_GPU_QUERY_STATIC_TTL
+        # (0 included) bounds it too.
+        ttl = gpu_query.ttl_for(gpu_query.STATIC)
+        if now - hit[1] < (ttl if hit[3] else min(ttl, _MIG_FAILURE_RETRY_S)):
             return set(hit[2])
     gen = gpu_query._static_gen
     started = time.monotonic()

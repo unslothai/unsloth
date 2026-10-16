@@ -15009,12 +15009,16 @@ class LlamaCppBackend:
         seen: set[int] = set()
         for token in tokens:
             prefix = re.match(r"\+?\d+", token)
-            if token.startswith("GPU-"):
-                hits = [r for r in parents if str(r.get("uuid", "")).startswith(token)]
-            elif token.startswith("MIG-"):
+            # Case-insensitive, as the nvidia-smi uuid matcher reads the same mask.
+            low = token.lower()
+            if low.startswith("gpu-"):
+                hits = [r for r in parents if str(r.get("uuid", "")).lower().startswith(low)]
+            elif low.startswith("mig-"):
                 # A MIG- entry names a slice row the probe lists under its parent.
                 hits = [
-                    r for r in rows if r.get("mig") and str(r.get("uuid", "")).startswith(token)
+                    r
+                    for r in rows
+                    if r.get("mig") and str(r.get("uuid", "")).lower().startswith(low)
                 ]
             elif prefix:
                 # CUDA reads an index strtoul-style: "1gpu2" is GPU 1.

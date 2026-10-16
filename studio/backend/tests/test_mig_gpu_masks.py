@@ -584,3 +584,32 @@ def test_a_reordered_uuid_mask_orders_the_pinned_child(host, monkeypatch):
     assert LlamaCppBackend._inherited_child_gpu_order([1, 2]) == [2, 1]
     assert LlamaCppBackend._pinned_child_visibility([2, 1]) == f"{GPU2},{GPU1}"
     assert LlamaCppBackend._inherited_child_gpu_order([2]) is None
+
+
+class TestMigListingHonoursTheStaticTtl:
+    @pytest.mark.parametrize("ttl, expected", [("10", [1, 1, 2]), ("0", [1, 2, 3])])
+    def test_the_configured_ttl_bounds_the_mig_set(self, host, monkeypatch, calls, ttl, expected):
+        now = [1000.0]
+        monkeypatch.setattr(nvidia.time, "monotonic", lambda: now[0])
+        monkeypatch.setenv("UNSLOTH_GPU_QUERY_STATIC_TTL", ttl)
+        host(TWO_SLICES, [38000], None)
+        seen = []
+        for step in (0, 5, 6):
+            now[0] += step
+            assert nvidia.get_mig_gpu_indices() == {0}
+            seen.append(calls["list"])
+        assert seen == expected
+
+
+@pytest.mark.parametrize(
+    "mask, expected, child",
+    [
+        (GPU0.lower(), (0, 9000, 9856), MIG0A),
+        (MIG0B.lower(), (0, 9500, 9856), MIG0B),
+    ],
+)
+def test_a_lowercase_uuid_reads_the_slice(host, monkeypatch, mask, expected, child):
+    host(MIXED, [39000, 30000, 40000], MIXED_NVML)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+    assert LlamaCppBackend._get_gpu_memory() == [expected]
+    assert LlamaCppBackend._pinned_child_visibility([0]) == child
