@@ -1310,6 +1310,10 @@ def load_ltx23_transformer(
         "local_files_only": local_files_only,
         **LTX_2_3_TRANSFORMER_CONFIG_OVERRIDES,
     }
+    from .diffusion_families import pinned_revision_kwargs
+
+    # The load plan's commit for that hub-id config (absent for an unpinned load).
+    kwargs.update(pinned_revision_kwargs(base_repo))
     if is_gguf:
         kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(compute_dtype = torch_dtype)
     elif device is not None:
