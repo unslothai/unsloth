@@ -735,12 +735,24 @@ def _shapes_qualify(query, key, value):
 _SELF_CHECK = {}
 
 
+def _measured_faster_on(device):
+    # Timed faster than SDPA on sm80+ only. Pre-Ampere (T4) also lacks the shared memory for the
+    # larger tiles and has no bf16, so it keeps SDPA without compiling or autotuning anything.
+    try:
+        return torch.cuda.get_device_capability(device)[0] >= 8
+    except Exception:
+        return False
+
+
 def _self_check(device, dtype):
     """One small fwd + bwd against SDPA math per (device, dtype) before first use."""
     key = (str(device), dtype)
     if key in _SELF_CHECK:
         return _SELF_CHECK[key]
     passed = False
+    if not _measured_faster_on(device):
+        _SELF_CHECK[key] = passed
+        return passed
     try:
         # A local generator: torch.manual_seed would reseed every CUDA device's RNG.
         gen = torch.Generator(device = device)
@@ -928,8 +940,10 @@ def patch_large_head_attention(model = None):
             }
         except Exception:
             targets = set()
-        for device, dtype in targets:
-            _self_check(device, dtype)
+        passed = [_self_check(device, dtype) for device, dtype in targets]
+        if passed and not any(passed):
+            # Every call would go back to SDPA, so leave it unwrapped.
+            return False
     try:
         from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
         current = ALL_ATTENTION_FUNCTIONS["sdpa"]

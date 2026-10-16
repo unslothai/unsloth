@@ -31,6 +31,7 @@ def _load():
 
 
 LH = _load()
+_SM80 = has_real_cuda() and torch.cuda.get_device_capability()[0] >= 8
 
 
 def _causal(S):
@@ -199,7 +200,7 @@ def test_kernel_matches_reference(S, heads, kind):
         assert err.mean() <= 0.01 * b.abs().mean() + 2e-3
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_router_engages_on_gemma4_global_call():
     calls, original = _sentinel()
     router = LH._make_router(original)
@@ -214,7 +215,7 @@ def test_router_engages_on_gemma4_global_call():
     assert router(_Module(), q, kv, kv, left_pad[None, None])[0] == "original"
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_router_defers_trainable_additive_mask():
     calls, original = _sentinel()
     router = LH._make_router(original)
@@ -234,7 +235,7 @@ def _cuda_dtype():
     return torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_self_check_leaves_global_rng_alone(monkeypatch):
     device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
     LH._SELF_CHECK.pop((str(device), dtype), None)
@@ -246,7 +247,7 @@ def test_self_check_leaves_global_rng_alone(monkeypatch):
     assert torch.equal(torch.cuda.get_rng_state(device), state)
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_self_check_under_inference_mode():
     device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
     LH._SELF_CHECK.pop((str(device), dtype), None)
@@ -254,7 +255,7 @@ def test_self_check_under_inference_mode():
         assert LH._self_check(device, dtype) is True
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_patch_self_checks_so_compiled_graphs_use_the_kernel(monkeypatch):
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
@@ -286,7 +287,7 @@ def test_patch_self_checks_so_compiled_graphs_use_the_kernel(monkeypatch):
     assert LH._SELF_CHECK.get((str(device), dtype)) is True
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_router_defers_autocast_dtype_change():
     calls, original = _sentinel()
     router = LH._make_router(original)
@@ -301,7 +302,7 @@ def test_router_defers_autocast_dtype_change():
     assert LH.LARGE_HEAD_ENGAGED["calls"] == before + 1 and len(calls) == 1
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_router_honours_math_sdpa_selection():
     from torch.nn.attention import SDPBackend, sdpa_kernel
 
@@ -398,6 +399,7 @@ def test_self_check_oom_falls_back_to_sdpa(monkeypatch):
         raise torch.cuda.OutOfMemoryError("CUDA out of memory.")
 
     monkeypatch.setattr(LH, "large_head_attention", oom)
+    monkeypatch.setattr(LH, "_measured_faster_on", lambda device: True)
     key = (str(torch.device("cpu")), torch.float32)
     monkeypatch.setitem(LH._SELF_CHECK, key, None)
     LH._SELF_CHECK.pop(key)
@@ -421,7 +423,7 @@ def test_autotune_of_a_new_shape_adds_no_flush_buffer():
     assert torch.cuda.max_memory_allocated() - base < 32 * 1024**2
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_router_falls_back_to_sdpa_on_kernel_oom(monkeypatch):
     calls, original = _sentinel()
     router = LH._make_router(original)
@@ -439,7 +441,7 @@ def test_router_falls_back_to_sdpa_on_kernel_oom(monkeypatch):
     assert LH.LARGE_HEAD_ENGAGED["fallback"] == before + 1 and len(calls) == 1
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_router_skips_the_mask_scan_when_it_cannot_use_the_result(monkeypatch):
     # The scan needs a host sync: inference masks would pay it on every layer, and a failed self
     # check makes the result unusable.
@@ -459,3 +461,38 @@ def test_router_skips_the_mask_scan_when_it_cannot_use_the_result(monkeypatch):
     monkeypatch.setitem(LH._SELF_CHECK, (str(device), dtype), False)
     assert router(_Module(), q, kv, kv, _causal(24).cuda()[None, None])[0] == "original"
     assert len(calls) == 2
+
+
+def test_pre_ampere_keeps_sdpa_without_compiling(monkeypatch):
+    def kernel(*args, **kwargs):
+        raise AssertionError("kernel compiled on sm75")
+
+    monkeypatch.setattr(LH, "large_head_attention", kernel)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device = None: (7, 5))
+    key = (str(torch.device("cpu")), torch.float16)
+    monkeypatch.setitem(LH._SELF_CHECK, key, None)
+    LH._SELF_CHECK.pop(key)
+    assert LH._self_check(torch.device("cpu"), torch.float16) is False
+
+
+def test_install_skipped_when_every_self_check_fails(monkeypatch):
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    class _Param:
+        is_cuda = True
+        device = torch.device("cuda", 0)
+        dtype = torch.float16
+
+    model = torch.nn.Linear(4, 4)
+    model.head_dim = 512
+    monkeypatch.setattr(model, "parameters", lambda: iter([_Param()]))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(LH, "_PATCHED", [False])
+    monkeypatch.setattr(LH, "_self_check", lambda device, dtype: False)
+    saved = ALL_ATTENTION_FUNCTIONS["sdpa"]
+    try:
+        assert LH.patch_large_head_attention(model) is False
+        assert ALL_ATTENTION_FUNCTIONS["sdpa"] is saved
+    finally:
+        ALL_ATTENTION_FUNCTIONS["sdpa"] = saved
