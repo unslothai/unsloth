@@ -92,6 +92,8 @@ def test_unset_request_resolves_to_the_hosted_scheme(name):
 @pytest.mark.parametrize("value", ["none", "off", "None", "OFF"])
 def test_none_still_pins_the_bf16_encoder(name, value):
     fam = _fam(name)
+    # Paired with the default: the same family resolves an unset request to a hosted scheme.
+    assert resolve_te_quant_request(None, fam.te_quant_auto)[0] is not None
     assert resolve_te_quant_request(value, fam.te_quant_auto) == (None, False)
     assert tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = None, target = CUDA_BF16) == {}
 

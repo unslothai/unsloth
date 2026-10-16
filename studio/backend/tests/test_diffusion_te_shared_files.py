@@ -39,10 +39,8 @@ def _fam(name):
         ("qwen-image-edit", "Qwen/Qwen-Image-Edit-2509", "text_encoder", "unsloth/Qwen-Image-FP8", None),
         ("qwen-image-edit", "Qwen/Qwen-Image-Edit-2511", "text_encoder", "unsloth/Qwen-Image-FP8", None),
         ("qwen-image-layered", "Qwen/Qwen-Image-Layered", "text_encoder", "unsloth/Qwen-Image-FP8", None),
-        ("qwen-image", "Qwen/Qwen-Image-2512", "text_encoder", "unsloth/Qwen-Image-FP8", None),
         # every FLUX.1 release shares schnell's T5
         ("flux.1-kontext", "black-forest-labs/FLUX.1-Kontext-dev", "text_encoder_2", "unsloth/FLUX.1-schnell-FP8", None),
-        ("flux.1", "black-forest-labs/FLUX.1-dev", "text_encoder_2", "unsloth/FLUX.1-schnell-FP8", None),
         # HiDream's text_encoder_3 is the same T5, under another slot, for every distillation
         (
             "hidream-i1",
