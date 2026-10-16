@@ -208,3 +208,54 @@ def test_a_named_projector_device_after_offload_off_is_unpriced(
     assert not seen, seen
     assert cmd[cmd.index("--ubatch-size") + 1] == "2048", cmd
     assert not _has_moe_cache(cmd), cmd
+
+
+# --- the cache's RAM admission prices the same margin ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    "launch, extra_args, env",
+    [
+        # 20 GiB model, 15 GiB experts, 20,000 MiB free, 26 GiB RAM: entry 0 is 0.
+        (dict(ram_gib = 26), ["--fit-target", "0"], {}),
+        (dict(ram_gib = 26), ["--fit-target", "0,16384"], {}),
+        (dict(ram_gib = 26), [], {"LLAMA_ARG_FIT_TARGET": "0,16384"}),
+        # 8 GiB model, 4 GiB experts, 13,000 MiB free, 14 GiB RAM: entry 0 is 1024.
+        (
+            dict(ram_gib = 14, size_gib = 8, expert_gib = 4, memory = [(0, 13_000, 16_000)]),
+            ["--fit-target", "1024"],
+            {},
+        ),
+        (
+            dict(ram_gib = 14, size_gib = 8, expert_gib = 4, memory = [(0, 13_000, 16_000)]),
+            ["--fit-target", "1024,4096"],
+            {},
+        ),
+        (
+            dict(ram_gib = 14, size_gib = 8, expert_gib = 4, memory = [(0, 13_000, 16_000)]),
+            [],
+            {"LLAMA_ARG_FIT_TARGET": "1024,4096"},
+        ),
+    ],
+    ids = [
+        "single_0",
+        "list_0_16384",
+        "env_list_0_16384",
+        "single_1024",
+        "list_1024_4096",
+        "env_list_1024_4096",
+    ],
+)
+def test_the_cache_admission_charges_the_selected_cards_entry(
+    tmp_path, _moe_cache_host, monkeypatch, launch, extra_args, env
+):
+    """One device in the child: the fitter keeps only entry 0 free (common/fit.cpp), the
+    margin the share already priced. The RAM admission charged the largest entry, the
+    16384 / 4096 MiB of a device that does not exist, and rejected a cache that the
+    equivalent single value admits."""
+    _set_env(monkeypatch, env)
+    seen = _spy_shares(monkeypatch)
+    _backend, cmd = _cache_launch(tmp_path, extra_args = extra_args, **launch)
+
+    assert seen and seen[-1] is not None, seen
+    assert _has_moe_cache(cmd), cmd

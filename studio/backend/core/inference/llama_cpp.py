@@ -6724,6 +6724,28 @@ def _extra_args_main_device(extra_args: Optional[Iterable[str]]) -> Optional[str
     return _extra_args_device(extra_args, {"--device", "-dev"})
 
 
+def _child_has_one_model_device(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]
+) -> bool:
+    """Whether a child on one selected card has that card as its only model device.
+
+    A per-device ``--fit-target`` list is applied positionally (``fit_params_target[i]``,
+    common/arg.cpp) over the child's model devices: RPC servers first, then GPUs, or the
+    ``--device`` list as given (src/llama.cpp). With one model device only ``margins_s[0]``
+    is read (common/fit.cpp), so entry 0 is the card's; with an RPC server or a longer
+    ``--device`` list, which entry the card gets is unknown. The caller checks the card
+    count; this reads the pass-through argv (last wins) and its env twins."""
+    env = env or {}
+    dev_list = _extra_args_main_device(extra_args)
+    if dev_list is None:
+        dev_list = env.get("LLAMA_ARG_DEVICE")
+    return not (
+        str(_extra_args_device(extra_args, {"--rpc"}) or "").strip()
+        or str(env.get("LLAMA_ARG_RPC") or "").strip()
+        or len([d for d in str(dev_list or "").split(",") if d.strip()]) > 1
+    )
+
+
 def _without_subsequence(tokens: List[str], run: List[str]) -> List[str]:
     """``tokens`` with the first contiguous occurrence of ``run`` removed.
 
@@ -28978,20 +29000,9 @@ class LlamaCppBackend:
                             fit_target_delta_mib = _fit_target_delta_mib,
                             supports_fit_target = _supports_fit_target,
                         )
-                        # A per-device list is applied positionally (fit_params_target[i],
-                        # common/arg.cpp) over the child's model devices: RPC servers first,
-                        # then GPUs, or the --device list as given (src/llama.cpp). With one
-                        # model device only margins_s[0] is read (common/fit.cpp), so entry 0
-                        # is this card's; with an RPC server or a longer --device list, which
-                        # entry this card gets is unknown.
-                        _dev_list = _extra_args_main_device(_child_extras)
-                        if _dev_list is None:
-                            _dev_list = _child_env.get("LLAMA_ARG_DEVICE")
-                        _one_model_device = not (
-                            str(_extra_args_device(_child_extras, {"--rpc"}) or "").strip()
-                            or str(_child_env.get("LLAMA_ARG_RPC") or "").strip()
-                            or len([d for d in str(_dev_list or "").split(",") if d.strip()]) > 1
-                        )
+                        # A per-device list: entry 0 is this card's only when it is the
+                        # child's one model device (_child_has_one_model_device).
+                        _one_model_device = _child_has_one_model_device(_child_extras, _child_env)
                         if fit_target_is_per_device(_child_extras or (), None):
                             if not _one_model_device:
                                 return None
@@ -29371,6 +29382,19 @@ class LlamaCppBackend:
                             )
                         )
                     )
+                    # The same margin the resident share prices: on one card that is the
+                    # child's one model device llama.cpp reads only entry 0 of a
+                    # per-device list (_child_has_one_model_device); otherwise any entry
+                    # may be a credited card's, so the largest is charged.
+                    _fit_margin_reader = (
+                        fit_target_first_device_margin_in
+                        if (
+                            len([g for g in gpus if gpu_indices is None or g[0] in gpu_indices])
+                            == 1
+                            and _child_has_one_model_device(_fit_extras, _fit_env)
+                        )
+                        else fit_target_margin_in
+                    )
                     _fit_margin_mib = (
                         max(
                             self._fit_target_margin_mib(
@@ -29380,7 +29404,7 @@ class LlamaCppBackend:
                                 and bool(server_caps.get("supports_fit_target")),
                                 floor_mib = _metal_fit_target_floor_mib,
                             ),
-                            fit_target_margin_in(_fit_extras, _fit_env) or 0.0,
+                            _fit_margin_reader(_fit_extras, _fit_env) or 0.0,
                         )
                         if _fitter_runs
                         else 0.0
