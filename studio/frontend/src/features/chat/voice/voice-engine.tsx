@@ -17,7 +17,11 @@
 
 import { resetPromptQueuesForThread } from "@/components/assistant-ui/thread";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
-import { ORB_IDLE_GRADIENT, orbConfig } from "@/components/assistant-ui/voice-orb";
+import {
+  ORB_IDLE_GRADIENT,
+  orbConfig,
+  VoiceOrb,
+} from "@/components/assistant-ui/voice-orb";
 import { StudioVoiceLoopAdapter } from "@/features/chat/adapters/studio-voice-loop-adapter";
 import { useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
@@ -25,6 +29,7 @@ import { deriveOrbState } from "@/features/chat/voice/orb-state";
 import {
   getVoiceMode,
   registerVoiceBargeIn,
+  registerVoiceListen,
   registerVoicePlayback,
   registerVoiceResume,
   registerVoiceSubmit,
@@ -60,19 +65,17 @@ const VOICE_COALESCE_MAX_RETRIES = 15;
 // past this (synthesis genuinely behind playback) shows lilac.
 const SYNTH_GAP_MS = 350;
 
-/**
- * Whether the plus menu may offer Voice at all. Listening is the gate: the loop's
- * adapter needs getUserMedia (secure contexts only) and Web Audio. Speaking is not
- * gated: voice mode always has an audio.cpp voice picked (Kokoro by default).
- */
-export function useVoiceAvailable(): boolean {
-  // Model transcription only. The loop used to follow the Dictate button's
-  // dictationEngine setting and run on the browser's SpeechRecognition when that
-  // said "browser" -- which meant voice mode silently depended on an online
-  // Google endpoint, and did not exist at all in the desktop WebView. It now
-  // always runs a local transcription model, so this is the only thing to check.
-  return StudioVoiceLoopAdapter.isSupported();
-}
+// Re-exported so voice mode is one lazy entry (loadVoiceMode).
+export { VoiceOrb };
+export { SttModelSelector } from "@/components/assistant-ui/stt-model-selector";
+export { VoiceModelSelector } from "@/components/assistant-ui/voice-model-selector";
+export { loadVoice, unloadVoice, voiceServing } from "@/features/chat/voice/voice-slot";
+
+// The dictation dispatcher reaches the loop's adapter through the bridge, so the
+// adapter loads with voice mode instead of at startup.
+registerVoiceListen(() =>
+  StudioVoiceLoopAdapter.isSupported() ? new StudioVoiceLoopAdapter().listen() : null,
+);
 
 export const VoiceEngine: FC = () => {
   const aui = useAui();

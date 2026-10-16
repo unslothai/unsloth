@@ -6,6 +6,7 @@ import {
   requestVoiceBargeIn,
   requestVoiceResume,
   requestVoiceSubmit,
+  voiceLoopSupported,
 } from "@/features/chat/voice/voice-loop-bridge";
 import { createBargeGate, stepBargeGate } from "@/features/chat/voice/barge-gate";
 // The store directly, not the feature barrel: the barrel pulls in the runtime
@@ -117,11 +118,7 @@ function isHallucinatedTranscript(text: string): boolean {
 
 export class StudioVoiceLoopAdapter implements DictationAdapter {
   static isSupported(): boolean {
-    return (
-      typeof window !== "undefined" &&
-      navigator.mediaDevices?.getUserMedia !== undefined &&
-      getAudioContextCtor() !== undefined
-    );
+    return voiceLoopSupported();
   }
 
   listen(): DictationAdapter.Session {

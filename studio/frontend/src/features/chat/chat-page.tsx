@@ -27,20 +27,14 @@ import {
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import {
   getVoiceMode,
+  loadVoiceMode,
   requestVoiceThreadReset,
 } from "@/features/chat/voice/voice-loop-bridge";
-import { VoiceModelSelector } from "@/components/assistant-ui/voice-model-selector";
-import { SttModelSelector } from "@/components/assistant-ui/stt-model-selector";
 import {
   STT_MODELS,
   sttModelName,
 } from "@/features/settings/stores/stt-model-catalog";
 import { VOICE_DEFAULT_STT_MODEL } from "@/features/chat/voice/voice-models";
-import {
-  loadVoice,
-  unloadVoice,
-  voiceServing,
-} from "@/features/chat/voice/voice-slot";
 import { usePlatformStore } from "@/config/env";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
@@ -337,6 +331,17 @@ const FullViewChatBar = lazy(() =>
 const FullViewChatButton = lazy(() =>
   import("@/features/browser/full-view-chat").then((module) => ({
     default: module.FullViewChatButton,
+  })),
+);
+// Voice mode's header pickers only show once it is on.
+const SttModelSelector = lazy(() =>
+  loadVoiceMode().then((module) => ({
+    default: module.SttModelSelector,
+  })),
+);
+const VoiceModelSelector = lazy(() =>
+  loadVoiceMode().then((module) => ({
+    default: module.VoiceModelSelector,
   })),
 );
 
@@ -3016,6 +3021,7 @@ export function ChatPage({
       const store = useChatRuntimeStore.getState();
       const id = store.selectedVoiceModelId;
       try {
+        const { loadVoice, unloadVoice, voiceServing } = await loadVoiceMode();
         if (await voiceServing(id)) {
           loadedVoiceRef.current = id;
           store.setVoiceSlotLoaded(true);
@@ -3062,7 +3068,11 @@ export function ChatPage({
     const id = loadedVoiceRef.current;
     loadedVoiceRef.current = null;
     useChatRuntimeStore.getState().setVoiceSlotLoaded(false);
-    if (id) void unloadVoice(id).catch(() => {});
+    if (id) {
+      void loadVoiceMode()
+        .then(({ unloadVoice }) => unloadVoice(id))
+        .catch(() => {});
+    }
   }, []);
 
   // Loaded once voice mode starts (not while it is only being configured), and
@@ -4918,26 +4928,28 @@ export function ChatPage({
               />
             )}
             {/* Listen, then speak: the pipeline's order. */}
-            {view.mode !== "compare" && voiceMode !== "off" && (
-              <SttModelSelector
-                models={sttModels}
-                value={selectedSttModelId}
-                onValueChange={setSelectedSttModelId}
-                disabled={!hasActiveModel}
-                ready={true}
-                className="!h-8.5"
-              />
-            )}
-            {view.mode !== "compare" && voiceMode !== "off" && (
-              <VoiceModelSelector
-                value={selectedVoiceModelId}
-                onValueChange={setSelectedVoiceModelId}
-                loading={voiceSlotLoading}
-                loaded={voiceSlotLoaded}
-                disabled={!hasActiveModel}
-                className="!h-8.5"
-              />
-            )}
+            <Suspense fallback={null}>
+              {view.mode !== "compare" && voiceMode !== "off" && (
+                <SttModelSelector
+                  models={sttModels}
+                  value={selectedSttModelId}
+                  onValueChange={setSelectedSttModelId}
+                  disabled={!hasActiveModel}
+                  ready={true}
+                  className="!h-8.5"
+                />
+              )}
+              {view.mode !== "compare" && voiceMode !== "off" && (
+                <VoiceModelSelector
+                  value={selectedVoiceModelId}
+                  onValueChange={setSelectedVoiceModelId}
+                  loading={voiceSlotLoading}
+                  loaded={voiceSlotLoaded}
+                  disabled={!hasActiveModel}
+                  className="!h-8.5"
+                />
+              )}
+            </Suspense>
             {view.mode !== "compare" && currentProjectId && (
               <nav
                 aria-label="Project location"

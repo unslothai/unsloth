@@ -24,8 +24,7 @@ import {
   type StudioDictationSession,
   StudioWebSpeechDictationAdapter,
 } from "./studio-web-speech-dictation-adapter";
-import { StudioVoiceLoopAdapter } from "./studio-voice-loop-adapter";
-import { getVoiceMode } from "../voice/voice-loop-bridge";
+import { getVoiceMode, startVoiceListen } from "../voice/voice-loop-bridge";
 
 // one live session lets Escape cancel because assistant-ui only exposes stop, which transcribes.
 let activeSession: StudioDictationSession | null = null;
@@ -108,9 +107,8 @@ export class StudioDictationAdapter implements DictationAdapter {
     // browser engine of its own -- it picks a transcription model in its own
     // header picker -- so it always lands here.
     if (getVoiceMode() === "active") {
-      if (StudioVoiceLoopAdapter.isSupported()) {
-        return new StudioVoiceLoopAdapter().listen();
-      }
+      const session = startVoiceListen();
+      if (session) return session;
     }
     if (usesRecordedAudio(dictationEngine)) {
       if (dictationEngine === "custom" && !customSttConfigured()) {

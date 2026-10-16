@@ -16,6 +16,8 @@
  * by handing one side a partially initialised module.
  */
 
+import type { DictationAdapter } from "@assistant-ui/react";
+
 /** Whether the conversation loop is off, being configured, or running. */
 export type VoiceMode = "off" | "configuring" | "active";
 
@@ -30,6 +32,38 @@ let voiceResume: (() => void) | null = null;
 let voiceBargeIn: (() => void) | null = null;
 let voiceSubmit: (() => void) | null = null;
 let voicePlayback: (() => boolean) | null = null;
+let voiceListen: (() => DictationAdapter.Session | null) | null = null;
+
+/**
+ * The loop's module, loaded on use so voice mode stays off the first screen.
+ * Everything voice loads through this one entry: a second would split shared
+ * modules into extra startup chunks.
+ */
+export const loadVoiceMode = () => import("./voice-engine");
+
+/** What the loop's adapter needs to listen: getUserMedia (secure contexts only) and Web Audio. */
+export function voiceLoopSupported(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    navigator.mediaDevices?.getUserMedia !== undefined &&
+    (window.AudioContext ??
+      (window as unknown as { webkitAudioContext?: unknown })
+        .webkitAudioContext) !== undefined
+  );
+}
+
+/**
+ * Whether the plus menu may offer Voice at all. Listening is the gate. Speaking is
+ * not gated: voice mode always has an audio.cpp voice picked (Kokoro by default).
+ */
+export function useVoiceAvailable(): boolean {
+  // Model transcription only. The loop used to follow the Dictate button's
+  // dictationEngine setting and run on the browser's SpeechRecognition when that
+  // said "browser" -- which meant voice mode silently depended on an online
+  // Google endpoint, and did not exist at all in the desktop WebView. It now
+  // always runs a local transcription model, so this is the only thing to check.
+  return voiceLoopSupported();
+}
 
 /** The loop's current mode. Safe to call from anywhere, including render. */
 export function getVoiceMode(): VoiceMode {
@@ -125,4 +159,16 @@ export function registerVoicePlayback(fn: (() => boolean) | null): void {
 /** Whether a reply is being spoken; the adapter listens only for barge-in then. */
 export function isVoicePlaybackActive(): boolean {
   return voicePlayback?.() ?? false;
+}
+
+/** Set once by the loop's module as it loads, which voice mode needs before it can go active. */
+export function registerVoiceListen(
+  fn: () => DictationAdapter.Session | null,
+): void {
+  voiceListen = fn;
+}
+
+/** The loop's own dictation session; null before its module loads or where it can't listen. */
+export function startVoiceListen(): DictationAdapter.Session | null {
+  return voiceListen?.() ?? null;
 }
