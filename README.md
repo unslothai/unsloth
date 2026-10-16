@@ -174,9 +174,8 @@ irm https://unsloth.ai/install.ps1 | iex
 ```
 
 #### Homebrew:
-```bash
-brew install --cask unsloth
-```
+The Homebrew cask installs **Unsloth Desktop**. For the `unsloth studio`
+command-line workflow, use the manual installer above.
 
 #### Docker
 Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth```. On Linux and Mac, set up GPU access once with
