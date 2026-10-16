@@ -6441,7 +6441,9 @@ class TestStrixRocm71Override:
             r"^_infer_amd_gfx_arch_from_gpu_name\(\) \{\n.*?\n\}\n", source, re.S | re.M
         )
         scan = re.search(
-            r"^    if command -v lspci[^\n]*\n.*?\nEOF\n    fi\n.*?    return 1\n", source, re.S | re.M
+            r"^    if command -v lspci[^\n]*\n.*?\nEOF\n    fi\n.*?    return 1\n",
+            source,
+            re.S | re.M,
         )
         assert name_fn and scan, "could not extract the lspci scan block"
         cases = (

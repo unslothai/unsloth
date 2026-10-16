@@ -395,7 +395,9 @@ def test_python_inferred_strix_defers_to_a_generic_only_dgpu():
     assert "download.pytorch.org/whl/rocm7.1" in calls and _STRIX_INDEX not in calls, calls
 
 
-@pytest.mark.parametrize("lspci,expected", [(_RX7900, "gfx1100"), (_KRACKAN2_TEXT[1].strip(), "gfx1153")])
+@pytest.mark.parametrize(
+    "lspci,expected", [(_RX7900, "gfx1100"), (_KRACKAN2_TEXT[1].strip(), "gfx1153")]
+)
 def test_python_krackan2_cpu_defers_to_a_discrete_peer(lspci, expected, monkeypatch):
     monkeypatch.setattr(stack_mod, "_is_wsl", lambda: False)
     monkeypatch.setattr(stack_mod, "_linux_amd_display_device_present", lambda: True)
@@ -411,14 +413,20 @@ def test_python_krackan2_cpu_defers_to_a_discrete_peer(lspci, expected, monkeypa
 @_POSIX
 @pytest.mark.parametrize(
     "lspci,expected",
-    [(_RX7900, "gfx1100"), ("c4:00.0 VGA compatible controller [0300]: " + _KRACKAN2_TEXT[1].strip(), "gfx1153"), ("", "gfx1153")],
+    [
+        (_RX7900, "gfx1100"),
+        ("c4:00.0 VGA compatible controller [0300]: " + _KRACKAN2_TEXT[1].strip(), "gfx1153"),
+        ("", "gfx1153"),
+    ],
 )
 def test_install_sh_krackan2_cpu_defers_to_a_discrete_peer(tmp_path, lspci, expected):
     assert _sh_infer(tmp_path, _KRACKAN2_TEXT[0], lspci = lspci)[0] == expected
 
 
 @_POSIX
-@pytest.mark.parametrize("arches,vulkan", [("gfx1153", False), ("gfx1010", True), ("gfx1010\ngfx1153", True)])
+@pytest.mark.parametrize(
+    "arches,vulkan", [("gfx1153", False), ("gfx1010", True), ("gfx1010\ngfx1153", True)]
+)
 def test_install_sh_gfx1153_keeps_its_hip_guidance(arches, vulkan):
     url, err = guards._run_sh_get_torch_index_url(arches, rocm_tag = "rocm7.2")
     assert url.endswith("/cpu"), (url, err)
@@ -428,10 +436,9 @@ def test_install_sh_gfx1153_keeps_its_hip_guidance(arches, vulkan):
 
 def test_setup_sh_gfx1153_keeps_its_hip_guidance():
     source = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
-    block = source[source.index('step "gpu" "AMD GPU detected ($_setup_unsup_gfx)'):]
-    block = block[: block.index("elif [ -n \"$_setup_mkt\" ]")]
+    block = source[source.index('step "gpu" "AMD GPU detected ($_setup_unsup_gfx)') :]
+    block = block[: block.index('elif [ -n "$_setup_mkt" ]')]
     assert 'if [ "$_setup_unsup_gfx" = gfx1153 ]' in block and "llama.cpp HIP build" in block
-
 
 
 def _setup_unsupported_lookup(gpu_name, lspci_lines, tmp_path):
