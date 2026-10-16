@@ -5793,8 +5793,9 @@ const Composer: FC<{
             audioUploadBusy={audioUpload.busy}
           />
           {/* While dictating, show only the "+"; hide the pill and tool toggles
-              so the waveform is the sole status indicator. */}
-          {!isDictating ? (
+              so the waveform is the sole status indicator. Voice mode keeps
+              dictation open between turns, so it keeps the pills. */}
+          {!showDictationUi ? (
             <>
               {/* Permission-level pill: always visible, opens the level dropdown. */}
               <PermissionModeComposerPill side={effectiveMenuSide} />

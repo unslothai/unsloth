@@ -24,10 +24,10 @@ test("the reply leaking into the mic never cuts it off", () => {
 test("a held burst cuts in, a short one does not", () => {
   const short = createBargeGate();
   feed(short, 0.005, 20);
-  assert.equal(feed(short, 0.2, 2), false);
+  assert.equal(feed(short, 0.2, 5), false);
   const held = createBargeGate();
   feed(held, 0.005, 20);
-  assert.equal(feed(held, 0.2, 3), true);
+  assert.equal(feed(held, 0.2, 6), true);
 });
 
 test("a loud leak raises the bar above the fixed minimum", () => {
@@ -35,5 +35,20 @@ test("a loud leak raises the bar above the fixed minimum", () => {
   feed(gate, 0.04, 100);
   // Over the 0.045 floor, but not three times the measured leak.
   assert.equal(feed(gate, 0.08, 10), false);
-  assert.equal(feed(gate, 0.2, 3), true);
+  assert.equal(feed(gate, 0.2, 6), true);
+});
+
+test("a cough-length burst does not cut in", () => {
+  const gate = createBargeGate();
+  feed(gate, 0.005, 20);
+  // ~340 ms loud then quiet: the shape of a cough, not of someone talking.
+  assert.equal(feed(gate, 0.3, 4), false);
+  assert.equal(feed(gate, 0.005, 5), false);
+});
+
+test("a shorter hold applies when a detector confirms the burst afterwards", () => {
+  const gate = createBargeGate(250);
+  let fired = false;
+  for (let i = 0; i < 3; i++) fired = stepBargeGate(gate, 0.2, 93);
+  assert.equal(fired, true);
 });

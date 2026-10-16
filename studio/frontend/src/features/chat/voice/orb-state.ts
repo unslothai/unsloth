@@ -18,6 +18,7 @@ export type VoiceOrbState =
   | "waiting"
   | "listening"
   | "transcribing"
+  | "thinking"
   | "generating"
   | "synthesizing"
   | "speaking"
@@ -39,6 +40,8 @@ export type VoiceOrbInputs = {
   voiceTranscribing: boolean;
   /** The model is generating a reply. */
   isThreadRunning: boolean;
+  /** The reply so far is reasoning only: the model is thinking, no answer text yet. */
+  isReasoning: boolean;
   /** A TTS session is open, whether or not a clip is playing this instant. */
   isSpeaking: boolean;
 };
@@ -81,6 +84,9 @@ export function deriveOrbState(inputs: VoiceOrbInputs): VoiceOrbDecision {
   // Nothing playing yet, so name the real phase rather than a vague "thinking".
   // Transcribing precedes generation within a turn, so it is checked first.
   if (inputs.voiceTranscribing) return set("transcribing");
+  // A reasoning model spends most of a slow turn here, so say so instead of
+  // lumping it in with the answer being written.
+  if (inputs.isThreadRunning && inputs.isReasoning) return set("thinking");
   if (inputs.isThreadRunning) return set("generating");
   if (inputs.isSpeaking) return { kind: "hold" };
   return set("listening");

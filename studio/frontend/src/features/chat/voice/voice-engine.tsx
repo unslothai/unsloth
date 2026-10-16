@@ -22,12 +22,25 @@ import {
   orbConfig,
   VoiceOrb,
 } from "@/components/assistant-ui/voice-orb";
-import { StudioVoiceLoopAdapter } from "@/features/chat/adapters/studio-voice-loop-adapter";
+import {
+  StudioVoiceLoopAdapter,
+  clearHeldTurn,
+} from "@/features/chat/adapters/studio-voice-loop-adapter";
 import { useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
+import {
+  fillerDelayMs,
+  pickStage2,
+  predictFiller,
+  STAGE2_AFTER_MS,
+  setPendingFiller,
+  toolKindOf,
+  type ToolKind,
+} from "@/features/chat/voice/thinking-filler";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { deriveOrbState } from "@/features/chat/voice/orb-state";
 import {
   getVoiceMode,
+  registerVoiceBargeAbort,
   registerVoiceBargeIn,
   registerVoiceListen,
   registerVoicePlayback,
@@ -69,6 +82,7 @@ const SYNTH_GAP_MS = 350;
 export { VoiceOrb };
 export { SttModelSelector } from "@/components/assistant-ui/stt-model-selector";
 export { VoiceModelSelector } from "@/components/assistant-ui/voice-model-selector";
+export { VadModelSelector } from "@/components/assistant-ui/vad-model-selector";
 export { loadVoice, unloadVoice, voiceServing } from "@/features/chat/voice/voice-slot";
 
 // The dictation dispatcher reaches the loop's adapter through the bridge, so the
@@ -183,8 +197,19 @@ export const VoiceEngine: FC = () => {
     attempt(1);
   }, []);
 
-  const { isSpeaking, isPlaying, speak, beginStream, feedText, endStream, stop, primeAudio } =
-    useTtsPlayer(resumeListen);
+  const {
+    isSpeaking,
+    isPlaying,
+    speak,
+    beginStream,
+    feedText,
+    endStream,
+    sayAside,
+    stop,
+    primeAudio,
+    pausePlayback,
+    resumePlayback,
+  } = useTtsPlayer(resumeListen);
   isSpeakingRef.current = isSpeaking;
   isPlayingRef.current = isPlaying;
   useEffect(() => {
@@ -206,9 +231,58 @@ export const VoiceEngine: FC = () => {
   const streamBegunRef = useRef(false);
   // Interval that feeds the growing assistant reply into the TTS stream.
   const streamPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sayAsideRef = useRef(sayAside);
+  sayAsideRef.current = sayAside;
+  // Thinking filler for the run in flight: decided at submit (the model is told
+  // about it), spoken after a short delay once the run starts, then at most one
+  // more line if the model is still thinking. Text is held back until the filler
+  // has been queued so it is always the first thing heard.
+  const fillerRef = useRef<{
+    phrase: string;
+    timer: ReturnType<typeof setTimeout> | null;
+    queued: boolean;
+    spokenAt: number | null;
+    stage2Done: boolean;
+  } | null>(null);
+  const clearFiller = useCallback(() => {
+    const f = fillerRef.current;
+    if (f?.timer) clearTimeout(f.timer);
+    fillerRef.current = null;
+  }, []);
+  const latestAssistantToolKinds = useCallback((): ToolKind[] => {
+    const messages = auiRef.current.thread().getState().messages;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.role !== "assistant") continue;
+      const kinds: ToolKind[] = [];
+      for (const part of msg.content as ReadonlyArray<{ type: string; toolName?: string }>) {
+        if (part.type === "tool-call") kinds.push(toolKindOf(part.toolName ?? ""));
+      }
+      return kinds;
+    }
+    return [];
+  }, []);
 
   // Latest assistant reply text (concatenated text parts of the newest assistant
   // message). Used both to stream during generation and to flush on completion.
+  // Whether the newest assistant message is still only reasoning: a reasoning
+  // part exists and no text part has content yet. Drives the orb's "thinking".
+  const latestAssistantIsReasoning = useCallback((): boolean => {
+    const messages = auiRef.current.thread().getState().messages;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.role !== "assistant") continue;
+      let reasoning = false;
+      for (const part of msg.content as Array<{ type: string; text?: string }>) {
+        if (part.type === "text" && part.text) return false;
+        if (part.type === "reasoning") reasoning = true;
+      }
+      return reasoning;
+    }
+    return false;
+  }, []);
+  const [isReasoning, setIsReasoning] = useState(false);
+
   const latestAssistantText = useCallback((): string => {
     const messages = auiRef.current.thread().getState().messages;
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -238,6 +312,24 @@ export const VoiceEngine: FC = () => {
       // re-arm; resumeListen defers that until the reply has finished speaking.
       resumeListen();
       return;
+    }
+    // Decide the thinking filler for this turn now, so the run's request can tell
+    // the model what was said. A reply that ended in a question wants a short
+    // answer, so no filler there.
+    const prevReply = latestAssistantText().trimEnd();
+    const decision = predictFiller(text, {
+      prevAssistantAskedQuestion: prevReply.endsWith("?"),
+    });
+    setPendingFiller(decision);
+    clearFiller();
+    if (decision.say) {
+      fillerRef.current = {
+        phrase: decision.phrase,
+        timer: null,
+        queued: false,
+        spokenAt: null,
+        stage2Done: false,
+      };
     }
     // Barge-in: the instant the user speaks, cut the audio and the in-flight run.
     // This utterance supersedes whatever the model was saying. Cover the tail
@@ -340,7 +432,7 @@ export const VoiceEngine: FC = () => {
       () => fireCoalescedRun(0),
       VOICE_COALESCE_MS,
     );
-  }, [resumeListen, stop]);
+  }, [resumeListen, stop, latestAssistantText, clearFiller]);
 
   // Sync derived orb state to the store so VoiceOrb can read it without prop-drilling.
   // The priority order itself lives in deriveOrbState, which is pure and tested.
@@ -363,6 +455,7 @@ export const VoiceEngine: FC = () => {
       isPlaying,
       voiceTranscribing,
       isThreadRunning,
+      isReasoning,
       isSpeaking,
     });
     if (decision.kind === "set") {
@@ -387,7 +480,7 @@ export const VoiceEngine: FC = () => {
         setVoiceOrbState("synthesizing");
       }
     }, SYNTH_GAP_MS);
-  }, [voiceMode, hasChatModel, voiceSlotLoading, voiceHearing, voiceTranscribing, isThreadRunning, isSpeaking, isPlaying, setVoiceOrbState]);
+  }, [voiceMode, hasChatModel, voiceSlotLoading, voiceHearing, voiceTranscribing, isThreadRunning, isReasoning, isSpeaking, isPlaying, setVoiceOrbState]);
 
   // The voice finishing its load is what opens the mic when activateLoop held it shut.
   const wasSlotLoadingRef = useRef(voiceSlotLoading);
@@ -474,9 +567,37 @@ export const VoiceEngine: FC = () => {
         // on the first complete sentence, not after the whole reply.
         beginStreamRef.current();
         streamBegunRef.current = true;
+        const filler = fillerRef.current;
+        if (filler && !filler.queued && !filler.timer) {
+          filler.timer = setTimeout(() => {
+            const f = fillerRef.current;
+            if (!f || f !== filler) return;
+            f.timer = null;
+            f.queued = true;
+            f.spokenAt = Date.now();
+            sayAsideRef.current(f.phrase);
+          }, fillerDelayMs());
+        }
         if (streamPollRef.current) clearInterval(streamPollRef.current);
         streamPollRef.current = setInterval(() => {
-          feedTextRef.current(latestAssistantText());
+          const f = fillerRef.current;
+          const text = latestAssistantText();
+          if (f && !f.queued) {
+            // Hold the reply until the filler is in the queue.
+          } else {
+            feedTextRef.current(text);
+          }
+          if (
+            f?.queued &&
+            !f.stage2Done &&
+            f.spokenAt !== null &&
+            !text &&
+            Date.now() - f.spokenAt >= STAGE2_AFTER_MS
+          ) {
+            f.stage2Done = true;
+            sayAsideRef.current(pickStage2(latestAssistantToolKinds()));
+          }
+          setIsReasoning(latestAssistantIsReasoning());
         }, 150);
         // The session starting is what reopens the mic, in barge-in mode (below).
       }
@@ -484,6 +605,7 @@ export const VoiceEngine: FC = () => {
     }
     if (!_prevRunning) return;
     _prevRunning = false;
+    setIsReasoning(false);
     const streamBegun = streamBegunRef.current;
     streamBegunRef.current = false;
 
@@ -491,6 +613,11 @@ export const VoiceEngine: FC = () => {
       clearInterval(streamPollRef.current);
       streamPollRef.current = null;
     }
+    // A reply that landed inside the delay: the model was told about the filler,
+    // so it still goes first, just without the wait.
+    const fillerAtEnd = fillerRef.current;
+    if (fillerAtEnd && !fillerAtEnd.queued) sayAsideRef.current(fillerAtEnd.phrase);
+    clearFiller();
     if (voiceModeRef.current !== "active") return;
     // Note: no isSpeaking guard here. If a stale utterance is still speaking when
     // a newer reply lands, the newest wins — beginStream above supersedes via
@@ -511,7 +638,14 @@ export const VoiceEngine: FC = () => {
       // speak() ends the turn through onPlaybackEnd -> resumeListen like a stream.
       speakRef.current(text);
     }
-  }, [isThreadRunning, resumeListen, latestAssistantText]);
+  }, [
+    isThreadRunning,
+    resumeListen,
+    latestAssistantText,
+    latestAssistantIsReasoning,
+    latestAssistantToolKinds,
+    clearFiller,
+  ]);
 
   // Barge-in: while the reply is being spoken the mic stays open. The adapter sees
   // playback (registerVoicePlayback) and only listens for the user cutting in over
@@ -565,12 +699,15 @@ export const VoiceEngine: FC = () => {
         clearTimeout(voiceCoalesceTimerRef.current);
         voiceCoalesceTimerRef.current = null;
       }
+      clearHeldTurn();
+      clearFiller();
+      setPendingFiller(null);
       stop();
       const composer = auiRef.current.composer();
       if (composer.getState().dictation) composer.stopDictation();
     }
     // "configuring": dropdown appears via store; mic stays off.
-  }, [stop, primeAudio]);
+  }, [stop, primeAudio, clearFiller]);
 
   // Switching threads carries the loop over instead of ending it: cut the old
   // thread's reply and mic, drop its pending timers, then re-arm on the new one.
@@ -587,13 +724,16 @@ export const VoiceEngine: FC = () => {
       streamPollRef.current = null;
     }
     streamBegunRef.current = false;
+    clearHeldTurn();
+    clearFiller();
+    setPendingFiller(null);
     stop();
     const composer = auiRef.current.composer();
     if (composer.getState().dictation) composer.stopDictation();
     // Only "active" re-arms. In "configuring" the mic was never open, and the
     // re-arm would start a loop the user has not started yet.
     if (voiceModeRef.current === "active") resumeListen();
-  }, [stop, resumeListen]);
+  }, [stop, resumeListen, clearFiller]);
 
   useEffect(() => {
     registerVoiceThreadReset(threadReset);
@@ -645,28 +785,24 @@ export const VoiceEngine: FC = () => {
     };
   }, [resumeListen]);
 
-  // The adapter owns end-of-utterance, so it also raises the two events that turn
-  // one into a conversation turn: cut the reply we are talking over, and send what
-  // it just committed to the composer.
+  // The adapter owns end-of-utterance. A burst over the reply only holds the audio:
+  // the run is cut when the utterance proves real (submitTranscript), and a burst
+  // that was a cough or a hum lets the reply carry on from where it was held.
   useEffect(() => {
     registerVoiceBargeIn(() => {
       if (voiceModeRef.current !== "active") return;
       if (!isSpeakingRef.current && !isPlayingRef.current) return;
-      stop();
-      // The rest of the reply is not wanted either; the next turn needs the model.
-      const thread = auiRef.current.thread();
-      if (thread.getState().isRunning) {
-        try {
-          thread.cancelRun();
-        } catch {
-          // ended between the check and here
-        }
-      }
+      pausePlayback();
+    });
+    registerVoiceBargeAbort(() => {
+      if (voiceModeRef.current !== "active") return;
+      resumePlayback();
     });
     return () => {
       registerVoiceBargeIn(null);
+      registerVoiceBargeAbort(null);
     };
-  }, [stop]);
+  }, [pausePlayback, resumePlayback]);
 
   useEffect(() => {
     registerVoiceSubmit(submitTranscript);

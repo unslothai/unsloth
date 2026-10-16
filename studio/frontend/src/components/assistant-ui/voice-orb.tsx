@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import {
   AudioLinesIcon,
   AudioWaveformIcon,
+  BrainIcon,
   LoaderCircleIcon,
   MicIcon,
   MicOffIcon,
@@ -61,6 +62,14 @@ export const orbConfig = {
     duration: "1.1s",
     shadow: "0 0 30px 7px rgba(217,70,239,0.4)",
   },
+  // Indigo slow breathe: a reasoning model is thinking, no answer text yet. Slower
+  // than generating on purpose; this is the long wait of a thinking turn.
+  thinking: {
+    gradient: "radial-gradient(circle at 40% 35%, #a5b4fc, #4f46e5)",
+    animation: "voice-orb-breathe",
+    duration: "2.4s",
+    shadow: "0 0 32px 8px rgba(129,140,248,0.35)",
+  },
   // Amber pulse: the LLM is writing its reply, nothing playing yet. The typing
   // dots are the classic "assistant is generating a response" indicator.
   generating: {
@@ -101,7 +110,8 @@ const orbMeta: Record<OrbStateName, { label: string; icon: IconKind }> = {
   hearing: { label: "Hearing you", icon: "wave" },
   loading: { label: "Warming up", icon: "spinner" },
   transcribing: { label: "Transcribing", icon: "pencil" },
-  generating: { label: "Generating LLM response", icon: "dots" },
+  thinking: { label: "Thinking", icon: "brain" },
+  generating: { label: "Writing the answer", icon: "dots" },
   synthesizing: { label: "Generating voice", icon: "waveform" },
   speaking: { label: "Speaking", icon: "bars-live" },
 };
@@ -112,6 +122,7 @@ type IconKind =
   | "wave"
   | "bars-live"
   | "dots"
+  | "brain"
   | "spinner"
   | "pencil"
   | "waveform";
@@ -121,6 +132,11 @@ type IconKind =
 const HOLE = "#08080b";
 const DEBOSS =
   "drop-shadow(0 1px 0.5px rgba(255,255,255,0.22)) drop-shadow(0 -1px 1.5px rgba(0,0,0,0.6))";
+// The same deboss as a box-shadow, for glyphs that move every frame. WebKit keeps a
+// filtered element's raster when only its transform changes, so a drop-shadow under
+// a per-frame scaleY leaves ghost bands at the unscaled edges (seen on macOS).
+const DEBOSS_BOX =
+  "0 1px 0.5px rgba(255,255,255,0.22), 0 -1px 1.5px rgba(0,0,0,0.6)";
 
 // Three dots that jump left-to-right in sequence (thinking). This is a vertical
 // translate, not a scale, so the dots never grow or shrink independently -- their
@@ -130,7 +146,7 @@ const Dots: FC = () => (
     {[0, 1, 2].map((i) => (
       <motion.span
         key={i}
-        style={{ width: 11, height: 11, borderRadius: "50%", background: HOLE, filter: DEBOSS }}
+        style={{ width: 11, height: 11, borderRadius: "50%", background: HOLE, boxShadow: DEBOSS_BOX }}
         animate={{ y: [0, -9, 0] }}
         transition={{ duration: 0.7, repeat: Infinity, ease: "easeInOut", delay: i * 0.15 }}
       />
@@ -179,7 +195,8 @@ const SpeakingBars: FC = () => {
             borderRadius: 3,
             background: HOLE,
             transformOrigin: "center",
-            filter: DEBOSS,
+            boxShadow: DEBOSS_BOX,
+            willChange: "transform",
           }}
         />
       ))}
@@ -197,6 +214,8 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
       <AudioLinesIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
     );
   if (icon === "dots") return <Dots />;
+  if (icon === "brain")
+    return <BrainIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />;
   if (icon === "spinner")
     return (
       <motion.div

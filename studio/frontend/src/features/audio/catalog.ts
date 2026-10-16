@@ -27,12 +27,12 @@ export {
   type AudioSttEngine,
 };
 
-export type AudioTask = "tts" | "stt";
+export type AudioTask = "tts" | "stt" | "vad";
 
 // Recommended GGUF speech and music load into the main slot like the native PyTorch models, but
 // through the GGUF audio runtime, so they need no remote code and run on every backend it builds for.
 const AUDIO_CPP_GENERATION_IDS = AUDIO_CPP_MODELS.filter(
-  (model) => model.task !== "asr",
+  (model) => model.task !== "asr" && model.task !== "vad",
 ).map((model) => model.id.toLowerCase());
 const AUDIO_CPP_MUSIC_IDS = AUDIO_CPP_MODELS.filter(
   (model) => model.task === "music",
@@ -123,6 +123,12 @@ export function audioTaskFor(repoId: string): AudioTask | null {
   return groupForRepoId(repoId, AUDIO_CATALOG)?.task ?? null;
 }
 
+/** The Audio page's slot for a model; speech detectors belong to voice mode, not a page. */
+export function audioPageTaskFor(repoId: string): "tts" | "stt" | null {
+  const task = audioTaskFor(repoId);
+  return task === "vad" ? null : task;
+}
+
 export function ggufSiblingFor(repoId: string): string | null {
   const group = groupForRepoId(repoId, AUDIO_CATALOG);
   if (!group || group.task !== "tts") return null;
@@ -158,6 +164,7 @@ const CAPABILITY_LABEL: Record<
   convert: "Voice conversion",
   tts: "Text-to-speech",
   stt: "Speech-to-text",
+  vad: "Voice activity detection",
 };
 
 export function audioCapabilityLine(

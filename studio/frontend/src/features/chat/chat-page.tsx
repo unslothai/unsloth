@@ -30,11 +30,7 @@ import {
   loadVoiceMode,
   requestVoiceThreadReset,
 } from "@/features/chat/voice/voice-loop-bridge";
-import {
-  STT_MODELS,
-  sttModelName,
-} from "@/features/settings/stores/stt-model-catalog";
-import { VOICE_DEFAULT_STT_MODEL } from "@/features/chat/voice/voice-models";
+import { isAudioCppFolderId } from "@/features/audio/audio-cpp-catalog";
 import { usePlatformStore } from "@/config/env";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
@@ -342,6 +338,11 @@ const SttModelSelector = lazy(() =>
 const VoiceModelSelector = lazy(() =>
   loadVoiceMode().then((module) => ({
     default: module.VoiceModelSelector,
+  })),
+);
+const VadModelSelector = lazy(() =>
+  loadVoiceMode().then((module) => ({
+    default: module.VadModelSelector,
   })),
 );
 
@@ -2851,7 +2852,14 @@ export function ChatPage({
   const residentCheckpoint = useChatRuntimeStore(
     (state) => state.residentCheckpoint,
   );
-  const loadedCount = useChatRuntimeStore((state) => state.loadedModels.length);
+  // The voice slot's audio.cpp model is kept beside the chat model but never chats, so the
+  // header's "N models loaded" counts chat models only.
+  const loadedCount = useChatRuntimeStore(
+    (state) =>
+      state.loadedModels.filter(
+        (m) => !isAudioCppFolderId(m.id) && !isAudioCppFolderId(m.checkpoint),
+      ).length,
+  );
   const loadedContextLength = useChatRuntimeStore(
     (state) => state.loadedContextLength,
   );
@@ -3008,6 +3016,9 @@ export function ChatPage({
   const voiceSlotLoading = useChatRuntimeStore((s) => s.voiceSlotLoading);
   const voiceSlotLoaded = useChatRuntimeStore((s) => s.voiceSlotLoaded);
   const selectedSttModelId = useChatRuntimeStore((s) => s.selectedSttModelId);
+  const selectedVadModelId = useChatRuntimeStore((s) => s.selectedVadModelId);
+  const setSelectedVadModelId = useChatRuntimeStore((s) => s.setSelectedVadModelId);
+  const vadSlotLoaded = useChatRuntimeStore((s) => s.vadSlotLoaded);
   const setSelectedSttModelId = useChatRuntimeStore(
     (s) => s.setSelectedSttModelId,
   );
@@ -4629,16 +4640,6 @@ export function ChatPage({
     void localModelInventory.refreshIfOlderThan(INVENTORY_FRESHNESS_WINDOW_MS);
   }, [refresh, localModelInventory.refreshIfOlderThan]);
 
-  // The loop's listening model, audio.cpp Parakeet first; every curated STT model works.
-  const sttModels = useMemo<LoraModelOption[]>(
-    () =>
-      [
-        VOICE_DEFAULT_STT_MODEL,
-        ...STT_MODELS.filter((id) => id !== VOICE_DEFAULT_STT_MODEL),
-      ].map((id) => ({ id, name: sttModelName(id), isGguf: true })),
-    [],
-  );
-
   useEffect(() => {
     if (getTrainingCompareHandoff()) return;
     const controller = new AbortController();
@@ -4927,16 +4928,22 @@ export function ChatPage({
                 onSwitch={handleSwitchBackToChatModel}
               />
             )}
-            {/* Listen, then speak: the pipeline's order. */}
+            {/* Detect, listen, then speak: the pipeline's order. */}
             <Suspense fallback={null}>
               {view.mode !== "compare" && voiceMode !== "off" && (
+                <VadModelSelector
+                  value={selectedVadModelId}
+                  onValueChange={setSelectedVadModelId}
+                  loaded={vadSlotLoaded}
+                  disabled={!hasActiveModel}
+                />
+              )}
+              {view.mode !== "compare" && voiceMode !== "off" && (
                 <SttModelSelector
-                  models={sttModels}
                   value={selectedSttModelId}
                   onValueChange={setSelectedSttModelId}
                   disabled={!hasActiveModel}
                   ready={true}
-                  className="!h-8.5"
                 />
               )}
               {view.mode !== "compare" && voiceMode !== "off" && (
@@ -4946,7 +4953,6 @@ export function ChatPage({
                   loading={voiceSlotLoading}
                   loaded={voiceSlotLoaded}
                   disabled={!hasActiveModel}
-                  className="!h-8.5"
                 />
               )}
             </Suspense>

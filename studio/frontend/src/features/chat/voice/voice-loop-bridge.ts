@@ -37,6 +37,7 @@ let voicePlayCtx: AudioContext | null = null;
 let voiceThreadReset: (() => void) | null = null;
 let voiceResume: (() => void) | null = null;
 let voiceBargeIn: (() => void) | null = null;
+let voiceBargeAbort: (() => void) | null = null;
 let voiceSubmit: (() => void) | null = null;
 let voicePlayback: (() => boolean) | null = null;
 let voiceListen: (() => DictationAdapter.Session | null) | null = null;
@@ -181,12 +182,26 @@ export function registerVoiceBargeIn(fn: (() => void) | null): void {
 }
 
 /**
- * Cut the reply because the user has started talking over it: the adapter raises
- * this once a burst over its barge gate holds during playback. The handler no-ops
- * unless something is actually audible, so stray calls are harmless.
+ * Hold the reply because the user may have started talking over it: the adapter
+ * raises this once a burst over its barge gate holds during playback. The reply is
+ * only cut once the utterance proves real (requestVoiceSubmit); a false alarm
+ * resumes it (requestVoiceBargeAbort). No-ops unless something is audible.
  */
 export function requestVoiceBargeIn(): void {
   voiceBargeIn?.();
+}
+
+/** Called by the mounted voice loop. Pass null on teardown. */
+export function registerVoiceBargeAbort(fn: (() => void) | null): void {
+  voiceBargeAbort = fn;
+}
+
+/**
+ * The burst that paused the reply turned out not to be the user (a cough, a hum,
+ * nothing STT could use): let the reply carry on from where it was held.
+ */
+export function requestVoiceBargeAbort(): void {
+  voiceBargeAbort?.();
 }
 
 /** Called by the mounted voice loop. Pass null on teardown. */

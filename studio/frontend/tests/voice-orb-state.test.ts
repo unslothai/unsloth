@@ -19,6 +19,7 @@ function idle(overrides: Partial<VoiceOrbInputs> = {}): VoiceOrbInputs {
     isPlaying: false,
     voiceTranscribing: false,
     isThreadRunning: false,
+    isReasoning: false,
     isSpeaking: false,
     ...overrides,
   };
@@ -109,4 +110,17 @@ test("a blank orb still wins over waiting when the loop is not running", () => {
     deriveOrbState(idle({ voiceMode: "configuring", hasChatModel: false })),
     { kind: "set", state: null },
   );
+});
+
+test("a reasoning model reads as thinking until answer text arrives", () => {
+  assert.deepEqual(deriveOrbState(idle({ isThreadRunning: true, isReasoning: true })), {
+    kind: "set",
+    state: "thinking",
+  });
+  assert.deepEqual(deriveOrbState(idle({ isThreadRunning: true, isReasoning: false })), {
+    kind: "set",
+    state: "generating",
+  });
+  // Reasoning with nothing running is a stale flag, not a phase.
+  assert.deepEqual(deriveOrbState(idle({ isReasoning: true })), { kind: "set", state: "listening" });
 });

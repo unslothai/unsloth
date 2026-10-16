@@ -54,11 +54,16 @@ test("the two modes partition every curated model", () => {
   const all = catalogToModelOptions(AUDIO_CATALOG).map((o) => o.id);
   const tts = modelsForTask("tts");
   const stt = modelsForTask("stt");
+  const vad = modelsForTask("vad");
   assert.equal(
-    tts.some((id) => stt.includes(id)),
+    tts.some((id) => stt.includes(id) || vad.includes(id)),
     false,
   );
-  assert.deepEqual([...tts, ...stt].sort(), [...all].sort());
+  assert.equal(
+    stt.some((id) => vad.includes(id)),
+    false,
+  );
+  assert.deepEqual([...tts, ...stt, ...vad].sort(), [...all].sort());
 });
 
 test("the curated STT rows cover every dictation sidecar model", () => {

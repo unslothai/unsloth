@@ -54,7 +54,7 @@ import {
 } from "../audio-workspace-utils";
 import {
   audioModelRequiresRemoteCode,
-  audioTaskFor,
+  audioPageTaskFor,
   ggufSiblingFor,
   isMusicGenerationModel,
   musicGenerationRequiresCuda,
@@ -770,7 +770,7 @@ export function useAudioModelSlot({
     async (id: string, meta: ModelSelectorChangeMeta) => {
       if (busyRef.current !== null) return;
       // Uncurated picks fall back to the pipeline tag, else community ASR repos load into the TTS slot.
-      const task = resolveAudioPickTask(audioTaskFor(id), meta.pipelineTag);
+      const task = resolveAudioPickTask(audioPageTaskFor(id), meta.pipelineTag);
       const runtimeProblem =
         task === "stt" ? null : audioCppRuntimeProblem(id, audioCppRuntime.current);
       if (runtimeProblem) {

@@ -25,18 +25,27 @@ export interface AudioPickerRow {
   audioWorkflows?: readonly string[] | null;
 }
 
+/** Voice mode's speech check is a picker workflow with no Audio page of its own. */
+export type AudioPickerWorkflow = AudioWorkflowId | "detect";
+
+const VAD_HUB_TASK = "voice-activity-detection";
+
 export function audioRowMatchesWorkflow(
   row: AudioPickerRow,
-  workflow: AudioWorkflowId,
+  workflow: AudioPickerWorkflow,
 ): boolean {
   if (row.audioWorkflows && row.audioWorkflows.length > 0) {
     return row.audioWorkflows.includes(workflow);
+  }
+  if (row.task === VAD_HUB_TASK || audioCppModelFor(row.id)?.task === "vad") {
+    return workflow === "detect";
   }
   if (row.audioType === AUDIO_CPP_SEP_AUDIO_TYPE) {
     return workflow === "separate";
   }
   // MiniMax Music 3 is tagged text-to-speech on the Hub.
-  if (isMusicGenerationModel(row.id, row.audioType)) return workflow === "music";
+  if (isMusicGenerationModel(row.id, row.audioType))
+    return workflow === "music";
   const byTask = audioWorkflowForTask(row.task);
   if (byTask === "transcribe" || byTask === "music") {
     return byTask === workflow;

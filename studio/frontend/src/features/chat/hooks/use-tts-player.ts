@@ -64,6 +64,8 @@ interface Stream {
   sentences: string[];
   next: number;
   final: boolean;
+  /** Sentences spoken that are not part of the reply text (thinking fillers). */
+  extra: number;
 }
 
 /**
@@ -79,7 +81,12 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   beginStream(): void;
   feedText(text: string): void;
   endStream(finalText: string): void;
+  /** Queue a sentence that is not in the reply text, e.g. a thinking filler. */
+  sayAside(text: string): void;
   stop(): void;
+  /** Hold the reply while a possible barge-in is checked; resumePlayback picks it back up. */
+  pausePlayback(): void;
+  resumePlayback(): void;
   primeAudio(): void;
 } {
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -91,6 +98,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   const streamRef = useRef<Stream | null>(null);
   const failedReqRef = useRef(-1);
   const rafRef = useRef<number | null>(null);
+  const pausedRef = useRef(false);
   const onEndRef = useRef(onPlaybackEnd);
   onEndRef.current = onPlaybackEnd;
 
@@ -116,6 +124,10 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
 
   const stop = useCallback(() => {
     reqRef.current += 1;
+    if (pausedRef.current) {
+      pausedRef.current = false;
+      void getPlayCtx()?.resume().catch(() => {});
+    }
     abortRef.current?.abort();
     abortRef.current = null;
     for (const clip of clipsRef.current) {
@@ -169,6 +181,10 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     (buffer: AudioBuffer) => {
       const ctx = getPlayCtx();
       if (!ctx) return;
+      // WebKit parks the context ("interrupted"/"suspended") when another surface takes
+      // the audio session, e.g. the Audio tab mounting its players; a start() on a parked
+      // context is silent, so wake it first.
+      if (ctx.state !== "running") void ctx.resume().catch(() => {});
       const source = ctx.createBufferSource();
       source.buffer = buffer;
       source.connect(ctx.destination);
@@ -242,7 +258,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     stop();
     const reqId = reqRef.current;
     abortRef.current = new AbortController();
-    streamRef.current = { reqId, sentences: [], next: 0, final: false };
+    streamRef.current = { reqId, sentences: [], next: 0, final: false, extra: 0 };
     setIsSpeaking(true);
     void run(reqId);
   }, [stop, run]);
@@ -251,9 +267,16 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     const st = streamRef.current;
     if (!st || st.reqId !== reqRef.current) return;
     const { complete } = splitStreaming(text);
-    while (st.sentences.length < complete.length) {
-      st.sentences.push(complete[st.sentences.length] ?? "");
+    while (st.sentences.length - st.extra < complete.length) {
+      st.sentences.push(complete[st.sentences.length - st.extra] ?? "");
     }
+  }, []);
+
+  const sayAside = useCallback((text: string) => {
+    const st = streamRef.current;
+    if (!st || st.reqId !== reqRef.current || st.final) return;
+    st.sentences.push(text);
+    st.extra += 1;
   }, []);
 
   // A stream stopped by a barge-in or a thread switch is gone, and ending it is a
@@ -262,8 +285,8 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     const st = streamRef.current;
     if (!st || st.reqId !== reqRef.current) return;
     const all = splitIntoSentences(finalText);
-    while (st.sentences.length < all.length) {
-      st.sentences.push(all[st.sentences.length] ?? "");
+    while (st.sentences.length - st.extra < all.length) {
+      st.sentences.push(all[st.sentences.length - st.extra] ?? "");
     }
     st.final = true;
   }, []);
@@ -276,7 +299,46 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     [beginStream, endStream],
   );
 
+  // Suspending the context freezes every scheduled clip in place; the run loop's tail wait
+  // reads the frozen clock, so nothing ends early while held.
+  const pausePlayback = useCallback(() => {
+    if (pausedRef.current || clipsRef.current.size === 0) return;
+    pausedRef.current = true;
+    void getPlayCtx()?.suspend().catch(() => {});
+  }, []);
+
+  const resumePlayback = useCallback(() => {
+    if (!pausedRef.current) return;
+    pausedRef.current = false;
+    void getPlayCtx()?.resume().catch(() => {});
+  }, []);
+
   useEffect(() => stop, [stop]);
 
-  return { isSpeaking, isPlaying, speak, beginStream, feedText, endStream, stop, primeAudio };
+  useEffect(() => {
+    const ctx = getPlayCtx();
+    if (!ctx) return;
+    const wake = () => {
+      if (pausedRef.current) return;
+      if (ctx.state !== "running" && clipsRef.current.size > 0) {
+        void ctx.resume().catch(() => {});
+      }
+    };
+    ctx.addEventListener("statechange", wake);
+    return () => ctx.removeEventListener("statechange", wake);
+  }, []);
+
+  return {
+    isSpeaking,
+    isPlaying,
+    speak,
+    beginStream,
+    feedText,
+    endStream,
+    sayAside,
+    stop,
+    pausePlayback,
+    resumePlayback,
+    primeAudio,
+  };
 }

@@ -326,12 +326,13 @@ test("a Fish Audio Hub row lists on both Speak and Clone before download", () =>
 });
 
 test("every seeded audio GGUF lists on exactly the pages it runs on", () => {
-  const pages = [...WORKFLOWS.slice(0, 5), "separate", "transcribe"] as const;
+  const pages = [...WORKFLOWS.slice(0, 5), "separate", "transcribe", "detect"] as const;
   const hubTask = {
     tts: "text-to-speech",
     music: "text-to-audio",
     asr: "automatic-speech-recognition",
     sep: null,
+    vad: "voice-activity-detection",
   };
   const listed = (id: string) => {
     const model = AUDIO_CPP_MODELS.find((entry) => entry.id.endsWith(`/${id}`));

@@ -89,7 +89,7 @@ UMBRELLA = {
     "Phonon-2-GGUF": ("parakeet_tdt", []),
     "Piper-TTS-GGUF": ("piper_tts", ["speak"]),
     "PocketTTS-GGUF": ("pocket_tts", ["speak", "clone"]),
-    "PulseVAD-GGUF": ("pulsevad", []),
+    "PulseVAD-GGUF": ("pulsevad", ["detect"]),
     "Qwen3-ASR-0.6B-GGUF": ("qwen3_asr", ["transcribe"]),
     "Qwen3-ASR-1.7B-GGUF": ("qwen3_asr", ["transcribe"]),
     "Qwen3-ForcedAligner-0.6B-GGUF": ("qwen3_forced_aligner", []),
@@ -132,7 +132,7 @@ SPEC_TASKS = {
     "smart_turn": ["turn"],
 }
 
-TASK_PAGE = {"tts": "speak", "music": "music", "asr": "transcribe", "sep": "separate"}
+TASK_PAGE = {"tts": "speak", "music": "music", "asr": "transcribe", "sep": "separate", "vad": "detect"}
 
 CATALOG = Path(__file__).resolve().parents[2] / "frontend/src/features/audio/audio-cpp-catalog.ts"
 

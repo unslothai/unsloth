@@ -320,7 +320,7 @@ def test_an_unknown_family_follows_its_spec_tasks_or_is_refused(hub):
         ("new_clone_asr", ["clone", "asr"], "asr", "asr"),
         ("new_clone_only", ["clone"], "tts", "clon"),
         ("new_sep", ["sep"], "sep", "sep"),
-        ("new_vad", ["vad"], "", ""),
+        ("new_vad", ["vad"], "vad", "vad"),
     ):
         repo = f"someone/{family}-GGUF"
         _put(_snapshot(hub, repo), "m-q8_0.gguf", _gguf_bytes(family = family, spec = {"tasks": tasks}))
@@ -331,7 +331,10 @@ def test_an_unknown_family_follows_its_spec_tasks_or_is_refused(hub):
     assert list(sep.workflows) == ["separate"] and sep.separation is not None
     acm.require_runnable(sep, "tts")
     vad = acm.resolve("someone/new_vad-GGUF", network = False)
-    assert "Voice activity detection" in vad.unsupported
+    assert list(vad.workflows) == ["detect"] and vad.unsupported is None
+    acm.require_runnable(vad, "vad")
+    with pytest.raises(acm.AudioCppModelError, match = "not a voice activity"):
+        acm.require_runnable(sep, "vad")
     clone_only = acm.resolve("someone/new_clone_only-GGUF", network = False)
     assert list(clone_only.workflows) == ["clone"] and clone_only.clone.reference_text == "optional"
 
@@ -434,7 +437,9 @@ def test_a_spec_fallback_family_the_runtime_lacks_is_refused(hub, monkeypatch, t
     )
     kugel = acm.resolve(f"{AUDIO_CPP_REPO}/KugelAudio-0-Open-GGUF", network = False)
     assert "needs a newer audio runtime" in kugel.unsupported
-    assert acm.family_policy("silero_vad").unsupported.startswith("Voice activity detection")
+    assert acm.family_policy("silero_vad").unsupported.startswith("Silero VAD ships inside")
+    assert acm.family_policy("pulsevad").task == "vad"
+    assert list(acm.family_policy("pulsevad").workflows) == ["detect"]
     assert acm.family_policy("kokoro_tts").task == "tts"
     assert acm.family_policy("crisperwhisper", {"tasks": ["asr"]}).unsupported == (
         "crisperwhisper needs a newer audio runtime than the one installed."
@@ -541,12 +546,13 @@ _CONVERT_TABLE = {
 
 
 def test_every_task_family_binds_its_workflows():
-    workflow_for = {"tts": "speak", "music": "music", "asr": "transcribe", "sep": "separate"}
+    workflow_for = {"tts": "speak", "music": "music", "asr": "transcribe", "sep": "separate", "vad": "detect"}
     endpoint_for = {
         "speak": "speech",
         "music": "tasks",
         "transcribe": "transcriptions",
         "separate": "tasks",
+        "detect": "tasks",
     }
     for family in acm.FAMILIES.values():
         # Edit is checked by its own table below.

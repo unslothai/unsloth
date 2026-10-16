@@ -16,7 +16,7 @@ export const AUDIO_CPP_AUDIO_TYPES: ReadonlySet<string> = new Set([
   AUDIO_CPP_SEP_AUDIO_TYPE,
 ]);
 
-export type AudioCppTask = "tts" | "music" | "asr" | "sep";
+export type AudioCppTask = "tts" | "music" | "asr" | "sep" | "vad";
 
 /** Mirrors AudioWorkflowId; spelled out to keep this file import-free. */
 export type AudioCppWorkflow =
@@ -26,7 +26,8 @@ export type AudioCppWorkflow =
   | "convert"
   | "music"
   | "separate"
-  | "transcribe";
+  | "transcribe"
+  | "detect";
 
 export interface AudioCppModel {
   /** Hub repo id, or `${AUDIO_CPP_REPO}/<folder>` for a package in the shared repo. */
@@ -245,6 +246,8 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
     task: "asr",
     languages: VOXTRAL_LANGUAGES,
   },
+  // Voice mode's speech check: whether a clip the loudness gate cut holds a voice.
+  { id: folder("PulseVAD-GGUF"), task: "vad" },
 ];
 
 /** Shared-repo folders the pickers leave out, and why; the nightly catalog check fails on an unclassified folder. */
@@ -274,7 +277,6 @@ export const AUDIO_CPP_UNOFFERED_FOLDERS: Readonly<Record<string, string>> = {
   "PersonaPlex-GGUF": "duplex speech chat has no page",
   "MMS-Forced-Aligner-GGUF": "forced alignment has no page",
   "Sortformer-Diar-4spk-v1-GGUF": "speaker diarization has no page",
-  "PulseVAD-GGUF": "voice activity detection has no page",
   "MuScriptor-Small-GGUF": "music transcription has no page",
   "Samsone-GGUF": "describes audio rather than transcribing it",
 };
@@ -413,6 +415,7 @@ const TASK_WORKFLOW: Record<AudioCppTask, AudioCppWorkflow> = {
   music: "music",
   asr: "transcribe",
   sep: "separate",
+  vad: "detect",
 };
 
 export function audioCppWorkflowsFor(

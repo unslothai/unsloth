@@ -7,6 +7,7 @@ import {
   VOICE_DEFAULT_STT_MODEL,
   migrateVoiceTtsModel,
 } from "@/features/chat/voice/voice-models";
+import { VOICE_DEFAULT_VAD_MODEL } from "@/features/chat/voice/vad-client";
 import { forgetThreadReads } from "../api/thread-read-cache.ts";
 import type { ImageDisclosure } from "../api/mcp-image";
 import {
@@ -183,6 +184,7 @@ export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
 const CHAT_VOICE_MODEL_ID_KEY = "unsloth_chat_voice_model_id";
 const CHAT_VOICE_SAVED_ID_KEY = "unsloth_chat_voice_saved_id";
 const CHAT_STT_MODEL_ID_KEY = "unsloth_chat_stt_model_id";
+const CHAT_VAD_MODEL_ID_KEY = "unsloth_chat_vad_model_id";
 export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
 export const CHAT_RAG_MODE_KEY = "unsloth_chat_rag_mode";
 export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
@@ -2700,6 +2702,10 @@ type ChatRuntimeStore = {
   selectedVoiceId: string;
   /** The transcription model the loop listens with. Persisted. */
   selectedSttModelId: string;
+  /** The audio.cpp voice activity detector that checks each clip for a voice. Persisted. */
+  selectedVadModelId: string;
+  /** The detector is resident on the backend. Not persisted. */
+  vadSlotLoaded: boolean;
   /** True while the voice slot (TTS) is loading, so the orb can show a loading
    *  state instead of appearing ready to listen. Not persisted. */
   voiceSlotLoading: boolean;
@@ -2739,6 +2745,8 @@ type ChatRuntimeStore = {
   setSelectedVoiceModelId: (id: string) => void;
   setSelectedVoiceId: (id: string) => void;
   setSelectedSttModelId: (id: string) => void;
+  setSelectedVadModelId: (id: string) => void;
+  setVadSlotLoaded: (loaded: boolean) => void;
   setVoiceSlotLoading: (loading: boolean) => void;
   setVoiceSlotLoaded: (loaded: boolean) => void;
   setVoiceTranscribing: (transcribing: boolean) => void;
@@ -4544,6 +4552,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   selectedVoiceModelId: migrateVoiceTtsModel(loadString(CHAT_VOICE_MODEL_ID_KEY, "")),
   selectedVoiceId: loadString(CHAT_VOICE_SAVED_ID_KEY, ""),
   selectedSttModelId: loadString(CHAT_STT_MODEL_ID_KEY, "") || VOICE_DEFAULT_STT_MODEL,
+  selectedVadModelId: loadString(CHAT_VAD_MODEL_ID_KEY, "") || VOICE_DEFAULT_VAD_MODEL,
+  vadSlotLoaded: false,
   voiceSlotLoading: false,
   voiceSlotLoaded: false,
   voiceTranscribing: false,
@@ -4792,6 +4802,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveString(CHAT_STT_MODEL_ID_KEY, selectedSttModelId);
       return { selectedSttModelId };
     }),
+  setSelectedVadModelId: (selectedVadModelId) =>
+    set(() => {
+      saveString(CHAT_VAD_MODEL_ID_KEY, selectedVadModelId);
+      return { selectedVadModelId, vadSlotLoaded: false };
+    }),
+  setVadSlotLoaded: (vadSlotLoaded) => set({ vadSlotLoaded }),
   setVoiceSlotLoading: (voiceSlotLoading) => set({ voiceSlotLoading }),
   setVoiceSlotLoaded: (voiceSlotLoaded) => set({ voiceSlotLoaded }),
   setVoiceTranscribing: (voiceTranscribing) => set({ voiceTranscribing }),

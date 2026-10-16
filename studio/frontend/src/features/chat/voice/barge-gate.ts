@@ -7,23 +7,31 @@
 
 const BARGE_IN_RMS = 0.045;
 const BARGE_OVER_BLEED = 3;
-const BARGE_IN_MS = 220;
+// Long enough that a cough or a dropped object (one impulsive burst that decays
+// inside ~300 ms) does not cut the reply; "wait, stop" still clears it.
+const BARGE_IN_MS = 450;
 
 export interface BargeGate {
   bleed: number;
   loudMs: number;
+  /** How long a burst must hold; shorter when a speech detector confirms it afterwards. */
+  holdMs: number;
 }
 
-export function createBargeGate(): BargeGate {
-  return { bleed: -1, loudMs: 0 };
+export function createBargeGate(holdMs: number = BARGE_IN_MS): BargeGate {
+  return { bleed: -1, loudMs: 0, holdMs };
 }
 
 /** Feed one mic frame heard during playback; true once a burst has held long enough to cut in. */
-export function stepBargeGate(gate: BargeGate, rms: number, frameMs: number): boolean {
+export function stepBargeGate(
+  gate: BargeGate,
+  rms: number,
+  frameMs: number,
+): boolean {
   const threshold = Math.max(BARGE_IN_RMS, gate.bleed * BARGE_OVER_BLEED);
   if (rms >= threshold) {
     gate.loudMs += frameMs;
-    return gate.loudMs >= BARGE_IN_MS;
+    return gate.loudMs >= gate.holdMs;
   }
   gate.loudMs = 0;
   // Falls fast, climbs slowly: a quiet stretch resets it, and a burst of speech
