@@ -266,3 +266,70 @@ def test_covered_reads_still_rebuild_a_device_left_stale_by_growth():
     assert torch.equal(cos, ref_cos)
     rope.extend_rope_embedding(_x(1, torch.float16), 11)
     assert rope.multi_gpu_cos_cached[1] is cos
+
+
+def _model_forward_rope(
+    rope,
+    seq_length_with_past,
+    position_ids,
+    max_position,
+    max_seq_length = 2048,
+):
+    # Runs the rotary block of LlamaModel_fast_forward as written in llama.py.
+    tree = ast.parse(LLAMA.read_text(encoding = "utf-8"))
+    fn = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "LlamaModel_fast_forward"
+    )
+    block = next(
+        n
+        for n in fn.body
+        if isinstance(n, ast.If) and "IS_ATTENTION_REFACTOR" in ast.unparse(n.test)
+    )
+    scope = {
+        "self": types.SimpleNamespace(
+            rotary_emb = rope,
+            max_seq_length = max_seq_length,
+            config = types.SimpleNamespace(max_position_embeddings = max_position),
+        ),
+        "hidden_states": _x(0, torch.float16),
+        "seq_length_with_past": seq_length_with_past,
+        "position_ids": position_ids,
+        "IS_ATTENTION_REFACTOR": True,
+        "IS_GRANITE": False,
+        "max": max,
+        "getattr": getattr,
+    }
+    exec(compile(ast.Module(body = [block], type_ignores = []), str(LLAMA), "exec"), scope)
+    return scope["position_embeddings"]
+
+
+def test_model_forward_covers_explicit_offset_position_ids():
+    # Valid positions past the batch length (offsets, generate, packing) must index real rows.
+    max_position = 1 << 17
+    position_ids = torch.tensor([[40000, 40001]])
+    cos, sin = _model_forward_rope(_llama(max_position), 2, position_ids, max_position)
+    assert cos.shape[0] >= int(position_ids.max()) + 1
+    ref_cos, ref_sin = _reference(cos.shape[0], torch.float16)
+    assert torch.equal(cos[position_ids], ref_cos[position_ids])
+    assert torch.equal(sin[position_ids], ref_sin[position_ids])
+
+
+def test_model_forward_without_position_ids_stays_short():
+    # Implicit positions are 0..seq_length_with_past-1, so the short cache is enough.
+    max_position = 1 << 20
+    rope = _llama(max_position)
+    cos, _ = _model_forward_rope(rope, 2, None, max_position)
+    assert cos.shape[0] == 4 * 8192
+    assert _built(rope.multi_gpu_cos_cached) == [0]
+
+
+def test_starting_cache_is_computed_on_cpu():
+    # The eager __init__ computed the starting cache on CPU even when loading later moved inv_freq to
+    # an accelerator; computing it there instead raises the first forward's peak memory.
+    rope = _llama(4096)
+    rope.inv_freq = rope.inv_freq.to("meta")
+    cos, sin = rope.get_cached(10, 0)
+    ref_cos, ref_sin = _reference(4096)
+    assert torch.equal(cos, ref_cos) and torch.equal(sin, ref_sin)
