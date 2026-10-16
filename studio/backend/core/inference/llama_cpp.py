@@ -36267,6 +36267,7 @@ class LlamaCppBackend:
                                 fully_gpu_offloaded = (
                                     fully_gpu_offloaded or _spill_keeps_every_layer_on_gpu
                                 )
+                                and not _mem_host_resident
                                 and not _fit_on_recovered
                                 and not fit_is_effectively_on(_last_spawn_cmd, env),
                             ),
