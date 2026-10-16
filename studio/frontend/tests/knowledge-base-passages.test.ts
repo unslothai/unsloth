@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The retrieved passages a document search shows on request (#13788): grouped under their document,
-// ranked, opening at their page, long ones clamped, and capped like the document chips.
+// The retrieved passages a document search shows on request (#13788): in the order the model received
+// them, numbered as it saw them, opening at their page, long ones clamped, and capped like the document chips.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -17,8 +17,8 @@ import { loadWithStubs } from "./helpers/module-stubs.ts";
 const {
   parseCitations,
   passageDisplayText,
+  orderedPassages,
   passageNeedsClamp,
-  passagesPerDocument,
 } = citationUtils;
 
 const { KnowledgeBasePassages } = loadWithStubs<typeof PassagesModule>(
@@ -106,60 +106,62 @@ const render = (result: unknown) =>
     }),
   );
 
-test("passages group under their document in chip order, each keeping its rank in the whole search", () => {
-  const groups = passagesPerDocument(parseCitations(SEARCH));
+test("passages keep the search's order, numbered as the model saw them, across documents", () => {
+  const passages = orderedPassages(parseCitations(SEARCH));
   assert.deepEqual(
-    groups.map((g) => [
-      g.filename,
-      g.passages.map((p) => [p.rank, p.citation.page]),
-    ]),
+    passages.map((p) => [p.number, p.citation.filename, p.citation.page]),
     [
-      [
-        "handbook.pdf",
-        [
-          [1, 3],
-          [3, 1],
-        ],
-      ],
-      ["lab.md", [[2, null]]],
+      [1, "handbook.pdf", 3],
+      [2, "lab.md", null],
+      [3, "handbook.pdf", 1],
     ],
   );
-  // An empty chunk is not a passage: it would render as a blank card.
-  assert.equal(groups[0].passages.length, 2);
 });
 
-test("a whole-document read has no ranking, so its passages carry none", () => {
-  const groups = passagesPerDocument(
+test("an empty chunk is not a passage, and the passages after it keep their own numbers", () => {
+  const passages = orderedPassages(
     parseCitations(
       searchResult([
         {
           chunkId: "a:0",
           documentId: "a",
-          filename: "a.txt",
-          page: null,
+          filename: "a.pdf",
+          page: 1,
           text: "first",
-          score: null,
+          score: 0.9,
         },
         {
           chunkId: "a:1",
           documentId: "a",
-          filename: "a.txt",
-          page: null,
-          text: "second",
-          score: null,
+          filename: "a.pdf",
+          page: 2,
+          text: " \n ",
+          score: 0.8,
+        },
+        {
+          chunkId: "a:2",
+          documentId: "a",
+          filename: "a.pdf",
+          page: 3,
+          text: "third",
+          score: 0.7,
         },
       ]),
     ),
   );
   assert.deepEqual(
-    groups[0].passages.map((p) => p.rank),
-    [null, null],
+    passages.map((p) => [p.number, p.citation.text]),
+    [
+      [1, "first"],
+      [3, "third"],
+    ],
   );
 });
 
-// The backend appends ranked project passages after a whole-document read under one numbering.
-test("ranked passages merged after a whole-document read still start at #1", () => {
-  const groups = passagesPerDocument(
+// The backend appends ranked project passages after a whole-document read under one numbering
+// (render_sources), and the model cites them by that numbering.
+test("passages merged after a whole-document read continue its numbering", () => {
+  const passages = orderedPassages(
     parseCitations(
       searchResult([
         {
@@ -198,15 +200,17 @@ test("ranked passages merged after a whole-document read still start at #1", () 
     ),
   );
   assert.deepEqual(
-    groups.map((g) => g.passages.map((p) => p.rank)),
+    passages.map((p) => [p.number, p.citation.text]),
     [
-      [null, null],
-      [1, 2],
+      [1, "whole 1"],
+      [2, "whole 2"],
+      [3, "best match"],
+      [4, "next match"],
     ],
   );
 });
 
-test("each passage shows its exact text, its rank, and opens its document at its own page", () => {
+test("each passage shows its exact text, its number, and opens its document at its own page", () => {
   const html = render(SEARCH);
   assert.equal(html.match(/data-slot="knowledge-base-passage"/g)?.length, 3);
   // The chunk text itself, line breaks and spacing kept for whitespace-pre-wrap to show.
@@ -218,8 +222,39 @@ test("each passage shows its exact text, its rank, and opens its document at its
   assert.match(html, /data-opens="h@1"><button[^>]*>Open at p\.1</);
   // A file without pages still opens, from the start.
   assert.match(html, /data-opens="l@start"><button[^>]*>Open document</);
-  // Each document is named once above its passages.
-  assert.equal(html.match(/title="handbook\.pdf"/g)?.length, 1);
+  // Rendered in the search's order, so lab.md's #2 sits between handbook.pdf's #1 and #3.
+  const numbers = [
+    ...html.matchAll(/model was given">#(?:<!-- -->)?(\d+)</g),
+  ].map((m) => Number(m[1]));
+  assert.deepEqual(numbers, [1, 2, 3]);
+  // With more than one document, every passage names its own.
+  assert.equal(html.match(/title="handbook\.pdf"/g)?.length, 2);
+  assert.equal(html.match(/title="lab\.md"/g)?.length, 1);
+});
+
+test("a single-document search leaves the filename to its chip", () => {
+  const html = render(
+    searchResult([
+      {
+        chunkId: "h:2",
+        documentId: "h",
+        filename: "handbook.pdf",
+        page: 3,
+        text: RADIUM,
+        score: 0.9,
+      },
+      {
+        chunkId: "h:0",
+        documentId: "h",
+        filename: "handbook.pdf",
+        page: 1,
+        text: SCOPE,
+        score: 0.8,
+      },
+    ]),
+  );
+  assert.equal(html.match(/data-slot="knowledge-base-passage"/g)?.length, 2);
+  assert.ok(!html.includes('title="handbook.pdf"'));
 });
 
 test("a source with no document id shows its page but offers nothing to open", () => {
@@ -265,12 +300,12 @@ test("a large search shows the first 20 passages and holds the rest behind Show 
   }));
   const html = render(searchResult(rows));
   assert.equal(html.match(/data-slot="knowledge-base-passage"/g)?.length, 20);
-  // The cap follows retrieval order across documents, not each document's list.
-  const ranks = [...html.matchAll(/search results">#(?:<!-- -->)?(\d+)</g)].map(
-    (m) => Number(m[1]),
-  );
+  // The first 20 in the search's order, across both documents.
+  const numbers = [
+    ...html.matchAll(/model was given">#(?:<!-- -->)?(\d+)</g),
+  ].map((m) => Number(m[1]));
   assert.deepEqual(
-    ranks.sort((a, b) => a - b),
+    numbers,
     Array.from({ length: 20 }, (_, i) => i + 1),
   );
   assert.match(html, />Show 3 more passages</);

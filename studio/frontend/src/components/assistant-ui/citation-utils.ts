@@ -157,44 +157,26 @@ export function isPassage(citation: Citation): boolean {
   return citation.text.trim().length > 0;
 }
 
-/** rank: 1-based among scored passages, across a merged thread + project search; null for a whole-document read. */
+/** number: 1-based position in the search result, the `<chunk id>` the model was given. */
 export interface Passage {
   citation: Citation;
-  rank: number | null;
-}
-
-export interface DocumentPassages {
-  key: string;
-  filename: string;
-  passages: Passage[];
+  number: number;
 }
 
 /**
- * Documents in chip order. Ranks skip unscored passages, so ranked ones after a whole-document read start at #1.
- * `limit` keeps the first passages in retrieval order, not per document.
+ * The first `limit` passages in the order the model received them. An empty chunk is skipped but keeps its
+ * number, so every passage is numbered as the model saw it, merged whole-document and project reads included.
  */
-export function passagesPerDocument(
+export function orderedPassages(
   citations: readonly Citation[],
   limit = Number.POSITIVE_INFINITY,
-): DocumentPassages[] {
-  const groups = new Map<string, DocumentPassages>();
-  let ranked = 0;
-  let kept = 0;
-  for (const citation of citations) {
-    if (!isPassage(citation)) continue;
-    if (kept++ >= limit) break;
-    const key = documentKey(citation);
-    let group = groups.get(key);
-    if (!group) {
-      group = { key, filename: citation.filename, passages: [] };
-      groups.set(key, group);
-    }
-    group.passages.push({
-      citation,
-      rank: citation.score != null ? ++ranked : null,
-    });
+): Passage[] {
+  const passages: Passage[] = [];
+  for (const [i, citation] of citations.entries()) {
+    if (passages.length >= limit) break;
+    if (isPassage(citation)) passages.push({ citation, number: i + 1 });
   }
-  return Array.from(groups.values());
+  return passages;
 }
 
 /** Only PDFs drop `#` markers (added by their Markdown conversion); code and config keep their `#` comments. */
