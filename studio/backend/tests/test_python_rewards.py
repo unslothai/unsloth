@@ -522,3 +522,36 @@ def test_opting_into_software_safeguards_runs_and_reports_it(no_os_sandbox):
     # A summary log with no RL keys stays empty rather than becoming an isolation-only point.
     assert rl.with_reward_isolation(None, isolation) is None
     assert rl.with_reward_isolation({"reward": 1.0}, None) == {"reward": 1.0}
+
+
+def test_worker_log_stops_growing_at_its_cap(tmp_path):
+    from core.training.reward_worker_main import _BoundedLog
+
+    path = tmp_path / "worker.log"
+    log = _BoundedLog(str(path), 10)
+    assert log.write("x" * 25) == 25
+    assert log.write("more") == 4
+    log.flush()
+    text = path.read_text("utf-8")
+    assert text.startswith("x" * 10 + "\n[worker.log is full")
+    assert "more" not in text
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "rlimits are POSIX")
+def test_reward_workers_start_under_file_size_and_descriptor_limits():
+    import subprocess
+    import sys
+
+    probe = (
+        "import resource\n"
+        "print(resource.getrlimit(resource.RLIMIT_FSIZE)[0], resource.getrlimit(resource.RLIMIT_NOFILE)[0])\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe],
+        preexec_fn = python_rewards._reward_worker_preexec,
+        capture_output = True,
+        text = True,
+        check = True,
+    ).stdout.split()
+    assert int(out[0]) == python_rewards.REWARD_FSIZE_BYTES
+    assert int(out[1]) <= python_rewards.REWARD_NOFILE

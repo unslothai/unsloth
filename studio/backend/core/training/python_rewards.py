@@ -27,6 +27,11 @@ from typing import Any, Callable, Optional
 
 from core.training import reward_worker_main as _worker_io
 
+try:
+    import resource as _resource
+except ImportError:  # Windows
+    _resource = None
+
 logger = logging.getLogger(__name__)
 
 READY_TIMEOUT_SECONDS = 120.0
@@ -117,6 +122,36 @@ def _kill_tree(proc) -> None:
         pass
 
 
+# Reward code is user code: one worker must not fill the disk or memory. No CPU cap, since one
+# worker scores a whole run; the batch timeout bounds a stuck call.
+REWARD_FSIZE_BYTES = 100 * 1024 * 1024
+REWARD_NOFILE = 4096
+REWARD_NPROC = 10000
+# Resolved before the fork: the settings store cannot be read in the child.
+_reward_as_bytes: Optional[int] = None
+
+
+def _reward_worker_preexec() -> None:
+    os.setsid()
+    if _resource is None:
+        return
+    limits = [
+        (_resource.RLIMIT_FSIZE, REWARD_FSIZE_BYTES),
+        (_resource.RLIMIT_NOFILE, REWARD_NOFILE),
+        (getattr(_resource, "RLIMIT_NPROC", None), REWARD_NPROC),
+        (_resource.RLIMIT_AS, _reward_as_bytes),
+    ]
+    for limit, value in limits:
+        if limit is None or value is None:
+            continue
+        try:
+            _soft, hard = _resource.getrlimit(limit)
+            target = value if hard == _resource.RLIM_INFINITY else min(value, hard)
+            _resource.setrlimit(limit, (target, target))
+        except (ValueError, OSError):
+            pass
+
+
 class RewardWorker:
     """One sandboxed process holding every Python reward of a run."""
 
@@ -156,13 +191,19 @@ class RewardWorker:
         shutil.copyfile(_WORKER_SOURCE, os.path.join(self._workdir, "worker.py"))
         with open(os.path.join(self._workdir, "rewards.json"), "w", encoding = "utf-8") as f:
             json.dump({"specs": self.specs, "unsloth_helpers": _unsloth_helpers_path()}, f)
+        global _reward_as_bytes
+        try:
+            from utils import sandbox_memory_limit
+            _reward_as_bytes = sandbox_memory_limit.memory_limit_bytes()
+        except Exception:  # noqa: BLE001 - no memory cap rather than no worker
+            _reward_as_bytes = None
         try:
             self._prepared = os_sandbox.prepare_tool_launch(
                 os_sandbox.ToolLaunchPlan(
                     argv = (sys.executable, "-u", os.path.join(self._workdir, "worker.py")),
                     workdir = self._workdir,
                     env = _safe_env(self._workdir),
-                    preexec_fn = None if os.name == "nt" else os.setsid,
+                    preexec_fn = None if os.name == "nt" else _reward_worker_preexec,
                     requested_mode = self.mode,
                     execution_kind = "python",
                 )
