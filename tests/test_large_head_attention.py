@@ -351,3 +351,37 @@ def test_router_keeps_wrapped_router_sentinels():
     )
     q = torch.randn(1, 2, 4, 64)
     assert mapping["sdpa"](None, q, q, q, None)[0] == "sdpa"
+
+
+def test_install_sits_beneath_the_packed_router(monkeypatch):
+    # A packed trainer built before the model load already installed the packed router; the route of a
+    # packed call must not depend on which of the two was installed first.
+    import sys
+    import types
+
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    def inner(module, query, key, value, attention_mask, **kwargs):
+        return "inner", None
+
+    packed = types.ModuleType("unsloth.utils.hf_packed_attention")
+    packed._ORIG_SDPA = [inner]
+
+    def packed_router(module, query, key, value, attention_mask, **kwargs):
+        return packed._ORIG_SDPA[0](module, query, key, value, attention_mask, **kwargs)
+
+    model = torch.nn.Linear(4, 4)
+    model.head_dim = 512
+    saved = ALL_ATTENTION_FUNCTIONS["sdpa"]
+    monkeypatch.setitem(sys.modules, "unsloth.utils.hf_packed_attention", packed)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(LH, "_PATCHED", [False])
+    try:
+        ALL_ATTENTION_FUNCTIONS["sdpa"] = packed_router
+        assert LH.patch_large_head_attention(model) is True
+        assert ALL_ATTENTION_FUNCTIONS["sdpa"] is packed_router
+        assert packed._ORIG_SDPA[0]._unsloth_large_head
+        assert packed._ORIG_SDPA[0]._unsloth_original is inner
+    finally:
+        ALL_ATTENTION_FUNCTIONS["sdpa"] = saved

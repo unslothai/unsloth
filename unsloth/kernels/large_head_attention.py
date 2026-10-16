@@ -10,6 +10,7 @@
 
 import functools
 import os
+import sys
 
 import torch
 import triton
@@ -906,7 +907,15 @@ def patch_large_head_attention(model = None):
     # Other wrappers (unsloth_zoo's gemma-4 sliding router) may sit on top of ours.
     if _PATCHED[0] or getattr(current, "_unsloth_large_head", False):
         return True
-    # Direct assignment: register() does not update the global mapping layers read.
-    ALL_ATTENTION_FUNCTIONS["sdpa"] = _make_router(current)
+    # unsloth/utils/hf_packed_attention.py sends packed rows (packed_seq_lengths) past head dim 256 to
+    # SDPA's efficient kernel over cu_seqlens. Sit beneath it whichever is installed first, so a packed
+    # call takes the same route as when a packed trainer is built after the model load.
+    packed = sys.modules.get("unsloth.utils.hf_packed_attention")
+    packed_orig = getattr(packed, "_ORIG_SDPA", None)
+    if isinstance(packed_orig, list) and packed_orig and packed_orig[0] is not None:
+        packed_orig[0] = _make_router(packed_orig[0])
+    else:
+        # Direct assignment: register() does not update the global mapping layers read.
+        ALL_ATTENTION_FUNCTIONS["sdpa"] = _make_router(current)
     _PATCHED[0] = True
     return True
