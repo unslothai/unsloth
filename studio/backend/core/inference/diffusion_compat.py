@@ -734,7 +734,6 @@ def flux3_pick_mismatch(
         return None
     if not gguf_filename:
         from .diffusion_flux3 import flux3_family_blocks_mismatch, flux3_index_family
-
         declared = flux3_index_family(
             _flux3_pipeline_index(repo_id, normalize_token(hf_token), allow_network)
         )

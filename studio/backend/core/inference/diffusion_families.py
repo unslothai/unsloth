@@ -2885,7 +2885,6 @@ def _checkpoint_comfy_declared(path) -> bool:
         return False
     try:
         from safetensors import safe_open
-
         with safe_open(name, "pt") as handle:
             return flux3_comfy_declared(list(handle.keys()), handle.metadata())
     except Exception:  # noqa: BLE001 -- fail open: the loader reports its own error
@@ -2907,8 +2906,10 @@ def flux3_variant_mismatch_reason(
         return None
     stripped = [n.split("model.diffusion_model.", 1)[-1] for n in names]
     bfl_native = any(n.startswith(("emb_in.", "txt_in.")) for n in stripped)
-    if bfl_native and not comfy_declared and any(
-        n.endswith((".weight_scale", ".weight_scale_2", ".input_scale")) for n in stripped
+    if (
+        bfl_native
+        and not comfy_declared
+        and any(n.endswith((".weight_scale", ".weight_scale_2", ".input_scale")) for n in stripped)
     ):
         # BFL's variants/fp8r and variants/nvfp4: row-major scales in BFL's own layout. The NVFP4 one has the same
         # tensor sizes as a ComfyUI NVFP4 file whose scales are 128x4 tiles, so the ComfyUI loader would decode it

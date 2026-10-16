@@ -1605,7 +1605,12 @@ def _generation_defaults_for(
         # FLUX.3 first: the variant check has matched the checkpoint to the family, while the names cannot tell the
         # variants apart (BFL's ComfyUI base files are flux3_image_klein_*.safetensors, no "base", and a base file can
         # sit on the distilled repo's companions).
-        identifiers = (gguf_filename, content_variant_hint(repo_id, gguf_filename), repo_id, base_repo)
+        identifiers = (
+            gguf_filename,
+            content_variant_hint(repo_id, gguf_filename),
+            repo_id,
+            base_repo,
+        )
         if is_flux3_family(family):
             identifiers = (family.name,) + identifiers
         steps, guidance = generation_params_with_grid(grid, *identifiers)
@@ -12488,7 +12493,10 @@ def _offload_controlnet_module(cn_model: Any, device: str, logger: Any) -> bool:
 
 
 def _base_file_downloaded(
-    rfilename: str, *, include_transformer: bool = False, manifest: str = "model_index.json"
+    rfilename: str,
+    *,
+    include_transformer: bool = False,
+    manifest: str = "model_index.json",
 ) -> bool:
     """True for base-repo files ``from_pretrained`` actually fetches. The transformer is supplied by
     the GGUF, and repo docs (``assets/``, the top-level README/PDF/images) are never downloaded:

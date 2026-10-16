@@ -521,9 +521,16 @@ def test_variant_mismatch_and_bfl_quant_packages_are_refused():
     ]
     assert "variants/fp8r or variants/nvfp4" in why("flux.3-klein", "model.safetensors", bfl_nvfp4)
     # BFL's ComfyUI files (flux-3-image-klein-comfy) declare their quantization; the ComfyUI loader reads them.
-    assert why("flux.3-klein", "flux3_image_klein_sd_nvfp4.safetensors", bfl_nvfp4, comfy_declared = True) is None
+    assert (
+        why(
+            "flux.3-klein", "flux3_image_klein_sd_nvfp4.safetensors", bfl_nvfp4, comfy_declared = True
+        )
+        is None
+    )
     # ... but the variant still has to match.
-    assert "flux.3-klein" in why("flux.3-klein-base", "sd_int8.safetensors", bfl_nvfp4, comfy_declared = True)
+    assert "flux.3-klein" in why(
+        "flux.3-klein-base", "sd_int8.safetensors", bfl_nvfp4, comfy_declared = True
+    )
     # Unreadable file or another family: fail open.
     assert why("flux.3-klein", "x.gguf", None) is None
     assert why("flux.2-klein", "x.gguf", base) is None
@@ -1314,7 +1321,6 @@ _OFFICIAL_LISTING = (
 
 def _fake_hub(monkeypatch, repo_files):
     import huggingface_hub
-
     class _Api:
         def __init__(self, *a, **k):
             pass
@@ -1322,7 +1328,6 @@ def _fake_hub(monkeypatch, repo_files):
         def model_info(self, repo, *a, **k):
             if repo not in repo_files:
                 from huggingface_hub.errors import RepositoryNotFoundError
-
                 raise RepositoryNotFoundError(
                     repo, response = SimpleNamespace(status_code = 404, headers = {}, request = None)
                 )
@@ -1336,7 +1341,9 @@ def _fake_hub(monkeypatch, repo_files):
     monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
 
 
-@pytest.mark.parametrize("kind, name", [("gguf", "klein.gguf"), ("single_file", "klein.safetensors")])
+@pytest.mark.parametrize(
+    "kind, name", [("gguf", "klein.gguf"), ("single_file", "klein.safetensors")]
+)
 def test_companion_staging_is_scoped_to_the_folders_flux3_loads(tmp_path, monkeypatch, kind, name):
     # A GGUF / single file stages the official repo's text encoder, VAE, transformer config and the modular manifest
     # (the staged-snapshot marker), never BFL's variants/ packages or the root single file.
@@ -1398,14 +1405,20 @@ def test_the_download_plan_reports_a_flux3_pick_of_the_other_variant(tmp_path, m
         discover_text_encoders = False,
     )
     assert "Load it with family flux.3-klein" in (plan["incompatible_reason"] or "")
+
+
 def test_single_file_config_flow_map_follows_family():
     # A base single file on distilled companions (the gated base repo's TE / VAE are the distilled ones) must not
     # inherit flow_map=True from the companion config, and a distilled file on base companions must keep it.
     from core.inference.diffusion_families import transformer_config_overrides_for
 
     base_file = "diffusion_models/flux3_image_klein_bf16.safetensors"
-    assert transformer_config_overrides_for(detect_family(BASE), base_file, DISTILLED) == {"flow_map": False}
-    assert transformer_config_overrides_for(detect_family(DISTILLED), base_file, BASE) == {"flow_map": True}
+    assert transformer_config_overrides_for(detect_family(BASE), base_file, DISTILLED) == {
+        "flow_map": False
+    }
+    assert transformer_config_overrides_for(detect_family(DISTILLED), base_file, BASE) == {
+        "flow_map": True
+    }
     assert "flow_map" not in transformer_config_overrides_for(
         detect_family("black-forest-labs/FLUX.2-klein-4B"), "flux-2-klein-4b-Q4_K_M.gguf"
     )
@@ -1424,8 +1437,15 @@ def test_single_file_base_checkpoint_loads_on_distilled_config(tmp_path):
 
     cls = diffusers.Flux3Transformer2DModel
     cfg = dict(
-        attention_head_dim = 16, axes_dims_rope = [4, 4, 4, 4], cond_in_channels = 8, in_channels = 8,
-        joint_attention_dim = 32, mlp_ratio = 2.0, num_attention_heads = 2, num_layers = 1, num_single_layers = 1,
+        attention_head_dim = 16,
+        axes_dims_rope = [4, 4, 4, 4],
+        cond_in_channels = 8,
+        in_channels = 8,
+        joint_attention_dim = 32,
+        mlp_ratio = 2.0,
+        num_attention_heads = 2,
+        num_layers = 1,
+        num_single_layers = 1,
         timestep_channels = 16,
     )
     cfg_dir = tmp_path / "distilled" / "transformer"
@@ -1435,8 +1455,12 @@ def test_single_file_base_checkpoint_loads_on_distilled_config(tmp_path):
     ckpt = tmp_path / "base.safetensors"
     save_file({k: v.contiguous() for k, v in base_model.state_dict().items()}, str(ckpt))
     kwargs = {
-        "config": str(tmp_path / "distilled"), "subfolder": "transformer", "torch_dtype": torch.float32,
-        **transformer_config_overrides_for(detect_family(BASE), "flux3_image_klein_bf16.safetensors"),
+        "config": str(tmp_path / "distilled"),
+        "subfolder": "transformer",
+        "torch_dtype": torch.float32,
+        **transformer_config_overrides_for(
+            detect_family(BASE), "flux3_image_klein_bf16.safetensors"
+        ),
     }
     loaded = cls.from_single_file(str(ckpt), **kwargs)
     assert loaded.config.flow_map is False
@@ -1455,10 +1479,21 @@ def test_comfy_declared_quant_files_pass_the_variant_check(tmp_path):
     )
 
     base = {"emb_in.image.weight": torch.zeros(2, 2), "time_in.in_layer.weight": torch.zeros(2, 2)}
-    scales = {"single_blocks.0.qkv.weight": torch.zeros(4, 4, dtype = torch.int8),
-              "single_blocks.0.qkv.weight_scale": torch.ones(4, 1)}
+    scales = {
+        "single_blocks.0.qkv.weight": torch.zeros(4, 4, dtype = torch.int8),
+        "single_blocks.0.qkv.weight_scale": torch.ones(4, 1),
+    }
     int8 = tmp_path / "flux3_image_klein_int8_convrot.safetensors"
-    save_file({**base, **scales, "single_blocks.0.qkv.comfy_quant": torch.tensor(list(b'{"format":"int8_tensorwise"}'), dtype = torch.uint8)}, str(int8))
+    save_file(
+        {
+            **base,
+            **scales,
+            "single_blocks.0.qkv.comfy_quant": torch.tensor(
+                list(b'{"format":"int8_tensorwise"}'), dtype = torch.uint8
+            ),
+        },
+        str(int8),
+    )
     nvfp4 = tmp_path / "flux3_image_klein_nvfp4.safetensors"
     save_file({**base, **scales}, str(nvfp4), metadata = {"_quantization_metadata": '{"layers": {}}'})
     package = tmp_path / "model.safetensors"
@@ -1483,24 +1518,43 @@ def test_pick_check_reads_comfy_declaration_from_hub_header(monkeypatch):
 
     from core.inference import diffusion_compat as compat
 
-    names = ["emb_in.image.weight", "time_in.in_layer.weight", "single_blocks.0.q_proj.weight",
-             "single_blocks.0.q_proj.weight_scale", "single_blocks.0.q_proj.weight_scale_2"]
+    names = [
+        "emb_in.image.weight",
+        "time_in.in_layer.weight",
+        "single_blocks.0.q_proj.weight",
+        "single_blocks.0.q_proj.weight_scale",
+        "single_blocks.0.q_proj.weight_scale_2",
+    ]
 
     class _Api:
         def __init__(self, *a, **k):
             pass
 
-        def parse_safetensors_file_metadata(self, repo_id, filename, token = None):
-            md = {"_quantization_metadata": "{}"} if repo_id.endswith("-comfy") else {"quantization": "nvfp4"}
+        def parse_safetensors_file_metadata(
+            self,
+            repo_id,
+            filename,
+            token = None,
+        ):
+            md = (
+                {"_quantization_metadata": "{}"}
+                if repo_id.endswith("-comfy")
+                else {"quantization": "nvfp4"}
+            )
             return NS(tensors = {n: None for n in names}, metadata = md)
 
     monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
     monkeypatch.setattr(compat, "_local_gguf_path", lambda *a, **k: None)
     fam = detect_family("x", "flux.3-klein-base")
-    compat.assert_flux3_pick_compatible(fam, "black-forest-labs/flux-3-image-klein-comfy",
-                                        "diffusion_models/flux3_image_klein_nvfp4.safetensors")
+    compat.assert_flux3_pick_compatible(
+        fam,
+        "black-forest-labs/flux-3-image-klein-comfy",
+        "diffusion_models/flux3_image_klein_nvfp4.safetensors",
+    )
     with pytest.raises(ValueError, match = "variants/fp8r or variants/nvfp4"):
-        compat.assert_flux3_pick_compatible(fam, "black-forest-labs/flux-3-image-klein", "variants/nvfp4/model.safetensors")
+        compat.assert_flux3_pick_compatible(
+            fam, "black-forest-labs/flux-3-image-klein", "variants/nvfp4/model.safetensors"
+        )
 
 
 def test_comfy_fused_qkv_is_split_into_bfl_projections():
@@ -1514,11 +1568,13 @@ def test_comfy_fused_qkv_is_split_into_bfl_projections():
 
     fn, _sfm = _mapping(diffusers.Flux3Transformer2DModel)
     tags = torch.arange(12, dtype = torch.float64).view(-1, 1).expand(12, 4)
-    out = fn(checkpoint = {
-        "single_blocks.0.qkv.weight": tags.clone(),
-        "single_blocks.0.comfy_attention.config": torch.zeros(3, dtype = torch.uint8),
-        "content_mode_blocks.image.1.q_proj.weight": torch.ones(2, 2),
-    })
+    out = fn(
+        checkpoint = {
+            "single_blocks.0.qkv.weight": tags.clone(),
+            "single_blocks.0.comfy_attention.config": torch.zeros(3, dtype = torch.uint8),
+            "content_mode_blocks.image.1.q_proj.weight": torch.ones(2, 2),
+        }
+    )
     pre = "single_transformer_blocks.0.attn."
     assert out[pre + "to_q.weight"][:, 0].tolist() == [0, 1, 2, 3]
     assert out[pre + "to_k.weight"][:, 0].tolist() == [4, 5, 6, 7]
@@ -1536,10 +1592,24 @@ def test_flux3_family_decides_generation_defaults_over_file_names():
     comfy = "black-forest-labs/flux-3-image-klein-comfy"
     for name in ("bf16", "int8_convrot", "nvfp4"):
         f = f"diffusion_models/flux3_image_klein_{name}.safetensors"
-        assert _generation_defaults_for(comfy, f, BASE, None, base) == {"steps": 25, "guidance": 3.5}
-        assert _generation_defaults_for("/local/dir", f, DISTILLED, None, base) == {"steps": 25, "guidance": 3.5}
+        assert _generation_defaults_for(comfy, f, BASE, None, base) == {
+            "steps": 25,
+            "guidance": 3.5,
+        }
+        assert _generation_defaults_for("/local/dir", f, DISTILLED, None, base) == {
+            "steps": 25,
+            "guidance": 3.5,
+        }
     sd = "diffusion_models/flux3_image_klein_sd_bf16.safetensors"
-    assert _generation_defaults_for(comfy, sd, DISTILLED, None, dist) == {"steps": 16, "guidance": 1.0}
+    assert _generation_defaults_for(comfy, sd, DISTILLED, None, dist) == {
+        "steps": 16,
+        "guidance": 1.0,
+    }
     # Not FLUX.3: names still lead (FLUX.1's base is schnell, a dev file keeps dev).
     flux1 = detect_family("black-forest-labs/FLUX.1-dev")
-    assert _generation_defaults_for("x", "flux1-dev-Q4_K_M.gguf", "black-forest-labs/FLUX.1-schnell", None, flux1)["steps"] == 20
+    assert (
+        _generation_defaults_for(
+            "x", "flux1-dev-Q4_K_M.gguf", "black-forest-labs/FLUX.1-schnell", None, flux1
+        )["steps"]
+        == 20
+    )
