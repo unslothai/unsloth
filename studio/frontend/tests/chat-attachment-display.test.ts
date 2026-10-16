@@ -105,7 +105,7 @@ test("composer cards wrap for two rows, then become one scrolling strip", () => 
   // In a chat the strip allows one row: a fifth card at a quarter of the width already scrolls.
   assert.equal(composerAttachmentsOverflow(cards(4), 724, 8, 1), false);
   assert.equal(composerAttachmentsOverflow(cards(5), 724, 8, 1), true);
-  // Image cards take their own widths: narrow portraits fit more to a row than a quarter each.
+  // Image cards take their own widths.
   assert.equal(composerAttachmentsOverflow(cards(8, 75), 724, 8, 1), false);
   assert.equal(composerAttachmentsOverflow([168, 168, 168, 168, 75], 724, 8, 1), true);
   assert.match(
@@ -382,7 +382,6 @@ test("an image card in the composer shares the file card border but has no fill"
   );
   assert.match(card, /const src = useAttachmentImageSrc\(\);/);
   assert.match(card, /CARD_EDGE,\n\s*!src && CARD_SURFACE,/);
-  // An image keeps its proportions within the Library's 2:3 to 3:2 bounds.
   assert.match(
     card,
     /Math\.min\(Math\.max\(ratio \?\? 1, MIN_IMAGE_RATIO\), MAX_IMAGE_RATIO\)/,

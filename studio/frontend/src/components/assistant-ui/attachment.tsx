@@ -79,8 +79,7 @@ import { ScrollPane } from "./scroll-pane";
 export const CARD_SLOT =
   "shrink-0 w-[calc((100%_-_var(--spacing)*6)/4.15)] min-w-[calc(7.5rem*var(--ui-space-scale,1))]";
 export const CARD_SIZE = "h-[calc(7rem*var(--ui-space-scale,1))] w-full";
-// The Library's thumbnail bounds: an image card keeps the row's height and takes its own width, from
-// 2:3 portrait to 3:2 landscape; anything beyond is cropped.
+// The Library's thumbnail bounds; an image card keeps the row's height, past these it is cropped.
 const MIN_IMAGE_RATIO = 2 / 3;
 const MAX_IMAGE_RATIO = 3 / 2;
 const SENT_IMAGE_SIZE = "size-[calc(9rem*var(--ui-space-scale,1))]";
@@ -167,7 +166,6 @@ const CardImageOrBody: FC<{
           const { naturalWidth, naturalHeight } = event.currentTarget;
           if (naturalWidth > 0 && naturalHeight > 0) onRatio?.(naturalWidth / naturalHeight);
         }}
-        // Past 2:3 a portrait shows its top, as in the Library.
         className="h-full w-full object-cover object-top"
       />
     );
@@ -548,7 +546,6 @@ const ComposerAttachmentCard: FC = () => {
         "aui-attachment-root aui-attachment-card group/attachment-card relative",
         src ? "shrink-0" : CARD_SLOT,
       )}
-      // Square until the image decodes.
       style={
         src
           ? {
