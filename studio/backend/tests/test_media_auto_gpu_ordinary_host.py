@@ -243,6 +243,7 @@ def _fastest_first_host(monkeypatch, rows):
     reads = []
     monkeypatch.setattr(nvidia, "get_cuda_ordinal_smi_rows", lambda: reads.append(1) or rows)
     monkeypatch.setattr(hw, "_cuda_ordinal_rows_cache", {})
+    monkeypatch.setattr(hw, "_nvidia_mig_gpu_indices_or_none", lambda: set())
     return torch_calls, reads
 
 
@@ -271,25 +272,22 @@ def test_fastest_first_mask_without_a_mapping_keeps_torch(monkeypatch):
     assert torch_calls == [[0, 1]]
 
 
-def test_fastest_first_mask_corrects_mig_on_the_physical_row(monkeypatch):
-    # Mask entry 0 is physical row 1, a MIG card whose slice has 5 GB: the whole-card 80 GB
-    # must not reach the ranking, and row 0 (mask entry 1) must not be "corrected" instead.
-    from core.inference.llama_cpp import LlamaCppBackend
-    from utils.hardware import nvidia
-
+@pytest.mark.parametrize("mig", [{1}, None])  # a mapped MIG card, or MIG discovery failing
+def test_fastest_first_mask_falls_back_to_torch_around_mig(monkeypatch, mig):
+    # nvidia-smi shows a MIG card's whole memory; torch reports the slice, so it ranks instead.
     torch_calls, _reads = _fastest_first_host(monkeypatch, [1, 0])
-    monkeypatch.setattr(nvidia, "get_mig_gpu_indices", lambda: {1})
-    monkeypatch.setattr(
-        LlamaCppBackend, "_get_gpu_memory_nvml", staticmethod(lambda: [(1, 4096, 5120)])
-    )
+    monkeypatch.setattr(hw, "_nvidia_mig_gpu_indices_or_none", lambda: mig)
     with patch.dict(os.environ, _FASTEST, clear = True):
-        rows = hw._smi_rows_for_cuda_ordinals([0, 1])
-        ids, _meta = hw.auto_select_gpu_ids("m", required_override_gb = 8.0)
-    assert rows["devices"] == [
-        {"index": 0, "vram_total_gb": 5.0, "vram_used_gb": 1.0},
-        {"index": 1, "vram_total_gb": 80.0, "vram_used_gb": 70.0},
-    ]
-    assert ids == [1]  # only mask entry 1 (physical row 0) has 8 GB free
+        assert hw._smi_rows_for_cuda_ordinals([0, 1]) is None
+        hw.auto_select_gpu_ids("m", required_override_gb = 8.0)
+    assert torch_calls == [[0, 1]]
+
+
+def test_fastest_first_mask_without_mig_keeps_nvidia_smi(monkeypatch):
+    torch_calls, _reads = _fastest_first_host(monkeypatch, [1, 0])
+    monkeypatch.setattr(hw, "_nvidia_mig_gpu_indices_or_none", lambda: {5})  # MIG elsewhere only
+    with patch.dict(os.environ, _FASTEST, clear = True):
+        assert hw._smi_rows_for_cuda_ordinals([0, 1]) is not None
     assert torch_calls == []
 
 

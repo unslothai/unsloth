@@ -2128,9 +2128,12 @@ def _smi_rows_for_cuda_ordinals(parent_ids: list[int]) -> Optional[Dict[str, Any
     result = _smi_query(
         "get_visible_gpu_utilization", sorted(rows), parent_cuda_visible_devices = None
     )
-    # MIG slices are keyed by the physical row, so correct before the rows become mask ids.
-    physical = _with_mig_instance_memory(list((result or {}).get("devices", [])))
-    by_row = {d.get("index"): d for d in physical}
+    # nvidia-smi rows show a MIG card's whole memory, not its slice: with a MIG card among the rows,
+    # or MIG discovery failing, keep the slice-aware torch telemetry instead.
+    mig = _nvidia_mig_gpu_indices_or_none()
+    if mig is None or mig & set(rows):
+        return None
+    by_row = {d.get("index"): d for d in (result or {}).get("devices", [])}
     if not all(row in by_row for row in rows):
         return None
     return {
