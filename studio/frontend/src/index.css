@@ -5172,6 +5172,33 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	box-shadow: 0 1px 4px rgb(0 0 0 / 0.25);
 }
 
+/* Size the container's em breakpoint with the same setting as its controls. Children
+   keep the inherited base size: their own text tokens already include that setting. */
+.browser-panel {
+	font-size: calc(1rem * var(--ui-space-scale, 1));
+}
+
+.browser-panel > * {
+	font-size: 1rem;
+}
+
+/* Keep a usable address field when the fixed navigation and action buttons no longer fit. */
+@container browser (width < 22em) {
+	.browser-web-toolbar {
+		column-gap: 0;
+		padding-inline: calc(0.375rem * var(--ui-space-scale, 1));
+	}
+
+	.browser-web-toolbar > form {
+		order: -1;
+		flex-basis: 100%;
+	}
+
+	.browser-web-toolbar > form ~ div {
+		margin-inline-start: auto;
+	}
+}
+
 /* The browser's tabs scroll sideways once they're at their narrowest, with no bar. */
 .browser-tablist {
 	scrollbar-width: none;
