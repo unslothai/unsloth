@@ -924,6 +924,10 @@ def _walk_a_load(
 ):
     import huggingface_hub
 
+    # The assembly stand-in drives the real diffusers config readers; without diffusers the load would record the
+    # ImportError as its error rather than skip.
+    pytest.importorskip("diffusers")
+
     _HubRecorder.listings, _HubRecorder.downloads, _HubRecorder.config_reads = [], [], []
     _HubRecorder.moving = (_WAN_MIRROR,) if carrier_checkpoint else (_GGUF_REPO,)
     monkeypatch.setattr(huggingface_hub, "HfApi", _HubRecorder)

@@ -4260,13 +4260,11 @@ class VideoBackend:
 
             # Every hub-id config read of the base during assembly (encoder / VAE / transformer configs, the LTX-2.5
             # companions and encoder worker) reads the commit the plan pinned; a no-op for an unpinned load.
-            with (
-                pread_safetensors(),
-                pinned_repo_revision(
+            with pread_safetensors():
+                with pinned_repo_revision(
                     kwargs.get("_base_fetch_repo"), kwargs.get("_base_fetch_revision")
-                ),
-            ):
-                self.load_pipeline(**kwargs)
+                ):
+                    self.load_pipeline(**kwargs)
             with self._lock:
                 if self._load_token == token:
                     self._loading = None
