@@ -439,3 +439,174 @@ def test_a_gguf_and_its_folders_split_across_cache_roots_make_one_sized_gguf_row
     rows = [r for r in merged if r.model_id == repo]
     assert [r.model_format for r in rows] == ["gguf"]
     assert rows[0].size_bytes > 5_000 + folder_bytes
+
+
+_SHAPES = {
+    # A bf16 pipeline whose files come from the FP8 artifact mirror (root checkpoints + samples cached beside them).
+    "pipeline-through-mirror": dict(
+        repo_id = "Qwen/Qwen-Image-2.1-Turbo",
+        gguf = None,
+        kind = "pipeline",
+        base = "Qwen/Qwen-Image-2.1-Turbo",
+        fetch = _FP8_REPO,
+        base_files = {
+            "model_index.json": 7,
+            "transformer/diffusion_pytorch_model.safetensors": 4_000,
+            "vae/diffusion_pytorch_model.safetensors": 300,
+        },
+        dit = None,
+        extra = {_FP8_REPO: {"Qwen-Image-2.1-Turbo-FP8.safetensors": 7_000, "samples/a.png": 900}},
+    ),
+    # A GGUF picked from the artifact mirror that is also its companion repo (sibling quant + samples cached).
+    "gguf-from-mirror": dict(
+        repo_id = "unsloth/Z-Image-GGUF",
+        gguf = "z-image-Q4_K_M.gguf",
+        gguf_size = 5_000,
+        kind = "gguf",
+        base = "Tongyi-MAI/Z-Image",
+        fetch = "unsloth/Z-Image-GGUF",
+        base_files = {"model_index.json": 7, "vae/diffusion_pytorch_model.safetensors": 300},
+        dit = None,
+        extra = {"unsloth/Z-Image-GGUF": {"z-image-Q8_0.gguf": 9_000, "assets/a.png": 900}},
+    ),
+    # The Turbo pipeline with its hosted FP8 denoiser: companion and denoiser repo are the same mirror.
+    "prequant-in-the-companion-repo": dict(
+        repo_id = "Qwen/Qwen-Image-2.1-Turbo",
+        gguf = None,
+        kind = "pipeline",
+        base = "Qwen/Qwen-Image-2.1-Turbo",
+        fetch = _FP8_REPO,
+        base_files = {"model_index.json": 7, "transformer/config.json": 2, "vae/diffusion_pytorch_model.safetensors": 300},
+        dit = (_FP8_REPO, "Qwen-Image-2.1-Turbo-FP8.safetensors", 7_000),
+        extra = {_FP8_REPO: {"Qwen-Image-2.1-Turbo-INT8.safetensors": 7_100, "samples/a.png": 900}},
+    ),
+    # A plain GGUF repo with its base on an ordinary full mirror.
+    "plain-gguf": dict(
+        repo_id = "unsloth/FLUX.1-dev-GGUF",
+        gguf = "flux1-dev-Q4_K_M.gguf",
+        gguf_size = 6_000,
+        kind = "gguf",
+        base = "black-forest-labs/FLUX.1-dev",
+        fetch = "unsloth/FLUX.1-dev",
+        base_files = {"model_index.json": 7, "text_encoder/model.safetensors": 2_000},
+        dit = None,
+        extra = {"unsloth/FLUX.1-dev-GGUF": {"flux1-dev-Q8_0.gguf": 11_000}},
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_SHAPES))
+def test_progress_reaches_expected_exactly_when_every_planned_file_is_cached(monkeypatch, tmp_path, shape):
+    """expected_bytes and the progress scan come from ONE list of planned files, so whatever else the repos hold
+    (sibling quants, other prequant schemes, sample renders), downloaded equals expected once every planned file is
+    cached, and stays below it while one is still in flight."""
+    from core.inference.diffusion import _LoadingState, _planned_progress_files
+
+    s = _SHAPES[shape]
+    file_sizes = {s["base"]: dict(s["base_files"])}
+    if s["gguf"]:
+        file_sizes[s["repo_id"]] = {s["gguf"]: s["gguf_size"]}
+    planned = _planned_progress_files(
+        s["repo_id"],
+        s["gguf"],
+        kind = s["kind"],
+        base = s["base"],
+        fetch_base = s["fetch"],
+        base_files = list(s["base_files"]),
+        file_sizes = file_sizes,
+        dit_prequant = s["dit"],
+    )
+    on_disk: dict[str, dict[str, int]] = {}
+    for repo, name, size in planned:
+        on_disk.setdefault(repo, {})[name] = size
+    for repo, files in s["extra"].items():
+        on_disk.setdefault(repo, {}).update(files)
+    for repo, files in on_disk.items():
+        _snapshot(tmp_path, repo, files)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_cache_repo_dirs",
+        staticmethod(lambda repo_id: [tmp_path / f"models--{repo_id.replace('/', '--')}"]),
+    )
+    expected = sum(size for _r, _n, size in planned)
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(
+        repo_id = s["repo_id"],
+        base_repo = s["base"],
+        fetch_repo = s["fetch"],
+        gguf_filename = s["gguf"],
+        planned_files = planned,
+        expected_bytes = expected,
+    )
+    done = backend.load_progress()
+    assert done["bytes_downloaded"] == expected and done["phase"] == "finalizing"
+
+    # The largest planned file back in flight: half of it written, the snapshot entry not there yet.
+    repo, name, size = max(planned, key = lambda p: p[2])
+    repo_dir = tmp_path / f"models--{repo.replace('/', '--')}"
+    (repo_dir / "snapshots" / "rev1" / name).unlink()
+    (repo_dir / "blobs").mkdir(exist_ok = True)
+    (repo_dir / "blobs" / "x.incomplete").write_bytes(b"\0" * (size // 2))
+    backend._loading = _LoadingState(
+        repo_id = s["repo_id"],
+        base_repo = s["base"],
+        fetch_repo = s["fetch"],
+        gguf_filename = s["gguf"],
+        planned_files = planned,
+        expected_bytes = expected,
+    )
+    partial = backend.load_progress()
+    assert partial["phase"] == "downloading"
+    assert partial["bytes_downloaded"] == expected - size + size // 2
+
+
+def test_run_load_counts_a_prequant_denoiser_hosted_in_the_companion_mirror(monkeypatch):
+    """Qwen-Image-2.1-Turbo as a pipeline with its hosted FP8 denoiser: the companion folders and the denoiser both
+    come from unsloth/Qwen-Image-2.1-Turbo-FP8. The scoped repo scan counted only the folders and the asset loop
+    skipped the companion repo, so the denoiser sat in expected_bytes but never in downloaded."""
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion import _LoadingState
+
+    base = "Qwen/Qwen-Image-2.1-Turbo"
+    dit = (_FP8_REPO, "Qwen-Image-2.1-Turbo-FP8.safetensors", 7_000)
+    base_files = {"model_index.json": 7, "transformer/config.json": 2, "vae/diffusion_pytorch_model.safetensors": 300}
+
+    def estimate(*_a, file_sizes_out = None, fetch_repos_out = None, **_k):
+        if file_sizes_out is not None:
+            file_sizes_out[base] = dict(base_files)
+        if fetch_repos_out is not None:
+            fetch_repos_out[base] = _FP8_REPO
+        return sum(base_files.values()), list(base_files)
+
+    on_disk = {(_FP8_REPO, name): size for name, size in base_files.items()}
+    on_disk[(dit[0], dit[1])] = dit[2]
+    for name, value in {
+        "_te_prequant_plan_files": staticmethod(lambda *a, **k: {}),
+        "_pipeline_planned_denoiser_scheme": lambda self, *a, **k: None,
+        "_dit_prequant_plan_source": lambda self, *a, **k: dit,
+        "declared_footprint_shortfall": lambda self, *a, **k: None,
+        "_estimate_download_bytes": staticmethod(estimate),
+        "_prefetch_files": lambda self, *a, **k: None,
+        "_fetch_denoiser_prequant": lambda self, *a, **k: None,
+        "_cache_file_bytes": staticmethod(lambda repo, f: on_disk.get((repo, f), 0)),
+        "_hub_cache_repo_dirs": staticmethod(lambda repo: []),
+        # What the old scoped scan saw in the mirror: the diffusers folders only.
+        "_cache_bytes": staticmethod(lambda repo, **k: sum(base_files.values()) if repo == _FP8_REPO else 0),
+    }.items():
+        monkeypatch.setattr(DiffusionBackend, name, value)
+    monkeypatch.setattr(dmod, "_assert_base_repo_accessible", lambda *a, **k: None)
+    monkeypatch.setattr(dmod, "prefer_ungated_mirror", lambda b, *a, **k: _FP8_REPO if b == base else b)
+    monkeypatch.setattr(dmod, "assert_flux2_pick_compatible", lambda *a, **k: None)
+    monkeypatch.setattr(dmod, "assert_pick_is_not_speech", lambda *a, **k: None)
+    seen = []
+    monkeypatch.setattr(DiffusionBackend, "load_pipeline", lambda self, **kw: seen.append(self.load_progress()))
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(repo_id = base, base_repo = None)
+    backend._load_token = 7
+    backend._run_load(_load_token = 7, repo_id = base, model_kind = "pipeline")
+    expected = sum(base_files.values()) + dit[2]
+    assert (seen[0]["phase"], seen[0]["bytes_downloaded"], seen[0]["bytes_total"]) == (
+        "finalizing",
+        expected,
+        expected,
+    )

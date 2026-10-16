@@ -425,6 +425,41 @@ def _record_revision(out: Optional[dict[str, str]], repo_id: str, info: Any) -> 
         out[repo_id] = sha
 
 
+def _planned_progress_files(
+    repo_id: str,
+    gguf_filename: Optional[str],
+    *,
+    kind: str,
+    base: str,
+    fetch_base: str,
+    base_files: Sequence[str],
+    file_sizes: dict[str, dict[str, int]],
+    dit_prequant: Optional[tuple[str, str, int]] = None,
+    te_hub_files: Sequence[tuple[str, str, int]] = (),
+) -> tuple[tuple[str, str, int], ...]:
+    """``(repo, filename, size)`` for every file a diffusers load downloads, keyed by the repo the bytes LAND in: the
+    selected checkpoint, the base files under the repo they are fetched from, the hosted prequant denoiser and the
+    pre-cast encoders. One file named twice (a combined repo, a prequant in the companion repo) is listed once. The
+    single source of a load's expected_bytes and of the progress scan."""
+    out: dict[tuple[str, str], tuple[str, str, int]] = {}
+
+    def add(repo: Optional[str], name: Optional[str], size: Any) -> None:
+        if not repo or not name or _is_local_path(repo):
+            return
+        out.setdefault((repo.lower(), name), (repo, name, int(size or 0)))
+
+    if kind != "pipeline" and gguf_filename:
+        add(repo_id, gguf_filename, (file_sizes.get(repo_id) or {}).get(gguf_filename, 0))
+    base_sizes = file_sizes.get(base) or file_sizes.get(repo_id if kind == "pipeline" else base) or {}
+    for name in base_files:
+        add(fetch_base or base, name, base_sizes.get(name, 0))
+    if dit_prequant is not None:
+        add(dit_prequant[0], dit_prequant[1], dit_prequant[2])
+    for repo, name, size in te_hub_files:
+        add(repo, name, size)
+    return tuple(out.values())
+
+
 def _listing_extra(listing_repo: str, rfilename: str) -> bool:
     """A file an artifact mirror ships beside the upstream folders that no pipeline load reads (its sample renders);
     the root checkpoints are already excluded by every listing filter's top-level rule."""
@@ -1259,6 +1294,10 @@ class _LoadingState:
     # The single file this load reads from ``repo_id``, so progress through an artifact mirror counts that one
     # checkpoint rather than every sibling quant cached beside it.
     gguf_filename: Optional[str] = None
+    # ``(repo, filename, size)`` for every file this load downloads, from ``_planned_progress_files``: the ONE answer
+    # to "which files of which repos does this load count", which expected_bytes is the sum of and load_progress
+    # scans. Empty when the size estimate failed; load_progress then keeps its repo-level scan.
+    planned_files: tuple[tuple[str, str, int], ...] = ()
     # (expected_bytes, downloaded) once every expected byte was on disk.
     finalized_scan: Optional[tuple[int, int]] = None
 
@@ -4074,6 +4113,7 @@ class DiffusionBackend:
             resident_sizes: list[tuple[str, int]] = []
             skipped_transformer_files: list[str] = []
             fetch_repos: dict[str, str] = {}
+            planned_sizes: dict[str, dict[str, int]] = {}
             expected, base_files = self._estimate_download_bytes(
                 kwargs["repo_id"],
                 kwargs.get("gguf_filename"),
@@ -4100,6 +4140,7 @@ class DiffusionBackend:
                 local_files_only = local_files_only,
                 resident_file_sizes_out = resident_sizes,
                 fetch_repos_out = fetch_repos,
+                file_sizes_out = planned_sizes,
             )
             # An OPERATOR'S OWN checkpoint has no Hub entry, so the plan drops no shards and the seed costs no bytes.
             # Suppressing it would ignore the file the load was asked to use and quantise the released bf16 shards in
@@ -4195,10 +4236,26 @@ class DiffusionBackend:
                 raise RuntimeError(shortfall)
             # Outside the lock: a disk scan, and nothing of ours has written to the artifact repo yet.
             asset_baseline = self._cache_bytes(dit_prequant[0]) if skip_transformer_weights else 0
+            planned_files = _planned_progress_files(
+                kwargs["repo_id"],
+                kwargs.get("gguf_filename"),
+                kind = kind,
+                base = base,
+                fetch_base = fetch_base,
+                base_files = base_files,
+                file_sizes = planned_sizes,
+                dit_prequant = dit_prequant,
+                te_hub_files = te_hub_files,
+            )
             with self._load_cancel_lock:
                 if self._load_token == token and self._loading is not None:
                     self._loading.base_repo = base
                     self._loading.fetch_repo = fetch_base
+                    # One list for both numbers, so they cannot disagree. Used only when it accounts for the whole
+                    # estimate: a total that came back without per-file sizes keeps the repo-level scan.
+                    planned_total = sum(size for _r, _n, size in planned_files)
+                    if planned_total and planned_total == expected:
+                        self._loading.planned_files = planned_files
                     self._loading.expected_bytes = expected
                     if skip_transformer_weights:
                         # Claimed before a byte moves. File entry first: load_progress reads lock-free.
@@ -4314,6 +4371,9 @@ class DiffusionBackend:
             # Nothing left to download: another tree walk only holds the GIL the load thread needs.
             return _progress("finalizing", finalized[1], finalized[0], 1.0)
 
+        if loading.planned_files and sum(size for _r, _n, size in loading.planned_files) > 0:
+            downloaded = self._planned_progress_bytes(loading.planned_files)
+            return self._progress_from(loading, downloaded)
         # Sum checkpoint + companion cache, scanning the repo the bytes LAND in (the mirror when one was swapped in),
         # else a mirrored companion download reads as zero and the bar sits still.
         companion = loading.fetch_repo or loading.base_repo
@@ -4351,6 +4411,10 @@ class DiffusionBackend:
                 size,
                 self._cache_file_bytes(repo, filename) + max(0, self._cache_bytes(repo) - baseline),
             )
+        return self._progress_from(loading, downloaded)
+
+    @staticmethod
+    def _progress_from(loading: "_LoadingState", downloaded: int) -> dict[str, Any]:
         expected = loading.expected_bytes
         # Downloads done, still finalizing. The cache scan can exceed the estimate, so clamp to 100%.
         if expected > 0 and downloaded >= expected * 0.999:
@@ -5793,6 +5857,35 @@ class DiffusionBackend:
             except OSError:
                 continue  # not in this root / broken symlink / unreadable
         return best
+
+    @staticmethod
+    def _planned_progress_bytes(planned: Sequence[tuple[str, str, int]]) -> int:
+        """Bytes on disk of exactly the files ``_planned_progress_files`` chose. Each finished file counts up to its
+        planned size (its largest copy across cache roots); a repo's ``*.incomplete`` blobs are the file it is
+        writing right now, capped so the repo never counts more than its planned files. Sibling quants, sample
+        renders, root checkpoints and other schemes already in the same repo are simply not in the list."""
+        by_repo: dict[str, list[tuple[str, int]]] = {}
+        for repo, name, size in planned:
+            by_repo.setdefault(repo, []).append((name, int(size or 0)))
+        total = 0
+        for repo, files in by_repo.items():
+            planned_total = sum(size for _n, size in files)
+            done = sum(
+                min(size, DiffusionBackend._cache_file_bytes(repo, name)) if size else 0
+                for name, size in files
+            )
+            in_flight = 0
+            for repo_dir in DiffusionBackend._hub_cache_repo_dirs(repo):
+                try:
+                    in_flight += sum(
+                        entry.stat().st_size
+                        for entry in (repo_dir / "blobs").iterdir()
+                        if entry.name.endswith(".incomplete")
+                    )
+                except OSError:
+                    continue
+            total += min(planned_total, done + in_flight)
+        return total
 
     @staticmethod
     def _companion_progress_bytes(repo_id: str) -> int:
