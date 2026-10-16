@@ -258,7 +258,7 @@ async def one_case(
     # layout snapshot. Still a real browser pointer click, not a dispatched DOM event.
     await page.locator('[data-role="assistant"]').last.get_by_role(
         "button", name = "Copy", exact = True
-    ).click(timeout = 5000)
+    ).first.click(timeout = 5000)
     await until(page, f"n => ({FACTS_JS})().targetClicks > n", 2000, arg = control["targetClicks"])
     counted = (await page.evaluate(FACTS_JS))["targetClicks"] - control["targetClicks"]
     if counted != 1:
