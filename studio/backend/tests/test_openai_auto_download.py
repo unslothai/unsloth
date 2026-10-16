@@ -1842,6 +1842,48 @@ def test_a_sibling_build_stem_is_not_the_resident_one(monkeypatch):
         asyncio.run(inference_route._reject_unservable_model("org/model:beta-Q4_K_M", _Req()))
 
 
+def test_a_withheld_build_is_not_admitted_through_the_advertised_folder(monkeypatch):
+    entry = resolver._LocalGgufEntry(
+        "org/model", "/models/model", ("Q4_K_M",), withheld = ("beta-q4_k_m",), exact_builds = True
+    )
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/model": entry}))
+    loaded = _Loaded("org/model", "Q4_K_M")
+    loaded.gguf_path = "/models/model/alpha-Q4_K_M.gguf"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    monkeypatch.setattr(inference_route, "_advertised_local_path", lambda name: "/models/model")
+    monkeypatch.setattr(inference_route, "_unavailable_model_message", _fake_unavailable_message)
+
+    with pytest.raises(HTTPException):
+        asyncio.run(inference_route._reject_unservable_model("org/model:beta-Q4_K_M", _Req()))
+
+
+def test_a_rekeyed_quant_directory_build_is_admitted_against_its_resident(monkeypatch):
+    entry = resolver._LocalGgufEntry(
+        "org/model",
+        "/models/model",
+        ("Q4_K_M",),
+        build_aliases = (("q4_k_m/beta-q4_k_m", "Q4_K_M"),),
+        exact_builds = True,
+    )
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/model": entry}))
+    loaded = _Loaded("org/model", "Q4_K_M")
+    loaded.gguf_path = "/models/model/Q4_K_M/beta-Q4_K_M.gguf"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    monkeypatch.setattr(inference_route, "_unavailable_model_message", _fake_unavailable_message)
+
+    asyncio.run(inference_route._reject_unservable_model("org/model:Q4_K_M/beta-Q4_K_M", _Req()))
+
+
 def test_a_remote_tag_that_names_no_quant_picks_the_preferred_one(hub):
     # ":latest" and ":8b" name no quant, so remote admission must default-select like a
     # bare repo id (as the local resolver does) instead of 404ing on a non-quant.

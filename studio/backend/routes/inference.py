@@ -11000,6 +11000,7 @@ async def _reject_unservable_model(
     from core.inference.local_model_resolver import (
         index_is_built,
         local_gguf_pinned_variant,
+        local_gguf_withheld,
         recently_downloaded,
         resolve_local_gguf,
         warm_index_soon,
@@ -11053,11 +11054,15 @@ async def _reject_unservable_model(
                 warm_index_soon()
                 still_indexing = True
                 resolved = None
-        if resolved is not None and not quantified:
+        if resolved is not None:
+            # canonical even for a quant-shaped key: a saved build key can be re-keyed
             pinned_variant = local_gguf_pinned_variant(requested_model, allow_scan = False)
             if pinned_variant is not None:
                 variant = pinned_variant
                 quantified = True
+        elif local_gguf_withheld(requested_model):
+            # names a build that cannot be served, so no sibling may answer for it
+            quantified = True
         # A manual load stores the on-disk path the resolver advertises under an alias,
         # so match on the path too. Quants of one repo share a directory, so the path
         # alone cannot tell them apart: without the variant check an explicit :Q8_0
