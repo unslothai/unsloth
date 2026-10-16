@@ -252,7 +252,7 @@
 	--muted-base: oklch(0.9702 0 0);
 	--muted-foreground: oklch(0.5486 0 0);
 	/* Trace ink: muted, pulled toward the page so the answer stands apart. */
-	--trace-fade: 15%;
+	--trace-fade: 7%;
 	/* Hover/active washes are neutral grey (matches the sidebar), not the
 	   brand green; green stays on primary controls only. */
 	--accent-base: #ececec;
@@ -470,7 +470,7 @@
 	/* Secondary text: settings descriptions, empty states, captions.
 	   Under the ink, still ~7:1 on the dialog surface. */
 	--muted-foreground: #b0b0b0;
-	--trace-fade: 24%;
+	--trace-fade: 13%;
 	/* Shared hover tone: one step over --popover. */
 	--accent-base: #3a3a3a;
 	--accent-foreground-base: #fcfcfc;
@@ -4563,7 +4563,7 @@ html[data-chat-font] .aui-root {
 
 	.aui-md-table-dialog {
 		margin-block: 0;
-		font-size: 1rem;
+		font-size: calc(1rem * var(--ui-font-scale, 1));
 	}
 
 	/* Chat: use the app sans stack for UI + prose. */
@@ -6334,7 +6334,8 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 }
 
 .unsloth-files-panel {
-	@apply relative mb-2 flex w-full flex-col gap-5 overflow-hidden rounded-[24px] px-4 pt-4 pb-6;
+	/* pt-3.5: the 28px Add files pill sits in the 32px header row, so this keeps it 16px from the top edge. */
+	@apply relative mb-2 flex w-full flex-col gap-5 overflow-hidden rounded-[24px] px-4 pt-3.5 pb-6;
 	container: files-panel / inline-size;
 	font-family: var(--font-sans);
 	background-color: #ffffff;
@@ -6388,7 +6389,8 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	display: none;
 }
 .unsloth-files-panel[data-collapsed="true"] {
-	@apply gap-2.5 pt-3 pb-3;
+	/* pt-2.5 + the 32px header row's 2px around the Add files pill = the pills' 12px below. */
+	@apply gap-2.5 pt-2.5 pb-3;
 }
 /* Dropdown-surface look. Hover washes over the solid fill, never replaces it (it would turn see-through). */
 .unsloth-files-panel-show-all {
@@ -6425,7 +6427,8 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 }
 
 .unsloth-files-panel-action {
-	@apply inline-flex h-7 shrink-0 items-center rounded-full border px-3 text-ui-12 text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50;
+	/* pt-px: centred by its line box, the cap-height text sits half a pixel high. */
+	@apply inline-flex h-7 shrink-0 items-center rounded-full border px-3 pt-px text-ui-12 text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50;
 	border-color: color-mix(in oklab, var(--foreground) 14%, transparent);
 }
 .unsloth-files-panel-action:hover {
@@ -6458,4 +6461,15 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 }
 .unsloth-files-panel-icon-btn:hover {
 	background-color: color-mix(in oklab, var(--foreground) 6%, transparent);
+}
+
+/* Inside thinking and tool traces, muted ink and chip edges sit a shade nearer the answer's ink:
+   lighter in dark mode, darker in light. :where keeps hover:text-foreground winning. */
+@layer utilities {
+	:where(.aui-reasoning-root, .aui-tool-fallback-root, .aui-tool-group-root) .text-muted-foreground {
+		color: color-mix(in oklab, var(--muted-foreground), var(--foreground) 15%);
+	}
+	:where(.aui-reasoning-root, .aui-tool-fallback-root, .aui-tool-group-root) [data-slot="badge"] {
+		border-color: color-mix(in oklab, var(--border), var(--foreground) 15%);
+	}
 }

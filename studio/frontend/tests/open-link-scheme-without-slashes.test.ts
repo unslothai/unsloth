@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import { isSafeNavigableSourceUrl } from "../src/features/chat/utils/document-citation-source.ts";
 
 // open-link.ts imports `@/lib/api-base`; load it as the web build (isTauri = false) with window.open recorded.

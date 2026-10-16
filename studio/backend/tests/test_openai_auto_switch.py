@@ -319,8 +319,8 @@ async def _noop_reject(*_args, **_kwargs):
     return None
 
 
-def _run_hook(model = "some/model"):
-    asyncio.run(inference_route._maybe_auto_switch_model(model, object(), "tester"))
+def _run_hook(model = "some/model", **kwargs):
+    asyncio.run(inference_route._maybe_auto_switch_model(model, object(), "tester", **kwargs))
 
 
 def test_flag_off_never_loads(monkeypatch):
@@ -4410,6 +4410,8 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         audio_preflight = None,
         image_preflight = None,
         tool_images_only = False,
+        serves_npu = False,
+        npu_request_check = None,
     ):
         captured.update(
             require_vision = require_vision,
@@ -9921,6 +9923,8 @@ def test_a_video_request_labels_the_switch_refusal_video(monkeypatch):
         audio_preflight = None,
         image_preflight = None,
         tool_images_only = False,
+        serves_npu = False,
+        npu_request_check = None,
     ):
         captured.update(
             require_vision = require_vision,
@@ -12361,6 +12365,281 @@ def test_tensor_split_requires_matching_gpu_ids_at_the_settings_boundary(ids):
         settings_route.ModelOverridePayload(
             model_id = "org/split-GGUF", gpu_ids = ids, tensor_split = [3, 1]
         )
+
+
+_NPU_MODEL = "lemonade:qwen3-0.6b-FLM"
+
+
+def test_an_npu_model_named_by_a_request_switches_when_on(monkeypatch):
+    # The GGUF resolver cannot find an NPU id, so this used to 404 even with the switch on.
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    _run_hook(_NPU_MODEL, serves_npu = True)
+    assert [call.model_path for call in rec.calls] == [_NPU_MODEL]
+
+
+def test_an_npu_switch_loads_with_the_saved_context_length(monkeypatch):
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    monkeypatch.setattr(
+        settings,
+        "get_model_override",
+        lambda model_id: {"max_seq_length": 16384} if model_id == _NPU_MODEL else {},
+    )
+    _run_hook(_NPU_MODEL, serves_npu = True)
+    assert [(call.model_path, call.max_seq_length) for call in rec.calls] == [(_NPU_MODEL, 16384)]
+
+
+def test_a_deferred_npu_switch_leaves_the_model_preview_owned(monkeypatch):
+    # Chat defers its claim and can still reject after the switch (n > 1 on the NPU); unmarked, the
+    # NPU model then read as Studio-owned and every public preview got 503.
+    _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    monkeypatch.setattr(inference_route, "_preview_resident_ident", None)
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            _NPU_MODEL, object(), "tester", claim_resident = False, serves_npu = True
+        )
+    )
+    assert inference_route._get_preview_resident() == _NPU_MODEL
+
+
+def test_an_npu_switch_keeps_the_setting_read_on_entry(monkeypatch):
+    # Turned off mid-request, a second read loaded nothing and the resident GGUF answered instead.
+    _, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    state = {"on": True}
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: state["on"])
+    refuse = inference_route._refuse_unservable_npu_switch
+
+    async def _refuse_then_turn_off(*args, **kwargs):
+        await refuse(*args, **kwargs)
+        state["on"] = False
+
+    monkeypatch.setattr(inference_route, "_refuse_unservable_npu_switch", _refuse_then_turn_off)
+    _run_hook(_NPU_MODEL, serves_npu = True)
+    assert [call.model_path for call in rec.calls] == [_NPU_MODEL]
+
+
+def test_an_npu_model_named_with_the_switch_off_says_how_to_load_it(monkeypatch):
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None, enabled = False)
+    with pytest.raises(HTTPException) as excinfo:
+        _run_hook(_NPU_MODEL)
+    assert excinfo.value.status_code == 404
+    assert "Switch model by request" in str(excinfo.value.detail)
+    assert rec.calls == []
+
+
+def test_a_resident_npu_model_is_not_reloaded(monkeypatch):
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    monkeypatch.setattr(inference_route, "_loaded_satisfies", lambda model: model == _NPU_MODEL)
+    _run_hook(_NPU_MODEL, serves_npu = True)
+    assert rec.calls == []
+
+
+def test_messages_with_an_npu_model_loaded_names_it(monkeypatch):
+    # "No GGUF model loaded" read as "nothing is loaded" while the NPU model was serving.
+    from models.inference import AnthropicMessagesRequest
+
+    _wired(monkeypatch, _FakeBackend(None), None, enabled = False)
+    monkeypatch.setattr(inference_route, "_automatic_model_load_may_run", lambda: False)
+    monkeypatch.setattr(
+        inference_route,
+        "_resident_npu_model",
+        lambda: SimpleNamespace(model_path = _NPU_MODEL),
+    )
+    request = SimpleNamespace(
+        state = SimpleNamespace(), url = SimpleNamespace(path = "/v1/messages"), method = "POST"
+    )
+    payload = AnthropicMessagesRequest(max_tokens = 16, messages = [{"role": "user", "content": "hi"}])
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.anthropic_messages(payload, request, "tester"))
+    assert excinfo.value.status_code == 400
+    assert _NPU_MODEL in excinfo.value.detail
+    assert "No GGUF model loaded" not in excinfo.value.detail
+
+
+def test_messages_with_switching_on_and_an_npu_model_loaded_names_it(monkeypatch):
+    # The early check is skipped once automatic loads may run; the later one must say the same.
+    from models.inference import AnthropicMessagesRequest
+
+    _wired(monkeypatch, _FakeBackend(None), None, enabled = True)
+    monkeypatch.setattr(
+        inference_route,
+        "_resident_npu_model",
+        lambda: SimpleNamespace(model_path = _NPU_MODEL, id = "qwen3-0.6b-FLM"),
+    )
+    monkeypatch.setattr(inference_route, "_loaded_satisfies", lambda model: model == _NPU_MODEL)
+    request = SimpleNamespace(
+        state = SimpleNamespace(), url = SimpleNamespace(path = "/v1/messages"), method = "POST"
+    )
+    payload = AnthropicMessagesRequest(
+        model = _NPU_MODEL, max_tokens = 16, messages = [{"role": "user", "content": "hi"}]
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.anthropic_messages(payload, request, "tester"))
+    assert excinfo.value.status_code == 400
+    assert _NPU_MODEL in str(excinfo.value.detail)
+
+
+def _npu_catalog_entry(
+    monkeypatch,
+    *,
+    vision,
+    tools = False,
+):
+    from core.inference import npu_backend as nb
+    class _Npu:
+        def loadable_model(self, model_id):
+            return SimpleNamespace(id = model_id, vision = vision, tools = tools)
+
+    monkeypatch.setattr(nb, "get_npu_backend", lambda: _Npu())
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "words"),
+    [
+        ({"serves_npu": False}, "serves /v1/chat/completions only"),
+        ({"gguf_only": True}, "serves /v1/chat/completions only"),
+        ({"require_audio_input": True}, "takes no audio or video input"),
+        ({"require_video": True}, "takes no audio or video input"),
+        ({"require_vision": True}, "cannot read images"),
+    ],
+)
+def test_a_request_the_npu_model_cannot_serve_never_switches(monkeypatch, kwargs, words):
+    # Loading first evicted the resident GGUF, then the endpoint failed on the NPU model anyway.
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    _npu_catalog_entry(monkeypatch, vision = False)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                _NPU_MODEL, object(), "tester", **{"serves_npu": True, **kwargs}
+            )
+        )
+    assert excinfo.value.status_code == 400
+    assert words in str(excinfo.value.detail)
+    assert rec.calls == []
+    assert backend.model_identifier == "unsloth/A-GGUF"
+
+
+@pytest.mark.parametrize(
+    ("fields", "param"),
+    [
+        (
+            {"tools": [{"type": "function", "function": {"name": "f", "parameters": {}}}]},
+            "tools",
+        ),
+        ({"n": 2}, "n"),
+    ],
+)
+def test_a_chat_request_the_npu_model_would_refuse_never_switches(monkeypatch, fields, param):
+    # NPU chat checked these only after the switch had already evicted the resident GGUF.
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    _npu_catalog_entry(monkeypatch, vision = False, tools = False)
+    payload = _chat_request(model = _NPU_MODEL, **fields)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert excinfo.value.status_code == 400
+    assert param in str(excinfo.value.detail)
+    assert rec.calls == []
+    assert backend.model_identifier == "unsloth/A-GGUF"
+
+
+@pytest.mark.parametrize("route", ["/v1/responses", "/v1/messages"])
+def test_a_route_the_npu_model_cannot_serve_never_switches_to_it(monkeypatch, route):
+    # Both routes relax gguf_only for in-process models, so the NPU switch evicted the GGUF first.
+    from starlette.requests import Request
+
+    from models.inference import AnthropicMessagesRequest
+
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    _npu_catalog_entry(monkeypatch, vision = True, tools = True)
+    request = Request({"type": "http", "headers": [], "path": route, "method": "POST"})
+    if route == "/v1/responses":
+        payload = ResponsesRequest(model = _NPU_MODEL, stream = True, input = "hi")
+        call = inference_route.openai_responses(payload, request, "tester")
+    else:
+        payload = AnthropicMessagesRequest(
+            model = _NPU_MODEL, max_tokens = 16, messages = [{"role": "user", "content": "hi"}]
+        )
+        call = inference_route.anthropic_messages(payload, request, "tester")
+    with pytest.raises(Exception) as excinfo:
+        asyncio.run(call)
+    assert rec.calls == []
+    assert backend.model_identifier == "unsloth/A-GGUF"
+    assert isinstance(excinfo.value, HTTPException) and excinfo.value.status_code == 400
+    assert "serves /v1/chat/completions only" in str(excinfo.value.detail)
+
+
+def test_an_mcp_image_request_never_switches_to_an_npu_model(monkeypatch):
+    # NPU chat runs no MCP tool loop, so it refused the image only after evicting the GGUF.
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    _npu_catalog_entry(monkeypatch, vision = True, tools = True)
+
+    async def _an_mcp_image(*_args):
+        return object()
+
+    monkeypatch.setattr(inference_route, "_request_mcp_image", _an_mcp_image)
+    payload = _chat_request(model = _NPU_MODEL)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert excinfo.value.status_code == 400
+    assert "MCP" in str(excinfo.value.detail)
+    assert rec.calls == []
+    assert backend.model_identifier == "unsloth/A-GGUF"
+
+
+def test_an_image_request_switches_to_a_vision_npu_model(monkeypatch):
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    _npu_catalog_entry(monkeypatch, vision = True)
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            _NPU_MODEL, object(), "tester", require_vision = True, serves_npu = True
+        )
+    )
+    assert [call.model_path for call in rec.calls] == [_NPU_MODEL]
+
+
+def test_a_cancelled_request_never_switches_to_an_npu_model(monkeypatch):
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    cancel = threading.Event()
+    cancel.set()
+    request = SimpleNamespace(state = SimpleNamespace(generation_cancel_event = cancel))
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(_NPU_MODEL, request, "tester", serves_npu = True)
+        )
+    assert excinfo.value.status_code == 409
+    assert rec.calls == []
+
+
+def test_a_tool_result_image_never_switches_to_a_text_only_npu_model(monkeypatch):
+    # A text-only GGUF reads a tool-result image as a note; NPU chat rejects it after the load.
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    _npu_catalog_entry(monkeypatch, vision = False)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                _NPU_MODEL,
+                object(),
+                "tester",
+                require_vision = True,
+                tool_images_only = True,
+                serves_npu = True,
+            )
+        )
+    assert "cannot read images" in str(excinfo.value.detail)
+    assert rec.calls == []
+
+
+def test_an_npu_switch_counts_as_a_queued_switch_while_it_loads(monkeypatch):
+    # Uncounted, a GGUF switch waiting on the lock this one holds kept its drain from finishing.
+    _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    seen = []
+
+    async def _load(*_args, **_kwargs):
+        seen.append(inference_route._switch_waiter_count())
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _load)
+    _run_hook(_NPU_MODEL, serves_npu = True)
+    assert seen == [1]
+    assert inference_route._switch_waiter_count() == 0
 
 
 @pytest.mark.parametrize("reload", [False, True], ids = ["switch", "idle reload"])

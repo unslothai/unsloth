@@ -9,22 +9,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import sys
 import torch
 from unsloth_zoo.utils import Version
+from . import utils as _kernel_utils
 from .utils import (
     _has_active_dora_adapter,
     _has_active_lora_bias,
     _has_multiple_active_adapters,
     addmm_,
     fast_dequantize,
-    QUANT_STATE,
+    _base_quant_state,
     get_lora_parameters,
     get_lora_parameters_bias,
     matmul_lora,
     torch_amp_custom_fwd,
     torch_amp_custom_bwd,
 )
+from . import rms_layernorm as _rms_layernorm
 
 _is_compiling = torch.compiler.is_compiling
 
@@ -71,6 +74,167 @@ def _has_activation_fake_quantizer(proj):
         ):
             return True
     return False
+
+
+# lora_dropout > 0 and lora_bias = True run inside the fused kernels; "0" restores the PEFT fallback.
+FUSED_LORA_DROPOUT = os.environ.get("UNSLOTH_FUSED_LORA_DROPOUT", "1") != "0"
+FUSED_LORA_BIAS = os.environ.get("UNSLOTH_FUSED_LORA_BIAS", "1") != "0"
+
+
+def _active_lora_adapter(proj):
+    if getattr(proj, "disable_adapters", True) or getattr(proj, "merged", False):
+        return None
+    adapter = getattr(proj, "active_adapters", None)
+    if adapter is None:
+        adapter = getattr(proj, "active_adapter", "default")
+    if not isinstance(adapter, str):
+        adapter = adapter[0]
+    return adapter if adapter in proj.lora_A else None
+
+
+def _lora_dropout_p(
+    proj,
+    X,
+    adapter = False,
+):
+    """Dropout probability of the active adapter, 0.0 when it is a no-op, None when only PEFT can run it."""
+    if adapter is False:
+        adapter = _active_lora_adapter(proj)
+    dropout = getattr(proj, "lora_dropout", None)
+    if adapter is None or dropout is None or adapter not in dropout:
+        return 0.0
+    dropout = dropout[adapter]
+    if isinstance(dropout, torch.nn.Identity) or not dropout.training:
+        return 0.0
+    if (
+        type(dropout) is not torch.nn.Dropout
+        or dropout.inplace
+        or not FUSED_LORA_DROPOUT
+        or X.device.type not in ("cuda", "xpu", "cpu")
+    ):
+        return None
+    p = float(dropout.p)
+    if p == 0:
+        return 0.0
+    return p if p < 1 else None
+
+
+def _lora_B_bias(proj):
+    adapter = _active_lora_adapter(proj)
+    if adapter is None:
+        return None
+    return proj.lora_B[adapter].bias
+
+
+def lora_bias_blocks_fused(proj):
+    return not FUSED_LORA_BIAS and _has_active_lora_bias(proj)
+
+
+def _is_plain_lora(proj):
+    # One enabled, unmerged adapter with no dropout module and no lora_B bias (the default LoRA config).
+    # Reads PEFT's instance state directly: getattr through nn.Module / properties costs more than the
+    # routing it guards. Anything else (or other PEFT internals) takes the general path below.
+    state = proj.__dict__
+    adapter = state.get("_active_adapter")
+    if type(adapter) is not str:
+        if type(adapter) is not list or len(adapter) != 1:
+            return False
+        adapter = adapter[0]
+    if state.get("_disable_adapters", True) or state.get("merged_adapters"):
+        return False
+    modules = proj._modules
+    dropout = modules.get("lora_dropout")
+    lora_B = modules.get("lora_B")
+    if dropout is None or lora_B is None:
+        return False
+    lora_B = lora_B._modules.get(adapter)
+    return (
+        type(dropout._modules.get(adapter)) is torch.nn.Identity
+        and lora_B is not None
+        and lora_B._parameters.get("bias") is None
+    )
+
+
+def _lora_dropout_and_bias(projs, X):
+    """(dropout probabilities or None, lora_B biases) for the fused kernels, or None to use PEFT."""
+    for proj in projs:
+        if not _is_plain_lora(proj):
+            break
+    else:
+        return None, (None,) * len(projs)
+    dropout_p, biases = [], []
+    for proj in projs:
+        adapter = _active_lora_adapter(proj)
+        if adapter is None:
+            # Enabled adapter missing from this projection: PEFT runs the base layer alone.
+            if not getattr(proj, "disable_adapters", True) and not getattr(proj, "merged", False):
+                return None
+            dropout_p.append(0.0)
+            biases.append(None)
+            continue
+        p = _lora_dropout_p(proj, X, adapter)
+        if p is None:
+            return None
+        dropout_p.append(p)
+        biases.append(proj.lora_B[adapter].bias)
+    if any(lora_bias_blocks_fused(proj) for proj in projs):
+        return None
+    return (tuple(dropout_p) if any(dropout_p) else None), tuple(biases)
+
+
+def _dropout_forward(X, p):
+    # Same RNG draws and rounding as torch.nn.Dropout under autograd: native_dropout on CUDA / XPU
+    # (ATen's fused path), a bernoulli_ noise tensor in X's dtype on CPU.
+    if not p:
+        return X, None
+    if X.device.type == "cpu":
+        noise = torch.empty_like(X).bernoulli_(1 - p)
+        mask = noise.bool()
+        return X * noise.div_(1 - p), mask
+    return torch.native_dropout(X, p, True)
+
+
+def _dropout_replay(
+    T,
+    mask,
+    p,
+    S = 1.0,
+):
+    # S * T * mask / (1 - p): with S = 1 exactly the dropout forward's output, and the dropout backward.
+    if mask.device.type == "cpu":
+        T = T * mask.to(T.dtype).div_(1 - p)
+        return T if S == 1 else T.mul_(S)
+    return torch.ops.aten.native_dropout_backward(T, mask, S / (1.0 - p))
+
+
+def _matmul_lora_ext(X, X_lora, W, W_quant, A, B, S, bias):
+    # matmul_lora with the LoRA branch reading X_lora (X after dropout, or X itself) plus lora_B's bias.
+    if A is None or (X_lora is X and bias is None):
+        return matmul_lora(X, W, W_quant, A, B, S)
+    out = matmul_lora(X, W, W_quant, None, None, None)
+    dtype = X.dtype
+    XA = torch.matmul(X_lora.reshape(-1, X_lora.shape[-1]), A.to(dtype).t())
+    out2d = out.view(-1, out.shape[-1])
+    if bias is None:
+        addmm_(out2d, XA, B.to(dtype).t(), alpha = S)
+    else:
+        # PEFT's rounding order: (lora_B(x) + bias) * scaling, then + base. No add(alpha = S): Inductor
+        # (torch 2.13) miscompiles it traced inside these Functions.
+        out2d.add_(torch.addmm(bias.to(dtype), XA, B.to(dtype).t()).mul_(S))
+    return out
+
+
+def _add_lora_dX(dX, y_dB, A, S, mask, p):
+    # dX += S * y_dB @ A.t(), through the dropout mask when the LoRA branch saw a dropped out X.
+    if mask is None:
+        addmm_(dX, y_dB, A.t(), alpha = S)
+    else:
+        dX.add_(_dropout_replay(y_dB @ A.t(), mask, p, S))
+
+
+def _lora_bias_grad(dY, S):
+    # Autograd casts it to the bias dtype.
+    return dY.sum(0, dtype = torch.float32).mul_(S)
 
 
 def _may_overwrite_input(X):
@@ -147,13 +311,32 @@ class LoRA_MLP(torch.autograd.Function):
         _forward_function,
         _backward_function,
         inplace = True,
+        dropout_p = None,
+        gateBias = None,
+        upBias = None,
+        downBias = None,
     ):
         dtype = X.dtype
 
-        e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
-        g = matmul_lora(X, upW, upW_quant, upA, upB, upS)
-        h = _forward_function(e, g)
-        i = matmul_lora(h, downW, downW_quant, downA, downB, downS)
+        if dropout_p is None and gateBias is None and upBias is None and downBias is None:
+            e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
+            g = matmul_lora(X, upW, upW_quant, upA, upB, upS)
+            h = _forward_function(e, g)
+            i = matmul_lora(h, downW, downW_quant, downA, downB, downS)
+            masks = (None, None, None)
+        else:
+            # Masks are drawn gate, up, down: the order PEFT's down(act(gate(X)) * up(X)) draws them in.
+            gate_p, up_p, down_p = dropout_p or (0.0, 0.0, 0.0)
+            Xd, gate_mask = _dropout_forward(X, gate_p)
+            e = _matmul_lora_ext(X, Xd, gateW, gateW_quant, gateA, gateB, gateS, gateBias)
+            Xd, up_mask = _dropout_forward(X, up_p)
+            g = _matmul_lora_ext(X, Xd, upW, upW_quant, upA, upB, upS, upBias)
+            del Xd
+            h = _forward_function(e, g)
+            hd, down_mask = _dropout_forward(h, down_p)
+            i = _matmul_lora_ext(h, hd, downW, downW_quant, downA, downB, downS, downBias)
+            del hd
+            masks = (gate_mask, up_mask, down_mask)
 
         ctx.custom_saved_tensors = (
             gateW,
@@ -167,8 +350,11 @@ class LoRA_MLP(torch.autograd.Function):
             downS,
             _backward_function,
         )
-        ctx.save_for_backward(gateA, gateB, upA, upB, downA, downB, X, e, g)
-        ctx.inplace = inplace and _may_overwrite_input(X)
+        ctx.save_for_backward(gateA, gateB, upA, upB, downA, downB, X, e, g, *masks)
+        # Only an opt-in UNSLOTH_RMSNORM_SAVE_OUTPUT norm marks its output; skip the check otherwise.
+        ctx.inplace = inplace and (not _rms_layernorm._SAVE_OUTPUT or _may_overwrite_input(X))
+        ctx.dropout_p = dropout_p or (0.0, 0.0, 0.0)
+        ctx.biases = (gateBias is not None, upBias is not None, downBias is not None)
         return i
 
     @staticmethod
@@ -186,7 +372,10 @@ class LoRA_MLP(torch.autograd.Function):
             downS,
             _backward_function,
         ) = ctx.custom_saved_tensors
-        gateA, gateB, upA, upB, downA, downB, X, e, g = ctx.saved_tensors
+        gateA, gateB, upA, upB, downA, downB, X, e, g, gate_mask, up_mask, down_mask = (
+            ctx.saved_tensors
+        )
+        gate_p, up_p, down_p = ctx.dropout_p
 
         batch, seq_len, hd = X.shape
         dY = dY.reshape(-1, dY.shape[-1])
@@ -215,11 +404,21 @@ class LoRA_MLP(torch.autograd.Function):
 
         if downW.dtype == torch.float8_e4m3fn:
             # Dequantize like gate / up: matmul_lora would send the FP8 weight to fp8_linear, quantizing dY to FP8.
-            DW = matmul_lora(dY, fast_dequantize(downW.t(), downW_quant), None, downB, downA, downS)
+            downW, downW_quant = fast_dequantize(downW.t(), downW_quant), None
         else:
-            DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
+            downW = downW.t()
+        if down_mask is None:
+            DW = matmul_lora(dY, downW, downW_quant, downB, downA, downS)
+        else:
+            # Only the LoRA branch saw the dropped out h, so only its gradient goes through the mask.
+            DW = matmul_lora(dY, downW, downW_quant, None, None, None)
+            down_mask = down_mask.view(-1, down_mask.shape[-1])
+            DW.add_(_dropout_replay((dY @ downB.t()) @ downA.t(), down_mask, down_p, downS))
+        del downW
         DW, e, g = _backward_function(DW, e, g)
         h, df, de = DW, e, g
+        if down_mask is not None:
+            h = _dropout_replay(h, down_mask, down_p)
 
         d_downA = torch.empty_like(downA)
         d_downB = torch.empty_like(downB)
@@ -235,25 +434,38 @@ class LoRA_MLP(torch.autograd.Function):
         up_dB = df @ upB.t()
         gate_dB = de @ gateB.t()
 
+        if up_mask is not None:
+            up_mask = up_mask.view(-1, hd)
+        if gate_mask is not None:
+            gate_mask = gate_mask.view(-1, hd)
+
         # d_upA = X.t() @ (df @ upB.t()), d_upB = (upA.t() @ X.t()) @ df, both scaled by upS.
-        d_upA.addmm_(X.t(), up_dB, alpha = upS, beta = 0)
-        d_upB.addmm_(upA.t() @ X.t(), df, alpha = upS, beta = 0)
+        Xd = X if up_mask is None else _dropout_replay(X, up_mask, up_p)
+        d_upA.addmm_(Xd.t(), up_dB, alpha = upS, beta = 0)
+        d_upB.addmm_(upA.t() @ Xd.t(), df, alpha = upS, beta = 0)
 
         # d_gateA = X.t() @ (de @ gateB.t()), d_gateB = (gateA.t() @ X.t()) @ de, both scaled by gateS.
-        d_gateA.addmm_(X.t(), gate_dB, alpha = gateS, beta = 0)
-        d_gateB.addmm_(gateA.t() @ X.t(), de, alpha = gateS, beta = 0)
+        Xd = X if gate_mask is None else _dropout_replay(X, gate_mask, gate_p)
+        d_gateA.addmm_(Xd.t(), gate_dB, alpha = gateS, beta = 0)
+        d_gateB.addmm_(gateA.t() @ Xd.t(), de, alpha = gateS, beta = 0)
+        del Xd
+
+        gate_has_bias, up_has_bias, down_has_bias = ctx.biases
+        d_gateBias = _lora_bias_grad(de, gateS) if gate_has_bias else None
+        d_upBias = _lora_bias_grad(df, upS) if up_has_bias else None
+        d_downBias = _lora_bias_grad(dY, downS) if down_has_bias else None
 
         # dX = matmul_lora(df, upW.t(), ...) + matmul_lora(de, gateW.t(), ...), expanded below.
         upW = fast_dequantize(upW.t(), upW_quant)
         # Eager only: AOT autograd rejects a backward mutating a forward input that requires grad.
         dX = torch.matmul(df, upW.t(), out = X if ctx.inplace and not _is_compiling() else None)
         del upW
-        addmm_(dX, up_dB, upA.t(), alpha = upS)
+        _add_lora_dX(dX, up_dB, upA, upS, up_mask, up_p)
 
         gateW = fast_dequantize(gateW.t(), gateW_quant)
         addmm_(dX, de, gateW.t())
         del gateW
-        addmm_(dX, gate_dB, gateA.t(), alpha = gateS)
+        _add_lora_dX(dX, gate_dB, gateA, gateS, gate_mask, gate_p)
 
         return (
             dX.view(batch, seq_len, hd),
@@ -275,6 +487,10 @@ class LoRA_MLP(torch.autograd.Function):
             None,
             None,
             None,
+            None,
+            d_gateBias,
+            d_upBias,
+            d_downBias,
         )
 
 
@@ -286,14 +502,18 @@ def apply_lora_mlp_swiglu(
     X,
     inplace = True,
 ):
-    if any(
+    projs = (self.gate_proj, self.up_proj, self.down_proj)
+    extras = None
+    if not any(
         _has_multiple_active_adapters(proj)
         or _has_active_dora_adapter(proj)
-        or _has_active_lora_bias(proj)
         or _has_activation_fake_quantizer(proj)
-        for proj in (self.gate_proj, self.up_proj, self.down_proj)
+        for proj in projs
     ):
+        extras = _lora_dropout_and_bias(projs, X)
+    if extras is None:
         return self.down_proj(self.act_fn(self.gate_proj(X)) * self.up_proj(X))
+    dropout_p, biases = extras
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
@@ -318,6 +538,8 @@ def apply_lora_mlp_swiglu(
         swiglu_fg_kernel,
         swiglu_DWf_DW_dfg_kernel,
         inplace,
+        dropout_p,
+        *biases,
     )
     return out
 
@@ -330,14 +552,18 @@ def apply_lora_mlp_geglu_exact(
     X,
     inplace = True,
 ):
-    if any(
+    projs = (self.gate_proj, self.up_proj, self.down_proj)
+    extras = None
+    if not any(
         _has_multiple_active_adapters(proj)
         or _has_active_dora_adapter(proj)
-        or _has_active_lora_bias(proj)
         or _has_activation_fake_quantizer(proj)
-        for proj in (self.gate_proj, self.up_proj, self.down_proj)
+        for proj in projs
     ):
+        extras = _lora_dropout_and_bias(projs, X)
+    if extras is None:
         return self.down_proj(self.act_fn(self.gate_proj(X)) * self.up_proj(X))
+    dropout_p, biases = extras
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
@@ -362,6 +588,8 @@ def apply_lora_mlp_geglu_exact(
         geglu_exact_forward_kernel,
         geglu_exact_backward_kernel,
         inplace,
+        dropout_p,
+        *biases,
     )
     return out
 
@@ -370,14 +598,18 @@ from .geglu import geglu_approx_forward_kernel, geglu_approx_backward_kernel
 
 
 def apply_lora_mlp_geglu_approx(self, X):
-    if any(
+    projs = (self.gate_proj, self.up_proj, self.down_proj)
+    extras = None
+    if not any(
         _has_multiple_active_adapters(proj)
         or _has_active_dora_adapter(proj)
-        or _has_active_lora_bias(proj)
         or _has_activation_fake_quantizer(proj)
-        for proj in (self.gate_proj, self.up_proj, self.down_proj)
+        for proj in projs
     ):
+        extras = _lora_dropout_and_bias(projs, X)
+    if extras is None:
         return self.down_proj(self.act_fn(self.gate_proj(X)) * self.up_proj(X))
+    dropout_p, biases = extras
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
@@ -401,6 +633,9 @@ def apply_lora_mlp_geglu_approx(self, X):
         downS,
         geglu_approx_forward_kernel,
         geglu_approx_backward_kernel,
+        True,
+        dropout_p,
+        *biases,
     )
     return out
 
@@ -457,6 +692,10 @@ class LoRA_QKV(torch.autograd.Function):
         VB,
         VS,
         inplace = True,
+        dropout_p = None,
+        QBias = None,
+        KBias = None,
+        VBias = None,
     ):
         dtype = X.dtype
 
@@ -466,9 +705,21 @@ class LoRA_QKV(torch.autograd.Function):
         X_for_matmul = X
         if X.dim() == 3:
             X_for_matmul = X.view(-1, X.shape[-1])
-        Q = matmul_lora(X_for_matmul, QW, QW_quant, QA, QB, QS)
-        K = matmul_lora(X_for_matmul, KW, KW_quant, KA, KB, KS)
-        V = matmul_lora(X_for_matmul, VW, VW_quant, VA, VB, VS)
+        if dropout_p is None and QBias is None and KBias is None and VBias is None:
+            Q = matmul_lora(X_for_matmul, QW, QW_quant, QA, QB, QS)
+            K = matmul_lora(X_for_matmul, KW, KW_quant, KA, KB, KS)
+            V = matmul_lora(X_for_matmul, VW, VW_quant, VA, VB, VS)
+            masks = (None, None, None)
+        else:
+            Q_p, K_p, V_p = dropout_p or (0.0, 0.0, 0.0)
+            Xd, Q_mask = _dropout_forward(X_for_matmul, Q_p)
+            Q = _matmul_lora_ext(X_for_matmul, Xd, QW, QW_quant, QA, QB, QS, QBias)
+            Xd, K_mask = _dropout_forward(X_for_matmul, K_p)
+            K = _matmul_lora_ext(X_for_matmul, Xd, KW, KW_quant, KA, KB, KS, KBias)
+            Xd, V_mask = _dropout_forward(X_for_matmul, V_p)
+            V = _matmul_lora_ext(X_for_matmul, Xd, VW, VW_quant, VA, VB, VS, VBias)
+            del Xd
+            masks = (Q_mask, K_mask, V_mask)
 
         # Restore original shape after matmul
         if len(orig_shape) == 3:
@@ -495,8 +746,12 @@ class LoRA_QKV(torch.autograd.Function):
             KB,
             VA,
             VB,
+            *masks,
         )
-        ctx.inplace = inplace and _may_overwrite_input(X)
+        # Only an opt-in UNSLOTH_RMSNORM_SAVE_OUTPUT norm marks its output; skip the check otherwise.
+        ctx.inplace = inplace and (not _rms_layernorm._SAVE_OUTPUT or _may_overwrite_input(X))
+        ctx.dropout_p = dropout_p or (0.0, 0.0, 0.0)
+        ctx.biases = (QBias is not None, KBias is not None, VBias is not None)
         return Q, K, V
 
     @staticmethod
@@ -511,7 +766,11 @@ class LoRA_QKV(torch.autograd.Function):
             KB,
             VA,
             VB,
+            Q_mask,
+            K_mask,
+            V_mask,
         ) = ctx.saved_tensors
+        Q_p, K_p, V_p = ctx.dropout_p
 
         batch, seq_len, hd = X.shape
         dQ = dQ.reshape(-1, dQ.shape[-1])
@@ -543,32 +802,45 @@ class LoRA_QKV(torch.autograd.Function):
         k_dB = dK @ KB.t()
         v_dB = dV @ VB.t()
 
+        Q_mask, K_mask, V_mask = (
+            None if mask is None else mask.view(-1, hd) for mask in (Q_mask, K_mask, V_mask)
+        )
+
         # d_QA = X.t() @ (dQ @ QB.t()), d_QB = (QA.t() @ X.t()) @ dQ, both scaled by QS; K and V below are
         # identical with their own scales.
-        d_QA.addmm_(X.t(), q_dB, alpha = QS, beta = 0)
-        d_QB.addmm_(QA.t() @ X.t(), dQ, alpha = QS, beta = 0)
+        Xd = X if Q_mask is None else _dropout_replay(X, Q_mask, Q_p)
+        d_QA.addmm_(Xd.t(), q_dB, alpha = QS, beta = 0)
+        d_QB.addmm_(QA.t() @ Xd.t(), dQ, alpha = QS, beta = 0)
 
-        d_KA.addmm_(X.t(), k_dB, alpha = KS, beta = 0)
-        d_KB.addmm_(KA.t() @ X.t(), dK, alpha = KS, beta = 0)
+        Xd = X if K_mask is None else _dropout_replay(X, K_mask, K_p)
+        d_KA.addmm_(Xd.t(), k_dB, alpha = KS, beta = 0)
+        d_KB.addmm_(KA.t() @ Xd.t(), dK, alpha = KS, beta = 0)
 
-        d_VA.addmm_(X.t(), v_dB, alpha = VS, beta = 0)
-        d_VB.addmm_(VA.t() @ X.t(), dV, alpha = VS, beta = 0)
+        Xd = X if V_mask is None else _dropout_replay(X, V_mask, V_p)
+        d_VA.addmm_(Xd.t(), v_dB, alpha = VS, beta = 0)
+        d_VB.addmm_(VA.t() @ Xd.t(), dV, alpha = VS, beta = 0)
+        del Xd
+
+        Q_has_bias, K_has_bias, V_has_bias = ctx.biases
+        d_QBias = _lora_bias_grad(dQ, QS) if Q_has_bias else None
+        d_KBias = _lora_bias_grad(dK, KS) if K_has_bias else None
+        d_VBias = _lora_bias_grad(dV, VS) if V_has_bias else None
 
         # Combine the per-projection derivatives into dX.
         QW = fast_dequantize(QW.t(), QW_quant)
         dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace and not _is_compiling() else None)
         del QW
-        addmm_(dX, q_dB, QA.t(), alpha = QS)
+        _add_lora_dX(dX, q_dB, QA, QS, Q_mask, Q_p)
 
         KW = fast_dequantize(KW.t(), KW_quant)
         addmm_(dX, dK, KW.t())
         del KW
-        addmm_(dX, k_dB, KA.t(), alpha = KS)
+        _add_lora_dX(dX, k_dB, KA, KS, K_mask, K_p)
 
         VW = fast_dequantize(VW.t(), VW_quant)
         addmm_(dX, dV, VW.t())
         del VW
-        addmm_(dX, v_dB, VA.t(), alpha = VS)
+        _add_lora_dX(dX, v_dB, VA, VS, V_mask, V_p)
 
         return (
             dX.view(batch, seq_len, hd),
@@ -588,6 +860,10 @@ class LoRA_QKV(torch.autograd.Function):
             d_VB.t(),
             None,
             None,
+            None,
+            d_QBias,
+            d_KBias,
+            d_VBias,
         )
 
 
@@ -596,14 +872,18 @@ def apply_lora_qkv(
     X,
     inplace = True,
 ):
-    if any(
+    projs = (self.q_proj, self.k_proj, self.v_proj)
+    extras = None
+    if not any(
         _has_multiple_active_adapters(proj)
         or _has_active_dora_adapter(proj)
-        or _has_active_lora_bias(proj)
         or _has_activation_fake_quantizer(proj)
-        for proj in (self.q_proj, self.k_proj, self.v_proj)
+        for proj in projs
     ):
+        extras = _lora_dropout_and_bias(projs, X)
+    if extras is None:
         return self.q_proj(X), self.k_proj(X), self.v_proj(X)
+    dropout_p, biases = extras
     QW, QW_quant, QA, QB, QS = get_lora_parameters(self.q_proj)
     KW, KW_quant, KA, KB, KS = get_lora_parameters(self.k_proj)
     VW, VW_quant, VA, VB, VS = get_lora_parameters(self.v_proj)
@@ -626,6 +906,8 @@ def apply_lora_qkv(
         VB,
         VS,
         inplace,
+        dropout_p,
+        *biases,
     )
     return Q, K, V
 
@@ -660,26 +942,46 @@ class LoRA_W(torch.autograd.Function):
 
     @staticmethod
     @torch_amp_custom_fwd
-    def forward(ctx, X: torch.Tensor, W, W_quant, A, B, S):
+    def forward(
+        ctx,
+        X: torch.Tensor,
+        W,
+        W_quant,
+        A,
+        B,
+        S,
+        dropout_p = None,
+        bias = None,
+    ):
         dtype = X.dtype
-        XW = matmul_lora(X, W, W_quant, A, B, S)
+        if dropout_p is None and bias is None:
+            XW = matmul_lora(X, W, W_quant, A, B, S)
+            mask = None
+        else:
+            Xd, mask = _dropout_forward(X, dropout_p or 0.0)
+            XW = _matmul_lora_ext(X, Xd, W, W_quant, A, B, S, bias)
+            del Xd
         ctx.custom_saved_tensors = (
             W,
             W_quant,
             S,
         )
-        ctx.save_for_backward(A, B, X)
+        ctx.save_for_backward(A, B, X, mask)
+        ctx.dropout_p = dropout_p
+        ctx.has_bias = bias is not None
         return XW
 
     @staticmethod
     @torch_amp_custom_bwd
     def backward(ctx, dY: torch.Tensor):
         W, W_quant, S = ctx.custom_saved_tensors
-        A, B, X = ctx.saved_tensors
+        A, B, X, mask = ctx.saved_tensors
 
         batch, seq_len, hd = X.shape
         dY = dY.reshape(-1, dY.shape[-1])  # Must be reshape
         X = X.reshape(-1, X.shape[-1])  # Must be reshape
+        if mask is not None:
+            mask = mask.reshape(-1, hd)
         dtype = X.dtype
 
         A, B = A.to(dtype), B.to(dtype)
@@ -692,28 +994,35 @@ class LoRA_W(torch.autograd.Function):
         y_dB = dY @ B.t()
 
         # d_A = X.t() @ (dY @ B.t()), d_B = (A.t() @ X.t()) @ dY, both scaled by S.
-        d_A.addmm_(X.t(), y_dB, alpha = S, beta = 0)
-        d_B.addmm_(A.t() @ X.t(), dY, alpha = S, beta = 0)
+        Xd = X if mask is None else _dropout_replay(X, mask, ctx.dropout_p)
+        d_A.addmm_(Xd.t(), y_dB, alpha = S, beta = 0)
+        d_B.addmm_(A.t() @ Xd.t(), dY, alpha = S, beta = 0)
+        del Xd
+        d_bias = _lora_bias_grad(dY, S) if ctx.has_bias else None
 
         W = fast_dequantize(W.t(), W_quant)
         dX = dY @ W.t()
         del W
-        addmm_(dX, y_dB, A.t(), alpha = S)
+        _add_lora_dX(dX, y_dB, A, S, mask, ctx.dropout_p)
 
-        return dX.view(batch, seq_len, hd), None, None, d_A.t(), d_B.t(), None
+        return dX.view(batch, seq_len, hd), None, None, d_A.t(), d_B.t(), None, None, d_bias
 
 
 def apply_lora_o(self, X):
-    if (
+    extras = None
+    if not (
         _has_multiple_active_adapters(self.o_proj)
         or _has_active_dora_adapter(self.o_proj)
-        or _has_active_lora_bias(self.o_proj)
         or _has_activation_fake_quantizer(self.o_proj)
     ):
+        extras = _lora_dropout_and_bias((self.o_proj,), X)
+    if extras is None:
         return self.o_proj(X)
+    dropout_p, (bias,) = extras
     OW, OW_quant, OA, OB, OS = get_lora_parameters(self.o_proj)
-    O = _apply(LoRA_W, X, OW, OW_quant, OA, OB, OS)
-    return O
+    if dropout_p is None and bias is None:
+        return _apply(LoRA_W, X, OW, OW_quant, OA, OB, OS)
+    return _apply(LoRA_W, X, OW, OW_quant, OA, OB, OS, dropout_p and dropout_p[0], bias)
 
 
 IDENTITY_DROPOUT = torch.nn.Identity
@@ -746,7 +1055,10 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
                 lora_B = self.lora_B[active_adapter].weight
                 scaling = self.scaling[active_adapter]
                 W = self.base_layer.weight
-                return _apply(LoRA_W, x, W, QUANT_STATE(W), lora_A, lora_B, scaling)
+                W_quant = getattr(W, "quant_state", None)
+                if W_quant is None and _kernel_utils._FSDP2_QLORA_PREPARED:
+                    W_quant = _base_quant_state(self.base_layer, W)
+                return _apply(LoRA_W, x, W, W_quant, lora_A, lora_B, scaling)
             pass
         pass
 

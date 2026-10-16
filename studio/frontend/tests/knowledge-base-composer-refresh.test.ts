@@ -72,6 +72,7 @@ function harness() {
       "react/jsx-runtime": stubJsxRuntime(),
       "lucide-react": {},
       "@/lib/tick-icon": {},
+      "@/lib/file-icon": {},
       "@hugeicons/react": {},
       "@hugeicons/core-free-icons": {},
       "@/components/ui/dropdown-menu": {},
