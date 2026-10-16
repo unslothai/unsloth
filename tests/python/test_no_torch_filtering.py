@@ -25,9 +25,6 @@ OVERRIDES_TXT = REQ_ROOT / "overrides.txt"
 TRITON_KERNELS_TXT = REQ_ROOT / "triton-kernels.txt"
 
 
-# ── _filter_requirements unit tests (synthetic) ───────────────────────
-
-
 class TestFilterRequirements:
     """Verify _filter_requirements correctly removes packages by prefix."""
 
@@ -69,7 +66,6 @@ class TestFilterRequirements:
         result = ips._filter_requirements(req, ips.NO_TORCH_SKIP_PACKAGES)
         lines = Path(result).read_text(encoding = "utf-8").splitlines()
         non_blank = [l.strip() for l in lines if l.strip()]
-        # Comment lines start with "#", so they are preserved.
         assert len(non_blank) == 2
         assert non_blank[0].startswith("#")
         assert non_blank[1] == "numpy"
@@ -128,7 +124,6 @@ class TestFilterRequirements:
         )
         result = ips._filter_requirements(req, ips.NO_TORCH_SKIP_PACKAGES)
         content = Path(result).read_text(encoding = "utf-8")
-        # Blank lines must be preserved.
         assert "\n\n" in content or content.count("\n") >= 3
 
     @pytest.mark.skipif(
@@ -205,11 +200,7 @@ class TestFilterRequirements:
         result = ips._filter_requirements(req, ips.NO_TORCH_SKIP_PACKAGES)
         lines = Path(result).read_text(encoding = "utf-8").splitlines()
         non_blank = [l.strip() for l in lines if l.strip()]
-        # git+ URL starts with no skip package, so it is preserved.
         assert len(non_blank) == 2, f"git+ URL should be preserved, got: {non_blank}"
-
-
-# ── Real requirements file filtering ──────────────────────────────────
 
 
 class TestRealRequirementsFiltering:
@@ -223,9 +214,7 @@ class TestRealRequirementsFiltering:
             pytest.skip("extras-no-deps.txt not found in repo")
         self._created = []
         yield
-        # Only what this test made. These land in the REAL requirements directory, and the previous version deleted
-        # everything that appeared since its own snapshot, so under pytest-xdist one test's teardown removed a file
-        # another worker was still reading and that test failed with FileNotFoundError.
+        # Remove only files this test made; other xdist workers read the same directory.
         for path in self._created:
             Path(path).unlink(missing_ok = True)
 
@@ -297,20 +286,12 @@ class TestRealRequirementsFiltering:
         assert "trl" in filtered_text, "trl should survive NO_TORCH filtering"
 
 
-# ── NO_TORCH constant tests ──────────────────────────────────────────
-
-
 class TestNoTorchConstant:
     """Verify NO_TORCH is derived correctly from UNSLOTH_NO_TORCH env var."""
 
     @staticmethod
     def _no_manifest():
-        """Pin the manifest tier to "unknown".
-
-        Without this the env-unset cases below read the manifest of whatever venv
-        pytest happens to run in, so the result would depend on the developer's
-        machine rather than on the code under test.
-        """
+        """Pins the manifest tier to unknown, so results do not depend on the venv pytest runs in."""
         return mock.patch.object(
             ips.install_manifest, "recorded_no_torch", lambda *args, **kwargs: None
         )
@@ -377,11 +358,7 @@ class TestNoTorchConstant:
 
     @pytest.mark.parametrize("recorded", (True, False))
     def test_infer_no_torch_reads_the_manifest_when_env_is_unset(self, recorded: bool):
-        """`unsloth studio update` injects no env var, so the venv must remember.
-
-        Without this an update reinstalls torch into a GGUF-only venv, and on
-        Windows reads the missing torch as a stale venv it then fails to delete.
-        """
+        """`unsloth studio update` sets no env var, so the venv manifest is what remembers no-torch."""
         env = os.environ.copy()
         env.pop("UNSLOTH_NO_TORCH", None)
         with (
@@ -411,9 +388,6 @@ class TestNoTorchConstant:
             assert ips._infer_no_torch() is True
 
 
-# ── IS_MACOS constant tests ──────────────────────────────────────────
-
-
 class TestIsMacosConstant:
     """Verify IS_MACOS detection logic."""
 
@@ -421,9 +395,6 @@ class TestIsMacosConstant:
         import sys
         expected = sys.platform == "darwin"
         assert ips.IS_MACOS is expected
-
-
-# ── Subprocess mock of install_python_stack() ─────────────────────────
 
 
 class TestInstallPythonStackSubprocessMock:
@@ -606,18 +577,9 @@ class TestInstallPythonStackSubprocessMock:
             cmds, "triton-kernels.txt"
         ), "triton-kernels.txt should be skipped on macOS even via studio update"
 
-    # -- The harness above must not write the venv it is running in --
     def test_the_harness_never_writes_the_running_venv_root(self):
-        """install_python_stack() drops, marks and rewrites the manifest for real here.
-
-        Only subprocess.run is mocked, so remove_manifest(), set_no_torch_marker() and
-        write_manifest() all execute against Path(sys.prefix), one directory shared by every
-        xdist worker and every subprocess they spawn. A leaked no-torch marker makes every
-        install_python_stack.py subprocess in the run resolve NO_TORCH True at import, which
-        is how the AMD fast-path CLI probe failed on 17 CI runs across 7 branches in one day
-        while passing in isolation. Driven through the real _capture_install, not a rebuilt
-        copy: the property has to hold for the harness that ships in this file.
-        """
+        """Harness must not write sys.prefix, which xdist workers share; a leaked no-torch marker
+        breaks CI."""
         real_root = Path(sys.prefix)
         watched = (
             real_root / ips.install_manifest.MANIFEST_NAME,
@@ -632,17 +594,12 @@ class TestInstallPythonStackSubprocessMock:
             f"the installer harness wrote {real_root}, which every worker in this run "
             "shares; give install_manifest.venv_root a contained root instead"
         )
-        # Non-vacuous: the writes must have landed somewhere, or an install that returned early and wrote nothing at all
-        # would pass this too.
         contained = ips.install_manifest.venv_root()
         assert contained != real_root, "venv_root was never contained"
         assert (contained / ips.install_manifest.MANIFEST_NAME).is_file(), (
             "no manifest reached the contained root, so this run proves nothing about "
             "where the installer writes"
         )
-
-
-# ── Overrides skip structural checks ─────────────────────────────────
 
 
 class TestOverridesSkip:
@@ -658,9 +615,6 @@ class TestOverridesSkip:
         source = Path(ips.__file__).read_text(encoding = "utf-8")
         overrides_match = re.search(r"if NO_TORCH:.*?overrides", source, re.DOTALL)
         assert overrides_match is not None, "Expected NO_TORCH conditional before overrides install"
-
-
-# ── install.sh --no-torch flag tests ──────────────────────────────────
 
 
 class TestInstallShNoTorchFlag:
@@ -795,9 +749,6 @@ class TestInstallShNoTorchFlag:
         assert (
             "HINT_PRINTED" not in result2.stdout
         ), "CPU hint should NOT print when SKIP_TORCH=true"
-
-
-# ── Triton macOS skip structural checks ──────────────────────────────
 
 
 class TestTritonMacosSkip:

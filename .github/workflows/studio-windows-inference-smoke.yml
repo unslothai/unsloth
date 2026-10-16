@@ -99,11 +99,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  # Latest-only on a PR branch. On main this does less than it reads like: it stops
-  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
-  # the moment a newer one is queued, so a merge burst still leaves only the tip.
-  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
+  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
+  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -162,7 +161,17 @@ jobs:
 
       # Fast GPU-free gate: parse install.ps1 + setup.ps1 and run the PowerShell
       # unit tests (CUDA-toolkit + torch-flavor helpers) before the heavy GGUF smoke.
+      #
+      # Background, together with the uninstall test below: about 60 s of pure
+      # PowerShell that reads only the checkout, so it overlaps the node/python setup
+      # and the ~90 s uv cache restore instead of running ahead of them. Both are
+      # collected by the wait step right before Install Unsloth, so a failure still
+      # stops the job before the install, as it did when they ran first; they are not
+      # overlapped with the install itself, because test_mirror_fallback.ps1 asserts
+      # deadlines and transfer speeds that a CPU-bound install next to it could skew.
       - name: PowerShell installer unit tests
+        id: ps-installer-units
+        background: true
         shell: pwsh
         run: |
           foreach ($f in @('install.ps1', 'studio/setup.ps1')) {
@@ -195,6 +204,8 @@ jobs:
       # uninstall.ps1: native uninstall must keep the shared unsloth.ico while a
       # WSL shortcut still references it (dual install), else that shortcut blanks.
       - name: uninstall.ps1 unit test (dual-install icon preserve)
+        id: ps-uninstall-unit
+        background: true
         shell: pwsh
         run: |
           $errs = $null
@@ -267,6 +278,9 @@ jobs:
       - name: Restore the built frontend
         id: fe-dist
         uses: ./.github/actions/frontend-dist-restore
+
+      - name: Collect the PowerShell unit tests
+        wait: [ps-installer-units, ps-uninstall-unit]
 
       - name: Install Unsloth (--local, --no-torch)
         id: install

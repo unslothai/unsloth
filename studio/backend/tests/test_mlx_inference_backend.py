@@ -2,10 +2,12 @@
 
 import ast
 import asyncio
+import importlib
 import builtins
 import contextlib
 import copy
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -33,6 +35,54 @@ FUSIONS = (
     "residual_norm_handoff",
     "packed_gated_delta",
 )
+# Stub scopes kept out of the FUSIONS parametrisations: unsloth_zoo #1757 added fused_verify_attention
+# around speculative verify. The stub still has to answer them.
+ZOO_ONLY_FUSIONS = ("verify_attention",)
+
+
+def _zoo_registry():
+    """The stub's INFERENCE_SCOPES in zoo's order: (scope name, call traits it serves[, opt-in switch])."""
+    return [
+        *((f"fused_{name}", ()) for name in FUSIONS[:5]),
+        ("nax_quantized_linear", ()),
+        ("dense_prefill_linear", ()),
+        *((f"fused_{name}", ()) for name in FUSIONS[5:]),
+        ("exact_speculative_verify", ("speculative",)),
+        ("fused_verify_attention", ("speculative",)),
+    ]
+
+
+def _stub_inference_scopes(module):
+    """zoo's inference_scopes over the stub: each registered scope is looked up by name when entered,
+    so a test that replaces a stub scope sees it entered through the registry."""
+
+    @contextmanager
+    def inference_scopes(
+        model = None,
+        call = None,
+        *,
+        int8_prefill = None,
+        on_error = None,
+        _modules = None,
+    ):
+        # The call-shape replay below passes placeholders; anything but a tuple serves every scope.
+        traits = set(call) if isinstance(call, tuple) else None
+        with contextlib.ExitStack() as stack:
+            for name, serves, *opt_in in module.INFERENCE_SCOPES:
+                if traits is not None and serves and traits.isdisjoint(serves):
+                    continue
+                if opt_in and opt_in[0] and os.environ.get(opt_in[0]) != "1":
+                    continue
+                args = (int8_prefill,) if name == "nax_quantized_linear" else ()
+                try:
+                    stack.enter_context(getattr(module, name)(model, *args))
+                except Exception as error:
+                    if on_error is None:
+                        raise
+                    on_error(name, error)
+            yield model
+
+    return inference_scopes
 
 
 @pytest.fixture(autouse = True)
@@ -41,10 +91,12 @@ def mlx_inference_patches(monkeypatch, native_vlm_generation_context):
 
     monkeypatch.setattr(mlx_inference, "_vlm_generation_context", contextlib.nullcontext)
     module = types.ModuleType("unsloth_zoo.mlx.inference")
-    for name in FUSIONS:
+    for name in FUSIONS + ZOO_ONLY_FUSIONS:
         setattr(module, f"fused_{name}", _neutral_scope)
     for name, helper in PLAIN_HELPERS.items():
         setattr(module, name, helper)
+    module.INFERENCE_SCOPES = _zoo_registry()
+    module.inference_scopes = _stub_inference_scopes(module)
     module.__getattr__ = _neutral_zoo_helper
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", module)
     return module
@@ -83,10 +135,14 @@ def _neutral_zoo_helper(name):
     """Every other public helper zoo's generate.py enters around a model is neutral too.
 
     unsloth_zoo #1541 added nax_quantized_linear to that import list, and a stub holding only the
-    fused_* names failed every real-model test on macOS with an ImportError. fused_* stay explicit,
-    so a test that deletes one still sees it missing.
+    fused_* names failed every real-model test on macOS with an ImportError. fused_*,
+    inference_scopes and warm_inference stay explicit, so a test that deletes one still sees it missing.
     """
-    if name.startswith("_") or name.startswith("fused_"):
+    if (
+        name.startswith("_")
+        or name.startswith("fused_")
+        or name in ("inference_scopes", "warm_inference")
+    ):
         raise AttributeError(name)
     return _neutral_scope
 
@@ -121,7 +177,7 @@ def test_mlx_fusion_import_never_fails_the_request(monkeypatch, error, feature):
     from core.inference import mlx_inference
 
     module_name = "unsloth_zoo.mlx.inference"
-    helper = getattr(mlx_inference, f"_mlx_fused_{feature}")
+    helper = lambda model: mlx_inference._mlx_optional_fusion(f"fused_{feature}", model)
 
     original_import = mlx_inference.importlib.import_module
 
@@ -153,7 +209,7 @@ def test_mlx_fusion_that_cannot_be_entered_keeps_native(
     monkeypatch.setattr(mlx_inference_patches, f"fused_{feature}", refuse)
     monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
     model = object()
-    with getattr(mlx_inference, f"_mlx_fused_{feature}")(model) as active:
+    with mlx_inference._mlx_optional_fusion(f"fused_{feature}", model) as active:
         assert active is model
 
 
@@ -181,7 +237,7 @@ def test_mlx_dead_gpu_queue_is_not_reported_as_a_working_fallback(
     monkeypatch.setattr(mlx_inference_patches, f"fused_{feature}", fault)
     monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
     with pytest.raises(RuntimeError, match = "METAL"):
-        with getattr(mlx_inference, f"_mlx_fused_{feature}")(object()):
+        with mlx_inference._mlx_optional_fusion(f"fused_{feature}", object()):
             pass  # pragma: no cover
     assert mlx_inference._MLX_FUSION_UNAVAILABLE == set()
 
@@ -200,7 +256,7 @@ def test_mlx_packing_that_runs_out_of_memory_still_keeps_native(
     monkeypatch.setattr(mlx_inference_patches, f"fused_{feature}", refuse)
     monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
     model = object()
-    with getattr(mlx_inference, f"_mlx_fused_{feature}")(model) as active:
+    with mlx_inference._mlx_optional_fusion(f"fused_{feature}", model) as active:
         assert active is model
 
 
@@ -244,6 +300,78 @@ def test_mlx_fusion_failure_at_load_still_loads_the_model(monkeypatch, mlx_moe):
     assert backend.active_model_name == "fake/text"
     assert backend._model is not None
     assert backend.unload_model("fake/text")
+
+
+@pytest.mark.parametrize("outcome", ["warmed", "int8", "failed", "dead_queue", "distributed"])
+def test_a_load_warms_zoo_scopes_under_its_int8_decision(monkeypatch, mlx_moe, outcome):
+    from core.inference import mlx_inference
+
+    backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7, 8]}, [])
+    _install_fake_fast_mlx(monkeypatch, [])
+    sys.modules["mlx.core"].clear_cache = lambda: None
+    warnings = _capture_rng_warnings(monkeypatch, mlx_inference)
+    events = []
+
+    @contextmanager
+    def rng():
+        events.append("rng")
+        try:
+            yield
+        finally:
+            events.append("/rng")
+
+    @contextmanager
+    def gate_up(model, **_):
+        events.append("gate_up")
+        yield model
+
+    @contextmanager
+    def int8(
+        model,
+        int8_prefill = None,
+        **_,
+    ):
+        events.append(("int8", int8_prefill))
+        try:
+            yield model
+        finally:
+            events.append("/int8")
+
+    def warm(model, int8_prefill):
+        events.append(("warm", model is backend._model, int8_prefill))
+        if outcome == "failed":
+            raise RuntimeError("no headroom")
+        if outcome == "dead_queue":
+            raise RuntimeError("[METAL] Command buffer execution failed: Caused GPU Timeout Error.")
+
+    mlx_moe.fused_moe_gate_up, mlx_moe.nax_quantized_linear, mlx_moe.warm_inference = (
+        gate_up,
+        int8,
+        warm,
+    )
+    monkeypatch.setattr(mlx_inference, "mlx_rng_preserved", rng)
+    if outcome == "int8":
+        status = {"requested": True, "active": True, "reason": "", "scope": int8}
+        monkeypatch.setattr(mlx_inference, "_int8_prefill_status", lambda *_: status)
+    config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
+    group = SimpleNamespace(size = lambda: 2, rank = lambda: 0)
+    kwargs = (
+        {"parallel_mode": "tensor", "distributed_group": group} if outcome == "distributed" else {}
+    )
+    with (
+        pytest.raises(RuntimeError, match = "METAL")
+        if outcome == "dead_queue"
+        else contextlib.nullcontext()
+    ):
+        assert backend.load_model(config, **kwargs) is True
+    active = outcome == "int8"
+    warmed = (
+        []
+        if outcome == "distributed"
+        else ["rng", ("int8", active), ("warm", True, active), "/int8", "/rng"]
+    )
+    assert events == ["gate_up", *warmed]
+    assert any("MLX warm-up failed" in warning for warning in warnings) == (outcome == "failed")
 
 
 def test_mlx_fusion_that_refuses_everywhere_still_generates(monkeypatch, mlx_moe):
@@ -372,6 +500,198 @@ def test_mlx_audio_input_generation_survives_every_fusion_refusing(
         )
     ) == ["H", "e", "l"]
     assert Counter(refused) == Counter(dict.fromkeys(FUSIONS, 1))
+
+
+class _Ids(list):
+    def tolist(self):
+        return list(self)
+
+
+def _run_studio_site(site, monkeypatch):
+    """Drive one of Studio's own MLX generation paths once, on fakes."""
+    from core.inference import mlx_inference
+
+    backend = mlx_inference.MLXInferenceBackend()
+    if site == "text":
+        backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7]}, [])
+        tokenizer = backend._tokenizer
+        _install_fake_fast_mlx(monkeypatch, [])
+        sys.modules["mlx.core"].clear_cache = lambda: None
+        config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
+        assert backend.load_model(config)
+        backend._tokenizer = tokenizer
+        assert list(backend.generate_chat_response(messages = [{"role": "user", "content": "p"}]))
+    elif site.startswith("vision"):
+        if site == "vision-drafted":
+            pytest.importorskip("mlx_lm")
+            utils = types.ModuleType("mlx_vlm.utils")
+            utils.prepare_inputs = lambda *_a, **_k: {"input_ids": [_Ids([7])]}
+            monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+            backend._speculative_draft = SimpleNamespace(
+                draft_kind = "mtp", draft_n = 1, draft_n_accepted = 1, prepare = lambda *_a: None
+            )
+        assert "draft_model" in _drive_vlm_generation(backend, monkeypatch) or site == "vision"
+    elif site == "audio":
+        fake_vlm = types.ModuleType("mlx_vlm")
+        fake_vlm.stream_generate = lambda *_a, **_k: iter(
+            [SimpleNamespace(text = "H", prompt_tokens = 3, generation_tokens = 1)]
+        )
+        monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
+        monkeypatch.setattr(mlx_inference, "_render_registered_vlm_prompt", lambda *_a, **_k: "P")
+        backend._model, backend._processor = _audio_model(), _audio_processor()
+        backend.active_model_name, backend.models = "m", {"m": {"audio_type": "audio_vlm"}}
+        response = backend.generate_audio_input_response(
+            messages = [{"role": "user", "content": "?"}],
+            system_prompt = "",
+            audio_array = [0.0, 0.1],
+            max_new_tokens = 1,
+        )
+        assert list(response) == ["H"]
+    else:
+        generate = types.ModuleType("mlx_lm.generate")
+        generate.BatchGenerator = lambda *_a, **_k: SimpleNamespace(close = lambda: None)
+        backend._model, backend._tokenizer = SimpleNamespace(), SimpleNamespace(eos_token_ids = [2])
+        with (
+            monkeypatch.context() as patch
+        ):  # only while it is built: mlx_lm itself imports from it
+            patch.setitem(sys.modules, "mlx_lm.generate", generate)
+            mlx_inference._TextBatchSession(backend, width = 2).close()
+
+
+@pytest.fixture(params = ["stub", "zoo"])
+def zoo_registry(request, monkeypatch, mlx_inference_patches):
+    """Register scopes in zoo's registry only, entered through the stub's composer or zoo's own."""
+    if request.param == "stub":
+        register = lambda name, serves = (), opt_in = None: (
+            mlx_inference_patches.INFERENCE_SCOPES.append((name, serves, opt_in))
+        )
+        return register
+    monkeypatch.delitem(sys.modules, "unsloth_zoo.mlx.inference")
+    try:
+        zoo = importlib.import_module("unsloth_zoo.mlx.inference")
+    except Exception as error:
+        pytest.skip(f"unsloth_zoo.mlx.inference is not importable here: {error}")
+    finally:
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", mlx_inference_patches)
+    if not hasattr(zoo, "INFERENCE_SCOPES"):
+        pytest.skip("this unsloth_zoo has no inference scope registry")
+    monkeypatch.setattr(zoo, "INFERENCE_SCOPES", [])
+    monkeypatch.setattr(mlx_inference_patches, "inference_scopes", zoo.inference_scopes)
+
+    def register(
+        name,
+        serves = (),
+        opt_in = None,
+    ):
+        scope = getattr(mlx_inference_patches, name)
+        enter = lambda model, *args, _modules: scope(model, *args)
+        enter.__name__ = name
+        zoo.INFERENCE_SCOPES.append(zoo.InferenceScope(enter, frozenset(serves), opt_in))
+
+    return register
+
+
+@pytest.mark.parametrize("site", ["text", "vision", "vision-drafted", "audio", "text-batch"])
+def test_a_scope_zoo_registers_reaches_each_studio_site_with_no_studio_change(
+    monkeypatch, mlx_inference_patches, zoo_registry, site
+):
+    from core.inference import mlx_inference
+
+    entered = []
+
+    def scope(name):
+        @contextmanager
+        def enter(model, *_args):
+            entered.append(name)
+            yield model
+
+        return enter
+
+    traits = ("speculative", "vision", "audio", "batch")
+    for name, serves, opt_in in (
+        ("every", (), None),
+        *((trait, (trait,), None) for trait in traits),
+        ("switched_off", (), "UNSLOTH_MLX_STUDIO_TEST_SCOPE"),
+    ):
+        setattr(mlx_inference_patches, name, scope(name))
+        zoo_registry(name, serves, opt_in)
+    monkeypatch.delenv("UNSLOTH_MLX_STUDIO_TEST_SCOPE", raising = False)
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    _run_studio_site(site, monkeypatch)
+    assert mlx_inference._MLX_FUSION_UNAVAILABLE == set()  # the registry and every scope entered
+    call = {
+        "text": (),
+        "vision": ("vision",),
+        "vision-drafted": ("speculative", "vision"),
+        "audio": ("vision", "audio"),
+        "text-batch": ("batch",),
+    }[site]
+    assert entered == ["every", *call]
+
+
+def test_an_older_zoo_without_the_registry_keeps_the_scopes_studio_listed(
+    monkeypatch, mlx_inference_patches
+):
+    from core.inference import mlx_inference
+
+    pytest.importorskip("mlx_lm")  # the drafted vision site imports zoo's generate
+    entered = []
+    for name in (*(f"fused_{name}" for name in FUSIONS), "exact_speculative_verify"):
+        monkeypatch.setattr(
+            mlx_inference_patches,
+            name,
+            lambda model, name = name: entered.append(name) or contextlib.nullcontext(model),
+        )
+    monkeypatch.delattr(mlx_inference_patches, "inference_scopes")
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7, 8]}, [])
+    _install_fake_fast_mlx(monkeypatch, [])
+    sys.modules["mlx.core"].clear_cache = lambda: None
+    assert backend.load_model(
+        SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
+    )
+    legacy = [f"fused_{name}" for name in FUSIONS]
+    # The load-time gate/up pack, then each site as Studio entered it before the registry.
+    want = {
+        "load": ["fused_moe_gate_up"],
+        "text": ["fused_moe_gate_up", *legacy],
+        "vision": legacy,
+        "vision-drafted": [*legacy, "exact_speculative_verify"],
+        "audio": legacy,
+        "text-batch": [],
+    }
+    assert entered == want["load"]
+    for site in ("text", "vision", "vision-drafted", "audio", "text-batch"):
+        entered.clear()
+        _run_studio_site(site, monkeypatch)
+        assert entered == want[site], site
+    assert mlx_inference._MLX_FUSION_UNAVAILABLE == set()
+
+
+@pytest.mark.parametrize("dead", [False, True], ids = ["refused", "dead-queue"])
+@pytest.mark.parametrize("failing", ["inference_scopes", "fused_moe_router"])
+def test_a_registry_or_scope_that_fails_to_enter_keeps_the_request_native(
+    monkeypatch, mlx_inference_patches, failing, dead
+):
+    """The whole registry is guarded like each scope in it: logged once, unless the Metal queue died."""
+    from core.inference import mlx_inference
+
+    message = "[METAL] Command buffer execution failed: Caused GPU Timeout Error" if dead else "no"
+
+    @contextmanager
+    def broken(*_a, **_k):
+        raise RuntimeError(message)
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(mlx_inference_patches, failing, broken)
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    if dead:
+        with pytest.raises(RuntimeError, match = "METAL"):
+            _run_studio_site("audio", monkeypatch)
+        assert mlx_inference._MLX_FUSION_UNAVAILABLE == set()
+    else:
+        _run_studio_site("audio", monkeypatch)
+        assert [key[0] for key in mlx_inference._MLX_FUSION_UNAVAILABLE] == [failing]
 
 
 def _zoo_inference_imports():
@@ -506,8 +826,7 @@ def test_mlx_missing_inference_export_keeps_native(monkeypatch, mlx_inference_pa
     name = f"fused_{feature}"
     monkeypatch.delattr(mlx_inference_patches, name)
     model = object()
-    helper = getattr(mlx_inference, f"_mlx_{name}")
-    with helper(model) as active:
+    with mlx_inference._mlx_optional_fusion(name, model) as active:
         assert active is model
 
 
@@ -2376,6 +2695,7 @@ def _install_fake_text_stack(
             self,
             ids,
             skip_special_tokens = False,
+            clean_up_tokenization_spaces = True,
         ):
             return "".join(str(i) for i in ids)
 
@@ -2443,6 +2763,210 @@ def test_mlx_text_tracks_tokens_on_the_native_reasoning_path(monkeypatch):
     _run_turn(backend, "P1")
     _run_turn(backend, "P2")
     assert captured[1]["prompt"] == [9]
+
+
+def test_mlx_completion_prompt_skips_the_template_and_reuses_the_prompt_cache(monkeypatch):
+    _install_fake_prompt_cache_api(monkeypatch)
+    captured = []
+    token_map = {"P1": [1, 2, 3], "generated": [7, 8]}
+    backend = _install_fake_text_stack(monkeypatch, token_map, captured)
+    _run_turn(backend, "P1")
+
+    monkeypatch.setattr(backend, "_render_text_prompt", lambda *_a, **_k: pytest.fail("templated"))
+    seen = {}
+    monkeypatch.setattr(
+        "core.inference.mlx_inference._mlx_sampling_processors", lambda **kw: seen.update(kw)
+    )
+    monkeypatch.setattr("core.inference.grammar_constraint.GrammarConstraint", _RawConstraint)
+    ids = [1, 2, 3, 7, 8, 9]
+    out = list(backend.generate_completion(ids, max_new_tokens = 4, penalty_window = 4, grammar = "G"))
+
+    assert captured[1]["prompt"] == [9]
+    assert out[-1] == "78" and backend.last_generation_stats["timings"]["cache_n"] == 5
+    assert seen["penalty_prompt"] == [1, 2, 3, 7, 8, 9] and seen["penalty_window"] == 4
+    assert seen["grammar_constraint"].built == ("G", backend._tokenizer)
+    # The reply decodes with skip_special_tokens, so the grammar must not spell text with them.
+    assert seen["grammar_constraint"].options == {"strips_special_tokens": True}
+    # Unconstrained too: llama-server returns the pieces without whitespace cleanup.
+    cleanups, decode = [], type(backend._tokenizer).decode
+    monkeypatch.setattr(
+        type(backend._tokenizer),
+        "decode",
+        lambda tok, ids, **kw: cleanups.append(kw.get("clean_up_tokenization_spaces"))
+        or decode(tok, ids, **kw),
+    )
+    list(backend.generate_completion(ids, max_new_tokens = 4))
+    assert cleanups and set(cleanups) == {False}
+
+
+def _RawConstraint(grammar, tokenizer, **kw):
+    noop = lambda *_a: None
+    return SimpleNamespace(
+        built = (grammar, tokenizer),
+        options = kw,
+        allows_reasoning = False,
+        decoded_dropping = noop,
+        stops_on = noop,
+    )
+
+
+def test_mlx_vlm_completion_prompt_runs_untemplated_from_its_ids(monkeypatch):
+    from core.inference import mlx_inference
+
+    seen = {}
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.stream_generate = lambda *a, **kw: seen.update(args = a, kwargs = kw) or iter(
+        [SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)]
+    )
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    _install_fake_mlx(monkeypatch)
+    sys.modules["mlx.core"].array = lambda rows: rows
+    monkeypatch.setattr(
+        mlx_inference, "_temporary_mlx_adapter_state", lambda *_a: contextlib.nullcontext()
+    )
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model, backend._is_vlm = SimpleNamespace(), True
+    backend._tokenizer = backend._processor = SimpleNamespace()
+    monkeypatch.setattr(backend, "_render_vlm_prompt", lambda *_a, **_k: pytest.fail("templated"))
+    monkeypatch.setattr(backend, "_vlm_prompt_cache_session", lambda *a, **_k: seen.update(cache = a))
+    monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **kw: seen.update(kw))
+    monkeypatch.setattr("core.inference.grammar_constraint.GrammarConstraint", _RawConstraint)
+
+    assert list(backend.generate_completion([5, 6], max_new_tokens = 2, grammar = "G")) == ["ok"]
+    assert seen["args"][2:] == ("", None) and seen["kwargs"]["input_ids"] == [[5, 6]]
+    assert seen["kwargs"]["skip_special_tokens"] is True
+    assert seen["penalty_prompt"] == [5, 6]
+    assert seen["grammar_constraint"].built == ("G", backend._tokenizer)
+    assert seen["cache"] == (None, None, "")
+
+    # With sampled ids the reply is decoded from them: the runtime's text trims the first
+    # piece's leading space and keeps control tokens, which a raw continuation must not.
+    pieces = {7: " Paris", 8: "<|im_start|>", 9: "!"}
+    backend._tokenizer = SimpleNamespace(
+        decode = lambda ids, skip_special_tokens, clean_up_tokenization_spaces: "".join(
+            pieces[i] for i in ids if not (skip_special_tokens and i == 8)
+        )
+    )
+    responses = [
+        SimpleNamespace(text = text, token = token, generation_tokens = n, prompt_tokens = 2)
+        for n, (token, text) in enumerate([(7, "Paris"), (8, "<|im_start|>"), (9, "!")], 1)
+    ]
+    mlx_vlm.stream_generate = lambda *a, **kw: iter(responses)
+    assert list(backend.generate_completion([5, 6], max_new_tokens = 3))[-1] == " Paris!"
+
+
+def test_a_raw_vision_prompt_decodes_on_its_own_even_when_zoo_could_batch_it(monkeypatch):
+    from core.inference import mlx_inference
+
+    engine = types.ModuleType("unsloth_zoo.mlx.generate")
+    engine.VLM_TOKEN_ID_PROMPTS = True
+    package = types.ModuleType("unsloth_zoo.mlx")
+    package.generate = engine
+    monkeypatch.setitem(sys.modules, "unsloth_zoo", types.ModuleType("unsloth_zoo"))
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx", package)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.generate", engine)
+    sys.modules["unsloth_zoo"].mlx = package
+    monkeypatch.setattr(mlx_inference, "_batched_vision_engine_gap", lambda _e: None)
+    monkeypatch.setattr(mlx_inference, "_row_processor_gap", lambda _e, _r: None)
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = SimpleNamespace(_is_vlm_model = True)
+    assert backend._vlm_batch_unavailable_reason([{}, {}]) is None
+    assert backend._vlm_batch_unavailable_reason([{"prompt_ids": [1]}, {"prompt_ids": [2]}])
+
+
+def test_mlx_batch_rows_plan_a_raw_completion_prompt_untemplated(monkeypatch):
+    from core.inference import mlx_inference
+
+    backend = _install_fake_text_stack(monkeypatch, {"generated": [7]}, [])
+    monkeypatch.setattr(backend, "_render_text_prompt", lambda *_a, **_k: pytest.fail("templated"))
+    seen = {}
+    monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **kw: seen.update(kw))
+    row = mlx_inference._row_kwargs({"prompt_ids": [1, 2, 3], "penalty_window": 2})
+    plan = backend._plan_text_row([], **row)
+    assert (plan.prompt, plan.think_prefix, seen["penalty_prompt"], seen["penalty_window"]) == (
+        [1, 2, 3],
+        "",
+        [1, 2, 3],
+        2,
+    )
+    backend._make_row_cache = lambda: None
+    assert backend._batch_prompt_row(plan.prompt, None)[1] == [1, 2, 3]
+    kwargs = []
+    monkeypatch.setattr(type(backend._tokenizer), "decode", lambda _t, _i, **kw: kwargs.append(kw))
+    plan.stream._decode([7])
+    assert kwargs[-1]["clean_up_tokenization_spaces"] is False
+    monkeypatch.setattr(backend, "_render_vlm_prompt", lambda *_a, **_k: pytest.fail("templated"))
+    monkeypatch.setattr(
+        backend, "_generation_limit", lambda prompt, limit, ids, **_k: (prompt, ids)
+    )
+    vision = backend._plan_vlm_request({"prompt_ids": [4, 5], "messages": []})
+    assert (vision.prompt, vision.max_tokens) == ([4, 5], ([4, 5], [4, 5]))
+    assert backend._vlm_batch_prompt([4, 5]) == {"prompt_token_ids": [4, 5]}
+    assert mlx_inference._request_batch_gap({"grammar": "G"})
+
+
+_COMPLETION_TOK = SimpleNamespace(
+    encode = lambda text, add_special_tokens: [100] * add_special_tokens + [ord(c) for c in text],
+    decode = lambda ids, skip_special_tokens, clean_up_tokenization_spaces = True: "".join(
+        chr(i % 256) for i in ids
+    ).replace(" .", "." if clean_up_tokenization_spaces else " ."),
+)
+
+
+@pytest.mark.parametrize(
+    "prompt, ids, text",
+    [
+        ("ab", [100, 97, 98], "ab"),
+        # Only a leading string gets the tokenizer's special tokens.
+        ([5, "ab"], [5, 97, 98], "\x05ab"),
+        (["ab", 5, 6, "c"], [100, 97, 98, 5, 6, 99], "ab\x05\x06c"),
+        ({"prompt_string": [5, "a"]}, [5, 97], "\x05a"),
+        ([199], [199], "\xc7"),
+        ([97, 32, 46], [97, 32, 46], "a ."),
+        ([200], ValueError, None),
+        ([-1], ValueError, None),
+        ([], ValueError, None),
+        ([True], ValueError, None),
+    ],
+)
+def test_mlx_completion_prompt_resolves_as_llama_server_tokenizes_it(prompt, ids, text):
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(args = SimpleNamespace(vocab_size = 200))
+    backend._tokenizer = _COMPLETION_TOK
+    if ids is ValueError:
+        with pytest.raises(ValueError):
+            backend.resolve_completion_prompt(prompt)
+    else:
+        assert backend.resolve_completion_prompt(prompt) == {
+            "ids": ids,
+            "text": text,
+            "n_vocab": 200,
+        }
+
+
+def test_mlx_penalty_window_scores_the_last_tokens_of_prompt_and_completion():
+    mx = pytest.importorskip("mlx.core")
+    from core.inference import mlx_inference
+
+    presence = mlx_inference._make_mlx_presence_penalty_processor(1.0, window = 2)
+    frequency = mlx_inference._make_mlx_frequency_penalty_processor(1.0, window = 3)
+    z = mx.zeros((1, 5))
+    # The prompt's own tail counts from the first step; tokens past the window do not.
+    assert mx.array_equal(presence(mx.array([1, 2, 3]), z)[0], mx.array([0, 0, -1, -1, 0]))
+    assert mx.array_equal(frequency(mx.array([1, 3, 3, 3]), z)[0], mx.array([0, 0, 0, -3, 0]))
+    off = dict(repetition_penalty = 1.3, presence_penalty = 1.0, frequency_penalty = 1.0)
+    assert mlx_inference._mlx_sampling_processors(penalty_window = 0, **off) is None
+    # Prefill and prompt-cache reuse hand processors only the prompt's last token at first.
+    make = lambda: mlx_inference._mlx_sampling_processors(
+        presence_penalty = 1.0, penalty_window = 3, penalty_prompt = [0, 1, 2, 3]
+    )[0]
+    tail, whole = make(), make()
+    assert tail.history_only
+    assert mx.array_equal(tail(mx.array([3]), z)[0], mx.array([0, -1, -1, -1, 0]))
+    assert mx.array_equal(tail(mx.array([3, 4]), z)[0], mx.array([0, 0, -1, -1, -1]))
+    assert mx.array_equal(whole(mx.array([0, 1, 2, 3]), z)[0], mx.array([0, -1, -1, -1, 0]))
 
 
 def test_mlx_presence_penalty_latches_the_first_decode_step():
@@ -3687,13 +4211,16 @@ def test_int8_prefill_reloads_on_change_and_reports_why_it_is_off(mlx_inference_
     assert status(True, object())["active"] and status(False, object())["scope"] is None
 
 
+@pytest.mark.parametrize("registry", [True, False], ids = ["zoo-registry", "older-zoo"])
 @pytest.mark.parametrize("requested,available", [(True, True), (True, False), (False, True)])
 def test_int8_prefill_is_the_outermost_scope_of_generation_pinned_off_when_inactive(
-    monkeypatch, mlx_inference_patches, requested, available
+    monkeypatch, mlx_inference_patches, requested, available, registry
 ):
     from core.inference import mlx_inference
 
     events = _int8_zoo(mlx_inference_patches, available = available)
+    if not registry:
+        monkeypatch.delattr(mlx_inference_patches, "inference_scopes")
 
     @contextmanager
     def fusion(_model):
@@ -3729,10 +4256,13 @@ def test_int8_prefill_is_the_outermost_scope_of_generation_pinned_off_when_inact
     assert list(backend._generate_vlm(*args, 1.0, None)) == ["ok"]
 
     active = requested and available
-    assert events == [("int8", active)] + [("fusion", None)] * len(FUSIONS) + [
-        ("stream", None),
-        ("int8_exit", active),
-    ]
+    # Zoo's registry enters the NAX scope again in its own place; the outer decision holds there too.
+    fusions = [("fusion", None)] * len(FUSIONS)
+    if registry:
+        fusions[5:5] = [("int8", active)]
+    assert events == [("int8", active), *fusions, ("stream", None)] + [("int8_exit", active)] * (
+        1 + registry
+    )
 
     def broken(model, int8_prefill = None):
         raise ImportError("skewed zoo")
@@ -5524,11 +6054,6 @@ def test_a_speculative_load_drafts_eligible_single_replies(monkeypatch):
     utils.prepare_inputs = lambda *_a, **_k: {"input_ids": [_Ids([7, 8, 9])], "extra": 1}
     monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
     prepared, verify_scope, scopes = [], [], []
-    # A Zoo without the scope leaves the reply drafted and unfused.
-    with monkeypatch.context() as patch:
-        patch.setattr(mlx_inference, "_mlx_inference_patch", lambda name: verify_scope.append(name))
-        with mlx_inference._mlx_exact_speculative_verify(utils) as active:
-            assert active is utils and verify_scope.pop() == "exact_speculative_verify"
 
     @contextmanager
     def exact_verify(model):
@@ -5538,7 +6063,9 @@ def test_a_speculative_load_drafts_eligible_single_replies(monkeypatch):
         finally:
             verify_scope.append("closed")
 
-    monkeypatch.setattr(mlx_inference, "_mlx_exact_speculative_verify", exact_verify)
+    monkeypatch.setattr(
+        sys.modules["unsloth_zoo.mlx.inference"], "exact_speculative_verify", exact_verify
+    )
     draft = SimpleNamespace(draft_kind = "mtp", draft_n = 6, draft_n_accepted = 4)
     draft.prepare = (
         lambda ids, sampling, given: prepared.append((ids, sampling.temperature, sampling.top_k))
@@ -7308,7 +7835,9 @@ def test_the_grammar_stops_on_the_token_the_decode_loop_stops_on():
 
     tokenizer, runtime_stop = _two_stop_tokenizer()
     wrapped = TokenizerWrapper(tokenizer, eos_token_ids = [runtime_stop])
-    assert _stop_offered_after_the_document(wrapped, tokenizer) == {runtime_stop}
+    # mlx-lm 0.32 also keeps the tokenizer's own end token in the wrapper's stop set.
+    assert runtime_stop in wrapped.eos_token_ids
+    assert _stop_offered_after_the_document(wrapped, tokenizer) == set(wrapped.eos_token_ids)
     assert _stop_offered_after_the_document(tokenizer, tokenizer) == {tokenizer.eos_token_id}
 
 
@@ -7667,12 +8196,19 @@ def test_mlx_stream_detokenizer_handles_one_that_cannot_be_copied():
         def decode(self, token_ids):
             return "".join(f"<{token_id}>" for token_id in token_ids)
 
+        def encode(
+            self,
+            text,
+            add_special_tokens = True,
+        ):
+            return [ord(c) for c in text]
+
     class _PerRead:
         """Stands in for ``TokenizerWrapper``, whose ``detokenizer`` is a property."""
 
         @property
         def detokenizer(self):
-            return detokenizers.NaiveStreamingDetokenizer(_Tok())
+            return _uncopyable_naive_detokenizer(detokenizers)(_Tok())
 
     source = _PerRead()
     with pytest.raises(AttributeError):
@@ -8974,7 +9510,7 @@ def test_mlx_vlm_every_release_reads_one_models_rate_the_same_way(
 ):
     """A model's declared rate must not depend on which mlx-vlm is installed.
 
-    Studio pins ``mlx-vlm>=0.4.4,<=0.7.4``, which spans both shapes: releases with no resolver
+    Studio pins ``mlx-vlm>=0.4.4,<=0.7.8``, which spans both shapes: releases with no resolver
     and, from 0.7.0, releases that have one. Reading the rate only through the resolver left
     every install on the older shape sampling at the library default instead of the rate the
     checkpoint asked for.

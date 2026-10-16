@@ -1,12 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""Pinned-symbol + source-pattern transformers compat checks via GitHub raw-fetch + grep.
-
-Catches breakage classes from unsloth#3998/5036/5155/5259 and
-unsloth-zoo#572/571/549/543/541/495/491/488/472/393/388/583/584/159.
-CPU-only, no install. Anchors: transformers 4.57.6 (floor), 5.17.0 (ceiling) and 5.5.0
-(the old ceiling, still the Apple Silicon cap).
-"""
+"""CPU-only checks against transformers GitHub source; anchors 4.57.6, 5.5.0 and 5.17.0."""
 
 from __future__ import annotations
 
@@ -30,7 +24,7 @@ from tests.version_compat._fetch import (
 )
 
 
-# Read from pyproject: a hardcoded floor went stale and silently dropped 4.52-4.56.
+# Read from pyproject: a hardcoded floor went stale.
 _FLOOR_RE = re.compile(r"^\s*\"transformers[^\"]*?>=\s*([0-9]+(?:\.[0-9]+)*)", re.M)
 _FLOOR_FALLBACK = (4, 52, 4)
 
@@ -55,7 +49,6 @@ _ALWAYS = ("v4.57.6", "v5.5.0", "v5.16.0", "v5.10.1", "v5.15.1")
 
 # Exact pins notebooks use; one-tag-per-minor would evict them.
 
-# pyproject's cap, so a later patch cannot evict the declared maximum.
 _CAP = re.compile(r"^\s*\"transformers[^\"]*?<=\s*([0-9]+(?:\.[0-9]+)*)", re.M)
 
 
@@ -69,14 +62,13 @@ def _declared_ceiling_tag() -> tuple[str, ...]:
     if not found:
         return ()
     ceiling = max(found, key = lambda v: tuple(int(p) for p in v.split(".")))
-    # Through the override table: some PyPI versions have no matching tag.
     return (_TAG_OVERRIDES.get(ceiling, "v" + ceiling),)
 
 
-# PyPI version -> tag where upstream disagrees (5.10.4 is tagged v5.10.3; 4.54.1 is v4.54-release).
+# PyPI version -> tag where upstream disagrees.
 _TAG_OVERRIDES = {"5.10.4": "v5.10.3", "4.54.1": "v4.54-release"}
 
-# Outage fallback; must start at the declared floor (test_the_outage_fallback_reaches_the_declared_floor).
+# Outage fallback; must start at the declared floor.
 _TAGS_FALLBACK = (
     "v4.52.4",
     "v4.53.3",
@@ -106,8 +98,7 @@ _TAGS_FALLBACK = (
 )
 
 
-# Shared across xdist workers so all collect identical parameters
-# (https://pytest-xdist.readthedocs.io/en/stable/known-limitations.html).
+# Shared across xdist workers so all collect identical parameters.
 _MATRIX_CACHE_ENV = "PYTEST_TRANSFORMERS_MATRIX_FILE"
 
 
@@ -140,13 +131,7 @@ def _write_cached_matrix(tags: list[str]) -> None:
 
 
 def _resolved_tags() -> list[str]:
-    """`_release_tags()`, resolved once per run and shared across xdist workers.
-
-    Every return goes through `_with_always`, the published one included: the cache agrees on the
-    PyPI half of the answer, it is not a second source of truth for the anchors. A file written by
-    another revision and returned verbatim dropped the floor, the old ceiling and the notebook pins
-    while reporting green.
-    """
+    """Cached and fresh results both go through _with_always, so a stale file cannot drop the anchors."""
     cached = _cached_matrix()
     if cached is not None:
         return _with_always(cached)
@@ -159,13 +144,7 @@ def _resolved_tags() -> list[str]:
 
 
 def _release_tags() -> list[str]:
-    """Every transformers minor at or above the floor, latest patch of each, oldest first.
-
-    Read from PyPI, not pinned: this suite says which versions the cap may be lifted to, and a
-    hand-maintained list answers for the day it was edited. One tag per minor bounds the matrix; a
-    patch that broke something earns a place in `_ALWAYS`. Yanked and rc/dev/post builds are
-    skipped, since pip will not install them.
-    """
+    """Reads versions from PyPI rather than a pinned list; yanked and rc/dev/post builds are skipped."""
     try:
         with urllib.request.urlopen(
             "https://pypi.org/pypi/transformers/json",
@@ -198,12 +177,7 @@ def _release_tags() -> list[str]:
 
 
 def _with_always(tags) -> list[str]:
-    """`tags` with every `_ALWAYS` anchor present, sorted, deduplicated.
-
-    Every return path goes through here, the fallback ones included: `_TAGS_FALLBACK` carries one
-    tag per minor so it holds neither v5.5.0 nor v5.16.0, and returning it unmerged let an outage
-    drop the Apple Silicon ceiling and the tokenizers breakpoint and still report green.
-    """
+    """Every return path goes through here, fallback included, so an outage cannot drop the anchors."""
     return sorted(set(tuple(tags) + _ALWAYS + _declared_ceiling_tag()), key = _sort_key)
 
 
@@ -217,11 +191,9 @@ def _sort_key(tag: str) -> tuple[int, ...]:
 
 TRANSFORMERS_TAGS = _resolved_tags() + ["main"]
 
-# Every check runs once per tag; one that cannot skips from inside so the tag stays in the report.
 pytestmark = pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 
 
-# Trainer surface: unsloth/models/_utils.py rewrites Trainer.{__init__, training_step, get_batch_samples, compute_loss}.
 def test_trainer_class_importable_path(tag: str):
     """transformers.Trainer must remain at trainer.py or trainer/__init__.py."""
     candidates = ["src/transformers/trainer.py", "src/transformers/trainer/__init__.py"]
@@ -258,7 +230,6 @@ def test_trainer_training_step_grad_accum_pattern(tag: str):
         "self.accelerator.backward(loss",
     )
     missing = [s for s in needed if s not in src]
-    # Hard-fail only when ALL substrings missing; partial drift is informational.
     if len(missing) == len(needed):
         pytest.fail(
             f"{tag}: Trainer.training_step has none of the grad-accum "
@@ -288,7 +259,6 @@ def test_trainer_inner_training_loop_inplace_loss_v5(tag: str):
     _, src = hit
     has_inplace = "self._tr_loss +=" in src
     has_outplace = "tr_loss = tr_loss + tr_loss_step" in src
-    # Assert ONE form is present so a refactor dropping both is caught.
     assert has_inplace or has_outplace, (
         f"{tag}: Trainer._inner_training_loop has neither "
         f"`tr_loss = tr_loss + tr_loss_step` nor `self._tr_loss +=`; "
@@ -296,13 +266,11 @@ def test_trainer_inner_training_loop_inplace_loss_v5(tag: str):
     )
 
 
-# modeling_utils: checkpoint, PushToHubMixin, ALL_ATTENTION_FUNCTIONS.
 def test_modeling_utils_exposes_checkpoint(tag: str):
     """unsloth-zoo#549: transformers 5.2+ uses modeling_utils.checkpoint; patch must replace it, not just torch's."""
     src = fetch_text("huggingface/transformers", tag, "src/transformers/modeling_utils.py")
     if src is None:
         pytest.skip(f"{tag}: modeling_utils.py missing")
-    # Either a direct import or local rebinding.
     has_import = bool(
         re.search(
             r"^from\s+torch\.utils\.checkpoint\s+import\s+checkpoint",
@@ -327,7 +295,6 @@ def test_pushtohubmixin_create_repo_status(tag: str):
     _ = has_create
 
 
-# integrations.bitsandbytes: _replace_with_bnb_linear vs new path.
 def test_integrations_bitsandbytes_module_present(tag: str):
     src = fetch_text(
         "huggingface/transformers", tag, "src/transformers/integrations/bitsandbytes.py"
@@ -354,7 +321,6 @@ def test_quantizers_should_convert_module_signature(tag: str):
     _ = has_dot_form
 
 
-# integrations.finegrained_fp8.FP8Linear: bias/has_bias rename in v5.
 def test_fp8linear_init_param_names(tag: str):
     """unsloth-zoo#572: transformers 5.x renamed FP8Linear.__init__ `bias` -> `has_bias`."""
     src = fetch_text(
@@ -399,7 +365,6 @@ MODELING_CONTRACTS: tuple[ModelingContract, ...] = (
         path = "src/transformers/models/llama/modeling_llama.py",
         classes = ("LlamaAttention", "LlamaDecoderLayer", "LlamaModel", "LlamaForCausalLM"),
         rope_name = "LlamaRotaryEmbedding",
-        # LlamaLinearScalingRotaryEmbedding is Unsloth's own shim, not an upstream rebind.
         patch_site = "unsloth/models/llama.py:FastLlamaModel.pre_patch",
     ),
     ModelingContract(
@@ -500,7 +465,7 @@ MODELING_CONTRACTS: tuple[ModelingContract, ...] = (
         extra_bindings = ("FalconH1RMSNorm",),
         patch_site = "unsloth/models/falcon_h1.py:FastFalconH1Model.pre_patch",
     ),
-    # glm4_moe omitted: upstream renamed Glm4MoeLiteNaiveMoe -> Glm4MoeLiteExperts; add with the Unsloth-side fix.
+    # glm4_moe omitted: upstream renamed Glm4MoeLiteNaiveMoe -> Glm4MoeLiteExperts.
 )
 
 
@@ -520,9 +485,6 @@ def test_modeling_contract(tag: str, contract: ModelingContract):
         )
     for n in contract.extra_bindings:
         assert is_bound(src, n), f"{tag}/{contract.name}: {n} missing: {contract.patch_site}"
-
-
-# auto_factory: unsloth#5155 _LazyAutoMapping private API.
 
 
 def test_auto_factory_lazy_mapping_private_api(tag: str):
@@ -564,7 +526,6 @@ def test_configuration_utils_alias(tag: str):
     )
 
 
-# tokenization: apply_chat_template return_dict default flip in v5.
 def test_apply_chat_template_signature_present(tag: str):
     """unsloth-zoo#572: apply_chat_template `return_dict` default flipped False -> True in transformers 5.x."""
     src = fetch_text(
@@ -579,7 +540,6 @@ def test_apply_chat_template_signature_present(tag: str):
     ), f"{tag}: apply_chat_template missing in tokenization_utils_base.py"
 
 
-# Generic-importability sweep: every transformers symbol unsloth/zoo imports must stay reachable.
 def test_modeling_attn_mask_utils_symbols(tag: str):
     """_prepare_4d_attention_mask_for_sdpa is imported by unsloth/models/llama.py + sentence_transformer.py."""
     src = fetch_text(
@@ -595,7 +555,6 @@ def test_modeling_attn_mask_utils_symbols(tag: str):
     ), f"{tag}: _prepare_4d_attention_mask_for_sdpa missing"
 
 
-# Generic-importability sweep:
 def test_cache_utils_classes(tag: str):
     src = fetch_text("huggingface/transformers", tag, "src/transformers/cache_utils.py")
     if src is None:
@@ -616,11 +575,7 @@ def test_training_args_parallel_mode_importable(tag: str):
 
 
 def test_the_matrix_starts_at_the_declared_floor(tag: str) -> None:
-    """The matrix is only a compatibility claim if it begins where the claim does.
-
-    `_FLOOR` was a literal 4.57.6 while pyproject declared 4.52.4, so every 4.52-4.56 release was
-    discarded and a change landing after the floor could break supported users, matrix still green.
-    """
+    """_FLOOR must equal the floor pyproject declares, or releases between them are silently skipped."""
     declared = _declared_floor()
     assert _FLOOR == declared, (
         f"_FLOOR is {_FLOOR} but pyproject declares {declared}; the matrix would skip "
@@ -635,11 +590,7 @@ def test_the_matrix_starts_at_the_declared_floor(tag: str) -> None:
 
 
 def test_trainer_training_step_model_train_call_is_standalone(tag: str):
-    """unsloth#11238 rewrites the FIRST `model.train()` in Trainer.training_step.
-
-    A release writing `self.model.train()` earlier in that method turns the same replace into
-    `self._unsloth_train_if_needed(model)` and every training step dies with AttributeError.
-    """
+    """The first model.train() in training_step must stand alone or unsloth's rewrite breaks every step."""
     candidates = ["src/transformers/trainer.py", "src/transformers/trainer/__init__.py"]
     hit = first_match("huggingface/transformers", tag, candidates)
     assert hit is not None

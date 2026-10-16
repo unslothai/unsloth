@@ -242,7 +242,7 @@ def GraniteDecoderLayer_fast_forward(
         hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
     else:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, reuse_grad = True)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states = hidden_states,
             causal_mask = causal_mask,
@@ -258,7 +258,9 @@ def GraniteDecoderLayer_fast_forward(
         hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
 
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm(
+            self.post_attention_layernorm, hidden_states, reuse_grad = True
+        )
         hidden_states = self.mlp(hidden_states)
         hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
 
@@ -452,8 +454,9 @@ def GraniteModel_fast_forward_inference(
     else:
         attention_mask = None
 
+    # Decode positions run past max_seq_length; the cache is only built for the rows asked for.
     position_embeddings = self.model.rotary_emb.get_cached(
-        self.max_seq_length, hidden_states.device.index
+        max(self.max_seq_length, seq_len + q_len), hidden_states.device.index
     )
 
     next_decoder_cache = []

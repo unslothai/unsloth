@@ -720,13 +720,13 @@ def test_physical_gpu_count_records_whether_the_smi_answered(monkeypatch):
     monkeypatch.setattr(hw, "_physical_gpu_count_from_smi", False)
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "IS_ROCM", False)
-    monkeypatch.setattr(nvidia, "get_physical_gpu_count", lambda: 4)
+    monkeypatch.setattr(nvidia, "get_physical_gpu_count", lambda gpu_rows_only = False: 4)
     assert hw.get_physical_gpu_count() == 4
     assert hw._physical_gpu_count_from_smi is True
 
     monkeypatch.setattr(hw, "_physical_gpu_count", None)
     monkeypatch.setattr(hw, "_physical_gpu_count_from_smi", False)
-    monkeypatch.setattr(nvidia, "get_physical_gpu_count", lambda: None)
+    monkeypatch.setattr(nvidia, "get_physical_gpu_count", lambda gpu_rows_only = False: None)
     monkeypatch.setattr(hw, "_torch_get_physical_gpu_count", lambda: 1)
     assert hw.get_physical_gpu_count() == 1
     assert hw._physical_gpu_count_from_smi is False

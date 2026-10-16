@@ -89,6 +89,14 @@ export interface ExportOperationResponse {
   details?: { output_path?: string | null } & Record<string, unknown>;
 }
 
+/** The trained speculative-decoding drafter an export carried (backend `details.drafter`). */
+export interface ExportDrafterInfo {
+  strategy: "mtp" | "eagle3";
+  files?: string[];
+  vllm_command?: string | null;
+  llama_cpp_args?: string[] | string | null;
+}
+
 /** GGUF export options for a decision model (Clef / Laya) checkpoint folder. */
 export interface DecisionExportInfo {
   is_decision: boolean;
@@ -172,6 +180,8 @@ export async function loadCheckpoint(params: {
   checkpoint_path: string;
   max_seq_length?: number;
   load_in_4bit?: boolean;
+  /** Decoder layers in host RAM for low-VRAM export; "auto" (default) or a fixed count. */
+  offload_layers?: number | "auto";
   /** Allow loading models with custom code. Only enable for checkpoints you trust. */
   trust_remote_code?: boolean;
   /** sha256 fingerprint pinning user approval of this exact custom-code version. */

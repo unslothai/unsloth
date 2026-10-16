@@ -117,6 +117,25 @@ def _resolve_inventory_handle(value: str) -> str:
 _CHECKPOINTING_OFF = ("false", "0", "no", "none", "off")
 
 
+class DrafterTrainingConfig(BaseModel):
+    """Optional speculative-decoding drafter trained after the fine-tune (omitted or disabled = off)."""
+
+    enabled: bool = False
+    strategy: Literal["auto", "mtp", "eagle3"] = "auto"
+    data_source: Literal["dataset", "regenerate"] = "dataset"
+    max_examples: int = Field(2000, ge = 16, le = 100000)
+    epochs: float = Field(1.0, ge = 0.1, le = 20)
+    learning_rate: Optional[float] = Field(None, gt = 0, le = 1.0)
+    draft_steps: int = Field(3, ge = 1, le = 8)
+
+    @field_validator("max_examples", "draft_steps", "epochs", mode = "before")
+    @classmethod
+    def _reject_booleans(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("expected a number, not a boolean")
+        return value
+
+
 class TrainingStartRequest(BaseModel):
     """Request schema for starting training"""
 
@@ -205,6 +224,16 @@ class TrainingStartRequest(BaseModel):
         description = "Whether to load the Hugging Face dataset in streaming mode",
     )
     eval_steps: float = Field(0.00, description = "Fraction of total steps between evals (0-1)")
+    early_stopping_patience: int = Field(
+        0,
+        ge = 0,
+        le = 1000,
+        description = "Stop after this many evaluations without a lower eval loss and keep the best weights. 0 = off",
+    )
+    drafter: Optional[DrafterTrainingConfig] = Field(
+        None,
+        description = "Train a speculative-decoding drafter (MTP head or EAGLE-3) after the fine-tune",
+    )
     dataset_slice_start: Optional[int] = Field(
         None,
         ge = 0,
@@ -230,6 +259,13 @@ class TrainingStartRequest(BaseModel):
     @classmethod
     def _normalize_project_name(cls, value: Optional[str]) -> Optional[str]:
         return normalize_project_name(value)
+
+    @field_validator("early_stopping_patience", mode = "before")
+    @classmethod
+    def _reject_boolean_patience(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("early_stopping_patience must be a number, not a boolean")
+        return value
 
     @field_validator("eval_steps", mode = "before")
     @classmethod
@@ -725,6 +761,17 @@ class TrainingStartRequest(BaseModel):
             )
         return self
 
+    @model_validator(mode = "after")
+    def _validate_drafter(self) -> "TrainingStartRequest":
+        drafter = getattr(self, "drafter", None)
+        if drafter is None or not drafter.enabled:
+            return self
+        if getattr(self, "is_embedding", False) or getattr(self, "is_decision", False):
+            raise ValueError("drafter training is only available for text generation models.")
+        if getattr(self, "training_type", None) == "Continued Pretraining":
+            raise ValueError("drafter training is not available for continued pretraining.")
+        return self
+
 
 class TrainingJobResponse(BaseModel):
     """Immediate response when training is initiated"""
@@ -734,6 +781,32 @@ class TrainingJobResponse(BaseModel):
     message: str = Field(..., description = "Human-readable status message")
     error: Optional[str] = Field(None, description = "Error details if status is 'error'")
     error_code: Optional[str] = Field(None, description = "Stable error code if status is 'error'")
+
+
+class TokenPreviewRequest(BaseModel):
+    """How a training run would tokenize and mask a few dataset rows, or ``text`` when given. Only
+    the model's tokenizer is read, never its weights."""
+
+    model_name: str = Field(..., min_length = 1)
+    model_type: Optional[str] = None
+    load_in_4bit: bool = True
+    dataset_name: Optional[str] = None
+    subset: Optional[str] = None
+    train_split: Optional[str] = None
+    dataset_local_path: Optional[str] = None
+    dataset_known_cached: bool = False
+    format_type: str = "auto"
+    custom_format_mapping: Optional[Dict[str, Any]] = None
+    train_on_completions: bool = False
+    is_cpt: bool = False
+    max_seq_length: int = Field(2048, ge = 1, le = 1_048_576)
+    num_samples: int = Field(3, ge = 1, le = 8)
+    seed: int = 0
+    text: Optional[str] = Field(None, max_length = 200_000)
+    # The dataset's format from an earlier preview, so typed text gets the template and markers it would.
+    final_format: Optional[str] = None
+
+    _resolve_the_handles = field_validator("model_name", "dataset_name")(_resolve_inventory_handle)
 
 
 class TrainingStartRequestStatus(BaseModel):
@@ -761,6 +834,7 @@ class TrainingStatus(BaseModel):
         "loading_dataset",
         "configuring",
         "training",
+        "training_drafter",
         "finalizing",
         "completed",
         "error",

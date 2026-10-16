@@ -150,6 +150,36 @@ def get_physical_gpu_count(gpu_rows_only: bool = False) -> Optional[int]:
     return None
 
 
+def get_mig_gpu_indices() -> set[int]:
+    """Physical indices of GPUs with MIG instances (indented ``MIG`` rows under their
+    ``GPU N:`` row in ``nvidia-smi -L``). CUDA sees such a card as one slice, so its
+    ``--query-gpu`` memory is the whole card's, not the device's. Empty on failure."""
+    try:
+        result = gpu_query.run_nvidia_smi(
+            [_nvidia_smi_executable(), "-L"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except Exception:
+        return set()
+    if result.returncode != 0 or not isinstance(result.stdout, str):
+        return set()
+    indices: set[int] = set()
+    current: Optional[int] = None
+    for line in result.stdout.splitlines():
+        if line.startswith("GPU "):
+            head = line[4:].split(":", 1)[0].strip()
+            current = int(head) if head.isdecimal() else None
+        elif current is not None and line.strip().startswith("MIG "):
+            indices.add(current)
+    return indices
+
+
 def get_primary_gpu_utilization() -> dict[str, Any]:
     try:
         result = gpu_query.run_nvidia_smi(
@@ -427,6 +457,33 @@ def get_checkpoint_quant_formats() -> list[str]:
         return []
     floor = min(capabilities)
     return [fmt for fmt, needed in _CHECKPOINT_QUANT_MIN_CAPABILITY if floor >= needed]
+
+
+def get_compute_capabilities() -> dict[int, tuple[int, int]]:
+    """nvidia-smi row index -> (major, minor), no mask and no torch; {} when unreadable."""
+    try:
+        result = gpu_query.run_nvidia_smi(
+            [_nvidia_smi_executable(), "--query-gpu=index,compute_cap", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if result.returncode != 0:
+        return {}
+    capabilities: dict[int, tuple[int, int]] = {}
+    for line in result.stdout.strip().splitlines():
+        index, _, cap = (part.strip() for part in line.partition(","))
+        major, _, minor = cap.partition(".")
+        if not (index.isdigit() and major.isdigit() and minor.isdigit()):
+            return {}
+        capabilities[int(index)] = (int(major), int(minor))
+    return capabilities
 
 
 def get_physical_gpu_inventory() -> dict[str, Any]:

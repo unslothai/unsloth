@@ -28,7 +28,6 @@ import {
 import {
   MINIMAX_MUSIC_MAX_SECONDS,
   audioCppRuntimeProblem,
-  audioCppRuntimeUpdate,
   audioSamplingControlsApply,
   isGgufTtsTarget,
   isTtsAudioType,
@@ -45,6 +44,7 @@ import {
   sttRepoIdForSidecarKey,
   sttSidecarKeyFor,
 } from "../src/features/audio/stt-artifacts.ts";
+import { transcribeLanguagesFor } from "../src/features/audio/transcribe-languages.ts";
 import {
   audioPickIsRoutable,
   audioPipelineTagFor,
@@ -721,7 +721,6 @@ test("English-only and partial-language ASR models are gated by language", () =>
     "audiocpp-moonshine-tiny",
     "audiocpp-moonshine-small",
     "audiocpp-moonshine-medium",
-    "audiocpp-nemotron-3.5-asr-0.6b",
     `${AUDIO_CPP_REPO}/Citrinet-ASR-GGUF`,
     `${AUDIO_CPP_REPO}/Granite-Speech-5.0-470M-TurboCTC-GGUF`,
     `${AUDIO_CPP_REPO}/Higgs-Audio-v3-STT-GGUF`,
@@ -740,6 +739,20 @@ test("English-only and partial-language ASR models are gated by language", () =>
     assert.equal(isSttModelLanguageCompatible(canary, language), true, language);
   }
   assert.equal(isSttModelLanguageCompatible(canary, "ja-JP"), false);
+  // Nemotron lists its spec's 40 locales; the backend sends the one its prompt dictionary keys.
+  const nemotron = "audiocpp-nemotron-3.5-asr-0.6b";
+  assert.ok(!ENGLISH_ONLY_STT_MODELS.has(nemotron));
+  for (const language of ["en-US", "ja-JP", "zh-CN", "nb-NO", "pt-BR", "auto"]) {
+    assert.equal(isSttModelLanguageCompatible(nemotron, language), true, language);
+  }
+  assert.equal(isSttModelLanguageCompatible(nemotron, "id-ID"), false);
+  assert.deepEqual(
+    transcribeLanguagesFor(
+      audioCppModelFor(`${AUDIO_CPP_REPO}/Nemotron-3.5-ASR-Streaming-0.6B-GGUF`)?.languages,
+    ).map((language) => language.code),
+    ["", "en", "zh", "es", "fr", "de", "it", "pt", "ru", "ja", "ko", "ar", "hi", "nl", "pl",
+      "tr", "uk", "vi", "th", "sv", "da", "fi", "no", "cs", "el", "he", "hu", "ro"],
+  );
   const hviske = `${AUDIO_CPP_REPO}/Hviske-v5.3-GGUF`;
   assert.equal(isSttModelLanguageCompatible(hviske, "da-DK"), true);
   assert.equal(isSttModelLanguageCompatible(hviske, "auto"), true);
@@ -794,7 +807,7 @@ test("GGUF runtime speech trades sampling controls for the model's own options",
     /\{musicGeneration \|\|\s*samplingControls \|\|\s*audioOptionSpecs\.length > 0 \? \(\s*<AdvancedDisclosure/,
   );
   assert.match(page, /!musicGeneration && samplingControls && temperatureEdited/);
-  assert.match(page, /parseAudioOptions\(status\?\.audio_options\)/);
+  assert.match(page, /audioOptionSpecsFor\(status, workflow\)/);
   assert.match(page, /\{ audio_options: requestOptions \}/);
   assert.match(page, /"Voice or style description"/);
 });
@@ -877,44 +890,6 @@ test("recommended speech and music picks are refused when the runtime cannot run
   assert.match(
     page,
     /audioCppRuntimeProblem\(id, audioCppRuntime\.current\);\s*if \(runtimeProblem\) \{\s*toast\.error\(runtimeProblem, \{ duration: 7000 \}\);\s*return;/,
-  );
-});
-
-test("an outdated managed runtime names both releases; anything else shows no notice", () => {
-  const current = {
-    available: true,
-    espeak: true,
-    backend: "cuda",
-    release_tag: "v0.9.0-unsloth.1",
-    expected_tag: "v0.9.0-unsloth.1",
-    outdated: false,
-  };
-  const outdated = { ...current, release_tag: "v0.8.0-unsloth.1", outdated: true };
-  assert.deepEqual(audioCppRuntimeUpdate(outdated), {
-    installed: "v0.8.0-unsloth.1",
-    expected: "v0.9.0-unsloth.1",
-  });
-  assert.equal(audioCppRuntimeUpdate(current), null);
-  assert.equal(audioCppRuntimeUpdate(null), null);
-  assert.equal(audioCppRuntimeUpdate(undefined), null);
-  // support servers older than these fields or unable to name either release.
-  assert.equal(
-    audioCppRuntimeUpdate({ available: true, espeak: true, backend: null, release_tag: "v0.8.0" }),
-    null,
-  );
-  assert.equal(audioCppRuntimeUpdate({ ...outdated, expected_tag: null }), null);
-  assert.equal(audioCppRuntimeUpdate({ ...outdated, release_tag: null }), null);
-  assert.equal(audioCppRuntimeUpdate({ ...outdated, available: false }), null);
-  const route = readText("../../backend/routes/inference.py");
-  assert.match(route, /"expected_tag": None,\s*"outdated": False,/);
-  const page = readAudioWorkspaceSource();
-  assert.match(page, /const nextUpdate = audioCppRuntimeUpdate\(audioCppRuntime\.current\);/);
-  assert.match(page, /\{runtimeUpdate \? \(\s*<AudioRuntimeUpdateNotice\s+update=\{runtimeUpdate\}/);
-  // The CLI route stays for whoever the in-app update is not offered to.
-  const notice = readText("../src/features/audio/components/audio-runtime-update-notice.tsx");
-  assert.match(
-    notice,
-    /Stop Unsloth, run\{" "\}\s*<code className="font-mono">unsloth studio update<\/code>, then\s*start it again\./,
   );
 });
 

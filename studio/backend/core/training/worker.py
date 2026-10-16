@@ -77,8 +77,8 @@ from utils.kernel_install import (
     uninstall_command,
 )
 from utils.ssm_runtime import (
-    CAUSAL_CONV1D_MODEL_SUBSTRINGS as _CAUSAL_CONV1D_MODEL_SUBSTRINGS,
-    SSM_MODEL_SUBSTRINGS as _SSM_MODEL_SUBSTRINGS,
+    model_is_ssm as _model_is_ssm,
+    model_wants_causal_conv1d as _model_wants_causal_conv1d,
 )
 from utils.wheel_utils import (
     direct_wheel_url,
@@ -1326,11 +1326,6 @@ def _decision_has_llm_backbone(model_load_target: str, hf_token: str | None) -> 
         return False
 
 
-def _model_wants_causal_conv1d(model_name: str) -> bool:
-    name = model_name.lower()
-    return any(key in name for key in _CAUSAL_CONV1D_MODEL_SUBSTRINGS)
-
-
 _hipcc_gcc_install_dir = hipcc_gcc_install_dir
 
 
@@ -1683,8 +1678,16 @@ def _flash_linear_attention_importable() -> bool:
         return False
 
 
-def _ensure_mamba_ssm(event_queue: Any, model_name: str) -> None:
-    if not any(sub in model_name.lower() for sub in _SSM_MODEL_SUBSTRINGS):
+def _ensure_mamba_ssm(
+    event_queue: Any,
+    model_name: str,
+    *,
+    required: bool | None = None,
+) -> None:
+    # `required` is the config-resolved answer (resolved_model_is_ssm); the name is the fallback.
+    if required is None:
+        required = _model_is_ssm(model_name)
+    if not required:
         return
 
     if sys.platform == "win32" and importlib.util.find_spec("triton") is None:
@@ -2186,6 +2189,28 @@ def _activate_transformers_version_or_warn(model_name: str, hf_token: str | None
         )
 
 
+def _carry_mlx_chat_template_to_processor(model, tokenizer) -> bool:
+    """MLXTrainer saves the loader's processor when it has one, so a text run on a multimodal base checkpoint (Qwen3.5
+    Base) saved no template and Chat failed with "chat_template is not set". Give it the template the rows used."""
+    processor = getattr(model, "_processor", None)
+    if processor is None or processor is tokenizer:
+        return False
+    trained = tokenizer
+    if type(tokenizer).__name__ == "TokenizerWrapper":
+        trained = getattr(tokenizer, "_tokenizer", tokenizer)
+    template = getattr(trained, "chat_template", None)
+    if not template or getattr(processor, "chat_template", None):
+        return False
+    own = getattr(processor, "tokenizer", None)
+    if own is not None and own is not trained and getattr(own, "chat_template", None):
+        return False
+    processor.chat_template = template
+    if own is not None and own is not trained:
+        # Also carries get_chat_template's end-token remap.
+        processor.tokenizer = trained
+    return True
+
+
 def _mlx_vlm_max_resized_size(width: int, height: int, target: int) -> tuple[int, int]:
     if width <= 0 or height <= 0 or target <= 0:
         return width, height
@@ -2522,6 +2547,11 @@ def _start_mlx_stop_poller(stop_queue):
         trainer = trainer_ref[0]
         if trainer is not None:
             trainer.stop_requested = True
+            # Early stopping set load_best_model_at_end; a manual stop keeps the current adapters instead, since the
+            # stop checkpoint stores this step's optimizer state next to them.
+            args = getattr(trainer, "args", None)
+            if getattr(args, "load_best_model_at_end", False):
+                args.load_best_model_at_end = False
 
     stop_thread = _start_worker_stop_poller(
         stop_queue,
@@ -2768,6 +2798,9 @@ def _finalize_mlx_training(
                 resume_blocked = True,
             )
             return
+    if not stopped_after_save and getattr(trainer, "_early_stopped", False):
+        # Zoo ends an early-stopped run without stop_requested, so it reads as a plain completion otherwise.
+        completion_message = "Training completed (stopped early: eval loss stopped improving)"
     send(
         "complete",
         output_dir = output_dir if bool(trainer.is_main_process) else None,
@@ -3271,6 +3304,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
     except ImportError:
         _send("status", status_message = "Format helper unavailable, using raw dataset")
 
+    if not is_vlm and dataset_final_format:
+        # get_chat_template returns a new tokenizer unless it is an mlx-lm wrapper, so the rows' template stayed in
+        # the formatter; mirror the CUDA trainer and re-apply it here (no-op for models with a template).
+        from utils.datasets.chat_templates import get_training_chat_template
+        tokenizer = get_training_chat_template(tokenizer, model_name, dataset_final_format)
+        if _carry_mlx_chat_template_to_processor(model, tokenizer):
+            logger.info("Saving the training chat template with the processor")
+
     if eval_enabled and eval_dataset is None:
         from core.training.eval_dataset import (
             MIN_TOTAL_ROWS_FOR_EVAL,
@@ -3386,6 +3427,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
         # Refills the gradient-norm chart. MLX returns a norm for free only under global-norm clipping; asking for it
         # beats switching clip modes, which would alter the loss trajectory and cost VLM runs mx.compile.
         mlx_config_kwargs["report_grad_norm"] = True
+    if (
+        "early_stopping_patience" in _supported_fields
+        and "load_best_model_at_end" in _supported_fields
+    ):
+        from core.training.early_stopping import early_stopping_patience
+
+        # Zoo counts patience in evaluations and restores the best adapters itself, the CUDA path's contract.
+        patience = early_stopping_patience(config.get("early_stopping_patience"))
+        if patience and eval_dataset is not None and eval_steps_value > 0:
+            mlx_config_kwargs["early_stopping_patience"] = patience
+            mlx_config_kwargs["load_best_model_at_end"] = True
     if "append_eos" in _supported_fields:
         # Unsloth SFT formatting owns rendered examples; raw/CPT text still needs MLX to append EOS.
         mlx_config_kwargs["append_eos"] = bool(raw_text_mode)
@@ -3433,10 +3485,25 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     # Auto-detect markers from the chat template first, manual table as fallback. Mirror the CUDA skips: raw/CPT text
     # has no chat turns. Check the resolved format too, since format_type="auto" can land on alpaca or raw.
+    from utils.datasets.pretokenized import has_custom_labels
+
+    if (
+        config.get("train_on_completions", False)
+        and dataset_final_format == "pretokenized"
+        and not has_custom_labels(dataset)
+    ):
+        # zoo's MLX masker re-tokenizes text, so token-id rows have nothing it can mask (CUDA masks input_ids).
+        _send(
+            "warning",
+            message = (
+                "'Train on completions' is not available for pre-tokenized datasets on Mac: "
+                "training will run on full sequences. Add a labels column to choose the trained tokens."
+            ),
+        )
     if (
         config.get("train_on_completions", False)
         and not raw_text_mode
-        and dataset_final_format != "raw_text"
+        and dataset_final_format not in ("raw_text", "pretokenized")
     ):
         _send("status", status_message = "Configuring response-only training...")
         # No catch: the helper handles detection failures and double misses, so an exception here is a real masking
@@ -3961,16 +4028,21 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # 2) mamba-ssm + flash-attn keep their substring / size gates.
     # 3) FLA gated-delta kernels: vendored by unsloth_zoo, nothing to install.
     # Laya decision models are ModernBERT encoders: none of these apply.
-    # Clef decision models are Qwen3.5 backbones and need the same gated-delta / conv kernels.
+    # Clef decision models are Qwen3.5 backbones: zoo's gated-delta and Triton conv kernels cover them.
     if (
         not config.get("is_decision")
         or config.get("decision_layout") in ("clef", "llm")
         or _decision_has_llm_backbone(model_load_target, _worker_hf_token(config))
     ):
         try:
-            from utils.ssm_runtime import resolved_model_wants_causal_conv1d
+            from utils.ssm_runtime import (
+                resolved_model_is_ssm,
+                resolved_model_wants_causal_conv1d,
+            )
 
-            wants_causal_conv1d = resolved_model_wants_causal_conv1d(
+            is_ssm = resolved_model_is_ssm(model_name, model_load_target, _worker_hf_token(config))
+            # Every mamba-ssm model also runs causal-conv1d.
+            wants_causal_conv1d = is_ssm or resolved_model_wants_causal_conv1d(
                 model_name,
                 model_load_target,
                 _worker_hf_token(config),
@@ -3985,7 +4057,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 model_name,
                 install_causal_conv1d = wants_causal_conv1d,
             )
-            _ensure_mamba_ssm(event_queue, model_name)
+            _ensure_mamba_ssm(event_queue, model_name, required = is_ssm)
             _ensure_flash_attn_for_long_context(
                 event_queue,
                 int(config.get("max_seq_length", 2048)),
@@ -4921,6 +4993,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 use_rslora = config.get("use_rslora", False),
                 use_loftq = _lora_uses_loftq(config),
                 use_dora = config.get("use_dora", False),
+                random_state = config.get("random_seed", 3407),
             )
         elif use_lora:
             _send_status(event_queue, "Configuring LoRA adapters...")
@@ -4938,6 +5011,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 use_rslora = config.get("use_rslora", False),
                 use_loftq = _lora_uses_loftq(config),
                 use_dora = config.get("use_dora", False),
+                random_state = config.get("random_seed", 3407),
             )
         else:
             _send_status(event_queue, "Preparing model for full finetuning...")
@@ -5058,6 +5132,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             tensorboard_dir = tensorboard_dir,
             eval_dataset = eval_dataset,
             eval_steps = eval_steps,
+            early_stopping_patience = config.get("early_stopping_patience", 0),
             max_seq_length = config.get("max_seq_length", 2048),
             vision_image_size = config.get("vision_image_size"),
             optim = config.get("optim", "adamw_8bit"),
@@ -5069,6 +5144,20 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         _tqdm_stop.set()
 
         progress = trainer.get_training_progress()
+        drafter_note = ""
+        # A Stop during the drafter phase drops only the drafter; the fine-tune is already saved.
+        stopped_in_training = trainer.should_stop
+        if config.get("drafter") and not progress.error and not trainer.should_stop:
+            from core.training.drafter import run_drafter_phase
+
+            manifest = run_drafter_phase(trainer, config, output_dir, event_queue, _send_status)
+            if manifest is not None:
+                label = "MTP head" if manifest["strategy"] == "mtp" else "EAGLE-3 drafter"
+                drafter_note = f"\nTrained {label} saved with the model."
+            progress = trainer.get_training_progress()
+        elif output_dir:
+            from core.training.drafter import discard_drafter_artifacts
+            discard_drafter_artifacts(output_dir)
         if progress.error:
             event_queue.put(
                 {
@@ -5080,13 +5169,14 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
         else:
             saved_output_dir = (
-                None if trainer.should_stop and not trainer.save_on_stop else output_dir
+                None if stopped_in_training and not trainer.save_on_stop else output_dir
             )
             event_queue.put(
                 {
                     "type": "complete",
                     "output_dir": saved_output_dir,
-                    "status_message": progress.status_message or "Training completed",
+                    "status_message": (progress.status_message or "Training completed")
+                    + drafter_note,
                     "ts": time.time(),
                 }
             )

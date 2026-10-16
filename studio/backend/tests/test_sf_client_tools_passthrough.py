@@ -1358,7 +1358,12 @@ def test_every_tool_loop_turn_is_billed_not_just_the_last():
     earlier results."""
     folded = _fold(_turn(100, 20), _turn(160, 30), _turn(220, 5))
 
-    assert folded["usage"] == {"prompt_tokens": 220, "completion_tokens": 55, "total_tokens": 275}
+    assert folded["usage"] == {
+        "prompt_tokens": 220,
+        "completion_tokens": 55,
+        "total_tokens": 275,
+        "context_tokens": 225,
+    }
     # Rates describe the summed counts, not the last turn that arrived.
     assert folded["timings"]["predicted_n"] == 55
     assert folded["timings"]["predicted_ms"] == pytest.approx(550.0)
@@ -1378,6 +1383,17 @@ def test_a_turn_that_ends_before_reporting_does_not_erase_the_loop():
     # Reported timings but no usage: the prompt is still the loop's.
     errored = _fold(_turn(100, 20), {"timings": {"predicted_ms": 1.0, "predicted_n": 1}})
     assert errored["usage"] == {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}
+
+
+def test_the_context_meter_counts_earlier_turns_once():
+    folded = _fold(_turn(18000, 60), _turn(21500, 80), _turn(25000, 700))
+
+    assert folded["usage"]["total_tokens"] == 25840
+    assert folded["usage"]["context_tokens"] == 25700
+    assert "context_tokens" not in _fold(_turn(18000, 60))["usage"]
+    # A last report with no prompt count keeps the earlier context.
+    unreported = _fold(_turn(18000, 60), _turn(21500, 80), {"finish_reason": "stop"})
+    assert unreported["usage"]["context_tokens"] == 21580
 
 
 def test_completion_details_are_summed_with_the_completion_they_describe():
@@ -1534,6 +1550,183 @@ def test_the_contract_reaches_the_backend_and_its_reply_comes_back_whole(monkeyp
     message = body["choices"][0]["message"]
     assert message["content"] == _MARKUP_DOC
     assert not message.get("reasoning_content")
+
+
+def _mlx_format_call(
+    monkeypatch,
+    backend,
+    caps = None,
+    **fields,
+):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "_reject_unhonorable_response_format", lambda payload: None)
+    backend.models["sf-model"]["is_mlx"] = True
+    return _call(
+        _request(**{"tools": [LOOKUP_TOOL], **fields}), monkeypatch, backend, **(caps or {})
+    )
+
+
+@pytest.mark.parametrize("response_format", [_RF_FORMAT, {"type": "json_object"}])
+@pytest.mark.parametrize(
+    "tool_choice",
+    [None, "auto", "required", {"type": "function", "function": {"name": "lookup"}}],
+)
+def test_a_response_format_does_not_lock_out_callable_tools(
+    monkeypatch, response_format, tool_choice
+):
+    backend = _ScriptedBackend(_fixed(_CALL_XML))
+    reply = _mlx_format_call(
+        monkeypatch,
+        backend,
+        tool_choice = tool_choice,
+        response_format = response_format,
+        stream = False,
+    )
+    choice = _json_body(reply)["choices"][0]
+    assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
+    assert backend.calls[0]["response_format"] is None
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["tool_calls"][0]["function"]["name"] == "lookup"
+
+
+def test_a_streamed_response_format_does_not_lock_out_callable_tools(monkeypatch):
+    backend = _ScriptedBackend(_fixed(_CALL_XML))
+    reply = _mlx_format_call(monkeypatch, backend, response_format = _RF_FORMAT, stream = True)
+    finishes = [
+        c.get("finish_reason") for o in _sse_objects(_collect_sse(reply)) for c in o["choices"]
+    ]
+    assert backend.calls[0]["response_format"] is None
+    assert "tool_calls" in finishes
+
+
+def test_a_set_aside_response_format_keeps_reasoning_out_of_the_call(monkeypatch):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "_sf_reasoning_prefill_mode", lambda *a, **k: True)
+    backend = _ScriptedBackend(_fixed("weighing</think>" + _CALL_XML))
+    reply = _mlx_format_call(
+        monkeypatch,
+        backend,
+        caps = {"supports_reasoning": True},
+        response_format = _RF_FORMAT,
+        stream = False,
+    )
+    message = _json_body(reply)["choices"][0]["message"]
+    assert message["reasoning_content"] == "weighing"
+    assert not message["content"]
+    assert message["tool_calls"][0]["function"]["name"] == "lookup"
+
+
+def test_a_set_aside_response_format_still_allows_the_nudge(monkeypatch):
+    truncated = '<tool_call>{"name": "lookup"'
+    backend = _ScriptedBackend(
+        lambda messages, tools: [_CALL_XML]
+        if any("native tool-call format" in (m.get("content") or "") for m in messages)
+        else [truncated]
+    )
+    reply = _mlx_format_call(
+        monkeypatch, backend, response_format = _RF_FORMAT, nudge_tool_calls = True, stream = False
+    )
+    assert len(backend.calls) == 2
+    assert _json_body(reply)["choices"][0]["finish_reason"] == "tool_calls"
+
+
+_RF_TOOL_HISTORY = [
+    ChatMessage(role = "user", content = "hi"),
+    ChatMessage(
+        role = "assistant",
+        content = None,
+        tool_calls = [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": '{"q": "cats"}'},
+            }
+        ],
+    ),
+    ChatMessage(role = "tool", tool_call_id = "call_1", content = "Paris"),
+]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [{"tool_choice": "none"}, {"tools": None, "messages": _RF_TOOL_HISTORY}],
+    ids = ["tool_choice_none", "history_without_tools"],
+)
+def test_a_response_format_still_applies_when_tools_cannot_be_called(monkeypatch, fields):
+    backend = _ScriptedBackend(_fixed('{"city":"Paris"}'))
+    reply = _mlx_format_call(
+        monkeypatch, backend, response_format = _RF_FORMAT, stream = False, **fields
+    )
+    assert backend.calls[0]["response_format"] == _RF_FORMAT
+    assert _json_body(reply)["choices"][0]["message"]["content"] == '{"city":"Paris"}'
+
+
+@pytest.mark.parametrize(
+    "tool_choice", ["required", {"type": "function", "function": {"name": "x"}}]
+)
+def test_a_forced_tool_choice_beside_a_response_format_needs_tools(monkeypatch, tool_choice):
+    from fastapi import HTTPException
+
+    backend = _ScriptedBackend(_fixed('{"city":"Paris"}'))
+    with pytest.raises(HTTPException) as exc:
+        _mlx_format_call(
+            monkeypatch,
+            backend,
+            tools = None,
+            tool_choice = tool_choice,
+            response_format = _RF_FORMAT,
+            stream = False,
+        )
+    assert exc.value.status_code == 400
+    assert not backend.calls
+
+
+@pytest.mark.parametrize("is_mlx", [False, True])
+def test_a_requested_tool_loop_keeps_the_format_refusals(monkeypatch, is_mlx):
+    from fastapi import HTTPException
+
+    backend = _ScriptedBackend(_fixed(_CALL_XML))
+    backend.models["sf-model"]["is_mlx"] = is_mlx
+    payload = _request(
+        tools = [LOOKUP_TOOL],
+        enable_tools = True,
+        max_tool_calls_per_message = 0,
+        response_format = {"type": "json_schema"},
+        stream = False,
+    )
+    with pytest.raises(HTTPException) as exc:
+        _call(payload, monkeypatch, backend)
+    assert exc.value.status_code == 400
+    assert not backend.calls
+
+
+@pytest.mark.parametrize(
+    "is_mlx, fields",
+    [
+        (False, {"response_format": _RF_FORMAT}),
+        (True, {"response_format": {"type": "json_schema"}}),
+        (
+            True,
+            {
+                "response_format": _RF_FORMAT,
+                "continue_final_message": True,
+                "messages": [
+                    ChatMessage(role = "user", content = "hi"),
+                    ChatMessage(role = "assistant", content = "<tool_call>"),
+                ],
+            },
+        ),
+    ],
+    ids = ["transformers", "unhonorable_schema", "continuation"],
+)
+def test_callable_tools_lift_the_refusals_of_a_format_they_set_aside(monkeypatch, is_mlx, fields):
+    backend = _ScriptedBackend(_fixed(_CALL_XML))
+    backend.models["sf-model"]["is_mlx"] = is_mlx
+    reply = _call(_request(tools = [LOOKUP_TOOL], stream = False, **fields), monkeypatch, backend)
+    assert backend.calls[0]["response_format"] is None
+    assert _json_body(reply)["choices"][0]["finish_reason"] == "tool_calls"
 
 
 class _FittedToolLoopBackend(_ToolLoopBackend):

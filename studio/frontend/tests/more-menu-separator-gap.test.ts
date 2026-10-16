@@ -32,6 +32,8 @@ test("the More flyout's rule sits as far from its rows as the menu's own edge", 
     const className = /\sclassName="([^"]*)"/.exec(tag);
     if (
       className &&
+      // The rail's media flyouts share these placement props; only More holds this ref.
+      /\sref=\{moreContentRef\}/.test(tag) &&
       /\sside="right"/.test(tag) &&
       /\salign="start"/.test(tag) &&
       /\ssideOffset=\{6\}/.test(tag)

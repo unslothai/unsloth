@@ -83,8 +83,121 @@ export const BUDGET = {
   // The KV cache, GPU memory limit and seed engine options (#13596) add 5.7 KB raw / 1.4 KB transfer
   // (6,573.5 -> 6,579.2 KB raw, 1,976.9 -> 1,978.3 KB transfer against abfe3142c, one machine and
   // build), inline in the eager chat and settings chunks like the other engine options; raised by that.
-  transferBytes: 2_026_500,
-  rawBytes: 6_743_000,
+  // Read aloud's token cap and length warning add 0.2 KB raw / 0.1 KB transfer to the eager chat chunk
+  // (6,739,816 -> 6,740,052 B raw, 2,021,725 -> 2,021,835 B transfer against af9d97837e, one machine
+  // and build), which took main over; raised by that.
+  // Seven merges since add 2.1 KB raw / 0.7 KB transfer (6,741,756 -> 6,743,873 B raw, 2,025,885 ->
+  // 2,026,588 B transfer from b44035a64 to cbf0f593d, one machine and build, Node 22), with the chunk count
+  // unchanged and no new dependency. The step that crossed is eval-loss early stopping patience (#13626,
+  // +806 B raw / +311 B transfer: its training field and strings); the maximized window layout fix in the
+  // app provider (#13647) 539 B raw, the + menu reorder (#13679, measured together with #13659) 711 B raw,
+  // and #13703 / #13700 the last 61 B. Raised by that growth so main's margin stays where it was.
+  // The chat menu's Compact conversation item adds 1.6 KB raw / 0.3 KB transfer to the eager chat chunk
+  // (6,741,807 -> 6,743,381 B raw, 2,021,316 -> 2,021,655 B transfer against 2a03c22812), raised by that.
+  // Eleven frontend merges since add 4.6 KB raw / 1.2 KB transfer (6,745,911 -> 6,750,599 B raw, 2,027,285 ->
+  // 2,028,544 B transfer from 85b6414c68 to 8611f1846c, one machine and build, Node 24), with the chunk count
+  // unchanged at 95 and no new dependency. No single step crossed: the composer draft kept across chats
+  // (#13722) 2.1 KB raw / 0.5 KB transfer, the collapsed sidebar rail's Images and Audio entries (#13731)
+  // 2.1 KB raw / 0.4 KB transfer, and #13665, #13614, #13732, #13661, #13538 the rest (#13744's revert
+  // gave back 0.4 KB raw). Raised by that growth so main's margin stays where it was.
+  // Then the Audio API card in Settings (#12821) 2,019 B raw / 557 B transfer and #13630 132 B raw
+  // (6,750,599 -> 6,752,750 B raw, 2,028,544 -> 2,029,099 B transfer to dd56fb3572, same machine and build).
+  // Numbers wrapped tightly in dollars render as math (#13649): the shell-context checks that keep
+  // `$1$?`-style shell text literal add 6,984 B raw / 2,836 B transfer to the eager chat chunk
+  // (6,753,387 -> 6,760,371 B raw, 2,029,398 -> 2,032,234 B transfer against eba7641835, one machine
+  // and build, chunk count unchanged at 95), raised by that.
+  // Re-embedding documents after an embedding model switch (the save toast's action and the Settings row)
+  // adds 3,018 B raw / 905 B transfer (6,760,371 -> 6,763,389 B raw, 2,032,234 -> 2,033,139 B transfer
+  // against 525f3ceae, one machine and build, Node 24, chunk count unchanged at 95). Lazy-loading its store
+  // from both save sites cost 0.3 KB transfer more in chunk overhead, so the budget is raised by that growth.
+  // Keeping the tool pills in step with the loaded model's tool support (#13621) adds 1.2 KB raw / 0.4 KB
+  // transfer to the eager chat chunk (6,753,387 -> 6,754,540 B raw, 2,029,398 -> 2,029,795 B transfer
+  // against 97ed9415f7, before #13649, one machine and build), raised by that.
+  // Offering the newest audio.cpp release in updates (#13589) adds 385 B raw / 80 B transfer to the eager set
+  // (6,764,579 -> 6,764,964 B raw, 2,033,464 -> 2,033,544 B transfer from 91f8457ab3 to 7b6b2a8e48, one machine
+  // and build, Node 24, chunk count unchanged at 95), which put main 43 B raw over. Raised by that growth so
+  // main's margin stays where it was.
+  // Naming the Windows update that adds MXC's built-in container (#13798) adds 358 B raw / 93 B transfer, its
+  // string in the eager English locale (6,765,003 -> 6,765,361 B raw against 3c0061e16, one machine and build,
+  // Node 24, chunk count unchanged at 95), which put main 55 B raw over. Raised by that growth.
+  // Each chat keeping its own browser tabs (#13800: the store's per-chat state, background pages in the
+  // native view, and the off-screen question strings) adds 5,278 B raw / 1,928 B transfer (6,765,003 ->
+  // 6,770,281 B raw, 2,033,563 -> 2,035,491 B transfer against a8585676d4, one machine and build, Node 24,
+  // chunk count unchanged at 95), raised by that.
+  // Always allow on browser agent prompts (#13777) adds 91 B raw / 42 B transfer to the eager chat chunk
+  // (6,770,922 -> 6,771,013 B raw, 2,035,640 -> 2,035,682 B transfer against cd947468f1, one machine and build,
+  // Node 24, chunk count unchanged at 95), which put main 71 B raw over. Raised by that growth.
+  // Word list numbering through the default style and basedOn (#13755) adds 228 B raw / 39 B transfer to the
+  // eager attachment reader (6,770,962 -> 6,771,190 B raw, 2,035,676 -> 2,035,715 B transfer against 7ae1a5386,
+  // one machine and build, Node 24, chunk count unchanged at 95). Raised by that growth.
+  // The "Only show models that fit" Settings row adds 289 B raw / 77 B transfer (6,771,372 -> 6,771,661 B raw,
+  // 2,035,798 -> 2,035,875 B transfer against 52a3fbefe, 95 chunks, identical under Node 22.22.2 and 24). Main
+  // already measured 111 B raw / 54 B transfer over the previous limits, so they are set to the measured build.
+  // Main was 48 B raw / 29 B transfer over at ffa8fc3b9 (6,771,709 B raw, 2,035,904 B transfer). The browser
+  // panel's notice for pages that hit a sandbox limit (#13761) adds 143 B raw / 44 B transfer (-> 6,771,852 B raw,
+  // 2,035,948 B transfer, one machine and build, Node 24, chunk count unchanged at 95). Raised by both.
+  // Keeping site storage across browser panel pages (#13762) adds 1,644 B raw / 466 B transfer, the page-storage
+  // module the eager browser store imports for tab close and duplicate (6,771,852 -> 6,773,496 B raw, 2,035,948 ->
+  // 2,036,414 B transfer against 82f16ca55, one machine and build, Node 24, chunk count unchanged at 95). Raised by
+  // that growth.
+  // Hub Run refusing audio models neither Audio nor chat can run (#13812) adds 77 B raw / 65 B transfer
+  // (6,773,445 -> 6,773,522 B raw, 2,036,392 -> 2,036,457 B transfer against 59ab069b5, one machine and build,
+  // Node 24, chunk count unchanged at 95). Raised by that growth.
+  // The Windows Desktop install location row on the first-run screen (#13446) adds 1,324 B raw / 342 B
+  // transfer (6,773,496 -> 6,774,820 B raw, 2,036,386 -> 2,036,728 B transfer against 59ab069b5, one machine
+  // and build, Node 24, chunk count unchanged at 95). Lazy-loading it cost more transfer and a 96th startup
+  // chunk (Rollup split react-dom out), so it is imported statically and the budget raised by that growth.
+  // Opening the OS folder dialog for model folders on Desktop (#13843) adds 235 B raw / 336 B transfer
+  // (6,777,794 -> 6,778,029 B raw, 2,037,725 -> 2,038,061 B transfer against 199987c63, one machine and build,
+  // Node 24, chunk count unchanged at 95). Raised by that growth.
+  // The Windows Long Paths explainer on the first-run startup screen (#13523) adds 1,816 B raw / 519 B
+  // transfer (6,778,788 -> 6,780,604 B raw, 2,038,337 -> 2,038,856 B transfer against 62e063618, one machine
+  // and build, Node 24, chunk count unchanged at 95). Main already measured 3,656 B raw / 1,180 B transfer over
+  // the previous limits there, so they are set to the measured build.
+  // The downloads panel's "Starting…" row (#13738) adds 1,404 B raw / 353 B transfer (6,778,788 -> 6,780,192 B raw,
+  // 2,038,337 -> 2,038,690 B transfer against 7c235de6f, one machine and build, Node 24, 95 chunks). Raised by that growth.
+  // The Image downloads > Info stamp row in Settings > Library, its search entry and strings (#13444) add 348 B
+  // raw / 83 B transfer to the eager settings and English locale chunks (6,780,553 -> 6,780,901 B raw,
+  // 2,038,848 -> 2,038,931 B transfer against 9f5b133254, one machine and build, Node 24, chunk count unchanged
+  // at 95). Raised by that growth.
+  // Drafter training in the Train tab adds about 4.9 KB raw / 1.4 KB transfer (6,628.3 KB raw, 1,992.9 KB transfer
+  // measured against cd424654a, one machine and build, 95 chunks): its persisted training-store fields, their
+  // migration and the en strings hydrate at startup; the section itself is not in the startup set.
+  // The Run settings Load in 4-bit switch (#13841: the per-model field threaded through every chat load path and
+  // the resident-config check) adds 1,448 B raw / 433 B transfer, inline in the eager chat chunk (6,787,367 ->
+  // 6,788,815 B raw, 2,040,805 -> 2,041,238 B transfer against 4494fa58c, one machine and build, Node 24, chunk
+  // count unchanged at 95). Raised by that growth.
+  // The Train tab's Preview tokens button, its dialog and strings (#13850) add 2,233 B raw / 858 B transfer
+  // (6,788,764 -> 6,790,997 B raw, 2,041,243 -> 2,042,101 B transfer against 5e5511027, one machine and build,
+  // Node 24, chunk count unchanged at 95). Lazy-loading the dialog cost more (2.7 KB transfer) and a 96th
+  // startup chunk, so it is imported statically and the budget raised by that growth.
+  // Three small Studio merges since add 747 B raw / 302 B transfer (6,791,021 -> 6,791,768 B raw, 2,042,102 ->
+  // 2,042,404 B transfer from 587079569a to 4a8b727dfd, one machine and build, Node 24, chunk count unchanged at
+  // 95), with no single import doing it: Deep research under Tools in the + menu (#13959) took main over, and
+  // the connection name and provider menu order (#13964) and the attachment card polish (#13970) add the rest.
+  // Raised by that growth so main's margin stays where it was.
+  // The Hub fit filter sizing safetensors rows the way transformers loads them adds 497 B raw / 184 B transfer
+  // (6,791,768 -> 6,792,265 B raw, 2,037,833 -> 2,038,017 B transfer against 23bbee09b1, one machine and build,
+  // Node 26, chunk count unchanged at 95). A synchronous predicate in a module already in the startup set, so
+  // nothing to lazy-load; raised by that growth.
+  // Seven Studio merges after 17901061d1 add 5,031 B raw / 1,798 B transfer (6,791,768 -> 6,796,799 B raw,
+  // 2,042,404 -> 2,044,202 B transfer from 17901061d1 to 6106de938c, one machine and build, Node 24, chunk count
+  // unchanged at 95), measured commit by commit. The two largest steps are inline chat markdown tables with
+  // their hover controls and expand dialog (#13973, +2,561 B raw / +1,063 B transfer, in the eager chat chunk)
+  // and Latest Unsloth Models ranking (#13969, +1,290 B raw / +445 B transfer); the composer alignment
+  // (#13965), the resizable hub split view (#13966) and the fit filter (#13945, already raised for above) add the
+  // rest. Set to the measured build plus the margin main had at 17901061d1 (160 B raw, 189 B transfer).
+  // Chat with files closing on its X, the app tooltips and the higher-contrast traces (#13989) add 1,339 B raw /
+  // 377 B transfer (6,796,799 -> 6,798,138 B raw, 2,044,202 -> 2,044,579 B transfer against 1574001bc1, one
+  // machine and build, Node 24, chunk count unchanged at 95). Raised by that growth so main's margin stays where
+  // it was.
+  // Three Studio merges since add 3,117 B raw / 1,058 B transfer (6,798,138 -> 6,801,255 B raw, 2,044,534 ->
+  // 2,045,592 B transfer from 4ebc263832~1 to d4e005e73e, one machine and build, Node 24, chunk count unchanged at
+  // 95). Nearly all of it is searching a model maker in the Model hub (#13998, +3,038 B raw / +1,000 B transfer):
+  // its owner-to-uploads search lives in use-hub-model-search, a hook the startup screen already loads, so there
+  // is no separate module to lazy-load. #13999 and #13993 add 79 B raw / 58 B transfer. Raised by that growth.
+  transferBytes: 2_045_781,
+  rawBytes: 6_801_415,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
