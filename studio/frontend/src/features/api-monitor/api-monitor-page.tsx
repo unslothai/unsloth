@@ -183,32 +183,33 @@ function CopyButton({
     [],
   );
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="sm"
-      aria-label={label}
-      onClick={async () => {
-        if (await copyToClipboard(value)) {
-          setCopied(true);
-          if (timerRef.current !== undefined) {
-            window.clearTimeout(timerRef.current);
+    <ToolbarTooltip label={copied ? "Copied" : label}>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        aria-label={label}
+        onClick={async () => {
+          if (await copyToClipboard(value)) {
+            setCopied(true);
+            if (timerRef.current !== undefined) {
+              window.clearTimeout(timerRef.current);
+            }
+            timerRef.current = window.setTimeout(() => setCopied(false), 1800);
           }
-          timerRef.current = window.setTimeout(() => setCopied(false), 1800);
-        }
-      }}
-      className="h-7 shrink-0 gap-1.5 px-2 text-ui-11"
-    >
-      <HugeiconsIcon
-        icon={copied ? Tick02Icon : Copy01Icon}
-        strokeWidth={1.75}
-        className={cn(
-          "size-3.5",
-          copied && "text-emerald-600 dark:text-emerald-500",
-        )}
-      />
-      {copied ? "Copied" : "Copy"}
-    </Button>
+        }}
+        className="size-7 shrink-0 p-0"
+      >
+        <HugeiconsIcon
+          icon={copied ? Tick02Icon : Copy01Icon}
+          strokeWidth={1.75}
+          className={cn(
+            "size-3.5",
+            copied && "text-emerald-600 dark:text-emerald-500",
+          )}
+        />
+      </Button>
+    </ToolbarTooltip>
   );
 }
 
