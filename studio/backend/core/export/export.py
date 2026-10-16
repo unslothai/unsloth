@@ -670,7 +670,6 @@ def _open_hub_repo(hf_api, repo_id, private):
 def _hub_push_token(hf_token: HfTokenArg) -> HfTokenArg:
     if hf_token is None:
         from huggingface_hub import get_token
-
         return get_token()
     return hf_token
 
