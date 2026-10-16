@@ -864,6 +864,16 @@ class InferenceOrchestrator:
             with self._dispatcher_lifecycle_lock:
                 self._worker_reserved_for = None
 
+    def _shutdown_before_respawn(self) -> None:
+        """Tear the current worker down before a retry spawns its replacement. A worker that
+        survives terminate/kill keeps its handle (see the model-switch guard in load_model), and a
+        second worker must not be spawned over it."""
+        if self._shutdown_subprocess(timeout = 5) is False:
+            raise RuntimeError(
+                "The inference worker did not exit and still holds GPU memory; "
+                "not starting a new one over it. Retry shortly."
+            )
+
     def _shutdown_subprocess(self, timeout: float = 10.0) -> bool:
         with self._subprocess_shutdown_lock:
             managed = getattr(self, "_managed_engine", None)
@@ -2242,7 +2252,11 @@ class InferenceOrchestrator:
                 os.environ.get("HF_HUB_DISABLE_XET") == "1"
             )
 
-            for attempt in range(2):
+            # One spawn, plus at most one Xet-off retry after a stalled download and one respawn
+            # to bind SSM kernels the worker just installed: each is used once, in either order.
+            xet_retry_used = False
+            ssm_restart_used = False
+            for attempt in range(3):
                 if model_name not in self.loading_models or (
                     load_cancel_event is not None and load_cancel_event.is_set()
                 ):
@@ -2256,7 +2270,7 @@ class InferenceOrchestrator:
                     return False
                 logger.info(
                     "Spawning fresh inference subprocess for '%s' "
-                    "(transformers %s.x, attempt %d/2%s)",
+                    "(transformers %s.x, attempt %d/3%s)",
                     model_name,
                     needed_major,
                     attempt + 1,
@@ -2303,18 +2317,23 @@ class InferenceOrchestrator:
                     return False
                 except DownloadStallError:
                     # First stall with Xet on -> retry with Xet disabled
-                    if attempt == 0 and not disable_xet:
+                    if not xet_retry_used and not disable_xet:
+                        xet_retry_used = True
                         logger.warning(
                             "Download stalled for '%s' -- retrying with HF_HUB_DISABLE_XET=1",
                             model_name,
                         )
-                        self._shutdown_subprocess(timeout = 5)
+                        self._shutdown_before_respawn()
                         disable_xet = True
                         continue
                     self._shutdown_subprocess(timeout = 5)
+                    if disable_xet:
+                        raise RuntimeError(
+                            f"Download stalled for '{model_name}' even with "
+                            f"HF_HUB_DISABLE_XET=1 -- check your network connection"
+                        )
                     raise RuntimeError(
-                        f"Download stalled for '{model_name}' even with "
-                        f"HF_HUB_DISABLE_XET=1 -- check your network connection"
+                        f"Download stalled for '{model_name}' -- check your network connection"
                     )
 
                 if resp.get("success"):
@@ -2385,14 +2404,18 @@ class InferenceOrchestrator:
                     logger.info("Model '%s' loaded successfully in subprocess", model_name)
                     return True
                 else:
-                    if resp.get("error_kind") == "ssm_runtime_restart_required" and attempt == 0:
+                    if (
+                        resp.get("error_kind") == "ssm_runtime_restart_required"
+                        and not ssm_restart_used
+                    ):
                         # The worker installed an SSM kernel after its transformers had already
                         # imported the model's modeling module; a fresh worker binds it.
+                        ssm_restart_used = True
                         logger.info(
                             "Respawning the inference worker for '%s' to pick up new SSM kernels",
                             model_name,
                         )
-                        self._shutdown_subprocess(timeout = 5)
+                        self._shutdown_before_respawn()
                         continue
                     # Worker reports failures (consent gate included) under "message".
                     error = resp.get("message") or resp.get("error") or "Failed to load model"

@@ -388,16 +388,39 @@ def refresh_transformers_kernel_gates() -> None:
         logger.debug("Could not refresh transformers' hub kernel map: %s", exc)
 
 
-def modeling_modules_needing_restart(model_types) -> list[str]:
-    """The already-imported transformers modeling modules of *model_types*. Each captured its kernel
-    functions (module globals, hub-kernel decorators) when it was imported, so a kernel installed
-    after that is only picked up by a fresh process."""
-    prefixes = tuple(
-        f"transformers.models.{model_type}." for model_type in model_types if model_type
-    )
-    if not prefixes:
-        return []
-    return sorted(name for name in list(sys.modules) if name.startswith(prefixes))
+def _squash(value: str) -> str:
+    # transformers spells "-" / "." in a remote-code module path as _hyphen_ / _dot_ (5.x) or
+    # keeps them (4.x); compare letters and digits only.
+    value = value.replace("_hyphen_", "").replace("_dot_", "")
+    return "".join(ch for ch in value.lower() if ch.isalnum())
+
+
+def modeling_modules_needing_restart(model_types, model_ids = ()) -> list[str]:
+    """The already-imported modeling modules of *model_types* (``transformers.models.<type>.
+    modeling_*``) and of the remote-code checkpoints *model_ids* (``transformers_modules.*.
+    modeling_*``). Each captured its kernel functions (module globals, hub-kernel decorators) when
+    it was imported, so a kernel installed after that is only picked up by a fresh process. A
+    configuration or tokenizer module captures none, so importing one alone needs no restart."""
+    model_types = {model_type for model_type in model_types if model_type}
+    repo_keys = {
+        _squash(str(model_id).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1])
+        for model_id in model_ids
+        if model_id
+    }
+    repo_keys.discard("")
+    stale = []
+    for name in list(sys.modules):
+        parts = name.split(".")
+        if not parts[-1].startswith("modeling_"):
+            continue
+        if parts[0] == "transformers" and len(parts) == 4 and parts[1] == "models":
+            if parts[2] in model_types:
+                stale.append(name)
+        elif parts[0] == "transformers_modules" and len(parts) > 2:
+            package = _squash(".".join(parts[1:-1]))
+            if any(t in parts[-1] for t in model_types) or any(k in package for k in repo_keys):
+                stale.append(name)
+    return sorted(stale)
 
 
 def ssm_probe_identifier(model_name: str, base: str | None = None) -> str:
@@ -487,9 +510,10 @@ def _install_kernel(
         logger.info("%s already installed", display_name)
         return True
 
-    from utils.utils import hf_env_offline
+    from utils.utils import package_installs_offline
 
-    if hf_env_offline():
+    if package_installs_offline():
+        # No URL probe, no source build, and no uv-to-pip fallback that would reach the network.
         logger.info("Skipping %s installation while offline", display_name)
         return False
 

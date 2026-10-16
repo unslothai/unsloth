@@ -8610,30 +8610,77 @@ def _ensure_flash_attn() -> None:
         _remove_stale_flash_attn()
 
 
+# The compiled extension each SSM kernel loads (kernel_install.KERNELS checks the same import).
+_SSM_KERNEL_EXTENSIONS = {"causal_conv1d": "causal_conv1d_cuda", "mamba_ssm": "selective_scan_cuda"}
+# Exit code of the probe below when torch imported and the extension raised ImportError / OSError.
+_SSM_EXTENSION_BROKEN_EXIT = 87
+_SSM_EXTENSION_PROBE = (
+    "import sys\n"
+    "import torch\n"
+    "try:\n"
+    "    import {extension}\n"
+    "except (ImportError, OSError) as exc:\n"
+    "    print('{extension}: %s: %s' % (type(exc).__name__, exc), file = sys.stderr)\n"
+    "    sys.exit({code})\n"
+)
+
+
+def _probe_tail(stderr) -> str:
+    lines = [line for line in str(stderr or "").strip().splitlines() if line.strip()]
+    return " | ".join(lines[-3:])[-400:]
+
+
+def _run_import_probe(code: str):
+    """Run *code* in a child; None when it hung or could not start (inconclusive)."""
+    try:
+        return subprocess.run(
+            [sys.executable, "-c", code],
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.PIPE,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
 def _remove_stale_ssm_kernels() -> None:
     """Remove an installed causal-conv1d / mamba-ssm whose compiled extension no longer imports,
     e.g. built for the torch a repair just replaced. Never installs: a model that needs them
-    installs them when it loads, and a broken native module left behind can take that load down."""
+    installs them when it loads, and a broken native module left behind can take that load down.
+
+    Removal needs proof: torch itself imports, and the extension import then completes with an
+    ImportError / OSError. A torch that does not import, a probe killed by a signal, a hang or a
+    probe that cannot start says nothing about the kernel, and an offline machine could not get
+    it back, so each keeps it."""
     if NO_TORCH or IS_MACOS:
         return
-    for name in ("causal_conv1d", "mamba_ssm"):
-        distribution, check = KERNELS[name]
-        if _installed_distribution_version(distribution) is None:
+    installed = [
+        name
+        for name in _SSM_KERNEL_EXTENSIONS
+        if _installed_distribution_version(KERNELS[name][0]) is not None
+    ]
+    if not installed:
+        return
+    torch_probe = _run_import_probe("import torch")
+    if torch_probe is None or torch_probe.returncode != 0:
+        detail = "" if torch_probe is None else f": {_probe_tail(torch_probe.stderr)}"
+        _note(f"torch did not import cleanly; kept {', '.join(installed)}{detail}")
+        return
+    for name in installed:
+        distribution = KERNELS[name][0]
+        extension = _SSM_KERNEL_EXTENSIONS[name]
+        probe = _run_import_probe(
+            _SSM_EXTENSION_PROBE.format(extension = extension, code = _SSM_EXTENSION_BROKEN_EXIT)
+        )
+        if probe is None or probe.returncode == 0:
             continue
-        try:
-            loads = (
-                subprocess.run(
-                    [sys.executable, "-c", check],
-                    stdout = subprocess.DEVNULL,
-                    stderr = subprocess.DEVNULL,
-                    timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT,
-                ).returncode
-                == 0
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            # Inconclusive (a hung or unlaunchable probe), not proof it is broken.
-            continue
-        if loads:
+        tail = _probe_tail(probe.stderr)
+        if probe.returncode != _SSM_EXTENSION_BROKEN_EXIT or extension not in tail:
+            # A signal (negative code) or a crash outside the extension import: inconclusive.
+            _note(f"could not check {name} (exit {probe.returncode}); kept it: {tail}")
             continue
         _count_install_action()
         try:
@@ -8641,12 +8688,12 @@ def _remove_stale_ssm_kernels() -> None:
         except OSError:
             removed = False
         if removed:
-            _step("warning", f"{name} does not load with this torch; removed it", _warn)
+            _step("warning", f"{name} does not load with this torch; removed it ({tail})", _warn)
         else:
             _step(
                 "warning",
                 f"{name} does not load with this torch and could not be removed; "
-                f"uninstall {distribution} manually",
+                f"uninstall {distribution} manually ({tail})",
                 _warn,
             )
 

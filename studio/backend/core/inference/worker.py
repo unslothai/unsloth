@@ -417,7 +417,11 @@ def _ensure_ssm_kernels(
             kernels, installed = provision_ssm_kernels(
                 probe, config_target or probe, hf_token, status_cb = _ssm_status
             )
-            stale = modeling_modules_needing_restart(kernels.model_types) if installed else []
+            stale = (
+                modeling_modules_needing_restart(kernels.model_types, (probe, config_target))
+                if installed
+                else []
+            )
             if stale:
                 logger.info(
                     "Installed %s after %s was imported; restarting the worker to pick it up",

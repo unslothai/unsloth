@@ -239,12 +239,24 @@ def _send_response(resp_queue: Any, response: dict) -> None:
         logger.error("Failed to send response: %s", exc)
 
 
+def _export_uses_cuda_kernels(device_backend) -> bool:
+    """causal-conv1d / mamba-ssm are CUDA / ROCm extensions: an MLX or CPU export (and any macOS
+    one) never loads them, as training and chat skip them there."""
+    return sys.platform != "darwin" and str(device_backend or "") not in ("mlx", "cpu")
+
+
 def _provision_ssm_kernels(
-    checkpoint_path: str, base_model: str | None, hf_token, resp_queue: Any
+    checkpoint_path: str,
+    base_model: str | None,
+    hf_token,
+    resp_queue: Any,
+    device_backend = None,
 ) -> bool:
     """Install the causal-conv1d / mamba-ssm a checkpoint needs before Unsloth and its modeling
     import, decided from its config (a LoRA's base config), as a training or chat load does.
     Returns False after reporting a failure only for a model that cannot load without mamba-ssm."""
+    if not _export_uses_cuda_kernels(device_backend):
+        return True
     try:
         from utils.ssm_runtime import provision_ssm_kernels, ssm_probe_identifier
         from utils.transformers_version import _remote_lora_base
@@ -658,7 +670,11 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     # some remote modeling code (Nemotron-H) cannot import at all without mamba-ssm.
     with _offline_window_if_unreachable(step = "installing SSM kernels"):
         if not _provision_ssm_kernels(
-            checkpoint_path, config.get("base_model") or None, config.get("hf_token"), resp_queue
+            checkpoint_path,
+            config.get("base_model") or None,
+            config.get("hf_token"),
+            resp_queue,
+            config.get("device_backend"),
         ):
             return
 
@@ -745,6 +761,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
                     cmd.get("base_model") or None,
                     cmd.get("hf_token"),
                     resp_queue,
+                    config.get("device_backend"),
                 ):
                     continue
                 # Offline window also covers this load's Hub preflights (re-probed per load).

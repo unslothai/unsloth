@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+from types import SimpleNamespace
 import builtins
 import importlib.metadata
 import inspect
@@ -36,6 +37,7 @@ not_on_windows = pytest.mark.skipif(
 def _clear_offline_environment(monkeypatch):
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("UV_OFFLINE", raising = False)
 
 
 @pytest.fixture(autouse = True)
@@ -530,7 +532,10 @@ def test_runtime_flash_attn_skip_env_avoids_all_install_work(monkeypatch):
     worker._sp.run.assert_not_called()
 
 
-@pytest.mark.parametrize("offline_variable", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
+# UV_OFFLINE too: uv refuses the index and install_wheel's pip fallback would not.
+@pytest.mark.parametrize(
+    "offline_variable", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "UV_OFFLINE"]
+)
 def test_wheel_first_install_skips_all_install_work_offline(monkeypatch, offline_variable):
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
@@ -1610,10 +1615,69 @@ def test_long_context_flash_attn_is_not_downloaded_below_sm80(monkeypatch, capab
     statuses: list[str] = []
     install_mock = mock.Mock(return_value = True)
     monkeypatch.setattr(worker, "_should_try_runtime_flash_attn_install", lambda length: True)
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
+    # No torch in this worker yet: the child probe answers.
+    monkeypatch.delitem(worker.sys.modules, "torch", raising = False)
     monkeypatch.setattr(kernel_install, "_gpu_capability", lambda run: capability)
+    monkeypatch.setattr(kernel_install, "_torch_is_hip", lambda run: False)
     monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
     monkeypatch.setattr(worker, "_send_status", lambda queue, message: statuses.append(message))
     worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 65536)
     assert install_mock.called is installs
     if not installs:
         assert any("sm80" in message for message in statuses)
+
+
+def _fake_torch(capabilities, hip = None):
+    cuda = SimpleNamespace(
+        is_available = lambda: bool(capabilities),
+        device_count = lambda: len(capabilities),
+        get_device_capability = lambda i: capabilities[i],
+    )
+    return SimpleNamespace(version = SimpleNamespace(hip = hip), cuda = cuda)
+
+
+def _no_child_probe(*args, **kwargs):
+    raise AssertionError("the worker's own torch answers; no child probe")
+
+
+def test_an_importable_flash_attn_skips_the_capability_probe(monkeypatch):
+    from utils import kernel_install
+
+    install_mock = mock.Mock(return_value = True)
+    monkeypatch.setattr(worker, "_should_try_runtime_flash_attn_install", lambda length: True)
+    monkeypatch.setattr(worker, "_is_importable", lambda name: name == "flash_attn")
+    monkeypatch.setattr(kernel_install, "_gpu_capability", _no_child_probe)
+    monkeypatch.setattr(worker, "_flash_attn_gpu_below_floor", _no_child_probe)
+    monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
+    worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 65536)
+    assert not install_mock.called
+
+
+@pytest.mark.parametrize(
+    "capabilities, hip, below",
+    [
+        ([(7, 5)], None, True),
+        ([(7, 5), (8, 6)], None, False),
+        ([(9, 0)], None, False),
+        ([], None, False),
+        # ROCm reports a gfx version: never the NVIDIA floor.
+        ([(7, 5)], "6.4.0", False),
+    ],
+)
+def test_the_floor_reuses_the_workers_own_torch(monkeypatch, capabilities, hip, below):
+    from utils import kernel_install
+
+    monkeypatch.setitem(worker.sys.modules, "torch", _fake_torch(capabilities, hip))
+    monkeypatch.setattr(kernel_install, "_gpu_capability", _no_child_probe)
+    assert worker._flash_attn_gpu_below_floor() is below
+
+
+def test_rocm_long_context_still_installs_flash_attn(monkeypatch):
+    install_mock = mock.Mock(return_value = True)
+    monkeypatch.setattr(worker, "_should_try_runtime_flash_attn_install", lambda length: True)
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
+    monkeypatch.setitem(worker.sys.modules, "torch", _fake_torch([(7, 5)], "6.4.0"))
+    monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
+    worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 65536)
+    assert install_mock.called

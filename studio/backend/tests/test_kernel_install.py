@@ -513,10 +513,73 @@ def test_main_installs_all_by_default_in_dependency_order(monkeypatch, argv, exp
     order = []
     monkeypatch.setattr(kernel_install, "probe_torch_wheel_env", lambda **kwargs: _COLAB)
     monkeypatch.setattr(
-        kernel_install, "install_kernel", lambda name, env, dry_run = False: order.append(name) or 0
+        kernel_install, "install_kernel", lambda name, env, **kwargs: order.append(name) or 0
     )
     assert kernel_install.main(argv) == 0
     assert order == expected
+
+
+# A GPU-less image build (Docker, CI) provisions for the GPU it will run on only when asked to.
+
+
+@pytest.mark.parametrize("opt_in", ["flag", "env"])
+def test_install_kernels_without_gpu_installs_mamba_ssm_headless(uv, monkeypatch, opt_in):
+    uv(False)
+    monkeypatch.setattr(kernel_install.sys, "platform", "linux")
+    monkeypatch.setattr(kernel_install, "probe_torch_wheel_env", lambda **kwargs: _COLAB)
+    monkeypatch.setattr(kernel_install, "url_exists", lambda url: True)
+    run = _Runner([False, True], capability = "None")
+    real = kernel_install.install_kernel
+    monkeypatch.setattr(
+        kernel_install,
+        "install_kernel",
+        lambda name, env, **kwargs: real(name, env, run = run, exists = lambda url: True, **kwargs),
+    )
+    argv = ["mamba_ssm"]
+    monkeypatch.delenv("UNSLOTH_INSTALL_KERNELS_WITHOUT_GPU", raising = False)
+    if opt_in == "flag":
+        argv.append("--without-gpu")
+    else:
+        monkeypatch.setenv("UNSLOTH_INSTALL_KERNELS_WITHOUT_GPU", "1")
+    assert kernel_install.main(argv) == 0
+    assert run.installer_calls[0][-1].endswith(
+        "mamba_ssm-2.3.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
+    )
+
+
+def test_a_requested_kernel_skipped_without_a_gpu_is_not_a_silent_success(monkeypatch, capsys):
+    monkeypatch.delenv("UNSLOTH_INSTALL_KERNELS_WITHOUT_GPU", raising = False)
+    monkeypatch.setattr(kernel_install, "probe_torch_wheel_env", lambda **kwargs: _COLAB)
+    run = _Runner([], capability = "None")
+    real = kernel_install.install_kernel
+    monkeypatch.setattr(
+        kernel_install,
+        "install_kernel",
+        lambda name, env, **kwargs: real(name, env, run = run, exists = lambda url: True, **kwargs),
+    )
+    assert kernel_install.main(["mamba_ssm"]) != 0
+    assert run.installer_calls == []
+    out = capsys.readouterr().out
+    assert "--without-gpu" in out
+    assert "not installed on this machine: mamba_ssm" in out
+
+
+def test_the_default_run_lists_skipped_kernels_and_keeps_its_exit_code(monkeypatch, capsys):
+    monkeypatch.setattr(kernel_install, "probe_torch_wheel_env", lambda **kwargs: _COLAB)
+
+    def _install(
+        name,
+        env,
+        skipped = None,
+        **kwargs,
+    ):
+        if name == "mamba_ssm":
+            skipped.append(name)
+        return 0
+
+    monkeypatch.setattr(kernel_install, "install_kernel", _install)
+    assert kernel_install.main([]) == 0
+    assert "not installed on this machine: mamba_ssm" in capsys.readouterr().out
 
 
 def test_flash_attn_without_a_wheel_never_probes_the_gpu():
@@ -745,4 +808,20 @@ def test_windows_mamba_ssm_installs_with_triton(uv, monkeypatch):
 )
 def test_flash_attn_floor_is_sm80_and_no_visible_gpu_is_not_below(monkeypatch, capability, below):
     monkeypatch.setattr(kernel_install, "_gpu_capability", lambda run: capability)
+    monkeypatch.setattr(kernel_install, "_torch_is_hip", lambda run: False)
     assert kernel_install.gpu_below_flash_attn_floor() is below
+
+
+def test_rocm_never_takes_the_sm80_floor(monkeypatch):
+    # ROCm reports a gfx version as its capability; the sm80 floor is an NVIDIA rule.
+    monkeypatch.setattr(kernel_install, "_gpu_capability", lambda run: (7, 5))
+    monkeypatch.setattr(kernel_install, "_torch_is_hip", lambda run: True)
+    assert kernel_install.gpu_below_flash_attn_floor() is False
+
+
+def test_the_hip_probe_reads_torch_version_hip():
+    def run(cmd, **kwargs):
+        assert "torch.version.hip" in cmd[-1]
+        return SimpleNamespace(returncode = 0, stdout = "True\n")
+
+    assert kernel_install._torch_is_hip(run) is True

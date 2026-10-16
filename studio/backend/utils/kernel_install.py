@@ -202,6 +202,7 @@ KERNELS = {
 }
 
 _PINNED = {"causal_conv1d": CAUSAL_CONV1D, "mamba_ssm": MAMBA_SSM}
+_WITHOUT_GPU_ENV = "UNSLOTH_INSTALL_KERNELS_WITHOUT_GPU"
 
 
 def resolve_wheel_url(name: str, env: dict[str, str] | None) -> str | None:
@@ -283,7 +284,30 @@ def gpu_below_flash_attn_floor(
     (a T4 is sm75), so a flash-attn download would go unused. No visible GPU answers False: an
     image build installs ahead of the GPU it will run on."""
     capability = _gpu_capability(run)
-    return capability is not None and capability < (8, 0)
+    # ROCm reports a gfx version, not an sm, as its capability: the floor is NVIDIA's.
+    return capability is not None and capability < (8, 0) and not _torch_is_hip(run)
+
+
+_HIP: dict = {}
+
+
+def _torch_is_hip(run: Callable[..., subprocess.CompletedProcess]) -> bool:
+    """Whether torch is a ROCm build. Probed once per runner, and only below sm80."""
+    if run not in _HIP:
+        try:
+            result = run(
+                [sys.executable, "-c", "import torch; print(bool(torch.version.hip))"],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 120,
+            )
+            _HIP[run] = result.stdout.strip() == "True"
+        except Exception:
+            _HIP[run] = False
+    return _HIP[run]
 
 
 def _probe_gpu_capability(
@@ -338,34 +362,44 @@ def install_kernel(
     dry_run: bool = False,
     run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
     exists: Callable[[str], bool | None] = url_exists,
+    install_without_gpu: bool = False,
+    skipped: list[str] | None = None,
 ) -> int:
+    # install_without_gpu: no visible GPU yet (an image build for the GPU it will run on) still
+    # installs. Each kernel left uninstalled for this machine is appended to *skipped*.
     distribution, check = KERNELS[name]
     url = resolve_wheel_url(name, env)
+
+    def skip(message: str) -> int:
+        print(message)
+        if skipped is not None:
+            skipped.append(name)
+        return 0
+
     if name in _GPU_GATED and url is not None:
         capability = _gpu_capability(run)
-        if capability is None:
-            print(f"Unsloth: skipping {name}, which needs sm80 or newer (no CUDA GPU is visible).")
-            return 0
+        if capability is None and not install_without_gpu:
+            return skip(
+                f"Unsloth: skipping {name}, which needs sm80 or newer (no CUDA GPU is visible; "
+                "pass --without-gpu to install it for the GPU this image will run on)."
+            )
         if capability is not None and capability < (8, 0):
             reason = _pre_ampere_skip_reason(name, capability, run)
             if reason is not None:
-                print(
+                return skip(
                     f"Unsloth: skipping {name}, which {reason} "
                     f"(the best GPU is sm{capability[0]}{capability[1]})."
                 )
-                return 0
     torch_desc = f"torch {env.get('torch_version')}" if env else "this environment"
     # Only a 404 proves nothing is published; an unreachable check falls through to the install.
     if url is None or exists(url) is False:
-        print(f"Unsloth: no prebuilt {name} for {torch_desc}; using the torch fallback.")
-        return 0
+        return skip(f"Unsloth: no prebuilt {name} for {torch_desc}; using the torch fallback.")
     # mamba_ssm imports triton at load; on Windows that is triton-windows, which its metadata cannot name.
     if name == "mamba_ssm" and sys.platform == "win32" and not _loads("import triton", run):
-        print(
+        return skip(
             "Unsloth: skipping mamba_ssm, which needs Triton on Windows; "
             "install triton-windows first (Studio setup does), then re-run."
         )
-        return 0
     # UNSLOTH_PYTORCH_MIRROR may carry credentials, and notebook output gets shared.
     shown = redact_url_credentials(url)
     if dry_run:
@@ -418,11 +452,40 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--dry-run", action = "store_true", help = "print the resolved wheel URL and install nothing"
     )
+    parser.add_argument(
+        "--without-gpu",
+        action = "store_true",
+        help = (
+            "install the GPU-gated kernels (flash_attn, mamba_ssm) even though no CUDA GPU is "
+            f"visible, e.g. in an image build; also {_WITHOUT_GPU_ENV}=1"
+        ),
+    )
     args = parser.parse_args(argv)
+    without_gpu = args.without_gpu or os.environ.get(_WITHOUT_GPU_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
     env = probe_torch_wheel_env(timeout = 120, include_windows = True)
     status = 0
+    skipped: list[str] = []
     for name in [name for name in KERNELS if not args.kernels or name in args.kernels]:
-        status = max(status, install_kernel(name, env, dry_run = args.dry_run))
+        status = max(
+            status,
+            install_kernel(
+                name,
+                env,
+                dry_run = args.dry_run,
+                install_without_gpu = without_gpu,
+                skipped = skipped,
+            ),
+        )
+    if skipped:
+        print(f"Unsloth: not installed on this machine: {', '.join(skipped)}.")
+        # Kernels asked for by name and not installed are not a success.
+        if args.kernels and status == 0:
+            status = 2
     return status
 
 

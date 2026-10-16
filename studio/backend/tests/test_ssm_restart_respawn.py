@@ -4,15 +4,22 @@
 """An SSM kernel installed after the worker's transformers imported the model's modeling module is
 only bound by a fresh worker: the worker asks for one and the orchestrator respawns once."""
 
+import sys
 import threading
 from types import SimpleNamespace
+
+import pytest
 
 from core.inference import orchestrator as orch_mod
 from core.inference import worker as inference_worker
 from core.inference.orchestrator import InferenceOrchestrator
 
 
-def _orchestrator(monkeypatch, responses):
+def _orchestrator(
+    monkeypatch,
+    responses,
+    shutdown_results = (),
+):
     orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
     orchestrator._stop_ledger = None
     orchestrator._pending_teardowns = None
@@ -35,17 +42,27 @@ def _orchestrator(monkeypatch, responses):
     monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: alive["value"])
 
     def _spawn(config, *args):
-        spawned.append(config)
+        spawned.append(dict(config))  # the orchestrator reuses one sub_config
         alive["value"] = True
+
+    results = list(shutdown_results)
 
     def _shutdown(timeout = 5):
         shutdowns.append(timeout)
-        alive["value"] = False
-        return True
+        exited = results.pop(0) if results else True
+        if exited:
+            alive["value"] = False
+        return exited
+
+    def _wait(*_a, **_k):
+        response = responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
     monkeypatch.setattr(orchestrator, "_spawn_subprocess", _spawn)
     monkeypatch.setattr(orchestrator, "_shutdown_subprocess", _shutdown)
-    monkeypatch.setattr(orchestrator, "_wait_response", lambda *_a, **_k: responses.pop(0))
+    monkeypatch.setattr(orchestrator, "_wait_response", _wait)
     return orchestrator, spawned, shutdowns
 
 
@@ -79,6 +96,67 @@ def test_a_second_restart_request_fails_instead_of_looping(monkeypatch):
     else:
         raise AssertionError("a second restart request must fail the load")
     assert len(spawned) == 2
+
+
+def _loaded():
+    return {"type": "loaded", "success": True, "model_info": {"identifier": "acme/hybrid"}}
+
+
+def _stall():
+    from utils.hf_xet_fallback import DownloadStallError
+    return DownloadStallError("stalled")
+
+
+def test_a_worker_that_survives_shutdown_is_not_respawned_over(monkeypatch):
+    # The worker outlived terminate/kill: its handle stays, and no second worker is spawned over
+    # one still holding GPU memory (the model-switch guard's rule).
+    orchestrator, spawned, _ = _orchestrator(
+        monkeypatch, [_restart(), _loaded()], shutdown_results = [False]
+    )
+    try:
+        orchestrator.load_model(SimpleNamespace(identifier = "acme/hybrid"))
+    except RuntimeError as exc:
+        assert "did not exit" in str(exc)
+    else:
+        raise AssertionError("the load must fail while the old worker survives")
+    assert len(spawned) == 1
+    assert orchestrator.active_model_name is None
+
+
+def test_a_survivor_also_blocks_the_xet_retry(monkeypatch):
+    orchestrator, spawned, _ = _orchestrator(
+        monkeypatch, [_stall(), _loaded()], shutdown_results = [False]
+    )
+    try:
+        orchestrator.load_model(SimpleNamespace(identifier = "acme/hybrid"))
+    except RuntimeError as exc:
+        assert "did not exit" in str(exc)
+    else:
+        raise AssertionError("the load must fail while the old worker survives")
+    assert len(spawned) == 1
+
+
+def test_an_ssm_restart_keeps_the_xet_retry(monkeypatch):
+    orchestrator, spawned, _ = _orchestrator(monkeypatch, [_restart(), _stall(), _loaded()])
+    assert orchestrator.load_model(SimpleNamespace(identifier = "acme/hybrid")) is True
+    assert [config["disable_xet"] for config in spawned] == [False, False, True]
+
+
+def test_a_xet_retry_keeps_the_ssm_restart(monkeypatch):
+    orchestrator, spawned, _ = _orchestrator(monkeypatch, [_stall(), _restart(), _loaded()])
+    assert orchestrator.load_model(SimpleNamespace(identifier = "acme/hybrid")) is True
+    assert [config["disable_xet"] for config in spawned] == [False, True, True]
+
+
+def test_spawns_are_bounded_at_three_and_the_stall_message_is_accurate(monkeypatch):
+    orchestrator, spawned, _ = _orchestrator(monkeypatch, [_restart(), _stall(), _stall()])
+    try:
+        orchestrator.load_model(SimpleNamespace(identifier = "acme/hybrid"))
+    except RuntimeError as exc:
+        assert "even with HF_HUB_DISABLE_XET=1" in str(exc)
+    else:
+        raise AssertionError("a second stall must fail the load")
+    assert len(spawned) == 3
 
 
 class _Queue(list):
@@ -129,3 +207,59 @@ def test_no_restart_when_nothing_new_was_installed_or_nothing_was_imported(monke
         ssm_runtime, "provision_ssm_kernels", _fake_provision(["mamba_ssm"], {"nemotron_h"})
     )
     assert inference_worker._ensure_ssm_kernels([("acme/hybrid", "acme/hybrid")], _Queue())
+
+
+# Only modeling modules capture kernel functions at import; a config or tokenizer import does not.
+
+
+def test_a_configuration_import_alone_needs_no_restart(monkeypatch):
+    from utils import ssm_runtime
+
+    monkeypatch.setitem(
+        sys.modules, "transformers.models.nemotron_h.configuration_nemotron_h", SimpleNamespace()
+    )
+    monkeypatch.setitem(sys.modules, "transformers.models.nemotron_h", SimpleNamespace())
+    monkeypatch.delitem(
+        sys.modules, "transformers.models.nemotron_h.modeling_nemotron_h", raising = False
+    )
+    assert ssm_runtime.modeling_modules_needing_restart({"nemotron_h"}) == []
+    queue = _Queue()
+    monkeypatch.setattr(
+        ssm_runtime, "provision_ssm_kernels", _fake_provision(["mamba_ssm"], {"nemotron_h"})
+    )
+    assert inference_worker._ensure_ssm_kernels([("acme/hybrid", "acme/hybrid")], queue) is True
+
+
+@pytest.mark.parametrize(
+    "module",
+    [
+        # transformers 5.x spells "-" and "." in the repo name out.
+        "transformers_modules.nvidia.NVIDIA_hyphen_Nemotron_hyphen_Nano_hyphen_9B_hyphen_v2"
+        ".0123abcd.modeling_nemotron_h",
+        # 4.x keeps them.
+        "transformers_modules.nvidia.NVIDIA-Nemotron-Nano-9B-v2.0123abcd.modeling_nemotron_h",
+    ],
+)
+def test_an_imported_remote_code_modeling_module_needs_a_restart(monkeypatch, module):
+    from utils import ssm_runtime
+
+    monkeypatch.setitem(sys.modules, module, SimpleNamespace())
+    model = "nvidia/NVIDIA-Nemotron-Nano-9B-v2"
+    # Found by the checkpoint it came from, even with no model type resolved.
+    assert ssm_runtime.modeling_modules_needing_restart(set(), (model,)) == [module]
+    assert module in ssm_runtime.modeling_modules_needing_restart({"nemotron_h"})
+    monkeypatch.setattr(ssm_runtime, "provision_ssm_kernels", _fake_provision(["mamba_ssm"], set()))
+    queue = _Queue()
+    assert inference_worker._ensure_ssm_kernels([(model, model)], queue) is False
+    assert queue[-1]["error_kind"] == inference_worker.SSM_RESTART_REQUIRED
+
+
+def test_another_remote_models_modules_are_not_a_reason_to_restart(monkeypatch):
+    from utils import ssm_runtime
+
+    other = "transformers_modules.acme.Some_hyphen_Chat.0123.modeling_chat"
+    monkeypatch.setitem(sys.modules, other, SimpleNamespace())
+    config = "transformers_modules.nvidia.Nemotron_hyphen_H.0123.configuration_nemotron_h"
+    monkeypatch.setitem(sys.modules, config, SimpleNamespace())
+    found = ssm_runtime.modeling_modules_needing_restart({"nemotron_h"}, ("nvidia/Nemotron-H",))
+    assert other not in found and config not in found

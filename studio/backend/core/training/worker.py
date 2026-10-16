@@ -306,6 +306,22 @@ def _is_model_cache_artifact_error(error: BaseException | None) -> bool:
     return False
 
 
+def _package_installs_offline() -> bool:
+    # UV_OFFLINE too: uv would refuse the index and install_wheel's pip fallback would not.
+    try:
+        from utils.utils import package_installs_offline
+        return package_installs_offline()
+    except Exception:
+        return os.environ.get("UV_OFFLINE", "").strip().lower() in {
+            "1",
+            "true",
+            "t",
+            "yes",
+            "y",
+            "on",
+        }
+
+
 def _model_offline_mode_enabled() -> bool:
     try:
         from utils.utils import hf_env_offline
@@ -1433,7 +1449,7 @@ def _install_package_wheel_first(
         logger.info("%s already installed", display_name)
         return True
 
-    if _model_offline_mode_enabled():
+    if _model_offline_mode_enabled() or _package_installs_offline():
         logger.info("Skipping %s installation while offline", display_name)
         return False
 
@@ -2144,12 +2160,37 @@ def _should_try_runtime_flash_attn_install(max_seq_length: int) -> bool:
     return sys.platform.startswith("linux") or sys.platform == "win32"
 
 
+def _flash_attn_gpu_below_floor() -> bool:
+    """Whether the best visible GPU is below sm80, where Unsloth leaves FlashAttention 2 off. Asks
+    the torch this worker already imported when there is one (no child process); ROCm never takes
+    the NVIDIA floor; no visible GPU is not below it."""
+    torch = sys.modules.get("torch")
+    if torch is not None:
+        try:
+            if getattr(torch.version, "hip", None):
+                return False
+            if not torch.cuda.is_available():
+                return False
+            count = torch.cuda.device_count()
+            return count > 0 and max(
+                tuple(torch.cuda.get_device_capability(i)) for i in range(count)
+            ) < (8, 0)
+        except Exception as exc:
+            logger.debug("In-process GPU capability check failed (%s); probing a child", exc)
+    from utils.kernel_install import gpu_below_flash_attn_floor
+
+    return gpu_below_flash_attn_floor()
+
+
 def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -> None:
     if not _should_try_runtime_flash_attn_install(max_seq_length):
         return
-    from utils.kernel_install import gpu_below_flash_attn_floor
+    if _is_importable("flash_attn"):
+        # Already usable: nothing to download, so no capability probe either.
+        logger.info("flash-attn already installed")
+        return
 
-    if gpu_below_flash_attn_floor():
+    if _flash_attn_gpu_below_floor():
         # Unsloth only turns FlashAttention 2 on from sm80 (a T4 is sm75): nothing to download.
         _send_status(event_queue, "flash-attn needs an sm80 or newer GPU; continuing without it")
         return

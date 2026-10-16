@@ -26,6 +26,7 @@ from utils import ssm_runtime  # noqa: E402
 def _clear_offline_environment(monkeypatch):
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("UV_OFFLINE", raising = False)
 
 
 class _Result:
@@ -198,7 +199,10 @@ def test_install_kernel_idempotent_when_present(monkeypatch):
     assert called == []  # short-circuits before touching the network
 
 
-@pytest.mark.parametrize("offline_variable", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
+# UV_OFFLINE too: uv refuses the index and install_wheel's pip fallback would not.
+@pytest.mark.parametrize(
+    "offline_variable", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "UV_OFFLINE"]
+)
 def test_install_kernel_skips_all_install_work_offline(monkeypatch, offline_variable):
     monkeypatch.setenv(offline_variable, "on")
     monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: False)

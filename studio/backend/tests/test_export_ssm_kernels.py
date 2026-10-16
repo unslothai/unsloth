@@ -121,3 +121,60 @@ def test_a_lora_export_resolves_its_base(monkeypatch, tmp_path, pinned):
         str(adapter), str(base) if pinned else None, None, _Queue()
     )
     assert seen == [True]
+
+
+@pytest.mark.parametrize(
+    "platform, device_backend",
+    [("darwin", None), ("darwin", "mlx"), ("linux", "mlx"), ("linux", "cpu")],
+)
+def test_mlx_cpu_and_macos_exports_install_no_cuda_kernels(
+    monkeypatch, tmp_path, platform, device_backend
+):
+    # causal-conv1d / mamba-ssm are CUDA / ROCm extensions: an MLX or CPU export never loads them,
+    # and a source build there would only delay (or fail) a valid export.
+    checkpoint = tmp_path / "qwen"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(json.dumps({"model_type": "qwen3_5"}))
+    monkeypatch.setattr(export_worker.sys, "platform", platform)
+    monkeypatch.setattr(
+        ssm_runtime,
+        "provision_ssm_kernels",
+        lambda *a, **k: pytest.fail("no SSM kernel provisioning on MLX / CPU / macOS"),
+    )
+    queue = _Queue()
+    assert (
+        export_worker._provision_ssm_kernels(str(checkpoint), None, None, queue, device_backend)
+        is True
+    )
+    assert queue == []
+
+
+@pytest.mark.parametrize("device_backend", ["cuda", None])
+def test_cuda_exports_still_provision(monkeypatch, tmp_path, device_backend):
+    checkpoint = tmp_path / "qwen"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(json.dumps({"model_type": "qwen3_5"}))
+    monkeypatch.setattr(export_worker.sys, "platform", "linux")
+    seen = []
+    monkeypatch.setattr(
+        ssm_runtime, "provision_ssm_kernels", lambda *a, **k: seen.append(a) or (None, [])
+    )
+    assert export_worker._provision_ssm_kernels(
+        str(checkpoint), None, None, _Queue(), device_backend
+    )
+    assert seen
+
+
+def test_both_export_provisioning_sites_pass_the_device_backend():
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(export_worker.run_export_process))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "_provision_ssm_kernels"
+    ]
+    assert len(calls) == 2
+    for call in calls:
+        assert ast.unparse(call.args[4]) == "config.get('device_backend')"
