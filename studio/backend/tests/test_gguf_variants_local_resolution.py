@@ -754,6 +754,32 @@ def test_directory_filename_selector_preserves_its_subdirectory(tmp_path, separa
     assert _find_local_gguf_by_variant(str(tmp_path), "missing/model-Q8_0.gguf") is None
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "Windows reserves backslash as a separator")
+def test_literal_backslash_filename_wins_over_separator_fallback(tmp_path):
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    literal = tmp_path / "chosen\\model-Q8_0.gguf"
+    literal.write_bytes(b"GGUF")
+    nested = tmp_path / "chosen" / "model-Q8_0.gguf"
+    nested.parent.mkdir()
+    nested.write_bytes(b"GGUF")
+
+    assert _find_local_gguf_by_variant(str(tmp_path), literal.name) == str(literal)
+
+
+def test_exact_filename_spelling_wins_over_casefold_fallback(tmp_path):
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    upper = tmp_path / "Model-Q8_0.gguf"
+    upper.write_bytes(b"GGUF")
+    lower = tmp_path / "model-Q8_0.gguf"
+    lower.write_bytes(b"GGUF")
+    if upper.samefile(lower):
+        pytest.skip("filesystem is case-insensitive")
+
+    assert _find_local_gguf_by_variant(str(tmp_path), lower.name) == str(lower)
+
+
 def test_split_filename_selector_loads_the_first_shard(tmp_path):
     from utils.models.model_config import _find_local_gguf_by_variant
 
