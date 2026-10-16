@@ -16251,7 +16251,13 @@ def _fetch_hop_timeout(timeout, deadline):
     return remaining if timeout is None else min(timeout, remaining)
 
 
-def _resolve_with_budget(hostname, port, deadline, cancel_event, lookup_timeout = None):
+def _resolve_with_budget(
+    hostname,
+    port,
+    deadline,
+    cancel_event,
+    lookup_timeout = None,
+):
     """``_validate_and_resolve_host`` bounded by the overall fetch budget. ``getaddrinfo`` is
     blocking with no deadline of its own, so a slow resolver (or a request cancelled before
     dispatch) could run past the budget. Resolve on a daemon thread and poll the budget so the
