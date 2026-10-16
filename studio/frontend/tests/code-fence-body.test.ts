@@ -316,7 +316,7 @@ const TABLE_CONTROLS = ".aui-md-table-actions";
 const POSITIONAL_ANCESTOR =
   /:(?:first|last|only)-child[^{,]*?>\s*(?:\.relative|button)\b/;
 const TABLE_BUTTON =
-  /height: calc\(var\(--spacing\) \* 8\);[\s\S]*border-radius: 10px;\s*color: var\(--color-chat-icon-fg\);/;
+  /height: calc\(var\(--spacing\) \* 8\);[\s\S]*border-radius: 9999px;\s*color: var\(--color-chat-icon-fg\);/;
 
 // Streamdown draws the table's buttons itself, 23px with no hover fill, beside these 32px ones.
 test("a table's toolbar buttons are drawn like the code block's", () => {

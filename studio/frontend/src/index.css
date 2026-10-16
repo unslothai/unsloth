@@ -4540,7 +4540,7 @@ html[data-chat-font] .aui-root {
 		width: calc(var(--spacing) * 8);
 		height: calc(var(--spacing) * 8);
 		padding: 0;
-		border-radius: 10px;
+		border-radius: 9999px;
 		color: var(--color-chat-icon-fg);
 		cursor: pointer;
 	}
@@ -4549,6 +4549,11 @@ html[data-chat-font] .aui-root {
 	.aui-md-table-actions > .relative > button:hover:not(:disabled) {
 		background-color: var(--color-chat-icon-bg-hover);
 		color: var(--color-chat-icon-fg-hover);
+	}
+
+	/* Streamdown's diagram controls; its menu rows are w-full and stay square. */
+	.aui-thread-root [data-streamdown="mermaid-block"] button:not(.w-full) {
+		border-radius: 9999px;
 	}
 
 	.aui-md-table-actions > button:disabled {
