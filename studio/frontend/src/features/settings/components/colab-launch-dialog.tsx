@@ -331,7 +331,7 @@ export function ColabLaunchDialog({
                     className={cn(
                       "flex flex-col items-start gap-0.5 rounded-md border px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                       gpu === option.id
-                        ? "border-foreground/60 bg-accent/40"
+                        ? "border-[color-mix(in_oklab,var(--foreground)_calc(60%*var(--contrast-edge-gain,1)),transparent)] bg-accent/40"
                         : "border-border/70 hover:border-border hover:bg-accent/20",
                     )}
                   >

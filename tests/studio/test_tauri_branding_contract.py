@@ -216,6 +216,9 @@ LOCALE_REMOTE_SERVER_KEYS = frozenset(
     {
         "settings.agents.remote.title",
         "settings.agents.remote.description",
+        # The Colab VM a linked instance runs on: Unsloth Studio is what gets installed there.
+        "settings.apiKeys.linkedInstances.colab.description",
+        "settings.apiKeys.linkedInstances.colab.stageInstalling",
     }
 )
 
