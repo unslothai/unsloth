@@ -12,12 +12,10 @@ activated. Expects `pip` and `python` on PATH to point at the venv.
 from __future__ import annotations
 
 import ast
-import contextlib
 import functools
 import glob
 import importlib
 import importlib.util
-import io
 import json
 import locale
 import os
@@ -54,8 +52,6 @@ def _nvidia_library_inventory():
 
 
 from backend.utils.kernel_install import (
-    KERNELS,
-    install_kernel,
     install_prebuilt,
     uninstall_command,
 )
@@ -907,7 +903,7 @@ def _macos_release_major() -> "int | None":
 
 # The pinned MLX versions publish macosx_14_0_arm64 wheels, no sdist and no cp39, so
 # macOS 13 and Python 3.9 have nothing to resolve to (`uv pip install --python-platform
-# aarch64-apple-darwin mlx==0.32.3`). Asked before the install, like
+# aarch64-apple-darwin mlx==0.32.4`). Asked before the install, like
 # _torchcodec_spec_is_installable: pip_install exits on failure, so trying would end an
 # install that today just comes up chat-only.
 _MLX_MIN_PYTHON = (3, 10)
@@ -2436,6 +2432,11 @@ def _unsupported_gfx_arch_from_gpu_name(name: str) -> "str | None":
     return None
 
 
+# Krackan Point 2 names overlap the Krackan patterns of the shared name table (gfx1152);
+# the Linux runtime-less paths test them first so the uncovered-arch fallback sees gfx1153.
+_LINUX_KRACKAN2_NAME_RE = r"820M|Krackan ?(?:Point ?)?2|AI 5 (?:PRO )?330"
+
+
 def _linux_amd_gfx_from_cpuinfo() -> "str | None":
     """Infer gfx arch from /proc/cpuinfo on integrated AMD APUs (Strix Halo/Point)."""
     try:
@@ -2446,6 +2447,8 @@ def _linux_amd_gfx_from_cpuinfo() -> "str | None":
         return "gfx1151"
     if re.search(r"890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]", text, re.IGNORECASE):
         return "gfx1150"
+    if re.search(_LINUX_KRACKAN2_NAME_RE, text, re.IGNORECASE):
+        return "gfx1153"
     if re.search(
         r"860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33", text, re.IGNORECASE
     ):
@@ -2453,12 +2456,13 @@ def _linux_amd_gfx_from_cpuinfo() -> "str | None":
     return None
 
 
-def _linux_amd_gfx_from_lspci() -> "str | None":
+def _linux_amd_gfx_from_lspci(beside_krackan2: bool = False) -> "str | None":
     """First AMD display-class lspci line mapping to a known gfx arch. A non-AMD
     controller can enumerate first (Intel/ASPEED before an AMD dGPU), so scan
     them all. The vendor guard is case-SENSITIVE: a -i "ATI" would match
     "CorporATIon" on every Intel/NVIDIA line. Whole-line matching also survives
-    the 0000: PCI domain prefix."""
+    the 0000: PCI domain prefix. beside_krackan2 skips that APU's own iGPU line, so only a
+    discrete peer answers."""
     lspci = shutil.which("lspci")
     if not lspci:
         return None
@@ -2476,15 +2480,21 @@ def _linux_amd_gfx_from_lspci() -> "str | None":
         return None
     if result.returncode != 0:
         return None
+    # A Krackan Point 2 line (gfx1153, no Linux torch wheel) is only the fallback: a covered
+    # adapter later in the list still answers, as for the CPU-name case.
+    krackan2 = beside_krackan2
     for line in result.stdout.splitlines():
         if not re.search(r"VGA compatible controller|3D controller|Display controller", line, re.I):
             continue
         if not re.search(r"AMD|ATI", line):
             continue
+        if re.search(_LINUX_KRACKAN2_NAME_RE, line, re.IGNORECASE):
+            krackan2 = True
+            continue
         arch = _gfx_arch_from_gpu_name(line)
-        if arch:
+        if arch and not (krackan2 and arch in ("gfx1152", "gfx1153")):
             return arch
-    return None
+    return "gfx1153" if krackan2 and not beside_krackan2 else None
 
 
 def _is_wsl() -> bool:
@@ -2549,6 +2559,9 @@ def _infer_linux_amd_gfx_arch() -> "str | None":
         # fallback reads the same PCI space and would find nothing here either.
         return None
     cpu_gfx = _linux_amd_gfx_from_cpuinfo()
+    if cpu_gfx == "gfx1153":
+        # Krackan Point 2 has no Linux torch wheel, so a discrete AMD card lspci names wins.
+        return _linux_amd_gfx_from_lspci(beside_krackan2 = True) or cpu_gfx
     if cpu_gfx:
         return cpu_gfx
     return _linux_amd_gfx_from_lspci()
@@ -3203,6 +3216,12 @@ _GENERIC_ROCM_WHEEL_GFX: frozenset[str] = frozenset(
 )
 
 
+# Strix APUs: listed first beside a discrete card, they defer to it for torch alone (their
+# per-arch wheels carry no other arch). Not shadowing: llama.cpp and a lone Strix keep them.
+# install.sh's _amd_prefer_discrete_gfx "torch" mode holds the same list.
+_STRIX_APU_GFX: "frozenset[str]" = frozenset({"gfx1150", "gfx1151", "gfx1152"})
+
+
 # Arches whose only wheel route is unreachable once a second GPU is present, so they must
 # never depose an integrated card. gfx906's rocm6.3 route is gated on it being the sole
 # detected arch (_runtime_target_is_gfx906), which no mixed host satisfies.
@@ -3336,9 +3355,13 @@ def _gfx_has_a_wheel_route(gfx: "str | None") -> bool:
     return bool(gfx) and (gfx in _GENERIC_ROCM_WHEEL_GFX or gfx in _GFX_TO_AMD_INDEX_ARCH)
 
 
-# RDNA 1 and Polaris: no Linux index this installer picks carries their kernels (#8529).
+# RDNA 1, Polaris and gfx1153 (Krackan Point 2): no Linux index this installer picks carries
+# their kernels (#8529, #11815); the generic wheel loads and faults on first use. gfx1153 is
+# torch-only here: llama.cpp's LINUX_NO_ROCM_GFX_TARGETS keeps its HIP route.
 # install.sh's get_torch_index_url holds the same list.
-_LINUX_UNCOVERED_AMD_GFX: "frozenset[str]" = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx803"})
+_LINUX_UNCOVERED_AMD_GFX: "frozenset[str]" = frozenset(
+    {"gfx1010", "gfx1011", "gfx1012", "gfx1153", "gfx803"}
+)
 
 
 def _linux_host_only_uncovered_amd(*arch_lists: "list[str]") -> "str | None":
@@ -3622,7 +3645,18 @@ def _runtime_gfx_target(
         if gfx_devices
         else None
     )
-    if runtime_gfx in _SHADOWING_INTEGRATED_GFX and not _visible_devices_pinned():
+    # Strix defers only where the discrete card's wheel can be installed and will run: a ROCm
+    # version with a generic tag (unreadable or pre-6.0 has none, so nothing would install) and
+    # no HSA override (which spoofs every agent, the dGPU included). Otherwise it keeps its own
+    # per-arch index, as before.
+    _strix_rocm = _detect_rocm_version() if runtime_gfx in _STRIX_APU_GFX else None
+    _strix_first = (
+        runtime_gfx in _STRIX_APU_GFX
+        and _strix_rocm is not None
+        and _generic_pytorch_rocm_tag(_strix_rocm) is not None
+        and _hsa_override_gfx_arch(os.environ.get("HSA_OVERRIDE_GFX_VERSION")) is None
+    )
+    if (runtime_gfx in _SHADOWING_INTEGRATED_GFX or _strix_first) and not _visible_devices_pinned():
         # Unpinned mixed host: only enumeration order put the integrated GPU first, and the
         # wheel family is picked for ONE arch, so letting the APU decide strands the discrete
         # card. Same #7776 preference _detect_windows_gfx_arch applies, stopping at a set mask
@@ -3633,7 +3667,9 @@ def _runtime_gfx_target(
         _others = [
             g
             for g in gfx_devices
-            if g not in _SHADOWING_INTEGRATED_GFX and g not in _MIXED_HOST_UNROUTABLE
+            if g not in _SHADOWING_INTEGRATED_GFX
+            and g not in _MIXED_HOST_UNROUTABLE
+            and not (_strix_first and g in _STRIX_APU_GFX)
         ]
         # Prefer a discrete card the installer can serve: deposing a routable APU for one no
         # index carries (an RDNA 1 dGPU beside a gfx1103) trades a repairable GPU for nothing.
@@ -6591,8 +6627,16 @@ def _ensure_rocm_torch() -> "bool | None":
         # This branch installs for the inferred arch without asking the mask layers, so an
         # ordinal the guess cannot account for reaches the wheel the preflight already
         # declines. An explicit arch is exempt above, and no ordinal contradicts it.
-        and (_gfx_override_env or _runtime_gfx_target(_inferred_linux_gfx)[0] is not None)
+        and (
+            _gfx_override_env
+            or (_inferred_target := _runtime_gfx_target(_inferred_linux_gfx)[0]) is not None
+        )
     ):
+        # The discrete card a leading Strix deferred to. One served only by the generic index
+        # (gfx942) skips this per-arch install: the generic route below installs for it, since
+        # the deferral already required a readable ROCm version.
+        if not _gfx_override_env and _inferred_target != _inferred_linux_gfx:
+            _inferred_linux_gfx = _inferred_target
         index_url = _amd_arch_index_url(_inferred_linux_gfx)
         if index_url is not None:
             # The bare arch _amd_arch_index_url resolved the URL from: stripping the suffix there is
@@ -6674,8 +6718,8 @@ def _ensure_rocm_torch() -> "bool | None":
         _uncovered = _linux_host_only_uncovered_amd(gfx_codes, _host_codes)
         if _uncovered and not rocm_torch_ready:
             _safe_print(
-                f"   AMD {_uncovered}: no ROCm PyTorch wheel carries kernels for this GPU -- "
-                f"not installing ROCm torch for it.\n"
+                f"   AMD {_uncovered}: no ROCm PyTorch wheel Unsloth installs carries kernels for "
+                f"this GPU -- not installing ROCm torch for it.\n"
             )
             return
         _strix_gfx = _AMD_ARCH_INDEX_FLOOR_GFX
@@ -6720,8 +6764,12 @@ def _ensure_rocm_torch() -> "bool | None":
                     _clear_confirmed_hsa_spoof(_selected_gfx)
             else:
                 _gfx_str = ", ".join(sorted(_detected_strix))
+                # Unpinned, the discrete-card preference in _runtime_gfx_target moved it.
+                _selector = (
+                    "HIP_VISIBLE_DEVICES" if _visible_devices_pinned() else "the discrete GPU"
+                )
                 _safe_print(
-                    f"   AMD per-gfx GPU ({_gfx_str}) present but HIP_VISIBLE_DEVICES "
+                    f"   AMD per-gfx GPU ({_gfx_str}) present but {_selector} "
                     f"selects another runtime target ({_runtime_gfx});\n"
                     f"   skipping AMD per-gfx index override.\n"
                 )
@@ -7382,8 +7430,8 @@ def _green(msg: str) -> str:
     return f"\033[38;5;108m{msg}\033[0m" if _HAS_COLOR else msg
 
 
-def _cyan(msg: str) -> str:
-    return f"\033[96m{msg}\033[0m" if _HAS_COLOR else msg
+def _warn(msg: str) -> str:
+    return f"\033[38;5;136m{msg}\033[0m" if _HAS_COLOR else msg
 
 
 def _red(msg: str) -> str:
@@ -8471,7 +8519,7 @@ def _build_flash_attn_wheel_url(env: dict[str, str]) -> str | None:
 
 
 def _print_optional_install_failure(label: str, result: subprocess.CompletedProcess[str]) -> None:
-    _step("warning", f"{label} failed (exit code {result.returncode})", _cyan)
+    _step("warning", f"{label} failed (exit code {result.returncode})", _warn)
     if result.stdout:
         # Redact any pinned --index-url credentials before printing captured output.
         _safe_print(_redact_install_output(result.stdout).strip())
@@ -8515,14 +8563,14 @@ def _remove_stale_flash_attn() -> None:
         _step(
             "warning",
             "flash-attn was built for another torch or CUDA and does not import; removed it",
-            _cyan,
+            _warn,
         )
     else:
         _step(
             "warning",
             "flash-attn was built for another torch or CUDA and could not be removed; "
             "uninstall flash-attn manually",
-            _cyan,
+            _warn,
         )
 
 
@@ -8568,7 +8616,7 @@ def _ensure_flash_attn() -> None:
                 _step(
                     "warning",
                     "flash-attn wheel installed but is not importable on this GPU; removed it",
-                    _cyan,
+                    _warn,
                 )
             else:
                 # the rejected native module remains discoverable and may terminate training.
@@ -8576,111 +8624,28 @@ def _ensure_flash_attn() -> None:
                     "warning",
                     "flash-attn wheel is not importable on this GPU and could not be "
                     "removed; uninstall flash-attn manually before training",
-                    _cyan,
+                    _warn,
                 )
         elif stale:
             _remove_stale_flash_attn()
-        _step("warning", "Continuing without flash-attn", _cyan)
+        _step("warning", "Continuing without flash-attn", _warn)
         return
 
     if wheel_url is None:
         if IS_WINDOWS:
             _note("no flash-attn prebuilt wheel for this torch build; skipped")
         else:
-            _step("warning", "No compatible flash-attn prebuilt wheel found", _cyan)
+            _step("warning", "No compatible flash-attn prebuilt wheel found", _warn)
     elif wheel_available is None:
         _step(
             "warning",
             "Could not check the flash-attn prebuilt wheel; skipped it",
-            _cyan,
+            _warn,
         )
     else:
-        _step("warning", "No published flash-attn prebuilt wheel found", _cyan)
+        _step("warning", "No published flash-attn prebuilt wheel found", _warn)
     if stale:
         _remove_stale_flash_attn()
-
-
-def _ssm_kernel_install_disabled() -> bool:
-    return os.getenv("UNSLOTH_STUDIO_SKIP_SSM_KERNELS_INSTALL") == "1"
-
-
-def _ensure_ssm_kernels() -> None:
-    """causal-conv1d and mamba-ssm prebuilt wheels at setup, via the wheel-only install_kernel."""
-    if _ssm_kernel_install_disabled() or NO_TORCH or IS_MACOS:
-        return
-    # Bounded on every platform, and a probe that cannot launch skips this optional step.
-    try:
-        env = probe_torch_wheel_env(timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT, include_windows = True)
-    except OSError:
-        return
-    if env is None:
-        return
-
-    # A new runner per call resets install_kernel's per-runner GPU / Triton cache after a torch
-    # repair; it bounds import probes, not installs.
-    def run(cmd, *args, **kwargs):
-        if list(cmd[:2]) == [sys.executable, "-c"]:
-            kwargs.setdefault("timeout", _FLASH_ATTN_IMPORT_PROBE_TIMEOUT)
-        return subprocess.run(cmd, *args, **kwargs)
-
-    def loads(check: str) -> bool | None:
-        try:
-            return (
-                run(
-                    [sys.executable, "-c", check],
-                    stdout = subprocess.DEVNULL,
-                    stderr = subprocess.DEVNULL,
-                ).returncode
-                == 0
-            )
-        except (subprocess.TimeoutExpired, OSError):
-            return None
-
-    for name in ("causal_conv1d", "mamba_ssm"):
-        distribution, check = KERNELS[name]
-        installed = _installed_distribution_version(distribution) is not None
-        # Local first, so an offline re-run does not wait on a wheel HEAD request.
-        if installed and loads(check):
-            _note(f"{name} already installed and loads.")
-            continue
-        status = 0
-        buffer = io.StringIO()
-        if _uv_is_offline():
-            # install_wheel's pip fallback ignores UV_OFFLINE; stale removal below still runs.
-            if not installed:
-                _note(
-                    f"{name} not installed: UV_OFFLINE is set; run `unsloth install-kernels` online"
-                )
-        else:
-            try:
-                with contextlib.redirect_stdout(buffer):
-                    status = install_kernel(name, env, run = run, install_without_gpu = True)
-            except Exception as exc:
-                status = 1
-                buffer.write(f"{type(exc).__name__}: {exc}")
-        # install_kernel redacts only the wheel URL; uv / pip failure text can name another index.
-        for line in _redact_install_output(buffer.getvalue()).splitlines():
-            if line.strip():
-                _note(line.removeprefix("Unsloth: "))
-        if status or f"Unsloth: installed {name} " in buffer.getvalue():
-            _count_install_action()
-        if _installed_distribution_version(distribution) is not None and loads(check) is False:
-            _count_install_action()
-            try:
-                removed = _uninstall_distribution(distribution)
-            except OSError:
-                removed = False
-            if removed:
-                _step("warning", f"{name} does not load with this torch; removed it", _cyan)
-            else:
-                _step(
-                    "warning",
-                    f"{name} does not load with this torch and could not be removed; "
-                    f"uninstall {distribution} manually",
-                    _cyan,
-                )
-        elif status:
-            _step("warning", f"Continuing without {name}", _cyan)
 
 
 # -- uv bootstrap ------------------------------------------------------
@@ -9557,7 +9522,7 @@ def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
         # By canonical project name: `--upgrade-package mlx` beside `mlx==0.32.3` is one project,
         # and pip refuses a double requirement where uv does not.
         def _project(requirement: str) -> str:
-            # _requirement_name stops at "==" and "@"; a range (mlx-vlm>=0.4.4,<=0.7.4) needs the
+            # _requirement_name stops at "==" and "@"; a range (mlx-vlm>=0.4.4,<=0.7.8) needs the
             # rest.
             return _canonical_package_name(
                 re.split(r"[<>=!~;\[ ]", _requirement_name(requirement), maxsplit = 1)[0]
@@ -10367,7 +10332,7 @@ def _mirror_retry(args: "tuple[str, ...]", output: bytes, rerun) -> "bool | None
     _step(
         "mirror",
         f"{_MIRROR_NAMES[host]} failed; retrying through {next(iter(pairs.values()))}",
-        _cyan,
+        _warn,
     )
     saved = ({name: os.environ.get(name) for name in pairs}, _PYTORCH_WHL_BASE)
     os.environ.update(pairs)
@@ -10643,11 +10608,16 @@ def _has_working_git() -> bool:
 
 # The MLX stack, one place; test_mlx_install.py compares it with utils/mlx_repair.py's
 # _MLX_INSTALL_SPECS.
-_MLX_PINS: tuple[str, ...] = ("mlx==0.32.3", "mlx-metal==0.32.3", "mlx-lm==0.31.3")
-_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.4"
+_MLX_PINS: tuple[str, ...] = ("mlx==0.32.4", "mlx-metal==0.32.4")
+# A range, like mlx-vlm: 0.32 requires Python 3.11, so Python 3.10 resolves 0.31.3.
+_MLX_LM_SPEC = "mlx-lm>=0.31.3,<=0.32.2"
+_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.8"
 # Exact: llguidance.mlx / llguidance.hf are the API grammar_constraint.py binds to.
 _LLGUIDANCE_PIN = "llguidance==1.8.0"
-_MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + ("mlx-vlm",)
+_MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + (
+    "mlx-lm",
+    "mlx-vlm",
+)
 # mflux goes in --no-deps: its declared torch / transformers floors would move the MLX pins, and Z-Image
 # needs only the deps below. Best-effort: a failure must never mark the MLX stack broken.
 _MLX_DIFFUSION_PINS: tuple[str, ...] = ("mflux==0.22.0",)
@@ -10694,7 +10664,15 @@ def _install_mlx_diffusion_engine() -> None:
 
 
 def _mlx_vlm_spec_for_installed_zoo() -> str:
-    """_MLX_VLM_SPEC, intersected with the range the INSTALLED unsloth-zoo declares.
+    return _mlx_spec_for_installed_zoo(_MLX_VLM_SPEC)
+
+
+def _mlx_lm_spec_for_installed_zoo() -> str:
+    return _mlx_spec_for_installed_zoo(_MLX_LM_SPEC)
+
+
+def _mlx_spec_for_installed_zoo(spec: str) -> str:
+    """`spec`, intersected with the range the INSTALLED unsloth-zoo declares for its package.
 
     This step runs before the core phase, and on a fresh install (SKIP_STUDIO_BASE=1) the core
     phase is skipped entirely, so the zoo install.sh already put down is the one that stays.
@@ -10702,31 +10680,33 @@ def _mlx_vlm_spec_for_installed_zoo() -> str:
     accept it, so admitting 0.7.1 beside such a zoo raises TypeError at the first Qwen3.5 VLM
     training step, after mlx_stack_available() has cleared the chat-only gate. Reading what the
     installed zoo itself declares keeps the two in step without naming a zoo version here, and it
-    widens on its own once a zoo declaring 0.7.1 is installed. Mirrors utils/mlx_repair.py's
-    _install_packages, which does the same for the unattended self-heal.
+    widens on its own once a zoo declaring 0.7.1 is installed. Likewise a zoo pinning mlx-lm 0.31.3
+    keeps 0.31.3. Mirrors utils/mlx_repair.py's _install_packages, which does the same for the
+    unattended self-heal.
     """
     try:
         from importlib.metadata import requires
         from packaging.requirements import Requirement
         from packaging.utils import canonicalize_name
     except ImportError:
-        return _MLX_VLM_SPEC
+        return spec
     try:
         declared = requires("unsloth_zoo") or ()
+        wanted = canonicalize_name(Requirement(spec).name)
     except Exception:  # noqa: BLE001 - not installed, or unreadable metadata
-        return _MLX_VLM_SPEC
+        return spec
     for raw in declared:
         try:
             requirement = Requirement(raw)
         except Exception:  # noqa: BLE001 - a requirement string packaging cannot parse
             continue
-        if canonicalize_name(requirement.name) == "mlx-vlm" and str(requirement.specifier):
-            return f"{_MLX_VLM_SPEC},{requirement.specifier}"
-    return _MLX_VLM_SPEC
+        if canonicalize_name(requirement.name) == wanted and str(requirement.specifier):
+            return f"{spec},{requirement.specifier}"
+    return spec
 
 
 def _mlx_stack_is_current() -> bool:
-    """Whether the three exact pins and mlx-vlm's range are all already satisfied.
+    """Whether the exact pins and the mlx-lm and mlx-vlm ranges are all already satisfied.
 
     Without this the step ran `--upgrade` on every update and fetched ~60 MB of wheels
     it then discarded, because the pins were already exact and the upgrade only moved
@@ -10734,12 +10714,18 @@ def _mlx_stack_is_current() -> bool:
     """
     if not all(_exact_distribution_spec_is_installed(spec) for spec in _MLX_PINS):
         return False
-    installed = _installed_distribution_version("mlx-vlm")
-    if not installed:
+    installed, installed_lm = (
+        _installed_distribution_version(name) for name in ("mlx-vlm", "mlx-lm")
+    )
+    if not installed or not installed_lm:
         return False
     try:
         from packaging.requirements import Requirement
-
+        if not Requirement(_mlx_lm_spec_for_installed_zoo()).specifier.contains(
+            installed_lm,
+            prereleases = True,
+        ):
+            return False
         # The narrowed spec, not the static one: with an older zoo beside an already-installed
         # 0.7.1 the static range reads as satisfied and the step skips the very install that
         # would put mlx-vlm back where the zoo can drive it.
@@ -10785,7 +10771,10 @@ def _mlx_closure_unmet() -> bool:
         os.close(_fd)
         handle = Path(_name)
         handle.write_text(
-            "\n".join([*_MLX_PINS, _mlx_vlm_spec_for_installed_zoo()]) + "\n",
+            "\n".join(
+                [*_MLX_PINS, _mlx_lm_spec_for_installed_zoo(), _mlx_vlm_spec_for_installed_zoo()]
+            )
+            + "\n",
             encoding = "utf-8",
         )
         unmet = install_manifest.closure_unmet_requirements(handle, _installed_index())
@@ -10840,8 +10829,10 @@ def _mlx_health_fingerprint() -> dict:
     """What a recorded MLX verdict is only valid for."""
     return {
         # The narrowed spec, so installing a different zoo invalidates a recorded verdict.
-        "pins": list(_MLX_PINS) + [_mlx_vlm_spec_for_installed_zoo()],
+        "pins": list(_MLX_PINS)
+        + [_mlx_lm_spec_for_installed_zoo(), _mlx_vlm_spec_for_installed_zoo()],
         "python": _installer_python_tag(),
+        "mlx_lm": _installed_distribution_version("mlx-lm") or "",
         "mlx_vlm": _installed_distribution_version("mlx-vlm") or "",
         # Versions as installed; an older record without this key is probed once and rewritten.
         "imports": {
@@ -10967,9 +10958,9 @@ def _report_mlx_stack_health(skipped: bool = False) -> None:
     if not blockers:
         _step("mlx", "training stack ready")
         return
-    _step("mlx", "Train and Export will stay off until this is resolved:", _cyan)
+    _step("mlx", "Train and Export will stay off until this is resolved:", _warn)
     for blocker in blockers:
-        _step("", blocker, _cyan)
+        _step("", blocker, _warn)
 
 
 # The idempotent dependency pass. A skip is legal only when (a) the previous run recorded this
@@ -12420,7 +12411,6 @@ def install_python_stack() -> int:
     if not IS_MACOS and not NO_TORCH:
         base_total += 1  # ROCm torch check (step 2b), non-macOS
         base_total += 1  # flash-attn, Linux and Windows
-        base_total += 1  # causal-conv1d + mamba-ssm, same gate
         if not IS_WINDOWS:
             base_total += 1  # torch final repair (step 13), Linux
         else:
@@ -12556,6 +12546,7 @@ def install_python_stack() -> int:
     # None when the MLX step did not run at all, so the re-resolve after the core phase has
     # nothing to compare against.
     _mlx_vlm_spec_used: Optional[str] = None
+    _mlx_lm_spec_used: Optional[str] = None
     if IS_MAC_ARM and not NO_TORCH:
         # Both branches spend the slot, so the denominator does not depend on the host.
         if _mlx_pins_are_installable():
@@ -12578,12 +12569,14 @@ def install_python_stack() -> int:
                     # transitive dependency; _build_pip_cmd translates back for pip.
                     *[arg for name in _MLX_NAMES for arg in ("--upgrade-package", name)],
                     *_MLX_PINS,
+                    _mlx_lm_spec_for_installed_zoo(),
                     _mlx_vlm_spec_for_installed_zoo(),
                 )
             # Inside the MLX slot, after the pins it runs on; its own check, so a satisfied
             # stack still gets a missing engine.
             _install_mlx_diffusion_engine()
             _mlx_vlm_spec_used = _mlx_vlm_spec_for_installed_zoo()
+            _mlx_lm_spec_used = _mlx_lm_spec_for_installed_zoo()
         else:
             _progress("MLX stack (skipped, no wheel for this macOS or Python)")
             _note(
@@ -12696,7 +12689,11 @@ def install_python_stack() -> int:
     # moved, so the common update pays a metadata read and nothing else.
     if IS_MAC_ARM and not NO_TORCH:
         _mlx_vlm_spec_now = _mlx_vlm_spec_for_installed_zoo()
-        if _mlx_vlm_spec_used is None or _mlx_vlm_spec_now == _mlx_vlm_spec_used:
+        _mlx_lm_spec_now = _mlx_lm_spec_for_installed_zoo()
+        if _mlx_vlm_spec_used is None or (_mlx_vlm_spec_now, _mlx_lm_spec_now) == (
+            _mlx_vlm_spec_used,
+            _mlx_lm_spec_used,
+        ):
             _progress("MLX stack (zoo unchanged, skipped)")
         else:
             _progress("MLX stack (re-resolved for the new zoo)")
@@ -12706,6 +12703,7 @@ def install_python_stack() -> int:
                 "--no-cache-dir",
                 *[arg for name in _MLX_NAMES for arg in ("--upgrade-package", name)],
                 *_MLX_PINS,
+                _mlx_lm_spec_now,
                 _mlx_vlm_spec_now,
             )
 
@@ -12831,8 +12829,6 @@ def install_python_stack() -> int:
     if not IS_MACOS and not NO_TORCH:
         _progress("flash-attn")
         _ensure_flash_attn()
-        _progress("mamba kernels")
-        _ensure_ssm_kernels()
 
     # # 6. Patch: override llama_cpp.py with fix from unsloth-zoo  feature/llama-cpp-windows-support branch
     # patch_package_file(
@@ -13016,9 +13012,8 @@ def install_python_stack() -> int:
                 "flash-attn"
             )
             _install_torchao_for_torch(_torch_after_repair)
-            # resync the kernels because the repair can invalidate the wheels selected earlier.
+            # resync flash-attn because the repair can invalidate the wheel selected earlier.
             _ensure_flash_attn()
-            _ensure_ssm_kernels()
         # Unguarded: torch==2.10.0 accepts 2.10.0+rocm7.1, and an earlier run may have moved it.
         _evict_xformers_built_for_another_torch(scope = "linux torch repair", family_only = True)
         _evict_xformers_requiring_another_torch()
@@ -13033,9 +13028,8 @@ def install_python_stack() -> int:
             return 1
         _torch_after_flavor = str(_probe_installed_torch_version() or "")
         if _torch_after_flavor and _torch_after_flavor != _torch_before_flavor:
-            # The kernels were chosen for the torch the invariant just replaced, as in step 13.
+            # flash-attn was chosen for the torch the invariant just replaced, as in step 13.
             _ensure_flash_attn()
-            _ensure_ssm_kernels()
         # A direct run has no setup.ps1 postlude to swap triton back. After the invariant,
         # because the swap keys off the installed +xpu label.
         _ensure_xpu_triton()

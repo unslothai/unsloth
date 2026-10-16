@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Returning from Compare to a ``/chat?new=<uuid>`` chat must re-attach its thread id.
-
-The provider is HIDDEN rather than unmounted when Compare opens (the point of #9129), but
-``enterCompare`` clears ``activeThreadId`` and nothing put it back for this view:
-``ThreadNewChatSwitch`` returns immediately since the nonce never changed, ``ActiveThreadSync``
-is disabled whenever a nonce is present, and only ``ProjectLanding`` restored on resume.
-
-``ThreadScopedSettingsSync`` is NOT nonce-gated, so the chat came back live but detached, on
-installation defaults, with an edit moving THOSE rather than its own snapshot. Title, context
-usage and the model notice are keyed on the same id.
-
-``NonceThreadResumeRestore``'s effect is sliced verbatim and replayed through the same
-React-effect emulator the sibling suites use, so wiring drift breaks this.
-"""
+"""Compare leaves a /chat?new=<uuid> chat detached unless its thread id is re-attached on return."""
 
 from __future__ import annotations
 
@@ -171,13 +158,7 @@ def test_a_fresh_new_chat_is_not_attached_on_its_first_render() -> None:
 
 
 def test_a_materialized_chat_keeping_its_runtime_id_is_still_restored() -> None:
-    """The ordinary case, and the one an id-prefix guard would have skipped.
-
-    ``createStudioDbAdapter.initialize()`` writes the row under whatever id assistant-ui
-    minted and returns it, so a ``?new=`` chat that has been sent to keeps its
-    ``__LOCALID_`` id, and refusing that refuses almost every chat this component exists
-    for. Published raw, as ActiveThreadSync does elsewhere; consumers that need a
-    persisted id filter for themselves."""
+    """A materialized chat keeps its __LOCALID_ id after initialize() persists it, so no id-prefix check."""
     out = _run(
         """
         // initialize() wrote the row under the minted id and handed it back, so this
@@ -227,11 +208,7 @@ def test_staying_hidden_never_restores() -> None:
 
 
 def test_the_provider_gates_the_restore_on_a_nonce_view_that_is_visible() -> None:
-    """Structural. The emulator replays the effect but not the props the JSX hands it, so
-    the enable expression is only pinned here. ``newThreadNonce`` and ``initialThreadId``
-    because a saved thread already has ActiveThreadSync, ``pairId``/``base`` because a
-    compare pane has no single chat to attach, ``backgrounded`` because a hidden view must
-    not claim the visible one's id."""
+    """The emulator cannot see JSX props, so the enable expression is pinned here instead."""
     jsx = slice_between(
         read(PROVIDER),
         "<NonceThreadResumeRestore",
@@ -258,15 +235,7 @@ def test_the_harness_binds_every_name_the_effect_reaches() -> None:
 
 
 def test_an_untouched_landing_is_not_read_into_a_chat_on_resume() -> None:
-    """A project landing that was never typed in still holds a blank placeholder thread
-    after a compare round trip, because the runtime mints one eagerly. Publishing it makes
-    ProjectLanding set pendingNewThreadId and swap the project overview for an empty
-    Thread, so the user comes back to a chat they never started.
-
-    Note what is NOT the discriminator: the placeholder here has the same `__LOCALID_`
-    shape as the materialized chat two tests up. Only the absence of a row tells them
-    apart.
-    """
+    """Blank placeholders share the __LOCALID_ shape of a sent chat; only a missing row tells them apart."""
     out = _run(
         """
         const render = mount(true);

@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""A cleaned notebook must never outlive the record of what it was cleaned to.
-
-The migration published every notebook and then wrote the state once at the end. Lose
-that single write and every cleaned notebook no longer matches its record, so the
-refresh reads a hash mismatch as a user edit, carries the stale record forward and
-stops applying upstream updates to it for good, while the migration prints success and
-exits 0. On the first boot after this ships the migration touches the whole set at
-once, so a docker stop or an ENOSPC anywhere in that window stranded all of them.
-"""
+"""Cleaned notebooks are recorded before publish, or one lost state write strands the whole set."""
 
 from __future__ import annotations
 
@@ -28,8 +20,7 @@ INTRO = (
     'To run this, press "*Runtime*" and press "*Run all*" on a **free** '
     "Tesla T4 Google Colab instance!\n"
 )
-# json.dumps escapes the quotes in INTRO, so the raw sentence never appears in the file
-# text; this fragment does, and only in the intro.
+# json.dumps escapes quotes in INTRO; this fragment appears verbatim and only there.
 MARK = "Tesla T4 Google Colab instance"
 
 
@@ -213,19 +204,12 @@ def test_malformed_and_unmanaged_lines_survive_verbatim(strip, tmp_path):
 
 
 def test_a_publish_cut_off_after_its_record_is_recovered(strip, tree, monkeypatch):
-    """The window the ordering leaves behind, and the reason it is not the old one.
-
-    Between os.replace on the state file and os.replace on the notebook the record
-    describes the cleaned bytes while the file still holds the pristine ones. Every
-    later run reads that as a user edit and carries the stale record forward, so the
-    notebook stops receiving upstream updates for good. It is one notebook rather than
-    the whole set, and unlike a real edit it can be told apart and finished.
-    """
+    """A cut between writing the record and the notebook leaves one recoverable mismatch, not a lost set."""
     dest, state, names = tree
 
     def _killed(tmp, path, before):
         strip._unlink(tmp)
-        raise KeyboardInterrupt  # docker stop, between the two renames
+        raise KeyboardInterrupt
 
     monkeypatch.setattr(strip, "_publish", _killed)
     with pytest.raises(KeyboardInterrupt):

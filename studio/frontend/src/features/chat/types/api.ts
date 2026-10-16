@@ -365,6 +365,8 @@ export interface UnloadModelRequest {
 }
 
 export interface InferenceStatusResponse {
+  /** The 4-bit setting the resident non-GGUF load was requested with; null for GGUF. */
+  load_in_4bit?: boolean | null;
   engine_parallelism?: "tensor" | "pipeline" | "data";
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
   engine_kv_cache_dtype?: "auto" | "fp8";
@@ -751,7 +753,7 @@ export interface OpenAIChatCompletionsRequest {
   context_overflow?: "error" | "truncate_middle" | "truncate_oldest";
   /** Override UNSLOTH_CONTEXT_POLICY for this local GGUF request. */
   context_policy?: "checkpoint" | "rolling";
-  /** Extra share of the prompt budget to drop when a rolling compaction fires. */
+  /** Extra share of the prompt budget a rolling compaction drops, or a checkpoint reset keeping the turn in progress leaves free. */
   compaction_headroom_ratio?: number;
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;

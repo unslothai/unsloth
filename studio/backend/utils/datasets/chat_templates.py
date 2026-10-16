@@ -236,8 +236,16 @@ def _sharegpt_tool_turns(conversation, content = "", probe = False):
                 markers.append(f"unslothresult{len(markers)}end")
                 message["content"] = markers[-1]
         elif role == "function_call":
+            raw = message.get("content")
+            if isinstance(raw, list):
+                # A processor-loaded model gets every turn standardized into text parts.
+                raw = "".join(
+                    part.get("text") or ""
+                    for part in raw
+                    if isinstance(part, dict) and part.get("type") == "text"
+                )
             try:
-                calls = json.loads(message.get("content"))
+                calls = json.loads(raw)
             except (TypeError, ValueError, RecursionError):
                 calls = None
             calls = calls if isinstance(calls, list) else [calls]
@@ -480,6 +488,7 @@ def get_dataset_info_summary(dataset_info):
         "sharegpt": "ShareGPT format (needs standardization)",
         "chatml_messages": "ChatML format (messages column) - OpenAI compatible",
         "chatml_conversations": "ChatML format (conversations column) - HuggingFace standard",
+        "pretokenized": "Pre-tokenized (input_ids / labels)",
         "unknown": "Unknown format"
     }
 

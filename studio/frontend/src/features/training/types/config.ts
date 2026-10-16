@@ -18,6 +18,7 @@ import type {
   DecisionCheckpoint,
   DecisionLayout,
 } from "../api/models-api";
+import type { DrafterCapability } from "./api";
 
 export type LoraVariant = "lora" | "rslora" | "loftq" | "dora";
 
@@ -65,6 +66,11 @@ export interface TrainingMethodProvenance {
 
 /** Column-to-role mapping, e.g. { "problem": "user", "solution": "assistant", "context": "system" } */
 export type DatasetManualMapping = Record<string, string>;
+
+/** "auto" retrains a native MTP head when the model has one, else trains an EAGLE-3 drafter. */
+export type DrafterStrategy = "auto" | "mtp" | "eagle3";
+/** "dataset" trains on the dataset's answers; "regenerate" on the fine-tuned model's own answers. */
+export type DrafterDataSource = "dataset" | "regenerate";
 
 /** Decoder layers kept in host RAM during LoRA training: a count (0 = off) or "auto". */
 export type OffloadLayers = number | "auto";
@@ -126,6 +132,19 @@ export interface TrainingConfigState {
   maxSteps: number;
   saveSteps: number;
   evalSteps: number;
+  /** Evaluations without a lower eval loss before the run stops; 0 = off. */
+  earlyStoppingPatience: number;
+  /** Train a speculative-decoding drafter (MTP head or EAGLE-3) after fine-tuning. */
+  drafterEnabled: boolean;
+  drafterStrategy: DrafterStrategy;
+  drafterDataSource: DrafterDataSource;
+  drafterMaxExamples: number;
+  drafterEpochs: number;
+  /** null = the backend's default for the resolved strategy. */
+  drafterLearningRate: number | null;
+  drafterDraftSteps: number;
+  /** Last /api/train/drafter-capability answer (its `model_name` says which model it is for). */
+  drafterCapability: DrafterCapability | null;
   packing: boolean;
   trainOnCompletions: boolean;
   gradientCheckpointing: GradientCheckpointing;
@@ -281,6 +300,15 @@ export interface TrainingConfigActions {
   setMaxSteps: (value: number) => void;
   setSaveSteps: (value: number) => void;
   setEvalSteps: (value: number) => void;
+  setEarlyStoppingPatience: (value: number) => void;
+  setDrafterEnabled: (value: boolean) => void;
+  setDrafterStrategy: (value: DrafterStrategy) => void;
+  setDrafterDataSource: (value: DrafterDataSource) => void;
+  setDrafterMaxExamples: (value: number) => void;
+  setDrafterEpochs: (value: number) => void;
+  setDrafterLearningRate: (value: number | null) => void;
+  setDrafterDraftSteps: (value: number) => void;
+  setDrafterCapability: (value: DrafterCapability | null) => void;
   setPacking: (value: boolean) => void;
   setTrainOnCompletions: (value: boolean) => void;
   setGradientCheckpointing: (value: GradientCheckpointing) => void;

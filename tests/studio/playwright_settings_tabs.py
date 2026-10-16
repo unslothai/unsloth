@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Settings dialog behaviour harness: every tab renders, search jumps land, deep-open works.
-
-Drives smoke-settings.html (the real SettingsDialog and store, no backend), so a static-import
-tree and a React.lazy one are directly comparable. Emits a JSON report to $PW_OUT for a
-field-by-field diff.
-
-    PW_ENGINE=chromium PW_PORT=5399 PW_OUT=out.json python tests/studio/playwright_settings_tabs.py
-
-PW_CHUNK_DELAY_MS delays every tab module response, widening the window a lazy panel is
-in-flight for; PW_CHUNK_FAIL=<tab> aborts one tab's module outright.
-"""
+"""Settings tabs on the real dialog, no backend; PW_CHUNK_DELAY_MS and PW_CHUNK_FAIL inject faults."""
 
 import json
 import os
@@ -20,6 +10,7 @@ import sys
 import time
 from pathlib import Path
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -77,12 +68,10 @@ LAN_STATUS = {
     "keyless_scope": "off",
     "keyless_tools": False,
 }
-# The panel scroller inside the dialog, the element `mainScrollRef` points at.
 PANEL = 'div[role="dialog"] main div.hover-scrollbar'
-# How long the Data module is held, and how far into that hold the deep-open is abandoned.
 DEEP_OPEN_HOLD_MS = 2500
 DEEP_OPEN_ABANDON_MS = 300
-# The Data panel's own module, however the server spells it (vite appends ?t=, ?v=).
+# vite appends ?t= or ?v= to module URLs.
 DATA_MODULE = re.compile(r"/data-tab(\.tsx)?(\?|$)")
 
 report: dict = {
@@ -121,6 +110,29 @@ SNAPSHOT_JS = """(sel) => {
 }"""
 
 
+def until(
+    page,
+    condition: str,
+    arg = None,
+    timeout: int = 5000,
+) -> None:
+    """Wait for the state a check reads, without failing here: a broken build spends the bound and
+    then fails on the same check. Replaces flat sleeps, which also asserted the runner's speed."""
+    try:
+        page.wait_for_function(condition, arg = arg, timeout = timeout)
+    except PlaywrightTimeout:
+        pass
+
+
+DIALOG_GONE = "() => !document.querySelector('div[role=\"dialog\"]')"
+ROWS = "[...document.querySelectorAll('[data-settings-label]')].map(r => r.dataset.settingsLabel)"
+
+
+def close_dialog(page) -> None:
+    page.evaluate("() => window.__settingsSmoke.close()")
+    until(page, DIALOG_GONE)
+
+
 def snapshot(page) -> dict:
     return page.evaluate(SNAPSHOT_JS, PANEL)
 
@@ -144,11 +156,7 @@ def settle(page, timeout_s: float = SETTLE_TIMEOUT_S) -> dict:
 
 
 def settle_panel(page, timeout_s: float = SETTLE_TIMEOUT_S) -> dict:
-    """Settle, but do not accept a placeholder as the answer.
-
-    The panel renders from a deferred value, so the outgoing content stays on screen until
-    the incoming one is ready, and under load that hand-off can hold still past SETTLE_MS.
-    """
+    """Waits past the deferred-render placeholder, which can outlast SETTLE_MS under load."""
     deadline = time.time() + timeout_s
     latest = settle(page, timeout_s = timeout_s)
     while latest.get("elements", 0) < 5 and time.time() < deadline:
@@ -186,14 +194,7 @@ def click_tab_and_observe(page, tab: str) -> dict:
 
 
 def require_harness(page) -> None:
-    """Fail with the cause rather than a selector timeout if the page has moved on.
-
-    Vite dev proxies /api to 127.0.0.1:8888. With a real Unsloth listening there and no
-    token, those calls come back 401 and the app's auth handling navigates, which takes
-    the harness's window with it. Every later step then times out on a dialog that cannot
-    exist. This is not the dialog's doing: it happens on main too, where the harness is
-    unmounted before the first open. So say so.
-    """
+    """Fail if the harness page is gone: a real Unsloth on 127.0.0.1:8888 gives /api 401 and navigates."""
     if not page.evaluate("() => !!window.__settingsSmoke"):
         raise RuntimeError(
             "the harness page is gone (window.__settingsSmoke undefined). This smoke page "
@@ -209,14 +210,12 @@ def open_dialog(page, tab: str | None = None) -> None:
     page.wait_for_selector('div[role="dialog"]', timeout = 15000)
 
 
-# Only subpages put a back button in the panel header, so this is locale-independent.
 ON_SUBPAGE_JS = """() => ({
     subpage: !!document.querySelector('div[role="dialog"] main header button'),
     elements: (document.querySelector('div[role="dialog"] main div.hover-scrollbar')
         || { querySelectorAll: () => [] }).querySelectorAll('*').length,
 })"""
 
-# Deep-open the archived chats, then walk away partway through the hold.
 ABANDON_DEEP_OPEN_JS = """(delay) => {
     window.__abandonedAt = null;
     window.__settingsSmoke.openArchived('chats');
@@ -232,20 +231,9 @@ ABANDON_DEEP_OPEN_JS = """(delay) => {
 
 
 def run_abandoned_deep_open(page) -> None:
-    """A deep-open the panel never mounted for must not outlive the navigation.
+    """Closing the dialog mid-fetch must not leave archivedRequested set for the next Data visit."""
 
-    `openArchivedChats` sets `archivedRequested`, and DataTab is the only thing that clears
-    it. Now that the panel is fetched on first view, closing the dialog while that fetch is
-    in flight leaves the request set with nothing to consume it, and the next ordinary visit
-    to Data opens an archive listing nobody asked for. Runs before anything else opens the
-    dialog, so the Data module is still cold and the hold is what decides when it arrives.
-    """
-
-    # Matched on the Data module alone rather than on everything. The sleep below runs on
-    # the driver thread, so a handler that sees every request makes the whole page's module
-    # load queue behind it, and the panel that arrives next has to be rendered by a main
-    # thread that got the lot at once. On a busy two-core runner that pushed the reopen
-    # below past its timeout even though nothing was wrong with the dialog.
+    # Match only the Data module: the handler sleeps on the driver thread, queueing every request it sees.
     def hold_data(route):
         time.sleep(DEEP_OPEN_HOLD_MS / 1000)
         return route.continue_()
@@ -275,10 +263,8 @@ def run_abandoned_deep_open(page) -> None:
         fail("an abandoned archive deep-open reopened the archive on the next visit to Data")
     else:
         log("an abandoned deep-open leaves the next visit to Data on the main page")
-    page.evaluate("() => window.__settingsSmoke.close()")
-    page.wait_for_timeout(200)
+    close_dialog(page)
 
-    # Dropping the abandoned ones must not drop the honoured ones.
     page.evaluate("() => window.__settingsSmoke.openArchived('chats')")
     page.wait_for_selector('div[role="dialog"]', timeout = 15000)
     settle_panel(page)
@@ -288,8 +274,7 @@ def run_abandoned_deep_open(page) -> None:
         fail(f"a deep-open the panel did reach no longer opens the archive ({honoured})")
     else:
         log("a deep-open the panel reaches still opens the archive")
-    page.evaluate("() => window.__settingsSmoke.close()")
-    page.wait_for_timeout(200)
+    close_dialog(page)
     report["steps"].append("abandoned-deep-open")
 
 
@@ -299,18 +284,15 @@ def run_chunk_fail(page) -> None:
     settle_panel(page)
     click_forced(page.locator('[data-testid="settings-tab-general"]'), timeout = 15000)
     settle_panel(page)
-    # Read the nav size instead of hardcoding it. The invariant is that blocking a
-    # panel does not collapse the dialog, not that the dialog has any particular
-    # number of tabs. The hardcoded 12 outlived its truth once a page was added,
-    # and this smoke started failing with "took the dialog down" while reporting
-    # dialog: True, which reads like an error-handling regression and was a stale
-    # constant.
+    # Read the nav size: the invariant is that a blocked panel does not collapse the dialog.
     nav_before = page.evaluate(
         "() => document.querySelectorAll('[data-testid^=\"settings-tab-\"]').length"
     )
     if nav_before < 2:
         fail(f"the settings nav was already empty before blocking anything ({nav_before})")
     click_forced(page.locator(f'[data-testid="settings-tab-{CHUNK_FAIL}"]'), timeout = 15000)
+    # Observation window: the blocked panel's failure (and the idle prefetch's) must play out
+    # without taking the dialog or the app down, so this watches for a fixed time.
     page.wait_for_timeout(3000)
     state = page.evaluate(
         """() => ({
@@ -325,7 +307,6 @@ def run_chunk_fail(page) -> None:
     )
     report["chunk_fail_state"] = state
     log(f"after blocking {CHUNK_FAIL}: {state}")
-    # The idle prefetch pulls every panel, so a blocked one must not surface as a rejection.
     errors = page.evaluate("() => window.__settingsSmoke.errors()")
     report["chunk_fail_window_errors"] = errors
     unhandled = [
@@ -347,7 +328,6 @@ def run_chunk_fail(page) -> None:
         )
     else:
         log("the dialog and its twelve nav entries survived")
-    # Another tab must still work.
     click_forced(page.locator('[data-testid="settings-tab-about"]'), timeout = 15000)
     after = settle_panel(page)
     report["chunk_fail_recovery"] = after
@@ -462,12 +442,7 @@ def assert_persisted_monitor_restores(page) -> None:
 
 
 def run_keystroke_search(page) -> None:
-    """Searching the shortcut list by pressing a chord instead of typing its name.
-
-    Ordering is the whole risk here: the press has to reach the box ahead of the
-    shortcut it names and ahead of the dialog's own Escape, which only a real
-    browser can settle.
-    """
+    """Chord press must beat both the shortcut it names and the dialog's own Escape to the search box."""
     open_dialog(page, "keyboard-shortcuts")
     settle_panel(page)
     rows_js = """() => [...document.querySelectorAll('[data-settings-label]')]
@@ -475,7 +450,7 @@ def run_keystroke_search(page) -> None:
     box = page.locator(f"{PANEL} input")
     toggle = page.locator(f"{PANEL} button[aria-pressed]")
     click_forced(toggle, timeout = 15000)
-    page.wait_for_timeout(SETTLE_MS)
+    until(page, "el => el?.getAttribute('aria-pressed') === 'true'", arg = toggle.element_handle())
     # Mod is Cmd on macOS and Ctrl everywhere else, and bindingFromEvent drops a Meta
     # chord off macOS outright, so a hardcoded Meta would record nothing on the Linux
     # runner. Same read as isMacPlatform(), which is what the app itself goes by.
@@ -485,21 +460,23 @@ def run_keystroke_search(page) -> None:
     mod = "Meta" if mac else "Control"
     state: dict = {"armed": toggle.get_attribute("aria-pressed"), "mod": mod}
 
-    # A chord narrows to what answers to it: ⇧⌘O is New chat's, and New standalone
-    # chat sits on ⌥⌘O, which does not carry the Shift.
     page.keyboard.press(f"{mod}+Shift+KeyO")
-    page.wait_for_timeout(SETTLE_MS)
+    until(
+        page,
+        f"() => {{ const rows = {ROWS}; return rows.includes('New chat')"
+        " && !rows.includes('New standalone chat'); }",
+    )
     state["chord"] = box.input_value()
     state["chord_rows"] = page.evaluate(rows_js)
 
-    # The bare key widens to every chord built on it, ⌥⌘O included.
     page.keyboard.press("KeyO")
-    page.wait_for_timeout(SETTLE_MS)
+    until(page, f"() => {ROWS}.includes('New standalone chat')")
     state["bare_rows"] = page.evaluate(rows_js)
 
-    # Escape backs out a step at a time, and the dialog stays open for both. A dialog
-    # gone here is the bug this covers: the press reaching Radix before the box.
+    # A dialog gone here means the press reached Radix before the box.
     page.keyboard.press("Escape")
+    # Observation window, not a readiness guess: the bug is the dialog closing, and a closing
+    # dialog stays mounted through its exit animation, so it needs the time to finish leaving.
     page.wait_for_timeout(SETTLE_MS)
     open_after_first = page.locator('div[role="dialog"]').count()
     state["after_first_escape"] = {
@@ -509,7 +486,9 @@ def run_keystroke_search(page) -> None:
     }
     if open_after_first:
         page.keyboard.press("Escape")
-        page.wait_for_timeout(SETTLE_MS)
+        until(
+            page, "el => el?.getAttribute('aria-pressed') === 'false'", arg = toggle.element_handle()
+        )
         open_after_second = page.locator('div[role="dialog"]').count()
         state["after_second_escape"] = {
             "dialog": open_after_second,
@@ -549,12 +528,10 @@ def run(page) -> None:
         run_chunk_fail(page)
         return
 
-    # --- 1. a deep-open walked away from mid-load is not replayed later --------------
     run_abandoned_deep_open(page)
 
     assert_persisted_monitor_restores(page)
 
-    # --- 2. every tab renders when selected -----------------------------------------
     open_dialog(page)
     settle_panel(page)
     click_forced(page.locator('[data-testid="settings-tab-about"]'), timeout = 15000)
@@ -577,11 +554,9 @@ def run(page) -> None:
             )
     report["steps"].append("all-tabs-render")
 
-    # --- 3. every lan address has actions bound to that address ----------------------
     run_lan_address_actions(page)
 
-    page.evaluate("() => window.__settingsSmoke.close()")
-    page.wait_for_timeout(300)
+    close_dialog(page)
     for tab in ("voice", "api-keys", "data", "about", "connections"):
         open_dialog(page, tab)
         state = page.evaluate("() => window.__settingsSmoke.state()")
@@ -598,12 +573,9 @@ def run(page) -> None:
             )
         else:
             log(f"deep-open {tab}: matches the clicked-to panel")
-        page.evaluate("() => window.__settingsSmoke.close()")
-        page.wait_for_timeout(200)
+        close_dialog(page)
     report["steps"].append("deep-open")
 
-    # --- 5. search, then jump to a result and confirm the scroll target flashed ------
-    # A real setting well down a long panel, so a jump that never happens shows in scrollTop.
     target_tab = "general"
     target_label = report["tabs"][target_tab]["settled"]["labels"][-1]
     query = target_label.split()[0]
@@ -611,7 +583,12 @@ def run(page) -> None:
     settle_panel(page)
     search = page.locator('div[role="dialog"] aside input').first
     search.fill(query)
-    page.wait_for_timeout(400)
+    until(
+        page,
+        """label => [...document.querySelectorAll('div[role="dialog"] aside button:not([data-testid])')]
+          .some(b => b.innerText.trim() === label)""",
+        arg = target_label,
+    )
     entries = page.locator('div[role="dialog"] aside button:not([data-testid])')
     texts = [entries.nth(i).inner_text().strip() for i in range(entries.count())]
     report["search"] = {"query": query, "target_label": target_label, "result_texts": texts}
@@ -712,8 +689,7 @@ def main() -> int:
                         raise
                     time.sleep(2)
             page.wait_for_function("() => !!window.__settingsSmoke", timeout = 120000)
-            # Vite dev re-optimizes deps on first sight and full-reloads; settle, then reload once for a stable dep
-            # graph.
+            # Vite re-optimizes deps on first sight and full-reloads; settle, then reload once.
             page.wait_for_timeout(4000)
             page.reload(wait_until = "domcontentloaded")
             page.wait_for_function("() => !!window.__settingsSmoke", timeout = 120000)
@@ -734,7 +710,6 @@ def main() -> int:
                     fail(f"error boundary tripped: {report['error_boundary']}")
             browser.close()
     except Exception as exc:
-        # A cold-start dev server can fail to serve a module before anything is under test.
         report["aborted"] = f"{type(exc).__name__}: {exc}"
         fail(f"harness aborted: {report['aborted'].splitlines()[0]}")
         write_report()

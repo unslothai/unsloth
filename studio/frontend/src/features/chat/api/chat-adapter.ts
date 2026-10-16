@@ -52,6 +52,9 @@ import { resolveSpeculativeType } from "@/lib/speculative-modes";
 
 import { getSkillsSnapshot, settleSkillsForText } from "./skills-api";
 
+const skillsForTools = () =>
+  useSkillsSwitchStore.getState().on === false ? [] : getSkillsSnapshot().skills;
+
 function messageText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -73,6 +76,7 @@ function userTexts(
 }
 import { endBrowserAgentRun } from "@/features/browser/agent/agent-store";
 import { browserAgentToolsForTurn } from "@/features/browser/agent/tools";
+import { shownBrowserChat } from "@/features/browser/panel-availability";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
   IMAGE_SENTINEL_TOOLS,
@@ -262,6 +266,7 @@ import {
 } from "../provider-capabilities";
 import { selectCodeToolNames } from "./code-tool-placement";
 import { skillToolNames } from "./skill-tools";
+import { useSkillsSwitchStore } from "../stores/skills-switch-store";
 import { ragScopeContextLength } from "./rag-context-length";
 import {
   type PendingImageEditReference,
@@ -2303,7 +2308,7 @@ export async function buildLocalTokenCountExtras(
   // re-fetch for every counted user turn so skills created since page load match request pricing.
   await settleSkillsForText(userTexts(messages).join("\n"));
   const skillTools = skillToolNames(
-    getSkillsSnapshot().skills,
+    skillsForTools(),
     codeToolsEnabled,
     userTexts(messages),
   );
@@ -3515,13 +3520,14 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     speculative_type?: string | null;
     spec_draft_n_max?: number | null;
     n_parallel?: number | null;
+    load_in_4bit?: boolean;
   }): Promise<boolean> {
     // Before the POST, so an abort costs nothing: no request was sent.
     options?.abortSignal?.throwIfAborted();
     const validation = await validateModel({
       ...payload,
       hf_token: hfToken,
-      load_in_4bit: true,
+      load_in_4bit: payload.load_in_4bit ?? true,
       trust_remote_code: trustRemoteCode,
     }).catch((error: unknown) => {
       // A rejection is a spent /validate that never reaches loadAttempts, so nothing else bounds it.
@@ -3747,6 +3753,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         max_seq_length: fitMaxSeqLength,
         is_lora: false,
         gguf_variant: candidate.ggufVariant,
+        load_in_4bit: config.loadIn4bit !== false,
         cache_type_kv: config.kvCacheDtype,
         tensor_parallel: effectiveTensorParallel,
         disable_vision: effectiveDisableVision,
@@ -3802,7 +3809,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       model_path: modelPath,
       hf_token: hfToken,
       max_seq_length: fitMaxSeqLength,
-      load_in_4bit: true,
+      load_in_4bit: config.loadIn4bit !== false,
       is_lora: false,
       gguf_variant: candidate.ggufVariant,
       trust_remote_code: trustRemoteCode,
@@ -5634,6 +5641,12 @@ export function createOpenAIStreamAdapter(
       );
 
       const threadKey = resolvedThreadId || "__default";
+      // A new chat's browser is the one on screen as it sends; a switch mid-run must not move it.
+      const browserChat = options.pairId
+        ? `compare:${options.pairId}`
+        : threadKey === "__default"
+          ? shownBrowserChat()
+          : undefined;
       // A first turn files its handles under "__default" and autosave re-keys them mid-run, so resolve per use.
       const liveThreadKey = (owner: () => void) =>
         threadKey === "__default"
@@ -6679,7 +6692,7 @@ export function createOpenAIStreamAdapter(
             await settleSkillsForText(userTexts(outboundMessages).join("\n"));
           }
           const skillTools = skillToolNames(
-            getSkillsSnapshot().skills,
+            skillsForTools(),
             codeToolsEnabled,
             userTexts(outboundMessages),
           );
@@ -7563,9 +7576,11 @@ export function createOpenAIStreamAdapter(
                       if (action) {
                         void runBrowserAction(action, {
                           runKey: cancelId,
+                          chat: browserChat,
                           // Resolved per action: a first turn is re-keyed from "__default" to its id.
                           scope: liveThreadKey(serverCancel),
                           userText,
+                          fullAccess: bypassPermissions,
                           signal: runSignal,
                         });
                       }

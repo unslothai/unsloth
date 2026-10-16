@@ -5,6 +5,7 @@ import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-a
 import { readImageModel, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
 import {
+  type DragEvent,
   type ReactNode,
   type SetStateAction,
   useCallback,
@@ -33,6 +34,11 @@ import { MediaViewer } from "@/components/media-viewer";
 import { shortPrompt } from "@/lib/prompt-text";
 
 import { ImageDropzone } from "@/components/image-dropzone";
+import {
+  readNativeAttachmentFile,
+  registerNativeAttachmentPath,
+  useNativeDropTarget,
+} from "@/features/native-intents";
 import { useImageCrop } from "@/hooks/use-image-crop";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildImagesTourSteps } from "./tour";
@@ -41,6 +47,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -96,6 +103,7 @@ import {
 } from "@/hooks/use-host-class";
 import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
 import type {
+  ExternalModelOption,
   ModelOption,
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
@@ -145,8 +153,15 @@ import {
   recipeWorkflowLabel,
   type WorkflowId,
 } from "./workflows";
-import { ParamSlider } from "@/features/chat";
+import {
+  ParamSlider,
+  buildExternalModelId,
+  isDecisionConnection,
+  parseExternalModelId,
+  useExternalProvidersStore,
+} from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
+import { cancelConnectionImageGeneration } from "./connection-cancel";
 import {
   type ImageGenerationPresetParams,
   MediaGenerationPresetControl,
@@ -265,6 +280,19 @@ import {
   shouldReportGenerateError,
   stopButtonLabel,
 } from "./lib/generation-stop";
+import { drawInfoStamp, infoStampText } from "./lib/info-stamp";
+import {
+  copyPngTextChunks,
+  importedRecipe,
+  newerRecipeSchema,
+  pngRecipe,
+  readEmbeddedRecipe,
+  recipeSettings,
+  unknownRecipeKeys,
+  withJpegExif,
+  withWebpExif,
+} from "./lib/image-metadata";
+import { useLibrarySettingsStore } from "@/features/library/settings-store";
 import {
   ALLOW_OVERSIZED_HINT,
   ALLOW_OVERSIZED_LABEL,
@@ -282,6 +310,7 @@ import {
   type SamplerChoice,
   samplerRecipeLabel,
   samplerRequestFields,
+  SAMPLER_LABELS,
   SCHEDULE_LABELS,
   withSamplerChoice,
 } from "./lib/sampler-choice";
@@ -333,6 +362,10 @@ function useImageModels(
 // support; null = always. Each conditioned workflow names the images it consumed for the restore
 // toast, since a recipe keeps the scalar settings but not the uploads. Keys are the backend's own
 // workflow strings; txt2img is absent because it restores completely.
+// Own keys only: an imported id like "constructor" must not read Object.prototype.
+const labelOf = (labels: Record<string, string>, id: string) =>
+  Object.hasOwn(labels, id) ? labels[id] : id;
+
 const CONDITIONED_WORKFLOW_INPUTS: Record<string, string> = {
   img2img: "the source image",
   inpaint: "the source image and mask",
@@ -521,11 +554,14 @@ function exportFilename(image: GalleryImage, format: ImageExportFormat = "png"):
   return `Unsloth_${stamp}_${image.seed}${suffix}.${ext}`;
 }
 
-// PNG saves the stored bytes verbatim, keeping the embedded recipe; JPEG / WebP re-encode
-// client-side, JPEG flattened onto white.
-async function reencodeImage(
+// Re-encoded client-side (JPEG flattened onto white), with the info stamp when it is on. Every
+// format carries the stored recipe: PNG keeps its text chunks, JPEG / WebP get it as EXIF.
+async function encodeExport(
   src: string,
-  format: Exclude<ImageExportFormat, "png">,
+  original: Uint8Array,
+  image: GalleryImage,
+  format: ImageExportFormat,
+  stamp: boolean,
 ): Promise<Blob> {
   const el = new Image();
   el.decoding = "async";
@@ -543,6 +579,9 @@ async function reencodeImage(
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
   ctx.drawImage(el, 0, 0);
+  if (stamp) {
+    drawInfoStamp(ctx, canvas.width, canvas.height, infoStampText(image));
+  }
   const blob = await new Promise<Blob | null>((resolve) =>
     canvas.toBlob(resolve, `image/${format}`, 0.95),
   );
@@ -554,39 +593,54 @@ async function reencodeImage(
     // failed conversion and use a matching .png name.
     throw new Error(`${format} encoding is unavailable`);
   }
-  return blob;
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const recipe = pngRecipe(original);
+  const out =
+    format === "png"
+      ? copyPngTextChunks(original, bytes)
+      : format === "jpeg"
+        ? withJpegExif(bytes, recipe)
+        : withWebpExif(bytes, recipe, canvas.width, canvas.height);
+  return new Blob([out], { type: `image/${format}` });
 }
 
 async function downloadImage(
-  src: string,
   image: GalleryImage,
   format: ImageExportFormat = "png",
+  src?: string,
 ) {
-  let outputFormat = format;
-  let outputBlob: Blob | null = null;
-
-  if (format !== "png") {
-    try {
-      outputBlob = await reencodeImage(src, format);
-    } catch {
-      // Conversion failed, so preserve the original PNG instead.
-      outputFormat = "png";
-      outputBlob = null;
-    }
-  }
-
-  const filename = exportFilename(image, outputFormat);
+  const stamp = useLibrarySettingsStore.getState().imageInfoStamp;
+  let ownedUrl: string | null = null;
   try {
-    if (outputBlob) {
-      await downloadFile(outputBlob, filename, outputBlob.type);
-    } else if (isTauri) {
-      // WebKit can display the cached object URL but fail to fetch it again, so re-fetch the
-      // authenticated original for the native save.
-      const originalBlob = await fetchGalleryBlob(image.url);
-      await downloadFile(originalBlob, filename, originalBlob.type);
+    let output: Blob;
+    let outputFormat = format;
+    if (format === "png" && !stamp) {
+      // The stored bytes verbatim. WebKit can display the cached object URL but fail to fetch it
+      // again, so the native save re-fetches the authenticated original.
+      if (src && !isTauri) {
+        const filename = exportFilename(image, "png");
+        await downloadUrl(src, filename);
+        return;
+      }
+      output = await fetchGalleryBlob(image.url);
     } else {
-      await downloadUrl(src, filename);
+      const original = await fetchGalleryBlob(image.url);
+      const source = src ?? (ownedUrl = URL.createObjectURL(original));
+      try {
+        output = await encodeExport(
+          source,
+          new Uint8Array(await original.arrayBuffer()),
+          image,
+          format,
+          stamp,
+        );
+      } catch {
+        outputFormat = "png";
+        output = original;
+      }
     }
+    const filename = exportFilename(image, outputFormat);
+    await downloadFile(output, filename, output.type || "image/png");
     if (isTauri) {
       toast.success("Image saved", { description: filename });
     }
@@ -597,6 +651,10 @@ async function downloadImage(
     toast.error("Could not save image", {
       description: error instanceof Error ? error.message : undefined,
     });
+  } finally {
+    if (ownedUrl) {
+      URL.revokeObjectURL(ownedUrl);
+    }
   }
 }
 
@@ -720,6 +778,7 @@ function loadToastArgs(
 }
 
 const NO_SAMPLERS: DiffusionSamplerOption[] = [];
+const IMAGE_CONNECTION_TYPES = new Set(["custom", "vllm", "llama_cpp", "lemonade", "ollama"]);
 
 const IDLE_PROGRESS: DiffusionLoadProgress = {
   phase: null,
@@ -1194,6 +1253,7 @@ function RecipePopover({
   useEffect(() => {
     if (!active) setOpen(false);
   }, [active]);
+  const viaConnection = image.model_kind === "connection";
   return (
     <Popover open={active && open} onOpenChange={(o) => setOpen(active && o)}>
       <PopoverTrigger asChild>
@@ -1290,15 +1350,15 @@ function RecipePopover({
             />
           ) : null}
           <RecipeRow label="Size" value={`${image.width} × ${image.height}`} />
-          <RecipeRow label="Steps" value={String(image.steps)} />
-          <RecipeRow label="Guidance" value={String(image.guidance)} />
+          {!viaConnection && <RecipeRow label="Steps" value={String(image.steps)} />}
+          {!viaConnection && <RecipeRow label="Guidance" value={String(image.guidance)} />}
           {samplerRecipeLabel(image.sampler, image.schedule_type) ? (
             <RecipeRow
               label="Sampler"
               value={samplerRecipeLabel(image.sampler, image.schedule_type) ?? ""}
             />
           ) : null}
-          <RecipeRow label="Seed" value={String(image.seed)} mono />
+          {!viaConnection && <RecipeRow label="Seed" value={String(image.seed)} mono />}
         </div>
         <div className="shrink-0 border-t border-border/60 px-3 py-2.5">
           <Button size="sm" className="w-full gap-1.5" onClick={() => onRestore(image)}>
@@ -1451,6 +1511,7 @@ export function ImagesPage({
 }) {
   const t = useT();
   const initialReadySent = useRef(false);
+  const imageInfoStamp = useLibrarySettingsStore((state) => state.imageInfoStamp);
   const [rememberedModel, setRememberedModel] = useState(readImageModel);
   const pendingRecalledGeneration = useRef<{ model: RememberedImageModel; load: number; workflow: WorkflowId; allowOversized?: boolean } | null>(null);
   const { isMobile, pinned } = useSidebar();
@@ -1459,6 +1520,34 @@ export function ImagesPage({
   const nvfp4Diffusion = useNvfp4Diffusion();
   const nvfp4DiffusionKnown = useNvfp4DiffusionKnown();
   const imageModels = useImageModels(hostClass, denseQuantSchemes);
+  const connections = useExternalProvidersStore((s) => s.providers);
+  const connectionsEnabled = useExternalProvidersStore((s) => s.connectionsEnabled);
+  const externalModels = useMemo<ExternalModelOption[]>(
+    () =>
+      connectionsEnabled
+        ? connections
+            .filter((c) => IMAGE_CONNECTION_TYPES.has(c.providerType) && !isDecisionConnection(c))
+            .flatMap((c) =>
+              c.models.map((model) => ({
+                id: buildExternalModelId(c.id, model),
+                name: model,
+                providerId: c.id,
+                providerName: c.name,
+                providerType: c.providerType,
+              })),
+            )
+        : [],
+    [connections, connectionsEnabled],
+  );
+  const [externalModelId, setExternalModelId] = useState<string | null>(null);
+  const runTarget = useRef<"connection" | undefined>(undefined);
+  const external = useMemo(
+    () =>
+      externalModels.some((m) => m.id === externalModelId)
+        ? parseExternalModelId(externalModelId)
+        : null,
+    [externalModels, externalModelId],
+  );
   const { rootStyle: railRootStyle } = useMediaRailWidth("images");
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   // One prompt per workflow, starting from the last one generated with.
@@ -1668,7 +1757,8 @@ export function ImagesPage({
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
   const { familyOverride, setFamilyOverride, familySelect, opaqueKind, selectorModelId } = useFamilyOverride(status, status?.supported_families);
-  const conditioning = status?.loaded ? (status.conditioning ?? null) : null;
+  // A connection is not bound by the resident model's size grid or presets.
+  const conditioning = !external && status?.loaded ? (status.conditioning ?? null) : null;
   const sizeLimits = useMemo(() => sizeLimitsFrom(conditioning), [conditioning]);
   const unifiedEdit = Boolean(conditioning?.unified_edit);
   const referenceResolutions = conditioning?.reference_resolutions ?? [];
@@ -1896,7 +1986,7 @@ export function ImagesPage({
 
   // Refresh the LoRA picker when the loaded family changes, since a LoRA is family-specific.
   // Not on first load or unload (a restore can precede the load), so track it in a ref.
-  const loraCapable = Boolean(status?.loaded && status?.supports_lora);
+  const loraCapable = Boolean(!external && status?.loaded && status?.supports_lora);
   const prevLoraFamilyRef = useRef<string | null | undefined>(undefined);
   // Whether the load in flight baked the LoRA selection into the build (see handleLoad).
   const bakedLorasOnLoad = useRef(false);
@@ -1960,9 +2050,10 @@ export function ImagesPage({
   }, [loraCapable, residentBuildKey, status?.resolved, loras]);
 
   // Refresh the ControlNet options when the loaded family changes, and clear a stale selection.
-  const controlnetCapable = Boolean(status?.loaded && status?.supports_controlnet);
-  const negativeCapable = status?.supports_negative_prompt !== false;
-  const samplerOptions = (status?.loaded ? status.samplers : null) ?? NO_SAMPLERS;
+  const controlnetSupported = Boolean(status?.loaded && status?.supports_controlnet);
+  const controlnetCapable = !external && controlnetSupported;
+  const negativeCapable = !external && status?.supports_negative_prompt !== false;
+  const samplerOptions = (!external && status?.loaded ? status.samplers : null) ?? NO_SAMPLERS;
   // The checkpoint, not residentDefaults: community SDXL files all share the SDXL base repo.
   const samplerModelKey = status?.loaded ? `${status.repo_id ?? ""}|${status.gguf_filename ?? ""}` : "";
   const samplerChoice = normalizeSamplerChoice(
@@ -1983,7 +2074,7 @@ export function ImagesPage({
     [samplerChoice, samplerModelKey, samplerOptions],
   );
   useEffect(() => {
-    if (!controlnetCapable) {
+    if (!controlnetSupported) {
       setAvailableControlNets([]);
       setControlnetId("");
       setControlImage(null);
@@ -2002,7 +2093,7 @@ export function ImagesPage({
     return () => {
       cancelled = true;
     };
-  }, [controlnetCapable, status?.family]);
+  }, [controlnetSupported, status?.family]);
 
   // The control types offered for the selected ControlNet: a union model advertises several.
   const controlTypeOptions = useMemo(() => {
@@ -2438,24 +2529,8 @@ export function ImagesPage({
     },
     [resyncWindow, loadGallery],
   );
-  // One-click download of the original PNG.
   const handleQuickDownload = useCallback(
-    async (image: GalleryImage) => {
-      const src = srcById[image.id];
-      if (src) {
-        await downloadImage(src, image, "png");
-        return;
-      }
-      try {
-        const blob = await fetchGalleryBlob(image.url);
-        await downloadFile(blob, exportFilename(image, "png"), blob.type);
-      } catch (error) {
-        if (isDownloadCancelled(error)) return;
-        toast.error("Could not save image", {
-          description: error instanceof Error ? error.message : undefined,
-        });
-      }
-    },
+    (image: GalleryImage) => downloadImage(image, "png", srcById[image.id]),
     [srcById],
   );
   const stripReorder = useStripReorder((id, afterId) => void handleMove(id, afterId));
@@ -2493,12 +2568,15 @@ export function ImagesPage({
   );
 
   const restoreSettings = useCallback((image: GalleryImage) => {
+    const viaConnection = image.model_kind === "connection";
     // Negative prompt only applies when guidance>0; do not restore a hidden value.
     const restoredNegative = image.guidance > 0 ? (image.negative_prompt ?? "") : "";
     setNegativePrompt(restoredNegative);
     if (restoredNegative) setNegativeOpen(true);
-    setSteps(image.steps);
-    setGuidance(image.guidance);
+    if (!viaConnection) {
+      setSteps(image.steps);
+      setGuidance(image.guidance);
+    }
     const restoredChoice = {
       sampler: image.sampler ?? DEFAULT_SAMPLER,
       scheduleType: image.schedule_type ?? AUTOMATIC_SCHEDULE,
@@ -2507,7 +2585,7 @@ export function ImagesPage({
     else setRestoredSampler(restoredChoice);
     // Restore from the BASE batch seed, not this image's derived seed, or a replay with batch_size
     // advances it again.
-    setSeed(String(image.batch_seed ?? image.seed));
+    if (!viaConnection) setSeed(String(image.batch_seed ?? image.seed));
     const restored = restorableSize(image.width, image.height, image.workflow, sizeLimits);
     setWidth(restored.width);
     setHeight(restored.height);
@@ -2570,6 +2648,144 @@ export function ImagesPage({
       toast.success("Settings restored to inputs", rescaled);
     }
   }, [changeSamplerChoice, samplerOptions.length, setPromptFor, setWorkflow, sizeLimits]);
+
+  // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
+  const importFileRef = useRef<HTMLInputElement>(null);
+  const importSettingsFromFile = useCallback(
+    async (file: File | Uint8Array) => {
+      let recipe = null;
+      try {
+        const bytes = file instanceof Uint8Array ? file : new Uint8Array(await file.arrayBuffer());
+        recipe = importedRecipe(readEmbeddedRecipe(bytes));
+      } catch {
+        recipe = null;
+      }
+      if (!recipe) {
+        toast.error("No generation settings found in this image", {
+          description: "Images saved by Unsloth, ComfyUI, or tools that write a parameters block can be loaded.",
+        });
+        return;
+      }
+      const settings = recipeSettings(recipe, { width, height, steps, guidance });
+      const localized = settings.localized_edit;
+      restoreSettings({
+        ...settings,
+        id: "",
+        url: "",
+        seed: settings.seed ?? 0,
+        batch_index: 0,
+        created_at: 0,
+        localized_edit:
+          localized === "annotate" || localized === "paint" || localized === "mask" ? localized : null,
+      });
+      if (settings.seed === null && settings.model_kind !== "connection") setSeed("");
+      const loaded = status?.display_repo_id ?? status?.repo_id ?? null;
+      const quant = typeof recipe.gguf_filename === "string" ? recipe.gguf_filename : null;
+      if (settings.model && settings.model !== loaded) {
+        toast(`Made with ${settings.model}${quant ? ` (${quant})` : ""}`, {
+          // Loading a model applies its own default steps and guidance.
+          description: "Load that model, then load settings from this image again to reproduce it.",
+        });
+      } else if (settings.model && status?.loaded) {
+        // Same model, another build: null on either side means dense / no quant.
+        const differs = (["gguf_filename", "transformer_quant", "text_encoder_quant", "transformer_cache", "attention_backend"] as const).filter(
+          (key) =>
+            Object.hasOwn(recipe, key) &&
+            status[key] !== undefined &&
+            (recipe[key] ?? null) !== (status[key] ?? null),
+        );
+        if (differs.length > 0) {
+          toast(
+            `Made with ${differs.map((key) => (key === "gguf_filename" ? String(recipe[key] ?? "the dense model") : `${key.replace(/_/g, " ")} ${String(recipe[key] ?? "off")}`)).join(", ")}`,
+            { description: "Reload the model with that build to reproduce this image exactly." },
+          );
+        }
+      }
+      const notApplied = unknownRecipeKeys(recipe);
+      const baked = Array.isArray(recipe.baked_loras)
+        ? recipe.baked_loras.filter((x): x is string => typeof x === "string")
+        : [];
+      if (baked.length > 0) notApplied.unshift(`baked LoRAs ${baked.join(", ")} (load-time)`);
+      if (typeof recipe.controlnet === "string" && recipe.controlnet) {
+        notApplied.unshift(`ControlNet ${recipe.controlnet}`);
+      }
+      if (status?.loaded && status.supports_lora === false && settings.loras.length > 0) {
+        notApplied.unshift("LoRAs");
+      }
+      if (status?.supports_negative_prompt === false && settings.negative_prompt && settings.guidance > 0) {
+        notApplied.unshift("negative prompt");
+      }
+      if (status?.loaded && samplerOptions.length === 0) {
+        if (settings.schedule_type && settings.schedule_type !== AUTOMATIC_SCHEDULE) {
+          notApplied.unshift(`schedule ${labelOf(SCHEDULE_LABELS, settings.schedule_type)}`);
+        }
+        if (settings.sampler && settings.sampler !== DEFAULT_SAMPLER) {
+          notApplied.unshift(`sampler ${labelOf(SAMPLER_LABELS, settings.sampler)}`);
+        }
+      } else if (samplerOptions.length > 0) {
+        const offered = samplerOptions.find((o) => o.id === (settings.sampler ?? DEFAULT_SAMPLER));
+        if (!offered) {
+          notApplied.unshift(`sampler ${labelOf(SAMPLER_LABELS, settings.sampler ?? DEFAULT_SAMPLER)}`);
+        } else if (
+          settings.schedule_type &&
+          !offered.schedule_types.includes(settings.schedule_type)
+        ) {
+          notApplied.unshift(`schedule ${labelOf(SCHEDULE_LABELS, settings.schedule_type)}`);
+        }
+      }
+      if (notApplied.length > 0 || newerRecipeSchema(recipe)) {
+        toast.warning("Some settings in this image were not applied", {
+          description:
+            (notApplied.length > 0 ? `Not applied: ${notApplied.join(", ")}. ` : "") +
+            (newerRecipeSchema(recipe)
+              ? "It was made with a newer Unsloth; update to use every setting."
+              : "This model or build does not support them."),
+        });
+      }
+    },
+    [restoreSettings, width, height, steps, guidance, status, samplerOptions],
+  );
+  // Desktop: Tauri delivers OS drops as paths and suppresses the DOM drop event.
+  const importNativePath = useCallback(
+    async (path: string | undefined) => {
+      if (!path) return;
+      if (!["png", "jpg", "jpeg", "webp"].includes(path.split(".").pop()?.toLowerCase() ?? "")) {
+        toast.error("Drop a PNG, JPEG or WebP image to load its settings");
+        return;
+      }
+      try {
+        const intent = await registerNativeAttachmentPath(path);
+        const file = await readNativeAttachmentFile(intent.path.token);
+        await importSettingsFromFile(Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0)));
+      } catch (error) {
+        toast.error("Could not read the image", {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+    [importSettingsFromFile],
+  );
+  const previewDropRef = useNativeDropTarget({ onDrop: (paths) => void importNativePath(paths[0]) });
+  const onImportDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
+    if (event.dataTransfer.types.includes("Files")) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+    }
+  }, []);
+  const onImportDrop = useCallback(
+    (event: DragEvent<HTMLDivElement>) => {
+      if (!event.dataTransfer.types.includes("Files")) return;
+      // Claimed even for a file this cannot read, or the browser navigates away to it.
+      event.preventDefault();
+      const file = Array.from(event.dataTransfer.files).find((f) => f.type.startsWith("image/"));
+      if (file) {
+        void importSettingsFromFile(file);
+      } else {
+        toast.error("Drop a PNG, JPEG or WebP image to load its settings");
+      }
+    },
+    [importSettingsFromFile],
+  );
 
   // A locked ratio keeps the paired dimension in step; "custom" frees both, Flip swaps W/H. ratioHW is h/w for [a,b].
   const ratioHW = (a: number, b: number) => (portrait ? a / b : b / a);
@@ -2807,6 +3023,7 @@ export function ImagesPage({
       pollInFlight = true;
       try {
         const p = await getGenerateProgress();
+        if (p.active) runTarget.current = p.target ?? undefined;
         if (!p.active) {
           if (genPollTimer.current) clearInterval(genPollTimer.current);
           genPollTimer.current = null;
@@ -2859,6 +3076,7 @@ export function ImagesPage({
       try {
         const g = await getGenerateProgress();
         if (g.active) {
+          runTarget.current = g.target ?? undefined;
           setBusy("generating");
           setGenStep(g);
           resumeGeneratePoll();
@@ -3039,6 +3257,7 @@ export function ImagesPage({
       // Reuse the pick toast when loading starts.
       pickToastId?: string,
     ): Promise<boolean> => {
+      setExternalModelId(null);
       // Cancel any prior poll loop so two cannot run at once.
       if (pollTimer.current) clearTimeout(pollTimer.current);
       // Read BEFORE the start request goes out: a Cancel pressed while it is in flight sends an
@@ -3582,7 +3801,10 @@ export function ImagesPage({
     // already staging with its claim, or resumePendingLoad drops that load once its files arrive.
     const downloadOnlyPick = modelSelectionAction === "download";
     const token = downloadOnlyPick ? undefined : pickGuard.claim();
-    if (!downloadOnlyPick) setFamilyOverride("auto");
+    if (!downloadOnlyPick) {
+      setFamilyOverride("auto");
+      setExternalModelId(null);
+    }
     void navigateSelf({ to: "/images", search: {}, replace: true });
     // A label means a GGUF repo whatever the catalog says, and is not loadable, so resolve it
     // rather than routing it as a filename.
@@ -3696,6 +3918,19 @@ export function ImagesPage({
       // with a 409. A download-only pick submits no load, so that cannot happen, and the selector
       // stays interactive during a generation: refusing it there was a silent dead click.
       if (busy !== null && !downloadOnlyPick) return;
+      if (meta.source === "external") {
+        if (busy !== null) return;
+        if (quantRevert.current && quantRevert.current === stagedQuantRevert.current) {
+          revertPick(quantRevert.current);
+          quantRevert.current = null;
+        }
+        pickGuard.cancel();
+        pickToast.dismissAll();
+        beginPick();
+        setExternalModelId(id);
+        return;
+      }
+      if (!downloadOnlyPick) setExternalModelId(null);
       if (!downloadOnlyPick) beginPick();
       // This pick owns the page now, so one still awaiting a listing or a plan drops out. Before any
       // branch, since staging never sets `busy`.
@@ -3883,6 +4118,7 @@ export function ImagesPage({
       loadGgufRepoPick,
       loadOrStage,
       pickGuard,
+      pickToast,
       quant,
       revertPick,
     ],
@@ -3906,6 +4142,7 @@ export function ImagesPage({
       // The deploy owns the page now: a resolving pick or a staged download would load over the base it is about to.
       pickGuard.cancel();
       pickToast.dismissAll();
+      setExternalModelId(null);
       pendingDeploy.current = { loraId: stem, family: args.family };
       if (args.trigger.trim()) setPrompt(args.trigger.trim());
       setPageMode("create");
@@ -4375,7 +4612,7 @@ export function ImagesPage({
     }
     // Resolve a base seed up front, so each sequential image gets a distinct, reproducible seed (base + i).
     let baseSeed: number;
-    if (seed.trim()) {
+    if (seed.trim() && !external) {
       const n = Number(seed);
       if (!Number.isInteger(n) || n < 0 || n > Number.MAX_SAFE_INTEGER) {
         toast.error("Seed must be a non-negative integer");
@@ -4422,6 +4659,7 @@ export function ImagesPage({
     cancelAbort.current?.abort();
     cancelAbort.current = null;
     runToken.current += 1;
+    runTarget.current = external ? "connection" : undefined;
     // Poll the backend's per-step progress across the whole run. A named poll body also serves the
     // visibilitychange listener, so a throttled tab catches up when visible.
     let pollInFlight = false;
@@ -4515,6 +4753,7 @@ export function ImagesPage({
                     strength: controlStrength,
                   }
                 : undefined,
+            ...(external && { provider_id: external.providerId, model: external.modelId }),
           });
         } catch (err) {
           // The POST response was lost while the backend kept generating (the secure-mode tunnel caps
@@ -4581,7 +4820,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [allowOversized, livePreview, prompt, negativePrompt, negativeCapable, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [external, allowOversized, livePreview, prompt, negativePrompt, negativeCapable, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -4596,7 +4835,9 @@ export function ImagesPage({
     const abort = new AbortController();
     cancelAbort.current = abort;
     try {
-      const { cancelled } = await cancelDiffusionGeneration(abort.signal);
+      const { cancelled } = runTarget.current
+        ? await cancelConnectionImageGeneration(abort.signal)
+        : await cancelDiffusionGeneration(abort.signal);
       cancelAcked.current = Boolean(cancelled);
       if (!cancelled) setStopping(false);
     } catch {
@@ -4616,6 +4857,10 @@ export function ImagesPage({
 
   const handleGenerateWithRecall = useCallback(async () => {
     if (busy !== null || !imagePresets.hydrated) return;
+    if (external) {
+      await handleGenerate();
+      return;
+    }
     if (status?.loaded) {
       const kind = status.model_kind;
       if (
@@ -4672,6 +4917,7 @@ export function ImagesPage({
   }, [
     busy,
     currentLoadAdvanced,
+    external,
     handleGenerate,
     handleLoad,
     imagePresets.hydrated,
@@ -4721,6 +4967,10 @@ export function ImagesPage({
   // Publish what the loaded model can do, so the sidebar submenu dims the rest. null while
   // nothing is loaded, which leaves every workflow open to set up first.
   useEffect(() => {
+    if (external) {
+      setSupported(["create"]);
+      return;
+    }
     if (!status?.loaded) {
       setSupported(null);
       return;
@@ -4731,7 +4981,7 @@ export function ImagesPage({
         wf.includes(t.requires === null ? "txt2img" : t.requires),
       ).map((t) => t.id),
     );
-  }, [status?.loaded, status?.workflows, setSupported]);
+  }, [external, status?.loaded, status?.workflows, setSupported]);
 
   // Keep the active workflow valid for the loaded model: snap to the first supported one when capabilities change.
   useEffect(() => {
@@ -4977,7 +5227,8 @@ export function ImagesPage({
               <ModelSelector
                 triggerDataTour="images-model"
                 models={imageModels}
-                value={selectorModelId}
+                externalModels={externalModels}
+                value={(external && externalModelId) || selectorModelId}
                 loadedModelIdOverride={selectorModelId}
                 activeGgufVariant={quant}
                 onValueChange={handleModelSelect}
@@ -4989,7 +5240,7 @@ export function ImagesPage({
                 task={IMAGE_GEN_TASKS}
                 catalog={IMAGE_CATALOG}
                 opaqueKind={opaqueKind}
-                hubCapability="diffusion"
+                hubCapability="image-gen"
                 placeholder="Select image model"
                 open={active && selectorOpen}
                 onOpenChange={(o) => setSelectorOpen(active && o)}
@@ -5102,6 +5353,7 @@ export function ImagesPage({
                   onSelect={imagePresets.selectPreset}
                   onSave={imagePresets.savePreset}
                   onDelete={imagePresets.deletePreset}
+                  onImportFromImage={() => importFileRef.current?.click()}
                 />
               )}
             </div>
@@ -5691,26 +5943,30 @@ export function ImagesPage({
             {!unifiedEditActive && sizeControls}
 
             {/* First of the one-line sliders, so it takes a bigger break than the gap gives. */}
-            <div className="pt-2">
-              <SliderField
-                label="Steps"
-                hint="Number of denoising steps. Start with the selected model's default; more steps take longer and may not improve quality."
-                value={steps}
-                min={1}
-                max={50}
-                step={1}
-                onChange={setSteps}
-              />
-            </div>
-            <SliderField
-              label="Guidance"
-              hint="Controls how strongly the model follows the prompt. Start with the selected model's default; distilled models may require low or zero guidance."
-              value={guidance}
-              min={0}
-              max={15}
-              step={0.5}
-              onChange={setGuidance}
-            />
+            {!external && (
+              <>
+                <div className="pt-2">
+                  <SliderField
+                    label="Steps"
+                    hint="Number of denoising steps. Start with the selected model's default; more steps take longer and may not improve quality."
+                    value={steps}
+                    min={1}
+                    max={50}
+                    step={1}
+                    onChange={setSteps}
+                  />
+                </div>
+                <SliderField
+                  label="Guidance"
+                  hint="Controls how strongly the model follows the prompt. Start with the selected model's default; distilled models may require low or zero guidance."
+                  value={guidance}
+                  min={0}
+                  max={15}
+                  step={0.5}
+                  onChange={setGuidance}
+                />
+              </>
+            )}
             <SliderField
               label="Batch size"
               hint="How many images to make at once. Faster than running them one by one, but uses more VRAM. They share a seed but each one is different."
@@ -5773,21 +6029,25 @@ export function ImagesPage({
                 </div>
               </Field>
             )}
-            <Field
-              label="Seed"
-              hint="Leave empty for a fresh random seed each run."
-              className="pt-2"
-            >
-              <Input
-                placeholder="Random if empty"
-                value={seed}
-                onChange={(e) => setSeed(e.target.value)}
-              />
-            </Field>
+            {!external && (
+              <>
+                <Field
+                  label="Seed"
+                  hint="Leave empty for a fresh random seed each run."
+                  className="pt-2"
+                >
+                  <Input
+                    placeholder="Random if empty"
+                    value={seed}
+                    onChange={(e) => setSeed(e.target.value)}
+                  />
+                </Field>
 
-            <AdvancedDisclosure open={advancedOpen} onOpenChange={setAdvancedOpen}>
-              {advancedControls}
-            </AdvancedDisclosure>
+                <AdvancedDisclosure open={advancedOpen} onOpenChange={setAdvancedOpen}>
+                  {advancedControls}
+                </AdvancedDisclosure>
+              </>
+            )}
 
           </div>
           {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
@@ -5808,11 +6068,11 @@ export function ImagesPage({
                 <Button
                   className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   onClick={handleGenerateWithRecall}
-                  disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel)}
+                  disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel && !external)}
                 >
                   Generate
                 </Button>
-                {status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
+                {!external && status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       <Button
@@ -5834,9 +6094,24 @@ export function ImagesPage({
         </div>
 
         <div
+          ref={previewDropRef}
           data-tour="images-preview"
           className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0"
+          onDragOver={onImportDragOver}
+          onDrop={onImportDrop}
         >
+          <input
+            ref={importFileRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            className="hidden"
+            data-testid="images-import-settings-input"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (file) void importSettingsFromFile(file);
+            }}
+          />
           {viewerImage && viewerSrc && (
             <MediaViewer
               open={true}
@@ -5930,19 +6205,27 @@ export function ImagesPage({
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem
-                        onClick={() => void downloadImage(selectedSrc, selected, "png")}
+                        onClick={() => void downloadImage(selected, "png", selectedSrc)}
                       >
-                        PNG (original, keeps recipe)
+                        PNG (lossless)
                       </DropdownMenuItem>
                       <DropdownMenuItem
-                        onClick={() => void downloadImage(selectedSrc, selected, "jpeg")}
+                        onClick={() => void downloadImage(selected, "jpeg", selectedSrc)}
                       >
                         JPEG (smaller)
                       </DropdownMenuItem>
                       <DropdownMenuItem
-                        onClick={() => void downloadImage(selectedSrc, selected, "webp")}
+                        onClick={() => void downloadImage(selected, "webp", selectedSrc)}
                       >
                         WebP
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        onClick={() => useSettingsDialogStore.getState().openDialog("library")}
+                        className="justify-between gap-4 text-muted-foreground"
+                      >
+                        Info stamp
+                        <span className="text-xs">{imageInfoStamp ? "On" : "Off"}</span>
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
@@ -6007,7 +6290,7 @@ export function ImagesPage({
                 {/* Same icon as the Images nav item. */}
                 <HugeiconsIcon icon={Image03Icon} className="size-12" strokeWidth={1.5} />
                 <p className="text-sm">
-                  {status?.loaded
+                  {status?.loaded || external
                     ? "Enter a prompt and hit Generate."
                     : "Select a diffusion model to load"}
                 </p>

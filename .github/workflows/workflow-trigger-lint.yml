@@ -30,7 +30,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -72,8 +72,12 @@ jobs:
         # to when `pytest tests/security` lived there. That suite exercises
         # scripts/lint_workflow_triggers.py as a SUBPROCESS and asserts on its exit
         # semantics, so a pytest or PyYAML that resolves differently changes what it is
-        # asserting against. xdist and vermin stay unpinned: neither is under test.
-        run: pip install pyyaml==6.0.2 pytest==9.0.3 pytest-xdist vermin
+        # asserting against. xdist stays unpinned: it is not under test. vermin is
+        # pinned because its answer IS the floor gate's verdict: 1.9.0 (2026-10-15)
+        # reads a starred element in a tuple inside a comprehension, valid since 3.5
+        # (`[p for p in (a, *rest)]`), as PEP 798 and fails 79 backend files at 3.15.
+        # Move the pin deliberately, after the floor step passes on main with it.
+        run: pip install pyyaml==6.0.2 pytest==9.0.3 pytest-xdist vermin==1.8.0
 
       - name: Lint workflow triggers + cache keys
         run: python3 scripts/lint_workflow_triggers.py
@@ -129,6 +133,7 @@ jobs:
         run: |
           python3 -m pytest -q -n 4 \
             tests/studio/test_absorbed_lanes_still_run.py \
+            tests/studio/test_lint_ci_scans_committed_files.py \
             tests/studio/test_agent_guides_verdicts.py \
             tests/studio/test_apt_steps_are_bounded.py \
             tests/studio/test_backend_ci_matrix.py \
@@ -176,6 +181,7 @@ jobs:
             tests/studio/test_smoke_workflows_share_one_script.py \
             tests/studio/test_stt_model_search_locator_contract.py \
             tests/studio/test_studio_smokes_do_not_trigger_on_the_training_library.py \
+            tests/studio/test_studiobench_ci_update_checks_off.py \
             tests/studio/test_uv_cache_discipline.py \
             tests/studio/test_version_compat_bundle.py \
             tests/studio/test_windows_small_checks_stay_on_their_image.py \

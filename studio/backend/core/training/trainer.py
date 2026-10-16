@@ -86,6 +86,11 @@ from utils.datasets.cells import csv_as_text_kwargs
 from utils.datasets.chat_templates import get_training_chat_template
 from utils.datasets.completion_masking import apply_completion_masking
 from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
+from utils.datasets.pretokenized import (
+    PRETOKENIZED_FORMAT,
+    has_custom_labels,
+    prepare_pretokenized_dataset,
+)
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
 from utils.paths import (
     dataset_files_in_dir,
@@ -547,6 +552,7 @@ class UnslothTrainer:
         self.is_training = False
         self.should_stop = False
         self.save_on_stop = True
+        self._early_stopping = None
         self.load_in_4bit = True
 
         self.is_cpt = False
@@ -1050,6 +1056,23 @@ class UnslothTrainer:
 
         return _ProgressCallback()
 
+    def _attach_early_stopping(self, training_args):
+        from core.training.early_stopping import attach_early_stopping
+        self._early_stopping = attach_early_stopping(
+            self.trainer,
+            training_args.get("early_stopping_patience"),
+            user_stopped = lambda: self.should_stop,
+        )
+
+    def _early_stopping_summary(self) -> str:
+        es = self._early_stopping
+        if es is None:
+            return ""
+        summary = f"Stopped early at step {es.stopped_at}. " if es.stopped_at is not None else ""
+        if es.restored:
+            summary += f"Kept the weights from step {es.best_step} (eval loss {es.best_loss:.4f}). "
+        return summary
+
     def _calculate_total_steps(self, num_samples, batch_size, grad_accum, num_epochs, max_steps):
         """Calculate total training steps from dataset size and training params."""
         if max_steps and max_steps > 0:
@@ -1129,7 +1152,9 @@ class UnslothTrainer:
             logger.info(f"\n{msg}. Model saved to {output_dir}\n")
             self._update_progress(
                 is_training = False,
-                status_message = f"Training stopped. Model saved to {output_dir}",
+                status_message = (
+                    f"Training stopped. {self._early_stopping_summary()}Model saved to {output_dir}"
+                ),
             )
         elif self.should_stop:
             msg = f"{label} training cancelled" if label else "Training cancelled"
@@ -1144,7 +1169,9 @@ class UnslothTrainer:
             self._update_progress(
                 is_training = False,
                 is_completed = True,
-                status_message = f"Training completed! Model saved to {output_dir}",
+                status_message = (
+                    f"Training completed! {self._early_stopping_summary()}Model saved to {output_dir}"
+                ),
             )
 
     def _cleanup_audio_artifacts(self):
@@ -1754,6 +1781,7 @@ class UnslothTrainer:
         use_rslora,
         use_loftq,
         use_dora,
+        random_state = 3407,
     ) -> bool:
         """LoRA for a text-diffusion model through its profile. Studio's default target list names
         autoregressive projections (LLaDA has none of o/gate/down_proj, and the MoE families must keep their
@@ -1802,7 +1830,7 @@ class UnslothTrainer:
             lora_dropout = lora_dropout,
             bias = "none",
             use_gradient_checkpointing = bool(use_gradient_checkpointing),
-            random_state = 3407,
+            random_state = random_state,
         )
         if modules_to_save:
             peft_kwargs["modules_to_save"] = modules_to_save
@@ -1832,6 +1860,7 @@ class UnslothTrainer:
         use_loftq: bool = False,
         use_dora: bool = False,
         modules_to_save: list = None,
+        random_state: int = 3407,
     ) -> bool:
         try:
             if self.model is None:
@@ -1899,6 +1928,7 @@ class UnslothTrainer:
                     use_rslora = use_rslora,
                     use_loftq = use_loftq,
                     use_dora = use_dora,
+                    random_state = random_state,
                 )
 
             # LoRA/QLoRA. "all-linear" is a PEFT keyword targeting every linear layer.
@@ -1960,7 +1990,7 @@ class UnslothTrainer:
                     lora_dropout = lora_dropout,
                     bias = "none",
                     use_gradient_checkpointing = use_gradient_checkpointing,
-                    random_state = 3407,
+                    random_state = random_state,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     **_loftq_peft_kwargs(use_loftq),
@@ -1992,7 +2022,7 @@ class UnslothTrainer:
                     lora_dropout = lora_dropout,
                     bias = "none",
                     use_gradient_checkpointing = use_gradient_checkpointing,
-                    random_state = 3407,
+                    random_state = random_state,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     **_loftq_peft_kwargs(use_loftq),
@@ -2012,7 +2042,7 @@ class UnslothTrainer:
                     lora_dropout = lora_dropout,
                     bias = "none",
                     use_gradient_checkpointing = use_gradient_checkpointing,
-                    random_state = 3407,
+                    random_state = random_state,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     **_loftq_peft_kwargs(use_loftq),
@@ -2037,7 +2067,7 @@ class UnslothTrainer:
                     lora_dropout = lora_dropout,
                     bias = "none",
                     use_gradient_checkpointing = use_gradient_checkpointing,
-                    random_state = 3407,
+                    random_state = random_state,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     **_loftq_peft_kwargs(use_loftq),
@@ -2058,7 +2088,7 @@ class UnslothTrainer:
                     lora_dropout = lora_dropout,
                     bias = "none",
                     use_gradient_checkpointing = use_gradient_checkpointing,
-                    random_state = 3407,
+                    random_state = random_state,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     **_loftq_peft_kwargs(use_loftq),
@@ -4485,6 +4515,7 @@ class UnslothTrainer:
                     trainer_kwargs["eval_dataset"] = eval_dataset
                 self.trainer = HFTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
+                self._attach_early_stopping(training_args)
                 # Unsloth publishes progress itself, so HF's stdout callbacks are pure duplication in a log that has
                 # no terminal; --verbose keeps them.
                 _drop_hf_stdout_callbacks(self.trainer)
@@ -4531,6 +4562,7 @@ class UnslothTrainer:
                     trainer_kwargs["eval_dataset"] = eval_dataset
                 self.trainer = HFTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
+                self._attach_early_stopping(training_args)
                 _drop_hf_stdout_callbacks(self.trainer)
 
                 batch_size = training_args.get("batch_size", 2)
@@ -4583,6 +4615,7 @@ class UnslothTrainer:
 
                 self.trainer = Seq2SeqTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
+                self._attach_early_stopping(training_args)
                 _drop_hf_stdout_callbacks(self.trainer)
 
                 batch_size = training_args.get("batch_size", 2)
@@ -4621,6 +4654,9 @@ class UnslothTrainer:
                 str(dataset.get("final_format", "")).lower() if isinstance(dataset, dict) else ""
             )
             raw_text_mode = dataset_final_format == "raw_text"
+            pretokenized_mode = dataset_final_format == PRETOKENIZED_FORMAT
+            # Without a labels column, "Train on responses only" can still mask prompts from input_ids.
+            user_labels = pretokenized_mode and has_custom_labels(dataset["dataset"])
             self.tokenizer = get_training_chat_template(
                 self.tokenizer, self.model_name, dataset_final_format
             )
@@ -4907,6 +4943,23 @@ class UnslothTrainer:
                 # Packed rows share one bidirectional attention window, so documents would see each other.
                 config_args["packing"] = False
                 logger.info("Text-diffusion model: sequence packing turned off\n")
+            if pretokenized_mode:
+                # Packing on TRL < 1.7 keeps only input_ids, silently replacing the user's labels.
+                if config_args.get("packing"):
+                    logger.info("Pre-tokenized dataset: sequence packing turned off\n")
+                config_args["packing"] = False
+                try:
+                    vocab_size = int(self.model.get_input_embeddings().num_embeddings)
+                except Exception:
+                    vocab_size = None
+                max_seq = training_args.get("max_seq_length", 2048)
+                dataset["dataset"] = prepare_pretokenized_dataset(
+                    dataset["dataset"], max_seq_length = max_seq, vocab_size = vocab_size
+                )
+                if eval_dataset is not None:
+                    eval_dataset = prepare_pretokenized_dataset(
+                        eval_dataset, max_seq_length = max_seq, vocab_size = vocab_size
+                    )
 
             # Plain-text single-pass runs tokenize in the DataLoader workers instead of a blocking .map(); everything
             # else stays eager.
@@ -5088,7 +5141,7 @@ class UnslothTrainer:
             is_cpt = training_args.get("is_cpt", False)
             train_on_responses_enabled = (
                 False
-                if (is_cpt or raw_text_mode or objective != "sft")
+                if (is_cpt or raw_text_mode or user_labels or objective != "sft")
                 else training_args.get("train_on_completions", False)
             )
 
@@ -5097,6 +5150,10 @@ class UnslothTrainer:
             elif raw_text_mode:
                 logger.info(
                     "Raw-text mode: skipping train_on_responses_only — training on all tokens\n"
+                )
+            elif user_labels:
+                logger.info(
+                    "Pre-tokenized dataset: its labels define the loss, no response masking\n"
                 )
 
             # Markers auto-detected from the chat template first, with the manual table as fallback; gpt-oss stays on
@@ -5186,6 +5243,7 @@ class UnslothTrainer:
                     logger.info("Training on full sequences (including prompts)\n")
 
             self.trainer.add_callback(self._create_progress_callback())
+            self._attach_early_stopping(training_args)
             # Unsloth publishes progress itself, so HF's stdout callbacks are pure duplication in a log that has no
             # terminal; --verbose keeps them.
             _drop_hf_stdout_callbacks(self.trainer)

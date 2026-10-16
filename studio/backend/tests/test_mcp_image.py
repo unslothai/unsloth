@@ -58,7 +58,6 @@ def mapped_server(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
-    monkeypatch.setattr(tools_mod, "_MCP_COMPACTED_WINDOWS", {})
     mcp_servers_db.create_server(
         id = "srv1",
         display_name = "Trace",
@@ -684,14 +683,15 @@ def test_every_local_exit_without_a_tool_loop_refuses_the_image():
         "_refuse_unused_mcp_image(_mcp_image, _catalog_names(_sf_tools_to_use) if _sf_use_tools else None)",
     ):
         assert guard in statements
-    # NPU, both speech models, audio input and the GGUF passthrough return before either loop.
+    # The NPU switch check, NPU, both speech models, audio input and the GGUF passthrough
+    # return before either loop.
     calls = [
         node
         for node in ast.walk(ast.parse(src))
         if isinstance(node, ast.Call)
         and getattr(node.func, "id", None) == "_refuse_unused_mcp_image"
     ]
-    assert len(calls) == 7
+    assert len(calls) == 8
     # The forced image approval parks the GGUF stream, so the slot must be tracked for reclaim.
     slot = [
         ast.unparse(node.value)
