@@ -8204,6 +8204,20 @@ _MUSE_SPARK_REASONING_EFFORT = {
 }
 
 
+# The arch "beam" template takes an int or minimal/low/medium/high/xhigh/max and
+# raise_exception()s on any other string, so the OpenAI "none" sentinel would fail the
+# render. It cannot turn reasoning off: "none" takes the smallest trained budget.
+_MINIMAL_FLOOR_REASONING_EFFORT = {
+    "none": "minimal",
+}
+
+# Architectures whose templates emit tool calls llama-server's chat parser cannot read
+# yet: arch "beam" declares tools and replies with Harmony headers carrying XML
+# argument bodies (<|constrain|>xml), which the gpt-oss parser rejects with a 500
+# mid-stream. Studio withholds tools for them so plain chat keeps working.
+_TOOL_CALLS_UNPARSED_ARCHS = frozenset({"beam"})
+
+
 def _coerce_reasoning_effort(architecture, kwargs: dict) -> dict:
     if architecture == "inkling":
         effort = kwargs.get("reasoning_effort")
@@ -8215,6 +8229,12 @@ def _coerce_reasoning_effort(architecture, kwargs: dict) -> dict:
         effort = kwargs.get("reasoning_effort")
         if isinstance(effort, str):
             mapped = _MUSE_SPARK_REASONING_EFFORT.get(effort.strip().lower())
+            if mapped is not None:
+                kwargs["reasoning_effort"] = mapped
+    elif architecture == "beam":
+        effort = kwargs.get("reasoning_effort")
+        if isinstance(effort, str):
+            mapped = _MINIMAL_FLOOR_REASONING_EFFORT.get(effort.strip().lower())
             if mapped is not None:
                 kwargs["reasoning_effort"] = mapped
     return kwargs
@@ -9456,13 +9476,18 @@ class LlamaCppBackend:
         # frames are dropped by the agentic tool loop; never route it through tools.
         if self._is_diffusion:
             return False
+        if getattr(self, "_architecture", None) in _TOOL_CALLS_UNPARSED_ARCHS:
+            return False
         return self._supports_tools
 
     @property
     def supports_tool_passthrough(self) -> bool:
         # supports_tools is forced off for DiffusionGemma (its agentic loop drops the
         # per-step canvas frames), but client passthrough skips that loop, so it uses
-        # the real _supports_tools.
+        # the real _supports_tools. Both are off where llama-server cannot parse the
+        # template's tool calls: a 400 up front beats a 500 after generation.
+        if getattr(self, "_architecture", None) in _TOOL_CALLS_UNPARSED_ARCHS:
+            return False
         return self._supports_tools
 
     @property
