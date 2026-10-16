@@ -408,6 +408,7 @@ def archive_turns(
     conn = None
     try:
         count = embeddings.token_counter(model)
+        chunk_limit = None
         conn = rag_db.get_connection()
         # What the query side will ask for. Only a prediction until the encode reports what it actually used, so the
         # authoritative check happens under the write lock.
@@ -441,9 +442,11 @@ def archive_turns(
                 )
                 _widen_span(conn, scope, digest, span)
                 continue
+            if chunk_limit is None:
+                chunk_limit = embeddings.chunk_tokens(model)
             chunks = chunk_pages(
                 [Page(text = text, page_number = None, char_count = len(text))],
-                max_tokens = embeddings.chunk_tokens(model),
+                max_tokens = chunk_limit,
                 overlap = config.CHUNK_OVERLAP,
                 count = count,
             )
