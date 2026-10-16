@@ -258,7 +258,7 @@ def _launch_forward(Q, K, Wq, Wk, cos, sin, rope_indices, eps_Q, eps_K, has_indi
         Ko, K, K.stride(0), K.stride(1), Wk, rk, n_heads_K, eps_K,
         cos, cos.stride(0), sin, sin.stride(0), rope_indices, seq_len,
         HEAD_DIM = head_dim, BLOCK_H = BLOCK_H, HAS_ROPE_INDICES = has_indices,
-        num_warps = _num_warps(BLOCK_H, head_dim),
+        num_warps = _num_warps(BLOCK_H, head_dim), enable_fp_fusion = True,
     )  # fmt: skip
     return Qo, Ko, rq, rk
 
@@ -282,7 +282,7 @@ def _launch_backward(dQo, dKo, Q, K, Wq, Wk, rq, rk, cos, sin, rope_indices, has
         dK, dKo, dKo.stride(0), dKo.stride(1), dKo.stride(2), K, K.stride(0), K.stride(1), Wk, rk, n_heads_K,
         cos, cos.stride(0), sin, sin.stride(0), rope_indices, seq_len,
         HEAD_DIM = head_dim, BLOCK_H = BLOCK_H, HAS_ROPE_INDICES = has_indices,
-        num_warps = _num_warps(BLOCK_H, head_dim),
+        num_warps = _num_warps(BLOCK_H, head_dim), enable_fp_fusion = True,
     )  # fmt: skip
     return dQ, dK
 
