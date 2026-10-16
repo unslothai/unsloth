@@ -430,8 +430,13 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           }
         };
 
+        // onaudioprocess only fires while the processor reaches a destination; a muted sink
+        // keeps it running without ever playing the mic back.
+        const sink = audioCtx.createGain();
+        sink.gain.value = 0;
         source.connect(processor);
-        processor.connect(audioCtx.destination); // required for onaudioprocess to fire
+        processor.connect(sink);
+        sink.connect(audioCtx.destination);
       } catch (error) {
         teardown();
         console.error("Voice mic error:", error);

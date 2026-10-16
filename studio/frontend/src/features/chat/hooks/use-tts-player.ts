@@ -6,6 +6,7 @@ import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { splitIntoSentences, stripForSpeech } from "../voice/speech-text";
+import { getVoicePlayContext } from "../voice/voice-loop-bridge";
 import { voiceTtsCanClone } from "../voice/voice-models";
 
 // While the LLM is still writing, only terminated sentences are safe to speak;
@@ -29,16 +30,7 @@ export const voiceOutputLevel = { current: 0 };
 const MAX_QUEUED_CLIPS = 2;
 const ENVELOPE_BUCKET_S = 1 / 60;
 
-let playCtx: AudioContext | null = null;
-function getPlayCtx(): AudioContext | null {
-  if (typeof window === "undefined") return null;
-  const Ctor =
-    window.AudioContext ??
-    (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-  if (!Ctor) return null;
-  if (!playCtx) playCtx = new Ctor();
-  return playCtx;
-}
+const getPlayCtx = getVoicePlayContext;
 
 function wavBytesFromDataUrl(url: string): ArrayBuffer {
   const binary = atob(url.slice(url.indexOf(",") + 1));

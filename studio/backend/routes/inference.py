@@ -18222,6 +18222,11 @@ async def load_model_gated(
     from core.inference.llama_cpp import GpuMemoryShortError
     from core.inference.llama_keepwarm import inference_lifecycle_gate, model_load_gate
 
+    if request.voice and not await asyncio.to_thread(_is_voice_model, request):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Only an audio.cpp speech or transcription model can load as voice mode's voice.",
+        )
     extra = None
     evicted: list[str] = []
     attempt = _begin_load_attempt(request, current_subject)
@@ -18402,6 +18407,17 @@ def _primary_model_label() -> Optional[str]:
     if getattr(llama, "is_loaded", False):
         return _llama_public_model_id(llama)
     return getattr(_peek_inference_backend(), "active_model_name", None)
+
+
+def _is_voice_model(request: LoadRequest) -> bool:
+    """``voice`` keeps a slot with multi-model off, so it is honoured for voice mode's models only."""
+    from core.inference.audio_cpp_models import resolve
+
+    try:
+        model = resolve(request.model_path, request.gguf_variant, request.hf_token)
+    except Exception:  # noqa: BLE001 - unresolvable is not a voice
+        return False
+    return model is not None and not model.unsupported and model.task in ("tts", "asr")
 
 
 async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:

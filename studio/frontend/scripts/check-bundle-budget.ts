@@ -177,8 +177,12 @@ export const BUDGET = {
   // the loop's adapter load on use through one dynamic entry; loading them eagerly measured 6,676.2 KB raw /
   // 2,007.9 KB transfer. What stays is what must exist before voice is opened: the plus menu's Voice toggle,
   // the chat store's voice fields and the chat page's voice slot logic. Raised by that growth.
+  // Not rendering the voice components until Voice is clicked, and unlocking playback inside that click, adds
+  // 415 B raw and saves 101 B transfer (6,797,281 -> 6,797,696 B raw, 2,044,353 -> 2,044,252 B transfer, one
+  // machine and build, chunk count unchanged at 95): the bridge's requested flag and the playback context moved
+  // out of the lazy player. Raw is raised by that; transfer is left where it was.
   transferBytes: 2_044_353,
-  rawBytes: 6_797_281,
+  rawBytes: 6_797_696,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

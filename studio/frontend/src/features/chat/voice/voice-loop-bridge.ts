@@ -17,6 +17,7 @@
  */
 
 import type { DictationAdapter } from "@assistant-ui/react";
+import { useSyncExternalStore } from "react";
 
 /** Whether the conversation loop is off, being configured, or running. */
 export type VoiceMode = "off" | "configuring" | "active";
@@ -27,8 +28,12 @@ export type VoiceMode = "off" | "configuring" | "active";
 let voiceMode: VoiceMode = "off";
 
 let voiceToggle: (() => void) | null = null;
-// A toggle clicked before the lazy loop mounted; it runs once the loop registers.
-let voiceTogglePending = false;
+// Toggles clicked before the lazy loop mounted. Only the parity matters: two clicks cancel out.
+let voiceTogglesPending = 0;
+// Set by the first Voice click and kept: the loop's components mount only from then on.
+let voiceRequested = false;
+const voiceRequestedListeners = new Set<() => void>();
+let voicePlayCtx: AudioContext | null = null;
 let voiceThreadReset: (() => void) | null = null;
 let voiceResume: (() => void) | null = null;
 let voiceBargeIn: (() => void) | null = null;
@@ -42,6 +47,36 @@ let voiceListen: (() => DictationAdapter.Session | null) | null = null;
  * modules into extra startup chunks.
  */
 export const loadVoiceMode = () => import("./voice-engine");
+
+/** Whether Voice has been clicked this session; the lazy loop is not rendered before it. */
+export function useVoiceRequested(): boolean {
+  return useSyncExternalStore(
+    subscribeVoiceRequested,
+    isVoiceRequested,
+    isVoiceRequested,
+  );
+}
+
+export function isVoiceRequested(): boolean {
+  return voiceRequested;
+}
+
+export function subscribeVoiceRequested(listener: () => void): () => void {
+  voiceRequestedListeners.add(listener);
+  return () => voiceRequestedListeners.delete(listener);
+}
+
+/** The context voice mode plays through. Here, not in the lazy player, so the first click can unlock it. */
+export function getVoicePlayContext(): AudioContext | null {
+  if (typeof window === "undefined") return null;
+  const Ctor =
+    window.AudioContext ??
+    (window as unknown as { webkitAudioContext?: typeof AudioContext })
+      .webkitAudioContext;
+  if (!Ctor) return null;
+  if (!voicePlayCtx) voicePlayCtx = new Ctor();
+  return voicePlayCtx;
+}
 
 /** What the loop's adapter needs to listen: getUserMedia (secure contexts only) and Web Audio. */
 export function voiceLoopSupported(): boolean {
@@ -80,25 +115,31 @@ export function setVoiceMode(next: VoiceMode): void {
 /** Registered by the mounted loop. Pass null on teardown. */
 export function registerVoiceToggle(fn: (() => void) | null): void {
   voiceToggle = fn;
-  if (fn && voiceTogglePending) {
-    voiceTogglePending = false;
-    fn();
-  }
+  if (!fn) return;
+  const replay = voiceTogglesPending % 2 === 1;
+  voiceTogglesPending = 0;
+  if (replay) fn();
 }
 
 /**
  * Drive the same off/configuring/active toggle the plus menu uses -- from the orb
  * overlay's close button, its Esc handler, or the chat page's thread-switch reset.
- * Before the lazy loop has mounted, the toggle waits for it instead of being lost;
- * audio is then primed after the click rather than inside it.
+ * Before the lazy loop has mounted, the toggle waits for it instead of being lost,
+ * and the playback context is unlocked here, inside the click.
  */
 export function requestVoiceToggle(): void {
   if (voiceToggle) {
     voiceToggle();
     return;
   }
-  voiceTogglePending = true;
-  void loadVoiceMode();
+  voiceTogglesPending += 1;
+  void getVoicePlayContext()?.resume().catch(() => {});
+  if (!voiceRequested) {
+    voiceRequested = true;
+    for (const listener of voiceRequestedListeners) listener();
+  }
+  // A failed chunk surfaces through the lazy components' own load.
+  void loadVoiceMode().catch(() => {});
 }
 
 /** Called by the mounted voice loop. Pass null on teardown. */

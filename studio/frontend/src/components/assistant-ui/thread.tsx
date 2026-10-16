@@ -161,6 +161,7 @@ import {
   loadVoiceMode,
   requestVoiceToggle,
   useVoiceAvailable,
+  useVoiceRequested,
 } from "@/features/chat/voice/voice-loop-bridge";
 import {
   PromptStorageDialog,
@@ -2088,6 +2089,7 @@ export const Thread: FC<{
   // opening the full orb is exclusively the mini-orb button's job.
   const voiceActive = useChatRuntimeStore((s) => s.voiceMode === "active");
   const effectiveHideWelcome = hideWelcome || voiceActive;
+  const voiceRequested = useVoiceRequested();
 
   const isComposerAttachPending = useAuiState(({ threads }) =>
     targetThreadId ? threads.mainThreadId !== targetThreadId : false,
@@ -2425,9 +2427,11 @@ export const Thread: FC<{
             hideComposer={hideComposer}
             bottomOffsetPx={footerBottomPx}
           />
-          <Suspense fallback={null}>
-            <VoiceOrb />
-          </Suspense>
+          {voiceRequested && (
+            <Suspense fallback={null}>
+              <VoiceOrb />
+            </Suspense>
+          )}
 
           {!hideComposer && (
             <AuiIf condition={({ thread }) => effectiveHideWelcome || !thread.isEmpty}>
@@ -7623,13 +7627,16 @@ const ComposerRightControls: FC<{
   // the composer runtime's startDictation()/stopDictation(), not by clicking
   // these). Kept mounted (display:none) only so composer state stays consistent.
   const voiceEngaged = useChatRuntimeStore((s) => s.voiceMode !== "off");
+  const voiceRequested = useVoiceRequested();
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
-      <Suspense fallback={null}>
-        <VoiceEngine />
-        <VoiceControlButton />
-      </Suspense>
+      {voiceRequested && (
+        <Suspense fallback={null}>
+          <VoiceEngine />
+          <VoiceControlButton />
+        </Suspense>
+      )}
       {/* Starts dictation; the recording bar then covers the input row and owns
           the stop and send actions. Hidden while voice mode is engaged: the mini
           orb is the mic control there, and the loop drives dictation through the
@@ -8816,7 +8823,7 @@ const DeleteMessageButton: FC = () => {
 const MORE_MENU_CONTENT_CLASS =
   "aui-action-bar-more-content dropdown-surface z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-[21px] bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]";
 
-// Voice mode stays off the first screen; the engine mounts once its chunk lands.
+// Not rendered until Voice is clicked: rendering a lazy component is what fetches its chunk.
 const VoiceEngine = lazy(() =>
   loadVoiceMode().then((module) => ({
     default: module.VoiceEngine,

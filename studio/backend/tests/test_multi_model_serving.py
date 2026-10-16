@@ -189,6 +189,34 @@ def test_a_voice_load_keeps_its_slot_with_multi_model_off(backends, monkeypatch)
     assert _selected(LoadRequest(model_path = "audio-cpp/Kokoro-82M-GGUF", voice = True)) is None
 
 
+def test_only_voice_models_may_load_as_the_voice(monkeypatch):
+    import core.inference.audio_cpp_models as audio_cpp_models
+
+    tasks = {
+        "audio-cpp/Kokoro-82M-GGUF": "tts",
+        "audio-cpp/parakeet-GGUF": "asr",
+        "audio-cpp/music-GGUF": "music",
+    }
+    monkeypatch.setattr(
+        audio_cpp_models,
+        "resolve",
+        lambda path, *a, **k: SimpleNamespace(task = tasks[path], unsupported = None)
+        if path in tasks
+        else None,
+    )
+    assert inf._is_voice_model(LoadRequest(model_path = "audio-cpp/Kokoro-82M-GGUF", voice = True))
+    assert inf._is_voice_model(LoadRequest(model_path = "audio-cpp/parakeet-GGUF", voice = True))
+    assert not inf._is_voice_model(LoadRequest(model_path = "audio-cpp/music-GGUF", voice = True))
+    # Any other model would otherwise keep a second slot with multi-model off: refused before a slot is picked.
+    picked = []
+    monkeypatch.setattr(inf, "_select_load_slot", lambda request: picked.append(request))
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(
+            inf.load_model_gated(LoadRequest(model_path = "org/C-GGUF", voice = True), None, "s")
+        )
+    assert refused.value.status_code == 400 and not picked
+
+
 def test_a_voice_load_never_replaces_the_chat_model():
     source = inspect.getsource(inf.load_model_gated)
     refuse = source.index("if request.voice:")
