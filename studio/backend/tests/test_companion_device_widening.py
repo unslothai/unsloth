@@ -125,12 +125,38 @@ def test_value_forms_the_parser_reads(prefix):
     assert _value(cmd, "--spec-draft-device") == f"{prefix}1,{prefix}0"
 
 
-def test_only_the_flag_that_wins_is_acted_on():
+def test_every_parsed_device_flag_remains_resolvable():
+    # arg.cpp resolves each device value as it reads it (parse_device_list), so an
+    # overridden one must still name a card the child can see.
     cmd, pin, _ = _widen([0], ["--mmproj-device", "CUDA7", "-mmdev", "CUDA2"])
-    assert pin == [0, 2], "an overridden flag must not expose another card"
-    assert cmd[:2] == ["--mmproj-device", "CUDA7"]
-    assert _value(cmd, "-mmdev") == "CUDA1"
+    assert pin == [0, 7, 2]
+    assert cmd[:2] == ["--mmproj-device", "CUDA1"]
+    assert _value(cmd, "-mmdev") == "CUDA2"
     assert cmd.count("--device") == 1
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--mmproj-device", "CUDA1", "--mmproj-device", "none"],
+        ["-mmdev=CUDA1", "--mmproj-device", "none"],
+        ["--spec-draft-device", "CUDA1", "-devd", "none"],
+    ],
+)
+def test_a_device_overridden_by_none_still_widens_the_mask(flags):
+    # Pinned to GPU 0 because the final none keeps the companion off the cards, but
+    # the earlier CUDA1 is still parsed: a mask of 0 fails it with "invalid device".
+    cmd, pin, note = _widen([0], flags, inherited = [0, 1])
+    assert pin == [0, 1]
+    assert note
+    assert _value(cmd, "--device") == "CUDA0"
+    assert cmd[-4:-2] == flags[-2:], "the winning none is left alone"
+
+
+def test_an_overridden_device_the_parent_cannot_see_is_left_alone():
+    cmd, pin, note = _widen([0], ["--mmproj-device", "CUDA5", "--mmproj-device", "none"], [0, 1])
+    assert (pin, note) == ([0], "")
+    assert "--device" not in cmd
 
 
 def test_load_model_uses_the_argv_and_skips_an_unmappable_mask():

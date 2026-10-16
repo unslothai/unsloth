@@ -1588,6 +1588,22 @@ def test_zero_offload_flag_true_with_device_pin(device_args):
     assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)], {}) is True
 
 
+@pytest.mark.parametrize(
+    ("device_args", "env"),
+    [
+        (["--device", "CUDA0", "--device", "cpu"], {}),
+        (["--device", "CUDA0", "--device", "none"], {}),
+        (["--spec-draft-device", "CUDA0", "--spec-draft-device", "none"], {}),
+        (["--device", "none"], {"LLAMA_ARG_DEVICE": "CUDA0"}),
+    ],
+)
+def test_zero_offload_flag_true_with_an_overridden_gpu_device(device_args, env):
+    # arg.cpp resolves every device value it reads (env first), so the GPU named before
+    # the final cpu / none must stay visible: the server can still hold VRAM.
+    cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0", *device_args]
+    assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)], env) is True
+
+
 def test_zero_offload_flag_true_with_env_device_pin():
     cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0"]
     env = {"LLAMA_ARG_DEVICE": "CUDA0"}
@@ -1601,7 +1617,7 @@ def test_zero_offload_flag_true_with_env_device_pin():
         (["--device=none"], {}),
         (["--spec-draft-device", "cpu"], {}),
         ([], {"LLAMA_ARG_DEVICE": "none"}),
-        (["--device", "CUDA0", "--device", "cpu"], {}),
+        (["--device", "cpu", "--device", "none"], {}),
     ],
 )
 def test_zero_offload_flag_false_with_cpu_device_pin(device_args, env):
