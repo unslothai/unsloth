@@ -6798,6 +6798,12 @@ def _probe_backend_visible_gpu_info(device) -> Dict[str, Any]:
                 }
                 for td in torch_devices
             ]
+            if IS_ROCM:
+                # Training already skips these (#8792); flagged so the UI neither counts nor pre-ticks them.
+                uncovered = rocm_gpu_ids_without_torch_kernels()
+                for dev in devices:
+                    if dev["index"] in uncovered:
+                        dev["no_torch_kernels"] = True
             # A per-device probe failure leaves this list SHORT rather than empty, and
             # a shorter list drops cards nvidia-smi could see. The repair's guarantee is
             # that it never reports fewer devices than before it existed.
