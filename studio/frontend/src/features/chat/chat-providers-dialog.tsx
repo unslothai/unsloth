@@ -467,11 +467,11 @@ export function ChatProvidersSettings({
   const modelSearchInputClassName =
     "h-8 w-full bg-background/55 text-xs placeholder:text-muted-foreground/65 focus-visible:border-border focus-visible:ring-0";
   // Full-bleed rows of the Models card (-mx-4 undoes the body padding). The list grows with its rows
-  // and only scrolls past 20 (rows are min-h-9, plus 1px dividers).
+  // and only scrolls past 10 (rows are min-h-9, plus 1px dividers).
   const modelListClassName = cn(
     "-mx-4 divide-y divide-border/60 border-border/60 border-y last:-mb-4 last:border-b-0",
-    filteredAvailableModels.length > 20 &&
-      "max-h-[calc(var(--spacing)*180+20px)] overflow-y-auto",
+    filteredAvailableModels.length > 10 &&
+      "max-h-[calc(var(--spacing)*90+10px)] overflow-y-auto",
   );
 
   useEffect(() => {
@@ -1500,7 +1500,7 @@ export function ChatProvidersSettings({
 
   if (page === "form") {
     return (
-      <div className="@container -mt-3 flex min-h-0 flex-col gap-2">
+      <div className="@container -mt-3 flex shrink-0 flex-col gap-2">
         <header className="flex items-center gap-2 pr-8">
           <Button
             type="button"
@@ -2267,7 +2267,8 @@ export function ChatProvidersSettings({
             </AnimatePresence>
           </section>
 
-          <div className="mb-3 flex flex-wrap items-center justify-end gap-3">
+          {/* -mb-3 trims the settings pane's p-6 so the gap below the buttons matches the gap-3 above. */}
+          <div className="-mb-3 flex flex-wrap items-center justify-end gap-3">
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
