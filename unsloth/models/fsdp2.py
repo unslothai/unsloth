@@ -409,6 +409,14 @@ def after_fsdp2_wrap(accelerator, model):
         model, blocks, parents, FSDPModule
     )
     _gate_fused_lora(accelerator, model, parents, FSDPModule, blocks)
+    from .fsdp2_save import reduce_unsharded_trainable_grads
+
+    replicated = reduce_unsharded_trainable_grads(model)
+    if replicated:
+        _print_rank0(
+            f"Unsloth: FSDP2 leaves {len(replicated)} trainable parameters unsharded (e.g. "
+            f"{replicated[0]}); their gradients are averaged over ranks like DDP."
+        )
 
 
 def install_fsdp2_prepare_hook():
@@ -553,6 +561,9 @@ def install_fsdp2_hooks():
     install_fsdp2_prepare_hook()
     install_fsdp2_no_sync()
     install_fsdp2_peft_full_state_dict()
+    from .fsdp2_save import install_dcp_bnb_state_dict
+
+    install_dcp_bnb_state_dict()
 
 
 def fsdp2_trainer_setup(trainer):
@@ -564,6 +575,9 @@ def fsdp2_trainer_setup(trainer):
     install_fsdp2_prepare_hook()
     install_fsdp2_no_sync()
     install_fsdp2_peft_full_state_dict()
+    from .fsdp2_save import install_dcp_bnb_state_dict
+
+    install_dcp_bnb_state_dict()
     if os.environ.get("UNSLOTH_FSDP2_FUSED_LORA", "1").strip().lower() in _FALSY:
         return False, "UNSLOTH_FSDP2_FUSED_LORA=0"
     if getattr(plugin, "auto_wrap_policy", None) is None:
