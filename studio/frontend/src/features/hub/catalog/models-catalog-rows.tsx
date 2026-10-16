@@ -60,6 +60,7 @@ import type {
   LocalInventoryRow,
 } from "../types";
 import { DOWNLOADING_DOT_CLASS } from "./dot-tag";
+import { inventoryPinId } from "./inventory-pin";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessGlyphs } from "./shared";
 
@@ -743,24 +744,24 @@ export const InventoryRow = memo(function InventoryRow({
 
   const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
   const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
-  const rowPinned =
-    cacheDeletableRepoId != null &&
-    pinnedKeys.includes(pinKey(cacheDeletableRepoId));
+  // Filesystem rows pin too, under their load id, so they can be kept at the top of the list.
+  const pinId = isDataset ? null : inventoryPinId(row);
+  const rowPinned = pinId != null && pinnedKeys.includes(pinKey(pinId));
   const deletableRepoId = canDelete ? cacheDeletableRepoId : null;
-  const deleteAction =
-    deletableRepoId ? (
+  const rowMenu =
+    deletableRepoId || pinId ? (
       <ModelRowMenu
         ariaLabel={`More options for ${deletableRepoId ?? rowModelId}`}
         buttonClassName="pointer-events-auto hub-modal-pe-guard size-6 rounded-full opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
         pin={
-          isDataset || !deletableRepoId
-            ? undefined
-            : {
+          pinId
+            ? {
                 pinned: rowPinned,
                 pinLabel: "Pin",
                 unpinLabel: "Unpin",
-                onToggle: () => togglePinned(deletableRepoId),
+                onToggle: () => togglePinned(pinId),
               }
+            : undefined
         }
         cachePath={
           isDataset || !deletableRepoId ? undefined : { repoId: deletableRepoId }
@@ -907,7 +908,7 @@ export const InventoryRow = memo(function InventoryRow({
             ) : trailing ? (
               <span>{trailing}</span>
             ) : null}
-            {deleteAction}
+            {rowMenu}
           </div>
         </div>
       </CatalogRow>
@@ -969,7 +970,7 @@ export const InventoryRow = memo(function InventoryRow({
         </div>
 
         <div className="flex w-9 shrink-0 items-center justify-end">
-          {deleteAction}
+          {rowMenu}
         </div>
       </div>
     </CatalogRow>

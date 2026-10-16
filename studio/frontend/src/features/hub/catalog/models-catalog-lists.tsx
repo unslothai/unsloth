@@ -33,6 +33,7 @@ import {
   inventoryItemSize,
   inventoryItemTitle,
 } from "./inventory-sort";
+import { inventoryPinId } from "./inventory-pin";
 import {
   DiscoverFetchMoreFooter,
   DiscoverFetchMoreState,
@@ -319,8 +320,10 @@ export function DownloadedList({
     ];
     // Pinned rows order by pin recency, not the active sort, so a new pin lands on top.
     const rank = makePinRank(pinnedIds);
-    const pinRank = (item: InventoryItem) =>
-      item.row.repoId ? rank(pinKey(item.row.repoId)) : Number.MAX_SAFE_INTEGER;
+    const pinRank = (item: InventoryItem) => {
+      const pinId = inventoryPinId(item.row);
+      return pinId ? rank(pinKey(pinId)) : Number.MAX_SAFE_INTEGER;
+    };
     if (inventoryTokens.length > 0) {
       return merged
         .map((item, index) => ({
@@ -369,9 +372,10 @@ export function DownloadedList({
   // Pinned repos get their own labelled section; inventoryItems already sorts them first.
   const pinnedCount = useMemo(
     () =>
-      inventoryItems.filter(
-        (item) => item.row.repoId && pinnedSet.has(pinKey(item.row.repoId)),
-      ).length,
+      inventoryItems.filter((item) => {
+        const pinId = inventoryPinId(item.row);
+        return pinId != null && pinnedSet.has(pinKey(pinId));
+      }).length,
     [inventoryItems, pinnedSet],
   );
   const pinnedItems = inventoryItems.slice(0, pinnedCount);
@@ -509,11 +513,10 @@ export function DownloadedList({
               // dataset whose repoId also names a pinned model reaches this grid, and the row menu
               // offers datasets no pin action, so a drag here must not reorder the user's model
               // pins from the dataset list.
+              const itemPinId = isDataset ? null : inventoryPinId(item.row);
               const itemPinKey =
-                !isDataset &&
-                item.row.repoId &&
-                pinnedSet.has(pinKey(item.row.repoId))
-                  ? pinKey(item.row.repoId)
+                itemPinId && pinnedSet.has(pinKey(itemPinId))
+                  ? pinKey(itemPinId)
                   : null;
               return (
                 <div

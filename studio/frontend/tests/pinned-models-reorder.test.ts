@@ -486,13 +486,14 @@ test("the hub's pinned grid never makes a dataset row draggable", async () => {
   const lists = await readSrcAsync("features/hub/catalog/models-catalog-lists.tsx");
   assert.match(
     lists,
-    /const itemPinKey =\s*!isDataset &&\s*item\.row\.repoId &&\s*pinnedSet\.has\(pinKey\(item\.row\.repoId\)\)/,
+    /const itemPinId = isDataset \? null : inventoryPinId\(item\.row\);\s*const itemPinKey =\s*itemPinId && pinnedSet\.has\(pinKey\(itemPinId\)\)/,
   );
   // The invariant the gate keeps: the row menu withholds pin/unpin for datasets.
   assert.match(
     MODELS_CATALOG_ROWS,
-    /pin=\{\s*isDataset \|\| !deletableRepoId\s*\?\s*undefined/,
+    /const pinId = isDataset \? null : inventoryPinId\(row\);/,
   );
+  assert.match(MODELS_CATALOG_ROWS, /pin=\{\s*pinId\s*\?/);
 });
 
 test("deleting a repo drops its quant pins, not just the repo's own", () => {
