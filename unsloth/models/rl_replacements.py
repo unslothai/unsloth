@@ -2350,6 +2350,8 @@ def grpo_trainer__get_per_token_logps(function_name, function):
         compute_efficient = False,
     ):
         if True:  # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
+            # Older TRL calls this instead of _get_per_token_logps_and_entropies: latch here too.
+            _unsloth_grpo_autocast(self)
             return None  # Unsloth efficient GRPO
         _unsloth_grpo_autocast(self)
 

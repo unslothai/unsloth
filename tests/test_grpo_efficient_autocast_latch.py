@@ -76,3 +76,16 @@ def test_efficient_call_keeps_an_existing_latch(monkeypatch):
     ns["_get_per_token_logps_and_entropies"](trainer, None, None, None, 4, compute_efficient = True)
     assert trainer._autocast_enabled is False
     assert trainer._autocast_dtype is torch.float16
+
+
+def test_legacy_logprob_replacement_latches_too(monkeypatch):
+    ns = {"torch": torch, "os": os}
+    exec(_function("_unsloth_grpo_autocast"), ns)
+    exec(_function("_get_per_token_logps", "grpo_trainer__get_per_token_logps"), ns)
+    monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "fp16")
+    trainer = types.SimpleNamespace(
+        args = types.SimpleNamespace(mixed_precision = "bf16", bf16 = True, fp16 = False),
+        model = None,
+    )
+    assert ns["_get_per_token_logps"](trainer, None, None, None, 4) is None
+    assert trainer._autocast_dtype is torch.bfloat16
