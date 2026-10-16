@@ -9,7 +9,51 @@ export type SelectedPostExportHook = {
   id: string;
   label: string;
   options: Record<string, string>;
+  /** The hook is the export method: its source export is temporary and removed once the hook succeeds. */
+  asMethod?: boolean;
 };
+
+/** Each option's default value (or its first choice). */
+export function defaultHookOptions(hook: PostExportHook): Record<string, string> {
+  return Object.fromEntries(
+    hook.options.map((o) => [o.name, o.default || o.choices[0] || ""]),
+  );
+}
+
+/** One select per hook option; values are limited to the hook's declared choices. */
+export function HookOptionFields({
+  hook,
+  value,
+  onChange,
+}: {
+  hook: PostExportHook;
+  value: Record<string, string>;
+  onChange: (next: Record<string, string>) => void;
+}) {
+  return (
+    <>
+      {hook.options.map((o) => (
+        <label
+          key={o.name}
+          className="flex items-center justify-between gap-3 text-xs"
+        >
+          <span className="text-muted-foreground">{o.label}</span>
+          <select
+            className="h-8 max-w-[60%] rounded-md border bg-background px-2 text-xs"
+            value={value[o.name] ?? o.default}
+            onChange={(e) => onChange({ ...value, [o.name]: e.target.value })}
+          >
+            {o.choices.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </label>
+      ))}
+    </>
+  );
+}
 
 /**
  * Admin-configured post-export hooks (post_export_hooks.json), one switch each -- the same row
@@ -33,7 +77,8 @@ export function PostExportHooksPicker({
     fetchPostExportHooks(exportType)
       .then((h) => {
         if (alive) {
-          setHooks(h);
+          // A hook configured as a method gets its own method card instead of a switch.
+          setHooks(h.filter((hook) => !hook.method));
         }
       })
       .catch(() => {
@@ -69,12 +114,7 @@ export function PostExportHooksPicker({
                   {
                     id: hook.id,
                     label: hook.label,
-                    options: Object.fromEntries(
-                      hook.options.map((o) => [
-                        o.name,
-                        o.default || o.choices[0] || "",
-                      ]),
-                    ),
+                    options: defaultHookOptions(hook),
                   },
                 ]
               : value.filter((v) => v.id !== hook.id),
@@ -99,40 +139,17 @@ export function PostExportHooksPicker({
                 disabled={!(localOnly && hook.available)}
               />
             </div>
-            {selected &&
-              hook.options.map((o) => (
-                <label
-                  key={o.name}
-                  className="flex items-center justify-between gap-3 text-xs"
-                >
-                  <span className="text-muted-foreground">{o.label}</span>
-                  <select
-                    className="h-8 max-w-[60%] rounded-md border bg-background px-2 text-xs"
-                    value={selected.options[o.name] ?? o.default}
-                    onChange={(e) =>
-                      onChange(
-                        value.map((v) =>
-                          v.id === hook.id
-                            ? {
-                                ...v,
-                                options: {
-                                  ...v.options,
-                                  [o.name]: e.target.value,
-                                },
-                              }
-                            : v,
-                        ),
-                      )
-                    }
-                  >
-                    {o.choices.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ))}
+            {selected && (
+              <HookOptionFields
+                hook={hook}
+                value={selected.options}
+                onChange={(options) =>
+                  onChange(
+                    value.map((v) => (v.id === hook.id ? { ...v, options } : v)),
+                  )
+                }
+              />
+            )}
           </div>
         );
       })}

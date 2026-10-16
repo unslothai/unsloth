@@ -15,6 +15,16 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { EXPORT_METHODS, type ExportMethod } from "../constants";
 
+/** An extra method card: an admin-configured post-export hook offered as its own export method. */
+export interface ExtraExportMethod {
+  value: string;
+  title: string;
+  description: string;
+  tooltip: string;
+  disabled?: boolean;
+  disabledReason?: string;
+}
+
 interface MethodPickerProps {
   value: ExportMethod | null;
   onChange: (v: ExportMethod) => void;
@@ -22,9 +32,53 @@ interface MethodPickerProps {
   disabledMethods?: ExportMethod[];
   /** Optional reason shown in a tooltip on disabled methods. */
   disabledReason?: string;
+  /** Cards after the built-in methods; when one is selected no built-in card shows as selected. */
+  extraMethods?: ExtraExportMethod[];
+  extraValue?: string | null;
+  onExtraChange?: (v: string) => void;
 }
 
-export function MethodPicker({ value, onChange, disabledMethods = [], disabledReason }: MethodPickerProps) {
+type MethodCard = {
+  value: string;
+  title: string;
+  description: string;
+  tooltip: string;
+  badge?: string;
+  readMore?: string;
+  selected: boolean;
+  disabled: boolean;
+  disabledReason?: string;
+  onSelect: () => void;
+};
+
+export function MethodPicker({
+  value,
+  onChange,
+  disabledMethods = [],
+  disabledReason,
+  extraMethods = [],
+  extraValue = null,
+  onExtraChange,
+}: MethodPickerProps) {
+  const cards: MethodCard[] = [
+    ...EXPORT_METHODS.map((m) => ({
+      ...m,
+      readMore:
+        m.value === "gguf"
+          ? "https://unsloth.ai/docs/basics/inference-and-deployment/saving-to-gguf"
+          : "https://unsloth.ai/docs/basics/inference-and-deployment",
+      selected: extraValue === null && value === m.value,
+      disabled: disabledMethods.includes(m.value),
+      disabledReason,
+      onSelect: () => onChange(m.value),
+    })),
+    ...extraMethods.map((m) => ({
+      ...m,
+      selected: extraValue === m.value,
+      disabled: Boolean(m.disabled),
+      onSelect: () => onExtraChange?.(m.value),
+    })),
+  ];
   return (
     <div data-tour="export-method" className="flex flex-col gap-3">
       <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
@@ -51,10 +105,15 @@ export function MethodPicker({ value, onChange, disabledMethods = [], disabledRe
           </TooltipContent>
         </Tooltip>
       </span>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        {EXPORT_METHODS.map((m) => {
-          const selected = value === m.value;
-          const isDisabled = disabledMethods.includes(m.value);
+      <div
+        className={cn(
+          "grid grid-cols-1 gap-3",
+          cards.length > 3 ? "sm:grid-cols-2 xl:grid-cols-4" : "sm:grid-cols-3",
+        )}
+      >
+        {cards.map((m) => {
+          const selected = m.selected;
+          const isDisabled = m.disabled;
 
           const card = (
             <button
@@ -62,7 +121,7 @@ export function MethodPicker({ value, onChange, disabledMethods = [], disabledRe
               type="button"
               disabled={isDisabled}
               aria-pressed={selected}
-              onClick={() => !isDisabled && onChange(m.value)}
+              onClick={() => !isDisabled && m.onSelect()}
               className={cn(
                 "flex items-start gap-3 rounded-xl p-4 text-left ring-1 transition-colors",
                 isDisabled
@@ -105,19 +164,17 @@ export function MethodPicker({ value, onChange, disabledMethods = [], disabledRe
                       </button>
                     </TooltipTrigger>
                     <TooltipContent className="max-w-xs">
-                      {m.tooltip}{" "}
-                      <a
-                        href={
-                          m.value === "gguf"
-                            ? "https://unsloth.ai/docs/basics/inference-and-deployment/saving-to-gguf"
-                            : "https://unsloth.ai/docs/basics/inference-and-deployment"
-                        }
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-primary underline"
-                      >
-                        Read more
-                      </a>
+                      {m.tooltip || m.description}{" "}
+                      {m.readMore && (
+                        <a
+                          href={m.readMore}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary underline"
+                        >
+                          Read more
+                        </a>
+                      )}
                     </TooltipContent>
                   </Tooltip>
                   {m.badge && (
@@ -136,11 +193,11 @@ export function MethodPicker({ value, onChange, disabledMethods = [], disabledRe
             </button>
           );
 
-          if (isDisabled && disabledReason) {
+          if (isDisabled && m.disabledReason) {
             return (
               <Tooltip key={m.value}>
                 <TooltipTrigger asChild={true}>{card}</TooltipTrigger>
-                <TooltipContent>{disabledReason}</TooltipContent>
+                <TooltipContent>{m.disabledReason}</TooltipContent>
               </Tooltip>
             );
           }

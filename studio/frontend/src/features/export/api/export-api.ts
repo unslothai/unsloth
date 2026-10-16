@@ -223,6 +223,14 @@ export interface PostExportHookOption {
   choices: string[];
 }
 
+/** A hook offered as its own export method; Studio exports `source` to a temporary folder for it. */
+export interface PostExportHookMethod {
+  title: string;
+  description: string;
+  tooltip: string;
+  source: "auto" | "lora" | "merged";
+}
+
 /** An admin-configured post-export hook (post_export_hooks.json); the command stays on the server. */
 export interface PostExportHook {
   id: string;
@@ -231,6 +239,7 @@ export interface PostExportHook {
   applies_to: string[];
   available: boolean;
   options: PostExportHookOption[];
+  method?: PostExportHookMethod | null;
 }
 
 export async function fetchPostExportHooks(
@@ -246,6 +255,8 @@ export async function runPostExportHook(params: {
   hook_id: string;
   export_path: string;
   options: Record<string, string>;
+  /** Remove the export folder once the hook succeeds (a hook configured as a method only). */
+  discard_export?: boolean;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/hooks/run", {
     method: "POST",

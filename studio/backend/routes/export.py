@@ -945,7 +945,13 @@ async def run_post_export_hook(
         backend._append_log({"line": line, "stream": stream})
 
     ok, message, details = await asyncio.to_thread(
-        run_hook, request.hook_id, str(target), request.options, root, _log
+        run_hook,
+        request.hook_id,
+        str(target),
+        request.options,
+        root,
+        _log,
+        discard_export = request.discard_export,
     )
     if not ok:
         raise HTTPException(status_code = 400, detail = message)

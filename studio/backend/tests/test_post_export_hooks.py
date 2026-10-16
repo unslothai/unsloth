@@ -218,3 +218,91 @@ def test_silent_command_still_times_out(tmp_path, monkeypatch):
     ok, message, _ = post_hooks.run_hook("a", str(export), {}, root, lambda l, s: None)
     assert not ok and "timeout" in message
     assert __import__("time").time() - t0 < 10
+
+
+METHOD = {"title": "MyRuntime", "description": "A MyRuntime file.", "source": "auto"}
+
+
+def test_method_hook_is_listed_with_its_method(tmp_path, monkeypatch):
+    _write_hooks(
+        tmp_path,
+        monkeypatch,
+        [{"id": "a", "command": ECHO, "method": METHOD}, {"id": "b", "command": ECHO}],
+    )
+    by_id = {h["id"]: h for h in post_hooks.list_hooks()}
+    assert by_id["a"]["method"] == {**METHOD, "tooltip": ""}
+    assert by_id["b"]["method"] is None
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        {"description": "no title"},
+        {"title": "X", "source": "gguf"},
+        "MyRuntime",
+        {"title": "X", "tooltip": 3},
+    ],
+)
+def test_malformed_method_skips_the_hook(tmp_path, monkeypatch, method):
+    _write_hooks(tmp_path, monkeypatch, [{"id": "a", "command": ECHO, "method": method}])
+    assert post_hooks.list_hooks() == []
+
+
+def _out_cmd(out):
+    return [sys.executable, "-c", f"print('UNSLOTH_HOOK_OUTPUT={out}')"]
+
+
+def test_discard_removes_the_export_after_success(tmp_path, monkeypatch):
+    out = tmp_path / "elsewhere" / "model.bin"
+    _write_hooks(tmp_path, monkeypatch, [{"id": "a", "command": _out_cmd(out), "method": METHOD}])
+    root = tmp_path / "exports"
+    export = _merged_export(root)
+    ok, _, details = post_hooks.run_hook(
+        "a", str(export.parent), {}, root, lambda l, s: None, None, True
+    )
+    assert ok and details["discarded"] == str(export.parent.resolve())
+    assert not export.parent.exists() and root.exists()
+
+
+def test_discard_keeps_the_export_when_the_hook_fails(tmp_path, monkeypatch):
+    _write_hooks(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "id": "a",
+                "command": [sys.executable, "-c", "import sys; sys.exit(1)"],
+                "method": METHOD,
+            }
+        ],
+    )
+    root = tmp_path / "exports"
+    export = _merged_export(root)
+    ok, _, _ = post_hooks.run_hook("a", str(export), {}, root, lambda l, s: None, None, True)
+    assert not ok and export.exists()
+
+
+def test_discard_keeps_the_export_when_the_output_is_inside_it(tmp_path, monkeypatch):
+    root = tmp_path / "exports"
+    export = _merged_export(root)
+    _write_hooks(
+        tmp_path,
+        monkeypatch,
+        [{"id": "a", "command": _out_cmd(export / "x.bin"), "method": METHOD}],
+    )
+    ok, _, details = post_hooks.run_hook("a", str(export), {}, root, lambda l, s: None, None, True)
+    assert ok and "discarded" not in details and export.exists()
+
+
+def test_discard_is_refused_for_a_switch_hook_and_for_the_root(tmp_path, monkeypatch):
+    _write_hooks(
+        tmp_path,
+        monkeypatch,
+        [{"id": "a", "command": ECHO}, {"id": "m", "command": ECHO, "method": METHOD}],
+    )
+    root = tmp_path / "exports"
+    export = _merged_export(root)
+    ok, message, _ = post_hooks.run_hook("a", str(export), {}, root, lambda l, s: None, None, True)
+    assert not ok and "not an export method" in message and export.exists()
+    ok, _, _ = post_hooks.run_hook("m", str(root), {}, root, lambda l, s: None, None, True)
+    assert not ok and root.exists()

@@ -11,16 +11,21 @@ the API never accepts a command. Placeholders are substituted one argument at a 
 ``UNSLOTH_HOOK_OUTPUT=<path>`` to name what it produced; Studio lists that path with the export's outputs.
 The command's environment carries ``UNSLOTH_POST_EXPORT=1``, ``UNSLOTH_EXPORT_DIR`` and ``UNSLOTH_EXPORT_TYPE``.
 
+A hook is shown as a switch under the Merged and LoRA methods ("Also convert to ..."), or -- with a ``method``
+block -- as an export method of its own: Studio exports ``source`` (``auto``: the LoRA adapter for an adapter run,
+else the merged model) to a temporary folder, runs the hook on it, and removes that folder once the hook succeeds.
+
 Example::
 
     {"hooks": [{
-        "id": "radiance",
-        "label": "Convert to Radiance (.rad)",
-        "description": "Merged/LoRA export -> a Radiance engine container (rad-convert, CPU only).",
+        "id": "my-runtime",
+        "label": "MyRuntime",
+        "description": "Converts the export with my-runtime-convert.",
         "applies_to": ["merged", "lora"],
-        "command": ["rad-export", "--auto", "{export_dir}", "--recipe", "{recipe}"],
-        "options": [{"name": "recipe", "label": "Recipe", "default": "auto",
-                     "choices_command": ["rad-export", "--list-recipes", "--json"], "choices_key": "recipes"}],
+        "command": ["my-runtime-convert", "{export_dir}", "--preset", "{preset}"],
+        "options": [{"name": "preset", "label": "Preset", "default": "auto",
+                     "choices_command": ["my-runtime-convert", "--list-presets", "--json"], "choices_key": "presets"}],
+        "method": {"title": "MyRuntime", "description": "A MyRuntime model file.", "source": "auto"},
         "timeout_s": 3600
     }]}
 """
@@ -43,6 +48,9 @@ logger = get_logger(__name__)
 
 _CHOICES_TIMEOUT_S = 20
 _PLACEHOLDERS = ("export_dir", "export_type", "base_model")
+# A hook with "method" is offered as its own export method; "source" is the export Studio feeds it
+# ("auto": the LoRA adapter for an adapter run, else the merged model).
+_METHOD_SOURCES = ("auto", "lora", "merged")
 
 
 def hooks_file() -> Path:
@@ -78,7 +86,29 @@ def _normalise(h: Any) -> Optional[Dict[str, Any]]:
     for key in ("label", "description"):
         if key in h and not isinstance(h[key], str):
             return None
-    return {**h, "applies_to": applies, "options": options, "timeout_s": float(timeout)}
+    method = h.get("method")
+    if method is not None:
+        if (
+            not isinstance(method, dict)
+            or not isinstance(method.get("title"), str)
+            or not method["title"]
+            or method.get("source", "auto") not in _METHOD_SOURCES
+            or any(not isinstance(method.get(k, ""), str) for k in ("description", "tooltip"))
+        ):
+            return None
+        method = {
+            "title": method["title"],
+            "description": method.get("description", ""),
+            "tooltip": method.get("tooltip", ""),
+            "source": method.get("source", "auto"),
+        }
+    return {
+        **h,
+        "applies_to": applies,
+        "options": options,
+        "timeout_s": float(timeout),
+        "method": method,
+    }
 
 
 def _load() -> List[Dict[str, Any]]:
@@ -145,6 +175,7 @@ def list_hooks(export_type: Optional[str] = None) -> List[Dict[str, Any]]:
                 "description": h.get("description", ""),
                 "applies_to": applies,
                 "available": bool(shutil.which(exe) or os.path.isfile(exe)),
+                "method": h["method"],
                 "options": [
                     {
                         "name": o["name"],
@@ -192,8 +223,13 @@ def run_hook(
     allowed_root: Path,
     log: Callable[[str, str], None],
     cancel: Optional[threading.Event] = None,
+    discard_export: bool = False,
 ) -> Tuple[bool, str, Dict[str, Any]]:
-    """Run hook ``hook_id`` on ``export_dir`` (which must lie inside ``allowed_root``), streaming output to ``log``."""
+    """Run hook ``hook_id`` on ``export_dir`` (which must lie inside ``allowed_root``), streaming output to ``log``.
+
+    ``discard_export`` removes ``export_dir`` once the hook succeeds -- only for a hook configured as an export
+    method, only strictly inside ``allowed_root``, and never when the hook's output lies inside it.
+    """
     hook = next((h for h in _load() if h["id"] == hook_id), None)
     if hook is None:
         return False, f"Unknown post-export hook '{hook_id}'", {}
@@ -201,6 +237,9 @@ def run_hook(
     root = Path(allowed_root).resolve()
     if not target.is_dir() or not (target == root or root in target.parents):
         return False, "Export directory is not inside this account's exports folder", {}
+    if discard_export and (not hook.get("method") or target == root):
+        return False, f"Hook '{hook_id}' is not an export method; its export is never removed", {}
+    requested = target
     if _export_type_of(target) == "other":
         # A run folder holding one checkpoint folder ({run}/{checkpoint}/): use the checkpoint.
         inner = [d for d in target.iterdir() if d.is_dir() and _export_type_of(d) != "other"]
@@ -306,4 +345,15 @@ def run_hook(
         log(f"[post-export:{hook_id}] failed (exit {rc}) after {secs} s", "stderr")
         return False, f"Hook '{hook_id}' failed (exit {rc})", details
     log(f"[post-export:{hook_id}] done in {secs} s", "stdout")
+    if discard_export:
+        out = Path(produced).resolve() if produced else None
+        if out is not None and (out == requested or requested in out.parents):
+            log(
+                f"[post-export:{hook_id}] kept {requested}: the hook's output is inside it",
+                "stdout",
+            )
+        else:
+            shutil.rmtree(requested, ignore_errors = True)
+            details["discarded"] = str(requested)
+            log(f"[post-export:{hook_id}] removed the intermediate export {requested}", "stdout")
     return True, f"{hook.get('label', hook_id)} finished in {secs} s", details
