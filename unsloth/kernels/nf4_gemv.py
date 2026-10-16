@@ -208,8 +208,7 @@ def _gemv_config(N: int, K: int, blocksize: int, capability, words_ok: bool, for
 
 
 def _lut_mode(block_k):
-    # 2 = register tl.gather, 0 = L1 table load. A 256 wide tile is too small to pay for the gather
-    # (2% to 5% slower at 1 row on A100 / L4); from BLOCK_K 512 it ties or wins.
+    # 2 = register tl.gather, 0 = L1 table load; a 256 wide tile is too small to pay for the gather.
     return 2 if _HAS_TL_GATHER and block_k >= 512 else 0
 
 
