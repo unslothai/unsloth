@@ -244,3 +244,71 @@ def test_explicit_int8_without_the_file_still_takes_the_torchao_int8_cast(name, 
     monkeypatch.setattr(prec, "_cast_fp8", lambda enc, tgt: fp8.append(enc))
     out = prec.quantize_text_encoders(pipe, CUDA_BF16, mode = "int8", family = name)
     assert out.mode == "fp8" and fp8 == [pipe.text_encoder]
+
+
+# ── an automatic int8 default without its file is the dense encoder, never fp8 or torchao ─
+
+
+INT8_DEFAULTS = sorted(n for n, row in EXPECTED.items() if row[0] == "int8")
+
+
+@pytest.mark.parametrize("name", INT8_DEFAULTS)
+def test_the_automatic_int8_default_never_plans_the_fp8_file_behind_it(name):
+    fam = _fam(name)
+    mode, auto = resolve_te_quant_request(None, fam.te_quant_auto)
+    assert auto and mode == "int8"
+    component = EXPECTED[name][1]
+    # outside a load (download plan, memory budget): the resolved mode itself carries the automatic pick
+    source = tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = mode, target = CUDA_BF16)[component]
+    assert "INT8" in source.filename and source.fallback_filenames == ()
+    # inside a load: the raw request does
+    with tpq.auto_te_request(True):
+        source = tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16)[
+            component
+        ]
+    assert source.fallback_filenames == ()
+
+
+@pytest.mark.parametrize("name", INT8_DEFAULTS)
+def test_the_automatic_int8_default_without_its_file_keeps_the_dense_encoder(name, monkeypatch):
+    import core.inference.diffusion_precision as prec
+
+    monkeypatch.setattr(prec, "te_quant_supported", lambda *a, **k: True)
+    monkeypatch.setattr(prec, "torchao_quantize_importable", lambda: True)
+    monkeypatch.setattr(prec, "_cast_fp8", lambda *a, **k: pytest.fail("fp8 cast of an automatic int8 default"))
+    monkeypatch.setattr(prec, "_cast_int8_selective", lambda *a, **k: pytest.fail("torchao cast of an automatic default"))
+    mode, _ = resolve_te_quant_request(None, _fam(name).te_quant_auto)
+    pipe = types.SimpleNamespace(text_encoder = torch.nn.Linear(4, 4))
+    out = prec.quantize_text_encoders(pipe, CUDA_BF16, mode = mode, family = name)
+    assert out.mode is None and out.status == prec.RESOLVED_FELL_BACK
+    assert pipe.text_encoder.weight.dtype == torch.float32
+
+
+def test_an_automatic_int8_file_that_will_not_build_is_not_retried_as_fp8(monkeypatch):
+    calls = []
+
+    def fake_load(base, component, source, **kwargs):
+        calls.append(source.filename)
+        return None
+
+    monkeypatch.setattr(tpq, "load_prequant_text_encoder", fake_load)
+    monkeypatch.setattr(tpq, "_held_locally", lambda *a, **k: True)
+    import core.inference.media_locality as ml
+
+    monkeypatch.setattr(ml, "_hosted_component_cached", lambda *a, **k: True)
+    fam = _fam("z-image")
+    with tpq.auto_te_request(True):
+        tpq.te_prequant_pipe_kwargs(
+            fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16, dtype = None, dense_source = "/d"
+        )
+    assert calls == ["Z-Image-Turbo-text_encoder-INT8-ConvRot.safetensors"]
+    calls.clear()
+    # explicit int8 keeps the int8 -> fp8 chain
+    with tpq.auto_te_request(False):
+        tpq.te_prequant_pipe_kwargs(
+            fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16, dtype = None, dense_source = "/d"
+        )
+    assert calls == [
+        "Z-Image-Turbo-text_encoder-INT8-ConvRot.safetensors",
+        "Z-Image-Turbo-text_encoder-FP8.safetensors",
+    ]

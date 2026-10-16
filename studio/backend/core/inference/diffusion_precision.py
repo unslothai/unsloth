@@ -96,6 +96,27 @@ def te_quant_is_auto(value: Optional[str]) -> bool:
     return not normalized or normalized == "auto"
 
 
+class AutoTeQuant(str):
+    """A scheme ``resolve_te_quant_request`` picked from the family default, not one the caller typed. Equal to and
+    hashed as the plain string, so every consumer that only needs the scheme is unchanged; the type lets the planners
+    that run outside a load (download plan, memory budget) tell an automatic pick from an explicit one."""
+
+    __slots__ = ()
+
+
+def te_quant_picked_automatically(mode: Any) -> bool:
+    """Whether ``mode`` is an automatic pick: an ``AutoTeQuant``, or any mode inside a load whose raw request was
+    unset / "auto" (``diffusion_te_prequant.auto_te_request``)."""
+    if isinstance(mode, AutoTeQuant):
+        return True
+    try:
+        from .diffusion_te_prequant import te_request_is_auto
+
+        return te_request_is_auto()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def resolve_te_quant_request(
     value: Optional[str], auto_scheme: Optional[str]
 ) -> tuple[Optional[str], bool]:
@@ -115,7 +136,8 @@ def resolve_te_quant_request(
         return None, False
     # Validate the family's own field rather than trusting it: a typo here would otherwise reach
     # quantize_text_encoders as an unknown mode on every default load of that family.
-    return normalize_te_quant(auto_scheme), True
+    scheme = normalize_te_quant(auto_scheme)
+    return (AutoTeQuant(scheme) if scheme is not None else None), True
 
 
 def effective_te_quant(mode: Optional[str], family: Optional[str]) -> Optional[str]:
@@ -256,6 +278,7 @@ def quantize_text_encoders(
     it falls back to ``fp8``. Under ``offload_active`` the torchao modes are skipped (their
     subclasses reject ``Module.to()``); layerwise ``fp8`` still engages. Best-effort: any failure
     leaves the encoder dense."""
+    picked_automatically = te_quant_picked_automatically(mode)
     mode = normalize_te_quant(mode)
     if mode is None:
         present = [a for a in _TEXT_ENCODER_ATTRS if getattr(pipe, a, None) is not None]
@@ -285,6 +308,16 @@ def quantize_text_encoders(
             TE_QUANT_INT8,
             f"hosted int8 ConvRot weight-only {', '.join(hosted_int8)}; {', '.join(dense)} kept bf16",
             RESOLVED_APPLIED,
+        )
+    if mode == TE_QUANT_INT8 and not hosted_int8 and picked_automatically:
+        # The automatic default is the measured hosted int8 file and nothing else: our unscaled fp8 and the torchao
+        # cast are not what was measured, so without the file the released bf16 encoder stays.
+        _note(logger, "automatic int8 ConvRot text encoder not available; keeping the dense bf16 encoder")
+        return TEQuantOutcome(
+            None,
+            "the hosted int8 ConvRot text encoder is not available (not published yet, offline, or refused, see "
+            "the server log), so the automatic default kept the dense bf16 encoder",
+            RESOLVED_FELL_BACK,
         )
     downgrade_reason = ""
     skip: Optional[tuple[int, int]] = None

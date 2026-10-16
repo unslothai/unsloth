@@ -153,6 +153,12 @@ def te_request_is_auto() -> bool:
     return _AUTO_TE_REQUEST.get()
 
 
+def _picked_automatically(mode: Any) -> bool:
+    from .diffusion_precision import te_quant_picked_automatically
+
+    return te_quant_picked_automatically(mode)
+
+
 # The scheme the loaded FILE carried ("fp8" / "int8"), so quantize_text_encoders never re-casts an int8 encoder.
 TE_PREQUANT_SCHEME_ATTR = "_unsloth_te_prequant_scheme"
 
@@ -596,6 +602,9 @@ def te_prequant_sources(
             te_quant_supported,
         )
 
+        from .diffusion_precision import te_quant_picked_automatically
+
+        auto = te_quant_picked_automatically(te_quant_mode)
         mode = normalize_te_quant(te_quant_mode)
         if mode not in TE_PREQUANT_SCHEMES:
             return {}
@@ -612,6 +621,9 @@ def te_prequant_sources(
         sources: dict[str, TePrequantSource] = {}
         for component in components:
             source = resolve_te_prequant_source(fam, component, mode)
+            if source is not None and auto and mode == "int8":
+                # An automatic int8 pick takes the int8 file or the dense encoder, never the fp8 file behind it.
+                source = replace(source, fallback_filenames = ())
             if source is not None and not fp8_runs:
                 if source.kind == "repo" and _is_fp8_te_name(source.filename):
                     continue
@@ -1040,6 +1052,7 @@ def _te_prequant_pipe_kwargs(
             if (
                 encoder is None
                 and mode == "int8"
+                and not _picked_automatically(te_quant_mode)
                 and source.kind == "repo"
                 and fp8_names
                 and te_quant_supported(target, TE_QUANT_FP8)
@@ -1073,7 +1086,7 @@ def _te_prequant_pipe_kwargs(
                 cause = f" ({failures[-1]})" if failures else cause
         if not unavailable and not unbudgeted:
             return injected
-        if te_request_is_auto() and _fetch_dense_components(
+        if _picked_automatically(te_quant_mode) and _fetch_dense_components(
             dense_source or base,
             unavailable + unbudgeted,
             hf_token = hf_token,
