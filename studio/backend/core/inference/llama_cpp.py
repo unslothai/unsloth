@@ -6724,6 +6724,28 @@ def _extra_args_main_device(extra_args: Optional[Iterable[str]]) -> Optional[str
     return _extra_args_device(extra_args, {"--device", "-dev"})
 
 
+def _child_has_one_model_device(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]
+) -> bool:
+    """Whether a child on one selected card has that card as its only model device.
+
+    A per-device ``--fit-target`` list is applied positionally (``fit_params_target[i]``,
+    common/arg.cpp) over the child's model devices: RPC servers first, then GPUs, or the
+    ``--device`` list as given (src/llama.cpp). With one model device only ``margins_s[0]``
+    is read (common/fit.cpp), so entry 0 is the card's; with an RPC server or a longer
+    ``--device`` list, which entry the card gets is unknown. The caller checks the card
+    count; this reads the pass-through argv (last wins) and its env twins."""
+    env = env or {}
+    dev_list = _extra_args_main_device(extra_args)
+    if dev_list is None:
+        dev_list = env.get("LLAMA_ARG_DEVICE")
+    return not (
+        str(_extra_args_device(extra_args, {"--rpc"}) or "").strip()
+        or str(env.get("LLAMA_ARG_RPC") or "").strip()
+        or len([d for d in str(dev_list or "").split(",") if d.strip()]) > 1
+    )
+
+
 def _without_subsequence(tokens: List[str], run: List[str]) -> List[str]:
     """``tokens`` with the first contiguous occurrence of ``run`` removed.
 
@@ -23433,29 +23455,29 @@ class LlamaCppBackend:
 
         if not any(_flag(arg) in ("--mmproj", "-mm") for arg in args):
             return None
-        # Argv and environment at arg.cpp's own precedence. Two placements the
-        # spelling list below cannot see: LLAMA_ARG_NO_MMPROJ_OFFLOAD (falsey on
-        # presence alone) and the `disabled` token. Either already has the projector in
-        # host RAM, so respawning cannot clear the allocation failure and costs the
-        # caller the real error, which only surfaces when this returns None.
+        # Where the projector really runs, in arg.cpp's last-wins order over env, then
+        # argv: --[no-]mmproj-offload, --mmproj-device / -mmdev and their env twins
+        # (LLAMA_ARG_NO_MMPROJ_OFFLOAD is falsey on presence alone). A named device
+        # after an offload-off turns the offload back on (mmproj_use_gpu = true), and
+        # device none turns it off whatever came before. Host RAM already: respawning
+        # cannot clear the allocation failure and costs the caller the real error, which
+        # only surfaces when this returns None.
         #
-        # Only a resolved False means "already on CPU". An explicit --mmproj-offload is
-        # overridden deliberately: this is crash recovery, and the alternative is
-        # losing vision altogether.
-        if _resolved_mmproj_offload(args, env or {}) is False:
+        # An explicit --mmproj-offload or GPU name is overridden deliberately: this is
+        # crash recovery, and the alternative is losing vision altogether.
+        placement = _mmproj_placement(args, env or {})
+        if placement == "host":
             return None
-        placements = [
-            _flag(arg) for arg in args if _flag(arg) in ("--mmproj-offload", "--no-mmproj-offload")
-        ]
-        if not placements:
+        if placement is None:
             # Colloquial spellings arg.cpp itself rejects: `no` parses as neither truthy
             # nor falsey, so common_params_parse throws and the child never starts, which
-            # no retry can fix. Kept as a deliberate superset of the resolution above
-            # rather than tightened, so a value that used to skip the futile retry still
-            # does.
+            # no retry can fix. Kept as a deliberate superset, so a value that used to
+            # skip the futile retry still does.
             env_value = str((env or {}).get(_MMPROJ_OFFLOAD_ENV_VAR) or "").strip().lower()
             if env_value in ("0", "false", "off", "no"):
                 return None
+        # Appended last, so it beats every earlier placement token: mmproj_use_gpu =
+        # false, and clip.cpp only reads mmproj_device while use_gpu is set.
         return args + ["--no-mmproj-offload"]
 
     @staticmethod
@@ -28983,20 +29005,9 @@ class LlamaCppBackend:
                             fit_target_delta_mib = _fit_target_delta_mib,
                             supports_fit_target = _supports_fit_target,
                         )
-                        # A per-device list is applied positionally (fit_params_target[i],
-                        # common/arg.cpp) over the child's model devices: RPC servers first,
-                        # then GPUs, or the --device list as given (src/llama.cpp). With one
-                        # model device only margins_s[0] is read (common/fit.cpp), so entry 0
-                        # is this card's; with an RPC server or a longer --device list, which
-                        # entry this card gets is unknown.
-                        _dev_list = _extra_args_main_device(_child_extras)
-                        if _dev_list is None:
-                            _dev_list = _child_env.get("LLAMA_ARG_DEVICE")
-                        _one_model_device = not (
-                            str(_extra_args_device(_child_extras, {"--rpc"}) or "").strip()
-                            or str(_child_env.get("LLAMA_ARG_RPC") or "").strip()
-                            or len([d for d in str(_dev_list or "").split(",") if d.strip()]) > 1
-                        )
+                        # A per-device list: entry 0 is this card's only when it is the
+                        # child's one model device (_child_has_one_model_device).
+                        _one_model_device = _child_has_one_model_device(_child_extras, _child_env)
                         if fit_target_is_per_device(_child_extras or (), None):
                             if not _one_model_device:
                                 return None
@@ -29376,6 +29387,19 @@ class LlamaCppBackend:
                             )
                         )
                     )
+                    # The same margin the resident share prices: on one card that is the
+                    # child's one model device llama.cpp reads only entry 0 of a
+                    # per-device list (_child_has_one_model_device); otherwise any entry
+                    # may be a credited card's, so the largest is charged.
+                    _fit_margin_reader = (
+                        fit_target_first_device_margin_in
+                        if (
+                            len([g for g in gpus if gpu_indices is None or g[0] in gpu_indices])
+                            == 1
+                            and _child_has_one_model_device(_fit_extras, _fit_env)
+                        )
+                        else fit_target_margin_in
+                    )
                     _fit_margin_mib = (
                         max(
                             self._fit_target_margin_mib(
@@ -29385,7 +29409,7 @@ class LlamaCppBackend:
                                 and bool(server_caps.get("supports_fit_target")),
                                 floor_mib = _metal_fit_target_floor_mib,
                             ),
-                            fit_target_margin_in(_fit_extras, _fit_env) or 0.0,
+                            _fit_margin_reader(_fit_extras, _fit_env) or 0.0,
                         )
                         if _fitter_runs
                         else 0.0

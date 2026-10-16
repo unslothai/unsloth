@@ -470,8 +470,13 @@ def test_the_launch_charges_the_fitters_margin_only_when_fit_stays_on():
     # launch's budget, which _ctx_integrity_flags never emitted for it.
     assert "fit_target_delta_mib=_fit_target_delta_mibifuse_fitelse0.0" in call
     assert "supports_fit_target=use_fitand" in call
-    # And a pass-through --fit-target raises the margin above either.
-    assert "fit_target_margin_in(_fit_extras,_fit_env)or0.0" in call
+    # And a pass-through --fit-target raises the margin above either: entry 0 of a
+    # per-device list on a one-model-device child, the largest entry otherwise.
+    assert "_fit_margin_reader(_fit_extras,_fit_env)or0.0" in call
+    pre = compact[compact.index("_fit_margin_reader=(") : compact.index("_fit_margin_mib=(")]
+    assert "fit_target_first_device_margin_inif" in pre
+    assert "_child_has_one_model_device(_fit_extras,_fit_env)" in pre
+    assert "elsefit_target_margin_in" in pre
     assert "fit_margin_mib=_fit_margin_mib" in call
 
 
