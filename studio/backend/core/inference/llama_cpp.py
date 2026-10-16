@@ -15207,10 +15207,11 @@ class LlamaCppBackend:
         if uuid_rows:
             visible = nvidia._uuid_visible_ordinal_map(cvd, uuid_rows)
             return set(visible) if visible is not None else None
-        # No uuid column: verify with the separate uuid query, never assume.
-        # Every named card needs a row: a partial set is budgeted but cannot be pinned.
+        # No uuid column: verify with the separate uuid query, never assume. Only a
+        # one-card mask: these rows carry no uuids to order or pin a multi-card subset,
+        # while the inherited mask already pins a single card.
         ids = nvidia.resolve_uuid_mask(cvd)
-        return set(ids) if ids and set(ids) <= physical_ids else None
+        return set(ids) if ids and len(ids) == 1 and set(ids) <= physical_ids else None
 
     @staticmethod
     def _get_gpu_memory(
@@ -15321,7 +15322,19 @@ class LlamaCppBackend:
                     # The NVML branch names slices and uuids.
                     gpus = []
                 elif gpus:
-                    mig = nvidia.get_mig_gpu_indices() & {g[0] for g in gpus}
+                    mig_known = nvidia.get_mig_gpu_indices_or_none()
+                    mig = (mig_known or set()) & {g[0] for g in gpus}
+                    if mig_known is None:
+                        # MIG discovery failed: a row may be a whole MIG card. NVML names
+                        # slices and whole cards alike, so its reading wins; without one
+                        # the CLI rows stand, as before MIG support (no CUDA context).
+                        nvml = {g[0]: g for g in LlamaCppBackend._get_gpu_memory_nvml()}
+                        if nvml:
+                            gpus = [nvml.get(g[0], g) for g in gpus]
+                    elif not mig:
+                        # The CLI now answers for these cards: an earlier NVML inventory
+                        # (slices since removed) must not name the child's devices.
+                        LlamaCppBackend._NVML_ROWS = []
                     if mig:
                         # A MIG card's row is the whole card: swap in its NVML slice reading,
                         # keeping the whole cards. No reading at all: the later probes decide,

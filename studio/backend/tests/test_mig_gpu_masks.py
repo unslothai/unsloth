@@ -684,11 +684,13 @@ class TestAnEmptyEntryEndsAUuidMask:
         assert [r["index"] for r in LlamaCppBackend._nvml_rows_visible(MIXED_NVML)] == expected
 
 
-def test_without_a_uuid_column_every_named_card_needs_a_row(host, monkeypatch):
+def test_without_a_uuid_column_only_a_one_card_mask_resolves(host, monkeypatch):
+    # No uuids in the rows: a multi-card subset could be neither ordered nor pinned.
     host([(GPU0, []), (GPU1, [])], [39000, 30000], None)
     mask = f"{GPU0},{GPU1}"
-    assert LlamaCppBackend._whole_gpu_mask_rows(mask, [], {0, 1}) == {0, 1}
+    assert LlamaCppBackend._whole_gpu_mask_rows(mask, [], {0, 1}) is None
     assert LlamaCppBackend._whole_gpu_mask_rows(mask, [], {0}) is None
+    assert LlamaCppBackend._whole_gpu_mask_rows(GPU1, [], {0, 1}) == {1}
 
 
 def test_a_failed_probe_keeps_a_newer_answer_from_another_caller(host, monkeypatch, calls):
@@ -723,3 +725,31 @@ def test_unknown_mig_discovery_is_not_no_mig(host, monkeypatch, calls):
     nvidia.gpu_query.invalidate_static("test")
     host([(GPU0, [])], [38000], None)
     assert nvidia.get_mig_gpu_indices_or_none() == set()
+
+
+class TestUnknownMigDiscovery:
+    def test_placement_reads_nvml_when_the_listing_fails(self, host, calls):
+        host(TWO_SLICES, [38000], TWO_SLICES_NVML)
+        calls["list_fails"] = True
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 15000, 19968)]
+        devices = [{"index": 0, "vram_total_gb": 40.0, "vram_used_gb": 2.0}]
+        out = hw._with_mig_instance_memory(devices)
+        assert out[0]["vram_total_gb"] == round(19968 / 1024, 2)
+
+    def test_without_nvml_the_cli_rows_stand_and_cuda_is_not_touched(self, host, calls):
+        host([(GPU0, [])], [14000], None)
+        calls["list_fails"] = True
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 14000, A100_MIB)]
+        devices = [{"index": 0, "vram_total_gb": 40.0, "vram_used_gb": 2.0}]
+        assert hw._with_mig_instance_memory(devices) == devices
+        assert calls["torch"] == 0
+
+
+def test_cli_rows_retire_an_old_nvml_inventory(host, monkeypatch):
+    # MIG was on (NVML rows cached), then disabled: the CLI now reports whole cards.
+    host([(GPU0, []), (GPU1, [])], [39000, 30000], None)
+    monkeypatch.setattr(LlamaCppBackend, "_NVML_ROWS", [dict(r) for r in MIXED_NVML])
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", GPU0)
+    assert LlamaCppBackend._get_gpu_memory() == [(0, 39000, A100_MIB)]
+    assert LlamaCppBackend._NVML_ROWS == []
+    assert LlamaCppBackend._pinned_child_visibility([0]) == "0"
