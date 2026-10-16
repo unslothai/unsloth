@@ -315,7 +315,8 @@ def quantize_text_encoders(
         return outcome
     held = f"text_encoder_4 is {te4_scheme}" if te4_scheme else "text_encoder_4 stayed dense bf16"
     reason = f"{outcome.reason}; {held}" if outcome.reason else held
-    return outcome._replace(reason = reason, status = RESOLVED_FELL_BACK)
+    # The fourth conditioner is not on the scheme the rest took: a mixed build, which an explicit request refuses.
+    return outcome._replace(reason = reason, status = RESOLVED_FELL_BACK, partial = True)
 
 
 def _quantize_text_encoders(

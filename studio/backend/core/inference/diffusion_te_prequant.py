@@ -1170,6 +1170,8 @@ def _te_prequant_pipe_kwargs(
     those shards out of the prefetch, so assembly would die on a missing shard instead."""
     unavailable: list[str] = []
     unbudgeted: list[str] = []
+    built_failed: dict[str, str] = {}
+    refusal: Optional[str] = None
     failures: list = []
     cause = ""
     try:
@@ -1231,6 +1233,11 @@ def _te_prequant_pipe_kwargs(
                     trim_lm_head = trim,
                     failures = failures,
                 )
+            if encoder is None and _picked_automatically(te_quant_mode) and te_prequant_sources_confirmed(
+                {component: source}
+            ):
+                # The file is there but did not build: the plan priced it, not the dense encoder.
+                built_failed[component] = getattr(source, "filename", None) or str(source.location)
             if encoder is not None:
                 injected[component] = encoder
             elif int8_convrot_te_runs_on(target):
@@ -1241,8 +1248,31 @@ def _te_prequant_pipe_kwargs(
                 unavailable.append(component)
                 cause = f" ({failures[-1]})" if failures else cause
         if not unavailable and not unbudgeted:
+            if built_failed and logger is not None:
+                # Dense shards already cached off MPS: the cached-plan path priced max(file, scanned dense), so the
+                # dense encoder is inside the plan.
+                logger.warning(
+                    "diffusion.te_prequant: automatic %s %s for %s is present but could not be loaded%s; loading the "
+                    "cached dense encoder, which the memory plan covered",
+                    mode,
+                    ", ".join(built_failed.values()),
+                    base,
+                    cause,
+                )
             return injected
-        if _picked_automatically(te_quant_mode) and _fetch_dense_components(
+        uncovered = [c for c in unbudgeted + unavailable if c in built_failed]
+        if uncovered:
+            # A confirmed automatic file that fails to build: the memory plan was sized for it (te_prequant_budget_scale,
+            # _precast_text_encoder_mib), and the dense encoder is not covered (not cached, or MPS, where the plan never
+            # takes the dense shards). Loading it anyway would overrun the plan after the resident model was evicted.
+            names = ", ".join(f"{built_failed[c]} ({c})" for c in uncovered)
+            refusal = (
+                f"The hosted pre-quantized text encoder {names} for {base} is present but could not be "
+                f"loaded{cause}. This load was sized for it, so the larger dense encoder is not loaded in its "
+                "place. Set Text encoder precision to Dense (bf16) to load the dense encoder instead, or delete "
+                "the cached file so it is downloaded again."
+            )
+        elif _picked_automatically(te_quant_mode) and _fetch_dense_components(
             dense_source or base,
             unavailable + unbudgeted,
             hf_token = hf_token,
@@ -1262,6 +1292,8 @@ def _te_prequant_pipe_kwargs(
     except Exception as exc:  # noqa: BLE001 - injection is an optimisation, never a blocker
         _warn(logger, "pipe_kwargs", exc)
         return {}
+    if refusal is not None:
+        raise RuntimeError(refusal)
     if unbudgeted:
         raise RuntimeError(
             f"The pre-quantized {', '.join(unbudgeted)} for {base} could not be loaded{cause}. The "

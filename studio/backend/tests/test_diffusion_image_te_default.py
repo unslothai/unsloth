@@ -946,3 +946,144 @@ def test_dense_shards_in_the_import_time_root_count_as_cached(monkeypatch, tmp_p
     _cache_file(other, "Qwen/Qwen-Image", "text_encoder/config.json")
     assert tpq._dense_component_cached("Qwen/Qwen-Image", "text_encoder")
     assert not tpq._dense_component_cached("Qwen/Qwen-Image", "vae")
+
+
+# ---- review round 5 ---------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "te4_scheme, te4_runtime", [("fp8", None), (None, "fp8"), (None, None)]
+)
+def test_hidream_fourth_encoder_off_the_scheme_is_partial(monkeypatch, te4_scheme, te4_runtime):
+    import core.inference.diffusion_precision as prec
+
+    monkeypatch.setattr(prec, "te_quant_supported", lambda *a, **k: True)
+    out = prec.quantize_text_encoders(
+        _hidream_pipe("int8", te4_scheme, te4_runtime), CUDA_BF16, mode = "int8", family = "hidream-i1"
+    )
+    assert out.mode == "int8" and out.status == prec.RESOLVED_FELL_BACK and out.partial is True
+
+
+def _failing_build(monkeypatch, *, confirmed, dense_cached, fetched):
+    import huggingface_hub
+
+    import core.inference.media_locality as ml
+
+    monkeypatch.setattr(tpq, "load_prequant_text_encoder", lambda *a, **k: None)
+    monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda sources: confirmed)
+    monkeypatch.setattr(tpq, "_dense_component_cached", lambda *a, **k: dense_cached)
+    monkeypatch.setattr(ml, "_hosted_component_cached", lambda *a, **k: dense_cached)
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda repo, **k: fetched.append(repo) or repo)
+
+
+@pytest.mark.parametrize("target", [CUDA_BF16, MPS_TARGET], ids = ["cuda", "mps"])
+def test_a_confirmed_automatic_file_that_fails_to_build_refuses_when_dense_is_not_covered(target, monkeypatch):
+    fetched = []
+    _failing_build(monkeypatch, confirmed = True, dense_cached = False, fetched = fetched)
+    fam = _fam("krea-2")
+    mode, _ = resolve_te_quant_request(None, fam.te_quant_auto)
+    with pytest.raises(RuntimeError, match = "Krea-2-Turbo-text_encoder-INT8-ConvRot.safetensors.*Dense \\(bf16\\)"):
+        tpq.te_prequant_pipe_kwargs(
+            fam, fam.base_repo, te_quant_mode = mode, target = target, dtype = None, dense_source = fam.base_repo
+        )
+    assert fetched == []
+
+
+def test_a_confirmed_automatic_file_that_fails_to_build_loads_cached_dense_the_plan_covered(monkeypatch):
+    fetched = []
+    _failing_build(monkeypatch, confirmed = True, dense_cached = True, fetched = fetched)
+    fam = _fam("krea-2")
+    mode, _ = resolve_te_quant_request(None, fam.te_quant_auto)
+    out = tpq.te_prequant_pipe_kwargs(
+        fam, fam.base_repo, te_quant_mode = mode, target = CUDA_BF16, dtype = None, dense_source = fam.base_repo
+    )
+    assert out == {} and fetched == []
+
+
+@pytest.mark.parametrize("target", [CUDA_BF16, MPS_TARGET], ids = ["cuda", "mps"])
+def test_an_unconfirmed_automatic_file_still_falls_back_to_dense(target, monkeypatch):
+    # the plan budgeted dense for an unconfirmed file, so the dense fetch is inside it
+    fetched = []
+    _failing_build(monkeypatch, confirmed = False, dense_cached = False, fetched = fetched)
+    fam = _fam("krea-2")
+    mode, _ = resolve_te_quant_request(None, fam.te_quant_auto)
+    out = tpq.te_prequant_pipe_kwargs(
+        fam, fam.base_repo, te_quant_mode = mode, target = target, dtype = None, dense_source = fam.base_repo
+    )
+    assert out == {} and fetched == [fam.base_repo]
+
+
+# te_prequant_budget_scale on the merge base (origin/main 6583ae4de8) for every family with a hosted encoder,
+# request (unset resolved through that tree's own te_quant_auto, fp8, int8) and device; computed by
+# running te_prequant_budget_scale there with fp8 support on CUDA only.
+_ORIGIN_MAIN_BUDGET_SCALE = {
+    "flux.1|fp8|cuda": 0.65,
+    "flux.1|fp8|mps": 1.0,
+    "flux.1|int8|cuda": 1.0,
+    "flux.1|int8|mps": 1.0,
+    "flux.1|unset|cuda": 1.0,
+    "flux.1|unset|mps": 1.0,
+    "flux.2-dev|fp8|cuda": 0.65,
+    "flux.2-dev|fp8|mps": 1.0,
+    "flux.2-dev|int8|cuda": 1.0,
+    "flux.2-dev|int8|mps": 1.0,
+    "flux.2-dev|unset|cuda": 1.0,
+    "flux.2-dev|unset|mps": 1.0,
+    "hidream-i1|fp8|cuda": 1.0,
+    "hidream-i1|fp8|mps": 1.0,
+    "hidream-i1|int8|cuda": 1.0,
+    "hidream-i1|int8|mps": 1.0,
+    "hidream-i1|unset|cuda": 1.0,
+    "hidream-i1|unset|mps": 1.0,
+    "hunyuanimage-2.1|fp8|cuda": 0.65,
+    "hunyuanimage-2.1|fp8|mps": 1.0,
+    "hunyuanimage-2.1|int8|cuda": 1.0,
+    "hunyuanimage-2.1|int8|mps": 1.0,
+    "hunyuanimage-2.1|unset|cuda": 1.0,
+    "hunyuanimage-2.1|unset|mps": 1.0,
+    "krea-2|fp8|cuda": 0.65,
+    "krea-2|fp8|mps": 1.0,
+    "krea-2|int8|cuda": 1.0,
+    "krea-2|int8|mps": 1.0,
+    "krea-2|unset|cuda": 1.0,
+    "krea-2|unset|mps": 1.0,
+    "lumina-2|fp8|cuda": 0.65,
+    "lumina-2|fp8|mps": 1.0,
+    "lumina-2|int8|cuda": 1.0,
+    "lumina-2|int8|mps": 1.0,
+    "lumina-2|unset|cuda": 1.0,
+    "lumina-2|unset|mps": 1.0,
+    "qwen-image-2.1|fp8|cuda": 0.65,
+    "qwen-image-2.1|fp8|mps": 1.0,
+    "qwen-image-2.1|int8|cuda": 0.65,
+    "qwen-image-2.1|int8|mps": 0.56,
+    "qwen-image-2.1|unset|cuda": 0.65,
+    "qwen-image-2.1|unset|mps": 0.56,
+    "qwen-image|fp8|cuda": 0.65,
+    "qwen-image|fp8|mps": 1.0,
+    "qwen-image|int8|cuda": 1.0,
+    "qwen-image|int8|mps": 1.0,
+    "qwen-image|unset|cuda": 1.0,
+    "qwen-image|unset|mps": 1.0,
+    "z-image|fp8|cuda": 0.65,
+    "z-image|fp8|mps": 1.0,
+    "z-image|int8|cuda": 1.0,
+    "z-image|int8|mps": 1.0,
+    "z-image|unset|cuda": 1.0,
+    "z-image|unset|mps": 1.0,
+}
+
+
+@pytest.mark.parametrize("key", sorted(_ORIGIN_MAIN_BUDGET_SCALE))
+def test_no_pick_budgets_above_origin_main_with_the_file_confirmed(key, monkeypatch):
+    import core.inference.diffusion_precision as prec
+
+    name, req, device = key.split("|")
+    monkeypatch.delenv("UNSLOTH_TE_KEEP_LM_HEAD", raising = False)
+    monkeypatch.setattr(prec, "te_quant_supported", lambda target, mode: getattr(target, "device", None) == "cuda")
+    monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda sources: True)
+    fam = _fam(name)
+    mode, _ = resolve_te_quant_request(None if req == "unset" else req, fam.te_quant_auto)
+    target = CUDA_BF16 if device == "cuda" else MPS_TARGET
+    scale = tpq.te_prequant_budget_scale(fam, te_quant_mode = mode, target = target, base = fam.base_repo)
+    assert scale <= _ORIGIN_MAIN_BUDGET_SCALE[key] + 1e-9
