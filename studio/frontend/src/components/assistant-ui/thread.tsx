@@ -2594,8 +2594,16 @@ const ThreadComposerDock: FC<{
         observedFooter = footer;
       }
       const dockRect = dock.getBoundingClientRect();
-      const inset = footer
-        ? composerInsetFromColumn(footer.getBoundingClientRect(), dockRect)
+      const footerRect = footer?.getBoundingClientRect();
+      // The footer scrolls sideways with the content; the composer does not.
+      const inset = footerRect
+        ? composerInsetFromColumn(
+            {
+              left: footerRect.left + viewport.scrollLeft,
+              right: footerRect.right + viewport.scrollLeft,
+            },
+            dockRect,
+          )
         : composerColumnInset(readViewportBox(viewport), dockRect);
       inner.style.setProperty("--composer-dock-inset-left", `${inset.left}px`);
       inner.style.setProperty("--composer-dock-inset-right", `${inset.right}px`);
