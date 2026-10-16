@@ -221,17 +221,9 @@ export function fitsDevice(opts: {
   return requireKnown ? false : true;
 }
 
-// Prequantized formats a chat load may rebuild as bnb 4-bit (weight-only packed schemes). fp8 is
-// not: Studio never requests the explicit 4-bit that fp8 -> NF4 needs.
-const BNB_REBUILT_QUANTS = new Set([
-  "compressed-tensors",
-  "compressed_tensors",
-  "sparseml",
-]);
-
-/** A safetensors chat load on a discrete GPU runs in transformers, either as a prequantized
- *  checkpoint stored or as bnb 4-bit at the row badge's estimate. `raise_if_offloaded` refuses CPU
- *  offload, except that one CUDA / ROCm card block-swaps 16-bit or bnb layers into host RAM. */
+/** A safetensors load on a discrete GPU: a prequantized checkpoint as stored (Studio rebuilds none
+ *  of them as bnb), anything else at the row badge's 4-bit estimate. `raise_if_offloaded` refuses
+ *  CPU offload, except that one CUDA / ROCm card block-swaps 16-bit or bnb layers into host RAM. */
 function fitsTransformersLoad(
   model: { totalParams: number; estimatedSizeBytes?: number; quantMethod?: string },
   gpu: { memoryTotalGb: number; systemRamAvailableGb: number; backend?: string },
@@ -244,18 +236,13 @@ function fitsTransformersLoad(
       : 0;
   const fits = (requiredGb: number, budgetGb: number) =>
     checkVramFit(requiredGb, budgetGb) !== "exceeds";
-  const bnbGb = estimateLoadingVram(model.totalParams, "qlora");
+  if (!quant)
+    return fits(estimateLoadingVram(model.totalParams, "qlora"), gpu.memoryTotalGb + swapGb);
   const storedBytes =
     model.estimatedSizeBytes ?? estimateQuantBytes(model.totalParams);
-  const storedGb = storedBytes / 1024 ** 3 + LOADING_OVERHEAD_GB;
-  if (
-    quant &&
-    fits(storedGb, gpu.memoryTotalGb + (quant === "bitsandbytes" ? swapGb : 0))
-  )
-    return true;
-  return (
-    (!quant || BNB_REBUILT_QUANTS.has(quant)) &&
-    fits(bnbGb, gpu.memoryTotalGb + swapGb)
+  return fits(
+    storedBytes / 1024 ** 3 + LOADING_OVERHEAD_GB,
+    gpu.memoryTotalGb + (quant === "bitsandbytes" ? swapGb : 0),
   );
 }
 

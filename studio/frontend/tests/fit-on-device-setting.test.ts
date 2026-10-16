@@ -97,8 +97,8 @@ test("a safetensors row on a discrete GPU is sized like its badge, with RAM only
   assert.equal(hfModelFitsDevice(row("org/m-70B", 70e9), cuda, { gpuCount: 1 }), true);
   assert.equal(hfModelFitsDevice(row("org/m-70B", 70e9), { ...cuda, backend: "rocm" }), true);
   assert.equal(hfModelFitsDevice(row("org/m-120B", 120e9), cuda, { gpuCount: 1 }), false);
-  // A prequantized checkpoint loads as stored (23e9 B is 21.4 GiB), where only bnb block-swaps, or
-  // rebuilt as bnb 4-bit, which block-swaps too.
+  // A prequantized checkpoint loads as stored (23e9 B is 21.4 GiB), never rebuilt as bnb 4-bit; only
+  // a bnb one block-swaps.
   const prequant = (quantMethod: string, bytes: number) => ({
     ...row("org/m-32B", 32e9),
     quantMethod,
@@ -107,8 +107,7 @@ test("a safetensors row on a discrete GPU is sized like its badge, with RAM only
   assert.equal(hfModelFitsDevice(prequant("mxfp4", 23e9), xpu), true);
   assert.equal(hfModelFitsDevice(prequant("mxfp4", 40e9), cuda), false);
   assert.equal(hfModelFitsDevice(prequant("bitsandbytes", 40e9), cuda), true);
-  assert.equal(hfModelFitsDevice(prequant("compressed-tensors", 100e9), cuda), true);
-  assert.equal(hfModelFitsDevice(prequant("fp8", 100e9), cuda), false);
+  assert.equal(hfModelFitsDevice(prequant("compressed-tensors", 100e9), cuda), false);
   // With no byte size, a packed checkpoint is sized as the smallest quant, not the bnb rebuild.
   assert.equal(hfModelFitsDevice({ ...row("org/m-32B", 32e9), quantMethod: "gptq" }, xpu), true);
   // Host pools, MLX ids, Images / Video rows and GGUF keep the quant rule.
