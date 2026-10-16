@@ -3223,6 +3223,13 @@ def _patch_sentence_transformer_trainer():
                     if hasattr(self.args, "fp16_full_eval"):
                         self.args.fp16_full_eval = False
 
+        if os.environ.get("UNSLOTH_LOG_MFU", "0") == "1":
+            try:
+                from ..utils.mfu import add_mfu_callback
+                add_mfu_callback(self)
+            except Exception as exc:
+                print(f"Unsloth: could not enable MFU logging ({exc}).")
+
     SentenceTransformerTrainer.__init__ = _patched_init
     SentenceTransformerTrainer._unsloth_auto_compile_patched = True
 

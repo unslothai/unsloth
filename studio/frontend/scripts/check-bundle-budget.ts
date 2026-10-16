@@ -176,13 +176,33 @@ export const BUDGET = {
   // 95), with no single import doing it: Deep research under Tools in the + menu (#13959) took main over, and
   // the connection name and provider menu order (#13964) and the attachment card polish (#13970) add the rest.
   // Raised by that growth so main's margin stays where it was.
-  // R6V3 virtual-history startup budget. Fork PR #38: 106 eager chunks,
-  // 6,644.2 KiB raw and 2,004.3 KiB transfer (15 October 2026).
-  // The virtualizer and expensive tool cards stay lazy; eager growth comes
-  // from chat preferences, menu modes and their English UI strings.
-  // These thresholds carry modest build headroom; remeasure in this CI.
-  transferBytes: 2_065_000,
-  rawBytes: 6_820_000,
+  // The Hub fit filter sizing safetensors rows the way transformers loads them adds 497 B raw / 184 B transfer
+  // (6,791,768 -> 6,792,265 B raw, 2,037,833 -> 2,038,017 B transfer against 23bbee09b1, one machine and build,
+  // Node 26, chunk count unchanged at 95). A synchronous predicate in a module already in the startup set, so
+  // nothing to lazy-load; raised by that growth.
+  // Seven Studio merges after 17901061d1 add 5,031 B raw / 1,798 B transfer (6,791,768 -> 6,796,799 B raw,
+  // 2,042,404 -> 2,044,202 B transfer from 17901061d1 to 6106de938c, one machine and build, Node 24, chunk count
+  // unchanged at 95), measured commit by commit. The two largest steps are inline chat markdown tables with
+  // their hover controls and expand dialog (#13973, +2,561 B raw / +1,063 B transfer, in the eager chat chunk)
+  // and Latest Unsloth Models ranking (#13969, +1,290 B raw / +445 B transfer); the composer alignment
+  // (#13965), the resizable hub split view (#13966) and the fit filter (#13945, already raised for above) add the
+  // rest. Set to the measured build plus the margin main had at 17901061d1 (160 B raw, 189 B transfer).
+  // Chat with files closing on its X, the app tooltips and the higher-contrast traces (#13989) add 1,339 B raw /
+  // 377 B transfer (6,796,799 -> 6,798,138 B raw, 2,044,202 -> 2,044,579 B transfer against 1574001bc1, one
+  // machine and build, Node 24, chunk count unchanged at 95). Raised by that growth so main's margin stays where
+  // it was.
+  // Three Studio merges since add 3,117 B raw / 1,058 B transfer (6,798,138 -> 6,801,255 B raw, 2,044,534 ->
+  // 2,045,592 B transfer from 4ebc263832~1 to d4e005e73e, one machine and build, Node 24, chunk count unchanged at
+  // 95). Nearly all of it is searching a model maker in the Model hub (#13998, +3,038 B raw / +1,000 B transfer):
+  // its owner-to-uploads search lives in use-hub-model-search, a hook the startup screen already loads, so there
+  // is no separate module to lazy-load. #13999 and #13993 add 79 B raw / 58 B transfer. Raised by that growth.
+  // R6V3 virtual-history startup allowance on top of current upstream main.
+  // Fork commit 3072264 measured 106 eager chunks, 6,645.0 KiB raw
+  // and 2,004.6 KiB transfer. Keep the virtualizer and tool cards lazy.
+  // Preserve upstream's latest measured thresholds, then add only the
+  // R6V3 allowance from its tested base. Remeasure this merged CI build.
+  transferBytes: 2_068_188,
+  rawBytes: 6_829_487,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

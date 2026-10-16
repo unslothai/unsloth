@@ -2378,7 +2378,8 @@ def run(
         help = (
             "Model path or HF repo. Accepts llama.cpp-style "
             "`org/repo:variant` syntax. `-hf` / `--hf-repo` match "
-            "llama-server's spelling."
+            "llama-server's spelling. An AMD Ryzen AI NPU model is "
+            "`lemonade:<id>` or its bare id, e.g. `qwen3-0.6b-FLM`."
         ),
     ),
     gguf_variant: Optional[str] = typer.Option(
@@ -2700,12 +2701,14 @@ def run(
             os.environ[_sampling_env] = str(_sampling_value)
 
     # Set before any re-exec. --log-verbose keeps llama-server's own -v passthrough working.
+    added_log_verbose = False
     if verbose:
         _enable_verbose_access_logs()
         if engine == "auto" and not any(
             a in ("--verbose", "-v", "--log-verbose") for a in extra_llama_args
         ):
             extra_llama_args.append("--log-verbose")
+            added_log_verbose = True
     if disable_dns_pinning:
         os.environ["UNSLOTH_STUDIO_DISABLE_DNS_PINNING"] = "1"
     else:
@@ -2735,8 +2738,23 @@ def run(
         )
         raise typer.Exit(2)
 
+    from unsloth_cli._npu import npu_model_path
+
+    # An NPU model's `lemonade:` prefix is not a llama.cpp `repo:variant` split.
+    npu_path = npu_model_path(model)
+    if npu_path:
+        if added_log_verbose:
+            extra_llama_args.remove("--log-verbose")
+        if gguf_variant or extra_llama_args or engine != "auto":
+            typer.echo(
+                "Error: NPU models run on FastFlowLM; --gguf-variant, --engine and "
+                "llama-server flags do not apply to them.",
+                err = True,
+            )
+            raise typer.Exit(2)
+        model = npu_path
     # Parse llama.cpp `repo:variant`; error if it disagrees with --gguf-variant.
-    parsed_repo, embedded_variant = _split_repo_variant(model)
+    parsed_repo, embedded_variant = (model, None) if npu_path else _split_repo_variant(model)
     if embedded_variant:
         if gguf_variant and gguf_variant != embedded_variant:
             typer.echo(
@@ -3001,6 +3019,30 @@ def run(
             # The engine otherwise gets one GPU, which makes pipeline / data a no-op.
             from utils.hardware.hardware import resolve_requested_gpu_ids
             gpu_ids = resolve_requested_gpu_ids(None)
+        if npu_path:
+            from unsloth_cli._npu import prepare_npu_model
+            def _npu_request(method, path, payload, timeout):
+                import urllib.request
+                request = urllib.request.Request(
+                    f"http://{_url_host(request_host)}:{actual_port}{path}",
+                    data = None if payload is None else json.dumps(payload).encode(),
+                    headers = {
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {api_key}",
+                    },
+                    method = method,
+                )
+                return _direct_urlopen(request, timeout = timeout)
+
+            try:
+                prepare_npu_model(
+                    _npu_request,
+                    model,
+                    (lambda _line: None) if silent else typer.echo,
+                )
+            except RuntimeError as exc:
+                typer.echo(f"Error: {exc}", err = True)
+                raise typer.Exit(1)
         if not silent:
             typer.echo(f"Loading model: {model}...")
         try:
@@ -3077,7 +3119,8 @@ def run(
             typer.echo(context_length_line)
         typer.echo(f"  API Key:      {api_key}")
         typer.echo("")
-        typer.echo("  OpenAI / Anthropic SDK base URL:")
+        # An NPU model serves /v1/chat/completions only: no Anthropic or streaming Responses example.
+        typer.echo("  OpenAI SDK base URL:" if npu_path else "  OpenAI / Anthropic SDK base URL:")
         typer.echo(f"    {sdk_base_url}")
         typer.echo("=" * 56)
         typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
@@ -3090,20 +3133,21 @@ def run(
             """    -d '{"messages": [{"role": "user", "content": "Hello"}], "stream": true}'"""
         )
         typer.echo("")
-        typer.echo("Anthropic Messages:")
-        typer.echo(f"  curl {sdk_base_url}/messages \\")
-        typer.echo(f'    -H "Authorization: Bearer {api_key}" \\')
-        typer.echo('    -H "Content-Type: application/json" \\')
-        typer.echo(
-            """    -d '{"max_tokens": 256, "messages": [{"role": "user", "content": "Hello"}], "stream": true}'"""
-        )
-        typer.echo("")
-        typer.echo("OpenAI Responses:")
-        typer.echo(f"  curl {sdk_base_url}/responses \\")
-        typer.echo(f'    -H "Authorization: Bearer {api_key}" \\')
-        typer.echo('    -H "Content-Type: application/json" \\')
-        typer.echo("""    -d '{"input": "Hello", "stream": true}'""")
-        typer.echo("")
+        if not npu_path:
+            typer.echo("Anthropic Messages:")
+            typer.echo(f"  curl {sdk_base_url}/messages \\")
+            typer.echo(f'    -H "Authorization: Bearer {api_key}" \\')
+            typer.echo('    -H "Content-Type: application/json" \\')
+            typer.echo(
+                """    -d '{"max_tokens": 256, "messages": [{"role": "user", "content": "Hello"}], "stream": true}'"""
+            )
+            typer.echo("")
+            typer.echo("OpenAI Responses:")
+            typer.echo(f"  curl {sdk_base_url}/responses \\")
+            typer.echo(f'    -H "Authorization: Bearer {api_key}" \\')
+            typer.echo('    -H "Content-Type: application/json" \\')
+            typer.echo("""    -d '{"input": "Hello", "stream": true}'""")
+            typer.echo("")
     else:
         if secure and _cf_url:
             typer.echo(f"URL:     {_cf_url}")

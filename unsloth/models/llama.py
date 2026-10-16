@@ -67,6 +67,7 @@ from .loader_utils import (
     _prepare_compressed_tensors_model,
     fsdp_will_wrap,
     fsdp2_keeps_fused_lora,
+    fsdp2_requested,
     planner_class_mismatch_reason,
     planner_model_class,
     planner_config_overrides,
@@ -84,6 +85,7 @@ from .loader_utils import (
     sync_load_when_quantizing,
     warn_if_bitsandbytes_quantized_nothing,
 )
+from .fsdp2_qlora import prepare_fsdp2_qlora, set_fsdp2_quant_storage
 from ..utils.packing import (
     get_packed_info_from_kwargs,
     mask_packed_boundary_labels,
@@ -144,7 +146,8 @@ from unsloth.models._attn_mask_compat import (
 )
 from transformers.cache_utils import DynamicCache, Cache
 from ..kernels import *
-from ..kernels.utils import _has_active_lora_bias, has_mxfp4_base
+from ..kernels.utils import has_mxfp4_base
+from ..kernels import fast_lora as _fast_lora
 from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
 from ..tokenizer_utils import *
 from ..context_parallel import get_cp_manager
@@ -1069,7 +1072,9 @@ def LlamaDecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, save_output = True)
+        hidden_states = fast_rms_layernorm(
+            self.input_layernorm, hidden_states, save_output = True, reuse_grad = True
+        )
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states = hidden_states,
             causal_mask = causal_mask,
@@ -1086,7 +1091,7 @@ def LlamaDecoderLayer_fast_forward(
 
         residual = hidden_states
         hidden_states = fast_rms_layernorm(
-            self.post_attention_layernorm, hidden_states, save_output = True
+            self.post_attention_layernorm, hidden_states, save_output = True, reuse_grad = True
         )
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
@@ -1417,13 +1422,31 @@ def LlamaModel_fast_forward(
         # had the attention refactor, so it always takes this path.
         # max_position_embeddings still sets the cache size and dtype as before, but only the rows
         # this batch (or the declared max_seq_length) can index are built, on this device only.
-        rope_rows = max(seq_length_with_past, getattr(self, "max_seq_length", None) or 0)
+        rope_len = max(seq_length_with_past, getattr(self, "max_seq_length", None) or 0)
+        rope_rows = rope_len
+        if position_ids is not None:
+            # Explicit positions (offsets, generate, packing) can index any row below
+            # max_position_embeddings; bounding them needs a host sync, so build them all as before.
+            rope_rows = max(rope_rows, self.config.max_position_embeddings)
         self.rotary_emb.extend_rope_embedding(
             hidden_states,
             self.config.max_position_embeddings,
             materialize_len = rope_rows,
         )
-        position_embeddings = self.rotary_emb.get_cached(rope_rows, hidden_states.device.index)
+        device_index = hidden_states.device.index
+        original = getattr(self.rotary_emb, "original_max_position_embeddings", None)
+        if (
+            position_ids is not None
+            and isinstance(self.rotary_emb, LongRopeRotaryEmbedding)
+            and rope_len <= original < rope_rows
+        ):
+            # transformers' longrope_frequency_update picks the factors from max(position_ids) + 1, a host
+            # sync it pays too; other models and LongRoPE without position_ids stay sync-free.
+            # Also under compile (one graph break): an in-graph choice would rebuild full-size hybrid
+            # tables every forward, and this forward is not compiled by Unsloth.
+            rope_len = max(rope_len, int(position_ids.max()) + 1)
+        # rope_rows only sizes the build; LongRoPE picks its short or long factors from rope_len.
+        position_embeddings = self.rotary_emb.get_cached(rope_len, device_index)
     else:
         position_embeddings = None
 
@@ -1497,10 +1520,16 @@ def LlamaModel_fast_forward(
             )(self.norm, hidden_states)
     elif IS_COHERE:
         hidden_states = self.norm(hidden_states)
-    elif IS_FALCON_H1:
-        hidden_states = fast_rms_layernorm(self.final_layernorm, hidden_states, gemma = IS_GEMMA)
     else:
-        hidden_states = fast_rms_layernorm(self.norm, hidden_states, gemma = IS_GEMMA)
+        # Only the CausalLM head may let the final norm overwrite its incoming grad: a base model
+        # hands this output to the caller, whose grad_outputs must stay intact.
+        reuse_grad = getattr(self, "_unsloth_head_reads_final_norm", False)
+        hidden_states = fast_rms_layernorm(
+            self.final_layernorm if IS_FALCON_H1 else self.norm,
+            hidden_states,
+            gemma = IS_GEMMA,
+            reuse_grad = reuse_grad,
+        )
 
     if output_hidden_states:
         all_hidden_states += (hidden_states,)
@@ -1724,6 +1753,19 @@ def apply_logit_transforms(logits, logit_softcapping, logit_scaling):
     return logits
 
 
+def _run_backbone(self, **kwargs):
+    # The CausalLM forward feeds the final norm's output to lm_head, the fused CE loss, or (with
+    # UNSLOTH_RETURN_HIDDEN_STATES, set only by Unsloth's GRPO / DPO / GKD trainers) their chunked
+    # lm_head loss; all return a fresh grad, so the norm may write dX over it. Returned
+    # hidden_states would let a caller own that grad, so they keep the norm's own buffer.
+    model = self.model
+    model._unsloth_head_reads_final_norm = not kwargs.get("output_hidden_states")
+    try:
+        return model(**kwargs)
+    finally:
+        model._unsloth_head_reads_final_norm = False
+
+
 def CausalLM_fast_forward(fast_forward_inference):
     def _CausalLM_fast_forward(
         self,
@@ -1780,7 +1822,8 @@ def CausalLM_fast_forward(fast_forward_inference):
                 return_dict if return_dict is not None else config_return_dict(self.config)
             )
             self.model._has_no_labels = labels is None
-            outputs = self.model(
+            outputs = _run_backbone(
+                self,
                 input_ids = input_ids,
                 causal_mask = causal_mask,
                 attention_mask = attention_mask,
@@ -2336,15 +2379,22 @@ class LlamaRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         # Rebuild inv_freq instead of reading the buffer: transformers v5 refills it with uninitialized
         # memory on models _fix_rope_inv_freq never sees, e.g. a PPO value / reward model loaded after
         # Unsloth patched the classes, so extend_rope_embedding built NaN or garbage cos/sin (#884).
-        self.inv_freq = self._unsloth_recompute_inv_freq().to(self.inv_freq.device)
+        inv_freq = self._unsloth_recompute_inv_freq()
+        self.inv_freq = inv_freq.to(self.inv_freq.device)
+        # The first cache built (and every device's copy of that size) is computed on CPU like the eager
+        # __init__ build was, even when the first forward already grew the size, so the first forward's
+        # peak memory does not rise; later growth computes on inv_freq's device as before.
+        version = getattr(self, "_rope_cache_version", 0)
+        if getattr(self, "_rope_cache_cpu_version", None) is None:
+            self._rope_cache_cpu_version = version
+        if version != self._rope_cache_cpu_version:
+            inv_freq = self.inv_freq
         # The original Llama codebase creates these on the target device in FP32 and multiplies in FP32.
         self.current_rope_size = seq_len
-        t = torch.arange(
-            self.current_rope_size, device = self.inv_freq.device, dtype = torch.int64
-        ).float()
+        t = torch.arange(self.current_rope_size, device = inv_freq.device, dtype = torch.int64).float()
         t = self._apply_time_scaling(t)
 
-        freqs = torch.outer(t, self.inv_freq)
+        freqs = torch.outer(t, inv_freq)
         # Different from the paper, but it uses a different permutation to obtain the same calculation.
         emb = torch.cat((freqs, freqs), dim = -1)
         # Applied here so attention_scaling survives extend_rope_embedding rebuilds; the 1.0 default
@@ -2715,8 +2765,8 @@ def _fused_lora_skip_reason(
     conditions mirror the fused-kernel gate in patch_peft_model.
     """
     reasons = []
-    if lora_dropout != 0:
-        reasons.append(f"lora_dropout = {lora_dropout}")
+    if lora_dropout != 0 and not _fast_lora.FUSED_LORA_DROPOUT:
+        reasons.append(f"lora_dropout = {lora_dropout} with UNSLOTH_FUSED_LORA_DROPOUT=0")
     if bias != "none":
         reasons.append(f"bias = '{bias}'")
     if float32_base:
@@ -3509,6 +3559,10 @@ class FastLlamaModel:
                 bnb_4bit_compute_dtype = dtype,
                 llm_int8_skip_modules = llm_int8_skip_modules,
             )
+            if fsdp2_requested():
+                # FSDP2 shards packed 4-bit bytes only in a float storage dtype; the compute dtype makes its
+                # mixed precision cast of them a no-op.
+                set_fsdp2_quant_storage(bnb_config, dtype)
             # Pre-quantized checkpoints use the quantization_config baked into config.json, ignoring our
             # runtime BitsAndBytesConfig, so merge our skip list into it to keep task heads like `score` in
             # compute dtype (#5027).
@@ -3707,6 +3761,8 @@ class FastLlamaModel:
                     dtype = dtype,
                 )
                 _prepare_compressed_tensors_model(model)
+                if fsdp2_requested():
+                    prepare_fsdp2_qlora(model, dtype)
                 model.fast_generate = make_fast_generate_wrapper(model.generate)
                 model.fast_generate_batches = None
             else:
@@ -4273,7 +4329,7 @@ class FastLlamaModel:
         SUPPORTS_LOFTQ = "loftq_config" in signature
         SUPPORTS_RSLORA = "use_rslora" in signature
 
-        if lora_dropout != 0:
+        if lora_dropout != 0 and not _fast_lora.FUSED_LORA_DROPOUT:
             logger.warning_once(
                 f"Unsloth: Dropout = 0 is supported for fast patching. You are using dropout = {lora_dropout}.\n"
                 f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
@@ -4786,7 +4842,7 @@ class FastLlamaModel:
         fused_lora_declined_for_fsdp = fsdp_will_wrap() and not fsdp2_keeps_fused_lora()
 
         if (
-            lora_dropout == 0
+            (lora_dropout == 0 or _fast_lora.FUSED_LORA_DROPOUT)
             and bias == "none"
             and not float32_base
             and not fused_lora_declined_for_fsdp
@@ -4812,9 +4868,9 @@ class FastLlamaModel:
                         and (len(getattr(down_proj, "lora_magnitude_vector", []) or []) == 0)
                         and not has_mxfp4_base(gate_proj, up_proj, down_proj)
                         and not _has_packed_base(gate_proj, up_proj, down_proj)
-                        and not _has_active_lora_bias(gate_proj)
-                        and not _has_active_lora_bias(up_proj)
-                        and not _has_active_lora_bias(down_proj)
+                        and not _fast_lora.lora_bias_blocks_fused(gate_proj)
+                        and not _fast_lora.lora_bias_blocks_fused(up_proj)
+                        and not _fast_lora.lora_bias_blocks_fused(down_proj)
                     ):
                         # MethodType binds the replacement; see stackoverflow.com/questions/50599045.
                         if hasattr(mlp_module, "_unsloth_forward"):
@@ -4846,9 +4902,9 @@ class FastLlamaModel:
                     and (len(getattr(v_proj, "lora_magnitude_vector", []) or []) == 0)
                     and not has_mxfp4_base(q_proj, k_proj, v_proj)
                     and not _has_packed_base(q_proj, k_proj, v_proj)
-                    and not _has_active_lora_bias(q_proj)
-                    and not _has_active_lora_bias(k_proj)
-                    and not _has_active_lora_bias(v_proj)
+                    and not _fast_lora.lora_bias_blocks_fused(q_proj)
+                    and not _fast_lora.lora_bias_blocks_fused(k_proj)
+                    and not _fast_lora.lora_bias_blocks_fused(v_proj)
                 ):
                     layer.self_attn.apply_qkv = apply_lora_qkv
                     n_qkv += 1
@@ -4868,7 +4924,7 @@ class FastLlamaModel:
                     and (len(getattr(o_proj, "lora_magnitude_vector", []) or []) == 0)
                     and not has_mxfp4_base(o_proj)
                     and not _has_packed_base(o_proj)
-                    and not _has_active_lora_bias(o_proj)
+                    and not _fast_lora.lora_bias_blocks_fused(o_proj)
                 ):
                     layer.self_attn.apply_o = apply_lora_o
                     n_o += 1

@@ -123,3 +123,25 @@ def test_oom_log_reports_the_cap_not_disabled(monkeypatch, capsys):
     model = _OOMOnceModel(RuntimeError("kernel rejected the packed layout"))
     harness._run_packed_block(model = model, UNSLOTH_ENABLE_LOGGING = True)
     assert "disabled (fell back to padded)" in capsys.readouterr().out
+
+
+def test_capped_batch_skips_packing_prep(monkeypatch):
+    # A batch at or above the OOM cap decides from the host lengths alone: no flatten of the ids,
+    # no completion mask and no active-row read (each costs GPU work or a sync).
+    model = _OOMOnceModel(torch.cuda.OutOfMemoryError("CUDA out of memory"))
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    ns, *_ = harness._run_packed_block(model = model)
+    assert model._unsloth_seq_packing_nograd_unsafe_T == ns["_pk_T"]
+
+    ns, _, input_ids, _ = harness._run_packed_block(model = model)
+    assert ns["_pk_use"] is False
+    assert ns["_pk_T"] == int((input_ids != harness.PAD_ID).sum())
+    for name in ("_pk_flat", "_pk_cmask", "_pk_active"):
+        assert name not in ns, name
+
+    # Below the cap the prep runs as before.
+    monkeypatch.setattr(harness, "_batch", _shorter_batch)
+    ns, *_ = harness._run_packed_block(model = model)
+    assert ns["_pk_use"] is True
+    assert ns["_pk_flat"].shape[1] == ns["_pk_T"]
+    assert "_pk_active" in ns
