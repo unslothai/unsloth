@@ -115,6 +115,8 @@ def _get_task(conn: sqlite3.Connection, task_id: str) -> Optional[dict]:
 def list_tasks() -> list[dict]:
     conn = get_connection()
     try:
+        # One snapshot for the tasks and their last runs.
+        conn.execute("BEGIN")
         rows = conn.execute(
             "SELECT * FROM scheduled_tasks ORDER BY created_at DESC, rowid DESC"
         ).fetchall()
@@ -126,6 +128,7 @@ def list_tasks() -> list[dict]:
 def get_task(task_id: str) -> Optional[dict]:
     conn = get_connection()
     try:
+        conn.execute("BEGIN")
         return _get_task(conn, task_id)
     finally:
         conn.close()
@@ -524,6 +527,9 @@ def activity(since: Optional[int]) -> dict:
     """
     conn = get_connection()
     try:
+        # One snapshot: a run that settles between two separate reads would be in neither, not
+        # finished in the first and no longer active in the second.
+        conn.execute("BEGIN")
         runs: list[dict] = []
         more = False
         if since is not None:

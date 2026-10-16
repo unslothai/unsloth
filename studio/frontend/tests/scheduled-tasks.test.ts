@@ -324,10 +324,11 @@ test("the client reaches every scheduled task route", async () => {
   const c = client((path, init) =>
     init?.method === "DELETE"
       ? new Response(null, { status: 204 })
-      : Response.json(path === "/api/scheduled-tasks" && !init?.method ? { tasks: [] } : {}),
+      : Response.json(path === "/api/scheduled-tasks" && !init?.method ? { tasks: [], now: 7 } : {}),
   );
   const schedule: TaskSchedule = { kind: "daily", time: "09:00" };
-  await c.api.listScheduledTasks();
+  // The server's clock comes with the list, for timing refreshes by.
+  assert.deepEqual(await c.api.listScheduledTasks(), { tasks: [], now: 7 });
   await c.api.createScheduledTask({ title: "Brief", prompt: "Hi", schedule, timezone: "UTC" });
   await c.api.updateScheduledTask("a/b", { enabled: false });
   assert.equal(await c.api.deleteScheduledTask("t1"), undefined);

@@ -23,6 +23,8 @@ function announceChange(): void {
 
 interface ScheduledTasksState {
   tasks: ScheduledTask[];
+  /** The server's clock less this browser's, as of the last refresh: task times are the server's. */
+  serverOffset: number;
   status: "idle" | "loading" | "ready" | "error";
   error: string | null;
   refresh: () => Promise<void>;
@@ -56,15 +58,21 @@ export const useScheduledTasksStore = create<ScheduledTasksState>()((set, get) =
 
   return {
     tasks: [],
+    serverOffset: 0,
     status: "idle",
     error: null,
     refresh: async () => {
       const generation = ++refreshGeneration;
       if (get().status === "idle") set({ status: "loading" });
       try {
-        const tasks = await listScheduledTasks();
+        const list = await listScheduledTasks();
         if (generation !== refreshGeneration) return;
-        set({ tasks, status: "ready", error: null });
+        set({
+          tasks: list.tasks,
+          serverOffset: list.now - Date.now(),
+          status: "ready",
+          error: null,
+        });
       } catch (error) {
         if (generation !== refreshGeneration) return;
         set({
@@ -111,6 +119,6 @@ if (typeof window !== "undefined") {
   // The store is module state, so a sign-out must drop it or the next account sees these tasks.
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
     refreshGeneration += 1;
-    useScheduledTasksStore.setState({ tasks: [], status: "idle", error: null });
+    useScheduledTasksStore.setState({ tasks: [], serverOffset: 0, status: "idle", error: null });
   });
 }

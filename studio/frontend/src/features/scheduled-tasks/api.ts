@@ -87,8 +87,14 @@ function taskPath(id: string, suffix = ""): string {
   return `/${encodeURIComponent(id)}${suffix}`;
 }
 
-export async function listScheduledTasks(): Promise<ScheduledTask[]> {
-  return (await request<{ tasks: ScheduledTask[] }>("")).tasks;
+export interface ScheduledTaskList {
+  tasks: ScheduledTask[];
+  /** The server's clock, which `nextRunAt` and the run times are on. */
+  now: number;
+}
+
+export function listScheduledTasks(): Promise<ScheduledTaskList> {
+  return request("");
 }
 
 export function createScheduledTask(input: ScheduledTaskInput): Promise<ScheduledTask> {

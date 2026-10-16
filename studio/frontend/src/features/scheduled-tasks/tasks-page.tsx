@@ -306,7 +306,9 @@ export function TasksPage() {
       remove: state.remove,
     })),
   );
-  const now = useMinuteClock();
+  // On the server's clock, as task and run times are.
+  const serverOffset = useScheduledTasksStore((state) => state.serverOffset);
+  const now = useMinuteClock() + serverOffset;
   // undefined: closed; null: creating a new task.
   const [editing, setEditing] = useState<ScheduledTask | null | undefined>(undefined);
   const [deleting, setDeleting] = useState<ScheduledTask | null>(null);
@@ -373,7 +375,9 @@ export function TasksPage() {
   );
   useEffect(() => {
     if (soonest === null) return;
-    const delay = Math.max(1_000, soonest - Date.now() + 2_000);
+    // Read, not subscribed to: the offset moves a little with every refresh.
+    const serverNow = Date.now() + useScheduledTasksStore.getState().serverOffset;
+    const delay = Math.max(1_000, soonest - serverNow + 2_000);
     // Further out than a timer can wait; the minute clock re-renders long before it matters.
     if (delay > 2 ** 31 - 1) return;
     // Then again every few seconds while the task is still due: the scheduler may be busy with

@@ -92,6 +92,9 @@ class ScheduledTask(BaseModel):
 
 class ScheduledTaskList(BaseModel):
     tasks: list[ScheduledTask]
+    # The server's clock, which nextRunAt and the run times are on: a client times its refreshes
+    # from it rather than from its own.
+    now: int
 
 
 class ScheduledTaskActivity(BaseModel):
@@ -129,7 +132,7 @@ def _wake_scheduler(request: Request) -> None:
 
 @router.get("", response_model = ScheduledTaskList)
 def list_scheduled_tasks(current_subject: str = Depends(get_current_subject)):
-    return {"tasks": [_response(task) for task in db.list_tasks()]}
+    return {"tasks": [_response(task) for task in db.list_tasks()], "now": db.now_ms()}
 
 
 @router.post("", status_code = 201, response_model = ScheduledTask)

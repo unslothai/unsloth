@@ -35,18 +35,25 @@ interface UnseenState extends Stored {
   clearPage: () => void;
 }
 
-function load(): Stored {
+const NOTHING_UNSEEN: Stored = { tasks: {}, page: false };
+
+/** The account's stored record, or null when there is none to read: signed out, or no storage. */
+function stored(): Stored | null {
   const key = storageKey();
-  if (key === null) return { tasks: {}, page: false };
+  if (key === null) return null;
   try {
     const value = JSON.parse(localStorage.getItem(key) ?? "null") as Partial<Stored> | null;
     if (value && typeof value.tasks === "object" && value.tasks !== null) {
       return { tasks: value.tasks, page: value.page === true };
     }
+    return NOTHING_UNSEEN;
   } catch {
-    // Unreadable storage starts with nothing unseen.
+    return null;
   }
-  return { tasks: {}, page: false };
+}
+
+function load(): Stored {
+  return stored() ?? NOTHING_UNSEEN;
 }
 
 function save({ tasks, page }: Stored): void {
@@ -60,30 +67,39 @@ function save({ tasks, page }: Stored): void {
 }
 
 export const useUnseenScheduledRuns = create<UnseenState>()((set, get) => {
-  const update = (next: Stored) => {
+  // Each change starts from the stored record, not this tab's copy, which another tab of the
+  // account may have changed since: written back, a stale copy would bring back markers that tab
+  // cleared, or drop ones it added. Without storage the copy is all there is.
+  const change = (apply: (current: Stored) => Stored | null) => {
+    const current = stored() ?? { tasks: get().tasks, page: get().page };
+    const next = apply(current) ?? current;
     set(next);
-    save(next);
+    if (next !== current) save(next);
+  };
+  const withoutTask = (current: Stored, taskId: string | undefined): Stored | null => {
+    if (taskId === undefined || !(taskId in current.tasks)) return null;
+    const tasks = { ...current.tasks };
+    delete tasks[taskId];
+    return { tasks, page: current.page };
   };
   return {
-    ...(typeof window === "undefined" ? { tasks: {}, page: false } : load()),
-    markFinished: (runs, onPage) => {
-      const tasks = { ...get().tasks };
-      for (const run of runs) tasks[run.taskId] = run.threadId;
-      update({ tasks, page: get().page || !onPage });
-    },
-    clearTask: (taskId) => {
-      if (!(taskId in get().tasks)) return;
-      const tasks = { ...get().tasks };
-      delete tasks[taskId];
-      update({ tasks, page: get().page });
-    },
-    clearThread: (threadId) => {
-      const taskId = Object.keys(get().tasks).find((id) => get().tasks[id] === threadId);
-      if (taskId !== undefined) get().clearTask(taskId);
-    },
-    clearPage: () => {
-      if (get().page) update({ tasks: get().tasks, page: false });
-    },
+    ...(typeof window === "undefined" ? NOTHING_UNSEEN : load()),
+    markFinished: (runs, onPage) =>
+      change((current) => {
+        const tasks = { ...current.tasks };
+        for (const run of runs) tasks[run.taskId] = run.threadId;
+        return { tasks, page: current.page || !onPage };
+      }),
+    clearTask: (taskId) => change((current) => withoutTask(current, taskId)),
+    clearThread: (threadId) =>
+      change((current) =>
+        withoutTask(
+          current,
+          Object.keys(current.tasks).find((id) => current.tasks[id] === threadId),
+        ),
+      ),
+    clearPage: () =>
+      change((current) => (current.page ? { tasks: current.tasks, page: false } : null)),
   };
 });
 
@@ -94,5 +110,11 @@ if (typeof window !== "undefined") {
   });
   window.addEventListener(AUTH_SESSION_STORED_EVENT, () => {
     useUnseenScheduledRuns.setState(load());
+  });
+  // Another tab of the account marked or cleared something: show it here too.
+  window.addEventListener("storage", (event) => {
+    if (event.key !== null && event.key === storageKey()) {
+      useUnseenScheduledRuns.setState(load());
+    }
   });
 }

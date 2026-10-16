@@ -326,7 +326,10 @@ def test_create_list_and_read(client, monkeypatch):
     assert task["nextRunAt"] == ms("2026-10-15T09:00:00+00:00")
     assert task["lastRun"] is None
     assert "ownerSubject" not in task
-    assert client.get("/api/scheduled-tasks").json()["tasks"] == [task]
+    listed = client.get("/api/scheduled-tasks").json()
+    assert listed["tasks"] == [task]
+    # The server's clock, for a client to time its refreshes by.
+    assert listed["now"] == ms("2026-10-14T12:00:00+00:00")
     assert client.get(f"/api/scheduled-tasks/{task['id']}").json() == task
 
 
