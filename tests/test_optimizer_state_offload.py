@@ -587,6 +587,80 @@ def test_weight_quant_q_galore_steps_unchunked():
     assert not module._chunk_safe(QGaLoreAdamW8bit([{"params": p, "weight_quant": True}]))
 
 
+def test_weight_quant_q_galore_restores_only_active_state(monkeypatch):
+    module = _module()
+
+    class QGaLoreAdamW8bit(torch.optim.AdamW):
+        pass
+
+    QGaLoreAdamW8bit.__module__ = "unsloth.optimizers.q_galore_adamw"
+    active, idle = torch.nn.Parameter(torch.randn(16)), torch.nn.Parameter(torch.randn(16))
+    optimizer = QGaLoreAdamW8bit([{"params": [active, idle], "weight_quant": True}])
+    offloader = _hooked(module, optimizer, chunk_bytes = None)
+    restored = []
+    monkeypatch.setattr(offloader, "restore", lambda params = None: restored.append(params))
+    active.grad = torch.ones_like(active)
+    optimizer.step()
+    # A closure still restores everything, as does a class that may touch gradless parameters.
+    optimizer.step(lambda: None)
+
+    class Custom(torch.optim.SGD):
+        def step(self, closure = None):
+            return None
+
+    other = Custom([{"params": [active, idle], "weight_quant": True}], lr = 0.1)
+    _hooked(module, other, chunk_bytes = None).restore = lambda params = None: restored.append(params)
+    other.step()
+    assert restored == [[active], None, None]
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+def test_q_galore_weight_quant_inactive_state_stays_on_host(monkeypatch):
+    module = _module()
+    q_galore = _q_galore(monkeypatch)
+    torch.manual_seed(17)
+    params = [torch.nn.Parameter(torch.randn(256, 256, device = "cuda")) for _ in range(3)]
+    groups = [{"params": params, "rank": 16, "weight_quant": True, "stochastic_round": False}]
+    optimizer = q_galore.QGaLoreAdamW8bit(groups, lr = 1e-3)
+    q_galore.QGaLoreAdamW8bit.init_weight_quantization(torch.nn.ParameterList(params), groups)
+    offloader = module.offload_optimizer_state(optimizer, chunk_bytes = 256 << 10)
+    for step in range(2):
+        for p in params:
+            if step:
+                q_galore._materialize_weight(p)
+            p.grad = torch.full_like(p, 0.01)
+        optimizer.step()
+    # Only params[0] is active; the others' state must not visit the device during the step.
+    seen = []
+    restore = offloader.restore
+
+    def _spy(params = None):
+        restore(params)
+        seen.append(_state_devices_of(optimizer))
+
+    monkeypatch.setattr(offloader, "restore", _spy)
+    q_galore._materialize_weight(params[0])
+    params[0].grad = torch.full_like(params[0], 0.01)
+    for p in params[1:]:
+        p.grad = None
+    optimizer.step()
+    assert seen and all(devices[1:] == [{"cpu"}, {"cpu"}] for devices in seen)
+    assert seen[0][0] == {"cuda"}
+    assert _state_devices(optimizer) == {"cpu"}
+
+
+def _state_devices_of(optimizer):
+    groups = [p for group in optimizer.param_groups for p in group["params"]]
+    return [
+        {
+            v.device.type
+            for v in optimizer.state.get(p, {}).values()
+            if isinstance(v, torch.Tensor) and v.numel() > 1
+        }
+        for p in groups
+    ]
+
+
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 @pytest.mark.parametrize("weight_quant", [False, True])
 def test_q_galore_multi_chunk_offload(monkeypatch, weight_quant):
