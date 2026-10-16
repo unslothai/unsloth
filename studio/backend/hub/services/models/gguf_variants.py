@@ -1831,9 +1831,10 @@ async def get_gguf_variants_answer(
                 if variants or has_vision:
                     answered_from[0] = local_path
                     # Same reason as the is_local_path branch above.
-                    return _local_response(
-                        repo_id, variants, has_vision, _complete_quants_under(local_path)
+                    complete = _complete_with_servable(
+                        local_path, _complete_quants_under(local_path), variants
                     )
+                    return _local_response(repo_id, variants, has_vision, complete)
             partial = _quants_from_state(repo_id, hub_cache) if cache_reads_authorized else None
             if partial is not None:
                 variants, has_vision = partial
