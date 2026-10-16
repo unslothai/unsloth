@@ -2128,7 +2128,14 @@ def _smi_rows_for_cuda_ordinals(parent_ids: list[int]) -> Optional[Dict[str, Any
     nvidia-smi rows. The ordinal -> row join is by PCI bus id, found once per environment out of process
     (no CUDA context here). None when it cannot be established, so the caller keeps the torch path.
     """
-    key = (os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER"))
+    from . import gpu_query
+
+    # The static generation moves on hardware re-detection (eGPU, driver change), retiring old mappings.
+    key = (
+        os.environ.get("CUDA_VISIBLE_DEVICES"),
+        os.environ.get("CUDA_DEVICE_ORDER"),
+        gpu_query._static_gen,
+    )
     rows = _cuda_ordinal_rows_cache.get(key)
     if rows is None:
         try:
@@ -2138,6 +2145,7 @@ def _smi_rows_for_cuda_ordinals(parent_ids: list[int]) -> Optional[Dict[str, Any
             rows = None
         if rows is None:
             return None
+        _cuda_ordinal_rows_cache.clear()
         _cuda_ordinal_rows_cache[key] = rows
     if not rows:  # an integrated card: keep the pool-aware torch telemetry
         return None

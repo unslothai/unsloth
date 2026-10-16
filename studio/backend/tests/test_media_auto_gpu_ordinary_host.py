@@ -543,3 +543,25 @@ def test_identity_compares_every_listed_row_not_a_stale_count(monkeypatch):
     monkeypatch.setattr(hw, "_nvidia_mig_gpu_indices_or_none", lambda: set())
     assert hw._cuda_cards_identical() is False
     assert hw._cuda_cards_identical([0, 1]) is True
+
+
+def test_hardware_redetection_retires_the_ordinal_mapping(monkeypatch):
+    from utils.hardware import gpu_query
+
+    _torch_calls, reads = _fastest_first_host(monkeypatch, [0, 1])
+    assert _auto(_FASTEST) == [1]
+    gpu_query.invalidate_static("test: eGPU attached")
+    assert _auto(_FASTEST) == [1]
+    assert reads == [1, 1]
+
+
+def test_cold_rocm_detection_is_settled_before_the_gate_reads_it(monkeypatch):
+    _ordinary(monkeypatch, visible = (0, 1))
+    monkeypatch.setattr(hw, "IS_ROCM", False)
+
+    def cold_detect():
+        hw.IS_ROCM = True  # ROCm reports as CUDA once detection has run
+        return DeviceType.CUDA
+
+    monkeypatch.setattr(hw, "get_device", cold_detect)
+    assert dd.auto_cuda_ranking_possible() is False
