@@ -1035,7 +1035,9 @@ def _official_manifest(variant, with_upsampler):
     upsampler components; same shape, abridged to what the checks read."""
     repo = DISTILLED if variant == "distilled" else BASE
     index = {
-        "_blocks_class_name": FLUX3_DISTILLED_BLOCKS if variant == "distilled" else FLUX3_BASE_BLOCKS,
+        "_blocks_class_name": FLUX3_DISTILLED_BLOCKS
+        if variant == "distilled"
+        else FLUX3_BASE_BLOCKS,
         "_class_name": "Flux3DistilledModularPipeline"
         if variant == "distilled"
         else "Flux3ModularPipeline",
@@ -1088,9 +1090,7 @@ def _official_layout(tmp_path, variant, with_upsampler):
     return root
 
 
-_MANIFEST_CASES = [
-    (v, u) for v in ("distilled", "base") for u in (False, True)
-]
+_MANIFEST_CASES = [(v, u) for v in ("distilled", "base") for u in (False, True)]
 
 
 @pytest.mark.parametrize("variant, with_upsampler", _MANIFEST_CASES)
@@ -1160,6 +1160,9 @@ def test_the_download_plan_never_selects_the_upsampler(with_upsampler):
         sha = "x",
     )
     selected, _ignored = _pipeline_components_from_index(
-        DISTILLED, info, None, explicit_components = _explicit_pipeline_components(_family(FLUX3_KLEIN_FAMILY_NAME))
+        DISTILLED,
+        info,
+        None,
+        explicit_components = _explicit_pipeline_components(_family(FLUX3_KLEIN_FAMILY_NAME)),
     )
     assert selected == frozenset(FLUX3_COMPONENTS)

@@ -328,7 +328,6 @@ def _pipeline_components_present(root: Path) -> bool:
 
 def _is_flux3_manifest(index: dict) -> bool:
     from core.inference.diffusion_flux3 import flux3_index_family
-
     return flux3_index_family(index) is not None
 
 
