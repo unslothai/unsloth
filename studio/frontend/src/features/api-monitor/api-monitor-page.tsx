@@ -785,14 +785,15 @@ export function ApiMonitorPage(): ReactElement {
             size="sm"
             onClick={refresh}
             disabled={refreshing}
-            className="h-9 gap-1.5 rounded-full"
+            title="Refresh"
+            aria-label="Refresh"
+            className="size-9 rounded-full p-0"
           >
             <HugeiconsIcon
               icon={Refresh01Icon}
               strokeWidth={1.75}
               className={cn("size-4", refreshing && "animate-spin")}
             />
-            Refresh
           </Button>
           <Button
             type="button"
@@ -803,14 +804,15 @@ export function ApiMonitorPage(): ReactElement {
               setSelectedId(null);
               void clear();
             }}
-            className="h-9 gap-1.5 rounded-full"
+            title="Clear log"
+            aria-label="Clear log"
+            className="size-9 rounded-full p-0"
           >
             <HugeiconsIcon
               icon={Delete02Icon}
               strokeWidth={1.75}
               className="size-4"
             />
-            Clear log
           </Button>
           <Button
             type="button"
