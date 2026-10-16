@@ -320,8 +320,8 @@ def setup_commands(state: str, *, has_uv: bool = True) -> list[str]:
     # A fresh uv lands in ~/.local/bin, which the terminal that ran its installer may not have
     # on PATH yet, so the commands after it name that directory.
     bin_dir = "" if has_uv else "~/.local/bin/"
-    install = [] if has_uv else ["curl -LsSf https://astral.sh/uv/install.sh | sh"]
-    install.append(f"{bin_dir}uv tool install google-colab-cli")
+    get_uv = [] if has_uv else ["curl -LsSf https://astral.sh/uv/install.sh | sh"]
+    install = [*get_uv, f"{bin_dir}uv tool install google-colab-cli"]
     signin = [f"{bin_dir}colab --auth oauth2 sessions"]
     if state == "unsupported":
         # Typed into a Windows terminal, so the rest has to be sent into the new distro.
@@ -332,8 +332,9 @@ def setup_commands(state: str, *, has_uv: bool = True) -> list[str]:
         return install + signin
     if state == "kernel_client":
         return [
-            "uv tool install --force google-colab-cli --with "
-            "'jupyter-kernel-client @ git+https://github.com/googlecolab/jupyter-kernel-client.git'"
+            *get_uv,
+            f"{bin_dir}uv tool install --force google-colab-cli --with "
+            "'jupyter-kernel-client @ git+https://github.com/googlecolab/jupyter-kernel-client.git'",
         ]
     if state == "signed_out":
         return ["colab --auth oauth2 sessions"]

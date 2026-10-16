@@ -550,3 +550,11 @@ def test_a_fresh_uv_is_called_by_path_until_the_terminal_picks_it_up():
         "colab --auth oauth2 sessions",
     ]
     assert cl.setup_commands("signed_out", has_uv = False) == ["colab --auth oauth2 sessions"]
+
+
+def test_the_kernel_client_repair_brings_uv_when_it_is_missing():
+    # A colab installed some other way (pip, pipx) can be probed with no uv on PATH.
+    repair = cl.setup_commands("kernel_client", has_uv = False)
+    assert repair[0] == "curl -LsSf https://astral.sh/uv/install.sh | sh"
+    assert repair[1].startswith("~/.local/bin/uv tool install --force google-colab-cli --with ")
+    assert cl.setup_commands("kernel_client")[0].startswith("uv tool install --force")
