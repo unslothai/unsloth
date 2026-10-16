@@ -515,7 +515,11 @@ def _python_lspci(lines, monkeypatch):
 
 @pytest.mark.parametrize(
     "lines,expected",
-    [([_K2_LINE, _NAVI31_LINE], "gfx1100"), ([_NAVI31_LINE, _K2_LINE], "gfx1100"), ([_K2_LINE], "gfx1153")],
+    [
+        ([_K2_LINE, _NAVI31_LINE], "gfx1100"),
+        ([_NAVI31_LINE, _K2_LINE], "gfx1100"),
+        ([_K2_LINE], "gfx1153"),
+    ],
 )
 def test_python_lspci_gfx1153_is_only_the_fallback(lines, expected, monkeypatch):
     assert _python_lspci(lines, monkeypatch) == expected
@@ -524,7 +528,11 @@ def test_python_lspci_gfx1153_is_only_the_fallback(lines, expected, monkeypatch)
 @_POSIX
 @pytest.mark.parametrize(
     "lines,expected",
-    [([_K2_LINE, _NAVI31_LINE], "gfx1100"), ([_NAVI31_LINE, _K2_LINE], "gfx1100"), ([_K2_LINE], "gfx1153")],
+    [
+        ([_K2_LINE, _NAVI31_LINE], "gfx1100"),
+        ([_NAVI31_LINE, _K2_LINE], "gfx1100"),
+        ([_K2_LINE], "gfx1153"),
+    ],
 )
 def test_install_sh_lspci_gfx1153_is_only_the_fallback(tmp_path, lines, expected):
     # Generic CPU name: only lspci can answer.
@@ -534,7 +542,12 @@ def test_install_sh_lspci_gfx1153_is_only_the_fallback(tmp_path, lines, expected
 @_POSIX
 @pytest.mark.parametrize(
     "unsup,setup_gfx,expected",
-    [("gfx1153", "", "gfx1153"), ("gfx1010", "", ""), ("gfx1010, gfx1153", "", ""), ("gfx1153", "gfx1153", "gfx1153")],
+    [
+        ("gfx1153", "", "gfx1153"),
+        ("gfx1010", "", ""),
+        ("gfx1010, gfx1153", "", ""),
+        ("gfx1153", "gfx1153", "gfx1153"),
+    ],
 )
 def test_setup_sh_forwards_an_inferred_gfx1153_to_llama_cpp(unsup, setup_gfx, expected):
     # The forwarding below the summary passes _setup_gfx as --rocm-gfx; gfx1153 keeps a HIP bundle.
@@ -550,4 +563,7 @@ def test_setup_sh_forwards_an_inferred_gfx1153_to_llama_cpp(unsup, setup_gfx, ex
     out = subprocess.run(["bash", "-c", script], capture_output = True, text = True, timeout = 30)
     assert out.stdout.strip().rsplit("GFX:", 1)[-1] == expected, out
     # That value is what reaches the prebuilt installer (--rocm-gfx implies --has-rocm there).
-    assert '    if [ -n "${_setup_gfx:-}" ]; then\n        _PREBUILT_CMD+=(--rocm-gfx "$_setup_gfx")' in source
+    assert (
+        '    if [ -n "${_setup_gfx:-}" ]; then\n        _PREBUILT_CMD+=(--rocm-gfx "$_setup_gfx")'
+        in source
+    )
