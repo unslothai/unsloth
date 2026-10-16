@@ -11362,6 +11362,7 @@ async def _maybe_auto_switch_model(
     require_audio_workflow: Optional[str] = None,
     speech_budget: Optional[dict] = None,
     tool_images_only: bool = False,
+    serves_npu: bool = False,
     npu_request_check: Optional[Callable[[Any], None]] = None,
     gguf_target_check: Optional[Callable[[], None]] = None,
 ) -> None:
@@ -11392,7 +11393,8 @@ async def _maybe_auto_switch_model(
     checks only the resolved target can decide; see
     :func:`_preflight_audio_for_switch`. ``image_preflight`` does the same for
     non-GGUF image count and byte validation. ``require_audio_workflow`` refuses a target that
-    cannot run that Audio page workflow (``separate``, ``clone``...). ``npu_request_check``
+    cannot run that Audio page workflow (``separate``, ``clone``...). ``serves_npu`` marks
+    the chat route, the only one an NPU model serves; ``npu_request_check``
     refuses a request an NPU target would reject once loaded, given its catalog entry.
     """
     # A text-only GGUF reads tool-result images as a note, so only audio or video needs its mmproj.
@@ -11544,7 +11546,8 @@ async def _maybe_auto_switch_model(
         await _refuse_unservable_npu_switch(
             named_model,
             fastapi_request,
-            gguf_only = gguf_only,
+            # gguf_only alone misses routes that relax it for in-process models.
+            gguf_only = gguf_only or not serves_npu,
             # Not gguf_requires_vision: NPU chat rejects tool-result images too.
             needs_vision = require_vision,
             needs_audio = bool(
@@ -31606,6 +31609,7 @@ async def produce_openai_chat_completions(
         audio_preflight = _audio_preflight,
         image_preflight = _image_preflight,
         tool_images_only = _tool_images_only,
+        serves_npu = True,
         npu_request_check = _npu_switch_check,
     )
     if _audio_preflight is not None:
