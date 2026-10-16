@@ -1956,7 +1956,8 @@ def studio_default(
         "--disable-dns-pinning",
         help = "Send the hostname (not the validated IP) in web fetches that go through an "
         "explicitly configured HTTP(S)_PROXY, so the proxy can apply hostname policy and "
-        "TLS interception. Direct fetches stay pinned to the validated IP.",
+        "TLS interception, and let them go on when the name doesn't resolve locally. The "
+        "browser panel's fetches always do. Direct fetches stay pinned to the validated IP.",
     ),
     password: str = typer.Option(
         "",
@@ -2468,7 +2469,8 @@ def run(
         rich_help_panel = _RUN_PANEL_TOOLS,
         help = "Send the hostname (not the validated IP) in web fetches that go through an "
         "explicitly configured HTTP(S)_PROXY, so the proxy can apply hostname policy and "
-        "TLS interception. Direct fetches stay pinned to the validated IP.",
+        "TLS interception, and let them go on when the name doesn't resolve locally. The "
+        "browser panel's fetches always do. Direct fetches stay pinned to the validated IP.",
     ),
     tool_call_healing: Optional[bool] = typer.Option(
         None,
