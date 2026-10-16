@@ -57,15 +57,19 @@ _CHUNK_SAFE_MODULES = (
 )
 
 
+def _grad_only_step(optimizer):
+    for cls in type(optimizer).__mro__:
+        if "step" in vars(cls):
+            return cls.__module__.startswith(_CHUNK_SAFE_MODULES)
+    return False
+
+
 def _chunk_safe(optimizer):
     # Q-GaLore weight_quant swaps p.data for a one element placeholder inside step, so the full
     # size gradients hidden between chunks can no longer be put back on it.
     if any(group.get("weight_quant", False) for group in optimizer.param_groups):
         return False
-    for cls in type(optimizer).__mro__:
-        if "step" in vars(cls):
-            return cls.__module__.startswith(_CHUNK_SAFE_MODULES)
-    return False
+    return _grad_only_step(optimizer)
 
 
 def _tensor_attrs(value):
@@ -278,7 +282,14 @@ class _StateOffloader:
         closure = rest[0] if rest else kwargs.get("closure")
         # A closure recomputes the loss on every call, so it must run once over all parameters.
         if closure is not None or not _chunk_safe(optimizer):
-            self.restore()
+            params = None
+            if closure is None and _grad_only_step(optimizer):
+                # Unchunked weight_quant Q-GaLore still skips parameters without a gradient.
+                params = [
+                    p for group in optimizer.param_groups for p in group["params"]
+                    if p.grad is not None
+                ]
+            self.restore(params)
             return
 
         # Chunk-safe steps call a closure first, before any update, so the chunked updates run
