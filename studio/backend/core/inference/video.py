@@ -1453,7 +1453,11 @@ def _plan_fetch(
     repo = _video_fetch_repo(logical, hf_token, files = wanted, checkpoint = checkpoint) or logical
     meta = {s.rfilename: s for s in (getattr(info, "siblings", None) or [])}
     files = tuple(
-        (name, _sibling_etag(meta[name]) if name in meta else None, int(getattr(meta.get(name), "size", 0) or 0))
+        (
+            name,
+            _sibling_etag(meta[name]) if name in meta else None,
+            int(getattr(meta.get(name), "size", 0) or 0),
+        )
         for name in wanted
     )
     revision = getattr(info, "sha", None) if repo.lower() == (listing or "").lower() else None
@@ -3945,7 +3949,9 @@ class VideoBackend:
                         checkpoint = True,
                     )
                 )
-                checkpoint_revision = checkpoint_plan.revision if checkpoint_plan is not None else None
+                checkpoint_revision = (
+                    checkpoint_plan.revision if checkpoint_plan is not None else None
+                )
                 checkpoint_local = Path(
                     hf_hub_download_with_xet_fallback(
                         checkpoint_repo,
@@ -6782,7 +6788,6 @@ class VideoBackend:
         roots = [Path(hub_cache_dir())]
         try:
             from huggingface_hub import constants
-
             if Path(constants.HF_HUB_CACHE) != roots[0]:
                 roots.append(Path(constants.HF_HUB_CACHE))
         except Exception:  # noqa: BLE001 -- the live root alone
@@ -6803,7 +6808,10 @@ class VideoBackend:
                     folder = root / ("models--" + repo.replace("/", "--"))
                     try:
                         if etag:
-                            candidates = [folder / "blobs" / etag, folder / "blobs" / f"{etag}.incomplete"]
+                            candidates = [
+                                folder / "blobs" / etag,
+                                folder / "blobs" / f"{etag}.incomplete",
+                            ]
                         else:
                             ref = folder / "refs" / "main"
                             rev = entry.revision or (
@@ -7681,7 +7689,11 @@ class VideoBackend:
             pipe = pipeline_cls.from_pretrained(
                 _base_local_dir or fetch_base,
                 # A hub id here reads the plan's commit; the staged dir already is that commit.
-                **({"revision": _base_fetch_revision} if _base_fetch_revision and not _base_local_dir else {}),
+                **(
+                    {"revision": _base_fetch_revision}
+                    if _base_fetch_revision and not _base_local_dir
+                    else {}
+                ),
                 **pipe_kwargs,
             )
         else:
@@ -8885,7 +8897,11 @@ class VideoBackend:
             load_kwargs["token"] = hf_token
         pipe = diffusers.ModularPipeline.from_pretrained(
             _base_local_dir or fetch_base,
-            **({"revision": _base_fetch_revision} if _base_fetch_revision and not _base_local_dir else {}),
+            **(
+                {"revision": _base_fetch_revision}
+                if _base_fetch_revision and not _base_local_dir
+                else {}
+            ),
             **load_kwargs,
         )
         transformer_quant_engaged: Optional[str] = None

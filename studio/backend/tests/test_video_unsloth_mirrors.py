@@ -374,8 +374,6 @@ def test_assembly_reads_the_repo_the_predownload_staged(empty_cache, monkeypatch
     assert "fetch_choice = base_fetch_choice" in src
 
 
-
-
 def test_no_mirror_keeps_an_explicit_checkpoint_in_its_repo(empty_cache, monkeypatch):
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     seen: list = []
@@ -464,10 +462,6 @@ def test_named_choice_reuses_an_upstream_complete_in_the_fallback_root(empty_cac
     )
 
 
-
-
-
-
 def test_h3_staging_index_is_read_from_the_mirror(empty_cache, monkeypatch):
     seen: list = []
 
@@ -485,10 +479,6 @@ def test_h3_staging_index_is_read_from_the_mirror(empty_cache, monkeypatch):
         == "MiniMaxAI/MiniMax-H3"
     )
     assert seen == ["unsloth/MiniMax-H3"]
-
-
-
-
 
 
 def test_h3_component_specs_follow_the_selected_mirror(empty_cache):
@@ -521,10 +511,6 @@ def test_h3_modular_load_passes_the_mirrored_sources_to_load_components():
     assert src.index("_h3_mirrored_component_sources(") < src.index("pipe.load_components(")
 
 
-
-
-
-
 def test_a_pipeline_load_of_the_ltx25_carrier_is_refused():
     with pytest.raises(ValueError, match = "single files"):
         video_mod._detect_load_family("unsloth/LTX-2.5-GGUF", None, None, None, "pipeline")
@@ -535,13 +521,23 @@ def test_a_pipeline_load_of_the_ltx25_carrier_is_refused():
 # ── the load's fetch plan: one immutable record per role, read by every fetch site and by progress ────────────────
 
 
-def _blob(root, repo, key, data, incomplete = False):
+def _blob(
+    root,
+    repo,
+    key,
+    data,
+    incomplete = False,
+):
     folder = root / ("models--" + repo.replace("/", "--")) / "blobs"
     folder.mkdir(parents = True, exist_ok = True)
     (folder / (key + (".incomplete" if incomplete else ""))).write_bytes(data)
 
 
-def _plan(repo, files, revision = None):
+def _plan(
+    repo,
+    files,
+    revision = None,
+):
     return video_mod._PlannedFetch(repo, revision, tuple(files))
 
 
@@ -556,12 +552,20 @@ def _progress_of(backend, plan, expected):
 def test_progress_reads_planned_files_by_blob_key_in_the_plan_repo(empty_cache, monkeypatch):
     upstream, mirror = "Lightricks/LTX-2", "unsloth/LTX-2-FP8"
     monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
-    _blob(empty_cache, upstream, "k-vae", b"u" * 30)  # a partial upstream cache the load does not read
+    _blob(
+        empty_cache, upstream, "k-vae", b"u" * 30
+    )  # a partial upstream cache the load does not read
     _blob(empty_cache, mirror, "k-carrier-fp8", b"c" * 900)  # the carrier's own root checkpoint
-    _blob(empty_cache, mirror, "k-old-transformer", b"o" * 50)  # a superseded revision's same-named file
-    _blob(empty_cache, mirror, "k-unrelated", b"z" * 500, incomplete = True)  # an abandoned unrelated partial
+    _blob(
+        empty_cache, mirror, "k-old-transformer", b"o" * 50
+    )  # a superseded revision's same-named file
+    _blob(
+        empty_cache, mirror, "k-unrelated", b"z" * 500, incomplete = True
+    )  # an abandoned unrelated partial
     _blob(empty_cache, mirror, "k-index", b"i" * 2)
-    _blob(empty_cache, mirror, "k-transformer", b"t" * 7, incomplete = True)  # the planned shard, in flight
+    _blob(
+        empty_cache, mirror, "k-transformer", b"t" * 7, incomplete = True
+    )  # the planned shard, in flight
     plan = {
         "base": _plan(
             mirror,
@@ -585,7 +589,9 @@ def test_progress_reads_the_fallback_cache_root(empty_cache, monkeypatch):
     assert _progress_of(video_mod.VideoBackend(), plan, 40)["phase"] == "finalizing"
 
 
-def test_progress_counts_a_carrier_checkpoint_and_its_mirrored_base_per_role(empty_cache, monkeypatch):
+def test_progress_counts_a_carrier_checkpoint_and_its_mirrored_base_per_role(
+    empty_cache, monkeypatch
+):
     upstream, carrier = "Wan-AI/Wan2.2-TI2V-5B-Diffusers", "unsloth/Wan2.2-TI2V-5B-FP8"
     monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
     _blob(empty_cache, carrier, "k-fp8", b"c" * 40)
@@ -611,7 +617,13 @@ def test_progress_without_a_blob_key_reads_the_pinned_revision(empty_cache, monk
 class _KeyedApi(_RecordingApi):
     revisions: list = []
 
-    def model_info(self, repo, files_metadata = True, revision = None, **_kw):
+    def model_info(
+        self,
+        repo,
+        files_metadata = True,
+        revision = None,
+        **_kw,
+    ):
         type(self).revisions.append(revision)
         info = super().model_info(repo, files_metadata)
         for sib in info.siblings:
@@ -657,7 +669,13 @@ def test_predownload_follows_the_plan_repo_and_revision(empty_cache, monkeypatch
     monkeypatch.setattr(huggingface_hub, "HfApi", _KeyedApi)
     calls: list = []
 
-    def _download(repo, name, token, revision = None, **_kw):
+    def _download(
+        repo,
+        name,
+        token,
+        revision = None,
+        **_kw,
+    ):
         calls.append((repo, revision))
         path = empty_cache / "snap" / name
         path.parent.mkdir(parents = True, exist_ok = True)
@@ -700,7 +718,6 @@ def test_a_superseded_worker_cannot_rewrite_the_active_plan(empty_cache, monkeyp
     backend._predownload_base("Lightricks/LTX-2", None, "pipeline")  # the stale worker's base pull
     assert backend._loading.fetch_plan == active
     assert not hasattr(video_mod.VideoBackend, "_note_load_fetch_repo")
-
 
 
 def test_completeness_needs_weights_beside_a_model_config(empty_cache, monkeypatch):
@@ -771,14 +788,27 @@ class _HubRecorder:
     def __init__(self, token = None):
         pass
 
-    def model_info(self, repo, files_metadata = True, revision = None, **_kw):
+    def model_info(
+        self,
+        repo,
+        files_metadata = True,
+        revision = None,
+        **_kw,
+    ):
         type(self).listings.append((repo, revision))
-        files = {_GGUF_FILE: 7} if repo == _GGUF_REPO else dict(_WAN_FILES, **{"Wan-FP8.safetensors": 99})
+        files = (
+            {_GGUF_FILE: 7}
+            if repo == _GGUF_REPO
+            else dict(_WAN_FILES, **{"Wan-FP8.safetensors": 99})
+        )
         return types.SimpleNamespace(
             sha = ("g" if repo == _GGUF_REPO else "m") * 40,
             siblings = [
                 types.SimpleNamespace(
-                    rfilename = n, size = sz, blob_id = "git-" + n, lfs = types.SimpleNamespace(sha256 = "lfs-" + n)
+                    rfilename = n,
+                    size = sz,
+                    blob_id = "git-" + n,
+                    lfs = types.SimpleNamespace(sha256 = "lfs-" + n),
                 )
                 for n, sz in files.items()
             ],
@@ -792,7 +822,13 @@ def _walk_a_load(empty_cache, monkeypatch, *, te_fetch_falls_back):
     monkeypatch.setattr(huggingface_hub, "HfApi", _HubRecorder)
     monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
 
-    def _download(repo, name, token, revision = None, **_kw):
+    def _download(
+        repo,
+        name,
+        token,
+        revision = None,
+        **_kw,
+    ):
         _HubRecorder.downloads.append((repo, revision, name))
         path = empty_cache / "dl" / repo.replace("/", "--") / (revision or "main") / name
         path.parent.mkdir(parents = True, exist_ok = True)
@@ -801,13 +837,17 @@ def _walk_a_load(empty_cache, monkeypatch, *, te_fetch_falls_back):
 
     monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
     # The upstream already holds every base file EXCEPT the dense encoder weights: enough for the reduced plan only.
-    _snapshot(empty_cache, _WAN_UP, {n: b"x" for n in _WAN_FILES if n != "text_encoder/model.safetensors"})
+    _snapshot(
+        empty_cache, _WAN_UP, {n: b"x" for n in _WAN_FILES if n != "text_encoder/model.safetensors"}
+    )
     backend = video_mod.VideoBackend()
     # The estimate expects a hosted pre-cast encoder; the real fetch then finds it (or falls back).
     monkeypatch.setattr(backend, "_te_prequant_sources", lambda *a, **k: {"text_encoder": object()})
     monkeypatch.setattr(backend, "_te_prequant_hub_files", lambda *a, **k: {"text_encoder": []})
     monkeypatch.setattr(
-        backend, "_fetch_te_prequant", lambda *a, **k: () if te_fetch_falls_back else ("text_encoder",)
+        backend,
+        "_fetch_te_prequant",
+        lambda *a, **k: () if te_fetch_falls_back else ("text_encoder",),
     )
     monkeypatch.setattr(video_mod, "_assert_pick_is_not_speech", lambda *a, **k: None)
     captured: dict = {}
@@ -849,7 +889,9 @@ def test_every_hub_call_of_a_load_matches_its_plan(empty_cache, monkeypatch, te_
     if te_fetch_falls_back:
         # The dense encoder is back in the pull, which the partial upstream cannot serve: re-planned onto the mirror.
         assert plan["base"].repo == _WAN_MIRROR and plan["base"].revision == "m" * 40
-        assert any(name == "text_encoder/model.safetensors" for _, _, name in _HubRecorder.downloads)
+        assert any(
+            name == "text_encoder/model.safetensors" for _, _, name in _HubRecorder.downloads
+        )
     else:
         assert plan["base"].repo == _WAN_UP and plan["base"].revision is None
     assert plan["checkpoint"] == video_mod._PlannedFetch(
