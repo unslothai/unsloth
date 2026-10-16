@@ -913,36 +913,68 @@ def _mlx_optional_fusion(name, model, *args):
         yield active
 
 
-def _mlx_fused_moe_gate_up(model):
-    return _mlx_optional_fusion("fused_moe_gate_up", model)
+def _mlx_scope_refused(name, error):
+    if is_metal_queue_dead(error):
+        raise error
+    _mlx_fusion_unavailable(name, error)
 
 
-def _mlx_fused_decode_conv_silu(model):
-    return _mlx_optional_fusion("fused_decode_conv_silu", model)
+# What Studio entered by hand before Zoo's registry; a Zoo without it keeps exactly these.
+_MLX_LEGACY_SCOPES = (
+    "fused_moe_gate_up",
+    "fused_decode_conv_silu",
+    "fused_residual_norm",
+    "fused_moe_router",
+    "fused_moe_routed_experts",
+    "fused_residual_norm_handoff",
+    "fused_packed_gated_delta",
+)
 
 
-def _mlx_fused_residual_norm(model):
-    return _mlx_optional_fusion("fused_residual_norm", model)
+@contextmanager
+def _mlx_inference_scopes(model, call, int8_prefill):
+    """Hold the Zoo scopes Zoo picks for `call` (its call traits), so a new Zoo scope needs no Studio change.
+    A Zoo without the registry keeps the scopes Studio listed before it (none for the text batch)."""
+    compose = _mlx_inference_patch("inference_scopes")
+    with ExitStack() as scope:
+        if compose is None and "batch" not in call:
+            for name in _MLX_LEGACY_SCOPES:
+                scope.enter_context(_mlx_optional_fusion(name, model))
+            if "speculative" in call:
+                scope.enter_context(_mlx_optional_fusion("exact_speculative_verify", model))
+        elif compose is not None:
+            try:
+                scope.enter_context(
+                    compose(
+                        model,
+                        call,
+                        int8_prefill = int8_prefill,
+                        on_error = _mlx_scope_refused,
+                    )
+                )
+            except Exception as error:
+                if is_metal_queue_dead(error):
+                    raise
+                _mlx_fusion_unavailable("inference_scopes", error)
+        yield model
 
 
-def _mlx_fused_moe_router(model):
-    return _mlx_optional_fusion("fused_moe_router", model)
-
-
-def _mlx_fused_moe_routed_experts(model):
-    return _mlx_optional_fusion("fused_moe_routed_experts", model)
-
-
-def _mlx_fused_residual_norm_handoff(model):
-    return _mlx_optional_fusion("fused_residual_norm_handoff", model)
-
-
-def _mlx_fused_packed_gated_delta(model):
-    return _mlx_optional_fusion("fused_packed_gated_delta", model)
-
-
-def _mlx_exact_speculative_verify(model):
-    return _mlx_optional_fusion("exact_speculative_verify", model)
+def _mlx_warm_inference(model, int8_prefill):
+    """Zoo's warm-up generation, so the first request skips the scopes' kernel builds and first-use
+    checks. A Zoo without it, or a failed warm-up, leaves them to the first request."""
+    warm = _mlx_inference_patch("warm_inference")
+    if warm is None:
+        return
+    try:
+        warm(model, int8_prefill = int8_prefill)
+    except Exception as error:
+        if is_metal_queue_dead(error):
+            raise
+        logger.warning(
+            "MLX warm-up failed, so the first request runs it: %s: %s",
+            type(error).__name__,
+            error,
+        )
 
 
 def _int8_prefill_zoo():
@@ -3675,6 +3707,7 @@ class _TextBatchSession:
                     _temporary_mlx_adapter_state(backend._model, adapter_state)
                 )
             self._held.enter_context(backend._int8_prefill_scope())
+            self._held.enter_context(backend._generation_scopes("batch"))
             self.generator = BatchGenerator(
                 backend._model,
                 stop_tokens = [
@@ -4452,6 +4485,12 @@ class MLXInferenceBackend:
             return nullcontext()
         return _mlx_optional_fusion("nax_quantized_linear", self._model, False)
 
+    def _generation_scopes(self, *call):
+        """Zoo's scopes for a generation of this load, under its Int8 Prefill decision. Nested in
+        _int8_prefill_scope, which stays outermost."""
+        active = (getattr(self, "_int8_prefill", None) or {}).get("active", False)
+        return _mlx_inference_scopes(self._model, call, active)
+
     def _kv_quant_bits(self):
         return (getattr(self, "_kv_quant", None) or {}).get("kv_bits")
 
@@ -5119,7 +5158,11 @@ class MLXInferenceBackend:
 
         # The worker owns fixed base weights until unload; adapter requests stay scoped.
         if not is_lora:
-            self._model_fusion.enter_context(_mlx_fused_moe_gate_up(model))
+            self._model_fusion.enter_context(_mlx_optional_fusion("fused_moe_gate_up", model))
+        # Every rank of a distributed load must run each forward together.
+        if not is_distributed:
+            with mlx_rng_preserved(), self._int8_prefill_scope():
+                _mlx_warm_inference(model, self._int8_prefill["active"])
         logger.info("Model %s loaded successfully", model_name)
         return True
 
@@ -5756,13 +5799,7 @@ class MLXInferenceBackend:
             self._generation_lock,
             _temporary_mlx_adapter_state(self._model, _adapter_state),
             self._int8_prefill_scope(),
-            _mlx_fused_moe_gate_up(self._model),
-            _mlx_fused_decode_conv_silu(self._model),
-            _mlx_fused_residual_norm(self._model),
-            _mlx_fused_moe_router(self._model),
-            _mlx_fused_moe_routed_experts(self._model),
-            _mlx_fused_residual_norm_handoff(self._model),
-            _mlx_fused_packed_gated_delta(self._model),
+            self._generation_scopes(),
         ):
             (
                 gen_prompt,
@@ -6586,19 +6623,14 @@ class MLXInferenceBackend:
                     # The vision pass gets the headroom, under the lock so nothing refills it.
                     # A video turn resumes no snapshot, so retained ones are pure occupancy.
                     self._release_vlm_snapshots()
-                generation_scope.enter_context(_mlx_fused_moe_gate_up(self._model))
-                generation_scope.enter_context(_mlx_fused_decode_conv_silu(self._model))
-                generation_scope.enter_context(_mlx_fused_residual_norm(self._model))
-                generation_scope.enter_context(_mlx_fused_moe_router(self._model))
-                generation_scope.enter_context(_mlx_fused_moe_routed_experts(self._model))
-                generation_scope.enter_context(_mlx_fused_residual_norm_handoff(self._model))
-                generation_scope.enter_context(_mlx_fused_packed_gated_delta(self._model))
+                generation_scope.enter_context(
+                    self._generation_scopes("vision", *(() if draft is None else ("speculative",)))
+                )
                 final_response = None
                 clip_path = None
                 if draft is not None:
                     from unsloth_zoo.mlx.generate import SamplingParams
 
-                    generation_scope.enter_context(_mlx_exact_speculative_verify(self._model))
                     # Under the lock: the load's one draft serves one generation at a time.
                     draft.prepare(
                         vlm_kwargs["input_ids"][0].tolist(),
@@ -7154,13 +7186,7 @@ class MLXInferenceBackend:
         ):
             # As on the image path: the tower gets the headroom, under the lock.
             self._release_vlm_snapshots()
-            generation_scope.enter_context(_mlx_fused_moe_gate_up(self._model))
-            generation_scope.enter_context(_mlx_fused_decode_conv_silu(self._model))
-            generation_scope.enter_context(_mlx_fused_residual_norm(self._model))
-            generation_scope.enter_context(_mlx_fused_moe_router(self._model))
-            generation_scope.enter_context(_mlx_fused_moe_routed_experts(self._model))
-            generation_scope.enter_context(_mlx_fused_residual_norm_handoff(self._model))
-            generation_scope.enter_context(_mlx_fused_packed_gated_delta(self._model))
+            generation_scope.enter_context(self._generation_scopes("vision", "audio"))
             final_response = None
             try:
                 with closing(
