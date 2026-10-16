@@ -2263,6 +2263,32 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
                 + function[_signature.end() :]
             )
 
+    # Opt-in ScaleRL loss weights (zero-variance group exclusion, prompt-level aggregation). They need
+    # the group layout, which only exists here: the loss sees shuffled micro-batches.
+    _zero_std_anchor = (
+        'self._metrics[mode]["frac_reward_zero_std"].append(is_std_zero.float().mean().item())'
+    )
+    _return_anchor = "\n        return output"
+    if function.count(_zero_std_anchor) == 1 and function.count(_return_anchor) == 1:
+        function = function.replace(
+            _zero_std_anchor,
+            _zero_std_anchor + "\n"
+            "        _unsloth_sample_weight = _unsloth_grpo_sample_weight(\n"
+            "            self, mode, rewards_per_func, completion_mask, locals().get('tool_mask'), process_slice,\n"
+            "        )",
+        )
+        function = function.replace(
+            _return_anchor,
+            "\n        if _unsloth_sample_weight is not None:\n"
+            '            output["unsloth_sample_weight"] = _unsloth_sample_weight' + _return_anchor,
+        )
+    elif _unsloth_grpo_sample_weight_mode() is not None:
+        _warn_once(
+            "grpo_sample_weight",
+            "Unsloth: UNSLOTH_GRPO_ZERO_VARIANCE_EXCLUDE / UNSLOTH_GRPO_LOSS_AGGREGATION could "
+            "not be installed for this TRL version and are ignored.",
+        )
+
     return function
 
 
@@ -3333,6 +3359,85 @@ def grpo_update_SamplingParams(
     return generation_kwargs
 
 
+def _unsloth_grpo_sample_weight_mode():
+    import os
+
+    exclude = os.environ.get("UNSLOTH_GRPO_ZERO_VARIANCE_EXCLUDE", "0") == "1"
+    aggregation = os.environ.get("UNSLOTH_GRPO_LOSS_AGGREGATION", "").strip().lower()
+    if aggregation not in ("", "prompt"):
+        raise ValueError(
+            f"Unsloth: UNSLOTH_GRPO_LOSS_AGGREGATION must be 'prompt' or unset, got {aggregation}."
+        )
+    if not exclude and aggregation != "prompt":
+        return None
+    return exclude, aggregation == "prompt"
+
+
+def _unsloth_grpo_sample_weight(
+    trainer, mode, rewards_per_func, completion_mask, tool_mask, process_slice
+):
+    """Per-completion loss weights normalised over the whole generation batch (all processes),
+    or None when off. ScaleRL (arXiv 2510.13786): zero-variance filtering drops groups whose
+    rewards are all equal from the loss and its token count; prompt-level aggregation averages
+    tokens within each group, then over groups. Training batches only."""
+    settings = _unsloth_grpo_sample_weight_mode()
+    if settings is None or mode != "train":
+        return None
+    exclude, prompt_level = settings
+    loss_type = getattr(trainer.args, "loss_type", None)
+    if (prompt_level and loss_type == "luspo") or (
+        not prompt_level and loss_type not in ("bnpo", "dapo", "cispo", "vespo")
+    ):
+        if not getattr(trainer, "_unsloth_sample_weight_warned", False):
+            import warnings
+            warnings.warn(
+                f"Unsloth: zero-variance exclusion alone needs a token-normalised loss_type "
+                f"(bnpo, dapo, cispo, vespo) and prompt-level aggregation does not support "
+                f"luspo; ignored for loss_type={loss_type}.",
+                stacklevel = 2,
+            )
+            trainer._unsloth_sample_weight_warned = True
+        return None
+    num_generations = trainer.num_generations
+    loss_mask = completion_mask if tool_mask is None else completion_mask * tool_mask
+    lengths = trainer.accelerator.gather(loss_mask.sum(dim = 1).to(torch.float32))
+
+    def nan_variance(x, dim):
+        # TRL's nanstd squared: Bessel corrected, nan (never "zero") with fewer than two values.
+        centred = x - torch.nanmean(x, dim = dim, keepdim = True)
+        count = (~torch.isnan(x)).sum(dim = dim, keepdim = True)
+        variance = torch.nansum(centred * centred, dim = dim, keepdim = True) / (count - 1).clamp(min = 1)
+        return torch.where(count > 1, variance, torch.full_like(variance, torch.nan))
+
+    weights = trainer.reward_weights.to(rewards_per_func.device).unsqueeze(0)
+    if getattr(trainer, "multi_objective_aggregation", None) == "normalize_then_sum":
+        # TRL normalises each reward function within its group before the weighted sum.
+        per_func = rewards_per_func.view(-1, num_generations, rewards_per_func.shape[1])
+        per_func = (per_func - torch.nanmean(per_func, dim = 1, keepdim = True)) / (
+            nan_variance(per_func, 1).sqrt() + 1e-4
+        )
+        rewards = (per_func.view_as(rewards_per_func) * weights).nansum(dim = 1)
+    else:
+        rewards = (rewards_per_func * weights).nansum(dim = 1)
+    rewards[torch.isnan(rewards_per_func).all(dim = 1)] = torch.nan
+    variance = nan_variance(rewards.view(-1, num_generations), 1).squeeze(1)
+    group_keep = torch.ones_like(variance, dtype = torch.bool)
+    if exclude:
+        # TRL's frac_reward_zero_std test, per group.
+        group_keep = ~torch.isclose(variance.sqrt(), torch.zeros_like(variance))
+    keep = group_keep.repeat_interleave(num_generations).to(torch.float32).to(lengths.device)
+    if prompt_level:
+        group_tokens = (lengths * keep).view(-1, num_generations).sum(dim = 1)
+        groups = group_keep.sum().to(torch.float32).clamp(min = 1.0)
+        weight = keep / (group_tokens.clamp(min = 1.0).repeat_interleave(num_generations) * groups)
+    else:
+        weight = keep / (lengths * keep).sum().clamp(min = 1.0)
+    trainer._metrics[mode]["frac_reward_zero_std_excluded"].append(
+        float(1.0 - group_keep.float().mean()) if exclude else 0.0
+    )
+    return weight[process_slice].to(completion_mask.device)
+
+
 def _unsloth_grpo_is_metric_values(delta, flat_is_ratio, mask, sequence_level):
     # Inputs are zero-filled outside the mask; TRL reduces over masked tokens only, else min ratio reads 0.
     if mask is None or delta.shape != mask.shape or flat_is_ratio.shape != mask.shape:
@@ -3366,6 +3471,8 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_accumulation_steps))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_metric_values))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight_mode))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_vision_inputs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_split_vision_by_sample))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_unsplit_vision))
@@ -3670,6 +3777,14 @@ def grpo_trainer_compute_loss(function_name, function):
                     )
                 self._unsloth_grpo_tool_mask_zoo_checked = True
             _grpo_accumulated_loss_kwargs = {}
+            _sample_weight = inputs.get("unsloth_sample_weight", None)
+            if _sample_weight is not None:
+                if "sample_weight" not in inspect.getsource(grpo_compute_loss):
+                    raise RuntimeError(
+                        "UNSLOTH_GRPO_ZERO_VARIANCE_EXCLUDE / UNSLOTH_GRPO_LOSS_AGGREGATION need a "
+                        "newer unsloth_zoo. Please upgrade unsloth_zoo."
+                    )
+                _grpo_accumulated_loss_kwargs["sample_weight"] = _sample_weight
             if tool_mask is not None:
                 _grpo_accumulated_loss_kwargs["tool_mask"] = tool_mask
             if hasattr(self.args, "loss_type"):

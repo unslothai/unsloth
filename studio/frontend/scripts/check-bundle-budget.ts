@@ -171,8 +171,13 @@ export const BUDGET = {
   // (6,788,764 -> 6,790,997 B raw, 2,041,243 -> 2,042,101 B transfer against 5e5511027, one machine and build,
   // Node 24, chunk count unchanged at 95). Lazy-loading the dialog cost more (2.7 KB transfer) and a 96th
   // startup chunk, so it is imported statically and the budget raised by that growth.
-  transferBytes: 2_042_291,
-  rawBytes: 6_791_181,
+  // Three small Studio merges since add 747 B raw / 302 B transfer (6,791,021 -> 6,791,768 B raw, 2,042,102 ->
+  // 2,042,404 B transfer from 587079569a to 4a8b727dfd, one machine and build, Node 24, chunk count unchanged at
+  // 95), with no single import doing it: Deep research under Tools in the + menu (#13959) took main over, and
+  // the connection name and provider menu order (#13964) and the attachment card polish (#13970) add the rest.
+  // Raised by that growth so main's margin stays where it was.
+  transferBytes: 2_042_593,
+  rawBytes: 6_791_928,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

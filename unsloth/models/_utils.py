@@ -3853,6 +3853,16 @@ def _cache_device_capability(get_device_capability):
     if getattr(get_device_capability, "_unsloth_per_device_cache", False):
         return get_device_capability
 
+    # One visible device: every spelling names it, so the plain C-level cache is exact and fastest.
+    try:
+        single_device = torch.cuda.device_count() <= 1
+    except Exception:
+        single_device = False
+    if single_device:
+        cached = functools.cache(get_device_capability)
+        cached._unsloth_per_device_cache = True
+        return cached
+
     cache = {}
 
     @functools.wraps(get_device_capability)
@@ -5535,6 +5545,11 @@ def patch_gradient_accumulation_fix(Trainer):
                     apply_accepts_loss_kwargs_fix(model)
                 except Exception:
                     pass
+            try:
+                from .fsdp2 import install_fsdp2_policy_provenance
+                install_fsdp2_policy_provenance()
+            except Exception:
+                pass
             _original_trainer_init(self, *args, **kwargs)
             try:
                 accelerator = getattr(self, "accelerator", None)
@@ -5552,8 +5567,13 @@ def patch_gradient_accumulation_fix(Trainer):
             except Exception:
                 pass
             if getattr(self, "is_fsdp_enabled", False):
-                from .llama import _decline_fused_lora_for_fsdp
-                _decline_fused_lora_for_fsdp(getattr(self, "model", None))
+                # FSDP2 keeps the fused LoRA kernels when each decoder block is its own unit (checked
+                # again once accelerate has wrapped); FSDP1 and a root-only wrap decline them here.
+                from .fsdp2 import fsdp2_trainer_setup
+                keep_fused, reason = fsdp2_trainer_setup(self)
+                if not keep_fused:
+                    from .llama import _decline_fused_lora_for_fsdp
+                    _decline_fused_lora_for_fsdp(getattr(self, "model", None), reason)
             _replan_auto_offload_safely(self)
             _block_swap_for_trainer_backend(self)
             _enable_ddp_batched_grad_copy(self)
