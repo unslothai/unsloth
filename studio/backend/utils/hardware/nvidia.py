@@ -125,6 +125,7 @@ def _query_uuid_mask(parent_cuda_visible_devices: str) -> Optional[list[int]]:
 def get_physical_gpu_count(gpu_rows_only: bool = False) -> Optional[int]:
     """Return physical GPU count via nvidia-smi, or None on failure. ``gpu_rows_only`` skips the indented MIG child rows."""
     probe = _mig_probe_start()
+    published = False
     try:
         result = gpu_query.run_nvidia_smi(
             [_nvidia_smi_executable(), "-L"],
@@ -137,6 +138,7 @@ def get_physical_gpu_count(gpu_rows_only: bool = False) -> Optional[int]:
             **_windows_hidden_subprocess_kwargs(),
         )
         # Same listing get_mig_gpu_indices parses: publish it so memory polls reuse it.
+        published = True
         _mig_finish(probe, result)
         if result.returncode == 0 and result.stdout.strip():
             lines = result.stdout.strip().splitlines()
@@ -148,6 +150,9 @@ def get_physical_gpu_count(gpu_rows_only: bool = False) -> Optional[int]:
             result.returncode,
         )
     except Exception as e:
+        if not published:
+            # This probe is the latest started: a raise must leave MIG unknown, not the old answer.
+            _mig_finish(probe, None)
         logger.warning("nvidia-smi -L failed: %s; caller should fall back to torch", e)
     return None
 

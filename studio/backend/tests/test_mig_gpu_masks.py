@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import types
 
@@ -531,6 +532,24 @@ class TestOrdinaryHostsKeepTheirReadings:
         for _ in range(3):
             assert LlamaCppBackend._get_gpu_memory() == [(0, 14000, A100_MIB)]
         assert calls["list"] == 1
+
+
+    def test_a_raised_physical_count_probe_leaves_mig_unknown(self, host, monkeypatch, calls):
+        host([(GPU0, [])], [14000], None)
+        assert nvidia.get_mig_gpu_indices_or_none() == frozenset()
+        real = nvidia.gpu_query.run_nvidia_smi
+
+        def boom(cmd, *a, **k):
+            if cmd[-1] == "-L":
+                raise subprocess.TimeoutExpired(cmd, 5)
+            return real(cmd, *a, **k)
+
+        monkeypatch.setattr(nvidia.gpu_query, "run_nvidia_smi", boom)
+        assert nvidia.get_physical_gpu_count() is None
+        # The newest probe failed: the older "no MIG" answer is no longer served.
+        assert nvidia._mig_entry[3] is None
+        monkeypatch.setattr(nvidia.gpu_query, "run_nvidia_smi", real)
+        assert nvidia.get_mig_gpu_indices_or_none() is None
 
 
 class TestMigListingFreshness:
