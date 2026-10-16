@@ -70,10 +70,12 @@ function SetupCommands({
 }) {
   const t = useT();
   if (commands.length === 0) return null;
+  // Setup that installs WSL is typed into a Windows terminal, even with a runner found.
+  const inWsl = wsl && !commands[0].startsWith("wsl ");
   return (
     <div className="flex flex-col gap-2">
       <p className="text-ui-11 text-muted-foreground">
-        {wsl
+        {inWsl
           ? t("settings.apiKeys.linkedInstances.colab.setupWsl", {
               command: distro ? `wsl -d ${distro}` : "wsl",
             })

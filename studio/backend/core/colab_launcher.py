@@ -319,7 +319,10 @@ def setup_commands(state: str, *, has_uv: bool = True) -> list[str]:
     install.append("uv tool install google-colab-cli")
     signin = ["colab --auth oauth2 sessions"]
     if state == "unsupported":
-        return ["wsl --install -d Ubuntu-24.04"] + install + signin
+        # Typed into a Windows terminal, so the rest has to be sent into the new distro.
+        return ["wsl --install -d Ubuntu-24.04"] + [
+            f'wsl -d Ubuntu-24.04 -- bash -lc "{command}"' for command in install + signin
+        ]
     if state == "missing_cli":
         return install + signin
     if state == "kernel_client":
@@ -556,6 +559,7 @@ def _step(
 def _run_job(job: LaunchJob) -> None:
     runner = detect_runner()
     allocated = False
+    started = False
     try:
         cap = capability(runner)
         if not cap["ready"]:
@@ -612,20 +616,17 @@ def _run_job(job: LaunchJob) -> None:
 
         job.stage = "starting"
         start = START_SCRIPT.format(launcher = LAUNCHER_SCRIPT)
-        # The printed link carries the API key, so drop the CLI's local history of this session.
-        script = (
-            _colab(
-                job.session,
-                auth,
-                "exec",
-                "-s",
-                job.session,
-                "-",
-                "--timeout",
-                str(START_CELL_TIMEOUT),
-            )
-            + f"; rc=$?; rm -f {HISTORY_DIR}/{job.session}.jsonl; exit $rc"
+        script = _colab(
+            job.session,
+            auth,
+            "exec",
+            "-s",
+            job.session,
+            "-",
+            "--timeout",
+            str(START_CELL_TIMEOUT),
         )
+        started = True
         result = _step(job, runner, script, stdin = start, timeout = START_CELL_TIMEOUT + 120)
         link = parse_link(result.output)
 
@@ -649,6 +650,8 @@ def _run_job(job: LaunchJob) -> None:
         job.add(f"Failed: {job.error}")
         logger.warning("Colab launch %s failed: %s", job.session, job.error)
     finally:
+        if started:
+            _forget_history(runner, job.session)
         if allocated:
             job.add(f"Stopping {job.session} so it does not keep billing...")
             try:
@@ -659,6 +662,17 @@ def _run_job(job: LaunchJob) -> None:
                     f"Could not stop {job.session}: {_clean(str(exc))}. Stop it from colab.research.google.com."
                 )
         job.finished_at = _now()
+
+
+def _forget_history(runner: Runner, session: str) -> None:
+    # The start cell prints the link with its API key, and the CLI keeps a local history of it.
+    # Run apart from the start step, so a timeout or cancel that kills that step still gets here.
+    try:
+        run_shell(runner, f"rm -f {HISTORY_DIR}/{session}.jsonl", timeout = PROBE_TIMEOUT)
+    except Exception as exc:
+        logger.warning(
+            "Could not remove the Colab CLI history of %s: %s", session, _clean(str(exc))
+        )
 
 
 def _last_line(output: str) -> str:

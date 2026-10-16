@@ -66,6 +66,8 @@ class FakeColab:
         self.stop_rc = (0, "[colab] Session terminated.")
         self.status_rc = (0, "[colab] Session 'x' not found.")
         self.on_install = None
+        self.on_start = None
+        self.start_timed_out = False
 
     def __call__(
         self,
@@ -91,6 +93,13 @@ class FakeColab:
                 self.on_install(cancel)
         elif stdin and "UNSLOTH_LINK" in stdin:
             kind, (rc, out) = "start", self.start
+            if self.on_start:
+                self.on_start(cancel)
+                if self.start_timed_out:
+                    self.calls.append((kind, script))
+                    return cl.ShellResult(-1, "", True)
+        elif script.startswith("rm -f ") and "colab-cli/history" in script:
+            kind, (rc, out) = "forget", (0, "")
         else:
             raise AssertionError(f"unexpected script: {script[:80]}")
         self.calls.append((kind, script))
@@ -199,6 +208,28 @@ def test_no_wsl_on_windows_is_unsupported(monkeypatch):
     assert cl.detect_runner() is None
     cap = cl.capability()
     assert cap["state"] == "unsupported" and cap["setup"][0].startswith("wsl --install")
+    # Pasted into the same Windows terminal: everything after the install runs in the new distro.
+    rest = cap["setup"][1:]
+    assert rest and all(c.startswith('wsl -d Ubuntu-24.04 -- bash -lc "') for c in rest)
+    assert any("curl -LsSf https://astral.sh/uv/install.sh | sh" in c for c in rest)
+    assert all(c.count('"') == 2 and "$" not in c for c in rest)
+
+
+@pytest.mark.parametrize("how", ["timeout", "cancel"])
+def test_a_killed_start_step_still_drops_the_cli_history(monkeypatch, how):
+    # The start cell can print the link and its key before the wall timer or a cancel kills it.
+    fake = FakeColab()
+    job = _job()
+    if how == "timeout":
+        fake.start_timed_out = True
+        fake.on_start = lambda cancel: None
+    else:
+        fake.on_start = lambda cancel: job.cancel.set()
+    monkeypatch.setattr(cl, "run_shell", fake)
+    cl._run_job(job)
+    assert job.state == ("failed" if how == "timeout" else "cancelled")
+    kinds = fake.kinds()
+    assert kinds[kinds.index("start") + 1] == "forget" and kinds[-1] == "stop"
 
 
 def test_colab_flags_are_global_and_auth_is_passed():
@@ -224,12 +255,11 @@ def test_launch_links_the_vm_and_never_exposes_the_key(monkeypatch):
     cl._run_job(job)
 
     assert job.state == "ready" and job.stage == "ready", job.error
-    assert fake.kinds() == ["probe", "new", "install", "start"]
-    assert stages == ["allocating", "allocating", "installing", "starting"]
+    assert fake.kinds() == ["probe", "new", "install", "start", "forget"]
+    assert stages == ["allocating", "allocating", "installing", "starting", "ready"]
     new_script = fake.calls[1][1]
     assert "new -s unsloth-colab-l4 --gpu L4" in new_script
-    start_script = fake.calls[3][1]
-    assert "rm -f ~/.config/colab-cli/history/unsloth-colab-l4.jsonl" in start_script
+    assert fake.calls[4][1] == "rm -f ~/.config/colab-cli/history/unsloth-colab-l4.jsonl"
 
     instance = linked_instances_db.get_instance_by_name("colab-l4")
     assert instance["base_url"] == TUNNEL and job.instance_id == instance["id"]
