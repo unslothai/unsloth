@@ -1391,6 +1391,9 @@ def test_the_context_meter_counts_earlier_turns_once():
     assert folded["usage"]["total_tokens"] == 25840
     assert folded["usage"]["context_tokens"] == 25700
     assert "context_tokens" not in _fold(_turn(18000, 60))["usage"]
+    # A last report with no prompt count keeps the earlier context.
+    unreported = _fold(_turn(18000, 60), _turn(21500, 80), {"finish_reason": "stop"})
+    assert unreported["usage"]["context_tokens"] == 21580
 
 
 def test_completion_details_are_summed_with_the_completion_they_describe():
