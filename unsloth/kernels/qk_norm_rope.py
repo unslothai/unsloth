@@ -143,7 +143,13 @@ def _norm_rope_bwd_block(
     hmask = heads < n_heads
     mask = hmask[:, None]
     hoff = heads[:, None].to(tl.int64)
-    dy_ptr = dY + batch_id * dY_batch_stride + seq_index * dY_seq_stride + hoff * dY_head_stride + cols[None, :]
+    dy_ptr = (
+        dY
+        + batch_id * dY_batch_stride
+        + seq_index * dY_seq_stride
+        + hoff * dY_head_stride
+        + cols[None, :]
+    )
     dy0 = tl.load(dy_ptr, mask = mask, other = 0)
     dy1 = tl.load(dy_ptr + HALF, mask = mask, other = 0)
     # Inverse rotation (sin negated), rounded to dY's dtype as the RoPE backward stores it.
@@ -387,7 +393,15 @@ def _fused_untraced(*args):
     return Fast_QK_Norm_RoPE.apply(*args)
 
 
-def fast_qk_norm_rope(q_norm, k_norm, Q, K, cos, sin, position_ids = None):
+def fast_qk_norm_rope(
+    q_norm,
+    k_norm,
+    Q,
+    K,
+    cos,
+    sin,
+    position_ids = None,
+):
     """RMSNorm each head of Q [batch, seq_len, n_heads, head_dim] and K with q_norm / k_norm, then
     rotate both. Returns Q, K as [batch, n_heads, seq_len, head_dim] like fast_rope_embedding.
     Falls back to fast_rms_layernorm + fast_rope_embedding where the fused kernel does not apply

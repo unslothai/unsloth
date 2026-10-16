@@ -29,7 +29,13 @@ EPS = 1e-6
 
 
 class _Norm(torch.nn.Module):
-    def __init__(self, dim, dtype, seed, trainable = False):
+    def __init__(
+        self,
+        dim,
+        dtype,
+        seed,
+        trainable = False,
+    ):
         super().__init__()
         g = torch.Generator(device = "cuda").manual_seed(seed)
         w = torch.randn(dim, device = "cuda", generator = g) * 0.3 + 1
@@ -37,9 +43,20 @@ class _Norm(torch.nn.Module):
         self.variance_epsilon = EPS
 
 
-def _case(bsz, seq, n_heads, n_kv, head_dim, dtype, packed, trainable = False):
+def _case(
+    bsz,
+    seq,
+    n_heads,
+    n_kv,
+    head_dim,
+    dtype,
+    packed,
+    trainable = False,
+):
     g = torch.Generator(device = "cuda").manual_seed(0)
-    q_lin = (torch.randn(bsz, seq, n_heads * head_dim, device = "cuda", generator = g) * 2 + 0.3).to(dtype)
+    q_lin = (torch.randn(bsz, seq, n_heads * head_dim, device = "cuda", generator = g) * 2 + 0.3).to(
+        dtype
+    )
     k_lin = (torch.randn(bsz, seq, n_kv * head_dim, device = "cuda", generator = g) * 0.5).to(dtype)
     inv = 1.0 / (1e6 ** (torch.arange(0, head_dim, 2, device = "cuda").float() / head_dim))
     emb = torch.outer(torch.arange(seq + 16, device = "cuda").float(), inv)
@@ -97,7 +114,13 @@ def _err(x, ref):
 @pytest.mark.parametrize("packed", [False, True])
 @pytest.mark.parametrize(
     "shape",
-    [(2, 130, 32, 8, 128), (1, 77, 12, 4, 64), (2, 64, 8, 1, 256), (1, 33, 16, 16, 128), (1, 50, 20, 5, 128)],
+    [
+        (2, 130, 32, 8, 128),
+        (1, 77, 12, 4, 64),
+        (2, 64, 8, 1, 256),
+        (1, 33, 16, 16, 128),
+        (1, 50, 20, 5, 128),
+    ],
 )
 def test_matches_unfused_within_rounding(shape, packed, dtype):
     bsz, seq, n_heads, n_kv, head_dim = shape
@@ -117,7 +140,9 @@ def test_fused_inputs_and_grads_untouched():
     a = q_lin.clone().requires_grad_(True)
     b = k_lin.clone().requires_grad_(True)
     g0, g1 = grads[0].clone(), grads[1].clone()
-    q, k = fast_qk_norm_rope(norms[0], norms[1], a.view(2, 64, 16, 128), b.view(2, 64, 4, 128), cos, sin, pos)
+    q, k = fast_qk_norm_rope(
+        norms[0], norms[1], a.view(2, 64, 16, 128), b.view(2, 64, 4, 128), cos, sin, pos
+    )
     torch.autograd.backward((q, k), grads)
     assert torch.equal(a.detach(), q_lin) and torch.equal(b.detach(), k_lin)
     assert torch.equal(grads[0], g0) and torch.equal(grads[1], g1)
@@ -127,7 +152,9 @@ def test_fused_inputs_and_grads_untouched():
 def test_trainable_norm_weights_fall_back_to_unfused():
     case = _case(1, 40, 8, 2, 64, torch.float32, False, trainable = True)
     q_lin, k_lin, cos, sin, pos, grads, norms = case
-    q, k = fast_qk_norm_rope(norms[0], norms[1], q_lin.view(1, 40, 8, 64), k_lin.view(1, 40, 2, 64), cos, sin, pos)
+    q, k = fast_qk_norm_rope(
+        norms[0], norms[1], q_lin.view(1, 40, 8, 64), k_lin.view(1, 40, 2, 64), cos, sin, pos
+    )
     torch.autograd.backward((q, k), grads)
     assert norms[0].weight.grad is not None and norms[1].weight.grad is not None
 
@@ -158,4 +185,3 @@ def test_compiled_no_graph_breaks_same_bytes(dtype, packed):
     for x, y in zip(eager, compiled):
         assert torch.equal(x, y)
     torch._dynamo.reset()
-
