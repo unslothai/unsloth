@@ -475,6 +475,13 @@ def prepare_fsdp2_qlora(
     info["params4bit"] = len(params4bit)
     if not params4bit:
         return info
+    try:
+        from ..kernels import utils as kernel_utils
+    except ImportError:  # loaded on its own, without the Unsloth package (tests)
+        kernel_utils = None
+    if kernel_utils is not None:
+        # Sharded 4-bit weights can now reach the LoRA kernels without their quant_state.
+        kernel_utils._FSDP2_QLORA_PREPARED = True
     if dtype is None:
         dtype = next(
             (
