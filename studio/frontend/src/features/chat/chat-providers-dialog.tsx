@@ -2070,7 +2070,7 @@ export function ChatProvidersSettings({
                       Select from suggestions below or enter exact model IDs.
                     </p>
                     {availableModels.length > 0 ? (
-                      <div className="space-y-3 rounded-md border border-border/70 bg-background/50 p-3">
+                      <>
                         <div className="grid grid-cols-[minmax(90px,auto)_minmax(0,1fr)_auto] items-center gap-3 @max-[520px]:grid-cols-1">
                           <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
                             {availableModelsLabel}
@@ -2110,16 +2110,16 @@ export function ChatProvidersSettings({
                             </Button>
                           </div>
                         </div>
-                        <ul className="max-h-56 overflow-y-auto scroll-rounded rounded-md border border-border/70 bg-background/50">
+                        <ul className="max-h-56 overflow-y-auto scroll-rounded rounded-md bg-muted/25 p-1">
                           {filteredAvailableModels.length === 0 ? (
-                            <li className="px-3 py-3 text-xs text-muted-foreground">
+                            <li className="px-2.5 py-2 text-xs text-muted-foreground">
                               No matching models
                             </li>
                           ) : (
                             filteredAvailableModels.map((model, index) => (
                               <li
                                 key={model}
-                                className="flex cursor-pointer items-center gap-2.5 border-border/60 border-b px-3 py-2 last:border-b-0 hover:bg-muted/35"
+                                className="flex cursor-pointer items-center gap-2.5 rounded-[7px] px-2.5 py-1.5 hover:bg-muted/50"
                                 onClick={() => toggleModel(model)}
                               >
                                 <Checkbox
@@ -2137,7 +2137,7 @@ export function ChatProvidersSettings({
                             ))
                           )}
                         </ul>
-                      </div>
+                      </>
                     ) : null}
                     {modelIdsEditable ? (
                       <div className="space-y-2">
@@ -2199,16 +2199,16 @@ export function ChatProvidersSettings({
                             </Button>
                           </div>
                         </div>
-                        <ul className="max-h-56 overflow-y-auto scroll-rounded rounded-md border border-border/70 bg-background/50">
+                        <ul className="max-h-56 overflow-y-auto scroll-rounded rounded-md bg-muted/25 p-1">
                           {filteredAvailableModels.length === 0 ? (
-                            <li className="px-3 py-3 text-xs text-muted-foreground">
+                            <li className="px-2.5 py-2 text-xs text-muted-foreground">
                               No matching models
                             </li>
                           ) : (
                             filteredAvailableModels.map((model, index) => (
                               <li
                                 key={model}
-                                className="flex cursor-pointer items-center gap-2.5 border-border/60 border-b px-3 py-2 last:border-b-0 hover:bg-muted/35"
+                                className="flex cursor-pointer items-center gap-2.5 rounded-[7px] px-2.5 py-1.5 hover:bg-muted/50"
                                 onClick={() => toggleModel(model)}
                               >
                                 <Checkbox
