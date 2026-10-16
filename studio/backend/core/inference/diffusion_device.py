@@ -470,7 +470,6 @@ def auto_cuda_ranking_possible() -> bool:
     """
     try:
         from utils.hardware import hardware as hw
-
         if hw.IS_ROCM or hw.get_device() != hw.DeviceType.CUDA:
             return False
         return len(hw.get_parent_visible_gpu_ids()) >= 2

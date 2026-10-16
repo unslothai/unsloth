@@ -24,7 +24,11 @@ def _dev(index, total, used):
     return {"index": index, "vram_total_gb": total, "vram_used_gb": used}
 
 
-def _counting_target(monkeypatch, module, device = "cuda"):
+def _counting_target(
+    monkeypatch,
+    module,
+    device = "cuda",
+):
     calls = []
 
     def _target(**_kw):
@@ -46,7 +50,12 @@ def _counting_rank(monkeypatch, answer = 1):
     return calls
 
 
-def _ordinary(monkeypatch, device = DeviceType.CUDA, visible = (0,), rocm = False):
+def _ordinary(
+    monkeypatch,
+    device = DeviceType.CUDA,
+    visible = (0,),
+    rocm = False,
+):
     monkeypatch.setattr(hw, "IS_ROCM", rocm)
     monkeypatch.setattr(hw, "get_device", lambda: device)
     monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: list(visible))
@@ -127,7 +136,9 @@ def test_route_auto_still_ranks_on_a_multi_gpu_cuda_host(monkeypatch):
     assert (len(targets), len(ranks)) == (1, 1)
 
 
-@pytest.mark.parametrize("module_name, cls_name", [("diffusion", "DiffusionBackend"), ("video", "VideoBackend")])
+@pytest.mark.parametrize(
+    "module_name, cls_name", [("diffusion", "DiffusionBackend"), ("video", "VideoBackend")]
+)
 def test_direct_invalid_auto_load_is_refused_before_any_probe(monkeypatch, module_name, cls_name):
     import importlib
 

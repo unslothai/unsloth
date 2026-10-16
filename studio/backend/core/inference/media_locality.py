@@ -295,7 +295,6 @@ def catalog_gpu_ordinal() -> Optional[int]:
         return None
     try:
         from utils.hardware import hardware as hw
-
         if hw._cuda_cards_identical(hw.get_parent_visible_gpu_ids()) is not False:
             return None
     except Exception:  # noqa: BLE001 -- unknown: plan against the current device
