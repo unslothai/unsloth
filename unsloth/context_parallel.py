@@ -540,6 +540,7 @@ def patch_sft_trainer() -> None:
     original_evaluate = _original("evaluate")
     original_predict = _original("predict")
     original_evaluation_loop = _original("evaluation_loop")
+    original_save_model = _original("save_model")
     has_total_train_batch_size = hasattr(trainer_cls, "get_total_train_batch_size")
     if has_total_train_batch_size:
         original_get_total_train_batch_size = _original("get_total_train_batch_size")
@@ -758,6 +759,20 @@ def patch_sft_trainer() -> None:
         _install_accelerator_state(self)
         return original_predict(self, test_dataset, *args, **kwargs)
 
+    @functools.wraps(original_save_model)
+    def patched_save_model(self, *args, **kwargs):
+        state = getattr(getattr(self, "accelerator", None), "state", None)
+        installed = _INSTALLED_PARALLELISM_CONFIG[1] if _INSTALLED_PARALLELISM_CONFIG else None
+        if installed is None or getattr(state, "parallelism_config", None) is not installed:
+            return original_save_model(self, *args, **kwargs)
+        # transformers < 5 checks parallelism_config before FSDP and would skip the FSDP2 state dict
+        # gather; save under the config the user had, as FSDP2 without CP does.
+        state.parallelism_config = _INSTALLED_PARALLELISM_CONFIG[0]
+        try:
+            return original_save_model(self, *args, **kwargs)
+        finally:
+            state.parallelism_config = installed
+
     @functools.wraps(original_evaluation_loop)
     def patched_evaluation_loop(self, *args, **kwargs):
         manager = getattr(self, "_context_parallel_manager", None)
@@ -811,5 +826,6 @@ def patch_sft_trainer() -> None:
     trainer_cls.evaluate = patched_evaluate
     trainer_cls.predict = patched_predict
     trainer_cls.evaluation_loop = patched_evaluation_loop
+    trainer_cls.save_model = patched_save_model
     trainer_cls.training_step = patched_training_step
     trainer_cls.__unsloth_context_parallel__ = True
