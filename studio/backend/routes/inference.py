@@ -37313,6 +37313,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                         _resp = await _client.post(
                             target_url,
                             json = _single_body,
+                            headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
                             timeout = _llama_non_streaming_generation_timeout(),
                         )
                         if _cancel_event.is_set():

@@ -60,7 +60,6 @@ import { LlmCompressorConsentDialog } from "@/features/export/components/llm-com
 import { useNativePathLeasesSupported } from "@/features/native-intents";
 import { useRagAvailabilityStore } from "@/features/rag";
 import { useIsMobileShell } from "@/hooks/use-mobile";
-import { useBenchmarkRuntimeLifecycle } from "@/features/benchmark";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useTypeToActivate } from "@/hooks/use-type-to-activate";
 import { type TranslationKey, useT } from "@/i18n";
@@ -178,6 +177,11 @@ const VideoPage = lazy(() =>
 // AudioPage gets the same persistent mount so an in-flight generation keeps its UI state; still lazy on first /audio visit.
 const AudioPage = lazy(() =>
   import("@/features/audio").then((m) => ({ default: m.AudioPage })),
+);
+
+// Global Evals driver, same job as useExportRuntimeLifecycle; lazy so its API and store stay out of the startup bundle.
+const BenchmarkRuntimeLifecycle = lazy(
+  () => import("@/features/benchmark/benchmark-runtime-lifecycle"),
 );
 
 // Enabled once the session is settled, not once a token exists. The first read runs once per session, so a read
@@ -455,8 +459,6 @@ function RootLayout() {
   // Global export driver: streams worker logs and tracks status from any route
   // so an export keeps running and stays visible while training / chatting.
   useExportRuntimeLifecycle();
-  // Global benchmark driver: same pattern for benchmark runs.
-  useBenchmarkRuntimeLifecycle();
 
   const matchedTitle = useMatches({
     select: (matches) => {
@@ -837,6 +839,9 @@ function RootLayout() {
 
   return (
     <AppProvider>
+      <Suspense fallback={null}>
+        <BenchmarkRuntimeLifecycle />
+      </Suspense>
       <CredentialBootstrapGate active={!isAuthFlowRoute}>
         <SharedRunConfigLinkHandler
           chatSearch={shouldMountChat ? chatSearch : null}
