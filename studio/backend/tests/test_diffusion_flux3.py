@@ -696,7 +696,7 @@ def test_quantized_gguf_pick_assembles_through_the_modular_loader(monkeypatch):
     assert calls["device"] == "cuda"
 
 
-# ── review round 1 ───────────────────────────────────────────────────────────
+# ── generation splitting and local file checks ───────────────────────────────
 def test_split_calls_pair_each_prompt_with_its_own_negative():
     face = _Face(distilled = False)
     face(
@@ -793,7 +793,7 @@ def test_supplied_encoder_or_vae_files_are_refused_for_flux3(tmp_path, monkeypat
             )
 
 
-# ── review round 2 ───────────────────────────────────────────────────────────
+# ── LoRA loader ──────────────────────────────────────────────────────────────
 def test_the_face_carries_the_flux3_lora_loader(monkeypatch):
     # Studio's LoRA path calls load_lora_weights / set_adapters / unload_lora_weights on the pipe; the pinned
     # Diffusers build ships them for FLUX.3 as Flux3LoraLoaderMixin (transformer-only). Fake modules, so the
@@ -835,7 +835,7 @@ def test_the_face_carries_the_flux3_lora_loader(monkeypatch):
     assert not hasattr(f3.flux3_pipeline_class(), "load_lora_weights")
 
 
-# ── review round 3 ───────────────────────────────────────────────────────────
+# ── local validation and variant refusal ─────────────────────────────────────
 def test_local_validation_checks_the_folders_the_flux3_loader_reads(tmp_path, monkeypatch):
     # A spec naming another source (repo / folder) is ignored by load_flux3_pipeline, which reads
     # <root>/text_encoder, /transformer and /vae; validation must check those folders, not the named source.
@@ -924,7 +924,7 @@ def test_gguf_header_tensor_names(tmp_path):
     assert gguf_tensor_names_from_header(b"") is None
 
 
-# ── review round 4 ───────────────────────────────────────────────────────────
+# ── staged dirs and family routing ───────────────────────────────────────────
 def test_every_flux3_assembly_reads_the_staged_dir_and_names_the_family():
     # Each FLUX.3 assembly in the loader takes the staged companion dir first (a plan that found the companions under
     # another cache root must not re-resolve them) and hands the family to the variant backstop.
