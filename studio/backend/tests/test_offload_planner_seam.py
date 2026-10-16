@@ -3482,7 +3482,7 @@ def _qwen4exp_backend(**extra):
 
 @pytest.mark.parametrize("n_ctx,before_mib,after_mib", [(8192, 304, 377), (65536, 1648, 2225)])
 def test_the_indexer_cache_is_charged_on_the_architecture_that_builds_one(
-    n_ctx, before_mib, after_mib
+    monkeypatch, n_ctx, before_mib, after_mib
 ):
     """llama-model.cpp:create_memory routes qwen4exp to llama_memory_hybrid_idx, which allocates
     a THIRD cache over the dense-attention rows: one head of attention.indexer.key_length for K
@@ -3493,6 +3493,11 @@ def test_the_indexer_cache_is_charged_on_the_architecture_that_builds_one(
     sized by llama-hparams.cpp:ple_conv_state) and was missing too."""
     from test_offload_planner import _StubReader, _StubTensor, _layout_from_reader
 
+    # The K + V widths below are the unknown-build charge; a host llama-server at b10889 or later
+    # drops the V half (test_offload_planner_review_r5 covers those builds).
+    monkeypatch.setattr(
+        LlamaCppBackend, "probe_build_number", classmethod(lambda cls, b = None: None)
+    )
     b = _qwen4exp_backend()
     total = b._estimate_kv_cache_bytes(
         n_ctx, "f16", n_parallel = 1, kv_unified = False, flash_attn = False

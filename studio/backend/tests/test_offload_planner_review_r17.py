@@ -17,6 +17,7 @@ for _p in (_BACKEND_DIR, _TESTS_DIR):
 
 from core.inference.offload_cost_model import HostProfile  # noqa: E402
 from core.inference.offload_planner import (  # noqa: E402
+    Plan,
     ContextPolicy,
     PlanOptions,
     _Knobs,
@@ -129,3 +130,190 @@ def test_the_resident_shortcut_is_unchanged_on_one_card():
     plan = plan_placement(layout, [7 * GIB], 94 * GIB, 32768, opts = opts)
     assert plan.changed and not plan.spilled_blocks and 0 < plan.n_ctx < 32768, plan.reason
     assert "resident" in plan.reason
+
+
+# --- revocation bookkeeping -------------------------------------------------------------------
+
+
+def _launch_refused_then_ok(
+    tmp_path,
+    monkeypatch,
+    plan,
+    *,
+    caps = None,
+):
+    """The planned launch exits refusing a unified cache with several sequences, a capability
+    crash the startup-failure retry does not take, so the single-sequence rung revokes the plan."""
+    import subprocess
+    from unittest.mock import patch
+
+    from core.inference.llama_cpp import GgufLoadIntent
+    from test_offload_planner_launch import CARD_MIB, DENSE, MIB, _backend
+
+    monkeypatch.setenv("UNSLOTH_SMART_OFFLOAD", "1")
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, CARD_MIB, CARD_MIB)])
+
+    def read(_path):
+        for key, value in DENSE.items():
+            setattr(backend, key, value)
+
+    backend._read_gguf_metadata = read
+    backend._get_gguf_size_bytes = lambda _path: 30 * 1024 * MIB
+    del backend._can_estimate_kv
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "supports_kv_unified": True,
+        "supports_fit_ctx": True,
+        "supports_cache_ram": True,
+        **(caps or {}),
+    }
+    backend._available_system_memory_mib = lambda: 64 * 1024
+    backend._planned_tensor_spill = lambda inputs, **_kw: plan
+
+    real_popen = subprocess.Popen
+    cmds = []
+
+    def planned(cmd):
+        return "--fit" in cmd and cmd[cmd.index("--fit") + 1] == "off"
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return real_popen(cmd, **kwargs)
+        cmds.append(list(cmd))
+        rc = 1 if planned(cmd) else None
+        return type(
+            "Process",
+            (),
+            {
+                "pid": 123,
+                "stdout": (),
+                "returncode": rc,
+                "poll": lambda self: rc,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: 0,
+                "kill": lambda self: None,
+            },
+        )()
+
+    def fake_health(timeout = None, **_kw):
+        launched = cmds[-1] if cmds else []
+        if planned(launched):
+            backend._stdout_lines = [
+                "llama_init_from_model: a unified KV cache is only supported with a single sequence"
+            ]
+            return False
+        backend._stdout_lines = []
+        return True
+
+    backend._wait_for_health = fake_health
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        assert backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(gguf),
+                model_identifier = "test",
+                speculative_type = "off",
+                n_parallel = 4,
+            )
+        )
+    return cmds, backend
+
+
+def _settings(monkeypatch, keep_resident, no_ram_reserve):
+    import utils.model_memory_settings as mm
+
+    monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (keep_resident, no_ram_reserve))
+    monkeypatch.setattr(mm, "get_keep_resident", lambda: keep_resident)
+    monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_ram_reserve)
+
+
+def _satisfied(backend):
+    from core.inference.llama_server_args import memory_state_satisfies_settings
+    return memory_state_satisfies_settings(
+        backend._memory_state,
+        backend._memory_policy_active,
+        backend._memory_mlock_applicable,
+        backend._memory_direct_io,
+        backend._memory_dio_applicable,
+        bool(backend._memory_dio_flags),
+    )
+
+
+def test_a_revocation_records_the_load_mode_the_retry_runs_with(tmp_path, monkeypatch):
+    """The plan's --load-mode none reserves a full host copy; the revocation strips it, so the
+    record has to follow, or the next "Don't reserve system RAM" reloads a child that does not
+    reserve anything."""
+    from core.inference.llama_server_args import resolve_effective_load_state
+
+    _settings(monkeypatch, False, False)
+    plan = Plan(changed = True, n_ctx = 8192, n_parallel = 2, load_mode_none = True)
+    cmds, backend = _launch_refused_then_ok(
+        tmp_path, monkeypatch, plan, caps = {"supports_load_mode": True}
+    )
+    assert len(cmds) == 2, cmds
+    assert "none" in cmds[0] and "none" not in cmds[-1], cmds
+    mlock, reserves, direct = resolve_effective_load_state(cmds[-1], {})
+    assert backend._memory_state == (mlock, reserves), (backend._memory_state, cmds[-1])
+    _settings(monkeypatch, False, True)
+    assert _satisfied(backend), "a mapped child already satisfies no-reserve"
+
+
+def test_a_revoked_all_on_gpu_plan_leaves_the_page_lock_applicable(tmp_path, monkeypatch):
+    """The plan kept every layer on the card, so the lock was recorded inapplicable. The --fit on
+    child the revocation launches is the no-plan launch, which records it applicable: a later
+    "Keep model in RAM" must reload with the lock, not be judged already satisfied."""
+    from test_offload_planner_launch import _launch_crash_then_ok
+
+    _settings(monkeypatch, False, False)
+    plan = Plan(changed = True, n_ctx = 8192, n_parallel = 1)
+    cmds, backend = _launch_crash_then_ok(
+        tmp_path, monkeypatch, plan, caps = {"supports_load_mode": True}
+    )
+    assert cmds[-1][cmds[-1].index("--fit") + 1] == "on", cmds[-1]
+    assert backend._memory_mlock_applicable is True
+    _settings(monkeypatch, True, False)
+    assert not _satisfied(backend), "keep-resident has to relaunch with the page-lock"
+
+
+def test_a_revoked_all_on_gpu_plan_drops_the_dio_applicability(tmp_path, monkeypatch):
+    """Windows: the all-on-GPU plan read as a confirmed full offload, so the no-reserve DirectIO
+    was recorded applicable. The --fit on child is not that placement any more, the same reason
+    the --fit on crash retry drops it."""
+    from core.inference import llama_cpp
+    from test_offload_planner_launch import _launch_crash_then_ok
+
+    monkeypatch.setattr(
+        llama_cpp,
+        "no_reserve_requires_dio",
+        lambda *, supports_load_mode, gpu_offload_confirmed: supports_load_mode
+        and gpu_offload_confirmed,
+    )
+    import core.inference.llama_server_args as lsa
+
+    monkeypatch.setattr(
+        lsa,
+        "no_reserve_requires_dio",
+        lambda *, supports_load_mode, gpu_offload_confirmed: supports_load_mode
+        and gpu_offload_confirmed,
+    )
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend, "_gpu_offload_confirmed", lambda self, *a, **k: True
+    )
+    seen = {}
+    real = llama_cpp.LlamaCppBackend._record_memory_state
+
+    def spy(
+        self,
+        argv,
+        env = None,
+    ):
+        seen.setdefault("first_dio_applicable", self._memory_dio_applicable)
+        return real(self, argv, env)
+
+    monkeypatch.setattr(llama_cpp.LlamaCppBackend, "_record_memory_state", spy)
+    _settings(monkeypatch, False, False)
+    plan = Plan(changed = True, n_ctx = 8192, n_parallel = 1)
+    cmds, backend = _launch_crash_then_ok(
+        tmp_path, monkeypatch, plan, caps = {"supports_load_mode": True}
+    )
+    assert seen.get("first_dio_applicable") is True, "harness: the plan launch read DIO applicable"
+    assert cmds[-1][cmds[-1].index("--fit") + 1] == "on", cmds[-1]
+    assert backend._memory_dio_applicable is False

@@ -33850,28 +33850,36 @@ class LlamaCppBackend:
                     # --fit on placement this hands back may leave weights in host RAM: re-arm
                     # it like the --fit on crash retry does. Not for the CPU fallback, which
                     # decides its own load mode.
-                    if (
-                        rearm_page_lock
-                        and _plan_kept_every_layer
-                        and _mem_should_mlock
-                        and not _mem_host_resident
-                    ):
-                        reverted = [
-                            *reverted,
-                            *(
-                                ["--load-mode", "mmap+mlock"]
-                                if server_caps.get("supports_load_mode")
-                                else ["--mlock"]
-                            ),
-                        ]
-                        _mem_host_resident = True
-                        self._memory_mlock_applicable = True
-                        self._memory_policy_active = True
-                        logger.info(
-                            "Model Memory: re-applying the page-lock; the tensor-spill plan "
-                            "that kept every layer on the GPU was revoked (%s).",
-                            why,
+                    # The bookkeeping follows whether or not a lock is wanted now: the --fit on
+                    # child is the no-plan launch, which records the lock applicable, so a later
+                    # "Keep model in RAM" must relaunch instead of being judged satisfied. Same
+                    # for the DirectIO: it was applicable to the confirmed full offload the plan
+                    # made, which the --fit on crash retry drops for the same reason.
+                    if rearm_page_lock and _plan_kept_every_layer:
+                        reverted = self._drop_managed_dio(
+                            reverted,
+                            f"the tensor-spill plan that kept every layer on the GPU was "
+                            f"revoked ({why})",
+                            clear_record = False,
                         )
+                        if not _mem_host_resident:
+                            _mem_host_resident = True
+                            self._memory_mlock_applicable = True
+                            if _mem_should_mlock:
+                                reverted = [
+                                    *reverted,
+                                    *(
+                                        ["--load-mode", "mmap+mlock"]
+                                        if server_caps.get("supports_load_mode")
+                                        else ["--mlock"]
+                                    ),
+                                ]
+                                self._memory_policy_active = True
+                                logger.info(
+                                    "Model Memory: re-applying the page-lock; the tensor-spill "
+                                    "plan that kept every layer on the GPU was revoked (%s).",
+                                    why,
+                                )
                     # So does the plan's load mode: the fitter can put far more on the host than
                     # the plan did, so a retry that keeps "none" turns a pageable fallback into a
                     # host-RAM OOM.
@@ -33906,6 +33914,11 @@ class LlamaCppBackend:
                                 if max_available_ctx > 0
                                 else self._effective_context_length
                             )
+                    # The plan's --load-mode none went and a page-lock may have come, so the
+                    # record follows the argv about to spawn, as the --fit on crash retry's
+                    # does. Not for the CPU fallback, which records its own replay.
+                    if rearm_page_lock:
+                        self._record_memory_state(reverted, env)
                     return reverted
 
                 # Memoed only when the load ends terminally, so a recovering fallback is not blocked.
