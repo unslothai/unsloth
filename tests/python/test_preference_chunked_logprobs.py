@@ -331,7 +331,7 @@ def test_declines_without_kernel_or_on_unsupported_setups(monkeypatch):
         setattr(trainer, attr, value)
         assert rl._unsloth_pref_chunked_head(trainer, model) is None, attr
     # A subclass reading the full chosen / rejected logits, or scoring its own log-probs, keeps TRL's path.
-    for hook in ("get_batch_loss_metrics", "get_batch_logps"):
+    for hook in ("get_batch_loss_metrics", "get_batch_logps", "concatenated_forward"):
         sub = type("Sub", (cls,), {hook: lambda self, *a, **k: None})
         assert rl._unsloth_pref_chunked_head(_trainer(sub, "orpo"), model) is None, hook
     monkeypatch.setenv("UNSLOTH_PREFERENCE_CHUNKED", "0")

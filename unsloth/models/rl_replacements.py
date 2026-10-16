@@ -4726,8 +4726,11 @@ def _unsloth_pref_chunked_head(self, model):
         return None
     if getattr(self, "is_encoder_decoder", False) or getattr(self, "aux_loss_enabled", False):
         return None
+    # Listing the method itself rejects a subclass wrapping it: it would see stand-in logits.
     if not _unsloth_stock_logps_hook(
-        self, "concatenated_forward", ("get_batch_logps", "get_batch_loss_metrics")
+        self,
+        "concatenated_forward",
+        ("get_batch_logps", "get_batch_loss_metrics", "concatenated_forward"),
     ):
         return None
     # TRL <= 0.25 scores labels against label_pad_token_id but nn.CrossEntropyLoss always ignores -100.
@@ -4992,9 +4995,9 @@ def _unsloth_dpo_chunked_head(
         method,
         ("get_batch_logps",)
         if method == "concatenated_forward"
-        else ("get_batch_logps", "get_batch_loss_metrics"),
+        else ("get_batch_logps", "get_batch_loss_metrics", method),
     ):
-        # KTO hands get_batch_loss_metrics logits stand-ins; DPO's outputs are exact.
+        # KTO hands its callers logits stand-ins; DPO's outputs are exact, so a DPO wrapper is fine.
         reason = "get_batch_logps / get_batch_loss_metrics overridden"
     elif getattr(self, "padding_free", False):
         reason = "padding_free"

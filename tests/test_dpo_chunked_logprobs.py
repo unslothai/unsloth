@@ -559,6 +559,15 @@ def test_stock_logps_hook_detects_overrides():
 
     assert not hook(WrapsForwardAndHook(), "concatenated_forward")
 
+    class WrapsForward(Patched):
+        def concatenated_forward(self):
+            return super().concatenated_forward()
+
+    stand_ins = both + ("concatenated_forward",)
+    assert hook(WrapsForward(), "concatenated_forward")
+    assert not hook(WrapsForward(), "concatenated_forward", stand_ins)
+    assert hook(Patched(), "concatenated_forward", stand_ins)
+
 
 def test_router_aux_loss_falls_back():
     ns = _helpers()
