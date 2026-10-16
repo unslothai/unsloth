@@ -39,7 +39,6 @@ test("the Hub's menus take the composer + menu's shape", () => {
   assert.match(css, /\.hub-composer-menu\[data-slot\] \{\s*border-radius: 21px !important;/);
   assert.match(readSrc("features/hub/catalog/hub-option-menu.tsx"), /hub-composer-menu/);
   assert.match(popover, /hub-composer-menu/);
-  // The line above Reset all is inset like the rows, not the popover's padding.
   assert.match(popover, /<div aria-hidden=\{true\} className="mx-3 h-px shrink-0 bg-border" \/>/);
 });
 

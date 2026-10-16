@@ -60,9 +60,7 @@ const CAPABILITY_ICONS: Record<HubCapabilityFilter, IconSvgElement | null> = {
   "video-gen": FlimSlateIcon,
 };
 
-// Every gap is 17px (scaled): between sections, above the first title past the popover's 8px
-// padding, and on both sides of Reset all. Text sits at leading-[1.25], Inter's own text box, so
-// the gaps measure to the glyphs rather than to line-height padding.
+// Gaps are 17px scaled; leading-[1.25] is Inter's text box, so they measure to the glyphs.
 const TEXT_BOX = "leading-[1.25]";
 const SECTION_LABEL = cn(
   "flex w-full items-center justify-between px-3 pb-2 text-ui-12 text-muted-foreground",
@@ -756,7 +754,6 @@ export function ModelSearchFiltersControl({
           />
         </div>
         <div aria-hidden={true} className="mx-3 h-px shrink-0 bg-border" />
-        {/* With the h-6 button's 5px around its text, 12px above and 4px plus the popover's 8px below. */}
         <div className="flex shrink-0 items-center justify-end px-3 pt-3 pb-1">
           <Button
             type="button"
