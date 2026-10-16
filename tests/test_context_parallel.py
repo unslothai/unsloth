@@ -544,7 +544,10 @@ def test_find_unused_parameters_is_off_under_cp_unless_the_user_set_it(monkeypat
         cp,
         "ContextParallelManager",
         lambda size, *rest: types.SimpleNamespace(
-            size = size, device_mesh = object(), attach_attention_hooks = lambda model: None
+            size = size,
+            backend = "ring",
+            device_mesh = object(),
+            attach_attention_hooks = lambda model: None,
         ),
     )
     args = types.SimpleNamespace(
@@ -605,7 +608,10 @@ def test_cp_state_is_reinstalled_at_train_after_another_trainer(monkeypatch):
     trainer = object.__new__(Trainer)
     trainer.accelerator = types.SimpleNamespace(state = state)
     trainer.args = types.SimpleNamespace(ddp_find_unused_parameters = None)
-    trainer._context_parallel_manager = types.SimpleNamespace(size = 2, device_mesh = mesh)
+    trainer._context_parallel_manager = types.SimpleNamespace(
+        size = 2, backend = "ring", device_mesh = mesh
+    )
+    # A later non-CP trainer cleared the shared state; train() must put the CP mesh back.
     assert trainer.train() == "trained"
     assert state.device_mesh is mesh
     assert trainer.args.ddp_find_unused_parameters is False
@@ -746,7 +752,10 @@ def _gated_trainer(
     ):
         built.append((size, backend, rotate_method))
         return types.SimpleNamespace(
-            size = size, device_mesh = object(), attach_attention_hooks = lambda model: None
+            size = size,
+            backend = backend,
+            device_mesh = object(),
+            attach_attention_hooks = lambda model: None,
         )
 
     monkeypatch.setattr(cp, "ContextParallelManager", manager)
@@ -771,7 +780,6 @@ def _gated_trainer(
         ({"context_parallel_size": "2"}, ValueError),
         ({"context_parallel_backend": "tree"}, ValueError),
         ({"context_parallel_rotate_method": "ring"}, ValueError),
-        ({"context_parallel_backend": "ulysses"}, NotImplementedError),
     ],
 )
 def test_bad_cp_options_fail_before_the_trainer_builds(monkeypatch, overrides, error):
@@ -1030,6 +1038,99 @@ def test_generated_sft_config_carries_the_cp_options(tmp_path):
     assert cp.context_parallel_options(default) == (1, "ring", "allgather")
 
 
+class _FakeCPMesh:
+    def __init__(self, rank):
+        self.rank = rank
+
+    def get_local_rank(self):
+        return self.rank
+
+    def get_group(self):
+        return ("group", self.rank)
+
+
+def _ulysses_manager(rank, size = 2):
+    manager = _manager(size)
+    manager.backend = "ulysses"
+    manager.mesh = _FakeCPMesh(rank)
+    return manager
+
+
+def test_ulysses_shards_contiguously_after_global_shift():
+    labels = torch.tensor([[-100, 5, 6, 7, 8, 9, 10]])
+    shards = []
+    for rank in range(2):
+        inputs = {"input_ids": torch.arange(1, 8)[None], "labels": labels.clone()}
+        manager = _ulysses_manager(rank)
+        with manager.apply(inputs):
+            assert cp.get_cp_manager() is manager
+            shards.append(inputs)
+        assert cp.get_cp_manager() is None
+    assert [s["input_ids"].tolist() for s in shards] == [[[1, 2, 3, 4]], [[5, 6, 7, 0]]]
+    assert [s["shift_labels"].tolist() for s in shards] == [[[5, 6, 7, 8]], [[9, 10, -100, -100]]]
+    assert [s["position_ids"].tolist() for s in shards] == [[[0, 1, 2, 3]], [[4, 5, 6, 7]]]
+
+
+def test_ulysses_packed_batch_keeps_global_lengths_and_masks_document_starts():
+    lengths = torch.tensor([3, 4], dtype = torch.int32)
+    labels = torch.tensor([[10, 11, 12, 20, 21, 22, 23]])
+    shards = []
+    for rank in range(2):
+        inputs = {
+            "input_ids": torch.arange(7)[None],
+            "labels": labels.clone(),
+            "packed_seq_lengths": lengths,
+        }
+        with _ulysses_manager(rank).apply(inputs):
+            shards.append(inputs)
+    assert all(s["packed_seq_lengths"] is lengths for s in shards)
+    assert torch.cat([s["position_ids"] for s in shards], 1).tolist() == [[0, 1, 2, 0, 1, 2, 3, 4]]
+    shift = torch.cat([s["shift_labels"] for s in shards], 1).tolist()
+    assert shift == [[11, 12, -100, 21, 22, 23, -100, -100]]
+
+
+def test_ulysses_refuses_packed_lengths_longer_than_the_row():
+    inputs = {
+        "input_ids": torch.ones(1, 4, dtype = torch.long),
+        "position_ids": torch.arange(4)[None],
+        "packed_seq_lengths": torch.tensor([3, 10**9]),
+    }
+    with pytest.raises(ValueError, match = "packed row has 4 tokens"):
+        _ulysses_manager(0)._prepare_inputs(inputs)
+
+
+def test_ring_refuses_packed_batches():
+    inputs = {
+        "input_ids": torch.ones(1, 4, dtype = torch.long),
+        "packed_seq_lengths": torch.tensor([4]),
+    }
+    manager = _manager()
+    manager.backend = "ring"
+    with pytest.raises(ValueError, match = "ring context parallelism does not support packing"):
+        manager._prepare_inputs(inputs)
+
+
+def test_ulysses_keeps_varlen_and_routes_attention_through_the_exchange(monkeypatch):
+    calls = []
+
+    def fake_ulysses(run_attention_fn, config, context, Q, K, V, group):
+        calls.append((run_attention_fn, group))
+        return "exchanged"
+
+    monkeypatch.setattr(ad, "ulysses_attention", fake_ulysses)
+    manager = _ulysses_manager(1)
+    monkeypatch.setattr(cp, "_ACTIVE_MANAGER", manager)
+    if ad.HAS_FLASH_ATTENTION:
+        assert ad.select_attention_backend(True) == ad.FLASH_VARLEN
+    else:
+        assert ad.select_attention_backend(True) != ad.FLASH_VARLEN
+    assert ad.run_attention(config = None, context = None, Q = 1, K = 2, V = 3) == "exchanged"
+    assert calls == [(ad._run_attention, ("group", 1))]
+    manager.backend = "ring"
+    with pytest.raises(ValueError, match = "context_parallel_backend = 'ulysses'"):
+        ad.select_attention_backend(True)
+
+
 def test_inherited_trainer_methods_are_resolved_per_call(monkeypatch):
     import trl
 
@@ -1050,3 +1151,35 @@ def test_inherited_trainer_methods_are_resolved_per_call(monkeypatch):
     cp.patch_sft_trainer()
     monkeypatch.setattr(Base, "train", lambda self: "patched later")
     assert Trainer().train() == "patched later"
+
+
+def test_ulysses_head_counts_are_checked_at_init(monkeypatch):
+    import types
+
+    config = types.SimpleNamespace(num_attention_heads = 3, num_key_value_heads = 3)
+    model = types.SimpleNamespace(config = config)
+    Trainer, _, built = _gated_trainer(monkeypatch, model = model, context_parallel_backend = "ulysses")
+    with pytest.raises(ValueError, match = "divisible by context_parallel_size"):
+        Trainer()
+    assert built == []
+    config.num_attention_heads = config.num_key_value_heads = 4
+    Trainer()
+    assert built == [(2, "ulysses", "allgather")]
+
+
+@pytest.mark.parametrize("backend", ["ring", "ulysses"])
+def test_only_ring_needs_sm80(monkeypatch, backend):
+    import types
+
+    config = types.SimpleNamespace(num_attention_heads = 4, num_key_value_heads = 4)
+    Trainer, _, built = _gated_trainer(
+        monkeypatch, model = types.SimpleNamespace(config = config), context_parallel_backend = backend
+    )
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (7, 5))
+    if backend == "ring":
+        with pytest.raises(NotImplementedError, match = "compute capability"):
+            Trainer()
+    else:
+        Trainer()
+        assert built == [(2, "ulysses", "allgather")]

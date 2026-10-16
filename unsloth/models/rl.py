@@ -3325,11 +3325,11 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         max_seq_length_pre += """
     context_parallel_size : Optional[int] = field(
         default = 1,
-        metadata = {'help': 'Ranks per context parallel group (SDPA ring attention). 1 disables it.'},
+        metadata = {'help': 'Ranks per context parallel group. 1 disables it.'},
     )
     context_parallel_backend : Optional[str] = field(
         default = 'ring',
-        metadata = {'help': 'Context parallel attention backend: ring.'},
+        metadata = {'help': 'Context parallel attention backend: ring or ulysses (keeps packing).'},
     )
     context_parallel_rotate_method : Optional[str] = field(
         default = 'allgather',
