@@ -240,7 +240,7 @@ def test_filenames_follow_the_qwen_image_2_1_pattern_per_variant(family):
 def test_one_encoder_serves_both_variants():
     # The distilled and base text_encoder/ shards are byte-identical, so either base id validates the other's file.
     assert tpq.te_base_equivalent(DISTILLED, BASE)
-    assert tpq.te_base_equivalent("unsloth/flux-3-image-klein", BASE)
+    assert tpq.te_base_equivalent("unsloth/flux-3-image-klein-FP8", BASE)
     assert not tpq.te_base_equivalent(DISTILLED, "Qwen/Qwen-Image-2.1")
 
 

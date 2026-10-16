@@ -1461,13 +1461,13 @@ def test_companion_staging_is_scoped_to_the_folders_flux3_loads(tmp_path, monkey
         discover_text_encoders = False,
     )
     # Staged from the ungated unsloth mirror of the gated BFL repo, never from BFL itself.
-    assert {e["repo_id"] for e in plan["entries"]} & {DISTILLED, "unsloth/flux-3-image-klein"} == {
-        "unsloth/flux-3-image-klein"
+    assert {e["repo_id"] for e in plan["entries"]} & {DISTILLED, "unsloth/flux-3-image-klein-FP8"} == {
+        "unsloth/flux-3-image-klein-FP8"
     }
     files = sorted(
         f
         for e in plan["entries"]
-        if e["repo_id"] == "unsloth/flux-3-image-klein"
+        if e["repo_id"] == "unsloth/flux-3-image-klein-FP8"
         for f in e["files"]
     )
     assert files == [
