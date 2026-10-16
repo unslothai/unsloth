@@ -2167,7 +2167,7 @@ export function ModelsPage() {
           )}
         </div>
 
-        {splitMode && (
+        {splitMode && !isCompactViewport && (
           <HubSplitDivider
             paneRef={catalogPaneRef}
             width={splitWidth.width}
