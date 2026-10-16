@@ -61,6 +61,11 @@ def _ordinary(
     monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: list(visible))
 
 
+@pytest.fixture(autouse = True)
+def _no_earlier_pins(monkeypatch):
+    monkeypatch.setattr(dd, "_PINNED_AWAY_FROM_ZERO", False, raising = False)
+
+
 # Item 1: the current device stays None.
 
 
@@ -565,3 +570,33 @@ def test_cold_rocm_detection_is_settled_before_the_gate_reads_it(monkeypatch):
 
     monkeypatch.setattr(hw, "get_device", cold_detect)
     assert dd.auto_cuda_ranking_possible() is False
+
+
+def test_card_zero_stays_explicit_once_a_thread_was_pinned_elsewhere(monkeypatch):
+    import torch
+
+    _two_cards(monkeypatch, [_dev(0, 80.0, 0.5), _dev(1, 80.0, 40.0)], {0: (8, 0), 1: (8, 0)})
+    monkeypatch.setattr(torch.cuda, "set_device", lambda ordinal: None)
+    dd.pin_cuda_ordinal(0)
+    assert dd.resolve_auto_cuda_ordinal() is None  # pinning card 0 leaves no worker elsewhere
+    dd.pin_cuda_ordinal(1)
+    # A pooled worker may now sit on card 1: the winner is named so preflight reads card 0.
+    assert dd.resolve_auto_cuda_ordinal() == 0
+
+
+def test_hardware_redetection_rereads_card_identities(monkeypatch):
+    from utils.hardware import gpu_query, nvidia
+
+    a100 = ("NVIDIA A100-SXM4-80GB", "81920 MiB", "8.0", "1410 MHz")
+    h100 = ("NVIDIA H100 80GB HBM3", "81559 MiB", "9.0", "1980 MHz")
+    inventory = [{0: a100, 1: a100}]
+    monkeypatch.setattr(hw, "IS_ROCM", False)
+    monkeypatch.setattr(hw, "get_physical_gpu_count", lambda: 2)
+    monkeypatch.setattr(nvidia, "get_card_identities", lambda: inventory[0])
+    monkeypatch.setattr(hw, "_nvidia_mig_gpu_indices_or_none", lambda: set())
+    monkeypatch.setattr(hw, "_cuda_card_identities", {})
+    assert hw._cuda_cards_identical() is True
+    inventory[0] = {0: a100, 1: h100}  # card 1 swapped, same count
+    assert hw._cuda_cards_identical() is True  # cached until re-detection
+    gpu_query.invalidate_static("test: card swapped")
+    assert hw._cuda_cards_identical() is False

@@ -395,6 +395,8 @@ _PLANNED_ORDINAL: ContextVar[Any] = ContextVar("media_planned_gpu_ordinal", defa
 
 # Free-VRAM readings this close are noise, so the lower ordinal keeps an idle uniform host on card 0.
 _AUTO_FREE_TIE_BYTES = 256 * 1024**2
+# Set once any thread was pinned to a card other than 0: pooled workers may then sit elsewhere.
+_PINNED_AWAY_FROM_ZERO = False
 
 
 def resolve_auto_cuda_ordinal() -> Optional[int]:
@@ -464,9 +466,11 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
     winner = min(o for o, free in free_by_ordinal.items() if best - free <= _AUTO_FREE_TIE_BYTES)
     if winner:
         return winner
-    # Card 0 won. Identical cards (same capability and size) keep None, the unpinned path they always had:
-    # any card resolves the same precision and artifacts. Mixed cards keep 0 explicit, since a pooled thread
-    # left on another card would otherwise preflight against that card.
+    # Card 0 won. Identical cards (same capability and size) keep None, the unpinned path they always had,
+    # while no thread was ever pinned elsewhere. Mixed cards, or a process where a pooled thread may sit on
+    # another card, keep 0 explicit so preflight and load read the ranked card.
+    if _PINNED_AWAY_FROM_ZERO:
+        return 0
     totals = {d.get("vram_total_gb") for d in devices if d.get("index") in visible}
     if len({caps.get(i) for i in visible}) == 1 and len(totals) == 1:
         # Physical rows hide MIG slice sizes, so a MIG card makes the set mixed.
@@ -576,11 +580,14 @@ def apply_diffusion_device_ordinal(target: DiffusionDeviceTarget) -> None:
 
 def pin_cuda_ordinal(ordinal: Optional[int]) -> None:
     """``torch.cuda.set_device``, thread-local, never fatal. A no-op for None."""
+    global _PINNED_AWAY_FROM_ZERO
     if ordinal is None:
         return
     try:
         import torch
         torch.cuda.set_device(ordinal)
+        if ordinal != 0:
+            _PINNED_AWAY_FROM_ZERO = True
     except Exception:  # noqa: BLE001 -- placement still works off torch_device; never fail a load here
         pass
 

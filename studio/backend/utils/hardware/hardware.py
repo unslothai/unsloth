@@ -2055,16 +2055,25 @@ def _mask_names_cuda_ordinals(parent_visible_spec: Dict[str, Any]) -> bool:
 
 
 _cuda_card_identities: Dict[int, tuple] = {}
+_cuda_card_identities_gen: Optional[int] = None
 
 
 def _cuda_cards_identical(gpu_ids: Optional[list[int]] = None) -> Optional[bool]:
     """Whether the NVIDIA cards ``gpu_ids`` (default: every physical card) share one identity per nvidia-smi (name, total memory, compute cap, max SM clock) and none is MIG, out of process. None when unknown. Read once and cached: a card's identity does not change, and a grown card count re-reads."""
-    global _cuda_card_identities
+    global _cuda_card_identities, _cuda_card_identities_gen
     if IS_ROCM:
         return None
+    from . import gpu_query
+
     count = get_physical_gpu_count()
     wanted = list(range(count)) if gpu_ids is None else list(gpu_ids)
-    if not set(wanted) <= set(_cuda_card_identities) or len(_cuda_card_identities) < count:
+    # Hardware re-detection (a swapped card) bumps the static generation.
+    if (
+        _cuda_card_identities_gen != gpu_query._static_gen
+        or not set(wanted) <= set(_cuda_card_identities)
+        or len(_cuda_card_identities) < count
+    ):
+        gen = gpu_query._static_gen
         try:
             from . import nvidia
             identities = nvidia.get_card_identities()
@@ -2072,7 +2081,7 @@ def _cuda_cards_identical(gpu_ids: Optional[list[int]] = None) -> Optional[bool]
             return None
         if not identities:
             return None
-        _cuda_card_identities = identities
+        _cuda_card_identities, _cuda_card_identities_gen = identities, gen
     if gpu_ids is None:
         # Every row nvidia-smi lists, not just the count: a torch-fallback count can miss cards.
         wanted = sorted(_cuda_card_identities)
