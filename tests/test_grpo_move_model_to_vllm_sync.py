@@ -119,3 +119,17 @@ def test_other_functions_and_trainers_still_stripped():
         out = _strip_vllm_weight_loads(function, line, trainer_file)
         assert "load_weights" not in out and "pass" in out
     assert _strip_vllm_weight_loads("_move_model_to_vllm", line, "grpo_trainer") == line
+
+
+class Params4bit(torch.nn.Parameter):
+    pass
+
+
+def test_bnb_quantized_base_keeps_no_op():
+    # merge_adapter on a bitsandbytes base requantizes it from the fp32 LoRA delta and the next
+    # fast_lora backward fails on dtype, so a quantized model must not enter TRL's sync body.
+    trainer, rec = _trainer("colocate")
+    trainer.model.weight = Params4bit(trainer.model.weight.data, requires_grad = False)
+    method = _patched_method()
+    assert method(trainer) is None and method(trainer) is None
+    assert rec.loaded == [] and rec.resets == 0
