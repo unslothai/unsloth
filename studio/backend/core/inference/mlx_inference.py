@@ -913,38 +913,6 @@ def _mlx_optional_fusion(name, model, *args):
         yield active
 
 
-def _mlx_fused_moe_gate_up(model):
-    return _mlx_optional_fusion("fused_moe_gate_up", model)
-
-
-def _mlx_fused_decode_conv_silu(model):
-    return _mlx_optional_fusion("fused_decode_conv_silu", model)
-
-
-def _mlx_fused_residual_norm(model):
-    return _mlx_optional_fusion("fused_residual_norm", model)
-
-
-def _mlx_fused_moe_router(model):
-    return _mlx_optional_fusion("fused_moe_router", model)
-
-
-def _mlx_fused_moe_routed_experts(model):
-    return _mlx_optional_fusion("fused_moe_routed_experts", model)
-
-
-def _mlx_fused_residual_norm_handoff(model):
-    return _mlx_optional_fusion("fused_residual_norm_handoff", model)
-
-
-def _mlx_fused_packed_gated_delta(model):
-    return _mlx_optional_fusion("fused_packed_gated_delta", model)
-
-
-def _mlx_exact_speculative_verify(model):
-    return _mlx_optional_fusion("exact_speculative_verify", model)
-
-
 def _mlx_scope_refused(name, error):
     if is_metal_queue_dead(error):
         raise error
@@ -954,25 +922,10 @@ def _mlx_scope_refused(name, error):
 @contextmanager
 def _mlx_inference_scopes(model, call, int8_prefill):
     """Hold the Zoo scopes for a generation described by `call`, Zoo's call traits. Zoo picks them, so
-    a scope it registers reaches this path with no change here. A Zoo without the registry gets the
-    scopes once wired here by hand; that set is frozen, since new scopes register in Zoo."""
+    a scope it registers reaches this path with no change here. A Zoo without the registry runs unfused."""
     compose = _mlx_inference_patch("inference_scopes")
     with ExitStack() as scope:
-        if compose is None:
-            if "batch" not in call:
-                for fusion in (
-                    _mlx_fused_moe_gate_up,
-                    _mlx_fused_decode_conv_silu,
-                    _mlx_fused_residual_norm,
-                    _mlx_fused_moe_router,
-                    _mlx_fused_moe_routed_experts,
-                    _mlx_fused_residual_norm_handoff,
-                    _mlx_fused_packed_gated_delta,
-                ):
-                    scope.enter_context(fusion(model))
-            if "speculative" in call:
-                scope.enter_context(_mlx_exact_speculative_verify(model))
-        else:
+        if compose is not None:
             try:
                 scope.enter_context(
                     compose(
@@ -5186,9 +5139,10 @@ class MLXInferenceBackend:
         # Capture chat_template_info for the worker IPC reply and route capability classification.
         self._populate_chat_template_info(model_name, native_template)
 
-        # The worker owns fixed base weights until unload; adapter requests stay scoped.
-        if not is_lora:
-            self._model_fusion.enter_context(_mlx_fused_moe_gate_up(model))
+        # The worker owns fixed base weights until unload; adapter requests stay scoped. A Zoo without
+        # the registry runs unfused.
+        if not is_lora and _mlx_inference_patch("inference_scopes") is not None:
+            self._model_fusion.enter_context(_mlx_optional_fusion("fused_moe_gate_up", model))
         # Every rank of a distributed load must run each forward together.
         if not is_distributed:
             with mlx_rng_preserved(), self._int8_prefill_scope():

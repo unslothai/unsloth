@@ -35,9 +35,8 @@ FUSIONS = (
     "residual_norm_handoff",
     "packed_gated_delta",
 )
-# Fused scopes Studio never wired by hand, so they get no _mlx_fused_* helper and stay out of the
-# FUSIONS parametrisations: unsloth_zoo #1757 added fused_verify_attention around speculative verify.
-# The stub still has to answer them.
+# Stub scopes kept out of the FUSIONS parametrisations: unsloth_zoo #1757 added fused_verify_attention
+# around speculative verify. The stub still has to answer them.
 ZOO_ONLY_FUSIONS = ("verify_attention",)
 
 
@@ -178,7 +177,7 @@ def test_mlx_fusion_import_never_fails_the_request(monkeypatch, error, feature):
     from core.inference import mlx_inference
 
     module_name = "unsloth_zoo.mlx.inference"
-    helper = getattr(mlx_inference, f"_mlx_fused_{feature}")
+    helper = lambda model: mlx_inference._mlx_optional_fusion(f"fused_{feature}", model)
 
     original_import = mlx_inference.importlib.import_module
 
@@ -210,7 +209,7 @@ def test_mlx_fusion_that_cannot_be_entered_keeps_native(
     monkeypatch.setattr(mlx_inference_patches, f"fused_{feature}", refuse)
     monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
     model = object()
-    with getattr(mlx_inference, f"_mlx_fused_{feature}")(model) as active:
+    with mlx_inference._mlx_optional_fusion(f"fused_{feature}", model) as active:
         assert active is model
 
 
@@ -238,7 +237,7 @@ def test_mlx_dead_gpu_queue_is_not_reported_as_a_working_fallback(
     monkeypatch.setattr(mlx_inference_patches, f"fused_{feature}", fault)
     monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
     with pytest.raises(RuntimeError, match = "METAL"):
-        with getattr(mlx_inference, f"_mlx_fused_{feature}")(object()):
+        with mlx_inference._mlx_optional_fusion(f"fused_{feature}", object()):
             pass  # pragma: no cover
     assert mlx_inference._MLX_FUSION_UNAVAILABLE == set()
 
@@ -257,7 +256,7 @@ def test_mlx_packing_that_runs_out_of_memory_still_keeps_native(
     monkeypatch.setattr(mlx_inference_patches, f"fused_{feature}", refuse)
     monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
     model = object()
-    with getattr(mlx_inference, f"_mlx_fused_{feature}")(model) as active:
+    with mlx_inference._mlx_optional_fusion(f"fused_{feature}", model) as active:
         assert active is model
 
 
@@ -630,7 +629,7 @@ def test_a_scope_zoo_registers_reaches_each_studio_site_with_no_studio_change(
     assert entered == ["every", *call]
 
 
-def test_an_older_zoo_without_the_registry_keeps_the_hand_wired_scopes(
+def test_an_older_zoo_without_the_registry_loads_and_generates_unfused(
     monkeypatch, mlx_inference_patches
 ):
     from core.inference import mlx_inference
@@ -644,16 +643,15 @@ def test_an_older_zoo_without_the_registry_keeps_the_hand_wired_scopes(
         )
     monkeypatch.delattr(mlx_inference_patches, "inference_scopes")
     monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
-    fused = [f"fused_{name}" for name in FUSIONS]
-    for site, want in (
-        ("text-batch", []),
-        ("audio", fused),
-        ("vision-drafted", [*fused, "exact_speculative_verify"]),
-    ):
-        entered.clear()
+    backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7, 8]}, [])
+    _install_fake_fast_mlx(monkeypatch, [])
+    sys.modules["mlx.core"].clear_cache = lambda: None
+    assert backend.load_model(
+        SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
+    )
+    for site in ("text", "vision", "vision-drafted", "audio", "text-batch"):
         _run_studio_site(site, monkeypatch)
-        assert entered == want, site
-    assert mlx_inference._MLX_FUSION_UNAVAILABLE == set()
+    assert entered == [] and mlx_inference._MLX_FUSION_UNAVAILABLE == set()
 
 
 @pytest.mark.parametrize("dead", [False, True], ids = ["refused", "dead-queue"])
@@ -814,8 +812,7 @@ def test_mlx_missing_inference_export_keeps_native(monkeypatch, mlx_inference_pa
     name = f"fused_{feature}"
     monkeypatch.delattr(mlx_inference_patches, name)
     model = object()
-    helper = getattr(mlx_inference, f"_mlx_{name}")
-    with helper(model) as active:
+    with mlx_inference._mlx_optional_fusion(name, model) as active:
         assert active is model
 
 
@@ -4246,7 +4243,7 @@ def test_int8_prefill_is_the_outermost_scope_of_generation_pinned_off_when_inact
 
     active = requested and available
     # Zoo's registry enters the NAX scope again in its own place; the outer decision holds there too.
-    fusions = [("fusion", None)] * len(FUSIONS)
+    fusions = [("fusion", None)] * len(FUSIONS) if registry else []
     if registry:
         fusions[5:5] = [("int8", active)]
     assert events == [("int8", active), *fusions, ("stream", None)] + [("int8_exit", active)] * (
@@ -6043,11 +6040,6 @@ def test_a_speculative_load_drafts_eligible_single_replies(monkeypatch):
     utils.prepare_inputs = lambda *_a, **_k: {"input_ids": [_Ids([7, 8, 9])], "extra": 1}
     monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
     prepared, verify_scope, scopes = [], [], []
-    # A Zoo without the scope leaves the reply drafted and unfused.
-    with monkeypatch.context() as patch:
-        patch.setattr(mlx_inference, "_mlx_inference_patch", lambda name: verify_scope.append(name))
-        with mlx_inference._mlx_exact_speculative_verify(utils) as active:
-            assert active is utils and verify_scope.pop() == "exact_speculative_verify"
 
     @contextmanager
     def exact_verify(model):
