@@ -779,3 +779,9 @@ def test_selective_dequant_off_never_reads_a_packed_expert_stack(monkeypatch):
     layer.mlp.experts = PackedExperts()
     M._experts_outside(layer)
     assert reads == []
+    # Opted in, a packed stack is still not a bnb 4-bit one: never read, never moved out.
+    monkeypatch.setenv("UNSLOTH_MOE_SELECTIVE_DEQUANT", "1")
+    layer.__dict__.pop("_unsloth_block_moe_done", None)
+    M._experts_outside(layer)
+    assert reads == []
+    assert not getattr(layer.mlp.experts, "_unsloth_block_outside", False)

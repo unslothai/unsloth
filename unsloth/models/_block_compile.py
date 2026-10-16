@@ -715,14 +715,14 @@ def _lora_would_fold(experts):
 def _selective_dequant_requested(experts):
     # zoo's selective / chunked bnb 4-bit expert dequant plans from host-read token counts, so it
     # declines inside a trace: experts it should run on must stay out of the compiled block.
-    # Env first: on packed experts (MXFP4) gate_up_proj is a property that dequantizes the stack.
+    # Never getattr: on packed experts (MXFP4) gate_up_proj is a property that dequantizes the stack.
     try:
         chunked = int(os.environ.get("UNSLOTH_MOE_DEQUANT_CHUNK_EXPERTS", "0")) > 0
     except ValueError:
         chunked = False
     if os.environ.get("UNSLOTH_MOE_SELECTIVE_DEQUANT", "0") != "1" and not chunked:
         return False
-    return type(getattr(experts, "gate_up_proj", None)).__name__ == "Params4bit"
+    return type(experts._parameters.get("gate_up_proj")).__name__ == "Params4bit"
 
 
 def _experts_outside(layer):
