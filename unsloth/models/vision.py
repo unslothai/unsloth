@@ -4466,6 +4466,13 @@ class FastBaseModel:
                     f"({type(_exc).__name__}: {_exc})."
                 )
         _install_bnb_nf4_override()
+        # head_dim 512 layers (Gemma-4 globals) otherwise fall to SDPA's efficient / math kernels.
+        # Lazy: the kernel module defines Triton autotuners, which need a driver at import.
+        from ..kernels.large_head_attention import (
+            patch_large_head_attention as _patch_large_head_attention,
+        )
+
+        _patch_large_head_attention(model)
         return _mark_requested_float32(model, user_float32), tokenizer
 
     @staticmethod
