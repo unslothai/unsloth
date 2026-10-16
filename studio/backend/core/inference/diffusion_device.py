@@ -423,8 +423,12 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
         if hw.IS_ROCM:
             return None
         visible = hw.get_parent_visible_gpu_ids()
-        if len(visible) < 2 or not hw._cuda_order_matches_smi():
+        if len(visible) < 2:
             return None
+        if not hw._cuda_order_matches_smi():
+            # No ranking (rows are not ordinals), but on cards that are not provably identical keep the
+            # current card explicit, so a pooled thread left on another card cannot preflight against it.
+            return None if hw._cuda_cards_identical() is True else 0
         if hw._integrated_cuda_rows(visible)[0]:
             return None
         result = hw._smi_visible_utilization(hw._get_parent_visible_gpu_spec())

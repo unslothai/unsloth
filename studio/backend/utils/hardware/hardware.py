@@ -2092,10 +2092,13 @@ def _smi_rows_for_cuda_ordinals(parent_ids: list[int]) -> Optional[Dict[str, Any
     result = _smi_query(
         "get_visible_gpu_utilization", sorted(rows), parent_cuda_visible_devices = None
     )
-    by_row = {d.get("index"): d for d in (result or {}).get("devices", [])}
+    # MIG slices are keyed by the physical row, so correct before the rows become mask ids.
+    physical = _with_mig_instance_memory(list((result or {}).get("devices", [])))
+    by_row = {d.get("index"): d for d in physical}
     if not all(row in by_row for row in rows):
         return None
     return {
+        "mig_corrected": True,
         "devices": [
             {
                 "index": parent_ids[ordinal],
@@ -2103,7 +2106,7 @@ def _smi_rows_for_cuda_ordinals(parent_ids: list[int]) -> Optional[Dict[str, Any
                 "vram_used_gb": by_row[row].get("vram_used_gb"),
             }
             for ordinal, row in enumerate(rows)
-        ]
+        ],
     }
 
 
@@ -6194,7 +6197,8 @@ def auto_select_gpu_ids(
     else:
         utilization = get_visible_gpu_utilization()
     devices = [d for d in utilization.get("devices", []) if d.get("index") not in _uncovered]
-    devices = _with_mig_instance_memory(devices)
+    if not utilization.get("mig_corrected"):
+        devices = _with_mig_instance_memory(devices)
     parent_ids = _covered(get_parent_visible_gpu_ids())
 
     if not devices:

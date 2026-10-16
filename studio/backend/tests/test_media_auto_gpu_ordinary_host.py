@@ -257,6 +257,26 @@ def test_fastest_first_mask_without_a_mapping_keeps_torch(monkeypatch):
     assert torch_calls == [[0, 1]]
 
 
+def test_fastest_first_mask_corrects_mig_on_the_physical_row(monkeypatch):
+    # Mask entry 0 is physical row 1, a MIG card whose slice has 5 GB: the whole-card 80 GB
+    # must not reach the ranking, and row 0 (mask entry 1) must not be "corrected" instead.
+    from core.inference.llama_cpp import LlamaCppBackend
+    from utils.hardware import nvidia
+
+    torch_calls, _reads = _fastest_first_host(monkeypatch, [1, 0])
+    monkeypatch.setattr(nvidia, "get_mig_gpu_indices", lambda: {1})
+    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory_nvml", staticmethod(lambda: [(1, 4096, 5120)]))
+    with patch.dict(os.environ, _FASTEST, clear = True):
+        rows = hw._smi_rows_for_cuda_ordinals([0, 1])
+        ids, _meta = hw.auto_select_gpu_ids("m", required_override_gb = 8.0)
+    assert rows["devices"] == [
+        {"index": 0, "vram_total_gb": 5.0, "vram_used_gb": 1.0},
+        {"index": 1, "vram_total_gb": 80.0, "vram_used_gb": 70.0},
+    ]
+    assert ids == [1]  # only mask entry 1 (physical row 0) has 8 GB free
+    assert torch_calls == []
+
+
 def test_bus_ids_from_both_tools_join():
     from utils.hardware import nvidia
     assert nvidia._normalize_bus_id("00000000:3B:00.0") == nvidia._normalize_bus_id("0000:3b:00.0")

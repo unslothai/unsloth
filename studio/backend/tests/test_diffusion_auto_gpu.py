@@ -93,10 +93,13 @@ def test_auto_never_raises(monkeypatch):
     assert dd.resolve_auto_cuda_ordinal() is None
 
 
-def test_auto_keeps_the_current_device_when_cuda_order_is_not_smi_order(monkeypatch):
-    # CUDA_DEVICE_ORDER=FASTEST_FIRST: nvidia-smi rows are not torch ordinals, so no ranking.
+@pytest.mark.parametrize("identical, expected", [(True, None), (False, 0), (None, 0)])
+def test_auto_does_not_rank_when_cuda_order_is_not_smi_order(monkeypatch, identical, expected):
+    # CUDA_DEVICE_ORDER=FASTEST_FIRST: nvidia-smi rows are not torch ordinals, so no ranking. Identical
+    # cards keep None; otherwise card 0 stays explicit so a pooled thread cannot preflight elsewhere.
     _host(monkeypatch, [0, 1], [_dev(0, 8.0, 1.0), _dev(1, 24.0, 0.5)], order_matches = False)
-    assert dd.resolve_auto_cuda_ordinal() is None
+    monkeypatch.setattr(hw, "_cuda_cards_identical", lambda gpu_ids = None: identical)
+    assert dd.resolve_auto_cuda_ordinal() is expected
 
 
 def test_auto_never_falls_back_to_torch_telemetry(monkeypatch):
