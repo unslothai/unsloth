@@ -501,9 +501,11 @@ async function* freshChannelIterator(
     );
   const newest = listing("createdAt");
   // Read by hand: breaking out of a for-await would close the listing the tail continues.
+  // The task listings alternate, so each task gets a full pool of its own.
+  const poolSize = FRESH_POOL * Math.max(1, tasks.length);
   const take = async (iter: AsyncGenerator<unknown>) => {
     const items: unknown[] = [];
-    while (items.length < FRESH_POOL) {
+    while (items.length < poolSize) {
       const next = await iter.next();
       if (next.done) break;
       items.push(next.value);

@@ -93,6 +93,7 @@ test("Latest picked from the sort menu, outside any section, ranks the same way"
     hook,
     /if \(sortBy === "fresh" && !trimmed\) \{[\s\S]*?freshChannelIterator\(\n\s*\{ owner: unslothOnly \? "unsloth" : undefined \},[\s\S]*?tasks: normalizeTaskFilter\(task\),/,
   );
+  assert.match(hook, /const poolSize = FRESH_POOL \* Math\.max\(1, tasks\.length\);/);
   // The task scopes both candidate listings, not only the ranked result.
   assert.match(hook, /\.\.\.\(opts\.task \? \{ task: opts\.task \} : \{\}\),/);
 });
