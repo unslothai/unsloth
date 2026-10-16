@@ -73,7 +73,20 @@ def _batches():
     return ids, labels
 
 
+def _accelerator_less_import():
+    # Spawned ranks skip conftest, whose CUDA spoof lets `import unsloth` run on CPU-only runners.
+    if torch.cuda.is_available():
+        return
+    import importlib.util
+    import pathlib
+
+    path = pathlib.Path(__file__).resolve().parent / "conftest.py"
+    spec = importlib.util.spec_from_file_location("_unsloth_tests_conftest", path)
+    spec.loader.exec_module(importlib.util.module_from_spec(spec))
+
+
 def _worker(rank, port, out_dir):
+    _accelerator_less_import()
     os.environ.update(
         RANK = str(rank),
         LOCAL_RANK = str(rank),
