@@ -2423,6 +2423,8 @@ def grpo_trainer__get_per_token_logps(function_name, function):
         compute_efficient = False,
     ):
         if True:  # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
+            # Older TRL calls this instead of _get_per_token_logps_and_entropies: latch here too.
+            _unsloth_grpo_autocast(self)
             return None  # Unsloth efficient GRPO
         _unsloth_grpo_autocast(self)
 
@@ -2466,6 +2468,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
     ):
         # All Unsloth code in this function is licensed under AGPL3.
         if compute_efficient:
+            # No scoring forward may run (vLLM, beta = 0): latch precision here, not from the shared env.
+            _unsloth_grpo_autocast(self)
             return None, None
         else:
             _unsloth_grpo_autocast(self)
