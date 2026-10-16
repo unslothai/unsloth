@@ -243,7 +243,7 @@ def test_reasoning_after_a_tool_result_is_kept_and_stays_a_prefix():
     ]
     tmpl = NS["gemma4_empty_thought_template"]
     out = _render(tmpl, msgs)
-    assert out.endswith('<tool_response|><|channel>thought\nr\n<channel|>Done.<turn|>\n')
+    assert out.endswith("<tool_response|><|channel>thought\nr\n<channel|>Done.<turn|>\n")
     assert out.count(EMPTY) == 1
     full = _render(tmpl, msgs, enable_thinking = True)
     prompt = _render(tmpl, msgs[:3], enable_thinking = True, add_generation_prompt = True)
