@@ -67,7 +67,10 @@ def test_calls_go_through_to_the_loaded_models(tmp_path, monkeypatch):
     assert models.judge("are you there?") == 0.9
     assert models.filler("write me a snake game")["class"] == "code"
     assert models.interject("write a poem", "ok", 1.0)["action"] == "ignore"
-    assert models.status() == {"judge": True, "filler": True, "interject": True, "dir": str(tmp_path), "errors": {}}
+    status = models.status()
+    assert {k: status[k] for k in vm.MODELS} == {"judge": True, "filler": True, "interject": True}
+    assert status["dir"] == str(tmp_path) and status["errors"] == {}
+    assert status["backends"] == {"judge": None, "filler": None, "interject": None, "filler_echo": None}
 
 
 def test_env_var_picks_the_models_dir(monkeypatch, tmp_path):
@@ -125,6 +128,7 @@ def test_filler_phrase_and_echo_come_from_the_bank(tmp_path, monkeypatch):
     (tmp_path / "filler" / "models" / "tfidf_lr").mkdir(parents = True)
     (tmp_path / "filler" / "models" / "tfidf_lr" / "model.pkl").write_bytes(b"")
     filler = vm._Filler(tmp_path, seed = 0)
+    assert filler.backend == "tfidf" and filler.echo_backend == "rules"
 
     out = filler.predict("write me a snake game in python")
     assert out["say"] and out["class"] == "code" and out["echo"] is True
@@ -163,14 +167,111 @@ def test_interject_unpickler_maps_the_training_class():
     assert vm._InterjectUnpickler.find_class(None, "train_tfidf", "Model") is vm._InterjectTfidf
 
 
+class _FakeSession:
+    """Stands in for onnxruntime: 12 class logits, or per-token B/I/O logits."""
+
+    def __init__(self, logits_for):
+        self.logits_for = logits_for
+
+    def get_inputs(self):
+        return [type("I", (), {"name": "input_ids"})(), type("I", (), {"name": "attention_mask"})()]
+
+    def run(self, _outputs, feed):
+        assert set(feed) == {"input_ids", "attention_mask"}
+        assert feed["input_ids"].dtype.name == "int64"
+        return [self.logits_for(feed["input_ids"].shape[1])]
+
+
+class _FakeTokenizer:
+    def __init__(self, path):
+        self.max = None
+
+    def enable_truncation(self, n):
+        self.max = n
+
+    def encode(self, text):
+        words, ids, offsets, pos = text.split(), [], [], 0
+        for w in words:
+            a = text.index(w, pos)
+            ids.append(len(ids) + 5)
+            offsets.append((a, a + len(w)))
+            pos = a + len(w)
+        ids, offsets = ids[: self.max], offsets[: self.max]
+        return type("E", (), {"ids": ids, "attention_mask": [1] * len(ids), "offsets": offsets})()
+
+
+def _onnx_layout(tmp_path, classes):
+    for name in (vm.FILLER_ONNX, vm.ECHO_ONNX):
+        d = tmp_path / "filler" / "models" / name
+        d.mkdir(parents = True)
+        (d / "model_int8.onnx").write_bytes(b"")
+        (d / "tokenizer.json").write_text("{}")
+    (tmp_path / "filler" / "models" / vm.FILLER_ONNX / "classes.json").write_text(json.dumps(classes))
+    (tmp_path / "filler" / "phrases.json").write_text(json.dumps({
+        "classes": {"code": {"phrases": [{"text": "On it.", "weight": 1}]}},
+        "echo_templates": {"templates": [{"text": "okay, {slot}.", "weight": 1}], "mix": {"echo_when_slot": 1.0}},
+    }))
+
+
+def test_onnx_filler_is_preferred_when_its_folder_exists(tmp_path, monkeypatch):
+    import numpy as np
+    import types
+
+    classes = ["none", "minimal", "code"]
+    _onnx_layout(tmp_path, classes)
+
+    def cls_logits(n):
+        return np.array([[0.0, 0.0, 4.0]], dtype = np.float32)
+
+    def tag_logits(n):  # "write me a snake game in python": B on "a", I on "snake", "game", O elsewhere
+        bio = np.zeros((1, n, 3), dtype = np.float32)
+        bio[0, :, 0] = 3.0
+        if n >= 5:
+            bio[0, 2] = [0, 3.0, 0]
+            bio[0, 3] = [0, 0, 3.0]
+            bio[0, 4] = [0, 0, 3.0]
+        return bio
+
+    sessions = iter([_FakeSession(cls_logits), _FakeSession(tag_logits)])
+    monkeypatch.setitem(__import__("sys").modules, "onnxruntime", types.SimpleNamespace(
+        SessionOptions = lambda: types.SimpleNamespace(intra_op_num_threads = 0),
+        InferenceSession = lambda path, so, providers: next(sessions),
+    ))
+    monkeypatch.setitem(__import__("sys").modules, "tokenizers", types.SimpleNamespace(Tokenizer = types.SimpleNamespace(from_file = _FakeTokenizer)))
+
+    filler = vm._Filler(tmp_path, seed = 0)
+    assert filler.backend == "onnx" and filler.echo_backend == "onnx"
+    out = filler.predict("write me a snake game in python")
+    assert out["say"] and out["class"] == "code" and out["confidence"] > 0.9
+    assert out["slot"] == "a snake game" and out["echo"] is True and out["phrase"] == "Okay, a snake game."
+    assert set(out) == {"say", "class", "confidence", "phrase", "slot", "echo", "ms"}
+
+
+def test_onnx_echo_tagger_falls_back_to_rules_when_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(vm, "_OnnxClassifier", lambda d: type("C", (), {"classify": lambda self, t, q: ("code", 0.9)})())
+    (tmp_path / "filler" / "models" / vm.FILLER_ONNX).mkdir(parents = True)
+    (tmp_path / "filler" / "phrases.json").write_text(json.dumps({
+        "classes": {"code": {"phrases": [{"text": "On it.", "weight": 1}]}},
+        "echo_templates": {"templates": [{"text": "okay, {slot}.", "weight": 1}], "mix": {"echo_when_slot": 0.0}},
+    }))
+    filler = vm._Filler(tmp_path, seed = 0)
+    assert filler.backend == "onnx" and filler.echo_backend == "rules"
+    out = filler.predict("why is my install failing with this error")
+    assert out["slot"] == "the install error" and out["echo"] is False and out["phrase"] == "On it."
+
+
 @pytest.mark.skipif(not vm.models_dir().is_dir(), reason = "voice models dir not present")
 def test_real_models_end_to_end():
     models = vm.VoiceModels()
     status = models.status()
-    assert status == {"judge": True, "filler": True, "interject": True, "dir": str(vm.models_dir()), "errors": {}}, status
+    assert {k: status[k] for k in vm.MODELS} == {"judge": True, "filler": True, "interject": True}, status
+    assert status["errors"] == {} and status["dir"] == str(vm.models_dir())
+    assert status["backends"] == {"judge": "modernbert", "filler": "onnx", "interject": "tfidf", "filler_echo": "onnx"}
     assert models.judge("what's the capital of france") > models.judge("what's the capital of")
     out = models.filler("write me a snake game in python")
     assert out["say"] and out["class"] == "code" and out["phrase"]
+    assert out["slot"] == models._models["filler"].echo.extract("write me a snake game in python")[0]
+    assert out["ms"] < 100
     out = models.interject("write a poem about the sea", "no wait make it about the mountains", 1.0)
     assert out["action"] == "restart" and out["merged_prompt"].startswith("write a poem about the sea. Correction:")
     assert models.interject("write a poem about the sea", "ok", 0.5)["action"] == "ignore"

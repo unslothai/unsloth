@@ -3,7 +3,8 @@
 """The three small voice-mode models: turn judge, filler picker, interject decision.
 
 judge: ModernBERT sequence classifier, P(the user finished the turn), CPU.
-filler: TF-IDF gate + class over the ASR text, a phrase from phrases.json, optional echo slot.
+filler: int8 ONNX ModernBERT classifier over the ASR text (TF-IDF gate + class pickle when the ONNX
+folder is absent), a phrase from phrases.json, an echo slot from the int8 ONNX tagger (rules otherwise).
 interject: TF-IDF + hand features over (running prompt, new utterance, elapsed), restart | ignore | queue.
 
 Each loads on first use. A model that fails to load (no dir, no torch, bad pickle) stays
@@ -32,6 +33,11 @@ MODELS = ("judge", "filler", "interject")
 JUDGE_MAX_LENGTH = 64
 JUDGE_THREADS = 4
 ECHO_MIN_CONF = 0.7
+FILLER_ONNX = "modernbert_l4"
+ECHO_ONNX = "echo_distilbert_l4"
+FILLER_MAX_TOKENS = 48
+ECHO_MAX_TOKENS = 40
+ORT_THREADS = 4
 INTERJECT_ACTIONS = ["restart", "ignore", "queue"]
 
 
@@ -175,15 +181,45 @@ def extract_slot(text: str) -> tuple[Optional[str], float]:
     return None, 0.0
 
 
-class _Filler:
-    def __init__(self, root: Path, seed: Optional[int] = None):
-        m = pickle.load((root / "filler" / "models" / "tfidf_lr" / "model.pkl").open("rb"))
-        self.gate, self.cls = m["gate"], m["cls"]
-        self.bank = json.load((root / "filler" / "phrases.json").open())
-        self.rng = random.Random(seed)
+def _ort_session(path: Path):
+    import onnxruntime as ort
 
-    def _pick(self, items: list[dict]) -> str:
-        return self.rng.choices([p["text"] for p in items], weights = [p["weight"] for p in items])[0]
+    so = ort.SessionOptions()
+    so.intra_op_num_threads = ORT_THREADS
+    return ort.InferenceSession(str(path), so, providers = ["CPUExecutionProvider"])
+
+
+def _softmax(x):
+    import numpy as np
+
+    e = np.exp(x - x.max(-1, keepdims = True))
+    return e / e.sum(-1, keepdims = True)
+
+
+class _OnnxClassifier:
+    def __init__(self, d: Path):
+        from tokenizers import Tokenizer
+
+        self.classes = json.load((d / "classes.json").open())
+        self.tok = Tokenizer.from_file(str(d / "tokenizer.json"))
+        self.tok.enable_truncation(FILLER_MAX_TOKENS)
+        self.session = _ort_session(d / "model_int8.onnx")
+        self.inputs = {x.name for x in self.session.get_inputs()}
+
+    def classify(self, text: str, prev_q: bool) -> tuple[str, float]:
+        import numpy as np
+
+        e = self.tok.encode(featurize(text, prev_q))
+        feed = {"input_ids": np.array([e.ids], dtype = np.int64), "attention_mask": np.array([e.attention_mask], dtype = np.int64)}
+        p = _softmax(self.session.run(None, {k: v for k, v in feed.items() if k in self.inputs})[0][0])
+        i = int(p.argmax())
+        return self.classes[i], float(p[i])
+
+
+class _TfidfClassifier:
+    def __init__(self, d: Path):
+        m = pickle.load((d / "model.pkl").open("rb"))
+        self.gate, self.cls = m["gate"], m["cls"]
 
     def classify(self, text: str, prev_q: bool) -> tuple[str, float]:
         x = featurize(text, prev_q)
@@ -194,14 +230,79 @@ class _Filler:
         i = int(probs.argmax())
         return str(self.cls.classes_[i]), float(probs[i])
 
+
+class _OnnxEchoTagger:
+    """Per-token B/I/O logits; longest span wins, then the same finish() as the rules."""
+
+    def __init__(self, d: Path):
+        from tokenizers import Tokenizer
+
+        self.tok = Tokenizer.from_file(str(d / "tokenizer.json"))
+        self.tok.enable_truncation(ECHO_MAX_TOKENS)
+        self.session = _ort_session(d / "model_int8.onnx")
+
+    def extract(self, text: str) -> tuple[Optional[str], float]:
+        import numpy as np
+
+        e = self.tok.encode(text)
+        logits = self.session.run(None, {"input_ids": np.array([e.ids], dtype = np.int64), "attention_mask": np.array([e.attention_mask], dtype = np.int64)})[0][0]
+        p = _softmax(logits)
+        pred = p.argmax(-1)
+        spans: list[tuple[list[int], list[float]]] = []
+        cur: Optional[list[int]] = None
+        confs: list[float] = []
+        for j, (a, b) in enumerate(e.offsets):
+            if a == b:
+                continue
+            if pred[j] == 1 or (pred[j] == 2 and cur is None):
+                if cur:
+                    spans.append((cur, confs))
+                cur, confs = [a, b], [float(p[j].max())]
+            elif pred[j] == 2 and cur is not None:
+                cur[1] = b
+                confs.append(float(p[j].max()))
+            elif cur:
+                spans.append((cur, confs))
+                cur, confs = None, []
+        if cur:
+            spans.append((cur, confs))
+        if not spans:
+            return None, 0.0
+        (a, b), confs = max(spans, key = lambda s: s[0][1] - s[0][0])
+        problem = bool(re.search(_PROBLEM, text[b:])) or bool(re.match(r"^(why|how come)", text.strip()))
+        s = _finish(text[a:b], problem = problem)
+        return (s, round(sum(confs) / len(confs), 3)) if s else (None, 0.0)
+
+
+class _RulesEchoTagger:
+    extract = staticmethod(extract_slot)
+
+
+class _Filler:
+    def __init__(self, root: Path, seed: Optional[int] = None):
+        models = root / "filler" / "models"
+        if (models / FILLER_ONNX).is_dir():
+            self.clf, self.backend = _OnnxClassifier(models / FILLER_ONNX), "onnx"
+        else:
+            self.clf, self.backend = _TfidfClassifier(models / "tfidf_lr"), "tfidf"
+        if (models / ECHO_ONNX).is_dir():
+            self.echo, self.echo_backend = _OnnxEchoTagger(models / ECHO_ONNX), "onnx"
+        else:
+            self.echo, self.echo_backend = _RulesEchoTagger(), "rules"
+        self.bank = json.load((root / "filler" / "phrases.json").open())
+        self.rng = random.Random(seed)
+
+    def _pick(self, items: list[dict]) -> str:
+        return self.rng.choices([p["text"] for p in items], weights = [p["weight"] for p in items])[0]
+
     def predict(self, text: str, prev_q: bool = False) -> dict:
         t0 = time.perf_counter()
-        cls, conf = self.classify(text, prev_q)
+        cls, conf = self.clf.classify(text, prev_q)
         out: dict[str, Any] = {"say": cls != "none", "class": cls, "confidence": round(conf, 3), "phrase": "", "slot": None, "echo": False}
         if cls != "none":
             out["phrase"] = self._pick(self.bank["classes"][cls]["phrases"])
             if cls != "minimal":  # a one-word tier stays one word
-                slot, sconf = extract_slot(text)
+                slot, sconf = self.echo.extract(text)
                 out["slot"] = slot
                 echo = self.bank["echo_templates"]
                 if slot and sconf >= ECHO_MIN_CONF and self.rng.random() < echo["mix"]["echo_when_slot"]:
@@ -297,6 +398,8 @@ class _InterjectUnpickler(pickle.Unpickler):
 
 
 class _Interject:
+    backend = "tfidf"
+
     def __init__(self, root: Path):
         with (root / "interject" / "models" / "tfidf_lr" / "model.pkl").open("rb") as f:
             self.m = _InterjectUnpickler(f).load()
@@ -319,6 +422,8 @@ class _Interject:
 # ---------------------------------------------------------------- judge
 
 class _Judge:
+    backend = "modernbert"
+
     def __init__(self, root: Path):
         import torch
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
@@ -372,9 +477,16 @@ class VoiceModels:
         self._get(name)
         return self._errors.get(name, "")
 
+    def backend(self, name: str) -> Optional[str]:
+        m = self._get(name)
+        return getattr(m, "backend", None) if m is not None else None
+
     def status(self) -> dict:
         out: dict[str, Any] = {name: self.available(name) for name in MODELS}
         out["dir"] = str(self.root)
+        out["backends"] = {name: self.backend(name) for name in MODELS}
+        filler = self._models.get("filler")
+        out["backends"]["filler_echo"] = getattr(filler, "echo_backend", None)
         out["errors"] = dict(self._errors)
         return out
 
