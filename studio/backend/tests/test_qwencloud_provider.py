@@ -10,9 +10,10 @@ from pathlib import Path
 import pytest
 
 from core.inference.external_provider import ExternalProviderClient
-from core.inference.providers import list_available_providers
+from core.inference.providers import get_provider_info, list_available_providers
 from models.providers import ProviderModelsRequest
 from routes import providers as providers_route
+from routes.inference import _external_takes_mcp_images
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_external_provider_sampling_over_the_wire import _Handler, _run, _Server  # noqa: E402
@@ -129,3 +130,10 @@ def test_the_qwencloud_thinking_toggle_reaches_the_wire(enabled):
     assert body["enable_thinking"] is enabled
     assert "chat_template_kwargs" not in body
     assert "thinking" not in body
+
+
+def test_qwencloud_vision_models_keep_mcp_pictures():
+    info = get_provider_info("qwencloud")
+    for model in info["default_models"]:
+        assert _external_takes_mcp_images("qwencloud", True, model, info) is True, model
+    assert _external_takes_mcp_images("qwencloud", True, "glm-5.3", info) is False

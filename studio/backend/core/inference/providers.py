@@ -305,6 +305,11 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "qwen3.7-plus",
             "qwen3.8-flash",
         ],
+        "model_capabilities": {
+            "qwen3.8-max": {"vision": True, "studio_tools": True},
+            "qwen3.7-plus": {"vision": True, "studio_tools": True},
+            "qwen3.8-flash": {"vision": True, "studio_tools": True},
+        },
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
