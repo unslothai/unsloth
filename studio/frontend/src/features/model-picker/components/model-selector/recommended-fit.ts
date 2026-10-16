@@ -5,7 +5,11 @@
 // the device. No React/DOM deps so they are easy to test.
 
 import { classifyGgufFit } from "../../../../lib/gguf-fit.ts";
-import { checkVramFit, estimateLoadingVram } from "../../../../lib/vram.ts";
+import {
+  LOADING_OVERHEAD_GB,
+  checkVramFit,
+  estimateLoadingVram,
+} from "../../../../lib/vram.ts";
 import {
   audioCppDisplayName,
   isAudioCppFolderId,
@@ -217,19 +221,48 @@ export function fitsDevice(opts: {
   return requireKnown ? false : true;
 }
 
-/** A safetensors chat load on a discrete GPU runs in transformers, 4-bit by default, and
- *  `raise_if_offloaded` (utils/hardware/hardware.py) refuses any CPU offload. So it gets the
- *  row badge's own verdict: the 4-bit estimate against VRAM alone. */
-function fitsTransformersLoad(params: number, gpuGb: number): boolean {
-  return checkVramFit(estimateLoadingVram(params, "qlora"), gpuGb) !== "exceeds";
+// Prequantized formats a chat load may rebuild as bnb 4-bit (weight-only packed schemes). fp8 is
+// not: Studio never requests the explicit 4-bit that fp8 -> NF4 needs.
+const BNB_REBUILT_QUANTS = new Set([
+  "compressed-tensors",
+  "compressed_tensors",
+  "sparseml",
+]);
+
+/** A safetensors chat load on a discrete GPU runs in transformers, either as a prequantized
+ *  checkpoint stored or as bnb 4-bit at the row badge's estimate. `raise_if_offloaded` refuses CPU
+ *  offload, except that one CUDA / ROCm card block-swaps 16-bit or bnb layers into host RAM. */
+function fitsTransformersLoad(
+  model: { totalParams: number; estimatedSizeBytes?: number; quantMethod?: string },
+  gpu: { memoryTotalGb: number; systemRamAvailableGb: number; backend?: string },
+  gpuCount = 1,
+): boolean {
+  const quant = model.quantMethod?.toLowerCase();
+  const swapGb =
+    gpuCount <= 1 && (gpu.backend === "cuda" || gpu.backend === "rocm")
+      ? Math.max(0, gpu.systemRamAvailableGb)
+      : 0;
+  const fits = (requiredGb: number, budgetGb: number) =>
+    checkVramFit(requiredGb, budgetGb) !== "exceeds";
+  const bnbGb = estimateLoadingVram(model.totalParams, "qlora");
+  const storedGb = model.estimatedSizeBytes
+    ? model.estimatedSizeBytes / 1024 ** 3 + LOADING_OVERHEAD_GB
+    : bnbGb;
+  if (
+    quant &&
+    fits(storedGb, gpu.memoryTotalGb + (quant === "bitsandbytes" ? swapGb : 0))
+  )
+    return true;
+  return (
+    (!quant || BNB_REBUILT_QUANTS.has(quant)) &&
+    fits(bnbGb, gpu.memoryTotalGb + swapGb)
+  );
 }
 
 /** Fit predicate for one Hub listing row, shared by the chat model selector and the Hub page
- *  filter. GGUF repos use metadata size or the smallest-quant estimate. A safetensors row on a
- *  discrete GPU takes the verdict its own badge shows (see `fitsTransformersLoad`). MLX, and
- *  safetensors on a host memory pool, use the params-based quant estimate, since their
- *  estimatedSizeBytes is the full-precision checkpoint. `curatedSizeBytes` outranks all of
- *  these. Anything still unsizable is hidden; an unknown device budget keeps all. */
+ *  filter. GGUF repos use metadata size or the smallest-quant estimate, safetensors on a discrete
+ *  GPU `fitsTransformersLoad`, and MLX / host-pool rows the params-based quant estimate.
+ *  `curatedSizeBytes` outranks all. Unsizable rows are hidden; an unknown budget keeps all. */
 export function hfModelFitsDevice(
   model: {
     id: string;
@@ -237,16 +270,17 @@ export function hfModelFitsDevice(
     estimatedSizeBytes?: number;
     curatedSizeBytes?: number;
     isGguf?: boolean;
+    quantMethod?: string;
   },
   gpu: {
     memoryTotalGb: number;
     systemRamAvailableGb: number;
     budgetKnown?: boolean;
+    backend?: string;
   },
   /** `budgetFraction` is the user's saved VRAM Budget: omitted scores against the loader's
    *  default, so a caller that forgets it judges rows on a replaced budget. `mediaLoad` picks
-   *  the diffusion rule for an Images / Video row. `hostPooledMemory` marks a GPU whose memory
-   *  is a window into host RAM (a Mac, an APU), which keeps safetensors rows on the quant rule. */
+   *  the diffusion rule for an Images / Video row. */
   opts: {
     budgetFraction?: number;
     gpuCount?: number;
@@ -271,7 +305,7 @@ export function hfModelFitsDevice(
     !opts.hostPooledMemory &&
     gpu.memoryTotalGb > 0
   )
-    return fitsTransformersLoad(params, gpu.memoryTotalGb);
+    return fitsTransformersLoad({ ...model, totalParams: params }, gpu, opts.gpuCount);
   const quantBytes = params ? estimateQuantBytes(params) : undefined;
   const sizeBytes =
     model.curatedSizeBytes ??
@@ -354,6 +388,7 @@ export function searchRowFitsDevice<
     totalParams?: number;
     estimatedSizeBytes?: number;
     curatedSizeBytes?: number;
+    quantMethod?: string;
   },
   opts: {
     isGguf: boolean;

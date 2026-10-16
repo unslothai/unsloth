@@ -4031,22 +4031,26 @@ export function HubModelPicker({
     const rowGpu = loadScopedGpu(gpu, taskScoped);
     const rowInferenceGpu = loadScopedGpu(inferenceGpu, taskScoped);
     const pipelineBudget = artifactBudget(rowGpu);
-    const fits = (r: HfModelResult) =>
-      // Downloaded models show regardless of fit.
-      cachedIdFor(r.id) !== null ||
-      runsCheckpointQuant(r) ||
-      // The catalog's own verdict where it has one, so this list and the OOM badge cannot disagree:
-      // hfModelFitsDevice counts RAM toward a load that never leaves the card.
-      (catalogFit(r.id, pipelineBudget)?.fits ??
-        hfModelFitsDevice(r, diffusionLoad || !r.isGguf ? rowGpu : rowInferenceGpu, {
-          budgetFraction,
-          // Not `&& r.isGguf`: on a task page a safetensors row is placed by the same backend, and this
-          // rule IS the budget those rows had before the classifiers were merged.
-          mediaLoad: diffusionLoad,
-          hostPooledMemory: gpu.loadDeviceSharesHostMemory,
-          // The scoped inventory's own count, so it always describes rowInferenceGpu's capacity.
-          gpuCount: rowInferenceGpu.deviceCount,
-        }));
+    const fits = (r: HfModelResult) => {
+      const source = diffusionLoad || !r.isGguf ? rowGpu : rowInferenceGpu;
+      return (
+        // Downloaded models show regardless of fit.
+        cachedIdFor(r.id) !== null ||
+        runsCheckpointQuant(r) ||
+        // The catalog's own verdict where it has one, so this list and the OOM badge cannot disagree:
+        // hfModelFitsDevice counts RAM toward a load that never leaves the card.
+        (catalogFit(r.id, pipelineBudget)?.fits ??
+          hfModelFitsDevice(r, source, {
+            budgetFraction,
+            // Not `&& r.isGguf`: on a task page a safetensors row is placed by the same backend, and this
+            // rule IS the budget those rows had before the classifiers were merged.
+            mediaLoad: diffusionLoad,
+            hostPooledMemory: gpu.loadDeviceSharesHostMemory,
+            // The scoped inventory's own count, so it always describes the capacity beside it.
+            gpuCount: source.deviceCount,
+          }))
+      );
+    };
     const unslothRows = orderRecommendedRows({
       seeds: catalogSeedRows,
       results: recommendedSearch.results,
@@ -5323,6 +5327,7 @@ export function HubModelPicker({
       totalParams?: number;
       estimatedSizeBytes?: number;
       curatedSizeBytes?: number;
+      quantMethod?: string;
     }) =>
       catalogFit(row.id, artifactBudget(loadScopedGpu(gpu, Boolean(task))))?.fits ??
       searchRowFitsDevice(

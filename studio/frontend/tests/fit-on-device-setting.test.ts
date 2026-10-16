@@ -83,26 +83,38 @@ test("a model is hidden only when it exceeds GPU memory plus RAM", () => {
   );
 });
 
-test("a safetensors row on a discrete GPU is kept only when its badge would not say exceeds", () => {
-  // 24 GB card with 64 GB of RAM, which a transformers load cannot offload into.
-  const gpu = { memoryTotalGb: 24, systemRamAvailableGb: 64, budgetKnown: true };
+test("a safetensors row on a discrete GPU is sized like its badge, with RAM only where layers swap", () => {
+  // 24 GB of VRAM beside 64 GB of RAM.
+  const cuda = { memoryTotalGb: 24, systemRamAvailableGb: 64, budgetKnown: true, backend: "cuda" };
+  const xpu = { ...cuda, backend: "xpu" };
   const row = (id: string, totalParams: number) => ({ id, totalParams, isGguf: false });
-  // 14B: 14 * 0.9 + 1.4 = 14 GB, under the card.
-  assert.equal(hfModelFitsDevice(row("org/m-14B", 14e9), gpu), true);
-  // 24B: 23 GB, the badge's "tight" band, still kept.
-  assert.equal(hfModelFitsDevice(row("org/m-24B", 24e9), gpu), true);
-  // 32B and 70B: 30.2 and 64.4 GB, badged "exceeds".
-  assert.equal(hfModelFitsDevice(row("org/m-32B", 32e9), gpu), false);
-  assert.equal(hfModelFitsDevice(row("org/m-70B", 70e9), gpu), false);
-  // A host memory pool and MLX ids keep the quant rule.
+  // Badge estimates (0.9 B/param + 1.4 GB): 24B 23 GB (tight), 32B 30.2, 70B 64.4, 120B 109.4.
+  // Several cards, or XPU, cannot offload: VRAM alone, kept unless the badge says exceeds.
+  assert.equal(hfModelFitsDevice(row("org/m-24B", 24e9), cuda, { gpuCount: 2 }), true);
+  assert.equal(hfModelFitsDevice(row("org/m-32B", 32e9), cuda, { gpuCount: 2 }), false);
+  assert.equal(hfModelFitsDevice(row("org/m-32B", 32e9), xpu), false);
+  // One CUDA or ROCm card block-swaps layers into host RAM.
+  assert.equal(hfModelFitsDevice(row("org/m-70B", 70e9), cuda, { gpuCount: 1 }), true);
+  assert.equal(hfModelFitsDevice(row("org/m-70B", 70e9), { ...cuda, backend: "rocm" }), true);
+  assert.equal(hfModelFitsDevice(row("org/m-120B", 120e9), cuda, { gpuCount: 1 }), false);
+  // A prequantized checkpoint loads as stored (23e9 B is 21.4 GiB), where only bnb block-swaps, or
+  // rebuilt as bnb 4-bit, which block-swaps too.
+  const prequant = (quantMethod: string, bytes: number) => ({
+    ...row("org/m-32B", 32e9),
+    quantMethod,
+    estimatedSizeBytes: bytes,
+  });
+  assert.equal(hfModelFitsDevice(prequant("mxfp4", 23e9), xpu), true);
+  assert.equal(hfModelFitsDevice(prequant("mxfp4", 40e9), cuda), false);
+  assert.equal(hfModelFitsDevice(prequant("bitsandbytes", 40e9), cuda), true);
+  assert.equal(hfModelFitsDevice(prequant("compressed-tensors", 100e9), cuda), true);
+  assert.equal(hfModelFitsDevice(prequant("fp8", 100e9), cuda), false);
+  // Host pools, MLX ids, Images / Video rows and GGUF keep the quant rule.
+  assert.equal(hfModelFitsDevice(row("org/m-32B", 32e9), xpu, { hostPooledMemory: true }), true);
+  assert.equal(hfModelFitsDevice(row("mlx-community/m-32B", 32e9), xpu), true);
+  assert.equal(hfModelFitsDevice(row("org/m-32B", 32e9), xpu, { mediaLoad: true }), true);
   assert.equal(
-    hfModelFitsDevice(row("org/m-32B", 32e9), gpu, { hostPooledMemory: true }),
-    true,
-  );
-  assert.equal(hfModelFitsDevice(row("mlx-community/m-32B", 32e9), gpu), true);
-  // GGUF rows are unchanged: the same 32B repo as a GGUF is kept on its quant size.
-  assert.equal(
-    hfModelFitsDevice({ id: "org/m-32B-GGUF", totalParams: 32e9, isGguf: true }, gpu),
+    hfModelFitsDevice({ id: "org/m-32B-GGUF", totalParams: 32e9, isGguf: true }, xpu),
     true,
   );
 });
