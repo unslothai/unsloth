@@ -334,6 +334,25 @@ def test_media_bare_id_matches_variantless_local_file_ranking(tmp_path, monkeypa
     assert picks["local-image"].gguf_filename == alpha
 
 
+def test_quant_directory_siblings_share_the_media_default_scope(tmp_path, monkeypatch):
+    quant_dir = tmp_path / "Q4_K_M"
+    quant_dir.mkdir()
+    alpha = "Q4_K_M/alpha-Q4_K_M.gguf"
+    beta = "Q4_K_M/beta-Q4_K_M.gguf"
+    (tmp_path / alpha).write_bytes(b"x" * 100)
+    (tmp_path / beta).write_bytes(b"x" * 120)
+    info = _Info("local-image", "Local Image", path = str(tmp_path), task = "text-to-image")
+    monkeypatch.setattr(mmi, "_loader_can_open", lambda *_args: True)
+    monkeypatch.setattr(
+        "utils.models.model_config.detect_gguf_model", lambda *_args: str(tmp_path / beta)
+    )
+
+    picks = {}
+    assert mmi._add_gguf_picks(picks, info, (info.id,), tmp_path, tmp_path)
+
+    assert picks["local-image"].gguf_filename == beta
+
+
 def test_edit_only_checkpoints_are_not_offered_for_text_to_image(monkeypatch):
     """The catalog tags an instruction-editing checkpoint text-to-image, but it ships no
     txt2img workflow: the switch refuses it with a 400 and a resident one is refused by

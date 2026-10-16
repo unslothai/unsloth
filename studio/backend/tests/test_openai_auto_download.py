@@ -1944,9 +1944,18 @@ def test_a_non_quant_tag_does_not_tear_down_a_serving_quant(monkeypatch):
     monkeypatch.setattr(
         "utils.openai_auto_switch_settings.get_openai_auto_switch_enabled", lambda: True
     )
+    probes = []
+    real_pinned_variant = resolver.local_gguf_pinned_variant
+
+    def _record_probe(requested, allow_scan = True):
+        probes.append((requested, allow_scan))
+        return real_pinned_variant(requested, allow_scan = allow_scan)
+
+    monkeypatch.setattr(resolver, "local_gguf_pinned_variant", _record_probe)
     for tag in ("org/model:latest", "org/model:8b", "org/model"):
         asyncio.run(inference_route._maybe_auto_switch_model(tag, _Req(), "tester"))
     assert loads == [], "a tag naming no quant swapped the serving model out"
+    assert probes == [("org/model:latest", False), ("org/model:8b", False)]
 
 
 def test_a_split_build_stem_switches_away_from_the_resident_sibling(monkeypatch):

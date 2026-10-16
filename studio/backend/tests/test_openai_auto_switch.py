@@ -725,6 +725,31 @@ def test_local_gguf_entry_filters_non_gguf_and_recurses(tmp_path):
     assert e2 is not None and e2.variants
 
 
+def test_local_gguf_entry_uses_the_variantless_same_quant_default(tmp_path):
+    alpha = tmp_path / "alpha-Q4_K_M.gguf"
+    beta_one = tmp_path / "beta-Q4_K_M-00001-of-00002.gguf"
+    beta_two = tmp_path / "beta-Q4_K_M-00002-of-00002.gguf"
+    alpha.write_bytes(b"x" * 100)
+    beta_one.write_bytes(b"x" * 60)
+    beta_two.write_bytes(b"x" * 60)
+
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+
+    assert entry is not None
+    assert entry.variants[0] == "Q4_K_M"
+    assert resolver._resolve_from_index("local/model", {"local/model": entry})[1] == "Q4_K_M"
+
+
+def test_local_gguf_entry_does_not_publish_a_torn_sibling_build(tmp_path):
+    (tmp_path / "alpha-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "beta-Q4_K_M-00001-of-00002.gguf").write_bytes(b"x" * 200)
+
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+
+    assert entry is not None
+    assert entry.variants == ("Q4_K_M",)
+
+
 def test_local_gguf_entry_labels_a_quantless_filename_as_the_picker_does(tmp_path):
     # No quant token in the name, so the picker and every saved setting key this variant by
     # the stem. Labelling it "v2" here left an API load reading a key nothing wrote (#10227).

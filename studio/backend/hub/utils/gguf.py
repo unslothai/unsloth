@@ -384,7 +384,26 @@ def default_gguf_scope(
         if scoped:
             return scoped
     root = [item for item in rows if "/" not in str(key_of(item) or "")]
-    return root or rows
+    if not root:
+        return rows
+    root_keys = {str(key_of(item) or "").casefold() for item in root}
+
+    def _same_quant_directory(item) -> bool:
+        value = str(key_of(item) or "").replace("\\", "/")
+        parents, separator, _basename = value.rpartition("/")
+        segments = [segment for segment in parents.split("/") if segment]
+        return bool(
+            separator
+            and segments
+            and all(_is_quant_directory(segment) for segment in segments)
+            and bare_quant_alias(value).casefold() in root_keys
+        )
+
+    return [
+        item
+        for item in rows
+        if "/" not in str(key_of(item) or "").replace("\\", "/") or _same_quant_directory(item)
+    ]
 
 
 def _gguf_stem(filename: str) -> str:

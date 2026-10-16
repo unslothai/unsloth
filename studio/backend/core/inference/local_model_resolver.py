@@ -418,6 +418,14 @@ def _local_gguf_entry(
             offered, _ = inventory_variants(str(load_dir))
             complete_files = {str(v.filename).casefold() for v in offered if v.quant in complete}
             variants = [v for v in variants if str(v.filename).casefold() in complete_files]
+        if cache_repo_dir is None:
+            from utils.models.model_config import colocated_split_shards
+            variants = [
+                variant
+                for variant in variants
+                if getattr(variant, "filename", None)
+                and colocated_split_shards(Path(load_dir) / variant.filename)[1]
+            ]
         quants = tuple(v.quant for v in variants if getattr(v, "quant", None))
         if not quants:
             return None
@@ -429,15 +437,39 @@ def _local_gguf_entry(
         # preferred_quant is order-sensitive: rank only default_gguf_scope, or a sibling checkpoint can win.
         from hub.utils.gguf import default_gguf_scope
 
-        best = preferred_quant(
-            default_gguf_scope(
-                quants,
-                getattr(info, "id", None),
-                getattr(info, "model_id", None),
-                loader_id,
-                str(cache_repo_dir) if cache_repo_dir is not None else None,
-            )
+        scope = default_gguf_scope(
+            quants,
+            getattr(info, "id", None),
+            getattr(info, "model_id", None),
+            loader_id,
+            str(cache_repo_dir) if cache_repo_dir is not None else None,
         )
+        best = preferred_quant(scope)
+        from hub.utils.gguf import gguf_variant_key
+
+        legacy_groups: dict[str, int] = {}
+        for variant in variants:
+            legacy = gguf_variant_key(variant.filename).casefold()
+            legacy_groups[legacy] = legacy_groups.get(legacy, 0) + 1
+        if any(count > 1 for count in legacy_groups.values()):
+            try:
+                detected = detect_gguf_model(str(load_dir))
+                relative = (
+                    Path(detected).relative_to(Path(load_dir)).as_posix() if detected else None
+                )
+                selected = next(
+                    (
+                        variant
+                        for variant in variants
+                        if variant.filename == relative
+                        and legacy_groups.get(gguf_variant_key(variant.filename).casefold(), 0) > 1
+                    ),
+                    None,
+                )
+                if selected is not None and selected.quant in scope:
+                    best = selected.quant
+            except (OSError, RuntimeError, ValueError):
+                pass
         if best and quants[0] != best:
             quants = (best, *(q for q in quants if q != best))
         return _LocalGgufEntry(
