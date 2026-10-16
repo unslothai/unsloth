@@ -13,19 +13,21 @@ import os
 import sys
 import torch
 from unsloth_zoo.utils import Version
+from . import utils as _kernel_utils
 from .utils import (
     _has_active_dora_adapter,
     _has_active_lora_bias,
     _has_multiple_active_adapters,
     addmm_,
     fast_dequantize,
-    QUANT_STATE,
+    _base_quant_state,
     get_lora_parameters,
     get_lora_parameters_bias,
     matmul_lora,
     torch_amp_custom_fwd,
     torch_amp_custom_bwd,
 )
+from . import rms_layernorm as _rms_layernorm
 
 _is_compiling = torch.compiler.is_compiling
 
@@ -349,7 +351,8 @@ class LoRA_MLP(torch.autograd.Function):
             _backward_function,
         )
         ctx.save_for_backward(gateA, gateB, upA, upB, downA, downB, X, e, g, *masks)
-        ctx.inplace = inplace and _may_overwrite_input(X)
+        # Only an opt-in UNSLOTH_RMSNORM_SAVE_OUTPUT norm marks its output; skip the check otherwise.
+        ctx.inplace = inplace and (not _rms_layernorm._SAVE_OUTPUT or _may_overwrite_input(X))
         ctx.dropout_p = dropout_p or (0.0, 0.0, 0.0)
         ctx.biases = (gateBias is not None, upBias is not None, downBias is not None)
         return i
@@ -745,7 +748,8 @@ class LoRA_QKV(torch.autograd.Function):
             VB,
             *masks,
         )
-        ctx.inplace = inplace and _may_overwrite_input(X)
+        # Only an opt-in UNSLOTH_RMSNORM_SAVE_OUTPUT norm marks its output; skip the check otherwise.
+        ctx.inplace = inplace and (not _rms_layernorm._SAVE_OUTPUT or _may_overwrite_input(X))
         ctx.dropout_p = dropout_p or (0.0, 0.0, 0.0)
         ctx.biases = (QBias is not None, KBias is not None, VBias is not None)
         return Q, K, V
@@ -1051,7 +1055,10 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
                 lora_B = self.lora_B[active_adapter].weight
                 scaling = self.scaling[active_adapter]
                 W = self.base_layer.weight
-                return _apply(LoRA_W, x, W, QUANT_STATE(W), lora_A, lora_B, scaling)
+                W_quant = getattr(W, "quant_state", None)
+                if W_quant is None and _kernel_utils._FSDP2_QLORA_PREPARED:
+                    W_quant = _base_quant_state(self.base_layer, W)
+                return _apply(LoRA_W, x, W, W_quant, lora_A, lora_B, scaling)
             pass
         pass
 

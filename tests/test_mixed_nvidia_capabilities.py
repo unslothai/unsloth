@@ -184,6 +184,23 @@ def test_capability_cache_resolves_device_spellings(monkeypatch):
     assert inspect.signature(cached) == inspect.signature(probe)
 
 
+def test_capability_cache_single_device_keeps_the_plain_cache(monkeypatch):
+    import unsloth.models._utils as model_utils
+
+    calls = []
+
+    def probe(device = None):
+        calls.append(device)
+        return SM86
+
+    monkeypatch.setattr(model_utils, "torch", _fake_torch([SM86]))
+    cached = model_utils._cache_device_capability(probe)
+    assert hasattr(cached, "cache_info")  # functools.cache: no per-call Python work
+    assert cached() == cached() == cached(0) == SM86
+    assert calls == [None, 0]
+    assert model_utils._cache_device_capability(cached) is cached
+
+
 def _run_pre_volta(fake, monkeypatch, capsys):
     applied = []
 

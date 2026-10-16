@@ -67,6 +67,7 @@ from .loader_utils import (
     _prepare_compressed_tensors_model,
     fsdp_will_wrap,
     fsdp2_keeps_fused_lora,
+    fsdp2_requested,
     planner_class_mismatch_reason,
     planner_model_class,
     planner_config_overrides,
@@ -84,6 +85,7 @@ from .loader_utils import (
     sync_load_when_quantizing,
     warn_if_bitsandbytes_quantized_nothing,
 )
+from .fsdp2_qlora import prepare_fsdp2_qlora, set_fsdp2_quant_storage
 from ..utils.packing import (
     get_packed_info_from_kwargs,
     mask_packed_boundary_labels,
@@ -1418,13 +1420,31 @@ def LlamaModel_fast_forward(
         # had the attention refactor, so it always takes this path.
         # max_position_embeddings still sets the cache size and dtype as before, but only the rows
         # this batch (or the declared max_seq_length) can index are built, on this device only.
-        rope_rows = max(seq_length_with_past, getattr(self, "max_seq_length", None) or 0)
+        rope_len = max(seq_length_with_past, getattr(self, "max_seq_length", None) or 0)
+        rope_rows = rope_len
+        if position_ids is not None:
+            # Explicit positions (offsets, generate, packing) can index any row below
+            # max_position_embeddings; bounding them needs a host sync, so build them all as before.
+            rope_rows = max(rope_rows, self.config.max_position_embeddings)
         self.rotary_emb.extend_rope_embedding(
             hidden_states,
             self.config.max_position_embeddings,
             materialize_len = rope_rows,
         )
-        position_embeddings = self.rotary_emb.get_cached(rope_rows, hidden_states.device.index)
+        device_index = hidden_states.device.index
+        original = getattr(self.rotary_emb, "original_max_position_embeddings", None)
+        if (
+            position_ids is not None
+            and isinstance(self.rotary_emb, LongRopeRotaryEmbedding)
+            and rope_len <= original < rope_rows
+        ):
+            # transformers' longrope_frequency_update picks the factors from max(position_ids) + 1, a host
+            # sync it pays too; other models and LongRoPE without position_ids stay sync-free.
+            # Also under compile (one graph break): an in-graph choice would rebuild full-size hybrid
+            # tables every forward, and this forward is not compiled by Unsloth.
+            rope_len = max(rope_len, int(position_ids.max()) + 1)
+        # rope_rows only sizes the build; LongRoPE picks its short or long factors from rope_len.
+        position_embeddings = self.rotary_emb.get_cached(rope_len, device_index)
     else:
         position_embeddings = None
 
@@ -2337,15 +2357,22 @@ class LlamaRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         # Rebuild inv_freq instead of reading the buffer: transformers v5 refills it with uninitialized
         # memory on models _fix_rope_inv_freq never sees, e.g. a PPO value / reward model loaded after
         # Unsloth patched the classes, so extend_rope_embedding built NaN or garbage cos/sin (#884).
-        self.inv_freq = self._unsloth_recompute_inv_freq().to(self.inv_freq.device)
+        inv_freq = self._unsloth_recompute_inv_freq()
+        self.inv_freq = inv_freq.to(self.inv_freq.device)
+        # The first cache built (and every device's copy of that size) is computed on CPU like the eager
+        # __init__ build was, even when the first forward already grew the size, so the first forward's
+        # peak memory does not rise; later growth computes on inv_freq's device as before.
+        version = getattr(self, "_rope_cache_version", 0)
+        if getattr(self, "_rope_cache_cpu_version", None) is None:
+            self._rope_cache_cpu_version = version
+        if version != self._rope_cache_cpu_version:
+            inv_freq = self.inv_freq
         # The original Llama codebase creates these on the target device in FP32 and multiplies in FP32.
         self.current_rope_size = seq_len
-        t = torch.arange(
-            self.current_rope_size, device = self.inv_freq.device, dtype = torch.int64
-        ).float()
+        t = torch.arange(self.current_rope_size, device = inv_freq.device, dtype = torch.int64).float()
         t = self._apply_time_scaling(t)
 
-        freqs = torch.outer(t, self.inv_freq)
+        freqs = torch.outer(t, inv_freq)
         # Different from the paper, but it uses a different permutation to obtain the same calculation.
         emb = torch.cat((freqs, freqs), dim = -1)
         # Applied here so attention_scaling survives extend_rope_embedding rebuilds; the 1.0 default
@@ -3510,6 +3537,10 @@ class FastLlamaModel:
                 bnb_4bit_compute_dtype = dtype,
                 llm_int8_skip_modules = llm_int8_skip_modules,
             )
+            if fsdp2_requested():
+                # FSDP2 shards packed 4-bit bytes only in a float storage dtype; the compute dtype makes its
+                # mixed precision cast of them a no-op.
+                set_fsdp2_quant_storage(bnb_config, dtype)
             # Pre-quantized checkpoints use the quantization_config baked into config.json, ignoring our
             # runtime BitsAndBytesConfig, so merge our skip list into it to keep task heads like `score` in
             # compute dtype (#5027).
@@ -3708,6 +3739,8 @@ class FastLlamaModel:
                     dtype = dtype,
                 )
                 _prepare_compressed_tensors_model(model)
+                if fsdp2_requested():
+                    prepare_fsdp2_qlora(model, dtype)
                 model.fast_generate = make_fast_generate_wrapper(model.generate)
                 model.fast_generate_batches = None
             else:

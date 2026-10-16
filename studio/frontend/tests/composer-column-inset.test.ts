@@ -4,11 +4,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { composerColumnInset } from "../src/components/assistant-ui/composer-column-inset.ts";
+import {
+  composerColumnInset,
+  composerInsetFromColumn,
+} from "../src/components/assistant-ui/composer-column-inset.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 const DOCK_INNER_RULE =
   /\.unsloth-composer-dock-inner \{\s*padding-left: var\(--composer-dock-inset-left/;
+const FOOTER_COLUMN_CALL = /left: footerRect\.left \+ viewport\.scrollLeft/;
 const NARROW_DOCK_RULE = /data-thread-narrow\]\) \.unsloth-composer-dock-inner/;
 
 const base = {
@@ -66,6 +70,18 @@ test("a one-sided gutter with a border, as the Windows low-scale viewport has", 
     ),
     { left: 40, right: 20 },
   );
+});
+
+test("a measured column box wins over the computed one", () => {
+  assert.deepEqual(
+    composerInsetFromColumn(
+      { left: 300, right: 1394 },
+      { left: 290, right: 1430 },
+    ),
+    { left: 10, right: 36 },
+  );
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  assert.match(thread, FOOTER_COLUMN_CALL);
 });
 
 test("the dock pads from the measured inset, not a fixed gutter", () => {

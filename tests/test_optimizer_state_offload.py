@@ -19,10 +19,12 @@
 import importlib.util
 import io
 import os
+import sys
 import types
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _PATH = os.path.join(_ROOT, "unsloth", "optimizers", "state_offload.py")
@@ -136,7 +138,7 @@ def _bnb_factory():
     return lambda p: bnb.optim.AdamW8bit(p, lr = 1e-3)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 @pytest.mark.parametrize("name", ["adamw", "adamw_foreach", "adamw_fused", "adamw_8bit"])
 @pytest.mark.parametrize("chunk_bytes", [None, 1])
 def test_offload_matches_on_device_steps_and_resumes(name, chunk_bytes):
@@ -170,7 +172,7 @@ def test_offload_matches_on_device_steps_and_resumes(name, chunk_bytes):
     assert _state_devices(resumed_opt) == {"cpu"}
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_chunked_step_bounds_device_state_and_keeps_grads():
     module = _module()
     params = [torch.nn.Parameter(torch.randn(1 << 20, device = "cuda")) for _ in range(4)]
@@ -257,7 +259,7 @@ def test_nested_state_tensors_are_sized():
     assert len(offloader._chunks([param, other])) == 2
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_nested_state_object_round_trip():
     module = _module()
     param = torch.nn.Parameter(torch.randn(64, device = "cuda"))
@@ -278,7 +280,7 @@ def test_nested_state_object_round_trip():
     assert projector.ortho_matrix.device.type == "cpu"
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_layerwise_optimizer_dict_is_offloaded():
     module = _module()
     LayerWiseDummyOptimizer = pytest.importorskip(
@@ -368,7 +370,7 @@ def test_list_state_tensors_are_sized():
     assert len(module._StateOffloader(optimizer, chunk_bytes = 100)._chunks(params)) == 2
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_lbfgs_history_is_offloaded():
     module = _module()
     torch.manual_seed(0)
@@ -450,7 +452,7 @@ def _big_params(n = 4, numel = 1 << 20):
     return [torch.nn.Parameter(torch.randn(numel, device = "cuda")) for _ in range(n)]
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 @pytest.mark.parametrize("fused", [False, True])
 def test_load_state_dict_keeps_state_on_host(fused):
     module = _module()
@@ -490,7 +492,7 @@ def test_load_state_dict_keeps_state_on_host(fused):
     assert _state_devices(optimizer) == {"cpu"}
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_resumed_bitsandbytes_first_step_stays_chunked():
     bnb = pytest.importorskip("bitsandbytes")
     module = _module()
@@ -545,3 +547,86 @@ def test_mps_synchronize_takes_no_device(monkeypatch):
     )
     module._synchronize(torch.device("mps"))
     assert calls == [()]
+
+
+def _q_galore(monkeypatch):
+    # Loaded by path under its real module name (so _chunk_safe sees unsloth.optimizers.*),
+    # without importing the full unsloth package.
+    pytest.importorskip("bitsandbytes")
+    for name, path in (
+        ("unsloth", [os.path.join(_ROOT, "unsloth")]),
+        ("unsloth.optimizers", [os.path.join(_ROOT, "unsloth", "optimizers")]),
+    ):
+        package = types.ModuleType(name)
+        package.__path__ = path
+        monkeypatch.setitem(sys.modules, name, package)
+    device_type = types.ModuleType("unsloth_zoo.device_type")
+    device_type.device_synchronize = torch.cuda.synchronize
+    monkeypatch.setitem(sys.modules, "unsloth_zoo", types.ModuleType("unsloth_zoo"))
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.device_type", device_type)
+    for name in ("q_galore_projector", "q_galore_adamw"):
+        full = "unsloth.optimizers." + name
+        spec = importlib.util.spec_from_file_location(
+            full, os.path.join(_ROOT, "unsloth", "optimizers", name + ".py")
+        )
+        loaded = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, full, loaded)
+        spec.loader.exec_module(loaded)
+    return loaded
+
+
+def test_weight_quant_q_galore_steps_unchunked():
+    module = _module()
+    p = [torch.nn.Parameter(torch.randn(2))]
+
+    class QGaLoreAdamW8bit(torch.optim.AdamW):
+        pass
+
+    QGaLoreAdamW8bit.__module__ = "unsloth.optimizers.q_galore_adamw"
+    assert module._chunk_safe(QGaLoreAdamW8bit([{"params": p, "weight_quant": False}]))
+    assert not module._chunk_safe(QGaLoreAdamW8bit([{"params": p, "weight_quant": True}]))
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.parametrize("weight_quant", [False, True])
+def test_q_galore_multi_chunk_offload(monkeypatch, weight_quant):
+    module = _module()
+    q_galore = _q_galore(monkeypatch)
+
+    def run(offload):
+        torch.manual_seed(17)
+        params = [torch.nn.Parameter(torch.randn(256, 256, device = "cuda")) for _ in range(2)]
+        groups = [
+            {
+                "params": params,
+                "rank": 16,
+                "weight_quant": weight_quant,
+                "stochastic_round": False,
+            }
+        ]
+        optimizer = q_galore.QGaLoreAdamW8bit(groups, lr = 1e-3)
+        if weight_quant:
+            q_galore.QGaLoreAdamW8bit.init_weight_quantization(
+                torch.nn.ParameterList(params), groups
+            )
+        if offload:
+            module.offload_optimizer_state(optimizer, chunk_bytes = 256 << 10)
+        for step in range(2):
+            for p in params:
+                if weight_quant and step:
+                    q_galore._materialize_weight(p)
+                p.grad = torch.full_like(p, 0.01 * (step + 1))
+            optimizer.step()
+        return params, optimizer
+
+    base, _ = run(False)
+    params, optimizer = run(True)
+    for p, q in zip(params, base):
+        if weight_quant:
+            # p itself is a one element placeholder; the INT8 copy holds the weight.
+            assert torch.equal(p._q_data, q._q_data)
+            assert torch.equal(p._q_scales, q._q_scales)
+        else:
+            assert torch.equal(p, q)
+        assert torch.equal(p.grad, q.grad)
+    assert _state_devices(optimizer) == {"cpu"}

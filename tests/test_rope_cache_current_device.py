@@ -266,3 +266,151 @@ def test_covered_reads_still_rebuild_a_device_left_stale_by_growth():
     assert torch.equal(cos, ref_cos)
     rope.extend_rope_embedding(_x(1, torch.float16), 11)
     assert rope.multi_gpu_cos_cached[1] is cos
+
+
+def _model_forward_rope(
+    rope,
+    seq_length_with_past,
+    position_ids,
+    max_position,
+    max_seq_length = 2048,
+):
+    # Runs the rotary block of LlamaModel_fast_forward as written in llama.py.
+    tree = ast.parse(LLAMA.read_text(encoding = "utf-8"))
+    fn = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "LlamaModel_fast_forward"
+    )
+    block = next(
+        n
+        for n in fn.body
+        if isinstance(n, ast.If) and "IS_ATTENTION_REFACTOR" in ast.unparse(n.test)
+    )
+    scope = {
+        "self": types.SimpleNamespace(
+            rotary_emb = rope,
+            max_seq_length = max_seq_length,
+            config = types.SimpleNamespace(max_position_embeddings = max_position),
+        ),
+        "hidden_states": _x(0, torch.float16),
+        "seq_length_with_past": seq_length_with_past,
+        "position_ids": position_ids,
+        "IS_ATTENTION_REFACTOR": True,
+        "IS_GRANITE": False,
+        "torch": torch,
+        # isinstance needs the class this rope was built from; other ropes never match.
+        "LongRopeRotaryEmbedding": type(rope)
+        if type(rope).__name__ == "LongRopeRotaryEmbedding"
+        else type("LongRopeRotaryEmbedding", (), {}),
+        "max": max,
+        "getattr": getattr,
+    }
+    exec(compile(ast.Module(body = [block], type_ignores = []), str(LLAMA), "exec"), scope)
+    return scope["position_embeddings"]
+
+
+def test_model_forward_covers_explicit_offset_position_ids():
+    # Valid positions past the batch length (offsets, generate, packing) must index real rows.
+    max_position = 1 << 17
+    position_ids = torch.tensor([[40000, 40001]])
+    cos, sin = _model_forward_rope(_llama(max_position), 2, position_ids, max_position)
+    assert cos.shape[0] >= int(position_ids.max()) + 1
+    ref_cos, ref_sin = _reference(cos.shape[0], torch.float16)
+    assert torch.equal(cos[position_ids], ref_cos[position_ids])
+    assert torch.equal(sin[position_ids], ref_sin[position_ids])
+
+
+def test_model_forward_without_position_ids_stays_short():
+    # Implicit positions are 0..seq_length_with_past-1, so the short cache is enough.
+    max_position = 1 << 20
+    rope = _llama(max_position)
+    cos, _ = _model_forward_rope(rope, 2, None, max_position)
+    assert cos.shape[0] == 4 * 8192
+    assert _built(rope.multi_gpu_cos_cached) == [0]
+
+
+def test_starting_cache_is_computed_on_cpu():
+    # The eager __init__ computed the starting cache on CPU even when loading later moved inv_freq to
+    # an accelerator; computing it there instead raises the first forward's peak memory.
+    rope = _llama(4096)
+    rope.inv_freq = rope.inv_freq.to("meta")
+    cos, sin = rope.get_cached(10, 0)
+    ref_cos, ref_sin = _reference(4096)
+    assert torch.equal(cos, ref_cos) and torch.equal(sin, ref_sin)
+
+
+def test_model_forward_position_ids_keep_longrope_short_factors():
+    # Building every row for explicit positions must not switch a short input to the long factors.
+    rope = _llama_ns()["LongRopeRotaryEmbedding"](
+        dim = DIM,
+        max_position_embeddings = 128,
+        original_max_position_embeddings = 16,
+        short_factor = [1.0] * (DIM // 2),
+        long_factor = [2.0] * (DIM // 2),
+    )
+    cos, sin = _model_forward_rope(rope, 4, torch.tensor([[0, 1, 2, 3]]), 128, max_seq_length = 8)
+    assert cos is rope.multi_gpu_short_cos_cached[0]
+    assert sin is rope.multi_gpu_short_sin_cached[0]
+
+
+def _longrope(max_position, original_max_position):
+    return _llama_ns()["LongRopeRotaryEmbedding"](
+        dim = DIM,
+        max_position_embeddings = max_position,
+        original_max_position_embeddings = original_max_position,
+        short_factor = [1.0] * (DIM // 2),
+        long_factor = [2.0] * (DIM // 2),
+    )
+
+
+def test_model_forward_longrope_offset_positions_match_transformers():
+    # transformers picks LongRoPE's factors from max(position_ids) + 1, so 4 tokens at 40000 with a 4096
+    # pretrained window use the long factors; the short cache has no row 40000.
+    from transformers import Phi3Config
+    from transformers.models.phi3.modeling_phi3 import Phi3RotaryEmbedding
+
+    max_position, original_max_position = 1 << 17, 4096
+    position_ids = torch.tensor([[40000, 40001, 40002, 40003]])
+    rope = _longrope(max_position, original_max_position)
+    cos, sin = _model_forward_rope(rope, 4, position_ids, max_position)
+    assert cos.shape[0] > int(position_ids.max())
+
+    config = Phi3Config(
+        hidden_size = DIM,
+        num_attention_heads = 1,
+        num_key_value_heads = 1,
+        max_position_embeddings = max_position,
+        original_max_position_embeddings = original_max_position,
+        rope_scaling = {
+            "type": "longrope",
+            "short_factor": [1.0] * (DIM // 2),
+            "long_factor": [2.0] * (DIM // 2),
+        },
+    )
+    ref_cos, ref_sin = Phi3RotaryEmbedding(config)(torch.zeros(1, 4, DIM), position_ids)
+    torch.testing.assert_close(cos[position_ids[0]].float(), ref_cos[0], atol = 2e-3, rtol = 0)
+    torch.testing.assert_close(sin[position_ids[0]].float(), ref_sin[0], atol = 2e-3, rtol = 0)
+
+
+@pytest.mark.parametrize("start", [0, 40000])
+def test_model_forward_longrope_under_compile_matches_eager(monkeypatch, start):
+    # While tracing, the choice still follows max(position_ids) + 1, so compiled runs match eager.
+    position_ids = torch.arange(start, start + 4)[None]
+    eager_cos, eager_sin = _model_forward_rope(_longrope(1 << 17, 4096), 4, position_ids, 1 << 17)
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    cos, sin = _model_forward_rope(_longrope(1 << 17, 4096), 4, position_ids, 1 << 17)
+    assert torch.equal(cos[position_ids[0]], eager_cos[position_ids[0]])
+    assert torch.equal(sin[position_ids[0]], eager_sin[position_ids[0]])
+
+
+def test_first_grown_cache_is_computed_on_cpu():
+    # A configured max above the 4 * 8192 floor grows the size on the first forward, before any cache
+    # exists; that first build must still run on CPU, while later growth uses inv_freq's device.
+    rope = _llama(1 << 17)
+    rope.inv_freq = rope.inv_freq.to("meta")
+    cos, sin = _model_forward_rope(rope, 2, None, 1 << 17)
+    ref_cos, ref_sin = _reference(cos.shape[0], torch.float16)
+    assert torch.equal(cos, ref_cos) and torch.equal(sin, ref_sin)
+    with pytest.raises(NotImplementedError):
+        rope.extend_rope_embedding(_x(0, torch.float16), 1 << 18)
