@@ -53,7 +53,9 @@ class _TRL022Trainer:
     def compute_loss(self, inputs):
         correct, entropy = _token_stats(inputs["input_ids"])
         attention_mask = inputs["attention_mask"].double()
-        self._metrics["train"]["entropy"].append(float((entropy * attention_mask).sum() / attention_mask.sum()))
+        self._metrics["train"]["entropy"].append(
+            float((entropy * attention_mask).sum() / attention_mask.sum())
+        )
         self._metrics["train"]["num_tokens"] = [0]
         shift_labels = inputs["labels"][..., 1:]
         valid = shift_labels != -100
@@ -249,7 +251,9 @@ class _TRL114Trainer(_TRL022Trainer):
         outputs.num_correct_tokens = (correct[..., 1:] * valid).sum()
         num_valid = outputs.num_valid_tokens
         self._metrics["train"]["entropy"].append(float(outputs.entropy_sum / num_valid))
-        self._metrics["train"]["mean_token_accuracy"].append(float(outputs.num_correct_tokens / num_valid))
+        self._metrics["train"]["mean_token_accuracy"].append(
+            float(outputs.num_correct_tokens / num_valid)
+        )
 
 
 def _label_gap_batch():
