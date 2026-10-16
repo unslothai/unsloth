@@ -10661,9 +10661,9 @@ def _loaded_satisfies(requested: str) -> bool:
 
             pinned_variant = local_gguf_pinned_variant(requested, allow_scan = False)
             if pinned_variant is not None:
-                return (
-                    getattr(llama_backend, "hf_variant", None) or ""
-                ).lower() == pinned_variant.lower()
+                return _same_local_build(
+                    base, getattr(llama_backend, "hf_variant", None) or "", pinned_variant
+                )
             if _unindexed_build_stem(variant) or local_gguf_withheld(requested):
                 return False
         if not looks_like_quant(variant):
@@ -10800,10 +10800,25 @@ def _norm_path(value: str) -> str:
     return os.path.normcase(str(value)).replace("\\", "/").rstrip("/")
 
 
-def _resident_quant_is(variant: Optional[str]) -> bool:
+def _resident_quant_is(variant: Optional[str], base: Optional[str] = None) -> bool:
     """Whether the loaded GGUF is that exact quant."""
     resident = getattr(get_llama_cpp_backend(), "hf_variant", None) or ""
-    return bool(variant) and resident.lower() == variant.strip().lower()
+    return bool(variant) and _same_local_build(base, resident, variant)
+
+
+def _same_local_build(base: Optional[str], resident: str, wanted: str) -> bool:
+    """Whether *resident* names *wanted*, verbatim or through *base*'s index (a build loaded by
+    its stem, ``alpha-Q4_K_M``, is the build the bare key ``Q4_K_M`` now names)."""
+    resident = (resident or "").strip().lower()
+    wanted = (wanted or "").strip().lower()
+    if resident == wanted:
+        return True
+    if not base or not resident:
+        return False
+    from core.inference.local_model_resolver import local_gguf_pinned_variant
+
+    canonical = local_gguf_pinned_variant(f"{base}:{resident}", allow_scan = False)
+    return canonical is not None and canonical.lower() == wanted
 
 
 def _blob_identity(identity: Optional[tuple]) -> Optional[tuple]:
@@ -11077,7 +11092,7 @@ async def _reject_unservable_model(
                 )
             )[1]
         )
-        if resolved_is_resident and (not quantified or _resident_quant_is(variant)):
+        if resolved_is_resident and (not quantified or _resident_quant_is(variant, base)):
             return
         downloaded = resolved is not None
         # /v1/models may have advertised this id off its own scan while the index is cold.
@@ -11095,7 +11110,7 @@ async def _reject_unservable_model(
                 )
             )[1]
         )
-        if advertised_is_resident and (not quantified or _resident_quant_is(variant)):
+        if advertised_is_resident and (not quantified or _resident_quant_is(variant, base)):
             return
         # The exact ref may miss on the quant alone, so ask about the repo too.
         here = (
