@@ -315,9 +315,15 @@ def _catalog_match(catalog: list[dict], model_id: str) -> Optional[tuple[str, di
         return row["id"], row, False
     from core.inference.openai_auto_download import looks_like_quant
 
+    from core.inference.local_model_resolver import local_gguf_pinned_variant
+
     base, sep, suffix = wanted.rpartition(":")
-    # Only a quant: the resolver maps any other suffix (":latest", ":") back to the bare repo.
-    row = rows.get(base.strip().lower()) if sep and looks_like_quant(suffix) else None
+    # Only a quant or an indexed build key: the resolver maps any other suffix (":latest", ":")
+    # back to the bare repo.
+    named = sep and (
+        looks_like_quant(suffix) or local_gguf_pinned_variant(wanted, allow_scan = False) is not None
+    )
+    row = rows.get(base.strip().lower()) if named else None
     return (wanted, row, True) if row is not None else None
 
 

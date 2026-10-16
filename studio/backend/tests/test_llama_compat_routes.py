@@ -1458,6 +1458,19 @@ def test_management_unload_releases_a_build_loaded_by_its_rekeyed_stem(monkeypat
     assert calls != []
 
 
+def test_an_indexed_build_key_matches_its_listed_base_row(monkeypatch, _no_local_gguf):
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "local_gguf_pinned_variant",
+        lambda requested, **kwargs: "Q4_K_M" if requested == QWEN + ":beta-Q4_K_M" else None,
+    )
+    catalog = [{"id": QWEN, "object": "model"}]
+    mod, _calls = _management(backend = _Backend(), catalog = catalog)
+
+    assert mod._catalog_match(catalog, QWEN + ":beta-Q4_K_M") is not None
+    assert mod._catalog_match(catalog, QWEN + ":gamma-Q4_K_M") is None
+
+
 def test_management_unload_of_a_bare_id_ignores_the_preferred_quant(monkeypatch, _no_local_gguf):
     """A bare id resolves to the preferred quant on disk, which need not be the resident one."""
     monkeypatch.setattr(
