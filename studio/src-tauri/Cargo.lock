@@ -5687,6 +5687,7 @@ dependencies = [
  "elevated-command",
  "gdk",
  "gdk-pixbuf",
+ "gio",
  "glib",
  "gtk",
  "hmac",

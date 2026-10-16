@@ -78,6 +78,8 @@ system-configuration = "0.7"
 cairo-rs = { version = "0.18", features = ["png"] }
 gdk = "0.18"
 gdk-pixbuf = "0.18"
+# The desktop's proxy resolver for browser panel pages (browser_proxy.rs); gtk already builds it.
+gio = "0.18"
 glib = "0.18"
 gtk = "0.18"
 elevated-command = "1.1.2"

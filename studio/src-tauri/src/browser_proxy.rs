@@ -96,8 +96,9 @@ enum Upstream {
         address: String,
         auth: Option<(String, String)>,
     },
-    /// What a Windows PAC script's `SOCKS` names, as WinINet and Chromium read it.
-    #[cfg(any(windows, test))]
+    /// What a Windows PAC script's `SOCKS` names, as WinINet and Chromium read it, or a Linux
+    /// desktop's `socks4(a)` proxy.
+    #[cfg(any(windows, target_os = "linux", test))]
     Socks4 { address: String },
 }
 
@@ -156,8 +157,9 @@ fn parse(head: &str) -> Option<Request> {
 /// How the system routes pages.
 #[derive(Default)]
 struct Proxies {
-    /// A PAC script, which decides before `fixed` unless it can't be found or run.
-    #[cfg(any(target_os = "macos", windows))]
+    /// A PAC script (on Linux, the desktop's settings), which decides before `fixed` unless it
+    /// can't be found or run.
+    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     pac: Option<pac::Pac>,
     /// Fixed settings, in order: proxy variables, else macOS or Windows settings.
     fixed: Vec<Matcher>,
@@ -172,7 +174,9 @@ fn system_proxies() -> Proxies {
             .map(|source| pac::Pac::new(source, &|name: &str| std::env::var(name).ok())),
         fixed: vec![windows_per_protocol().unwrap_or_else(Matcher::from_system)],
     };
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(target_os = "linux")]
+    let proxies = linux_proxies(|name| std::env::var(name).ok());
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
     let proxies = Proxies {
         fixed: vec![Matcher::from_system()],
     };
@@ -201,12 +205,29 @@ fn with_variables(settings: Settings, env: &impl Fn(&str) -> Option<String>) -> 
         .build()
 }
 
-#[cfg(any(target_os = "macos", windows, test))]
+#[cfg(any(target_os = "macos", windows, target_os = "linux", test))]
 fn variable(env: &impl Fn(&str) -> Option<String>, names: [&str; 2]) -> Option<String> {
     names
         .into_iter()
         .filter_map(env)
         .find(|value| !value.is_empty())
+}
+
+/// The desktop's settings, unless proxy variables (Linux's own way to set a proxy) are.
+#[cfg(target_os = "linux")]
+fn linux_proxies(env: impl Fn(&str) -> Option<String>) -> Proxies {
+    let names = [
+        ["ALL_PROXY", "all_proxy"],
+        ["HTTP_PROXY", "http_proxy"],
+        ["HTTPS_PROXY", "https_proxy"],
+    ];
+    let variables = names
+        .into_iter()
+        .any(|names| variable(&env, names).is_some());
+    Proxies {
+        pac: (!variables).then(|| pac::Pac::new(pac::Source::Desktop, &env)),
+        fixed: vec![Matcher::from_system()],
+    }
 }
 
 /// macOS' proxy settings, read here rather than by hyper-util, which skips PAC, the SOCKS proxy and
@@ -300,7 +321,7 @@ fn macos_proxies(env: impl Fn(&str) -> Option<String>) -> Proxies {
 }
 
 /// `host[:port]`, with an IPv6 host bracketed as a URI needs.
-#[cfg(any(target_os = "macos", windows, test))]
+#[cfg(any(target_os = "macos", windows, target_os = "linux", test))]
 fn authority(host: &str, port: Option<i32>) -> String {
     let host = match host.parse::<std::net::Ipv6Addr>() {
         Ok(_) => format!("[{host}]"),
@@ -392,7 +413,7 @@ async fn routes(proxies: &Proxies, request: &Request) -> Vec<Option<Upstream>> {
     let Some(destination) = destination else {
         return vec![None];
     };
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     if let Some(pac) = proxies.pac.as_ref().filter(|pac| pac.decides(&destination)) {
         // As browsers ask, without a default port.
         let url = Url::parse(&destination.to_string())
@@ -497,7 +518,7 @@ async fn connect_via(
     let (address, http_auth) = match upstream {
         Upstream::Http { address, auth } => (address, auth),
         Upstream::Socks { address, .. } => (address, &None),
-        #[cfg(any(windows, test))]
+        #[cfg(any(windows, target_os = "linux", test))]
         Upstream::Socks4 { address } => (address, &None),
     };
     let deadline = tokio::time::Instant::now() + TIMEOUT;
@@ -517,7 +538,7 @@ async fn connect_via(
             Upstream::Socks { auth, .. } => {
                 Some(socks_connect(&mut stream, &host, request.port, auth.as_ref()).await)
             }
-            #[cfg(any(windows, test))]
+            #[cfg(any(windows, target_os = "linux", test))]
             Upstream::Socks4 { .. } => Some(socks4_connect(&mut stream, &host, request.port).await),
         };
         if let Some(connected) = socks {
@@ -640,7 +661,7 @@ async fn socks_connect(
 }
 
 /// A SOCKS4a CONNECT that names `host`, so the proxy resolves it. SOCKS4 has no IPv6.
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 async fn socks4_connect(stream: &mut TcpStream, host: &Host<String>, port: u16) -> Option<()> {
     let mut connect = vec![4, 1];
     connect.extend_from_slice(&port.to_be_bytes());
@@ -745,8 +766,9 @@ async fn reply(client: &mut TcpStream, status: &str) -> std::io::Result<()> {
 
 /// PAC scripts, run as the system's own browser runs them: on macOS fetched here (directly, since a
 /// local proxy app or the intranet often serves them) and run by CFNetwork; on Windows found and
-/// run by WinHTTP, which also discovers them (WPAD).
-#[cfg(any(target_os = "macos", windows))]
+/// run by WinHTTP, which also discovers them (WPAD). On Linux GIO's resolver, which WebKitGTK uses,
+/// answers from the desktop's settings: GNOME's, else libproxy's (KDE, PAC, WPAD).
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 mod pac {
     use super::{variable, Upstream, ADDRESS_TIMEOUT};
     use hyper_util::client::proxy::matcher::Matcher;
@@ -795,6 +817,8 @@ mod pac {
         /// Windows' automatic configuration: discovery when `detect`, then the script at `url`.
         #[cfg(windows)]
         Automatic { detect: bool, url: Option<String> },
+        #[cfg(target_os = "linux")]
+        Desktop,
     }
 
     pub(super) struct Pac {
@@ -848,6 +872,11 @@ mod pac {
             } = &pac.source;
             let (detect, script) = (*detect, script.clone());
             move || winhttp::evaluate(detect, script.as_deref(), &url)
+        };
+        #[cfg(target_os = "linux")]
+        let run = {
+            let Source::Desktop = pac.source;
+            move || desktop::evaluate(&gio::ProxyResolver::default(), &url)
         };
         tokio::time::timeout(ADDRESS_TIMEOUT, tokio::task::spawn_blocking(run))
             .await
@@ -962,6 +991,69 @@ mod pac {
                 routes.push(None);
             }
             Some(routes)
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) mod desktop {
+        use super::super::{authority, system_proxy, Upstream};
+        use gio::prelude::*;
+        use hyper_util::client::proxy::matcher::Matcher;
+        use url::Url;
+
+        pub(in crate::browser_proxy) fn evaluate(
+            resolver: &gio::ProxyResolver,
+            url: &str,
+        ) -> Option<Vec<Option<Upstream>>> {
+            let destination: http::Uri = url.parse().ok()?;
+            let entries = resolver
+                .lookup(url, gio::Cancellable::NONE)
+                .map_err(|error| log::info!("browser proxy couldn't ask the desktop: {error}"))
+                .ok()?;
+            Some(from_entries(&entries, &destination))
+        }
+
+        /// The entries that are DIRECT or a proxy this one can chain to, in order.
+        pub(in crate::browser_proxy) fn from_entries(
+            entries: &[impl AsRef<str>],
+            destination: &http::Uri,
+        ) -> Vec<Option<Upstream>> {
+            let mut routes: Vec<_> = entries
+                .iter()
+                .filter_map(|entry| route(entry.as_ref(), destination))
+                .collect();
+            // GLib lists a `socks` proxy once per version; the first that connects is the one used.
+            routes.dedup_by(|later, earlier| match (earlier, later) {
+                (
+                    Some(Upstream::Socks { address, .. }),
+                    Some(Upstream::Socks4 { address: same }),
+                ) => address == same,
+                (earlier, later) => earlier == later,
+            });
+            if routes.is_empty() {
+                routes.push(None);
+            }
+            routes
+        }
+
+        fn route(entry: &str, destination: &http::Uri) -> Option<Option<Upstream>> {
+            let proxy = Url::parse(entry).ok()?;
+            let chained = |entry: String| {
+                system_proxy(&[Matcher::builder().all(entry).build()], destination).map(Some)
+            };
+            match proxy.scheme() {
+                "direct" => Some(None),
+                "http" => chained(entry.to_string()),
+                // GLib tries SOCKS5 first for a plain `socks` proxy.
+                "socks" | "socks5" => chained(entry.replacen(proxy.scheme(), "socks5", 1)),
+                "socks4" | "socks4a" => Some(Some(Upstream::Socks4 {
+                    address: authority(
+                        proxy.host_str()?,
+                        Some(i32::from(proxy.port().unwrap_or(1080))),
+                    ),
+                })),
+                _ => None,
+            }
         }
     }
 
@@ -1653,5 +1745,46 @@ mod tests {
             routes(&missing, &to("h.example")).await,
             [http("127.0.0.1:9")]
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_desktop_proxies_map_to_routes() {
+        let routes = |proxy: &str, host: &str| {
+            let resolver = gio::SimpleProxyResolver::new(Some(proxy), &["n.example"][..]);
+            pac::desktop::evaluate(&resolver, &format!("https://{host}/")).unwrap()
+        };
+        assert_eq!(routes("http://127.0.0.1:1", "n.example"), [None]);
+        let socks4 = Upstream::Socks4 {
+            address: "127.0.0.1:3".into(),
+        };
+        assert_eq!(routes("socks4a://127.0.0.1:3", "h.example"), [Some(socks4)]);
+        // In order: GLib's expanded `socks`, libproxy's unexpanded one, then a DIRECT fallback.
+        let entries = [
+            "http://u:p@127.0.0.1:1",
+            "socks5://127.0.0.1:2",
+            "socks4a://127.0.0.1:2",
+            "socks://127.0.0.1:4",
+            "direct://",
+        ];
+        let http = Upstream::Http {
+            address: "127.0.0.1:1".into(),
+            auth: Some("Basic dTpw".into()),
+        };
+        let socks = |address: &str| {
+            Some(Upstream::Socks {
+                address: address.into(),
+                auth: None,
+            })
+        };
+        let to = "https://h.example/".parse().unwrap();
+        assert_eq!(
+            pac::desktop::from_entries(&entries, &to),
+            [Some(http), socks("127.0.0.1:2"), socks("127.0.0.1:4"), None]
+        );
+        // Proxy variables replace the desktop's settings rather than mixing with them.
+        let env = |name: &str| (name == "https_proxy").then(|| "http://127.0.0.1:8".to_string());
+        assert!(linux_proxies(env).pac.is_none());
+        assert!(linux_proxies(|_: &str| None).pac.is_some());
     }
 }
