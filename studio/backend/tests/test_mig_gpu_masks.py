@@ -70,6 +70,7 @@ def host(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_GPU_QUERY_CACHE", "0")
     monkeypatch.setattr(nvidia, "_uuid_mask_cache", {})
     monkeypatch.setattr(LlamaCppBackend, "_NVML_ROWS", [])
+    monkeypatch.setattr(LlamaCppBackend, "_SMI_UUID_ROWS", [], raising = False)
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: False))
     monkeypatch.setattr(
         LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/opt/llama-server")
@@ -448,14 +449,56 @@ class TestOrdinaryHostsKeepTheirReadings:
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", GPU2)
         assert LlamaCppBackend._get_gpu_memory() == [(0, 1, 1)]
 
-    def test_a_lone_card_without_a_uuid_column(self, host):
+    def test_without_a_uuid_column_the_mask_is_verified_or_unresolved(
+        self, host, monkeypatch, calls
+    ):
         host([(GPU0, [])], [14000], None)
+        monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
         assert LlamaCppBackend._whole_gpu_mask_rows(GPU0, [], {0}) == {0}
-        assert LlamaCppBackend._whole_gpu_mask_rows(f"{GPU0},{GPU1}", [], {0}) is None
+        # A uuid no card has hides every device, even on a one-card host.
+        assert LlamaCppBackend._whole_gpu_mask_rows(GPU1, [], {0}) is None
         assert LlamaCppBackend._whole_gpu_mask_rows(MIG0A, [], {0}) is None
-        nvidia.gpu_query.invalidate_static("test")
-        host(TWO_SLICES, [38000], None)
+        nvidia._uuid_mask_cache.clear()
+        calls["uuid_query_fails"] = True
         assert LlamaCppBackend._whole_gpu_mask_rows(GPU0, [], {0}) is None
+
+    def test_a_subset_of_a_uuid_mask_pins_the_child_by_uuid(self, host, monkeypatch, calls):
+        host([(GPU0, []), (GPU1, []), (GPU2, [])], [39000, 30000, 40000], None)
+        monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", f"{GPU2},{GPU1}")
+        assert LlamaCppBackend._get_gpu_memory() == [(1, 30000, A100_MIB), (2, 40000, A100_MIB)]
+        assert LlamaCppBackend._pinned_child_visibility([2]) == GPU2
+        assert LlamaCppBackend._pinned_child_visibility([2, 1]) == f"{GPU2},{GPU1}"
+        # A card the mask does not name is never pinned.
+        assert LlamaCppBackend._pinned_child_visibility([0]) is None
+        # The mask is re-read: a card the new mask drops is no longer mapped.
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", GPU1)
+        assert LlamaCppBackend._pinned_child_visibility([2]) is None
+
+    def test_a_uuid_mask_on_a_mig_card_keeps_the_inherited_mask(self, host, monkeypatch, calls):
+        host(MIXED, [39000, 30000, 40000], None)
+        monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", f"{GPU0},{GPU1}")
+        LlamaCppBackend._get_gpu_memory()
+        assert LlamaCppBackend._pinned_child_visibility([0, 1]) is None
+        assert LlamaCppBackend._pinned_child_visibility([1]) == GPU1
+
+    def test_a_listing_raced_by_an_invalidation_is_not_cached(self, host, monkeypatch, calls):
+        host([(GPU0, [])], [14000], None)
+        real = nvidia._query_mig_gpu_indices
+
+        def racing():
+            out = real()
+            nvidia.gpu_query.invalidate_static("hotplug during the query")
+            return out
+
+        monkeypatch.setattr(nvidia, "_query_mig_gpu_indices", racing)
+        nvidia.get_mig_gpu_indices()
+        monkeypatch.setattr(nvidia, "_query_mig_gpu_indices", real)
+        nvidia.get_mig_gpu_indices()
+        assert calls["list"] == 2
+        nvidia.get_mig_gpu_indices()
+        assert calls["list"] == 2
 
     def test_memory_polls_reuse_one_mig_listing(self, host, calls):
         host([(GPU0, [])], [14000], None)

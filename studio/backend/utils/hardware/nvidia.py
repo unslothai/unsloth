@@ -125,6 +125,7 @@ def _query_uuid_mask(parent_cuda_visible_devices: str) -> Optional[list[int]]:
 
 def get_physical_gpu_count(gpu_rows_only: bool = False) -> Optional[int]:
     """Return physical GPU count via nvidia-smi, or None on failure. ``gpu_rows_only`` skips the indented MIG child rows."""
+    gen = gpu_query._static_gen
     try:
         result = gpu_query.run_nvidia_smi(
             [_nvidia_smi_executable(), "-L"],
@@ -138,7 +139,7 @@ def get_physical_gpu_count(gpu_rows_only: bool = False) -> Optional[int]:
         )
         if result.returncode == 0 and result.stdout.strip():
             # Same listing get_mig_gpu_indices parses: publish it so memory polls reuse it.
-            _store_mig_gpu_indices(_parse_mig_gpu_indices(result.stdout))
+            _store_mig_gpu_indices(_parse_mig_gpu_indices(result.stdout), gen)
             lines = result.stdout.strip().splitlines()
             if gpu_rows_only:
                 return sum(1 for line in lines if line.startswith("GPU "))
@@ -157,9 +158,12 @@ _MIG_INDICES_TTL_S = 60.0
 _mig_indices_cache: Optional[tuple[int, float, frozenset[int]]] = None
 
 
-def _store_mig_gpu_indices(indices: frozenset[int]) -> None:
+def _store_mig_gpu_indices(indices: frozenset[int], gen: int) -> None:
+    """Publish a listing under the generation read before its query started; one the
+    inventory was invalidated during is dropped, so the next caller re-reads."""
     global _mig_indices_cache
-    _mig_indices_cache = (gpu_query._static_gen, time.monotonic(), indices)
+    if gen == gpu_query._static_gen:
+        _mig_indices_cache = (gen, time.monotonic(), indices)
 
 
 def _parse_mig_gpu_indices(stdout: Any) -> frozenset[int]:
@@ -191,8 +195,9 @@ def get_mig_gpu_indices() -> set[int]:
         and time.monotonic() - hit[1] < _MIG_INDICES_TTL_S
     ):
         return set(hit[2])
+    gen = gpu_query._static_gen
     indices = _query_mig_gpu_indices()
-    _store_mig_gpu_indices(indices)
+    _store_mig_gpu_indices(indices, gen)
     return set(indices)
 
 

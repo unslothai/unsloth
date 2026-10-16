@@ -13208,6 +13208,7 @@ class LlamaCppBackend:
     _GPU_IDS_ARE_PCI_INDICES = None
     # index -> inherited uuid, when CUDA_VISIBLE_DEVICES named the NVML rows by uuid.
     _NVML_ROWS: list = []  # the last NVML inventory; _child_visibility_for reads it
+    _SMI_UUID_ROWS: list = []  # (index, uuid) from the last nvidia-smi memory probe
 
     # Boot-time property: read once, not per launch (the #10613 host has 175
     # groups). Only the default root is cached; an explicit root (tests) re-reads.
@@ -15072,8 +15073,34 @@ class LlamaCppBackend:
             and LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES") is None
             and LlamaCppBackend._visibility_mask_is_unmappable()
         ):
+            # Physical rows the memory probe matched by uuid: hand the child those uuids.
+            uuids = LlamaCppBackend._smi_uuids_for(cvd, gpu_indices)
+            if uuids is not None:
+                return uuids
             return LlamaCppBackend._mig_tokens_for_ordinals(cvd, gpu_indices)
         return mask
+
+    @staticmethod
+    def _smi_uuids_for(cvd: str, gpu_indices) -> Optional[str]:
+        """The uuids of these physical ids when the current whole-GPU uuid mask names each
+        of them in the last nvidia-smi rows, else None. Never for a MIG card: CUDA hands a
+        GPU- entry on one a slice, which only the NVML rows name."""
+        if LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is not True:
+            return None
+        from utils.hardware import nvidia
+
+        rows = LlamaCppBackend._SMI_UUID_ROWS
+        visible = nvidia._uuid_visible_ordinal_map(cvd, rows)
+        try:
+            ids = [int(i) for i in gpu_indices]
+        except (TypeError, ValueError):
+            return None
+        if not visible or not ids or len(set(ids)) != len(ids):
+            return None
+        if any(i not in visible for i in ids) or set(ids) & nvidia.get_mig_gpu_indices():
+            return None
+        by_index = dict(rows)
+        return ",".join(by_index[i] for i in ids)
 
     @staticmethod
     def _mig_tokens_for_ordinals(cvd: str, gpu_indices) -> Optional[str]:
@@ -15147,9 +15174,9 @@ class LlamaCppBackend:
         cvd: str, uuid_rows: list[tuple[int, str]], physical_ids: set[int]
     ) -> Optional[set[int]]:
         """Physical rows behind a whole-GPU uuid mask the ordinal resolvers left open.
-        A uuid names its card whatever CUDA_DEVICE_ORDER says. One card without MIG is
-        the only device any valid whole-GPU mask can name. None for a MIG mask or a
-        token no row matches, so the caller keeps its conservative path."""
+        A uuid names its card whatever CUDA_DEVICE_ORDER says, so only membership is
+        needed. None for a MIG mask or a token no row verifies, so the caller keeps
+        its conservative path."""
         from utils.hardware import nvidia
 
         tokens = [t.strip().lower() for t in cvd.split(",") if t.strip()]
@@ -15158,12 +15185,9 @@ class LlamaCppBackend:
         if uuid_rows:
             visible = nvidia._uuid_visible_ordinal_map(cvd, uuid_rows)
             return set(visible) if visible is not None else None
-        # No uuid column: only a lone card without MIG is unambiguous.
-        if len(tokens) == 1 and len(physical_ids) == 1:
-            (only,) = physical_ids
-            if only not in nvidia.get_mig_gpu_indices():
-                return {only}
-        return None
+        # No uuid column: verify with the separate uuid query, never assume.
+        ids = nvidia.resolve_uuid_mask(cvd)
+        return set(ids) & physical_ids if ids else None
 
     @staticmethod
     def _get_gpu_memory(
@@ -15255,6 +15279,7 @@ class LlamaCppBackend:
                         except ValueError:
                             total_mib = 0
                     rows.append((idx, free_mib, total_mib))
+                LlamaCppBackend._SMI_UUID_ROWS = uuid_rows
                 if allowed is None and _cvd:
                     allowed = LlamaCppBackend._whole_gpu_mask_rows(
                         _cvd, uuid_rows, {r[0] for r in rows} | set(unsized_rows)
