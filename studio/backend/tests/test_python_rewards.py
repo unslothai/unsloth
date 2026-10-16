@@ -2,6 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import os
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -12,6 +14,7 @@ from auth.authentication import get_current_subject
 from core.training import python_rewards, rewards, rl
 from core.training.python_rewards import PythonRewardError, RewardWorker
 from routes.rewards import router
+from utils.account_context import AccountContext, bind_account
 
 NOTEBOOK = (Path(__file__).parent / "fixtures" / "notebook_rewards" / "qwen25_gsm8k.py").read_text(
     "utf-8"
@@ -280,8 +283,21 @@ def test_preview_reports_a_broken_python_reward_as_a_400(client):
     assert "ZeroDivisionError" in response.json()["detail"]
 
 
+def _preview_as(client, account_id, payload):
+    async def subject():
+        # Async, as the real dependency is: the binding has to reach the route's thread.
+        bind_account(AccountContext(account_id, "same-name"))
+        return "same-name"
+
+    client.app.dependency_overrides[get_current_subject] = subject
+    response = client.post("/api/rewards/preview", json = payload)
+    assert response.status_code == 200, response.text
+    return response.json()["scores"][0]["score"]
+
+
 def test_a_warm_preview_worker_is_not_shared_across_accounts(client):
-    # Module state survives between previews of one account; another account gets a fresh worker.
+    # Module state survives between previews of one account; another account gets a fresh
+    # worker, even under the same username (a deleted and re-created user).
     md = _python_md(
         "calls",
         "seen = []\n\n"
@@ -289,16 +305,49 @@ def test_a_warm_preview_worker_is_not_shared_across_accounts(client):
         "    seen.append(1)\n"
         "    return [float(len(seen))] * len(completions)\n",
     )
+    payload = {"rewards": [{"markdown": md}], "completion": "x"}
+    scores = [_preview_as(client, a, payload) for a in ("acct-a", "acct-a", "acct-b")]
+    assert scores == [1.0, 2.0, 1.0]
 
-    def preview(subject):
-        client.app.dependency_overrides[get_current_subject] = lambda: subject
-        response = client.post(
-            "/api/rewards/preview", json = {"rewards": [{"markdown": md}], "completion": "x"}
+
+def test_another_accounts_preview_does_not_close_a_worker_mid_score(client):
+    slow = _python_md(
+        "slow",
+        "import time\n\ndef reward(completions, **kw):\n"
+        "    time.sleep(3)\n    return [1.0] * len(completions)\n",
+    )
+    fast = _python_md(
+        "fast", "def reward(completions, **kw):\n    return [2.0] * len(completions)\n"
+    )
+    first = {}
+    thread = threading.Thread(
+        target = lambda: first.update(
+            score = _preview_as(
+                client, "acct-a", {"rewards": [{"markdown": slow}], "completion": "x"}
+            )
         )
-        assert response.status_code == 200, response.text
-        return response.json()["scores"][0]["score"]
+    )
+    thread.start()
+    time.sleep(1.5)
+    assert (
+        _preview_as(client, "acct-b", {"rewards": [{"markdown": fast}], "completion": "x"}) == 2.0
+    )
+    thread.join(30)
+    assert first == {"score": 1.0}
 
-    assert [preview("alice"), preview("alice"), preview("bob")] == [1.0, 2.0, 1.0]
+
+def test_a_preview_row_keeps_its_value_types(client):
+    md = _python_md(
+        "typed",
+        "def reward(completions, level, meta, **kw):\n"
+        "    return [float(level[0] + meta[0]['bonus'])] * len(completions)\n",
+    )
+    payload = {
+        "rewards": [{"markdown": md}],
+        "completion": "x",
+        "row": {"level": 3, "meta": {"bonus": 2}},
+    }
+    assert _preview_as(client, "acct-a", payload) == 5.0
 
 
 def _os_sandbox_available() -> bool:

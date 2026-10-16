@@ -70,12 +70,13 @@ export function missingRlRoles(
 // Mirrors _RL_ROW_KEYS in rl.py: TRL fills these itself, every other column reaches a Python reward.
 const RL_ROW_KEYS = new Set(["prompt", "answer", "chosen", "rejected"]);
 
-/** Row 1 the way GRPO training hands it to a Python reward, mapped role columns included. */
+/** Row 1 the way GRPO training hands it to a Python reward: mapped role columns included,
+ *  values in their own types. */
 export function pythonRewardRow(
-  row: Record<string, string>,
+  row: Record<string, unknown>,
   answer: string,
-): Record<string, string> {
-  const out: Record<string, string> = {};
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
   for (const [column, value] of Object.entries(row)) {
     if (!RL_ROW_KEYS.has(column)) {
       out[column] = value;

@@ -391,12 +391,7 @@ export function RewardsSection(): ReactElement {
       return;
     }
     try {
-      const row = pythonRewardRow(
-        Object.fromEntries(
-          Object.entries(previewRow ?? {}).map(([k, v]) => [k, previewCell(v)]),
-        ),
-        reference,
-      );
+      const row = pythonRewardRow(previewRow ?? {}, reference);
       const prompt = promptColumn
         ? previewCell(previewRow?.[promptColumn])
         : "";

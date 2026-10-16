@@ -38,13 +38,19 @@ test("explicit roles win over name matching, and a stale column is ignored", () 
   );
 });
 
-test("a Python reward preview row keeps mapped columns, as GRPO training does", () => {
+test("a Python reward preview row keeps mapped columns and value types, as GRPO training does", () => {
   // solution is mapped to answer: training keeps it under its own name for a Python reward.
   assert.deepEqual(
     pythonRewardRow(
-      { question: "q", solution: "72", prompt: "p", id: "7" },
+      {
+        question: "q",
+        solution: "72",
+        prompt: "p",
+        level: [3],
+        meta: { a: 1 },
+      },
       "72",
     ),
-    { question: "q", solution: "72", id: "7", answer: "72" },
+    { question: "q", solution: "72", level: [3], meta: { a: 1 }, answer: "72" },
   );
 });

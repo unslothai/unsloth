@@ -296,16 +296,29 @@ def make_python_reward_funcs(
 
 
 _preview_lock = threading.Lock()
-_preview: dict[str, Any] = {"key": None, "worker": None, "timer": None}
+# Warm Try it workers by key: at most one idle per account, and none is closed while it scores.
+_previews: dict[str, dict[str, Any]] = {}
 PREVIEW_IDLE_SECONDS = 120.0
+
+
+def _drop_preview(key: str, entry: dict[str, Any]) -> None:
+    with _preview_lock:
+        if _previews.get(key) is not entry or entry["busy"]:
+            return
+        del _previews[key]
+    if entry["worker"] is not None:
+        entry["worker"].close()
 
 
 def _close_preview() -> None:
     with _preview_lock:
-        worker = _preview["worker"]
-        _preview.update(key = None, worker = None, timer = None)
-    if worker is not None:
-        worker.close()
+        entries = list(_previews.values())
+        _previews.clear()
+    for entry in entries:
+        if entry["timer"] is not None:
+            entry["timer"].cancel()
+        if entry["worker"] is not None:
+            entry["worker"].close()
 
 
 def preview_python_scores(
@@ -317,34 +330,54 @@ def preview_python_scores(
 ) -> tuple[dict[str, Optional[float]], dict[str, Any]]:
     """Score one reply for the Try it box. The worker is kept warm for a couple of minutes,
     since the box re-scores on every edit."""
-    # Keyed by owner too: a warm worker keeps the reward's module state, which must not carry
-    # one account's rows into another account's scores.
+    # Keyed by account: a warm worker keeps the reward's module state, which must not carry one
+    # account's rows into another account's scores.
     key = json.dumps([owner, [[s["name"], s["entry"], s["code"]] for s in specs]], sort_keys = True)
+    stale = []
     with _preview_lock:
-        if _preview["timer"] is not None:
-            _preview["timer"].cancel()
-        worker = _preview["worker"] if _preview["key"] == key else None
-        stale = _preview["worker"] if worker is None else None
-        if stale is not None:
-            _preview.update(key = None, worker = None)
-    if stale is not None:
-        stale.close()
-    if worker is None:
-        worker = RewardWorker(specs, batch_timeout = 30.0).start()
-        with _preview_lock:
-            _preview.update(key = key, worker = worker)
+        entry = _previews.get(key)
+        if entry is None:
+            # The account's other idle workers hold older code.
+            for other_key, other in list(_previews.items()):
+                if other["owner"] == owner and not other["busy"]:
+                    del _previews[other_key]
+                    stale.append(other)
+            entry = {"owner": owner, "worker": None, "timer": None, "busy": 0}
+            entry["start"] = threading.Lock()
+            _previews[key] = entry
+        if entry["timer"] is not None:
+            entry["timer"].cancel()
+            entry["timer"] = None
+        entry["busy"] += 1
+    for other in stale:
+        if other["timer"] is not None:
+            other["timer"].cancel()
+        if other["worker"] is not None:
+            other["worker"].close()
     prompts = [[{"role": "user", "content": prompt or ""}]]
     completions = [[{"role": "assistant", "content": text}]]
     kwargs = {k: [v] for k, v in (row or {}).items()}
+    failed = True
     try:
+        with entry["start"]:
+            if entry["worker"] is None:
+                entry["worker"] = RewardWorker(specs, batch_timeout = 30.0).start()
+        worker = entry["worker"]
         scores = worker.score([s["name"] for s in specs], prompts, completions, kwargs)
-    except PythonRewardError:
-        _close_preview()
-        raise
+        failed = False
     finally:
-        timer = threading.Timer(PREVIEW_IDLE_SECONDS, _close_preview)
-        timer.daemon = True
         with _preview_lock:
-            _preview["timer"] = timer
-        timer.start()
+            entry["busy"] -= 1
+            if failed and _previews.get(key) is entry:
+                # A failed worker is not reused; whoever finishes last closes it.
+                del _previews[key]
+            idle = not entry["busy"]
+            mapped = _previews.get(key) is entry
+            if idle and mapped:
+                timer = threading.Timer(PREVIEW_IDLE_SECONDS, _drop_preview, (key, entry))
+                timer.daemon = True
+                entry["timer"] = timer
+                timer.start()
+        if idle and not mapped and entry["worker"] is not None:
+            entry["worker"].close()
     return {name: values[0] for name, values in scores.items()}, worker.isolation

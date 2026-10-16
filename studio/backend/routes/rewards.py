@@ -4,9 +4,10 @@
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictBool, StrictStr
 
 from auth.authentication import get_current_subject
+from utils.account_context import current_account_id
 from core.training.rewards import (
     MAX_REWARD_MD_BYTES,
     RewardError,
@@ -64,8 +65,8 @@ class RewardPreviewRequest(BaseModel):
     rewards: list[RewardPreviewItem] = Field(..., min_length = 1, max_length = 16)
     completion: StrictStr = Field(..., max_length = 64 * 1024)
     reference: Optional[StrictStr] = Field(None, max_length = 16 * 1024)
-    # Row 1 of the dataset, so a Python reward sees the same columns it gets in training.
-    row: Optional[dict[StrictStr, StrictStr]] = Field(None, max_length = 64)
+    # Row 1 of the dataset with its own value types, as a Python reward gets it in training.
+    row: Optional[dict[StrictStr, JsonValue]] = Field(None, max_length = 64)
     prompt: Optional[StrictStr] = Field(None, max_length = 16 * 1024)
 
 
@@ -131,7 +132,7 @@ def preview_rewards(
             payload.reference,
             payload.row,
             payload.prompt,
-            owner = current_subject,
+            owner = current_account_id(),
         )
     except RewardError as exc:
         raise _http_error(exc) from exc

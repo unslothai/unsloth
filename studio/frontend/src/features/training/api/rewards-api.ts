@@ -76,7 +76,7 @@ export async function previewRewards(
   rewards: GrpoRewardSelection[],
   completion: string,
   reference: string | null,
-  row: Record<string, string> | null = null,
+  row: Record<string, unknown> | null = null,
   prompt: string | null = null,
 ): Promise<RewardPreviewResponse> {
   return readJson(
