@@ -90,21 +90,14 @@ def _wait_for(
             last = _execute(base, session_id, script)
             if last:
                 return last
-        except Exception as error:  # The webview can reload while startup hands off.
+        except Exception as error:
             last = str(error)
         time.sleep(0.25)
     raise AssertionError(f"Timed out waiting for {description}; last result: {last!r}")
 
 
-# The quant list is fetched once per expanded row, by an effect keyed on [repoId, localSource, refreshKey, hfToken].
-# Its .catch() calls setError and stops: there is no automatic retry, by design, and the row offers a Retry button
-# instead. So one transient transport blip at the moment the row expands leaves the row showing an error for the rest
-# of the run, and waiting longer cannot help -- nothing is still in flight. Observed as "Unsloth isn't running --
-# please relaunch it." rendered inside the FLUX.2-klein-4B row while /api/health kept answering for another 49 seconds,
-# on a job that fails on roughly three runs in four across unrelated branches.
-#
-# Clicking Retry is what a user does and what the row is built for. Bounded, and the listing error is reported if the
-# retries run out, so a backend that is genuinely unreachable still fails the run rather than looping.
+# The quant list fetch has no automatic retry and the row shows a Retry button, so a transient
+# blip needs a click. Bounded, so a genuinely unreachable backend still fails.
 _VARIANT_RETRY_ATTEMPTS = 3
 _VARIANT_ERROR_TEXT = (
     "const box=[...document.querySelectorAll('div')].find("
@@ -137,7 +130,7 @@ def _wait_for_quantization(
         except AssertionError:
             error_text = _execute(base, session_id, _VARIANT_ERROR_TEXT) or ""
             if not error_text:
-                raise  # No listing error on screen, so retrying would prove nothing.
+                raise
             last_error = error_text
             print(
                 f"[appimage-e2e] quant listing failed (attempt {attempt}/"
@@ -147,7 +140,7 @@ def _wait_for_quantization(
             if attempt == _VARIANT_RETRY_ATTEMPTS:
                 break
             if not _execute(base, session_id, _VARIANT_RETRY_CLICK):
-                break  # The button went away; let the assertion below carry the text.
+                break
             time.sleep(1.0)
     raise AssertionError(
         f"Timed out waiting for {description} after {_VARIANT_RETRY_ATTEMPTS} listing "
@@ -706,7 +699,6 @@ def main() -> None:
         )
         assert clicked, "Could not click the seeded FLUX model row"
 
-        # Some catalog states show a format level before the quantization level.
         time.sleep(0.25)
         _execute(
             base,
@@ -773,7 +765,6 @@ def main() -> None:
             timeout = 15,
         )
 
-        # Verify the packaged WebKit view exposes the required media formats.
         media = json.loads(
             _execute(
                 base,
@@ -847,6 +838,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception:
-        # Preserve the rendered text whenever a late assertion fails.
         print(f"AppImage E2E evidence: {ART_DIR.resolve()}", file = sys.stderr)
         raise

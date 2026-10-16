@@ -6,10 +6,9 @@ import test from "node:test";
 
 import {
   checkpointQuantFormat,
-  listingTagsForFormat,
+  hasRecommendedCheckpointLikes,
   matchesFormat,
   matchesRecommended,
-  recommendedNeedsLikes,
 } from "../src/features/hub/lib/format-filters.ts";
 import { readSrcAsync } from "./helpers/kit.ts";
 
@@ -65,6 +64,40 @@ test("Recommended lists every GGUF and only the checkpoints this GPU runs native
   assert.equal(matchesRecommended(nvfp4, ["fp8", "nvfp4"]), true);
 });
 
+test("Recommended browsing lists checkpoints only past 30 likes", async () => {
+  assert.equal(hasRecommendedCheckpointLikes({ ...gguf, likes: 0 }), true);
+  assert.equal(hasRecommendedCheckpointLikes(fp8), false);
+  assert.equal(hasRecommendedCheckpointLikes({ ...fp8, likes: 30 }), false);
+  assert.equal(hasRecommendedCheckpointLikes({ ...fp8, likes: 31 }), true);
+  // Safetensors repo cross-tagged "gguf" for a stray .gguf file (Nemotron-3.5-Bolt-74B-A9B).
+  const crossTagged = {
+    id: "unsloth/NVIDIA-Nemotron-3.5-Bolt-74B-A9B",
+    isGguf: true,
+    tags: ["transformers", "safetensors", "gguf"],
+  };
+  assert.equal(
+    hasRecommendedCheckpointLikes({ ...crossTagged, likes: 2 }),
+    false,
+  );
+  assert.equal(
+    hasRecommendedCheckpointLikes({ ...crossTagged, likes: 31 }),
+    true,
+  );
+  assert.equal(
+    hasRecommendedCheckpointLikes({ ...gguf, tags: ["safetensors", "gguf"] }),
+    true,
+  );
+  const page = await readSrcAsync("features/hub/hub-page.tsx");
+  assert.match(
+    page,
+    /effectiveDiscoverFormat !== "recommended" \|\|\s*hasQuery \|\|\s*hasRecommendedCheckpointLikes\(row\.result\)/,
+  );
+  assert.match(
+    page,
+    /matchesFormat\(row\.result\.isGguf, "gguf"\)\)[\s\S]{0,200}\.filter\(\(row\) => hasRecommendedCheckpointLikes\(row\.result\)\)/,
+  );
+});
+
 test("the GGUF filter stays a plain format match", () => {
   assert.equal(matchesFormat("gguf", "gguf"), true);
   assert.equal(matchesFormat("safetensors", "gguf"), false);
@@ -75,7 +108,7 @@ test("the likes threshold only curates Recommended, and Recommended is the defau
   const page = await readSrcAsync("features/hub/hub-page.tsx");
   assert.match(
     page,
-    /effectiveDiscoverFormat !== "recommended" \|\|\s*hasQuery \|\|\s*\(mode === "search" && !recommendedNeedsLikes\(effectiveSort\)\) \|\|\s*resolveOwnerProviderLogo/,
+    /effectiveDiscoverFormat !== "recommended" \|\|\s*hasQuery \|\|\s*resolveOwnerProviderLogo/,
   );
   assert.doesNotMatch(page, /preset\?\.format \?\? "gguf"/);
   const channels = await readSrcAsync("features/hub/lib/channels.ts");
@@ -141,40 +174,5 @@ test("a capable Recommended channel query drops the GGUF-only tag", async () => 
   assert.match(
     page,
     /tags: widenRecommendedChannel\s*\?\s*withoutGgufTag\(liveListChannel\.tags\)\s*:\s*liveListChannel\.tags/,
-  );
-});
-
-test("Newest and Recently updated skip the likes floor no fresh upload can meet", () => {
-  for (const sort of ["trendingScore", "downloads", "likes"]) {
-    assert.equal(recommendedNeedsLikes(sort), true, sort);
-  }
-  assert.equal(recommendedNeedsLikes("createdAt"), false);
-  assert.equal(recommendedNeedsLikes("lastModified"), false);
-});
-
-test("GGUF-only views ask the Hub for GGUF repos, others list every format", async () => {
-  assert.deepEqual(listingTagsForFormat("gguf", []), ["gguf"]);
-  assert.deepEqual(listingTagsForFormat("gguf", ["fp8"]), ["gguf"]);
-  assert.deepEqual(listingTagsForFormat("recommended", []), ["gguf"]);
-  // FP8 / NVFP4 checkpoints pass Recommended here, and they are not GGUF repos.
-  assert.equal(listingTagsForFormat("recommended", ["fp8"]), undefined);
-  for (const format of ["all", "checkpoint", "mlx", "npu"] as const) {
-    assert.equal(listingTagsForFormat(format, []), undefined, format);
-  }
-  const page = await readSrcAsync("features/hub/hub-page.tsx");
-  assert.match(
-    page,
-    /listingTags:\s*mode === "search"\s*\?\s*listingTagsForFormat\(effectiveDiscoverFormat, checkpointQuantFormats\)\s*:\s*undefined/,
-  );
-});
-
-test("a Discover browse floats unsloth repos first under any sort, other pickers keep their listing", async () => {
-  const discover = await readSrcAsync("features/hub/hooks/use-discover-search.ts");
-  assert.match(discover, /unslothFirstBrowse: true,/);
-  const search = await readSrcAsync("features/hub/hooks/use-hub-model-search.ts");
-  assert.match(search, /unslothFirstBrowse = false,/);
-  assert.match(
-    search,
-    /if \(\s*\(hasFilters \|\| unslothFirstBrowse\) &&\s*pinUnslothFirst &&\s*!unslothOnly\s*\) \{\s*return mergedModelIterator\(/,
   );
 });

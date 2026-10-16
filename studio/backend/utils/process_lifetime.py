@@ -2016,6 +2016,19 @@ def is_process_shutting_down() -> bool:
     return _shutdown_latch.is_set()
 
 
+_quit_signal_at: Optional[float] = None
+
+
+def mark_quit_signal_received() -> None:
+    global _quit_signal_at
+    if _quit_signal_at is None:
+        _quit_signal_at = time.monotonic()
+
+
+def seconds_since_quit_signal() -> Optional[float]:
+    return None if _quit_signal_at is None else time.monotonic() - _quit_signal_at
+
+
 def begin_process_lifecycle() -> None:
     """Clear the latch for an embedded host that calls run_server again.
 
@@ -2023,7 +2036,9 @@ def begin_process_lifecycle() -> None:
     reuse the interpreter, and a latch that never cleared would refuse every spawn of
     the second session.
     """
+    global _quit_signal_at
     _shutdown_latch.clear()
+    _quit_signal_at = None
 
 
 def terminate_all(timeout: float = 5.0) -> "list[int]":

@@ -94,6 +94,7 @@ import { cn } from "@/lib/utils";
 import { setInAppLinkHandler } from "@/lib/open-link";
 import {
   BrowserToggleButton,
+  chatKeyOfThread,
   openUrlInBrowser,
   pinBrowserPage,
   setBrowserPanelAvailable,
@@ -120,7 +121,7 @@ import {
   PencilEdit02Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
-import { useAui, useAuiState } from "@assistant-ui/react";
+import { useAui } from "@assistant-ui/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -260,6 +261,7 @@ import {
   takeEffortDisplacedByPin,
   threadScopedOverride,
   resolvePreserveThinkingOnLoad,
+  resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import { wantsDownloadManagerStaging } from "./utils/model-download-staging";
@@ -274,7 +276,6 @@ import {
   comparePairReadState,
   resolveComparePaneThreadIds,
 } from "./utils/compare-pane-threads";
-import { clearNewChatDraft } from "./utils/composer-draft";
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
 import {
   getStoredChatThread,
@@ -764,16 +765,13 @@ const SingleContent = memo(function SingleContent({
     useChatRuntimeStore.getState().setSettingsPanelOpen(false);
   }, [researchMatchesThread, closeBrowser]);
 
-  // Close the browser on leaving the chat; the runtime thread id survives a new chat's first save.
-  const shownThreadId = useAuiState(({ threads }) => threads.mainThreadId);
-  const shownThreadIdRef = useRef(shownThreadId);
+  // Leaving Chat closes this chat's browser. Compare keeps this view mounted but hidden, and by
+  // then the panel on screen is the compare chat's: that one stays as it is.
+  const browserChat = useBrowserStore((state) => state.chat);
+  const browserChatRef = useRef<string | null>(null);
+  if (chatActive) browserChatRef.current = browserChat;
   useEffect(() => {
-    if (shownThreadIdRef.current === shownThreadId) return;
-    shownThreadIdRef.current = shownThreadId;
-    closeBrowser();
-  }, [shownThreadId, closeBrowser]);
-  useEffect(() => {
-    if (!chatActive) closeBrowser();
+    if (!chatActive && useBrowserStore.getState().chat === browserChatRef.current) closeBrowser();
   }, [chatActive, closeBrowser]);
 
   // Width on header/notice only: on the root it would restyle the whole thread per resize.
@@ -1516,7 +1514,7 @@ function GeneralCompareHeader({
         onModelsChange={onModelsChange}
         deleteDisabled={deleteDisabled}
         variant="ghost"
-        className="pointer-events-auto max-w-[80%] !h-[var(--studio-chat-control-height,34px)]"
+        className="pointer-events-auto ml-1.5 max-w-[80%] !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
         open={active && selectorOpen}
         onOpenChange={(open) => setSelectorOpen(active && open)}
       />
@@ -2887,7 +2885,6 @@ export function ChatPage({
   );
 
   const handleDesktopNewChat = useCallback(() => {
-    clearNewChatDraft();
     const runtime = useChatRuntimeStore.getState();
     runtime.setActiveThreadId(null);
     runtime.setActiveProjectId(currentProjectId);
@@ -3197,6 +3194,8 @@ export function ChatPage({
         supports_preserve_thinking: providerSupportsPreserveThinking(provider?.providerType),
       }),
       supportsTools: supportsStudioToolsHere,
+      deepResearchEnabled: resolveToolsEnabledOnLoad(supportsStudioToolsHere)
+        .deepResearchEnabled,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
       supportsBuiltinImageGeneration,
@@ -3492,6 +3491,26 @@ export function ChatPage({
   // biome-ignore lint/correctness/useExhaustiveDependencies: another chat on screen is the reset
   useLayoutEffect(() => {
     useBrowserStore.getState().closeChatPages();
+  }, [shownChatKey]);
+  // Each chat keeps its own browser tabs, so a run in another chat keeps its page. A new chat's key
+  // changes on its first save, and its tabs go with it.
+  const unsavedChatKey =
+    view.mode === "single"
+      ? `single:${view.newThreadNonce ?? "new"}`
+      : view.mode === "project"
+        ? `project:${view.projectId}:${projectNewThreadNonce}`
+        : null;
+  const browserChatRef = useRef<string | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only another chat on screen moves the tabs
+  useLayoutEffect(() => {
+    const previous = browserChatRef.current;
+    browserChatRef.current = shownChatKey;
+    const store = useBrowserStore.getState();
+    if (previous !== null && previous === unsavedChatKey && activeThreadId && shownChatKey === chatKeyOfThread(activeThreadId)) {
+      store.adoptChat(previous, shownChatKey);
+    } else {
+      store.showChat(shownChatKey);
+    }
   }, [shownChatKey]);
 
   const hasActiveModel = Boolean(inferenceCheckpoint);
@@ -4734,7 +4753,7 @@ export function ChatPage({
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
                 showCloudIndicator={isExternalModel}
-                className="max-w-[62vw] !pr-3 md:max-w-none !h-[var(--studio-chat-control-height,34px)] max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!px-2 max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!gap-0"
+                className="ml-1.5 max-w-[62vw] !pl-2.5 !pr-1.5 md:max-w-none !h-[var(--studio-chat-control-height,34px)] max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!ml-0 max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!px-2 max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!gap-0"
               />
             )}
             {view.mode === "single" && (

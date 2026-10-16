@@ -12,13 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""`save_pretrained_merged` must mean the same thing on every model type.
-
-FastSentenceTransformer bound the name to `(self, save_directory, **kwargs)`
-while FastLanguageModel takes `tokenizer` and `save_method` positionally, so
-the documented positional call raised TypeError on embedding models.
-`save_method` must be honoured, not accepted and dropped.
-"""
+"""save_pretrained_merged must have the same signature on every model type and honour save_method."""
 
 import ast
 import inspect
@@ -32,12 +26,7 @@ SAVE_PY = REPO_ROOT / "unsloth" / "save.py"
 
 
 def _defs(name, path):
-    """Matching definitions in SOURCE order.
-
-    `ast.walk` is breadth-first, so nested closures come back in an order
-    that has nothing to do with the file, and indexing into it silently
-    tested the wrong one.
-    """
+    """Matching defs in source order; ast.walk is breadth-first and scrambles nested closures."""
     src = path.read_text(encoding = "utf-8")
     found = [
         n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef) and n.name == name
@@ -86,9 +75,6 @@ def test_the_reference_signature_is_what_we_matched():
     assert _params(node[0])[:4] == ["self", "save_directory", "tokenizer", "save_method"]
 
 
-# ---- save_method is honoured, not swallowed -------------------------------
-
-
 def test_merge_and_unload_path_refuses_an_unsupported_method():
     src = ST_PY.read_text(encoding = "utf-8")
     node = _defs("_save_pretrained_merged", ST_PY)[0]
@@ -114,9 +100,6 @@ def test_an_explicit_tokenizer_is_not_shadowed_by_kwargs(i):
     assert 'pop("tokenizer", None)' in body
 
 
-# ---- behavioural check with a stand-in ------------------------------------
-
-
 def _extract_helper(name):
     """Pull a module-level helper out by source, so nothing imports unsloth."""
     src = ST_PY.read_text(encoding = "utf-8")
@@ -134,24 +117,7 @@ _PROBE_PACKAGE = "_unsloth_st_source_probe"
 
 
 def _probe_package():
-    """A package for the exec'd body to resolve its deferred relative imports against.
-
-    #11067 put `from ..save import _is_adapter_save_method` inside `_save_pretrained_merged`,
-    deferred on purpose: a module-scope bind out of `unsloth.save` closes an import cycle.
-    `exec` with a bare globals dict has no `__name__` and no `__package__`, so a relative
-    import there raises `KeyError: "'__name__' not in globals"`, and every test that calls the
-    body died on it rather than on anything it was checking.
-
-    Satisfying it by importing unsloth would give up what this file is for: it reads the two
-    closures out of the source precisely so the assertions run without an unsloth import. So
-    stand up a package that owns the same relative path and put the REAL helper in it, pulled
-    from unsloth/save.py by source the way `_normalize_save_method` already is. The import
-    statement then executes for real and binds the shipped function, so a change to that
-    function's behaviour still reaches these tests.
-
-    Registered under a name of our own rather than "unsloth", so this cannot shadow the real
-    package for anything else in the session.
-    """
+    """A private package so the exec'd body's deferred relative import binds the real shipped helper."""
     import sys
     import types
 
@@ -163,7 +129,6 @@ def _probe_package():
     models = types.ModuleType(f"{_PROBE_PACKAGE}.models")
     models.__path__ = []
     save = types.ModuleType(f"{_PROBE_PACKAGE}.save")
-    # By source, not by import, for the same reason as everything else in this file.
     save_src = SAVE_PY.read_text(encoding = "utf-8")
     helper = [
         n
@@ -187,9 +152,7 @@ def _extract(i):
     _probe_package()
     branding = []
     ns = {
-        # The package coordinates of unsloth/models/sentence_transformer.py, mirrored onto the
-        # probe package: `from ..save import ...` in the body resolves one level up from
-        # `<probe>.models`, which is where the extracted helper was just installed.
+        # Mirror sentence_transformer.py's package so `from ..save import` resolves to the probe.
         "__name__": f"{_PROBE_PACKAGE}.models.sentence_transformer",
         "__package__": f"{_PROBE_PACKAGE}.models",
         "os": __import__("os"),
@@ -204,13 +167,7 @@ def _extract(i):
 
 
 def test_the_deferred_import_binds_the_shipped_helper():
-    """The harness above must resolve that import for real, not paper over it.
-
-    A stub returning a constant would make the "lora" tests pass while testing nothing, which
-    is the failure mode worth guarding: the point of routing through the real
-    `_is_adapter_save_method` is that its spelling rules ("LoRA", "lora ") are the ones the
-    shipped code applies.
-    """
+    """The deferred import must bind the real _is_adapter_save_method; a stub would test nothing."""
     _probe_package()
     import sys
 
@@ -219,7 +176,6 @@ def test_the_deferred_import_binds_the_shipped_helper():
         assert helper(accepted), f"the shipped helper no longer accepts {accepted!r}"
     for refused in ("merged_16bit", "lora_adapter", None, 1):
         assert not helper(refused), f"the shipped helper now accepts {refused!r}"
-    # And it is the shipped source, not a copy that can drift from it.
     save_src = SAVE_PY.read_text(encoding = "utf-8")
     assert "def _is_adapter_save_method(save_method):" in save_src
 
@@ -322,9 +278,6 @@ def test_unsupported_save_method_raises_not_implemented(tmp_path):
     assert st.saved == [], "and before writing a half-finished directory"
 
 
-# ---- the no_modules fallback honours save_method too -----------------------
-
-
 def test_no_modules_fallback_refuses_an_unsupported_method(tmp_path):
     """That branch drops save_method and merges unconditionally, so "lora"
     would return full weights for a request to write adapters."""
@@ -344,35 +297,19 @@ def test_no_modules_fallback_still_does_a_16bit_merge(tmp_path):
 
 
 def test_the_forwarding_path_refuses_lora_for_its_own_reason(tmp_path):
-    """Both branches refuse "lora", and the two refusals must stay distinct.
-
-    This test used to assert that the forwarding path ACCEPTED "lora", on the premise that
-    with modules.json present the merge understands every method. unsloth#11067 retired that
-    premise: `save_pretrained_merged` writes a loadable SentenceTransformer, and an
-    adapter-only save has no base weights for one, so it now refuses here too. Before that,
-    "lora" matched no branch in merge_and_overwrite_lora and fell through to a 16bit merge,
-    which happened to write something loadable for a request that asked for adapters.
-
-    The invariant the old test was really protecting survives the change and is what is
-    checked now: the no_modules refusal must not leak into this branch. Both raise, so a
-    bare `pytest.raises` would no longer notice if one wrongly borrowed the other's reason,
-    which is why the two messages are pinned apart rather than merely asserted non-empty.
-    """
+    """The forwarding path refuses lora with its own message, never borrowing the no_modules refusal."""
     fn, _ = _extract(1)
     st = _FakeST(no_modules = False)
     with pytest.raises(NotImplementedError) as raised:
         fn(st, str(tmp_path), None, "lora")
 
     message = str(raised.value)
-    # Its own reason: no base weights for a loadable SentenceTransformer, plus the two ways
-    # out. Not the no_modules reason, which is about falling back to merge_and_unload.
     assert "adapter" in message
     assert "merged_16bit" in message
     assert "no modules.json was found" not in message, (
         "the no_modules refusal leaked into the branch that HAS modules.json; the two "
         "conditions are different and a user told the wrong one looks for the wrong file"
     )
-    # Refused before anything is touched, exactly as the no_modules branch is.
     assert not st.inner.merged, "must refuse BEFORE merging the adapters away"
     assert st.saved == [], "and before writing a half-finished directory"
     assert st.inner.forwarded is None, "and without forwarding the unsupported method on"
@@ -394,9 +331,6 @@ def test_the_two_lora_refusals_do_not_share_a_message(tmp_path):
         "both 'lora' refusals now say the same thing, so the message no longer tells the "
         "user whether modules.json was the problem"
     )
-
-
-# ---- spellings mean the same thing as in unsloth_save_model ----------------
 
 
 def test_the_reference_normalizes_before_validating():

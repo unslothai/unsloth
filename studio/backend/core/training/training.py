@@ -262,6 +262,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "eval_split": values.get("eval_split"),
         "eval_steps": values.get("eval_steps", 0.00),
         "early_stopping_patience": values.get("early_stopping_patience", 0),
+        "drafter": values.get("drafter"),
         "dataset_streaming": values.get("dataset_streaming", False),
         "dataset_slice_start": values.get("dataset_slice_start"),
         "dataset_slice_end": values.get("dataset_slice_end"),
@@ -451,6 +452,8 @@ def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
         config["actual_model_repo_id"] = None
         config["model_snapshot_path"] = None
         config["model_revision"] = None
+        # Nothing is pinned, so an offline start's pin has nothing left to validate.
+        config["require_validated_model_snapshot"] = False
         return
     requested_pin = config.get("model_snapshot_path")
     require_validated_snapshot = bool(config.get("require_validated_model_snapshot"))
@@ -709,6 +712,9 @@ class TrainingProgress:
     # The end-of-run record has no step loss, so the progress filter would drop it, and with it the only
     # elapsed time that includes the final evaluation, checkpoint save and best-model reload.
     is_run_summary: bool = False
+    # Drafter phase after the fine-tune: {strategy, step, total_steps, loss, top1, state}. Kept apart
+    # from the SFT fields so its step counter never lands in the SFT loss history.
+    drafter: Optional[dict] = None
 
 
 # Marks an omitted mode, which keeps the loaded one; a literal default would overwrite it.
@@ -843,6 +849,7 @@ class _MLXTrainerAdapter:
         use_rslora: bool = False,
         use_loftq: bool = False,
         use_dora: bool = False,
+        random_state: int = 3407,
     ) -> bool:
         if use_gradient_checkpointing is _UNSET:
             # This entry overrides load_model's, so default to the mode recorded there.
@@ -3299,6 +3306,14 @@ class TrainingBackend:
 
             elif etype == "status":
                 self._progress.status_message = event.get("message", "")
+                self._progress.is_training = True
+
+            elif etype == "drafter_progress":
+                info = {
+                    k: event.get(k)
+                    for k in ("strategy", "step", "total_steps", "loss", "top1", "state")
+                }
+                self._progress.drafter = info
                 self._progress.is_training = True
 
             elif etype == "warning":

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isGgufLike } from "./model-identifiers.ts";
+
 export type FormatFilterModelFormat =
   | "gguf"
   | "safetensors"
@@ -97,21 +99,21 @@ export function matchesRecommended(
   return format !== null && checkpointQuantFormats.includes(format);
 }
 
-/** Hub tags for a listing whose format filter only shows GGUF rows, else undefined. */
-export function listingTagsForFormat(
-  formatFilter: FormatFilterValue,
-  checkpointQuantFormats: readonly string[],
-): readonly string[] | undefined {
-  return formatFilter === "gguf" ||
-    (formatFilter === "recommended" && checkpointQuantFormats.length === 0)
-    ? GGUF_LISTING_TAGS
-    : undefined;
-}
-const GGUF_LISTING_TAGS: readonly string[] = ["gguf"];
+// Recommended browsing lists every GGUF but only checkpoints with more than this many likes.
+export const MIN_RECOMMENDED_CHECKPOINT_LIKES = 30;
 
-/** Recommended's likes floor needs a popularity sort: under Newest no fresh upload has likes yet. */
-export function recommendedNeedsLikes(sort: string): boolean {
-  return sort !== "createdAt" && sort !== "lastModified";
+export function hasRecommendedCheckpointLikes(result: {
+  id: string;
+  isGguf: boolean;
+  likes?: number;
+  tags?: readonly string[];
+}): boolean {
+  // A safetensors repo that also ships a stray .gguf is still tagged "gguf"; its weights are safetensors.
+  const isGgufRepo =
+    isGgufLike(result.id) ||
+    (result.isGguf &&
+      !result.tags?.some((tag) => tag.toLowerCase() === "safetensors"));
+  return isGgufRepo || (result.likes ?? 0) > MIN_RECOMMENDED_CHECKPOINT_LIKES;
 }
 
 // Inference-only quant formats Unsloth cannot fine-tune. Matched on the repo

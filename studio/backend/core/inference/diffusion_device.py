@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -386,6 +387,78 @@ def resolve_selected_cuda_ordinal(
     return max(ordinals, key = lambda ordinal: (_free_vram(ordinal), -ordinal))
 
 
+_UNPLANNED = object()
+# Set by an auto-switch for its locality check and the load it starts (both copy this context), so free VRAM
+# moving in between cannot rank the load onto a card whose precision picks an artifact the check never saw.
+# A pinned None is a decision too (keep the current device), so the backend fallbacks honour it.
+_PLANNED_ORDINAL: ContextVar[Any] = ContextVar("media_planned_gpu_ordinal", default = _UNPLANNED)
+
+# Free-VRAM readings this close are noise, so the lower ordinal keeps an idle uniform host on card 0.
+_AUTO_FREE_TIE_BYTES = 256 * 1024**2
+
+
+def resolve_auto_cuda_ordinal() -> Optional[int]:
+    """The torch ordinal an AUTOMATIC diffusion load should run on, or None to keep the current device.
+
+    Bare "cuda" is the current device, PCI slot 0 under Studio's PCI_BUS_ID order, so on a multi-GPU host
+    the load budgeted against that card alone and offloaded to RAM beside an idle bigger one (#8235). Neither
+    engine shards, so this picks ONE card: most free VRAM, like ``auto_select_gpu_ids`` and Ollama's
+    single-GPU fit, ties to the lowest ordinal. Read from nvidia-smi alone (no CUDA context per card, so no
+    torch fallback) and keyed through the parent-visible list, so a mask keeps deciding which cards exist.
+
+    None on one visible card (unchanged), a UUID/MIG mask (no physical ids), ROCm (an APU's free reading is the
+    shared host pool, which would outrank a discrete card), a CUDA order other than nvidia-smi's (its rows are
+    then not torch's ordinals), an integrated GPU (its rows are a carve-out or N/A, and its real budget is the
+    shared host pool), missing nvidia-smi telemetry and any failure. Never raises. Only cards at least as
+    capable as the current one compete. A pinned plan (auto-switch, or the route's own ranking) is returned
+    as is.
+    """
+    planned = _PLANNED_ORDINAL.get()
+    if planned is not _UNPLANNED:
+        return planned
+    try:
+        from utils.hardware import hardware as hw
+
+        if hw.IS_ROCM:
+            return None
+        visible = hw.get_parent_visible_gpu_ids()
+        if len(visible) < 2 or not hw._cuda_order_matches_smi():
+            return None
+        if hw._integrated_cuda_rows(visible)[0]:
+            return None
+        result = hw._smi_visible_utilization(hw._get_parent_visible_gpu_spec())
+        devices = (result or {}).get("devices", [])
+        from utils.hardware import nvidia
+
+        caps = nvidia.get_compute_capabilities()
+    except Exception:  # noqa: BLE001 -- automatic placement falls back to the current device
+        return None
+    # CUDA stops a mask at an entry naming no card ("0,99,1" is just 0), so later ids are not ordinals.
+    if not {d.get("index") for d in devices} >= set(visible):
+        return None
+    # Only cards at least as capable as the current one (ordinal 0): a freer older card can lack the
+    # installed torch's kernels or a precision the request needs, where the current card works today.
+    floor = caps.get(visible[0])
+    if floor is None:
+        return None
+    free_by_ordinal: dict[int, float] = {}
+    for device in devices:
+        index, total, used = (
+            device.get("index"),
+            device.get("vram_total_gb"),
+            device.get("vram_used_gb"),
+        )
+        if index not in visible or total is None or used is None:
+            continue
+        if caps.get(index, (0, 0)) < floor:
+            continue
+        free_by_ordinal[visible.index(index)] = max(float(total) - float(used), 0.0) * 1024**3
+    if not free_by_ordinal:
+        return None
+    best = max(free_by_ordinal.values())
+    return min(o for o, free in free_by_ordinal.items() if best - free <= _AUTO_FREE_TIE_BYTES)
+
+
 @contextmanager
 def diffusion_device_scope(ordinal: Optional[int]):
     """Make ``ordinal`` the current CUDA device for the block, then restore the previous one.
@@ -529,7 +602,11 @@ def diffusion_device_target_from_torch_device(
     if device == "cuda":
         try:
             import torch
-            is_rocm = bool(getattr(getattr(torch, "version", None), "hip", None))
+
+            from .rocm_bf16 import is_rocm_torch
+
+            # Tag-aware: AMD SDK / Radeon wheels leave torch.version.hip unset.
+            is_rocm = is_rocm_torch(torch)
         except Exception:
             is_rocm = False
         return DiffusionDeviceTarget(
@@ -538,7 +615,7 @@ def diffusion_device_target_from_torch_device(
             backend = "rocm" if is_rocm else "cuda",
             vendor = "amd" if is_rocm else "nvidia",
             supports_model_cpu_offload = True,
-            supports_default_torch_compile = not is_rocm,
+            supports_default_torch_compile = (not is_rocm) or _rocm_compile_allowed(),
             supports_pinned_transfer = True,
             # An overriding caller's "cuda:1" is a device choice to keep, not one to drop back to ordinal 0.
             ordinal = int(index) if index.isdigit() else None,
@@ -571,6 +648,15 @@ def float64_device(device: Any) -> Any:
     """Device to build float64 values on before moving the result to ``device``: itself, or CPU when it has no float64."""
     target = diffusion_device_target_from_torch_device(str(device), None)
     return device if target.supports_float64 else "cpu"
+
+
+def _rocm_compile_allowed() -> bool:
+    """Kill switch only; the install probe runs at compile time (``diffusion_rocm_compile``)."""
+    try:
+        from .diffusion_rocm_compile import rocm_compile_allowed
+        return rocm_compile_allowed()
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _cuda_or_rocm_target(
@@ -607,7 +693,7 @@ def _cuda_or_rocm_target(
         backend = "rocm" if is_rocm else "cuda",
         vendor = "amd" if is_rocm else "nvidia",
         supports_model_cpu_offload = True,
-        supports_default_torch_compile = not is_rocm,
+        supports_default_torch_compile = (not is_rocm) or _rocm_compile_allowed(),
         supports_pinned_transfer = True,
         ordinal = ordinal,
     )
@@ -641,6 +727,82 @@ def _mps_supports_bfloat16(torch: Any) -> bool:
         return False
 
 
+MPS_HIGH_WATERMARK_ENV = "PYTORCH_MPS_HIGH_WATERMARK_RATIO"
+# torch's accepted range for the high watermark ratio (MPSAllocator default_high_watermark_upper_bound).
+_MPS_RATIO_MAX = 2.0
+# Room left outside the cap for macOS, the window server and this process's own CPU-side memory.
+_MPS_CAP_OS_RESERVE_MIN = 1536 * 1024**2
+_MPS_CAP_OS_RESERVE_FRAC = 0.10
+
+
+def mps_high_watermark_ratio(
+    recommended_bytes: Optional[int], total_ram_bytes: Optional[int]
+) -> Optional[float]:
+    """The MPS high watermark ratio (a multiple of the recommended working set) that caps Metal allocations at
+    physical RAM minus an OS reserve, never below the working set Apple recommends. None when either reading is
+    missing (no cap: the caller keeps the unbounded allocator).
+
+    torch's own default is 1.7x the working set, which is above physical RAM on every Apple Silicon Mac (the working
+    set is ~2/3 to 3/4 of RAM), so past RAM it swaps instead of raising; 0.0 removes the limit entirely. A finite cap
+    turns that into an "MPS backend out of memory" RuntimeError that the batch backoff and VAE tile retry handle."""
+    try:
+        recommended = int(recommended_bytes or 0)
+        total = int(total_ram_bytes or 0)
+    except (TypeError, ValueError):
+        return None
+    if recommended <= 0 or total <= 0:
+        return None
+    reserve = max(_MPS_CAP_OS_RESERVE_MIN, int(total * _MPS_CAP_OS_RESERVE_FRAC))
+    cap = max(recommended, total - reserve)
+    return round(min(_MPS_RATIO_MAX, cap / recommended), 4)
+
+
+def _total_ram_bytes() -> Optional[int]:
+    try:
+        import psutil
+        return int(psutil.virtual_memory().total)
+    except Exception:  # noqa: BLE001 -- fall back to sysconf
+        pass
+    try:
+        return int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _mps_cap_disabled() -> bool:
+    if MPS_HIGH_WATERMARK_ENV in os.environ and os.environ.get(MPS_HIGH_WATERMARK_ENV) != "0.0":
+        return True
+    # The oversized-load opt-in asks to run past the unified-memory guard, so it keeps the unbounded allocator too.
+    return os.environ.get("UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def apply_mps_memory_cap(torch: Any, logger: Any = None) -> Optional[float]:
+    """Cap MPS allocations below physical RAM (``mps_high_watermark_ratio``). Returns the ratio set, or None when
+    nothing was changed: a user-set PYTORCH_MPS_HIGH_WATERMARK_RATIO, the oversized-load opt-in, or torch without
+    ``recommended_max_memory`` (< 2.5) / ``set_per_process_memory_fraction``. Set at runtime because the allocator
+    may already exist (its env reading is one-shot), and best-effort: a failure keeps today's allocator."""
+    if _mps_cap_disabled():
+        return None
+    try:
+        mps = torch.mps
+        ratio = mps_high_watermark_ratio(mps.recommended_max_memory(), _total_ram_bytes())
+        if ratio is None:
+            return None
+        mps.set_per_process_memory_fraction(float(ratio))
+    except Exception as exc:  # noqa: BLE001 -- old torch / no reading: keep the unbounded allocator
+        if logger is not None:
+            logger.info("diffusion: MPS memory cap not set (%s)", exc)
+        return None
+    if logger is not None:
+        logger.info("diffusion: MPS allocations capped at %.3fx the recommended working set", ratio)
+    return ratio
+
+
 def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
     mps_available = False
     try:
@@ -654,14 +816,17 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
         mps_available = False
 
     if mps_available:
-        # torch reads PYTORCH_MPS_HIGH_WATERMARK_RATIO once, at the first MPS allocation (the probe below), so relax it
-        # first or the allocator caps at ~1.7x recommendedMaxWorkingSet and can OOM a model that would fit. setdefault
-        # respects an override.
-        os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
+        user_ratio = MPS_HIGH_WATERMARK_ENV in os.environ
+        # torch reads PYTORCH_MPS_HIGH_WATERMARK_RATIO once, when the allocator is built (the probe below, or an earlier
+        # recommended_max_memory() reading). 0.0 here only lifts torch's 1.7x-of-working-set default, which sits above
+        # physical RAM; apply_mps_memory_cap() then sets the finite cap. setdefault respects an override.
+        os.environ.setdefault(MPS_HIGH_WATERMARK_ENV, "0.0")
         # Prefer bfloat16, else float32, NEVER silent float16: modern DiTs produce activations far outside fp16's
         # range (Z-Image MLP peaks near 9e5 -> inf -> NaN -> black image). bf16 (macOS 14+) shares fp32's exponent
         # range; older macOS uses fp32.
         dtype = torch.bfloat16 if _mps_supports_bfloat16(torch) else torch.float32
+        if not user_ratio:
+            apply_mps_memory_cap(torch)
         return DiffusionDeviceTarget(
             device = "mps",
             dtype = dtype,

@@ -98,6 +98,7 @@ from .diffusion_device import (
     install_frame_pad_fix,
     pin_cuda_ordinal,
     placed_cuda_ordinal,
+    resolve_auto_cuda_ordinal,
     resolve_diffusion_device_target,
     resolve_selected_cuda_ordinal,
 )
@@ -160,6 +161,12 @@ from .diffusion_memory import (
     refine_balanced_plan_for_components,
     refine_memory_plan_for_components,
     refine_plan_from_loaded_weights,
+    learned_peak_label,
+    live_vae_saver_tag,
+    planned_vae_saver_tag,
+    stream_window_pad_mib,
+    with_label_part,
+    applied_plan,
     release_resident_groups,
     resident_group_mib,
     hook_resident_denoiser,
@@ -189,8 +196,10 @@ from .diffusion_speed import (
     apply_speed_optims,
     engage_pinned_denoisers,
     auto_dynamic_active,
+    _gguf_dequant_compilable,
     compile_eligible,
     compiled_shapes_are_static,
+    rocm_probe_load_scoped,
     family_compiles_regionally,
     fp16_compile_explicit_only,
     fp16_unet_offloaded,
@@ -1960,6 +1969,288 @@ def _quadratic_attention(
         return True
 
 
+def _attention_scaling_known(target: Any, engaged_backend: Optional[str] = None) -> bool:
+    """Whether ``_quadratic_attention``'s answer is evidence: a non-native backend engaged, or the SDPA probe saw math
+    alone or a sub-quadratic kernel run. An unanswered probe (or no device target) is unknown."""
+    if engaged_backend is not None and str(engaged_backend) != "native":
+        return True
+    if target is None:
+        return False
+    try:
+        return bool(sdpa_math_only(target) or sdpa_subquadratic_confirmed(target))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _start_peak_probe(state: Any) -> Any:
+    """Arm the learned-peak measurement for one render (CUDA loads that carry a peak identity), else None."""
+    pipe = getattr(state, "pipe", None)
+    identity = getattr(pipe, "_unsloth_peak_identity", None)
+    if identity is None:
+        return None
+    try:
+        from .diffusion_measured_peaks import PeakProbe, enabled
+
+        index = _peak_device_index(state)
+        graphs = cuda_graph.live_graph_count(index)
+        generation = cuda_graph.capture_generation(index)
+        accounted = getattr(pipe, "_unsloth_peak_graphs", None)
+        if accounted is None or graphs < accounted:
+            # the load's own graphs (every render starts above them), or fewer after a reset freed some
+            first = accounted is None
+            pipe._unsloth_peak_graphs = accounted = graphs
+            if first or graphs == 0:
+                # nothing alive on the card: no unrecorded capture can remain. A drop to a non-zero count may be
+                # another pipeline's reset, so a capture this one made unrecorded keeps the generation dirty
+                pipe._unsloth_peak_graph_gen = generation
+        if getattr(pipe, "_unsloth_peak_graph_gen", None) is None:
+            pipe._unsloth_peak_graph_gen = generation
+        if graphs > accounted or generation > pipe._unsloth_peak_graph_gen:
+            # an unrecorded render (cache-served, refused, failed) left graphs allocated, or replaced one in a full
+            # cache (same count): a later peak above that start omits memory a fresh process allocates on its first
+            # render
+            return None
+        if _live_peak_identity(state) != tuple(identity):
+            # this render runs a configuration the key does not name (a speed tier or step cache that toggled, a VAE
+            # saver the guard engaged for it, another attention backend): its peak belongs to no key
+            return None
+        if not enabled():
+            return None
+        window_pad = stream_window_pad_mib(pipe)
+        if window_pad is None:
+            return (
+                None  # the streamed baseline is unknown: the peak cannot be put on the common scale
+            )
+        probe = PeakProbe(getattr(state, "device", None))
+        if probe.device is None:
+            return None
+        probe.window_pad = window_pad
+        probe.failed_captures = cuda_graph.failed_capture_count()
+        probe.conditioning_hits = _conditioning_cache_hits(pipe)
+        return probe
+    except Exception:  # noqa: BLE001 - measurement only
+        return None
+
+
+def _peak_device_index(state: Any) -> Optional[int]:
+    """CUDA ordinal the pipeline renders on (``state.device`` may be un-indexed: the thread's current card)."""
+    try:
+        import torch
+        dev = torch.device(getattr(state, "device", None) or "cuda")
+        return dev.index if dev.index is not None else torch.cuda.current_device()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _live_peak_identity(state: Any) -> tuple:
+    """The load's learned-peak identity (the canonical configuration captured at load) with every part that can change
+    after the load read from the live state: speed tier, step cache, VAE savers, attention backend. A render records
+    only when this equals the identity."""
+    pipe = getattr(state, "pipe", None)
+    family, label, _ = tuple(getattr(pipe, "_unsloth_peak_identity", ("", "", None)))[:3]
+    label = with_label_part(
+        str(label), "cache", str(getattr(state, "transformer_cache", None) or "off")
+    )
+    label = with_label_part(label, "vae", live_vae_saver_tag(pipe))
+    label = with_label_part(label, "attn", getattr(state, "attention_backend", None) or "native")
+    if "|graphs:" in label:
+        label = with_label_part(label, "graphs", _live_graph_mode(state))
+    speed = getattr(state, "speed_mode", None)
+    if "compile_fallback_eager" in tuple(getattr(state, "speed_optims", ()) or ()):
+        speed = None  # the compiled tier fell back to eager: an execution path no key names
+    try:
+        from .diffusion_bg_compile import eager_forced
+        if eager_forced():
+            speed = None  # a background compile is still pending: this render runs eager under a compiled tier
+    except Exception:  # noqa: BLE001
+        speed = None
+    # a family that can run classifier-free guidance records only renders that do (the doubled denoiser batch)
+    family_obj = getattr(state, "family", None)
+    expects_cfg = bool(getattr(family_obj, "uses_negative_prompt", False))
+    if bool(getattr(pipe, "_unsloth_peak_cfg", expects_cfg)) != expects_cfg:
+        speed = None
+    if getattr(pipe, "_unsloth_loras", None):
+        speed = None  # LoRA adapters add rank-dependent activations no key names
+    return (family, label, speed)
+
+
+def _live_graph_mode(state: Any) -> str:
+    """``step`` / ``blocks`` (``_engaged_graph_mode``) while the load's CUDA graphs are armed and not dropped
+    (``live_status``), else ``off``."""
+    try:
+        _, optims = cuda_graph.live_status(
+            getattr(state, "resolved", None),
+            getattr(state, "speed_optims", ()),
+            getattr(state, "cuda_graphs", ()),
+        )
+        if "cuda_graph" not in optims:
+            return "off"
+        return _engaged_graph_mode(getattr(state, "pipe", None), {"cuda_graph": True})
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+def _peak_te_label(te_quant: Any, outcome: Any) -> str:
+    """The text encoders' precision as the learned-peak key names it. A partial cast (some encoders quantised, others
+    left dense) is no build the key can name: ``unknown``, so it neither reads nor records a learned peak."""
+    if getattr(outcome, "partial", False):
+        return "unknown"
+    return str(te_quant or "dense")
+
+
+def _engaged_graph_mode(pipe: Any, applied: Any) -> str:
+    """The graph implementation placement armed: whole-step and per-block graphs hold different statics, slot rings
+    and pools, so their peaks never share a key."""
+    if not (applied or {}).get("cuda_graph"):
+        return "off"
+    return "blocks" if getattr(pipe, "_unsloth_cuda_graph_mode", None) == "blocks" else "step"
+
+
+def _local_weights_digest(path: Any) -> Optional[str]:
+    """Size and mtime of every weight file under a local pipeline folder (``checkpoint_fingerprint`` reads only its
+    manifests); None for a repo id or an unreadable folder."""
+    try:
+        import hashlib
+
+        root = Path(str(path)).expanduser()
+        if not root.is_dir():
+            return None
+        digest = hashlib.sha256()
+        for f in sorted(root.rglob("*")):
+            if f.is_file() and f.suffix in (
+                ".safetensors",
+                ".bin",
+                ".gguf",
+                ".pt",
+                ".pth",
+                ".ckpt",
+            ):
+                st = f.stat()
+                digest.update(f"{f.relative_to(root)}:{st.st_size}:{st.st_mtime_ns}\0".encode())
+        return digest.hexdigest()[:16]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _peak_model_identity(
+    repo_id: Any, gguf_filename: Optional[str], kind: Optional[str], base: Any
+) -> str:
+    """The exact build for the learned-peak key: the denoiser source and its weights' revision / fingerprint, plus the
+    companion base and its revision for a GGUF / single-file load. ``unknown`` (no learned peak used or recorded)
+    when a revision cannot be read."""
+    from .diffusion_component_sizes import checkpoint_fingerprint
+
+    source = f"{repo_id}/{gguf_filename}" if gguf_filename else str(repo_id)
+    revision = checkpoint_fingerprint(repo_id, gguf_filename)
+    if not revision:
+        return "unknown"
+    if str(revision).startswith("local:"):
+        weights = _local_weights_digest(repo_id)
+        if not weights:
+            return "unknown"
+        revision = f"{revision}:{weights}"
+    identity = f"{source}@{revision}"
+    if (kind or "pipeline") != "pipeline" and base and str(base) != str(repo_id):
+        base_revision = checkpoint_fingerprint(base)
+        if not base_revision:
+            return "unknown"
+        if str(base_revision).startswith("local:"):
+            weights = _local_weights_digest(base)
+            if not weights:
+                return "unknown"
+            base_revision = f"{base_revision}:{weights}"
+        identity += f"+{base}@{base_revision}"
+    return identity
+
+
+def _conditioning_cache_hits(pipe: Any) -> int:
+    """Encodes served from the in-memory prompt cache or the persistent conditioning cache so far: a render with a
+    hit skipped the text-encoder phase, so its peak covers only part of what a new prompt needs."""
+    hits = 0
+    try:
+        cache = prompt_cache.cache_for(pipe)
+        if cache is not None:
+            hits += int(cache.stats.get("hits", 0))
+        stats = getattr(pipe, "_unsloth_cond_cache_stats", None)
+        if isinstance(stats, dict):
+            hits += int(stats.get("hits", 0))
+    except Exception:  # noqa: BLE001 - measurement only
+        pass
+    return hits
+
+
+def _record_peak_probe(
+    state: Any,
+    probe: Any,
+    *,
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int,
+    target: Any = None,
+) -> None:
+    """Persist a completed render's peak above its starting allocation under the load's peak identity."""
+    if probe is None or not width or not height:
+        return
+    identity = getattr(getattr(state, "pipe", None), "_unsloth_peak_identity", None)
+    try:
+        from .diffusion_measured_peaks import device_name, record
+
+        peak = probe.finish()
+        if peak is None or not isinstance(identity, tuple) or len(identity) != 3:
+            return
+        if _live_peak_identity(state) != tuple(identity):
+            # the configuration moved during the render (a compile fallback, a toggled cache): no key names it
+            return
+        if cuda_graph.failed_capture_count() != getattr(probe, "failed_captures", 0):
+            # a capture failed (an absorbed OOM): the peak is the failed attempt's, not the render's need
+            return
+        if _conditioning_cache_hits(state.pipe) != getattr(probe, "conditioning_hits", 0):
+            # a cached prompt skipped the text encoder: the peak misses that phase, and an unseeded family places
+            # its next load from this value alone
+            return
+        engaged = getattr(state, "attention_backend", None)
+        if not _attention_scaling_known(target, engaged):
+            # the SDPA probe could not tell math from a fused kernel: a quadratic peak stored as linear would
+            # under-size every larger request
+            return
+        family, quant, speed_mode = identity
+        pipe = state.pipe
+        index = getattr(probe.device, "index", None)
+        graphs = cuda_graph.live_graph_count(index)
+        generation = cuda_graph.capture_generation(index)
+        peak += int(getattr(probe, "window_pad", 0) or 0)
+        held: list = []
+        raised = record(
+            family = family,
+            quant = quant,
+            speed_mode = speed_mode,
+            width = width,
+            height = height,
+            batch_size = batch_size,
+            peak_mib = peak,
+            device_name = device_name(probe.device),
+            quadratic = _quadratic_attention(target, engaged, state.pipe),
+            held = held,
+        )
+        if held:
+            # the store holds this sample, so it covers the graphs the render recorded; unpersisted, they stay dirty
+            pipe._unsloth_peak_graphs = graphs
+            pipe._unsloth_peak_graph_gen = generation
+        if raised:
+            logger.info(
+                "diffusion.memory: learned activation peak %d MiB recorded for %s / %s / %s at %dx%d x%d",
+                peak,
+                family,
+                quant,
+                speed_mode,
+                int(width),
+                int(height),
+                int(batch_size),
+            )
+    except Exception as exc:  # noqa: BLE001 - recording must never fail a finished render
+        logger.debug("diffusion.memory: learned activation peak not recorded (%s)", exc)
+
+
 def _activation_guard_batch(chunks: Sequence[Sequence[Any]]) -> int:
     """The batch size the generate-time activation guard budgets for.
 
@@ -2049,7 +2340,12 @@ def _memory_request_forces_offload(memory_mode: Optional[str], cpu_offload: bool
 
 
 def _pipeline_quant_uncompilable_reason(
-    target: Any, fam: Any, speed_mode: Optional[str], *, model_kind: str
+    target: Any,
+    fam: Any,
+    speed_mode: Optional[str],
+    *,
+    model_kind: str,
+    probe: bool = False,
 ) -> Optional[str]:
     """Why a PIPELINE load must keep its dense weights rather than quantise them, or None.
 
@@ -2059,7 +2355,9 @@ def _pipeline_quant_uncompilable_reason(
     bf16. GGUF is out of scope, substituting dense base weights and falling back to the packed file.
 
     speed=off is absent on purpose: an engaged quant upgrades it to `default`, and an AUTO request
-    under it is rewritten to off long before either caller."""
+    under it is rewritten to off long before either caller.
+
+    ``probe``: only the loader, which owns the evicted card, runs the allocating ROCm compile probe."""
     if model_kind != "pipeline":
         return None
     # A string compare, not resolve_speed_mode: this runs on the route, where an unvalidated value must not raise.
@@ -2068,13 +2366,37 @@ def _pipeline_quant_uncompilable_reason(
             "Speed is set to 'eager', and a quantised transformer that is not compiled runs far "
             "slower than the bf16 weights it replaces. Pick a compiling speed mode to combine the two"
         )
-    if not compile_eligible(target, is_gguf = False, family = fam):
+    if not compile_eligible(target, is_gguf = False, family = fam, probe = probe):
         return (
             "this process cannot run a torch.compile (no Triton, TORCHDYNAMO_DISABLE, or a "
             "family/device that does not compile), and a quantised transformer that is not "
             "compiled runs far slower than the bf16 weights it replaces"
         )
     return None
+
+
+def _compile_cache_wanted(
+    pipe: Any, target: Any, fam: Any, *, is_gguf: bool, speed_mode: str, offload_active: bool
+) -> bool:
+    """``compile_eligible`` for the compile-cache gate; on a dense ROCm load the allocating probe runs only once the
+    plan finds something in the model to compile."""
+    if is_gguf or getattr(target, "backend", None) != "rocm":
+        return compile_eligible(target, is_gguf = is_gguf, family = fam)
+    if not compile_eligible(target, is_gguf = False, family = fam, probe = False):
+        return False
+    try:
+        from .diffusion_autoopt import plan as plan_mod
+        step = plan_mod.build_plan(
+            pipe,
+            target,
+            family = fam,
+            backend = "image",
+            speed_mode = speed_mode,
+            offload_active = offload_active,
+        ).step("compiled")
+    except Exception:  # noqa: BLE001 - no plan: the probing predicate decides as before
+        return compile_eligible(target, is_gguf = False, family = fam)
+    return bool(step is not None and step.attempt)
 
 
 def _plan_proves_resident(plan: Any) -> bool:
@@ -3507,8 +3829,8 @@ class DiffusionBackend:
         # on another.
         if gpu_ordinal is None:
             gpu_ordinal = (
-                resolve_selected_cuda_ordinal(gpu_ids)
-                if gpu_ids and resolve_diffusion_device_target().device == "cuda"
+                (resolve_selected_cuda_ordinal(gpu_ids) if gpu_ids else resolve_auto_cuda_ordinal())
+                if resolve_diffusion_device_target().device == "cuda"
                 else None
             )
         fam = self.validate_load_request(
@@ -5931,6 +6253,7 @@ class DiffusionBackend:
         return DiffusionBackend._union_over_cached_revs(base, _params, staged_dir) * 2
 
     @_invalidates_gpu_memory("diffusion load")
+    @rocm_probe_load_scoped
     @_account_owned_load
     @_plans_at_requested_speed
     @scoped_local_files_only
@@ -7547,11 +7870,6 @@ class DiffusionBackend:
                                         _load_token,
                                     )
 
-                    # The same helper the route preflight asked, so the two cannot disagree.
-                    pipeline_quant_uncompilable = _pipeline_quant_uncompilable_reason(
-                        target, fam, speed_mode, model_kind = kind
-                    )
-
                     # Quantise dense bf16 pipeline denoisers in place. The blocker excludes UNet and pre-quantised
                     # pipelines; offloaded plans stay dense unless whole-module.
                     if (
@@ -7561,6 +7879,15 @@ class DiffusionBackend:
                         and normalize_transformer_quant(transformer_quant) is not None
                         and (dense_transformer_supported(target) or native_scheme is not None)
                     ):
+                        # The same helper the route preflight asked; probed only for an engaged torchao request
+                        # (a native scheme never reads it).
+                        pipeline_quant_uncompilable = (
+                            None
+                            if native_scheme is not None
+                            else _pipeline_quant_uncompilable_reason(
+                                target, fam, speed_mode, model_kind = kind, probe = True
+                            )
+                        )
                         # from_pretrained widens a raw fp8/int8 checkpoint to bf16, erasing the one thing the blocker
                         # below reads, so recover it from the shard header (Ideogram's loader stamps its own).
                         # `fetch_base` too: a LOCAL diffusers directory stages nothing, so `_base_local_dir` is None
@@ -7799,7 +8126,8 @@ class DiffusionBackend:
                         and effective_speed == SPEED_OFF
                         and transformer_quant_engaged is None
                         and not comfy_compile
-                        and compile_eligible(target, is_gguf = False, family = fam)
+                        # Non-probing: _engage_deferred_profile runs the ROCm probe if the 3rd image arrives.
+                        and compile_eligible(target, is_gguf = False, family = fam, probe = False)
                         and not fp16_compile_explicit_only(target)
                     )
                     # Speed optims run BEFORE placement, so snapshot the global backend flags first for unload restore.
@@ -7974,7 +8302,37 @@ class DiffusionBackend:
                     # first compiled forward pays the 25-58s compile once.
                     if (
                         effective_speed in (SPEED_DEFAULT, SPEED_MAX)
-                        and compile_eligible(target, is_gguf = gguf_transformer, family = fam)
+                        # ROCm GGUF default compiles only the dequant: gate on that predicate, never the regional probe.
+                        # On max the dequant is the fallback when the regional compile is refused, so it keeps the cache.
+                        and (
+                            _gguf_dequant_compilable(
+                                True,
+                                getattr(target, "device", None) == "cuda",
+                                bool(getattr(fam, "supports_torch_compile", True)),
+                                target,
+                            )
+                            if gguf_transformer
+                            and effective_speed == SPEED_DEFAULT
+                            and getattr(target, "backend", None) == "rocm"
+                            else _compile_cache_wanted(
+                                pipe,
+                                target,
+                                fam,
+                                is_gguf = gguf_transformer,
+                                speed_mode = effective_speed,
+                                offload_active = plan.offload_policy != OFFLOAD_NONE,
+                            )
+                            or (
+                                gguf_transformer
+                                and getattr(target, "backend", None) == "rocm"
+                                and _gguf_dequant_compilable(
+                                    True,
+                                    getattr(target, "device", None) == "cuda",
+                                    bool(getattr(fam, "supports_torch_compile", True)),
+                                    target,
+                                )
+                            )
+                        )
                         and not fp16_unet_offloaded(
                             target, pipe, offload_active = plan.offload_policy != OFFLOAD_NONE
                         )
@@ -8085,6 +8443,9 @@ class DiffusionBackend:
                             "diffusion.text_encoder: dropped unused lm_head (%.2fM params); hidden states unchanged",
                             te_trim["params"] / 1e6,
                         )
+                    from .diffusion_te_truncate import truncate_text_encoders
+
+                    truncate_text_encoders(pipe, logger = logger)
                     # Quantise the dense companion text encoder(s) before placement so offload moves the smaller
                     # weights.
                     te_outcome = quantize_text_encoders(
@@ -8134,6 +8495,45 @@ class DiffusionBackend:
                             "; ".join(refined_plan.reasons),
                         )
                     plan = refined_plan
+                    peak_model = _peak_model_identity(repo_id, gguf_filename, kind, base)
+                    if getattr(pipe, "_unsloth_loras", None):
+                        peak_model = (
+                            "unknown"  # adapters baked in at load: a build the key cannot name
+                        )
+                    try:
+                        # the phase-table seed holds only where it was measured
+                        pipe._unsloth_phase_seeds = _calibrated_activation(fam, target) is not None
+                    except Exception:  # noqa: BLE001
+                        pass
+                    peak_vae = planned_vae_saver_tag(pipe, plan)
+                    peak_te = _peak_te_label(te_quant, te_outcome)
+                    # an auto step cache toggles per request: only uncached renders (the full transformer) record
+                    peak_cache = "off" if cache_may_toggle else str(cache_engaged or "off")
+                    # graph statics and pools sit above a graph-free peak; a graph armed after an offloaded placement
+                    # counts as on
+                    peak_graphs = (
+                        "on"
+                        if speed_applied.get("cuda_graph")
+                        or getattr(pipe, "_unsloth_cuda_graph_after_placement", False)
+                        else "off"
+                    )
+                    try:
+                        # the learned-peak key: recorded at every completed render, read by later loads
+                        pipe._unsloth_peak_identity = (
+                            fam.name,
+                            learned_peak_label(
+                                pipe,
+                                attention_engaged or "native",
+                                peak_model,
+                                peak_vae,
+                                peak_te,
+                                peak_cache,
+                                peak_graphs,
+                            ),
+                            effective_speed,
+                        )
+                    except Exception:  # noqa: BLE001 - recording is optional
+                        pass
                     # not under the legacy cpu_offload flag alone: that request asked for offload
                     if not cpu_offload or normalize_memory_mode(memory_mode) is not None:
                         plan = refine_plan_from_loaded_weights(
@@ -8142,6 +8542,12 @@ class DiffusionBackend:
                             family = fam.name,
                             speed_mode = effective_speed,
                             logger = logger,
+                            attention = attention_engaged or "native",
+                            model = peak_model,
+                            vae = peak_vae,
+                            te = peak_te,
+                            cache = peak_cache,
+                            graphs = peak_graphs,
                         )
                         headroom = plan.estimates.get("measured_runtime_headroom_mib")
                         if headroom and (
@@ -8153,6 +8559,9 @@ class DiffusionBackend:
                                 effective_speed,
                                 plan.estimates.get("measured_dense_transformer_mib"),
                                 plan.estimates.get("measured_compute_bytes"),
+                                plan.estimates.get("measured_learned_peak_mib"),
+                                plan.estimates.get("measured_learned_peak_pixels"),
+                                plan.estimates.get("measured_learned_peak_quadratic"),
                             )
 
                     from .diffusion_qwenimage21_vision import configure_vision_attention
@@ -8199,6 +8608,16 @@ class DiffusionBackend:
                         placement_device = target.torch_device,
                         logger = logger,
                     )
+                    # a transient OOM during setup may have re-planned to lower residency
+                    plan = applied_plan(pipe, plan)
+                    identity = getattr(pipe, "_unsloth_peak_identity", None)
+                    if isinstance(identity, tuple) and len(identity) == 3:
+                        # a saver the plan asked for may not have engaged: key the renders by what did
+                        live_vae = with_label_part(identity[1], "vae", live_vae_saver_tag(pipe))
+                        if live_vae != identity[1]:
+                            pipe._unsloth_peak_identity = (identity[0], live_vae, identity[2])
+                            # placed from the planned saver's peak: requests size from the flat estimate instead
+                            pipe._unsloth_peak_static = True
                     # streams the whole-resident denoiser back to the flat room while the encoders run
                     install_encode_release(pipe, plan, logger)
                     # the speed layer saw only the plan; placement may have pinned every denoiser group since
@@ -8221,6 +8640,20 @@ class DiffusionBackend:
                             cache_engaged = bool(cache_graph_break),
                             speed_mode = effective_speed,
                             logger = logger,
+                        )
+                    identity = getattr(pipe, "_unsloth_peak_identity", None)
+                    if (
+                        isinstance(identity, tuple)
+                        and len(identity) == 3
+                        and "graphs:on" in str(identity[1]).split("|")
+                    ):
+                        # placed from the larger of both graph modes' peaks: renders record under the one that armed
+                        pipe._unsloth_peak_identity = (
+                            identity[0],
+                            with_label_part(
+                                identity[1], "graphs", _engaged_graph_mode(pipe, speed_applied)
+                            ),
+                            identity[2],
                         )
 
                     # Per-control provenance for status. cpu_offload=False is the unset default, so only True is
@@ -10247,6 +10680,8 @@ class DiffusionBackend:
                     tc.update(tc_before)
             raise
 
+    # Outside load_pipeline (3rd generation): its own probe scope, so one OOM is not re-probed by plan and apply.
+    @rocm_probe_load_scoped
     def _engage_deferred_profile(self, state: _LoadState) -> None:
         """Engage the deferred `default` speed profile at the start of the 3rd generation this
         session. The load left the pipe fully eager (bit-identical reference); by the 3rd image
@@ -10280,6 +10715,21 @@ class DiffusionBackend:
             target = target,
         )
         object.__setattr__(state, "attention_backend", attention_engaged)
+        identity = getattr(state.pipe, "_unsloth_peak_identity", None)
+        if isinstance(identity, tuple) and len(identity) == 3:
+            # later renders record under the backend that now runs
+            try:
+                # the profile engages the default tier too (state.speed_mode below)
+                state.pipe._unsloth_peak_identity = (
+                    identity[0],
+                    with_label_part(identity[1], "attn", attention_engaged or "native"),
+                    SPEED_DEFAULT,
+                )
+            except Exception:  # noqa: BLE001 - recording is optional
+                pass
+            # the reserve was placed for the load's tier: until a reload re-places it, requests size from the flat
+            # estimate
+            state.pipe._unsloth_peak_static = True
         # Keep the badge in step with the state it describes: the top-level field moved, so leaving `resolved` on the
         # load-time value would make the panel report an attention backend that is no longer the one running.
         if isinstance(state.resolved, dict) and "attention_backend" in state.resolved:
@@ -10287,7 +10737,14 @@ class DiffusionBackend:
             entry["value"] = attention_engaged or "native"
             object.__setattr__(state, "resolved", {**state.resolved, "attention_backend": entry})
         gguf_transformer = state.kind == "gguf" and state.transformer_quant is None
-        if compile_eligible(target, is_gguf = gguf_transformer, family = state.family):
+        if _compile_cache_wanted(
+            state.pipe,
+            target,
+            state.family,
+            is_gguf = gguf_transformer,
+            speed_mode = SPEED_DEFAULT,
+            offload_active = state.offload_policy != OFFLOAD_NONE,
+        ):
             compile_ctx = compile_cache.begin(
                 family = state.family.name,
                 # U-Net families (SDXL) carry the denoiser as pipe.unet.
@@ -10851,6 +11308,8 @@ class DiffusionBackend:
                 # cap; the OOM backoff below halves a failed chunk. Layered: one input per forward (the pipeline's
                 # per-prompt layer stride is only right for one).
                 chunks = [[job] for job in jobs] if layer_count else chunk_jobs(jobs, batch_size)
+                guard_width = guard_height = guard_target = None
+                guard_batch = 1
 
                 try:
                     # The dimensions the forward runs at, not the sliders: img2img / inpaint / upscale / edit take
@@ -11089,6 +11548,11 @@ class DiffusionBackend:
                 graphs_before = fresh_compile_count()
                 compile_cache.note_use(state.compile_cache_ctx)
                 try:
+                    state.pipe._unsloth_peak_cfg = _negative_prompt_engaged(state.family, guidance)
+                except Exception:  # noqa: BLE001 - an unknown guidance mode records nothing
+                    state.pipe._unsloth_peak_cfg = None
+                peak_probe = _start_peak_probe(state)
+                try:
                     previewer = _start_previewer()
                     pending = list(chunks)
                     while pending:
@@ -11209,6 +11673,7 @@ class DiffusionBackend:
                                 empty_cache()
                             first_half, second_half = split_chunk(chunk)
                             pending[:0] = [first_half, second_half]
+                            peak_probe = None  # the failed attempt's peak is the card's limit, not this request's
                             gen.total_steps += steps  # one extra chunk to run
                             logger.warning(
                                 "diffusion.generate: batch of %d hit OOM; retrying as %d + %d",
@@ -11250,6 +11715,14 @@ class DiffusionBackend:
                     raise
                 if previewer is not None:
                     previewer.finish()
+                _record_peak_probe(
+                    state,
+                    peak_probe,
+                    width = guard_width,
+                    height = guard_height,
+                    batch_size = max(chunk_shapes or [1]),
+                    target = guard_target,
+                )
                 if static_skip:
                     logger.debug("diffusion.step_skip: %s", static_skip_stats(state.pipe))
                 # Keep progress ACTIVE through the post-denoise work: the route persists the image after this returns,

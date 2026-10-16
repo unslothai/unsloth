@@ -1380,12 +1380,177 @@ def test_a_lone_rdna1_card_takes_the_vulkan_route(monkeypatch):
     assert routed.has_rocm is False
 
 
-def test_rdna1_beside_a_hip_capable_card_keeps_the_hip_bundle(monkeypatch):
-    # Mixed host keeps the HIP prebuilt: Vulkan would enumerate both cards.
-    for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+@pytest.fixture
+def _unpinned_amd_env(monkeypatch):
+    for var in (
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+        "UNSLOTH_ROCM_GFX_ARCH",
+        "UNSLOTH_LLAMA_CPP_BACKEND",
+        "UNSLOTH_FORCE_VULKAN",
+    ):
         monkeypatch.delenv(var, raising = False)
+    monkeypatch.setattr(ilp, "_rocm_torch_preferred", lambda: False)
+
+
+def _route_mixed(
+    targets,
+    backend = None,
+    cpu_mechanism = False,
+    repo = FORK,
+):
+    host = _windows_amd_host(
+        rocm_gfx_target = ilp._pick_rocm_gfx_target(" ".join(targets)),
+        rocm_gfx_targets = list(targets),
+    )
+    return ilp.route_backend_request(
+        backend = backend,
+        published_repo = repo,
+        published_release_tag = "pin",
+        cpu_mechanism = cpu_mechanism,
+        host = host,
+    )
+
+
+@pytest.mark.parametrize(
+    "targets",
+    [
+        ("gfx1010", "gfx1034"),  # RX 5700 XT at device 0 beside an RX 6500 XT (#13680)
+        ("gfx1010", "gfx1100"),
+        ("gfx1103", "gfx1010"),  # covered iGPU first, uncovered dGPU active (#7776)
+    ],
+)
+def test_an_uncovered_active_card_beside_a_covered_one_takes_vulkan(targets, _unpinned_amd_env):
+    # No HIP prebuilt serves the card HIP runs on, so main found no bundle at all.
+    route = _route_mixed(targets)
+    assert route.host.has_rocm is False
+    assert route.host.has_intel_gpu is True
+    assert route.persist_llama_backend == "auto"
+    assert route.persist_rocm_gfx == "gfx1010"
+    assert route.published_repo == FORK
+
+
+@pytest.mark.parametrize(
+    "targets",
+    [
+        ("gfx1034", "gfx1010"),  # covered card active: its bundle, the arch gate pins it
+        ("gfx1036", "gfx1200"),  # shadowing iGPU first: the gfx1200 decides (#7776)
+        ("gfx1100", "gfx1034"),
+    ],
+)
+def test_a_covered_active_card_keeps_the_hip_bundle(targets, _unpinned_amd_env):
+    route = _route_mixed(targets)
+    assert route.host.has_rocm is True
+    assert route.persist_llama_backend is None
+
+
+def test_upstream_answers_per_repo_for_the_active_card(_unpinned_amd_env):
+    # ggml-org's win-hip build has no gfx1034, so the same host moves on upstream only.
+    assert _route_mixed(("gfx1034", "gfx1030")).host.has_rocm is True
+    assert _route_mixed(("gfx1034", "gfx1030"), repo = UPSTREAM).host.has_rocm is False
+
+
+@pytest.mark.parametrize(
+    "mask_env", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"]
+)
+@pytest.mark.parametrize("mask_value", ["0", "1", "", "-1"])
+def test_a_masked_mixed_host_never_moves_to_vulkan(
+    mask_env, mask_value, _unpinned_amd_env, monkeypatch
+):
+    # Vulkan honours none of these masks, so it would hand over the card the user hid.
+    monkeypatch.setenv(mask_env, mask_value)
     host = _windows_amd_host(rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1010", "gfx1034"])
     assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is False
+
+
+def test_a_forwarded_arch_behind_a_probed_igpu_is_not_the_probe_pick(_unpinned_amd_env):
+    # Probe saw only the gfx1103 iGPU; setup forwarded gfx1010. Re-picking over the augmented
+    # list would skip the iGPU and mistake the forward for the probe's own pick.
+    host = _windows_amd_host(rocm_gfx_target = "gfx1103", rocm_gfx_targets = ["gfx1103"])
+    host = ilp._apply_host_overrides(host, override_rocm_gfx = "gfx1010")
+    assert ilp._active_rocm_gfx_target(host) == "gfx1010"
+    assert host.rocm_gfx_forwarded is True
+    assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is False
+
+
+def test_a_forward_matching_the_probe_pick_still_takes_vulkan(_unpinned_amd_env):
+    host = _windows_amd_host(rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1010", "gfx1034"])
+    host = ilp._apply_host_overrides(host, override_rocm_gfx = "gfx1010")
+    assert host.rocm_gfx_forwarded is False
+    assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is True
+
+
+def test_a_manual_arch_keeps_the_all_cards_rule(_unpinned_amd_env, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx1010")
+    host = _windows_amd_host(rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1010", "gfx1034"])
+    assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is False
+
+
+@pytest.mark.parametrize(
+    "backend, cpu_mechanism", [("hip", False), ("rocm", False), ("cpu", False), (None, True)]
+)
+def test_an_explicit_backend_or_cpu_flag_still_wins_on_the_mixed_host(
+    backend, cpu_mechanism, _unpinned_amd_env
+):
+    route = _route_mixed(("gfx1010", "gfx1034"), backend = backend, cpu_mechanism = cpu_mechanism)
+    assert route.host.has_intel_gpu is False
+    assert route.persist_llama_backend is None
+
+
+def test_a_physical_nvidia_card_keeps_the_mixed_host_off_vulkan(_unpinned_amd_env):
+    host = _windows_amd_host(
+        rocm_gfx_target = "gfx1010",
+        rocm_gfx_targets = ["gfx1010", "gfx1034"],
+        has_physical_nvidia = True,
+    )
+    assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is False
+
+
+def test_rocm_torch_preference_does_not_hide_nvidia_from_the_mixed_host_rule(
+    _unpinned_amd_env, monkeypatch
+):
+    # Following ROCm torch clears has_physical_nvidia; Vulkan would still enumerate the card.
+    host = _windows_amd_host(
+        nvidia_smi = r"C:\Windows\System32\nvidia-smi.exe",
+        compute_caps = ["89"],
+        physical_compute_caps = ["89"],
+        has_physical_nvidia = True,
+        has_usable_nvidia = True,
+        rocm_gfx_target = "gfx1010",
+        rocm_gfx_targets = ["gfx1010", "gfx1034"],
+    )
+    monkeypatch.setattr(ilp, "_rocm_torch_preferred", lambda: True)
+    route = ilp.route_backend_request(
+        backend = None, published_repo = FORK, published_release_tag = "pin", host = host
+    )
+    assert route.host.has_rocm is True
+    assert route.persist_llama_backend is None
+
+
+def test_the_mixed_host_rule_is_windows_only(_unpinned_amd_env):
+    host = _windows_amd_host(
+        system = "Linux",
+        is_windows = False,
+        is_linux = True,
+        rocm_gfx_target = "gfx1010",
+        rocm_gfx_targets = ["gfx1010", "gfx1034"],
+    )
+    assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is False
+
+
+def test_resolve_prebuilt_reports_vulkan_for_the_mixed_host(monkeypatch, capsys, _unpinned_amd_env):
+    monkeypatch.setattr(
+        ilp,
+        "detect_host",
+        lambda **_kw: _windows_amd_host(
+            rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1010", "gfx1034"]
+        ),
+    )
+    seen, _out = _run_resolve_capture_host(monkeypatch, capsys)
+    assert seen["host"].has_rocm is False
+    assert seen["host"].has_intel_gpu is True
+    assert seen["repo"] == FORK
 
 
 @pytest.mark.parametrize(
@@ -3733,3 +3898,186 @@ def test_one_unreadable_instance_does_not_cost_the_rest_of_the_class(monkeypatch
     assert _HalfBrokenWinreg({}, devices) is not None
     winreg = _HalfBrokenWinreg({}, devices)
     assert ilp._windows_device_icd_manifest_paths(winreg) == [manifest]
+
+
+# Linux: ROCm userspace installed, but no AMD GPU here has ROCm kernels (RDNA 1, Polaris).
+
+
+@pytest.fixture
+def linux_no_rocm_env(amd_vulkan_icd, monkeypatch):
+    for var in ("GGML_VK_VISIBLE_DEVICES", "HSA_OVERRIDE_GFX_VERSION"):
+        monkeypatch.delenv(var, raising = False)
+
+
+def _linux_amd(*targets, **overrides):
+    return _amd_host(
+        windows = False, rocm_gfx_target = targets[0], rocm_gfx_targets = list(targets), **overrides
+    )
+
+
+@pytest.mark.parametrize(
+    "targets", [("gfx1010",), ("gfx1011",), ("gfx1012",), ("gfx803",), ("gfx1010", "gfx803")]
+)
+def test_linux_amd_without_rocm_kernels_takes_the_vulkan_route(targets, linux_no_rocm_env):
+    host = _linux_amd(*targets)
+    assert ilp._should_auto_vulkan_for_amd_linux(host) is True
+    routed, repo, tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert routed.has_rocm is False
+    assert routed.has_intel_gpu is True
+    assert (repo, tag) == (FORK, "pin")
+    assert persist == "auto"
+
+
+@pytest.mark.parametrize(
+    "targets", [("gfx1010", "gfx1100"), ("gfx1100",), ("gfx1030",), ("gfx906",), ("gfx1151",)]
+)
+def test_linux_any_rocm_capable_card_keeps_todays_path(targets, linux_no_rocm_env):
+    # Vulkan honours no HIP mask, so one ROCm-capable card keeps the whole host on ROCm.
+    assert ilp._should_auto_vulkan_for_amd_linux(_linux_amd(*targets)) is False
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+        "GGML_VK_VISIBLE_DEVICES",
+        "HSA_OVERRIDE_GFX_VERSION",
+    ],
+)
+def test_linux_no_rocm_route_declines_under_a_mask_or_override(env, linux_no_rocm_env, monkeypatch):
+    monkeypatch.setenv(env, "10.3.0" if env == "HSA_OVERRIDE_GFX_VERSION" else "0")
+    host = _linux_amd("gfx1010")
+    assert ilp._should_auto_vulkan_for_amd_linux(host) is False
+    routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert routed is host
+    assert persist is None
+
+
+def test_linux_no_rocm_route_declines_beside_a_physical_nvidia_card(linux_no_rocm_env):
+    assert (
+        ilp._should_auto_vulkan_for_amd_linux(_linux_amd("gfx1010", has_physical_nvidia = True))
+        is False
+    )
+
+
+def test_linux_no_rocm_route_needs_an_amd_vulkan_driver(linux_no_rocm_env, monkeypatch):
+    monkeypatch.setattr(ilp, "_amd_vulkan_icd_present", lambda: False)
+    host = _linux_amd("gfx1010")
+    assert ilp._should_auto_vulkan_for_amd_linux(host) is False
+    routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert routed is host
+    assert persist is None
+
+
+def test_linux_no_rocm_route_is_linux_only(linux_no_rocm_env):
+    # Windows has its own floor (_should_auto_vulkan_for_amd_windows).
+    host = _windows_amd_host(rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1010"])
+    assert ilp._should_auto_vulkan_for_amd_linux(host) is False
+
+
+@pytest.mark.parametrize("backend", ["rocm", "cpu", "cuda"])
+def test_linux_no_rocm_route_yields_to_an_explicit_backend(backend, linux_no_rocm_env):
+    host = _linux_amd("gfx1010")
+    routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
+        host, FORK, "pin", force_cpu = False, llama_backend = backend
+    )
+    assert routed is host
+    assert persist is None
+
+
+def test_linux_no_rocm_route_forced_vulkan_persists_as_automatic(linux_no_rocm_env):
+    _routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
+        _linux_amd("gfx1010"), FORK, "pin", force_cpu = False, llama_backend = "vulkan"
+    )
+    assert persist == "auto"
+
+
+def test_linux_no_rocm_route_force_cpu_wins(linux_no_rocm_env):
+    host = _linux_amd("gfx1010")
+    routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = True)
+    assert routed is host
+    assert persist is None
+
+
+def test_linux_no_rocm_route_carries_no_rocm_fallback(linux_no_rocm_env):
+    route = ilp.route_backend_request(
+        backend = None, published_repo = FORK, published_release_tag = "pin", host = _linux_amd("gfx1010")
+    )
+    assert route.host.has_rocm is False
+    assert route.persist_llama_backend == "auto"
+    assert route.persist_rocm_gfx == "gfx1010"
+    assert route.rocm_fallback_host is None
+
+
+def _linux_rocm_and_vulkan_bundle():
+    def _artifact(
+        kind,
+        profile,
+        gfx_target = None,
+        mapped = (),
+    ):
+        return ilp.PublishedLlamaArtifact(
+            asset_name = f"app-release-{profile}",
+            install_kind = kind,
+            runtime_line = None,
+            coverage_class = None,
+            supported_sms = [],
+            min_sm = None,
+            max_sm = None,
+            bundle_profile = profile,
+            rank = 60,
+            gfx_target = gfx_target,
+            mapped_targets = list(mapped),
+        )
+
+    # The shape of b11541-mix-2500203: no linux-rocm bundle maps RDNA 1 or Polaris.
+    artifacts = [
+        _artifact(
+            "linux-rocm",
+            "linux-rocm-gfx103X",
+            "gfx103X",
+            ["gfx1030", "gfx1031", "gfx1032", "gfx1034"],
+        ),
+        _artifact(
+            "linux-rocm",
+            "linux-rocm-gfx110X",
+            "gfx110X",
+            ["gfx1100", "gfx1101", "gfx1102", "gfx1103"],
+        ),
+        _artifact("linux-vulkan", "linux-vulkan-x64"),
+        _artifact("linux-cpu", "linux-cpu-x64"),
+    ]
+    return ilp.PublishedReleaseBundle(
+        repo = FORK,
+        release_tag = "release",
+        upstream_tag = "b9925",
+        assets = {a.asset_name: f"https://example/{a.asset_name}" for a in artifacts},
+        artifacts = artifacts,
+    )
+
+
+def test_linux_rdna1_plan_installs_the_vulkan_bundle_not_a_source_build(linux_no_rocm_env):
+    bundle = _linux_rocm_and_vulkan_bundle()
+    host = _linux_amd("gfx1010")
+    # Unrouted, the ROCm branch finds no bundle and the caller source-builds HIP.
+    assert ilp._linux_published_attempts(host, bundle) == []
+    routed, *_ = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    kinds = [a.install_kind for a in ilp._linux_published_attempts(routed, bundle)]
+    assert kinds == ["linux-vulkan", "linux-cpu"]
+
+
+def test_linux_rdna2_plan_keeps_its_rocm_bundle(linux_no_rocm_env):
+    bundle = _linux_rocm_and_vulkan_bundle()
+    host = _linux_amd("gfx1030")
+    routed, *_ = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert routed is host
+    assert [a.install_kind for a in ilp._linux_published_attempts(routed, bundle)] == ["linux-rocm"]
+
+
+def test_linux_no_rocm_set_matches_the_torch_installer():
+    # Duplicated because this module is vendored standalone; keep the two in step.
+    # gfx1153 is torch-only: no torch wheel, but the llama.cpp HIP route is left alone.
+    ips = importlib.import_module("install_python_stack")
+    assert ilp.LINUX_NO_ROCM_GFX_TARGETS == ips._LINUX_UNCOVERED_AMD_GFX - {"gfx1153"}

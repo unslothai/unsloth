@@ -16,11 +16,15 @@ import {
 } from "../lib/server-tuning-fields";
 import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
+import { createNavigationNonce } from "@/lib/navigation-nonce";
 import {
   isBackendDownForDesktopUpdate,
   isSilencedDesktopUpdateFailure,
 } from "@/lib/desktop-update-activity";
-import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
+import {
+  notifyModelLifecycle,
+  subscribeModelLifecycle,
+} from "@/lib/model-lifecycle-events";
 import { resolveSpeculativeType } from "@/lib/speculative-modes";
 import {
   type TransferSample,
@@ -869,6 +873,10 @@ export async function resyncInferenceStatusAfterServerModelChange(): Promise<voi
     useChatRuntimeStore.getState().clearCheckpoint();
   }
   await syncInferenceStatusToStore();
+  // The update also unloads audio.cpp models, and the Audio page holds its own status: a settled
+  // "chat" re-reads its speech slot and "stt" its dictation, else Generate stays enabled and 400s.
+  notifyModelLifecycle({ runtime: "chat", loading: false, model: null });
+  notifyModelLifecycle({ runtime: "stt", loading: false, model: null });
 }
 
 function pickOf(info: {
@@ -1185,11 +1193,15 @@ export function useChatModelRuntime() {
   const cancelLoadingWithCheckpointPolicy = useCallback(
     (preserveCheckpoint = false): Promise<boolean> => {
       const run = activeLoadRunRef.current;
-      return run
-        ? cancelLoadRun(run, preserveCheckpoint)
-        : Promise.resolve(false);
+      if (run) return cancelLoadRun(run, preserveCheckpoint);
+      if (loadingModelRef.current) {
+        const tid = loadToastIdRef.current;
+        resetLoadingUi();
+        if (tid != null) toast.dismiss(tid);
+      }
+      return Promise.resolve(false);
     },
-    [cancelLoadRun],
+    [cancelLoadRun, resetLoadingUi],
   );
 
   const cancelLoading = useCallback(
@@ -1985,7 +1997,7 @@ export function useChatModelRuntime() {
         settledPromise: loadRunSettled,
         markSettled: markLoadRunSettled,
 
-        requestId: crypto.randomUUID(),
+        requestId: createNavigationNonce(),
         loadAttemptPath: null,
       };
       activeLoadRunRef.current = loadRun;
@@ -1997,13 +2009,18 @@ export function useChatModelRuntime() {
       let mlxLoadProgress = false;
       const liveBeforeLoad = useChatRuntimeStore.getState();
       // A switch without a saved config starts on the default engine, as the dedupe above assumes.
+      const switchesModel = Boolean(
+        liveBeforeLoad.params.checkpoint &&
+          (liveBeforeLoad.params.checkpoint !== modelId ||
+            (liveBeforeLoad.activeGgufVariant ?? null) !== (ggufVariant ?? null)),
+      );
       if (
         (typeof selection === "string" || !selection.config) &&
         !keepSpeculative &&
-        liveBeforeLoad.params.checkpoint &&
-        (liveBeforeLoad.params.checkpoint !== modelId ||
-          (liveBeforeLoad.activeGgufVariant ?? null) !== (ggufVariant ?? null)) &&
-        (liveBeforeLoad.params.engine ?? "auto") !== "auto"
+        (((liveBeforeLoad.params.engine ?? "auto") !== "auto" && switchesModel) ||
+          // An unload clears the checkpoint but not the precision, so 16-bit resets either way.
+          (liveBeforeLoad.params.loadIn4bit === false &&
+            (switchesModel || !liveBeforeLoad.params.checkpoint)))
       ) {
         liveBeforeLoad.setParams({
           ...liveBeforeLoad.params,
@@ -2013,6 +2030,7 @@ export function useChatModelRuntime() {
           engineKvCacheDtype: "auto",
           engineSeed: null,
           engineGpuMemoryUtilization: null,
+          loadIn4bit: true,
         });
       }
       const requestedEngine =
@@ -2285,6 +2303,7 @@ export function useChatModelRuntime() {
               stateBeforeUnload.ctxCheckpoints,
             cacheRam: pendingLoadConfig?.cacheRam ?? stateBeforeUnload.cacheRam,
           };
+          const loadIn4bitChoice = stateBeforeUnload.params.loadIn4bit !== false;
           let loadEngineFields = {
             engine: stateBeforeUnload.params.engine ?? "auto",
             engine_precision: stateBeforeUnload.params.enginePrecision ?? "auto",
@@ -2392,7 +2411,9 @@ export function useChatModelRuntime() {
               nativePathLease: validateNativePathLease,
               hf_token: hfToken,
               max_seq_length: validateMaxSeqLength,
-              load_in_4bit: (stateBeforeUnload.params.engine ?? "auto") === "auto",
+              load_in_4bit:
+                (stateBeforeUnload.params.engine ?? "auto") === "auto" &&
+                stateBeforeUnload.params.loadIn4bit !== false,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               cache_type_kv: loadKvCacheDtype,
@@ -2492,6 +2513,7 @@ export function useChatModelRuntime() {
                   ) {
                     pendingReplacementRollback = null;
                   }
+                  toast.dismiss(toastId);
                   resetLoadingUiForRun(loadRun);
                   abortCtrl.abort();
                   throw new Error("Cancelled");
@@ -2777,7 +2799,8 @@ export function useChatModelRuntime() {
                 loadCustomContextLength,
                 loadMaxSeqLength,
               ),
-              load_in_4bit: loadEngineFields.engine === "auto",
+              load_in_4bit:
+                loadEngineFields.engine === "auto" && loadIn4bitChoice,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               trust_remote_code: trustRemoteCode,
@@ -3174,7 +3197,9 @@ export function useChatModelRuntime() {
                   nativePathLease: rollbackNativePathLease,
                   hf_token: hfToken,
                   max_seq_length: rollbackMaxSeqLength,
-                  load_in_4bit: stateBeforeUnload.loadedEngine === "auto",
+                  load_in_4bit:
+                    stateBeforeUnload.loadedEngine === "auto" &&
+                    rollbackConfig?.loadIn4bit !== false,
                   is_lora: previousIsLora,
                   gguf_variant: previousVariant,
                   trust_remote_code:
@@ -3443,7 +3468,7 @@ export function useChatModelRuntime() {
                       getDownloadProgress(progressModelId, hfToken, mlxLoadProgress),
                     ),
                   );
-            if (!loadingModelRef.current) return;
+            if (abortCtrl.signal.aborted || !loadingModelRef.current) return;
             if (
               progressModelIdsAtRequest.length !== progressModelIds.length ||
               progressModelIdsAtRequest.some(
@@ -3580,7 +3605,7 @@ export function useChatModelRuntime() {
           }
           try {
             const prog = await getLoadProgress();
-            if (!loadingModelRef.current) return;
+            if (abortCtrl.signal.aborted || !loadingModelRef.current) return;
             if (!prog || prog.phase == null) return;
             if (prog.phase === "ready") {
               // Loaded. The chat flow will flip loadingModelRef shortly; just stop polling.
@@ -3835,7 +3860,7 @@ export function useChatModelRuntime() {
         attemptId: loadIntentId,
         intentId: loadIntentId,
         abortController: abortCtrl,
-        requestId: crypto.randomUUID(),
+        requestId: createNavigationNonce(),
         loadAttemptPath: null,
         cancelPromise: null,
         rollbackCheckpoint: previousCheckpoint,

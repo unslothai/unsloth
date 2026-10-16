@@ -1,15 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""LongRope must use the short factor at exactly the pretraining length.
-
-transformers switches to the long factor at `seq_len > original_max_position_embeddings`
-(`_compute_longrope_parameters`, `_longrope_frequency_update`); `seq_len < original_max`
-here switched a token early, and crashed there as well, because the long cache is built
-only past `current_rope_size`, which starts at `original_max`.
-
-llama.py needs an accelerator to import, so the class is `ast`-extracted and run against a
-CPU-pinned prelude, the shape `tests/test_callback_signature_drift.py` uses.
-"""
+"""LongRope must switch to the long factor only when seq_len exceeds original_max_position_embeddings."""
 
 from __future__ import annotations
 
@@ -45,16 +36,14 @@ class _CPUTorch:
         return torch.device(spec) if index is None else torch.device(spec, index)
 
     def empty(self, *args, **kwargs):
-        # get_current_device() is an int, and `device = <int>` means CUDA, so __init__'s
-        # scratch buffers would allocate on a GPU the runner may not have.
+        # `device = <int>` means CUDA, so scratch buffers would land on a GPU the runner may lack.
         kwargs["device"] = "cpu"
         return torch.empty(*args, **kwargs)
 
 
 def _load_longrope():
     tree = ast.parse(LLAMA.read_text(encoding = "utf-8"))
-    # ast.walk, not tree.body: nesting the class inside an `if` would otherwise turn this
-    # guard into a silent skip, which is the one failure mode a regression test must not have.
+    # ast.walk, not tree.body: a class nested in an `if` would otherwise make this a silent skip.
     cls = next(
         (
             n
@@ -68,6 +57,13 @@ def _load_longrope():
             "LongRopeRotaryEmbedding is gone from unsloth/models/llama.py. If it moved or was "
             "renamed, repoint this test rather than deleting it."
         )
+    # The per-device cache helpers it inherits from, when this checkout has them.
+    helpers = [
+        n
+        for n in tree.body
+        if isinstance(n, (ast.ClassDef, ast.FunctionDef))
+        and n.name in ("_round_rope_size", "_PerDeviceRopeCache")
+    ]
     ns = {
         "torch": _CPUTorch(),
         "math": __import__("math"),
@@ -76,11 +72,10 @@ def _load_longrope():
         # int, matching unsloth/device_type.py: get_cached() indexes a list with it.
         "get_current_device": lambda: 0,
         "is_bfloat16_supported": lambda: False,
-        # Only reached on the `config is not None` path, which these tests do not take.
         "_get_rope_theta": lambda config, default = 10000: default,
     }
     try:
-        exec(compile(ast.Module(body = [cls], type_ignores = []), str(LLAMA), "exec"), ns)
+        exec(compile(ast.Module(body = helpers + [cls], type_ignores = []), str(LLAMA), "exec"), ns)
     except NameError as e:
         pytest.fail(
             f"LongRopeRotaryEmbedding grew a module-level dependency this test does not stub "
@@ -100,7 +95,6 @@ def _make(max_position = MAX_POSITION):
 
 
 def _fake_input():
-    # forward() only reads .device and .dtype off its input.
     return types.SimpleNamespace(device = torch.device("cpu", 0), dtype = torch.float16)
 
 
@@ -125,8 +119,7 @@ def test_long_factor_past_the_pretraining_length():
 
 
 def test_get_cached_agrees_with_forward_across_the_boundary():
-    # get_cached is what every attention path reads cos/sin through, so it has to pick the
-    # same branch forward does.
+    # Every attention path reads cos/sin through get_cached, so it must pick forward's branch.
     for seq_len in (ORIGINAL_MAX - 1, ORIGINAL_MAX, ORIGINAL_MAX + 1):
         rope = _make()
         x = _fake_input()
@@ -139,8 +132,7 @@ def test_get_cached_agrees_with_forward_across_the_boundary():
 
 
 def test_the_boundary_holds_when_the_window_was_never_extended():
-    # original_max == max_position (Phi-3-mini-4k's shape), so current_rope_size starts at the
-    # boundary and no growth path can ever fill the long cache. Reading it is the whole bug.
+    # original_max == max_position (Phi-3-mini-4k), so the long cache is never filled here.
     rope = _make(max_position = ORIGINAL_MAX)
     x = _fake_input()
     rope.extend_rope_embedding(x, ORIGINAL_MAX)
@@ -149,8 +141,7 @@ def test_the_boundary_holds_when_the_window_was_never_extended():
 
 
 def test_a_warm_long_cache_does_not_capture_the_boundary():
-    # Once a longer sequence has run, the long cache exists, so the boundary stops crashing and
-    # starts silently returning the wrong factor instead. Same branch, quieter failure.
+    # Once the long cache exists the boundary silently returns the wrong factor instead.
     rope = _make()
     x = _fake_input()
     rope.extend_rope_embedding(x, ORIGINAL_MAX * 4)
@@ -164,8 +155,7 @@ def test_a_warm_long_cache_does_not_capture_the_boundary():
 
 @pytest.mark.parametrize("seq_len", [None, 0])
 def test_an_unknown_or_empty_length_reads_the_short_cache(seq_len):
-    # transformers takes the long factor only on `seq_len and seq_len > original_max`, so None
-    # and 0 are both short. They also have to not be None-dereferences on a cold module.
+    # transformers takes the long factor only on `seq_len and seq_len > original_max`.
     rope = _make()
     x = _fake_input()
     cos, sin = rope.forward(x, seq_len = seq_len)
@@ -177,8 +167,7 @@ def test_an_unknown_or_empty_length_reads_the_short_cache(seq_len):
 
 
 def test_get_cached_defaults_its_device_index():
-    # device_index = None falls back to get_current_device(), which returns an int the
-    # multi_gpu_* lists are indexed with.
+    # device_index = None falls back to get_current_device(), an int list index.
     rope = _make()
     cos, sin = rope.get_cached(seq_len = ORIGINAL_MAX)
     assert cos is not None and sin is not None

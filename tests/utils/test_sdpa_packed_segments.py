@@ -3,7 +3,7 @@
 
 import pytest
 import torch
-from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+from real_accelerator import has_real_cuda
 
 import unsloth  # noqa: F401
 from unsloth.utils import attention_dispatch as ad
@@ -53,7 +53,6 @@ def _run(
 
 
 CASES = [
-    # lengths, total tokens (> sum = pad tail segment), heads, kv heads, causal, window
     ((5, 3, 4), 12, 4, 4, True, None),
     ((5, 3, 4), 12, 4, 2, True, None),
     ((4, 4, 4), 12, 4, 1, True, None),
@@ -96,11 +95,9 @@ def test_segments_never_build_the_dense_mask(monkeypatch):
     assert out.shape == (1, 9, 2, 8)
 
 
-# has_real_cuda, not torch.cuda.is_available(): tests/_zoo_aggressive_cuda_spoof.py patches the
-# latter to True process-wide, and this body allocates on "cuda" (test_accelerator_skip_guards).
+# Not torch.cuda.is_available(): the zoo CUDA spoof patches it to True process-wide.
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_peak_memory_is_linear_in_tokens(monkeypatch):
-    # 2 x 2048-token segments, 16 heads over 8 KV heads, as Qwen3-0.6B under padding-free SFT.
     total, n_heads, n_kv = 4096, 16, 8
     g = torch.Generator().manual_seed(0)
     shapes = ((1, n_heads, total, 128), (1, n_kv, total, 128), (1, n_kv, total, 128))
@@ -113,6 +110,6 @@ def test_peak_memory_is_linear_in_tokens(monkeypatch):
         _run(monkeypatch, segments, (2048, 2048), total, n_heads, n_kv, qkv)
         torch.cuda.synchronize()
         peaks[segments] = (torch.cuda.max_memory_allocated() - base) / 2**20
-    # The dense path holds (16, 4096, 4096) fp32 scores (1 GiB); per segment no (T, T) tensor exists.
+    # The dense path holds (16, 4096, 4096) fp32 scores (1 GiB).
     assert peaks[True] < 256, peaks
     assert peaks[False] > 4 * peaks[True], peaks

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 import inspect
+import types
 import logging
 import os
 import sys
@@ -1122,6 +1123,12 @@ def _hybrid_varlen_metadata(kwargs):
         return None
     if kwargs.get("past_key_values") is not None or kwargs.get("cache_params") is not None:
         return None
+    from ..context_parallel import get_cp_manager
+
+    # Under context parallelism the model sees one sequence shard, so shard-local boundaries are wrong;
+    # the Ulysses mixer forward builds global ones from packed_seq_lengths itself.
+    if get_cp_manager() is not None:
+        return None
     total, device = None, None
     for key in ("input_ids", "inputs_embeds", "position_ids"):
         tensor = kwargs.get(key)
@@ -1458,8 +1465,12 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         except (TypeError, ValueError):
             forward_sig = None
 
-        @wraps(forward_orig)
-        def forward_with_varlen(*args, **kwargs):
+        # A bound method with no __wrapped__: accelerate's unwrap_model(keep_fp32_wrapper = False),
+        # run by TRL every step, rebinds the forward it finds with MethodType(forward, model), which
+        # passes the model as input_ids to a plain function. The self check covers a double bind.
+        def forward_with_varlen(self, *args, **kwargs):
+            if args and args[0] is self:
+                args = args[1:]
             try:
                 bound = dict(kwargs)
                 if forward_sig is not None and args:
@@ -1506,7 +1517,18 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                     )
             return out
 
-        model.forward = forward_with_varlen
+        for attribute in ("__name__", "__qualname__", "__doc__", "__module__"):
+            try:
+                setattr(forward_with_varlen, attribute, getattr(forward_orig, attribute))
+            except Exception:
+                pass
+        if forward_sig is not None:
+            # Bound below, so callers see forward_orig's parameters once `self` is dropped.
+            self_param = inspect.Parameter("self", inspect.Parameter.POSITIONAL_ONLY)
+            forward_with_varlen.__signature__ = forward_sig.replace(
+                parameters = [self_param, *forward_sig.parameters.values()]
+            )
+        model.forward = types.MethodType(forward_with_varlen, model)
         model._unsloth_varlen_forward_wrapped = True
 
     _wrap_generate_clears_varlen(model, hybrid_modules)

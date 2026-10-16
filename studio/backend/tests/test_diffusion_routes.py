@@ -1363,11 +1363,113 @@ def test_cpu_native_load_skips_gpu_arbiter(client, monkeypatch):
     # A native sd.cpp load on a pure-CPU host never touches the GPU, so the route must NOT evict the resident chat model.
     from core.inference.sd_cpp_engine import ENGINE_SD_CPP
 
+    import core.inference.diffusion_engine_router as router
+
     backend = diffusion_module.get_diffusion_backend()
     acquired = _force_engine(monkeypatch, backend, engine_name = ENGINE_SD_CPP, device = "cpu")
+    monkeypatch.setattr(router, "image_install_accelerator", lambda backend: "auto")
+    import core.inference.sd_cpp_backend as sd_backend
+
+    monkeypatch.setattr(sd_backend, "managed_sd_cpp_accelerator", lambda: None)
     resp = _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
     assert resp.status_code == 200
     assert acquired == []  # no arbiter handoff for a CPU native load
+
+
+def test_cpu_torch_vulkan_native_load_takes_arbiter(client, monkeypatch):
+    # #13666: a CPU torch routed to the Vulkan sd.cpp build renders on the AMD / Arc card.
+    import core.inference.diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    backend = diffusion_module.get_diffusion_backend()
+    acquired = _force_engine(monkeypatch, backend, engine_name = ENGINE_SD_CPP, device = "cpu")
+    monkeypatch.setattr(router, "image_install_accelerator", lambda backend: "vulkan")
+    resp = _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    assert resp.status_code == 200
+    assert acquired == [gpu_arbiter.DIFFUSION]
+
+
+def test_a_retained_vulkan_build_takes_arbiter_even_when_cpu_is_requested(client, monkeypatch):
+    # A failed or disabled CPU install keeps the managed Vulkan build, which renders on the card.
+    import core.inference.diffusion_engine_router as router
+    import core.inference.sd_cpp_backend as sd_backend
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    backend = diffusion_module.get_diffusion_backend()
+    acquired = _force_engine(monkeypatch, backend, engine_name = ENGINE_SD_CPP, device = "cpu")
+    monkeypatch.setattr(router, "image_install_accelerator", lambda backend: "auto")
+    monkeypatch.setattr(sd_backend, "managed_sd_cpp_accelerator", lambda: "vulkan")
+    resp = _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    assert resp.status_code == 200
+    assert acquired == [gpu_arbiter.DIFFUSION]
+
+
+def test_cpu_torch_load_after_a_failed_vulkan_build_skips_arbiter(client, monkeypatch):
+    # The ladder runs the CPU build once Vulkan is recorded unrunnable, so no GPU is taken.
+    import core.inference.diffusion_engine_router as router
+    import core.inference.sd_cpp_backend as sd_backend
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    backend = diffusion_module.get_diffusion_backend()
+    acquired = _force_engine(monkeypatch, backend, engine_name = ENGINE_SD_CPP, device = "cpu")
+    monkeypatch.setattr(router, "image_install_accelerator", lambda backend: "vulkan")
+    monkeypatch.setattr(sd_backend, "preferred_accelerator", lambda accelerator, card = None: "cpu")
+    monkeypatch.setattr(sd_backend, "managed_sd_cpp_accelerator", lambda: "cpu")
+    resp = _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    assert resp.status_code == 200
+    assert acquired == []
+
+
+def test_cpu_torch_diffusers_fallback_after_a_vulkan_prediction_skips_arbiter(client, monkeypatch):
+    # Predicted the Vulkan sd.cpp build, but selection fell back to diffusers on the CPU.
+    import core.inference.diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
+
+    backend = diffusion_module.get_diffusion_backend()
+    acquired = _force_engine(monkeypatch, backend, engine_name = ENGINE_DIFFUSERS, device = "cpu")
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **kw: ENGINE_SD_CPP)
+    monkeypatch.setattr(router, "image_install_accelerator", lambda backend: "vulkan")
+    monkeypatch.setattr(backend, "assert_precision_available", lambda *a, **k: None)
+    resp = _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    assert resp.status_code == 200
+    assert acquired == []
+
+
+def test_cpu_torch_vulkan_route_on_a_retained_cpu_bundle_skips_arbiter(client, monkeypatch):
+    # The Vulkan install failed after selection and the usable CPU bundle was kept.
+    import core.inference.diffusion_engine_router as router
+    import core.inference.sd_cpp_backend as sd_backend
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    backend = diffusion_module.get_diffusion_backend()
+    acquired = _force_engine(monkeypatch, backend, engine_name = ENGINE_SD_CPP, device = "cpu")
+    monkeypatch.setattr(router, "image_install_accelerator", lambda backend: "vulkan")
+    monkeypatch.setattr(sd_backend, "sd_cpp_binaries_all_cpu", lambda: True)
+    resp = _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    assert resp.status_code == 200
+    assert acquired == []
+
+
+def test_gpu_torch_load_on_the_cpu_rung_skips_arbiter(client, monkeypatch):
+    # ROCm and Vulkan both recorded unrunnable: the managed CPU bundle runs, so no GPU is taken.
+    import core.inference.diffusion_engine_router as router
+    import core.inference.sd_cpp_backend as sd_backend
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    backend = diffusion_module.get_diffusion_backend()
+    acquired = _force_engine(monkeypatch, backend, engine_name = ENGINE_SD_CPP, device = "cuda")
+    monkeypatch.setattr(router, "image_install_accelerator", lambda backend: "rocm")
+    monkeypatch.setattr(sd_backend, "preferred_accelerator", lambda accelerator, card = None: "cpu")
+    monkeypatch.setattr(sd_backend, "sd_cpp_binaries_all_cpu", lambda: True)
+    resp = _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    assert resp.status_code == 200
+    assert acquired == []
+    # A GPU build, or an unowned binary, may still be what runs: keep the claim.
+    monkeypatch.setattr(sd_backend, "sd_cpp_binaries_all_cpu", lambda: False)
+    acquired.clear()
+    resp = _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    assert resp.status_code == 200
+    assert acquired == [gpu_arbiter.DIFFUSION]
 
 
 def test_gpu_native_load_takes_arbiter(client, monkeypatch):
@@ -2946,3 +3048,353 @@ def test_a_managed_account_cannot_send_allow_oversized(client, monkeypatch):
     )
     assert resp.status_code == 200
     assert seen == [False]
+
+
+def _external_image_connection(monkeypatch, handler):
+    import httpx
+
+    import core.inference.external_provider as external_provider
+
+    monkeypatch.setattr(
+        external_provider,
+        "_http_client",
+        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
+    )
+    monkeypatch.setattr(
+        inference_routes.providers_db,
+        "get_provider",
+        lambda pid: (
+            {
+                "provider_type": "custom",
+                "display_name": "Gufo",
+                "base_url": "http://127.0.0.1:8000/v1",
+                "is_enabled": True,
+            }
+            if pid == "conn-1"
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        inference_routes, "resolve_provider_api_key_or_400", lambda *a, **k: "sk-test"
+    )
+
+
+def test_external_connection_generates_without_a_local_model_and_saves_to_gallery(
+    client, monkeypatch
+):
+    import base64
+    import io
+    import json
+
+    import httpx
+    from PIL import Image
+
+    sent = []
+
+    def handler(req):
+        sent.append((str(req.url), req.headers.get("authorization"), json.loads(req.content)))
+        buf = io.BytesIO()
+        Image.new("RGB", (512, 256), (200, 30, 30)).save(buf, format = "PNG")
+        png = base64.b64encode(buf.getvalue()).decode()
+        return httpx.Response(200, json = {"created": 0, "data": [{"b64_json": png}] * 2})
+
+    _external_image_connection(monkeypatch, handler)
+    resp = _post_generate(
+        client,
+        prompt = "a sloth",
+        width = 512,
+        height = 256,
+        batch_size = 2,
+        provider_id = "conn-1",
+        model = "qwen-image",
+    )
+    assert resp.status_code == 200, resp.text
+    images = resp.json()["images"]
+    assert [(i["prompt"], i["model"], i["width"], i["height"]) for i in images] == [
+        ("a sloth", "qwen-image", 512, 256)
+    ] * 2
+    assert len(client.get("/api/inference/images/gallery").json()["images"]) == 2
+    assert sent == [
+        (
+            "http://127.0.0.1:8000/v1/images/generations",
+            "Bearer sk-test",
+            {
+                "model": "qwen-image",
+                "prompt": "a sloth",
+                "n": 2,
+                "size": "512x256",
+                "response_format": "b64_json",
+            },
+        )
+    ]
+
+
+def test_external_connection_error_is_a_502_with_the_upstream_reason(client, monkeypatch):
+    import httpx
+
+    _external_image_connection(
+        monkeypatch, lambda req: httpx.Response(404, text = "model 'nope' not found")
+    )
+    resp = _post_generate(client, prompt = "a sloth", provider_id = "conn-1", model = "nope")
+    assert resp.status_code == 502
+    assert "model 'nope' not found" in resp.text
+    assert client.get("/api/inference/images/gallery").json()["images"] == []
+
+
+def test_external_connection_does_not_hold_local_chat_swaps(client, monkeypatch):
+    import base64
+    import io
+
+    import httpx
+    from PIL import Image
+
+    import core.inference.llama_keepwarm as kw
+
+    client.app.add_middleware(kw.LlamaKeepWarmMiddleware)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    seen = []
+
+    def handler(req):
+        seen.append(
+            kw.other_inference_request_count(current_request_counted = False, include_pending = False)
+        )
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 64)).save(buf, format = "PNG")
+        return httpx.Response(
+            200, json = {"data": [{"b64_json": base64.b64encode(buf.getvalue()).decode()}]}
+        )
+
+    _external_image_connection(monkeypatch, handler)
+    resp = client.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "a sloth", "provider_id": "conn-1", "model": "qwen-image"},
+        headers = {"Authorization": "Bearer session"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert seen == [0]
+    assert kw._inflight == 0
+
+
+def test_external_connection_refuses_a_key_read_after_the_connection_moved(client, monkeypatch):
+    import httpx
+
+    sent = []
+    _external_image_connection(monkeypatch, lambda req: sent.append(req) or httpx.Response(500))
+    rows = iter(["http://127.0.0.1:8000/v1"] * 2 + ["http://10.0.0.9:9000/v1"])
+    monkeypatch.setattr(
+        inference_routes.providers_db,
+        "get_provider",
+        lambda pid: {
+            "provider_type": "custom",
+            "display_name": "Gufo",
+            "base_url": next(rows),
+            "is_enabled": True,
+        },
+    )
+    resp = _post_generate(client, prompt = "a sloth", provider_id = "conn-1", model = "qwen-image")
+    assert resp.status_code == 409
+    assert "Provider changed" in resp.json()["detail"]
+    assert sent == []
+
+
+def test_stop_cancels_a_connection_run_and_progress_shows_it(client, monkeypatch):
+    import asyncio
+
+    import httpx
+
+    started = asyncio.Event()
+    calls = []
+
+    async def handler(req):
+        calls.append(req)
+        started.set()
+        await asyncio.sleep(30)
+        return httpx.Response(500)
+
+    _external_image_connection(monkeypatch, handler)
+
+    async def run():
+        transport = httpx.ASGITransport(app = client.app)
+        async with httpx.AsyncClient(transport = transport, base_url = "http://t") as ac:
+            gen = asyncio.create_task(
+                ac.post(
+                    "/api/inference/images/generate",
+                    json = {"prompt": "a sloth", "provider_id": "conn-1", "model": "qwen-image"},
+                )
+            )
+            await asyncio.wait_for(started.wait(), 5)
+            progress = (await ac.get("/api/inference/images/generate-progress")).json()
+            local = (await ac.post("/api/inference/images/generate/cancel")).json()
+            stop = (await ac.post("/api/inference/images/generate/cancel?target=connection")).json()
+            resp = await asyncio.wait_for(gen, 5)
+            after = (await ac.get("/api/inference/images/generate-progress")).json()
+            return progress, local, stop, resp, after
+
+    progress, local, stop, resp, after = asyncio.run(run())
+    assert progress["active"] is True
+    # A page that resumed this run reads its Stop target from progress.
+    assert progress["target"] == "connection"
+    assert local == {"cancelled": False}
+    assert stop == {"cancelled": True}
+    assert resp.status_code == 409
+    assert after["active"] is False
+    assert after["target"] is None
+    assert len(calls) == 1
+    assert client.get("/api/inference/images/gallery").json()["images"] == []
+
+
+def test_stop_reaches_a_connection_run_after_the_account_scope_moves(client, monkeypatch):
+    import asyncio
+
+    import httpx
+    import hub.services.models.account_access as account_access
+
+    started = asyncio.Event()
+
+    async def handler(req):
+        started.set()
+        await asyncio.sleep(30)
+        return httpx.Response(500)
+
+    _external_image_connection(monkeypatch, handler)
+
+    async def run():
+        transport = httpx.ASGITransport(app = client.app)
+        async with httpx.AsyncClient(transport = transport, base_url = "http://t") as ac:
+            gen = asyncio.create_task(
+                ac.post(
+                    "/api/inference/images/generate",
+                    json = {"prompt": "a sloth", "provider_id": "conn-1", "model": "qwen-image"},
+                )
+            )
+            await asyncio.wait_for(started.wait(), 5)
+            # The first managed account appears mid-run: the owner's scope goes from None to its id.
+            monkeypatch.setattr(account_access, "account_scope", lambda: "owner-scope")
+            progress = (await ac.get("/api/inference/images/generate-progress")).json()
+            stop = (await ac.post("/api/inference/images/generate/cancel?target=connection")).json()
+            resp = await asyncio.wait_for(gen, 5)
+            return progress, stop, resp
+
+    progress, stop, resp = asyncio.run(run())
+    assert progress["active"] is True
+    assert stop == {"cancelled": True}
+    assert resp.status_code == 409
+
+
+def test_external_connection_refuses_options_it_cannot_forward(client, monkeypatch):
+    import httpx
+
+    sent = []
+    _external_image_connection(monkeypatch, lambda req: sent.append(req) or httpx.Response(500))
+    for extra in ({"negative_prompt": "blurry"}, {"sampler": "euler"}, {"strength": 0.5}):
+        resp = _post_generate(
+            client, prompt = "a sloth", provider_id = "conn-1", model = "qwen-image", **extra
+        )
+        assert resp.status_code == 400, (extra, resp.text)
+    assert sent == []
+
+
+def test_connection_images_are_marked_in_the_gallery(client, monkeypatch):
+    import base64
+    import io
+
+    import httpx
+    from PIL import Image
+
+    def handler(req):
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 64)).save(buf, format = "PNG")
+        return httpx.Response(
+            200, json = {"data": [{"b64_json": base64.b64encode(buf.getvalue()).decode()}]}
+        )
+
+    _external_image_connection(monkeypatch, handler)
+    resp = _post_generate(client, prompt = "a sloth", provider_id = "conn-1", model = "qwen-image")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["images"][0]["model_kind"] == "connection"
+
+
+def test_a_connection_run_reports_active_even_when_local_progress_is_hidden(client, monkeypatch):
+    import hub.services.models.account_access as account_access
+
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(account_access, "generation_is_foreign", lambda kind: True)
+    assert client.get("/api/inference/images/generate-progress").json()["active"] is False
+    from utils.account_context import current_account_id
+
+    monkeypatch.setitem(inference_routes._external_image_runs, current_account_id(), {object()})
+    progress = client.get("/api/inference/images/generate-progress").json()
+    assert progress["active"] is True
+    assert progress["target"] == "connection"
+
+
+def test_a_connection_call_leaves_the_media_tracker(client, monkeypatch):
+    import base64
+    import io
+
+    import httpx
+    from PIL import Image
+
+    import core.inference.llama_keepwarm as kw
+    import core.inference.media_keepwarm as mk
+
+    client.app.add_middleware(kw.LlamaKeepWarmMiddleware)
+    seen = []
+
+    def handler(req):
+        seen.append(mk._TRACKERS[mk.DIFFUSION].outstanding())
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 64)).save(buf, format = "PNG")
+        return httpx.Response(
+            200, json = {"data": [{"b64_json": base64.b64encode(buf.getvalue()).decode()}]}
+        )
+
+    _external_image_connection(monkeypatch, handler)
+    before = mk._TRACKERS[mk.DIFFUSION].outstanding()
+    resp = client.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "a sloth", "provider_id": "conn-1", "model": "qwen-image"},
+        headers = {"Authorization": "Bearer session"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert seen == [before]
+    assert mk._TRACKERS[mk.DIFFUSION].outstanding() == before
+
+
+def test_stop_after_the_connection_answered_is_not_acknowledged(client, monkeypatch):
+    import asyncio
+
+    from utils.account_context import current_account_id
+
+    async def run():
+        done = asyncio.get_running_loop().create_future()
+        done.set_result(None)
+        task = asyncio.ensure_future(done)
+        await task
+        inference_routes._external_image_runs[current_account_id()] = {task}
+        try:
+            return inference_routes._stop_external_image_runs()
+        finally:
+            inference_routes._external_image_runs.clear()
+
+    assert asyncio.run(run()) is False
+
+
+def test_connection_png_parameters_leave_out_unsent_settings():
+    from core.inference.image_gallery import _params_text
+
+    text = _params_text(
+        {
+            "prompt": "a sloth",
+            "steps": 9,
+            "guidance": 0.0,
+            "seed": 123,
+            "width": 512,
+            "height": 256,
+            "model": "qwen-image",
+            "model_kind": "connection",
+        }
+    )
+    assert text == "a sloth\nSize: 512x256, Model: qwen-image"
+    local = _params_text({"prompt": "a sloth", "steps": 9, "guidance": 0.0, "seed": 123})
+    assert "Steps: 9" in local and "Seed: 123" in local
