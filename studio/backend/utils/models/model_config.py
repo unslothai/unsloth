@@ -5015,13 +5015,15 @@ class ModelConfig:
             if header is None or not header.is_audio_cpp:
                 return None
             target = gguf_file
+            resolved_variant = Path(gguf_file).name
         elif gguf_hint is None and not audio_cpp_models.is_umbrella_id(identifier):
             return None
         else:
             target = identifier
+            resolved_variant = gguf_variant
         model = audio_cpp_models.resolve(
             target,
-            gguf_variant,
+            resolved_variant,
             hf_token,
             network = not _env_offline(),
             gguf_hint = gguf_hint,
