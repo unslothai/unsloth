@@ -441,7 +441,11 @@ def test_tokenize_passthrough_sends_llama_server_key(monkeypatch):
         _auth_headers = {"Authorization": "Bearer llama-key"},
     )
 
-    async def passthrough(request, subject, gguf_only = False):
+    async def passthrough(
+        request,
+        subject,
+        gguf_only = False,
+    ):
         return await request.json()
 
     monkeypatch.setattr(inference_routes, "get_llama_cpp_backend", lambda: backend)
