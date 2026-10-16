@@ -2386,49 +2386,44 @@ def parse_tool_calls_from_text(
     # call's arguments are quoted prose, and a wrapped call nested there was promoted.
     content, _blocked_bodies = _mask_blocked_bodies(content, enabled_tool_names, think = True)
 
-    # A leading bare-JSON value is decided FIRST: a string argument quoting tool markup (XML or a Mistral trigger)
-    # must stay data, so the bare-JSON parser takes the outer call before any other pass. Precedes the Mistral guard,
-    # whose preamble tolerance would otherwise claim a trigger quoted inside the leading object.
-    if _xml_signal_inside_leading_bare_json(content):
-        calls = _parse_llama3_bare_json(
-            content, id_offset = id_offset, enabled_tool_names = enabled_tool_names
-        )
-        if calls:
-            return calls
-        i = 0
-        while i < len(content) and content[i] in " \t\n\r":
-            i += 1
-        # The guard guarantees a balanced leading value (object or array).
-        end = (_balanced_brace_end if content[i] == "{" else _balanced_bracket_end)(content, i)
-        return parse_tool_calls_from_text(
-            content[end + 1 :],
-            id_offset = id_offset,
-            allow_incomplete = allow_incomplete,
-            enabled_tool_names = enabled_tool_names,
-        )
+    # Skipped leading values advance over the text masked once: parsing each tail anew recursed
+    # once per JSONL line (RecursionError) and re-masked the rest every time.
+    while True:
+        # A leading bare-JSON value is decided FIRST: a string argument quoting tool markup (XML or a Mistral trigger)
+        # must stay data, so the bare-JSON parser takes the outer call before any other pass. Precedes the Mistral
+        # guard, whose preamble tolerance would otherwise claim a trigger quoted inside the leading object.
+        if _xml_signal_inside_leading_bare_json(content):
+            calls = _parse_llama3_bare_json(
+                content, id_offset = id_offset, enabled_tool_names = enabled_tool_names
+            )
+            if calls:
+                return calls
+            i = 0
+            while i < len(content) and content[i] in " \t\n\r":
+                i += 1
+            # The guard guarantees a balanced leading value (object or array).
+            end = (_balanced_brace_end if content[i] == "{" else _balanced_bracket_end)(content, i)
+            content = content[end + 1 :]
+            continue
 
-    # A leading enabled wrapper-less Gemma call is decided BEFORE the Mistral guard: its body reads as prose to the
-    # preamble tolerance below, so a quoted [TOOL_CALLS] would otherwise steal the turn.
-    if _signal_inside_leading_wrapperless_gemma(content, enabled_tool_names):
-        calls = _parse_gemma_tool_calls(
-            content,
-            id_offset = id_offset,
-            allow_incomplete = allow_incomplete,
-            enabled_tool_names = enabled_tool_names,
-        )
-        if calls:
-            return calls
+        # A leading enabled wrapper-less Gemma call is decided BEFORE the Mistral guard: its body reads as prose to
+        # the preamble tolerance below, so a quoted [TOOL_CALLS] would otherwise steal the turn.
+        if _signal_inside_leading_wrapperless_gemma(content, enabled_tool_names):
+            calls = _parse_gemma_tool_calls(
+                content,
+                id_offset = id_offset,
+                allow_incomplete = allow_incomplete,
+                enabled_tool_names = enabled_tool_names,
+            )
+            if calls:
+                return calls
 
-    # A DISABLED wrapper-less Gemma call is prose: drop the span and parse the tail BEFORE the Mistral guard, whose
-    # preamble tolerance would otherwise parse a quoted trigger.
-    _prose_end = _disabled_gemma_call_end_containing_signal(content, enabled_tool_names)
-    if _prose_end is not None:
-        return parse_tool_calls_from_text(
-            content[_prose_end:],
-            id_offset = id_offset,
-            allow_incomplete = allow_incomplete,
-            enabled_tool_names = enabled_tool_names,
-        )
+        # A DISABLED wrapper-less Gemma call is prose: drop the span and parse the tail BEFORE the Mistral guard,
+        # whose preamble tolerance would otherwise parse a quoted trigger.
+        _prose_end = _disabled_gemma_call_end_containing_signal(content, enabled_tool_names)
+        if _prose_end is None:
+            break
+        content = content[_prose_end:]
 
     # A [TOOL_CALLS] call that is the first tool emission owns the turn: XML quoted in its arguments or trailing prose
     # is not promoted over it, nor does a prose preface forfeit it.
