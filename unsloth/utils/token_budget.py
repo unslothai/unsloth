@@ -502,8 +502,9 @@ def _label_count(chunk):
 
 
 def _metric_style(trainer):
-    """How the trainer's TRL compute_loss averages entropy: "labels" (fused-head TRL, label mask) or
-    "attention" (older TRL, attention mask). None when no class in the MRO computes TRL's metrics."""
+    """How the trainer's TRL compute_loss averages entropy: "labels" (TRL >= 1.3, valid labels) or
+    "attention" (older TRL, attention mask). None when no class in the MRO computes TRL's metrics
+    or the entropy code is not recognised."""
     style = getattr(trainer, "_unsloth_token_budget_metric_style", False)
     if style is not False:
         return style
@@ -518,7 +519,12 @@ def _metric_style(trainer):
         except Exception:
             break
         if "mean_token_accuracy" in source:
-            style = "labels" if "label_mask" in source else "attention"
+            # TRL >= 1.3 sums entropy over valid labels (entropy_sum / label_mask); older TRL divides by
+            # the attention mask. Anything else is unknown, so its entries are left unfolded.
+            if "label_mask" in source or "entropy_sum" in source:
+                style = "labels"
+            elif "attention_mask" in source:
+                style = "attention"
             break
     trainer._unsloth_token_budget_metric_style = style
     return style
