@@ -41,9 +41,5 @@ def test_grpo_training_step_averages_gradients_like_ddp():
         mean, local = torch.tensor(mean), torch.tensor(local)
         torch.testing.assert_close(torch.tensor(grads["bypass"]), mean, rtol = 1e-6, atol = 1e-7)
         torch.testing.assert_close(torch.tensor(grads["oversized"]), mean, rtol = 1e-6, atol = 1e-7)
-        torch.testing.assert_close(
-            torch.tensor(grads["through_ddp"]), mean, rtol = 1e-6, atol = 1e-7
-        )  # not averaged twice
-        torch.testing.assert_close(
-            torch.tensor(grads["no_sync"]), local
-        )  # DDP does not reduce inside no_sync either
+        torch.testing.assert_close(torch.tensor(grads["through_ddp"]), mean, rtol = 1e-6, atol = 1e-7)
+        torch.testing.assert_close(torch.tensor(grads["no_sync"]), local)

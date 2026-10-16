@@ -81,7 +81,7 @@ const SELECTION_OPTIONS: Array<{ value: SeedSelectionType; label: string }> = [
   { value: "partition_block", label: "Partition block" },
 ];
 
-const LOCAL_ACCEPT = ".csv,.json,.jsonl";
+const LOCAL_ACCEPT = ".csv,.json,.jsonl,.parquet";
 const DEFAULT_CHUNK_SIZE = 1200;
 const DEFAULT_CHUNK_OVERLAP = 200;
 const MAX_CHUNK_SIZE = 20000;
@@ -1019,7 +1019,7 @@ export function SeedDialog({
             <div className="grid gap-1.5">
               <FieldLabel
                 label="Structured file"
-                hint="Upload CSV, JSON, or JSONL seed file."
+                hint="Upload CSV, JSON, JSONL, or Parquet seed file."
               />
               <div className="flex items-center gap-2">
                 <Input
