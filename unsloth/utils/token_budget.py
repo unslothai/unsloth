@@ -501,23 +501,36 @@ def _label_count(chunk):
     return int((labels != -100).sum())
 
 
-def _entropy_count(trainer, chunk):
-    """Tokens TRL averages entropy over: the label mask on fused-head TRL, else the attention mask
-    (plus prompt-tuning virtual tokens) or every position when padding-free."""
-    style = getattr(trainer, "_unsloth_token_budget_entropy_style", None)
-    if style is None:
+def _metric_style(trainer):
+    """How the trainer's TRL compute_loss averages entropy: "labels" (fused-head TRL, label mask) or
+    "attention" (older TRL, attention mask). None when no class in the MRO computes TRL's metrics."""
+    style = getattr(trainer, "_unsloth_token_budget_metric_style", False)
+    if style is not False:
+        return style
+    style = None
+    # Subclasses that only delegate to super() do not hold the metric code: use the class that does.
+    for cls in type(trainer).__mro__:
+        function = cls.__dict__.get("compute_loss")
+        if function is None:
+            continue
         try:
-            source = inspect.getsource(type(trainer).compute_loss)
+            source = inspect.getsource(function)
         except Exception:
-            source = ""
-        style = "labels" if "label_mask" in source else "attention"
-        trainer._unsloth_token_budget_entropy_style = style
-    if style == "labels":
+            break
+        if "mean_token_accuracy" in source:
+            style = "labels" if "label_mask" in source else "attention"
+            break
+    trainer._unsloth_token_budget_metric_style = style
+    return style
+
+
+def _entropy_count(trainer, chunk):
+    """Tokens TRL averages entropy over: the label mask on fused-head TRL, else the attention mask or
+    every position when padding-free."""
+    if _metric_style(trainer) == "labels":
         return _label_count(chunk)
     if "attention_mask" in chunk:
-        mask = chunk["attention_mask"]
-        virtual = int(getattr(trainer, "num_virtual_tokens", 0) or 0)
-        return int(mask.sum()) + virtual * mask.shape[0]
+        return int(chunk["attention_mask"].sum())
     if "position_ids" in chunk:
         return int(chunk["position_ids"].numel())
     return 0
@@ -528,6 +541,29 @@ _RATIO_METRICS = {
     "mean_token_accuracy": lambda trainer, chunk: _label_count(chunk),
     "entropy": _entropy_count,
 }
+
+
+def _is_prompt_learning(trainer, model):
+    if int(getattr(trainer, "num_virtual_tokens", 0) or 0) > 0:
+        return True
+    for candidate in (model, getattr(trainer, "model", None)):
+        config = getattr(candidate, "active_peft_config", None)
+        if getattr(config, "is_prompt_learning", False):
+            return True
+    return False
+
+
+def _can_merge_metrics(trainer, model, chunks, accelerator):
+    """Fold per-chunk entries only when token weighting provably reproduces TRL's unsplit value:
+    one process (TRL's cross-rank reductions differ per version), no prompt-learning PEFT (virtual
+    token logits are counted differently per version), one label source, and known TRL metric code."""
+    if accelerator is not None and int(getattr(accelerator, "num_processes", 1) or 1) > 1:
+        return False
+    if _is_prompt_learning(trainer, model):
+        return False
+    if any("shift_labels" in chunk and "labels" in chunk for chunk in chunks):
+        return False
+    return _metric_style(trainer) is not None
 
 
 def _metric_lengths(trainer):
@@ -543,25 +579,13 @@ def _metric_lengths(trainer):
     return metrics, lengths
 
 
-def _merge_chunk_metrics(trainer, metrics, lengths, chunks, accelerator):
+def _merge_chunk_metrics(trainer, metrics, lengths, chunks):
     """Fold the per-chunk ratio entries back into one entry for the micro-batch, weighting each chunk by
     the tokens TRL divided by, so the logged value matches an unsplit step."""
     keys = [key for key in _RATIO_METRICS if key in metrics and isinstance(metrics[key], list)]
     keys = [key for key in keys if len(metrics[key]) - lengths.get(key, 0) == len(chunks)]
-    if not keys:
-        return
-    weights = torch.tensor(
-        [[_RATIO_METRICS[key](trainer, chunk) for chunk in chunks] for key in keys],
-        dtype = torch.float64,
-    )
-    if accelerator is not None and getattr(accelerator, "num_processes", 1) > 1:
-        import torch.distributed as dist
-        if dist.is_available() and dist.is_initialized():
-            # TRL gathers the counts of every rank before dividing.
-            weights = weights.to(accelerator.device)
-            dist.all_reduce(weights)
-            weights = weights.cpu()
-    for key, row in zip(keys, weights.tolist()):
+    for key in keys:
+        row = [_RATIO_METRICS[key](trainer, chunk) for chunk in chunks]
         start = lengths.get(key, 0)
         values = metrics[key][start:]
         total = sum(row)
@@ -627,7 +651,11 @@ def install_token_budget(trainer):
             if len(chunks) == 1:
                 return original_training_step(model, inputs, num_items_in_batch, *args, **kwargs)
             trainer._unsloth_token_budget_splits += 1
-            metrics, lengths = _metric_lengths(trainer)
+            metrics, lengths = (
+                _metric_lengths(trainer)
+                if _can_merge_metrics(trainer, model, chunks, accelerator)
+                else (None, None)
+            )
             total = None
             for i, chunk in enumerate(chunks):
                 context = (
@@ -639,7 +667,7 @@ def install_token_budget(trainer):
                     loss = original_training_step(model, chunk, num_items_in_batch, *args, **kwargs)
                 total = loss if total is None else total + loss
             if metrics is not None:
-                _merge_chunk_metrics(trainer, metrics, lengths, chunks, accelerator)
+                _merge_chunk_metrics(trainer, metrics, lengths, chunks)
             return total
 
         trainer.training_step = training_step

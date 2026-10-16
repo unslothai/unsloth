@@ -148,3 +148,76 @@ def test_trainers_without_metrics_still_split(monkeypatch):
     tb.install_token_budget(trainer)
     loss = trainer.training_step(None, _padded_batch(), 10)
     assert len(seen) > 1 and float(loss) == len(seen)
+
+
+class _DelegatingTRL1Trainer(_TRL1Trainer):
+    """A user subclass of a TRL 1.x trainer whose compute_loss only delegates to super()."""
+
+    def compute_loss(self, inputs):
+        return super().compute_loss(inputs)
+
+
+def test_delegating_subclass_uses_parent_metric_code(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_TOKEN_BALANCE", raising = False)
+    batch = _padded_batch()
+    monkeypatch.delenv("UNSLOTH_TOKEN_BUDGET", raising = False)
+    reference = _DelegatingTRL1Trainer()
+    tb.install_token_budget(reference)
+    reference.training_step(None, dict(batch), 10)
+    expected = _logged(reference)
+
+    monkeypatch.setenv("UNSLOTH_TOKEN_BUDGET", "36")
+    trainer = _DelegatingTRL1Trainer()
+    tb.install_token_budget(trainer)
+    trainer.training_step(None, dict(batch), 10)
+    assert trainer._unsloth_token_budget_splits == 1
+    logged = _logged(trainer)
+    for key in ("entropy", "mean_token_accuracy"):
+        assert len(trainer._metrics["train"][key]) == 1
+        assert logged[key] == pytest.approx(expected[key], rel = 1e-6)
+
+
+def _per_chunk_entries(trainer_cls, batch, **attrs):
+    # What TRL logs with no folding: one entry per chunk.
+    trainer = trainer_cls()
+    for name, value in attrs.items():
+        setattr(trainer, name, value)
+    for chunk in tb.split_batch_by_token_budget(dict(batch), 36):
+        trainer.compute_loss(chunk)
+    return {k: list(trainer._metrics["train"][k]) for k in ("entropy", "mean_token_accuracy")}
+
+
+def _split_once(monkeypatch, trainer_cls, batch, **attrs):
+    monkeypatch.delenv("UNSLOTH_TOKEN_BALANCE", raising = False)
+    monkeypatch.setenv("UNSLOTH_TOKEN_BUDGET", "36")
+    trainer = trainer_cls()
+    for name, value in attrs.items():
+        setattr(trainer, name, value)
+    tb.install_token_budget(trainer)
+    trainer.training_step(None, dict(batch), 10)
+    assert trainer._unsloth_token_budget_splits == 1
+    return {k: list(trainer._metrics["train"][k]) for k in ("entropy", "mean_token_accuracy")}
+
+
+def test_prompt_learning_leaves_entries_unfolded(monkeypatch):
+    batch = _padded_batch()
+    expected = _per_chunk_entries(_TRL022Trainer, batch, num_virtual_tokens = 2)
+    assert len(expected["entropy"]) > 1
+    assert _split_once(monkeypatch, _TRL022Trainer, batch, num_virtual_tokens = 2) == expected
+
+
+def test_ambiguous_label_source_leaves_entries_unfolded(monkeypatch):
+    batch = _padded_batch()
+    batch["shift_labels"] = batch["labels"][..., 1:].contiguous()
+    batch["shift_labels"] = torch.nn.functional.pad(batch["shift_labels"], (0, 1), value = -100)
+    expected = _per_chunk_entries(_TRL1Trainer, batch)
+    assert len(expected["entropy"]) > 1
+    assert _split_once(monkeypatch, _TRL1Trainer, batch) == expected
+
+
+def test_multi_process_leaves_entries_unfolded(monkeypatch):
+    batch = _padded_batch()
+    expected = _per_chunk_entries(_TRL022Trainer, batch)
+    accelerator = _Accelerator()
+    accelerator.num_processes = 2
+    assert _split_once(monkeypatch, _TRL022Trainer, batch, accelerator = accelerator) == expected
