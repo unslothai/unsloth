@@ -377,3 +377,57 @@ def test_install_sh_final_summary_keeps_the_inferred_gfx1153():
     )
     out = subprocess.run(["bash", "-c", script], capture_output = True, text = True, timeout = 60)
     assert "AMD GPU (gfx1153, no ROCm PyTorch wheels -- CPU fallback)" in out.stdout, out
+
+
+# ── Codex round: generic-only dGPU, Krackan Point 2 peer, HIP guidance ──────
+
+_RX7900 = "03:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI] Navi 31 [Radeon RX 7900 XTX]"
+
+
+def test_python_inferred_strix_defers_to_a_generic_only_dgpu():
+    # gfx942 has no AMD per-arch index: the generic route installs for it, not the Strix wheel.
+    calls = routing._run_install(
+        gfx_devices = ("gfx1151", "gfx942"),
+        inferred = "gfx1151",
+        rocm_version = (7, 1),
+        rocm_gpu_visible = False,
+    )
+    assert "download.pytorch.org/whl/rocm7.1" in calls and _STRIX_INDEX not in calls, calls
+
+
+@pytest.mark.parametrize("lspci,expected", [(_RX7900, "gfx1100"), (_KRACKAN2_TEXT[1].strip(), "gfx1153")])
+def test_python_krackan2_cpu_defers_to_a_discrete_peer(lspci, expected, monkeypatch):
+    monkeypatch.setattr(stack_mod, "_is_wsl", lambda: False)
+    monkeypatch.setattr(stack_mod, "_linux_amd_display_device_present", lambda: True)
+    monkeypatch.setattr(Path, "read_text", lambda *a, **k: _KRACKAN2_TEXT[0])
+    monkeypatch.setattr(stack_mod.shutil, "which", lambda _n: "/usr/bin/lspci")
+    line = lspci if lspci.startswith("0") else "c4:00.0 VGA compatible controller [0300]: " + lspci
+    monkeypatch.setattr(
+        stack_mod.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, line, "")
+    )
+    assert stack_mod._infer_linux_amd_gfx_arch() == expected
+
+
+@_POSIX
+@pytest.mark.parametrize(
+    "lspci,expected",
+    [(_RX7900, "gfx1100"), ("c4:00.0 VGA compatible controller [0300]: " + _KRACKAN2_TEXT[1].strip(), "gfx1153"), ("", "gfx1153")],
+)
+def test_install_sh_krackan2_cpu_defers_to_a_discrete_peer(tmp_path, lspci, expected):
+    assert _sh_infer(tmp_path, _KRACKAN2_TEXT[0], lspci = lspci)[0] == expected
+
+
+@_POSIX
+@pytest.mark.parametrize("arches,vulkan", [("gfx1153", False), ("gfx1010", True), ("gfx1010\ngfx1153", True)])
+def test_install_sh_gfx1153_keeps_its_hip_guidance(arches, vulkan):
+    url, err = guards._run_sh_get_torch_index_url(arches, rocm_tag = "rocm7.2")
+    assert url.endswith("/cpu"), (url, err)
+    assert ("UNSLOTH_LLAMA_CPP_BACKEND=vulkan" in err) is vulkan, err
+    assert ("llama.cpp HIP build" in err) is (not vulkan), err
+
+
+def test_setup_sh_gfx1153_keeps_its_hip_guidance():
+    source = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
+    block = source[source.index('step "gpu" "AMD GPU detected ($_setup_unsup_gfx)'):]
+    block = block[: block.index("elif [ -n \"$_setup_mkt\" ]")]
+    assert 'if [ "$_setup_unsup_gfx" = gfx1153 ]' in block and "llama.cpp HIP build" in block

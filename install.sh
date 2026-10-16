@@ -5364,11 +5364,12 @@ _infer_linux_amd_gfx_arch() {
         echo gfx1150
         return 0
     fi
+    # Krackan Point 2 has no Linux torch wheel, so a discrete AMD card lspci names wins over it.
+    _k2=""
     if [ -n "$_gpu_evidence" ] && grep -qiE "$_krackan2_ere" /proc/cpuinfo 2>/dev/null; then
-        echo gfx1153
-        return 0
+        _k2=1
     fi
-    if [ -n "$_gpu_evidence" ] && grep -qiE '860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33' /proc/cpuinfo 2>/dev/null; then
+    if [ -z "$_k2" ] && [ -n "$_gpu_evidence" ] && grep -qiE '860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33' /proc/cpuinfo 2>/dev/null; then
         echo gfx1152
         return 0
     fi
@@ -5378,16 +5379,25 @@ _infer_linux_amd_gfx_arch() {
         while IFS= read -r _ln; do
             [ -n "$_ln" ] || continue
             if printf '%s\n' "$_ln" | grep -Eqi "$_krackan2_ere"; then
+                [ -n "${_k2:-}" ] && continue
                 echo gfx1153
                 return 0
             fi
             if _gfx=$(_infer_amd_gfx_arch_from_gpu_name "$_ln"); then
+                # With the Krackan Point 2 CPU, its own iGPU line (Krackan names) is not a peer.
+                if [ -n "${_k2:-}" ] && { [ "$_gfx" = gfx1152 ] || [ "$_gfx" = gfx1153 ]; }; then
+                    continue
+                fi
                 echo "$_gfx"
                 return 0
             fi
         done <<EOF
 $_amd_disp
 EOF
+    fi
+    if [ -n "${_k2:-}" ]; then
+        echo gfx1153
+        return 0
     fi
     return 1
 }
@@ -5915,7 +5925,11 @@ get_torch_index_url() {
                 echo "[WARN] AMD GPU detected ($_amd_unsup_gfx) -- Unsloth has no ROCm PyTorch wheels for that arch, installing CPU PyTorch." >&2
                 echo "[WARN] This is expected on this GPU; repairing rocminfo/amd-smi or setting UNSLOTH_ROCM_GFX_ARCH will not give it ROCm PyTorch." >&2
                 # Torch ends here, llama.cpp does not. `export` is load-bearing: a bare assignment never reaches the re-run (the #8458 mistake).
-                echo "[INFO] GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer (it selects the llama.cpp bundle at install time)." >&2
+                if [ "$_amd_unsup_gfx" = gfx1153 ]; then
+                    echo "[INFO] GGUF chat keeps the llama.cpp HIP build on this GPU (gfx1153 has one); no Vulkan switch is needed." >&2
+                else
+                    echo "[INFO] GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer (it selects the llama.cpp bundle at install time)." >&2
+                fi
                 # Only arches TheRock actually builds, so Polaris is never pointed at
                 # wheels that do not exist. Untested: nothing routes here on its own.
                 if _amd_therock_extra=$(_therock_device_extra_for_gfx "$_amd_unsup_gfx" 2>/dev/null); then
@@ -5981,7 +5995,11 @@ get_torch_index_url() {
         if [ -n "$_amd_unsup_all" ]; then
             echo "[WARN] AMD GPU detected ($_amd_unsup_all) -- Unsloth has no ROCm PyTorch wheels for that arch, installing CPU PyTorch." >&2
             echo "[WARN] The ROCm PyTorch wheels carry no kernels for it: they would install, then fail on the first GPU operation." >&2
-            echo "[INFO] GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer (it selects the llama.cpp bundle at install time)." >&2
+            if [ "$_amd_unsup_all" = gfx1153 ]; then
+                echo "[INFO] GGUF chat keeps the llama.cpp HIP build on this GPU (gfx1153 has one); no Vulkan switch is needed." >&2
+            else
+                echo "[INFO] GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer (it selects the llama.cpp bundle at install time)." >&2
+            fi
             echo "[INFO] If you run this GPU with HSA_OVERRIDE_GFX_VERSION, export it and re-run this installer to keep ROCm PyTorch." >&2
             if _amd_therock_extra=$(_therock_device_extra_for_gfx "${_amd_unsup_all%%,*}" 2>/dev/null); then
                 echo "[INFO] Untested: AMD's TheRock publishes nightly ${_amd_unsup_all%%,*} wheels. To try them, export both and re-run:" >&2
@@ -7619,8 +7637,12 @@ case "$TORCH_INDEX_URL" in
                     # Scoped to the card, as above: the SDK may still help another one.
                     substep "AMD GPU detected ($_unsup_disp_gfx) -- Unsloth has no ROCm PyTorch wheels for that arch, installing CPU PyTorch." "$C_WARN"
                     substep "Installing the ROCm/HIP SDK will not give this GPU ROCm PyTorch." "$C_WARN"
-                    substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer." "$C_WARN"
-                    substep "That variable selects the llama.cpp bundle at install time, so setting it afterwards has no effect until you install or update again." "$C_WARN"
+                    if [ "$_unsup_disp_gfx" = gfx1153 ]; then
+                        substep "GGUF chat keeps the llama.cpp HIP build on this GPU (gfx1153 has one); no Vulkan switch is needed."
+                    else
+                        substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer." "$C_WARN"
+                        substep "That variable selects the llama.cpp bundle at install time, so setting it afterwards has no effect until you install or update again." "$C_WARN"
+                    fi
                 else
                     substep "AMD GPU detected, but no usable ROCm/HIP install -- installing CPU-only PyTorch." "$C_WARN"
                     substep "Install the ROCm/HIP SDK and re-run this installer for GPU PyTorch." "$C_WARN"

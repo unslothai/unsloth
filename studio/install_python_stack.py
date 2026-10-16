@@ -2456,12 +2456,13 @@ def _linux_amd_gfx_from_cpuinfo() -> "str | None":
     return None
 
 
-def _linux_amd_gfx_from_lspci() -> "str | None":
+def _linux_amd_gfx_from_lspci(beside_krackan2: bool = False) -> "str | None":
     """First AMD display-class lspci line mapping to a known gfx arch. A non-AMD
     controller can enumerate first (Intel/ASPEED before an AMD dGPU), so scan
     them all. The vendor guard is case-SENSITIVE: a -i "ATI" would match
     "CorporATIon" on every Intel/NVIDIA line. Whole-line matching also survives
-    the 0000: PCI domain prefix."""
+    the 0000: PCI domain prefix. beside_krackan2 skips that APU's own iGPU line, so only a
+    discrete peer answers."""
     lspci = shutil.which("lspci")
     if not lspci:
         return None
@@ -2485,9 +2486,11 @@ def _linux_amd_gfx_from_lspci() -> "str | None":
         if not re.search(r"AMD|ATI", line):
             continue
         if re.search(_LINUX_KRACKAN2_NAME_RE, line, re.IGNORECASE):
+            if beside_krackan2:
+                continue
             return "gfx1153"
         arch = _gfx_arch_from_gpu_name(line)
-        if arch:
+        if arch and not (beside_krackan2 and arch in ("gfx1152", "gfx1153")):
             return arch
     return None
 
@@ -2554,6 +2557,9 @@ def _infer_linux_amd_gfx_arch() -> "str | None":
         # fallback reads the same PCI space and would find nothing here either.
         return None
     cpu_gfx = _linux_amd_gfx_from_cpuinfo()
+    if cpu_gfx == "gfx1153":
+        # Krackan Point 2 has no Linux torch wheel, so a discrete AMD card lspci names wins.
+        return _linux_amd_gfx_from_lspci(beside_krackan2 = True) or cpu_gfx
     if cpu_gfx:
         return cpu_gfx
     return _linux_amd_gfx_from_lspci()
@@ -6621,12 +6627,10 @@ def _ensure_rocm_torch() -> "bool | None":
             or (_inferred_target := _runtime_gfx_target(_inferred_linux_gfx)[0]) is not None
         )
     ):
-        # The discrete card a leading Strix deferred to, when it has an index of its own.
-        if (
-            not _gfx_override_env
-            and _inferred_target != _inferred_linux_gfx
-            and _amd_arch_index_url(_inferred_target) is not None
-        ):
+        # The discrete card a leading Strix deferred to. One served only by the generic index
+        # (gfx942) skips this per-arch install: the generic route below installs for it, since
+        # the deferral already required a readable ROCm version.
+        if not _gfx_override_env and _inferred_target != _inferred_linux_gfx:
             _inferred_linux_gfx = _inferred_target
         index_url = _amd_arch_index_url(_inferred_linux_gfx)
         if index_url is not None:
