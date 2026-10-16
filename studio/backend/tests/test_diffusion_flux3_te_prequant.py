@@ -334,3 +334,64 @@ def test_both_flux3_families_default_to_the_hosted_int8_convrot_encoder():
         assert fam.te_quant_auto == "int8", name
         assert resolve_te_quant_request(None, fam.te_quant_auto) == ("int8", True)
         assert resolve_te_quant_request("none", fam.te_quant_auto)[0] is None
+
+
+def _staged_only_config(tmp_path, monkeypatch):
+    """A staged companion dir (as a cache-only load resolves under a fallback cache root) holding the encoder config
+    but no dense shards; AutoConfig finds the config only there, never under the canonical base id."""
+    import transformers
+
+    staged = tmp_path / "fallback_root" / "snapshot"
+    (staged / "text_encoder").mkdir(parents = True)
+    (staged / "text_encoder" / "config.json").write_text("{}")
+    asked = []
+
+    def from_pretrained(source, *a, **k):
+        asked.append(str(source))
+        if str(source) != str(staged):
+            raise OSError(f"{source} is not in the active cache")
+        return _config()
+
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", from_pretrained)
+    return staged, asked
+
+
+@pytest.mark.parametrize("family", sorted(VARIANTS))
+def test_the_prequant_encoder_reads_its_config_from_the_staged_base(mirror, tmp_path, monkeypatch, family):
+    staged, asked = _staged_only_config(tmp_path, monkeypatch)
+    fam = detect_family("", override = family)
+    kwargs = dict(te_quant_mode = "int8", target = CUDA_BF16, dtype = torch.float32, local_files_only = True)
+    # without a config source the canonical id misses the config, and the dense fallback is refused
+    with pytest.raises(RuntimeError, match = "could not be loaded"):
+        tpq.te_prequant_pipe_kwargs(fam, fam.base_repo, dense_source = str(staged), **kwargs)
+    asked.clear()
+    encoder = tpq.te_prequant_pipe_kwargs(
+        fam, fam.base_repo, dense_source = str(staged), config_source = str(staged), **kwargs
+    )["text_encoder"]
+    assert getattr(encoder, tpq.TE_PREQUANT_SCHEME_ATTR) == "int8"
+    assert asked == [str(staged)]
+
+
+def test_flux3_assembly_hands_the_staged_dir_to_the_prequant_encoder(tmp_path, monkeypatch):
+    import core.inference.diffusion as d
+
+    seen = {}
+
+    def te_kwargs(fam, base, **k):
+        seen["base"], seen["config_source"] = base, k.get("config_source")
+        return {"text_encoder": "enc"}
+
+    class _Pipe:
+        def to(self, device):
+            return self
+
+    monkeypatch.setattr(d, "te_prequant_pipe_kwargs", te_kwargs)
+    monkeypatch.setattr(d, "load_flux3_pipeline", lambda root, *a, **k: seen.update(root = root, te = k["text_encoder"]) or _Pipe())
+    staged = str(tmp_path / "staged")
+    d.DiffusionBackend._assemble_pipe(
+        None, DISTILLED, object(), torch.float32, None, "cpu",
+        base_local_dir = staged, fam = detect_family("", override = "flux.3-klein"), te_quant_mode = "int8",
+        target = CUDA_BF16, fetch_base = "unsloth/flux-3-image-klein-FP8", local_files_only = True,
+    )
+    # the canonical fetch id for checkpoint compatibility, the staged dir for the config, as the pipeline itself
+    assert seen == {"base": "unsloth/flux-3-image-klein-FP8", "config_source": staged, "root": staged, "te": "enc"}

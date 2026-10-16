@@ -672,12 +672,18 @@ def _flux3_pipeline_index(
     except (OSError, RuntimeError, ValueError):
         return None
     try:
+        # The gated vendor repo's manifest is read from its byte-identical unsloth mirror (pure table lookup), so a
+        # load that fetches everything from the mirror does not also probe, and 401 on, the vendor repo.
+        from core.inference.diffusion_families import prefer_ungated_mirror
+        source = prefer_ungated_mirror(repo_id, token, files = (FLUX3_INDEX,))
         local = _local_gguf_path(repo_id, FLUX3_INDEX)
+        if local is None and source != repo_id:
+            local = _local_gguf_path(source, FLUX3_INDEX)
         if local is None and allow_network:
             from huggingface_hub import hf_hub_download
             from utils.hf_cache_settings import active_hf_hub_cache
             local = hf_hub_download(
-                repo_id, FLUX3_INDEX, token = token, cache_dir = active_hf_hub_cache()
+                source, FLUX3_INDEX, token = token, cache_dir = active_hf_hub_cache()
             )
         if local is None:
             return None

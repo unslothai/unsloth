@@ -292,6 +292,25 @@ def int8_convrot_te_runs_on(target: Any) -> bool:
     return getattr(target, "device", None) == "mps"
 
 
+def hosted_int8_convrot_te_runs_on(fam: Any, target: Any) -> bool:
+    """Whether an explicit int8 encoder request on ``fam`` loads the hosted int8 ConvRot file on ``target`` without the
+    fp8 fallback: the family hosts the file (and the lm_head trim it needs is on) and the device runs it as plain
+    tensors. Pure: no IO."""
+    try:
+        if not int8_convrot_te_runs_on(target):
+            return False
+        hosted = family_te_int8_convrot(fam, "text_encoder")
+        source = resolve_te_prequant_source(fam, "text_encoder", "int8")
+        return (
+            hosted is not None
+            and source is not None
+            and source.kind == "repo"
+            and source.filename == hosted[1]
+        )
+    except Exception:  # noqa: BLE001 -- unresolvable means the runtime-cast rules apply
+        return False
+
+
 def _is_fp8_te_name(name: Optional[str]) -> bool:
     return bool(name) and "fp8" in str(name).lower()
 
@@ -549,6 +568,7 @@ def load_prequant_text_encoder(
     local_files_only: bool = False,
     trim_lm_head: bool = False,
     failures: Optional[list] = None,
+    config_source: Optional[str] = None,
 ) -> Optional[Any]:
     """Load the pre-cast text encoder described by ``source`` (on CPU, for pipeline
     assembly to place), with the layerwise upcast hooks already installed.
@@ -563,7 +583,10 @@ def load_prequant_text_encoder(
     the pipeline's assembly normally passes to ``from_pretrained`` (forward-behaviour
     flags only; the state dict is unaffected by them).
     ``trim_lm_head`` builds the encoder without its untied ``lm_head`` and never reads that tensor
-    (``diffusion_text_encoder_trim``). ``failures`` collects the error text of a load that raised."""
+    (``diffusion_text_encoder_trim``). ``failures`` collects the error text of a load that raised.
+    ``config_source`` is where the encoder config is read when it is not ``base``: the staged directory the
+    pipeline itself assembles from, which a cache-only load may have resolved under another cache root. ``base``
+    stays the canonical id the checkpoint is validated against."""
     try:
         if source.kind == "path" and not _local_prequant_path_allowed(source.location):
             _warn(
@@ -650,7 +673,7 @@ def load_prequant_text_encoder(
         }
         if subfolder:
             config_kwargs["subfolder"] = subfolder
-        config = transformers.AutoConfig.from_pretrained(base, **config_kwargs)
+        config = transformers.AutoConfig.from_pretrained(config_source or base, **config_kwargs)
         # Krea-2 ships transformers-5.x configs whose rope lives under rope_parameters; the runtime component loader
         # remaps it for a 4.x runtime, and the meta-init here must match or the rebuilt encoder forwards with a broken
         # rope.
@@ -779,6 +802,7 @@ def te_prequant_pipe_kwargs(
     logger: Any = None,
     local_files_only: bool = False,
     dense_source: Optional[str] = None,
+    config_source: Optional[str] = None,
 ) -> dict[str, Any]:
     supplied = supplied_component_pipe_kwargs(
         base,
@@ -799,6 +823,7 @@ def te_prequant_pipe_kwargs(
         local_files_only = local_files_only,
         skip_components = tuple(supplied),
         dense_source = dense_source,
+        config_source = config_source,
     )
     injected.update(supplied)
     return injected
@@ -816,6 +841,7 @@ def _te_prequant_pipe_kwargs(
     local_files_only: bool = False,
     skip_components: tuple = (),
     dense_source: Optional[str] = None,
+    config_source: Optional[str] = None,
 ) -> dict[str, Any]:
     """Component overrides for pipeline assembly: ``{<component>: <pre-cast encoder>}``
     for every ``TE_PREQUANT_COMPONENTS`` attr the family hosts a pre-cast checkpoint for
@@ -864,6 +890,7 @@ def _te_prequant_pipe_kwargs(
                 local_files_only = local_files_only,
                 trim_lm_head = trim,
                 failures = failures,
+                config_source = config_source,
             )
             fp8_names = tuple(
                 n for n in te_candidate_filenames(source) if n != getattr(source, "filename", None)
@@ -893,6 +920,7 @@ def _te_prequant_pipe_kwargs(
                     local_files_only = local_files_only,
                     trim_lm_head = trim,
                     failures = failures,
+                    config_source = config_source,
                 )
             if encoder is not None:
                 injected[component] = encoder
