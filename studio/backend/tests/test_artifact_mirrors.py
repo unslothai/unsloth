@@ -441,6 +441,28 @@ def test_a_gguf_and_its_folders_split_across_cache_roots_make_one_sized_gguf_row
     assert rows[0].size_bytes > 5_000 + folder_bytes
 
 
+def test_a_custom_folder_with_the_gguf_and_folders_in_two_caches_shows_one_gguf_row(tmp_path):
+    """A registered custom scan folder can hold several HF caches; the GGUF in one and the mirror's folders in the
+    other are merged like the top-level roots, so deleting a separate folders row cannot strip the GGUF's companions."""
+    from hub.services.models import local_inventory
+
+    repo = "unsloth/Z-Image-GGUF"
+    folder = tmp_path / "models"
+    first, second = folder / "a" / "hub", folder / "b" / "hub"
+    folders = {**_FOLDERS, **_DENOISER}
+    _cache_repo(first, repo, {"z-image-Q4_K_M.gguf": 5_000})
+    _cache_repo(second, repo, folders)
+    folder_bytes = sum(v for k, v in folders.items() if k != "model_index.json")
+
+    rows = [
+        r
+        for r in local_inventory._scan_custom_folder(folder, hf_caches = [(first, None), (second, None)])
+        if r.model_id == repo
+    ]
+    assert [r.model_format for r in rows] == ["gguf"]
+    assert rows[0].size_bytes > 5_000 + folder_bytes
+
+
 _SHAPES = {
     # A bf16 pipeline whose files come from the FP8 artifact mirror (root checkpoints + samples cached beside them).
     "pipeline-through-mirror": dict(

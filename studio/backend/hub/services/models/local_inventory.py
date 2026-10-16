@@ -1354,18 +1354,24 @@ def _scan_custom_folder(
                 limit = _MAX_MODELS_PER_CUSTOM_FOLDER,
                 entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
             )
-            + [
-                row
-                for cache_dir, discovered in hf_caches
-                for row in _scan_hf_cache(
-                    cache_dir,
-                    entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
-                    active_cache = False,
-                    discovered = discovered,
-                    variant_states = variant_states,
-                    active_hub_cache = active_hub_cache,
-                )
-            ]
+            # Several HF caches under one folder are merged like the top-level roots, so an artifact mirror whose
+            # GGUF and diffusers folders sit in different caches is one GGUF row.
+            + _merge_artifact_mirror_roots(
+                [
+                    (
+                        cache_dir,
+                        _scan_hf_cache(
+                            cache_dir,
+                            entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
+                            active_cache = False,
+                            discovered = discovered,
+                            variant_states = variant_states,
+                            active_hub_cache = active_hub_cache,
+                        ),
+                    )
+                    for cache_dir, discovered in hf_caches
+                ]
+            )
             + _scan_lmstudio_dir(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES)
         )
         if _is_supported(m)
