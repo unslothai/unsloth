@@ -347,6 +347,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Pre-cast T5-XXL (9.52 -> 5.90 GB; CLIP-L stays dense). One artifact serves schnell/dev/Krea-dev (T5 shards
         # are byte-identical).
         te_prequant_repos = (("fp8", "text_encoder_2", "unsloth/FLUX.1-schnell-FP8"),),
+        # Default: the hosted int8 ConvRot T5 (CLIP-L stays bf16). ComfyUI's FLUX.1 templates load t5xxl_fp16, so this
+        # is the best hosted scheme that holds up: against the bf16 encoder (bf16 DiT, schnell 4 steps, 24 prompts, same
+        # seeds, bf16 A/A repeat bit-identical) int8 scores LPIPS-alex mean 0.055, SSIM 0.927; layerwise fp8 0.096 /
+        # SSIM 0.894 on 12 of them, too far. T5 resident 8.87 -> 4.56 GiB.
+        te_quant_auto = "int8",
         aliases = ("flux1", "flux-1"),
         # LoRA training targets FLUX.1-dev via the DiT trainer (QLoRA nf4); the dev repo is gated
         trainable = True,
@@ -392,6 +397,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         te_prequant_variant_repos = (
             ("black-forest-labs/FLUX.2-klein-9B", "fp8", "text_encoder", "unsloth/FLUX.2-klein-9B-FP8"),
         ),
+        # No te_quant_auto: an unset request keeps the bf16 encoder. ComfyUI loads qwen_3_4b bf16 for the 4B pair and
+        # qwen_3_8b_fp8mixed for the 9B pair; against the bf16 encoder (bf16 DiT) the hosted int8 ConvRot files score
+        # LPIPS-alex mean 0.078 (4B, 4 steps, 24 prompts), 0.103 (base 4B, 20 steps CFG 5) and 0.047 (9B), layerwise fp8
+        # 0.115 / 0.214 / 0.072. The encoder itself is close (int8 hidden-state cosine 0.9997 at the read layers), but
+        # the distilled 4B amplifies it past what a silent default should cost; the files stay for explicit picks.
         aliases = ("flux2-klein",),
         # A local ComfyUI file has no card tag, so without these a 9B pick got the 4B base and was refused.
         named_variant_bases = (
@@ -449,6 +459,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         # Pre-cast Mistral-Small-24B conditioner (bf16 ~48 GB dense, ~24.7 GB pre-cast).
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/FLUX.2-dev-FP8"),),
+        # int8 ConvRot by default. ComfyUI's FLUX.2-dev templates load mistral_3_small_flux2_bf16 (2 of 3; the third
+        # fp8); against the bf16 encoder (bf16 DiT, 20 steps guidance 4, 24 prompts, bf16 A/A repeat bit-identical) the
+        # hosted int8 ConvRot file scores LPIPS-alex mean 0.057, SSIM 0.929, layerwise fp8 0.266 / SSIM 0.730 on 12. The
+        # Pixtral vision tower stays bf16. Resident 44.7 -> 22.8 GiB, load 9.3 -> 3.6 s.
+        te_quant_auto = "int8",
         aliases = ("flux2-dev", "flux2dev"),
         trainable = True,
         train_base_repos = ("black-forest-labs/FLUX.2-dev",),
@@ -477,6 +492,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         base_repo = "black-forest-labs/FLUX.1-Kontext-dev",
         # FLUX.1's pre-cast T5-XXL: Kontext ships the same text_encoder_2 shards (sha256 compared 2026-10-16).
         te_prequant_repos = (("fp8", "text_encoder_2", "unsloth/FLUX.1-schnell-FP8"),),
+        # fp8 by default, as ComfyUI's Kontext template (t5xxl_fp8_e4m3fn_scaled): against the bf16 encoder (bf16 DiT, 8
+        # edits, 20 steps, bf16 A/A repeat bit-identical) LPIPS-alex mean 0.034 / max 0.143, SSIM 0.945. The shared int8
+        # ConvRot T5 scores 0.021 and is one explicit pick away.
+        te_quant_auto = "fp8",
         aliases = ("flux.1-kontext-dev", "flux1-kontext", "flux-kontext", "kontext"),
         edit = True,
         # Native: FLUX.1's VAE + CLIP-L / T5-XXL, the source as a reference image (sd.cpp docs/kontext.md).
@@ -517,6 +536,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Qwen-Image's pre-cast Qwen2.5-VL-7B: every edit release (original, 2509, 2511) ships the same text_encoder/
         # shards. The vision tower is cast too, and the edit path runs it.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
+        # int8 ConvRot by default. ComfyUI loads qwen_2.5_vl_7b_fp8_scaled; our layerwise fp8 (no scales) sits at the
+        # limit against the bf16 encoder (bf16 DiT, 8 edits, 40 steps: LPIPS-alex mean 0.060, max 0.330), the shared
+        # int8 ConvRot file at 0.017 / max 0.033, SSIM 0.970. The vision tower stays bf16 in it.
+        te_quant_auto = "int8",
         cfg_kwarg = "true_cfg_scale",
         aliases = (
             "qwen-image-edit-2511",
@@ -562,6 +585,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         base_repo = "Qwen/Qwen-Image-Layered",
         # Qwen-Image's pre-cast Qwen2.5-VL-7B: the layered release ships the same text_encoder/ shards.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
+        # fp8 by default, as ComfyUI's layered templates (qwen_2.5_vl_7b_fp8_scaled): LPIPS-alex mean 0.0055 / max
+        # 0.034, SSIM 0.993 against the bf16 encoder (bf16 DiT, 8 inputs, 20 steps CFG 2.5, bf16 A/A repeat
+        # bit-identical).
+        te_quant_auto = "fp8",
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image_layered", "qwenimagelayered"),
         edit = True,
@@ -617,6 +644,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         # Pre-cast Qwen2.5-VL-7B (16.6 -> 8.8 GB). Always was independent of the DiT scheme rules.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
+        # int8 ConvRot by default. ComfyUI loads qwen_2.5_vl_7b_fp8_scaled, but our layerwise fp8 (no per-tensor scale)
+        # moves too much: against the bf16 encoder (bf16 DiT, 20 steps CFG 4, bf16 A/A repeat bit-identical) LPIPS-alex
+        # mean 0.138 / SSIM 0.844 on 12 prompts, int8 ConvRot 0.057 / SSIM 0.938 on 24 (one 0.47 is a cone moved to the
+        # side the prompt asks for). Text renders correctly in both. Resident 15.45 -> 8.36 GiB, load 7.3 -> 2.6 s.
+        te_quant_auto = "int8",
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image", "qwenimage"),
         # fp16 overflows to NaN latents (black images)
@@ -826,6 +858,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # shared with flux.2-klein-4B: klein ships stock Qwen3-4B (sha256-identical to unsloth/Qwen3-4B), while this
         # encoder is Z-Image's own variant of it (layer 35 MLP up/down_proj maxdiff 0.86 against klein's).
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Z-Image-Turbo-FP8"),),
+        # int8 ConvRot by default (ComfyUI loads qwen_3_4b bf16 in 3 of 4 templates): against the bf16 encoder (bf16
+        # DiT, 8 steps, 12 prompts, bf16 A/A repeat bit-identical) LPIPS-alex mean 0.049 / max 0.078, SSIM 0.934;
+        # layerwise fp8 0.105. Resident 7.49 -> 4.11 GiB, load 2.7 -> 1.8 s.
+        te_quant_auto = "int8",
         aliases = ("zimage", "z_image"),
         # LoRA training via the DiT trainer (bf16); defaults to the prequant nf4 repo for QLoRA
         trainable = True,
@@ -868,6 +904,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Pre-cast Qwen3-VL-4B TE (8.88 -> 4.83 GB); handed into load_krea2_pipeline directly (assembly never sees
         # pipe_kwargs).
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Krea-2-Turbo-FP8"),),
+        # int8 ConvRot by default. ComfyUI loads qwen3vl_4b_fp8_scaled; our layerwise fp8 scores LPIPS-alex mean 0.110
+        # against the bf16 encoder (bf16 DiT, Turbo 8 steps, 12 prompts, bf16 A/A repeat bit-identical), int8 ConvRot
+        # (the Comfy-Org/Krea-2 qwen3vl_4b_int8_convrot scheme) 0.047 / SSIM 0.934. Resident 8.27 -> 4.79 GiB.
+        te_quant_auto = "int8",
         aliases = ("krea2",),
         # no prequant repo yet, so nf4 quantizes on the fly
         trainable = True,
@@ -891,6 +931,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         # pre-cast Gemma2-2B TE; the Hub stores it fp32 (10.46 GB), so the 3.20 GB artifact is a 3.3x download cut
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Lumina-Image-2.0-FP8"),),
+        # int8 ConvRot by default (ComfyUI ships gemma_2_2b_fp16 only): LPIPS-alex mean 0.015 / max 0.037, SSIM 0.986
+        # against the bf16 encoder (bf16 DiT, 50 steps, 8 prompts, bf16 A/A repeat bit-identical); layerwise fp8 0.177.
+        # Resident 4.87 -> 2.99 GiB, load 2.5 -> 0.7 s, download 10.46 (fp32) -> 3.21 GB.
+        te_quant_auto = "int8",
         aliases = ("lumina-image-2.0", "lumina-image-2", "lumina2"),
         fp16_incompatible = True,
     ),
@@ -914,6 +958,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         # the Qwen2.5-VL TE is byte-identical to Qwen-Image (verified sha256), so reuse that artifact: 16.58 -> 8.84 GB.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
+        # int8 ConvRot by default (Comfy-Org's HunyuanImage repo offers bf16 and fp8_scaled, no template): Qwen-Image's
+        # shared file scores LPIPS-alex mean 0.063, SSIM 0.917 against the bf16 encoder (bf16 DiT, 50 steps, 24 prompts,
+        # bf16 A/A repeat bit-identical); layerwise fp8 0.165. ByT5 stays bf16. Resident 15.45 -> 8.36 GiB.
+        te_quant_auto = "int8",
         pipeline_class = "HunyuanImagePipeline",
         transformer_class = "HunyuanImageTransformer2DModel",
         base_repo = "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
@@ -950,6 +998,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),
             ("fp8", "text_encoder_3", "unsloth/FLUX.1-schnell-FP8", "text_encoder_2"),
         ),
+        # No te_quant_auto. ComfyUI loads t5xxl_fp8_e4m3fn_scaled + llama_3.1_8b_instruct_fp8_scaled; against the bf16
+        # encoders (bf16 DiT, Full 50 steps CFG 5, 12 prompts, bf16 A/A repeat bit-identical) the hosted int8 ConvRot T5
+        # + Llama score LPIPS-alex mean 0.103 / SSIM 0.890 and layerwise fp8 0.225 / SSIM 0.763: this DiT reads every
+        # Llama layer, and neither is close enough for a silent default. Both stay one explicit pick away (CLIPs stay
+        # bf16).
         pipeline_class = "HiDreamImagePipeline",
         transformer_class = "HiDreamImageTransformer2DModel",
         base_repo = "HiDream-ai/HiDream-I1-Full",
@@ -970,6 +1023,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Qwen3-VL-8B, built from the vendor's per-channel-scaled fp8 shards dequantized to bf16 (what a dense load
         # runs): layerwise fp8 here, int8 ConvRot in diffusion_te_prequant.TE_INT8_CONVROT_FILES.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/ideogram-4-FP8"),),
+        # No te_quant_auto. ComfyUI loads qwen3vl_8b_fp8_scaled; against the dequantized vendor encoder (bf16 DiT, 20
+        # steps CFG 7, 12 prompts, bf16 A/A repeat bit-identical) int8 ConvRot scores LPIPS-alex mean 0.081 and
+        # layerwise fp8 0.114, both past what a silent default should cost, although text survives and the encoder loads
+        # in 2.1 s instead of 153 s (8.7 instead of 15.2 GiB). The files stay for explicit picks.
         aliases = ("ideogram4", "ideogram-v4", "ideogram"),
         # Two DiTs assembled per-component, so no transformer-only single-file / GGUF load.
         pipeline_only = True,
