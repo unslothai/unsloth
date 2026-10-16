@@ -587,7 +587,7 @@ def test_weight_quant_q_galore_steps_unchunked():
     assert not module._chunk_safe(QGaLoreAdamW8bit([{"params": p, "weight_quant": True}]))
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 @pytest.mark.parametrize("weight_quant", [False, True])
 def test_q_galore_multi_chunk_offload(monkeypatch, weight_quant):
     module = _module()
