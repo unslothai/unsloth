@@ -141,7 +141,7 @@ const FileCardBody: FC<{
     ) : (
       <CardCenter>{center}</CardCenter>
     )}
-    <span className={cn("flex min-w-0 items-center gap-1.5 px-2.25 pb-[calc(var(--spacing)*1.75-1.5px)]", preview && "pt-[calc(var(--spacing)*1.75-2.5px)]")}>
+    <span className={cn("flex min-w-0 items-center gap-1.5 px-2.25 pb-[calc(var(--spacing)*1.75-1px)]", preview && "pt-[calc(var(--spacing)*1.75-3px)]")}>
       {icon ?? <AttachmentKindIcon kind={kind} className="size-3.25" />}
       <span className="min-w-0 truncate text-ui-11p5 leading-ui-15 text-foreground">
         {name}
