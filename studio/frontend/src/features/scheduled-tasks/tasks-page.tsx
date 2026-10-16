@@ -48,6 +48,9 @@ import { type TaskSchedule, formatMoment, relativeTimeParts, summarizeSchedule }
 import { useScheduledTasksStore } from "./store";
 import { TaskDialog } from "./task-dialog";
 
+// How often the page looks again at a task that is due but not yet running.
+const OVERDUE_REFRESH_MS = 5_000;
+
 const ROW_BUTTON =
   "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 data-[state=open]:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";
 
@@ -265,7 +268,12 @@ export function TasksPage() {
     const delay = Math.max(1_000, soonest - Date.now() + 2_000);
     // Further out than a timer can wait; the minute clock re-renders long before it matters.
     if (delay > 2 ** 31 - 1) return;
-    const timer = window.setTimeout(() => void refresh(), delay);
+    // Then again every few seconds while the task is still due: the scheduler may be busy with
+    // another run, and only a claim moves its next run on, which ends this.
+    let timer = window.setTimeout(function look() {
+      void refresh();
+      timer = window.setTimeout(look, OVERDUE_REFRESH_MS);
+    }, delay);
     return () => window.clearTimeout(timer);
   }, [soonest, refresh]);
 

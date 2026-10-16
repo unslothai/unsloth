@@ -157,12 +157,17 @@ def create_task(task: dict) -> dict:
         conn.close()
 
 
+# What decides when a task runs; any other change keeps its next run, an overdue one included.
+_TIMING_FIELDS = ("schedule", "timezone", "enabled")
+
+
 def update_task(
     task_id: str,
     changes: dict,
     reschedule: Optional[Callable[[dict], Optional[int]]] = None,
 ) -> Optional[dict]:
-    """Apply ``changes``; ``reschedule`` sees the updated task and returns its next run time.
+    """Apply ``changes``. When they change when the task runs, ``reschedule`` sees the updated task
+    and returns its next run time; resending the values it already has changes nothing.
 
     Both happen in one transaction, so a run claimed meanwhile cannot be scheduled from a stale
     copy. Whatever ``reschedule`` raises rolls the update back.
@@ -174,8 +179,9 @@ def update_task(
         if row is None:
             conn.rollback()
             return None
-        task = {**_task_from_row(row), **changes}
-        if reschedule is not None:
+        stored = _task_from_row(row)
+        task = {**stored, **changes}
+        if reschedule is not None and any(task[key] != stored[key] for key in _TIMING_FIELDS):
             task["nextRunAt"] = reschedule(task)
         conn.execute(
             """

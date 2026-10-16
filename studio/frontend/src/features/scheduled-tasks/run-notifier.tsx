@@ -26,6 +26,7 @@ import {
   nextPollDelay,
   readSeenRuns,
   runErrorText,
+  runsToAnnounce,
 } from "./results";
 
 // More than this at once, e.g. on reopening Studio, and one toast speaks for them all.
@@ -119,8 +120,8 @@ export function ScheduledTaskRunNotifier() {
       void navigateRef.current({ to: "/chat", search: { thread: threadId } });
     const openTasks = () => void navigateRef.current({ to: "/tasks" });
 
-    const announce = (runs: FinishedScheduledTaskRun[]) => {
-      const threadIds = runs.flatMap((run) =>
+    const announce = (finished: FinishedScheduledTaskRun[]) => {
+      const threadIds = finished.flatMap((run) =>
         run.status === "succeeded" && run.threadId ? [run.threadId] : [],
       );
       if (threadIds.length > 0) {
@@ -128,6 +129,8 @@ export function ScheduledTaskRunNotifier() {
         useChatNavigationStore.getState().markThreadsUnread(threadIds);
       }
       window.dispatchEvent(new Event(SCHEDULED_TASK_RUNS_FINISHED_EVENT));
+      const runs = runsToAnnounce(finished);
+      if (runs.length === 0) return;
       if (runs.length > INDIVIDUAL_TOASTS) {
         toast(translate("scheduledTasks.toast.many", { count: runs.length }), {
           action: { label: translate("scheduledTasks.toast.view"), onClick: openTasks },

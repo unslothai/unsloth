@@ -15,6 +15,7 @@ import {
   nextPollDelay,
   readSeenRuns,
   runErrorText,
+  runsToAnnounce,
 } from "../src/features/scheduled-tasks/results.ts";
 import {
   type ScheduleSummary,
@@ -216,6 +217,13 @@ test("results past one answer are read a page at a time and announced once", asy
   assert.deepEqual(fresh.map((run) => run.id), ["a", "b", "c"]);
   assert.deepEqual(seen, { since: 40_000, ids: ["a", "b", "c"] });
   assert.equal(last.more, false);
+});
+
+test("a run that succeeded after its chat was deleted is not announced, least of all as failed", () => {
+  const ready = finished("ready", 1_000);
+  const gone = { ...finished("gone", 2_000), threadId: null };
+  const failed = { ...finished("failed", 3_000), status: "failed" as const, threadId: null };
+  assert.deepEqual(runsToAnnounce([ready, gone, failed]).map((run) => run.id), ["ready", "failed"]);
 });
 
 test("a backlog longer than one poll reads is picked up again shortly", async () => {

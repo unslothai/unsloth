@@ -187,11 +187,18 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
             "enabled_tools": [],
         }
     )
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _RUN_TIMEOUT_SECONDS
     activity = InferenceActivityReservation()
     activity.reserve()
     producer: Optional[asyncio.Future] = None
     try:
-        await activity.start(cancel_event)
+        # The deadline covers the wait for a model load or unload to let go too: one that never
+        # does must not keep the scheduler from every other task.
+        try:
+            await asyncio.wait_for(activity.start(cancel_event), timeout = _RUN_TIMEOUT_SECONDS)
+        except TimeoutError:
+            raise RunFailed("timeout") from None
         if cancel_event.is_set():
             raise RunFailed("cancelled")
         producer = asyncio.ensure_future(
@@ -202,7 +209,7 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
                 cancel_on_disconnect = False,
             )
         )
-        done, _ = await asyncio.wait({producer}, timeout = _RUN_TIMEOUT_SECONDS)
+        done, _ = await asyncio.wait({producer}, timeout = max(0.0, deadline - loop.time()))
         if not done:
             raise RunFailed("timeout")
         try:

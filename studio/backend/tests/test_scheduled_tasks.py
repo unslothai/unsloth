@@ -361,11 +361,17 @@ def test_pause_clears_the_next_run_and_resume_schedules_from_now(client, monkeyp
     assert resumed["nextRunAt"] == ms("2026-10-21T09:00:00+00:00")
 
 
-def test_a_rename_keeps_an_overdue_run_due(client):
+def test_a_rename_or_resent_timing_keeps_an_overdue_run_due(client):
     make_task(nextRunAt = ms("2026-10-14T09:00:00+00:00"))
     renamed = client.patch("/api/scheduled-tasks/task-1", json = {"title": "Evening brief"}).json()
     assert renamed["title"] == "Evening brief"
     assert renamed["nextRunAt"] == ms("2026-10-14T09:00:00+00:00")
+    # The values it already has, as a client saving a whole form sends them.
+    resent = client.patch(
+        "/api/scheduled-tasks/task-1",
+        json = {"enabled": True, "schedule": {"kind": "daily", "time": "09:00"}, "timezone": "UTC"},
+    ).json()
+    assert resent["nextRunAt"] == ms("2026-10-14T09:00:00+00:00")
 
 
 def test_a_new_schedule_moves_the_next_run(client, monkeypatch):
@@ -737,6 +743,21 @@ def test_a_run_that_never_answers_is_stopped(monkeypatch):
         generate(monkeypatch, producer, cancel_event = cancel_event)
     assert failure.value.code == "timeout"
     assert cancel_event.is_set() and producer.cancelled
+
+
+def test_a_run_whose_model_load_never_lets_go_times_out(monkeypatch):
+    from core.inference import llama_keepwarm
+
+    async def wedged(self, cancel_event = None):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(llama_keepwarm.InferenceActivityReservation, "start", wedged)
+    monkeypatch.setattr(scheduler_module, "_RUN_TIMEOUT_SECONDS", 0.05)
+    producer = FakeProducer(completion("Never asked."))
+    with pytest.raises(RunFailed) as failure:
+        generate(monkeypatch, producer)
+    assert failure.value.code == "timeout"
+    assert producer.payload is None
 
 
 def test_a_cancelled_run_discards_its_partial_answer(monkeypatch):

@@ -116,6 +116,14 @@ export async function collectFinishedRuns(
   }
 }
 
+/** The finished runs worth a toast: one that succeeded but whose chat is already gone (deleted,
+ *  say, from another tab) has nothing to open, and it did not fail either. */
+export function runsToAnnounce<T extends { status: string; threadId: string | null }>(
+  runs: readonly T[],
+): T[] {
+  return runs.filter((run) => run.status !== "succeeded" || run.threadId !== null);
+}
+
 type Translate = (key: TranslationKey, values?: InterpolationValues) => string;
 
 // The backend's error codes; anything else carries its own text.

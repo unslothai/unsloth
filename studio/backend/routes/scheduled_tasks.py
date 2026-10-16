@@ -189,11 +189,9 @@ def update_scheduled_task(
 ):
     changes = payload.model_dump(exclude_unset = True, exclude_none = True)
     now = db.now_ms()
-    # Only a change to when it runs moves the next run: a rename keeps an overdue run due.
-    moves = bool(changes.keys() & {"schedule", "timezone", "enabled"})
-    updated = db.update_task(
-        task_id, changes, (lambda task: _next_run(task, now)) if moves else None
-    )
+    # Called only when the schedule, time zone or enabled flag actually changes: a rename, or a
+    # resent value, keeps an overdue run due.
+    updated = db.update_task(task_id, changes, lambda task: _next_run(task, now))
     if updated is None:
         raise HTTPException(status_code = 404, detail = _NOT_FOUND)
     _wake_scheduler(request)
