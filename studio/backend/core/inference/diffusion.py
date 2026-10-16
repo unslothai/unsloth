@@ -3595,7 +3595,6 @@ class DiffusionBackend:
                     te_prequant_sources_confirmed,
                     te_prequant_sources_for_base,
                 )
-
                 hosted = te_prequant_sources_for_base(
                     fam,
                     base,
