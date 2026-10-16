@@ -391,4 +391,8 @@ SKIPPED = {
     "routes.linked_instances:PATCH:/{instance_id}": _LINKED_INSTANCE,
     "routes.linked_instances:DELETE:/{instance_id}": _LINKED_INSTANCE,
     "routes.linked_instances:POST:/{instance_id}/test": _LINKED_INSTANCE,
+    "routes.linked_instances:GET:/{instance_id}/proxy/{path:path}": _LINKED_INSTANCE,
+    "routes.linked_instances:POST:/{instance_id}/proxy/{path:path}": _LINKED_INSTANCE,
+    "routes.linked_instances:PATCH:/{instance_id}/proxy/{path:path}": _LINKED_INSTANCE,
+    "routes.linked_instances:DELETE:/{instance_id}/proxy/{path:path}": _LINKED_INSTANCE,
 }
