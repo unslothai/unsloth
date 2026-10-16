@@ -3792,6 +3792,13 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     "pandoc notes.md --output=/usr/share/doc/report.docx",
     "ffmpeg -y -i in.wav /usr/share/sounds/out.wav",
     "magick in.png /usr/share/pixmaps/photo.png",
+    "pandoc notes.md -o /report.docx",
+    "ffmpeg -y -i in.wav /report.wav",
+    "magick in.png -write /usr/share/pixmaps/mid.png out.png",
+    "convert in.png +write /usr/share/pixmaps/mid.png out.png",
+    "pandoc in.docx --extract-media=/usr/share/doc/assets -o out.md",
+    "pandoc in.docx --extract-media /usr/share/doc/assets -o out.md",
+    "pandoc in.md --log=/usr/share/doc/log.json -o out.html",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
@@ -4136,6 +4143,8 @@ _INDIRECT_BENIGN_TERMINAL = (
     "pandoc notes.md --output=report.docx",
     "export PATH=/home/alice/bin:$PATH",
     "robocopy src dst /E",
+    "magick in.png -resize 50% out.png",
+    "pandoc in.docx --extract-media=media -o out.md",
 )
 
 _INDIRECT_BENIGN_PYTHON = (

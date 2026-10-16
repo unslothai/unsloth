@@ -1223,6 +1223,14 @@ _BARE_SWITCH_RE = re.compile(r"^[/\\][^/\\]*$")
 # for most tools this scan has no table for.
 _OUTPUT_FILE_FLAGS = frozenset({"-o", "--output"})
 
+# Flags that name a file or directory the command writes, beyond `-o`/`--output`: ImageMagick's
+# `-write filename` / `+write filename`, and pandoc's `--extract-media=DIR` and `--log=FILE`.
+_COMMAND_OUTPUT_FLAGS = {
+    "magick": frozenset({"-write", "+write"}),
+    "convert": frozenset({"-write", "+write"}),
+    "pandoc": frozenset({"--extract-media", "--log"}),
+}
+
 # Tools that name their output positionally. `ffmpeg ... {[input_options] -i input} ... output`:
 # every operand but an `-i` value is written. `magick input-file ... output-file`: the last one is.
 _POSITIONAL_OUTPUT_COMMANDS = {"ffmpeg": "not_input", "magick": "last", "convert": "last"}
@@ -1230,22 +1238,26 @@ _POSITIONAL_OUTPUT_COMMANDS = {"ffmpeg": "not_input", "magick": "last", "convert
 
 def _unlisted_command_operands(command, args) -> "list[tuple[str, bool]]":
     outputs = _POSITIONAL_OUTPUT_COMMANDS.get(command)
+    output_flags = _OUTPUT_FILE_FLAGS | _COMMAND_OUTPUT_FLAGS.get(command, frozenset())
     operands = []
     writes_next = False
     for index, arg in enumerate(args):
         writing, writes_next = writes_next, False
         value = arg
+        if arg in output_flags:
+            writes_next = True
+            continue
         if arg.startswith("-"):
             flag, _, value = arg.partition("=")
             if not value and not arg.startswith("--"):
                 flag, value = arg[:2], arg[2:]
-            writing = flag in _OUTPUT_FILE_FLAGS
-            writes_next = writing and not value
+            writing = flag in output_flags
         elif outputs == "last":
             writing = writing or index == len(args) - 1
         elif outputs == "not_input":
             writing = writing or index == 0 or args[index - 1] != "-i"
-        if _looks_absolute(value) and not _BARE_SWITCH_RE.match(value):
+        # A lone rooted word is a Windows switch (`/E`), unless it is the file the command writes.
+        if _looks_absolute(value) and (writing or not _BARE_SWITCH_RE.match(value)):
             operands.append((value, writing))
     return operands
 
