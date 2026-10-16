@@ -203,8 +203,12 @@ export const BUDGET = {
   // module at startup: the page shares dropdown-menu, alert-dialog, use-mobile, native notifications and a Radix
   // package with the startup set, so Rolldown splits them out of the chunks they were in; that and a few small
   // helpers in other eager chunks are the other 1.6 KB. Raised by that growth.
-  transferBytes: 2_049_995,
-  rawBytes: 6_812_199,
+  // The Scheduled follow-ups add 4,519 B raw / 1,396 B transfer (6,811,639 -> 6,816,158 B raw, 2,049,629 ->
+  // 2,051,025 B transfer against d2bb8d702d): the unseen-runs store behind the notice dots on the sidebar's
+  // Scheduled and More icons, the scheduled-chat mark on Recents rows and "Sent by scheduled task" over its
+  // prompt, the sidebar's new-task "+", and their strings. The chunk count goes 100 -> 101. Raised by that growth.
+  transferBytes: 2_051_391,
+  rawBytes: 6_816_718,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
