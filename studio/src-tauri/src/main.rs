@@ -25,6 +25,7 @@ mod install;
 mod install_watchdog;
 #[cfg(target_os = "linux")]
 mod linux_webkit;
+mod long_paths;
 mod loopback_http;
 #[cfg(target_os = "macos")]
 mod macos_event_guard;
@@ -40,6 +41,7 @@ mod process;
 mod process_identity;
 mod shell_path;
 mod staged_update;
+mod studio_home;
 mod update;
 mod webview_permissions;
 mod windows_job;
@@ -795,9 +797,11 @@ fn setup_logging() {
         simplelog::ColorChoice::Auto,
     ));
 
-    // Try to set up file logging to ~/.unsloth/studio/tauri.log
+    // Try to set up file logging to ~/.unsloth/studio/tauri.log (a chosen root once it exists).
     if let Some(home) = dirs::home_dir() {
-        let log_dir = home.join(".unsloth").join("studio");
+        let log_dir = studio_home::chosen_root_for_home(&home)
+            .filter(|root| root.is_dir())
+            .unwrap_or_else(|| studio_home::default_root_for_home(&home));
         if fs::create_dir_all(&log_dir).is_ok() {
             let log_path = log_dir.join("tauri.log");
             let rotated_path = log_dir.join("tauri.log.1");
@@ -2312,6 +2316,9 @@ fn main() {
             app_layout::reset_app_window_layout_initialized,
             app_layout::take_native_layout_restored,
             commands::check_install_status,
+            studio_home::studio_install_location,
+            studio_home::choose_studio_install_location,
+            studio_home::reset_studio_install_location,
             commands::desktop_preflight,
             commands::start_install,
             commands::start_server,
@@ -2329,6 +2336,8 @@ fn main() {
             commands::native_path_leases_usable,
             commands::cancel_pending_elevation,
             commands::install_system_packages,
+            long_paths::windows_long_paths_status,
+            long_paths::enable_windows_long_paths,
             desktop_auth::desktop_auth,
             desktop_update_policy::check_desktop_manual_update,
             desktop_update_policy::desktop_update_policy,
@@ -2358,6 +2367,7 @@ fn main() {
             native_intents::read_native_attachment_file,
             native_intents::pick_native_model,
             native_intents::pick_hugging_face_cache_dir,
+            native_intents::pick_native_model_folder,
             native_intents::pick_native_document_folder,
             native_intents::consume_native_path_token,
             native_intents::register_artifact_path,

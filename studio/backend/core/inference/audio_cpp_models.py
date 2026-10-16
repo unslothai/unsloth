@@ -909,11 +909,21 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
         ),
     ),
     # Speech to text.
+    # Full context fails past the ~400 s encoder ceiling; windows drop about a third of the words.
+    AudioCppFamily(
+        "parakeet_tdt",
+        "asr",
+        model_options = {
+            "session_options": {
+                "parakeet_tdt.offline_mode": "auto",
+                "parakeet_tdt.audio_chunk_threshold_sec": "390",
+            }
+        },
+    ),
     *(
         AudioCppFamily(name, "asr")
         for name in (
             "qwen3_asr",
-            "parakeet_tdt",
             "canary_asr",
             "citrinet_asr",
             "cohere_asr",
@@ -1694,12 +1704,7 @@ def match_variant(
     wanted: Optional[str],
     folder: str = "",
 ) -> Optional[AudioCppVariant]:
-    """The variant ``wanted`` names: its key, its file, or a quant that picks one row.
-
-    A bare quant shared by several rows (ACE-Step ``turbo/Q8_0`` and ``base/Q8_0``) picks the default
-    ordering's first, which is what the folder row loads by default. ``folder`` is the row's folder in
-    the repo, whose own name never counts as a scope word.
-    """
+    """match a key, file, or quant; shared quants use default order; row folders are not scopes."""
     text = (wanted or "").strip().replace("\\", "/")
     if not text:
         return None
@@ -1707,9 +1712,12 @@ def match_variant(
     for variant in variants:
         if variant.key.lower() == low:
             return variant
-    for variant in variants:
-        main = variant.main_file.lower()
-        if main == low or main.rsplit("/", 1)[-1] in (low, f"{low}.gguf"):
+    mains = [(variant, variant.main_file.replace("\\", "/").lower()) for variant in variants]
+    for variant, main in mains:
+        if main == low:
+            return variant
+    for variant, main in mains:
+        if main.endswith(f"/{low}") or main.rsplit("/", 1)[-1] in (low, f"{low}.gguf"):
             return variant
     quant = low.rsplit("/", 1)[-1]
     matches = [
@@ -1720,7 +1728,7 @@ def match_variant(
     ]
     if matches:
         return sorted(matches, key = _variant_rank)[0]
-    # A sub-folder alone (legacy ``.../PocketTTS-GGUF/english``).
+    # support legacy requests that name only a subfolder, such as PocketTTS-GGUF/english.
     scoped = [v for v in variants if v.key.lower().startswith(low + "/")]
     if scoped:
         return sorted(scoped, key = _variant_rank)[0]
@@ -2597,6 +2605,10 @@ def _raw_request_options(spec: Optional[dict], embedded: Optional[dict]) -> list
 
 
 def _request_keys(spec: Optional[dict], embedded: Optional[dict]) -> Optional[frozenset[str]]:
+    # The server prefers an embedded v1 contract over model_specs/ (model_spec/package.cpp).
+    if isinstance(embedded, dict) and embedded.get("schema_version") is not None:
+        if (embedded.get("options") or {}).get("request"):
+            spec = None
     if _request_source(spec, embedded).get("schema_version") is None:
         return None
     names = frozenset(

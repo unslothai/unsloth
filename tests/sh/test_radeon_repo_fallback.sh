@@ -1,8 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-#
-# _radeon_fetch_listing separates "no such release" (HTTP 404/410) from "host unreachable" (#7264, #10657).
+# _radeon_fetch_listing separates "no such release" (HTTP 404/410) from "host unreachable".
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -20,7 +19,8 @@ echo cp312
 STUB
 chmod +x "$_STUB_DIR/fakepy"
 
-# $1 = stub curl exit code, $2 = the %{http_code} it writes out, as curl -w does even on failure, $3 = body sent first.
+# $1 = stub curl exit code, $2 = the %{http_code} it writes (curl -w does even on failure),
+# $3 = body sent first.
 run_fetch() {
     _curl_dir=$(mktemp -d)
     cat > "$_curl_dir/curl" <<STUB
@@ -46,7 +46,7 @@ STUB
 
 echo "=== test_radeon_repo_fallback ==="
 
-# 1) curl -f exits 22 on HTTP >= 400; only 404/410 mean the release is absent.
+# curl -f exits 22 on HTTP >= 400; only 404/410 mean the release is absent.
 assert_eq "HTTP 404 -> fetch fails, host recorded as answering" \
     "fail answered=true" "$(run_fetch 22 404)"
 assert_eq "HTTP 410 -> fetch fails, host recorded as answering" \
@@ -105,7 +105,7 @@ _result=$(PATH="$_curl_dir:$PATH" bash -c "
 assert_eq "a served listing -> fetch succeeds" "ok answered=false pytag=cp312" "$_result"
 rm -rf "$_curl_dir"
 
-# 5) Two attempts (X.Y.Z, then X.Y): "no release" only if BOTH were 404/410.
+# Two attempts (X.Y.Z, then X.Y): "no release" only if BOTH were 404/410.
 # $1/$2 = first call's rc/http, $3/$4 = second call's.
 run_two() {
     _curl_dir=$(mktemp -d)
@@ -135,7 +135,7 @@ assert_eq "404 then 503 -> inconclusive" "inconclusive calls=2" "$(run_two 22 40
 assert_eq "404 then connection refused -> inconclusive" "inconclusive calls=2" "$(run_two 22 404 7 000)"
 assert_eq "timeout then 404 -> stays inconclusive" "inconclusive calls=2" "$(run_two 28 000 22 404)"
 
-# 6) wget (only reached without curl): its 8 covers every HTTP error, so it stays "unreachable".
+# wget's exit 8 covers every HTTP error, so it stays "unreachable".
 run_fetch_wget() {
     _wget_dir=$(mktemp -d)
     cat > "$_wget_dir/wget" <<STUB

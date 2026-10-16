@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""SyntheticDataKit's vLLM server port (#2494).
-
-The port was fixed at 8000 in the `vllm serve` call, the readiness probe and the
-synthetic-data-kit config, so a kit could neither take a `port` argument nor start
-where 8000 was already taken (Studio listens there in the Unsloth Docker image)."""
+"""vLLM port is no longer fixed at 8000, where Studio listens in the Unsloth Docker image."""
 
 import socket
 
