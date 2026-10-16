@@ -276,7 +276,6 @@ const HEADER_ICON = { width: 16, height: 16 } as const;
 
 const CompactCardsContext = createContext(false);
 
-/** The app's tooltip on a header control, in place of the browser's title. */
 function HeaderTip({ label, children }: { label: string; children: ReactElement }) {
   return (
     <Tooltip>
