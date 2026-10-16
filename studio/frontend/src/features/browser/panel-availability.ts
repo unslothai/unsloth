@@ -17,6 +17,18 @@ export function browserPanelAvailable(): boolean {
   return panelAvailable;
 }
 
+// The chat whose browser is on screen, as the browser store names it; the store sets it.
+let shownChat = "new";
+
+export function setShownBrowserChat(chat: string): void {
+  shownChat = chat;
+}
+
+/** A new chat's run reads this when it starts, so its actions stay in that chat after a switch. */
+export function shownBrowserChat(): string {
+  return shownChat;
+}
+
 const subscribe = (listener: () => void) => {
   listeners.add(listener);
   return () => void listeners.delete(listener);

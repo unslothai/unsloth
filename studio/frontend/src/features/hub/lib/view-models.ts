@@ -18,9 +18,14 @@ import {
   type CapabilityKey,
   detectBaseModel,
   detectCapabilities,
+  generationKinds,
+  isVideoFamilyName,
+  HUB_CAPABILITY_FILTERS,
+  type HubCapabilityFilter,
 } from "./model-capabilities";
 export {
   detectResultFormat,
+  hasRecommendedCheckpointLikes,
   isUnslothFinetunable,
   matchesFormat,
   matchesRecommended,
@@ -32,15 +37,17 @@ export {
 export { isGgufLike } from "./hf-model-meta";
 
 export const CAPABILITY_FILTER_OPTIONS: ReadonlyArray<{
-  value: CapabilityFilter;
+  value: HubCapabilityFilter;
   label: string;
 }> = [
-  { value: "all", label: "All capabilities" },
+  // Models with none of the others, so ticking every box lists every model.
+  { value: "text", label: "Text only" },
   { value: "reasoning", label: "Reasoning" },
   { value: "vision", label: "Vision" },
   { value: "audio", label: "Audio" },
   { value: "embedding", label: "Embeddings" },
-  { value: "diffusion", label: "Image/video gen" },
+  { value: "image-gen", label: "Image gen" },
+  { value: "video-gen", label: "Video gen" },
 ];
 
 export const FORMAT_FILTER_OPTIONS: ReadonlyArray<{
@@ -265,6 +272,63 @@ export function buildDiscoverRows(
       ),
     };
   });
+}
+
+// Pipelines that make pictures, video or sound, which Text only must never list.
+const MEDIA_OUTPUT_TASKS: ReadonlySet<string> = new Set([
+  "text-to-image",
+  "image-to-image",
+  "image-text-to-image",
+  "unconditional-image-generation",
+  "text-to-video",
+  "image-to-video",
+  "image-text-to-video",
+  "video-to-video",
+  "text-to-speech",
+  "text-to-audio",
+  "audio-to-audio",
+  "text-to-3d",
+  "image-to-3d",
+]);
+
+/** One Hub filter pick against a row; image and video gen split the shared "diffusion" capability. */
+export function matchesHubCapability(
+  row: {
+    capabilities: Array<{ key: CapabilityKey }>;
+    result: Pick<HfModelResult, "tags" | "pipelineTag" | "id">;
+  },
+  key: HubCapabilityFilter,
+): boolean {
+  if (key === "text") {
+    return (
+      !HUB_CAPABILITY_FILTERS.some(
+        (other) => other !== "text" && matchesHubCapability(row, other),
+      ) &&
+      // A generator neither box claims (video-to-video), or a media task the detector misses.
+      !matchesCapability(row.capabilities, "diffusion") &&
+      !MEDIA_OUTPUT_TASKS.has(row.result.pipelineTag?.toLowerCase() ?? "") &&
+      !(row.result.tags ?? []).some((tag) =>
+        MEDIA_OUTPUT_TASKS.has(tag.toLowerCase()),
+      )
+    );
+  }
+  if (key !== "image-gen" && key !== "video-gen")
+    return matchesCapability(row.capabilities, key);
+  // A video family is video gen from its name alone: LTX GGUFs carry no pipeline tag.
+  // Still through generationKinds, so a video-to-video family repo stays out.
+  if (key === "video-gen" && isVideoFamilyName(row.result.id))
+    return generationKinds(
+      row.result.tags,
+      row.result.pipelineTag,
+      row.result.id,
+    ).video;
+  if (!matchesCapability(row.capabilities, "diffusion")) return false;
+  const kinds = generationKinds(
+    row.result.tags,
+    row.result.pipelineTag,
+    row.result.id,
+  );
+  return key === "image-gen" ? kinds.image : kinds.video;
 }
 
 export function matchesCapability(

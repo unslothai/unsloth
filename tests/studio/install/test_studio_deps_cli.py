@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Coverage for unsloth_cli/_studio_deps.py.
-
-Two things have to be right for the CLI half of the install check.
-
-It must describe the venv it was *asked* about. The wheel ships studio/, so a
-CLI installed outside the managed venv always finds its own copy of the manifest
-helper, and would otherwise report on its own prefix: a healthy managed install
-comes back "incomplete", a broken one comes back with the wrong missing list.
-
-And it must name the *distribution* to install rather than the import that
-failed. `pip install jwt` / `docx` / `fitz` all succeed and install unrelated
-PyPI projects, leaving the backend just as broken as before.
-"""
+"""The CLI check must describe the venv it was asked about and name pip distributions, not imports."""
 
 from __future__ import annotations
 
@@ -35,11 +23,8 @@ DEPS_PATH = REPO_ROOT / "unsloth_cli" / "_studio_deps.py"
 MANIFEST_PATH = REPO_ROOT / "studio" / "install_manifest.py"
 REQUIREMENTS = REPO_ROOT / "studio" / "backend" / "requirements"
 
-# `install_python_stack._filter_requirements` writes `.{stem}-filtered-XXXX.txt` BESIDE its
-# source, which is this very directory, so the tests that exercise it create and delete files
-# here while these copy it. Under xdist that is two workers on one directory, and copytree
-# raised "No such file or directory" for a name that existed when it listed the tree and was
-# gone by the time it read it. Never a real requirement, so skip them rather than racing.
+# _filter_requirements writes .*-filtered-*.txt beside its source (this dir); under xdist
+# copytree races another worker deleting it.
 _GENERATED_FILTERS = shutil.ignore_patterns(".*-filtered-*.txt")
 
 
@@ -84,12 +69,7 @@ def _studio_distribution_versions() -> dict:
 
 
 def _venv_executable(root: pathlib.Path) -> pathlib.Path:
-    """Where _venv_site_packages looks for this venv's interpreter.
-
-    Writing bin/python on Windows leaves the probe with nothing to run, so the
-    fixture falls through to the glob fallback and the case under test never
-    happens.
-    """
+    """Windows venvs use Scripts/python.exe; a bin/python fixture is never probed on Windows."""
     return root / "Scripts" / "python.exe" if os.name == "nt" else root / "bin" / "python"
 
 
@@ -145,10 +125,7 @@ def _write_manifest(root: pathlib.Path, site_packages: pathlib.Path, version: st
 
 @pytest.fixture
 def cross_venv(tmp_path, monkeypatch):
-    """`unsloth studio verify-install` run from a CLI outside the managed venv.
-
-    Returns a callable: build the managed venv, then ask about it.
-    """
+    """verify-install run from a CLI outside the managed venv; returns a builder for that venv."""
 
     def build(
         *,
@@ -350,9 +327,6 @@ def test_editable_foreign_install_follows_its_requirements_checkout(cross_venv):
     assert state["reason"] is None
 
 
-# ── import name vs distribution name ─────────────────────────────────
-
-
 @pytest.fixture
 def deps():
     return _load(DEPS_PATH, "studio_deps_under_test")
@@ -439,9 +413,6 @@ def test_a_torn_tree_without_the_manifest_helper_is_incomplete(tmp_path, monkeyp
     assert state["reason"] == "studio_install_manifest_missing"
 
 
-# ── which prefix owns the manifest module ────────────────────────────
-
-
 def test_a_manifest_inside_a_venv_site_packages_is_owned_by_that_venv(tmp_path, deps):
     """The wheel case: studio/ really is installed into that prefix."""
     venv = tmp_path / "venv"
@@ -457,12 +428,7 @@ def test_a_manifest_inside_a_venv_site_packages_is_owned_by_that_venv(tmp_path, 
 
 
 def test_an_editable_checkout_is_not_owned_by_a_surrounding_venv(tmp_path, deps):
-    """`./install.sh --local` leaves studio/install_manifest.py in the repo. When the
-    clone happens to live inside some other virtualenv's directory, the first
-    pyvenv.cfg above it belongs to a venv the managed install has nothing to do
-    with. Claiming it there made verify-install walk that venv's site-packages and
-    report every managed dependency as missing, so `unsloth studio verify-install`
-    exited 1 on a healthy install and setup.sh could never take its fast path."""
+    """A checkout inside another venv must not claim that venv's pyvenv.cfg; verify-install would fail."""
     surrounding = tmp_path / "unrelated_venv"
     (surrounding / "lib" / "python3.11" / "site-packages").mkdir(parents = True)
     (surrounding / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding = "utf-8")
@@ -477,13 +443,7 @@ def test_an_editable_checkout_is_not_owned_by_a_surrounding_venv(tmp_path, deps)
 
 
 def test_scan_paths_dedupes_a_lib64_symlink(tmp_path, monkeypatch, deps):
-    """A lib64 build names one site-packages twice.
-
-    purelib hardcodes `lib` while platlib follows sys.platlibdir, and venv
-    creates lib64 as a symlink to lib, so Fedora and SuSE would otherwise scan
-    the same directory twice and report EVERY installed package as having
-    duplicate metadata -- failing `unsloth studio update` on a healthy venv.
-    """
+    """A lib64 symlink to lib would scan one site-packages twice and report every package as duplicated."""
     real = tmp_path / "lib" / "python3.13" / "site-packages"
     real.mkdir(parents = True)
     (tmp_path / "lib64").symlink_to("lib")
@@ -517,11 +477,7 @@ def test_a_foreign_lib64_venv_reports_no_duplicates(tmp_path, deps):
 
 
 def test_a_foreign_venvs_sole_tilde_backup_is_a_conflict(tmp_path, deps):
-    """The backup reads as one healthy version, so nothing else here can tell
-    the environment apart from a good one, yet pip calls it an invalid
-    distribution and the payload is renamed away with it. Reproduced in a real
-    venv: the scanner reported 1.0 while the package was unimportable.
-    """
+    """A sole ~ backup dist-info looks healthy but pip deems it invalid, so it must count as a conflict."""
     venv = tmp_path / "managed"
     site = venv / "lib" / "python3.13" / "site-packages"
     site.mkdir(parents = True)
@@ -591,10 +547,7 @@ def test_one_readable_record_is_not_a_conflict(tmp_path, monkeypatch, deps):
 
 
 def test_a_versionless_local_record_is_reported_as_a_conflict(tmp_path, monkeypatch, deps):
-    """install_manifest.metadata_conflict() counts an empty version as a
-    conflict, so trusting the same record here would leave the two checks
-    disagreeing about one directory, and would let the file-damage scan treat an
-    unparseable record as authoritative."""
+    """Versionless records are conflicts, as in install_manifest.metadata_conflict(); the two must agree."""
     site = tmp_path / "site-packages"
     site.mkdir()
     entry = site / "unsloth-2026.8.15.dist-info"
@@ -610,12 +563,7 @@ def test_a_versionless_local_record_is_reported_as_a_conflict(tmp_path, monkeypa
 
 
 def test_an_interrupted_upgrades_tilde_orphan_is_a_conflict(tmp_path, monkeypatch, deps):
-    """pip renames the outgoing distribution to a `~` prefixed sibling during an
-    upgrade (AdjacentTempDirectory) and a kill mid-operation keeps both. pip has
-    no duplicate detection of its own, so nothing upstream clears it. The orphan
-    still parses and still says Name: unsloth, so it is a second record for the
-    same project: a conflict, not a file the newer release deleted.
-    """
+    """A ~ orphan from an interrupted pip upgrade still names unsloth: a second record, so a conflict."""
     site = tmp_path / "site-packages"
     site.mkdir()
     for name, version in (
@@ -637,12 +585,7 @@ def test_an_interrupted_upgrades_tilde_orphan_is_a_conflict(tmp_path, monkeypatc
 
 
 def test_an_editable_checkouts_egg_info_is_not_a_second_record(tmp_path, monkeypatch, deps):
-    """A setuptools editable install legitimately resolves to two records, a
-    dist-info in site-packages and an egg-info in the source tree. Only the
-    first is in this interpreter's scheme, and scanning purelib/platlib rather
-    than all of sys.path is what keeps a developer checkout from failing the
-    update it is running.
-    """
+    """Editable installs' source egg-info is not a second record; only purelib and platlib are scanned."""
     site = tmp_path / "site-packages"
     site.mkdir()
     entry = site / "unsloth-2026.8.15.dist-info"
@@ -665,14 +608,7 @@ def test_an_editable_checkouts_egg_info_is_not_a_second_record(tmp_path, monkeyp
 
 
 def test_a_generated_filter_file_does_not_travel_into_the_fake_venv(tmp_path):
-    """The requirements directory is shared with a writer, so the copy must tolerate it.
-
-    `_filter_requirements` writes `.{stem}-filtered-XXXX.txt` beside its source, and its source
-    is the real tree these fixtures copy. Two xdist workers then touch one directory: the file
-    is listed and deleted before it is read, and `copytree` fails the whole fixture with
-    `shutil.Error: [Errno 2] No such file or directory`. Skipping it by name removes the race
-    AND keeps a scratch file out of a tree that is supposed to mirror the shipped requirements.
-    """
+    """Skip the .{stem}-filtered-XXXX.txt files the installer writes, or parallel copytree calls race."""
     source = tmp_path / "requirements"
     source.mkdir()
     (source / "studio.txt").write_text("torch\n", encoding = "utf-8")
@@ -688,12 +624,7 @@ def test_a_generated_filter_file_does_not_travel_into_the_fake_venv(tmp_path):
 
 
 def test_the_real_requirements_copy_survives_a_file_vanishing_mid_copy(tmp_path):
-    """The failure as it actually arrived, rather than only the names it leaves behind.
-
-    Deleting the generated file between the listing and the read is what the other worker does,
-    and it is the step that raised. Without the ignore this raises `shutil.Error`; with it the
-    file is never scheduled for copying, so there is nothing to lose the race to.
-    """
+    """A generated file vanishing mid-copytree raises shutil.Error; ignoring it by name avoids the race."""
     source = tmp_path / "requirements"
     source.mkdir()
     (source / "studio.txt").write_text("torch\n", encoding = "utf-8")
@@ -701,10 +632,7 @@ def test_the_real_requirements_copy_survives_a_file_vanishing_mid_copy(tmp_path)
     vanishing.write_text("torch\n", encoding = "utf-8")
 
     def _delete_then_copy(src, dst, *args, **kwargs):
-        # Stand in for the other worker: the name was listed, now it is gone. Passed as
-        # `copy_function` rather than patched onto `shutil`, because copytree binds copy2 as a
-        # default argument at definition, so patching the module attribute does nothing and
-        # this test would pass without exercising anything.
+        # copytree binds copy2 as a default arg, so patching shutil does nothing.
         vanishing.unlink(missing_ok = True)
         return shutil.copy2(src, dst, *args, **kwargs)
 

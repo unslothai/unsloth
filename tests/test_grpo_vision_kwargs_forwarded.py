@@ -15,10 +15,7 @@ SOURCE_PATH = os.path.join(REPO_ROOT, "unsloth", "models", "rl_replacements.py")
 
 
 def _zoo_vision_helpers(*names):
-    """The multi image helpers ship with unsloth_zoo. An unsloth_zoo installed from before
-    they landed has none of them, and the static gates in this file already prove this repo
-    asks for them and fails loudly without them, so behaviour that can only be driven
-    through the zoo is skipped rather than reported as this repo being broken."""
+    """Skips when unsloth_zoo predates the multi-image helpers, rather than reporting this repo broken."""
     zoo = pytest.importorskip("unsloth_zoo.rl_replacements")
     missing = [name for name in names if not hasattr(zoo, name)]
     if missing:
@@ -250,7 +247,7 @@ def test_num_tiles_survives_the_output_dict_rewrite():
     except_at = next((i for i, l in enumerate(lines) if l.strip() == "except NameError:"), None)
     assert except_at is not None, "the sampling logprob block was not inserted"
     assert num_images_at < num_tiles_at < except_at
-    # still nested inside `if images is not None:`
+    # Still nested inside `if images is not None:`.
     assert lines[num_tiles_at].startswith(" " * 16)
 
 
@@ -359,12 +356,7 @@ def test_the_multi_image_zoo_probe_does_not_rest_on_a_local_variable():
 
 
 def _gradient_zoo_gate():
-    """The gradient path's zoo gate, as a runnable block taken out of the patched source.
-
-    Extracted by AST rather than by string slicing so the case below RUNS the real check
-    instead of restating it: the block is self contained (it reads `self` and `pixel_values`
-    and imports the zoo itself), so executing it is the behaviour and not a description.
-    """
+    """Extracted by AST so the test runs the real zoo gate, not a restatement of it."""
     import ast
     import textwrap
 
@@ -407,14 +399,7 @@ def _run_gate(block, *, pixel_values, zoo_module):
 
 
 def test_the_gradient_path_refuses_an_old_zoo_without_the_chunker():
-    """The no-grad gate does not cover the gradient call, and the default run never reaches it.
-
-    With beta = 0 and num_iterations = 1 there are no reference or old logprobs to compute, so
-    `_get_per_token_logps_and_entropies` -- where the other gate lives -- is never called. An
-    older `grpo_accumulated_loss` takes arbitrary kwargs, ignores the ones it does not know and
-    replaces `pixel_values` with None for a model that carries no `image_grid_thw`, so a vision
-    run would have trained on the text alone and said nothing.
-    """
+    """At beta = 0 the no-grad gate never runs, so an old grpo_accumulated_loss needs its own gate."""
     import types
 
     block = _gradient_zoo_gate()
@@ -423,16 +408,13 @@ def test_the_gradient_path_refuses_an_old_zoo_without_the_chunker():
         _run_gate(block, pixel_values = object(), zoo_module = old_zoo)
     assert "upgrade unsloth_zoo" in str(raised.value)
 
-    # A text-only run is untouched: there are no pixels to drop.
     _run_gate(block, pixel_values = None, zoo_module = old_zoo)
 
-    # And a zoo that exports the chunker passes, once, and remembers it.
     new_zoo = types.ModuleType("unsloth_zoo.rl_replacements")
     new_zoo.grpo_vision_chunks = lambda *_a, **_k: None
     trainer = _run_gate(block, pixel_values = object(), zoo_module = new_zoo)
     assert trainer._unsloth_grpo_vision_zoo_checked is True
-    # Checked once per trainer: the flag short-circuits a later step even on a broken zoo,
-    # so the probe is not paid on every accumulation step.
+    # Checked once per trainer, so the probe is not paid on every accumulation step.
     already = _Trainer()
     already._unsloth_grpo_vision_zoo_checked = True
     import sys
@@ -602,17 +584,13 @@ def test_a_padded_row_per_sample_is_left_alone():
 
 
 def test_a_padded_row_per_sample_survives_counts_that_sum_to_the_batch_size():
-    """The case above only holds because [2, 2] over two rows does not sum to two. A mixed
-    batch like [2, 0] does, and a padded sample axis then looks exactly like a flat image
-    axis: splitting it hands both rows to the first sample and the second an empty tensor,
-    so the images train against the wrong prompt with no error anywhere."""
+    """Counts like [2, 0] sum to the batch size, so a padded sample axis must not read as flat images."""
     import torch
 
     from unsloth.models.rl_replacements import _unsloth_grpo_split_vision_by_sample
 
     for num_images in ([2, 0], [0, 2], [1, 2, 0], [1, 0, 2, 1]):
         samples = len(num_images)
-        # Every value in row s is s, so a misattributed row is visible rather than inferred.
         pixel_values = torch.stack(
             [torch.full((2, 3, 4, 4), float(sample)) for sample in range(samples)]
         )
@@ -625,7 +603,7 @@ def test_a_padded_row_per_sample_survives_counts_that_sum_to_the_batch_size():
         assert split is batch, num_images
         assert split["pixel_values"] is pixel_values, num_images
 
-    # All ones is not ambiguous: both readings put row s with sample s, so it still splits.
+    # All ones is not ambiguous: both readings put row s with sample s.
     pixel_values = torch.stack([torch.full((3, 4, 4), float(s)) for s in range(2)])
     split = _unsloth_grpo_split_vision_by_sample(
         {"num_images": [1, 1], "pixel_values": pixel_values}
@@ -705,9 +683,7 @@ def test_both_halves_travel_with_the_generated_module():
     assert "def _unsloth_grpo_unsplit_vision(" in pre
 
 
-# The legacy 0.22.x-0.23.x rewrite is no longer a block that can be exec'd on its own: the
-# counts are built before the no-grad logprob calls and the output block reads them back.
-# tests/test_grpo_legacy_trl_vision.py runs the whole patched function instead.
+# The legacy rewrite cannot be exec'd on its own; tests/test_grpo_legacy_trl_vision.py runs it.
 
 
 def test_the_counts_are_not_added_twice_on_a_trl_that_has_them():

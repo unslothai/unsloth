@@ -1,26 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The Playwright wrapper scripts must say when a signal killed them.
-
-Observed on windows-latest at roughly one run in twenty-five: the suite prints
-"permission-only run passed" and the step then ends with "Process completed with exit
-code 143". 143 is 128+SIGTERM, so the script was signalled AFTER its work succeeded, and
-nothing in either the step log or the server log records what did it. The server log just
-stops mid-request, which is exactly what the script's own cleanup killing it looks like,
-so the two cannot be told apart.
-
-This file pins the diagnostic rather than a fix, because the cause is not known yet. A
-one-in-twenty-five failure that reports nothing costs a whole run every time it lands and
-teaches nothing, and the obvious tidy-up -- deleting a signal handler that "never fires"
--- puts it straight back. Both scripts have the same shape (background server, EXIT trap,
-suite as the last command), so both can lose a passing run the same way, and since #9391
-they run concurrently on Windows rather than one after another.
-
-`suite_done` is the fact worth capturing: it separates a signal that interrupted the
-browser run from one that arrived during teardown, which is the first thing anyone
-reading the next occurrence needs to know.
-"""
+"""Wrappers must say when a signal killed them, and whether the suite had already finished."""
 
 from __future__ import annotations
 
@@ -77,12 +58,7 @@ def test_the_handler_exits_with_the_signal_status(script: str) -> None:
 
 @pytest.mark.parametrize("script", WRAPPERS)
 def test_the_snapshot_does_not_print_command_lines(script: str) -> None:
-    """This lands in a public CI log.
-
-    `ps -o ...,args` would quote every running command line, and one of those can carry a
-    token that ::add-mask:: never saw. Process names answer the question the snapshot is
-    there for without that risk.
-    """
+    """Process snapshot prints names only: command lines in a public CI log can carry an unmasked token."""
     body = _body(script)
     assert "pid,ppid,comm" in body, f"{script}'s process snapshot is not limited to names"
     assert not re.search(
@@ -97,12 +73,7 @@ def test_the_guard_reads_real_files() -> None:
 
 
 def test_a_wall_budget_in_a_wrapper_comes_with_a_total():
-    """A wrapper's STUDIO_UI_WALL_TIMEOUT_S is a cap on the whole invocation.
-
-    It stopped being one when playwright_chat_ui.py started restarting that budget on
-    every step, so a run that keeps reporting progress runs past it. Three browsers share
-    one step here, so the cap is what keeps a wedged first browser from taking the other
-    two with it. STUDIO_UI_TOTAL_TIMEOUT_S is the ceiling no progress report moves."""
+    """A STUDIO_UI_WALL_TIMEOUT_S cap needs a STUDIO_UI_TOTAL_TIMEOUT_S ceiling progress cannot move."""
     for name in WRAPPERS:
         text = (SCRIPTS / name).read_text(encoding = "utf-8")
         wall = re.search(r"STUDIO_UI_WALL_TIMEOUT_S=(\d+)", text)
