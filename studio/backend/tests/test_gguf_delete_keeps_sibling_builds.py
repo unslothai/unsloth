@@ -119,7 +119,7 @@ def test_each_custom_build_reads_context_from_its_own_file(tmp_path, monkeypatch
     assert set(reads) == {tmp_path, *(tmp_path / name for name in names)}
 
 
-def test_direct_file_reads_sibling_context_from_the_sibling_file(tmp_path, monkeypatch):
+def test_direct_file_reads_context_from_the_chosen_file_only(tmp_path, monkeypatch):
     import asyncio
 
     from routes import models as models_route
@@ -148,8 +148,11 @@ def test_direct_file_reads_sibling_context_from_the_sibling_file(tmp_path, monke
         )
     )
 
-    assert {variant.filename: variant.context_length for variant in response.variants} == contexts
-    assert set(reads) == {tmp_path / name for name in names}
+    # the loader opens a direct file whatever variant is named, so its same-quant sibling is not offered
+    assert {variant.filename: variant.context_length for variant in response.variants} == {
+        names[0]: contexts[names[0]]
+    }
+    assert tmp_path / names[1] not in set(reads)
 
 
 def test_ready_sibling_keeps_its_context_when_the_other_build_is_partial(tmp_path, monkeypatch):
