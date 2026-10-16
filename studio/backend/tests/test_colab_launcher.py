@@ -423,3 +423,22 @@ def test_vm_scripts_are_valid_python():
     compile(start, "start", "exec")
     compile(cl.LAUNCHER_SCRIPT, "launcher", "exec")
     assert "--env" not in start
+
+
+def test_a_cancel_while_linking_stops_the_vm_and_drops_the_link(monkeypatch):
+    from core.inference import linked_instances as linked
+
+    fake = FakeColab()
+    monkeypatch.setattr(cl, "run_shell", fake)
+    job = _job()
+    real_normalize = linked.normalize_base_url
+
+    def slow_normalize(url):
+        job.cancel.set()
+        return real_normalize(url)
+
+    monkeypatch.setattr(linked, "normalize_base_url", slow_normalize)
+    cl._run_job(job)
+    assert job.state == "cancelled"
+    assert fake.kinds()[-1] == "stop"
+    assert linked_instances_db.list_instances() == [] and cl.list_sessions() == []

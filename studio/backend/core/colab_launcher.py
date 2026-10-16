@@ -637,6 +637,10 @@ def _run_job(job: LaunchJob) -> None:
         instance = linked_instances_db.create_instance(job.name, base_url, link["api_key"])
         job.instance_id = instance["id"]
         linked_instances_db.set_colab_session_instance(job.session, instance["id"])
+        # A cancel that landed while linking (URL checks can wait on DNS) still tears the VM
+        # and its new link down, rather than finishing as ready.
+        if job.cancel.is_set():
+            raise Cancelled()
         job.add(f"Linked as @{job.name} ({base_url}).")
         job.stage = "ready"
         job.state = "ready"
