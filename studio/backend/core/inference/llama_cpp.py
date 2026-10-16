@@ -6752,6 +6752,27 @@ def _child_has_one_model_device(
     )
 
 
+def _child_fit_target_margin_mib(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]], *, one_model_device: bool
+) -> tuple[Optional[float], bool]:
+    """The ``--fit-target`` margin (MiB) llama.cpp keeps free on the priced card, and
+    whether that is exact.
+
+    The one per-device margin reader, shared by the MoE resident share, the load-mode fit
+    and the MoE cache's RAM admission. Same precedence as ``fit_target_margin_in``
+    (argv last wins, then the env twin). A uniform value is the card's, exact. A
+    per-device list is entry 0 when the card is the child's one model device
+    (``one_model_device``: one priced card and ``_child_has_one_model_device``), since
+    llama.cpp then reads only ``margins_s[0]`` (common/fit.cpp); otherwise which entry the
+    card gets is unknown, so the LARGEST entry comes back with ``exact`` False, for the
+    caller to abstain on or charge. ``None`` when nothing readable is set."""
+    if fit_target_is_per_device(extra_args, env):
+        if one_model_device:
+            return fit_target_first_device_margin_in(extra_args, env), True
+        return fit_target_margin_in(extra_args, env), False
+    return fit_target_margin_in(extra_args, env), True
+
+
 def _without_subsequence(tokens: List[str], run: List[str]) -> List[str]:
     """``tokens`` with the first contiguous occurrence of ``run`` removed.
 
@@ -29017,25 +29038,24 @@ class LlamaCppBackend:
                         )
                         # A per-device list: entry 0 is this card's only when it is the
                         # child's one model device (_child_has_one_model_device).
+                        # A per-device list it cannot map to this card: unpriced.
                         _one_model_device = _child_has_one_model_device(_child_extras, _child_env)
-                        if fit_target_is_per_device(_child_extras or (), None):
-                            if not _one_model_device:
-                                return None
-                            _margin_mib = fit_target_first_device_margin_in(
-                                _child_extras or (), None
-                            )
-                        else:
-                            _margin_mib = fit_target_margin_in(_child_extras or (), None)
+                        _margin_mib, _margin_exact = _child_fit_target_margin_mib(
+                            _child_extras or (), None, one_model_device = _one_model_device
+                        )
+                        if not _margin_exact:
+                            return None
                         if _margin_mib is None:
                             _emits = _supports_fit_target and (
                                 _auto_fit or _managed_mib != _LLAMA_FIT_TARGET_DEFAULT_MIB
                             )
-                            if not _emits and fit_target_is_per_device((), _child_env):
-                                if not _one_model_device:
+                            _env_mib = None
+                            if not _emits:
+                                _env_mib, _margin_exact = _child_fit_target_margin_mib(
+                                    (), _child_env, one_model_device = _one_model_device
+                                )
+                                if not _margin_exact:
                                     return None
-                                _env_mib = fit_target_first_device_margin_in((), _child_env)
-                            else:
-                                _env_mib = None if _emits else fit_target_margin_in((), _child_env)
                             # An inherited 0 is a valid margin, not "unset".
                             _margin_mib = _managed_mib if _env_mib is None else _env_mib
                         # A lazily read table stays mmap'd on the host, never on the GPU.
@@ -29401,14 +29421,14 @@ class LlamaCppBackend:
                     # child's one model device llama.cpp reads only entry 0 of a
                     # per-device list (_child_has_one_model_device); otherwise any entry
                     # may be a credited card's, so the largest is charged.
-                    _fit_margin_reader = (
-                        fit_target_first_device_margin_in
-                        if (
+                    _fit_user_margin_mib, _ = _child_fit_target_margin_mib(
+                        _fit_extras,
+                        _fit_env,
+                        one_model_device = (
                             len([g for g in gpus if gpu_indices is None or g[0] in gpu_indices])
                             == 1
                             and _child_has_one_model_device(_fit_extras, _fit_env)
-                        )
-                        else fit_target_margin_in
+                        ),
                     )
                     _fit_margin_mib = (
                         max(
@@ -29419,7 +29439,7 @@ class LlamaCppBackend:
                                 and bool(server_caps.get("supports_fit_target")),
                                 floor_mib = _metal_fit_target_floor_mib,
                             ),
-                            _fit_margin_reader(_fit_extras, _fit_env) or 0.0,
+                            _fit_user_margin_mib or 0.0,
                         )
                         if _fitter_runs
                         else 0.0

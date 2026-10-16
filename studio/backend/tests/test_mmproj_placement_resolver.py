@@ -258,3 +258,28 @@ def test_the_gpu_companion_detector_reads_the_ordered_placement(extra_args, env,
 def test_cpu_fallback_leaves_an_explicitly_placed_projector_alone(extra_args, env, expected):
     intent = GgufLoadIntent(model_identifier = "m", gguf_path = "m.gguf")
     assert LlamaCppBackend._cpu_fallback_request_eligible(intent, extra_args, env) is expected
+
+
+# --- the one per-device --fit-target reader ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, one_model_device, expected",
+    [
+        (["--fit-target", "0,16384"], {}, True, (0.0, True)),
+        ([], {"LLAMA_ARG_FIT_TARGET": "512/8192"}, True, (512.0, True)),
+        (["--fit-target", "0,16384"], {}, False, (16384.0, False)),
+        (["--fit-target", "2048"], {}, False, (2048.0, True)),
+        (["--fit-target", "2048,2048"], {}, False, (2048.0, True)),
+        ([], {}, True, (None, True)),
+    ],
+)
+def test_the_fit_target_reader_is_exact_only_where_the_entry_is_provable(
+    extra_args, env, one_model_device, expected
+):
+    assert (
+        llama_cpp_module._child_fit_target_margin_mib(
+            extra_args, env, one_model_device = one_model_device
+        )
+        == expected
+    )
