@@ -469,7 +469,12 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
     # left on another card would otherwise preflight against that card.
     totals = {d.get("vram_total_gb") for d in devices if d.get("index") in visible}
     if len({caps.get(i) for i in visible}) == 1 and len(totals) == 1:
-        return None
+        # Physical rows hide MIG slice sizes, so a MIG card makes the set mixed.
+        try:
+            if not set(visible) & nvidia.get_mig_gpu_indices():
+                return None
+        except Exception:  # noqa: BLE001 -- unknown: keep card 0 explicit
+            pass
     return 0
 
 

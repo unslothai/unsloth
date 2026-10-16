@@ -76,6 +76,12 @@ def test_auto_returns_none_when_the_current_device_wins(monkeypatch, devices):
     assert dd.resolve_auto_cuda_ordinal() is None
 
 
+def test_auto_keeps_card_zero_explicit_beside_a_mig_card(monkeypatch):
+    # Identical physical rows, but card 1 is MIG: its slice size is not the row's.
+    _two_cards(monkeypatch, [_dev(0, 80.0, 0.5), _dev(1, 80.0, 0.5)], {0: (8, 0), 1: (8, 0)}, mig = {1})
+    assert dd.resolve_auto_cuda_ordinal() == 0
+
+
 @pytest.mark.parametrize(
     "devices, caps",
     [
@@ -89,10 +95,11 @@ def test_auto_keeps_card_zero_explicit_on_mixed_cards(monkeypatch, devices, caps
     assert dd.resolve_auto_cuda_ordinal() == 0
 
 
-def _two_cards(monkeypatch, devices, caps):
+def _two_cards(monkeypatch, devices, caps, mig = ()):
     from utils.hardware import nvidia
 
     monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda: dict(caps))
+    monkeypatch.setattr(nvidia, "get_mig_gpu_indices", lambda: set(mig))
     monkeypatch.setattr(hw, "IS_ROCM", False)
     monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0, 1])
     monkeypatch.setattr(hw, "_cuda_order_matches_smi", lambda: True)
@@ -304,6 +311,7 @@ def test_card_identities_are_read_once(monkeypatch):
     monkeypatch.setattr(hw, "IS_ROCM", False)
     monkeypatch.setattr(hw, "get_physical_gpu_count", lambda: 2)
     monkeypatch.setattr(nvidia, "get_card_identities", lambda: reads.append(1) or {0: row, 1: row})
+    monkeypatch.setattr(nvidia, "get_mig_gpu_indices", lambda: set())
     monkeypatch.setattr(hw, "_cuda_card_identities", {})
     assert hw._cuda_cards_identical() is True
     assert hw._cuda_cards_identical([0, 1]) is True
@@ -331,6 +339,7 @@ def _catalog(monkeypatch):
         lambda owner, pick, hf_token = None: planned.append(media_locality.plan_gpu_ordinal()) or 0,
     )
     monkeypatch.setattr(routes, "_MEDIA_PICK_CACHE", {"at": None, "picks": {}})
+    monkeypatch.setattr(hw, "_cuda_order_matches_smi", lambda: True)
     return routes, planned
 
 
@@ -401,3 +410,33 @@ def test_route_runs_an_uncached_gate_off_the_event_loop(monkeypatch):
     assert asyncio.run(routes._selected_gpu_ordinal(None)) is None
     assert loop_thread == [False]
     assert targets == []
+
+
+def test_identical_rows_with_a_mig_card_are_not_identical(monkeypatch):
+    from utils.hardware import nvidia
+
+    row = ("NVIDIA A100-SXM4-80GB", "81920 MiB", "8.0", "1410 MHz")
+    monkeypatch.setattr(hw, "IS_ROCM", False)
+    monkeypatch.setattr(hw, "get_physical_gpu_count", lambda: 2)
+    monkeypatch.setattr(nvidia, "get_card_identities", lambda: {0: row, 1: row})
+    monkeypatch.setattr(hw, "_cuda_card_identities", {})
+    monkeypatch.setattr(nvidia, "get_mig_gpu_indices", lambda: {1})
+    assert hw._cuda_cards_identical() is False
+    assert hw._cuda_cards_identical([0]) is True
+
+
+def test_catalog_compares_every_card_when_mask_ids_are_not_smi_rows(monkeypatch):
+    # FASTEST_FIRST subset mask "0,2": those are CUDA ordinals, not nvidia-smi rows 0 and 2.
+    routes, planned = _catalog(monkeypatch)
+    _ordinary(monkeypatch, visible = (0, 2))
+    monkeypatch.setattr(hw, "_cuda_order_matches_smi", lambda: False)
+    asked = []
+    # Rows 0 and 2 match, row 1 differs: only the all-cards answer is trustworthy.
+    monkeypatch.setattr(
+        hw, "_cuda_cards_identical", lambda gpu_ids = None: asked.append(gpu_ids) or gpu_ids is not None
+    )
+    _counting_target(monkeypatch, dd)
+    ranks = _counting_rank(monkeypatch, answer = 0)
+    routes._validated_media_picks(1.0)
+    assert asked == [None]
+    assert len(ranks) == 1

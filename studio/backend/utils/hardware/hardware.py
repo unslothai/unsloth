@@ -2045,7 +2045,7 @@ _cuda_card_identities: Dict[int, tuple] = {}
 
 
 def _cuda_cards_identical(gpu_ids: Optional[list[int]] = None) -> Optional[bool]:
-    """Whether the NVIDIA cards ``gpu_ids`` (default: every physical card) share one identity per nvidia-smi (name, total memory, compute cap, max SM clock), out of process. None when unknown. Read once and cached: a card's identity does not change, and a grown card count re-reads."""
+    """Whether the NVIDIA cards ``gpu_ids`` (default: every physical card) share one identity per nvidia-smi (name, total memory, compute cap, max SM clock) and none is MIG, out of process. None when unknown. Read once and cached: a card's identity does not change, and a grown card count re-reads."""
     global _cuda_card_identities
     if IS_ROCM:
         return None
@@ -2063,7 +2063,14 @@ def _cuda_cards_identical(gpu_ids: Optional[list[int]] = None) -> Optional[bool]
     rows = [_cuda_card_identities.get(gpu_id) for gpu_id in wanted]
     if not rows or any(row is None for row in rows):
         return None
-    return len(set(rows)) == 1
+    if len(set(rows)) != 1:
+        return False
+    # A MIG card is seen through a slice whose size the physical row does not show.
+    try:
+        from . import nvidia
+        return not (set(wanted) & nvidia.get_mig_gpu_indices())
+    except Exception:
+        return None
 
 
 _cuda_ordinal_rows_cache: Dict[tuple, list[int]] = {}

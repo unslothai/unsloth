@@ -295,7 +295,9 @@ def catalog_gpu_ordinal() -> Optional[int]:
         return None
     try:
         from utils.hardware import hardware as hw
-        if hw._cuda_cards_identical(hw.get_parent_visible_gpu_ids()) is True:
+        # Under a CUDA order nvidia-smi does not share, mask ids are not its rows: compare every card.
+        ids = hw.get_parent_visible_gpu_ids() if hw._cuda_order_matches_smi() else None
+        if hw._cuda_cards_identical(ids) is True:
             return None
     except Exception:  # noqa: BLE001 -- unknown identity ranks once, like mixed cards
         pass
