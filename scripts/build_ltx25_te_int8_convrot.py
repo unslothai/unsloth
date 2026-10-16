@@ -182,9 +182,7 @@ def _head_is_tied(state: dict) -> bool:
     if head is None:
         return False
     return any(
-        name != "lm_head.weight"
-        and t.shape == head.shape
-        and t.data_ptr() == head.data_ptr()
+        name != "lm_head.weight" and t.shape == head.shape and t.data_ptr() == head.data_ptr()
         for name, t in state.items()
     )
 
