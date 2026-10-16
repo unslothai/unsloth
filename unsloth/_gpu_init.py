@@ -46,24 +46,31 @@ from .import_fixes import (
 # transformers / vllm (disable_broken_vllm probes `import vllm`, check_fbgemm_gpu_version imports
 # transformers, fix_huggingface_hub imports huggingface_hub), any of which would freeze Hub's
 # cache constants with the un-redirected paths. hf_cache.py is stdlib-only, so it loads straight
-# from its file without triggering the full unsloth_zoo init this early.
+# from unsloth_zoo_downloads (or, on older zoo, its file) without the full unsloth_zoo init.
 try:
-    import importlib.util as _importlib_util
-    from pathlib import Path as _Path
+    try:
+        from unsloth_zoo_downloads.hf_cache import redirect_hf_cache_if_readonly as _redirect
+    except ImportError:
+        import importlib.util as _importlib_util
+        from pathlib import Path as _Path
 
-    _zoo_spec = _importlib_util.find_spec("unsloth_zoo")
-    if _zoo_spec is not None and _zoo_spec.origin:
-        _hf_cache_file = _Path(_zoo_spec.origin).with_name("hf_cache.py")
-        if _hf_cache_file.is_file():
-            _hf_cache_spec = _importlib_util.spec_from_file_location(
-                "unsloth_zoo._early_hf_cache", _hf_cache_file
-            )
-            _hf_cache = _importlib_util.module_from_spec(_hf_cache_spec)
-            _hf_cache_spec.loader.exec_module(_hf_cache)
-            _hf_cache.redirect_hf_cache_if_readonly()
-            del _hf_cache, _hf_cache_spec
-        del _hf_cache_file
-    del _zoo_spec, _importlib_util, _Path
+        _redirect = None
+        _zoo_spec = _importlib_util.find_spec("unsloth_zoo")
+        if _zoo_spec is not None and _zoo_spec.origin:
+            _hf_cache_file = _Path(_zoo_spec.origin).with_name("hf_cache.py")
+            if _hf_cache_file.is_file():
+                _hf_cache_spec = _importlib_util.spec_from_file_location(
+                    "unsloth_zoo._early_hf_cache", _hf_cache_file
+                )
+                _hf_cache = _importlib_util.module_from_spec(_hf_cache_spec)
+                _hf_cache_spec.loader.exec_module(_hf_cache)
+                _redirect = _hf_cache.redirect_hf_cache_if_readonly
+                del _hf_cache, _hf_cache_spec
+            del _hf_cache_file
+        del _zoo_spec, _importlib_util, _Path
+    if _redirect is not None:
+        _redirect()
+    del _redirect
 except Exception:
     pass
 
@@ -245,6 +252,13 @@ except ModuleNotFoundError:
     )
 except:
     raise
+
+try:
+    from .import_fixes import fix_torch_compiler_disable_unless_decode
+    fix_torch_compiler_disable_unless_decode()
+    del fix_torch_compiler_disable_unless_decode
+except Exception:
+    pass
 
 # Re-assert after unsloth_zoo's patch_torch_compile, which historically popped
 # TORCHINDUCTOR_COMPILE_THREADS.
@@ -757,3 +771,6 @@ from unsloth_zoo.rl_environments import (
 # inspect.getsource() and corrupts downstream drift detectors.
 if os.environ.get("UNSLOTH_ALLOW_CPU", "0") != "1":
     _patch_trl_trainer()
+
+    from .context_parallel import patch_sft_trainer
+    patch_sft_trainer()

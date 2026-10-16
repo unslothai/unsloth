@@ -119,6 +119,7 @@ __all__ = [
     "get_moe_expert_submodule_leaves",
     "moe_expert_submodule_regex",
     "widen_target_regex_to_expert_submodules",
+    "native_expert_only_regex",
     "warn_if_zoo_cannot_merge_moe_experts",
     "_select_moe_detection_targets",
     "EMBEDDING_MODULES",
@@ -7345,8 +7346,20 @@ def fast_inference_setup(model_name, model_config):
                 f"Unsloth: Switching from Unsloth dynamic quant to normal quant since\n"
                 f"we do not yet support fast inference for {model_name}"
             )
-            model_name = model_name[: -len("unsloth-bnb-4bit")] + "bnb-4bit"
+            model_name = _vllm_plain_bnb_or_16bit(model_name)
     return fast_inference, model_name
+
+
+def _vllm_plain_bnb_or_16bit(model_name):
+    """`-unsloth-bnb-4bit` -> `-bnb-4bit` when that repo is published, else the 16-bit original (quantized on load)."""
+    from .mapper import FLOAT_TO_INT_MAPPER, INT_TO_FLOAT_MAPPER
+
+    plain = model_name[: -len("unsloth-bnb-4bit")] + "bnb-4bit"
+    lower = model_name.lower()
+    key = lower if lower in INT_TO_FLOAT_MAPPER else FLOAT_TO_INT_MAPPER.get(lower)
+    if key is None or (FLOAT_TO_INT_MAPPER.get(plain.lower()) or "").lower() == key.lower():
+        return plain
+    return INT_TO_FLOAT_MAPPER.get(key) or plain
 
 
 def save_lora_adapter(model, save_directory, *args, **kwargs):
@@ -8484,8 +8497,8 @@ def _ignore_block_swap_params_for_ddp(model):
 
 
 def _block_swap_for_trainer_backend(trainer):
-    """DDP: ignore swapped weights. FSDP / DeepSpeed (invisible at load, so "auto" planned for DDP):
-    refuse, since sharding would flatten the 0-element placeholders."""
+    """DDP: ignore swapped weights. FSDP / DeepSpeed (invisible at load): refuse any block swap, since
+    sharding flattens the 0-element placeholders the swap later rebinds."""
     model = getattr(trainer, "model", None)
     backend = (
         "FSDP"
@@ -8508,6 +8521,14 @@ def _block_swap_for_trainer_backend(trainer):
             f"Unsloth: offload_layers = 'auto' (this rank swapped {swapped} decoder layers to host "
             f"RAM) cannot be combined with {backend}, which shards the weights itself and cannot wrap "
             "swapped layers. Load with offload_layers = 0 (and get_peft_model(offload_layers = 0)), "
+            f"or launch without {backend}."
+        )
+    # An explicit count swaps the same layers on every rank, so every rank refuses alike.
+    if swapped:
+        raise ValueError(
+            f"Unsloth: offload_layers = {swapped} (decoder layers swapped to host RAM) cannot be "
+            f"combined with {backend}, which shards the weights itself and cannot wrap swapped "
+            "layers. Load with offload_layers = 0 (and get_peft_model(offload_layers = 0)), "
             f"or launch without {backend}."
         )
     return []
@@ -9196,17 +9217,118 @@ def _remote_expert_parents(model):
     return parents
 
 
+def _native_expert_parents(model, target_modules, requested):
+    """(parents, requested leaves) of native ``experts.<i>`` blocks inside the regex's language scope."""
+    try:
+        pattern = re.compile(target_modules)
+    except re.error:
+        return set(), set()
+    modules = list(model.named_modules())
+    reached_layers = {
+        name.rsplit(".", 2)[0]
+        for name, _ in modules
+        if ".experts." not in name and pattern.fullmatch(name)
+    }
+    in_scope, parents, leaves = {}, set(), set()
+    for name, module in modules:
+        matched = _EXPERT_SUBMODULE_PATTERN.search(name)
+        if matched is None or not name[matched.start() :].lstrip(".").startswith("experts."):
+            continue
+        parent, leaf = name[: matched.start()], matched.group(1)
+        if not parent:
+            continue
+        key = (parent, leaf)
+        if key not in in_scope:
+            layer = parent.rpartition(".")[0]
+            # Mixtral's block_sparse_moe has no MLP keyword; this keeps vision towers out.
+            in_scope[key] = any(
+                pattern.fullmatch(f"{parent}.{t}") for t in requested | {leaf}
+            ) or bool(
+                layer and any(r == layer or r.startswith(layer + ".") for r in reached_layers)
+            )
+        if not in_scope[key]:
+            continue
+        parents.add(
+            r"\.".join(r"\d+" if part.isdigit() else re.escape(part) for part in parent.split("."))
+        )
+        if leaf in requested and (
+            isinstance(module, torch.nn.Linear)
+            or isinstance(getattr(module, "base_layer", None), torch.nn.Linear)
+        ):
+            leaves.add(leaf)
+    return parents, leaves
+
+
+def native_expert_only_regex(model, target_modules):
+    """Regex for the explicit leaves found in the language decoder's native ``experts.<i>`` blocks, or None."""
+    try:
+        decoder = model.get_decoder()
+    except Exception:
+        return None
+    prefix = next((name for name, module in model.named_modules() if module is decoder), None)
+    if prefix is None:
+        return None
+    requested = {t for t in target_modules if isinstance(t, str) and "." not in t}
+    if "gate_up_proj" in requested:  # the shorthand reaches split gate / up experts too
+        requested |= {"gate_proj", "up_proj"}
+
+    def generic(path):
+        return r"\.".join(r"\d+" if part.isdigit() else re.escape(part) for part in path.split("."))
+
+    linears = [
+        name
+        for name, module in model.named_modules()
+        if (not prefix or name.startswith(prefix + "."))
+        and (
+            isinstance(module, torch.nn.Linear)
+            or isinstance(getattr(module, "base_layer", None), torch.nn.Linear)
+        )
+    ]
+    blocks, leaves = set(), set()
+    for name in linears:
+        matched = _EXPERT_SUBMODULE_PATTERN.search(name)
+        if matched is not None and matched.group(1) in requested:
+            if name[matched.start() :].lstrip(".").startswith("experts."):
+                blocks.add(name[: matched.start()])
+                leaves.add(matched.group(1))
+    if not leaves:
+        return None
+    parents = {generic(block) for block in blocks}
+    # Requested expert siblings (router) too, as PEFT suffix matching would.
+    others = {
+        generic(name)
+        for name in linears
+        if name.rpartition(".")[0] in blocks and name.rpartition(".")[2] in requested
+    }
+    regex = moe_expert_submodule_regex(sorted(leaves), parents)
+    return f"(?:{regex})|(?:{'|'.join(sorted(others))})" if others else regex
+
+
 def widen_target_regex_to_expert_submodules(
-    model, target_modules, detect_targets, auto_regex: bool
+    model,
+    target_modules,
+    detect_targets,
+    auto_regex: bool,
+    explicit_leaves: bool = False,
 ):
-    """Widen a generated regex to ``experts.<i>.<leaf>``; a user-written regex is never widened."""
+    """Widen a generated regex to ``experts.<i>.<leaf>``; a user-written regex is never widened.
+    explicit_leaves: the caller's list went through get_peft_regex, which skips native experts
+    that plain PEFT would match, so widen those too."""
     if not auto_regex or not isinstance(target_modules, str):
         return target_modules, detect_targets, []
     # Remote expert blocks only: widening native ones (Qwen3-MoE on 4.x) LoRAs every routed expert.
     parents = _remote_expert_parents(model)
+    named_leaves = set()
+    if explicit_leaves:
+        requested = set()
+        if isinstance(detect_targets, (list, tuple, set)):
+            requested = {t for t in detect_targets if isinstance(t, str) and "." not in t}
+        native, named_leaves = _native_expert_parents(model, target_modules, requested)
+        parents = parents | native
     if not parents:
         return target_modules, detect_targets, []
-    leaves = get_moe_expert_submodule_leaves(model, detect_targets)
+    # Requested names used as-is too, as plain PEFT does (Mixtral's w1 / w2 / w3).
+    leaves = sorted(set(get_moe_expert_submodule_leaves(model, detect_targets)) | named_leaves)
     if not leaves:
         return target_modules, detect_targets, []
     if any(

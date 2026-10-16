@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The GRPO hidden-states fallback must wrap the module that owns the head.
-
-TRL builds GRPO's `ref_model` as a bare `*ForCausalLM`, and that also has a
-`.model`, so walking `("base_model", "model")` landed the wrapper on the decoder
-body. Nothing raised: the head above ran untouched and the caller silently got
-[B, T, vocab] where it expects [B, T, hidden], which blows up later as a reduction
-dim mismatch in `chunked_hidden_states_selective_log_softmax`.
-"""
+"""Wrap the module that owns lm_head: a bare *ForCausalLM also has .model, the decoder body."""
 
 import contextlib
 import os
@@ -101,8 +94,7 @@ def test_plain_causal_lm_returns_hidden_states_after_the_wrapper():
         config.hidden_size,
     ), f"expected hidden states of width {config.hidden_size}, got {tuple(wrapped.shape)}"
 
-    # Must be the hidden states the head consumes, or the logprobs are wrong rather
-    # than merely mis-shaped.
+    # Must be the hidden states the head consumes, or the logprobs are wrong, not just mis-shaped.
     with _return_hidden_states("0"), torch.no_grad():
         reference = model(input_ids = input_ids).logits
     lm_head = model.get_output_embeddings().weight

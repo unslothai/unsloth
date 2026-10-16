@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The '-bf16' notice must not claim 16bit when a quantization_config survives.
-
-A `-bf16` name drops the plain load_in_4bit / 8bit / fp8 flags, but a user
-`quantization_config` stays in `**kwargs` and still quantizes, so there the
-notice would say the opposite of what happens.
-
-Source-level, because reaching the branch needs a real checkpoint download.
-"""
+"""The -bf16 notice must not claim 16bit when a user quantization_config survives and still quantizes."""
 
 import ast
 import os
@@ -163,8 +156,7 @@ def test_the_notice_on_a_real_bare_call():
 
 @pytest.mark.parametrize("index", [0, 1, 2, 3])
 def test_the_notice_names_a_route_to_4bit_that_exists(index):
-    # Some -bf16 repos have no 4bit sibling (CohereLabs/command-a-plus-05-2026-bf16).
-    # Unsloth's 4bit LoRA kernels read the nested quant state and need a matching compute dtype.
+    # Some -bf16 repos have no 4bit sibling; the 4bit LoRA kernels need a matching compute dtype.
     guards = _bf16_notice_guards()
     assert len(guards) == 4, "the notice moved; update this test"
     text = ast.get_source_segment(SRC, guards[index].body[0]) or ""

@@ -87,11 +87,7 @@ _TERNARY = re.compile(r"(.+?)&&(.+?)\|\|(.+)")
 
 
 class Unparsed(Exception):
-    """A group expression this evaluator does not model.
-
-    Raised rather than guessed. A guess here would silently answer the one question this
-    file exists to ask, which is how a group behaves on main.
-    """
+    """Raised rather than guessed: a guessed answer would silently misreport how a group behaves on main."""
 
 
 def _term(text: str, context: dict[str, str]) -> str:
@@ -141,15 +137,7 @@ def _render(
 
 
 def _is_per_commit_on_main(group: str) -> bool:
-    """Whether two commits on main land in DIFFERENT groups.
-
-    Evaluated rather than grepped. ``"github.sha" in group`` was the first form of this and
-    it is not the invariant: reverse the conditional to
-    ``github.ref != 'refs/heads/main' && github.sha || ''`` and the substring is still
-    present, every workflow still names ``refs/heads/main``, and main commits share one
-    group again. Rendering both sides asks the question directly, so which branch supplies
-    the SHA is what decides the answer.
-    """
+    """Rendered, not grepped: a substring check still passes when the SHA is on the wrong branch."""
     return _render(group, ref = MAIN, sha = "a" * 40) != _render(group, ref = MAIN, sha = "b" * 40)
 
 
@@ -247,13 +235,7 @@ def test_the_scan_actually_found_the_workflows():
 
 
 def test_this_guard_runs_on_a_workflow_only_pull_request():
-    """Where it is invoked from is part of what it checks.
-
-    The regression this file catches is an edit to some OTHER workflow's concurrency block.
-    No workflow filters on .github/workflows/**, so a PR touching only wheel-smoke.yml
-    collects no test that reads it. workflow-trigger-lint.yml carries no paths filter at
-    all, by design, so it is the one job that sees such a PR.
-    """
+    """Only workflow-trigger-lint.yml, with no paths filter, sees workflow-only PRs, so it must run this."""
     lint = WORKFLOWS / "workflow-trigger-lint.yml"
     text = lint.read_text(encoding = "utf-8")
     assert Path(__file__).name in text, (
@@ -278,12 +260,7 @@ def test_the_quota_bound_exemptions_still_exist():
 
 
 def test_a_pull_request_still_gets_latest_only():
-    """The protection is for main; superseding a PR push is still what we want.
-
-    A group keyed on github.sha unconditionally would leave every abandoned PR run
-    executing, which is the opposite of the intent and the expensive direction. Asked by
-    rendering two commits on a pull request ref and requiring the SAME group.
-    """
+    """PR runs share a group so superseded pushes cancel; per-SHA groups would leave them running."""
     offenders = {}
     for name, document in _protected().items():
         group = _group(document)
@@ -331,7 +308,6 @@ def test_the_evaluator_reads_which_branch_supplies_the_sha():
     assert not _is_per_commit_on_main(wrong_branch), "the SHA is on the pull request branch"
     assert _is_per_commit_on_main(unconditional)
 
-    # ... and the pull request half, which is what disqualifies the unconditional form.
     def _same_on_a_pull_request(group: str) -> bool:
         return _render(group, ref = A_PULL_REQUEST, sha = "a" * 40) == _render(
             group, ref = A_PULL_REQUEST, sha = "b" * 40
