@@ -49,6 +49,7 @@ from .loader_utils import (
     OFFLOAD_EMBEDDING_AUTO,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
+    _fp8_needs_offline_quantize,
     _offline_quantize_to_fp8,
     _tag_model_with_fp8_torchao_config,
     get_model_name,
@@ -1307,7 +1308,16 @@ class FastLanguageModel(FastLlamaModel):
                 cache_dir = kwargs.get("cache_dir", None),
                 revision = revision,
             )
-            if new_model_name is None and load_in_fp8 != False:
+            # get_model_name hands back the caller's name when no FP8 repo is mapped, so a None check
+            # never fired and the model loaded in bf16. Only vLLM quantizes on the fly, and only
+            # when it is the one loading. Conflicting flags are left to the precision check below.
+            if (
+                load_in_fp8 != False
+                and not _precision_flags_conflict(
+                    load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8
+                )
+                and _fp8_needs_offline_quantize(new_model_name, old_model_name, fast_inference)
+            ):
                 fp8_mode = _get_fp8_mode_and_check_settings(
                     load_in_fp8,
                     fast_inference,
@@ -2220,7 +2230,16 @@ class FastModel(FastBaseModel):
                 cache_dir = kwargs.get("cache_dir", None),
                 revision = revision,
             )
-            if new_model_name is None and load_in_fp8 != False:
+            # get_model_name hands back the caller's name when no FP8 repo is mapped, so a None check
+            # never fired and the model loaded in bf16. Only vLLM quantizes on the fly, and only
+            # when it is the one loading. Conflicting flags are left to the precision check below.
+            if (
+                load_in_fp8 != False
+                and not _precision_flags_conflict(
+                    load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8
+                )
+                and _fp8_needs_offline_quantize(new_model_name, old_model_name, fast_inference)
+            ):
                 fp8_mode = _get_fp8_mode_and_check_settings(
                     load_in_fp8,
                     fast_inference,

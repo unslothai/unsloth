@@ -1717,6 +1717,9 @@ def _offline_quantize_to_fp8(
     )
 
     config = AutoConfig.from_pretrained(model_name, revision = revision, token = token)
+    if getattr(config, "quantization_config", None):
+        # Already quantized (a local FP8 checkpoint, say): load it as it is.
+        return model_name
     is_vlm = any(
         x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
         for x in (getattr(config, "architectures", None) or [])
@@ -1784,6 +1787,17 @@ def _offline_quantize_to_fp8(
             gc.collect()
         tokenizer.save_pretrained(new_model_name)
     return new_model_name
+
+
+def _fp8_needs_offline_quantize(resolved_name, requested_name, fast_inference):
+    """True when no pre-quantized FP8 repo was mapped and vLLM won't quantize it on the fly."""
+    if resolved_name is not None and str(resolved_name).lower() != str(requested_name).lower():
+        return False
+    if not fast_inference or importlib.util.find_spec("vllm") is None:
+        return True
+    import vllm
+
+    return Version(vllm.__version__) < Version("0.12.0")
 
 
 def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
