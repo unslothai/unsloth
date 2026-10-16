@@ -3885,6 +3885,7 @@ def test_every_long_lived_spawner_consults_the_shutdown_latch():
         "core/rag/embed_llama_server.py",
         "core/systemone/native_worker.py",
         "core/systemone/laya_worker.py",
+        "core/training/token_preview.py",
         "core/training/training.py",
     }
     # Adopters this change deliberately leaves ungated, listed so the completeness check

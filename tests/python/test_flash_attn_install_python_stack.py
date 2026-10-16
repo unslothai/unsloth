@@ -57,18 +57,15 @@ class TestPrebuiltWheelTorchMapping:
         assert wheel_utils.prebuilt_wheel_torch_mm("2.12") == "2.10"
 
     def test_other_versions_pass_through(self):
-        # 2.13 stays unmapped on purpose: a torch minor only joins the reuse table once its wheels have actually been
-        # measured.
+        # 2.13 stays unmapped until its wheels have been measured.
         for torch_mm in ("2.9", "2.10", "2.13"):
             assert wheel_utils.prebuilt_wheel_torch_mm(torch_mm) == torch_mm
 
     def test_reuse_never_targets_a_pre_210_wheel(self):
-        # torch broke extension ABI between 2.9 and 2.10, so the torch2.9 .so raises "undefined symbol" on 2.10+.
+        # torch broke extension ABI between 2.9 and 2.10.
         assert set(wheel_utils._PREBUILT_WHEEL_TORCH_MM.values()) == {"2.10"}
 
     def test_direct_wheel_url_reuses_torch210_on_211(self):
-        # causal-conv1d / mamba go through direct_wheel_url; torch 2.11 reuses the torch2.10 wheel filename just like
-        # flash-attn does.
         url = wheel_utils.direct_wheel_url(
             filename_prefix = "causal_conv1d",
             package_version = "1.6.1",
@@ -105,13 +102,10 @@ class TestPrebuiltWheelTorchMapping:
 
 class TestFlashAttnWheelSelection:
     def test_torch_210_maps_to_v281(self):
-        # v2.8.1 is the newest release still publishing the full torch2.10 asset matrix (cu12 + cu13, cp312 + cp313,
-        # x86_64 + aarch64).
         assert ips._select_flash_attn_version("2.10") == "2.8.1"
 
     def test_selected_version_is_never_a_post_release(self):
-        # The v2.8.3.post1 respin dropped every torch2.10 asset and stops at torch2.9, whose .so will not load on
-        # torch 2.10+. A future "just take the newest release" bump must fail here instead of shipping that.
+        # v2.8.3.post1 dropped torch2.10 assets; a naive newest-release bump must fail here.
         for torch_mm in ("2.4", "2.7", "2.9", "2.10"):
             version = ips._select_flash_attn_version(torch_mm)
             assert version is not None
@@ -121,8 +115,6 @@ class TestFlashAttnWheelSelection:
         assert ips._select_flash_attn_version("2.9") == "2.8.3"
 
     def test_torch_211_has_no_native_version_entry(self):
-        # The raw version table has no torch2.11-tagged wheel;
-        # the URL builder reuses the torch2.10 wheel instead (see test_torch_211_reuses_torch210_wheel).
         assert ips._select_flash_attn_version("2.11") is None
 
     def test_torch_211_reuses_torch210_wheel(self):
@@ -298,11 +290,8 @@ class TestEnsureFlashAttn:
         assert kwargs["uv_needs_system"] is True
 
     def test_wheel_that_does_not_import_is_not_trusted(self):
-        """pip exits 0 on a wrong-arch/ABI wheel; the import is what decides.
-
-        The #5420 / #6961 Blackwell shape: setup must report that rather than claim
-        flash-attn is ready.
-        """
+        """pip exits 0 on a wrong-arch or ABI wheel, so only a successful import shows flash-attn is
+        ready."""
         step_messages: list[tuple[str, str]] = []
 
         with (
@@ -333,7 +322,6 @@ class TestEnsureFlashAttn:
                     (label, value)
                 ),
             ),
-            # Import never succeeds, before or after the install; the removal does.
             mock.patch("subprocess.run", side_effect = self._import_fails_removal_works),
         ):
             ips._ensure_flash_attn()
@@ -345,11 +333,7 @@ class TestEnsureFlashAttn:
         assert ("warning", "Continuing without flash-attn") in step_messages
 
     def test_rejected_wheel_is_uninstalled(self):
-        """Leaving it installed is not "continuing without flash-attn".
-
-        unsloth/models/_utils.py finds it by metadata (_package_available) and then imports
-        the native module in process, so a wheel that killed the probe kills training too.
-        """
+        """Rejected wheels must be uninstalled: _package_available trusts metadata and imports natively."""
         step_messages: list[tuple[str, str]] = []
         removals: list[list[str]] = []
 
@@ -424,7 +408,6 @@ class TestEnsureFlashAttn:
         import_calls: list[int] = []
 
         def fake_run(cmd, **kwargs):
-            # First call is the pre-install check (missing), the second verifies the install.
             import_calls.append(1)
             return self._import_check(1 if len(import_calls) == 1 else 0)
 

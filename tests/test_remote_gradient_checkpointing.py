@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Remote decoder loops that never call a checkpoint function (Kimi-K2.7's DeepSeek-V3 port)
-must still checkpoint once gradient checkpointing is enabled.
-
-The backbone below mirrors that file: it declares `gradient_checkpointing` and support for it,
-but its loop calls every layer directly, so enabling the flag used to change nothing.
-"""
+"""Remote decoder loops that bypass the checkpoint function must still checkpoint when enabled."""
 
 import sys
 
