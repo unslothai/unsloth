@@ -42,6 +42,7 @@ class _LocalGgufEntry:
     is_gguf: bool = True  # False routes the load to the inference orchestrator
     repo_level_companions: bool = False
     aliases: tuple[tuple[str, str], ...] = ()  # see _legacy_variant_aliases
+    withheld: tuple[str, ...] = ()  # listed build keys that cannot be served (torn split sets)
 
 
 _CACHE_TTL_S = 5.0
@@ -418,13 +419,21 @@ def _local_gguf_entry(
             offered, _ = inventory_variants(str(load_dir))
             complete_files = {str(v.filename).casefold() for v in offered if v.quant in complete}
             variants = [v for v in variants if str(v.filename).casefold() in complete_files]
+        withheld: tuple[str, ...] = ()
         if cache_repo_dir is None:
+            listed = variants
             variants = [
                 variant
                 for variant in variants
                 if getattr(variant, "filename", None)
                 and _split_set_is_loadable(Path(load_dir) / variant.filename)
             ]
+            kept = {str(v.quant).lower() for v in variants if getattr(v, "quant", None)}
+            withheld = tuple(
+                str(v.quant).lower()
+                for v in listed
+                if getattr(v, "quant", None) and str(v.quant).lower() not in kept
+            )
         quants = tuple(v.quant for v in variants if getattr(v, "quant", None))
         if not quants:
             return None
@@ -483,6 +492,7 @@ def _local_gguf_entry(
             quants,
             repo_level_companions = cache_repo_dir is not None,
             aliases = _legacy_variant_aliases(variants),
+            withheld = withheld,
         )
     except Exception:
         return None
@@ -1371,6 +1381,9 @@ def _resolve_from_index(
         for legacy, current in entry.aliases:
             if legacy == wanted:
                 return _result(entry, current)
+        # a listed build that cannot be served misses rather than falling back to a sibling
+        if wanted in entry.withheld:
+            return None
         from core.inference.openai_auto_download import looks_like_quant
 
         if looks_like_quant(variant):
@@ -1417,6 +1430,18 @@ def local_gguf_pinned_variant(requested: str, allow_scan: bool = True) -> Option
         if legacy == wanted:
             return current
     return None
+
+
+def local_gguf_withheld(requested: str) -> bool:
+    """Whether ``repo:BUILD`` names a listed build the last index could not serve."""
+    base, sep, wanted = requested.rpartition(":")
+    if not sep:
+        return False
+    try:
+        entry = _snapshot()[1].get(base.strip().lower())
+    except Exception:
+        return False
+    return entry is not None and wanted.strip().lower() in entry.withheld
 
 
 def local_target_is_gguf(load_path: Optional[str], loader_id: Optional[str] = None) -> bool:

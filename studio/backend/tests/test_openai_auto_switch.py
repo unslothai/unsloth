@@ -782,6 +782,23 @@ def test_local_gguf_entry_keeps_the_preferred_quant_over_a_larger_sibling_build(
     assert entry.variants[0] == "Q4_K_M"
 
 
+def test_a_torn_build_key_misses_instead_of_serving_its_sibling(tmp_path, monkeypatch):
+    (tmp_path / "alpha-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "beta-Q4_K_M-00001-of-00002.gguf").write_bytes(b"x" * 200)
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+    assert entry is not None and "beta-q4_k_m" in entry.withheld
+
+    index = {"local/model": entry}
+    assert resolver._resolve_from_index("local/model:beta-Q4_K_M", index) is None
+    assert resolver._resolve_from_index("local/model:latest", index)[1] == "Q4_K_M"
+
+    monkeypatch.setattr(resolver, "_scan", (1.0, index))
+    loaded = _FakeBackend(loaded_id = "local/model", hf_variant = "Q4_K_M")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    assert inference_route._loaded_satisfies("local/model:beta-Q4_K_M") is False
+    assert inference_route._loaded_satisfies("local/model:latest") is True
+
+
 def test_local_gguf_entry_labels_a_quantless_filename_as_the_picker_does(tmp_path):
     # No quant token in the name, so the picker and every saved setting key this variant by
     # the stem. Labelling it "v2" here left an API load reading a key nothing wrote (#10227).

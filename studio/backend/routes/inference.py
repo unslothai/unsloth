@@ -10654,14 +10654,17 @@ def _loaded_satisfies(requested: str) -> bool:
         if not _matches_any(requested, candidates) and not _matches_any(base, candidates):
             return False
         if variant and not looks_like_quant(variant):
-            from core.inference.local_model_resolver import local_gguf_pinned_variant
+            from core.inference.local_model_resolver import (
+                local_gguf_pinned_variant,
+                local_gguf_withheld,
+            )
 
             pinned_variant = local_gguf_pinned_variant(requested, allow_scan = False)
             if pinned_variant is not None:
                 return (
                     getattr(llama_backend, "hf_variant", None) or ""
                 ).lower() == pinned_variant.lower()
-            if _unindexed_build_stem(variant):
+            if _unindexed_build_stem(variant) or local_gguf_withheld(requested):
                 return False
         if not looks_like_quant(variant):
             return True
@@ -10679,10 +10682,13 @@ def _loaded_satisfies(requested: str) -> bool:
     if looks_like_quant(variant):
         return False
     if variant:
-        from core.inference.local_model_resolver import local_gguf_pinned_variant
+        from core.inference.local_model_resolver import (
+            local_gguf_pinned_variant,
+            local_gguf_withheld,
+        )
         if local_gguf_pinned_variant(requested, allow_scan = False) is not None:
             return False
-        if _unindexed_build_stem(variant):
+        if _unindexed_build_stem(variant) or local_gguf_withheld(requested):
             return False
     # The alias too: auto-switch records the repo id there, not in active_model_name.
     return True
