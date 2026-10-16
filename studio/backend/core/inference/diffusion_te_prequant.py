@@ -1166,7 +1166,6 @@ def _te_prequant_pipe_kwargs(
     try:
         from .diffusion_precision import TE_QUANT_FP8, normalize_te_quant, te_quant_supported
         from .diffusion_text_encoder_trim import family_trims_lm_head
-        from .media_locality import _hosted_component_cached
 
         sources = te_prequant_sources_for_base(
             fam,
@@ -1229,7 +1228,7 @@ def _te_prequant_pipe_kwargs(
                 # The MPS plan priced this checkpoint, not the dense shards beside it.
                 unbudgeted.append(component)
                 cause = f" ({failures[-1]})" if failures else cause
-            elif dense_source and not _hosted_component_cached(dense_source, component, "", ""):
+            elif dense_source and not _dense_component_cached(dense_source, component):
                 unavailable.append(component)
                 cause = f" ({failures[-1]})" if failures else cause
         if not unavailable and not unbudgeted:
@@ -1282,8 +1281,7 @@ def _fetch_dense_components(
     if not components:
         return True
     try:
-        from .media_locality import _hosted_component_cached
-        if all(_hosted_component_cached(source, c, "", "") for c in components):
+        if all(_dense_component_cached(source, c) for c in components):
             return True
     except Exception:  # noqa: BLE001 - unknown: try the fetch
         pass
@@ -1321,23 +1319,43 @@ def _fetch_dense_components(
 
 
 def _held_locally(repo_id: str, name: Optional[str], hf_token: Optional[str]) -> bool:
-    """Whether ``repo_id/name`` is on this machine (mirror or Hub cache), without touching the network."""
+    """Whether ``repo_id/name`` is on this machine, without touching the network: the operator's mirror, or either
+    cache root the loader reuses (the live one and huggingface_hub's import-time one, as _download_checkpoint_name)."""
     try:
         if te_prequant_mirror_path(repo_id, name) is not None:
             return True
-        from huggingface_hub import hf_hub_download
+        import types
 
         from utils.hf_cache_settings import active_hf_hub_cache
 
-        hf_hub_download(
-            repo_id = repo_id,
-            filename = name,
-            token = hf_token,
-            cache_dir = active_hf_hub_cache(),
-            local_files_only = True,
-        )
-        return True
+        from .diffusion_prequant import _cached_in_root
+
+        source = types.SimpleNamespace(kind = "repo", location = repo_id, filename = name)
+        return any(_cached_in_root(source, root, name) is not None for root in (active_hf_hub_cache(), None))
     except Exception:  # noqa: BLE001 - not cached, or unanswerable
+        return False
+
+
+def _dense_component_cached(source: str, component: str) -> bool:
+    """Whether ``component``'s dense shards are on disk for ``source`` (a folder, or a repo id in either cache root)."""
+    from .media_locality import _component_present, _hosted_component_cached
+
+    if _hosted_component_cached(source, component, "", ""):
+        return True
+    import os
+
+    if os.path.isdir(str(source)):
+        return False
+    try:
+        from pathlib import Path
+
+        from huggingface_hub import constants
+
+        repo_dir = Path(constants.HF_HUB_CACHE) / f"models--{str(source).replace('/', '--')}"
+        ref = (repo_dir / "refs" / "main").read_text(encoding = "utf-8").strip()
+        snapshot = repo_dir / "snapshots" / ref
+        return bool(ref) and snapshot.is_dir() and _component_present(snapshot / component)
+    except Exception:  # noqa: BLE001 - not cached there
         return False
 
 

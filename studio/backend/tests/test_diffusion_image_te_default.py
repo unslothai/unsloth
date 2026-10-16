@@ -798,16 +798,91 @@ def test_hidream_loads_the_hosted_int8_te4_on_mps(monkeypatch):
     assert loaded == [("HiDream-I1-Full-text_encoder_4-INT8-ConvRot.safetensors", "int8")]
 
 
-def test_hidream_int8_on_mps_without_the_file_loads_dense_and_does_not_cast_fp8(monkeypatch):
-    import core.inference.diffusion_hidream as dh
+def _hidream_mps(monkeypatch, *, load):
     import core.inference.diffusion_precision as prec
     import transformers
 
+    monkeypatch.delenv("UNSLOTH_TE_KEEP_LM_HEAD", raising = False)
     monkeypatch.setattr(prec, "te_quant_supported", lambda target, mode: False)
     monkeypatch.setattr(prec, "_cast_fp8", lambda *a, **k: pytest.fail("fp8 cast on MPS"))
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", staticmethod(lambda *a, **k: "tok4"))
     dense = torch.nn.Linear(2, 2)
     monkeypatch.setattr(transformers.LlamaForCausalLM, "from_pretrained", staticmethod(lambda *a, **k: dense))
-    monkeypatch.setattr(tpq, "load_prequant_text_encoder", lambda *a, **k: None)
-    out = dh.hidream_te4_kwargs(None, None, fam = _fam("hidream-i1"), te_quant_mode = "int8", target = MPS_TARGET)
+    monkeypatch.setattr(tpq, "load_prequant_text_encoder", lambda *a, **k: load)
+    return dense
+
+
+def test_hidream_explicit_int8_on_mps_refuses_when_the_te4_file_fails(monkeypatch):
+    import core.inference.diffusion_hidream as dh
+
+    _hidream_mps(monkeypatch, load = None)
+    with pytest.raises(RuntimeError, match = "text_encoder_4"):
+        dh.hidream_te4_kwargs(None, None, fam = _fam("hidream-i1"), te_quant_mode = "int8", target = MPS_TARGET)
+
+
+def test_hidream_none_on_mps_still_loads_the_dense_te4(monkeypatch):
+    import core.inference.diffusion_hidream as dh
+
+    dense = _hidream_mps(monkeypatch, load = None)
+    out = dh.hidream_te4_kwargs(None, None, fam = _fam("hidream-i1"), te_quant_mode = None, target = MPS_TARGET)
     assert out["text_encoder_4"] is dense
+
+
+# ---- review round 4: both cache roots --------------------------------------------------------------------------
+
+
+def _cache_file(root, repo, name, rev = "c" * 40):
+    repo_dir = root / ("models--" + repo.replace("/", "--"))
+    (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
+    (repo_dir / "refs" / "main").write_text(rev)
+    snap = repo_dir / "snapshots" / rev
+    snap.mkdir(parents = True, exist_ok = True)
+    (snap / name).parent.mkdir(parents = True, exist_ok = True)
+    (snap / name).write_bytes(b"x")
+    return snap
+
+
+def _two_roots(monkeypatch, tmp_path):
+    from huggingface_hub import constants
+
+    import utils.hf_cache_settings as hcs
+
+    live, other = tmp_path / "live", tmp_path / "import-time"
+    live.mkdir()
+    other.mkdir()
+    monkeypatch.setattr(hcs, "active_hf_hub_cache", lambda: str(live))
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(other))
+    import core.inference.diffusion as D
+
+    monkeypatch.setattr(D, "hub_cache_dir", lambda: str(live))
+    monkeypatch.delenv(tpq.TE_PREQUANT_MIRROR_ENV, raising = False)
+    return live, other
+
+
+@pytest.mark.parametrize("where", ["live", "import-time"])
+def test_a_hosted_encoder_in_either_cache_root_is_confirmed_offline(where, monkeypatch, tmp_path):
+    live, other = _two_roots(monkeypatch, tmp_path)
+    _cache_file(live if where == "live" else other, *_QWEN25VL_INT8)
+    monkeypatch.setattr(tpq, "_hub_offline", lambda: True)
+    tpq._confirmed_cache.clear()
+    assert tpq._held_locally(*_QWEN25VL_INT8, None)
+    fam = _fam("qwen-image")
+    sources = tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16)
+    assert tpq.te_prequant_sources_confirmed(sources)
+
+
+def test_a_hosted_encoder_in_neither_root_is_not_confirmed_offline(monkeypatch, tmp_path):
+    _two_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(tpq, "_hub_offline", lambda: True)
+    assert not tpq._held_locally(*_QWEN25VL_INT8, None)
+
+
+def test_dense_shards_in_the_import_time_root_count_as_cached(monkeypatch, tmp_path):
+    live, other = _two_roots(monkeypatch, tmp_path)
+    import core.inference.media_locality as ml
+
+    monkeypatch.setattr(ml, "_hosted_component_cached", lambda *a, **k: False)
+    _cache_file(other, "Qwen/Qwen-Image", "text_encoder/model.safetensors")
+    _cache_file(other, "Qwen/Qwen-Image", "text_encoder/config.json")
+    assert tpq._dense_component_cached("Qwen/Qwen-Image", "text_encoder")
+    assert not tpq._dense_component_cached("Qwen/Qwen-Image", "vae")

@@ -127,6 +127,18 @@ def hidream_te4_kwargs(
             )
             if encoder is not None:
                 return {"text_encoder_4": encoder, "tokenizer_4": tokenizer_4}
+        if hosted_int8 and not fp8_engages:
+            from .diffusion_precision import te_quant_picked_automatically
+
+            if not te_quant_picked_automatically(te_quant_mode):
+                # Apple Silicon: the plan priced the hosted int8 TE4 and nothing else runs here, so the 16 GB dense
+                # Llama is not loaded in its place (as _te_prequant_pipe_kwargs refuses for the other encoders).
+                raise RuntimeError(
+                    f"The pre-quantized text_encoder_4 for {HIDREAM_LLAMA_REPO} could not be loaded "
+                    f"({'not available' if source is None else 'see the server log'}). The memory check sized "
+                    "this load for it, so the larger dense encoder is not loaded in its place. Set Text encoder "
+                    "precision to Dense (bf16) to load the dense encoder instead."
+                )
 
     logger.info("diffusion.hidream: loading Llama TE4 from %s", HIDREAM_LLAMA_REPO)
     text_encoder_4 = LlamaForCausalLM.from_pretrained(
