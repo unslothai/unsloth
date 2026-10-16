@@ -30,11 +30,15 @@ def _recipe_output(wrapped):
     return Dataset.from_list([{"user_goal": "Plan a monthly budget.", "output_format": wrapped}])
 
 
-@_WRAPPERS
-def test_check_detects_a_conversation_wrapped_in_a_structured_column(wrapped):
+@pytest.mark.parametrize(
+    "wrapped, expected",
+    [({"conversation": _CONVERSATION}, "chatml"), ({"messages": _SHAREGPT}, "sharegpt")],
+    ids = ["role_content", "from_value"],
+)
+def test_check_detects_a_conversation_wrapped_in_a_structured_column(wrapped, expected):
     result = check_dataset_format(_recipe_output(wrapped))
 
-    assert result["detected_format"] in {"chatml", "sharegpt"}
+    assert result["detected_format"] == expected
     assert result["chat_column"] == "output_format"
     assert result["suggested_mapping"] is None
 
