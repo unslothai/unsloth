@@ -1124,6 +1124,7 @@ def _detect_load_family(
     )
     if fam is not None and fam.name == "ltx-2.5" and not ltx_file:
         from .video_ltx25 import LTX25_SINGLE_FILE_REPO, is_ltx25_single_file_base
+
         # Mirror-folded: the carrier (unsloth/LTX-2.5-GGUF) has no model_index.json either. Only a FILE pick keeps
         # the unfolded check (ltx25_default_base), so a GGUF from the carrier keeps the Diffusers base.
         if is_ltx25_single_file_base(repo_id):
@@ -1710,7 +1711,11 @@ def _video_cached_completeness(repo_id: str) -> int:
         best = -1
         for rev in _cached_revisions(Path(hub_cache_dir()), repo_id):
             index = next(
-                (rev / n for n in ("model_index.json", "modular_model_index.json") if (rev / n).is_file()),
+                (
+                    rev / n
+                    for n in ("model_index.json", "modular_model_index.json")
+                    if (rev / n).is_file()
+                ),
                 None,
             )
             if index is None:
@@ -1730,7 +1735,9 @@ def _video_cached_completeness(repo_id: str) -> int:
                     continue
                 complete = True
                 for shard_index in folder.glob("*.index.json"):
-                    weight_map = json.loads(shard_index.read_text(encoding = "utf-8")).get("weight_map") or {}
+                    weight_map = (
+                        json.loads(shard_index.read_text(encoding = "utf-8")).get("weight_map") or {}
+                    )
                     if not all((folder / name).is_file() for name in set(weight_map.values())):
                         complete = False
                         break
@@ -3891,7 +3898,9 @@ class VideoBackend:
                 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
                 partner = moe_partner_filename(kwargs["gguf_filename"])
-                fetch_partner = bool(getattr(fam, "is_moe", False) and kind != "pipeline" and partner)
+                fetch_partner = bool(
+                    getattr(fam, "is_moe", False) and kind != "pipeline" and partner
+                )
                 # One choice for the pick and its partner expert, settled on both names, so they come from one repo and
                 # progress reads that repo for both.
                 checkpoint_repo = _video_fetch_repo(
@@ -5881,18 +5890,16 @@ class VideoBackend:
                 listing = _video_listing_repo(base)
                 info = api.model_info(listing, files_metadata = True)
                 base_files = self._base_download_files(
-                        info,
-                        kind,
-                        ltx23 = ltx23,
-                        skip_te_components = skip_te_components,
-                        skip_transformer_weights = skip_transformer_weights,
-                        skip_transformer_components = skip_transformer_components,
-                        h3_task = h3_task,
-                        ltx25_dev = ltx25_dev,
-                        ltx25_shards = self._ltx25_plan_shards(
-                            info, _video_listing_repo(base), hf_token
-                        ),
-                    )
+                    info,
+                    kind,
+                    ltx23 = ltx23,
+                    skip_te_components = skip_te_components,
+                    skip_transformer_weights = skip_transformer_weights,
+                    skip_transformer_components = skip_transformer_components,
+                    h3_task = h3_task,
+                    ltx25_dev = ltx25_dev,
+                    ltx25_shards = self._ltx25_plan_shards(info, _video_listing_repo(base), hf_token),
+                )
                 total += sum(size for _, size in base_files)
                 base_names = frozenset(name for name, _ in base_files)
                 planned[_FETCH_BASE] = _PlannedFetch(
@@ -6765,7 +6772,9 @@ class VideoBackend:
                 scans.setdefault(rid, set()).update(plan.names)
                 tags.setdefault(rid, set()).update(getattr(plan, "etags", ()) or ())
             downloaded = sum(
-                self._cache_bytes(rid, frozenset(names), pins.get(rid), frozenset(tags.get(rid, ())))
+                self._cache_bytes(
+                    rid, frozenset(names), pins.get(rid), frozenset(tags.get(rid, ()))
+                )
                 for rid, names in scans.items()
             )
         else:
