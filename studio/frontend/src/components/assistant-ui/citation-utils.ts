@@ -152,6 +152,87 @@ export function citedPagesPerDocument(
   );
 }
 
+/** Whether a citation has text to show as a passage; an empty chunk would render as a blank card. */
+export function isPassage(citation: Citation): boolean {
+  return citation.text.trim().length > 0;
+}
+
+/** A retrieved passage and its 1-based rank among the ranked passages; null when unscored (a whole-document read). */
+export interface Passage {
+  citation: Citation;
+  rank: number | null;
+}
+
+/** One document's passages, in retrieval order. */
+export interface DocumentPassages {
+  key: string;
+  filename: string;
+  passages: Passage[];
+}
+
+/**
+ * Passages grouped by document, documents in first-seen order (as their chips). Ranks count only
+ * scored passages, so ranked project passages merged after a whole-document read still start at #1.
+ */
+export function passagesPerDocument(
+  citations: readonly Citation[],
+): DocumentPassages[] {
+  const groups = new Map<string, DocumentPassages>();
+  let ranked = 0;
+  for (const citation of citations) {
+    if (!isPassage(citation)) continue;
+    const key = documentKey(citation);
+    let group = groups.get(key);
+    if (!group) {
+      group = { key, filename: citation.filename, passages: [] };
+      groups.set(key, group);
+    }
+    group.passages.push({
+      citation,
+      rank: citation.score != null ? ++ranked : null,
+    });
+  }
+  return Array.from(groups.values());
+}
+
+/** The first `limit` passages across the groups, in order; groups left empty are dropped. */
+export function firstPassages(
+  groups: readonly DocumentPassages[],
+  limit: number,
+): DocumentPassages[] {
+  const shown: DocumentPassages[] = [];
+  let room = limit;
+  for (const group of groups) {
+    if (room <= 0) break;
+    const passages = group.passages.slice(0, room);
+    room -= passages.length;
+    if (passages.length > 0) shown.push({ ...group, passages });
+  }
+  return shown;
+}
+
+/**
+ * A passage as shown: trimmed, without the Markdown heading markers PDF and Office parsing adds,
+ * and with blank lines folded so a clamped preview spends its lines on text.
+ */
+export function passageDisplayText(text: string): string {
+  return text
+    .trim()
+    .replace(/^#{1,6}[ \t]+/gm, "")
+    .replace(/\n[ \t]*\n\s*/g, "\n");
+}
+
+const PASSAGE_CLAMP_CHARS = 280;
+const PASSAGE_CLAMP_LINES = 4;
+
+/** Whether a passage is long enough to start clamped behind "Show more". */
+export function passageNeedsClamp(text: string): boolean {
+  return (
+    text.length > PASSAGE_CLAMP_CHARS ||
+    text.split("\n").length > PASSAGE_CLAMP_LINES
+  );
+}
+
 /** "p.3", "p.1–5" or "pp.1–3, 7": runs of consecutive pages collapse into ranges. */
 export function pageLabel(pages: readonly number[]): string {
   const runs: string[] = [];
