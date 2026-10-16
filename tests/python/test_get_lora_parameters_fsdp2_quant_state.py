@@ -97,3 +97,21 @@ def test_no_fallback_for_dense_or_non_bnb_weights():
     # Nor is a module that is not a bitsandbytes Linear4bit.
     proj, _ = _fsdp2_unsharded_4bit(base_cls = torch.nn.Module)
     assert get_lora_parameters(proj)[1] is None
+
+
+def test_dense_weight_never_takes_the_module_getattr_path():
+    # Every 16-bit LoRA forward (training and decode) asks for the quant state; a dense weight must
+    # not pay for nn.Module.__getattr__ raising and catching AttributeError on the base layer.
+    get_lora_parameters = _load_function("get_lora_parameters")
+    lookups = []
+
+    class _CountingLinear(torch.nn.Linear):
+        def __getattr__(self, name):
+            lookups.append(name)
+            return super().__getattr__(name)
+
+    base_layer = _CountingLinear(64, 32, bias = False)
+    proj = _LoRA(base_layer)
+    lookups.clear()
+    assert get_lora_parameters(proj)[1] is None
+    assert "quant_state" not in lookups, lookups
