@@ -5055,14 +5055,17 @@ def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
     stems do not: a bare quant names both FL2VA and Ref2VA, and picking the first file would load a
     different task.
     """
-    from hub.utils.gguf import is_qualified_gguf_variant_key
+    from hub.utils.gguf import gguf_variant_family, is_qualified_gguf_variant_key
     from utils.models.model_config import _gguf_variant_key
 
     label = _main_variant_gguf_label(rel_path)
     if label is None:
         return None
     key = _gguf_variant_key(rel_path)
-    if _variant_keys_match(key, want):
+    # A custom folder keys a second build at one quant by its family (#13926), which the loader also accepts.
+    if _variant_keys_match(key, want) or (
+        gguf_variant_family(rel_path).casefold() == want.strip().casefold()
+    ):
         return 0
     if is_qualified_gguf_variant_key(key) and "/" not in key.replace("\\", "/"):
         return None

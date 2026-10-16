@@ -66,6 +66,7 @@ def test_the_listing_still_offers_one_build_per_quant(tmp_path):
 
 
 def test_a_custom_folder_lists_every_build_at_one_quant(tmp_path):
+    from routes.models import _resolve_quant_gguf
     from utils.models.model_config import _find_local_gguf_by_variant
 
     # No remote listing has to agree with a custom folder's keys, so every build keeps a row (#13926).
@@ -80,6 +81,8 @@ def test_a_custom_folder_lists_every_build_at_one_quant(tmp_path):
     assert listed == {"NVFP4": names[0], **{name[: -len(".gguf")]: name for name in names[1:]}}
     for quant, filename in listed.items():
         assert Path(_find_local_gguf_by_variant(str(folder), quant)).name == filename
+        # The memory estimate prices the file the row loads.
+        assert Path(_resolve_quant_gguf(str(folder), quant, True)[0]).name == filename
     # Every build is named, the bare-keyed first one too.
     assert {v.display_label for v in variants} == {
         f"NVFP4 · {name[: -len('.gguf')]}" for name in names
