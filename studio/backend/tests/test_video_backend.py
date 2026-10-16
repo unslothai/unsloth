@@ -3340,8 +3340,8 @@ def test_h3_native_download_plan_stages_the_complete_runtime(monkeypatch):
             "unsloth/MiniMax-H3-GGUF": [
                 _PlanSibling("minimax_h3_fl2va-Q4_K_M.gguf", 19),
                 _PlanSibling("qwen3vl_32b_minimax_h3-Q4_K_M.gguf", 18),
-                _PlanSibling("vae/minimax_h3_video_vae_fp16.safetensors", 5),
-                _PlanSibling("vae/minimax_h3_audio_vae_fp32.safetensors", 1),
+                _PlanSibling("vae/official/minimax_h3_video_vae_fp16.safetensors", 5),
+                _PlanSibling("vae/official/minimax_h3_audio_vae_fp32.safetensors", 1),
             ],
         },
     )
@@ -3360,8 +3360,8 @@ def test_h3_native_download_plan_stages_the_complete_runtime(monkeypatch):
     assert by_repo["unsloth/MiniMax-H3-GGUF"]["files"] == [
         "minimax_h3_fl2va-Q4_K_M.gguf",
         "qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
-        "vae/minimax_h3_video_vae_fp16.safetensors",
-        "vae/minimax_h3_audio_vae_fp32.safetensors",
+        "vae/official/minimax_h3_video_vae_fp16.safetensors",
+        "vae/official/minimax_h3_audio_vae_fp32.safetensors",
     ]
     assert plan["total_bytes"] == 43
 
@@ -3427,8 +3427,8 @@ def test_h3_native_uses_the_local_bundles_own_text_encoder(monkeypatch, tmp_path
             "unsloth/MiniMax-H3-GGUF": [
                 _PlanSibling("minimax_h3_fl2va-Q4_K_M.gguf", 19),
                 _PlanSibling("qwen3vl_32b_minimax_h3-Q4_K_M.gguf", 18),
-                _PlanSibling("vae/minimax_h3_video_vae_fp16.safetensors", 5),
-                _PlanSibling("vae/minimax_h3_audio_vae_fp32.safetensors", 1),
+                _PlanSibling("vae/official/minimax_h3_video_vae_fp16.safetensors", 5),
+                _PlanSibling("vae/official/minimax_h3_audio_vae_fp32.safetensors", 1),
             ],
         },
     )
@@ -6472,6 +6472,7 @@ def test_the_native_h3_vaes_come_from_a_local_bundle_when_it_has_them(tmp_path):
     for name in (gguf, qwen):
         (bundle / name).write_bytes(b"x")
     for name in (H3_VIDEO_VAE, H3_AUDIO_VAE):
+        (bundle / name).parent.mkdir(parents = True, exist_ok = True)
         (bundle / name).write_bytes(b"x")
 
     requests = VideoBackend._h3_native_requests(str(bundle), gguf, qwen)

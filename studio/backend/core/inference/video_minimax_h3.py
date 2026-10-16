@@ -23,8 +23,11 @@ H3_GGUF_REPO = "unsloth/MiniMax-H3-GGUF"
 # The VAEs live beside the denoisers, so the native pick is one repo we control end to end. It was the Comfy-Org repack
 # once; a video load never reads from that repack any more, cached or not.
 H3_COMPONENT_REPO = "unsloth/MiniMax-H3-GGUF"
-H3_VIDEO_VAE = "vae/minimax_h3_video_vae_fp16.safetensors"
-H3_AUDIO_VAE = "vae/minimax_h3_audio_vae_fp32.safetensors"
+# Built from the official MiniMaxAI vae/ and audio_vae/ weights (diffusers layout -> sd.cpp layout; video cast to fp16)
+# and uploaded beside the originals under vae/official/. They are byte-identical to the vae/ copies that came from the
+# Comfy-Org repack, which stay in place for released builds; this build reads only the official-provenance paths.
+H3_VIDEO_VAE = "vae/official/minimax_h3_video_vae_fp16.safetensors"
+H3_AUDIO_VAE = "vae/official/minimax_h3_audio_vae_fp32.safetensors"
 H3_QWEN_Q2 = "qwen3vl_32b_minimax_h3-Q2_K_M.gguf"
 H3_QWEN_Q4 = "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
 

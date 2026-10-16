@@ -293,3 +293,12 @@ def test_in_flight_load_claims_both_sides_of_a_mirror_pair():
     ids = backend.loading_repo_ids()
     assert "Wan-AI/Wan2.2-TI2V-5B-Diffusers" in ids
     assert "unsloth/Wan2.2-TI2V-5B-FP8" in ids
+
+
+def test_h3_vaes_are_read_from_the_official_provenance_paths():
+    """The vae/ copies came from the Comfy-Org repack; the build reads the vae/official/ files made from MiniMaxAI's
+    weights (byte-identical, so released builds reading vae/ keep working)."""
+    from core.inference.video_minimax_h3 import H3_AUDIO_VAE, H3_VIDEO_VAE
+
+    assert H3_VIDEO_VAE == "vae/official/minimax_h3_video_vae_fp16.safetensors"
+    assert H3_AUDIO_VAE == "vae/official/minimax_h3_audio_vae_fp32.safetensors"
