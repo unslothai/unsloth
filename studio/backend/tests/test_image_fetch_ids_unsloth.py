@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """Every Hub repo an IMAGE load can fetch resolves to ``unsloth/*``.
 
 Walks the family table (bases, named variants, prequant / TE checkpoints, sd-cli VAE and text encoders, train and

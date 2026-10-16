@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """Mirror targets that are also a model's own artifact repo (GGUF / FP8 checkpoints at the root, the official
 diffusers folders beside them): the opt-out must not rewrite them, and pipeline sizing must not count the quants."""
 
