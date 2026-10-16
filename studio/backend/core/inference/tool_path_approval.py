@@ -1224,34 +1224,42 @@ _BARE_SWITCH_RE = re.compile(r"^[/\\][^/\\]*$")
 _OUTPUT_FILE_FLAGS = frozenset({"-o", "--output"})
 
 # Flags that name a file or directory the command writes, beyond `-o`/`--output`: ImageMagick's
-# `-write filename` / `+write filename`, and pandoc's `--extract-media=DIR` and `--log=FILE`.
+# `-write`/`+write`, pandoc's `--extract-media`/`--log`, and ffmpeg's log, SDP, stats, progress and
+# attachment-dump files.
 _COMMAND_OUTPUT_FLAGS = {
     "magick": frozenset({"-write", "+write"}),
     "convert": frozenset({"-write", "+write"}),
     "pandoc": frozenset({"--extract-media", "--log"}),
+    "ffmpeg": frozenset(
+        {"-passlogfile", "-sdp_file", "-vstats_file", "-progress", "-dump_attachment"}
+    ),
 }
 
 # Tools that name their output positionally. `ffmpeg ... {[input_options] -i input} ... output`:
-# every operand but an `-i` value is written. `magick input-file ... output-file`: the last one is.
-_POSITIONAL_OUTPUT_COMMANDS = {"ffmpeg": "not_input", "magick": "last", "convert": "last"}
+# an operand that is no option's value, or the last one, is an output; option values are read.
+# `magick input-file ... output-file` writes the last one; `compare image image [difference]` only
+# when the difference image is given.
+_POSITIONAL_OUTPUT_COMMANDS = {"ffmpeg": "not_option_value", "magick": "last", "convert": "last"}
+_MAGICK_VERB_OUTPUTS = {"identify": None, "compare": "third_image"}
 
-# ffmpeg options whose value is a file it reads (`-filter_complex_script`, `-attach`, and the
-# `-/option file` form that loads an option's value from a file), and magick's read-only verb.
-_FFMPEG_INPUT_FLAGS = frozenset({"-i", "-filter_complex_script", "-filter_script", "-attach"})
-_MAGICK_READ_ONLY_VERBS = frozenset({"identify"})
+# ffmpeg flags that take no value, so the operand after one is still positional.
+_FFMPEG_VALUELESS_FLAGS = frozenset(
+    "-y -n -an -vn -sn -dn -shortest -nostdin -hide_banner -stats -nostats -copyts".split()
+)
 
 
 def _unlisted_command_operands(command, args) -> "list[tuple[str, bool]]":
     outputs = _POSITIONAL_OUTPUT_COMMANDS.get(command)
-    if command == "magick" and args and args[0] in _MAGICK_READ_ONLY_VERBS:
-        outputs = None
+    if command == "magick" and args and args[0] in _MAGICK_VERB_OUTPUTS:
+        outputs = _MAGICK_VERB_OUTPUTS[args[0]]
+    images = [arg for arg in args[1:] if arg[:1] not in "-+" and re.search(r"[./\\]", arg)]
     output_flags = _OUTPUT_FILE_FLAGS | _COMMAND_OUTPUT_FLAGS.get(command, frozenset())
     operands = []
     writes_next = False
     for index, arg in enumerate(args):
         writing, writes_next = writes_next, False
         value = arg
-        if arg in output_flags:
+        if arg in output_flags or arg.split(":")[0] in output_flags:
             writes_next = True
             continue
         if arg.startswith("-"):
@@ -1261,11 +1269,12 @@ def _unlisted_command_operands(command, args) -> "list[tuple[str, bool]]":
             writing = flag in output_flags
         elif outputs == "last":
             writing = writing or index == len(args) - 1
-        elif outputs == "not_input":
-            previous = args[index - 1].split(":")[0] if index else ""
-            writing = writing or not (
-                previous in _FFMPEG_INPUT_FLAGS or previous.startswith("-/")
-            )
+        elif outputs == "third_image":
+            writing = writing or (len(images) >= 3 and index == len(args) - 1)
+        elif outputs == "not_option_value":
+            previous = args[index - 1] if index else ""
+            writing = writing or index == len(args) - 1 or not previous.startswith("-")
+            writing = writing or previous in _FFMPEG_VALUELESS_FLAGS
         # A lone rooted word is a Windows switch (`/E`), unless it is the file the command writes.
         if _looks_absolute(value) and (writing or not _BARE_SWITCH_RE.match(value)):
             operands.append((value, writing))

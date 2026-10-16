@@ -3799,6 +3799,10 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     "pandoc in.docx --extract-media=/usr/share/doc/assets -o out.md",
     "pandoc in.docx --extract-media /usr/share/doc/assets -o out.md",
     "pandoc in.md --log=/usr/share/doc/log.json -o out.html",
+    "ffmpeg -i in.wav -passlogfile /usr/share/doc/pass out.mp4",
+    "ffmpeg -i in.wav -y /out.wav",
+    "ffmpeg -i in.wav -shortest /usr/share/sounds/out.wav",
+    "magick compare a.png b.png /usr/share/pixmaps/diff.png",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
@@ -4150,6 +4154,9 @@ _INDIRECT_BENIGN_TERMINAL = (
     "ffmpeg -i in.mp4 -filter_script:v /usr/share/doc/f.txt out.mp4",
     "ffmpeg -i in.mp4 -attach /usr/share/fonts/a.ttf out.mkv",
     "ffmpeg -i in.mp4 -/filter_complex /usr/share/doc/g.txt out.mp4",
+    "ffmpeg -fpre /usr/share/ffmpeg/libvpx-360p.ffpreset -i in.y4m out.webm",
+    "ffmpeg -vpre /usr/share/ffmpeg/x.ffpreset -i in.y4m out.webm",
+    "magick compare /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png",
 )
 
 _INDIRECT_BENIGN_PYTHON = (
