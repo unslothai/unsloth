@@ -496,16 +496,16 @@ class TestOrdinaryHostsKeepTheirReadings:
 
     def test_a_listing_raced_by_an_invalidation_is_not_cached(self, host, monkeypatch, calls):
         host([(GPU0, [])], [14000], None)
-        real = nvidia._query_mig_gpu_indices
+        real = nvidia._run_mig_listing
 
         def racing():
             out = real()
             nvidia.gpu_query.invalidate_static("hotplug during the query")
             return out
 
-        monkeypatch.setattr(nvidia, "_query_mig_gpu_indices", racing)
-        nvidia.get_mig_gpu_indices()
-        monkeypatch.setattr(nvidia, "_query_mig_gpu_indices", real)
+        monkeypatch.setattr(nvidia, "_run_mig_listing", racing)
+        assert nvidia.get_mig_gpu_indices_or_none() is None
+        monkeypatch.setattr(nvidia, "_run_mig_listing", real)
         nvidia.get_mig_gpu_indices()
         assert calls["list"] == 2
         nvidia.get_mig_gpu_indices()
@@ -543,26 +543,23 @@ class TestMigListingFreshness:
         monkeypatch.setenv("UNSLOTH_GPU_QUERY_CACHE", "1")
         host(TWO_SLICES, [38000], None)
         assert nvidia.get_physical_gpu_count(gpu_rows_only = True) == 1
-        monkeypatch.setattr(nvidia, "_mig_indices_cache", None)
+        monkeypatch.setattr(nvidia, "_mig_entry", None)
         clock[0] += 59
         # Served from gpu_query's own cache: stamped with that answer's time, not now.
         assert nvidia.get_mig_gpu_indices() == {0}
         assert calls["list"] == 1
-        assert nvidia._mig_indices_cache[1] == 1000.0
+        assert nvidia._mig_entry[2] == 1000.0
         clock[0] += 2
         assert nvidia.get_mig_gpu_indices() == {0}
         assert calls["list"] == 2
 
-    def test_a_failed_listing_keeps_the_last_answer_and_backs_off(
-        self, host, monkeypatch, clock, calls
-    ):
+    def test_a_failed_listing_is_unknown_and_backs_off(self, host, monkeypatch, clock, calls):
         host(TWO_SLICES, [38000], None)
         assert nvidia.get_mig_gpu_indices() == {0}
         clock[0] += 61
         calls["list_fails"] = True
-        assert nvidia.get_mig_gpu_indices() == {0}
-        for _ in range(3):
-            assert nvidia.get_mig_gpu_indices() == {0}
+        for _ in range(4):
+            assert nvidia.get_mig_gpu_indices_or_none() is None
         assert calls["list"] == 2
         clock[0] += nvidia._MIG_FAILURE_RETRY_S
         calls["list_fails"] = False
@@ -629,8 +626,8 @@ def test_an_empty_listing_is_a_failed_probe(host, monkeypatch, calls):
     assert nvidia.get_mig_gpu_indices() == {0}
     now[0] += 61
     calls["list_empty"] = True
-    assert nvidia.get_mig_gpu_indices() == {0}
-    assert nvidia._mig_indices_cache[3] is False
+    assert nvidia.get_mig_gpu_indices_or_none() is None
+    assert nvidia._mig_entry[3] is None
     calls["list_empty"] = False
     now[0] += nvidia._MIG_FAILURE_RETRY_S
     assert nvidia.get_mig_gpu_indices() == {0}
@@ -650,10 +647,11 @@ def test_a_superseded_listing_is_not_cached(host, monkeypatch, calls):
         real(argv, **kw)
         return types.SimpleNamespace(returncode = 0, stdout = _smi_list([(GPU0, [])]), stderr = "")
 
-    monkeypatch.setattr(nvidia, "_mig_indices_cache", None)
+    monkeypatch.setattr(nvidia, "_mig_entry", None)
     monkeypatch.setattr(nvidia.gpu_query, "run_nvidia_smi", stale)
-    assert nvidia.get_mig_gpu_indices() == set()
-    assert nvidia._mig_indices_cache is None
+    # Neither published nor acted on: discovery is unknown, not "no MIG".
+    assert nvidia.get_mig_gpu_indices_or_none() is None
+    assert nvidia._mig_entry is None
 
 
 class TestAnEmptyEntryEndsAUuidMask:
@@ -693,17 +691,27 @@ def test_without_a_uuid_column_only_a_one_card_mask_resolves(host, monkeypatch):
     assert LlamaCppBackend._whole_gpu_mask_rows(GPU1, [], {0, 1}) == {1}
 
 
-def test_a_failed_probe_keeps_a_newer_answer_from_another_caller(host, monkeypatch, calls):
-    host(TWO_SLICES, [38000], None)
+class TestTheLatestStartedProbeWins:
+    LISTING = types.SimpleNamespace(returncode = 0, stdout = _smi_list(TWO_SLICES), stderr = "")
+    FAILED = types.SimpleNamespace(returncode = 9, stdout = "", stderr = "")
 
-    def fails_after_a_peer_answers():
-        nvidia._store_mig_gpu_indices(frozenset({0}), nvidia.gpu_query._static_gen)
-        return None
+    def test_an_older_failure_keeps_a_newer_answer(self, host):
+        old, new = nvidia._mig_probe_start(), nvidia._mig_probe_start()
+        assert nvidia._mig_finish(new, self.LISTING) == {0}
+        assert nvidia._mig_finish(old, self.FAILED) == {0}
+        assert nvidia.get_mig_gpu_indices_or_none() == {0}
 
-    monkeypatch.setattr(nvidia, "_query_mig_gpu_indices", fails_after_a_peer_answers)
-    assert nvidia.get_mig_gpu_indices() == {0}
-    assert nvidia._mig_indices_cache[2:] == (frozenset({0}), True)
-    assert nvidia.get_mig_gpu_indices_or_none() == {0}
+    def test_an_older_answer_keeps_a_newer_failure(self, host):
+        old, new = nvidia._mig_probe_start(), nvidia._mig_probe_start()
+        assert nvidia._mig_finish(new, self.FAILED) is None
+        assert nvidia._mig_finish(old, self.LISTING) is None
+        assert nvidia.get_mig_gpu_indices_or_none() is None
+
+    def test_a_probe_from_an_old_generation_is_unknown(self, host):
+        probe = nvidia._mig_probe_start()
+        nvidia.gpu_query.invalidate_static("test")
+        assert nvidia._mig_finish(probe, self.LISTING) is None
+        assert nvidia._mig_cached() is nvidia._MISS
 
 
 def test_unknown_mig_discovery_is_not_no_mig(host, monkeypatch, calls):
@@ -718,9 +726,8 @@ def test_unknown_mig_discovery_is_not_no_mig(host, monkeypatch, calls):
     assert nvidia.get_mig_gpu_indices_or_none() == {0}
     now[0] += 61
     calls["list_empty"] = True
-    # The last answer still sizes polls, but discovery itself is unknown again.
-    assert nvidia.get_mig_gpu_indices() == {0}
     assert nvidia.get_mig_gpu_indices_or_none() is None
+    assert nvidia.get_mig_gpu_indices() == set()
     calls["list_empty"] = False
     nvidia.gpu_query.invalidate_static("test")
     host([(GPU0, [])], [38000], None)
@@ -750,6 +757,16 @@ def test_cli_rows_retire_an_old_nvml_inventory(host, monkeypatch):
     host([(GPU0, []), (GPU1, [])], [39000, 30000], None)
     monkeypatch.setattr(LlamaCppBackend, "_NVML_ROWS", [dict(r) for r in MIXED_NVML])
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", GPU0)
+    assert LlamaCppBackend._get_gpu_memory() == [(0, 39000, A100_MIB)]
+    assert LlamaCppBackend._NVML_ROWS == []
+    assert LlamaCppBackend._pinned_child_visibility([0]) == "0"
+
+
+def test_unknown_discovery_without_nvml_retires_old_nvml_rows(host, monkeypatch, calls):
+    host([(GPU0, []), (GPU1, [])], [39000, 30000], None)
+    monkeypatch.setattr(LlamaCppBackend, "_NVML_ROWS", [dict(r) for r in MIXED_NVML])
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", GPU0)
+    calls["list_fails"] = True
     assert LlamaCppBackend._get_gpu_memory() == [(0, 39000, A100_MIB)]
     assert LlamaCppBackend._NVML_ROWS == []
     assert LlamaCppBackend._pinned_child_visibility([0]) == "0"

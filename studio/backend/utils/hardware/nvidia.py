@@ -124,8 +124,7 @@ def _query_uuid_mask(parent_cuda_visible_devices: str) -> Optional[list[int]]:
 
 def get_physical_gpu_count(gpu_rows_only: bool = False) -> Optional[int]:
     """Return physical GPU count via nvidia-smi, or None on failure. ``gpu_rows_only`` skips the indented MIG child rows."""
-    gen = gpu_query._static_gen
-    started = time.monotonic()
+    probe = _mig_probe_start()
     try:
         result = gpu_query.run_nvidia_smi(
             [_nvidia_smi_executable(), "-L"],
@@ -137,11 +136,9 @@ def get_physical_gpu_count(gpu_rows_only: bool = False) -> Optional[int]:
             env = child_env_without_native_path_secret(),
             **_windows_hidden_subprocess_kwargs(),
         )
+        # Same listing get_mig_gpu_indices parses: publish it so memory polls reuse it.
+        _mig_finish(probe, result)
         if result.returncode == 0 and result.stdout.strip():
-            # Same listing get_mig_gpu_indices parses: publish it so memory polls reuse it.
-            at = _listing_taken_at(started, result.stdout)
-            if at is not None:
-                _store_mig_gpu_indices(_parse_mig_gpu_indices(result.stdout), gen, at = at)
             lines = result.stdout.strip().splitlines()
             if gpu_rows_only:
                 return sum(1 for line in lines if line.startswith("GPU "))
@@ -155,54 +152,66 @@ def get_physical_gpu_count(gpu_rows_only: bool = False) -> Optional[int]:
     return None
 
 
-# A failed listing is retried after this, not on every poll.
+# MIG discovery cache: one entry (gen, seq, at, indices), indices None meaning unknown
+# (the probe failed, answered empty, or its listing was already superseded). Every probe
+# takes a sequence number when it starts and may only replace an entry of its own static
+# generation from an earlier-started probe, so the latest-started probe always wins. An
+# answer lives for gpu_query's static TTL from when its listing was taken; an unknown
+# for a short backoff, so a broken nvidia-smi adds no work per poll.
 _MIG_FAILURE_RETRY_S = 5.0
-# (static generation, monotonic stamp, indices, answered). answered False is a failed
-# probe; its indices are the last answer of that generation, None when there was none.
-_mig_indices_cache: Optional[tuple[int, float, Optional[frozenset[int]], bool]] = None
-_mig_indices_lock = threading.Lock()
+_mig_entry: Optional[tuple[int, int, float, Optional[frozenset[int]]]] = None
+_mig_seq = 0
+_mig_lock = threading.Lock()
+_MISS = object()
 
 
-def _store_mig_gpu_indices(
-    indices: frozenset[int],
-    gen: int,
-    at: Optional[float] = None,
-    answered: bool = True,
-) -> None:
-    """Publish a listing under the generation read before its query started; one the
-    inventory was invalidated during is dropped, so the next caller re-reads. ``at`` is
-    when the listing was taken, so a gpu_query cache hit does not renew its age. Never
-    replaces a newer listing another caller published."""
-    global _mig_indices_cache
-    at = time.monotonic() if at is None else at
-    with _mig_indices_lock:
-        cur = _mig_indices_cache
+def _mig_probe_start() -> tuple[int, int, float]:
+    global _mig_seq
+    with _mig_lock:
+        _mig_seq += 1
+        return gpu_query._static_gen, _mig_seq, time.monotonic()
+
+
+def _mig_cached() -> Any:
+    """The fresh entry's indices (None = unknown), or _MISS when a probe is due."""
+    entry = _mig_entry
+    if entry is None or entry[0] != gpu_query._static_gen:
+        return _MISS
+    # Same lifetime as gpu_query's static inventory: UNSLOTH_GPU_QUERY_STATIC_TTL (0 too).
+    ttl = gpu_query.ttl_for(gpu_query.STATIC)
+    life = ttl if entry[3] is not None else min(ttl, _MIG_FAILURE_RETRY_S)
+    return entry[3] if time.monotonic() - entry[2] < life else _MISS
+
+
+def _mig_finish(probe: tuple[int, int, float], result: Any) -> Optional[frozenset[int]]:
+    """Publish one probe's outcome (``result`` None when the query raised) and return the
+    indices callers should use, None for unknown."""
+    global _mig_entry
+    gen, seq, started = probe
+    stdout = getattr(result, "stdout", None)
+    indices: Optional[frozenset[int]] = None
+    at = time.monotonic()
+    if getattr(result, "returncode", 1) == 0 and isinstance(stdout, str) and stdout.strip():
+        taken = _listing_taken_at(started, stdout)
+        if taken is None:
+            # A newer listing replaced this one: never publish or act on it.
+            cached = _mig_cached()
+            return None if cached is _MISS else cached
+        indices, at = _parse_mig_gpu_indices(stdout), taken
+    with _mig_lock:
         if gen != gpu_query._static_gen:
-            return
-        if cur is not None and cur[0] == gen and cur[3] and cur[1] > at:
-            return
-        _mig_indices_cache = (gen, at, indices, answered)
-
-
-def _store_mig_failure(gen: int) -> tuple[Optional[frozenset[int]], bool]:
-    """Record a failed listing unless another caller published an answer for this
-    generation meanwhile; returns the entry callers should now see as (indices, answered)."""
-    global _mig_indices_cache
-    with _mig_indices_lock:
-        cur = _mig_indices_cache
-        same = cur is not None and cur[0] == gen
-        if same and cur[3] and time.monotonic() - cur[1] < gpu_query.ttl_for(gpu_query.STATIC):
-            return cur[2], True
-        last = cur[2] if same else None
-        if gen == gpu_query._static_gen:
-            _mig_indices_cache = (gen, time.monotonic(), last, False)
-        return last, False
+            return None
+        cur = _mig_entry
+        if cur is not None and cur[0] == gen and cur[1] > seq:
+            return cur[3]
+        _mig_entry = (gen, seq, at, indices)
+        return indices
 
 
 def _listing_taken_at(started: float, stdout: Any) -> Optional[float]:
     """When the ``-L`` answer ``stdout`` was produced: the start of the gpu_query entry
     holding exactly that answer, or when this query began with the cache off. None when
-    the cache no longer holds it (a newer listing replaced it): not safe to publish."""
+    the cache no longer holds it (a newer listing replaced it)."""
     if not gpu_query.enabled():
         return started
     try:
@@ -229,50 +238,31 @@ def _parse_mig_gpu_indices(stdout: Any) -> frozenset[int]:
 def get_mig_gpu_indices() -> set[int]:
     """Physical indices of GPUs with MIG instances (indented ``MIG`` rows under their
     ``GPU N:`` row in ``nvidia-smi -L``). CUDA sees such a card as one slice, so its
-    ``--query-gpu`` memory is the whole card's, not the device's.
-
-    Read on every memory poll, so the parsed set (empty included) is cached until the
-    listing is gpu_query's static TTL old, and dropped with the static generation (hotplug,
-    driver reset); the physical count probe refreshes it from the same listing. A failed
-    probe keeps the last answer of this generation (empty if none) and is retried after a
-    short backoff. Use get_mig_gpu_indices_or_none to tell a failed probe from no MIG."""
-    indices, _answered = _mig_gpu_lookup()
-    return set(indices or ())
+    ``--query-gpu`` memory is the whole card's, not the device's. Empty when discovery
+    is unknown: placement uses get_mig_gpu_indices_or_none to tell the two apart."""
+    return set(_mig_gpu_lookup() or ())
 
 
 def get_mig_gpu_indices_or_none() -> Optional[set[int]]:
-    """``get_mig_gpu_indices``, but None when MIG discovery is unknown: the latest probe
-    of this generation failed (empty output included) or none has answered. An empty set
-    means a listing answered and no card has MIG instances. Same cache and backoff."""
-    indices, answered = _mig_gpu_lookup()
-    return set(indices) if answered and indices is not None else None
+    """``get_mig_gpu_indices``, but None when MIG discovery is unknown: the latest-started
+    probe of this generation failed, answered empty or was superseded, or none has run.
+    An empty set means a listing answered and no card has MIG instances."""
+    indices = _mig_gpu_lookup()
+    return None if indices is None else set(indices)
 
 
-def _mig_gpu_lookup() -> tuple[Optional[frozenset[int]], bool]:
-    hit = _mig_indices_cache
-    now = time.monotonic()
-    if hit is not None and hit[0] == gpu_query._static_gen:
-        # Same lifetime as gpu_query's static inventory, so UNSLOTH_GPU_QUERY_STATIC_TTL
-        # (0 included) bounds it too.
-        ttl = gpu_query.ttl_for(gpu_query.STATIC)
-        if now - hit[1] < (ttl if hit[3] else min(ttl, _MIG_FAILURE_RETRY_S)):
-            return hit[2], hit[3]
-    gen = gpu_query._static_gen
-    answer = _query_mig_gpu_indices()
-    if answer is None:
-        return _store_mig_failure(gen)
-    indices, at = answer
-    if at is not None:
-        _store_mig_gpu_indices(indices, gen, at = at)
-    return indices, True
+def _mig_gpu_lookup() -> Optional[frozenset[int]]:
+    cached = _mig_cached()
+    if cached is not _MISS:
+        return cached
+    probe = _mig_probe_start()
+    return _mig_finish(probe, _run_mig_listing())
 
 
-def _query_mig_gpu_indices() -> Optional[tuple[frozenset[int], Optional[float]]]:
-    """The parsed listing and when it was taken (None: superseded, do not cache), or None
-    when nvidia-smi could not answer. Empty output is a failed answer, as in gpu_query."""
-    started = time.monotonic()
+def _run_mig_listing() -> Any:
+    """``nvidia-smi -L`` through gpu_query, or None when it raised."""
     try:
-        result = gpu_query.run_nvidia_smi(
+        return gpu_query.run_nvidia_smi(
             [_nvidia_smi_executable(), "-L"],
             capture_output = True,
             text = True,
@@ -284,9 +274,6 @@ def _query_mig_gpu_indices() -> Optional[tuple[frozenset[int], Optional[float]]]
         )
     except Exception:
         return None
-    if result.returncode != 0 or not isinstance(result.stdout, str) or not result.stdout.strip():
-        return None
-    return _parse_mig_gpu_indices(result.stdout), _listing_taken_at(started, result.stdout)
 
 
 def get_primary_gpu_utilization() -> dict[str, Any]:

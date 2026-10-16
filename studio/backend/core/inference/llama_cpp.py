@@ -15119,7 +15119,8 @@ class LlamaCppBackend:
             return None
         if not visible or not ids or len(set(ids)) != len(ids):
             return None
-        if any(i not in visible for i in ids) or set(ids) & nvidia.get_mig_gpu_indices():
+        mig = nvidia.get_mig_gpu_indices_or_none()
+        if any(i not in visible for i in ids) or mig is None or set(ids) & mig:
             return None
         by_index = dict(rows)
         return ",".join(by_index[i] for i in ids)
@@ -15331,6 +15332,9 @@ class LlamaCppBackend:
                         nvml = {g[0]: g for g in LlamaCppBackend._get_gpu_memory_nvml()}
                         if nvml:
                             gpus = [nvml.get(g[0], g) for g in gpus]
+                        else:
+                            # No current NVML inventory: an older one must not name devices.
+                            LlamaCppBackend._NVML_ROWS = []
                     elif not mig:
                         # The CLI now answers for these cards: an earlier NVML inventory
                         # (slices since removed) must not name the child's devices.
