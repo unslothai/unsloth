@@ -94,8 +94,7 @@ def test_patched_kimi_processor_takes_text_and_images(monkeypatch):
     from transformers.feature_extraction_utils import BatchFeature
 
     class _Tokenizer:
-        # Encodes each word as its length, so a token's id is its length too. unsloth_zoo
-        # (#1442) counts the image placeholders left after tokenizing through this.
+        # Each word's id is its length; unsloth_zoo counts image placeholders left after tokenizing.
         def convert_tokens_to_ids(self, token):
             return len(token)
 
