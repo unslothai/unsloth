@@ -3644,6 +3644,41 @@ def _fallback_checkpoint_extra_bytes(model, state_dict = None):
         return 0
 
 
+_GGUF_LINKED_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".npz")
+
+
+def _stage_reused_checkpoint(source, gguf_directory):
+    """A throwaway copy of the user's checkpoint folder for the converter to read. Weights are
+    linked; everything else is copied, because the tokenizer save and fix_sentencepiece_gguf
+    rewrite files there and a hard link would carry the write back into the user's checkpoint."""
+    import tempfile
+
+    os.makedirs(gguf_directory, exist_ok = True)
+    staging = tempfile.mkdtemp(prefix = ".unsloth_gguf_source_", dir = gguf_directory)
+    for name in os.listdir(source):
+        src = os.path.join(source, name)
+        dst = os.path.join(staging, name)
+        if os.path.realpath(staging).startswith(os.path.realpath(src) + os.sep):
+            continue  # the GGUF output folder sits inside the checkpoint
+        if os.path.isdir(src):
+            try:
+                os.symlink(src, dst, target_is_directory = True)
+            except OSError:
+                shutil.copytree(src, dst)
+        elif name.endswith(_GGUF_LINKED_WEIGHT_SUFFIXES):
+            for link in (os.link, os.symlink):
+                try:
+                    link(src, dst)
+                    break
+                except OSError:
+                    continue
+            else:
+                shutil.copy2(src, dst)
+        else:
+            shutil.copy2(src, dst)
+    return staging
+
+
 def _gguf_output_directory(save_directory):
     """Where the GGUF files land: a SIBLING of `save_directory`, not a child. One definition for the preflight and for the export itself, so the disk measured cannot drift from the disk written."""
     return f"{save_directory}_gguf"
@@ -4354,6 +4389,7 @@ def unsloth_save_pretrained_gguf(
         preexisting_weights = None
 
     is_peft_model = isinstance(self, PeftModelForCausalLM) or isinstance(self, PeftModel)
+    staged_directory = None
 
     # The flag holds for both branches that write the weights; the middle branch reuses the user's own checkpoint and clears it, whatever the caller asked for.
     if is_peft_model:
@@ -4376,7 +4412,10 @@ def unsloth_save_pretrained_gguf(
             print(
                 f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
             )
-            save_directory = original_path
+            # The converter reads a staged copy: writing the BOS-stripped tokenizer and the
+            # sentencepiece fix into the user's own checkpoint changed how it prompts afterwards.
+            staged_directory = _stage_reused_checkpoint(original_path, gguf_directory)
+            save_directory = staged_directory
             # The user's own checkpoint, not an intermediate: without this a save_pretrained_gguf on a tight disk would delete the model it was handed.
             merge_is_disposable = False
             # Persist tokenizer fixes (BOS stripping) so the GGUF converter reads the corrected chat template.
@@ -4496,6 +4535,10 @@ def unsloth_save_pretrained_gguf(
             ) from e
         else:
             raise RuntimeError(f"Unsloth: GGUF conversion failed: {_describe_exception(e)}") from e
+    finally:
+        if staged_directory is not None:
+            shutil.rmtree(staged_directory, ignore_errors = True)
+            save_directory = original_path
 
     modelfile_location = None
     ollama_success = False

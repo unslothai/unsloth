@@ -178,7 +178,7 @@ def test_non_peft_gguf_uses_checkpoint_as_input_not_output(
     def _save_to_gguf(**kwargs):
         seen.update(kwargs)
         output = tmp_path / "export" / "model_gguf" / "model.Q8_0.gguf"
-        output.parent.mkdir()
+        output.parent.mkdir(exist_ok = True)
         output.write_bytes(b"GGUF")
         return [str(output)], True, False
 
@@ -192,10 +192,13 @@ def test_non_peft_gguf_uses_checkpoint_as_input_not_output(
         quantization_method = "q8_0",
     )
 
-    assert seen["model_directory"] == str(checkpoint)
+    # The converter reads a staged copy beside the GGUF output, never the user's checkpoint.
+    staged = seen["model_directory"]
+    assert os.path.dirname(staged) == f"{requested}_gguf"
     assert seen["gguf_directory"] == f"{requested}_gguf"
     assert result["gguf_directory"] == f"{requested}_gguf"
-    assert tokenizer.saved_to == [str(checkpoint)]
+    assert tokenizer.saved_to == [staged]
+    assert not os.path.exists(staged)
 
 
 @pytest.mark.parametrize(
@@ -574,3 +577,61 @@ def test_every_converter_child_env_goes_through_the_token_boundary():
     assert not offenders, (
         "these build a child env without applying the token boundary: " + ", ".join(offenders)
     )
+
+
+def test_non_peft_gguf_leaves_the_users_checkpoint_as_it_was(monkeypatch, tmp_path):
+    """The BOS-stripped template and the sentencepiece fix are for the converter only: written into
+    the loaded checkpoint, they changed how that folder prompts in transformers afterwards."""
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "tokenizer_config.json").write_text('{"chat_template": "{{ bos_token }}x"}')
+    (checkpoint / "model.safetensors").write_bytes(b"WEIGHTS")
+    before = {p.name: p.read_bytes() for p in checkpoint.iterdir()}
+    model = _FakeModel()
+    model.config = type(
+        "cfg",
+        (),
+        {
+            "_name_or_path": str(checkpoint),
+            "architectures": ["LlamaForCausalLM"],
+            "model_type": "llama",
+        },
+    )()
+
+    class StrippingTokenizer(_FakeTokenizer):
+        def save_pretrained(self, path):
+            super().save_pretrained(path)
+            with open(os.path.join(path, "tokenizer_config.json"), "w") as f:
+                f.write('{"chat_template": "x"}')
+
+    converter_saw = {}
+
+    def _save_to_gguf(**kwargs):
+        folder = kwargs["model_directory"]
+        converter_saw.update(
+            {name: open(os.path.join(folder, name), "rb").read() for name in os.listdir(folder)}
+        )
+        output = tmp_path / "export" / "model_gguf" / "model.Q8_0.gguf"
+        output.parent.mkdir(exist_ok = True)
+        output.write_bytes(b"GGUF")
+        return [str(output)], True, False
+
+    (tmp_path / "export").mkdir()
+    monkeypatch.setattr(save_mod, "_is_vlm", lambda _model: False)
+    monkeypatch.setattr(save_mod, "_is_gpt_oss", lambda _model: False)
+    monkeypatch.setattr(save_mod, "fix_tokenizer_bos_token", lambda _tokenizer: (True, None))
+    monkeypatch.setattr(save_mod, "_resolve_imatrix_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(save_mod, "dtype_from_config", lambda _config: save_mod.torch.float16)
+    monkeypatch.setattr(save_mod, "create_ollama_modelfile", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(save_mod, "save_to_gguf", _save_to_gguf)
+
+    save_mod.unsloth_save_pretrained_gguf(
+        model,
+        str(tmp_path / "export" / "model"),
+        tokenizer = StrippingTokenizer(),
+        quantization_method = "q8_0",
+    )
+
+    assert converter_saw["tokenizer_config.json"] == b'{"chat_template": "x"}'
+    assert converter_saw["model.safetensors"] == b"WEIGHTS"
+    assert {p.name: p.read_bytes() for p in checkpoint.iterdir()} == before
