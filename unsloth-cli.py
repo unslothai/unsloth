@@ -32,6 +32,11 @@ def _normalize_dtype(dtype, is_mlx):
     return dtype
 
 
+def _writes_activation_capture():
+    # Under torchrun every rank runs the CLI; only global rank 0 writes the shared log.
+    return int(os.environ.get("RANK", "0")) == 0
+
+
 def _prepare_device_map(is_mlx):
     if is_mlx:
         return None, False
@@ -301,7 +306,7 @@ def run(args):
         return dataset
 
     # Attach activation capture now that model exists
-    if args.capture_activations:
+    if args.capture_activations and _writes_activation_capture():
         from unsloth.activation_capture import ActivationCapture, ActivationCaptureCallback
 
         capture = ActivationCapture(model, _capture_cfg)

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { usePlatformStore } from "@/config/env";
 import {
   Combobox,
   ComboboxContent,
@@ -72,6 +73,7 @@ export function ParamsSection({
     })),
   );
   useMlxTrainingConfigPolicy();
+  const isMac = usePlatformStore((state) => state.deviceType === "mac");
 
   const isCpt = store.trainingMethod === "cpt";
   const showAdvanced = mode === "advanced";
@@ -415,8 +417,8 @@ export function ParamsSection({
             />
           </div>
 
-          {/* Neuron Activation Capture */}
-          {!store.isAudioModel && (
+          {/* Neuron Activation Capture: CUDA/ROCm trainer only, the MLX one has none. */}
+          {!store.isAudioModel && !isMac && (
             <div className="flex items-center gap-2">
               <Checkbox
                 id="enableActivationCapture"

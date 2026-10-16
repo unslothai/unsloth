@@ -8,12 +8,14 @@ import { useShallow } from "zustand/react/shallow";
 
 export function useMlxTrainingConfigPolicy(): void {
   const isMac = usePlatformStore((state) => state.deviceType === "mac");
-  const { loraVariant, packing } = useTrainingConfigStore(
-    useShallow((state) => ({
-      loraVariant: state.loraVariant,
-      packing: state.packing,
-    })),
-  );
+  const { loraVariant, packing, enableActivationCapture } =
+    useTrainingConfigStore(
+      useShallow((state) => ({
+        loraVariant: state.loraVariant,
+        packing: state.packing,
+        enableActivationCapture: state.enableActivationCapture,
+      })),
+    );
 
   // Only loftq: clearing a persisted `dora` selection would silently substitute plain
   // LoRA.
@@ -28,4 +30,11 @@ export function useMlxTrainingConfigPolicy(): void {
       useTrainingConfigStore.setState({ packing: false });
     }
   }, [isMac, packing]);
+
+  // The MLX trainer has no activation capture, so a persisted pick would poll for nothing.
+  useEffect(() => {
+    if (isMac && enableActivationCapture) {
+      useTrainingConfigStore.setState({ enableActivationCapture: false });
+    }
+  }, [isMac, enableActivationCapture]);
 }

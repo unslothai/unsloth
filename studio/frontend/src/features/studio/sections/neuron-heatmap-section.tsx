@@ -124,6 +124,8 @@ const PALETTE_DARK  = buildPalette(GREY_DARK, COLOR_HIGH_DARK);
 const PALETTE_LIGHT = buildPalette3(LIME_LIGHT, COLOR_MID_LIGHT, COLOR_HIGH_LIGHT);
 const TOOLTIP_PALETTE_DARK  = buildPalette([255, 255, 255], COLOR_HIGH_DARK);
 const TOOLTIP_PALETTE_LIGHT = buildPalette3([55, 65, 81], COLOR_MID_LIGHT, COLOR_HIGH_LIGHT);
+// A sample the backend stored as null (it was NaN or inf).
+const MISSING_COLOR = "rgba(128, 128, 128, 0.25)";
 
 function paletteColor(t: number, palette: Uint8ClampedArray): string {
   const idx = Math.min(PALETTE_SIZE - 1, Math.max(0, Math.round(t * (PALETTE_SIZE - 1))));
@@ -205,7 +207,8 @@ function drawHeatmap(
   // Collect all values; normalise by p99
   const allVals: number[] = [];
   for (const key of layerKeys) {
-    for (const v of (values[key] ?? [])) allVals.push(v);
+    // A non-finite sample is stored as null; it is drawn as missing, not ranked.
+    for (const v of (values[key] ?? [])) if (Number.isFinite(v)) allVals.push(v);
   }
   allVals.sort((a, b) => a - b);
   const globalMax = allVals[allVals.length - 1] || 1;
@@ -221,7 +224,9 @@ function drawHeatmap(
       const v  = layerVals[ci];
       const cx = lMargin + (transposed ? ci : li) * cSlot;
       const cy = tMargin + (transposed ? li : ci) * cSlot;
-      ctx.fillStyle = v > clampMax ? outlierColor : paletteColor(v / clampMax, palette);
+      ctx.fillStyle = !Number.isFinite(v)
+        ? MISSING_COLOR
+        : v > clampMax ? outlierColor : paletteColor(v / clampMax, palette);
       ctx.beginPath();
       ctx.roundRect(cx, cy, cSize, cSize, cRadius);
       ctx.fill();
@@ -331,7 +336,7 @@ type TooltipState = {
   clientY: number;
   layerKey: string;
   channelIdx: number;
-  value: number;
+  value: number | null;
   normalized: number;
 };
 
@@ -564,9 +569,10 @@ function HeatmapCanvas({
       const layerVals  = values[layerKey];
       if (!layerVals || ci >= layerVals.length) { setTooltip(null); return; }
 
-      const value      = layerVals[ci];
-      const isOutlier  = value > layout.clampMax;
-      const normalized = isOutlier ? -1 : value / layout.clampMax;
+      const raw        = layerVals[ci];
+      const value      = Number.isFinite(raw) ? raw : null;
+      const isOutlier  = value !== null && value > layout.clampMax;
+      const normalized = value === null ? 0 : isOutlier ? -1 : value / layout.clampMax;
       const channelIdx = layout.capturedChannels[ci] ?? ci;
 
       setTooltip({ clientX: e.clientX, clientY: e.clientY, layerKey, channelIdx, value, normalized });
@@ -620,9 +626,9 @@ function HeatmapCanvas({
               <span className="text-muted-foreground">Value</span>
               <span
                 className="font-mono font-semibold tabular-nums"
-                style={{ color: tooltip.normalized < 0 ? outlierColor : paletteColor(tooltip.normalized, tooltipPalette) }}
+                style={{ color: tooltip.value === null ? undefined : tooltip.normalized < 0 ? outlierColor : paletteColor(tooltip.normalized, tooltipPalette) }}
               >
-                {tooltip.value.toFixed(4)}{tooltip.normalized < 0 ? " ↑" : ""}
+                {tooltip.value === null ? "missing (NaN or inf)" : tooltip.value.toFixed(4)}{tooltip.normalized < 0 ? " ↑" : ""}
               </span>
             </div>
           </div>
