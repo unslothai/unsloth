@@ -1400,24 +1400,22 @@ class _VideoLoadingState:
     # Companion repos this load is ALSO pulling from, beyond repo_id / base_repo (the native H3 GGUF and component
     # repos). Mirrors the image backend's _SdLoading.asset_repos.
     asset_repos: tuple[str, ...] = ()
-    # Fetch ROLE ("checkpoint" / "base") -> the physical repo that role FETCHES from, recorded by each fetch site once
-    # it has settled the choice against the exact file names. Keyed by role, not by mirror pair: a carrier repo's own
-    # checkpoint and the base it mirrors share a pair but can be read from different sides of it.
-    fetch_repos: dict[str, str] = field(default_factory = dict)
-    # Same role -> what ``expected_bytes`` was summed over. load_progress counts only these names in the revision the
-    # load reads, so a carrier repo's own root FP8 / GGUF files and superseded revisions never inflate the bar.
-    fetch_files: dict[str, "_PlannedFetch"] = field(default_factory = dict)
+    # Fetch ROLE ("checkpoint" / "base") -> the one plan this load settled at estimate time: the repo that role
+    # fetches from, the revision it is pinned to and every file with its blob key and size. Written only by the worker
+    # that owns this state (under the load-token check), replaced whole by a re-estimate, never patched by a fetch site.
+    # The fetch sites read their repo + revision from it, and load_progress reads nothing else.
+    fetch_plan: dict[str, "_PlannedFetch"] = field(default_factory = dict)
 
 
 class _PlannedFetch(NamedTuple):
-    """One fetch role's planned file names, plus the listing repo and commit they were sized from."""
+    """One fetch role's plan: the repo it reads, the revision it is pinned to (the listing commit when that repo IS the
+    listing; None for an upstream kept for its cache, which resolves its own ref) and ``(name, blob key, size)`` per
+    file. The blob key (LFS sha256, else git blob id) is what huggingface_hub names the cache blob, so progress reads a
+    file's bytes by content: revision-proof, root-proof, and blind to any other blob in the repo."""
 
-    names: frozenset
-    listing: str
-    sha: Optional[str] = None
-    # The cache blob keys of ``names`` (LFS sha256, else the git blob id): an in-flight ``<etag>.incomplete`` counts
-    # only when it is one of these.
-    etags: frozenset = frozenset()
+    repo: str
+    revision: Optional[str]
+    files: tuple
 
 
 def _sibling_etag(sibling: Any) -> Optional[str]:
@@ -1427,13 +1425,26 @@ def _sibling_etag(sibling: Any) -> Optional[str]:
     return sha or getattr(sibling, "blob_id", None) or None
 
 
-def _planned_etags(info: Any, names: Any) -> frozenset:
-    wanted = set(names)
-    return frozenset(
-        tag
-        for sibling in (getattr(info, "siblings", None) or [])
-        if sibling.rfilename in wanted and (tag := _sibling_etag(sibling))
+def _plan_fetch(
+    logical: str,
+    listing: str,
+    info: Any,
+    names: Any,
+    hf_token: Optional[str],
+    *,
+    checkpoint: bool = False,
+) -> "_PlannedFetch":
+    """The plan for one role: its fetch repo settled on the exact names, pinned to the listing commit when the fetch
+    reads the listing repo, and each file's blob key + size from the same listing."""
+    wanted = list(dict.fromkeys(names))
+    repo = _video_fetch_repo(logical, hf_token, files = wanted, checkpoint = checkpoint) or logical
+    meta = {s.rfilename: s for s in (getattr(info, "siblings", None) or [])}
+    files = tuple(
+        (name, _sibling_etag(meta[name]) if name in meta else None, int(getattr(meta.get(name), "size", 0) or 0))
+        for name in wanted
     )
+    revision = getattr(info, "sha", None) if repo.lower() == (listing or "").lower() else None
+    return _PlannedFetch(repo, revision, files)
 
 
 _FETCH_CHECKPOINT = "checkpoint"
@@ -1775,7 +1786,7 @@ def _video_repo_aliases(repo_id: Optional[str]) -> tuple[str, ...]:
 
 
 def _video_fetch_key(repo_id: Optional[str]) -> str:
-    """The key ``_VideoLoadingState.fetch_repos`` records a pair's fetch choice under: the upstream id, lowercased."""
+    """A mirror pair's key: the upstream id, lowercased (load_progress dedupes its no-plan fallback on it)."""
     from .diffusion_families import canonical_base
     return canonical_base(repo_id).strip().lower()
 
@@ -3868,8 +3879,8 @@ class VideoBackend:
             with self._lock:
                 if self._load_token == token and self._loading is not None:
                     self._loading.base_repo = base
-                    if hasattr(self._loading, "fetch_files"):
-                        self._loading.fetch_files = planned_files
+                    if hasattr(self._loading, "fetch_plan"):
+                        self._loading.fetch_plan = planned_files
                     # The conditioner artifact comes from a THIRD repo, neither repo_id nor base_repo, so without this
                     # the delete-cached guard would let it be deleted out from under the in-flight fetch (or out from
                     # under the assembly, while the base snapshot that no longer carries a dense encoder is still coming
@@ -3903,18 +3914,25 @@ class VideoBackend:
                 )
                 # One choice for the pick and its partner expert, settled on both names, so they come from one repo and
                 # progress reads that repo for both.
-                checkpoint_repo = _video_fetch_repo(
-                    kwargs["repo_id"],
-                    kwargs.get("hf_token"),
-                    files = (kwargs["gguf_filename"],) + ((partner,) if fetch_partner else ()),
-                    checkpoint = True,
+                # The estimate's plan when it made one (the repo + revision progress reads); else settled here.
+                checkpoint_plan = planned_files.get(_FETCH_CHECKPOINT)
+                checkpoint_repo = (
+                    checkpoint_plan.repo
+                    if checkpoint_plan is not None
+                    else _video_fetch_repo(
+                        kwargs["repo_id"],
+                        kwargs.get("hf_token"),
+                        files = (kwargs["gguf_filename"],) + ((partner,) if fetch_partner else ()),
+                        checkpoint = True,
+                    )
                 )
-                self._note_load_fetch_repo(_FETCH_CHECKPOINT, checkpoint_repo)
+                checkpoint_revision = checkpoint_plan.revision if checkpoint_plan is not None else None
                 checkpoint_local = Path(
                     hf_hub_download_with_xet_fallback(
                         checkpoint_repo,
                         kwargs["gguf_filename"],
                         kwargs.get("hf_token"),
+                        revision = checkpoint_revision,
                         cancel_event = cancel_event,
                         # The plan counts a file cached under EITHER root, so the load has to resolve through both or it
                         # re-pulls what the planner skipped.
@@ -3930,6 +3948,7 @@ class VideoBackend:
                         checkpoint_repo,
                         partner,
                         kwargs.get("hf_token"),
+                        revision = checkpoint_revision,
                         cancel_event = cancel_event,
                         reuse_other_cache_root = True,
                         local_files_only = local_files_only,
@@ -3978,8 +3997,8 @@ class VideoBackend:
                     with self._lock:
                         if self._load_token == token and self._loading is not None:
                             self._loading.expected_bytes = expected
-                            if hasattr(self._loading, "fetch_files"):
-                                self._loading.fetch_files = planned_files
+                            if hasattr(self._loading, "fetch_plan"):
+                                self._loading.fetch_plan = planned_files
             # Only a pre-cast checkpoint actually on disk earns the dense skip below.
             te_skipped = self._fetch_te_prequant(
                 te_sources,
@@ -4042,11 +4061,14 @@ class VideoBackend:
                     scheme = h3_auto_denoiser or video_auto_denoiser or requested_denoiser,
                 )
             base_fetch_choice: dict[str, str] = {}
+            base_plan = planned_files.get(_FETCH_BASE)
             base_local = self._predownload_base(
                 base,
                 kwargs.get("hf_token"),
                 kind,
                 fetch_choice = base_fetch_choice,
+                fetch_repo = base_plan.repo if base_plan is not None else None,
+                revision = base_plan.revision if base_plan is not None else None,
                 ltx23 = ltx23,
                 skip_te_components = te_skipped + h3_te_skipped,
                 skip_transformer_weights = skip_transformer_weights,
@@ -5880,11 +5902,8 @@ class VideoBackend:
                     if sibling.rfilename in wanted and sibling.size:
                         total += int(sibling.size)
                         names.add(sibling.rfilename)
-                planned[_FETCH_CHECKPOINT] = _PlannedFetch(
-                    frozenset(names),
-                    listing,
-                    getattr(info, "sha", None),
-                    _planned_etags(info, names),
+                planned[_FETCH_CHECKPOINT] = _plan_fetch(
+                    repo_id, listing, info, names, hf_token, checkpoint = True
                 )
             if base and not Path(base).expanduser().exists():
                 listing = _video_listing_repo(base)
@@ -5901,12 +5920,8 @@ class VideoBackend:
                     ltx25_shards = self._ltx25_plan_shards(info, _video_listing_repo(base), hf_token),
                 )
                 total += sum(size for _, size in base_files)
-                base_names = frozenset(name for name, _ in base_files)
-                planned[_FETCH_BASE] = _PlannedFetch(
-                    base_names,
-                    listing,
-                    getattr(info, "sha", None),
-                    _planned_etags(info, base_names),
+                planned[_FETCH_BASE] = _plan_fetch(
+                    base, listing, info, [name for name, _ in base_files], hf_token
                 )
             if planned_files is not None:
                 planned_files.update(planned)
@@ -6520,8 +6535,14 @@ class VideoBackend:
         local_files_only: bool = False,
         ltx25_dev: bool = False,
         fetch_choice: Optional[dict[str, str]] = None,
+        fetch_repo: Optional[str] = None,
+        revision: Optional[str] = None,
     ) -> Optional[str]:
         """Pull exactly the base-repo files the load needs; return the local snapshot dir.
+
+        ``fetch_repo`` / ``revision``: the load's settled plan (``_PlannedFetch``) for the base. Given, every file comes
+        from that repo at that commit, so the bytes land exactly where load_progress reads them; absent (a top-up, a
+        direct call), the repo is settled here on the exact names, unpinned, as before.
 
         ``fetch_choice`` (when given) receives ``{"repo": <id>}``, the side of the mirror pair the exact-name check
         settled on, so the assembly that follows reads the same repo instead of re-deciding without the names.
@@ -6552,7 +6573,12 @@ class VideoBackend:
             # Listed from the mirror (byte identical, so the same names and sizes), then the fetch repo is settled
             # against the EXACT names: an upstream snapshot that already holds every one of them keeps being used.
             listing = _video_listing_repo(base)
-            info = HfApi(token = hf_token or None).model_info(listing, files_metadata = True)
+            info = HfApi(token = hf_token or None).model_info(
+                listing,
+                files_metadata = True,
+                # The plan's commit only ever describes the listing repo (_plan_fetch pins nothing else).
+                **({"revision": revision} if revision else {}),
+            )
             files = self._base_download_files(
                 info,
                 kind,
@@ -6588,9 +6614,10 @@ class VideoBackend:
                         if cancel.is_set():
                             raise RuntimeError(VIDEO_CANCELLED_MSG)
                         local_index = hf_hub_download_with_xet_fallback(
-                            _video_fetch_repo(base, hf_token, files = (name,)) or base,
+                            fetch_repo or _video_fetch_repo(base, hf_token, files = (name,)) or base,
                             name,
                             hf_token,
+                            revision = revision,
                             cancel_event = cancel,
                             reuse_other_cache_root = True,
                         )
@@ -6609,8 +6636,11 @@ class VideoBackend:
 
             snapshot_root: Optional[str] = None
             roots: set[str] = set()
-            base = _video_fetch_repo(base, hf_token, files = [name for name, _ in files]) or base
-            self._note_load_fetch_repo(_FETCH_BASE, base)
+            base = (
+                fetch_repo
+                or _video_fetch_repo(base, hf_token, files = [name for name, _ in files])
+                or base
+            )
             if fetch_choice is not None:
                 fetch_choice["repo"] = base
             for name, _ in files:
@@ -6623,6 +6653,7 @@ class VideoBackend:
                         base,
                         name,
                         hf_token,
+                        revision = revision,
                         cancel_event = cancel,
                         reuse_other_cache_root = True,
                     )
@@ -6648,33 +6679,8 @@ class VideoBackend:
             logger.warning("video.predownload_fallback: %s", exc)
             return None
 
-    def _note_load_fetch_repo(self, role: str, fetched: Optional[str]) -> None:
-        """Record the repo the in-flight load's ``role`` fetch ("checkpoint" / "base") reads (load_progress reads it).
-        The latest call wins, so a top-up predownload that re-decides replaces the earlier choice."""
-        if not fetched:
-            return
-        with self._lock:
-            recorded = getattr(self._loading, "fetch_repos", None)
-            if isinstance(recorded, dict):
-                recorded[role] = fetched
-
-    def _cache_bytes(
-        self,
-        repo_id: Optional[str],
-        files: Optional[frozenset[str]] = None,
-        revision: Optional[str] = None,
-        etags: frozenset = frozenset(),
-    ) -> int:
-        """Bytes of ``repo_id`` currently in the HF blob cache (progress polling).
-
-        ``files`` narrows it to the planned names plus the in-flight ``<etag>.incomplete`` blobs whose key is in
-        ``etags`` (a stale or concurrent partial of an unplanned file, e.g. a carrier's own checkpoint, is skipped;
-        an unidentifiable one is never counted): a carrier repo also caches its own root FP8 / GGUF files, which the
-        estimate never counted. Names are read from
-        ONE revision, so a superseded snapshot holding an older file of the same name does not count: ``revision``
-        when given (the commit the plan was sized from), else the one ``refs/main`` names (written before the blobs
-        download, so a fresh revision reads as empty until its files land), else every snapshot for a cache with no
-        ref.
+    def _cache_bytes(self, repo_id: Optional[str]) -> int:
+        """Bytes of ``repo_id`` currently in the HF blob cache (progress polling without a plan).
 
         Walks the repo's cache directory directly instead of ``scan_cache_dir``:
         the scanner skips in-flight ``*.incomplete`` blobs, so during a multi-GB
@@ -6688,38 +6694,6 @@ class VideoBackend:
             folder = Path(hub_cache_dir()) / ("models--" + repo_id.strip().replace("/", "--"))
             if not folder.is_dir():
                 return 0
-            if files is not None:
-                seen: set[str] = set()
-                total = 0
-                snapshots = folder / "snapshots"
-                ref = folder / "refs" / "main"
-                if revision:
-                    revisions = [snapshots / revision]
-                elif ref.is_file():
-                    revisions = [snapshots / ref.read_text(encoding = "utf-8").strip()]
-                else:
-                    revisions = sorted(snapshots.iterdir()) if snapshots.is_dir() else []
-                revisions = [p for p in revisions if p.is_dir()]
-                for name in files:
-                    for rev in revisions:
-                        entry = rev / name
-                        try:
-                            blob = os.path.realpath(entry)
-                            if entry.is_file() and blob not in seen:
-                                seen.add(blob)
-                                total += os.path.getsize(blob)
-                        except OSError:
-                            continue
-                blobs = folder / "blobs"
-                if blobs.is_dir() and etags:
-                    for blob in blobs.glob("*.incomplete"):
-                        if blob.name[: -len(".incomplete")] not in etags:
-                            continue
-                        try:
-                            total += blob.stat().st_size
-                        except OSError:
-                            continue
-                return int(total)
             total = 0
             for root, _dirs, names in os.walk(folder):
                 for name in names:
@@ -6734,6 +6708,56 @@ class VideoBackend:
         except Exception:  # noqa: BLE001 -- cache scan is best-effort
             return 0
 
+    @staticmethod
+    def _planned_bytes(plan: dict[str, "_PlannedFetch"]) -> int:
+        """Bytes of the load's planned files present in the cache, read by blob key from the plan's repo.
+
+        A blob is named by its content key, so this counts exactly the planned file whichever revision it lands under
+        (a superseded snapshot's same-named file has another key), never a carrier's other checkpoints or an unrelated
+        partial, and the in-flight ``<key>.incomplete`` while it downloads. Both cache roots are read, as every fetch
+        passes ``reuse_other_cache_root``. A file with no key falls back to its entry in the pinned revision (else
+        ``refs/main``). Each file is capped at its listed size and counted once."""
+        import os
+
+        roots = [Path(hub_cache_dir())]
+        try:
+            from huggingface_hub import constants
+
+            if Path(constants.HF_HUB_CACHE) != roots[0]:
+                roots.append(Path(constants.HF_HUB_CACHE))
+        except Exception:  # noqa: BLE001 -- the live root alone
+            pass
+        total = 0
+        seen: set[tuple[str, str]] = set()
+        for entry in plan.values():
+            repo = (entry.repo or "").strip()
+            if not repo:
+                continue
+            for name, etag, size in entry.files:
+                key = (repo.lower(), etag or name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                best = 0
+                for root in roots:
+                    folder = root / ("models--" + repo.replace("/", "--"))
+                    try:
+                        if etag:
+                            candidates = [folder / "blobs" / etag, folder / "blobs" / f"{etag}.incomplete"]
+                        else:
+                            ref = folder / "refs" / "main"
+                            rev = entry.revision or (
+                                ref.read_text(encoding = "utf-8").strip() if ref.is_file() else None
+                            )
+                            candidates = [folder / "snapshots" / rev / name] if rev else []
+                        for path in candidates:
+                            if path.is_file():
+                                best = max(best, os.path.getsize(path))
+                    except OSError:
+                        continue
+                total += min(best, size) if size else best
+        return int(total)
+
     def load_progress(self) -> dict[str, Any]:
         """Phase + downloaded/total bytes for the in-flight load (cache-scan based)."""
         loading = self._loading
@@ -6741,44 +6765,14 @@ class VideoBackend:
             return _progress("error", error = loading.error)
         if loading is None:
             return _progress("ready" if self._state is not None else None)
-        # Only the side of each mirror pair this load reads: a mirrored repo downloads under the MIRROR's cache key, and
-        # summing both sides would count a partial upstream cache the load is not using toward the estimate. The fetch
-        # sites record their exact-name choice; before they have, the name-less default stands in.
-        fetch_repos = dict(getattr(loading, "fetch_repos", None) or {})
-        planned = dict(getattr(loading, "fetch_files", None) or {})
-        if planned:
-            # Per role: the repo it reads (recorded, else the name-less default) and its planned names. Two roles on one
-            # physical repo (a pipeline pick, or a carrier's checkpoint beside the base it mirrors, read from the same
-            # side) are merged into ONE scan so a shared name or in-flight blob is counted once.
-            scans: dict[str, set[str]] = {}
-            tags: dict[str, set[str]] = {}
-            pins: dict[str, Optional[str]] = {}
-            for role, logical, is_checkpoint in (
-                (_FETCH_CHECKPOINT, loading.repo_id, True),
-                (_FETCH_BASE, loading.base_repo, False),
-            ):
-                plan = planned.get(role)
-                if plan is None or not logical:
-                    continue
-                rid = (
-                    fetch_repos.get(role)
-                    or _video_fetch_repo(logical, checkpoint = is_checkpoint)
-                    or logical
-                )
-                # The sized commit only describes the listing repo; an upstream read for its cache uses its own ref.
-                sha = plan.sha if rid.lower() == (plan.listing or "").lower() else None
-                # Two roles disagreeing on the commit fall back to refs/main rather than scanning twice.
-                pins[rid] = sha if rid not in pins or pins[rid] == sha else None
-                scans.setdefault(rid, set()).update(plan.names)
-                tags.setdefault(rid, set()).update(getattr(plan, "etags", ()) or ())
-            downloaded = sum(
-                self._cache_bytes(
-                    rid, frozenset(names), pins.get(rid), frozenset(tags.get(rid, ()))
-                )
-                for rid, names in scans.items()
-            )
+        # The load's own plan, settled once at estimate time by the worker that owns this state: the repo + revision
+        # every fetch site reads, and each file's blob key and size. Nothing else is consulted.
+        plan = dict(getattr(loading, "fetch_plan", None) or {})
+        if plan:
+            downloaded = self._planned_bytes(plan)
         else:
-            # No plan recorded (a state built outside _run_load): the whole cache of each id's default fetch side.
+            # No plan (offline, a failed estimate, or a state built outside _run_load): the whole cache of each id's
+            # default fetch side.
             reading: dict[str, str] = {}
             for rid, is_checkpoint in ((loading.repo_id, True), (loading.base_repo, False)):
                 if rid:

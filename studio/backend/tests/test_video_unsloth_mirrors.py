@@ -374,40 +374,6 @@ def test_assembly_reads_the_repo_the_predownload_staged(empty_cache, monkeypatch
     assert "fetch_choice = base_fetch_choice" in src
 
 
-def test_progress_counts_only_the_side_the_load_fetches(empty_cache, monkeypatch):
-    upstream, mirror = "Lightricks/LTX-2", "unsloth/LTX-2-FP8"
-    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
-    _partial_upstream_cache(empty_cache, upstream, ["vae/diffusion_pytorch_model.safetensors"])
-    _partial_upstream_cache(
-        empty_cache, mirror, ["transformer/diffusion_pytorch_model.safetensors"]
-    )
-    backend = video_mod.VideoBackend()
-    up_bytes = backend._cache_bytes(upstream)
-    mirror_bytes = backend._cache_bytes(mirror)
-    backend._loading = video_mod._VideoLoadingState(
-        repo_id = upstream, base_repo = upstream, expected_bytes = up_bytes + mirror_bytes
-    )
-    # What the predownload records once its exact-name check settles on the mirror.
-    backend._loading.fetch_repos = {"base": mirror}
-    backend._loading.fetch_files = {
-        "base": video_mod._PlannedFetch(
-            frozenset(
-                {
-                    "vae/diffusion_pytorch_model.safetensors",
-                    "transformer/diffusion_pytorch_model.safetensors",
-                }
-            ),
-            mirror,
-        )
-    }
-    progress = backend.load_progress()
-    assert progress["phase"] == "downloading"
-    assert (
-        progress["downloaded_bytes"] == 10
-    )  # the mirror's transformer file; the partial upstream is not read
-    backend._loading.fetch_repos = {}
-    backend._note_load_fetch_repo("base", mirror)
-    assert backend._loading.fetch_repos == {"base": mirror}
 
 
 def test_no_mirror_keeps_an_explicit_checkpoint_in_its_repo(empty_cache, monkeypatch):
@@ -498,51 +464,8 @@ def test_named_choice_reuses_an_upstream_complete_in_the_fallback_root(empty_cac
     )
 
 
-def test_progress_counts_only_planned_files_of_a_carrier_repo(empty_cache, monkeypatch):
-    upstream, mirror = "Lightricks/LTX-2", "unsloth/LTX-2-FP8"
-    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
-    folder = _snapshot(
-        empty_cache,
-        mirror,
-        {
-            "model_index.json": b"{}",
-            "Model-FP8.safetensors": b"x" * 1000,
-        },  # the carrier's own root checkpoint
-    )
-    (folder / "blobs").mkdir()
-    (folder / "blobs" / "abc.incomplete").write_bytes(b"y" * 5)
-    backend = video_mod.VideoBackend()
-    backend._loading = video_mod._VideoLoadingState(
-        repo_id = upstream, base_repo = upstream, expected_bytes = 100
-    )
-    backend._loading.fetch_repos = {"base": mirror}
-    backend._loading.fetch_files = {
-        "base": video_mod._PlannedFetch(
-            frozenset({"model_index.json", "transformer/diffusion_pytorch_model.safetensors"}),
-            mirror,
-            None,
-            frozenset({"abc"}),
-        )
-    }
-    progress = backend.load_progress()
-    assert progress["phase"] == "downloading"
-    assert progress["downloaded_bytes"] == 2 + 5  # model_index.json + the in-flight blob
 
 
-def test_estimate_reports_the_planned_names(empty_cache, monkeypatch):
-    import huggingface_hub
-
-    monkeypatch.setattr(huggingface_hub, "HfApi", _RecordingApi)
-    backend = video_mod.VideoBackend()
-    monkeypatch.setattr(backend, "_te_prequant_hub_files", lambda *a, **k: ())
-    monkeypatch.setattr(backend, "_h3_te_quant_hub_files", lambda *a, **k: ((), ()))
-    planned: dict = {}
-    backend._estimate_download_bytes(
-        "Lightricks/LTX-2", None, "Lightricks/LTX-2", None, "pipeline", planned_files = planned
-    )
-    assert "Model-FP8.safetensors" not in planned["base"].names
-    assert "transformer/diffusion_pytorch_model.safetensors" in planned["base"].names
-    assert planned["base"].listing == "unsloth/LTX-2-FP8" and planned["base"].sha == "0" * 40
 
 
 def test_h3_staging_index_is_read_from_the_mirror(empty_cache, monkeypatch):
@@ -564,50 +487,8 @@ def test_h3_staging_index_is_read_from_the_mirror(empty_cache, monkeypatch):
     assert seen == ["unsloth/MiniMax-H3"]
 
 
-def test_progress_tracks_a_carrier_checkpoint_and_its_mirrored_base_separately(
-    empty_cache, monkeypatch
-):
-    """An FP8 pick from the carrier repo, base complete upstream: the checkpoint is read from the carrier, the base
-    from the upstream, and both count."""
-    upstream, carrier = "Wan-AI/Wan2.2-TI2V-5B-Diffusers", "unsloth/Wan2.2-TI2V-5B-FP8"
-    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
-    _snapshot(empty_cache, upstream, {"vae/diffusion_pytorch_model.safetensors": b"v" * 3})
-    _snapshot(empty_cache, carrier, {"Wan-FP8.safetensors": b"c" * 40})
-    backend = video_mod.VideoBackend()
-    backend._loading = video_mod._VideoLoadingState(
-        repo_id = carrier, base_repo = upstream, expected_bytes = 1000
-    )
-    backend._loading.fetch_files = {
-        "checkpoint": video_mod._PlannedFetch(frozenset({"Wan-FP8.safetensors"}), carrier),
-        "base": video_mod._PlannedFetch(
-            frozenset({"vae/diffusion_pytorch_model.safetensors"}), carrier
-        ),
-    }
-    backend._note_load_fetch_repo("checkpoint", carrier)
-    backend._note_load_fetch_repo("base", upstream)
-    assert backend.load_progress()["downloaded_bytes"] == 40 + 3
 
 
-def test_progress_reads_only_the_active_revision(empty_cache, monkeypatch):
-    mirror = "unsloth/LTX-2-FP8"
-    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
-    folder = empty_cache / ("models--" + mirror.replace("/", "--"))
-    old = folder / "snapshots" / ("1" * 40) / "transformer" / "diffusion_pytorch_model.safetensors"
-    old.parent.mkdir(parents = True)
-    old.write_bytes(b"o" * 50)  # a superseded revision's file of the same name
-    (folder / "snapshots" / ("2" * 40)).mkdir()
-    (folder / "refs").mkdir()
-    (folder / "refs" / "main").write_text("2" * 40)
-    backend = video_mod.VideoBackend()
-    names = frozenset({"transformer/diffusion_pytorch_model.safetensors"})
-    assert backend._cache_bytes(mirror, names) == 0  # refs/main names the new, still empty revision
-    assert backend._cache_bytes(mirror, names, "1" * 40) == 50  # the sized commit, when pinned
-    backend._loading = video_mod._VideoLoadingState(
-        repo_id = mirror, base_repo = mirror, expected_bytes = 50
-    )
-    backend._loading.fetch_files = {"base": video_mod._PlannedFetch(names, mirror, "2" * 40)}
-    backend._note_load_fetch_repo("base", mirror)
-    assert backend.load_progress()["phase"] == "downloading"
 
 
 def test_h3_component_specs_follow_the_selected_mirror(empty_cache):
@@ -640,59 +521,8 @@ def test_h3_modular_load_passes_the_mirrored_sources_to_load_components():
     assert src.index("_h3_mirrored_component_sources(") < src.index("pipe.load_components(")
 
 
-def test_progress_skips_incomplete_blobs_of_unplanned_files(empty_cache, monkeypatch):
-    mirror = "unsloth/LTX-2-FP8"
-    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
-    folder = _snapshot(empty_cache, mirror, {"model_index.json": b"{}"})
-    (folder / "blobs").mkdir()
-    (folder / "blobs" / "planned_tag.incomplete").write_bytes(b"p" * 5)
-    (folder / "blobs" / "carrier_ckpt_tag.incomplete").write_bytes(
-        b"c" * 500
-    )  # an abandoned carrier checkpoint pull
-    backend = video_mod.VideoBackend()
-    names = frozenset({"model_index.json", "transformer/diffusion_pytorch_model.safetensors"})
-    assert backend._cache_bytes(mirror, names, None, frozenset({"planned_tag"})) == 2 + 5
-    assert backend._cache_bytes(mirror, names) == 2  # unidentifiable partials never count
-    backend._loading = video_mod._VideoLoadingState(
-        repo_id = mirror, base_repo = mirror, expected_bytes = 100
-    )
-    backend._loading.fetch_files = {
-        "base": video_mod._PlannedFetch(names, mirror, None, frozenset({"planned_tag"}))
-    }
-    backend._note_load_fetch_repo("base", mirror)
-    progress = backend.load_progress()
-    assert progress["phase"] == "downloading" and progress["downloaded_bytes"] == 7
 
 
-def test_estimate_records_the_planned_blob_keys(empty_cache, monkeypatch):
-    import huggingface_hub
-
-    class _Api(_RecordingApi):
-        def model_info(
-            self,
-            repo,
-            files_metadata = True,
-            **_kw,
-        ):
-            info = super().model_info(repo, files_metadata)
-            for sib in info.siblings:
-                sib.blob_id = "git-" + sib.rfilename
-                if sib.rfilename.endswith(".safetensors"):
-                    sib.lfs = types.SimpleNamespace(sha256 = "lfs-" + sib.rfilename)
-            return info
-
-    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
-    backend = video_mod.VideoBackend()
-    monkeypatch.setattr(backend, "_te_prequant_hub_files", lambda *a, **k: ())
-    monkeypatch.setattr(backend, "_h3_te_quant_hub_files", lambda *a, **k: ((), ()))
-    planned: dict = {}
-    backend._estimate_download_bytes(
-        "Lightricks/LTX-2", None, "Lightricks/LTX-2", None, "pipeline", planned_files = planned
-    )
-    tags = planned["base"].etags
-    assert "lfs-transformer/diffusion_pytorch_model.safetensors" in tags
-    assert "git-model_index.json" in tags
-    assert not any("Model-FP8" in t for t in tags)
 
 
 def test_a_pipeline_load_of_the_ltx25_carrier_is_refused():
@@ -700,3 +530,174 @@ def test_a_pipeline_load_of_the_ltx25_carrier_is_refused():
         video_mod._detect_load_family("unsloth/LTX-2.5-GGUF", None, None, None, "pipeline")
     with pytest.raises(ValueError, match = "single files"):
         video_mod._detect_load_family("Lightricks/LTX-2.5", None, None, None, "pipeline")
+
+
+# ── the load's fetch plan: one immutable record per role, read by every fetch site and by progress ────────────────
+
+
+def _blob(root, repo, key, data, incomplete = False):
+    folder = root / ("models--" + repo.replace("/", "--")) / "blobs"
+    folder.mkdir(parents = True, exist_ok = True)
+    (folder / (key + (".incomplete" if incomplete else ""))).write_bytes(data)
+
+
+def _plan(repo, files, revision = None):
+    return video_mod._PlannedFetch(repo, revision, tuple(files))
+
+
+def _progress_of(backend, plan, expected):
+    backend._loading = video_mod._VideoLoadingState(
+        repo_id = "x/ckpt", base_repo = "x/base", expected_bytes = expected
+    )
+    backend._loading.fetch_plan = plan
+    return backend.load_progress()
+
+
+def test_progress_reads_planned_files_by_blob_key_in_the_plan_repo(empty_cache, monkeypatch):
+    upstream, mirror = "Lightricks/LTX-2", "unsloth/LTX-2-FP8"
+    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
+    _blob(empty_cache, upstream, "k-vae", b"u" * 30)  # a partial upstream cache the load does not read
+    _blob(empty_cache, mirror, "k-carrier-fp8", b"c" * 900)  # the carrier's own root checkpoint
+    _blob(empty_cache, mirror, "k-old-transformer", b"o" * 50)  # a superseded revision's same-named file
+    _blob(empty_cache, mirror, "k-unrelated", b"z" * 500, incomplete = True)  # an abandoned unrelated partial
+    _blob(empty_cache, mirror, "k-index", b"i" * 2)
+    _blob(empty_cache, mirror, "k-transformer", b"t" * 7, incomplete = True)  # the planned shard, in flight
+    plan = {
+        "base": _plan(
+            mirror,
+            [
+                ("model_index.json", "k-index", 2),
+                ("vae/diffusion_pytorch_model.safetensors", "k-vae", 30),
+                ("transformer/diffusion_pytorch_model.safetensors", "k-transformer", 100),
+            ],
+        )
+    }
+    progress = _progress_of(video_mod.VideoBackend(), plan, 132)
+    assert progress["phase"] == "downloading"
+    assert progress["downloaded_bytes"] == 2 + 7
+
+
+def test_progress_reads_the_fallback_cache_root(empty_cache, monkeypatch):
+    """Fetches pass reuse_other_cache_root; an upstream complete only in the import-time root counts."""
+    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
+    _blob(empty_cache / "other", "Lightricks/LTX-2", "k-a", b"a" * 40)
+    plan = {"base": _plan("Lightricks/LTX-2", [("a.safetensors", "k-a", 40)])}
+    assert _progress_of(video_mod.VideoBackend(), plan, 40)["phase"] == "finalizing"
+
+
+def test_progress_counts_a_carrier_checkpoint_and_its_mirrored_base_per_role(empty_cache, monkeypatch):
+    upstream, carrier = "Wan-AI/Wan2.2-TI2V-5B-Diffusers", "unsloth/Wan2.2-TI2V-5B-FP8"
+    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
+    _blob(empty_cache, carrier, "k-fp8", b"c" * 40)
+    _blob(empty_cache, upstream, "k-vae", b"v" * 3)
+    plan = {
+        "checkpoint": _plan(carrier, [("Wan-FP8.safetensors", "k-fp8", 40)]),
+        "base": _plan(upstream, [("vae/diffusion_pytorch_model.safetensors", "k-vae", 3)]),
+    }
+    assert _progress_of(video_mod.VideoBackend(), plan, 1000)["downloaded_bytes"] == 43
+
+
+def test_progress_without_a_blob_key_reads_the_pinned_revision(empty_cache, monkeypatch):
+    mirror = "unsloth/LTX-2-FP8"
+    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
+    _snapshot(empty_cache, mirror, {"model_index.json": b"{}"})  # revision "b" * 40
+    plan_old = {"base": _plan(mirror, [("model_index.json", None, 2)], revision = "a" * 40)}
+    plan_new = {"base": _plan(mirror, [("model_index.json", None, 2)], revision = "b" * 40)}
+    backend = video_mod.VideoBackend()
+    assert _progress_of(backend, plan_old, 100)["downloaded_bytes"] == 0
+    assert _progress_of(backend, plan_new, 100)["downloaded_bytes"] == 2
+
+
+class _KeyedApi(_RecordingApi):
+    revisions: list = []
+
+    def model_info(self, repo, files_metadata = True, revision = None, **_kw):
+        type(self).revisions.append(revision)
+        info = super().model_info(repo, files_metadata)
+        for sib in info.siblings:
+            sib.blob_id = "git-" + sib.rfilename
+            if sib.rfilename.endswith(".safetensors"):
+                sib.lfs = types.SimpleNamespace(sha256 = "lfs-" + sib.rfilename)
+        return info
+
+
+def test_estimate_settles_one_plan_per_role(empty_cache, monkeypatch):
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _KeyedApi)
+    backend = video_mod.VideoBackend()
+    monkeypatch.setattr(backend, "_te_prequant_hub_files", lambda *a, **k: ())
+    monkeypatch.setattr(backend, "_h3_te_quant_hub_files", lambda *a, **k: ((), ()))
+    planned: dict = {}
+    backend._estimate_download_bytes(
+        "Lightricks/LTX-2", None, "Lightricks/LTX-2", None, "pipeline", planned_files = planned
+    )
+    base = planned["base"]
+    assert base.repo == "unsloth/LTX-2-FP8" and base.revision == "0" * 40
+    files = {name: (key, size) for name, key, size in base.files}
+    assert files["transformer/diffusion_pytorch_model.safetensors"] == (
+        "lfs-transformer/diffusion_pytorch_model.safetensors",
+        3,
+    )
+    assert files["model_index.json"] == ("git-model_index.json", 1)
+    assert "Model-FP8.safetensors" not in files
+    # An upstream complete in the cache keeps being read, unpinned (the listing commit describes the mirror only).
+    _snapshot(empty_cache, "Lightricks/LTX-2", {name: b"x" for name in files})
+    planned.clear()
+    backend._estimate_download_bytes(
+        "Lightricks/LTX-2", None, "Lightricks/LTX-2", None, "pipeline", planned_files = planned
+    )
+    assert planned["base"].repo == "Lightricks/LTX-2" and planned["base"].revision is None
+
+
+def test_predownload_follows_the_plan_repo_and_revision(empty_cache, monkeypatch):
+    import huggingface_hub
+
+    _KeyedApi.revisions = []
+    monkeypatch.setattr(huggingface_hub, "HfApi", _KeyedApi)
+    calls: list = []
+
+    def _download(repo, name, token, revision = None, **_kw):
+        calls.append((repo, revision))
+        path = empty_cache / "snap" / name
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_bytes(b"x")
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+    backend = video_mod.VideoBackend()
+    choice: dict = {}
+    backend._predownload_base(
+        "Lightricks/LTX-2",
+        None,
+        "pipeline",
+        fetch_choice = choice,
+        fetch_repo = "unsloth/LTX-2-FP8",
+        revision = "c" * 40,
+    )
+    assert calls and set(calls) == {("unsloth/LTX-2-FP8", "c" * 40)}
+    assert _KeyedApi.revisions == ["c" * 40]
+    assert choice == {"repo": "unsloth/LTX-2-FP8"}
+
+
+def test_a_superseded_worker_cannot_rewrite_the_active_plan(empty_cache, monkeypatch):
+    """Only _run_load writes fetch_plan, under its token check; a fetch site has no way to patch it."""
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _KeyedApi)
+    monkeypatch.setattr(
+        "utils.hf_xet_fallback.hf_hub_download_with_xet_fallback",
+        lambda repo, name, token, **kw: (
+            (empty_cache / "snap" / name).parent.mkdir(parents = True, exist_ok = True),
+            (empty_cache / "snap" / name).write_bytes(b"x"),
+            str(empty_cache / "snap" / name),
+        )[2],
+    )
+    backend = video_mod.VideoBackend()
+    active = {"base": _plan("unsloth/Wan2.2-TI2V-5B-FP8", [("a", "k", 1)])}
+    backend._loading = video_mod._VideoLoadingState(repo_id = "n/new", base_repo = "n/new")
+    backend._loading.fetch_plan = dict(active)
+    backend._predownload_base("Lightricks/LTX-2", None, "pipeline")  # the stale worker's base pull
+    assert backend._loading.fetch_plan == active
+    assert not hasattr(video_mod.VideoBackend, "_note_load_fetch_repo")
+
