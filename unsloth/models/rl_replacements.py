@@ -4160,6 +4160,49 @@ def openenv_vllm_reload_weights():
 RL_ADDITIONAL_FUNCTIONS["openenv"].append(openenv_vllm_reload_weights)
 
 
+def _vllm_weight_sync_bucket_bytes():
+    raw = os.environ.get("UNSLOTH_VLLM_WEIGHT_SYNC_BUCKET_MB", "1024")
+    try:
+        mb = float(raw)
+    except ValueError:
+        mb = 1024.0
+    return int(mb * 2**20) if mb > 0 else 0
+
+
+def _unsloth_vllm_sync_colocate(generation, vllm_model):
+    """TRL's colocate sync calls load_weights once per tensor, and every call rebuilds vLLM's
+    parameter lookup (~0.4 ms each). Hand over the same (name, tensor) references in a few calls:
+    no copies, and each weight_loader runs on the same data, so vLLM's weights are bit-identical.
+    UNSLOTH_VLLM_WEIGHT_SYNC_BUCKET_MB = 0 restores the per-tensor loop."""
+    weights = generation._iter_named_params()
+    cap = _vllm_weight_sync_bucket_bytes()
+    state = getattr(getattr(generation, "accelerator", None), "state", None)
+    # ZeRO-3 / FSDP yield gathered tensors that are only valid until the next step of the
+    # iterator, and PEFT unmerges in place once it is exhausted: holding references is wrong there.
+    unsafe = (
+        state is None
+        or getattr(state, "deepspeed_plugin", None) is not None
+        or getattr(state, "fsdp_plugin", None) is not None
+        or getattr(generation.model, "peft_config", None) is not None
+    )
+    if cap == 0 or unsafe:
+        for name, param in weights:
+            vllm_model.load_weights([(name, param)])
+        return
+    bucket, size = [], 0
+    for name, param in weights:
+        bucket.append((name, param))
+        size += param.numel() * param.element_size()
+        if size >= cap:
+            vllm_model.load_weights(bucket)
+            bucket, size = [], 0
+    if bucket:
+        vllm_model.load_weights(bucket)
+    generation._unsloth_bucketed_weight_syncs = (
+        getattr(generation, "_unsloth_bucketed_weight_syncs", 0) + 1
+    )
+
+
 def vllm_generation_init_patch():
     # trl moved vllm code to trl/generation/vllm_generation.py (commit 0eb66d8, 0.28.0+), which must be patched so it does not build a second vLLM instance when fast_inference has one.
 
@@ -4263,6 +4306,23 @@ def vllm_generation_init_patch():
             raise RuntimeError(
                 "Unsloth: Warning - regex did not match, VLLMGeneration.sync_weights patch may have failed"
             )
+        # TRL >= 1.10 colocate loop; older layouts stay per-tensor.
+        colocate_loop = re.compile(
+            r"^(?P<indent>[ \t]*)for name, param in self\._iter_named_params\(\):\n"
+            r"(?P=indent)[ \t]+self\.llm\.llm_engine\.model_executor\.driver_worker\.model_runner\.model"
+            r"\.load_weights\(\[\(name, param\)\]\)\n",
+            re.MULTILINE,
+        )
+        patched_src, n_loops = colocate_loop.subn(
+            lambda m: (
+                f"{m.group('indent')}_unsloth_vllm_sync_colocate(self, "
+                "self.llm.llm_engine.model_executor.driver_worker.model_runner.model)\n"
+            ),
+            patched_src,
+            count = 1,
+        )
+        if n_loops:
+            vllm_generation._unsloth_vllm_sync_colocate = _unsloth_vllm_sync_colocate
         return patched_src
 
     # `generate` is deliberately NOT source-patched: its two anchors drifted (TRL >= 1.x deleted the collective_rpc("reload_weights") call for self.sync_weights(), so the anchor matched 0 times, raised, and took the lora injection with it, making GRPO rollouts come from the BASE model), and the generate regex is not paren-balanced and mis-edits multi-line calls. Intercept on the vLLM engine instead of TRL's method body: self.llm is the vLLM LLM object in colocate mode in every release with VLLMGeneration, and generate / chat / collective_rpc are public stable APIs checked across vLLM 0.11.0-0.27.1. The override is scoped to one VLLMGeneration.generate call and undone in a finally.
