@@ -1440,7 +1440,17 @@ def _keep_fetched_checkpoint(
 
 def _plan_total(plan: dict[str, "_PlannedFetch"]) -> Optional[int]:
     """The bytes a plan sums to (what ``expected_bytes`` reports), None for an empty one."""
-    return sum(size for entry in plan.values() for _name, _key, size in entry.files) or None
+    # Counted once per blob in a repo, exactly as load_progress counts them: two names with identical bytes share one
+    # cache blob, so summing both would leave the bar short of 100% forever.
+    seen: set[tuple[str, str]] = set()
+    total = 0
+    for entry in plan.values():
+        for name, key, size in entry.files:
+            ident = ((entry.repo or "").strip().lower(), key or name)
+            if ident not in seen:
+                seen.add(ident)
+                total += int(size or 0)
+    return total or None
 
 
 def _plan_fetch(
@@ -1675,7 +1685,7 @@ def _video_fetch_repo(
         if files:
             # Every video fetch passes ``reuse_other_cache_root``, so an upstream complete under EITHER root is reused
             # rather than re-staged under the mirror (a cache-folder change leaves it in the import-time root).
-            if _upstream_is_cached(repo_id, tuple(files), other_root = True):
+            if _upstream_whole_in_one_root(repo_id, tuple(files)):
                 return repo_id
         else:
             # No names to check (assembly, an offline load, progress): the any-weight default would keep a partial
@@ -1684,6 +1694,23 @@ def _video_fetch_repo(
             if up >= 0 or mir >= 0:
                 return repo_id if up >= mir else mirror
     return prefer_ungated_mirror(repo_id, hf_token, files = files)
+
+
+def _upstream_whole_in_one_root(repo_id: str, files: tuple) -> bool:
+    """Whether ONE cache root (the live one, or the import-time root the fetches fall back to) holds every name in one
+    revision: the only upstream cache assembly can open as a single snapshot. Names split across the two roots are not
+    a hit, so the load takes the mirror instead of a set that assembly sees half of (a 401 on a gated upstream)."""
+    from .diffusion_families import _root_holds_upstream
+
+    roots = [Path(hub_cache_dir())]
+    try:
+        from huggingface_hub import constants
+
+        if Path(constants.HF_HUB_CACHE) != roots[0]:
+            roots.append(Path(constants.HF_HUB_CACHE))
+    except Exception:  # noqa: BLE001 -- the live root alone
+        pass
+    return any(_root_holds_upstream(root, repo_id, files) for root in roots)
 
 
 def _h3_mirrored_component_sources(
@@ -4146,8 +4173,15 @@ class VideoBackend:
             kwargs["_base_local_dir"] = None if ltx23 else base_local
             # The repo the exact-name check staged the base into: re-deciding at assembly without the names would flip a
             # partially cached upstream back in (LTX-2.3 resolves every component through it).
-            kwargs["_base_fetch_repo"] = base_fetch_choice.get("repo")
-            kwargs["_base_fetch_revision"] = base_fetch_choice.get("revision")
+            # The predownload's choice; when it left early (no scoped pull), the plan it was handed still stands.
+            kwargs["_base_fetch_repo"] = base_fetch_choice.get("repo") or (
+                base_plan.repo if base_plan is not None else None
+            )
+            kwargs["_base_fetch_revision"] = (
+                base_fetch_choice.get("revision")
+                if base_fetch_choice
+                else (base_plan.revision if base_plan is not None else None)
+            )
             from .safetensors_pread import pread_safetensors
 
             from .diffusion_families import pinned_repo_revision
@@ -5908,8 +5942,14 @@ class VideoBackend:
                     and name.endswith(".safetensors.index.json")
                     and not name.startswith(_PACK_SKIP_PREFIXES)
                 ):
+                    # The listing's commit: the shard choice must describe the revision the plan pins.
+                    sha = getattr(info, "sha", None)
                     local = hf_hub_download_with_xet_fallback(
-                        base, name, hf_token, reuse_other_cache_root = True
+                        base,
+                        name,
+                        hf_token,
+                        **({"revision": sha} if sha else {}),
+                        reuse_other_cache_root = True,
                     )
                     indexes[name] = json.loads(Path(local).read_text(encoding = "utf-8"))
         except Exception as exc:  # noqa: BLE001 -- the plan falls back to ltx25_pack_files' listing-only choice
@@ -5998,7 +6038,8 @@ class VideoBackend:
                 )._replace(skip_te = tuple(skip_te_components))
             if planned_files is not None:
                 planned_files.update(planned)
-            return total or None
+            # The plan's own total (one count per blob, as progress reads it); the raw sum only without a plan.
+            return _plan_total(planned) if planned else (total or None)
         except Exception:  # noqa: BLE001 -- progress totals are best-effort only
             return None
 

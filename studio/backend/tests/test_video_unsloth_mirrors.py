@@ -839,9 +839,21 @@ def _assembly_config_reads(base, empty_cache, monkeypatch):
         resident = False,
     )
     _HubRecorder.config_reads.append((client.config["repo"], client.config.get("revision")))
+    # The LTX-2.5 DiT's single-file config.
+    import diffusers.loaders.single_file_utils as sfu
+
+    monkeypatch.setattr(sfu, "load_single_file_checkpoint", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        diffusers.LTX2VideoTransformer3DModel,
+        "from_single_file",
+        staticmethod(lambda _state, config = None, revision = None, **_k: _record(config, revision = revision)),
+    )
+    video_ltx25.load_ltx25_transformer(
+        str(empty_cache / "dit.safetensors"), base_repo = base, torch_dtype = None, is_gguf = False, hf_token = None
+    )
 
 
-def _walk_a_load(empty_cache, monkeypatch, *, te_fetch_falls_back):
+def _walk_a_load(empty_cache, monkeypatch, *, te_fetch_falls_back, predownload_leaves_early = False):
     import huggingface_hub
 
     _HubRecorder.listings, _HubRecorder.downloads, _HubRecorder.config_reads = [], [], []
@@ -882,6 +894,9 @@ def _walk_a_load(empty_cache, monkeypatch, *, te_fetch_falls_back):
         _assembly_config_reads(kwargs["_base_fetch_repo"], empty_cache, monkeypatch)
 
     monkeypatch.setattr(backend, "load_pipeline", _assemble)
+    if predownload_leaves_early:
+        # No scoped pull (a non-diffusers layout, a metadata failure): fetch_choice is never filled.
+        monkeypatch.setattr(backend, "_predownload_base", lambda *a, **k: None)
     backend._load_token = 1
     backend._loading = video_mod._VideoLoadingState(repo_id = _GGUF_REPO, base_repo = _WAN_UP)
     loading = backend._loading
@@ -891,9 +906,18 @@ def _walk_a_load(empty_cache, monkeypatch, *, te_fetch_falls_back):
     return loading.fetch_plan, captured
 
 
-@pytest.mark.parametrize("te_fetch_falls_back", [False, True])
-def test_every_hub_call_of_a_load_matches_its_plan(empty_cache, monkeypatch, te_fetch_falls_back):
-    plan, captured = _walk_a_load(empty_cache, monkeypatch, te_fetch_falls_back = te_fetch_falls_back)
+@pytest.mark.parametrize(
+    "te_fetch_falls_back, predownload_leaves_early", [(False, False), (True, False), (True, True)]
+)
+def test_every_hub_call_of_a_load_matches_its_plan(
+    empty_cache, monkeypatch, te_fetch_falls_back, predownload_leaves_early
+):
+    plan, captured = _walk_a_load(
+        empty_cache,
+        monkeypatch,
+        te_fetch_falls_back = te_fetch_falls_back,
+        predownload_leaves_early = predownload_leaves_early,
+    )
     pinned = {(p.repo, p.revision) for p in plan.values()}
     assert {(repo, rev) for repo, rev, _ in _HubRecorder.downloads} <= pinned
     # Listings are read from the listing repos only (the mirror, never the vendor id), at the plan's commit or before
@@ -905,14 +929,15 @@ def test_every_hub_call_of_a_load_matches_its_plan(empty_cache, monkeypatch, te_
     # The total is exactly what the kept plan sums to, after every re-plan.
     assert captured["_expected_bytes"] == sum(size for p in plan.values() for _n, _k, size in p.files)
     # Every base config read during assembly hits the plan's base (repo, revision).
-    assert len(_HubRecorder.config_reads) == 6
+    assert len(_HubRecorder.config_reads) == 7
     assert set(_HubRecorder.config_reads) == {(plan["base"].repo, plan["base"].revision)}
     assert captured["_base_fetch_repo"] == plan["base"].repo
     assert captured["_base_fetch_revision"] == plan["base"].revision
     if te_fetch_falls_back:
         # The dense encoder is back in the pull, which the partial upstream cannot serve: re-planned onto the mirror.
         assert plan["base"].repo == _WAN_MIRROR and plan["base"].revision == "m" * 40
-        assert any(name == "text_encoder/model.safetensors" for _, _, name in _HubRecorder.downloads)
+        if not predownload_leaves_early:
+            assert any(name == "text_encoder/model.safetensors" for _, _, name in _HubRecorder.downloads)
     else:
         assert plan["base"].repo == _WAN_UP and plan["base"].revision is None
     assert plan["checkpoint"] == video_mod._PlannedFetch(
@@ -936,3 +961,49 @@ def test_the_ltx25_encoder_worker_takes_the_plan_revision(empty_cache, monkeypat
 
     src = inspect.getsource(video_mod.VideoBackend.load_pipeline)
     assert "revision = None if _base_local_dir else _base_fetch_revision" in src
+
+
+def test_an_upstream_split_across_cache_roots_is_not_reused(empty_cache):
+    upstream = "Lightricks/LTX-2"
+    names = list(_COMPLETE)
+    half = len(names) // 2
+    _snapshot(empty_cache, upstream, {n: _COMPLETE[n] for n in names[:half]})
+    _snapshot(empty_cache / "other", upstream, {n: _COMPLETE[n] for n in names[half:]})
+    # Every name is cached, but no ONE root holds the set: assembly could not open it as one snapshot.
+    assert video_mod._video_fetch_repo(upstream, files = names) == "unsloth/LTX-2-FP8"
+
+
+def test_ltx25_shard_indexes_are_read_at_the_listing_commit(empty_cache, monkeypatch):
+    from core.inference import video_ltx25
+
+    seen: list = []
+
+    def _download(repo, name, token, revision = None, **_kw):
+        seen.append((repo, name, revision))
+        path = empty_cache / name
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text('{"weight_map": {}}')
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+    monkeypatch.setattr(video_ltx25, "is_ltx25_pack", lambda names: True)
+    info = types.SimpleNamespace(
+        sha = "s" * 40, siblings = [_sib("transformer/diffusion_pytorch_model.safetensors.index.json", 1)]
+    )
+    video_mod.VideoBackend._ltx25_plan_shards(info, "unsloth/LTX-2.5-FP8", None)
+    assert seen == [("unsloth/LTX-2.5-FP8", "transformer/diffusion_pytorch_model.safetensors.index.json", "s" * 40)]
+
+
+def test_expected_total_counts_identical_blobs_once(empty_cache, monkeypatch):
+    plan = {
+        "base": _plan(
+            "unsloth/LTX-2-FP8",
+            [("a/model.safetensors", "same", 10), ("b/model.safetensors", "same", 10), ("c.json", "other", 1)],
+        )
+    }
+    assert video_mod._plan_total(plan) == 11
+    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
+    _blob(empty_cache, "unsloth/LTX-2-FP8", "same", b"x" * 10)
+    _blob(empty_cache, "unsloth/LTX-2-FP8", "other", b"y")
+    progress = _progress_of(video_mod.VideoBackend(), plan, video_mod._plan_total(plan))
+    assert progress["phase"] == "finalizing"
