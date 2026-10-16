@@ -24,6 +24,7 @@ from test_llama_cpp_placement import (  # noqa: E402,F401
     _discrete_linux_host,
     _has_moe_cache,
     _moe_cache_host,
+    _ubatch_values,
     _write_gguf,
     llama_cpp_module,
 )
@@ -190,8 +191,14 @@ def test_a_projector_turned_back_on_is_charged_to_the_card(
     [
         (["--no-mmproj-offload", "--mmproj-device", "CUDA0"], {}),
         (["--mmproj-device", "CUDA0"], {"LLAMA_ARG_MMPROJ_OFFLOAD": "0"}),
+        # A CPU name is a child that never starts (parse_device_list rejects CPU devices).
+        (["--no-mmproj-offload", "--mmproj-device", "CPU"], {}),
     ],
-    ids = ["argv_named_after_no_offload", "argv_named_over_env_no_offload"],
+    ids = [
+        "argv_named_after_no_offload",
+        "argv_named_over_env_no_offload",
+        "argv_cpu_after_no_offload",
+    ],
 )
 def test_a_named_projector_device_after_offload_off_is_unpriced(
     tmp_path, _moe_cache_host, monkeypatch, extra_args, env
@@ -259,3 +266,114 @@ def test_the_cache_admission_charges_the_selected_cards_entry(
 
     assert seen and seen[-1] is not None, seen
     assert _has_moe_cache(cmd), cmd
+
+
+# --- pass-through adapters ----------------------------------------------------------------
+
+
+def _adapter(tmp_path, gib):
+    (tmp_path / "launch").mkdir(exist_ok = True)
+    path = tmp_path / f"adapter_{gib}.gguf"
+    with open(path, "wb") as fh:
+        fh.truncate(int(gib * _GIB))
+    return str(path)
+
+
+@pytest.mark.parametrize(
+    "flag, gib",
+    [("--lora", 4), ("--control-vector", 1), ("--lora", None)],
+    ids = ["lora_4gib", "control_vector_1gib", "unreadable_lora"],
+)
+def test_a_pass_through_adapter_leaves_the_share_unpriced(
+    tmp_path, _moe_cache_host, monkeypatch, flag, gib
+):
+    """common/fit.cpp sizes the split before the adapters load (common_init_from_params),
+    and their tensors then land on each base layer's buffer (llama-adapter.cpp), so which
+    expert slices they displace is unknown: the share abstains, as the load-mode fit and
+    the context ceiling do. An unreadable file is unsized. Unknown keeps the -ub raise and
+    adds no cache; priced without the adapter the share read ~0.531, inside the band."""
+    _set_env(monkeypatch, {})
+    path = _adapter(tmp_path, gib or 0)
+    if gib is None:
+        path += ".missing"
+    seen = _spy_shares(monkeypatch)
+    _backend, cmd = _cache_launch(tmp_path / "launch", extra_args = [flag, path])
+
+    assert all(share is None for share in seen), seen
+    assert _ubatch_values(cmd) == ["2048"], cmd
+    assert not _has_moe_cache(cmd), cmd
+
+
+def test_an_empty_adapter_keeps_the_share(tmp_path, _moe_cache_host, monkeypatch):
+    # Control: a 0-byte adapter adds nothing, so the share is the adapter-free one.
+    _set_env(monkeypatch, {})
+    seen = _spy_shares(monkeypatch)
+    _backend, cmd = _cache_launch(tmp_path / "launch", extra_args = ["--lora", _adapter(tmp_path, 0)])
+
+    assert seen and seen[-1] == pytest.approx(0.53125, abs = 1e-3), seen
+    assert _has_moe_cache(cmd), cmd
+
+
+# --- an explicit --fit-target the child cannot read -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--fit-target", "foo"], {}),
+        (["--fit-target", "foo"], {"LLAMA_ARG_FIT_TARGET": "1024"}),
+        (["-fitt=0,foo"], {}),
+        (["--fit-target", "-512"], {}),
+        ([], {"LLAMA_ARG_FIT_TARGET": "foo"}),
+        ([], {"LLAMA_ARG_FIT_TARGET": "-512"}),
+    ],
+    ids = ["argv", "argv_over_env", "argv_list", "argv_negative", "env", "env_negative"],
+)
+def test_an_unreadable_fit_target_leaves_the_share_unpriced(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    """std::stoull throws on "foo" (common/arg.cpp) and wraps a negative to a huge margin,
+    so the margin the child keeps is unknown. Falling back to Studio's value or the env
+    priced a margin the child never applies; the share now abstains."""
+    _set_env(monkeypatch, env)
+    seen = _spy_shares(monkeypatch)
+    _backend, cmd = _cache_launch(tmp_path, extra_args = extra_args)
+
+    assert all(share is None for share in seen), seen
+    assert not _has_moe_cache(cmd), cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [(["--fit-target", "1024"], {}), ([], {"LLAMA_ARG_FIT_TARGET": "1024"}), ([], {})],
+    ids = ["argv", "env", "unset"],
+)
+def test_a_readable_fit_target_keeps_the_share(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    # Control: llama.cpp's own 1024 MiB default, however it is spelled.
+    _set_env(monkeypatch, env)
+    seen = _spy_shares(monkeypatch)
+    _backend, cmd = _cache_launch(tmp_path, extra_args = extra_args)
+
+    assert seen and seen[-1] == pytest.approx(0.53125, abs = 1e-3), seen
+    assert _has_moe_cache(cmd), cmd
+
+
+# --- the no-spill log ------------------------------------------------------------------------
+
+
+def test_a_launch_with_nothing_spilled_says_so(tmp_path, _moe_cache_host, monkeypatch):
+    """Share 1.0 skips the raise with its own reason, not a "100% -> 100%" movement."""
+    lines = []
+    monkeypatch.setattr(
+        llama_cpp_module.logger,
+        "info",
+        lambda msg, *a, **kw: lines.append(msg % a if a else msg),
+    )
+    monkeypatch.setattr(llama_cpp_module, "_moe_resident_expert_share", lambda *_a: 1.0)
+    _backend, cmd = _cache_launch(tmp_path, memory = [(0, 14_000, 32_000)])
+
+    assert "2048" not in _ubatch_values(cmd), cmd
+    assert any("keeps every routed expert on the GPU" in line for line in lines), lines
+    assert not any("resident share" in line for line in lines), lines
