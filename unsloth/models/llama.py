@@ -146,6 +146,7 @@ from ..kernels import *
 from ..kernels.utils import _has_active_lora_bias, has_mxfp4_base
 from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
 from ..tokenizer_utils import *
+from ..context_parallel import get_cp_manager
 from .vision import FastBaseModel, _is_text_seq2seq_config
 from .vision import (
     _resolve_offload_embedding,
@@ -956,12 +957,15 @@ def LlamaAttention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
-    if position_embeddings and kv_seq_len <= position_embeddings[0].shape[0]:
+    cp_manager = get_cp_manager()
+    rope_seq_len = kv_seq_len * cp_manager.size if cp_manager is not None else kv_seq_len
+
+    if position_embeddings and rope_seq_len <= position_embeddings[0].shape[0]:
         cos, sin = position_embeddings
     else:
         rotary_emb = self.rotary_emb
-        rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
-        cos, sin = rotary_emb.get_cached(kv_seq_len, Q.device.index)
+        rotary_emb.extend_rope_embedding(V, seq_len = rope_seq_len)
+        cos, sin = rotary_emb.get_cached(rope_seq_len, Q.device.index)
         cos = cos.to(device = Q.device, dtype = Q.dtype)
         sin = sin.to(device = Q.device, dtype = Q.dtype)
 
@@ -1064,7 +1068,7 @@ def LlamaDecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, save_output = True)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states = hidden_states,
             causal_mask = causal_mask,
@@ -1080,7 +1084,9 @@ def LlamaDecoderLayer_fast_forward(
         hidden_states = residual + hidden_states
 
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm(
+            self.post_attention_layernorm, hidden_states, save_output = True
+        )
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
@@ -1731,6 +1737,8 @@ def CausalLM_fast_forward(fast_forward_inference):
         *args,
         **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
+        # Not a named parameter: HF's find_labels would make it a required eval label.
+        shift_labels = kwargs.pop("shift_labels", None)
         past_key_values = _cache_as_legacy_tuple(past_key_values)
         if past_key_values is not None and len(past_key_values) == 0:
             past_key_values = None
@@ -1797,6 +1805,8 @@ def CausalLM_fast_forward(fast_forward_inference):
         hidden_states = hidden_states.to(lm_head_device)
         if labels is not None:
             labels = labels.to(lm_head_device)
+        if shift_labels is not None:
+            shift_labels = shift_labels.to(lm_head_device)
 
         # Output last hidden states without logits if asked.
         if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
@@ -1854,7 +1864,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                     hidden_states = hidden_states,
                     lm_head_weight = lm_head,
                     lm_head_bias = None,
-                    labels = labels,
+                    labels = labels if shift_labels is None else shift_labels,
                     mask = None,
                     n_items = n_items,
                     scaling = getattr(self, "accelerator_scaler", None),
@@ -1863,6 +1873,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                     logit_softcapping = logit_softcapping,
                     logit_scale_multiply = logit_scale_multiply,
                     logit_scale_divide = logit_scale_divide,
+                    shift_labels = shift_labels is None,
                 )
                 if not return_dict:
                     # Fused CE never materializes logits; use EMPTY_LOGITS like the return_dict branch below (#2068).
@@ -1885,15 +1896,16 @@ def CausalLM_fast_forward(fast_forward_inference):
         # Same answer the fused branch above reads, so the two branches cannot drift apart.
         logit_softcapping, logit_scaling = resolve_logit_scaling(self.config)
 
-        if labels is not None:
+        if labels is not None or shift_labels is not None:
             shift_logits = logits
-            shift_labels = torch.empty_like(labels)
-            shift_labels[..., :-1] = labels[..., 1:]
-            shift_labels[..., -1] = -100
-            mask_packed_sequence_boundaries(
-                shift_labels,
-                kwargs.get("packed_seq_lengths"),
-            )
+            if shift_labels is None:
+                shift_labels = torch.empty_like(labels)
+                shift_labels[..., :-1] = labels[..., 1:]
+                shift_labels[..., -1] = -100
+                mask_packed_sequence_boundaries(
+                    shift_labels,
+                    kwargs.get("packed_seq_lengths"),
+                )
             n_items = kwargs.get("num_items_in_batch", None)
             if n_items is None:
                 n_items = kwargs.get("n_items", None)

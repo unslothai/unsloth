@@ -186,7 +186,7 @@ def test_launches_follow_the_current_stream(kind, width, gemma, train):
         assert torch.equal(a, b)
 
 
-@pytest.mark.skipif(torch.cuda.device_count() < 2, reason = "needs two GPUs")
+@pytest.mark.skipif(not has_real_cuda() or torch.cuda.device_count() < 2, reason = "needs two GPUs")
 @pytest.mark.parametrize("train", [False, True], ids = ["frozen", "trainable"])
 @pytest.mark.parametrize("kind,width,gemma", CASES)
 def test_second_device_with_first_current(kind, width, gemma, train):
