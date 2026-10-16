@@ -18,7 +18,6 @@ from .utils import (
     _has_multiple_active_adapters,
     addmm_,
     fast_dequantize,
-    QUANT_STATE,
     _base_quant_state,
     get_lora_parameters,
     get_lora_parameters_bias,
