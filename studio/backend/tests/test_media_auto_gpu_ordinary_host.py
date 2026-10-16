@@ -227,9 +227,7 @@ def _fastest_first_host(monkeypatch, rows):
     from utils.hardware import nvidia
 
     reads = []
-    monkeypatch.setattr(
-        nvidia, "get_cuda_ordinal_smi_rows", lambda: reads.append(1) or rows
-    )
+    monkeypatch.setattr(nvidia, "get_cuda_ordinal_smi_rows", lambda: reads.append(1) or rows)
     monkeypatch.setattr(hw, "_cuda_ordinal_rows_cache", {})
     return torch_calls, reads
 
@@ -261,7 +259,6 @@ def test_fastest_first_mask_without_a_mapping_keeps_torch(monkeypatch):
 
 def test_bus_ids_from_both_tools_join():
     from utils.hardware import nvidia
-
     assert nvidia._normalize_bus_id("00000000:3B:00.0") == nvidia._normalize_bus_id("0000:3b:00.0")
     assert nvidia._normalize_bus_id("garbage") is None
 
@@ -363,7 +360,6 @@ def test_route_runs_an_uncached_gate_off_the_event_loop(monkeypatch):
 
     def _gate():
         import threading
-
         loop_thread.append(threading.current_thread() is threading.main_thread())
         return False
 
