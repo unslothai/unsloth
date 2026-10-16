@@ -2393,8 +2393,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
     ):
         # All Unsloth code in this function is licensed under AGPL3.
         if compute_efficient:
-            # Latch this trainer's precision even when no scoring forward runs (vLLM, beta = 0): the loss
-            # otherwise falls back to the process-wide precision, which another trainer may have set.
+            # No scoring forward may run (vLLM, beta = 0): latch precision here, not from the shared env.
             _unsloth_grpo_autocast(self)
             return None, None
         else:

@@ -15,12 +15,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 
-"""The efficient GRPO logprob path must latch this trainer's precision even when it skips the scoring forward.
-
-With vLLM, beta = 0 and no importance sampling correction there is no old-policy or reference forward, so the
-compute_efficient call is the only place this trainer gets to latch its own precision. Unlatched, the zoo loss
-reads the process-wide ACCELERATE_MIXED_PRECISION, which another trainer built in the same process may own.
-"""
+"""With no scoring forward (vLLM, beta = 0) the efficient call must still latch this trainer's precision."""
 
 import ast
 import os
@@ -60,7 +55,6 @@ def _namespace():
 
 def test_efficient_call_latches_this_trainers_precision(monkeypatch):
     ns = _namespace()
-    # Another trainer in this process left fp16 behind; this one trains in bf16.
     monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "fp16")
     trainer = types.SimpleNamespace(
         args = types.SimpleNamespace(mixed_precision = "bf16", bf16 = True, fp16 = False),
