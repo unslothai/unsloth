@@ -836,6 +836,57 @@ def test_a_filename_build_key_still_resolves_after_its_sibling_is_removed(tmp_pa
     assert resolved is not None and resolved[1] == "F16"
 
 
+def test_a_deleted_build_stem_misses_instead_of_serving_its_sibling(tmp_path, monkeypatch):
+    (tmp_path / "alpha-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "beta-Q4_K_M.gguf").write_bytes(b"x" * 90)
+    (tmp_path / "beta-Q4_K_M.gguf").unlink()
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+    index = {"local/model": entry}
+
+    assert resolver._resolve_from_index("local/model:beta-Q4_K_M", index) is None
+    assert resolver._resolve_from_index("local/model:alpha-Q4_K_M", index)[1] == "Q4_K_M"
+    assert resolver._resolve_from_index("local/model:latest", index)[1] == "Q4_K_M"
+
+    monkeypatch.setattr(resolver, "_scan", (1.0, index))
+    loaded = _FakeBackend(loaded_id = "local/model", hf_variant = "Q4_K_M")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    assert inference_route._loaded_satisfies("local/model:beta-Q4_K_M") is False
+    assert inference_route._loaded_satisfies("local/model:alpha-Q4_K_M") is True
+
+
+def test_a_quant_directory_build_pin_is_authorized_by_its_base_model(monkeypatch):
+    from fastapi import HTTPException
+
+    def _refuse(_name):
+        raise HTTPException(status_code = 404, detail = "Model not found")
+
+    async def _no_catalog():
+        return None
+
+    async def _no_token(*_args):
+        return False
+
+    pinned = "custom-model:Q4_K_M/beta-Q4_K_M"
+    monkeypatch.setattr(inference_route.account_access, "require_model_access", _refuse)
+    monkeypatch.setattr(inference_route, "_cached_local_catalog", _no_catalog)
+    monkeypatch.setattr(inference_route, "_caller_token_authorizes_download", _no_token)
+    monkeypatch.setattr(
+        inference_route,
+        "_own_local_model_for_alias",
+        lambda alias: "/models/custom" if alias == "custom-model" else None,
+    )
+    monkeypatch.setattr(
+        resolver,
+        "local_gguf_pinned_variant",
+        lambda requested, **_: "Q4_K_M/beta-Q4_K_M" if requested == pinned else None,
+    )
+
+    asyncio.run(inference_route._require_named_model_access(pinned))
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(inference_route._require_named_model_access("custom-model:Q4_K_M/other"))
+    assert refused.value.status_code == 404
+
+
 def test_local_gguf_entry_labels_a_quantless_filename_as_the_picker_does(tmp_path):
     # No quant token in the name, so the picker and every saved setting key this variant by
     # the stem. Labelling it "v2" here left an API load reading a key nothing wrote (#10227).

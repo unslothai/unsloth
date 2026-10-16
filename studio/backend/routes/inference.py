@@ -11186,6 +11186,17 @@ async def _require_named_model_access(
         await _cached_local_catalog()
         if await asyncio.to_thread(_own_local_model_for_alias, alias) is not None:
             return
+        # split_model_ref keeps a quant-directory build pin (custom:Q4_K_M/beta-Q4_K_M) whole
+        from core.inference.local_model_resolver import local_gguf_pinned_variant
+
+        pinned_base = named_model.rpartition(":")[0].strip().lower()
+        if (
+            pinned_base
+            and pinned_base != alias
+            and local_gguf_pinned_variant(named_model, allow_scan = False) is not None
+            and await asyncio.to_thread(_own_local_model_for_alias, pinned_base) is not None
+        ):
+            return
     if await _caller_token_authorizes_download(named_model, fastapi_request):
         return
     raise HTTPException(status_code = 404, detail = "Model not found")

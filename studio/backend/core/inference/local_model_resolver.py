@@ -44,6 +44,7 @@ class _LocalGgufEntry:
     aliases: tuple[tuple[str, str], ...] = ()  # see _legacy_variant_aliases
     withheld: tuple[str, ...] = ()  # listed build keys that cannot be served (torn split sets)
     build_aliases: tuple[tuple[str, str], ...] = ()  # see _build_family_aliases
+    exact_builds: bool = False  # custom folder: a build-shaped suffix names one file, never a tag
 
 
 _CACHE_TTL_S = 5.0
@@ -519,6 +520,7 @@ def _local_gguf_entry(
             aliases = _legacy_variant_aliases(variants),
             withheld = withheld,
             build_aliases = _build_family_aliases(variants) if cache_repo_dir is None else (),
+            exact_builds = cache_repo_dir is None,
         )
     except Exception:
         return None
@@ -1402,17 +1404,17 @@ def _resolve_from_index(
         for v in entry.variants:
             if v.lower() == wanted:
                 return _result(entry, v)
-        # ahead of both branches below: one refuses a retired spelling, the other answers it
-        # with a different quant
         # a listed build that cannot be served misses, never answered by a sibling or alias
         if wanted in entry.withheld:
             return None
+        # ahead of both branches below: one refuses a retired spelling, the other answers it
+        # with a different quant
         for legacy, current in (*entry.aliases, *entry.build_aliases):
             if legacy == wanted:
                 return _result(entry, current)
         from core.inference.openai_auto_download import looks_like_quant
 
-        if looks_like_quant(variant):
+        if looks_like_quant(variant) or _names_missing_build(entry, wanted):
             return None
         # ":latest" or ":8b" names no file, so it means the repo; a real quant that is not on disk still misses, or a
         # swap would serve the wrong weights.
@@ -1460,8 +1462,22 @@ def local_gguf_pinned_variant(requested: str, allow_scan: bool = True) -> Option
     return None
 
 
+def _names_missing_build(entry: _LocalGgufEntry, wanted: str) -> bool:
+    """Whether *wanted* is a custom-folder build stem (``beta-Q4_K_M``) no indexed build answers."""
+    from core.inference.openai_auto_download import looks_like_quant
+    from hub.utils.gguf import extract_quant_token
+
+    return (
+        entry.exact_builds
+        and not looks_like_quant(wanted)
+        and extract_quant_token(wanted) is not None
+        and all(v.lower() != wanted for v in entry.variants)
+        and all(legacy != wanted for legacy, _ in (*entry.aliases, *entry.build_aliases))
+    )
+
+
 def local_gguf_withheld(requested: str) -> bool:
-    """Whether ``repo:BUILD`` names a listed build the last index could not serve."""
+    """Whether ``repo:BUILD`` names a build the last index cannot serve: torn, or no longer there."""
     base, sep, wanted = requested.rpartition(":")
     if not sep:
         return False
@@ -1469,7 +1485,10 @@ def local_gguf_withheld(requested: str) -> bool:
         entry = _snapshot()[1].get(base.strip().lower())
     except Exception:
         return False
-    return entry is not None and wanted.strip().lower() in entry.withheld
+    if entry is None:
+        return False
+    wanted = wanted.strip().lower()
+    return wanted in entry.withheld or _names_missing_build(entry, wanted)
 
 
 def local_target_is_gguf(load_path: Optional[str], loader_id: Optional[str] = None) -> bool:
