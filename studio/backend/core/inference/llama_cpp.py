@@ -34867,6 +34867,20 @@ class LlamaCppBackend:
                     "Load cancelled during the llama-server health wait"
                 ):
                     return False
+                # Every recovery below respawns with a label, and a labelled spawn revokes the
+                # spill plan anyway, so the plan is dead from here. Revoke it on `cmd` NOW, once,
+                # before any rung derives an argv or a decision from `cmd`: the drafterless,
+                # projector and arch-crash rungs re-price slots, context, checkpoints, the
+                # unified-memory env and the memory policy off `cmd`, and the later revocation
+                # at their spawn then rewrote the argv under those decisions. It also re-derives
+                # the state a failed --fit on retry inside the first spawn left describing its
+                # own argv. A no-op when no plan was applied (_drop_tensor_spill returns `cmd`).
+                if not healthy and self._spill_plan_flags:
+                    _revoked_cmd = _revoke_spill_plan(cmd, "recovery")
+                    if _revoked_cmd is not cmd:
+                        cmd = _revoked_cmd
+                        # What `cmd` means now, for the arch-crash retry's restore.
+                        _mem_policy_for_cmd = _snapshot_policy_for_cmd()
                 # #6415 split-mode tensor warmup abort. Latch it on THIS first spawn:
                 # the flash-attn-off retry below can't run tensor (needs flash_attn),
                 # so its output drops the marker and recording later would miss it,

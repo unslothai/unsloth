@@ -213,3 +213,29 @@ def test_a_single_revocation_is_unchanged(tmp_path, monkeypatch):
     assert _fit(cmds[-1]) == "on"
     assert _count(cmds[-1], ["--load-mode", "mmap+mlock"]) == 1, cmds[-1]
     assert backend._memory_mlock_applicable is True
+
+
+def test_the_plan_is_revoked_on_cmd_before_any_recovery_rung_derives_from_it(tmp_path, monkeypatch):
+    """One revocation point for the recovery rungs: once the first spawn fails, `cmd` itself is
+    revoked before the drafterless (and projector, arch-crash) rungs re-price slots, context,
+    checkpoints and the memory policy off it. Before, the outer revocation ran only at the rung's
+    own spawn, on the argv it had already derived from the planned `cmd`."""
+    from core.inference import llama_cpp
+
+    _settings(monkeypatch, False, False)
+    seen = []
+    real = llama_cpp.LlamaCppBackend._drop_tensor_spill
+
+    def spy(self, run_cmd, why):
+        out = real(self, run_cmd, why)
+        if out is not run_cmd:
+            seen.append((why, "draft-mtp" in run_cmd, "--spec-default" in run_cmd))
+        return out
+
+    monkeypatch.setattr(llama_cpp.LlamaCppBackend, "_drop_tensor_spill", spy)
+    plan = Plan(changed = True, n_ctx = 8192, n_parallel = 1)
+    cmds, _backend = _launch_planned_mtp(tmp_path, monkeypatch, plan)
+    assert _fit(cmds[-1]) == "on" and "--spec-default" in cmds[-1], cmds[-1]
+    # The inner startup-failure retry, then `cmd` itself, still carrying the drafter: the
+    # drafterless argv is built from an already-revoked command, so its spawn revokes nothing.
+    assert seen == [("startup failure", True, False), ("recovery", True, False)], seen
