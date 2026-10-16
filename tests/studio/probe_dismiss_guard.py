@@ -256,9 +256,9 @@ async def one_case(
         return {"case": case, "error": "no Copy button"}
     # Click the live, actionable element rather than stale coordinates from an earlier
     # layout snapshot. Still a real browser pointer click, not a dispatched DOM event.
-    await page.locator('[data-role="assistant"]').last.get_by_role(
-        "button", name = "Copy", exact = True
-    ).first.click(timeout = 5000)
+    last_assistant = page.locator('[data-role="assistant"]').last
+    copy_button = last_assistant.get_by_role("button", name = "Copy", exact = True).first
+    await copy_button.click(timeout = 5000)
     await until(page, f"n => ({FACTS_JS})().targetClicks > n", 2000, arg = control["targetClicks"])
     counted = (await page.evaluate(FACTS_JS))["targetClicks"] - control["targetClicks"]
     if counted != 1:
