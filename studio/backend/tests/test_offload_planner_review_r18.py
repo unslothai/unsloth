@@ -166,7 +166,7 @@ PLAN = Plan(
 )
 
 
-def _gated_launch(tmp_path, monkeypatch, *, survivors):
+def _gated_launch(tmp_path, monkeypatch, *, survivors, **load_kwargs):
     """Two supported GPUs (1, 2) the planner sized a --tensor-split for; the proactive arch gate
     then pins the child to ``survivors`` (gpu_indices None: the fit arm, nothing user-pinned)."""
     import test_offload_planner_launch as launch_mod
@@ -182,7 +182,7 @@ def _gated_launch(tmp_path, monkeypatch, *, survivors):
         return backend, gguf
 
     monkeypatch.setattr(launch_mod, "_backend", hooked)
-    return launch_mod._launch_with(tmp_path, monkeypatch, PLAN)
+    return launch_mod._launch_with(tmp_path, monkeypatch, PLAN, **load_kwargs)
 
 
 def test_the_planned_split_survives_the_proactive_gate_when_the_survivors_are_its_devices(
@@ -202,6 +202,28 @@ def test_a_gate_that_leaves_other_devices_than_the_plan_revokes_it(tmp_path, mon
     """Survivors that are not the plan's devices: the split cannot be kept, and --fit off
     without it is a placement nothing priced. Hand it back to llama.cpp's fitter."""
     cmd, backend, _seen = _gated_launch(tmp_path, monkeypatch, survivors = [2])
+    assert "--tensor-split" not in cmd, cmd
+    assert _flag(cmd, "--fit") == "on", cmd
+    assert "-ot" not in cmd, cmd
+
+
+@pytest.mark.parametrize("spelling", ["argv", "env"])
+def test_a_plan_riding_the_user_split_is_revoked_when_the_gate_drops_that_split(
+    tmp_path, monkeypatch, spelling
+):
+    """A user ratio reaching the child makes the plan emit no split of its own: its rows were
+    modelled against that ratio. The gate drops the ratio on any narrowing (the argv pair, and the
+    env twin with _clear_split_placement_env), so the child splits the survivors by free VRAM and
+    --fit off pins a placement nothing priced, even over the plan's own devices."""
+    kwargs = {}
+    if spelling == "argv":
+        kwargs["extra_args"] = ["--tensor-split", "1,3"]
+    else:
+        monkeypatch.setenv("LLAMA_ARG_TENSOR_SPLIT", "1,3")
+    cmd, backend, seen = _gated_launch(tmp_path, monkeypatch, survivors = SURVIVORS, **kwargs)
+    assert [int(i) for i, _f in seen["inputs"]["gpus"]] == SURVIVORS, "harness: plan saw 1, 2"
+    assert "--tensor-split" not in backend._spill_plan_flags, "harness: the user's split rides"
+    assert backend._spill_plan_flags, "harness: the plan was emitted"
     assert "--tensor-split" not in cmd, cmd
     assert _flag(cmd, "--fit") == "on", cmd
     assert "-ot" not in cmd, cmd

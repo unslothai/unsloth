@@ -31470,6 +31470,9 @@ class LlamaCppBackend:
                 # The devices, in order, the plan's --tensor-split is positional over; [] when it
                 # emitted none or they cannot be named. The proactive arch gate reads it.
                 _spill_plan_device_ids: list[int] = []
+                # A plan across devices that emitted no split because the user's own ratio (argv or
+                # LLAMA_ARG_TENSOR_SPLIT) reaches the child: its rows were modelled against that ratio.
+                _spill_plan_rides_user_split = False
                 # Set when that gate takes the plan's split out from under its --fit off: the
                 # first spawn then revokes the plan, as the reactive arch-crash retry does.
                 _arch_gate_voids_plan = False
@@ -31655,6 +31658,7 @@ class LlamaCppBackend:
                             # more than one device pins it too, or CUDA's fastest-first enumeration
                             # hands the rows to different cards.
                             manual_tensor_split_emitted = True
+                            _spill_plan_rides_user_split = "--tensor-split" not in _spill_flags
                         self._spill_plan_restore = {}
                         self._spill_plan_append = []
                         _spill_ctx_locals_before = None
@@ -33645,6 +33649,15 @@ class LlamaCppBackend:
                                 tuple(self._tensor_split) if self._tensor_split else None
                             )
                             self._tensor_split = None
+                        if _spill_plan_rides_user_split:
+                            # The user's ratio goes on any narrowing, the argv pair above and the
+                            # env twin with _clear_split_placement_env below, so the child splits
+                            # the survivors by free VRAM and the rows the plan priced are gone too.
+                            _arch_gate_voids_plan = True
+                            logger.info(
+                                "Tensor spill: the arch gate drops the user's --tensor-split the "
+                                "plan was sized against; revoking the plan."
+                            )
                         # Narrowing to one survivor leaves --split-mode tensor a no-op
                         # still REPORTED as active (tensor_parallel drives the UI and
                         # arms the MTP crash watchdog), manual mode having admitted it
