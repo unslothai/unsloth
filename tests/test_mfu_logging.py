@@ -389,6 +389,14 @@ def test_l40_is_not_matched_as_l4(monkeypatch):
         assert mfu.get_peak_tflops(dtype = torch.bfloat16) == peak, name
 
 
+def test_longer_model_number_is_not_matched_as_a_table_entry(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_PEAK_TFLOPS", raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    for name, peak in (("NVIDIA T400 4GB", None), ("NVIDIA T400", None), ("Tesla T4", 65.0)):
+        monkeypatch.setattr(torch.cuda, "get_device_name", lambda device = None, n = name: n)
+        assert mfu.get_peak_tflops(dtype = torch.float16) == peak, name
+
+
 def test_inactive_lora_adapters_are_not_counted():
     peft = pytest.importorskip("peft")
     config = peft.LoraConfig(r = 2, target_modules = ["q_proj", "v_proj"], lora_dropout = 0.0)

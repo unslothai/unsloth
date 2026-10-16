@@ -38,6 +38,7 @@ __all__ = [
 ]
 
 import os
+import re
 import time
 
 from collections.abc import Mapping
@@ -233,6 +234,13 @@ def _all_attention_bidirectional(model):
     flags = [
         m.is_causal for m in model.modules() if isinstance(getattr(m, "is_causal", None), bool)
     ]
+    if not flags:
+        # transformers 4.x encoders (BERT, XLM-R) expose only is_decoder on their attention.
+        flags = [
+            m.is_decoder
+            for m in model.modules()
+            if isinstance(getattr(m, "is_decoder", None), bool)
+        ]
     return bool(flags) and not any(flags)
 
 
@@ -295,7 +303,8 @@ def get_peak_tflops(device = None, dtype = torch.float16):
     except Exception:
         return None
     for key, value in _PEAK_TFLOPS_16BIT:
-        if key in name:
+        # A trailing digit is a different model (Quadro T400 is not a T4).
+        if re.search(re.escape(key) + r"(?!\d)", name):
             if dtype == torch.bfloat16 and key in _NO_BF16:
                 return None
             return value
