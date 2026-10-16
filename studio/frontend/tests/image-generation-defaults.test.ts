@@ -262,6 +262,7 @@ test("every FLUX.3 Klein alias the backend registers gets its family recipe", ()
     "someone/flux3-image-klein-base-finetune",
     "someone/flux3_image_klein_base",
     "someone/flux3-klein-base-merge",
+    "flux.3-klein-base",
   ]) {
     assert.deepEqual(defaultsFor(id), { steps: 25, guidance: 3.5 }, id);
   }
@@ -270,7 +271,19 @@ test("every FLUX.3 Klein alias the backend registers gets its family recipe", ()
     "someone/flux3-image-klein-finetune",
     "someone/flux3_image_klein",
     "someone/flux3-klein-lora-merge",
+    "flux.3-klein",
   ]) {
     assert.deepEqual(defaultsFor(id), { steps: 16, guidance: 1 }, id);
+  }
+});
+
+test("an opaque FLUX.3 path keys its defaults by the explicit family", () => {
+  for (const [family, want] of [
+    ["flux.3-klein", { steps: 16, guidance: 1 }],
+    ["flux.3-klein-base", { steps: 25, guidance: 3.5 }],
+  ] as const) {
+    const key = defaultsKeyFor("/models/my-model", family);
+    assert.equal(key, family);
+    assert.deepEqual(defaultsFor(key), want);
   }
 });

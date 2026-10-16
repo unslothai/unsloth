@@ -18,7 +18,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping, NamedTuple, Optional, Sequence
+from typing import Any, Iterable, Mapping, NamedTuple, Optional, Sequence
 from utils.paths.path_utils import is_appledouble_metadata
 
 from .diffusion_flow_shift import flux_mu_shift
@@ -1622,9 +1622,12 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     # FLUX.3 Image Klein, ComfyUI's templates (Comfy-Org/workflow_templates): the base's CFG template is 25 steps at
     # 3.5 (euler / simple); the distilled flow-map checkpoint 16 steps at CFG 1 (the edit template and the BFL
     # reference; the t2i template's 15-step er_sde is a sampler this backend does not run). Base first.
+    # Every registered alias plus the canonical family names (an opaque path resolves through the family).
+    ("flux.3-klein-base", 25, 3.5),
     ("flux-3-image-klein-base", 25, 3.5),
     ("flux3-image-klein-base", 25, 3.5),
     ("flux3-klein-base", 25, 3.5),
+    ("flux.3-klein", 16, 1.0),
     ("flux-3-image-klein", 16, 1.0),
     ("flux3-image-klein", 16, 1.0),
     ("flux3-klein", 16, 1.0),
@@ -2458,6 +2461,15 @@ def family_selectable(fam) -> bool:
         except (ImportError, ValueError):
             module = None
     return module is not None and family_pipeline_available(fam)
+
+
+def modular_image_family_names(names: Iterable[str]) -> tuple[str, ...]:
+    """Of ``names``, the families whose repos are Modular Diffusers pipelines (``modular_model_index.json``), so an
+    opaque folder picked under an explicit family override is classed ``diffusers_modular_pipeline`` (FLUX.3)."""
+    by_name = {f.name: f for f in _FAMILIES}
+    return tuple(
+        n for n in names if str(getattr(by_name.get(n), "pipeline_class", "")).endswith("ModularPipeline")
+    )
 
 
 def pipeline_available_family_names() -> tuple[str, ...]:

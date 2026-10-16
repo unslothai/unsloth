@@ -920,3 +920,96 @@ def test_gguf_header_tensor_names(tmp_path):
         "emb_in.image.weight",
     ]
     assert gguf_tensor_names_from_header(b"") is None
+
+
+# ── review round 4 ───────────────────────────────────────────────────────────
+def test_every_flux3_assembly_reads_the_staged_dir_and_names_the_family():
+    # Each FLUX.3 assembly in the loader takes the staged companion dir first (a plan that found the companions under
+    # another cache root must not re-resolve them) and hands the family to the variant backstop.
+    import ast
+    import inspect
+    from core.inference import diffusion as d
+
+    tree = ast.parse(inspect.getsource(d))
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "load_flux3_pipeline"
+    ]
+    assert len(calls) == 3
+    for call in calls:
+        assert "base_local_dir" in ast.unparse(call.args[0]), ast.unparse(call.args[0])
+        assert "family_name" in {k.arg for k in call.keywords}
+
+
+@pytest.mark.parametrize(
+    "family, index_blocks, refused",
+    [
+        (FLUX3_KLEIN_FAMILY_NAME, FLUX3_DISTILLED_BLOCKS, False),
+        (FLUX3_KLEIN_FAMILY_NAME, FLUX3_BASE_BLOCKS, True),
+        (FLUX3_KLEIN_BASE_FAMILY_NAME, FLUX3_BASE_BLOCKS, False),
+        (FLUX3_KLEIN_BASE_FAMILY_NAME, FLUX3_DISTILLED_BLOCKS, True),
+    ],
+)
+def test_a_pipeline_of_the_other_variant_is_refused_before_eviction(
+    tmp_path, monkeypatch, family, index_blocks, refused
+):
+    from core.inference.diffusion import DiffusionBackend
+
+    _flux3_installed(monkeypatch)
+    root = _modular_base(tmp_path)
+    index = json.loads((root / "modular_model_index.json").read_text())
+    index["_blocks_class_name"] = index_blocks
+    index["_class_name"] = (
+        "Flux3DistilledModularPipeline"
+        if index_blocks == FLUX3_DISTILLED_BLOCKS
+        else "Flux3ModularPipeline"
+    )
+    (root / "modular_model_index.json").write_text(json.dumps(index))
+    run = lambda: DiffusionBackend().preflight_base_access(  # noqa: E731
+        str(root), _family(family), model_kind = "pipeline", allow_network = False
+    )
+    if refused:
+        with pytest.raises(ValueError, match = "Load it with family"):
+            run()
+    else:
+        run()
+
+
+def test_the_loader_backstop_refuses_a_block_graph_of_the_other_family():
+    from core.inference.diffusion_flux3 import flux3_family_blocks_mismatch, flux3_index_family
+
+    assert flux3_family_blocks_mismatch(FLUX3_KLEIN_FAMILY_NAME, FLUX3_DISTILLED_BLOCKS, "r") is None
+    assert "flux.3-klein-base" in flux3_family_blocks_mismatch(
+        FLUX3_KLEIN_FAMILY_NAME, FLUX3_BASE_BLOCKS, "r"
+    )
+    assert flux3_family_blocks_mismatch(None, FLUX3_BASE_BLOCKS, "r") is None
+    assert flux3_index_family({"_class_name": "Flux3ModularPipeline"}) == FLUX3_KLEIN_BASE_FAMILY_NAME
+    assert flux3_index_family({"_blocks_class_name": FLUX3_DISTILLED_BLOCKS}) == FLUX3_KLEIN_FAMILY_NAME
+    assert flux3_index_family({}) is None
+
+
+def test_canonical_family_names_get_the_flux3_recipe():
+    from core.inference.diffusion import _generation_defaults_for
+
+    assert default_generation_params("flux.3-klein") == (16, 1.0)
+    assert default_generation_params("flux.3-klein-base") == (25, 3.5)
+    # An opaque local pipeline names no variant; the resident recipe falls back to the family.
+    for name, want in ((FLUX3_KLEIN_FAMILY_NAME, (16, 1.0)), (FLUX3_KLEIN_BASE_FAMILY_NAME, (25, 3.5))):
+        got = _generation_defaults_for("/models/my-model", None, "/models/my-model", family = _family(name))
+        assert (got["steps"], got["guidance"]) == want
+
+
+def test_status_lists_flux3_as_a_modular_image_family(monkeypatch):
+    from core.inference import diffusion_engine_router as router
+    from models.inference import DiffusionStatusResponse
+
+    monkeypatch.setattr(
+        router,
+        "_supported_family_capabilities",
+        lambda: ("flux.2-klein", FLUX3_KLEIN_FAMILY_NAME, FLUX3_KLEIN_BASE_FAMILY_NAME),
+    )
+    out = router.annotate_status({"loaded": False, "repo_id": None})
+    assert out["modular_families"] == [FLUX3_KLEIN_FAMILY_NAME, FLUX3_KLEIN_BASE_FAMILY_NAME]
+    # The response model keeps it (a dropped field reaches the UI as no modular families at all).
+    assert DiffusionStatusResponse(**out).modular_families == out["modular_families"]

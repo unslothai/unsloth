@@ -91,6 +91,43 @@ def _read_index(repo_id: str, hf_token: Optional[str], local_files_only: bool) -
     return payload if isinstance(payload, dict) else {}
 
 
+FLUX3_FAMILY_BLOCKS = {
+    FLUX3_KLEIN_FAMILY_NAME: FLUX3_DISTILLED_BLOCKS,
+    FLUX3_KLEIN_BASE_FAMILY_NAME: FLUX3_BASE_BLOCKS,
+}
+_BLOCKS_FAMILY = {blocks: family for family, blocks in FLUX3_FAMILY_BLOCKS.items()}
+# A manifest's ``_class_name`` names the pipeline; either it or ``_blocks_class_name`` identifies the variant.
+_PIPELINE_FAMILY = {
+    "Flux3DistilledModularPipeline": FLUX3_KLEIN_FAMILY_NAME,
+    "Flux3ModularPipeline": FLUX3_KLEIN_BASE_FAMILY_NAME,
+}
+
+
+def flux3_index_family(index: Optional[dict]) -> Optional[str]:
+    """The FLUX.3 family a ``modular_model_index.json`` declares, or None when it says nothing recognisable."""
+    if not isinstance(index, dict):
+        return None
+    blocks = index.get("_blocks_class_name")
+    if isinstance(blocks, str) and blocks in _BLOCKS_FAMILY:
+        return _BLOCKS_FAMILY[blocks]
+    name = index.get("_class_name")
+    return _PIPELINE_FAMILY.get(name) if isinstance(name, str) else None
+
+
+def flux3_family_blocks_mismatch(
+    family_name: Optional[str], declared: Optional[str], source: str
+) -> Optional[str]:
+    """Why ``source`` (declaring the FLUX.3 family or block class ``declared``) cannot load as ``family_name``."""
+    declared = _BLOCKS_FAMILY.get(declared, declared) if declared else None
+    if family_name not in FLUX3_FAMILY_BLOCKS or declared not in FLUX3_FAMILY_BLOCKS or declared == family_name:
+        return None
+    what = "distilled FLUX.3 Klein" if declared == FLUX3_KLEIN_FAMILY_NAME else "FLUX.3 Klein base"
+    return (
+        f"'{source}' is the {what} pipeline, but it was loaded as {family_name}. Load it with family {declared} "
+        "(or leave the family on auto)."
+    )
+
+
 def flux3_blocks_class(index: dict, transformer: Any = None) -> str:
     """The block graph a checkpoint runs. The loaded denoiser decides first: a flow-map DiT (it has the target-time
     embedder) runs the distilled graph, a CFG DiT the base graph, whatever repo supplied the companions (a single
@@ -442,8 +479,13 @@ def load_flux3_pipeline(
     text_encoder = None,
     local_files_only: bool = False,
     check_cancelled: Optional[Callable[[], None]] = None,
+    family_name: Optional[str] = None,
 ) -> Any:
     """A ready ``Flux3KleinPipeline`` for ``repo_id`` (on CPU; the caller places it).
+
+    ``family_name`` (the family the load resolved) must agree with the block graph the checkpoint runs: a base
+    pipeline loaded as the distilled family would run CFG while Studio suppresses its negative prompt, and the
+    reverse. The pre-eviction preflight refuses that from the manifest; this is the backstop.
 
     ``transformer`` / ``text_encoder`` let a quantised or pre-cast build hand in a component;
     the rest load from the repo's own subfolders. ``local_files_only`` keeps a load that was
@@ -482,6 +524,9 @@ def load_flux3_pipeline(
     check_cancelled()
     _pin_compute_dtype(transformer, dtype)
     blocks = flux3_blocks_class(index, transformer)
+    reason = flux3_family_blocks_mismatch(family_name, blocks, repo_id)
+    if reason is not None:
+        raise ValueError(reason)
     # The scheduler is the block graph's own (shift 6.93, the reference timestep shift); the repos ship none.
     scheduler = getattr(diffusers, blocks)().init_pipeline().scheduler
     return flux3_pipeline_class()(

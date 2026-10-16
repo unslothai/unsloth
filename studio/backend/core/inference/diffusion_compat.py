@@ -656,6 +656,34 @@ def assert_flux2_pick_compatible(
         raise ValueError(reason)
 
 
+def _flux3_pipeline_index(repo_id: str, token: Optional[str], allow_network: bool) -> Optional[dict]:
+    """A FLUX.3 pipeline's ``modular_model_index.json``: the local folder's, the cached copy, or (when allowed) a
+    fetch of that one small file. None on anything unreadable."""
+    import json
+
+    from .diffusion_flux3 import FLUX3_INDEX
+
+    try:
+        root = Path(repo_id).expanduser()
+        if root.is_dir():
+            return json.loads((root / FLUX3_INDEX).read_text(encoding = "utf-8-sig"))
+    except (OSError, RuntimeError, ValueError):
+        return None
+    try:
+        local = _local_gguf_path(repo_id, FLUX3_INDEX)
+        if local is None and allow_network:
+            from huggingface_hub import hf_hub_download
+            from utils.hf_cache_settings import active_hf_hub_cache
+
+            local = hf_hub_download(repo_id, FLUX3_INDEX, token = token, cache_dir = active_hf_hub_cache())
+        if local is None:
+            return None
+        payload = json.loads(Path(local).read_text(encoding = "utf-8-sig"))
+        return payload if isinstance(payload, dict) else None
+    except Exception:  # noqa: BLE001 -- offline, gated or odd: the loader's own check still runs
+        return None
+
+
 def _flux3_pick_tensor_names(
     repo_id: str, filename: str, token: Optional[str], allow_network: bool
 ) -> Optional[list[str]]:
@@ -686,11 +714,21 @@ def assert_flux3_pick_compatible(
     hf_token: Optional[str] = None,
     allow_network: bool = True,
 ) -> None:
-    """Refuse a FLUX.3 single file / GGUF of the other variant (or a BFL quantized package) before anything is
-    downloaded or unloaded: the loader's own check opens the downloaded file after the resident pipeline is gone.
-    Header only, and fails open on anything it cannot read."""
+    """Refuse a FLUX.3 pick of the other variant before anything is downloaded or unloaded: a single file / GGUF
+    from its tensor names (also refusing BFL's quantized packages), a full pipeline from its manifest. The loader's
+    own checks run after the resident pipeline is gone. Headers and the manifest only; fails open on anything it
+    cannot read."""
     name = str(getattr(fam, "name", ""))
-    if not gguf_filename or not name.startswith("flux.3"):
+    if not name.startswith("flux.3"):
+        return
+    if not gguf_filename:
+        # A full modular pipeline: its manifest names the variant. Same refusal, before the teardown.
+        from .diffusion_flux3 import flux3_family_blocks_mismatch, flux3_index_family
+
+        declared = flux3_index_family(_flux3_pipeline_index(repo_id, normalize_token(hf_token), allow_network))
+        reason = flux3_family_blocks_mismatch(name, declared, repo_id)
+        if reason is not None:
+            raise ValueError(reason)
         return
     from .diffusion_families import flux3_variant_mismatch_reason
 

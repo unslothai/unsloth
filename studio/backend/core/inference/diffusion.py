@@ -1585,12 +1585,20 @@ def _generation_defaults_for(
     gguf_filename: Optional[str],
     base_repo: Optional[str],
     grid: Optional[tuple[float, ...]] = None,
+    family: Any = None,
 ) -> Optional[dict[str, float]]:
     """The (steps, guidance) the OpenAI route renders this load with, header variant before base (FLUX.1's base is
     schnell), so the Images form can match it."""
     try:
+        # FLUX.3 last: an opaque path / base names no variant, and the family is the one thing that does.
+        family_key = getattr(family, "name", None) if is_flux3_family(family) else None
         steps, guidance = generation_params_with_grid(
-            grid, gguf_filename, content_variant_hint(repo_id, gguf_filename), repo_id, base_repo
+            grid,
+            gguf_filename,
+            content_variant_hint(repo_id, gguf_filename),
+            repo_id,
+            base_repo,
+            family_key,
         )
     except Exception:  # noqa: BLE001 - status must not fail on a recipe lookup
         return None
@@ -7675,6 +7683,7 @@ class DiffusionBackend:
                                             local_files_only = local_files_only,
                                             text_encoder = pipe_kwargs.get("text_encoder"),
                                             transformer = pipe_kwargs.get("transformer"),
+                                            family_name = fam.name,
                                         )
                                     finally:
                                         self._stop_load_prefetch()
@@ -7848,8 +7857,10 @@ class DiffusionBackend:
 
                             if is_flux3_family(fam):
                                 # The single file / GGUF is the denoiser; the modular companions come from the base.
+                                # From the staged dir when the prefetch resolved one, as every other assembly does: a plan
+                                # that found the companions under another cache root must not re-resolve them here.
                                 pipe = load_flux3_pipeline(
-                                    fetch_base,
+                                    _base_local_dir or fetch_base,
                                     dtype,
                                     hf_token = hf_token,
                                     check_cancelled = lambda: self._raise_if_load_cancelled(
@@ -7857,6 +7868,19 @@ class DiffusionBackend:
                                     ),
                                     transformer = transformer,
                                     local_files_only = local_files_only,
+                                    text_encoder = te_prequant_pipe_kwargs(
+                                        fam,
+                                        fetch_base,
+                                        te_quant_mode = text_encoder_quant,
+                                        target = target,
+                                        dtype = dtype,
+                                        hf_token = hf_token,
+                                        logger = logger,
+                                        local_files_only = local_files_only,
+                                        dense_source = _base_local_dir
+                                        or (fetch_base if local_files_only else None),
+                                    ).get("text_encoder"),
+                                    family_name = fam.name,
                                 )
                             elif fam.name == KREA2_FAMILY_NAME:
                                 pipe = load_krea2_pipeline(
@@ -9413,6 +9437,7 @@ class DiffusionBackend:
                 text_encoder = flux3_te,
                 check_cancelled = check_cancelled,
                 local_files_only = local_files_only,
+                family_name = getattr(fam, "name", None),
             )
             check_cancelled()
             pipe.to(device)
@@ -12241,7 +12266,11 @@ class DiffusionBackend:
             "transformer_cache_stats": static_skip_stats(state.pipe),
             "resolved": resolved,
             "generation_defaults": _generation_defaults_for(
-                state.repo_id, state.gguf_filename, state.base_repo, pipe_sample_sigmas(state.pipe)
+                state.repo_id,
+                state.gguf_filename,
+                state.base_repo,
+                pipe_sample_sigmas(state.pipe),
+                family = state.family,
             ),
             # Workflows the loaded family supports, so the UI can gate its tabs.
             "workflows": _family_workflows(state.family),

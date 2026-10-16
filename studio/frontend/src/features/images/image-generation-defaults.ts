@@ -21,10 +21,13 @@ const MODEL_DEFAULTS: Array<{
   { match: "flux.1-krea", steps: 20, guidance: 3.5 },
   { match: "flux.1", steps: 20, guidance: 3.5 },
   // FLUX.3 Image Klein (ComfyUI templates): base 25 steps at CFG 3.5, distilled 16 steps without CFG. Base first.
-  // Every alias the backend registers for the two families.
+  // Every alias the backend registers for the two families, and the canonical family names (an opaque path
+  // resolves through the explicit family).
+  { match: "flux.3-klein-base", steps: 25, guidance: 3.5 },
   { match: "flux-3-image-klein-base", steps: 25, guidance: 3.5 },
   { match: "flux3-image-klein-base", steps: 25, guidance: 3.5 },
   { match: "flux3-klein-base", steps: 25, guidance: 3.5 },
+  { match: "flux.3-klein", steps: 16, guidance: 1 },
   { match: "flux-3-image-klein", steps: 16, guidance: 1 },
   { match: "flux3-image-klein", steps: 16, guidance: 1 },
   { match: "flux3-klein", steps: 16, guidance: 1 },
