@@ -17,11 +17,15 @@ import {
   releaseDragOverlay,
 } from "@/components/ui/panel-drag-overlay";
 
+import {
+  clampSplitListWidth,
+  keyboardSplitWidth,
+  SPLIT_LIST_MIN_PX,
+  splitListMax,
+} from "../lib/split-width";
+
 const SPLIT_LIST_WIDTH_STORAGE_KEY = "unsloth.hub.splitListWidth";
-const LIST_MIN_PX = 340;
-const DETAIL_MIN_PX = 480;
 const DRAG_SLOP = 4;
-const RESIZE_STEP = 16;
 
 export const HUB_SPLIT_WIDTH_VAR = "--hub-split-list-width";
 // Re-clamped in CSS so a stored width stays valid when the window narrows.
@@ -33,7 +37,7 @@ function readStoredWidth(): number | null {
     const value = Number(
       window.localStorage.getItem(SPLIT_LIST_WIDTH_STORAGE_KEY),
     );
-    return Number.isFinite(value) && value >= LIST_MIN_PX ? value : null;
+    return Number.isFinite(value) && value >= SPLIT_LIST_MIN_PX ? value : null;
   } catch {
     return null;
   }
@@ -88,14 +92,15 @@ export function HubSplitDivider({
   } | null>(null);
   const frameRef = useRef(0);
   const pendingRef = useRef(0);
-  const [bounds, setBounds] = useState({ now: 0, max: 0 });
+  const [bounds, setBounds] = useState({ now: 0, max: 0, total: 0 });
 
   const limits = useCallback(() => {
     const pane = paneRef.current;
     const total = pane?.parentElement?.clientWidth ?? 0;
     return {
       now: pane?.getBoundingClientRect().width ?? 0,
-      max: Math.max(LIST_MIN_PX, total - DETAIL_MIN_PX),
+      max: splitListMax(total),
+      total,
     };
   }, [paneRef]);
 
@@ -119,7 +124,7 @@ export function HubSplitDivider({
   }, [paneRef, limits]);
 
   const clamp = useCallback(
-    (px: number) => Math.min(Math.max(px, LIST_MIN_PX), limits().max),
+    (px: number) => clampSplitListWidth(px, limits().total),
     [limits],
   );
 
@@ -177,7 +182,9 @@ export function HubSplitDivider({
     });
   };
 
-  const handlePointerUp = (event: PointerEvent<HTMLButtonElement>) => {
+  // Release, cancel and lost capture all commit what was painted, so the pane
+  // never keeps a width that state and storage do not hold.
+  const finishDrag = (event: PointerEvent<HTMLButtonElement>) => {
     const drag = dragRef.current;
     if (!drag) return;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
@@ -188,10 +195,11 @@ export function HubSplitDivider({
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
-    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    const { now, total } = limits();
+    const next = keyboardSplitWidth(now, event.key, total);
+    if (next !== null) {
       event.preventDefault();
-      const step = event.key === "ArrowRight" ? RESIZE_STEP : -RESIZE_STEP;
-      onWidthChange(clamp((width ?? limits().now) + step));
+      onWidthChange(next);
     } else if (event.key === "Home") {
       event.preventDefault();
       onWidthChange(null);
@@ -207,16 +215,14 @@ export function HubSplitDivider({
         aria-orientation="vertical"
         aria-label="Resize model list"
         aria-valuenow={Math.round(bounds.now)}
-        aria-valuemin={LIST_MIN_PX}
+        aria-valuemin={SPLIT_LIST_MIN_PX}
         aria-valuemax={Math.round(bounds.max)}
         title="Drag to resize, double-click to reset"
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={endDrag}
-        onLostPointerCapture={() => {
-          if (dragRef.current) endDrag();
-        }}
+        onPointerUp={finishDrag}
+        onPointerCancel={finishDrag}
+        onLostPointerCapture={finishDrag}
         onDoubleClick={() => onWidthChange(null)}
         onKeyDown={handleKeyDown}
         className={
