@@ -1331,6 +1331,23 @@ def _drop_the_settings_memo_between_tests():
 
 
 @pytest.fixture(autouse = True)
+def _drop_the_model_memory_memo_between_tests():
+    """The same 2 s clock for the Model Memory toggles (utils.model_memory_settings).
+
+    test_an_uncontended_read_still_caches reads keep_resident=True through a patched store and
+    leaves it memoized, so the next test on that worker inside the TTL sees "Keep model in GPU
+    memory" on: model_memory_owns_placement() turns true and the spill planner stands down.
+    """
+    settings = sys.modules.get("utils.model_memory_settings")
+    if settings is not None:
+        settings._cache.clear()
+    yield
+    settings = sys.modules.get("utils.model_memory_settings")
+    if settings is not None:
+        settings._cache.clear()
+
+
+@pytest.fixture(autouse = True)
 def _drop_the_idle_reload_stash_between_tests():
     """Stop one test's idle-unloaded model being resurrected by another test's request.
 
