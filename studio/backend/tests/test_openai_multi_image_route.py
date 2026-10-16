@@ -127,7 +127,7 @@ def test_what_cannot_be_served_is_answered_as_a_bad_request(
 def test_an_image_reaches_the_backend_in_a_mode_it_can_be_handed_over_in(
     monkeypatch, mode, container
 ):
-    """The first three reopen in a mode PNG cannot write and must convert."""
+    """All arrive as RGB; the first three reopen in a mode PNG cannot write."""
     part = _part(Image.new(mode, (16, 16)), container = container)
 
     delivered = _call(monkeypatch, [ChatMessage(role = "user", content = [part])]).calls[0]["image"]
