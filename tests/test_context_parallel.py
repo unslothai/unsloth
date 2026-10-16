@@ -562,6 +562,21 @@ def test_a_later_non_cp_trainer_drops_the_installed_mesh(monkeypatch):
     assert state.device_mesh is other
 
 
+def test_a_later_non_cp_trainer_restores_the_mesh_cp_replaced(monkeypatch):
+    import types
+
+    # An accepted FSDP2 ParallelismConfig came with its own mesh; CP swapped both.
+    prior, cp_mesh = object(), object()
+    monkeypatch.setattr(cp, "_INSTALLED_MESH", [cp_mesh, prior])
+    state = types.SimpleNamespace(device_mesh = cp_mesh)
+    args = types.SimpleNamespace(context_parallel_size = 1)
+    Trainer = _patched_trainer(
+        monkeypatch, args = args, accelerator = types.SimpleNamespace(state = state)
+    )
+    Trainer()
+    assert state.device_mesh is prior
+
+
 def test_every_attention_layer_must_be_the_llama_forward():
     from unsloth.models.llama import LlamaAttention_fast_forward
 

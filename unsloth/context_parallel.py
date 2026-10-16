@@ -442,13 +442,18 @@ def patch_sft_trainer() -> None:
         state = getattr(accelerator, "state", None)
         if manager is None:
             if _INSTALLED_MESH and getattr(state, "device_mesh", None) is _INSTALLED_MESH[0]:
-                state.device_mesh = None
+                # The mesh an accepted FSDP2 ParallelismConfig indexes, restored with that config.
+                state.device_mesh = _INSTALLED_MESH[1] if len(_INSTALLED_MESH) > 1 else None
+                _INSTALLED_MESH.clear()
             _restore_parallelism_config(state)
             return
         if accelerator is None:
             return
+        current = getattr(accelerator.state, "device_mesh", None)
+        if _INSTALLED_MESH and current is _INSTALLED_MESH[0]:
+            current = _INSTALLED_MESH[1] if len(_INSTALLED_MESH) > 1 else None
         accelerator.state.device_mesh = manager.device_mesh
-        _INSTALLED_MESH[:] = [manager.device_mesh]
+        _INSTALLED_MESH[:] = [manager.device_mesh, current]
         if getattr(manager, "fsdp2", False):
             _install_fsdp2_parallelism_config(accelerator.state, manager)
         else:
