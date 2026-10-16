@@ -415,8 +415,22 @@ def _note_once(trainer, message):
         print(message)
 
 
+def _padded_batches(trainer):
+    """True when the SFT collator pads rows: neither padding-free nor packing is on."""
+    args = getattr(trainer, "args", None)
+    return (
+        hasattr(args, "padding_free")
+        and not args.padding_free
+        and not getattr(args, "packing", False)
+    )
+
+
 def _balance_dataloader(trainer, dataloader):
     if _exactness_blocker(trainer) is not None:
+        return False
+    # A padded micro-batch costs rows x its longest row: equal token sums put a long row in every
+    # micro-batch, which adds padding without lowering the peak.
+    if _padded_batches(trainer):
         return False
     # accelerate's DataLoaderDispatcher deals successive inner batches to ranks behind a plain BatchSampler.
     if any(c.__name__ == "DataLoaderDispatcher" for c in type(dataloader).__mro__):
@@ -491,7 +505,10 @@ def install_token_budget(trainer):
             dataloader = original_get_train_dataloader(*args, **kwargs)
             trainer._unsloth_token_balance_active = _balance_dataloader(trainer, dataloader)
             if not trainer._unsloth_token_balance_active:
-                reason = _exactness_blocker(trainer) or "unsupported sampler or dataset"
+                reason = _exactness_blocker(trainer)
+                if reason is None and _padded_batches(trainer):
+                    reason = "batches are padded, so equal token sums would only add padding"
+                reason = reason or "unsupported sampler or dataset"
                 _note_once(trainer, f"Unsloth: UNSLOTH_TOKEN_BALANCE ignored: {reason}.")
             return dataloader
 

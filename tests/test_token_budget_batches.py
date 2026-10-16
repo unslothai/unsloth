@@ -684,3 +684,45 @@ def test_length_dependent_rope_steps_aside_for_split_and_balance(key, kind):
     assert kind in tb._exactness_blocker(trainer)
     trainer.model = SimpleNamespace(config = SimpleNamespace(**{key: {"rope_type": "llama3"}}))
     assert tb._exactness_blocker(trainer) is None
+
+
+def test_balance_steps_aside_for_padded_batches(monkeypatch, capsys):
+    # Padded rows: balancing token sums spreads the long rows over every micro-batch, so the
+    # padded token count grows while the longest micro-batch, and so the peak, stays the same.
+    datasets = pytest.importorskip("datasets")
+    monkeypatch.setenv("UNSLOTH_TOKEN_BALANCE", "1")
+    monkeypatch.delenv("UNSLOTH_TOKEN_BUDGET", raising = False)
+    rng = random.Random(0)
+    lengths = [rng.choice([8, 8, 8, 600]) for _ in range(64)]
+    dataset = datasets.Dataset.from_dict({"input_ids": [[1] * n for n in lengths]})
+    bs, ga = 2, 4
+
+    def padded_tokens(padding_free, packing = False):
+        sampler = torch.utils.data.SequentialSampler(dataset)
+        inner = torch.utils.data.BatchSampler(sampler, bs, drop_last = False)
+        loader = SimpleNamespace(batch_sampler = inner, dataset = dataset)
+        trainer = SimpleNamespace(
+            training_step = None,
+            get_train_dataloader = lambda: loader,
+            args = SimpleNamespace(
+                gradient_accumulation_steps = ga,
+                average_tokens_across_devices = True,
+                padding_free = padding_free,
+                packing = packing,
+            ),
+            model_accepts_loss_kwargs = True,
+        )
+        tb.install_token_budget(trainer)
+        trainer.get_train_dataloader()
+        return trainer._unsloth_token_balance_active, sum(
+            len(b) * max(lengths[i] for i in b) for b in inner
+        )
+
+    plain = sum(
+        len(lengths[s : s + bs]) * max(lengths[s : s + bs]) for s in range(0, len(lengths), bs)
+    )
+    active, tokens = padded_tokens(padding_free = False)
+    assert active is False and tokens == plain
+    assert "batches are padded" in capsys.readouterr().out
+    assert padded_tokens(padding_free = True)[0] is True
+    assert padded_tokens(padding_free = False, packing = True)[0] is True
