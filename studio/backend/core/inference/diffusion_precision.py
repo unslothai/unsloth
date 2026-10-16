@@ -111,7 +111,6 @@ def te_quant_picked_automatically(mode: Any) -> bool:
         return True
     try:
         from .diffusion_te_prequant import te_request_is_auto
-
         return te_request_is_auto()
     except Exception:  # noqa: BLE001
         return False
@@ -329,7 +328,11 @@ def _quantize_text_encoders(
             "hosted int8 ConvRot weight-only text encoder",
             RESOLVED_APPLIED,
         )
-    if mode == TE_QUANT_INT8 and hosted_int8 and _hosts_te_int8_for_all_but_small(family, hosted_int8, present):
+    if (
+        mode == TE_QUANT_INT8
+        and hosted_int8
+        and _hosts_te_int8_for_all_but_small(family, hosted_int8, present)
+    ):
         # FLUX.1's CLIP-L, HunyuanImage's ByT5: the hosted file covers the big encoder, and casting a sub-GB pooled /
         # glyph encoder in place would be a runtime-only conversion the file does not carry. Leave them bf16.
         dense = [a for a in present if a not in hosted_int8]
@@ -338,11 +341,15 @@ def _quantize_text_encoders(
             f"hosted int8 ConvRot weight-only {', '.join(hosted_int8)}; {', '.join(dense)} kept bf16",
             RESOLVED_APPLIED,
         )
-    if picked_automatically and not any(_hosted_te_scheme(getattr(pipe, a)) == mode for a in present):
+    if picked_automatically and not any(
+        _hosted_te_scheme(getattr(pipe, a)) == mode for a in present
+    ):
         # The automatic default is the measured hosted file and nothing else: a runtime cast (fp8, torchao int8) has a
         # dense bf16 peak and is not what was measured, so without the file the released bf16 encoder stays.
         label = "int8 ConvRot" if mode == TE_QUANT_INT8 else mode
-        _note(logger, f"automatic {label} text encoder not available; keeping the dense bf16 encoder")
+        _note(
+            logger, f"automatic {label} text encoder not available; keeping the dense bf16 encoder"
+        )
         return TEQuantOutcome(
             None,
             f"the hosted {label} text encoder is not available (not published yet, offline, or refused, see "
@@ -354,7 +361,11 @@ def _quantize_text_encoders(
     if mode == TE_QUANT_INT8:
         skip = _TE_INT8_SKIP.get((family or "").lower())
         pre_cast = [a for a in present if _hosted_te_scheme(getattr(pipe, a)) is not None]
-        if skip is not None and _family_hosts_te_int8(family) and (pre_cast or not torchao_quantize_importable()):
+        if (
+            skip is not None
+            and _family_hosts_te_int8(family)
+            and (pre_cast or not torchao_quantize_importable())
+        ):
             # The hosted int8 file did not engage. The on-the-fly torchao int8 (the path before the file existed) is
             # the fallback only over a dense encoder and with torchao present; otherwise fp8.
             skip = None
@@ -458,7 +469,9 @@ def _hosts_te_int8_for_all_but_small(family: Optional[str], hosted: list, presen
         from .diffusion_te_prequant import TE_INT8_CONVROT_FILES
 
         # HiDream's text_encoder_4 is assembled outside the attributes this pass walks.
-        listed = set(TE_INT8_CONVROT_FILES.get((family or "").strip().lower(), {})) & set(_TEXT_ENCODER_ATTRS)
+        listed = set(TE_INT8_CONVROT_FILES.get((family or "").strip().lower(), {})) & set(
+            _TEXT_ENCODER_ATTRS
+        )
     except Exception:  # noqa: BLE001
         return False
     return bool(listed) and listed <= set(hosted) and set(hosted) < set(present)

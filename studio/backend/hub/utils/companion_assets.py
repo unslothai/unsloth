@@ -169,7 +169,6 @@ def _te_prequant_names(repo_id: str) -> set[str]:
     try:
         from core.inference.diffusion_families import _FAMILIES
         from core.inference.diffusion_te_prequant import te_prequant_companion_names
-
         return te_prequant_companion_names(repo_id, _FAMILIES)
     except Exception as exc:  # noqa: BLE001 -- no table means no exclusions, as before
         logger.debug("te prequant names unavailable: %s", exc)

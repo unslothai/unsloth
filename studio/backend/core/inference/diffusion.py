@@ -6140,7 +6140,9 @@ class DiffusionBackend:
             from .diffusion_precision import te_quant_picked_automatically
             from .diffusion_te_prequant import te_prequant_sources_confirmed
 
-            if te_quant_picked_automatically(text_encoder_quant) and not te_prequant_sources_confirmed(sources):
+            if te_quant_picked_automatically(
+                text_encoder_quant
+            ) and not te_prequant_sources_confirmed(sources):
                 # An automatic pick without a confirmed file loads the dense encoder: no pre-cast saving to price.
                 return None
             total = 0
