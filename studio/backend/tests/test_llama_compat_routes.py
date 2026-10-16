@@ -1134,6 +1134,7 @@ def _no_local_gguf(monkeypatch):
 
     monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *a, **k: None)
     monkeypatch.setattr(resolver, "resolve_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "local_gguf_pinned_variant", lambda *a, **k: None)
     monkeypatch.setattr(overrides, "resolve_override_for_load", lambda *a, **k: (None, {}))
     monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *a, **k: True)
     return resolver
@@ -1378,6 +1379,33 @@ def test_management_unload_keeps_a_resident_of_another_quant(monkeypatch, _no_lo
         assert c.post("/models/unload", json = {"model": QWEN + ":Q8_0"}).status_code == 200
         assert c.post("/models/unload", json = {"model": QWEN + ":UD-Q4_K_XL"}).status_code == 200
     assert calls == [("unload", "/media/models/qwen/model.gguf")]
+
+
+def test_management_unload_keeps_a_resident_of_another_named_build(monkeypatch, _no_local_gguf):
+    build = QWEN + ":beta-Q4_K_M"
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **kwargs: (
+            "/media/models/qwen/model.gguf",
+            "beta-Q4_K_M",
+            QWEN,
+        ),
+    )
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "local_gguf_pinned_variant",
+        lambda requested, **kwargs: "beta-Q4_K_M" if requested == build else None,
+    )
+    backend = _Backend()
+    backend.hf_variant = "Q4_K_M"
+    pin = {"id": build, "object": "model", "loaded": False}
+    mod, calls = _management(backend = backend, catalog = CATALOG + [pin])
+
+    with _client(mod) as client:
+        assert client.post("/models/unload", json = {"model": build}).status_code == 200
+
+    assert calls == []
 
 
 def test_management_unload_of_a_bare_id_ignores_the_preferred_quant(monkeypatch, _no_local_gguf):

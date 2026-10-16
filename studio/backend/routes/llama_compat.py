@@ -369,7 +369,10 @@ async def _unload_target(model_id: str, row: dict, pinned: bool) -> Optional[str
     # Only a quant the caller named: a bare id resolves to the preferred quant, not the resident one.
     # The resolver's spelling of it, which maps a legacy label (BF16) onto the current quant.
     wanted_variant = None
-    if suffix and looks_like_quant(suffix):
+    if suffix:
+        from core.inference.local_model_resolver import local_gguf_pinned_variant
+        wanted_variant = local_gguf_pinned_variant(model_id, allow_scan = False)
+    if wanted_variant is None and suffix and looks_like_quant(suffix):
         wanted_variant = (resolved[1] if resolved else None) or suffix
 
     llama = inf.get_llama_cpp_backend()
