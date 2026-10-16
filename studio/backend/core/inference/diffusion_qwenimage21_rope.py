@@ -24,7 +24,9 @@ _MODULE = "diffusers.models.transformers.transformer_qwenimage21"
 
 _FINGERPRINTS: dict[str, frozenset] = {
     "apply_rotary_emb_qwen": frozenset({"ba81dd3fc907c23a"}),
-    "_qwenimage21_prepare_qkv": frozenset({"574bacc8f355456d"}),
+    # 0.41.0 splits heads by ``attn.heads``; main d42ebf9c by ``attn.inner_dim // attn.heads`` (tensor parallel),
+    # the same split whenever the projections hold every head, which is all Studio runs.
+    "_qwenimage21_prepare_qkv": frozenset({"574bacc8f355456d", "4c3830595aef56a0"}),
 }
 
 _LOCK = threading.Lock()
