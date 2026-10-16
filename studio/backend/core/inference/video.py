@@ -1634,7 +1634,11 @@ def _video_cached_completeness(repo_id: str) -> int:
         best = -1
         for rev in _cached_revisions(Path(hub_cache_dir()), repo_id):
             index = next(
-                (rev / n for n in ("model_index.json", "modular_model_index.json") if (rev / n).is_file()),
+                (
+                    rev / n
+                    for n in ("model_index.json", "modular_model_index.json")
+                    if (rev / n).is_file()
+                ),
                 None,
             )
             if index is None:
@@ -1654,7 +1658,9 @@ def _video_cached_completeness(repo_id: str) -> int:
                     continue
                 complete = True
                 for shard_index in folder.glob("*.index.json"):
-                    weight_map = json.loads(shard_index.read_text(encoding = "utf-8")).get("weight_map") or {}
+                    weight_map = (
+                        json.loads(shard_index.read_text(encoding = "utf-8")).get("weight_map") or {}
+                    )
                     if not all((folder / name).is_file() for name in set(weight_map.values())):
                         complete = False
                         break
@@ -5798,18 +5804,16 @@ class VideoBackend:
             if base and not Path(base).expanduser().exists():
                 info = api.model_info(_video_listing_repo(base), files_metadata = True)
                 base_files = self._base_download_files(
-                        info,
-                        kind,
-                        ltx23 = ltx23,
-                        skip_te_components = skip_te_components,
-                        skip_transformer_weights = skip_transformer_weights,
-                        skip_transformer_components = skip_transformer_components,
-                        h3_task = h3_task,
-                        ltx25_dev = ltx25_dev,
-                        ltx25_shards = self._ltx25_plan_shards(
-                            info, _video_listing_repo(base), hf_token
-                        ),
-                    )
+                    info,
+                    kind,
+                    ltx23 = ltx23,
+                    skip_te_components = skip_te_components,
+                    skip_transformer_weights = skip_transformer_weights,
+                    skip_transformer_components = skip_transformer_components,
+                    h3_task = h3_task,
+                    ltx25_dev = ltx25_dev,
+                    ltx25_shards = self._ltx25_plan_shards(info, _video_listing_repo(base), hf_token),
+                )
                 total += sum(size for _, size in base_files)
                 planned.setdefault(_video_fetch_key(base), set()).update(
                     name for name, _ in base_files
@@ -6564,7 +6568,11 @@ class VideoBackend:
             if isinstance(recorded, dict):
                 recorded[_video_fetch_key(logical)] = fetched
 
-    def _cache_bytes(self, repo_id: Optional[str], files: Optional[frozenset[str]] = None) -> int:
+    def _cache_bytes(
+        self,
+        repo_id: Optional[str],
+        files: Optional[frozenset[str]] = None,
+    ) -> int:
         """Bytes of ``repo_id`` currently in the HF blob cache (progress polling).
 
         ``files`` narrows it to the planned names (their snapshot entries, any revision) plus the in-flight
@@ -6587,7 +6595,9 @@ class VideoBackend:
                 seen: set[str] = set()
                 total = 0
                 snapshots = folder / "snapshots"
-                revisions = [p for p in snapshots.iterdir() if p.is_dir()] if snapshots.is_dir() else []
+                revisions = (
+                    [p for p in snapshots.iterdir() if p.is_dir()] if snapshots.is_dir() else []
+                )
                 for name in files:
                     for rev in revisions:
                         entry = rev / name
