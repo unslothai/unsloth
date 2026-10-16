@@ -25,6 +25,7 @@ from models.inference import _InferenceRuntimeFields
 import routes.inference as inference_route
 
 from .llama_backend_double import FakeLlamaCppBackend
+from llama_cpp_source import class_source
 
 
 def test_status_runtime_fields_survive_a_double_that_answers_none():
@@ -63,7 +64,7 @@ def test_the_double_claims_nothing_the_real_backend_lacks():
     # Attributes set in __init__ are not on the class, so check the source too.
     import inspect
 
-    source = inspect.getsource(LlamaCppBackend)
+    source = class_source(LlamaCppBackend)
     missing = sorted(
         name
         for name in declared

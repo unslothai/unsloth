@@ -53,6 +53,7 @@ from core.inference.llama_cpp import (  # noqa: E402
     _FIT_MIN_CTX,
     LlamaCppBackend,
 )
+from llama_cpp_source import class_source
 
 Accelerator = _matrix.Accelerator
 MIB = _matrix.MIB
@@ -237,7 +238,7 @@ def test_the_projector_residency_floor_is_the_fit_floor_and_not_the_offload_cont
     the mistake this test exists to catch and holds whatever the two numbers are.
     """
     assert LlamaCppBackend._MMPROJ_FIT_FLOOR_CTX == _FIT_MIN_CTX
-    source = inspect.getsource(LlamaCppBackend)
+    source = class_source(LlamaCppBackend)
     assignment = re.search(r"^\s*_MMPROJ_FIT_FLOOR_CTX\s*=\s*(.+)$", source, re.MULTILINE)
     assert assignment, "_MMPROJ_FIT_FLOOR_CTX is no longer a class attribute of the backend"
     assert "_AUTO_OFFLOAD_CTX" not in assignment.group(1), (

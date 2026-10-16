@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from llama_cpp_source import package_source
 
 _STUBBED = {}
 
@@ -2340,12 +2341,12 @@ def test_the_local_loops_detach_the_note_for_a_multi_result_batch():
         "                        if _batch_results != 1\n"
         "                        else MCP_IMAGE_TURN_TEXT,"
     )
-    assert rule in inspect.getsource(llama_cpp)
+    assert rule in package_source()
     assert rule.replace(
         "\n                        ", "\n                    "
     ) in inspect.getsource(safetensors_agentic)
     for module in (llama_cpp, safetensors_agentic):
-        body = inspect.getsource(module)
+        body = package_source() if module is llama_cpp else inspect.getsource(module)
         assert "batch_conversation_start = len(conversation)" in body
         assert "for m in conversation[batch_conversation_start:]" in body
 
@@ -2414,8 +2415,7 @@ def test_live_image_extraction_is_gated_on_the_target_reading_them():
         in inspect.getsource(studio_tool_loop)
     )
     assert (
-        'if mcp_images_mentioned_in(completion.result or "") and self.is_vision'
-        in inspect.getsource(llama_cpp)
+        'if mcp_images_mentioned_in(completion.result or "") and self.is_vision' in package_source()
     )
     assert "completion.mcp_images() if images_sink is not None else []" in inspect.getsource(
         safetensors_agentic

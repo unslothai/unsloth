@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from utils import process_lifetime, torch_device_probe
+from llama_cpp_source import package_tree
 
 
 # A child that dies of SIGSEGV is still handed to the host's core_pattern handler
@@ -298,8 +299,7 @@ def test_the_abort_status_is_read_as_a_crash_only_on_windows(monkeypatch):
 
 def test_the_abort_status_matches_the_one_llama_cpp_already_uses():
     # Same CRT convention, two readers; a divergence here would be silent.
-    source = Path(torch_device_probe.__file__).parents[1] / "core" / "inference" / "llama_cpp.py"
-    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    tree = package_tree()
     (function,) = [
         node
         for node in ast.walk(tree)

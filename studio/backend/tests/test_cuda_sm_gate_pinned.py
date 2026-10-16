@@ -17,6 +17,7 @@ import types
 import pytest
 
 from core.inference.llama_cpp import LlamaCppBackend
+from llama_cpp_source import package_source
 
 _CAPS = {0: 89, 1: 61}
 
@@ -122,9 +123,7 @@ def test_the_launch_gate_receives_the_pinned_ids():
     import re
     from pathlib import Path
 
-    import core.inference.llama_cpp as mod
-
-    src = Path(mod.__file__).read_text(encoding = "utf-8")
+    src = package_source()
     # Only ids in nvidia-smi's index space are checked against its caps (torch-fallback
     # ordinals are not), and a companion-widened mask is checked again.
     assert re.search(r"_sm_gate_ids_are_pci = not is_vulkan_backend and _p2p_ids_are_pci", src)

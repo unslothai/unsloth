@@ -9,6 +9,7 @@ build. The installers stopped trusting that misread in #10985; this is the runti
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import sys
@@ -22,7 +23,7 @@ from core.inference.llama_cpp import LlamaCppBackend
 from core.rag import embed_llama_server as embed_mod
 
 # Captured before the autouse fixture stubs it, for the one test that exercises the real finder.
-_REAL_FINDER = LlamaCppBackend.__dict__["_find_llama_server_binary"]
+_REAL_FINDER = inspect.getattr_static(LlamaCppBackend, "_find_llama_server_binary")
 
 
 def _payload(rows, source = "nvml"):
@@ -518,7 +519,12 @@ class TestAGpuCapableBuildIsPreferred:
         )
         monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", _REAL_FINDER)
         monkeypatch.setattr(mod.sys, "platform", "linux")
-        monkeypatch.setattr(mod, "__file__", str(tmp_path / "s" / "b" / "c" / "i" / "llama_cpp.py"))
+        # The finder derives the legacy tree from its own module's __file__, five directories up.
+        monkeypatch.setattr(
+            sys.modules[_REAL_FINDER.__func__.__module__],
+            "__file__",
+            str(tmp_path / "s" / "b" / "c" / "i" / "l" / "backend_binary.py"),
+        )
         for var in (
             "LLAMA_SERVER_PATH",
             "UNSLOTH_LLAMA_CPP_PATH",

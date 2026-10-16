@@ -24,6 +24,7 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from utils import debug_log_sources  # noqa: E402
+from llama_cpp_source import module_relative_paths
 
 _STUDIO = Path(__file__).resolve().parents[2]
 _MAIN_RS = _STUDIO / "src-tauri" / "src" / "main.rs"
@@ -57,7 +58,7 @@ def _python_retention_sources() -> str:
     """Every Python file that could plausibly prune a log directory."""
     backend = Path(_BACKEND_DIR)
     parts = []
-    for relative in ("run.py", "utils/log_retention.py", "core/inference/llama_cpp.py"):
+    for relative in ("run.py", "utils/log_retention.py", *module_relative_paths()):
         path = backend / relative
         if path.is_file():
             parts.append(path.read_text(encoding = "utf-8", errors = "replace"))

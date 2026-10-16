@@ -21,6 +21,7 @@ from core.inference.checkpoint import (
     render_checkpoint,
 )
 from core.inference.context_window import estimate_message_tokens
+from llama_cpp_source import module_source
 
 INSTRUCTION = (
     "Standing instruction for the rest of this task: always report results as a markdown "
@@ -1173,7 +1174,9 @@ def test_the_final_answer_pass_never_starts_an_epoch_behind_the_tools_it_does_no
 
     from core.inference import llama_cpp
 
-    source = inspect.getsource(llama_cpp)
+    # The final pass and everything after it in the loop module: the old check scanned from the
+    # marker to the end of the one file.
+    source = module_source("backend_tool_loop")
     final_pass = source[source.index("# Final streaming pass with the full conversation") :]
 
     assert (

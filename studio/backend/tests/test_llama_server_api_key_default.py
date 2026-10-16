@@ -17,6 +17,7 @@ if str(BACKEND) not in sys.path:
 
 from core.inference import llama_cpp  # noqa: E402
 from core.inference import llama_stats  # noqa: E402
+from llama_cpp_source import package_source
 
 
 @pytest.mark.parametrize(
@@ -93,7 +94,7 @@ def test_key_goes_through_env_only_where_windows_cannot_open_the_file(
 
 
 def test_launch_sets_the_env_key_after_the_inherited_one_is_scrubbed():
-    src = Path(llama_cpp.__file__).read_text(encoding = "utf-8")
+    src = package_source()
     assert src.index("_denied_scrubbed = scrub_denied_env(env)") < src.index("env.update(_key_env)")
 
 
@@ -141,7 +142,7 @@ def test_stats_scrape_sends_the_key(monkeypatch):
 
 
 def test_capability_probe_reports_api_key_file_and_fails_open():
-    src = Path(llama_cpp.__file__).read_text(encoding = "utf-8")
+    src = package_source()
     assert '"supports_api_key_file": True' in src
     assert 'supports_api_key_file = _is_real("--api-key-file")' in src
     assert 'server_caps.get("supports_api_key_file", True)' in src

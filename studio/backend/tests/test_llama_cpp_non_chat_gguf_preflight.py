@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from core.inference.llama_cpp import LlamaCppBackend
+from llama_cpp_source import package_tree
 
 GGUF_MAGIC = 0x46554747
 
@@ -422,16 +423,15 @@ def test_every_name_the_video_preflight_imports_from_routes_still_resolves():
 
     import routes.models as models_route
 
-    source = pathlib.Path(__file__).resolve().parents[1] / "core" / "inference" / "llama_cpp.py"
     wanted: set[str] = set()
-    for node in ast.walk(ast.parse(source.read_text(encoding = "utf-8"))):
+    for node in ast.walk(package_tree()):
         if isinstance(node, ast.ImportFrom) and node.module == "routes.models":
             wanted.update(alias.name for alias in node.names)
 
-    assert wanted, "llama_cpp.py no longer imports from routes.models; drop this test"
+    assert wanted, "llama_cpp no longer imports from routes.models; drop this test"
     missing = sorted(name for name in wanted if not hasattr(models_route, name))
     assert not missing, (
-        f"core/inference/llama_cpp.py imports {missing} from routes.models, but routes.models "
+        f"core/inference/llama_cpp imports {missing} from routes.models, but routes.models "
         f"does not bind them. The probe's broad except turns that into a silent fail-open."
     )
 

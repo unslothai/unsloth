@@ -20,6 +20,7 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 from models.training import DrafterTrainingConfig, TrainingStartRequest  # noqa: E402
+from llama_cpp_source import package_source
 
 BASE = dict(model_name = "x", format_type = "auto", hf_dataset = "a/b", training_type = "LoRA/QLoRA")
 
@@ -1021,7 +1022,7 @@ def test_probe_child_gets_exactly_the_callers_token(monkeypatch):
 
 
 def test_a_failed_eagle3_launch_retries_without_the_drafter():
-    src = _source("core/inference/llama_cpp.py")
+    src = package_source()
     assert (
         '_spec_requested_eagle3 = any("draft-eagle3" in str(t).lower() for t in spec_flags)' in src
     )

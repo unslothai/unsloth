@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, mock_open, patch, PropertyMock
 
 import pytest
 from unsloth_pwsh_runner import run_pwsh
+from llama_cpp_source import package_source
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
@@ -7338,9 +7339,6 @@ def test_pick_rocm_gfx_target_same_arch_multi_gpu(monkeypatch):
 # TEST: WSL ROCDXG fixes -- drop-in persistence + system-HIP-before-bundle
 
 
-_LLAMA_CPP_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
-
-
 class TestWslSystemRocmLibDirs:
     """_wsl_system_rocm_lib_dirs: no-op off a ROCDXG WSL host; else returns the system ROCm lib dir for binary_env."""
 
@@ -7507,11 +7505,11 @@ class TestLlamaCppRuntimeWslOrdering:
     """The serve-time launcher mirrors binary_env: system HIP before the bundle dir on WSL."""
 
     def test_has_wsl_helper(self):
-        source = _LLAMA_CPP_PATH.read_text(encoding = "utf-8")
+        source = package_source()
         assert "_wsl_system_rocm_lib_dirs" in source
 
     def test_prepends_before_binary_dir(self):
-        source = _LLAMA_CPP_PATH.read_text(encoding = "utf-8")
+        source = package_source()
         idx_helper = source.find("lib_dirs.extend(_wsl_system_rocm_lib_dirs())")
         idx_binary = source.find("lib_dirs.append(binary_dir)")
         assert idx_helper != -1 and idx_binary != -1

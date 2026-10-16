@@ -18,6 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
+from llama_cpp_source import package_tree
 
 _GB = 1024**3
 _advice = LlamaCppBackend._igpu_carveout_advice
@@ -546,8 +547,7 @@ class TestEveryCallSitePricesThePlacementItRuns:
 
     @staticmethod
     def _calls():
-        source = Path(sys.modules[LlamaCppBackend.__module__].__file__)
-        tree = ast.parse(source.read_text(encoding = "utf-8"))
+        tree = package_tree()
         return [
             node
             for node in ast.walk(tree)
@@ -817,8 +817,7 @@ class TestTheAdvisoryCannotReachTheLaunch:
 
     @staticmethod
     def _module_tree():
-        source = Path(sys.modules[LlamaCppBackend.__module__].__file__)
-        return ast.parse(source.read_text(encoding = "utf-8"))
+        return package_tree()
 
     @staticmethod
     def _recorder(tree):

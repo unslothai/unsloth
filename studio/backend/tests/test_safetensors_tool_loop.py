@@ -5197,7 +5197,10 @@ def test_both_tool_loops_say_they_are_waiting_for_approval():
     import os
 
     backend = os.path.join(os.path.dirname(__file__), "..")
-    for name in ("core/inference/safetensors_agentic.py", "core/inference/llama_cpp.py"):
+    for name in (
+        "core/inference/safetensors_agentic.py",
+        "core/inference/llama_cpp/backend_tool_loop.py",
+    ):
         with open(os.path.join(backend, name), encoding = "utf-8") as f:
             tree = ast.parse(f.read())
         calls = [

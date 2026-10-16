@@ -4,17 +4,10 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from llama_cpp_source import package_source
 
 
-SOURCE_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "studio"
-    / "backend"
-    / "core"
-    / "inference"
-    / "llama_cpp.py"
-)
-SRC = SOURCE_PATH.read_text(encoding = "utf-8")
+SRC = package_source()
 TREE = ast.parse(SRC)
 
 

@@ -17,6 +17,7 @@ network, subprocess, or GGUF I/O. Cross-platform.
 
 from __future__ import annotations
 
+import inspect
 import sys
 import types as _types
 from pathlib import Path
@@ -874,7 +875,9 @@ class TestAppleUnifiedMemoryBudget:
 
 
 # Unpatched: conftest pins the probe to 0.
-_REAL_WIRED_CEILING = LlamaCppBackend.__dict__["_apple_metal_wired_ceiling_bytes"].__func__
+_REAL_WIRED_CEILING = inspect.getattr_static(
+    LlamaCppBackend, "_apple_metal_wired_ceiling_bytes"
+).__func__
 
 
 def _install_wired_probes(monkeypatch, *, sysctl_mb, working_set, in_use):

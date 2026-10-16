@@ -548,7 +548,7 @@ def test_only_the_images_and_video_paths_opt_in():
     sites.pop("utils/hf_xet_fallback.py", None)
     assert set(sites) == OPT_IN_MODULES
     assert all(v == "True" for values in sites.values() for v in values)
-    assert "core/inference/llama_cpp.py" not in sites
+    assert not any(site.startswith("core/inference/llama_cpp/") for site in sites)
 
 
 def test_a_chat_gguf_download_never_reaches_the_delta(tmp_path, monkeypatch):

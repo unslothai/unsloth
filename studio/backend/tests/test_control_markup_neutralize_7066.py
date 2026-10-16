@@ -40,6 +40,7 @@ from core.inference.chat_template_helpers import (
     sweep_cache,
     model_markup,
 )
+from llama_cpp_source import package_source
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -2945,9 +2946,7 @@ def test_gguf_execution_gate_is_built_from_the_sanitized_catalog():
     """A tool dropped for unsafe markup is absent from the prompt, so it must be absent
     from what we are willing to EXECUTE: otherwise the model can still name it and the
     raw gate lets the call through (#7066)."""
-    source = (_REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py").read_text(
-        encoding = "utf-8"
-    )
+    source = package_source()
     gate = source.index("_enabled_tool_names = {")
     sweep = source.index(
         "neutralize_tool_descriptions(\n                active_tools, _markup_cache, self.markup_profile\n            )"
@@ -3002,7 +3001,7 @@ _INFERENCE_DIR = _REPO_ROOT / "studio" / "backend" / "core" / "inference"
 
 # The local tool loops. Each builds the controller prepare_call authorizes against, so each
 # has to hand it a catalog that traces back to the sweep.
-_CONTROLLER_MODULES = ("llama_cpp.py", "safetensors_agentic.py")
+_CONTROLLER_MODULES = ("llama_cpp/backend_tool_loop.py", "safetensors_agentic.py")
 
 # The third loop, named rather than forgotten. `studio_tool_loop.py` drives an EXTERNAL
 # provider and builds its controller from `policy.tools`, the request catalog as selected.

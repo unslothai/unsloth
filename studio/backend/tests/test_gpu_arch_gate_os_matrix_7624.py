@@ -44,6 +44,7 @@ from core.inference.llama_cpp import (
     LlamaCppBackend,
 )
 from utils.hardware import hardware as hw
+from llama_cpp_source import package_source
 
 MiB = 1024 * 1024
 GIB = 1024**3
@@ -2834,18 +2835,14 @@ class TestTheForcedCpuFlagIsNotSticky:
     def test_the_diffusion_state_path_clears_it(self):
         """A diffusion runner does hold VRAM, and its state block already resets
         the sibling chat fields for exactly this reason."""
-        source = (
-            Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
-        ).read_text(encoding = "utf-8")
+        source = package_source()
         block = source.split("Diffusion is never tensor-parallel")[1].split("def ")[0]
         assert "self._arch_gate_forced_cpu = False" in block
 
     def test_the_flag_is_published_not_only_set(self):
         """Source-level, because the miss was structural: a branch that only
         assigns True can never clear a previous launch's value."""
-        source = (
-            Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
-        ).read_text(encoding = "utf-8")
+        source = package_source()
         assert "self._arch_gate_forced_cpu = bool(_arch_gate_forced_cpu)" in source
         assert "self._arch_gate_forced_cpu = True" not in source
 

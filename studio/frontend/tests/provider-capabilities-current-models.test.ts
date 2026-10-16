@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readLlamaCppPackage } from "./helpers/backend-llama-cpp-source.ts";
 
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
@@ -212,10 +213,7 @@ test("the effort scale matches the backend's _REASONING_EFFORT_SCALE", () => {
     path.join(here, "../src/features/chat/model-catalog.ts"),
     "utf8",
   );
-  const backend = readFileSync(
-    path.join(here, "../../backend/core/inference/llama_cpp.py"),
-    "utf8",
-  );
+  const backend = readLlamaCppPackage();
   const frontendScale = frontend
     .match(/const REASONING_EFFORT_SCALE = \[([\s\S]*?)\] as const/)?.[1]
     .match(/"([a-z]+)"/g)

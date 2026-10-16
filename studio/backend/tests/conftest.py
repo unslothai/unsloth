@@ -24,6 +24,13 @@ for _up in _iso.parents:
         _spec = _ilu.spec_from_file_location("_unsloth_compile_cache_isolation", _candidate)
         _mod = _ilu.module_from_spec(_spec)
         _spec.loader.exec_module(_mod)  # sets the env vars on import
+        # The same directory holds helpers shared with the repo-level tests, such as
+        # llama_cpp_source, which both suites import by bare name. Appended, so nothing
+        # here shadows a backend module.
+        import sys as _sys  # noqa: E402
+
+        if str(_candidate.parent) not in _sys.path:
+            _sys.path.append(str(_candidate.parent))
         break
 # -----------------------------------------------------------------------------------
 

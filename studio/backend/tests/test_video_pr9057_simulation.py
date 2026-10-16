@@ -31,6 +31,7 @@ from routes.inference import (  # noqa: E402
     _inject_video_part,
     _video_b64_rejection,
 )
+from llama_cpp_source import package_source
 
 LIMIT = 64 * 1024 * 1024
 
@@ -166,10 +167,7 @@ def test_an_unreachable_props_leaves_the_capability_off_rather_than_guessing():
 
 
 def _llama_cpp_source() -> str:
-    from pathlib import Path
-    return (
-        Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
-    ).read_text(encoding = "utf-8")
+    return package_source()
 
 
 def test_the_load_path_and_the_unload_path_both_clear_the_capability():

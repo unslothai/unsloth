@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from auth.authentication import get_current_subject
 from core.inference import os_sandbox, sandbox_probe
 from state import tool_policy
+from llama_cpp_source import package_source
 
 MODES = ("ask", "auto", "off", "full")
 TOOLS = ("python", "terminal", "web_search", "edit_file")
@@ -649,7 +650,7 @@ def test_every_loop_launches_strictly_through_the_mode_parameter():
 
     from core.inference import llama_cpp, safetensors_agentic, studio_tool_loop
     for module in (studio_tool_loop, llama_cpp, safetensors_agentic):
-        source = inspect.getsource(module)
+        source = package_source() if module is llama_cpp else inspect.getsource(module)
         assert "requires_os_isolation(" in source, module.__name__
         assert 'kwargs["tool_execution_mode"] = "required"' in source, module.__name__
 

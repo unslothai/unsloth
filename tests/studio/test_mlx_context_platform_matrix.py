@@ -29,6 +29,7 @@ from core.inference.inference import runtime_context_length  # noqa: E402
 from core.inference.mlx_inference import MLXInferenceBackend  # noqa: E402
 from core.inference.orchestrator import _mirrored_model_entry  # noqa: E402
 import routes.inference as routes_inference  # noqa: E402
+from llama_cpp_source import package_source
 
 WORKER_SOURCE = (STUDIO_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
 HARDWARE_PACKAGE = STUDIO_BACKEND / "utils" / "hardware"
@@ -388,7 +389,7 @@ def test_wsl_is_indistinguishable_from_linux_in_the_detector():
             )
     assert "Microsoft" in _code_without_comments(HARDWARE_PACKAGE / "hardware.py")
     assert "_WINDOWS_DIRECTX_KEY" in (HARDWARE_PACKAGE / "hardware.py").read_text(encoding = "utf-8")
-    llama_cpp = (STUDIO_BACKEND / "core" / "inference" / "llama_cpp.py").read_text(encoding = "utf-8")
+    llama_cpp = package_source()
     assert "_wsl_system_rocm_lib_dirs" in llama_cpp
 
 

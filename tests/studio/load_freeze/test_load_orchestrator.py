@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from llama_cpp_source import package_source
 
 
 def _find_repo_root() -> Path | None:
@@ -531,8 +532,7 @@ def test_100_concurrent_healths_during_slow_probe_all_responsive():
 def test_load_model_caches_audio_type_inside_serial_load_lock():
     """Audio-type detection must run inside load_model under _serial_load_lock,
     else a concurrent /load can replace the backend mid-probe (review on #5669)."""
-    f = _REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
-    text = f.read_text(encoding = "utf-8")
+    text = package_source()
     assert (
         "with self._serial_load_lock" in text
     ), "LlamaCppBackend.load_model must hold self._serial_load_lock"

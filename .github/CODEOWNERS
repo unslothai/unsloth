@@ -122,7 +122,7 @@
 # Inference engines: loading, compiling and serving models.
 /studio/backend/core/ @danielhanchen
 /studio/backend/core/inference/ @danielhanchen
-/studio/backend/core/inference/llama_cpp.py @danielhanchen
+/studio/backend/core/inference/llama_cpp/ @danielhanchen
 /studio/backend/core/inference/sd_cpp_*.py @danielhanchen
 /studio/backend/core/inference/diffusion*.py @danielhanchen
 /studio/backend/core/inference/image_gallery.py @danielhanchen

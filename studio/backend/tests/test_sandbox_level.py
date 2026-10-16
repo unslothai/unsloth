@@ -33,6 +33,7 @@ from models.inference import (
     ChatCountTokensRequest,
 )
 from state import tool_policy
+from llama_cpp_source import package_source
 
 MODES = ("ask", "auto", "off", "full")
 LEVELS = ("high", "low")
@@ -496,7 +497,7 @@ def test_every_decision_in_the_gguf_loop_reads_the_level():
 def test_every_loop_launches_low_through_the_mode_parameter():
     from core.inference import llama_cpp, safetensors_agentic, studio_tool_loop
     for module in (studio_tool_loop, llama_cpp, safetensors_agentic):
-        source = inspect.getsource(module)
+        source = package_source() if module is llama_cpp else inspect.getsource(module)
         assert 'kwargs["tool_execution_mode"] = "software"' in source, module.__name__
         assert "runs_without_os_sandbox(" in source, module.__name__
 

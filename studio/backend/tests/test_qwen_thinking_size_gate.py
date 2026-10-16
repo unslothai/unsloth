@@ -13,8 +13,9 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from llama_cpp_source import PACKAGE_DIR
 
-_SRC = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
+_SRC = PACKAGE_DIR / "backend_load.py"
 _START = 'mid = (model_identifier or "").lower()'
 _END = "thinking_default = False"
 

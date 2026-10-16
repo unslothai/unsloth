@@ -36,6 +36,7 @@ import httpx  # noqa: E402
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 from core.inference.llama_cpp import GgufLoadIntent
+from llama_cpp_source import class_tree, package_source
 
 # Sibling tests install lightweight httpx stubs, so when collected together our `httpx`
 # may be a stub lacking `get`. Fill in the gaps so collection order does not matter.
@@ -658,9 +659,7 @@ class TestRetryLogFilenameUnique:
     frozen time.time -> single file, crash evidence gone)."""
 
     def test_log_name_includes_attempt_index(self):
-        src = (
-            Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
-        ).read_text(encoding = "utf-8")
+        src = package_source()
         assert "-try{_spawn_attempt}.log" in src
 
 
@@ -1577,7 +1576,7 @@ def test_the_lock_order_is_teardown_then_spawn():
     import ast
     import inspect
 
-    tree = ast.parse(inspect.getsource(LlamaCppBackend))
+    tree = class_tree(LlamaCppBackend)
     inversions = []
     for node in ast.walk(tree):
         if isinstance(node, ast.With) and any(

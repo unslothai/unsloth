@@ -29,6 +29,7 @@ resolve_effective_memory_state = _lsa.resolve_effective_memory_state
 scrub_memory_env = _lsa.scrub_memory_env
 
 import utils.model_memory_settings as mm_settings  # noqa: E402
+from llama_cpp_source import package_tree
 
 strip_shadowing_flags = _lsa.strip_shadowing_flags
 
@@ -1566,9 +1567,7 @@ class TestTheRetryCanReadTheGate:
     @staticmethod
     def _load_model_ast():
         import ast
-
-        src = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
-        for node in ast.walk(ast.parse(src.read_text(encoding = "utf-8"))):
+        for node in ast.walk(package_tree()):
             if isinstance(node, ast.FunctionDef) and node.name == "load_model":
                 return node
         raise AssertionError("load_model not found")
@@ -2396,7 +2395,6 @@ class TestNoDeadMemoryBookkeeping:
         import ast
 
         backend = Path(__file__).resolve().parent.parent
-        target = backend / "core" / "inference" / "llama_cpp.py"
 
         def attrs(tree, ctx):
             return {
@@ -2407,7 +2405,7 @@ class TestNoDeadMemoryBookkeeping:
 
         written = {
             a
-            for a in attrs(ast.parse(target.read_text(encoding = "utf-8")), ast.Store)
+            for a in attrs(package_tree(), ast.Store)
             if a.startswith("_memory_") or a.endswith("_mlock_enabled")
         }
         assert written, "no markers found; the scan is looking in the wrong place"

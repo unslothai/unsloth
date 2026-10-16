@@ -54,6 +54,7 @@ from core.inference.llama_cpp import (  # noqa: E402
     GgufLoadIntent,
     LlamaCppBackend,
 )
+from llama_cpp_source import package_source
 
 _floor = LlamaCppBackend._metal_zero_ctx_floor
 _drops = LlamaCppBackend._metal_drops_zero_ctx_override
@@ -230,7 +231,7 @@ def test_every_caller_of_the_floor_states_whether_the_fitter_runs():
     claim about what callers pass, with nothing checking that they do. So the claim is
     checked here instead of asserted in prose.
     """
-    source = Path(inspect.getfile(LlamaCppBackend)).read_text(encoding = "utf-8")
+    source = package_source()
     calls = [m for m in re.finditer(r"self\._metal_zero_ctx_floor\(", source)]
     assert calls, "the floor is no longer called from the backend; this guard is stale"
     for match in calls:

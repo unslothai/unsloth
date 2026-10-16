@@ -12,11 +12,15 @@ from unittest.mock import patch
 
 import pytest
 
+from llama_cpp_source import package_source
+
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 
 _PREBUILT_PATH = PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
-_LLAMA_CPP_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
+_LLAMA_CPP_PATH = (
+    PACKAGE_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp" / "binary_runtime.py"
+)
 
 _HELPERS = ("_bundled_hip_present", "_native_linux_system_rocm_lib_dirs")
 
@@ -53,7 +57,7 @@ def _impls():
     """The two copies of the helper, by the file they live in."""
     return {
         "studio/install_llama_prebuilt.py": prebuilt_mod._native_linux_system_rocm_lib_dirs,
-        "studio/backend/core/inference/llama_cpp.py": llama_ns[
+        "studio/backend/core/inference/llama_cpp/binary_runtime.py": llama_ns[
             "_native_linux_system_rocm_lib_dirs"
         ],
     }
@@ -110,7 +114,11 @@ class TestBundledHipPresent:
     CPU or CUDA build must be left alone."""
 
     @pytest.mark.parametrize(
-        "where", ["studio/install_llama_prebuilt.py", "studio/backend/core/inference/llama_cpp.py"]
+        "where",
+        [
+            "studio/install_llama_prebuilt.py",
+            "studio/backend/core/inference/llama_cpp/binary_runtime.py",
+        ],
     )
     def test_detects_versioned_and_plain_sonames(self, tmp_path, where):
         impl = (
@@ -341,7 +349,7 @@ class TestHelperParity:
         a = _function_ast(_PREBUILT_PATH, name)
         b = _function_ast(_LLAMA_CPP_PATH, name)
         assert ast.dump(a) == ast.dump(b), (
-            f"{name} has drifted between install_llama_prebuilt.py and llama_cpp.py; "
+            f"{name} has drifted between install_llama_prebuilt.py and llama_cpp/binary_runtime.py; "
             "the install-time and serve-time launchers must resolve the same lib dirs"
         )
 
@@ -454,7 +462,7 @@ class TestLlamaCppRuntimeNativeOrdering:
     function, so this half stays a source check (as the WSL sibling does)."""
 
     def test_prepends_before_binary_dir(self):
-        source = _LLAMA_CPP_PATH.read_text(encoding = "utf-8")
+        source = package_source()
         idx_helper = source.find("lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))")
         idx_binary = source.find("lib_dirs.append(binary_dir)")
         assert (
@@ -467,7 +475,7 @@ class TestLlamaCppRuntimeNativeOrdering:
 
     def test_dxg_detection_stays_on_the_wsl_branch(self):
         """HSA_ENABLE_DXG_DETECTION must be set from the WSL helper's result only."""
-        source = _LLAMA_CPP_PATH.read_text(encoding = "utf-8")
+        source = package_source()
         idx_wsl = source.find("lib_dirs.extend(_wsl_system_rocm_lib_dirs())")
         idx_dxg = source.find('env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")', idx_wsl)
         idx_native = source.find("lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))")

@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 import pytest
+from llama_cpp_source import package_source, package_tree
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -676,8 +677,7 @@ def test_the_diffusion_runner_is_recorded_too():
 
     from core.inference import llama_cpp
 
-    source = inspect.getsource(llama_cpp)
-    tree = ast.parse(source)
+    tree = package_tree()
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef):
             continue
@@ -753,7 +753,7 @@ def test_the_diffusion_runner_stays_in_the_backend_group():
 
     from core.inference import llama_cpp
 
-    tree = ast.parse(inspect.getsource(llama_cpp))
+    tree = package_tree()
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef) or "diffusion-stdout" not in ast.dump(node):
             continue
@@ -2088,9 +2088,7 @@ def test_an_installer_timeout_takes_its_announced_children_with_it(monkeypatch):
 def test_no_process_group_id_is_kept_past_the_group_it_names():
     """A pid is reusable once nothing holds the number as a process group any
     more, so a group id cached across an unload eventually names a stranger."""
-    source = (
-        Path(__file__).resolve().parents[1] / "core" / "inference" / "llama_cpp.py"
-    ).read_text(encoding = "utf-8")
+    source = package_source()
 
     assert "_diffusion_pgid" not in source, "a kept group id outlives its group"
 

@@ -87,6 +87,7 @@ from core.inference.llama_cpp import (
     hf_gguf_load_in_flight,
 )
 from core.inference.openai_auto_download import _DISK_RESERVE_BYTES
+from llama_cpp_source import package_source
 
 
 REPO = "unsloth/gemma-test-GGUF"
@@ -1478,9 +1479,7 @@ class TestLoadHubDownloadExclusion:
             < gguf_branch.index("enter_context(chat_load_in_flight")
             < gguf_branch.index("unsloth_backend.unload_model")
         )
-        llama_source = (
-            Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
-        ).read_text(encoding = "utf-8")
+        llama_source = package_source()
         assert "@_with_gguf_load_marker\n    def load_model(" in llama_source
 
     def _capture_hub_guard_require_mmproj(

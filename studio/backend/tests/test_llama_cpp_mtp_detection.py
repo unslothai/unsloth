@@ -84,6 +84,7 @@ from core.inference.llama_cpp import (
 )
 from core.inference import llama_cpp as mod
 import subprocess as _subprocess
+from llama_cpp_source import package_source, package_tree
 
 
 def _matches(backend: LlamaCppBackend, **kwargs) -> bool:
@@ -3649,7 +3650,7 @@ def test_the_probe_marker_is_committed_only_once_the_runtime_is_replaced():
     degraded, or set it on a diffusion runner that would then be torn down and reloaded
     for no reason. Checked structurally because load_model is not unit-callable.
     """
-    source = inspect.getsource(mod)
+    source = package_source()
     tree = ast.parse(source)
     load_model = next(
         node
@@ -3712,7 +3713,7 @@ def test_a_diffusion_load_never_pays_for_the_capability_probe():
 
     load_model = next(
         node
-        for node in ast.walk(ast.parse(inspect.getsource(mod)))
+        for node in ast.walk(package_tree())
         if isinstance(node, ast.FunctionDef) and node.name == "load_model"
     )
     # In-load probes go through the accumulating _launch_caps helper, so count both it
@@ -3781,7 +3782,7 @@ def test_the_marker_comes_from_the_launch_snapshot_not_a_probe_after_startup():
     """
     load_model = next(
         node
-        for node in ast.walk(ast.parse(inspect.getsource(mod)))
+        for node in ast.walk(package_tree())
         if isinstance(node, ast.FunctionDef) and node.name == "load_model"
     )
 
@@ -3831,7 +3832,7 @@ def test_a_later_successful_probe_cannot_erase_an_earlier_degrading_one():
     """
     load_model = next(
         node
-        for node in ast.walk(ast.parse(inspect.getsource(mod)))
+        for node in ast.walk(package_tree())
         if isinstance(node, ast.FunctionDef) and node.name == "load_model"
     )
     helper = next(
@@ -3896,7 +3897,7 @@ def test_the_dspark_pre_download_gate_latches_into_the_launch_accumulator():
     launch probe can come back conclusive and the load is remembered as a good one --
     every identical Apply after it then dedupes against a server with no drafter.
     """
-    tree = ast.parse(inspect.getsource(mod))
+    tree = package_tree()
     download = next(
         node
         for node in ast.walk(tree)

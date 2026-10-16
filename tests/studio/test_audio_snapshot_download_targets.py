@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 
 import pytest
+from llama_cpp_source import module_relative_paths
 
 
 def _find_repo_root() -> Path | None:
@@ -35,7 +36,7 @@ if _REPO_ROOT is None:
 
 _AUDIO_SOURCES = (
     "studio/backend/core/inference/inference.py",
-    "studio/backend/core/inference/llama_cpp.py",
+    *(f"studio/backend/{rel}" for rel in module_relative_paths()),
     "studio/backend/core/training/trainer.py",
 )
 

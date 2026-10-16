@@ -217,7 +217,7 @@ def test_agent_guides_lists_the_route_modules_that_serve_what_it_curls():
         )
         for required in (
             "studio/backend/main.py",
-            "studio/backend/core/inference/llama_cpp.py",
+            "studio/backend/core/inference/llama_cpp/**",
             "studio/backend/models/**",
             "unsloth_cli/*",
             "unsloth_cli/commands/*.py",

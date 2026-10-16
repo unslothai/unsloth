@@ -10,12 +10,13 @@ import sys
 from pathlib import Path
 
 import pytest
+from llama_cpp_source import package_source
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SOURCE_PATH = REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
+SOURCE_PATH = REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp"
 ROUTE_PATH = REPO_ROOT / "studio" / "backend" / "routes" / "inference.py"
-SRC = SOURCE_PATH.read_text(encoding = "utf-8")
+SRC = package_source()
 TREE = ast.parse(SRC)
 
 
@@ -25,7 +26,12 @@ def llama_cpp():
     backend = str(REPO_ROOT / "studio" / "backend")
     if backend not in sys.path:
         sys.path.insert(0, backend)
-    spec = importlib.util.spec_from_file_location("_llama_cpp_under_test", SOURCE_PATH)
+    # A private copy of the package, so the Metal stub below never touches the real one.
+    spec = importlib.util.spec_from_file_location(
+        "_llama_cpp_under_test",
+        SOURCE_PATH / "__init__.py",
+        submodule_search_locations = [str(SOURCE_PATH)],
+    )
     module = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(module)

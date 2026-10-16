@@ -38,6 +38,7 @@ if not hasattr(sys.modules["structlog"], "get_logger"):
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 import time
+from llama_cpp_source import package_source
 
 _classify = LlamaCppBackend._classify_llama_start_failure
 
@@ -713,8 +714,7 @@ class TestBundledHipRocrMismatch:
         # --fit cannot load a missing symbol, so the library check has to come
         # first. The launch sequence itself is asserted behaviourally in
         # test_gpu_init_crash_message.py::TestHipRocrRetryKeepsFitBudget.
-        src = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
-        text = src.read_text(encoding = "utf-8")
+        text = package_source()
         spawn_start = text.index("def _spawn_and_wait(")
         spawn_end = text.index("def _raise_terminal_load_failure", spawn_start)
         body = text[spawn_start:spawn_end]

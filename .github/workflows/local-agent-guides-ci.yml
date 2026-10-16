@@ -56,7 +56,7 @@ on:
       # twenty route modules pay the full matrix for edits never requested here.
       - 'studio/backend/routes/inference.py'
       - 'studio/backend/main.py'
-      - 'studio/backend/core/inference/llama_cpp.py'
+      - 'studio/backend/core/inference/llama_cpp/**'
       - 'studio/backend/models/**'
       - 'install.sh'
       - '.github/workflows/local-agent-guides-ci.yml'
@@ -98,7 +98,7 @@ on:
       # /api/health endpoint, the llama-server KV-cache log behavior, and the
       # request/response schemas the agent dialects depend on.
       - 'studio/backend/main.py'
-      - 'studio/backend/core/inference/llama_cpp.py'
+      - 'studio/backend/core/inference/llama_cpp/**'
       - 'studio/backend/models/**'
       - 'install.sh'
       - '.github/workflows/local-agent-guides-ci.yml'

@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.inference import llama_cpp  # noqa: E402
 from core.inference import tools as tools_mod  # noqa: E402
 from core.rag import conversation_archive  # noqa: E402
+from llama_cpp_source import package_source
 
 THREAD = "thread-recall"
 
@@ -904,8 +905,8 @@ def test_the_sticky_boundary_is_applied_once_per_request():
     # fit spends it.
     from pathlib import Path
 
-    source = Path(__file__).resolve().parent.parent / "core/inference/llama_cpp.py"
-    text = source.read_text(encoding = "utf-8")
+    source = package_source()
+    text = source
     assert "_sticky_boundary_applied = True" in text
     # Whitespace-insensitive: the gate is one expression however the formatter wraps it.
     # Both halves are spent together, so the depth and its provenance cannot disagree.
@@ -1127,8 +1128,13 @@ def test_both_retrieval_tools_share_the_per_turn_search_cap():
     # BOTH loops: the tool is advertised per thread, so a GGUF-compacted chat can call
     # it under a safetensors model.
     backend = Path(__file__).resolve().parent.parent / "core/inference"
-    for module in ("llama_cpp.py", "safetensors_agentic.py"):
-        text = (backend / module).read_text(encoding = "utf-8")
+    for module, text in (
+        ("llama_cpp", package_source()),
+        (
+            "safetensors_agentic.py",
+            (backend / "safetensors_agentic.py").read_text(encoding = "utf-8"),
+        ),
+    ):
         # The cap and the counter must both key on the set, not on one tool name.
         assert "decision.tool_name in RAG_SEARCH_TOOLS" in text, module
         assert 'decision.tool_name == "search_knowledge_base"' not in text, module
@@ -1471,8 +1477,8 @@ def test_a_tool_exchange_this_request_created_stays_on_the_branch(monkeypatch):
     """
     from pathlib import Path
 
-    source = Path(__file__).resolve().parent.parent / "core/inference/llama_cpp.py"
-    text = " ".join(source.read_text(encoding = "utf-8").split())
+    source = package_source()
+    text = " ".join(source.split())
 
     # The branch handed to both the forced recall and a model-initiated search is the
     # accumulated one, never the request's own messages.
