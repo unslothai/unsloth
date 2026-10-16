@@ -316,7 +316,6 @@ export function RunResults({
   const [expanded, setExpanded] = useState(false);
   const [fitRef, fitHeight] = useFitToViewport(360);
   const exportRef = useRef<SVGSVGElement | null>(null);
-  const spareRef = useRef<SVGSVGElement | null>(null);
   const rows = useMemo(
     () => aggregate(run.results, run.config.variants, run.config.baseline),
     [run],
@@ -430,7 +429,6 @@ export function RunResults({
       )
     : visibleRows(rows, expanded);
   const hidden = rows.length - top.length;
-  const folded = !live && (isTable || hidden > 0);
 
   return (
     <div className="flex flex-col gap-4">
@@ -573,6 +571,15 @@ export function RunResults({
             </NoteChip>
           )}
           {!live && (
+            <NoteChip tone="info" label="Details" title={title}>
+              <ul className="flex flex-col gap-1">
+                {footer.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            </NoteChip>
+          )}
+          {!live && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild={true}>
                 <Button
@@ -663,7 +670,7 @@ export function RunResults({
                 subtitle={headline(ranked)}
                 footer={footer}
                 pending={chartKind === "bars" ? pending : []}
-                svgRef={folded ? spareRef : exportRef}
+                bare={true}
               />
             </div>
           )}
@@ -690,8 +697,8 @@ export function RunResults({
               </button>
             )}
         </div>
-        {/* Exports always carry every row, whatever the screen is folded to. */}
-        {folded && (
+        {/* Exports carry every row plus the title and fine print the screen leaves off. */}
+        {!live && (
           <div className="hidden" aria-hidden={true}>
             <BenchChart
               kind={chartKind}
