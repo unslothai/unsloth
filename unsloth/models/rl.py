@@ -3624,13 +3624,21 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "trace.enabled"     : False,"""
 
         if DEVICE_TYPE == "cuda":
-            cuda_options = """
-            "triton.enable_persistent_tma_matmul": torch.cuda.get_device_capability()[0] >= 9,"""
+            # TMA only if every visible card is sm90+ (compile options are process-wide); an
+            # unreadable card is skipped by the probe, so a short list also means False.
+            all_sm90 = (
+                "(lambda caps: bool(caps) and len(caps) == torch.cuda.device_count() "
+                "and min(c[0] for c in caps) >= 9)"
+                '(__import__("unsloth.device_type", fromlist = ["cuda_visible_capabilities"])'
+                ".cuda_visible_capabilities())"
+            )
+            cuda_options = f"""
+            "triton.enable_persistent_tma_matmul": {all_sm90},"""
             # cutlass options were added in PyTorch 2.8.0.
             if torch_version >= Version("2.8.0"):
-                cuda_options += """
-            "cuda.cutlass_epilogue_fusion_enabled": torch.cuda.get_device_capability()[0] >= 9,
-            "cuda.cutlass_tma_only": torch.cuda.get_device_capability()[0] >= 9,"""
+                cuda_options += f"""
+            "cuda.cutlass_epilogue_fusion_enabled": {all_sm90},
+            "cuda.cutlass_tma_only": {all_sm90},"""
             cuda_options += """
             "cuda.compile_opt_level"              : "-O2",
             "cuda.enable_cuda_lto"                : True,

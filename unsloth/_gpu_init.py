@@ -315,6 +315,8 @@ try:
         arch_lacks_bf16,
         arch_lacks_buffer_ops,
         apply_gfx101x_triton_workaround,
+        cuda_gate_capabilities,
+        cuda_visible_capabilities,
         hip_visible_archs,
     )
 except NotImplementedError as device_type_error:
@@ -546,14 +548,24 @@ if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
     SUPPORTS_BFLOAT16 = False
     torch.cuda.is_bf16_supported = lambda *args, **kwargs: False
 elif DEVICE_TYPE == "cuda":
-    major_version, minor_version = torch.cuda.get_device_capability()
-    SUPPORTS_BFLOAT16 = major_version >= 8
+    # SUPPORTS_BFLOAT16 is process-wide, so one pre-Ampere card in the visible set disables it for all.
+    _cuda_caps = cuda_gate_capabilities()
+    SUPPORTS_BFLOAT16 = bool(_cuda_caps) and all(major >= 8 for major, _ in _cuda_caps)
+    if not SUPPORTS_BFLOAT16 and any(major >= 8 for major, _ in _cuda_caps):
+        _old = [i for i, (major, _) in cuda_visible_capabilities(with_index = True) if major < 8]
+        print(
+            f"Unsloth: visible GPU(s) {_old} lack bfloat16, so float16 is used on every GPU. "
+            "Hide them with CUDA_VISIBLE_DEVICES to train in bfloat16."
+        )
+        del _old
+    del _cuda_caps
 
     old_is_bf16_supported = torch.cuda.is_bf16_supported
     if "including_emulation" in str(inspect.signature(old_is_bf16_supported)):
 
         def is_bf16_supported(including_emulation = False):
-            return old_is_bf16_supported(including_emulation)
+            supported = old_is_bf16_supported(including_emulation)
+            return supported if including_emulation else (supported and SUPPORTS_BFLOAT16)
 
         torch.cuda.is_bf16_supported = is_bf16_supported
     else:
@@ -562,7 +574,6 @@ elif DEVICE_TYPE == "cuda":
             return SUPPORTS_BFLOAT16
 
         torch.cuda.is_bf16_supported = is_bf16_supported
-    del major_version, minor_version
 elif DEVICE_TYPE == "hip":
     old_is_bf16_supported = torch.cuda.is_bf16_supported
 
