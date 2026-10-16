@@ -1286,3 +1286,111 @@ def test_the_prefetch_hands_back_the_snapshot_of_a_modular_manifest(monkeypatch,
         fetch_base = DISTILLED,
     )
     assert root == str(snap)
+
+
+# ── review round 6: the download plan for FLUX.3 companions ─────────────────────
+_OFFICIAL_LISTING = (
+    "LICENSE.md",
+    "README.md",
+    "config.json",
+    "manifest.json",
+    "model.safetensors",
+    "modular_model_index.json",
+    "text_encoder/config.json",
+    "text_encoder/model-00001-of-00002.safetensors",
+    "text_encoder/tokenizer.json",
+    "transformer/config.json",
+    "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
+    "vae/config.json",
+    "vae/diffusion_pytorch_model.safetensors",
+    "variants/fp8r/model.safetensors",
+    "variants/nvfp4/model.safetensors",
+)
+
+
+def _fake_hub(monkeypatch, repo_files):
+    import huggingface_hub
+
+    class _Api:
+        def __init__(self, *a, **k):
+            pass
+
+        def model_info(self, repo, *a, **k):
+            if repo not in repo_files:
+                from huggingface_hub.errors import RepositoryNotFoundError
+
+                raise RepositoryNotFoundError(
+                    repo, response = SimpleNamespace(status_code = 404, headers = {}, request = None)
+                )
+            return SimpleNamespace(
+                siblings = [SimpleNamespace(rfilename = f, size = 10) for f in repo_files[repo]],
+                sha = "abc",
+                gated = False,
+                private = False,
+            )
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+
+
+@pytest.mark.parametrize("kind, name", [("gguf", "klein.gguf"), ("single_file", "klein.safetensors")])
+def test_companion_staging_is_scoped_to_the_folders_flux3_loads(tmp_path, monkeypatch, kind, name):
+    # A GGUF / single file stages the official repo's text encoder, VAE, transformer config and the modular manifest
+    # (the staged-snapshot marker), never BFL's variants/ packages or the root single file.
+    from safetensors.torch import save_file
+    import torch
+    from core.inference import diffusion as d
+
+    _flux3_installed(monkeypatch)
+    _fake_hub(monkeypatch, {DISTILLED: _OFFICIAL_LISTING})
+    monkeypatch.setattr(d, "hub_cache_dir", lambda: str(tmp_path / "cold"))
+    picks = tmp_path / "picks"
+    picks.mkdir()
+    if kind == "gguf":
+        (picks / name).write_bytes(b"GGUF")
+    else:
+        save_file({"ref_time_in.in_layer.weight": torch.zeros(2, 2)}, str(picks / name))
+    plan = d.DiffusionBackend().download_plan(
+        str(picks),
+        gguf_filename = name,
+        base_repo = DISTILLED,
+        model_kind = kind,
+        family_override = FLUX3_KLEIN_FAMILY_NAME,
+        allow_device_probe = False,
+        memory_verdict = False,
+        discover_text_encoders = False,
+    )
+    files = sorted(f for e in plan["entries"] if e["repo_id"] == DISTILLED for f in e["files"])
+    assert files == [
+        "modular_model_index.json",
+        "text_encoder/config.json",
+        "text_encoder/model-00001-of-00002.safetensors",
+        "text_encoder/tokenizer.json",
+        "transformer/config.json",
+        "vae/config.json",
+        "vae/diffusion_pytorch_model.safetensors",
+    ]
+
+
+def test_the_download_plan_reports_a_flux3_pick_of_the_other_variant(tmp_path, monkeypatch):
+    # The Images page stages the plan before it calls load, so the plan carries the same verdict as the load.
+    from safetensors.torch import save_file
+    import torch
+    from core.inference import diffusion as d
+
+    _flux3_installed(monkeypatch)
+    _fake_hub(monkeypatch, {BASE: _OFFICIAL_LISTING})
+    monkeypatch.setattr(d, "hub_cache_dir", lambda: str(tmp_path / "cold"))
+    picks = tmp_path / "picks"
+    picks.mkdir()
+    save_file({"ref_time_in.in_layer.weight": torch.zeros(2, 2)}, str(picks / "klein.safetensors"))
+    plan = d.DiffusionBackend().download_plan(
+        str(picks),
+        gguf_filename = "klein.safetensors",
+        base_repo = BASE,
+        model_kind = "single_file",
+        family_override = FLUX3_KLEIN_BASE_FAMILY_NAME,
+        allow_device_probe = False,
+        memory_verdict = False,
+        discover_text_encoders = False,
+    )
+    assert "Load it with family flux.3-klein" in (plan["incompatible_reason"] or "")

@@ -712,6 +712,32 @@ def _flux3_pick_tensor_names(
         return None
 
 
+def flux3_pick_mismatch(
+    fam: Any,
+    repo_id: str,
+    gguf_filename: Optional[str],
+    hf_token: Optional[str] = None,
+    allow_network: bool = True,
+) -> Optional[str]:
+    """Why a FLUX.3 pick cannot load under ``fam``, or None when nothing is known to be wrong: a single file /
+    GGUF of the other variant (or a BFL quantized package) from its tensor names, a full pipeline of the other
+    variant from its manifest. Headers and the manifest only; None on anything unreadable."""
+    name = str(getattr(fam, "name", ""))
+    if not name.startswith("flux.3"):
+        return None
+    if not gguf_filename:
+        from .diffusion_flux3 import flux3_family_blocks_mismatch, flux3_index_family
+
+        declared = flux3_index_family(
+            _flux3_pipeline_index(repo_id, normalize_token(hf_token), allow_network)
+        )
+        return flux3_family_blocks_mismatch(name, declared, repo_id)
+    from .diffusion_families import flux3_variant_mismatch_reason
+
+    names = _flux3_pick_tensor_names(repo_id, gguf_filename, normalize_token(hf_token), allow_network)
+    return flux3_variant_mismatch_reason(name, Path(str(gguf_filename)).name, names)
+
+
 def assert_flux3_pick_compatible(
     fam: Any,
     repo_id: str,
@@ -719,30 +745,9 @@ def assert_flux3_pick_compatible(
     hf_token: Optional[str] = None,
     allow_network: bool = True,
 ) -> None:
-    """Refuse a FLUX.3 pick of the other variant before anything is downloaded or unloaded: a single file / GGUF
-    from its tensor names (also refusing BFL's quantized packages), a full pipeline from its manifest. The loader's
-    own checks run after the resident pipeline is gone. Headers and the manifest only; fails open on anything it
-    cannot read."""
-    name = str(getattr(fam, "name", ""))
-    if not name.startswith("flux.3"):
-        return
-    if not gguf_filename:
-        # A full modular pipeline: its manifest names the variant. Same refusal, before the teardown.
-        from .diffusion_flux3 import flux3_family_blocks_mismatch, flux3_index_family
-
-        declared = flux3_index_family(
-            _flux3_pipeline_index(repo_id, normalize_token(hf_token), allow_network)
-        )
-        reason = flux3_family_blocks_mismatch(name, declared, repo_id)
-        if reason is not None:
-            raise ValueError(reason)
-        return
-    from .diffusion_families import flux3_variant_mismatch_reason
-
-    names = _flux3_pick_tensor_names(
-        repo_id, gguf_filename, normalize_token(hf_token), allow_network
-    )
-    reason = flux3_variant_mismatch_reason(name, Path(str(gguf_filename)).name, names)
+    """Refuse a FLUX.3 pick of the other variant before anything is downloaded or unloaded
+    (``flux3_pick_mismatch``). The loader's own checks run after the resident pipeline is gone."""
+    reason = flux3_pick_mismatch(fam, repo_id, gguf_filename, hf_token, allow_network)
     if reason is not None:
         raise ValueError(reason)
 

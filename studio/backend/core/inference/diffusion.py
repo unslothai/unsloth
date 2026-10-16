@@ -90,6 +90,7 @@ from .diffusion_compat import (
     assert_flux3_pick_compatible,
     assert_pick_is_not_speech,
     flux2_pick_mismatch,
+    flux3_pick_mismatch,
     speech_pick_refusal,
 )
 from .diffusion_device import (
@@ -4136,6 +4137,8 @@ class DiffusionBackend:
                 kind = kind,
                 pipeline_components = _explicit_pipeline_components(fam),
                 single_file_is_pipeline = bool(fam and fam.single_file_is_pipeline),
+                companion_components = FLUX3_COMPONENTS if is_flux3_family(fam) else None,
+                base_manifest = _base_manifest_name(fam),
                 include_transformer = (
                     (
                         lambda companions, transformer_files: self._dense_quant_prefetch_needed(
@@ -4967,6 +4970,8 @@ class DiffusionBackend:
         pipeline_components: Optional[Sequence[str]] = None,
         single_file_is_pipeline: bool = False,
         include_transformer: "bool | Callable[[Sequence[str], Sequence[str]], bool]" = False,
+        companion_components: Optional[Sequence[str]] = None,
+        base_manifest: str = "model_index.json",
         sizes_out: Optional[dict[str, int]] = None,
         file_sizes_out: Optional[dict[str, dict[str, int]]] = None,
         resident_file_sizes_out: Optional[list[tuple[str, int]]] = None,
@@ -5112,20 +5117,38 @@ class DiffusionBackend:
             else:
 
                 def base_filter(rfilename: str) -> bool:
-                    return _base_file_downloaded(rfilename, include_transformer = include_transformer)
+                    # ``companion_components``: an assembler that opens only these folders (FLUX.3), so the rest of
+                    # the base (BFL's variants/ packages) is never staged; transformer/ still follows the quant path.
+                    if (
+                        companion_components is not None
+                        and "/" in rfilename
+                        and rfilename.split("/", 1)[0] not in companion_components
+                    ):
+                        return False
+                    return _base_file_downloaded(
+                        rfilename, include_transformer = include_transformer, manifest = base_manifest
+                    )
 
             base_info = api.model_info(base_repo, files_metadata = True, token = hf_token)
             _record_revision(revisions_out, base_repo, base_info)
             if callable(include_transformer):
                 kept = [s.rfilename for s in base_info.siblings if not _dense_te_shard(s.rfilename)]
                 companions = tuple(
-                    f for f in kept if _base_file_downloaded(f, include_transformer = False)
+                    f
+                    for f in kept
+                    if _base_file_downloaded(f, include_transformer = False, manifest = base_manifest)
+                    and (
+                        companion_components is None
+                        or "/" not in f
+                        or f.split("/", 1)[0] in companion_components
+                    )
                 )
                 skip = set(companions)
                 transformer_files = tuple(
                     f
                     for f in kept
-                    if f not in skip and _base_file_downloaded(f, include_transformer = True)
+                    if f not in skip
+                    and _base_file_downloaded(f, include_transformer = True, manifest = base_manifest)
                 )
                 # Rebinding before base_filter is ever CALLED, so the loop below reads the answer.
                 include_transformer = bool(include_transformer(companions, transformer_files))
@@ -5208,9 +5231,12 @@ class DiffusionBackend:
         # SELECTION time. Metadata only, and None whenever nothing is known to be wrong. The speech verdict belongs
         # here too, not only on the load preflight: the Images page stages and downloads before it calls load, so a
         # later refusal arrives after the bytes.
-        incompatible = flux2_pick_mismatch(
-            fam, repo_id, gguf_filename, base, hf_token
-        ) or speech_pick_refusal(repo_id, gguf_filename, hf_token)
+        incompatible = (
+            flux2_pick_mismatch(fam, repo_id, gguf_filename, base, hf_token)
+            # The FLUX.3 variant / BFL-package verdict, off the header or the manifest, for the same reason.
+            or flux3_pick_mismatch(fam, repo_id, gguf_filename, hf_token)
+            or speech_pick_refusal(repo_id, gguf_filename, hf_token)
+        )
         component_overrides = None
         if (
             discover_text_encoders
@@ -5325,6 +5351,8 @@ class DiffusionBackend:
             kind = kind,
             pipeline_components = _explicit_pipeline_components(fam),
             single_file_is_pipeline = bool(fam and fam.single_file_is_pipeline),
+            companion_components = FLUX3_COMPONENTS if is_flux3_family(fam) else None,
+            base_manifest = _base_manifest_name(fam),
             # The RESOLVED base, as the load passes it: a variant base picks its own pre-quant repo. Deferred exactly
             # as _run_load defers it. Called eagerly this runs before the base listing exists, so the cache gate sees
             # no transformer shards, always declines, and the plan scopes narrower than the load: the registry then
@@ -12460,13 +12488,15 @@ def _offload_controlnet_module(cn_model: Any, device: str, logger: Any) -> bool:
         return False
 
 
-def _base_file_downloaded(rfilename: str, *, include_transformer: bool = False) -> bool:
+def _base_file_downloaded(
+    rfilename: str, *, include_transformer: bool = False, manifest: str = "model_index.json"
+) -> bool:
     """True for base-repo files ``from_pretrained`` actually fetches. The transformer is supplied by
     the GGUF, and repo docs (``assets/``, the top-level README/PDF/images) are never downloaded:
     counting them would peg the progress estimate above what lands on disk, so the bar would sit
     short of 100% for the whole pipeline-load phase. ``include_transformer`` admits the
     ``transformer/`` shards for loads where the dense transformer-quant path will fetch them
-    anyway."""
+    anyway. ``manifest`` is the base's pipeline index (FLUX.3's is ``modular_model_index.json``)."""
     if rfilename == "transformer/config.json":
         # The one transformer/ file that is ALWAYS needed, shards or not: from_single_file(config = <repo id>,
         # subfolder = "transformer") resolves it through the Hub, so a load that promised to download nothing cannot
@@ -12477,7 +12507,7 @@ def _base_file_downloaded(rfilename: str, *, include_transformer: bool = False) 
     if rfilename.startswith("transformer/"):
         return include_transformer
     if "/" not in rfilename:  # top-level: only the pipeline manifest is fetched
-        return rfilename == "model_index.json"
+        return rfilename == manifest
     return not rfilename.startswith("assets/")
 
 
