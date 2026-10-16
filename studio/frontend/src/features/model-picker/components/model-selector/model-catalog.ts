@@ -256,7 +256,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     ],
   },
   {
-    // A different denoiser with its own FP8/INT8 checkpoints; no unsloth mirror, so the vendor pipeline is the row.
+    // A different denoiser with its own FP8/INT8 checkpoints. The bf16 row keeps the vendor id; the backend fetches
+    // it from unsloth/Qwen-Image-2.1-Turbo-FP8, which carries the official diffusers folders byte-identical.
     canonicalId: "Qwen/Qwen-Image-2.1-Turbo",
     displayName: "Qwen-Image 2.1 Turbo",
     description: "Text-to-image and image editing in 8 steps",

@@ -3328,26 +3328,32 @@ def test_cached_repo_task_gates_an_image_pipeline_on_the_load_path_trust_rule(tm
 
 
 def test_cached_repo_task_never_offers_an_sd_cpp_companion_repo_as_a_model(tmp_path):
-    """The single-file VAE / text-encoder repos hold no denoiser, so none of them is a pick.
+    """The sd-cli text-encoder repos hold no denoiser, so none of them is an Images pick.
 
-    Their unsloth mirrors clear the trust gate the old third-party ids never did, and the ids
-    resolve to a family, so without the companion check each would list an unloadable Images row.
+    They are unsloth repos, so they clear the trust gate, and an id that resolves to a family
+    would list an unloadable Images row without the companion check. Every image VAE / encoder
+    now comes from a vendor base or an unsloth encoder GGUF, so the set is exactly those GGUFs.
     """
     from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
 
+    companions = sd_cpp_companion_only_repo_ids()
     for repo_id in (
-        "unsloth/Z-Image-Turbo-ComfyUI",
-        "unsloth/Qwen-Image-ComfyUI",
-        "unsloth/FLUX.2-dev-ComfyUI",
-        "unsloth/FLUX.2-VAE",
-        "unsloth/FLUX.2-klein-9B-ComfyUI",
-        "unsloth/flux-text-encoders",
+        "unsloth/Qwen3-4B-GGUF",
+        "unsloth/Qwen3-8B-GGUF",
+        "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF",
+        "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
     ):
-        assert repo_id.lower() in sd_cpp_companion_only_repo_ids(), repo_id
+        assert repo_id.lower() in companions, repo_id
+    for repo_id in companions:
         assert models_route._cached_repo_task(_pipeline_repo(repo_id, tmp_path)) is None, repo_id
 
-    # FLUX.1-schnell also serves a companion VAE, but it is a real base and must stay loadable.
-    assert "black-forest-labs/flux.1-schnell" not in sd_cpp_companion_only_repo_ids()
+    # The vendor bases that now serve the VAEs / encoders are real bases and must stay loadable.
+    for base in (
+        "black-forest-labs/FLUX.1-schnell",
+        "black-forest-labs/FLUX.2-dev",
+        "Qwen/Qwen-Image",
+    ):
+        assert base.lower() not in companions, base
     assert (
         models_route._cached_repo_task(_pipeline_repo("black-forest-labs/FLUX.1-schnell", tmp_path))
         == "text-to-image"
@@ -3358,11 +3364,21 @@ def test_a_companion_mirror_is_listed_but_flagged_so_no_picker_offers_it(monkeyp
     """A task of None does NOT drop the row: it is exactly what an unclassified CHAT repo carries,
     so the chat picker showed the companion as loadable. Deleting the row instead would hide tens
     of GB the user can then never find or remove, so the row stays and carries a flag the pickers
-    filter on."""
+    filter on.
+
+    No image companion repo ships .safetensors any more (the remaining ones are encoder GGUFs, which
+    this listing skips), so a synthetic single-file VAE repo is added to the companion set."""
+    import core.inference.diffusion_families as families
+
+    real = families.sd_cpp_companion_only_repo_ids
+    companion_id = "unsloth/example-vae-companion"
+    monkeypatch.setattr(
+        families, "sd_cpp_companion_only_repo_ids", lambda: real() | {companion_id.lower()}
+    )
     companion = _repo(
-        "unsloth/Z-Image-Turbo-ComfyUI",
-        [_file("split_files/vae/ae.safetensors", 300_000)],
-        tmp_path / "models--unsloth--Z-Image-Turbo-ComfyUI",
+        companion_id,
+        [_file("vae/ae.safetensors", 300_000)],
+        tmp_path / "models--unsloth--example-vae-companion",
     )
     chat = _repo(
         "unsloth/Qwen3-8B",
@@ -3377,10 +3393,10 @@ def test_a_companion_mirror_is_listed_but_flagged_so_no_picker_offers_it(monkeyp
     }
 
     # Listed, so it stays visible and deletable...
-    assert "unsloth/Z-Image-Turbo-ComfyUI" in rows
+    assert companion_id in rows
     # ...and flagged, which is the part a task of None could never express.
-    assert rows["unsloth/Z-Image-Turbo-ComfyUI"]["companion"] is True
-    assert rows["unsloth/Z-Image-Turbo-ComfyUI"]["task"] is None
+    assert rows[companion_id]["companion"] is True
+    assert rows[companion_id]["task"] is None
     # An ordinary chat repo carries the same task of None and must NOT be flagged.
     assert rows["unsloth/Qwen3-8B"].get("companion") is None
     assert rows["unsloth/Qwen3-8B"]["task"] is None

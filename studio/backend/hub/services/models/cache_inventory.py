@@ -688,9 +688,16 @@ def _scan_cached_gguf(
                             )
                     except Exception:
                         pass
+                row_size = max(total_size, variant_state_size)
+                # An artifact mirror's diffusers folders IN THIS ROOT are listed nowhere else (see
+                # _scan_cached_models), and this row's whole-repo delete removes them, so the row counts them. A copy
+                # in another root is that root's own companion row: a delete is scoped to one cache root, so counting
+                # it here would promise bytes this row's delete never frees.
+                if _hosts_artifacts(repo_id):
+                    row_size += artifact_folder_bytes(repo_path)
                 row = {
                     "repo_id": repo_id,
-                    "size_bytes": max(total_size, variant_state_size),
+                    "size_bytes": row_size,
                     "cache_path": str(repo_info.repo_path),
                     "task": row_task,
                     "audio_type": row_audio_type,
@@ -1180,6 +1187,8 @@ def _scan_cached_models(
         variant_states = None
 
     seen_lower: dict[str, dict] = {}
+    # Across EVERY root: the GGUF can sit in one cache root and its mirror's diffusers folders in the other.
+    artifact_gguf_keys = _artifact_gguf_repo_ids(cache_scans)
     inspected = 0
     skipped_gguf = 0
     skipped_no_weights = 0
@@ -1212,6 +1221,22 @@ def _scan_cached_models(
                 if not payload.has_runnable_weights:
                     skipped_no_weights += 1
                     continue
+                # A GGUF repo that also carries the official diffusers folders (it is the base's mirror): the folders,
+                # with or without the bf16 transformer, are part of the GGUF row (its size counts them), never a second
+                # row. Deletes are whole-repo or per-quant, so such a row's delete would wipe the quants, and a
+                # pipeline pick of the -GGUF id is refused anyway.
+                any_root_gguf = has_main_gguf or repo_id.lower() in artifact_gguf_keys
+                if has_main_gguf and _hosts_artifacts(repo_id):
+                    skipped_gguf += 1
+                    continue
+                # Its GGUF in ANOTHER cache root: this copy holds only the folders that GGUF loads its companions
+                # from. Its own row, so its delete (scoped to this root) frees exactly what it shows, but a companion,
+                # never a pipeline or single-file pick.
+                cross_root_folders = any_root_gguf and _hosts_artifacts(repo_id)
+                # The FP8 artifact mirror (unsloth/Qwen-Image-2.1-Turbo-FP8): its folders are what a pick of the BASE
+                # fetches, and a pipeline pick of the repo itself is refused, so the row stays the root checkpoint row
+                # released builds listed, whatever part of the folders is cached.
+                artifact_checkpoint = not any_root_gguf and _hosts_artifacts(repo_id)
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
                 identity = _resolve_load_identity(
@@ -1247,7 +1272,10 @@ def _scan_cached_models(
                     ),
                 )
                 # A companion-only prefetch passes the download check yet cannot from_pretrained, so mark it partial.
-                companion_only = hf_cache_scan.snapshot_pipeline_missing_denoiser(load_snapshot)
+                companion_only = (
+                    not artifact_checkpoint
+                    and hf_cache_scan.snapshot_pipeline_missing_denoiser(load_snapshot)
+                )
                 snapshot_partial = download_partial or companion_only
                 # Flags are OR-ed over revisions, so no payload snapshot means no directory serves the row and it would reach for the Hub.
                 if not payload.payload_snapshots:
@@ -1280,7 +1308,11 @@ def _scan_cached_models(
                     if not any(tag.lower() == "whisper" for tag in tags):
                         tags.append("whisper")
                     local_metadata["tags"] = tags
-                pipeline_artifact_kind = _diffusers_pipeline_artifact_kind(load_snapshot)
+                pipeline_artifact_kind = (
+                    None
+                    if artifact_checkpoint
+                    else _diffusers_pipeline_artifact_kind(load_snapshot)
+                )
                 row = {
                     "repo_id": repo_id,
                     "size_bytes": payload.size_bytes,
@@ -1318,10 +1350,14 @@ def _scan_cached_models(
                     # Diffusion repos with no pipeline index load only via from_single_file, so the task pickers must not offer them as pipeline loads.
                     "single_file": bool(
                         row_task is not None
-                        and not hf_cache_scan.snapshot_has_pipeline_index(load_snapshot)
+                        and (
+                            artifact_checkpoint
+                            or not hf_cache_scan.snapshot_has_pipeline_index(load_snapshot)
+                        )
                     ),
                     # Listed so tens of GB of companion weights stay visible and deletable, but flagged so no picker offers a denoiser-less repo as a load.
-                    "companion": _cached_row_companion(repo_id, load_snapshot),
+                    "companion": cross_root_folders
+                    or _cached_row_companion(repo_id, load_snapshot),
                     "diffusers": _cached_row_is_diffusers(repo_info, load_snapshot),
                     **local_metadata,
                 }
@@ -1388,3 +1424,49 @@ async def list_cached_models_response(hf_token: Optional[str] = None):
             status_code = 500,
             detail = "Failed to read the local model cache.",
         ) from e
+
+
+def artifact_folder_bytes(*repo_paths: Path) -> int:
+    """Bytes of every non-GGUF file under the repo's snapshots, in every cache root given: the diffusers folders an
+    artifact mirror (``mirror_hosts_artifacts``) holds beside its quants, which only its GGUF row lists. One logical
+    file (its path inside a snapshot) counts once, at its largest copy, however many revisions or roots hold it.
+    Never raises."""
+    seen: dict[str, int] = {}
+    for repo_path in repo_paths:
+        snapshots = Path(repo_path) / "snapshots"
+        try:
+            for path in snapshots.rglob("*"):
+                if path.name.lower().endswith(".gguf") or not path.is_file():
+                    continue
+                rel = path.relative_to(snapshots).parts[1:]
+                key = "/".join(rel)
+                seen[key] = max(seen.get(key, 0), path.stat().st_size)
+        except (OSError, ValueError):
+            continue
+    return sum(seen.values())
+
+
+def _artifact_gguf_repo_ids(cache_scans) -> set[str]:
+    """Lowercased ids of artifact mirrors with a main GGUF in ANY cache root."""
+    found: set[str] = set()
+    for hf_cache in cache_scans or ():
+        for repo in getattr(hf_cache, "repos", ()) or ():
+            try:
+                if (
+                    str(repo.repo_type) == "model"
+                    and _hosts_artifacts(repo.repo_id)
+                    and _repo_has_gguf_files(repo)
+                ):
+                    found.add(repo.repo_id.lower())
+            except Exception:  # noqa: BLE001
+                continue
+    return found
+
+
+def _hosts_artifacts(repo_id: str) -> bool:
+    """``mirror_hosts_artifacts``, False when the family tables are unavailable."""
+    try:
+        from core.inference.diffusion_families import mirror_hosts_artifacts
+        return mirror_hosts_artifacts(repo_id)
+    except Exception:  # noqa: BLE001 -- no table means no artifact mirrors
+        return False

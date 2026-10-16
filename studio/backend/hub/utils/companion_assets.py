@@ -54,14 +54,30 @@ def read_companion_links() -> dict[str, list[str]]:
     raw = payload.get("links")
     if not isinstance(raw, dict):
         return {}
+    retired = _retired_link_ids()
     links: dict[str, list[str]] = {}
     for checkpoint, bases in raw.items():
         if not isinstance(checkpoint, str) or not isinstance(bases, list):
             continue
-        clean = [b.strip() for b in bases if isinstance(b, str) and b.strip()]
+        # A link to a repo nothing loads from any more is dropped on read (and so from the file on the next write):
+        # it would otherwise pin a retired sd-cli repack for as long as the GGUF that once fetched it stays installed.
+        clean = [
+            b.strip()
+            for b in bases
+            if isinstance(b, str) and b.strip() and _normalise(b) not in retired
+        ]
         if clean:
             links[_normalise(checkpoint)] = clean
     return links
+
+
+def _retired_link_ids() -> frozenset[str]:
+    """``retired_companion_link_ids``, empty when the family tables are unavailable (every link then counts)."""
+    try:
+        from core.inference.diffusion_families import retired_companion_link_ids
+        return retired_companion_link_ids()
+    except Exception:  # noqa: BLE001 -- no table means nothing is known to be retired
+        return frozenset()
 
 
 def _write_companion_links(links: dict[str, list[str]]) -> bool:
@@ -272,12 +288,16 @@ def _curated_variant_bases(fam, repo_id: str, gguf_filename: Optional[str]) -> s
     if not family:
         return set()
     identity = f"{_fold(repo_id)} {_fold(gguf_filename or '')}"
-    out: set[str] = set()
+    hits: list[tuple[str, str]] = []
     for candidate in _curated_base_ids():
         name = _fold(candidate.rsplit("/", 1)[-1])
         if name and name.startswith(family) and name in identity:
-            out.add(candidate)
-    return out
+            hits.append((candidate, name))
+    # Most specific spelling only: "zimage" is inside "zimageturbo" and "qwenimageedit" inside "qwenimageedit2511", so
+    # a plain substring test made a Turbo / 2511 checkpoint depend on the Z-Image / Edit base as well, and since those
+    # bases' mirrors are now the Z-Image / Edit GGUF repos, the delete of an unrelated GGUF repo was refused.
+    names = {name for _c, name in hits}
+    return {c for c, name in hits if not any(name != other and name in other for other in names)}
 
 
 def _fold(text: str) -> str:
@@ -444,13 +464,25 @@ def required_companion_bases(
         if recorded:
             bases |= _with_mirrors(recorded)
         # Canonical, not literal: a cached MIRROR resolves its own family back to the UPSTREAM id, which would make each identity a dependent of the other and leave a cache holding both stuck.
-        self_keys = {key, _normalise(_canonical(repo_id))}
+        # Except an artifact-hosting mirror (unsloth/Z-Image-GGUF): it is a checkpoint in its own right, and folding it
+        # onto its upstream would leave a cached upstream base with no dependent, offered for deletion while the GGUF
+        # still loads from it.
+        self_keys = {key} if _hosts_artifacts(repo_id) else {key, _normalise(_canonical(repo_id))}
         for base in bases:
             base_key = _normalise(base)
             if not base_key or base_key in self_keys or _normalise(_canonical(base)) in self_keys:
                 continue
             required.setdefault(base_key, set()).add(repo_id)
     return required
+
+
+def _hosts_artifacts(repo_id: str) -> bool:
+    """``mirror_hosts_artifacts``, False when the family tables are unavailable."""
+    try:
+        from core.inference.diffusion_families import mirror_hosts_artifacts
+        return mirror_hosts_artifacts(repo_id)
+    except Exception:  # noqa: BLE001 -- no table means no artifact mirrors
+        return False
 
 
 def _canonical(repo_id: str) -> str:

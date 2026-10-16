@@ -714,8 +714,107 @@ def _scan_hf_cache(
                     rows, snapshot_partial = True, gguf_partial = gguf_partial
                 )
             ]
+        rows = _artifact_mirror_rows(
+            model_id,
+            repo_dir,
+            rows,
+            load_path = load_path,
+            updated_at = updated_at,
+            active_cache = active_cache,
+        )
         found.extend(rows)
     return found
+
+
+def _hosts_artifacts(repo_id: str) -> bool:
+    """``mirror_hosts_artifacts``, False when the family tables are unavailable."""
+    try:
+        from core.inference.diffusion_families import mirror_hosts_artifacts
+        return mirror_hosts_artifacts(repo_id)
+    except Exception:  # noqa: BLE001 -- no table means no artifact mirrors
+        return False
+
+
+def _cached_gguf_bytes(repo_dir: Path) -> int:
+    """Bytes of every ``.gguf`` under any cached revision of the repo, each file counted once."""
+    seen: dict[str, int] = {}
+    try:
+        for path in (repo_dir / "snapshots").rglob("*.gguf"):
+            if path.is_file():
+                seen[str(path.resolve())] = path.stat().st_size
+    except OSError:
+        pass
+    return sum(seen.values())
+
+
+def _artifact_mirror_rows(
+    model_id: str,
+    repo_dir: Path,
+    rows: List[LocalModelInfo],
+    *,
+    load_path: Optional[Path] = None,
+    updated_at: Optional[float] = None,
+    active_cache: bool = True,
+) -> List[LocalModelInfo]:
+    """An artifact mirror (a model's own GGUF / FP8 repo that also holds its base's official diffusers folders) never
+    lists those folders as a pipeline row: they are what a pick of the BASE fetches, a pipeline pick of the repo id is
+    refused, and deletes are whole-repo or per-quant, so a separate row's delete would wipe the quants. A GGUF repo's
+    folders fold into its GGUF row's size; the FP8 repo's row stays partial and flagged, so nothing loads or resumes it
+    as a pipeline. A snapshot with no pipeline index is left exactly as released builds listed it."""
+    if not _hosts_artifacts(model_id):
+        return rows
+    snapshot = hf_cache_scan.latest_snapshot_dir(repo_dir)
+    if snapshot is None or not hf_cache_scan.snapshot_has_pipeline_index(snapshot):
+        return rows
+    gguf_rows = [row for row in rows if row.model_format == "gguf"]
+    if not gguf_rows and (gguf_bytes := _cached_gguf_bytes(repo_dir)):
+        # The quants sit in an OLDER revision than the folders a later base pick added, and only the newest snapshot
+        # was classified: recover the GGUF row from every cached revision rather than drop an installed model.
+        gguf_rows = [
+            _local_model_info(
+                scan_path = repo_dir,
+                load_path = load_path or repo_dir,
+                source = "hf_cache",
+                model_format = "gguf",
+                display_name = model_id.split("/")[-1],
+                model_id = model_id,
+                updated_at = updated_at,
+                partial = False,
+                requires_variant = True,
+                size_bytes = gguf_bytes,
+                active_cache = active_cache,
+            )
+        ]
+    if gguf_rows:
+        from hub.services.models.cache_inventory import artifact_folder_bytes
+        folder_bytes = artifact_folder_bytes(repo_dir)
+        return [
+            row.model_copy(update = {"size_bytes": int(row.size_bytes or 0) + folder_bytes})
+            for row in gguf_rows
+        ]
+    return [row.model_copy(update = {"partial": True, "companion_prefetch": True}) for row in rows]
+
+
+def _merge_artifact_mirror_roots(
+    rows_by_root: list[tuple[Path, List[LocalModelInfo]]],
+) -> List[LocalModelInfo]:
+    """The cross-root half of ``_artifact_mirror_rows``, which sees one cache root at a time. When an artifact
+    mirror's GGUF sits in one root and its diffusers folders in another, each root keeps its own row, because a delete
+    is scoped to one root: the GGUF row counts only its own root, and the folders-only row stays partial and flagged as
+    the GGUF's companion prefetch, never a pick. Every other row passes through unchanged."""
+    gguf_ids = {
+        (row.model_id or "").lower()
+        for _root, rows in rows_by_root
+        for row in rows
+        if row.model_format == "gguf" and row.model_id and _hosts_artifacts(row.model_id)
+    }
+    out: List[LocalModelInfo] = []
+    for _root, rows in rows_by_root:
+        for row in rows:
+            if row.model_format != "gguf" and (row.model_id or "").lower() in gguf_ids:
+                row = row.model_copy(update = {"partial": True, "companion_prefetch": True})
+            out.append(row)
+    return out
 
 
 def _scan_lmstudio_dir(
@@ -1085,18 +1184,25 @@ async def _collect_models_from_default_sources(
     except Exception as e:
         logger.warning("Could not build shared Hub-state index: %s", scrub_paths(e))
         variant_states = None
+    hf_rows_by_root: list[tuple[Path, List[LocalModelInfo]]] = []
     for label, cache_dir, active_cache, discovered in discovered_sources:
-        local_models += await _scan_source(
-            label,
-            lambda path, rows = discovered, active = active_cache: _scan_hf_cache(
-                path,
-                active_cache = active,
-                discovered = rows,
-                variant_states = variant_states,
-                active_hub_cache = hf_cache_dir,
-            ),
-            cache_dir,
+        hf_rows_by_root.append(
+            (
+                cache_dir,
+                await _scan_source(
+                    label,
+                    lambda path, rows = discovered, active = active_cache: _scan_hf_cache(
+                        path,
+                        active_cache = active,
+                        discovered = rows,
+                        variant_states = variant_states,
+                        active_hub_cache = hf_cache_dir,
+                    ),
+                    cache_dir,
+                ),
+            )
         )
+    local_models += _merge_artifact_mirror_roots(hf_rows_by_root)
 
     for lm_dir in lm_dirs:
         local_models += await _scan_source("LM Studio", _scan_lmstudio_dir, lm_dir)
@@ -1231,18 +1337,24 @@ def _scan_custom_folder(
                 limit = _MAX_MODELS_PER_CUSTOM_FOLDER,
                 entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
             )
-            + [
-                row
-                for cache_dir, discovered in hf_caches
-                for row in _scan_hf_cache(
-                    cache_dir,
-                    entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
-                    active_cache = False,
-                    discovered = discovered,
-                    variant_states = variant_states,
-                    active_hub_cache = active_hub_cache,
-                )
-            ]
+            # Several HF caches under one folder are merged like the top-level roots, so an artifact mirror whose
+            # GGUF and diffusers folders sit in different caches is one GGUF row.
+            + _merge_artifact_mirror_roots(
+                [
+                    (
+                        cache_dir,
+                        _scan_hf_cache(
+                            cache_dir,
+                            entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
+                            active_cache = False,
+                            discovered = discovered,
+                            variant_states = variant_states,
+                            active_hub_cache = active_hub_cache,
+                        ),
+                    )
+                    for cache_dir, discovered in hf_caches
+                ]
+            )
             + _scan_lmstudio_dir(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES)
         )
         if _is_supported(m)

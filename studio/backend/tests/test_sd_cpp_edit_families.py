@@ -95,7 +95,8 @@ def test_every_qwen_edit_checkpoint_maps_to_vae_encoder_and_projector(repo, file
     specs = SdCppDiffusionBackend(engine = _FakeEngine())._asset_specs(repo, filename, fam)
     assert specs == [
         (repo, filename, "diffusion_model"),
-        ("unsloth/Qwen-Image-ComfyUI", "split_files/vae/qwen_image_vae.safetensors", "vae"),
+        # qwen-image's official diffusers VAE, the same one the base family reads.
+        ("Qwen/Qwen-Image", "vae/diffusion_pytorch_model.safetensors", "vae"),
         (
             "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
             "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
@@ -103,6 +104,7 @@ def test_every_qwen_edit_checkpoint_maps_to_vae_encoder_and_projector(repo, file
         ),
         ("unsloth/Qwen2.5-VL-7B-Instruct-GGUF", "mmproj-F16.gguf", "llm_vision"),
     ]
+    assert fam.sd_cpp_vae == detect_family("qwen-image").sd_cpp_vae
     assert (fam.sd_cpp_sampling_method, fam.sd_cpp_flow_shift) == ("euler", 3.0)
     assert text_encoder_flags_for_family(fam.name) == ("--qwen2vl",)
 
@@ -116,15 +118,24 @@ def test_kontext_maps_to_the_flux1_assets():
     specs = SdCppDiffusionBackend(engine = _FakeEngine())._asset_specs(
         "unsloth/FLUX.1-Kontext-dev-GGUF", "flux1-kontext-dev-Q4_K_M.gguf", fam
     )
-    assert [k for _r, _f, k in specs] == ["diffusion_model", "vae", "clip_l", "t5xxl"]
+    # The T5-XXL is BFL's sharded file: the index is the --t5xxl input, its two shards are fetched beside it.
+    assert [k for _r, _f, k in specs] == [
+        "diffusion_model",
+        "vae",
+        "clip_l",
+        "t5xxl",
+        "t5xxl_shard",
+        "t5xxl_shard",
+    ]
     assert text_encoder_flags_for_family(fam.name) == ("--clip_l", "--t5xxl")
 
 
 def test_the_new_companions_stay_fetch_only_and_bases_stay_loadable():
     companions = sd_cpp_companion_only_repo_ids()
-    assert "unsloth/qwen-image-comfyui" in companions
     assert "unsloth/qwen2.5-vl-7b-instruct-gguf" in companions
-    # The FLUX.1 VAE lives in a real base; mapping Kontext onto it must not hide that base.
+    # The Qwen edit VAE and the FLUX.1 VAE / encoders live in real bases; mapping the edit families
+    # onto them must not hide those bases.
+    assert "qwen/qwen-image" not in companions
     assert "black-forest-labs/flux.1-schnell" not in companions
 
 

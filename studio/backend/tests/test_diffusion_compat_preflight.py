@@ -796,6 +796,9 @@ def test_the_load_refuses_before_prefetching_or_unloading_anything(monkeypatch, 
 # ── the sibling hole: the native text-encoder pick ─────────────────────────────
 
 
+from core.inference.diffusion_families import _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS  # noqa: E402
+
+
 def test_the_native_encoder_follows_the_header_over_the_filename():
     # A renamed or hand-picked 9B checkpoint says nothing in its id, and the 4B encoder fails deep
     # inside sd-cli. The header knows.
@@ -809,7 +812,8 @@ def test_the_native_encoder_follows_the_header_over_the_filename():
 
     assert by_name == fam.sd_cpp_text_encoders  # today's answer: the 4B encoder
     assert by_header != by_name
-    assert any("9B" in repo for repo, _f, _k in by_header)
+    # The 9B checkpoint reads Qwen3-8B.
+    assert by_header == _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS
 
 
 def test_the_header_also_overrides_a_misleading_9b_filename():
@@ -835,7 +839,7 @@ def test_an_unmapped_or_absent_inner_dim_keeps_the_filename_rule():
             )
             == nine_b
         )
-    assert any("9B" in repo for repo, _f, _k in nine_b)
+    assert nine_b == _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS
 
 
 def test_a_stalled_response_header_cannot_hold_the_picker_open(monkeypatch):

@@ -5494,6 +5494,15 @@ def _repo_model_can_chat(repo_info, selected: Optional[Path] = None) -> Optional
     return None
 
 
+def _repo_hosts_artifacts(repo_id: str) -> bool:
+    """``mirror_hosts_artifacts``, False when the family tables are unavailable."""
+    try:
+        from core.inference.diffusion_families import mirror_hosts_artifacts
+        return mirror_hosts_artifacts(repo_id)
+    except Exception:  # noqa: BLE001 -- no table means no artifact mirrors
+        return False
+
+
 def cached_model_rows(cache_scans = None) -> list[dict]:
     _WEIGHT_EXTENSIONS = _NON_GGUF_WEIGHT_EXTENSIONS
     if cache_scans is None:
@@ -5504,6 +5513,14 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
         active_root = None
 
     seen_lower: dict[str, dict] = {}
+    cache_scans = list(cache_scans)
+    # Across EVERY root, as the cached-model scan decides it: an artifact mirror whose GGUF sits in one root and
+    # whose diffusers folders sit in the other is a GGUF repo, so its folders-only copy is no row of this listing.
+    try:
+        from hub.services.models.cache_inventory import _artifact_gguf_repo_ids
+        artifact_gguf_keys = _artifact_gguf_repo_ids(cache_scans)
+    except Exception:  # noqa: BLE001 -- no table means no artifact mirrors
+        artifact_gguf_keys = set()
     for hf_cache in cache_scans:
         for repo_info in hf_cache.repos:
             try:
@@ -5515,6 +5532,9 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                     continue
                 if _repo_has_gguf_files(repo_info):
                     continue
+                # Its GGUF in another root: listed (its delete is scoped to this root and frees what it shows) but as
+                # a companion of that GGUF, never a single-file or pipeline pick.
+                cross_root_folders = repo_id.lower() in artifact_gguf_keys
                 selected, model_load_id = _repo_model_selection(repo_info, active_root)
                 if _recovered_repo_is_unusable_by_repo_id(repo_info):
                     # That guard withheld these because this schema could describe neither a partial nor a path; it now
@@ -5542,9 +5562,12 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
                 # A companion-only prefetch (manifest + VAE/TE but no transformer shards) is not a loadable pipeline; treat it as partial.
-                is_partial = _cached_repo_partial(
-                    repo_id, Path(repo_info.repo_path), selected
-                ) or _repo_pipeline_missing_denoiser(repo_info, selected)
+                # The FP8 artifact mirror lists as its root checkpoint, as released builds did: its diffusers folders
+                # belong to the BASE pick, and a pipeline pick of the repo itself is refused.
+                artifact_checkpoint = _repo_hosts_artifacts(repo_id) and not cross_root_folders
+                is_partial = _cached_repo_partial(repo_id, Path(repo_info.repo_path), selected) or (
+                    not artifact_checkpoint and _repo_pipeline_missing_denoiser(repo_info, selected)
+                )
                 # Prefer the most COMPLETE snapshot, then largest: a partial copy in one cache root must not shadow a complete copy in another.
                 if existing is None or (not is_partial, total_size) > (
                     not bool(existing.get("partial")),
@@ -5552,13 +5575,17 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                 ):
                     row_task = _cached_repo_task(repo_info, selected)
                     is_diffusers = _repo_is_diffusers(repo_info, selected)
-                    has_pipeline_index = _repo_has_pipeline_index(repo_info, selected)
+                    has_pipeline_index = not artifact_checkpoint and _repo_has_pipeline_index(
+                        repo_info, selected
+                    )
                     row = {
                         "repo_id": repo_id,
                         "size_bytes": total_size,
                         "task": row_task,
                     }
-                    pipeline_artifact_kind = _diffusers_pipeline_artifact_kind(selected)
+                    pipeline_artifact_kind = (
+                        None if artifact_checkpoint else _diffusers_pipeline_artifact_kind(selected)
+                    )
                     if pipeline_artifact_kind is not None:
                         row["artifact_kind"] = pipeline_artifact_kind
                     # Pin a copy its bare id cannot reach, so the pick loads the found snapshot.
@@ -5580,7 +5607,7 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                         row["partial"] = True
                     # Listed, so tens of GB of companion weights stay visible and deletable,
                     # but flagged, so no picker offers a denoiser-less repo as a load.
-                    if _is_sd_cpp_companion_repo(repo_id):
+                    if _is_sd_cpp_companion_repo(repo_id) or cross_root_folders:
                         row["companion"] = True
                     # Flag diffusion repos with no pipeline index: loadable only via from_single_file, so pickers must not offer a pipeline load.
                     if row["task"] is not None and not has_pipeline_index:

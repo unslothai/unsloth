@@ -209,9 +209,15 @@ def test_delete_of_a_companion_base_fails_closed_when_the_cache_cannot_be_read(m
 
 
 def test_the_guard_leaves_ordinary_repos_alone(monkeypatch):
-    """Only a known companion base takes the extra check, so a chat GGUF is untouched by it."""
-    assert not companion_assets.is_companion_base("unsloth/Qwen3-8B-GGUF")
+    """Only a known companion base takes the extra check, so a chat GGUF is untouched by it.
+
+    A chat GGUF sd.cpp borrows as a text encoder (unsloth/Qwen3-8B-GGUF for FLUX.2-klein 9B, like
+    unsloth/Qwen2.5-VL-7B-Instruct-GGUF for Qwen-Image) does take it, so an installed image
+    checkpoint that reads it keeps it; one nobody borrows does not."""
+    assert not companion_assets.is_companion_base("unsloth/Qwen3-14B-GGUF")
     assert companion_assets.is_companion_base(BASE_REPO)
+    for borrowed in ("unsloth/Qwen2.5-VL-7B-Instruct-GGUF", "unsloth/Qwen3-8B-GGUF"):
+        assert companion_assets.is_companion_base(borrowed), borrowed
 
 
 # --------------------------------------------------------------------------------------------
@@ -428,12 +434,14 @@ def test_a_cached_community_repack_is_a_companion_identity_too(monkeypatch):
     """prefer_cached_legacy_source deliberately sends the native fetch back to a repack an
     upgraded install already holds, so on those machines the bytes protecting an installed GGUF
     sit under the OLD repo key. Expanding only the upstream/mirror pair left that copy
-    unprotected: deletable after unload, and the GGUF stranded."""
+    unprotected: deletable after unload, and the GGUF stranded.
+
+    Synthetic mirror -> repack row: no image asset is a repack any more, but the mechanism is
+    generic and still serves the video rows."""
     from core.inference.diffusion_families import legacy_source_repo
 
-    mirror = "unsloth/Z-Image-Turbo-ComfyUI"
-    repack = legacy_source_repo(mirror)
-    assert repack, "the mirror table no longer names a legacy repack; pick another for this test"
+    repack, mirror = _synthetic_legacy_row(monkeypatch)
+    assert legacy_source_repo(mirror) == repack
     companion_assets.record_companion_link(GGUF_REPO, mirror)
     _install(
         monkeypatch,
@@ -579,19 +587,57 @@ def test_a_gguf_in_a_subdirectory_still_pins_its_base(monkeypatch):
     assert asyncio.run(companion_cleanup.orphan_companions_response())["companions"] == []
 
 
+_EXAMPLE_ENCODER = "unsloth/FLUX.2-dev-example-encoder"
+_EXAMPLE_VAE = "unsloth/FLUX.2-dev-example-vae"
+_EXAMPLE_REPACK = "some-org/FLUX.2-dev-example-repack"
+
+
+def _synthetic_legacy_row(
+    monkeypatch,
+    mirror = "unsloth/example-repack-mirror",
+    repack = "some-org/example-repack",
+):
+    """(repack, mirror) after adding a made-up mirror -> community repack row to the legacy table."""
+    from core.inference import diffusion_families
+
+    monkeypatch.setitem(diffusion_families._SD_CPP_LEGACY_SOURCES, mirror.lower(), repack)
+    return repack, mirror
+
+
+def _synthetic_flux2_dev_components(monkeypatch):
+    """Point flux.2-dev's sd-cli VAE and encoder at made-up single-file component repos whose ids
+    carry the family keyword. The real assets now live in a vendor base and an encoder GGUF, neither
+    of which reads as a FLUX.2 checkpoint, so this keeps the keyword trap these tests guard covered."""
+    import dataclasses
+
+    from core.inference import diffusion_families
+
+    families = tuple(
+        dataclasses.replace(
+            fam,
+            sd_cpp_vae = (_EXAMPLE_VAE, "vae.safetensors"),
+            sd_cpp_text_encoders = ((_EXAMPLE_ENCODER, "mistral.safetensors", "llm"),),
+        )
+        if fam.name == "flux.2-dev"
+        else fam
+        for fam in diffusion_families._FAMILIES
+    )
+    monkeypatch.setattr(diffusion_families, "_FAMILIES", families)
+    companions = diffusion_families.sd_cpp_companion_only_repo_ids()
+    assert {_EXAMPLE_ENCODER.lower(), _EXAMPLE_VAE.lower()} <= companions
+
+
 def test_orphaned_native_components_do_not_hold_each_other_on_disk(monkeypatch):
     """A component repo is a companion, not a checkpoint. Several of those ids carry a family
     keyword of their own, so the derivation read a bare text-encoder fetch as an installed model
     and recorded the sibling VAE as still required: the pair survived every cleanup pass until the
     user happened to remove one of them by hand."""
-    encoder = "unsloth/FLUX.2-dev-ComfyUI"
-    vae = "unsloth/FLUX.2-VAE"
+    _synthetic_flux2_dev_components(monkeypatch)
+    encoder, vae = _EXAMPLE_ENCODER, _EXAMPLE_VAE
     _install(
         monkeypatch,
-        _repo(
-            encoder, [("split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors", 9_000)]
-        ),
-        _repo(vae, [("split_files/vae/flux2-vae.safetensors", 300_000)]),
+        _repo(encoder, [("mistral.safetensors", 9_000)]),
+        _repo(vae, [("vae.safetensors", 300_000)]),
     )
     assert companion_cleanup.companion_dependents(vae) == []
     offered = {
@@ -604,13 +650,14 @@ def test_orphaned_native_components_do_not_hold_each_other_on_disk(monkeypatch):
 def test_a_component_repo_holding_a_checkpoint_is_still_a_checkpoint(monkeypatch):
     """The exclusion above is denoiser-gated, so a curated component id the user really did
     install a GGUF from keeps pinning what it needs."""
-    encoder = "unsloth/FLUX.2-dev-ComfyUI"
+    _synthetic_flux2_dev_components(monkeypatch)
+    encoder, vae = _EXAMPLE_ENCODER, _EXAMPLE_VAE
     _install(
         monkeypatch,
-        _repo(encoder, [("split_files/diffusion_models/flux2-dev-Q4_K_M.gguf", 8_000_000)]),
-        _repo("unsloth/FLUX.2-VAE", [("split_files/vae/flux2-vae.safetensors", 300_000)]),
+        _repo(encoder, [("flux2-dev-Q4_K_M.gguf", 8_000_000)]),
+        _repo(vae, [("vae.safetensors", 300_000)]),
     )
-    assert companion_cleanup.companion_dependents("unsloth/FLUX.2-VAE") == [encoder]
+    assert companion_cleanup.companion_dependents(vae) == [encoder]
 
 
 def test_a_vae_only_prequant_fetch_is_not_a_dependent(monkeypatch):
@@ -801,15 +848,15 @@ def test_a_single_file_safetensors_pick_pins_its_base(monkeypatch):
 def test_a_legacy_component_repack_is_not_read_as_a_checkpoint(monkeypatch):
     """An upgraded install holds the component under the repack id the native fetch fell back to.
     That id matches its family just as literally, so without expanding the exclusion through the
-    same mirror identities the orphaned pair kept holding each other on disk."""
-    legacy = "Comfy-Org/flux2-dev"
-    vae = "unsloth/FLUX.2-VAE"
+    same mirror identities the orphaned pair kept holding each other on disk. Synthetic component
+    repos and repack row, as above."""
+    _synthetic_flux2_dev_components(monkeypatch)
+    legacy, _mirror = _synthetic_legacy_row(monkeypatch, _EXAMPLE_ENCODER, _EXAMPLE_REPACK)
+    vae = _EXAMPLE_VAE
     _install(
         monkeypatch,
-        _repo(
-            legacy, [("split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors", 9_000)]
-        ),
-        _repo(vae, [("split_files/vae/flux2-vae.safetensors", 300_000)]),
+        _repo(legacy, [("mistral.safetensors", 9_000)]),
+        _repo(vae, [("vae.safetensors", 300_000)]),
     )
     assert companion_cleanup.companion_dependents(vae) == []
     offered = {
@@ -951,3 +998,94 @@ def test_the_curated_bases_carry_the_whole_mirror_table():
     curated = companion_assets._curated_base_ids()
     missing = [rid for pair in _MIRROR_PAIRS for rid in pair if rid not in curated]
     assert missing == []
+
+
+# --------------------------------------------------------------------------------------------
+# Mirror targets that are also a model's own GGUF repo (unsloth/Z-Image-GGUF holds the official Tongyi-MAI/Z-Image
+# diffusers folders beside its quants).
+
+
+def test_a_turbo_checkpoint_does_not_depend_on_the_base_whose_name_it_contains():
+    """ "zimage" is inside "zimageturbo": a substring match made a Turbo GGUF depend on Tongyi-MAI/Z-Image too, whose
+    mirror is now the Z-Image GGUF repo, so deleting that unrelated repo was refused while Turbo was installed."""
+    scans = [
+        SimpleNamespace(
+            repos = [_repo("unsloth/Z-Image-Turbo-GGUF", [("z-image-turbo-Q4_K_M.gguf", 5_000)])]
+        )
+    ]
+    required = companion_assets.required_companion_bases(scans)
+    assert "tongyi-mai/z-image-turbo" in required
+    assert "tongyi-mai/z-image" not in required
+    assert "unsloth/z-image-gguf" not in required
+    scans = [
+        SimpleNamespace(
+            repos = [
+                _repo(
+                    "unsloth/Qwen-Image-Edit-2511-GGUF",
+                    [("qwen-image-edit-2511-Q4_K_M.gguf", 5_000)],
+                )
+            ]
+        )
+    ]
+    required = companion_assets.required_companion_bases(scans)
+    assert "qwen/qwen-image-edit-2511" in required
+    assert "qwen/qwen-image-edit" not in required
+    assert "unsloth/qwen-image-edit-gguf" not in required
+
+
+def test_an_artifact_mirror_checkpoint_still_protects_its_cached_upstream_base():
+    """The GGUF repo canonicalises to its upstream now, but it is a checkpoint in its own right: a cached upstream
+    base it loads from must keep it as a dependent, not be folded into the GGUF's own identity."""
+    scans = [
+        SimpleNamespace(
+            repos = [
+                _repo("unsloth/Z-Image-GGUF", [("z-image-Q4_K_M.gguf", 5_000)]),
+                _base_repo("Tongyi-MAI/Z-Image"),
+            ]
+        )
+    ]
+    required = companion_assets.required_companion_bases(scans)
+    assert required.get("tongyi-mai/z-image") == {"unsloth/Z-Image-GGUF"}
+
+
+@pytest.mark.parametrize(
+    "retired", ["unsloth/Z-Image-Turbo-ComfyUI", "unsloth/flux-text-encoders", "unsloth/FLUX.2-VAE"]
+)
+def test_a_retired_comfy_companion_left_by_a_released_build_is_offered_for_cleanup(
+    monkeypatch, retired
+):
+    """Released builds fetched the sd-cli VAEs and encoders from ComfyUI-built repacks. This build never reads them
+    again, so on an upgraded install they are pure leftovers: they must stay recognised as companions (hidden from the
+    pickers) and be offered by Free up space, not stranded."""
+    from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
+
+    assert retired.lower() in sd_cpp_companion_only_repo_ids()
+    assert retired.lower() in companion_assets.known_companion_base_ids()
+    _install(monkeypatch, _repo(retired, [("split_files/vae/ae.safetensors", 900_000)]))
+    offered = asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+    assert [c["repo_id"].lower() for c in offered] == [retired.lower()]
+
+
+def test_a_link_to_a_retired_sd_cli_repack_no_longer_pins_it(monkeypatch):
+    """A released sd.cpp load recorded the repos it fetched its VAE / encoders from. This build never reads them, so a
+    still-installed GGUF must not keep them required: they are offered by Free up space, and the next write drops
+    them from the file."""
+    gguf = "unsloth/Z-Image-Turbo-GGUF"
+    retired = "unsloth/Z-Image-Turbo-ComfyUI"
+    repack = "Comfy-Org/z_image_turbo"
+    for stale in (retired, repack, "Tongyi-MAI/Z-Image-Turbo"):
+        assert companion_assets.record_companion_link(gguf, stale) is True
+    links = companion_assets.read_companion_links()
+    assert links[gguf.lower()] == ["Tongyi-MAI/Z-Image-Turbo"]
+
+    scans = _install(
+        monkeypatch,
+        _repo(gguf, [("z-image-turbo-Q4_K_M.gguf", 5_000)]),
+        _repo(retired, [("split_files/vae/ae.safetensors", 900_000)]),
+    )
+    required = companion_assets.required_companion_bases(scans)
+    assert retired.lower() not in required
+    assert repack.lower() not in required
+    assert required["tongyi-mai/z-image-turbo"] == {gguf}
+    offered = asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+    assert retired.lower() in [c["repo_id"].lower() for c in offered]
