@@ -196,25 +196,29 @@ def test_an_irreducible_request_returns_the_original_messages():
     assert truncation["irreducible_tokens"] > truncation["prompt_target"]
 
 
+def _exchange(index, result):
+    return [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": f"call-{index}",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": f"call-{index}", "content": result},
+    ]
+
+
 def _mid_turn(*results):
     """A thread that overflows inside a tool loop: older history, the newest user message,
     then one terminal exchange per result."""
     messages = _thread() + [{"role": "user", "content": "Read main.py and apply your changes."}]
     for index, result in enumerate(results):
-        messages += [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": f"call-{index}",
-                        "type": "function",
-                        "function": {"name": "terminal", "arguments": "{}"},
-                    }
-                ],
-            },
-            {"role": "tool", "tool_call_id": f"call-{index}", "content": result},
-        ]
+        messages += _exchange(index, result)
     return messages
 
 
@@ -223,6 +227,8 @@ def _mid_turn(*results):
     [
         # Everything the turn has done fits beside the reset, so all of it stays.
         (["MAIN-PY " * 100, "ls output"], [0, 1]),
+        # Every exchange before the newest is held, not just the one before it.
+        (["MAIN-PY " * 50, "ls output", "git status"], [0, 1, 2]),
         # Only the oldest exchange has to go for the rest to fit.
         (["A" * 2400, "B" * 1600, "ls output"], [1, 2]),
         # Nothing fits but the newest, as on main.
@@ -247,6 +253,22 @@ def test_a_reset_inside_a_tool_loop_keeps_the_turn_in_progress(results, kept):
     # Each kept result still follows its own call, which strict templates require.
     calls = [m["tool_calls"][0]["id"] for m in fitted if m.get("tool_calls")]
     assert calls == [f"call-{i}" for i in kept]
+
+
+def test_a_reset_inside_a_tool_loop_leaves_room_for_the_next_tool_call():
+    """Held to the brim, the turn in progress reset again on every later tool call and was
+    prefilled again each time."""
+    messages = _mid_turn("A" * 1200, "B" * 1200, "C" * 400)
+
+    brim, _ = _fit(messages, headroom_ratio = 0.0)
+    half, _ = _fit(messages, headroom_ratio = 0.5)
+    fitted, truncation = _fit(messages)
+
+    assert [m["content"][0] for m in brim if m["role"] == "tool"] == ["A", "B", "C"]
+    assert [m["content"][0] for m in half if m["role"] == "tool"] == ["C"]
+    assert truncation["checkpoint_started"] is True
+    assert [m["content"][0] for m in fitted if m["role"] == "tool"] == ["B", "C"]
+    assert _fit(fitted + _exchange(3, "D" * 400))[1] is None
 
 
 def test_the_carried_forward_block_is_capped_and_excludes_the_giant_instruction():
