@@ -181,6 +181,7 @@ def _add_gguf_picks(
     """
     from core.inference.openai_auto_download import preferred_quant
     from hub.utils.gguf import default_gguf_scope, list_local_gguf_variants
+    from utils.models.model_config import list_local_gguf_variants as list_legacy_variants
 
     if load_dir.is_file():
         if load_dir.suffix.lower() != ".gguf":
@@ -199,6 +200,8 @@ def _add_gguf_picks(
         return True
     # filenames come back relative to this directory, which is what the loader joins them onto
     variants, _ = list_local_gguf_variants(str(load_dir))
+    legacy_variants, _ = list_legacy_variants(str(load_dir))
+    legacy_quants = {variant.filename: variant.quant for variant in legacy_variants}
     by_quant = {v.quant: v for v in variants if v.quant}
     if not by_quant:
         return False
@@ -217,6 +220,13 @@ def _add_gguf_picks(
             [f"{key}:{quant}" for key in keys],
             MediaModelPick(keys[0], load_path, variant.filename, "gguf"),
         )
+        legacy_quant = legacy_quants.get(variant.filename)
+        if legacy_quant and legacy_quant.lower() != quant.lower():
+            _register(
+                index,
+                [f"{key}:{legacy_quant}" for key in keys],
+                MediaModelPick(keys[0], load_path, variant.filename, "gguf"),
+            )
     scope = default_gguf_scope(list(openable), *keys, getattr(info, "id", None), str(on_disk))
     best = preferred_quant(scope) or scope[0]
     _register(

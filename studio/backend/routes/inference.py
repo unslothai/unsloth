@@ -10645,6 +10645,13 @@ def _loaded_satisfies(requested: str) -> bool:
             return _ollama_request_is_resident(requested, llama_backend)
         if not _matches_any(requested, candidates) and not _matches_any(base, candidates):
             return False
+        if variant and not looks_like_quant(variant):
+            from core.inference.local_model_resolver import local_gguf_pinned_variant
+            pinned_variant = local_gguf_pinned_variant(requested)
+            if pinned_variant is not None:
+                return (
+                    getattr(llama_backend, "hf_variant", None) or ""
+                ).lower() == pinned_variant.lower()
         if not looks_like_quant(variant):
             return True
         return (getattr(llama_backend, "hf_variant", None) or "").lower() == variant.lower()
@@ -10652,13 +10659,20 @@ def _loaded_satisfies(requested: str) -> bool:
     active = getattr(backend, "active_model_name", None)
     if not active:
         return False
+    matches = _matches_any(
+        base, [active, public_model_id(active), getattr(backend, "_openai_advertised_id", None)]
+    )
+    if not matches:
+        return False
     # Only llama.cpp carries a quant identity, so this backend can only match on the repo.
     if looks_like_quant(variant):
         return False
+    if variant:
+        from core.inference.local_model_resolver import local_gguf_pinned_variant
+        if local_gguf_pinned_variant(requested) is not None:
+            return False
     # The alias too: auto-switch records the repo id there, not in active_model_name.
-    return _matches_any(
-        base, [active, public_model_id(active), getattr(backend, "_openai_advertised_id", None)]
-    )
+    return True
 
 
 def _loaded_identity_satisfies(requested: str) -> bool:
@@ -11306,6 +11320,7 @@ async def _maybe_auto_switch_model(
     )
     from core.inference.local_model_resolver import (
         local_gguf_companion_roots,
+        local_gguf_pinned_variant,
         local_gguf_companion_state,
         local_target_is_gguf,
         resolve_local_gguf_for_switch,
@@ -11550,7 +11565,10 @@ async def _maybe_auto_switch_model(
         # _loaded_satisfies and the resolver read it. Treating it as a quant tears down
         # a serving Q8 to load the preferred Q4 for a request either satisfies.
         _, _requested_variant = split_model_ref(requested_model)
-        bare = not looks_like_quant(_requested_variant)
+        bare = not looks_like_quant(_requested_variant) and (
+            not _requested_variant
+            or local_gguf_pinned_variant(requested_model, allow_scan = False) is None
+        )
 
         ollama_target = target_is_gguf and is_ollama_manifest_ref(target_id)
         ollama_source_identity = (

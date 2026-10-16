@@ -1932,6 +1932,32 @@ def test_a_non_quant_tag_does_not_tear_down_a_serving_quant(monkeypatch):
     assert loads == [], "a tag naming no quant swapped the serving model out"
 
 
+def test_a_split_build_stem_switches_away_from_the_resident_sibling(monkeypatch):
+    entry = resolver._LocalGgufEntry("org/model", "/models/model", ("Q4_K_M", "beta-Q4_K_M"))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/model": entry}))
+    loaded = _Loaded("org/model", "Q4_K_M")
+    loaded.gguf_path = "/models/model/alpha-Q4_K_M.gguf"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    loads: list = []
+
+    async def _record_load(request, *args, **kwargs):
+        loads.append(getattr(request, "gguf_variant", None))
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _record_load)
+    monkeypatch.setattr(
+        "utils.openai_auto_switch_settings.get_openai_auto_switch_enabled", lambda: True
+    )
+
+    asyncio.run(inference_route._maybe_auto_switch_model("org/model:beta-Q4_K_M", _Req(), "tester"))
+
+    assert loads == ["beta-Q4_K_M"]
+
+
 def test_the_trust_probe_never_falls_back_to_the_server_identity(hub, monkeypatch):
     # huggingface_hub treats None as "use the cached login", so only an explicit False
     # is anonymous. This probe passed None, so a caller-named repo was read with the
