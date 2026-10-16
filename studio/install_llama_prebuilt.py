@@ -2799,6 +2799,15 @@ def _pick_rocm_gfx_target(
     if not _tokens:
         return None
 
+    # hipinfo is already filtered by HIP_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES (never ROCR on
+    # Windows): with either set, the selected device is survivor 0.
+    if hip_filtered:
+        _hip_vis = os.environ.get("HIP_VISIBLE_DEVICES")
+        if _hip_vis is None:
+            _hip_vis = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if _hip_vis is not None:
+            return None if _hip_vis.strip() in ("", "-1") else _tokens[0]
+
     _vis_raw = None
     # rocminfo output is already ROCr-filtered and renumbered: only HIP-layer masks index it.
     _masks = (
@@ -2806,11 +2815,10 @@ def _pick_rocm_gfx_target(
         if rocr_filtered
         else ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
     )
-    _vis_env = None
     for _env in _masks:
         _val = os.environ.get(_env)
         if _val is not None:
-            _vis_raw, _vis_env = _val, _env
+            _vis_raw = _val
             break
     # Still an explicit selection: survivor 0, so the discrete repick below must not override it.
     if _vis_raw is None and rocr_filtered and os.environ.get("ROCR_VISIBLE_DEVICES") is not None:
@@ -2820,9 +2828,6 @@ def _pick_rocm_gfx_target(
         # Empty or "-1" means "no AMD GPU visible" (matches the rest of Unsloth).
         if _vis == "" or _vis == "-1":
             return None
-        # Windows HIP never reads ROCR_VISIBLE_DEVICES, so only HIP-layer masks filtered it.
-        if hip_filtered and _vis_env != "ROCR_VISIBLE_DEVICES":
-            return _tokens[0]
         _first = _vis.split(",")[0].strip()
         try:
             _idx = int(_first)

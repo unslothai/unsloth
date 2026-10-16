@@ -92,3 +92,10 @@ def test_hipinfo_keeps_indexing_a_rocr_mask(monkeypatch):
     # Windows HIP ignores ROCR_VISIBLE_DEVICES, so hipinfo lists every card and the index applies.
     host = detect(monkeypatch, "hipinfo", hipinfo_listing(PHYSICAL), {"ROCR_VISIBLE_DEVICES": "1"})
     assert host.rocm_gfx_target == "gfx1201"
+
+
+def test_hipinfo_under_cuda_and_rocr_masks_takes_the_cuda_survivor(monkeypatch):
+    # hipinfo ignores ROCR but CUDA_VISIBLE_DEVICES=2,0 lists physical [2, 0]: survivor 0 is GPU 2.
+    env = {"CUDA_VISIBLE_DEVICES": "2,0", "ROCR_VISIBLE_DEVICES": "1"}
+    host = detect(monkeypatch, "hipinfo", hipinfo_listing([PHYSICAL[2], PHYSICAL[0]]), env)
+    assert host.rocm_gfx_target == "gfx1100"
