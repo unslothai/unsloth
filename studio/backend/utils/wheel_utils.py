@@ -521,7 +521,8 @@ def _uv_static_metadata_config(wheel_url: str, config_dir: str) -> bool:
     """
     if os.environ.get("UV_CONFIG_FILE") or os.environ.get("UV_NO_CONFIG"):
         return False  # uv would not read the file; it runs as before
-    if _uv_project_config_found():
+    # --project would override the user's chosen project, and with it that project's config.
+    if os.environ.get("UV_PROJECT") or _uv_project_config_found():
         return False
     filename = urllib.parse.unquote(urllib.parse.urlsplit(wheel_url).path.rsplit("/", 1)[-1])
     fields = filename[: -len(".whl")].split("-") if filename.endswith(".whl") else []

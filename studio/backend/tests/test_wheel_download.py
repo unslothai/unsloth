@@ -45,6 +45,7 @@ def no_project_config(tmp_path, monkeypatch):
     monkeypatch.setattr(wheel_utils, "_uv_project_config_found", lambda: False)
     monkeypatch.delenv("UV_CONFIG_FILE", raising = False)
     monkeypatch.delenv("UV_NO_CONFIG", raising = False)
+    monkeypatch.delenv("UV_PROJECT", raising = False)
     return tmp_path
 
 
@@ -80,7 +81,7 @@ def test_no_static_metadata_for_what_is_not_a_plain_wheel(url, no_project_config
     assert not (tmp_path / "uv.toml").exists()
 
 
-@pytest.mark.parametrize("variable", ["UV_CONFIG_FILE", "UV_NO_CONFIG"])
+@pytest.mark.parametrize("variable", ["UV_CONFIG_FILE", "UV_NO_CONFIG", "UV_PROJECT"])
 def test_no_static_metadata_where_uv_would_not_read_it(
     variable, no_project_config, tmp_path, monkeypatch
 ):
@@ -235,3 +236,26 @@ def test_real_uv_fetches_the_wheel_once(
     # A reinstall is answered from uv's own cache.
     wheel_utils.install_wheel(url, python_executable = str(python), use_uv = True, reinstall = True)
     assert len(gets) == expected_gets, gets
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason = "needs uv on PATH")
+def test_real_uv_still_honours_the_users_uv_project(
+    no_range_server, no_project_config, tmp_path, monkeypatch
+):
+    """--project would replace UV_PROJECT, and the config of the project the user chose with it."""
+    url, _ = no_range_server
+    venv = tmp_path / "venv"
+    subprocess.run(["uv", "venv", "-q", "--python", sys.executable, str(venv)], check = True)
+    python = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    chosen = tmp_path / "chosen-project"
+    chosen.mkdir()
+    # A requirement no uv meets, so honouring the chosen config is visible as a refusal.
+    (chosen / "uv.toml").write_text('required-version = "==0.0.1"\n', encoding = "utf-8")
+    monkeypatch.setenv("UV_PROJECT", str(chosen))
+    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    installer, result = wheel_utils.install_wheel(url, python_executable = str(python), use_uv = True)[
+        0
+    ]
+    assert installer == "uv" and result.returncode != 0, result.stdout
+    assert "0.0.1" in result.stdout, result.stdout
