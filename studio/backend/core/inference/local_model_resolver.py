@@ -419,12 +419,11 @@ def _local_gguf_entry(
             complete_files = {str(v.filename).casefold() for v in offered if v.quant in complete}
             variants = [v for v in variants if str(v.filename).casefold() in complete_files]
         if cache_repo_dir is None:
-            from utils.models.model_config import colocated_split_shards
             variants = [
                 variant
                 for variant in variants
                 if getattr(variant, "filename", None)
-                and colocated_split_shards(Path(load_dir) / variant.filename)[1]
+                and _split_set_is_loadable(Path(load_dir) / variant.filename)
             ]
         quants = tuple(v.quant for v in variants if getattr(v, "quant", None))
         if not quants:
@@ -1375,6 +1374,18 @@ def _resolve_from_index(
         return _result(entry, entry.variants[0] if entry.variants else None)
     except Exception:
         return None
+
+
+def _split_set_is_loadable(path) -> bool:
+    """Whether the loader finds a complete shard set here or, like it, behind a shard-1 symlink."""
+    from utils.models.model_config import colocated_split_shards
+
+    if colocated_split_shards(path)[1]:
+        return True
+    try:
+        return path.is_symlink() and colocated_split_shards(path.resolve())[1]
+    except OSError:
+        return False
 
 
 def local_gguf_pinned_variant(requested: str, allow_scan: bool = True) -> Optional[str]:

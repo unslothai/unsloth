@@ -10609,6 +10609,14 @@ def _resident_npu_model():
     return npu.loaded_model if npu is not None else None
 
 
+def _unindexed_build_stem(variant: str) -> bool:
+    """Whether *variant* may name a same-quant build (``beta-Q4_K_M``) the cold index cannot place yet."""
+    from core.inference.local_model_resolver import index_is_built
+    from hub.utils.gguf import extract_quant_token
+
+    return not index_is_built() and extract_quant_token(variant) is not None
+
+
 def _loaded_satisfies(requested: str) -> bool:
     """Whether what is serving right now actually answers to *requested*.
 
@@ -10647,11 +10655,14 @@ def _loaded_satisfies(requested: str) -> bool:
             return False
         if variant and not looks_like_quant(variant):
             from core.inference.local_model_resolver import local_gguf_pinned_variant
+
             pinned_variant = local_gguf_pinned_variant(requested, allow_scan = False)
             if pinned_variant is not None:
                 return (
                     getattr(llama_backend, "hf_variant", None) or ""
                 ).lower() == pinned_variant.lower()
+            if _unindexed_build_stem(variant):
+                return False
         if not looks_like_quant(variant):
             return True
         return (getattr(llama_backend, "hf_variant", None) or "").lower() == variant.lower()
@@ -10670,6 +10681,8 @@ def _loaded_satisfies(requested: str) -> bool:
     if variant:
         from core.inference.local_model_resolver import local_gguf_pinned_variant
         if local_gguf_pinned_variant(requested, allow_scan = False) is not None:
+            return False
+        if _unindexed_build_stem(variant):
             return False
     # The alias too: auto-switch records the repo id there, not in active_model_name.
     return True

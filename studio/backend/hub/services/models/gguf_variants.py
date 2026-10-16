@@ -1433,7 +1433,8 @@ async def get_gguf_variants_answer(
                 return complete is None or not v.quant or v.quant in complete
 
             if context_root:
-                root = Path(context_root).expanduser()
+                # absolute, since detect_gguf_model answers absolute paths for a relative id
+                root = Path(context_root).expanduser().absolute()
                 source_root = root.parent if root.is_file() else root
                 rows_by_legacy_key: dict[str, list] = {}
                 for variant in variants:

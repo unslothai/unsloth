@@ -750,6 +750,27 @@ def test_local_gguf_entry_does_not_publish_a_torn_sibling_build(tmp_path):
     assert entry.variants == ("Q4_K_M",)
 
 
+def test_local_gguf_entry_keeps_a_split_build_linked_to_its_complete_set(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    for index in (1, 2):
+        (store / f"beta-Q4_K_M-0000{index}-of-00002.gguf").write_bytes(b"x" * 60)
+    folder = tmp_path / "models"
+    folder.mkdir()
+    (folder / "alpha-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    try:
+        (folder / "beta-Q4_K_M-00001-of-00002.gguf").symlink_to(
+            store / "beta-Q4_K_M-00001-of-00002.gguf"
+        )
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(folder)))
+
+    assert entry is not None
+    assert len(entry.variants) == 2
+
+
 def test_local_gguf_entry_labels_a_quantless_filename_as_the_picker_does(tmp_path):
     # No quant token in the name, so the picker and every saved setting key this variant by
     # the stem. Labelling it "v2" here left an API load reading a key nothing wrote (#10227).
@@ -8749,6 +8770,21 @@ def test_two_local_paths_differing_only_in_case_are_not_the_same_model(monkeypat
     alias = _FakeBackend(loaded_id = "unsloth/Qwen3-4B-GGUF")
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: alias)
     assert inference_route._loaded_satisfies("unsloth/qwen3-4b-gguf") is True
+
+
+def test_a_cold_index_does_not_answer_a_build_stem_with_the_resident_sibling(monkeypatch):
+    # alpha-Q4_K_M is resident under the bare Q4_K_M key; before the first scan nothing can
+    # pin beta-Q4_K_M, so the resident sibling must not count as serving it (#13957).
+    loaded = _FakeBackend(loaded_id = "local/model")
+    loaded.hf_variant = "Q4_K_M"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    assert inference_route._loaded_satisfies("local/model:beta-Q4_K_M") is False
+    assert inference_route._loaded_satisfies("local/model:latest") is True
+    assert inference_route._loaded_satisfies("local/model:Q4_K_M") is True
+
+    monkeypatch.setattr(resolver, "_scan", (1.0, {}))
+    assert inference_route._loaded_satisfies("local/model:beta-Q4_K_M") is True
 
 
 def test_abs_path_ids_are_recognised_in_either_platform_spelling():

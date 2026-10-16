@@ -204,6 +204,23 @@ def test_default_build_matches_variantless_local_file_ranking(tmp_path):
     assert response.default_variant == "Q4_K_M"
 
 
+def test_default_build_matches_variantless_ranking_for_a_relative_folder(tmp_path, monkeypatch):
+    import asyncio
+
+    from hub.services.models.gguf_variants import get_gguf_variants_response
+
+    folder = tmp_path / "custom"
+    folder.mkdir()
+    (folder / "alpha-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (folder / "beta-Q4_K_M-00001-of-00002.gguf").write_bytes(b"x" * 60)
+    (folder / "beta-Q4_K_M-00002-of-00002.gguf").write_bytes(b"x" * 60)
+    monkeypatch.chdir(tmp_path)
+
+    response = asyncio.run(get_gguf_variants_response("custom", prefer_local_cache = True))
+
+    assert response.default_variant == "Q4_K_M"
+
+
 def test_a_bare_named_sibling_cannot_collide_with_the_legacy_quant_key(tmp_path):
     import asyncio
 
