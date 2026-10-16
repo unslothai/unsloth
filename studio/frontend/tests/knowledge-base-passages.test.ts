@@ -12,6 +12,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import * as jsxRuntime from "react/jsx-runtime";
 import * as citationUtils from "../src/components/assistant-ui/citation-utils.ts";
 import type * as PassagesModule from "../src/components/assistant-ui/knowledge-base-passages.tsx";
+import { attachmentFileKind } from "../src/features/chat/lib/attachment-file-kind.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 const {
@@ -30,6 +31,7 @@ const { KnowledgeBasePassages } = loadWithStubs<typeof PassagesModule>(
     react: React,
     "react/jsx-runtime": jsxRuntime,
     "./citation-utils": citationUtils,
+    "@/features/chat": { attachmentFileKind },
     "@/lib/file-icon": { FileGlyph: () => null },
     // Marks where each passage opens, so the markup shows the document and page it was given.
     "@/features/rag": {
@@ -384,4 +386,36 @@ test("code and config passages keep their # comments and indentation", () => {
   assert.ok(html.includes("\n    x = 1\n    return x"));
   // pre-wrap keeps the indentation on screen; pre-line would collapse it.
   assert.match(html, /whitespace-pre-wrap/);
+});
+
+test("code and config passages render in a monospace font; documents and notes do not", () => {
+  const passage = (filename: string) =>
+    render(
+      searchResult([
+        {
+          chunkId: `${filename}:0`,
+          documentId: filename,
+          filename,
+          page: null,
+          text: "retries = 3",
+          score: 1,
+        },
+      ]),
+    );
+  for (const filename of [
+    "worker.py",
+    "config.yaml",
+    "settings.toml",
+    "query.sql",
+  ]) {
+    assert.match(passage(filename), /font-mono/, filename);
+  }
+  for (const filename of [
+    "handbook.pdf",
+    "lab.md",
+    "notes.txt",
+    "report.docx",
+  ]) {
+    assert.ok(!passage(filename).includes("font-mono"), filename);
+  }
 });

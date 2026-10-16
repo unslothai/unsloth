@@ -3,6 +3,7 @@
 
 "use client";
 
+import { attachmentFileKind } from "@/features/chat";
 import { RagDocumentTrigger } from "@/features/rag";
 import { FileGlyph } from "@/lib/file-icon";
 import { useMemo, useState } from "react";
@@ -30,6 +31,8 @@ function PassageItem({
   const { citation, number } = passage;
   const text = passageDisplayText(citation.text, citation.filename);
   const clampable = passageNeedsClamp(text);
+  // Code and config read by their indentation and alignment, which a proportional font loses.
+  const code = attachmentFileKind(citation.filename, undefined) === "code";
   const [expanded, setExpanded] = useState(false);
   const location = citation.page != null ? `p.${citation.page}` : null;
 
@@ -72,8 +75,8 @@ function PassageItem({
       </div>
       <p
         className={`whitespace-pre-wrap break-words text-xs leading-relaxed text-foreground/90 ${
-          clampable && !expanded ? "line-clamp-4" : ""
-        }`}
+          code ? "font-mono" : ""
+        } ${clampable && !expanded ? "line-clamp-4" : ""}`}
       >
         {text}
       </p>
