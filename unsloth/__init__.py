@@ -1690,10 +1690,3 @@ try:
     del _fix_dill
 except Exception:
     pass
-
-# Activation capture for neuron visualization
-from .activation_capture import (
-    ActivationCaptureConfig,
-    ActivationCapture,
-    ActivationCaptureCallback,
-)

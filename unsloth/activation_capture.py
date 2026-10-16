@@ -271,12 +271,12 @@ class ActivationCapture:
             "lora_targets": lora_targets,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
-        with open(os.path.join(config.output_dir, "metadata.json"), "w") as f:
+        with open(os.path.join(config.output_dir, "metadata.json"), "w", encoding = "utf-8") as f:
             json.dump(metadata, f, indent = 2)
 
         # ---- prepare output file -----------------------------------------
         self._log_path = os.path.join(config.output_dir, "activation_log.jsonl")
-        open(self._log_path, "w").close()  # truncate / create
+        open(self._log_path, "w", encoding = "utf-8").close()  # truncate / create
 
         logger.info(
             "ActivationCapture: %d channels × %d layers → %s",
@@ -518,7 +518,7 @@ class ActivationCapture:
                     for target, norm in targets.items()
                 }
 
-        with open(self._log_path, "a") as f:
+        with open(self._log_path, "a", encoding = "utf-8") as f:
             f.write(json.dumps(record, separators = (",", ":")) + "\n")
 
         self._buffer.clear()

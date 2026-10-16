@@ -306,7 +306,7 @@ def run(args):
 
     # Attach activation capture now that model exists
     if args.capture_activations:
-        from unsloth import ActivationCapture, ActivationCaptureCallback
+        from unsloth.activation_capture import ActivationCapture, ActivationCaptureCallback
 
         capture = ActivationCapture(model, _capture_cfg)
         capture_callback = ActivationCaptureCallback(capture)

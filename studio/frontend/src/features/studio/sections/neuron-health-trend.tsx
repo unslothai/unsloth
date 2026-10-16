@@ -64,7 +64,7 @@ function TrendChartBody({
   bottomMargin = 18,
 }: TrendChartBodyProps): ReactElement {
   const tooltipStyle = {
-    fontSize: 11,
+    fontSize: "calc(0.6875rem * var(--ui-font-scale, 1))",
     borderRadius: 8,
     background: "hsl(var(--popover))",
     color: isDark ? "#fff" : "#000",
@@ -86,19 +86,19 @@ function TrendChartBody({
         <CartesianGrid strokeDasharray="3 3" className="stroke-border/40" />
         <XAxis
           dataKey="step"
-          tick={{ fontSize: 10 }}
+          tick={{ fontSize: "calc(0.625rem * var(--ui-font-scale, 1))" }}
           className="fill-muted-foreground"
           label={{
             value: "Step →",
             position: "insideBottom",
             offset: -2,
-            fontSize: 10,
+            fontSize: "calc(0.625rem * var(--ui-font-scale, 1))",
             fill: "rgba(120,120,120,0.75)",
           }}
         />
         <YAxis
           tickFormatter={(v: number) => `${v.toFixed(0)}%`}
-          tick={{ fontSize: 10 }}
+          tick={{ fontSize: "calc(0.625rem * var(--ui-font-scale, 1))" }}
           width={36}
           className="fill-muted-foreground"
           domain={[0, "auto"]}
@@ -146,7 +146,7 @@ function TrendChartBody({
 
 function TrendLegend(): ReactElement {
   return (
-    <span className="flex gap-3 text-[10px] font-normal text-muted-foreground">
+    <span className="flex gap-3 text-ui-10 font-normal text-muted-foreground">
       <span className="flex items-center gap-1">
         <span className="inline-block h-2 w-3 rounded-sm" style={{ backgroundColor: DEAD_COLOR }} />
         Dead

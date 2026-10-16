@@ -212,7 +212,7 @@ export function DeadNeuronPanel({ isTraining, records, stepIndex, onStepChange }
                     <TooltipTrigger asChild>
                       <button
                         type="button"
-                        className="inline-flex cursor-default items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium select-none border-red-500/40 bg-red-500/10 text-red-500"
+                        className="inline-flex cursor-default items-center rounded-full border px-1.5 py-0.5 text-ui-10 font-medium select-none border-red-500/40 bg-red-500/10 text-red-500"
                       >
                         dead (avg)
                       </button>
@@ -233,7 +233,7 @@ export function DeadNeuronPanel({ isTraining, records, stepIndex, onStepChange }
                     <TooltipTrigger asChild>
                       <button
                         type="button"
-                        className="inline-flex cursor-default items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium select-none border-amber-500/40 bg-amber-500/10 text-amber-500"
+                        className="inline-flex cursor-default items-center rounded-full border px-1.5 py-0.5 text-ui-10 font-medium select-none border-amber-500/40 bg-amber-500/10 text-amber-500"
                       >
                         constant (avg)
                       </button>

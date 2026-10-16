@@ -350,12 +350,12 @@ export function DiagnosticsPanel({
                           {f.title}
                         </span>
                         {f.stepIndex !== undefined && (
-                          <span className="text-[10px] text-muted-foreground/60 tabular-nums">
+                          <span className="text-ui-10 text-muted-foreground/60 tabular-nums">
                             step {records[f.stepIndex]?.step ?? f.stepIndex}
                           </span>
                         )}
                       </div>
-                      <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      <p className="text-ui-11 text-muted-foreground leading-relaxed">
                         {f.detail}
                       </p>
                       {f.layers && f.layers.length > 0 && (
@@ -363,7 +363,7 @@ export function DiagnosticsPanel({
                           {f.layers.map((l) => (
                             <span
                               key={l}
-                              className="rounded border border-border/50 px-1.5 py-px text-[10px] font-mono text-muted-foreground"
+                              className="rounded border border-border/50 px-1.5 py-px text-ui-10 font-mono text-muted-foreground"
                             >
                               {l}
                             </span>

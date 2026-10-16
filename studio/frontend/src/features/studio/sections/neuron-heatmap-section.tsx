@@ -340,7 +340,7 @@ type TooltipState = {
 function KatexDisplay({ latex }: { latex: string }): ReactElement {
   return (
     <span
-      className="block overflow-x-auto text-[11px]"
+      className="block overflow-x-auto text-ui-11"
       dangerouslySetInnerHTML={{
         __html: katex.renderToString(latex, { throwOnError: false, displayMode: true }),
       }}
@@ -435,7 +435,7 @@ function ModePill({
           onClick={disabled ? undefined : onClick}
           style={active && activeColor ? { borderColor: activeBorderColor, backgroundColor: activeBgColor, color: activeColor } : undefined}
           className={cn(
-            "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors select-none",
+            "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-ui-10 font-medium transition-colors select-none",
             active && !activeColor
               ? "border-primary/60 bg-primary/15 text-primary"
               : disabled
@@ -607,7 +607,7 @@ function HeatmapCanvas({
           }}
           className="rounded-lg border border-border/60 bg-popover text-popover-foreground px-2.5 py-1.5 shadow-lg"
         >
-          <div className="flex flex-col gap-0.5 text-[11px]">
+          <div className="flex flex-col gap-0.5 text-ui-11">
             <div className="flex items-center justify-between gap-4">
               <span className="text-muted-foreground">Layer</span>
               <span className="font-mono font-medium tabular-nums">{tooltip.layerKey}</span>
@@ -665,10 +665,10 @@ function ColorLegend({
 
   return (
     <div className="flex items-center gap-2">
-      <span className="text-[10px] text-muted-foreground">Low</span>
+      <span className="text-ui-10 text-muted-foreground">Low</span>
       <canvas ref={canvasRef} className="h-2 flex-1 rounded-full" />
-      <span className="text-[10px] text-muted-foreground">High</span>
-      <span className="mx-1 text-[10px] text-muted-foreground/50">·</span>
+      <span className="text-ui-10 text-muted-foreground">High</span>
+      <span className="mx-1 text-ui-10 text-muted-foreground/50">·</span>
       <span
         className="inline-block h-2 w-2 rounded-sm flex-shrink-0"
         style={{ backgroundColor: swatchColor }}
@@ -679,7 +679,7 @@ function ColorLegend({
             type="button"
             onClick={onToggleBlend}
             className={cn(
-              "inline-flex cursor-pointer items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium select-none transition-colors",
+              "inline-flex cursor-pointer items-center rounded-full border px-1.5 py-0.5 text-ui-10 font-medium select-none transition-colors",
               outlierBlend
                 ? "border-orange-400/60 bg-orange-400/20 text-orange-400"
                 : "border-current/20 bg-muted text-muted-foreground hover:text-foreground",
@@ -779,7 +779,7 @@ export function ReplayControls({
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
-        <Button size="sm" variant="outline" className="h-6 w-16 text-[11px]" onClick={handleToggle}>
+        <Button size="sm" variant="outline" className="h-6 w-16 text-ui-11" onClick={handleToggle}>
           {playing ? "⏸ Pause" : "▶ Play"}
         </Button>
         <input
@@ -790,19 +790,19 @@ export function ReplayControls({
           onChange={(e) => { stopPlayback(); onStepChange(Number(e.target.value)); }}
           className="h-1 flex-1 cursor-pointer accent-primary"
         />
-        <span className="min-w-[calc(4rem*var(--ui-space-scale,1))] text-right text-[11px] tabular-nums text-muted-foreground">
+        <span className="min-w-[calc(4rem*var(--ui-space-scale,1))] text-right text-ui-11 tabular-nums text-muted-foreground">
           Step {currentStep}
         </span>
       </div>
       <div className="flex items-center gap-1.5">
-        <span className="text-[10px] text-muted-foreground">Speed</span>
+        <span className="text-ui-10 text-muted-foreground">Speed</span>
         {SPEEDS.map((s) => (
           <button
             key={s}
             type="button"
             onClick={() => setSpeed(s)}
             className={cn(
-              "rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors",
+              "rounded px-1.5 py-0.5 text-ui-10 font-medium transition-colors",
               speed === s ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground",
             )}
           >
@@ -815,7 +815,7 @@ export function ReplayControls({
           aria-pressed={loop}
           onClick={() => setLoop((l) => !l)}
           className={cn(
-            "ml-1 rounded p-0.5 text-[12px] leading-none transition-colors",
+            "ml-1 rounded p-0.5 text-ui-12 leading-none transition-colors",
             loop ? "text-primary" : "text-muted-foreground hover:text-foreground",
           )}
         >
@@ -879,13 +879,13 @@ export function NeuronHeatmapSection({
           <div className="flex items-center gap-1.5">
             <CardTitle className="text-sm ml-1">Neuron Activations</CardTitle>
             {records.length > 0 && (
-              <span className="rounded border border-border/60 px-2 py-0.5 text-[10px] leading-none text-muted-foreground whitespace-nowrap">
+              <span className="rounded border border-border/60 px-2 py-0.5 text-ui-10 leading-none text-muted-foreground whitespace-nowrap">
                 {numLayers} layers · {numChannels} ch
               </span>
             )}
           </div>
           <div className="flex items-center gap-2">
-            <span className="tabular-nums text-[10px] text-muted-foreground flex items-center gap-1">
+            <span className="tabular-nums text-ui-10 text-muted-foreground flex items-center gap-1">
               {loading && (
                 <svg className="animate-spin h-2.5 w-2.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" strokeLinecap="round"/>
@@ -894,7 +894,7 @@ export function NeuronHeatmapSection({
               {record?.loss != null && <>loss {record.loss.toFixed(3)}</>}
             </span>
             {isTraining && records.length > 0 && (
-              <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+              <span className="flex items-center gap-1 text-ui-10 text-muted-foreground">
                 <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
                 Live
               </span>
@@ -902,7 +902,7 @@ export function NeuronHeatmapSection({
             <button
               type="button"
               onClick={() => setInfoOpen(true)}
-              className="rounded border border-border/60 px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground/80 transition-colors hover:bg-muted/60 hover:text-foreground hover:border-border focus:text-foreground leading-none"
+              className="rounded border border-border/60 px-1.5 py-0.5 text-ui-10 font-semibold text-muted-foreground/80 transition-colors hover:bg-muted/60 hover:text-foreground hover:border-border focus:text-foreground leading-none"
               title="How to read this chart"
               aria-label="Open interpretability guide"
             >
@@ -960,7 +960,7 @@ export function NeuronHeatmapSection({
         {record && <ColorLegend outlierBlend={outlierBlend} onToggleBlend={toggleOutlierBlend} />}
 
         {!loading && records.length === 0 && (
-          <p className="text-center text-[11px] text-muted-foreground">
+          <p className="text-center text-ui-11 text-muted-foreground">
             Activation data will appear here during training
           </p>
         )}
