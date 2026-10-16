@@ -393,10 +393,26 @@ def test_model_forward_longrope_offset_positions_match_transformers():
     torch.testing.assert_close(sin[position_ids[0]].float(), ref_sin[0], atol = 2e-3, rtol = 0)
 
 
-def test_model_forward_longrope_offset_positions_without_sync_under_compile(monkeypatch):
-    # While tracing there is no .item(): positions may span max_position_embeddings, so take the long cache.
+@pytest.mark.parametrize("start", [0, 40000])
+def test_model_forward_longrope_under_compile_matches_eager_without_sync(monkeypatch, start):
+    # While tracing, the short / long choice is made in the graph: no .item() or int() on a tensor.
+    position_ids = torch.arange(start, start + 4)[None]
+    eager_cos, eager_sin = _model_forward_rope(_longrope(1 << 17, 4096), 4, position_ids, 1 << 17)
     monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
-    monkeypatch.setattr(torch.Tensor, "max", lambda *args, **kwargs: pytest.fail("host sync"))
-    rope = _longrope(1 << 17, 4096)
-    cos, _ = _model_forward_rope(rope, 4, torch.tensor([[40000, 40001, 40002, 40003]]), 1 << 17)
-    assert cos is rope.multi_gpu_long_cos_cached[0]
+    monkeypatch.setattr(torch.Tensor, "item", lambda *args: pytest.fail("host sync"))
+    monkeypatch.setattr(torch.Tensor, "__int__", lambda *args: pytest.fail("host sync"))
+    cos, sin = _model_forward_rope(_longrope(1 << 17, 4096), 4, position_ids, 1 << 17)
+    assert torch.equal(cos[position_ids[0]], eager_cos[position_ids[0]])
+    assert torch.equal(sin[position_ids[0]], eager_sin[position_ids[0]])
+
+
+def test_first_grown_cache_is_computed_on_cpu():
+    # A configured max above the 4 * 8192 floor grows the size on the first forward, before any cache
+    # exists; that first build must still run on CPU, while later growth uses inv_freq's device.
+    rope = _llama(1 << 17)
+    rope.inv_freq = rope.inv_freq.to("meta")
+    cos, sin = _model_forward_rope(rope, 2, None, 1 << 17)
+    ref_cos, ref_sin = _reference(cos.shape[0], torch.float16)
+    assert torch.equal(cos, ref_cos) and torch.equal(sin, ref_sin)
+    with pytest.raises(NotImplementedError):
+        rope.extend_rope_embedding(_x(0, torch.float16), 1 << 18)
