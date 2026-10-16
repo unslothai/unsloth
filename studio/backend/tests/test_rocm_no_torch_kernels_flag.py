@@ -14,7 +14,13 @@ import pytest
 import utils.hardware.hardware as hw
 
 
-def _row(index, name, total_gb, *, unified = False):
+def _row(
+    index,
+    name,
+    total_gb,
+    *,
+    unified = False,
+):
     return {
         "index": index,
         "visible_ordinal": index,
@@ -49,7 +55,9 @@ def rocm_host(monkeypatch):
 
 
 def _devices():
-    return {d["index"]: d for d in hw._probe_backend_visible_gpu_info(hw.DeviceType.CUDA)["devices"]}
+    return {
+        d["index"]: d for d in hw._probe_backend_visible_gpu_info(hw.DeviceType.CUDA)["devices"]
+    }
 
 
 def test_uncovered_igpu_is_flagged(rocm_host):
