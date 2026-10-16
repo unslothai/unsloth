@@ -471,6 +471,16 @@ def untrack_admitted_inference(scope) -> None:
     _note_admitted_end()
 
 
+def end_in_process_request(scope, answered: bool) -> None:
+    """For a request produced in-process (a scheduled task's run), what LlamaKeepWarmMiddleware does
+    when an HTTP one ends, as this one never passes through it: an answer from the local model
+    adopts it for Unsloth, and the admitted-inference count it took is given back, or preview
+    loads stay refused as busy. Idempotent."""
+    if answered and isinstance(scope, dict) and scope.get(_ADMITTED_SCOPE_KEY):
+        _claim_non_preview_slot()
+    untrack_admitted_inference(scope)
+
+
 def begin_preview_serializer_wait(scope) -> bool:
     """Move a tracked preview from active to pending while it waits on the route lock."""
     global _inflight, _pending, _preview_inflight, _preview_pending

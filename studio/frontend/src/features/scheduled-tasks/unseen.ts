@@ -6,19 +6,14 @@
  *  is touched). In the startup bundle, beside the results poll that fills it. */
 
 import { create } from "zustand";
-import {
-  AUTH_SESSION_CLEARED_EVENT,
-  AUTH_SESSION_STORED_EVENT,
-  getAuthToken,
-  sessionAccount,
-} from "@/features/auth";
+import { AUTH_SESSION_CLEARED_EVENT, AUTH_SESSION_STORED_EVENT, getAuthToken } from "@/features/auth";
+import { browserAccountKey } from "@/lib/account-transition";
 import { UNSEEN_KEY_PREFIX } from "./results";
 
-/** The signed-in account's record, or none while signed out. Each account keeps its own, so
- *  signing out or into another account does not count as having looked. */
+/** The signed-in account's record, or none while signed out. Each account keeps its own, by id,
+ *  so signing out or into another account does not count as having looked. */
 function storageKey(): string | null {
-  const token = getAuthToken();
-  return token ? UNSEEN_KEY_PREFIX + (sessionAccount(token)?.username ?? "") : null;
+  return getAuthToken() ? UNSEEN_KEY_PREFIX + browserAccountKey() : null;
 }
 
 interface Stored {

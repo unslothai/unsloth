@@ -828,6 +828,46 @@ def test_a_run_that_never_answers_is_stopped(monkeypatch):
     assert cancel_event.is_set() and producer.cancelled
 
 
+class AdmittedProducer(FakeProducer):
+    """Admits the request the way the auto-switch hook does for local chat."""
+
+    async def __call__(self, payload, request, current_subject, *, cancel_on_disconnect):
+        from core.inference import llama_keepwarm
+
+        llama_keepwarm.note_admitted_inference(request.scope)
+        self.admitted = llama_keepwarm.other_admitted_inference_count()
+        return await super().__call__(
+            payload, request, current_subject, cancel_on_disconnect = cancel_on_disconnect
+        )
+
+
+@pytest.mark.parametrize("answers", [True, False])
+def test_a_run_gives_back_its_admission_and_adopts_the_model_only_once_answered(
+    monkeypatch, answers
+):
+    from core.inference import llama_keepwarm
+
+    claims = []
+    monkeypatch.setattr(inference_routes, "_set_preview_resident", claims.append)
+    before = llama_keepwarm.other_admitted_inference_count()
+    producer = (
+        AdmittedProducer(completion("Done."))
+        if answers
+        else AdmittedProducer(error = HTTPException(status_code = 500, detail = "boom"))
+    )
+    monkeypatch.setattr(inference_routes, "_loaded_slot_ident", lambda: "gemma-3")
+    try:
+        generate(monkeypatch, producer)
+    except RunFailed:
+        assert not answers
+
+    assert producer.admitted == before + 1
+    # No middleware sees this request end, so the run gives the count back itself, or preview
+    # loads would stay refused as busy.
+    assert llama_keepwarm.other_admitted_inference_count() == before
+    assert claims == ([None] if answers else [])
+
+
 def test_a_run_whose_model_load_never_lets_go_times_out(monkeypatch):
     from core.inference import llama_keepwarm
 

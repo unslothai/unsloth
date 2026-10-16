@@ -172,7 +172,7 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
     from fastapi import HTTPException
 
     from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
-    from core.inference.llama_keepwarm import InferenceActivityReservation
+    from core.inference.llama_keepwarm import InferenceActivityReservation, end_in_process_request
     from models.inference import ChatCompletionRequest
     from routes.inference import produce_openai_chat_completions
 
@@ -194,9 +194,11 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
     )
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _RUN_TIMEOUT_SECONDS
+    request = _producer_request(app, run["id"], cancel_event, task["timezone"])
     activity = InferenceActivityReservation()
     activity.reserve()
     producer: Optional[asyncio.Future] = None
+    response = None
     try:
         # The deadline covers the wait for a model load or unload to let go too: one that never
         # does must not keep the scheduler from every other task.
@@ -209,7 +211,7 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
         producer = asyncio.ensure_future(
             produce_openai_chat_completions(
                 payload,
-                _producer_request(app, run["id"], cancel_event, task["timezone"]),
+                request,
                 task["ownerSubject"],
                 cancel_on_disconnect = False,
             )
@@ -232,6 +234,10 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
             producer.cancel()
             await asyncio.wait({producer}, timeout = _CANCEL_GRACE_SECONDS)
         activity.finish()
+        end_in_process_request(
+            request.scope,
+            answered = response is not None and int(getattr(response, "status_code", 200)) < 400,
+        )
     if cancel_event.is_set():
         raise RunFailed("cancelled")
     body = getattr(response, "body", None)

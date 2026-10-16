@@ -3,15 +3,10 @@
 
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
-import {
-  AUTH_SESSION_STORED_EVENT,
-  getAuthSessionEpoch,
-  getAuthToken,
-  hasSettledAuthSession,
-  sessionAccount,
-} from "@/features/auth";
+import { AUTH_SESSION_STORED_EVENT, getAuthSessionEpoch, hasSettledAuthSession } from "@/features/auth";
 import { notifyChatHistoryUpdated, useChatNavigationStore } from "@/features/chat";
 import { translate } from "@/i18n";
+import { browserAccountKey } from "@/lib/account-transition";
 import { isTauri } from "@/lib/api-base";
 import { notifyNative } from "@/lib/native-notifications";
 import { toast } from "@/lib/toast";
@@ -39,9 +34,9 @@ const RECHECK_MS = 500;
 const ANNOUNCE_LOCK_PREFIX = "unsloth-scheduled-task-results:";
 
 /** The signed-in account the record belongs to: another account's cursor would pass over this
- *  one's results. A token that names none shares one record. */
+ *  one's results. By id, so an account made later under a deleted one's name starts afresh. */
 function currentAccount(): string {
-  return sessionAccount(getAuthToken())?.username ?? "";
+  return browserAccountKey();
 }
 
 function loadSeen(account: string): SeenRuns | null {
@@ -152,32 +147,32 @@ export function ScheduledTaskRunNotifier() {
       void navigateRef.current({ to: "/chat", search: { thread: threadId } });
     const openTasks = () => void navigateRef.current({ to: "/tasks" });
 
-    // In every tab: the new chats in Recents, marked unread, the unseen dots, and a loaded
-    // Scheduled page up to date.
+    // In every tab: the new chats in Recents, and a loaded Scheduled page up to date.
     const refreshFor = (finished: FinishedScheduledTaskRun[]) => {
-      const threadIds = finished.flatMap((run) =>
-        run.status === "succeeded" && run.threadId ? [run.threadId] : [],
-      );
-      if (threadIds.length > 0) {
+      if (finished.some((run) => run.status === "succeeded" && run.threadId)) {
         notifyChatHistoryUpdated();
-        useChatNavigationStore.getState().markThreadsUnread(threadIds);
       }
       window.dispatchEvent(new Event(SCHEDULED_TASK_RUNS_FINISHED_EVENT));
-      const shown = runsToAnnounce(finished);
-      if (shown.length === 0) return;
+    };
+
+    // In the one tab that claimed them: the chats marked unread, the unseen dots (which reach
+    // the account's other tabs through storage), the toasts, and a system notification. A tab
+    // that lost the claim marks nothing, so it cannot bring back a dot the user cleared meanwhile
+    // by opening the chat in the faster tab.
+    const announce = (claimed: FinishedScheduledTaskRun[]) => {
+      const runs = runsToAnnounce(claimed);
+      if (runs.length === 0) return;
+      const threadIds = runs.flatMap((run) =>
+        run.status === "succeeded" && run.threadId ? [run.threadId] : [],
+      );
+      if (threadIds.length > 0) useChatNavigationStore.getState().markThreadsUnread(threadIds);
       useUnseenScheduledRuns.getState().markFinished(
-        shown.map((run) => ({
+        runs.map((run) => ({
           taskId: run.taskId,
           threadId: run.status === "succeeded" ? run.threadId : null,
         })),
         pathnameRef.current === "/tasks",
       );
-    };
-
-    // In the one tab that claimed them: the toasts, and a system notification.
-    const announce = (claimed: FinishedScheduledTaskRun[]) => {
-      const runs = runsToAnnounce(claimed);
-      if (runs.length === 0) return;
       if (runs.length > INDIVIDUAL_TOASTS) {
         toast(translate("scheduledTasks.toast.many", { count: runs.length }), {
           action: { label: translate("scheduledTasks.toast.view"), onClick: openTasks },

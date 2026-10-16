@@ -10,6 +10,7 @@ import {
   BROWSER_ACCOUNT_FENCE_KEY,
   BROWSER_ACCOUNT_KEY,
   accountDatabaseName,
+  browserAccountKey,
   accountTransitionPending,
   browserAccountMarker,
   installAccountTransitionListener,
@@ -608,6 +609,18 @@ test("saved recipes live in a per-account store and are never purged", () => {
     accountDatabaseName("unsloth-data-recipes", stored("alice")),
     "unsloth-data-recipes:alice",
   );
+});
+
+test("an account's key is its id where the marker has one, so a reused username starts afresh", () => {
+  const stored = (marker: string | null) => ({ getItem: () => marker });
+  assert.equal(browserAccountKey(stored(null)), "owner");
+  assert.equal(browserAccountKey(stored("unsloth")), "owner");
+  assert.equal(browserAccountKey(stored("account:owner:unsloth")), "owner");
+  // A deleted account and the one later made under its name are two keys.
+  assert.equal(browserAccountKey(stored("account:a1:alice")), "a1");
+  assert.equal(browserAccountKey(stored("account:a2:alice")), "a2");
+  // An old marker with no id falls back to the name.
+  assert.equal(browserAccountKey(stored("alice")), "alice");
 });
 
 test("transcript recovery survives reauthentication but is cleared on account changes", async () => {
