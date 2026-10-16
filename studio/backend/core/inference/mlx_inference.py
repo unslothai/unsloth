@@ -4978,13 +4978,12 @@ class MLXInferenceBackend:
                     reason,
                 )
                 model = tokenizer_or_processor = _eligibility = None
-        if model is None:
-            import gc
-
-            # Outside the except: its traceback keeps the failed load's weights alive.
-            gc.collect()
-            _drain_generation_streams(mx)
-            mx.clear_cache()
+        # unsloth-zoo builds an image checkpoint mlx-vlm lacks through mlx-lm, whose image
+        # inputs this backend does not read yet: serve it as the text model it loaded as.
+        served_as_text = use_vlm and getattr(model, "_is_vlm_model", None) is False
+        if served_as_text:
+            is_vision = False
+        if model is None or served_as_text:
             if speculates:
                 speculates = False
                 spec_reason = (
@@ -4995,6 +4994,13 @@ class MLXInferenceBackend:
             elif self._turboquant:
                 self._turboquant_refusal = MLX_TURBOQUANT_TEXT_LOAD
             use_vlm = False
+        if model is None:
+            import gc
+
+            # Outside the except: its traceback keeps the failed load's weights alive.
+            gc.collect()
+            _drain_generation_streams(mx)
+            mx.clear_cache()
             load_kwargs["text_only"] = True
             model, tokenizer_or_processor = FastMLXModel.from_pretrained(
                 load_source,

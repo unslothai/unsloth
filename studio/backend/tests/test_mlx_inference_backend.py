@@ -4203,6 +4203,44 @@ def test_a_text_model_mlx_vlm_cannot_load_is_served_without_turboquant(monkeypat
     assert attempts == [(False, None)]
 
 
+def test_a_vision_checkpoint_served_through_mlx_lm_is_served_as_text(monkeypatch):
+    """unsloth-zoo builds an image checkpoint mlx-vlm lacks (Muse Spark) through mlx-lm."""
+    pytest.importorskip("mlx.core")
+    from core.inference import mlx_inference
+
+    attempts, built_by_mlx_vlm = [], []
+
+    class _Loader:
+        @staticmethod
+        def from_pretrained(name, **kwargs):
+            attempts.append(kwargs["text_only"])
+            model = SimpleNamespace(config = {}, _is_vlm_model = bool(built_by_mlx_vlm))
+            return model, SimpleNamespace(tokenizer = "inner")
+
+    loader = types.ModuleType("unsloth_zoo.mlx.loader")
+    loader.FastMLXModel = _Loader
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", loader)
+    monkeypatch.setattr(mlx_inference, "_classify_mlx_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(
+        mlx_inference.MLXInferenceBackend, "_resolve_context_lengths", lambda *a: (2048, 2048, 2048)
+    )
+    vision = SimpleNamespace(identifier = "org/vision", is_vision = True, is_lora = False)
+
+    backend = mlx_inference.MLXInferenceBackend()
+    backend.load_model(vision, kv_quant = "tq-4")
+    assert attempts == [False]
+    assert backend._is_vlm is False and backend._processor is None
+    assert backend._reads_vision_input() is False
+    assert backend.models["org/vision"]["is_vision"] is False
+    assert backend._turboquant_refusal == mlx_inference.MLX_TURBOQUANT_TEXT_LOAD
+
+    built_by_mlx_vlm.append(True)
+    backend = mlx_inference.MLXInferenceBackend()
+    backend.load_model(vision)
+    assert backend._is_vlm is True and backend._reads_vision_input() is True
+    assert backend.models["org/vision"]["is_vision"] is True
+
+
 def test_a_uniformly_quantized_text_load_goes_through_mlx_vlm_only_when_that_batches(monkeypatch):
     pytest.importorskip("mlx.core")
     from core.inference import mlx_inference
