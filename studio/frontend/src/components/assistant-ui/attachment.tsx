@@ -77,7 +77,7 @@ import {
 import { ScrollPane } from "./scroll-pane";
 
 export const CARD_SLOT =
-  "shrink-0 w-[calc((100%_-_var(--spacing)*8)/5)] min-w-[calc(7rem*var(--ui-space-scale,1))]";
+  "shrink-0 w-[calc((100%_-_var(--spacing)*6)/4)] min-w-[calc(7.5rem*var(--ui-space-scale,1))]";
 export const CARD_SIZE = "h-[calc(7rem*var(--ui-space-scale,1))] w-full";
 const SENT_IMAGE_SIZE = "size-[calc(9rem*var(--ui-space-scale,1))]";
 const SENT_IMAGE_SIZE_COMPACT = "size-[calc(5rem*var(--ui-space-scale,1))]";
@@ -137,7 +137,7 @@ const FileCardBody: FC<{
     ) : (
       <CardCenter>{center}</CardCenter>
     )}
-    <span className={cn("flex min-w-0 items-center gap-1.5 px-2.25 pb-[calc(var(--spacing)*1.75-0.5px)]", preview && "pt-1.25")}>
+    <span className={cn("flex min-w-0 items-center gap-1.5 px-2.25 pb-[calc(var(--spacing)*1.75-2px)]", preview && "pt-[calc(var(--spacing)*1.25+1.5px)]")}>
       {icon ?? <AttachmentKindIcon kind={kind} className="size-3.25" />}
       <span className="min-w-0 truncate text-ui-11p5 leading-ui-15 text-foreground">
         {name}
