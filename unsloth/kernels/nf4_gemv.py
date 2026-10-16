@@ -207,6 +207,12 @@ def _gemv_config(N: int, K: int, blocksize: int, capability, words_ok: bool, for
     return False, (-(-N // block_n),), block_n, block_k, num_warps
 
 
+def _lut_mode(block_k):
+    # 2 = register tl.gather, 0 = L1 table load. A 256 wide tile is too small to pay for the gather
+    # (2% to 5% slower at 1 row on A100 / L4); from BLOCK_K 512 it ties or wins.
+    return 2 if _HAS_TL_GATHER and block_k >= 512 else 0
+
+
 @functools.lru_cache(maxsize = None)
 def _capability(index):
     return torch.cuda.get_device_capability(index)
@@ -264,7 +270,7 @@ def _launch(
     if not use_words:
         # Even K skips K masks; register gather replaces LUT loads: 16-23% faster (A100/L4/T4, Triton 3.7).
         constexprs["EVEN_K"] = K % block_k == 0
-        constexprs["LUT_MODE"] = 2 if _HAS_TL_GATHER else 0
+        constexprs["LUT_MODE"] = _lut_mode(block_k)
     if kernel is _gemv_nf4_kernel or kernel is _gemv_nf4_words_kernel:
         entry = launch(
             kernel,
