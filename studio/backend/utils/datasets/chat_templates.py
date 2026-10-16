@@ -352,6 +352,7 @@ def _thinking_as_reasoning_content(tokenizer, conversation):
         if isinstance(message, dict)
         and message.get("thinking")
         and message.get("reasoning_content") is None
+        and "</think>" not in str(message.get("content") or "")
         else message
         for message in conversation
     ]

@@ -10,8 +10,13 @@ _QWEN3_TEMPLATE = """
 {%- for message in messages %}
 {%- if message.role == 'assistant' %}
 {%- set reasoning_content = '' %}
-{%- if message.reasoning_content is string %}{%- set reasoning_content = message.reasoning_content %}{%- endif %}
-{{- '<|im_start|>assistant\\n<think>\\n' + reasoning_content + '\\n</think>\\n\\n' + message.content + '<|im_end|>\\n' }}
+{%- set content = message.content %}
+{%- if message.reasoning_content is string %}{%- set reasoning_content = message.reasoning_content %}
+{%- elif '</think>' in content %}
+{%- set reasoning_content = content.split('</think>')[0].split('<think>')[-1].strip('\\n') %}
+{%- set content = content.split('</think>')[-1].lstrip('\\n') %}
+{%- endif %}
+{{- '<|im_start|>assistant\\n<think>\\n' + reasoning_content + '\\n</think>\\n\\n' + content + '<|im_end|>\\n' }}
 {%- else %}
 {{- '<|im_start|>' + message.role + '\\n' + message.content + '<|im_end|>\\n' }}
 {%- endif %}
@@ -42,7 +47,7 @@ class _JinjaTokenizer:
         return env.from_string(self.chat_template).render(messages = conversation)
 
 
-def _multilingual_thinking_rows():
+def _multilingual_thinking_rows(answer = "Paris."):
     return Dataset.from_list(
         [
             {
@@ -54,16 +59,16 @@ def _multilingual_thinking_rows():
                         "content": "Quelle est la capitale de la France ?",
                         "thinking": None,
                     },
-                    {"role": "assistant", "content": "Paris.", "thinking": _THINKING},
+                    {"role": "assistant", "content": answer, "thinking": _THINKING},
                 ],
             }
         ]
     )
 
 
-def _training_text(template):
+def _training_text(template, answer = "Paris."):
     result = format_and_template_dataset(
-        _multilingual_thinking_rows(),
+        _multilingual_thinking_rows(answer),
         model_name = "stub-model",
         tokenizer = _JinjaTokenizer(template),
         num_proc = 1,
@@ -82,3 +87,10 @@ def test_dataset_thinking_renders_once_on_a_template_reading_thinking():
     text = _training_text(_GPT_OSS_TEMPLATE)
 
     assert text.count(_THINKING) == 1
+
+
+def test_dataset_thinking_already_inline_in_content_renders_once():
+    text = _training_text(_QWEN3_TEMPLATE, answer = f"<think>\n{_THINKING}\n</think>\n\nParis.")
+
+    assert text.count(_THINKING) == 1
+    assert f"<think>\n{_THINKING}\n</think>\n\nParis.<|im_end|>" in text
