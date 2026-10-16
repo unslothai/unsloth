@@ -189,6 +189,7 @@ fn system_proxies() -> Proxies {
 struct Settings {
     http: String,
     https: String,
+    all: String,
     bypass: String,
 }
 
@@ -198,7 +199,7 @@ struct Settings {
 fn with_variables(settings: Settings, env: &impl Fn(&str) -> Option<String>) -> Matcher {
     let variable = |names| variable(env, names);
     Matcher::builder()
-        .all(variable(["ALL_PROXY", "all_proxy"]).unwrap_or_default())
+        .all(variable(["ALL_PROXY", "all_proxy"]).unwrap_or(settings.all))
         .http(variable(["HTTP_PROXY", "http_proxy"]).unwrap_or(settings.http))
         .https(variable(["HTTPS_PROXY", "https_proxy"]).unwrap_or(settings.https))
         .no(variable(["NO_PROXY", "no_proxy"]).unwrap_or(settings.bypass))
@@ -304,6 +305,7 @@ fn macos_proxies(env: impl Fn(&str) -> Option<String>) -> Proxies {
                 kSCPropNetProxiesHTTPSPort,
             )
             .unwrap_or_default(),
+            all: String::new(),
             bypass: bypass_list(exceptions.iter().map(String::as_str)),
         }
     };
@@ -393,9 +395,16 @@ fn per_protocol(
             .map(|(_, address)| address.trim().to_string())
             .unwrap_or_default()
     };
+    // WinINet and Chromium send the protocols without a proxy of their own to `socks=`, as SOCKS4.
+    let socks = setting("socks");
     let settings = Settings {
         http: setting("http"),
         https: setting("https"),
+        all: if socks.is_empty() {
+            socks
+        } else {
+            format!("socks4a://{socks}")
+        },
         bypass: bypass_list(proxy_override.split(';')),
     };
     Some(with_variables(settings, &env))
@@ -452,6 +461,10 @@ fn system_proxy(proxies: &[Matcher], destination: &http::Uri) -> Option<Upstream
             auth: intercept
                 .raw_auth()
                 .map(|(user, pass)| (user.to_owned(), pass.to_owned())),
+        }),
+        #[cfg(any(windows, target_os = "linux", test))]
+        Some("socks4" | "socks4a") => Some(Upstream::Socks4 {
+            address: address(1080),
         }),
         scheme => {
             log::info!("browser proxy can't chain to a {scheme:?} proxy");
@@ -1114,7 +1127,7 @@ mod pac {
             static SESSION: OnceLock<Option<Handle>> = OnceLock::new();
             SESSION
                 .get_or_init(|| unsafe {
-                    let agent = wide("Unsloth Studio");
+                    let agent = wide("Unsloth");
                     let flags = WINHTTP_FLAG_ASYNC;
                     let handle = WinHttpOpen(
                         agent.as_ptr(),
@@ -1401,6 +1414,35 @@ mod tests {
         }
         let all_var = [("ALL_PROXY", "http://127.0.0.1:7")];
         assert_eq!(port_for("http=127.0.0.1:1", "", &all_var, https), Some(7));
+        assert_eq!(port_for(both, "", &all_var, https), Some(2));
+    }
+
+    #[test]
+    fn windows_socks_setting_carries_the_other_protocols() {
+        let routes = |server: &str, url: &str| {
+            system_proxy(
+                &[per_protocol(server, "", |_| None).unwrap()],
+                &url.parse().unwrap(),
+            )
+        };
+        let socks = Some(Upstream::Socks4 {
+            address: "127.0.0.1:3".into(),
+        });
+        let http = Some(Upstream::Http {
+            address: "127.0.0.1:1".into(),
+            auth: None,
+        });
+        assert_eq!(routes("socks=127.0.0.1:3", "http://a.example/"), socks);
+        assert_eq!(routes("socks=127.0.0.1:3", "https://a.example/"), socks);
+        assert_eq!(
+            routes("http=127.0.0.1:1;socks=127.0.0.1:3", "http://a.example/"),
+            http
+        );
+        assert_eq!(
+            routes("http=127.0.0.1:1;socks=127.0.0.1:3", "https://a.example/"),
+            socks
+        );
+        assert_eq!(routes("http=127.0.0.1:1", "https://a.example/"), None);
     }
 
     // A name local DNS can't answer, so only a request sent on by name gets through.
