@@ -299,7 +299,7 @@ export function LiveTrainingView(): ReactElement {
           </TabsContent>
 
           <TabsContent value="interpretability">
-            {config.enableActivationCapture ? (
+            {(runConfigOverride?.enableActivationCapture ?? config.enableActivationCapture) ? (
               <InterpretabilitySection
                 isTraining={viewData.isTrainingRunning}
                 jobId={runtime.jobId}

@@ -19,6 +19,7 @@ export interface RunConfigOverride {
   loraAlpha?: number;
   loraDropout?: number;
   loraVariant?: string;
+  enableActivationCapture?: boolean;
 }
 
 /** Map a saved run's config (GET /api/train/runs/{id} `detail.config`) into the
@@ -54,5 +55,6 @@ export function mapRunConfigToOverride(
         : config.use_dora
           ? "dora"
           : "lora",
+    enableActivationCapture: config.enable_activation_capture === true,
   };
 }

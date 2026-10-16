@@ -11,6 +11,7 @@ import base64
 import binascii
 import hashlib
 import json
+import math
 import logging
 import os
 import platform
@@ -5821,6 +5822,16 @@ def upsert_activation_metadata(job_id: str, meta: dict) -> None:
         conn.close()
 
 
+def _finite_or_none(value):
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _finite_or_none(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite_or_none(v) for v in value]
+    return value
+
+
 def insert_activation_record(
     job_id: str,
     step: int,
@@ -5830,6 +5841,10 @@ def insert_activation_record(
     lora_norms: Optional[dict],
 ) -> None:
     """Insert one activation snapshot, ignoring duplicate (job_id, step) pairs."""
+    # An unstable step can produce NaN or inf, which the JSON API cannot render.
+    loss, layers, grad_norms, lora_norms = (
+        _finite_or_none(v) for v in (loss, layers, grad_norms, lora_norms)
+    )
     conn = get_connection()
     try:
         conn.execute(
