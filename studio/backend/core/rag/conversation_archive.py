@@ -443,7 +443,7 @@ def archive_turns(
                 continue
             chunks = chunk_pages(
                 [Page(text = text, page_number = None, char_count = len(text))],
-                max_tokens = config.CHUNK_TOKENS,
+                max_tokens = embeddings.chunk_tokens(model),
                 overlap = config.CHUNK_OVERLAP,
                 count = count,
             )
