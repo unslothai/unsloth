@@ -16251,13 +16251,7 @@ def _fetch_hop_timeout(timeout, deadline):
     return remaining if timeout is None else min(timeout, remaining)
 
 
-def _resolve_with_budget(
-    hostname,
-    port,
-    deadline,
-    cancel_event,
-    lookup_timeout = None,
-):
+def _resolve_with_budget(hostname, port, deadline, cancel_event):
     """``_validate_and_resolve_host`` bounded by the overall fetch budget. ``getaddrinfo`` is
     blocking with no deadline of its own, so a slow resolver (or a request cancelled before
     dispatch) could run past the budget. Resolve on a daemon thread and poll the budget so the
@@ -16266,9 +16260,8 @@ def _resolve_with_budget(
     budget_error = _fetch_budget_exceeded(deadline, cancel_event)
     if budget_error is not None:
         return False, budget_error, []
-    if deadline is None and cancel_event is None and lookup_timeout is None:
+    if deadline is None and cancel_event is None:
         return _validate_and_resolve_host(hostname, port)
-    gave_up = None if lookup_timeout is None else time.monotonic() + lookup_timeout
 
     result: "queue.Queue" = queue.Queue(maxsize = 1)
 
@@ -16283,8 +16276,6 @@ def _resolve_with_budget(
         budget_error = _fetch_budget_exceeded(deadline, cancel_event)
         if budget_error is not None:
             return False, budget_error, []
-        if gave_up is not None and time.monotonic() >= gave_up:
-            return False, f"{_RESOLVE_FAILED}: no answer for {hostname!r} in time", []
         try:
             return result.get(timeout = 0.05)
         except queue.Empty:
@@ -16740,18 +16731,24 @@ def _fetch_url_raw(
             # Resolved after routing: a name that reaches the proxy may resolve only there (proxy-only networks),
             # and a poisoned answer here never gets used. Non-public answers are refused either way.
             named = proxied and proxy_hostname
-            lookup_timeout = None
+            lookup_deadline = deadline
             if named:
-                lookup_timeout = _PROXIED_LOOKUP_TIMEOUT
-                if deadline is not None:
-                    lookup_timeout = min(lookup_timeout, max(0.0, deadline - time.monotonic()) / 2)
+                left = _PROXIED_LOOKUP_TIMEOUT if deadline is None else (deadline - time.monotonic()) / 2
+                lookup_deadline = time.monotonic() + max(0.0, min(_PROXIED_LOOKUP_TIMEOUT, left))
             ok, reason, pinned_ips = _resolve_with_budget(
                 current_host,
                 cp.port or (443 if cp.scheme == "https" else 80),
-                deadline,
+                lookup_deadline,
                 cancel_event,
-                lookup_timeout,
             )
+            if (
+                not ok
+                and named
+                and time.monotonic() >= lookup_deadline
+                and _fetch_budget_exceeded(deadline, cancel_event) is None
+            ):
+                # The lookup used up its share, not the fetch: leave the name to the proxy.
+                reason = f"{_RESOLVE_FAILED}: no answer for {current_host!r} in time"
             if not ok and not (named and reason.startswith(_RESOLVE_FAILED)):
                 return reason, "", ""
             if named:
