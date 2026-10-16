@@ -391,7 +391,11 @@ export function RewardsSection(): ReactElement {
       return;
     }
     try {
-      const row = pythonRewardRow(previewRow ?? {}, reference);
+      // No answer role, no answer kwarg in training; with no dataset yet, assume one.
+      const row = pythonRewardRow(
+        previewRow ?? {},
+        answerColumn || !previewRow ? reference : null,
+      );
       const prompt = promptColumn
         ? previewCell(previewRow?.[promptColumn])
         : "";
@@ -415,7 +419,7 @@ export function RewardsSection(): ReactElement {
       setIsolation(null);
       setPreviewError(err instanceof Error ? err.message : String(err));
     }
-  }, [rewards, completion, reference, previewRow, promptColumn]);
+  }, [rewards, completion, reference, previewRow, promptColumn, answerColumn]);
 
   // Score live, a beat after the last edit.
   useEffect(() => {

@@ -54,3 +54,7 @@ test("a Python reward preview row keeps mapped columns and value types, as GRPO 
     { question: "q", solution: "72", level: [3], meta: { a: 1 }, answer: "72" },
   );
 });
+
+test("a prompt-only GRPO dataset gives a Python reward no answer", () => {
+  assert.deepEqual(pythonRewardRow({ prompt: "p", id: 7 }, null), { id: 7 });
+});

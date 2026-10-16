@@ -71,10 +71,10 @@ export function missingRlRoles(
 const RL_ROW_KEYS = new Set(["prompt", "answer", "chosen", "rejected"]);
 
 /** Row 1 the way GRPO training hands it to a Python reward: mapped role columns included,
- *  values in their own types. */
+ *  values in their own types, and `answer` only when the dataset has an answer role. */
 export function pythonRewardRow(
   row: Record<string, unknown>,
-  answer: string,
+  answer: string | null,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [column, value] of Object.entries(row)) {
@@ -82,6 +82,8 @@ export function pythonRewardRow(
       out[column] = value;
     }
   }
-  out.answer = answer;
+  if (answer !== null) {
+    out.answer = answer;
+  }
   return out;
 }
