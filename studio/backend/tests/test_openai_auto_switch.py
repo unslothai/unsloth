@@ -791,6 +791,14 @@ def test_a_torn_build_key_misses_instead_of_serving_its_sibling(tmp_path, monkey
     index = {"local/model": entry}
     assert resolver._resolve_from_index("local/model:beta-Q4_K_M", index) is None
     assert resolver._resolve_from_index("local/model:latest", index)[1] == "Q4_K_M"
+    torn_first = resolver._LocalGgufEntry(
+        "local/model",
+        str(tmp_path),
+        ("beta-Q4_K_M",),
+        aliases = (("q4_k_m", "beta-Q4_K_M"),),
+        withheld = ("q4_k_m",),
+    )
+    assert resolver._resolve_from_index("local/model:Q4_K_M", {"local/model": torn_first}) is None
 
     monkeypatch.setattr(resolver, "_scan", (1.0, index))
     loaded = _FakeBackend(loaded_id = "local/model", hf_variant = "Q4_K_M")

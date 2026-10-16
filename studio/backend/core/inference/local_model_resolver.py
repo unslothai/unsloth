@@ -1402,12 +1402,12 @@ def _resolve_from_index(
                 return _result(entry, v)
         # ahead of both branches below: one refuses a retired spelling, the other answers it
         # with a different quant
+        # a listed build that cannot be served misses, never answered by a sibling or alias
+        if wanted in entry.withheld:
+            return None
         for legacy, current in (*entry.aliases, *entry.build_aliases):
             if legacy == wanted:
                 return _result(entry, current)
-        # a listed build that cannot be served misses rather than falling back to a sibling
-        if wanted in entry.withheld:
-            return None
         from core.inference.openai_auto_download import looks_like_quant
 
         if looks_like_quant(variant):
@@ -1450,6 +1450,8 @@ def local_gguf_pinned_variant(requested: str, allow_scan: bool = True) -> Option
     for variant in entry.variants:
         if variant.lower() == wanted:
             return variant
+    if wanted in entry.withheld:
+        return None
     for legacy, current in (*entry.aliases, *entry.build_aliases):
         if legacy == wanted:
             return current

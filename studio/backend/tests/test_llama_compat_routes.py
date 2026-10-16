@@ -1408,6 +1408,33 @@ def test_management_unload_keeps_a_resident_of_another_named_build(monkeypatch, 
     assert calls == []
 
 
+def test_management_unload_keeps_a_resident_of_another_quant_directory_build(
+    monkeypatch, _no_local_gguf
+):
+    build = "custom-model:Q4_K_M/beta-Q4_K_M"
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **kwargs: ("/media/models/custom", "Q4_K_M/beta-Q4_K_M", "custom-model"),
+    )
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "local_gguf_pinned_variant",
+        lambda requested, **kwargs: "Q4_K_M/beta-Q4_K_M" if requested == build else None,
+    )
+    backend = _Backend()
+    backend.hf_variant = "Q4_K_M"
+    backend.model_identifier = "/media/models/custom"
+    backend._openai_advertised_id = "custom-model"
+    pin = {"id": build, "object": "model", "loaded": False}
+    mod, calls = _management(backend = backend, catalog = CATALOG + [pin])
+
+    with _client(mod) as client:
+        assert client.post("/models/unload", json = {"model": build}).status_code == 200
+
+    assert calls == []
+
+
 def test_management_unload_of_a_bare_id_ignores_the_preferred_quant(monkeypatch, _no_local_gguf):
     """A bare id resolves to the preferred quant on disk, which need not be the resident one."""
     monkeypatch.setattr(
