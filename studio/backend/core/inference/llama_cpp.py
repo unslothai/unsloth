@@ -14986,7 +14986,6 @@ class LlamaCppBackend:
             return None
         try:
             import torch
-
             if torch.cuda.device_count() != len(tokens):
                 return None
             ids = [int(i) for i in gpu_indices]

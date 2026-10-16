@@ -262,7 +262,6 @@ class TestR570EnumeratesEverySlice:
         assert LlamaCppBackend._get_gpu_memory() == [(0, 15000, 19968)]
         assert LlamaCppBackend._pinned_child_visibility([0]) == MIG0A
 
-
     def test_r570_compute_instances_of_one_gpu_instance_are_not_summed(self, host, monkeypatch):
         # Two compute instances share one 3g.20gb GPU instance; CUDA exposes one of them.
         rows = [dict(r) for r in TWO_SLICES_NVML]
@@ -278,8 +277,12 @@ class TestR570EnumeratesEverySlice:
         host(TWO_SLICES, [38000], rows, driver = "570.86.15")
         assert LlamaCppBackend._get_gpu_memory() == [(0, 15000, 19968)]
 
-    @pytest.mark.parametrize("count, picked, expected", [(2, [1], MIG0B), (2, [0, 1], None), (1, [0], None)])
-    def test_torch_ordinals_narrow_a_multi_mig_mask(self, host, monkeypatch, count, picked, expected):
+    @pytest.mark.parametrize(
+        "count, picked, expected", [(2, [1], MIG0B), (2, [0, 1], None), (1, [0], None)]
+    )
+    def test_torch_ordinals_narrow_a_multi_mig_mask(
+        self, host, monkeypatch, count, picked, expected
+    ):
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", f"{MIG0A},{MIG0B}")
         fake = types.SimpleNamespace(cuda = types.SimpleNamespace(device_count = lambda: count))
         monkeypatch.setitem(sys.modules, "torch", fake)
