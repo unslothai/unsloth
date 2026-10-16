@@ -713,3 +713,88 @@ def test_moe_experts_run_outside_the_block(monkeypatch):
     third.experts = LoraWrapper()
     M._experts_outside(third)
     assert not getattr(third.experts, "_unsloth_block_outside", False)
+
+
+def test_selective_dequant_keeps_bnb4bit_experts_outside_the_block(monkeypatch):
+    # The zoo plan reads token counts on the host and declines in a trace; opted-in experts stay eager.
+    M = _load()
+
+    class Params4bit(torch.nn.Parameter):
+        pass
+
+    class ToyExperts(torch.nn.Module):
+        def __init__(self, quantized):
+            super().__init__()
+            weight = torch.zeros(2, 4, 4)
+            self.gate_up_proj = (
+                Params4bit(weight, requires_grad = False) if quantized else torch.nn.Parameter(weight)
+            )
+
+        def forward(self, x):
+            return x * 2
+
+    def layer(quantized):
+        out = torch.nn.Module()
+        out.mlp = torch.nn.Module()
+        out.mlp.experts = ToyExperts(quantized)
+        return out
+
+    monkeypatch.setattr(M, "_lora_would_fold", lambda experts: False)
+    for key in (
+        "UNSLOTH_BLOCK_MOE",
+        "UNSLOTH_MOE_SELECTIVE_DEQUANT",
+        "UNSLOTH_MOE_DEQUANT_CHUNK_EXPERTS",
+    ):
+        monkeypatch.delenv(key, raising = False)
+    default = layer(True)
+    M._experts_outside(default)
+    assert not getattr(default.mlp.experts, "_unsloth_block_outside", False)
+    for key, value in (
+        ("UNSLOTH_MOE_SELECTIVE_DEQUANT", "1"),
+        ("UNSLOTH_MOE_DEQUANT_CHUNK_EXPERTS", "32"),
+    ):
+        monkeypatch.setenv(key, value)
+        quantized, plain = layer(True), layer(False)
+        M._experts_outside(quantized)
+        M._experts_outside(plain)
+        assert quantized.mlp.experts._unsloth_block_outside
+        assert not getattr(plain.mlp.experts, "_unsloth_block_outside", False)
+        monkeypatch.delenv(key)
+    monkeypatch.setenv("UNSLOTH_MOE_DEQUANT_CHUNK_EXPERTS", "abc")
+    bad = layer(True)
+    M._experts_outside(bad)
+    assert not getattr(bad.mlp.experts, "_unsloth_block_outside", False)
+
+
+def test_selective_dequant_off_never_reads_a_packed_expert_stack(monkeypatch):
+    # MXFP4 experts expose gate_up_proj as a property that dequantizes the whole stack.
+    M = _load()
+    reads = []
+
+    class PackedExperts(torch.nn.Module):
+        @property
+        def gate_up_proj(self):
+            reads.append(1)
+            return torch.zeros(1)
+
+        def forward(self, x):
+            return x
+
+    monkeypatch.setattr(M, "_lora_would_fold", lambda experts: False)
+    for key in (
+        "UNSLOTH_BLOCK_MOE",
+        "UNSLOTH_MOE_SELECTIVE_DEQUANT",
+        "UNSLOTH_MOE_DEQUANT_CHUNK_EXPERTS",
+    ):
+        monkeypatch.delenv(key, raising = False)
+    layer = torch.nn.Module()
+    layer.mlp = torch.nn.Module()
+    layer.mlp.experts = PackedExperts()
+    M._experts_outside(layer)
+    assert reads == []
+    # Opted in, a packed stack is still not a bnb 4-bit one: never read, never moved out.
+    monkeypatch.setenv("UNSLOTH_MOE_SELECTIVE_DEQUANT", "1")
+    layer.__dict__.pop("_unsloth_block_moe_done", None)
+    M._experts_outside(layer)
+    assert reads == []
+    assert not getattr(layer.mlp.experts, "_unsloth_block_outside", False)
