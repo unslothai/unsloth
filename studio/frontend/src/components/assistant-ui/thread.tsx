@@ -7268,7 +7268,6 @@ const ComposerToolsMenu: FC<{
   };
   const { pinned: pinnedPlusItems, overflow: overflowPlusItems } =
     splitPlusMenuItems(plusOrder, plusPins);
-  // Pinned Deep research sits with the tools it drives, under Tools, whatever its saved order.
   const deepResearchWithTools = pinnedPlusItems.includes("deepResearch");
 
   return (

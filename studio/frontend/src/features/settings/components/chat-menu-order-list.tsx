@@ -28,7 +28,6 @@ function FixedRow({ icon, label }: { icon: IconSvgElement; label: string }) {
   );
 }
 
-// Deep research sits under Tools in the menu whenever it is on: it toggles but has no place to drag to.
 function ToggleRow({ id, meta }: { id: PlusMenuItemId; meta: ItemMeta }) {
   const pinned = usePlusMenuPrefsStore((s) => s.pins[id]);
   const togglePin = usePlusMenuPrefsStore((s) => s.togglePin);
