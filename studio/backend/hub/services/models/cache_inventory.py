@@ -688,9 +688,14 @@ def _scan_cached_gguf(
                             )
                     except Exception:
                         pass
+                row_size = max(total_size, variant_state_size)
+                # An artifact mirror's diffusers folders are listed nowhere else (see _scan_cached_models), and a
+                # whole-repo delete of this row removes them, so the row counts them.
+                if _hosts_artifacts(repo_id):
+                    row_size += artifact_folder_bytes(repo_path)
                 row = {
                     "repo_id": repo_id,
-                    "size_bytes": max(total_size, variant_state_size),
+                    "size_bytes": row_size,
                     "cache_path": str(repo_info.repo_path),
                     "task": row_task,
                     "audio_type": row_audio_type,
@@ -1212,25 +1217,17 @@ def _scan_cached_models(
                 if not payload.has_runnable_weights:
                     skipped_no_weights += 1
                     continue
-                # A GGUF repo that also carries the official diffusers folders (it is the base's mirror): companions
-                # without the bf16 transformer are part of the GGUF row, not a second row whose delete would wipe the
-                # quants with them.
-                if (
-                    has_main_gguf
-                    and _hosts_artifacts(repo_id)
-                    and hf_cache_scan.snapshot_pipeline_missing_denoiser(
-                        payload.payload_snapshot or snapshot_path
-                    )
-                ):
+                # A GGUF repo that also carries the official diffusers folders (it is the base's mirror): the folders,
+                # with or without the bf16 transformer, are part of the GGUF row (its size counts them), never a second
+                # row. Deletes are whole-repo or per-quant, so such a row's delete would wipe the quants, and a
+                # pipeline pick of the -GGUF id is refused anyway.
+                if has_main_gguf and _hosts_artifacts(repo_id):
                     skipped_gguf += 1
                     continue
                 # The FP8 artifact mirror (unsloth/Qwen-Image-2.1-Turbo-FP8): its folders are what a pick of the BASE
                 # fetches, and a pipeline pick of the repo itself is refused, so the row stays the root checkpoint row
                 # released builds listed, whatever part of the folders is cached.
                 artifact_checkpoint = not has_main_gguf and _hosts_artifacts(repo_id)
-                # A GGUF artifact mirror holding the WHOLE pipeline (a bf16 pick of its base): listed so those bytes
-                # stay visible and deletable, but as a companion, since a pipeline pick of the -GGUF id is refused.
-                artifact_folders = has_main_gguf and _hosts_artifacts(repo_id)
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
                 identity = _resolve_load_identity(
@@ -1347,7 +1344,7 @@ def _scan_cached_models(
                         )
                     ),
                     # Listed so tens of GB of companion weights stay visible and deletable, but flagged so no picker offers a denoiser-less repo as a load.
-                    "companion": artifact_folders or _cached_row_companion(repo_id, load_snapshot),
+                    "companion": _cached_row_companion(repo_id, load_snapshot),
                     "diffusers": _cached_row_is_diffusers(repo_info, load_snapshot),
                     **local_metadata,
                 }
@@ -1414,6 +1411,20 @@ async def list_cached_models_response(hf_token: Optional[str] = None):
             status_code = 500,
             detail = "Failed to read the local model cache.",
         ) from e
+
+
+def artifact_folder_bytes(repo_path: Path) -> int:
+    """Bytes of every non-GGUF file under the repo's snapshots, each blob counted once: the diffusers folders an
+    artifact mirror (``mirror_hosts_artifacts``) holds beside its quants, which only its GGUF row lists. Never raises."""
+    seen: dict[str, int] = {}
+    try:
+        for path in (Path(repo_path) / "snapshots").rglob("*"):
+            if path.name.lower().endswith(".gguf") or not path.is_file():
+                continue
+            seen[str(path.resolve())] = path.stat().st_size
+    except OSError:
+        return 0
+    return sum(seen.values())
 
 
 def _hosts_artifacts(repo_id: str) -> bool:

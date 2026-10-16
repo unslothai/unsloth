@@ -223,11 +223,60 @@ def test_the_fp8_artifact_mirror_lists_as_its_checkpoint_not_as_a_pipeline(
         }
 
 
-def test_a_gguf_artifact_mirror_holding_the_whole_pipeline_is_listed_as_a_companion(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize("cached", ["companions", "full"])
+def test_a_gguf_artifact_mirror_lists_only_its_gguf_row_which_counts_the_folders(
+    monkeypatch, tmp_path, cached
 ):
-    """A bf16 pick of Tongyi-MAI/Z-Image caches the transformer inside unsloth/Z-Image-GGUF. Those bytes stay listed
-    and deletable, but flagged, since a pipeline pick of the -GGUF id is refused."""
-    files = {"z-image-Q4_K_M.gguf": 5000, **_FOLDERS, **_DENOISER}
-    row = _inventory_row(monkeypatch, tmp_path, "unsloth/Z-Image-GGUF", files)
-    assert row["companion"] is True
+    """A bf16 pick of Tongyi-MAI/Z-Image caches the base's folders inside unsloth/Z-Image-GGUF. Deletes are whole-repo
+    or per-quant, so a second, non-GGUF row for those folders would delete the quants with them, and a pipeline pick
+    of the -GGUF id is refused. The folders fold into the GGUF row instead, whose size counts them."""
+    from types import SimpleNamespace
+
+    from hub.services.models import cache_inventory
+
+    repo = "unsloth/Z-Image-GGUF"
+    files = {"z-image-Q4_K_M.gguf": 5000, **_FOLDERS, **(_DENOISER if cached == "full" else {})}
+    cached_repo = _cache_repo(tmp_path, repo, files)
+    monkeypatch.setattr(
+        cache_inventory, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [cached_repo])]
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan, "is_snapshot_partial", lambda *_a, **_k: False
+    )
+    monkeypatch.setattr(cache_inventory, "_cached_row_task", lambda *_a, **_k: "text-to-image")
+    assert [
+        r for r in cache_inventory._scan_cached_models(active_hub_cache = tmp_path) if r["repo_id"] == repo
+    ] == []
+    gguf_rows = [
+        r for r in cache_inventory._scan_cached_gguf(active_hub_cache = tmp_path) if r["repo_id"] == repo
+    ]
+    assert len(gguf_rows) == 1
+    # model_index.json is rewritten with real JSON, so count every other file exactly and that one as present.
+    assert gguf_rows[0]["size_bytes"] > sum(v for k, v in files.items() if k != "model_index.json")
+
+
+@pytest.mark.parametrize("cached", ["companions", "full"])
+def test_on_device_lists_an_artifact_mirror_as_its_checkpoint_only(tmp_path, cached):
+    """The On Device scan applies the same rule: the GGUF repo shows only its GGUF row (folders counted), and the FP8
+    repo's row is never a loadable or resumable pipeline. A snapshot with no folders is left as released builds
+    listed it."""
+    from hub.services.models import local_inventory
+
+    extra = {**_FOLDERS, **(_DENOISER if cached == "full" else {})}
+    gguf_files = {"z-image-Q4_K_M.gguf": 5000, **extra}
+    _cache_repo(tmp_path / "gguf", "unsloth/Z-Image-GGUF", gguf_files)
+    rows = local_inventory._scan_hf_cache(tmp_path / "gguf")
+    assert [r.model_format for r in rows] == ["gguf"]
+    assert rows[0].size_bytes > sum(v for k, v in gguf_files.items() if k != "model_index.json")
+
+    _cache_repo(tmp_path / "fp8", _FP8_REPO, {**_FP8_ROOT, **extra})
+    rows = local_inventory._scan_hf_cache(tmp_path / "fp8")
+    assert rows and all(r.partial and r.companion_prefetch for r in rows)
+
+    _cache_repo(tmp_path / "released", _FP8_REPO, dict(_FP8_ROOT))
+    _cache_repo(tmp_path / "released-other", "unsloth/Some-Model-FP8", dict(_FP8_ROOT))
+    released = local_inventory._scan_hf_cache(tmp_path / "released")
+    baseline = local_inventory._scan_hf_cache(tmp_path / "released-other")
+    assert [(r.model_format, r.partial, r.companion_prefetch) for r in released] == [
+        (r.model_format, r.partial, r.companion_prefetch) for r in baseline
+    ]

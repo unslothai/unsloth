@@ -714,8 +714,43 @@ def _scan_hf_cache(
                     rows, snapshot_partial = True, gguf_partial = gguf_partial
                 )
             ]
+        rows = _artifact_mirror_rows(model_id, repo_dir, rows)
         found.extend(rows)
     return found
+
+
+def _hosts_artifacts(repo_id: str) -> bool:
+    """``mirror_hosts_artifacts``, False when the family tables are unavailable."""
+    try:
+        from core.inference.diffusion_families import mirror_hosts_artifacts
+        return mirror_hosts_artifacts(repo_id)
+    except Exception:  # noqa: BLE001 -- no table means no artifact mirrors
+        return False
+
+
+def _artifact_mirror_rows(
+    model_id: str, repo_dir: Path, rows: List[LocalModelInfo]
+) -> List[LocalModelInfo]:
+    """An artifact mirror (a model's own GGUF / FP8 repo that also holds its base's official diffusers folders) never
+    lists those folders as a pipeline row: they are what a pick of the BASE fetches, a pipeline pick of the repo id is
+    refused, and deletes are whole-repo or per-quant, so a separate row's delete would wipe the quants. A GGUF repo's
+    folders fold into its GGUF row's size; the FP8 repo's row stays partial and flagged, so nothing loads or resumes it
+    as a pipeline. A snapshot with no pipeline index is left exactly as released builds listed it."""
+    if not _hosts_artifacts(model_id):
+        return rows
+    snapshot = hf_cache_scan.latest_snapshot_dir(repo_dir)
+    if snapshot is None or not hf_cache_scan.snapshot_has_pipeline_index(snapshot):
+        return rows
+    gguf_rows = [row for row in rows if row.model_format == "gguf"]
+    if gguf_rows:
+        from hub.services.models.cache_inventory import artifact_folder_bytes
+
+        folder_bytes = artifact_folder_bytes(repo_dir)
+        return [
+            row.model_copy(update = {"size_bytes": int(row.size_bytes or 0) + folder_bytes})
+            for row in gguf_rows
+        ]
+    return [row.model_copy(update = {"partial": True, "companion_prefetch": True}) for row in rows]
 
 
 def _scan_lmstudio_dir(
