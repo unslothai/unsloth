@@ -11,6 +11,7 @@ const { store } = installLocalStorageFake();
 const {
   PLUS_MENU_ORDER,
   PLUS_MENU_PINS_STORAGE_KEY,
+  keepSavedSlot,
   normalizePlusMenuOrder,
   splitPlusMenuItems,
   usePlusMenuPrefsStore,
@@ -110,4 +111,14 @@ test("Settings shows Deep research under Tools with a switch and no drag handle"
   // It never joins the draggable list, and a drop or arrow key keeps it in the saved order.
   assert.match(src, /\.filter\(\(id\) => id !== FIXED_TOGGLE\)/);
   assert.match(src, /setOrder\(withFixed\(next\)\)/);
+});
+
+test("moving another row keeps Deep research where it was in More, not at the top", () => {
+  const saved = ["chatWithFiles", "browserUse", "deepResearch", "mcp", "skills"] as const;
+  // Skills dragged to the top; the list it comes from never shows Deep research.
+  const moved = keepSavedSlot(["skills", "chatWithFiles", "browserUse", "mcp"], [...saved], "deepResearch");
+  assert.deepEqual(moved, ["skills", "chatWithFiles", "deepResearch", "browserUse", "mcp"]);
+  // A saved slot past the end of the list lands at its end; an order without it puts it first.
+  assert.deepEqual(keepSavedSlot(["mcp"], ["mcp", "skills", "deepResearch"], "deepResearch"), ["mcp", "deepResearch"]);
+  assert.deepEqual(keepSavedSlot(["mcp"], ["mcp"], "deepResearch"), ["deepResearch", "mcp"]);
 });

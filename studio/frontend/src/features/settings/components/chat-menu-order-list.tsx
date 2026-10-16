@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Switch } from "@/components/ui/switch";
-import { type PlusMenuItemId, usePlusMenuPrefsStore } from "@/features/chat";
+import { type PlusMenuItemId, keepSavedSlot, usePlusMenuPrefsStore } from "@/features/chat";
 import { useT } from "@/i18n";
 import {
   AttachmentIcon,
@@ -45,7 +45,8 @@ function ToggleRow({ id, meta }: { id: PlusMenuItemId; meta: ItemMeta }) {
 
 const FIXED_TOGGLE: PlusMenuItemId = "deepResearch";
 // The stored order keeps every id; only the draggable ones are shown and moved here.
-const withFixed = (ids: PlusMenuItemId[]): PlusMenuItemId[] => [FIXED_TOGGLE, ...ids.filter((id) => id !== FIXED_TOGGLE)];
+const withFixed = (ids: PlusMenuItemId[]): PlusMenuItemId[] =>
+  keepSavedSlot(ids, usePlusMenuPrefsStore.getState().order, FIXED_TOGGLE);
 
 function MovableRow({
   id,
