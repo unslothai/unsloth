@@ -1025,3 +1025,17 @@ def test_an_artifact_mirror_checkpoint_still_protects_its_cached_upstream_base()
     ])]
     required = companion_assets.required_companion_bases(scans)
     assert required.get("tongyi-mai/z-image") == {"unsloth/Z-Image-GGUF"}
+
+
+@pytest.mark.parametrize("retired", ["unsloth/Z-Image-Turbo-ComfyUI", "unsloth/flux-text-encoders", "unsloth/FLUX.2-VAE"])
+def test_a_retired_comfy_companion_left_by_a_released_build_is_offered_for_cleanup(monkeypatch, retired):
+    """Released builds fetched the sd-cli VAEs and encoders from ComfyUI-built repacks. This build never reads them
+    again, so on an upgraded install they are pure leftovers: they must stay recognised as companions (hidden from the
+    pickers) and be offered by Free up space, not stranded."""
+    from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
+
+    assert retired.lower() in sd_cpp_companion_only_repo_ids()
+    assert retired.lower() in companion_assets.known_companion_base_ids()
+    _install(monkeypatch, _repo(retired, [("split_files/vae/ae.safetensors", 900_000)]))
+    offered = asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+    assert [c["repo_id"].lower() for c in offered] == [retired.lower()]

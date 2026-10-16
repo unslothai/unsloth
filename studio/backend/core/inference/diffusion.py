@@ -3649,9 +3649,8 @@ class DiffusionBackend:
             if te_schemes:
                 knobs.append(f"the text encoder precision to {' or '.join(te_schemes)}")
             raise ValueError(
-                f"'{repo_id}' hosts pre-quantised checkpoints for {shown} and is not a diffusers pipeline "
-                f"(it has no model_index.json). Pick {shown} and set {' and '.join(knobs) or 'a precision'} "
-                f"instead."
+                f"'{repo_id}' hosts pre-quantised checkpoints for {shown}; it is not a pipeline to pick "
+                f"directly. Pick {shown} and set {' and '.join(knobs) or 'a precision'} instead."
             )
         # Refuse a too-old diffusers here, not deep in the load, but only when this load builds the diffusers
         # pipeline: a GGUF this host routes to native sd.cpp never instantiates the class. The picker gate reads the

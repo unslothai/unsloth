@@ -48,3 +48,21 @@ def test_pipeline_sizing_of_an_artifact_repo_counts_only_the_diffusers_part(monk
                         staticmethod(lambda repo_id: [tmp_path / f"models--{repo_id.replace('/', '--')}"]))
     assert DiffusionBackend._cache_bytes("unsloth/Z-Image-GGUF") == 13917
     assert DiffusionBackend._cache_bytes("unsloth/Z-Image-GGUF", pipeline_only = True) == 907
+
+
+def test_a_direct_pipeline_pick_of_an_artifact_repo_is_still_refused():
+    """The official folders inside unsloth/Qwen-Image-2.1-Turbo-FP8 are what a pick of Qwen/Qwen-Image-2.1-Turbo
+    fetches; naming the FP8 repo itself as a pipeline stays refused, as it was before the folders arrived. The GGUF
+    repos keep their own -GGUF refusal."""
+    import pytest
+
+    assert "unsloth/qwen-image-2.1-turbo-fp8" in df.prequant_only_repo_ids()
+    backend = DiffusionBackend()
+    with pytest.raises(ValueError, match = "pre-quantised"):
+        backend.validate_load_request("unsloth/Qwen-Image-2.1-Turbo-FP8", model_kind = "pipeline")
+    for repo in ("unsloth/Z-Image-GGUF", "unsloth/Qwen-Image-Edit-GGUF", "unsloth/Qwen-Image-Edit-2509-GGUF",
+                 "unsloth/Qwen-Image-Layered-GGUF"):
+        with pytest.raises(ValueError):
+            backend.validate_load_request(repo, model_kind = "pipeline")
+    # and the base pick itself still validates
+    assert backend.validate_load_request("Qwen/Qwen-Image-2.1-Turbo", model_kind = "pipeline").name == "qwen-image-2.1"

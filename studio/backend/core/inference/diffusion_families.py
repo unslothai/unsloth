@@ -2384,6 +2384,21 @@ def family_sd_cpp_supported(fam: DiffusionFamily) -> bool:
 _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS = (("unsloth/Qwen3-8B-GGUF", "Qwen3-8B-Q4_K_M.gguf", "llm"),)
 
 
+# sd-cli companion repos released Studio builds fetched and this one no longer reads: the unsloth copies of the
+# ComfyUI-built repacks, each holding only VAE / text-encoder files (no denoiser). Nothing loads from them now, but an
+# upgraded install still holds their bytes (up to ~70 GB), so they stay companion-only: hidden from the model pickers
+# and offered by Free up space once nothing pins them. Never fetched again. The Comfy-Org originals are NOT listed:
+# those repos also ship denoisers a user may load as single files, so they must stay ordinary cached repos.
+_RETIRED_SD_CPP_COMPANION_REPOS: frozenset[str] = frozenset({
+    "unsloth/flux-text-encoders",
+    "unsloth/qwen-image-comfyui",
+    "unsloth/flux.2-vae",
+    "unsloth/flux.2-dev-comfyui",
+    "unsloth/z-image-turbo-comfyui",
+    "unsloth/flux.2-klein-9b-comfyui",
+})
+
+
 def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
     """Lowercased ids of repos that exist ONLY to hand sd.cpp a single-file VAE / text encoder.
 
@@ -2412,11 +2427,13 @@ def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
         loadable.update(repo for _base, _scheme, repo in fam.prequant_variant_repos)
         loadable.update(repo for _scheme, _component, repo in fam.te_prequant_repos)
     companions.update(repo for repo, _f, _k in _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
-    return frozenset(r.strip().lower() for r in companions - loadable if r)
+    return frozenset(r.strip().lower() for r in companions - loadable if r) | _RETIRED_SD_CPP_COMPANION_REPOS
 
 
 def prequant_only_repo_ids() -> frozenset[str]:
-    """Repos hosting only prequant checkpoints (no model_index.json), never a base or mirror."""
+    """Repos a pick names for their prequant checkpoints, never a base or a full mirror. A prequant repo that also
+    carries the official diffusers folders for its base (``mirror_hosts_artifacts``) stays here: those folders are
+    what a pick of the BASE fetches, and picking the prequant repo itself as a pipeline is still the wrong request."""
     hosted: set[str] = set()
     bases: set[str] = set()
     for fam in _FAMILIES:
@@ -2427,7 +2444,7 @@ def prequant_only_repo_ids() -> frozenset[str]:
         bases.update(fam.train_base_repos)
         if fam.deploy_base_repo:
             bases.add(fam.deploy_base_repo)
-    bases.update(rid for pair in _MIRROR_PAIRS for rid in pair)
+    bases.update(rid for pair in _MIRROR_PAIRS for rid in pair if not mirror_hosts_artifacts(rid))
     lowered = {b.strip().lower() for b in bases if b}
     return frozenset(r.strip().lower() for r in hosted if r and r.strip().lower() not in lowered)
 
