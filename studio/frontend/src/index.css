@@ -4563,7 +4563,7 @@ html[data-chat-font] .aui-root {
 
 	.aui-md-table-dialog {
 		margin-block: 0;
-		font-size: 1rem;
+		font-size: calc(1rem * var(--ui-font-scale, 1));
 	}
 
 	/* Chat: use the app sans stack for UI + prose. */
