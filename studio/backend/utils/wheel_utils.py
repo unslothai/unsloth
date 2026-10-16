@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import http.client
 import json
 import logging
@@ -481,66 +480,64 @@ def flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
     )
 
 
-_WHEEL_DOWNLOAD_TIMEOUT = 60
-_WHEEL_DOWNLOAD_CHUNK = 1 << 20
+# A wheel filename's leading fields, in the characters a name and version can carry.
+_WHEEL_FILENAME_FIELD_RE = re.compile(r"[A-Za-z0-9._+!]+")
 
 
-def download_wheel(
-    wheel_url: str,
-    dest_dir: str,
-    *,
-    progress: Callable[[int, int | None], None] | None = None,
-) -> str | None:
-    """Fetch ``wheel_url`` into ``dest_dir`` under its wheel filename; None when it cannot.
+def _uv_project_config_found() -> bool:
+    """Whether uv would discover a project config from the working directory.
 
-    uv decides from a HEAD request whether a server serves byte ranges, and GitHub release
-    assets fail that check although a ranged GET works, so uv streams the whole wheel once
-    for its METADATA and then a second time to install it (astral-sh/uv#18998). Fetching
-    it here makes one transfer, and lets the caller show progress that uv's captured output
-    hides. None makes the caller hand the URL to uv / pip as before, so a host this cannot
-    reach is no worse off.
+    uv reads only the nearest one, so running it elsewhere would drop that file: never wanted
+    for an input setup.sh / setup.ps1 already honour (_mirror_uv_project_config).
     """
-    parts = urllib.parse.urlsplit(wheel_url)
-    filename = urllib.parse.unquote(parts.path.rsplit("/", 1)[-1])
-    # Userinfo is a credential urllib will not send; leave those URLs to uv / pip.
-    if parts.scheme not in ("http", "https") or "@" in parts.netloc:
-        return None
-    if not filename.endswith(".whl") or "/" in filename or "\\" in filename:
-        return None
-    # uv and pip enforce a #sha256= fragment on a URL but not on a local path, so check it here.
-    fragment = urllib.parse.parse_qs(parts.fragment)
-    want_sha256 = (fragment.get("sha256") or [""])[0].lower()
-    request_url = urllib.parse.urlunsplit(parts._replace(fragment = ""))
-    path = os.path.join(dest_dir, filename)
-    digest = hashlib.sha256()
-    shown = redact_url_credentials(wheel_url)
     try:
-        with urllib.request.urlopen(request_url, timeout = _WHEEL_DOWNLOAD_TIMEOUT) as response:
-            length = response.headers.get("Content-Length")
-            total = int(length) if length and length.isdigit() else None
-            done = 0
-            with open(path, "wb") as fh:
-                while True:
-                    chunk = response.read(_WHEEL_DOWNLOAD_CHUNK)
-                    if not chunk:
-                        break
-                    fh.write(chunk)
-                    digest.update(chunk)
-                    done += len(chunk)
-                    if progress is not None:
-                        progress(done, total)
-        if total is not None and done != total:
-            raise OSError(f"received {done} of {total} bytes")
-    except (OSError, http.client.HTTPException, ValueError) as exc:
-        reason = f"HTTP {exc.code}" if isinstance(exc, urllib.error.HTTPError) else str(exc)
-        _logger.warning("download_wheel(%s): %s; installing from the URL instead", shown, reason)
-        return None
-    if want_sha256 and digest.hexdigest() != want_sha256:
-        _logger.warning(
-            "download_wheel(%s): sha256 mismatch; installing from the URL instead", shown
+        directory = os.getcwd()
+    except OSError:
+        return True
+    while True:
+        if os.path.isfile(os.path.join(directory, "uv.toml")):
+            return True
+        try:
+            with open(os.path.join(directory, "pyproject.toml"), encoding = "utf-8") as fh:
+                if "[tool.uv" in fh.read():
+                    return True
+        except (OSError, UnicodeDecodeError):
+            pass
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            return False
+        directory = parent
+
+
+def _uv_static_metadata_config(wheel_url: str, config_dir: str) -> bool:
+    """Write a uv.toml into ``config_dir`` that gives uv the wheel's metadata; True if written.
+
+    uv needs a direct-URL wheel's METADATA to resolve it, and reads it with range requests. On a
+    GitHub release asset the ranged GET follows a cross-origin redirect and comes back without
+    Content-Range, so uv streams the whole wheel for METADATA and then fetches it again to
+    install it (astral-sh/uv#18998): two copies of a 427 MB flash-attn wheel. With the metadata
+    given statically uv makes the one fetch, into its own cache, so a reinstall still revalidates
+    rather than downloads. --no-deps makes the empty requires-dist exact.
+    """
+    if os.environ.get("UV_CONFIG_FILE") or os.environ.get("UV_NO_CONFIG"):
+        return False  # uv would not read the file; it runs as before
+    if _uv_project_config_found():
+        return False
+    filename = urllib.parse.unquote(urllib.parse.urlsplit(wheel_url).path.rsplit("/", 1)[-1])
+    fields = filename[: -len(".whl")].split("-") if filename.endswith(".whl") else []
+    if len(fields) not in (5, 6) or not all(
+        _WHEEL_FILENAME_FIELD_RE.fullmatch(f) for f in fields[:2]
+    ):
+        return False
+    name, version = fields[0].replace("_", "-").lower(), fields[1].lower()
+    with open(os.path.join(config_dir, "uv.toml"), "w", encoding = "utf-8") as fh:
+        fh.write(
+            "[[dependency-metadata]]\n"
+            f'name = "{name}"\n'
+            f'version = "{version}"\n'
+            "requires-dist = []\n"
         )
-        return None
-    return path
+    return True
 
 
 def install_wheel(
@@ -551,31 +548,6 @@ def install_wheel(
     uv_needs_system: bool = False,
     reinstall: bool = False,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-    progress: Callable[[int, int | None], None] | None = None,
-) -> list[tuple[str, subprocess.CompletedProcess[str]]]:
-    dest_dir = tempfile.mkdtemp(prefix = "unsloth-wheel-")
-    try:
-        local = download_wheel(wheel_url, dest_dir, progress = progress)
-        return _install_wheel_target(
-            local or wheel_url,
-            python_executable = python_executable,
-            use_uv = use_uv,
-            uv_needs_system = uv_needs_system,
-            reinstall = reinstall,
-            run = run,
-        )
-    finally:
-        shutil.rmtree(dest_dir, ignore_errors = True)
-
-
-def _install_wheel_target(
-    wheel_url: str,
-    *,
-    python_executable: str,
-    use_uv: bool,
-    uv_needs_system: bool,
-    reinstall: bool,
-    run: Callable[..., subprocess.CompletedProcess[str]],
 ) -> list[tuple[str, subprocess.CompletedProcess[str]]]:
     attempts: list[tuple[str, subprocess.CompletedProcess[str]]] = []
 
@@ -588,15 +560,22 @@ def _install_wheel_target(
         if reinstall:
             uv_cmd.append("--reinstall")
         uv_cmd.append(wheel_url)
-        result = run(
-            uv_cmd,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            env = child_env_without_native_path_secret(),
-        )
+        config_dir = tempfile.mkdtemp(prefix = "unsloth-uv-")
+        try:
+            # uv finds the uv.toml as its project config; user and system configs still apply.
+            cwd = config_dir if _uv_static_metadata_config(wheel_url, config_dir) else None
+            result = run(
+                uv_cmd,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                env = child_env_without_native_path_secret(),
+                cwd = cwd,
+            )
+        finally:
+            shutil.rmtree(config_dir, ignore_errors = True)
         attempts.append(("uv", result))
         if result.returncode == 0:
             return attempts

@@ -12,6 +12,7 @@ activated. Expects `pip` and `python` on PATH to point at the venv.
 from __future__ import annotations
 
 import ast
+import contextlib
 import functools
 import glob
 import importlib
@@ -27,6 +28,8 @@ import sys
 import sysconfig
 import tempfile
 import textwrap
+import threading
+import time
 import urllib.request
 from pathlib import Path
 
@@ -7538,32 +7541,45 @@ def _stdout_is_tty() -> bool:
         return False
 
 
-# Wide enough for "flash-attn 1234/1234 MiB"; the label after it is padded back to this width.
-_DOWNLOAD_PROGRESS_WIDTH = 40
+# A minute, like ssm_runtime's heartbeat: often enough to show life, rarely enough to stay readable.
+_HEARTBEAT_NOTE_SECONDS = 60
+_HEARTBEAT_TICK_SECONDS = 1
+# Wide enough for "flash-attn 120:00"; the label after it is padded back to this width.
+_HEARTBEAT_WIDTH = 30
 
 
-def _download_progress(label: str):
-    """Progress callback for install_wheel, so a long wheel download does not read as a hang.
+@contextlib.contextmanager
+def _install_heartbeat(label: str):
+    """Show that a long, quiet install is still running, since its output is captured.
 
-    Redrawn in place on the bar line when stdout is a terminal; otherwise a note at each
-    quarter, which keeps a captured log readable.
+    A 427 MB wheel on a slow link takes many minutes, and the bar alone read as a hang. On a
+    terminal the elapsed time is redrawn on the bar line every second; when stdout is captured
+    a note goes out once a minute, flushed because a pipe is block-buffered.
     """
     in_place = not VERBOSE and _PROGRESS_LINE_ACTIVE and _stdout_is_tty()
-    last_quarter = -1
+    done = threading.Event()
+    started = time.monotonic()
 
-    def show(done: int, total: "int | None") -> None:
-        nonlocal last_quarter
-        size = f"{done >> 20}/{total >> 20} MiB" if total else f"{done >> 20} MiB"
-        if in_place:
-            text = label if total and done >= total else f"{label} {size}"
-            _draw_progress(f"{text:<{_DOWNLOAD_PROGRESS_WIDTH}}")
-            return
-        quarter = min(done * 4 // total, 4) if total else 0
-        if quarter > last_quarter:
-            last_quarter = quarter
-            _note(f"downloading the {label} wheel: {size}")
+    def beat() -> None:
+        interval = _HEARTBEAT_TICK_SECONDS if in_place else _HEARTBEAT_NOTE_SECONDS
+        while not done.wait(interval):
+            minutes, seconds = divmod(int(time.monotonic() - started), 60)
+            if not in_place:
+                _note(f"still installing {label} ({minutes} min)")
+                sys.stdout.flush()
+            # A message printed meanwhile closed the bar line; do not glue onto it.
+            elif _PROGRESS_LINE_ACTIVE:
+                _draw_progress(f"{f'{label} {minutes}:{seconds:02d}':<{_HEARTBEAT_WIDTH}}")
 
-    return show
+    thread = threading.Thread(target = beat, daemon = True, name = f"{label}-heartbeat")
+    thread.start()
+    try:
+        yield
+    finally:
+        done.set()
+        thread.join(timeout = 2)
+        if in_place and _PROGRESS_LINE_ACTIVE:
+            _draw_progress(f"{label:<{_HEARTBEAT_WIDTH}}")
 
 
 _ENV_FOR_CMD = object()
@@ -8635,19 +8651,19 @@ def _ensure_flash_attn() -> None:
     if wheel_available:
         # installing a distribution invalidates caches keyed on the action counter.
         _count_install_action()
-        outcome = install_prebuilt(
-            wheel_url,
-            install = install_wheel,
-            verify = _flash_attn_importable,
-            on_failed = lambda installer, wheel_result: _print_optional_install_failure(
-                f"Installing flash-attn prebuilt wheel with {installer}",
-                wheel_result,
-            ),
-            use_uv = USE_UV,
-            uv_needs_system = UV_NEEDS_SYSTEM,
-            reinstall = stale,
-            progress = _download_progress("flash-attn"),
-        )
+        with _install_heartbeat("flash-attn"):
+            outcome = install_prebuilt(
+                wheel_url,
+                install = install_wheel,
+                verify = _flash_attn_importable,
+                on_failed = lambda installer, wheel_result: _print_optional_install_failure(
+                    f"Installing flash-attn prebuilt wheel with {installer}",
+                    wheel_result,
+                ),
+                use_uv = USE_UV,
+                uv_needs_system = UV_NEEDS_SYSTEM,
+                reinstall = stale,
+            )
         if outcome == "installed":
             return
         if outcome == "rejected":
