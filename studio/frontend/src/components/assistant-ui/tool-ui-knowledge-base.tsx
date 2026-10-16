@@ -124,6 +124,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
   const [showAll, setShowAll] = useState(false);
   const shown = showAll ? documents : documents.slice(0, DOCUMENTS_SHOWN);
   // The passages behind the chips, on request: the card stays one line of documents by default.
+  // Empty chunks are not passages, so this can sit below the summary's count.
   const passageCount = useMemo(
     () => citations.filter(isPassage).length,
     [citations],

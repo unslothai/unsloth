@@ -209,7 +209,7 @@ test("ranked passages merged after a whole-document read still start at #1", () 
 test("each passage shows its exact text, its rank, and opens its document at its own page", () => {
   const html = render(SEARCH);
   assert.equal(html.match(/data-slot="knowledge-base-passage"/g)?.length, 3);
-  // The chunk text itself, line breaks kept for whitespace-pre-line to show.
+  // The chunk text itself, line breaks and spacing kept for whitespace-pre-wrap to show.
   assert.ok(html.includes("radium-226 and\nradium-228"));
   assert.ok(html.includes(RERUN) && html.includes(SCOPE));
   assert.ok(html.includes("#1") && html.includes("#2") && html.includes("#3"));
@@ -232,7 +232,9 @@ test("a source with no document id shows its page but offers nothing to open", (
 
 test("a long passage starts clamped behind Show more; a short one shows whole", () => {
   assert.equal(passageNeedsClamp("short"), false);
-  assert.equal(passageNeedsClamp("x".repeat(281)), true);
+  // Under about four lines at text-xs in the chat column, a passage shows whole.
+  assert.equal(passageNeedsClamp("x".repeat(450)), false);
+  assert.equal(passageNeedsClamp("x".repeat(451)), true);
   assert.equal(passageNeedsClamp("a\nb\nc\nd\ne"), true);
   const long = render(
     searchResult([
@@ -286,23 +288,57 @@ test("the search card keeps one chip per document and opens the passages only on
   assert.match(kb, /`Show passages \(\$\{passageCount\}\)`/);
 });
 
-test("a passage drops the heading markers and blank lines document parsing adds, and nothing else", () => {
+test("a PDF passage drops the heading markers its conversion adds; every passage folds only empty lines", () => {
   assert.equal(
     passageDisplayText(
       "# Chapter 3: Radiation limits\n\nThe limit is 5 pCi/L.",
+      "standard.pdf",
     ),
     "Chapter 3: Radiation limits\nThe limit is 5 pCi/L.",
   );
   assert.equal(
-    passageDisplayText("  ## Sample custody\nBottles are labelled. "),
+    passageDisplayText(
+      "  ## Sample custody\nBottles are labelled. ",
+      "Lab.PDF",
+    ),
     "Sample custody\nBottles are labelled.",
   );
   // Only a heading at a line's start: a hash inside a sentence, or a tag, stays.
   assert.equal(
-    passageDisplayText("Issue #13788 and #hashtag"),
+    passageDisplayText("Issue #13788 and #hashtag", "a.pdf"),
     "Issue #13788 and #hashtag",
   );
-  assert.equal(passageDisplayText("#nospace"), "#nospace");
+  assert.equal(passageDisplayText("#nospace", "a.pdf"), "#nospace");
   // Line breaks inside the text stay; only empty lines fold.
   assert.equal(passageDisplayText("a\nb\n\n \n\nc"), "a\nb\nc");
+});
+
+// Text sources (code, config, Markdown) are indexed as written, so their # lines are content.
+test("code and config passages keep their # comments and indentation", () => {
+  const python =
+    "# retry limit\nretries = 3\n\ndef f():\n    x = 1\n\n    return x";
+  assert.equal(
+    passageDisplayText(python, "worker.py"),
+    "# retry limit\nretries = 3\ndef f():\n    x = 1\n    return x",
+  );
+  assert.equal(
+    passageDisplayText("# Sample custody\nBottles are labelled.", "lab.md"),
+    "# Sample custody\nBottles are labelled.",
+  );
+  const html = render(
+    searchResult([
+      {
+        chunkId: "w:0",
+        documentId: "w",
+        filename: "worker.py",
+        page: null,
+        text: python,
+        score: 1,
+      },
+    ]),
+  );
+  assert.ok(html.includes("# retry limit"));
+  assert.ok(html.includes("\n    x = 1\n    return x"));
+  // pre-wrap keeps the indentation on screen; pre-line would collapse it.
+  assert.match(html, /whitespace-pre-wrap/);
 });

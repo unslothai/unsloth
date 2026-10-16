@@ -20,7 +20,7 @@ const PASSAGES_SHOWN = 20;
 
 function PassageItem({ passage }: { passage: Passage }) {
   const { citation, rank } = passage;
-  const text = passageDisplayText(citation.text);
+  const text = passageDisplayText(citation.text, citation.filename);
   const clampable = passageNeedsClamp(text);
   const [expanded, setExpanded] = useState(false);
   const location = citation.page != null ? `p.${citation.page}` : null;
@@ -32,7 +32,7 @@ function PassageItem({ passage }: { passage: Passage }) {
     >
       <div className="flex items-center gap-2 text-xs">
         {rank != null ? (
-          <span className="tabular-nums" title="Rank in this search">
+          <span className="tabular-nums" title="Position in the search results">
             #{rank}
           </span>
         ) : null}
@@ -54,7 +54,7 @@ function PassageItem({ passage }: { passage: Passage }) {
         ) : null}
       </div>
       <p
-        className={`whitespace-pre-line break-words text-xs leading-relaxed text-foreground/90 ${
+        className={`whitespace-pre-wrap break-words text-xs leading-relaxed text-foreground/90 ${
           clampable && !expanded ? "line-clamp-4" : ""
         }`}
       >

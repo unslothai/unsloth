@@ -157,7 +157,10 @@ export function isPassage(citation: Citation): boolean {
   return citation.text.trim().length > 0;
 }
 
-/** A retrieved passage and its 1-based rank among the ranked passages; null when unscored (a whole-document read). */
+/**
+ * A retrieved passage and its 1-based position among the scored passages; null when unscored (a
+ * whole-document read). When Studio merges a thread search with a project search, it runs across both.
+ */
 export interface Passage {
   citation: Citation;
   rank: number | null;
@@ -212,17 +215,19 @@ export function firstPassages(
 }
 
 /**
- * A passage as shown: trimmed, without the Markdown heading markers PDF and Office parsing adds,
- * and with blank lines folded so a clamped preview spends its lines on text.
+ * A passage as shown: trimmed, with runs of blank lines folded so a clamped preview spends its lines
+ * on text. A PDF loses the `#` heading markers its Markdown conversion adds; every other source keeps
+ * its text as indexed, so code and config passages keep their `#` comments and indentation.
  */
-export function passageDisplayText(text: string): string {
-  return text
-    .trim()
-    .replace(/^#{1,6}[ \t]+/gm, "")
-    .replace(/\n[ \t]*\n\s*/g, "\n");
+export function passageDisplayText(text: string, filename = ""): string {
+  const folded = text.trim().replace(/\n(?:[ \t]*\n)+/g, "\n");
+  return /\.pdf$/i.test(filename)
+    ? folded.replace(/^#{1,6}[ \t]+/gm, "")
+    : folded;
 }
 
-const PASSAGE_CLAMP_CHARS = 280;
+// About four lines of text-xs in the desktop chat column, so shorter passages are not clamped for nothing.
+const PASSAGE_CLAMP_CHARS = 450;
 const PASSAGE_CLAMP_LINES = 4;
 
 /** Whether a passage is long enough to start clamped behind "Show more". */
