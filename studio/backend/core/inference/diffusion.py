@@ -605,7 +605,7 @@ def _baked_lora_names(pipe: Any) -> list:
 
 def resolve_local_single_file(model_path: str) -> Optional[str]:
     """The sole single-file checkpoint basename in a local ``model_path`` directory that is NOT a
-    diffusers pipeline (no ``model_index.json``) and holds exactly one ``.safetensors`` file, else
+    diffusers pipeline (no ``model_index.json`` or FLUX.3 ``modular_model_index.json``) and holds exactly one ``.safetensors`` file, else
     None.
 
     The On-Device scanner advertises a bare single-file safetensors directory as a text-to-image
@@ -617,7 +617,9 @@ def resolve_local_single_file(model_path: str) -> Optional[str]:
     """
     try:
         root = Path(model_path).expanduser()
-        if not root.is_dir() or (root / "model_index.json").is_file():
+        if not root.is_dir() or any(
+            (root / index).is_file() for index in ("model_index.json", FLUX3_INDEX)
+        ):
             return None
         # A PEFT adapter folder is not a base checkpoint; skip it so validation 400s before eviction
         if (root / "adapter_config.json").is_file():
@@ -5084,8 +5086,10 @@ class DiffusionBackend:
                         skipped_files_out[:] = [s.rfilename for s in seeded]
                     return info, components, picked
 
+                # The family's own index: FLUX.3 ships only modular_model_index.json, so probing
+                # model_index.json would never find a cached upstream and restage the mirror.
                 metadata_repo = prefer_ungated_mirror(
-                    repo_id, hf_token, files = ("model_index.json",)
+                    repo_id, hf_token, files = (base_manifest,)
                 )
                 info, components, picked = _pipeline_listing(metadata_repo)
                 base_files = [s.rfilename for s in picked]

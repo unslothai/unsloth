@@ -2000,3 +2000,57 @@ def test_the_block_graph_drops_the_prompt_upsampler_step(monkeypatch, with_upsam
         "denoise",
         "decode",
     ]
+
+
+def test_a_modular_flux3_dir_with_one_root_checkpoint_stays_a_pipeline(tmp_path):
+    # FLUX.3 ships modular_model_index.json, not model_index.json: a lone root .safetensors must not turn
+    # the directory into a single-file load before the modular validation sees it.
+    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion_flux3 import FLUX3_INDEX
+
+    d = tmp_path / "flux3-klein"
+    d.mkdir()
+    (d / "model.safetensors").write_bytes(b"w")
+    assert resolve_local_single_file(str(d)) == "model.safetensors"
+    (d / FLUX3_INDEX).write_text("{}")
+    assert resolve_local_single_file(str(d)) is None
+
+
+def test_the_pipeline_estimate_probes_the_flux3_index_for_a_cached_upstream(monkeypatch):
+    # The mirror probe must ask for the index the family ships; asking for model_index.json never finds the
+    # cached upstream FLUX.3 snapshot and stages the same pipeline again under the mirror.
+    import types
+
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.diffusion_flux3 import FLUX3_INDEX
+
+    upstream, mirror = "black-forest-labs/FLUX.3-klein", "unsloth/FLUX.3-klein"
+    names = (FLUX3_INDEX, "vae/config.json", "transformer/diffusion_pytorch_model.safetensors")
+    siblings = [types.SimpleNamespace(rfilename = name, size = 1) for name in names]
+
+    class _Api:
+        def model_info(self, repo_id, **kw):
+            return types.SimpleNamespace(siblings = siblings, sha = "abc")
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    probes: list = []
+
+    def _prefer(repo_id, hf_token = None, files = None, **kw):
+        probes.append(tuple(files or ()))
+        # The upstream snapshot is cached: keep it when every probed file is there, else the mirror.
+        return repo_id if files and set(files) <= set(names) else mirror
+
+    monkeypatch.setattr(dmod, "prefer_ungated_mirror", _prefer)
+    fetch_repos: dict = {}
+    DiffusionBackend._estimate_download_bytes(
+        upstream,
+        None,
+        upstream,
+        None,
+        kind = "pipeline",
+        base_manifest = FLUX3_INDEX,
+        fetch_repos_out = fetch_repos,
+    )
+    assert probes[0] == (FLUX3_INDEX,)
+    assert fetch_repos[upstream] == upstream
