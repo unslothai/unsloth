@@ -143,6 +143,10 @@ instead: `--tts-provider-id <id> --tts-model <model> --tts-voice <voice>` (the
 speech route proxies it without touching the resident model; the TTS numbers
 then include a remote round trip). The harness checks which route it has at
 startup and exits 2 with the reason rather than 400-ing on every synthesis.
+That route needs a sign-in session, not an API key: Unsloth Studio only uses a
+saved connection's key for a session. With `--tts-provider-id` the harness mints
+a 12-hour session token for the local Unsloth Studio instead of the API key, and
+refuses an `sk-unsloth-` key given through `--token` or `UNSLOTH_BENCH_TOKEN`.
 
 Use the Studio venv python so the token bootstrap can import `auth.storage`:
 

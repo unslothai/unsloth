@@ -302,6 +302,36 @@ class TokenTests(unittest.TestCase):
         remote.token = "flag-key"
         self.assertEqual(vb.get_token(remote), "flag-key")
 
+    def test_tts_provider_route_refuses_an_api_key(self):
+        # Studio withholds a saved connection's key from sk-unsloth callers, so every
+        # synthesis would go out keyless: refuse up front instead.
+        args = types.SimpleNamespace(
+            base_url = vb.DEFAULT_BASE_URL, token = "sk-unsloth-abc", tts_provider_id = "conn-1"
+        )
+        with self.assertRaises(ValueError):
+            vb.get_token(args)
+        with unittest.mock.patch.dict(os.environ, {"UNSLOTH_BENCH_TOKEN": "sk-unsloth-env"}):
+            args.token = None
+            with self.assertRaises(ValueError):
+                vb.get_token(args)
+        args.token = "session-jwt"
+        self.assertEqual(vb.get_token(args), "session-jwt")
+
+    def test_tts_provider_route_mints_a_local_session(self):
+        fake = types.SimpleNamespace(
+            get_token = lambda: "sk-unsloth-minted",
+            get_session_token = lambda: "minted-session",
+        )
+        args = types.SimpleNamespace(
+            base_url = vb.DEFAULT_BASE_URL, token = None, tts_provider_id = "conn-1"
+        )
+        with unittest.mock.patch.dict(sys.modules, {"mint_token": fake}):
+            with unittest.mock.patch.dict(os.environ, {}, clear = False):
+                os.environ.pop("UNSLOTH_BENCH_TOKEN", None)
+                self.assertEqual(vb.get_token(args), "minted-session")
+                args.tts_provider_id = None
+                self.assertEqual(vb.get_token(args), "sk-unsloth-minted")
+
 
 class ReportPathTests(unittest.TestCase):
     def setUp(self):

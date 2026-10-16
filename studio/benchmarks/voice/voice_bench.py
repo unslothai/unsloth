@@ -1020,12 +1020,21 @@ def get_token(args) -> str:
 
     The minted key is a reusable secret for *this* machine's Studio; it is never
     sent to another host, so a non-loopback --base-url needs a credential issued
-    by that server (ValueError otherwise)."""
-    if args.token:
-        return args.token
-    env = os.environ.get("UNSLOTH_BENCH_TOKEN")
-    if env:
-        return env
+    by that server (ValueError otherwise).
+
+    --tts-provider-id needs a sign-in session instead: Studio hands a saved
+    connection's key only to a session, never to an API key, so with a key every
+    /v1/audio/speech call would reach the connection with no credential."""
+    provider = getattr(args, "tts_provider_id", None)
+    explicit = args.token or os.environ.get("UNSLOTH_BENCH_TOKEN")
+    if explicit:
+        if provider and explicit.startswith("sk-unsloth"):
+            raise ValueError(
+                "--tts-provider-id needs a session token, not an sk-unsloth API key: Studio "
+                "keeps a saved connection's key from API-key callers. Drop --token (and "
+                "UNSLOTH_BENCH_TOKEN) to have a local session minted, or pass a session token."
+            )
+        return explicit
     if not is_loopback_url(args.base_url):
         raise ValueError(
             f"{args.base_url} is not this machine's Studio, so no local key is minted for it: "
@@ -1035,7 +1044,7 @@ def get_token(args) -> str:
     sys.path.insert(0, str(HERE))
     import mint_token
 
-    return mint_token.get_token()
+    return mint_token.get_session_token() if provider else mint_token.get_token()
 
 
 def main() -> int:

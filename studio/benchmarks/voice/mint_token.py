@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import sqlite3
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -70,6 +71,18 @@ def get_token(force: bool = False) -> str:
     except OSError:
         pass
     return raw_key
+
+
+def get_session_token(hours: int = 12) -> str:
+    """A sign-in session token for the first user, for --tts-provider-id: a saved
+    connection's key is only used for a session, never for an API key. Not cached,
+    since it expires; 12 hours outlasts a long --repeats run."""
+    _storage, db_path = _load_backend()
+    if not Path(db_path).exists():
+        raise SystemExit(f"Auth DB not found at {db_path}. Start Studio at least once.")
+    from auth.authentication import create_access_token  # noqa: E402
+
+    return create_access_token(_first_username(Path(db_path)), timedelta(hours = hours))
 
 
 if __name__ == "__main__":
