@@ -1765,7 +1765,7 @@ def _ensure_mamba_ssm(
     model_name: str,
     *,
     required: bool | None = None,
-    essential: bool = True,
+    essential: bool | None = None,
 ) -> None:
     # `required` is the config-resolved answer (resolved_model_is_ssm); the name is the fallback.
     # `essential`: Nemotron-H, Falcon-H1, Granite-4.0-H, which may build it from source. Training
@@ -1776,6 +1776,12 @@ def _ensure_mamba_ssm(
         required = _model_is_ssm(model_name)
     if not required:
         return
+    if essential is None:
+        # Unspecified (the worker passes the config's answer): only the families named for it
+        # (Nemotron-H, Falcon-H1, Granite-4.0-H) may build from source, never Mamba / Mamba2 /
+        # Jamba / Zamba / Bamba, which a caller leaving it out must not turn into a source build.
+        from utils.ssm_runtime import model_requires_mamba_ssm
+        essential = model_requires_mamba_ssm(model_name)
 
     if sys.platform == "win32" and importlib.util.find_spec("triton") is None:
         # mamba_ssm imports triton at load and the wheel goes in --no-deps.

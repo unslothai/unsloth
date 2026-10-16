@@ -1998,3 +1998,66 @@ def test_training_waits_long_only_for_a_required_kernel(monkeypatch, required, b
         event_queue = [], required = required, **worker._pinned_kernel_kwargs(worker.MAMBA_SSM)
     )
     assert seen["wait_seconds"] == budget
+
+
+# Real ROCm gfx1151: the training block compiled mamba-ssm from source for a Mamba2 model (60 s)
+# where the inference path stayed wheel-only. Driven as the hardware harness drives it.
+
+
+def _hip_mamba2_host(monkeypatch, tmp_path):
+    import json
+
+    model = tmp_path / "tiny-mamba2"
+    model.mkdir()
+    (model / "config.json").write_text(json.dumps({"model_type": "mamba2"}))
+    monkeypatch.setattr(worker.sys, "platform", "linux")
+    monkeypatch.setattr(
+        worker,
+        "probe_torch_wheel_env",
+        lambda **k: {
+            "hip_version": "7.1",
+            "torch_mm": "2.10",
+            "python_tag": "cp312",
+            "cxx11abi": "TRUE",
+            "platform_tag": "linux_x86_64",
+        },
+    )
+    monkeypatch.setattr(worker.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(worker, "_hipcc_gcc_install_dir", lambda: None)
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
+    monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: False)
+    monkeypatch.setattr("utils.ssm_runtime._mamba_ssm_floor_reason", lambda: None)
+    statuses = []
+    monkeypatch.setattr(worker, "_send_status", lambda queue, message: statuses.append(message))
+    monkeypatch.setattr(worker, "_reject_install", lambda *a, **k: None)
+    builds = []
+    monkeypatch.setattr(
+        worker._sp,
+        "run",
+        lambda cmd, **k: builds.append(list(cmd)) or subprocess.CompletedProcess(cmd, 1, ""),
+    )
+    return str(model), builds, statuses
+
+
+@pytest.mark.parametrize("caller", ["harness", "worker"])
+def test_a_mamba2_model_on_rocm_never_builds_mamba_ssm_in_training(monkeypatch, tmp_path, caller):
+    from utils import ssm_runtime
+
+    model, builds, statuses = _hip_mamba2_host(monkeypatch, tmp_path)
+    kernels = ssm_runtime.resolve_ssm_kernels(model, model, None, adapter_base = None)
+    assert kernels.mamba_ssm and not kernels.mamba_ssm_required
+    if caller == "harness":
+        # scripts/v4_amd/ondemand_probe.py: no `essential`, as an older caller would.
+        worker._ensure_mamba_ssm([], model, required = kernels.mamba_ssm)
+    else:
+        worker._ensure_mamba_ssm(
+            [], model, required = kernels.mamba_ssm, essential = kernels.mamba_ssm_required
+        )
+    assert not [cmd for cmd in builds if "mamba-ssm==" in " ".join(cmd)]
+    assert not any("Compiling mamba-ssm" in message for message in statuses)
+
+
+def test_a_required_hybrid_on_rocm_keeps_its_mamba_ssm_source_build(monkeypatch, tmp_path):
+    _, builds, statuses = _hip_mamba2_host(monkeypatch, tmp_path)
+    worker._ensure_mamba_ssm([], "tiiuae/Falcon-H1-0.5B", required = True)
+    assert [cmd for cmd in builds if "mamba-ssm==" in " ".join(cmd)]
