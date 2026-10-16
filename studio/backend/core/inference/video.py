@@ -1428,6 +1428,12 @@ def _sibling_etag(sibling: Any) -> Optional[str]:
     return sha or getattr(sibling, "blob_id", None) or None
 
 
+def _fetched_pins(plan: dict[str, "_PlannedFetch"]) -> dict[str, str]:
+    """The commit the checkpoint was already fetched under, keyed by its repo, for a re-plan to list that repo at."""
+    entry = plan.get(_FETCH_CHECKPOINT)
+    return {entry.repo: entry.revision} if entry is not None and entry.revision else {}
+
+
 def _keep_fetched_checkpoint(
     replanned: dict[str, "_PlannedFetch"], previous: dict[str, "_PlannedFetch"]
 ) -> dict[str, "_PlannedFetch"]:
@@ -1436,6 +1442,27 @@ def _keep_fetched_checkpoint(
     if _FETCH_CHECKPOINT in previous:
         out[_FETCH_CHECKPOINT] = previous[_FETCH_CHECKPOINT]
     return out
+
+
+class _OneCommitListings:
+    """``model_info`` per physical repo, ONCE per plan: two roles reading one repo (a carrier's own checkpoint and the
+    base it mirrors) are sized and pinned from the same listing, so they can never land on two commits. ``pins`` maps
+    a lowercased repo to the commit a role was already fetched under (a re-plan after the checkpoint fetch), and that
+    repo is then listed at exactly that commit."""
+
+    def __init__(self, api: Any, pins: Optional[dict[str, str]] = None):
+        self._api = api
+        self._pins = {k.lower(): v for k, v in (pins or {}).items() if k and v}
+        self._infos: dict[str, Any] = {}
+
+    def info(self, repo: str) -> Any:
+        key = repo.strip().lower()
+        if key not in self._infos:
+            pinned = self._pins.get(key)
+            self._infos[key] = self._api.model_info(
+                repo, files_metadata = True, **({"revision": pinned} if pinned else {})
+            )
+        return self._infos[key]
 
 
 def _plan_total(plan: dict[str, "_PlannedFetch"]) -> Optional[int]:
@@ -4044,6 +4071,7 @@ class VideoBackend:
                         local_files_only = local_files_only,
                         ltx25_dev = ltx25_dev,
                         planned_files = (replanned := {}),
+                        pin_revisions = _fetched_pins(planned_files),
                     )
                     planned_files = _keep_fetched_checkpoint(replanned, planned_files)
                     # The total follows the plan actually kept: the retained checkpoint entry, not a re-listed one.
@@ -4135,6 +4163,7 @@ class VideoBackend:
                     ltx25_dev = ltx25_dev,
                     planned_files = (replanned := {}),
                     skip_te_override = actual_te_skip,
+                    pin_revisions = _fetched_pins(planned_files),
                 )
                 planned_files = _keep_fetched_checkpoint(replanned, planned_files)
                 # The total follows the plan actually kept: the retained checkpoint entry, not a re-listed newer one.
@@ -5974,6 +6003,7 @@ class VideoBackend:
         ltx25_dev: bool = False,
         planned_files: Optional[dict[str, "_PlannedFetch"]] = None,
         skip_te_override: Optional[tuple[str, ...]] = None,
+        pin_revisions: Optional[dict[str, str]] = None,
     ) -> Optional[int]:
         """Total bytes this load will pull (checkpoint + companions), or None.
 
@@ -6006,9 +6036,10 @@ class VideoBackend:
                 if self._h3_te_quant_hub_files(h3_te_scheme, api)[1]:
                     skip_te_components = skip_te_components + ("text_encoder",)
             planned: dict[str, _PlannedFetch] = {}
+            listings = _OneCommitListings(api, pin_revisions)
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 listing = _video_listing_repo(repo_id)
-                info = api.model_info(listing, files_metadata = True)
+                info = listings.info(listing)
                 wanted = _checkpoint_files(gguf_filename, kind)
                 names = set()
                 for sibling in info.siblings or []:
@@ -6020,7 +6051,7 @@ class VideoBackend:
                 )
             if base and not Path(base).expanduser().exists():
                 listing = _video_listing_repo(base)
-                info = api.model_info(listing, files_metadata = True)
+                info = listings.info(listing)
                 base_files = self._base_download_files(
                     info,
                     kind,
@@ -6194,9 +6225,10 @@ class VideoBackend:
 
         try:
             api = HfApi(token = hf_token or None)
+            listings = _OneCommitListings(api)
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 listing = _video_listing_repo(repo_id)
-                info = api.model_info(listing, files_metadata = True)
+                info = listings.info(listing)
                 wanted_checkpoints = (
                     _checkpoint_files(gguf_filename, kind) if fam.is_moe else (gguf_filename,)
                 )
@@ -6297,7 +6329,7 @@ class VideoBackend:
                 total += add(h3_te_repo, h3_te_files)
             if base and not Path(base).expanduser().exists():
                 listing = _video_listing_repo(base)
-                info = api.model_info(listing, files_metadata = True)
+                info = listings.info(listing)
                 base_files = self._base_download_files(
                     info,
                     kind,
@@ -6633,6 +6665,36 @@ class VideoBackend:
                 continue
             fetched.append(component)
         return tuple(fetched)
+
+    def _top_up_dense_base(
+        self,
+        base: str,
+        hf_token: Optional[str],
+        kind: str,
+        *,
+        base_local_dir: Optional[str],
+        fetch_repo: Optional[str],
+        revision: Optional[str],
+        local_files_only: bool,
+        ltx25_dev: bool = False,
+    ) -> Optional[str]:
+        """Restore the dense weights a failed injection left out: the same scoped pull with nothing skipped, from the
+        plan's repo at the plan's commit, so the topped-up snapshot is the one the rest of the base was staged into.
+        An offline load never had a scoped snapshot to top up (the prefetch returns None), so this is a no-op there --
+        but the flag is carried so the top-up can never become the one call that reaches the Hub."""
+        return (
+            self._predownload_base(
+                base,
+                hf_token,
+                kind,
+                ltx23 = False,
+                local_files_only = local_files_only,
+                ltx25_dev = ltx25_dev,
+                fetch_repo = fetch_repo,
+                revision = revision,
+            )
+            or base_local_dir
+        )
 
     def _predownload_base(
         self,
@@ -7719,19 +7781,15 @@ class VideoBackend:
                 "pre-download skipped",
                 ", ".join(missing_dense),
             )
-            _base_local_dir = (
-                self._predownload_base(
-                    base,
-                    hf_token,
-                    kind,
-                    ltx23 = False,
-                    # An offline load never had a scoped snapshot to top up (the prefetch returns None), so this is a
-                    # no-op there -- but the flag is carried rather than defaulted so the top-up can never become the
-                    # one call that reaches the Hub.
-                    local_files_only = local_files_only,
-                    ltx25_dev = ltx25_dev,
-                )
-                or _base_local_dir
+            _base_local_dir = self._top_up_dense_base(
+                base,
+                hf_token,
+                kind,
+                base_local_dir = _base_local_dir,
+                fetch_repo = _base_fetch_repo,
+                revision = _base_fetch_revision,
+                local_files_only = local_files_only,
+                ltx25_dev = ltx25_dev,
             )
         if ltx25_client is not None:
             from .video_ltx25 import LTX25_NONE_COMPONENTS

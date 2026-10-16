@@ -768,6 +768,8 @@ class _HubRecorder:
     listings: list = []
     downloads: list = []
     config_reads: list = []
+    # Repos whose main advances after their first listing (a later unpinned listing sees a new commit).
+    moving: tuple = (_GGUF_REPO,)
 
     def __init__(self, token = None):
         pass
@@ -775,14 +777,19 @@ class _HubRecorder:
     def model_info(self, repo, files_metadata = True, revision = None, **_kw):
         type(self).listings.append((repo, revision))
         # The checkpoint repo's main advances after the first listing: a re-plan must keep the fetched commit and size.
-        moved = repo == _GGUF_REPO and any(r == _GGUF_REPO for r, _ in type(self).listings[:-1])
+        moved = (
+            revision is None
+            and repo in type(self).moving
+            and any(r == repo for r, _ in type(self).listings[:-1])
+        )
         files = (
             {_GGUF_FILE: 70 if moved else 7}
             if repo == _GGUF_REPO
             else dict(_WAN_FILES, **{"Wan-FP8.safetensors": 99})
         )
         return types.SimpleNamespace(
-            sha = ("h" if moved else "g") * 40 if repo == _GGUF_REPO else "m" * 40,
+            sha = revision
+            or (("h" if moved else "g") * 40 if repo == _GGUF_REPO else ("n" if moved else "m") * 40),
             siblings = [
                 types.SimpleNamespace(
                     rfilename = n, size = sz, blob_id = "git-" + n, lfs = types.SimpleNamespace(sha256 = "lfs-" + n)
@@ -853,10 +860,19 @@ def _assembly_config_reads(base, empty_cache, monkeypatch):
     )
 
 
-def _walk_a_load(empty_cache, monkeypatch, *, te_fetch_falls_back, predownload_leaves_early = False):
+def _walk_a_load(
+    empty_cache,
+    monkeypatch,
+    *,
+    te_fetch_falls_back,
+    predownload_leaves_early = False,
+    carrier_checkpoint = False,
+    top_up = False,
+):
     import huggingface_hub
 
     _HubRecorder.listings, _HubRecorder.downloads, _HubRecorder.config_reads = [], [], []
+    _HubRecorder.moving = (_WAN_MIRROR,) if carrier_checkpoint else (_GGUF_REPO,)
     monkeypatch.setattr(huggingface_hub, "HfApi", _HubRecorder)
     monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
 
@@ -892,15 +908,27 @@ def _walk_a_load(empty_cache, monkeypatch, *, te_fetch_falls_back, predownload_l
         )
         backend._resolve_checkpoint_path(kwargs["repo_id"], kwargs["gguf_filename"], None, **pin)
         _assembly_config_reads(kwargs["_base_fetch_repo"], empty_cache, monkeypatch)
+        if top_up:
+            # An injection failed: load_pipeline restores the skipped dense weights through this, with its plan.
+            backend._top_up_dense_base(
+                kwargs["base_repo"],
+                None,
+                "single_file",
+                base_local_dir = kwargs.get("_base_local_dir"),
+                fetch_repo = kwargs["_base_fetch_repo"],
+                revision = kwargs["_base_fetch_revision"],
+                local_files_only = False,
+            )
 
     monkeypatch.setattr(backend, "load_pipeline", _assemble)
     if predownload_leaves_early:
         # No scoped pull (a non-diffusers layout, a metadata failure): fetch_choice is never filled.
         monkeypatch.setattr(backend, "_predownload_base", lambda *a, **k: None)
     backend._load_token = 1
-    backend._loading = video_mod._VideoLoadingState(repo_id = _GGUF_REPO, base_repo = _WAN_UP)
+    repo_id, filename = (_WAN_MIRROR, "Wan-FP8.safetensors") if carrier_checkpoint else (_GGUF_REPO, _GGUF_FILE)
+    backend._loading = video_mod._VideoLoadingState(repo_id = repo_id, base_repo = _WAN_UP)
     loading = backend._loading
-    backend._run_load(repo_id = _GGUF_REPO, gguf_filename = _GGUF_FILE, _load_token = 1)
+    backend._run_load(repo_id = repo_id, gguf_filename = filename, _load_token = 1)
     assert loading.error is None, loading.error
     captured["_expected_bytes"] = loading.expected_bytes
     return loading.fetch_plan, captured
@@ -1007,3 +1035,45 @@ def test_expected_total_counts_identical_blobs_once(empty_cache, monkeypatch):
     _blob(empty_cache, "unsloth/LTX-2-FP8", "other", b"y")
     progress = _progress_of(video_mod.VideoBackend(), plan, video_mod._plan_total(plan))
     assert progress["phase"] == "finalizing"
+
+
+@pytest.mark.parametrize("te_fetch_falls_back", [False, True])
+def test_roles_sharing_a_repo_share_one_commit(
+    empty_cache, monkeypatch, te_fetch_falls_back
+):
+    """An FP8 pick from the carrier that also mirrors the base: both roles list that repo once and pin one commit,
+    even though its main moves mid-load."""
+    plan, captured = _walk_a_load(
+        empty_cache,
+        monkeypatch,
+        te_fetch_falls_back = te_fetch_falls_back,
+        carrier_checkpoint = True,
+    )
+    by_repo: dict = {}
+    for entry in plan.values():
+        by_repo.setdefault(entry.repo, set()).add(entry.revision)
+    assert all(len(revs) == 1 for revs in by_repo.values()), by_repo
+    assert plan["checkpoint"].repo == _WAN_MIRROR and plan["checkpoint"].revision == "m" * 40
+    pinned = {(p.repo, p.revision) for p in plan.values()}
+    assert {(repo, rev) for repo, rev, _ in _HubRecorder.downloads} <= pinned
+    assert captured["_expected_bytes"] == video_mod._plan_total(plan)
+
+
+def test_load_pipeline_tops_up_through_the_plan():
+    import inspect
+
+    src = inspect.getsource(video_mod.VideoBackend.load_pipeline)
+    call = src[src.index("self._top_up_dense_base(") :][:600]
+    assert "fetch_repo = _base_fetch_repo" in call and "revision = _base_fetch_revision" in call
+
+
+@pytest.mark.parametrize("te_fetch_falls_back", [False, True])
+def test_the_dense_top_up_after_a_failed_injection_stays_on_the_plan(empty_cache, monkeypatch, te_fetch_falls_back):
+    plan, _captured = _walk_a_load(
+        empty_cache, monkeypatch, te_fetch_falls_back = te_fetch_falls_back, top_up = True
+    )
+    pinned = {(p.repo, p.revision) for p in plan.values()}
+    assert {(repo, rev) for repo, rev, _ in _HubRecorder.downloads} <= pinned
+    # The top-up pulled the whole unskipped set again, from the plan's base repo at its commit.
+    base = (plan["base"].repo, plan["base"].revision)
+    assert sum(1 for repo, rev, _ in _HubRecorder.downloads if (repo, rev) == base) >= len(_WAN_FILES) - 3
