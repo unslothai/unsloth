@@ -3217,7 +3217,9 @@ def get_activations(
     if not _job_id:
         try:
             backend = get_training_backend()
-            _job_id = getattr(backend, "current_job_id", None) or None
+            # Another account's active run is not this caller's to name, as in /metrics.
+            if not job_is_foreign(backend):
+                _job_id = getattr(backend, "current_job_id", None) or None
         except Exception:
             pass
 

@@ -11,6 +11,11 @@ export const CONSTANT_CV_THRESHOLD = 0.05;
 // With only 2–3 samples the CV is trivially low and produces false positives.
 export const MIN_STEPS_FOR_CONSTANT = 5;
 
+// A sample the backend stored as null (it was NaN or inf) is missing, not a measurement.
+function isSample(v: number | null | undefined): v is number {
+  return typeof v === "number" && Number.isFinite(v);
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface LayerStats {
@@ -53,15 +58,17 @@ export function computeLayerStats(records: ActivationRecord[]): LayerStats[] {
       if (!layer) continue;
       layer.mean_abs.forEach((val, idx) => {
         if (!channelSeries.has(idx)) channelSeries.set(idx, []);
-        channelSeries.get(idx)!.push(val);
+        if (isSample(val)) channelSeries.get(idx)!.push(val);
       });
     }
 
-    const totalChannels = channelSeries.size;
+    // A channel with no valid sample has nothing to judge, so it is not counted at all.
+    const measured = [...channelSeries.values()].filter((vals) => vals.length > 0);
+    const totalChannels = measured.length;
     let deadCount = 0;
     let constantCount = 0;
 
-    for (const vals of channelSeries.values()) {
+    for (const vals of measured) {
       const maxVal = Math.max(...vals);
       if (maxVal < DEAD_THRESHOLD) {
         deadCount++;
@@ -106,14 +113,17 @@ export function computeOverlaySets(
     const numCh = firstRecord.layers[key]?.mean_abs.length ?? 0;
 
     for (let ci = 0; ci < numCh; ci++) {
-      const vals = slice.map((r) => r.layers[key]?.mean_abs[ci] ?? 0);
-      const firstVal = firstRecord.layers[key]?.mean_abs[ci] ?? 0;
+      const vals = slice
+        .map((r) => r.layers[key]?.mean_abs[ci])
+        .filter(isSample);
+      if (vals.length === 0) continue;
+      const firstVal = firstRecord.layers[key]?.mean_abs[ci];
       const maxVal = Math.max(...vals);
       const id = `${key}:${ci}`;
 
       if (maxVal < DEAD_THRESHOLD) {
         dead.add(id);
-        if (firstVal >= DEAD_THRESHOLD) onsetDead.add(id);
+        if (isSample(firstVal) && firstVal >= DEAD_THRESHOLD) onsetDead.add(id);
         continue;
       }
 
@@ -200,7 +210,11 @@ export function computeViewValues(
       for (const key of layerKeys) {
         const curr = record.layers[key]?.mean_abs ?? [];
         const p = prev?.layers[key]?.mean_abs ?? [];
-        result[key] = curr.map((v, i) => Math.abs(v - (p[i] ?? 0)));
+        // Missing on either side stays missing (NaN), which the heatmap draws as such.
+        result[key] = curr.map((v, i) => {
+          const before = p[i] === undefined ? 0 : p[i];
+          return isSample(v) && isSample(before) ? Math.abs(v - before) : Number.NaN;
+        });
       }
       return result;
     }
@@ -216,17 +230,23 @@ export function computeViewValues(
         return result;
       }
 
-      const tMean = (N - 1) / 2;
-      const tVar = slice.reduce((s, _, i) => s + (i - tMean) ** 2, 0);
-
       for (const key of layerKeys) {
         const numCh = record.layers[key]?.mean_abs.length ?? 0;
         const slopes: number[] = [];
         for (let ci = 0; ci < numCh; ci++) {
-          const ys = slice.map((r) => r.layers[key]?.mean_abs[ci] ?? 0);
-          const yMean = ys.reduce((s, v) => s + v, 0) / N;
-          const cov = ys.reduce((s, v, i) => s + (i - tMean) * (v - yMean), 0);
-          slopes.push(Math.abs(tVar > 0 ? cov / tVar : 0));
+          // Fit over the valid samples only, at their own step positions.
+          const pts = slice
+            .map((r, i) => [i, r.layers[key]?.mean_abs[ci]] as const)
+            .filter(([, v]) => isSample(v));
+          if (pts.length < 2) {
+            slopes.push(Number.NaN);
+            continue;
+          }
+          const xMean = pts.reduce((s, [i]) => s + i, 0) / pts.length;
+          const yMean = pts.reduce((s, [, v]) => s + v, 0) / pts.length;
+          const xVar = pts.reduce((s, [i]) => s + (i - xMean) ** 2, 0);
+          const cov = pts.reduce((s, [i, v]) => s + (i - xMean) * (v - yMean), 0);
+          slopes.push(Math.abs(xVar > 0 ? cov / xVar : 0));
         }
         result[key] = slopes;
       }
