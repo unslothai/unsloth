@@ -281,7 +281,7 @@ def plan_gpu_ordinal() -> Optional[int]:
 
 
 def catalog_gpu_ordinal() -> Optional[int]:
-    """The one ordinal a catalog refresh plans every pick against, ranked live only on mixed cards.
+    """The one ordinal a catalog refresh plans every pick against, ranked once unless the cards are identical.
 
     Identical visible cards pick the same precision and so the same artifacts on any of them, so the
     refresh plans against the current device as it always did instead of re-ranking per pick.
@@ -295,10 +295,10 @@ def catalog_gpu_ordinal() -> Optional[int]:
         return None
     try:
         from utils.hardware import hardware as hw
-        if hw._cuda_cards_identical(hw.get_parent_visible_gpu_ids()) is not False:
+        if hw._cuda_cards_identical(hw.get_parent_visible_gpu_ids()) is True:
             return None
-    except Exception:  # noqa: BLE001 -- unknown: plan against the current device
-        return None
+    except Exception:  # noqa: BLE001 -- unknown identity ranks once, like mixed cards
+        pass
     return plan_gpu_ordinal()
 
 

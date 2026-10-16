@@ -72,9 +72,27 @@ def _ordinary(
     ],
 )
 def test_auto_returns_none_when_the_current_device_wins(monkeypatch, devices):
+    _two_cards(monkeypatch, devices, {0: (8, 0), 1: (8, 0)})
+    assert dd.resolve_auto_cuda_ordinal() is None
+
+
+@pytest.mark.parametrize(
+    "devices, caps",
+    [
+        ([_dev(0, 80.0, 0.5), _dev(1, 80.0, 40.0)], {0: (8, 0), 1: (9, 0)}),  # mixed capability
+        ([_dev(0, 80.0, 0.5), _dev(1, 40.0, 30.0)], {0: (8, 0), 1: (8, 0)}),  # mixed size
+    ],
+)
+def test_auto_keeps_card_zero_explicit_on_mixed_cards(monkeypatch, devices, caps):
+    # A pooled thread left on card 1 must not preflight a card-0 load against card 1.
+    _two_cards(monkeypatch, devices, caps)
+    assert dd.resolve_auto_cuda_ordinal() == 0
+
+
+def _two_cards(monkeypatch, devices, caps):
     from utils.hardware import nvidia
 
-    monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda: {0: (8, 0), 1: (8, 0)})
+    monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda: dict(caps))
     monkeypatch.setattr(hw, "IS_ROCM", False)
     monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0, 1])
     monkeypatch.setattr(hw, "_cuda_order_matches_smi", lambda: True)
@@ -83,20 +101,34 @@ def test_auto_returns_none_when_the_current_device_wins(monkeypatch, devices):
     monkeypatch.setattr(
         hw, "_smi_visible_utilization", lambda spec: {"available": True, "devices": devices}
     )
-    assert dd.resolve_auto_cuda_ordinal() is None
 
 
-def test_video_generation_gains_no_pins_on_a_tie(monkeypatch):
-    # gpu_ordinal None: _device_target does not pin, only the placed-device pin runs.
+@pytest.mark.parametrize("gpu_ordinal, expected", [(None, [("pin", 0)]), (0, ["apply"])])
+def test_video_generation_sets_the_device_once(monkeypatch, gpu_ordinal, expected):
+    # Auto (None) keeps the single placed-device pin; an explicit 0 pins once, not twice.
     from core.inference import video
 
     pins = []
     monkeypatch.setattr(video, "resolve_diffusion_device_target", lambda **_k: object())
     monkeypatch.setattr(video, "apply_diffusion_device_ordinal", lambda t: pins.append("apply"))
     monkeypatch.setattr(video, "pin_cuda_ordinal", lambda o: pins.append(("pin", o)))
-    state = types.SimpleNamespace(gpu_ordinal = None, placed_ordinal = 0)
+    state = types.SimpleNamespace(gpu_ordinal = gpu_ordinal, placed_ordinal = 0)
     video.VideoBackend._state_device_target(video.VideoBackend.__new__(video.VideoBackend), state)
-    assert pins == [("pin", 0)]
+    assert pins == expected
+
+
+@pytest.mark.parametrize("gpu_ordinal, expected", [(None, ["apply", ("pin", 0)]), (0, ["apply"])])
+def test_image_generation_sets_the_device_once(monkeypatch, gpu_ordinal, expected):
+    from core.inference import diffusion
+
+    pins = []
+    backend = diffusion.DiffusionBackend.__new__(diffusion.DiffusionBackend)
+    monkeypatch.setattr(backend, "_target_for_ordinal", lambda fam, o: object(), raising = False)
+    monkeypatch.setattr(diffusion, "apply_diffusion_device_ordinal", lambda t: pins.append("apply"))
+    monkeypatch.setattr(diffusion, "pin_cuda_ordinal", lambda o: pins.append(("pin", o)))
+    state = types.SimpleNamespace(family = None, gpu_ordinal = gpu_ordinal, placed_ordinal = 0)
+    diffusion.DiffusionBackend._state_device_target(backend, state)
+    assert pins == expected
 
 
 # Item 2: no probe on ordinary hosts, and validation first.
@@ -162,16 +194,16 @@ def test_backend_auto_fallback_runs_no_probe_on_ordinary_hosts(monkeypatch, devi
     assert (targets, ranks) == ([], [])
 
 
-# Item 3: identical cards under FASTEST_FIRST keep nvidia-smi telemetry.
+# Item 3: FASTEST_FIRST numeric masks read nvidia-smi rows joined by PCI bus id, not torch.
 
 
-def _fastest_first_host(monkeypatch, identical):
+def _fastest_first_host(monkeypatch, rows):
     torch_calls = []
 
     def _torch_rows(indices):
         torch_calls.append(list(indices))
         return [
-            {"index": idx, "visible_ordinal": o, "total_gb": 80.0, "used_gb": 70.0 - o * 60.0}
+            {"index": idx, "visible_ordinal": o, "total_gb": 80.0, "used_gb": 10.0 + o * 60.0}
             for o, idx in enumerate(indices)
         ]
 
@@ -180,21 +212,26 @@ def _fastest_first_host(monkeypatch, identical):
     monkeypatch.setattr(hw, "get_physical_gpu_count", lambda: 2)
     monkeypatch.setattr(hw, "_physical_gpu_count_from_smi", True)
     monkeypatch.setattr(hw, "rocm_gpu_ids_without_torch_kernels", lambda: set())
+    # Masked SMI rows (PCI order): row 0 busy, row 1 free.
+    smi_rows = [_dev(0, 80.0, 70.0), _dev(1, 80.0, 10.0)]
+    monkeypatch.setattr(hw, "get_visible_gpu_utilization", lambda: {"devices": smi_rows})
     monkeypatch.setattr(
         hw,
-        "get_visible_gpu_utilization",
-        lambda: {"devices": [_dev(0, 80.0, 70.0), _dev(1, 80.0, 10.0)]},
+        "_smi_query",
+        lambda name, ids, **_k: {
+            "available": True,
+            "devices": [d for d in smi_rows if d["index"] in ids],
+        },
     )
     monkeypatch.setattr(hw, "_torch_get_per_device_info", _torch_rows)
     from utils.hardware import nvidia
 
-    a100 = ("NVIDIA A100-SXM4-80GB", "81920 MiB", "8.0", "1410 MHz")
-    other = ("NVIDIA RTX A6000", "49140 MiB", "8.6", "2100 MHz")
+    reads = []
     monkeypatch.setattr(
-        nvidia, "get_card_identities", lambda: {0: a100, 1: a100 if identical else other}
+        nvidia, "get_cuda_ordinal_smi_rows", lambda: reads.append(1) or rows
     )
-    monkeypatch.setattr(hw, "_cuda_card_identities", {})
-    return torch_calls
+    monkeypatch.setattr(hw, "_cuda_ordinal_rows_cache", {})
+    return torch_calls, reads
 
 
 def _auto(env):
@@ -206,17 +243,27 @@ def _auto(env):
 _FASTEST = {"CUDA_DEVICE_ORDER": "FASTEST_FIRST", "CUDA_VISIBLE_DEVICES": "0,1"}
 
 
-def test_identical_cards_under_fastest_first_use_nvidia_smi_alone(monkeypatch):
-    torch_calls = _fastest_first_host(monkeypatch, identical = True)
-    assert _auto(_FASTEST) == [1]
-    assert _auto(_FASTEST) == [1]
+@pytest.mark.parametrize("rows, expected", [([0, 1], [1]), ([1, 0], [0])])
+def test_fastest_first_mask_ranks_smi_rows_by_bus_id(monkeypatch, rows, expected):
+    # rows = the nvidia-smi row behind each CUDA ordinal; [1, 0] is a tie order that differs from PCI.
+    torch_calls, reads = _fastest_first_host(monkeypatch, rows)
+    assert _auto(_FASTEST) == expected
+    assert _auto(_FASTEST) == expected
     assert torch_calls == []
+    assert reads == [1]  # mapping found once per environment
 
 
-def test_mixed_cards_under_fastest_first_still_rank_through_torch(monkeypatch):
-    torch_calls = _fastest_first_host(monkeypatch, identical = False)
-    assert _auto(_FASTEST) == [1]
+def test_fastest_first_mask_without_a_mapping_keeps_torch(monkeypatch):
+    torch_calls, _reads = _fastest_first_host(monkeypatch, None)
+    assert _auto(_FASTEST) == [0]
     assert torch_calls == [[0, 1]]
+
+
+def test_bus_ids_from_both_tools_join():
+    from utils.hardware import nvidia
+
+    assert nvidia._normalize_bus_id("00000000:3B:00.0") == nvidia._normalize_bus_id("0000:3b:00.0")
+    assert nvidia._normalize_bus_id("garbage") is None
 
 
 def test_card_identities_are_read_once(monkeypatch):
@@ -257,7 +304,7 @@ def _catalog(monkeypatch):
     return routes, planned
 
 
-@pytest.mark.parametrize("visible, identical", [((0,), True), ((0, 1), True), ((0, 1), None)])
+@pytest.mark.parametrize("visible, identical", [((0,), True), ((0,), None), ((0, 1), True)])
 def test_catalog_refresh_does_not_rank_on_ordinary_hosts(monkeypatch, visible, identical):
     routes, planned = _catalog(monkeypatch)
     _ordinary(monkeypatch, visible = visible)
@@ -269,10 +316,11 @@ def test_catalog_refresh_does_not_rank_on_ordinary_hosts(monkeypatch, visible, i
     assert planned and set(planned) == {None}
 
 
-def test_catalog_refresh_ranks_once_on_mixed_cards(monkeypatch):
+@pytest.mark.parametrize("identical", [False, None])
+def test_catalog_refresh_ranks_once_on_mixed_or_unknown_cards(monkeypatch, identical):
     routes, planned = _catalog(monkeypatch)
     _ordinary(monkeypatch, visible = (0, 1))
-    monkeypatch.setattr(hw, "_cuda_cards_identical", lambda gpu_ids = None: False)
+    monkeypatch.setattr(hw, "_cuda_cards_identical", lambda gpu_ids = None: identical)
     _counting_target(monkeypatch, dd)
     ranks = _counting_rank(monkeypatch, answer = 1)
     routes._validated_media_picks(1.0)
@@ -281,3 +329,46 @@ def test_catalog_refresh_ranks_once_on_mixed_cards(monkeypatch):
     from core.inference.media_locality import planned_gpu_ordinal
 
     assert planned_gpu_ordinal() == (False, None)
+
+
+# The route's gate answers from memory, or runs on a worker thread.
+
+
+@pytest.mark.parametrize(
+    "device, count, mask, cached",
+    [
+        (DeviceType.CUDA, 1, None, False),  # counted single GPU: answered inline
+        (DeviceType.MLX, None, None, False),  # Apple: answered inline
+        (None, None, None, None),  # detection not run yet
+        (DeviceType.CUDA, None, None, None),  # unmasked, never counted
+        (DeviceType.CUDA, 2, "GPU-abc,GPU-def", None),  # UUID mask may run nvidia-smi
+    ],
+)
+def test_cached_gate_defers_anything_that_could_probe(monkeypatch, device, count, mask, cached):
+    monkeypatch.setattr(hw, "IS_ROCM", False)
+    monkeypatch.setattr(hw, "DEVICE", device)
+    monkeypatch.setattr(hw, "_physical_gpu_count", count)
+    monkeypatch.setattr(hw, "get_device", lambda: device)
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: list(range(count or 0)))
+    env = {} if mask is None else {"CUDA_VISIBLE_DEVICES": mask}
+    with patch.dict(os.environ, env, clear = True):
+        assert dd.auto_cuda_ranking_possible_cached() is cached
+
+
+def test_route_runs_an_uncached_gate_off_the_event_loop(monkeypatch):
+    from routes import inference as routes
+
+    monkeypatch.setattr(dd, "auto_cuda_ranking_possible_cached", lambda: None)
+    loop_thread = []
+
+    def _gate():
+        import threading
+
+        loop_thread.append(threading.current_thread() is threading.main_thread())
+        return False
+
+    monkeypatch.setattr(dd, "auto_cuda_ranking_possible", _gate)
+    targets = _counting_target(monkeypatch, dd)
+    assert asyncio.run(routes._selected_gpu_ordinal(None)) is None
+    assert loop_thread == [False]
+    assert targets == []

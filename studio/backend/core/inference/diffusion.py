@@ -2988,8 +2988,10 @@ class DiffusionBackend:
         apply_diffusion_device_ordinal(target)
         # And put an AUTOMATIC load back on its own card. generate() runs on a pooled asyncio.to_thread worker, so a
         # previous pinned model leaves that thread set to its GPU for good; with no ordinal to pin, the bare "cuda"
-        # Generators below would then target that card while these weights sit on the default one.
-        pin_cuda_ordinal(state.placed_ordinal)
+        # Generators below would then target that card while these weights sit on the default one. Skipped when the
+        # pin above already set that card.
+        if state.gpu_ordinal is None or state.placed_ordinal != state.gpu_ordinal:
+            pin_cuda_ordinal(state.placed_ordinal)
         return target
 
     def _resolve_gguf_path(

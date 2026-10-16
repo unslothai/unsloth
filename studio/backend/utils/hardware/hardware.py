@@ -2066,6 +2066,47 @@ def _cuda_cards_identical(gpu_ids: Optional[list[int]] = None) -> Optional[bool]
     return len(set(rows)) == 1
 
 
+_cuda_ordinal_rows_cache: Dict[tuple, list[int]] = {}
+
+
+def _smi_rows_for_cuda_ordinals(parent_ids: list[int]) -> Optional[Dict[str, Any]]:
+    """nvidia-smi utilization keyed by the mask's ids, read from the rows the CUDA ordinals really are.
+
+    For a numeric mask under a non-PCI CUDA_DEVICE_ORDER, where mask entries are CUDA ordinals and not
+    nvidia-smi rows. The ordinal -> row join is by PCI bus id, found once per environment out of process
+    (no CUDA context here). None when it cannot be established, so the caller keeps the torch path.
+    """
+    key = (os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER"))
+    rows = _cuda_ordinal_rows_cache.get(key)
+    if rows is None:
+        try:
+            from . import nvidia
+            rows = nvidia.get_cuda_ordinal_smi_rows()
+        except Exception:
+            rows = None
+        if not rows:
+            return None
+        _cuda_ordinal_rows_cache[key] = rows
+    if len(rows) != len(parent_ids) or len(set(rows)) != len(rows):
+        return None
+    result = _smi_query(
+        "get_visible_gpu_utilization", sorted(rows), parent_cuda_visible_devices = None
+    )
+    by_row = {d.get("index"): d for d in (result or {}).get("devices", [])}
+    if not all(row in by_row for row in rows):
+        return None
+    return {
+        "devices": [
+            {
+                "index": parent_ids[ordinal],
+                "vram_total_gb": by_row[row].get("vram_total_gb"),
+                "vram_used_gb": by_row[row].get("vram_used_gb"),
+            }
+            for ordinal, row in enumerate(rows)
+        ]
+    }
+
+
 def _amd_smi_ids_for_hip_ids(hip_ids: Optional[list[int]]) -> Optional[list[int]]:
     """Translate visible HIP ordinals to amd-smi physical GPU IDs."""
     if hip_ids is None or not hip_ids:
@@ -6130,9 +6171,15 @@ def auto_select_gpu_ids(
         metadata["selected_gpu_ids"] = parent_ids
         return parent_ids, metadata
 
-    # Identical cards enumerate in PCI order under FASTEST_FIRST too, so the SMI rows are already the
-    # cards the ids select; torch telemetry (a CUDA context per card) only when they differ.
-    if _mask_names_cuda_ordinals(parent_visible_spec) and _cuda_cards_identical() is not True:
+    smi_by_ordinal = (
+        _smi_rows_for_cuda_ordinals(get_parent_visible_gpu_ids())
+        if _mask_names_cuda_ordinals(parent_visible_spec)
+        else None
+    )
+    if smi_by_ordinal is not None:
+        # nvidia-smi telemetry for the cards the ids select, joined by PCI bus id out of process.
+        utilization = smi_by_ordinal
+    elif _mask_names_cuda_ordinals(parent_visible_spec):
         # The display keeps the CLI rows; ranking needs the cards the worker will get.
         utilization = {
             "devices": [

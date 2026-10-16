@@ -3056,8 +3056,9 @@ class VideoBackend:
         target = self._device_target(state.gpu_ordinal)
         # And an automatic load back onto its own card, in case this thread is a shared one a previous pinned load left
         # elsewhere. The image path reaches this through a pooled executor; here it costs one no-op call to keep the two
-        # engines identical.
-        pin_cuda_ordinal(state.placed_ordinal)
+        # engines identical. Skipped when the pin above already set that card.
+        if state.gpu_ordinal is None or state.placed_ordinal != state.gpu_ordinal:
+            pin_cuda_ordinal(state.placed_ordinal)
         return target
 
     # ── validation ───────────────────────────────────────────────────────────

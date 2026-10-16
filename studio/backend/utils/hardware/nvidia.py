@@ -489,8 +489,7 @@ def get_compute_capabilities() -> dict[int, tuple[int, int]]:
 def get_card_identities() -> dict[int, tuple[str, ...]]:
     """nvidia-smi row index -> (name, total memory, compute cap, max SM clock), no mask and no torch.
 
-    These are what CUDA's FASTEST_FIRST heuristic orders by, so equal rows enumerate in PCI order.
-    {} when unreadable.
+    Equal rows pick the same precision and artifacts on either card. {} when unreadable.
     """
     try:
         result = gpu_query.run_nvidia_smi(
@@ -518,6 +517,86 @@ def get_card_identities() -> dict[int, tuple[str, ...]]:
             return {}
         identities[int(index)] = tuple(fields)
     return identities
+
+
+# Driver API only: cuInit enumerates devices under the inherited CUDA_VISIBLE_DEVICES / CUDA_DEVICE_ORDER
+# without creating a context, and runs in a child so the Studio process never initialises CUDA.
+_CUDA_BUS_ID_SCRIPT = r"""
+import ctypes, sys
+lib = ctypes.WinDLL("nvcuda.dll") if sys.platform == "win32" else ctypes.CDLL("libcuda.so.1")
+if lib.cuInit(0) != 0:
+    sys.exit(3)
+count = ctypes.c_int(0)
+if lib.cuDeviceGetCount(ctypes.byref(count)) != 0:
+    sys.exit(4)
+for ordinal in range(count.value):
+    dev = ctypes.c_int(0)
+    buf = ctypes.create_string_buffer(64)
+    if lib.cuDeviceGet(ctypes.byref(dev), ordinal) != 0 or lib.cuDeviceGetPCIBusId(buf, 64, dev) != 0:
+        sys.exit(5)
+    print(buf.value.decode())
+"""
+
+
+def _normalize_bus_id(bus_id: str) -> Optional[tuple[int, str]]:
+    """'00000000:3B:00.0' (nvidia-smi) and '0000:3b:00.0' (driver API) -> (domain, 'BUS:DEV.FN')."""
+    domain, sep, rest = bus_id.strip().partition(":")
+    if not sep:
+        return None
+    try:
+        return int(domain, 16), rest.upper()
+    except ValueError:
+        return None
+
+
+def get_cuda_ordinal_smi_rows() -> Optional[list[int]]:
+    """nvidia-smi row index for each CUDA ordinal of this process's environment, matched by PCI bus id.
+
+    Establishes the ordinal mapping under any CUDA_DEVICE_ORDER / numeric mask without opening a CUDA
+    context here: the ordinals come from a short child on the driver API, the rows from nvidia-smi.
+    None when either side is unreadable or the two do not join.
+    """
+    import sys
+
+    try:
+        child = subprocess.run(
+            [sys.executable, "-c", _CUDA_BUS_ID_SCRIPT],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 15,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+        smi = gpu_query.run_nvidia_smi(
+            [_nvidia_smi_executable(), "--query-gpu=index,pci.bus_id", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if child.returncode != 0 or smi.returncode != 0:
+        return None
+    row_by_bus: dict[tuple[int, str], int] = {}
+    for line in smi.stdout.strip().splitlines():
+        index, _, bus_id = (part.strip() for part in line.partition(","))
+        key = _normalize_bus_id(bus_id)
+        if not index.isdigit() or key is None:
+            return None
+        row_by_bus[key] = int(index)
+    rows = []
+    for line in child.stdout.strip().splitlines():
+        key = _normalize_bus_id(line)
+        if key not in row_by_bus:
+            return None
+        rows.append(row_by_bus[key])
+    return rows or None
 
 
 def get_physical_gpu_inventory() -> dict[str, Any]:

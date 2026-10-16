@@ -202,7 +202,8 @@ def test_auto_skips_a_freer_card_older_than_the_current_one(monkeypatch):
     _host(
         monkeypatch, [0, 1], [_dev(0, 24.0, 20.0), _dev(1, 8.0, 0.0)], caps = {0: (8, 6), 1: (6, 1)}
     )
-    assert dd.resolve_auto_cuda_ordinal() is None
+    # Mixed cards keep card 0 explicit.
+    assert dd.resolve_auto_cuda_ordinal() == 0
 
 
 def test_auto_a_newer_card_still_competes(monkeypatch):

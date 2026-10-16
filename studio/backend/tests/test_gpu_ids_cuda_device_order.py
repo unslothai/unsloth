@@ -95,8 +95,8 @@ def _host(monkeypatch, physical = 2):
     monkeypatch.setattr(hw, "rocm_gpu_ids_without_torch_kernels", lambda: set())
     monkeypatch.setattr(hw, "get_visible_gpu_utilization", _smi_utilization)
     monkeypatch.setattr(hw, "_torch_get_per_device_info", _torch_rows)
-    # A 3060 beside a 4090: FASTEST_FIRST reorders them.
-    monkeypatch.setattr(hw, "_cuda_cards_identical", lambda gpu_ids = None: False)
+    # No out-of-process ordinal mapping here, so the mismatched shape ranks through torch.
+    monkeypatch.setattr(hw, "_smi_rows_for_cuda_ordinals", lambda parent_ids: None)
 
 
 def _auto(env):

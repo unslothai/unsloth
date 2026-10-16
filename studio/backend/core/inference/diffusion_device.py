@@ -406,7 +406,7 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
     single-GPU fit, ties to the lowest ordinal. Read from nvidia-smi alone (no CUDA context per card, so no
     torch fallback) and keyed through the parent-visible list, so a mask keeps deciding which cards exist.
 
-    None when the winner is the current device (ordinal 0, ties included), on one visible card (unchanged),
+    None when card 0 wins (ties included) on identical cards, on one visible card (unchanged),
     a UUID/MIG mask (no physical ids), ROCm (an APU's free reading is the
     shared host pool, which would outrank a discrete card), a CUDA order other than nvidia-smi's (its rows are
     then not torch's ordinals), an integrated GPU (its rows are a carve-out or N/A, and its real budget is the
@@ -458,8 +458,39 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
         return None
     best = max(free_by_ordinal.values())
     winner = min(o for o, free in free_by_ordinal.items() if best - free <= _AUTO_FREE_TIE_BYTES)
-    # The current device (or a tie with it) stays None, so generation gains no explicit set_device pins.
-    return winner or None
+    if winner:
+        return winner
+    # Card 0 won. Identical cards (same capability and size) keep None, the unpinned path they always had:
+    # any card resolves the same precision and artifacts. Mixed cards keep 0 explicit, since a pooled thread
+    # left on another card would otherwise preflight against that card.
+    totals = {d.get("vram_total_gb") for d in devices if d.get("index") in visible}
+    if len({caps.get(i) for i in visible}) == 1 and len(totals) == 1:
+        return None
+    return 0
+
+
+def auto_cuda_ranking_possible_cached() -> Optional[bool]:
+    """``auto_cuda_ranking_possible`` when it can be answered from state already in memory, else None.
+
+    For the event loop: a cold device detection, an uncounted unmasked host or a non-numeric mask may run
+    nvidia-smi, so those go to a worker thread instead.
+    """
+    try:
+        from utils.hardware import hardware as hw
+
+        if hw.DEVICE is None:
+            return None
+        if hw.IS_ROCM or hw.DEVICE != hw.DeviceType.CUDA:
+            return auto_cuda_ranking_possible()
+        mask = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if mask is None:
+            if hw._physical_gpu_count is None:
+                return None
+        elif not all(token.strip().isdigit() for token in mask.split(",") if token.strip()):
+            return None
+    except Exception:  # noqa: BLE001 -- let the worker-thread gate decide
+        return None
+    return auto_cuda_ranking_possible()
 
 
 def auto_cuda_ranking_possible() -> bool:

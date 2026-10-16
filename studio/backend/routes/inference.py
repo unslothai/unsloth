@@ -49411,7 +49411,10 @@ async def _selected_gpu_ordinal(gpu_ids, *, allow_ranking: bool = True) -> Optio
         if pinned:
             return ordinal
         # Zero / one GPU, ROCm, Apple and CPU: nothing to rank, so no device or dtype probe either.
-        if not diffusion_device.auto_cuda_ranking_possible():
+        possible = diffusion_device.auto_cuda_ranking_possible_cached()
+        if possible is None:  # would probe: off the event loop
+            possible = await asyncio.to_thread(diffusion_device.auto_cuda_ranking_possible)
+        if not possible:
             return None
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
         if device != "cuda":
