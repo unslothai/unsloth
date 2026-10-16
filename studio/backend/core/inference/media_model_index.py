@@ -250,18 +250,22 @@ def _add_gguf_picks(
 
             detected = detect_gguf_model(load_path)
             relative = Path(detected).relative_to(root).as_posix() if detected else None
+            preferred = preferred_quant(scope) or scope[0]
+            preferred_group = gguf_variant_key(openable[preferred].filename).lower()
+            # detection only breaks ties between builds of the preferred quant
             selected = next(
                 (
                     quant
                     for quant, variant in openable.items()
                     if variant.filename == relative
-                    and legacy_groups.get(gguf_variant_key(variant.filename).lower(), 0) > 1
+                    and gguf_variant_key(variant.filename).lower() == preferred_group
+                    and legacy_groups.get(preferred_group, 0) > 1
                 ),
                 None,
             )
             if selected in scope:
                 best = selected
-    except (OSError, RuntimeError, ValueError):
+    except (OSError, RuntimeError, ValueError, KeyError):
         pass
     best = best or preferred_quant(scope) or scope[0]
     _register(

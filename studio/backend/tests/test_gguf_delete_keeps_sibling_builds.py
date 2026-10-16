@@ -237,6 +237,20 @@ def test_the_detected_build_does_not_leave_a_curated_default_scope(tmp_path):
     assert response.default_variant == "distilled/model-Q4_K_M"
 
 
+def test_a_larger_sibling_build_does_not_override_the_preferred_default(tmp_path):
+    import asyncio
+
+    from hub.services.models.gguf_variants import get_gguf_variants_response
+
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x" * 50)
+    (tmp_path / "alpha-F16.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "beta-F16.gguf").write_bytes(b"x" * 120)
+
+    response = asyncio.run(get_gguf_variants_response(str(tmp_path), prefer_local_cache = True))
+
+    assert response.default_variant == "Q4_K_M"
+
+
 def test_a_bare_named_sibling_cannot_collide_with_the_legacy_quant_key(tmp_path):
     import asyncio
 

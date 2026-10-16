@@ -771,6 +771,17 @@ def test_local_gguf_entry_keeps_a_split_build_linked_to_its_complete_set(tmp_pat
     assert len(entry.variants) == 2
 
 
+def test_local_gguf_entry_keeps_the_preferred_quant_over_a_larger_sibling_build(tmp_path):
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x" * 50)
+    (tmp_path / "alpha-F16.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "beta-F16.gguf").write_bytes(b"x" * 120)
+
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+
+    assert entry is not None
+    assert entry.variants[0] == "Q4_K_M"
+
+
 def test_local_gguf_entry_labels_a_quantless_filename_as_the_picker_does(tmp_path):
     # No quant token in the name, so the picker and every saved setting key this variant by
     # the stem. Labelling it "v2" here left an API load reading a key nothing wrote (#10227).

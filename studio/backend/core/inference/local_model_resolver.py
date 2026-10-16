@@ -456,12 +456,18 @@ def _local_gguf_entry(
                 relative = (
                     Path(detected).relative_to(Path(load_dir)).as_posix() if detected else None
                 )
+                preferred = next((v for v in variants if v.quant == best), None)
+                preferred_group = (
+                    gguf_variant_key(preferred.filename).casefold() if preferred else None
+                )
+                # detection only breaks ties between builds of the preferred quant
                 selected = next(
                     (
                         variant
                         for variant in variants
                         if variant.filename == relative
-                        and legacy_groups.get(gguf_variant_key(variant.filename).casefold(), 0) > 1
+                        and gguf_variant_key(variant.filename).casefold() == preferred_group
+                        and legacy_groups.get(preferred_group, 0) > 1
                     ),
                     None,
                 )

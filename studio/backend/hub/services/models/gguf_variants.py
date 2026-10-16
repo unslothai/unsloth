@@ -1463,17 +1463,20 @@ async def get_gguf_variants_answer(
                         relative = (
                             Path(detected).relative_to(source_root).as_posix() if detected else None
                         )
+                        preferred = next(
+                            (v for v in ready or variants if v.quant == default_variant), None
+                        )
+                        preferred_group = (
+                            gguf_variant_key(preferred.filename).lower() if preferred else None
+                        )
+                        # detection only breaks ties between builds of the preferred quant
                         selected = next(
                             (
                                 variant
                                 for variant in ready or variants
                                 if variant.filename == relative
-                                and len(
-                                    rows_by_legacy_key.get(
-                                        gguf_variant_key(variant.filename).lower(), []
-                                    )
-                                )
-                                > 1
+                                and gguf_variant_key(variant.filename).lower() == preferred_group
+                                and len(rows_by_legacy_key.get(preferred_group, [])) > 1
                             ),
                             None,
                         )
