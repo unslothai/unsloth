@@ -377,3 +377,25 @@ def test_a_launch_with_nothing_spilled_says_so(tmp_path, _moe_cache_host, monkey
     assert "2048" not in _ubatch_values(cmd), cmd
     assert any("keeps every routed expert on the GPU" in line for line in lines), lines
     assert not any("resident share" in line for line in lines), lines
+
+
+# --- a zero-layer drafter whose tensors are overridden onto the card -----------------------
+
+
+def test_a_zero_layer_drafter_with_gpu_tensor_overrides_is_unpriced(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    """-otd places each matching drafter tensor on its named buffer whatever -ngld says, so
+    -ngld 0 -otd .*=CUDA0 keeps drafter weights on the card. Classified as a CPU drafter it
+    left the budget and skipped the draft tensor-placement guard; the share now abstains."""
+    _set_env(monkeypatch, {})
+    _cmd, cpu = placement._drafter_cache_launch(
+        tmp_path / "cpu", monkeypatch, ["-ngld", "0", "-otd", ".*=CPU"]
+    )
+    assert cpu and cpu[-1] is not None, cpu
+
+    cmd, seen = placement._drafter_cache_launch(
+        tmp_path / "gpu", monkeypatch, ["-ngld", "0", "-otd", ".*=CUDA0"]
+    )
+    assert all(share is None for share in seen), seen
+    assert not _has_moe_cache(cmd), cmd

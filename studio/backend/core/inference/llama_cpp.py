@@ -5230,11 +5230,10 @@ def _kv_offload_from_args(
 
 
 def _is_positive_int(value: Optional[str]) -> bool:
-    """Whether ``value`` parses as an int > 0 (llama.cpp's std::stoi)."""
-    try:
-        return int(str(value).strip()) > 0
-    except (TypeError, ValueError):
-        return False
+    """Whether llama.cpp's std::stoi parses ``value`` as an int > 0 (``_stoi_prefix``:
+    leading digits, trailing text ignored, so "4abc" is 4)."""
+    parsed = _stoi_prefix(value) if value is not None else None
+    return parsed is not None and parsed > 0
 
 
 def _args_place_tensors_on_cpu(extra_args: Optional[Iterable[str]] = None) -> bool:
@@ -6603,12 +6602,10 @@ def _draft_is_split_across_host(
     raw = _extra_args_draft_gpu_layers(extra_args, env)
     if raw is None:
         return False
-    try:
-        count = int(str(raw).strip())
-    except (TypeError, ValueError):
-        # std::stoi would throw and the child never starts: nothing to misprice.
-        return False
-    if count <= 0:
+    # std::stoi reads the leading digits ("2 layers" is 2); no digits ("auto", "all")
+    # is not a fixed count, and a throw is a child that never starts.
+    count = _stoi_prefix(raw)
+    if count is None or count <= 0:
         return False
     return not (n_draft_layers and count > n_draft_layers)
 
@@ -6707,6 +6704,21 @@ def _sidecar_adapter_bytes(extra_args: Optional[Iterable[str]]) -> Optional[int]
     return total
 
 
+def _draft_tensor_overrides_cpu_only(extra_args: Optional[Iterable[str]]) -> bool:
+    """Whether every ``-otd`` entry (they accumulate) targets the ``CPU`` buffer; True with
+    none. Buffer names match exactly (parse_tensor_buffer_overrides, common/arg.cpp)."""
+    args = [str(a) for a in extra_args] if extra_args else []
+    for i, raw in enumerate(args):
+        if _flag_name(raw) not in _DRAFT_TENSOR_OVERRIDE_FLAGS:
+            continue
+        _, eq, inline = raw.partition("=")
+        value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+        for entry in value.split(","):
+            if "=" not in entry or entry.rsplit("=", 1)[1] != "CPU":
+                return False
+    return True
+
+
 def _extra_args_draft_offloaded_to_cpu(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
@@ -6717,14 +6729,17 @@ def _extra_args_draft_offloaded_to_cpu(
     draft-only flags don't move it. Last-wins, so only each flag's final value counts.
 
     A count BETWEEN 0 and the drafter's block count is a split, not an offload; see
-    ``_draft_is_split_across_host``."""
+    ``_draft_is_split_across_host``.
+
+    A ``-otd`` naming any buffer but ``CPU`` puts those drafter tensors on that device
+    whatever the layer count says (llama-model.cpp applies the overrides per tensor), so
+    the drafter is not off the card; neither is one whose override cannot be read
+    (parse_tensor_buffer_overrides throws without ``=``)."""
+    if not _draft_tensor_overrides_cpu_only(extra_args):
+        return False
     last_ngl = _extra_args_draft_gpu_layers(extra_args, env)
-    if last_ngl is not None:
-        try:
-            if int(last_ngl) == 0:
-                return True
-        except (TypeError, ValueError):
-            pass
+    if last_ngl is not None and _stoi_prefix(last_ngl) == 0:
+        return True
     last_dev = _extra_args_draft_device(extra_args)
     if last_dev is not None:
         devs = [d.strip().lower() for d in last_dev.split(",") if d.strip()]
@@ -29525,12 +29540,10 @@ class LlamaCppBackend:
                     _fit_mmproj_studio_pin = bool(
                         _mmproj_cpu_pinned and launch_mmproj_path and effective_is_vision
                     )
-                    _fit_env_mmproj_on_host = (
-                        _mmproj_placement(
-                            _fit_extras, _fit_env, studio_cpu_pin = _fit_mmproj_studio_pin
-                        )
-                        == "host"
+                    _fit_mmproj_place = _mmproj_placement(
+                        _fit_extras, _fit_env, studio_cpu_pin = _fit_mmproj_studio_pin
                     )
+                    _fit_env_mmproj_on_host = _fit_mmproj_place == "host"
                     _fit_model_size = model_size
                     if _fit_env_mmproj_unsized:
                         # Same abstain the other unreadable terms take.
@@ -29566,8 +29579,11 @@ class LlamaCppBackend:
                             or (_fit_mmproj_studio_pin and not mmproj_size)
                         )
                     )
+                    # A device token the resolver reads as "default" (none, then a later
+                    # offload) is the model's own card, which model_size already charged.
                     if (
                         _fit_mmproj_device is not None
+                        and _fit_mmproj_place != "default"
                         and not _fit_mmproj_known_host
                         and (launch_mmproj_path or _fit_env_mmproj or _fit_env_mmproj_url)
                     ) or (
@@ -35430,7 +35446,25 @@ class LlamaCppBackend:
             LlamaCppBackend._cmd_has_gpu_device_pin(cmd, env)
             or _effective_tensor_parallel(cmd, False, env)
             or LlamaCppBackend._cmd_has_gpu_companion(cmd, env)
+            or LlamaCppBackend._cmd_names_mmproj_device(cmd, env)
         )
+
+    @staticmethod
+    def _cmd_names_mmproj_device(cmd: list, env: Optional[Mapping[str, str]] = None) -> bool:
+        """True when any projector device value, not only the last, names a device.
+
+        arg.cpp resolves each --mmproj-device / MTMD_BACKEND_DEVICE as it reads it (env
+        first, then argv in order; parse_device_list), so a name before a final none
+        must still exist: hiding the GPUs fails the launch with "invalid device"."""
+        values = [(env or {}).get("MTMD_BACKEND_DEVICE")]
+        args = [str(arg) for arg in cmd]
+        for index, raw in enumerate(args):
+            if _flag_name(raw) in _MMPROJ_DEVICE_FLAGS:
+                _, equals, inline = raw.partition("=")
+                values.append(
+                    inline if equals else (args[index + 1] if index + 1 < len(args) else "")
+                )
+        return any(value is not None and value != "none" for value in values)
 
     @staticmethod
     def _cmd_has_gpu_device_pin(cmd: list, env: Optional[Mapping[str, str]] = None) -> bool:

@@ -5379,24 +5379,48 @@ def test_a_gpu_projector_at_the_same_ram_gets_the_moe_cache(tmp_path, _moe_cache
 @pytest.mark.parametrize(
     "extra_args, env",
     [
-        (["--mmproj-device", "none", "--mmproj-offload"], {}),
         (["--mmproj-device", "none", "--mmproj-device", "CUDA1"], {}),
         (["--mmproj-device", "NONE"], {}),
     ],
-    ids = ["offload_after", "gpu_after", "not_exactly_none"],
+    ids = ["gpu_after", "not_exactly_none"],
 )
 def test_a_projector_none_with_a_conflicting_placement_keeps_the_split(
     tmp_path, _moe_cache_host, monkeypatch, extra_args, env
 ):
-    """Controls: a later offload or GPU device puts the projector back on a card and
-    arg.cpp only matches the literal none, so the load-mode fit (which reads only a
-    host-RAM projector device) abstains and the cache stays off. An env offload under
-    an argv none is host RAM (env first): test_moe_share_device_margins.py."""
+    """Controls: a later GPU device pins the projector to a named card and arg.cpp only
+    matches the literal none, so the load-mode fit (which cannot place a named device)
+    abstains and the cache stays off. An env offload under an argv none is host RAM
+    (env first): test_moe_share_device_margins.py."""
     monkeypatch.delenv("MTMD_BACKEND_DEVICE", raising = False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     cmd, _seen = _vision_cache_launch(tmp_path, monkeypatch, extra_args)
     assert not _has_moe_cache(cmd), cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--mmproj-device", "none", "--mmproj-offload"], {}),
+        (["--mmproj-offload"], {"MTMD_BACKEND_DEVICE": "none"}),
+    ],
+    ids = ["offload_after", "env_none_argv_offload"],
+)
+def test_a_projector_offloaded_after_none_keeps_the_cache(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    """A later --mmproj-offload after device none puts the projector on the model's own
+    device (mmproj_device = devices.front(), common/arg.cpp): the resolver's "default",
+    the placement the budget charged to the card. The load-mode fit read the raw none
+    token and abstained, dropping the cache a bare --mmproj-offload keeps."""
+    monkeypatch.delenv("MTMD_BACKEND_DEVICE", raising = False)
+    cmd, _seen = _vision_cache_launch(tmp_path / "base", monkeypatch, ["--mmproj-offload"])
+    assert _has_moe_cache(cmd), cmd
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    cmd, _seen = _vision_cache_launch(tmp_path / "after", monkeypatch, extra_args)
+    assert _has_moe_cache(cmd), cmd
+    assert _load_mode(cmd) == "none", cmd
 
 
 @pytest.mark.parametrize(
