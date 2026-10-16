@@ -431,14 +431,19 @@ async fn routes(proxies: &Proxies, request: &Request) -> Vec<Option<Upstream>> {
             return routes;
         }
     }
-    vec![system_proxy(&proxies.fixed, &destination)]
+    // A set proxy this can't speak to leaves no route, rather than going direct around it.
+    system_proxy(&proxies.fixed, &destination).map_or_else(|()| Vec::new(), |route| vec![route])
 }
 
-/// The first fixed setting that covers `destination`. HTTP and SOCKS5 proxies are chained.
-fn system_proxy(proxies: &[Matcher], destination: &http::Uri) -> Option<Upstream> {
-    let intercept = proxies
+/// The first fixed setting that covers `destination`, if any. HTTP and SOCKS proxies are chained;
+/// any other kind is an error.
+fn system_proxy(proxies: &[Matcher], destination: &http::Uri) -> Result<Option<Upstream>, ()> {
+    let Some(intercept) = proxies
         .iter()
-        .find_map(|proxies| proxies.intercept(destination))?;
+        .find_map(|proxies| proxies.intercept(destination))
+    else {
+        return Ok(None);
+    };
     let uri = intercept.uri();
     let address = |default| {
         format!(
@@ -447,30 +452,30 @@ fn system_proxy(proxies: &[Matcher], destination: &http::Uri) -> Option<Upstream
             uri.port_u16().unwrap_or(default)
         )
     };
-    match uri.scheme_str() {
-        Some("http") => Some(Upstream::Http {
+    Ok(Some(match uri.scheme_str() {
+        Some("http") => Upstream::Http {
             address: address(80),
             auth: intercept
                 .basic_auth()
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned),
-        }),
+        },
         // Either way the proxy gets the name, as with HTTP proxies.
-        Some("socks5" | "socks5h") => Some(Upstream::Socks {
+        Some("socks5" | "socks5h") => Upstream::Socks {
             address: address(1080),
             auth: intercept
                 .raw_auth()
                 .map(|(user, pass)| (user.to_owned(), pass.to_owned())),
-        }),
+        },
         #[cfg(any(windows, target_os = "linux", test))]
-        Some("socks4" | "socks4a") => Some(Upstream::Socks4 {
+        Some("socks4" | "socks4a") => Upstream::Socks4 {
             address: address(1080),
-        }),
+        },
         scheme => {
             log::info!("browser proxy can't chain to a {scheme:?} proxy");
-            None
+            return Err(());
         }
-    }
+    }))
 }
 
 /// Parse `host`, refusing it if it names a private address.
@@ -1057,7 +1062,10 @@ mod pac {
         fn route(entry: &str, destination: &http::Uri) -> Option<Option<Upstream>> {
             let proxy = Url::parse(entry).ok()?;
             let chained = |entry: String| {
-                system_proxy(&[Matcher::builder().all(entry).build()], destination).map(Some)
+                system_proxy(&[Matcher::builder().all(entry).build()], destination)
+                    .ok()
+                    .flatten()
+                    .map(Some)
             };
             match proxy.scheme() {
                 "direct" => Some(None),
@@ -1429,6 +1437,7 @@ mod tests {
                 &[per_protocol(server, "", |_| None).unwrap()],
                 &url.parse().unwrap(),
             )
+            .unwrap()
         };
         let socks = Some(Upstream::Socks4 {
             address: "127.0.0.1:3".into(),
@@ -1510,6 +1519,13 @@ mod tests {
         assert_eq!(response, "HTTP/1.1 200 OK\r\n\r\nhello");
         let expected = format!("GET {url} HTTP/1.1\r\n{auth}\r\nConnection: close\r\n\r\n");
         assert_eq!(seen.await.unwrap().as_deref(), Some(expected.as_str()));
+    }
+
+    #[tokio::test]
+    async fn a_proxy_that_cant_be_chained_is_not_bypassed() {
+        let https = Matcher::builder().all("https://127.0.0.1:9").build();
+        let response = exchange(https, &tunnel("example.com:443")).await;
+        assert!(response.starts_with("HTTP/1.1 502"), "{response}");
     }
 
     #[tokio::test]
