@@ -42,5 +42,7 @@ export async function loadVoice(id: string): Promise<void> {
 }
 
 export async function unloadVoice(id: string): Promise<void> {
-  if (await voiceServing(id)) await unloadModel({ model_path: id });
+  // Voice mode is the only thing speaking with it, so a sentence still synthesizing
+  // is its own and is cancelled rather than turning the unload into a 409.
+  if (await voiceServing(id)) await unloadModel({ model_path: id, force_cancel_active: true });
 }
