@@ -180,8 +180,15 @@ export const BUDGET = {
   // (6,791,768 -> 6,792,265 B raw, 2,037,833 -> 2,038,017 B transfer against 23bbee09b1, one machine and build,
   // Node 26, chunk count unchanged at 95). A synchronous predicate in a module already in the startup set, so
   // nothing to lazy-load; raised by that growth.
-  transferBytes: 2_042_777,
-  rawBytes: 6_792_425,
+  // Seven Studio merges after 17901061d1 add 5,031 B raw / 1,798 B transfer (6,791,768 -> 6,796,799 B raw,
+  // 2,042,404 -> 2,044,202 B transfer from 17901061d1 to 6106de938c, one machine and build, Node 24, chunk count
+  // unchanged at 95), measured commit by commit. The two largest steps are inline chat markdown tables with
+  // their hover controls and expand dialog (#13973, +2,561 B raw / +1,063 B transfer, in the eager chat chunk)
+  // and Latest Unsloth Models ranking (#13969, +1,290 B raw / +445 B transfer); the composer alignment
+  // (#13965), the resizable hub split view (#13966) and the fit filter (#13945, already raised for above) add the
+  // rest. Set to the measured build plus the margin main had at 17901061d1 (160 B raw, 189 B transfer).
+  transferBytes: 2_044_391,
+  rawBytes: 6_796_959,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
