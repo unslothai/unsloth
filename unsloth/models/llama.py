@@ -1499,13 +1499,15 @@ def LlamaModel_fast_forward(
             )(self.norm, hidden_states)
     elif IS_COHERE:
         hidden_states = self.norm(hidden_states)
-    elif IS_FALCON_H1:
-        hidden_states = fast_rms_layernorm(
-            self.final_layernorm, hidden_states, gemma = IS_GEMMA, reuse_grad = True
-        )
     else:
+        # Only the CausalLM head may let the final norm overwrite its incoming grad: a base model
+        # hands this output to the caller, whose grad_outputs must stay intact.
+        reuse_grad = getattr(self, "_unsloth_head_reads_final_norm", False)
         hidden_states = fast_rms_layernorm(
-            self.norm, hidden_states, gemma = IS_GEMMA, reuse_grad = True
+            self.final_layernorm if IS_FALCON_H1 else self.norm,
+            hidden_states,
+            gemma = IS_GEMMA,
+            reuse_grad = reuse_grad,
         )
 
     if output_hidden_states:
@@ -1730,6 +1732,30 @@ def apply_logit_transforms(logits, logit_softcapping, logit_scaling):
     return logits
 
 
+def _final_norm_feeds_head(output_hidden_states, num_logits_to_keep, logits_to_keep):
+    # True when the CausalLM forward is the only reader of the final norm's output, so the norm's
+    # backward may write dX over its incoming grad (one activation less at the backward peak).
+    if output_hidden_states:
+        return False
+    if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") != "1":
+        return True
+    # GRPO hands the hidden states out; only a last-token slice gives the norm a fresh grad.
+    if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(logits_to_keep, torch.Tensor):
+        return False
+    return max(num_logits_to_keep or 0, logits_to_keep or 0) != 0
+
+
+def _run_backbone(self, num_logits_to_keep, logits_to_keep, **kwargs):
+    model = self.model
+    model._unsloth_head_reads_final_norm = _final_norm_feeds_head(
+        kwargs.get("output_hidden_states"), num_logits_to_keep, logits_to_keep
+    )
+    try:
+        return model(**kwargs)
+    finally:
+        model._unsloth_head_reads_final_norm = False
+
+
 def CausalLM_fast_forward(fast_forward_inference):
     def _CausalLM_fast_forward(
         self,
@@ -1786,7 +1812,10 @@ def CausalLM_fast_forward(fast_forward_inference):
                 return_dict if return_dict is not None else config_return_dict(self.config)
             )
             self.model._has_no_labels = labels is None
-            outputs = self.model(
+            outputs = _run_backbone(
+                self,
+                num_logits_to_keep,
+                logits_to_keep,
                 input_ids = input_ids,
                 causal_mask = causal_mask,
                 attention_mask = attention_mask,
