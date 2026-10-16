@@ -1,45 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The GRPO hidden-states wrapper must not pay for logits it throws away.
-
-`Kaggle-Muse_Glimmer_(30B)-GRPO` died on a 2 x T4 kernel with
-
-    accelerate/hooks.py:429  AlignDevicesHook.post_forward
-      -> send_to_device(output, self.input_device)
-    OutOfMemoryError: Tried to allocate 1002.00 MiB.
-    GPU 0 has 14.56 GiB capacity, of which 768.81 MiB is free.
-
-Two costs met there.
-
-The first is the lm_head. `UnslothEfficientGRPO` never sees a logits tensor --
-it takes per-token logps plus `lm_head` and chunks the projection itself -- and
-this wrapper exists to hand it hidden states instead of logits. But it forwarded
-the caller's `logits_to_keep` unchanged, and the GRPO trainer does not pass one:
-
-    outputs = unwrapped_model(
-        input_ids = input_ids_chunk,
-        attention_mask = attention_mask_chunk,
-        ...
-    )
-    logits_chunk = outputs.logits
-
-transformers reads a missing or zero value as `slice(-0, None)`, which is
-`slice(0, None)`: every position. So the model projected the whole prompt and
-completion over a 202048-wide vocabulary, softcapped it twice, and the wrapper
-then overwrote the result with hidden states.
-
-The second is the other layers. `output_hidden_states = True` returns every
-layer; only `[-1]` is read, and the rest stayed attached to the output.
-
-On one card neither cost is visible: the trainer's `del outputs` frees both a
-line later. Under an accelerate layer-split dispatch, `io_same_device` walks the
-whole returned object and copies every tensor in it to the input device first,
-so both ride across the bus and the first card runs out.
-
-These tests drive the real helpers, lifted from `unsloth/models/rl.py` with
-`ast` so they track the shipped source without importing unsloth.
-"""
+"""Wrapper must not project every position or keep unused layers: accelerate dispatch copies them all."""
 
 from __future__ import annotations
 
@@ -62,20 +24,9 @@ _drop_spare_hidden_states = WRAPPER["_drop_spare_hidden_states"]
 _install = WRAPPER["_install_grpo_hidden_states_forward_wrapper"]
 
 
-# --------------------------------------------------------------------------
-# a stand-in for transformers' ModelOutput, including the trap
-# --------------------------------------------------------------------------
+# A stand-in for transformers' ModelOutput, including the trap.
 class FakeModelOutput(collections.OrderedDict):
-    """`ModelOutput`'s actual assignment semantics, which are the whole point.
-
-        def __setattr__(self, name, value):
-            if name in field_names and value is not None:
-                super().__setitem__(name, value)
-            super().__setattr__(name, value)
-
-    so assigning None updates the attribute and leaves the mapping entry alone,
-    and `__delitem__` / `pop` / `update` / `setdefault` all raise.
-    """
+    """Mirrors ModelOutput: assigning None sets only the attribute; del, pop, update, setdefault raise."""
 
     _fields = ("logits", "hidden_states")
 
@@ -119,7 +70,6 @@ def test_the_fake_output_really_does_reproduce_the_trap():
         out.pop("hidden_states")
 
 
-# --------------------------------------------------------------------------
 def test_the_spare_layers_leave_the_mapping_not_just_the_attribute():
     """A consumer that walks the object as a mapping is the one that matters."""
     out = FakeModelOutput(logits = "L", hidden_states = ("a", "b", "c"))
@@ -168,9 +118,6 @@ def test_an_unassignable_output_does_not_take_the_step_down():
     _drop_spare_hidden_states(Frozen())  # must not raise
 
 
-# --------------------------------------------------------------------------
-# not paying for the lm_head
-# --------------------------------------------------------------------------
 def _sig(fn):
     import inspect
     return inspect.signature(fn)
@@ -192,11 +139,7 @@ def test_the_modern_kwarg_is_pinned_to_one():
 
 
 def test_the_legacy_kwarg_is_used_when_that_is_what_the_model_takes():
-    """Not transformers -- measured, 4.57.6 through 5.15.0 all take the modern
-    name and none takes this one. It is Unsloth's own patched forwards
-    (`models/llama.py`, `models/mistral.py`) and the VLM stacks
-    `models/vision.py` probes the old name for.
-    """
+    """Only Unsloth's patched forwards and models/vision.py VLM stacks take legacy num_logits_to_keep."""
 
     def forward(input_ids = None, num_logits_to_keep = 0): ...
 
@@ -208,13 +151,7 @@ def test_the_legacy_kwarg_is_used_when_that_is_what_the_model_takes():
 
 
 def test_a_positionally_bound_width_is_not_worked_around_via_the_other_name():
-    """The dangerous shape: positional modern name, plus a `**kwargs` sink.
-
-    Falling through to the legacy name here would set a kwarg this forward does
-    not declare. `**kwargs` accepts it silently, the model ignores it, no logits
-    are saved, and the non-None return arms the absent-hidden-states re-run --
-    a second full forward bought for nothing. Give up instead.
-    """
+    """Positional modern name plus **kwargs sink: give up, as the legacy kwarg is silently ignored."""
 
     def forward(
         input_ids = None,
@@ -299,9 +236,6 @@ def test_labels_of_none_does_not_count_as_labels():
     assert _minimise_logits_kwarg(_sig(forward), (), kwargs) == "logits_to_keep"
 
 
-# --------------------------------------------------------------------------
-# end to end through the installed wrapper
-# --------------------------------------------------------------------------
 class _Recorder:
     """A model whose lm_head cost is proportional to the positions it is asked for."""
 
@@ -452,10 +386,7 @@ def test_an_unrelated_type_error_still_propagates(hidden_states_on):
 
 
 def test_a_retry_that_is_then_refused_hidden_states_still_falls_back(hidden_states_on):
-    """A forward can refuse the logits limiter and the hidden states one after
-    the other -- a wrapper that splats **kwargs into a sub-module does exactly
-    that. The second refusal must reach the same raw-logits fallback, not
-    escape the wrapper and take the GRPO step down with it."""
+    """A second refusal must reach the raw-logits fallback rather than crash the GRPO step."""
     seen = []
 
     class Splatter:

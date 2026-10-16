@@ -109,7 +109,6 @@ def _grouped_gemm_forward_impl(
     permute_x: bool = False,
     permute_y: bool = False,
     fuse_mul_post: bool = False,
-    # Autotuning -- overrides manual kernel params when True
     autotune: bool = False,
     # Kernel tuning params: must be tuned, else poor performance.
     BLOCK_SIZE_M: int = 32,
@@ -264,7 +263,9 @@ def _grouped_gemm_forward_impl(
 
     is_fake = _is_tracing(X, W)
     if not is_fake:
-        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args)
+        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
+            **kernel_args, enable_fp_fusion = True
+        )
         if autotune:
             log_kernel_info(compiled_kernel, kernel.best_config)
         else:
@@ -404,7 +405,9 @@ def _grouped_gemm_dX_impl(
 
     is_fake = _is_tracing(dY, W)
     if not is_fake:
-        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args)
+        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
+            **kernel_args, enable_fp_fusion = True
+        )
 
         if autotune:
             log_kernel_info(compiled_kernel, kernel.best_config)
@@ -529,7 +532,6 @@ def _grouped_gemm_dW_impl(
         "NUM_SMS": NUM_SMS,
         "PERMUTE_X": permute_x,
         "PERMUTE_Y": permute_y,
-        "FLATTEN": flatten,
     }
 
     if not autotune:
@@ -550,7 +552,9 @@ def _grouped_gemm_dW_impl(
 
     is_fake = _is_tracing(X, dY)
     if not is_fake:
-        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args)
+        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
+            **kernel_args, enable_fp_fusion = True
+        )
 
         if autotune:
             log_kernel_info(compiled_kernel, kernel.best_config)
