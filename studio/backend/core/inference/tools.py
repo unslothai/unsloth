@@ -16733,7 +16733,11 @@ def _fetch_url_raw(
             named = proxied and proxy_hostname
             lookup_deadline = deadline
             if named:
-                left = _PROXIED_LOOKUP_TIMEOUT if deadline is None else (deadline - time.monotonic()) / 2
+                left = (
+                    _PROXIED_LOOKUP_TIMEOUT
+                    if deadline is None
+                    else (deadline - time.monotonic()) / 2
+                )
                 lookup_deadline = time.monotonic() + max(0.0, min(_PROXIED_LOOKUP_TIMEOUT, left))
             ok, reason, pinned_ips = _resolve_with_budget(
                 current_host,
