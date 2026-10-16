@@ -4605,6 +4605,57 @@ class TestAnthropicMessagesToolRouting:
         assert kwargs["tool_choice"] == {"type": "function", "function": {"name": "web_search"}}
         assert [tool["function"]["name"] for tool in kwargs["tools"]] == ["web_search"]
 
+    def test_web_search_domain_limits_reach_the_tool_loop(self, monkeypatch):
+        backend = _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [
+                {
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "allowed_domains": ["Docs.Python.org"],
+                    "blocked_domains": ["reddit.com"],
+                    "max_uses": 8,
+                }
+            ],
+            tool_choice = {"type": "tool", "name": "web_search"},
+        )
+
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+        call_kind, kwargs = backend.calls[0]
+        assert call_kind == "tools"
+        assert kwargs["website_policy"] == {
+            "allowedDomains": ["docs.python.org"],
+            "blockedDomains": ["reddit.com"],
+        }
+
+    def test_web_search_without_domain_limits_is_unrestricted(self, monkeypatch):
+        backend = _mock_backend(monkeypatch)
+        payload = _basic_payload(tools = [{"type": "web_search_20250305", "name": "web_search"}])
+
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+        assert backend.calls[0][1]["website_policy"] is None
+
+    def test_invalid_web_search_domain_is_rejected_before_generation(self, monkeypatch):
+        backend = _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [
+                {
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "allowed_domains": ["https://docs.python.org"],
+                }
+            ],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+        assert exc.value.status_code == 400
+        assert exc.value.detail["error"]["type"] == "invalid_request_error"
+        assert backend.calls == []
+
     def test_server_tool_choice_must_be_in_the_selected_catalog(self, monkeypatch):
         backend = _mock_backend(monkeypatch)
         payload = _basic_payload(

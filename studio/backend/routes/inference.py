@@ -42262,6 +42262,32 @@ def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
     return requested
 
 
+def _anthropic_website_policy(tools: Optional[list]) -> Optional[dict]:
+    from core.inference.web_access_policy import normalize_website_policy
+
+    policy = {"allowedDomains": [], "blockedDomains": []}
+    try:
+        for tool in tools or []:
+            td = tool if isinstance(tool, dict) else tool.model_dump()
+            if _STUDIO_ANTHROPIC_TOOL_ALIASES.get(td.get("type")) != "web_search":
+                continue
+            declared = normalize_website_policy(
+                {
+                    "allowedDomains": td.get("allowed_domains") or [],
+                    "blockedDomains": td.get("blocked_domains") or [],
+                }
+            )
+            for key in policy:
+                policy[key] += declared[key]
+        policy = normalize_website_policy(policy)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code = 400,
+            detail = anthropic_error_body(str(exc), status = 400, err_type = "invalid_request_error"),
+        )
+    return policy if policy["allowedDomains"] or policy["blockedDomains"] else None
+
+
 def _select_anthropic_server_tools(
     all_tools: list[dict],
     requested_studio_tools: set[str],
@@ -44723,6 +44749,7 @@ async def anthropic_messages(
     # before the switch too -- it depends only on the payload -- so an invalid
     # request never evicts the loaded model. Reused below for tool routing.
     requested_studio_tools = _anthropic_requested_studio_tools(payload.tools)
+    website_policy = _anthropic_website_policy(payload.tools)
     _has_client_tool = any(
         (t if isinstance(t, dict) else t.model_dump()).get("input_schema") is not None
         or anthropic_schema_client_tool_kind(t) is not None
@@ -45479,6 +45506,7 @@ async def anthropic_messages(
                     llama_backend.context_length,
                 ),
                 replay_preserve_thinking = not _anthropic_history_has_thinking(payload),
+                website_policy = website_policy,
                 **_reasoning_args,
             )
 
