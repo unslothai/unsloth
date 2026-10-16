@@ -928,7 +928,12 @@ mod pac {
 
     #[cfg(target_os = "macos")]
     async fn fetch(location: &str) -> Option<String> {
-        let client = crate::loopback_http::client(ADDRESS_TIMEOUT).ok()?;
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(ADDRESS_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::limited(5))
+            .build()
+            .ok()?;
         let response = client.get(location).send().await.ok()?;
         response.error_for_status().ok()?.text().await.ok()
     }
@@ -1639,15 +1644,22 @@ mod tests {
         }"#;
         let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let location = format!("http://{}/proxy.pac", server.local_addr().unwrap());
-        // Answers once, so only a cached script serves the later pages.
+        // Redirects, then answers once, so only a cached script serves the later pages.
         tokio::spawn(async move {
             let (mut stream, _) = server.accept().await.unwrap();
-            read_head(&mut stream).await;
-            let head = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
-                script.len()
-            );
-            stream.write_all((head + script).as_bytes()).await.unwrap();
+            while let Some((head, _)) = read_head(&mut stream).await {
+                let answer = if head.starts_with("GET /proxy.pac ") {
+                    "HTTP/1.1 302 Found\r\nLocation: /real.pac\r\nContent-Length: 0\r\n\r\n"
+                        .to_string()
+                } else {
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        script.len()
+                    );
+                    head + script
+                };
+                stream.write_all(answer.as_bytes()).await.unwrap();
+            }
         });
         let env = |name: &str| match name {
             "HTTP_PROXY" => Some("http://127.0.0.1:8".to_string()),
