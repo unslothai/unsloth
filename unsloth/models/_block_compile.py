@@ -206,10 +206,11 @@ def _route_fla_kernel():
             if not isinstance(space, dict) or space is adapter.__dict__:
                 continue
             for key, value in list(space.items()):
-                if (
-                    value is caller
-                    and isinstance(key, str)
-                    and key.endswith("chunk_gated_delta_rule")
+                if value is not caller or not isinstance(key, str):
+                    continue
+                # A packing varlen probe keeps the kernel as its `_fn` keyword default; route under it.
+                if key.endswith("chunk_gated_delta_rule") or (
+                    key == "_fn" and str(space.get("_name", "")).endswith("chunk_gated_delta_rule")
                 ):
                     space[key] = adapter
                     routed += 1
@@ -268,12 +269,38 @@ def _namespaces(fn, depth = 3):
     return out
 
 
+def _alias_namespace(space):
+    """The namespace Dynamo resolves `space`'s globals through: an inlined function's globals are
+    read as sys.modules[__name__], and Unsloth's compiled modules import transformers' __name__."""
+    module = (
+        sys.modules.get(space.get("__name__")) if isinstance(space.get("__name__"), str) else None
+    )
+    alias = getattr(module, "__dict__", None)
+    return alias if isinstance(alias, dict) and alias is not space else None
+
+
 def _route_causal_conv(gdn):
     from ._gdn_op import _causal_depthwise_conv
     for space in _namespaces(type(gdn).forward):
         fn = space.get("causal_conv1d_fn")
-        if callable(fn) and not getattr(fn, "_unsloth_block_adapter", False):
+        if not callable(fn) or getattr(fn, "_unsloth_block_adapter", False):
+            continue
+        probe_defaults = (
+            getattr(fn, "__kwdefaults__", None)
+            if getattr(fn, "_unsloth_varlen_probe_of", None) is not None
+            else None
+        )
+        if probe_defaults is not None:
+            # Packing's varlen probe stays outermost so its boundary handshake still sees the call.
+            inner = probe_defaults.get("_fn")
+            if callable(inner) and not getattr(inner, "_unsloth_block_adapter", False):
+                probe_defaults["_fn"] = _causal_conv1d_adapter(inner, _causal_depthwise_conv)
+        else:
             space["causal_conv1d_fn"] = _causal_conv1d_adapter(fn, _causal_depthwise_conv)
+        alias = _alias_namespace(space)
+        if alias is not None and callable(alias.get("causal_conv1d_fn")):
+            # Dynamo guards the alias binding: it must be the object the forward actually calls.
+            alias["causal_conv1d_fn"] = space["causal_conv1d_fn"]
 
 
 def _route_sm_count(modules = None):

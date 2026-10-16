@@ -377,7 +377,27 @@ def _zoo_style_dispatch(torch_function, name_seq_idx = True):
     return causal_conv1d_fn
 
 
+def scan_fast(
+    x,
+    cu_seqlens = None,
+    **kwargs,
+):
+    return scan_exact(x, cu_seqlens)
+
+
 def _kwargs_model(name, conv_impl):
+    modeling = types.ModuleType(name)
+    _install_kwargs_mixer(modeling.__dict__, conv_impl)
+    modeling.FakeKwargsGatedDeltaNet.__module__ = name
+    sys.modules[name] = modeling
+    return FakeHybrid(modeling.FakeKwargsGatedDeltaNet())
+
+
+def _install_kwargs_mixer(
+    namespace,
+    conv_impl,
+    scan_impl = scan_fast,
+):
     def conv_ref(
         hidden_states,
         weight,
@@ -390,17 +410,9 @@ def _kwargs_model(name, conv_impl):
     def scan_ref(x, **kwargs):
         return scan_exact(x)
 
-    def scan_fast(
-        x,
-        cu_seqlens = None,
-        **kwargs,
-    ):
-        return scan_exact(x, cu_seqlens)
-
-    modeling = types.ModuleType(name)
     impl = conv_impl(conv_ref)
-    modeling.causal_conv1d_fn = _hub_wrapped(impl, impl)
-    modeling.torch_chunk_gated_delta_rule = _hub_wrapped(scan_ref, scan_fast)
+    namespace["causal_conv1d_fn"] = _hub_wrapped(impl, impl)
+    namespace["torch_chunk_gated_delta_rule"] = _hub_wrapped(scan_ref, scan_impl)
     exec(
         "import torch\n"
         "class FakeKwargsGatedDeltaNet(torch.nn.Module):\n"
@@ -412,11 +424,8 @@ def _kwargs_model(name, conv_impl):
         "        x = causal_conv1d_fn(hidden_states.transpose(1, 2), self.conv1d.weight.squeeze(1), None,\n"
         "                             activation = 'silu', **kwargs).transpose(1, 2)\n"
         "        return torch_chunk_gated_delta_rule(x, cu_seqlens = kwargs.pop('cu_seq_lens_q', None), **kwargs)\n",
-        modeling.__dict__,
+        namespace,
     )
-    modeling.FakeKwargsGatedDeltaNet.__module__ = name
-    sys.modules[name] = modeling
-    return FakeHybrid(modeling.FakeKwargsGatedDeltaNet())
 
 
 @pytest.mark.parametrize("mode", [None, "1"])
@@ -596,3 +605,89 @@ def test_a_stale_stash_never_reaches_a_call_of_another_length(monkeypatch):
     mixer._unsloth_varlen_conv_hit = mixer._unsloth_varlen_scan_hit = False
     torch.testing.assert_close(mixer(hidden), plain)
     assert not mixer._unsloth_varlen_conv_hit and not mixer._unsloth_varlen_scan_hit
+
+
+def test_boundary_check_holds_after_a_dynamic_recompile():
+    # Traced, `total in (dim, dim)` came out False once the conv layout recompiled with dynamic shapes.
+    seen = []
+
+    def check(seq_idx, x):
+        seen.append(packing_module._varlen_seq_idx_applies(seq_idx, (x,), {}))
+        return x + 1
+
+    seq_idx = torch.zeros(1, 300, dtype = torch.int32)
+    torch._dynamo.reset()
+    try:
+        compiled = torch.compile(check, backend = "eager")
+        compiled(seq_idx, torch.zeros(1, 300, 8))  # (batch, seqlen, ...)
+        compiled(seq_idx, torch.zeros(1, 8, 300))  # causal_conv1d_fn: (batch, dim, seqlen)
+    finally:
+        torch._dynamo.reset()
+    assert seen == [True, True]
+
+
+def test_a_packed_mixer_runs_outside_a_compiled_block():
+    # Traced, transformers' hub-kernel wrappers run their torch reference (Dynamo folds
+    # torch.compiler.is_exporting() to True), and it ignores seq_idx / cu_seqlens.
+    traced = []
+
+    class Mixer(torch.nn.Module):
+        def forward(self, hidden_states, **kwargs):
+            traced.append(torch.compiler.is_compiling())
+            return hidden_states * 2
+
+    mixer = Mixer()
+    packing_module._wrap_kwargs_mixer_forward(mixer)
+    mixer._unsloth_varlen = (
+        torch.tensor([0, 4, 9], dtype = torch.int32),
+        torch.tensor([[0] * 4 + [1] * 5], dtype = torch.int32),
+    )
+    hidden = torch.randn(1, 9, 8)
+    torch._dynamo.reset()
+    try:
+        block = torch.compile(lambda h: mixer(h), backend = "eager")
+        block(hidden)
+        mixer._unsloth_varlen = None
+        block(hidden)
+    finally:
+        torch._dynamo.reset()
+    assert traced == [False, True]  # only the packed call leaves the graph
+
+
+def test_probes_and_block_adapters_match_the_namespace_dynamo_reads(monkeypatch):
+    # Unsloth's compiled modules run `from <modeling> import __name__`, so Dynamo resolves their globals
+    # through the modeling module; a kernel bound differently there failed the block's closure guard.
+    from unsloth.models import _block_compile as block
+
+    monkeypatch.delenv(ENV, raising = False)
+    names = (
+        "fake_alias.fla.ops.gated_delta_rule.chunk",
+        "fake_modeling_kwargs_alias_gdn",
+        "fake_unsloth_compiled_module_alias_gdn",
+    )
+    fla, modeling, compiled = (types.ModuleType(n) for n in names)
+
+    def chunk_gated_delta_rule(
+        x,
+        cu_seqlens = None,
+        **kwargs,
+    ):
+        return scan_exact(x, cu_seqlens)
+
+    fla.chunk_gated_delta_rule = chunk_gated_delta_rule
+    compiled.__name__ = modeling.__name__
+    for module in (modeling, compiled):
+        _install_kwargs_mixer(vars(module), _zoo_style_dispatch, scan_impl = chunk_gated_delta_rule)
+    for n, module in zip(names, (fla, modeling, compiled)):
+        monkeypatch.setitem(sys.modules, n, module)
+    model = FakeHybrid(compiled.FakeKwargsGatedDeltaNet())
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    # Route only these modules: routing a real fla import would outlive this test.
+    monkeypatch.setattr(block, "sys", SimpleNamespace(modules = {n: sys.modules[n] for n in names}))
+    block._route_fla_kernel()
+    block._route_causal_conv(model.linear_attn)
+    for kernel in ("causal_conv1d_fn", "torch_chunk_gated_delta_rule"):
+        probe = vars(compiled)[kernel]
+        assert vars(modeling)[kernel] is probe, kernel
+        assert probe._unsloth_varlen_probe_of is not None, kernel
+        assert getattr(probe.__kwdefaults__["_fn"], "_unsloth_block_adapter", False), kernel
