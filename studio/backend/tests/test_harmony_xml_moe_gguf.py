@@ -40,13 +40,21 @@ REPO = "unsloth/Beam-1.0-501B-A23B-GGUF"
 STEM = "Beam-1.0-501B-A23B"
 # Shard counts at 50 GB splits.
 _SPLITS = {
-    "UD-IQ1_S": 3, "UD-IQ1_M": 3, "UD-IQ2_XXS": 3, "UD-IQ2_M": 4, "UD-Q2_K_XL": 4,
-    "UD-IQ3_XXS": 4, "UD-Q3_K_XL": 5, "UD-Q4_K_XL": 7, "UD-Q5_K_XL": 8, "UD-Q6_K_XL": 10,
-    "Q8_0": 11, "BF16": 21,
+    "UD-IQ1_S": 3,
+    "UD-IQ1_M": 3,
+    "UD-IQ2_XXS": 3,
+    "UD-IQ2_M": 4,
+    "UD-Q2_K_XL": 4,
+    "UD-IQ3_XXS": 4,
+    "UD-Q3_K_XL": 5,
+    "UD-Q4_K_XL": 7,
+    "UD-Q5_K_XL": 8,
+    "UD-Q6_K_XL": 10,
+    "Q8_0": 11,
+    "BF16": 21,
 }
 FILES = [".gitattributes", "LICENSE", "README.md"] + [
-    f"{q}/{STEM}-{q}-{i:05d}-of-{n:05d}.gguf"
-    for q, n in _SPLITS.items() for i in range(1, n + 1)
+    f"{q}/{STEM}-{q}-{i:05d}-of-{n:05d}.gguf" for q, n in _SPLITS.items() for i in range(1, n + 1)
 ]
 
 
@@ -65,7 +73,8 @@ def test_variant_menu_lists_exactly_the_twelve_quants(monkeypatch):
     from utils.models import model_config
 
     monkeypatch.setattr(
-        model_config, "_hub_model_info_slow_link",
+        model_config,
+        "_hub_model_info_slow_link",
         lambda repo, token, files_metadata = True: _model_info(FILES),
     )
     variants, has_vision = model_config.list_gguf_variants(REPO)
@@ -119,7 +128,6 @@ MODEL_IDS = [
 @pytest.mark.parametrize("model_id", MODEL_IDS)
 def test_every_id_shape_resolves_to_the_family_sampling(model_id):
     from utils.inference.inference_config import load_inference_config
-
     config = load_inference_config(model_id)
     for key, want in EXPECTED_SAMPLING.items():
         assert config[key] == want, f"{model_id}: {key} was {config[key]}, expected {want}"
@@ -325,7 +333,6 @@ _FIELDS = {
 
 def _backend():
     from test_kv_cache_estimation import _backend_from_gguf
-
     return _backend_from_gguf(ARCH, _FIELDS, general = {"tokenizer.chat_template": TEMPLATE})
 
 
@@ -380,11 +387,14 @@ def test_offload_layout_spills_only_the_routed_experts():
     for i in range(_N_LAYERS):
         tensors.append(_StubTensor(f"blk.{i}.attn_q.weight", 30 * mib))
         if i < 3:
-            tensors += [_StubTensor(f"blk.{i}.ffn_{p}.weight", 100 * mib) for p in ("gate", "up", "down")]
+            tensors += [
+                _StubTensor(f"blk.{i}.ffn_{p}.weight", 100 * mib) for p in ("gate", "up", "down")
+            ]
         else:
             tensors.append(_StubTensor(f"blk.{i}.ffn_gate_inp.weight", mib))
             tensors += [
-                _StubTensor(f"blk.{i}.ffn_{p}_exps.weight", 600 * mib) for p in ("gate", "up", "down")
+                _StubTensor(f"blk.{i}.ffn_{p}_exps.weight", 600 * mib)
+                for p in ("gate", "up", "down")
             ]
     fields = {"general.architecture": ARCH, **{f"{ARCH}.{k}": v for k, v in _FIELDS.items()}}
     layout = _layout_from_reader(_StubReader(fields, tensors))
