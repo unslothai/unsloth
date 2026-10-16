@@ -235,16 +235,21 @@ def _base_sample_sigmas(
         elif not explicit_base and named_base:
             # Cache-only (e.g. the OpenAI route's auto-switch) reads no card: the pick's own name decides.
             base = named_base
-        # Cache-only reads try both roots, as the plan's locality check and _fetch_assets do.
+        # Read from the repo the plan staged it under (_grid_fetch_repo: the base's unsloth mirror unless the
+        # upstream already holds it), never the vendor id directly. Cache-only reads try both roots, as the plan's
+        # locality check and _fetch_assets do, and the upstream id too, so an index cached under either still counts.
+        fetch = _grid_fetch_repo(base, hf_token)
+        repos = tuple(dict.fromkeys((fetch, base))) if local_files_only else (fetch,)
         roots = (hub_cache_dir(), None) if local_files_only else (hub_cache_dir(),)
-        for i, root in enumerate(roots):
+        attempts = [(repo, root) for repo in repos for root in roots]
+        for i, (repo, root) in enumerate(attempts):
             try:
                 index = read_model_index(
-                    base, hf_token = hf_token, local_files_only = local_files_only, cache_dir = root
+                    repo, hf_token = hf_token, local_files_only = local_files_only, cache_dir = root
                 )
                 break
             except Exception:  # noqa: BLE001
-                if i == len(roots) - 1:
+                if i == len(attempts) - 1:
                     raise
     except Exception as exc:  # noqa: BLE001 - no grid is the pre-grid behaviour
         logger.debug("sd_cpp.sample_sigmas_unavailable: %s", exc)
@@ -255,6 +260,14 @@ def _base_sample_sigmas(
             "sd_cpp: %s ships a %d-step sampling grid; passing it as custom sigmas", base, len(grid)
         )
     return grid, base
+
+
+def _grid_fetch_repo(base: str, hf_token: Optional[str]) -> str:
+    """The repo a base's ``model_index.json`` sampling grid is fetched from: the same per-repo swap the assets take, so
+    the plan stages it where the load reads it (a routed base's unsloth mirror, e.g. unsloth/Qwen-Image-2.1-Turbo-FP8
+    for Qwen/Qwen-Image-2.1-Turbo, unless the upstream already holds the file)."""
+    files = ["model_index.json"]
+    return prefer_cached_legacy_source(prefer_ungated_mirror(base, hf_token, files = files), files)
 
 
 def _cgroup_cpu_limit(
@@ -3630,7 +3643,7 @@ class SdCppDiffusionBackend:
         else:
             grid_base = named_variant_base(fam, repo_id, gguf_filename)
         if fam.name in _SAMPLE_SIGMAS_FAMILIES and grid_base:
-            names = by_repo.setdefault(grid_base, [])
+            names = by_repo.setdefault(_grid_fetch_repo(grid_base, hf_token), [])
             if "model_index.json" not in names:
                 names.append("model_index.json")
         fetch_repo_id = fetch_repo.get(repo_id, repo_id)

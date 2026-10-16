@@ -291,3 +291,22 @@ def test_sd_cpp_text_encoders_are_unsloth_ggufs_or_official_files():
             repo,
             fetch,
         )
+
+
+def test_every_sampling_grid_index_is_read_from_an_unsloth_repo(monkeypatch):
+    """The native route reads a variant base's model_index.json for its sample_sigmas grid outside the asset table,
+    so it needs its own walk: every base a grid family can name must resolve to an unsloth repo on a fresh install."""
+    from core.inference import diffusion_families as families
+    from core.inference import sd_cpp_backend as bk
+
+    monkeypatch.setattr(families, "_upstream_is_cached", lambda *a, **k: False)
+    bases = {
+        b
+        for fam in families._FAMILIES
+        if fam.name in bk._SAMPLE_SIGMAS_FAMILIES
+        for b in (fam.base_repo, *(getattr(fam, "named_variant_bases", ()) or ()))
+        if b
+    }
+    assert bases
+    for base in sorted(bases):
+        assert bk._grid_fetch_repo(base, None).lower().startswith("unsloth/"), base

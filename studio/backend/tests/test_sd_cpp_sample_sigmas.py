@@ -109,17 +109,25 @@ def test_other_step_counts_resample_along_the_grid(steps):
 
 
 def _patch_hub(monkeypatch, *, card_base, indexes):
-    calls = {"card": 0, "index": []}
+    """``indexes`` is keyed by the UPSTREAM base; the read lands on whichever id the fetch swap picks (its unsloth
+    mirror while the upstream is uncached, pinned here), so ``index`` records the base it stands for and ``read`` the
+    id actually read."""
+    from core.inference import diffusion_families as families
+
+    calls = {"card": 0, "index": [], "read": []}
+    monkeypatch.setattr(families, "_upstream_is_cached", lambda *a, **k: False)
 
     def _card(repo_id, token):
         calls["card"] += 1
         return card_base
 
     def _index(base, **kw):
-        calls["index"].append((base, kw.get("local_files_only")))
-        if base not in indexes:
+        upstream = families.canonical_base(base)
+        calls["read"].append(base)
+        calls["index"].append((upstream, kw.get("local_files_only")))
+        if upstream not in indexes:
             raise FileNotFoundError(base)
-        return indexes[base]
+        return indexes[upstream]
 
     monkeypatch.setattr(diffusion_mod, "_hf_base_model", _card)
     monkeypatch.setattr(comfy_components, "read_model_index", _index)
@@ -245,6 +253,24 @@ def test_a_local_turbo_gguf_without_a_card_takes_the_named_grid(monkeypatch):
     assert calls["index"][-1][0] == "Qwen/Qwen-Image-2.1-Turbo"
 
 
+@pytest.mark.parametrize("local_files_only", [False, True])
+def test_the_grid_is_read_from_the_bases_unsloth_mirror(monkeypatch, local_files_only):
+    """Qwen/Qwen-Image-2.1-Turbo's index ships inside unsloth/Qwen-Image-2.1-Turbo-FP8, which is where the plan stages
+    it. Reading the vendor id instead fetched it from Qwen, and a cache holding only the mirror lost Turbo's grid."""
+    calls = _patch_hub(monkeypatch, card_base = None, indexes = INDEXES)
+    grid, base = bk._base_sample_sigmas(
+        REPO,
+        FAM.base_repo,
+        None,
+        family = FAM.name,
+        explicit_base = False,
+        local_files_only = local_files_only,
+        named_base = "Qwen/Qwen-Image-2.1-Turbo",
+    )
+    assert grid == TURBO_GRID and base == "Qwen/Qwen-Image-2.1-Turbo"
+    assert calls["read"] and all(r == "unsloth/Qwen-Image-2.1-Turbo-FP8" for r in calls["read"])
+
+
 @pytest.mark.parametrize(
     "gguf, base_repo, staged",
     [
@@ -257,8 +283,10 @@ def test_a_local_turbo_gguf_without_a_card_takes_the_named_grid(monkeypatch):
 )
 def test_the_native_plan_stages_a_named_variants_index(monkeypatch, gguf, base_repo, staged):
     # Locality approves a cache-only load from this plan, so the index the load reads for its grid is in it.
+    from core.inference import diffusion_families as families
     from core.inference.diffusion import DiffusionBackend
 
+    monkeypatch.setattr(families, "_upstream_is_cached", lambda *a, **k: False)
     repo = "someone/Qwen-Image-2.1-GGUF"
     b = SdCppDiffusionBackend(engine = _FakeEngine())
     monkeypatch.setattr(b, "_asset_specs", lambda *a, **k: [(repo, gguf, "diffusion_model")])
@@ -271,7 +299,11 @@ def test_the_native_plan_stages_a_named_variants_index(monkeypatch, gguf, base_r
         DiffusionBackend, "_hub_file_is_loadable", staticmethod(lambda *a, **k: False)
     )
     plan = b.download_plan(repo, gguf_filename = gguf, base_repo = base_repo, model_kind = "gguf")
-    index = [e for e in plan["entries"] if e["repo_id"].lower() == "qwen/qwen-image-2.1-turbo"]
+    # Staged under the mirror the load reads it from, never the vendor id.
+    assert not [e for e in plan["entries"] if e["repo_id"].lower().startswith("qwen/")]
+    index = [
+        e for e in plan["entries"] if e["repo_id"].lower() == "unsloth/qwen-image-2.1-turbo-fp8"
+    ]
     assert (
         (index == [{**index[0], "files": ["model_index.json"], "checkpoint": False}])
         if staged
