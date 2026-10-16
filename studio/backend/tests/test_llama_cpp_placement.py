@@ -924,6 +924,31 @@ def test_a_post_rename_build_ignores_the_legacy_depth_variable(tmp_path, monkeyp
     assert set(charged) == {16 * base}
 
 
+@pytest.mark.parametrize("depth", ["32.0", "32 tokens", "32abc", " 32"])
+def test_an_inherited_draft_depth_reads_like_std_stoi(tmp_path, monkeypatch, depth):
+    # The depth guard (_is_positive_int) reads std::stoi's leading digits, as arg.cpp
+    # does; converting what it admitted with int() raised on "32.0" and aborted the
+    # GPU planning, so the rollback reserve must come from the same 32 the child drafts.
+    backend, gguf, _sidecar = _hybrid_reserve_backend(
+        tmp_path,
+        caps = {
+            "mtp_token": "draft-mtp",
+            "supports_ngram_mod": True,
+            "spec_draft_n_max_flag": "--spec-draft-n-max",
+            "spec_draft_n_max_default": 16,
+            "supports_kv_unified": True,
+        },
+    )
+    monkeypatch.delenv("LLAMA_ARG_DRAFT_MAX", raising = False)
+    monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_N_MAX", depth)
+
+    charged = _recorded_mtp_reserve_std(backend, gguf)
+
+    base = backend._mamba_recurrent_state_bytes(n_parallel = 4)
+    assert base > 0
+    assert set(charged) == {32 * base}
+
+
 def test_an_unreadable_help_budgets_the_deepest_shipped_draft_depth(tmp_path):
     # The probe timed out, or the help line carries no default. The child is still
     # drafting at whatever the build defaults to, so Unsloth's own explicit-mode 2

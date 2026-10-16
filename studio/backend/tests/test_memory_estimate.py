@@ -2675,6 +2675,16 @@ class TestInheritedEnvironment:
             == 5
         )
 
+    @pytest.mark.parametrize("depth", ["7.0", "7 tokens", "7abc"])
+    def test_an_inherited_draft_depth_reads_like_std_stoi(self, bare, gqa_gguf, monkeypatch, depth):
+        # _is_positive_int admits std::stoi's leading digits; int() on the same value
+        # raised, so the estimate must read the 7 the child drafts at.
+        monkeypatch.delenv("LLAMA_ARG_DRAFT_MAX", raising = False)
+        monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_N_MAX", depth)
+        owned = ["--spec-type", "draft-mtp"]
+        assert ri._build_default_spec_draft_n_max(owned) == 7
+        assert ri._estimate_draft_n_max(bare, gqa_gguf, requested = None, extras = owned) == 7
+
     def test_an_inherited_projector_is_charged_like_a_configured_one(
         self, bare, gqa_gguf, tmp_path, monkeypatch
     ):

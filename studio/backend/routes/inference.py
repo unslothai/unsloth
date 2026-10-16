@@ -14482,7 +14482,7 @@ def _build_default_spec_draft_n_max(extras: Optional[list[str]] = None) -> int:
     settings change -- so an unprobed build assumes the deepest llama.cpp has shipped,
     as the loader does.
     """
-    from core.inference.llama_cpp import _child_spec_env, _is_positive_int
+    from core.inference.llama_cpp import _child_spec_env, _is_positive_int, _stoi_prefix
 
     spec_env = _child_spec_env(extras)
     inherited = next(
@@ -14497,7 +14497,8 @@ def _build_default_spec_draft_n_max(extras: Optional[list[str]] = None) -> int:
         None,
     )
     if inherited is not None:
-        return int(str(inherited).strip())
+        # std::stoi, as the guard parsed it: "2 tokens" is 2.
+        return _stoi_prefix(inherited)
     try:
         binary = LlamaCppBackend._exec_path_for_launch(LlamaCppBackend._find_llama_server_binary())
         stat = os.stat(str(binary))

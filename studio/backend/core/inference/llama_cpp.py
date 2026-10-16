@@ -6959,7 +6959,8 @@ def _extra_args_draft_device(extra_args: Optional[Iterable[str]]) -> Optional[st
 
 
 _GPU_DEVICE_TOKEN_RE = re.compile(r"(CUDA|ROCm)(\d+)$", re.IGNORECASE)
-# One group per companion: llama.cpp is last-wins within a group, so only its last flag counts.
+# One group per companion. llama.cpp is last-wins within a group for placement, but it
+# resolves every value it reads, so widening covers each occurrence.
 _COMPANION_DEVICE_FLAG_GROUPS = (
     frozenset({"--mmproj-device", "-mmdev"}),
     frozenset({"--spec-draft-device", "-devd", "--device-draft"}),
@@ -6977,10 +6978,11 @@ def _widen_pin_ids_for_companion_devices(
 
     Companion ``CUDA<n>`` / ``ROCm<n>`` tokens use the unpinned numbering (position in
     ``inherited_ids``, else the physical index). Cards they name are appended after the
-    pinned ones, the winning flag is renumbered to the child's mask, and a main
-    ``--device`` is added so ``-ngl -1`` does not spread over the extra cards. Tokens
-    the parent cannot see are left alone. ``allowed_ids`` (explicit gpu_ids) limits
-    widening to those cards. Returns the mask and a log note, empty when unchanged.
+    pinned ones, every occurrence (an overridden one is still parsed) is renumbered to
+    the child's mask, and a main ``--device`` is added so ``-ngl -1`` does not spread
+    over the extra cards. Tokens the parent cannot see are left alone. ``allowed_ids``
+    (explicit gpu_ids) limits widening to those cards. Returns the mask and a log note,
+    empty when unchanged.
     """
     if not pin_ids:
         return list(pin_ids), ""
@@ -6994,12 +6996,10 @@ def _widen_pin_ids_for_companion_devices(
     # (value index, prefix before "=" or None, [(token, physical id or None)])
     sites: list[tuple[int, Optional[str], list[tuple[str, Optional[int]]]]] = []
     prefix_word = None
-    last_of_group: dict[int, int] = {}
-    for i, raw in enumerate(cmd):
-        for group, flags in enumerate(_COMPANION_DEVICE_FLAG_GROUPS):
-            if _flag_name(str(raw)) in flags:
-                last_of_group[group] = i
-    for i in sorted(last_of_group.values()):
+    # Every occurrence, not only each group's last: arg.cpp resolves each device value as
+    # it reads it (parse_device_list), so a name a later flag overrides must still exist.
+    companion_flags = frozenset().union(*_COMPANION_DEVICE_FLAG_GROUPS)
+    for i in [i for i, raw in enumerate(cmd) if _flag_name(str(raw)) in companion_flags]:
         raw = str(cmd[i])
         head, eq, inline = raw.partition("=")
         if eq:
@@ -26886,7 +26886,8 @@ class LlamaCppBackend:
                             None,
                         )
                         if _env_n_max is not None:
-                            _mtp_eff_n_max = int(str(_env_n_max).strip())
+                            # The guard above parsed it like std::stoi ("2 tokens" is 2).
+                            _mtp_eff_n_max = _stoi_prefix(_env_n_max)
                         else:
                             # Never fall through to Unsloth's platform default here:
                             # the child is drafting at the build's number, and a
@@ -35473,24 +35474,20 @@ class LlamaCppBackend:
 
     @staticmethod
     def _cmd_has_gpu_device_pin(cmd: list, env: Optional[Mapping[str, str]] = None) -> bool:
-        """True when the effective main or draft ``--device`` pin names a GPU."""
-        main_flags = {"--device", "-dev"}
-        draft_flags = {"--spec-draft-device", "-devd", "--device-draft"}
-        last_main: Optional[str] = None
-        last_draft: Optional[str] = None
+        """True when any main or draft ``--device`` value, not only the last, names a GPU.
+
+        arg.cpp resolves each --device / -devd / LLAMA_ARG_DEVICE as it reads it (env
+        first, then argv in order; parse_device_list), so a GPU name before a final none
+        must still exist: hiding the GPUs fails the launch with "invalid device". The
+        twin of ``_cmd_names_mmproj_device`` for the main and draft device lists."""
+        flags = {"--device", "-dev", "--spec-draft-device", "-devd", "--device-draft"}
+        values = [(env or {}).get("LLAMA_ARG_DEVICE")]
         args = [str(arg) for arg in cmd]
         for index, raw in enumerate(args):
-            flag = _flag_name(raw)
-            _, equals, inline = raw.partition("=")
-            if flag not in main_flags and flag not in draft_flags:
+            if _flag_name(raw) not in flags:
                 continue
-            value = inline if equals else (args[index + 1] if index + 1 < len(args) else "")
-            if flag in main_flags:
-                last_main = value
-            else:
-                last_draft = value
-        if last_main is None:
-            last_main = (env or {}).get("LLAMA_ARG_DEVICE")
+            _, equals, inline = raw.partition("=")
+            values.append(inline if equals else (args[index + 1] if index + 1 < len(args) else ""))
 
         def _names_gpu(value: Optional[str]) -> bool:
             if value is None:
@@ -35498,7 +35495,7 @@ class LlamaCppBackend:
             devices = [item.strip().lower() for item in value.split(",") if item.strip()]
             return not devices or any(item not in ("cpu", "none") for item in devices)
 
-        return _names_gpu(last_main) or _names_gpu(last_draft)
+        return any(_names_gpu(value) for value in values)
 
     @staticmethod
     def _zero_offload_gpu_flag(
