@@ -552,7 +552,14 @@ fn public_host(host: &str) -> Result<Host<String>, Refusal> {
         Host::Ipv4(ip) => Host::Ipv4(*ip),
         Host::Ipv6(ip) => Host::Ipv6(*ip),
     };
-    if host_is_private(&borrowed) {
+    // Names the backend's browser also calls local (`_LOCAL_SUFFIXES`), which a proxy may resolve.
+    let local = |name: &str| {
+        let name = name.trim_end_matches('.').to_ascii_lowercase();
+        ["corp", "home"]
+            .iter()
+            .any(|suffix| name == *suffix || name.ends_with(&format!(".{suffix}")))
+    };
+    if host_is_private(&borrowed) || matches!(&parsed, Host::Domain(name) if local(name)) {
         return Err(Refusal::Private);
     }
     Ok(parsed)
@@ -1658,6 +1665,16 @@ mod tests {
         let to = |port| parse(&tunnel(&format!("h.example:{port}"))).unwrap();
         assert_eq!(routes(&proxies, &to(80)).await, [http]);
         assert_eq!(routes(&proxies, &to(443)).await, [None]);
+    }
+
+    #[tokio::test]
+    async fn local_names_never_reach_the_system_proxy() {
+        for host in ["wiki.corp", "router.home", "printer.local", "intranet"] {
+            let (proxies, seen) = system_proxy_answering("HTTP/1.1 200 OK\r\n\r\n").await;
+            let response = exchange(proxies, &tunnel(&format!("{host}:443"))).await;
+            assert!(response.starts_with("HTTP/1.1 403"), "{host}: {response}");
+            seen.abort();
+        }
     }
 
     #[tokio::test]
