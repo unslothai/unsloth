@@ -146,7 +146,9 @@ def main(argv = None) -> int:
                 if name == "lm_head.weight":
                     continue
                 tensor = handle.get_tensor(name)
-                leaf = name[: -len(".weight")].rsplit(".", 1)[-1] if name.endswith(".weight") else ""
+                leaf = (
+                    name[: -len(".weight")].rsplit(".", 1)[-1] if name.endswith(".weight") else ""
+                )
                 if pattern.match(name) and leaf not in keep_dense:
                     q, scale = quantize_int8_convrot_weight(tensor.to(device), args.group)
                     prefix = name[: -len(".weight")]

@@ -1037,9 +1037,7 @@ def _build_int8_convrot_encoder(
     if layers is None:
         raise ValueError("encoder has no model.language_model.layers or encoder.block")
     dense = [
-        n
-        for n, m in layers.named_modules()
-        if isinstance(m, torch.nn.Linear) and not _kept_fp32(n)
+        n for n, m in layers.named_modules() if isinstance(m, torch.nn.Linear) and not _kept_fp32(n)
     ]
     if dense:
         raise ValueError(

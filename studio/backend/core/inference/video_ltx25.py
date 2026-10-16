@@ -698,7 +698,9 @@ def ltx25_te_quant_scheme(text_encoder_quant: Optional[str]) -> Optional[str]:
     )
 
 
-def ltx25_te_prequant_sources(text_encoder_quant: Optional[str], base: Optional[str]) -> dict[str, Any]:
+def ltx25_te_prequant_sources(
+    text_encoder_quant: Optional[str], base: Optional[str]
+) -> dict[str, Any]:
     """``{"text_encoder": source}`` when this load takes the hosted int8 ConvRot encoder, else ``{}``.
 
     The video backend's pre-cast planner asks this for LTX-2.5, so the hosted file is fetched with the load's progress
@@ -1126,7 +1128,6 @@ def start_text_encoder(
     source = sources.get("text_encoder")
     if source is not None:
         from .diffusion_te_prequant import te_prequant_mirror_path
-
         te_prequant = {
             "repo": source.location,
             "filename": source.filename,

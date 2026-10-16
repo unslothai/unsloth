@@ -208,6 +208,7 @@ def _hosted_path(spec: dict, common: dict) -> str:
     if mirror and os.path.isfile(mirror):
         return mirror
     from huggingface_hub import hf_hub_download
+
     return hf_hub_download(spec["repo"], spec["filename"], **common)
 
 
@@ -233,11 +234,17 @@ def _load_hosted(config: dict, model_cls: Any, dtype: Any, common: dict) -> Any:
     if str(meta.get("base_model_id") or "").lower() != str(spec.get("base") or "").lower():
         raise ValueError(f"built from {meta.get('base_model_id')!r}, not {spec.get('base')!r}")
     if meta.get("scheme") != "int8" or quant.get("group_size") != CONVROT_GROUP:
-        raise ValueError(f"unexpected scheme {meta.get('scheme')!r} / group {quant.get('group_size')!r}")
+        raise ValueError(
+            f"unexpected scheme {meta.get('scheme')!r} / group {quant.get('group_size')!r}"
+        )
     state_dict = ckpt["state_dict"]
     for key, tensor in list(state_dict.items()):
         # The int8 codes and fp32 scales keep their storage; dense tensors follow the load dtype, as from_pretrained.
-        if tensor.is_floating_point() and not key.endswith(".weight_scale") and tensor.dtype != dtype:
+        if (
+            tensor.is_floating_point()
+            and not key.endswith(".weight_scale")
+            and tensor.dtype != dtype
+        ):
             state_dict[key] = tensor.to(dtype)
     repo, hub_repo = config["repo"], config.get("hub_repo")
     try:
@@ -265,7 +272,12 @@ def _load_hosted(config: dict, model_cls: Any, dtype: Any, common: dict) -> Any:
                     setattr(
                         parent,
                         name,
-                        cls(linear.in_features, linear.out_features, linear.bias is not None, CONVROT_GROUP),
+                        cls(
+                            linear.in_features,
+                            linear.out_features,
+                            linear.bias is not None,
+                            CONVROT_GROUP,
+                        ),
                     )
     result = model.load_state_dict(state_dict, strict = False, assign = True)
     tied = {"lm_head.weight"} if getattr(cfg, "tie_word_embeddings", False) else set()
@@ -283,7 +295,9 @@ def _load_hosted(config: dict, model_cls: Any, dtype: Any, common: dict) -> Any:
         raise ValueError(f"{len(stranded)} tensor(s) still on the meta device, e.g. {stranded[0]}")
     swapped = sum(1 for m in model.modules() if isinstance(m, cls))
     if swapped != int(quant.get("linears") or -1):
-        raise ValueError(f"{swapped} projections swapped, the file quantized {quant.get('linears')}")
+        raise ValueError(
+            f"{swapped} projections swapped, the file quantized {quant.get('linears')}"
+        )
     return model
 
 

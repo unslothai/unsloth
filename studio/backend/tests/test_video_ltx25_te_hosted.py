@@ -48,12 +48,17 @@ class _Layer(nn.Module):
 class _TinyGemma(nn.Module):
     """The shape of Gemma4UnifiedForConditionalGeneration the worker walks: model.language_model.layers."""
 
-    def __init__(self, d = 256, layers = 2):
+    def __init__(
+        self,
+        d = 256,
+        layers = 2,
+    ):
         super().__init__()
         self.model = nn.Module()
         self.model.language_model = nn.Module()
         self.model.language_model.embed_tokens = nn.Embedding(16, d)
         self.model.language_model.layers = nn.ModuleList(_Layer(d) for _ in range(layers))
+
 
 BASE = "Lightricks/LTX-2.5-Diffusers"
 
@@ -118,27 +123,34 @@ def _write_tiny_encoder(folder: Path) -> _TinyGemma:
     model = _TinyGemma().to(torch.bfloat16)
     te = folder / "text_encoder"
     te.mkdir(parents = True)
-    save_file({k: v.contiguous() for k, v in model.state_dict().items()}, str(te / "model.safetensors"))
+    save_file(
+        {k: v.contiguous() for k, v in model.state_dict().items()}, str(te / "model.safetensors")
+    )
     (te / "model.safetensors.index.json").write_text(
         json.dumps({"weight_map": {k: "model.safetensors" for k in model.state_dict()}})
     )
-    (te / "config.json").write_text(json.dumps({"architectures": ["Gemma4UnifiedForConditionalGeneration"]}))
+    (te / "config.json").write_text(
+        json.dumps({"architectures": ["Gemma4UnifiedForConditionalGeneration"]})
+    )
     return model
 
 
 def _build(pack: Path, out: Path) -> dict:
     """The builder runs the worker's own at-load path (here against the stand-in transformers) and saves it."""
     import build_ltx25_te_int8_convrot as builder
-
     return builder.build(str(pack), out, base = BASE, device = "cpu")
 
 
 def _fake_transformers(monkeypatch, folder: Path):
     from safetensors.torch import load_file
-
     class _Cls(_TinyGemma):
         @classmethod
-        def from_pretrained(cls, repo, subfolder = None, **_kw):
+        def from_pretrained(
+            cls,
+            repo,
+            subfolder = None,
+            **_kw,
+        ):
             path = Path(repo) / (subfolder or "") / "model.safetensors"
             if not path.is_file():
                 raise OSError(f"no weights at {path}")
@@ -174,7 +186,12 @@ def test_hosted_load_equals_the_at_load_build(tmp_path, monkeypatch):
     assert again["sha256"] == first["sha256"]
     assert hashlib.sha256(out.read_bytes()).hexdigest() == first["sha256"]
 
-    base = {"repo": str(tmp_path / "pack"), "device": "cpu", "dtype": "bfloat16", "te_quant": "int8"}
+    base = {
+        "repo": str(tmp_path / "pack"),
+        "device": "cpu",
+        "dtype": "bfloat16",
+        "te_quant": "int8",
+    }
     spec = {"repo": "unsloth/LTX-2.5-FP8", "filename": "x", "mirror_path": str(out), "base": BASE}
     config_hosted = dict(base, te_prequant = dict(spec))
     _tok, hosted = worker._load(config_hosted)
@@ -187,7 +204,9 @@ def test_hosted_load_equals_the_at_load_build(tmp_path, monkeypatch):
     for key in a:
         assert a[key].dtype == b[key].dtype and torch.equal(a[key], b[key]), key
     x = torch.randn(3, 256, dtype = torch.bfloat16)
-    for layer_a, layer_b in zip(hosted.model.language_model.layers, at_load.model.language_model.layers):
+    for layer_a, layer_b in zip(
+        hosted.model.language_model.layers, at_load.model.language_model.layers
+    ):
         assert type(layer_a.mlp.down_proj).__name__ == "Int8ConvRotLinear"
         assert torch.equal(layer_a.self_attn.q_proj(x), layer_b.self_attn.q_proj(x))
 
@@ -195,7 +214,12 @@ def test_hosted_load_equals_the_at_load_build(tmp_path, monkeypatch):
 def test_missing_or_foreign_hosted_file_falls_back_to_the_at_load_build(tmp_path, monkeypatch):
     _write_tiny_encoder(tmp_path / "pack")
     _fake_transformers(monkeypatch, tmp_path / "pack")
-    base = {"repo": str(tmp_path / "pack"), "device": "cpu", "dtype": "bfloat16", "te_quant": "int8"}
+    base = {
+        "repo": str(tmp_path / "pack"),
+        "device": "cpu",
+        "dtype": "bfloat16",
+        "te_quant": "int8",
+    }
     missing = {
         "repo": "unsloth/LTX-2.5-FP8",
         "filename": "x",

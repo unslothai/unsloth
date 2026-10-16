@@ -305,7 +305,9 @@ def resolve_video_model_kind(gguf_filename: Optional[str], model_kind: Optional[
     return "gguf" if gguf_filename.strip().lower().endswith(".gguf") else "single_file"
 
 
-def video_te_quant_request(fam: Any, text_encoder_quant: Optional[str]) -> tuple[Optional[str], bool]:
+def video_te_quant_request(
+    fam: Any, text_encoder_quant: Optional[str]
+) -> tuple[Optional[str], bool]:
     """``(request, auto_selected)``: an unset / "auto" encoder request on a family with ``te_quant_auto`` becomes that
     scheme; anything else comes back as given, raw, because MiniMax-H3 and LTX-2.5 read the raw tri-state themselves.
 
@@ -4626,6 +4628,7 @@ class VideoBackend:
                 text_encoder_quant, base or str(getattr(fam, "base_repo", "") or "")
             )
         from .diffusion_te_prequant import te_prequant_sources_for_base
+
         return te_prequant_sources_for_base(
             fam,
             base or str(getattr(fam, "base_repo", "") or ""),
@@ -6597,10 +6600,11 @@ class VideoBackend:
         # matches), "none" / "off" keep the released one, an explicit scheme pins itself. An automatic pick this card
         # cannot run is dropped rather than refused.
         text_encoder_quant_requested = text_encoder_quant
-        text_encoder_quant, text_encoder_quant_auto = video_te_quant_request(fam, text_encoder_quant)
+        text_encoder_quant, text_encoder_quant_auto = video_te_quant_request(
+            fam, text_encoder_quant
+        )
         if text_encoder_quant_auto:
             from . import diffusion_precision as _precision
-
             if _precision.te_quant_supported(target, text_encoder_quant):
                 logger.info(
                     "video.text_encoder_quant: '%s' selected automatically for %s (unset request)",

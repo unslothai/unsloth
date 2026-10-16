@@ -33,10 +33,16 @@ BACKEND = ROOT / "studio" / "backend"
 def main(argv = None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--base", default = "Lightricks/LTX-2.5-Diffusers")
-    p.add_argument("--repo", default = None, help = "local pack folder or Hub id to read (default: --base)")
+    p.add_argument(
+        "--repo", default = None, help = "local pack folder or Hub id to read (default: --base)"
+    )
     p.add_argument("--out", required = True)
-    p.add_argument("--device", default = "cuda:0", help = "the at-load path quantizes on the card when it has one")
-    p.add_argument("--venv-dir", default = None, help = "the transformers 5.10 sidecar (default: Studio's)")
+    p.add_argument(
+        "--device", default = "cuda:0", help = "the at-load path quantizes on the card when it has one"
+    )
+    p.add_argument(
+        "--venv-dir", default = None, help = "the transformers 5.10 sidecar (default: Studio's)"
+    )
     p.add_argument("--hf-token", default = None)
     args = p.parse_args(argv)
     sys.path.insert(0, str(BACKEND))
@@ -99,7 +105,9 @@ def build(
     try:
         import transformers
 
-        cfg = transformers.AutoConfig.from_pretrained(repo, subfolder = "text_encoder", token = hf_token)
+        cfg = transformers.AutoConfig.from_pretrained(
+            repo, subfolder = "text_encoder", token = hf_token
+        )
         te_class = (getattr(cfg, "architectures", None) or [None])[0]
         transformers_version = transformers.__version__
     except Exception:  # noqa: BLE001 -- forensic metadata only

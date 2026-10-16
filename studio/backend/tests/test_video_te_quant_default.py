@@ -124,7 +124,9 @@ def test_unsupported_hardware_gets_no_hosted_encoder_for_the_default():
     fam = _family("wan2.2-ti2v-5b")
     mps = types.SimpleNamespace(device = "mps", dtype = torch.bfloat16)
     mode, _ = video_te_quant_request(fam, None)
-    assert tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = mode, target = mps) == {}
+    assert (
+        tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = mode, target = mps) == {}
+    )
 
 
 @pytest.mark.parametrize("a", WAN_BASES)
@@ -168,7 +170,6 @@ _UMT5_LINEAR = re.compile(
 
 def _umt5_config():
     from transformers import UMT5Config
-
     return UMT5Config(
         vocab_size = 64,
         d_model = 256,
@@ -206,7 +207,11 @@ def _int8_state(encoder, *, keep_wo: bool):
     for k, v in encoder.state_dict().items():
         if _UMT5_LINEAR.match(k) and not (keep_wo and ".wo." in k):
             q, s = tpq.quantize_int8_convrot_weight(v, GROUP)
-            state[k], state[k[:-7] + ".weight_scale"], state[k[:-7] + ".comfy_quant"] = q, s, blob.clone()
+            state[k], state[k[:-7] + ".weight_scale"], state[k[:-7] + ".comfy_quant"] = (
+                q,
+                s,
+                blob.clone(),
+            )
         else:
             state[k] = v.detach().clone().float()
     return state
@@ -343,13 +348,18 @@ def test_the_converter_can_store_a_tied_embedding_once(tmp_path, monkeypatch):
     )
     rec = conv.convert(str(src), str(tmp_path), repo = None, revision = None, sha = None, drop_tied = True)
     assert rec["verified_bit_identical"] and rec["tied_copies_dropped"]
-    assert "encoder.embed_tokens.weight" not in ps.load_plain_prequant_safetensors(rec["dst"])["state_dict"]
+    assert (
+        "encoder.embed_tokens.weight"
+        not in ps.load_plain_prequant_safetensors(rec["dst"])["state_dict"]
+    )
     plain = conv.convert(str(src), str(tmp_path / "plain"), repo = None, revision = None, sha = None)
     assert plain["dst_bytes"] > rec["dst_bytes"]
 
     import transformers
 
-    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", lambda *_a, **_k: _umt5_config())
+    monkeypatch.setattr(
+        transformers.AutoConfig, "from_pretrained", lambda *_a, **_k: _umt5_config()
+    )
     monkeypatch.setenv(ALLOW_LOCAL_PREQUANT_PATH_ENV, str(tmp_path))
     loaded = tpq.load_prequant_text_encoder(
         WAN_BASES[2],
