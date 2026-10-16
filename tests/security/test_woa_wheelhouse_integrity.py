@@ -26,7 +26,7 @@ def _steps(workflow, job):
 
 
 def _dispatch_inputs(workflow):
-    # YAML 1.1 reads a bare `on` as the boolean true, so that is the key PyYAML hands back.
+    # YAML 1.1 reads a bare `on` as boolean true.
     triggers = workflow["on"] if "on" in workflow else workflow[True]
     return triggers["workflow_dispatch"]["inputs"]
 

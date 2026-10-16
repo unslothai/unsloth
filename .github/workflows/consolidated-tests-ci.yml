@@ -465,7 +465,8 @@ jobs:
         run: |
           python -m pytest -v --tb=short \
             tests/utils/test_dataset_num_proc.py \
-            tests/utils/test_train_on_responses_only_num_proc.py
+            tests/utils/test_train_on_responses_only_num_proc.py \
+            tests/utils/test_packing_overflow_guard.py
           PYTHONPATH=studio/backend python -m pytest -v --tb=short \
             studio/backend/tests/test_dataset_map_num_proc.py \
             studio/backend/tests/test_compressed_tensors_signature_drift.py

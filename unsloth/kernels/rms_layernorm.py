@@ -9,6 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 import hashlib
 import os
 import warnings
@@ -17,17 +18,18 @@ import triton.language as tl
 import torch
 from typing import Tuple
 from .utils import calculate_settings, long_indexing, torch_gpu_device
+from .triton_launch import launch
 
 
 @triton.jit
 def _rms_layernorm_forward(
     Y,
-    Y_row_stride: tl.constexpr,
     X,
-    X_row_stride: tl.constexpr,
     W,
-    W_row_stride: tl.constexpr,
     r,
+    Y_row_stride: tl.constexpr,
+    X_row_stride: tl.constexpr,
+    W_row_stride: tl.constexpr,
     r_row_stride: tl.constexpr,
     n_cols: tl.constexpr,
     eps: tl.constexpr,
@@ -63,7 +65,8 @@ def _rms_layernorm_forward(
     tl.store(Y + col_offsets, output, mask = mask)
 
 
-def _rms_layernorm_backward(
+@triton.jit
+def _rms_backward_row(
     dY,
     dY_row_stride: tl.constexpr,
     dX,
@@ -71,42 +74,40 @@ def _rms_layernorm_backward(
     X,
     X_row_stride: tl.constexpr,
     W,
-    W_row_stride: tl.constexpr,
     r,
     r_row_stride: tl.constexpr,
+    row_idx,
+    col_offsets,
+    mask,
     n_cols: tl.constexpr,
-    eps: tl.constexpr,
     GEMMA: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
+    dW_acc,
+    TRAIN_W: tl.constexpr,
+    FROM_Y: tl.constexpr,
 ):
-    """
-    Fast RMS Layernorm kernel for the backward pass
-    Inspiration from a Triton tutorial:
-    https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
-    """
-    row_idx = tl.program_id(0)
-    if LONG_INDEXING:
-        row_idx = row_idx.to(tl.int64)
-    col_offsets = tl.arange(0, BLOCK_SIZE)
-    mask = col_offsets < n_cols
-
+    # with FROM_Y, X holds Y and normed = Y / W; r still scales dX.
     dY += row_idx * dY_row_stride
     X += row_idx * X_row_stride
     r += row_idx * r_row_stride
-
-    if GEMMA:
-        dX += row_idx * dX_row_stride
-    else:
-        dX = dY
+    dX += row_idx * dX_row_stride
 
     dY_row = tl.load(dY + col_offsets, mask = mask, other = 0).to(tl.float32)
     X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
     W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
 
-    # Get saved row variance
     inv_var = tl.load(r).to(tl.float32)
-    normed = X_row * inv_var
+    if FROM_Y:
+        # masked lanes would divide 0 by 0.
+        normed = tl.where(mask, X_row / (W_row + 1.0 if GEMMA else W_row), 0.0)
+    else:
+        normed = X_row * inv_var
+    if TRAIN_W:
+        # accumulate dW before the row sum to free the fp32 dY row and keep all programs resident.
+        if GEMMA:
+            dW_acc += dY_row * normed
+        else:
+            # The forward multiplies W by normed rounded to W's dtype.
+            dW_acc += dY_row * normed.to(W.dtype.element_ty).to(tl.float32)
 
     if GEMMA:
         dY_W = dY_row * (W_row + 1.0)
@@ -116,6 +117,87 @@ def _rms_layernorm_backward(
     rowsum_dY_normed = tl.sum(dY_W * normed, axis = 0)
     output = inv_var / n_cols * (n_cols * dY_W - normed * rowsum_dY_normed)
     tl.store(dX + col_offsets, output, mask = mask)
+    return dW_acc
+
+
+def _rms_layernorm_backward(
+    dY,
+    dX,
+    X,
+    W,
+    r,
+    dW,
+    n_rows,
+    rows_per_program,
+    dY_row_stride: tl.constexpr,
+    dX_row_stride: tl.constexpr,
+    X_row_stride: tl.constexpr,
+    W_row_stride: tl.constexpr,
+    r_row_stride: tl.constexpr,
+    n_cols: tl.constexpr,
+    eps: tl.constexpr,
+    GEMMA: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    TRAIN_W: tl.constexpr,
+    FROM_Y: tl.constexpr,
+):
+    """
+    Fast RMS Layernorm kernel for the backward pass
+    Inspiration from a Triton tutorial:
+    https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
+    TRAIN_W: per-program fp32 dW partials (fla-org/flash-linear-attention layer_norm_bwd_kernel_row).
+    """
+    pid = tl.program_id(0)
+    if LONG_INDEXING:
+        pid = pid.to(tl.int64)
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    mask = col_offsets < n_cols
+
+    if TRAIN_W:
+        dW_acc = tl.zeros((BLOCK_SIZE,), dtype = tl.float32)
+        row_start = pid * rows_per_program
+        for row_idx in range(row_start, tl.minimum(row_start + rows_per_program, n_rows)):
+            dW_acc = _rms_backward_row(
+                dY,
+                dY_row_stride,
+                dX,
+                dX_row_stride,
+                X,
+                X_row_stride,
+                W,
+                r,
+                r_row_stride,
+                row_idx,
+                col_offsets,
+                mask,
+                n_cols,
+                GEMMA,
+                dW_acc,
+                True,
+                FROM_Y,
+            )
+        tl.store(dW + pid * n_cols + col_offsets, dW_acc, mask = mask)
+    else:
+        _rms_backward_row(
+            dY,
+            dY_row_stride,
+            dX,
+            dX_row_stride,
+            X,
+            X_row_stride,
+            W,
+            r,
+            r_row_stride,
+            pid,
+            col_offsets,
+            mask,
+            n_cols,
+            GEMMA,
+            0.0,
+            False,
+            FROM_Y,
+        )
 
 
 _rms_layernorm_backward = triton.jit(_rms_layernorm_backward)
@@ -123,6 +205,8 @@ _rms_layernorm_backward = triton.heuristics(
     {
         "GEMMA": lambda args: bool(args["GEMMA"]),
         "LONG_INDEXING": lambda args: bool(args["LONG_INDEXING"]),
+        "TRAIN_W": lambda args: bool(args["TRAIN_W"]),
+        "FROM_Y": lambda args: bool(args["FROM_Y"]),
     }
 )(_rms_layernorm_backward)
 
@@ -130,12 +214,12 @@ _rms_layernorm_backward = triton.heuristics(
 @triton.jit
 def _gemma_rms_layernorm_forward(
     Y,
-    Y_row_stride: tl.constexpr,
     X,
-    X_row_stride: tl.constexpr,
     W,
-    W_row_stride: tl.constexpr,
     r,
+    Y_row_stride: tl.constexpr,
+    X_row_stride: tl.constexpr,
+    W_row_stride: tl.constexpr,
     r_row_stride: tl.constexpr,
     n_cols: tl.constexpr,
     eps: tl.constexpr,
@@ -195,12 +279,12 @@ def _row_dot_in_row_kernel_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
 @triton.jit
 def _rms_layernorm_forward_rows(
     Y,
-    Y_row_stride: tl.constexpr,
     X,
-    X_row_stride: tl.constexpr,
     W,
     r,
     n_rows,
+    Y_row_stride: tl.constexpr,
+    X_row_stride: tl.constexpr,
     n_cols: tl.constexpr,
     eps: tl.constexpr,
     GEMMA: tl.constexpr,
@@ -240,7 +324,7 @@ def _rms_layernorm_forward_rows(
 
 
 @triton.jit
-def _rms_layernorm_backward_rows(
+def _rms_backward_rows_block(
     dY,
     dY_row_stride: tl.constexpr,
     dX,
@@ -249,19 +333,15 @@ def _rms_layernorm_backward_rows(
     X_row_stride: tl.constexpr,
     W,
     r,
+    rows,
     n_rows,
     n_cols: tl.constexpr,
-    eps: tl.constexpr,
     GEMMA: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     ROWS: tl.constexpr,
     WARPS: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
+    FROM_Y: tl.constexpr,
 ):
-    pid = tl.program_id(0)
-    if LONG_INDEXING:
-        pid = pid.to(tl.int64)
-    rows = pid * ROWS + tl.arange(0, ROWS)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     row_mask = rows < n_rows
     col_mask = col_offsets < n_cols
@@ -276,7 +356,11 @@ def _rms_layernorm_backward_rows(
     W_row = tl.load(W + col_offsets, mask = col_mask, other = 0).to(tl.float32)
 
     inv_var = tl.load(r + rows, mask = row_mask, other = 0).to(tl.float32)
-    normed = X_rows * inv_var[:, None]
+    if FROM_Y:
+        normed = X_rows / (W_row[None, :] + 1.0 if GEMMA else W_row[None, :])
+        normed = tl.where(mask, normed, 0.0)
+    else:
+        normed = X_rows * inv_var[:, None]
 
     if GEMMA:
         dY_W = dY_rows * (W_row[None, :] + 1.0)
@@ -284,12 +368,131 @@ def _rms_layernorm_backward_rows(
         dY_W = dY_rows * W_row[None, :]
 
     rowsum_dY_normed = _row_dot_in_row_kernel_order(dY_W, normed, ROWS, WARPS)
-    # Spelled as in the one-row kernel: an explicit fma here turns -0 into +0 on sm75.
+    # match one-row arithmetic because its fused multiply-add turns -0 into +0 on sm75.
     output = (inv_var / n_cols)[:, None] * (n_cols * dY_W - normed * rowsum_dY_normed[:, None])
-    if GEMMA:
-        tl.store(dX + rows[:, None] * dX_row_stride + col_offsets[None, :], output, mask = mask)
+    tl.store(dX + rows[:, None] * dX_row_stride + col_offsets[None, :], output, mask = mask)
+    # masked rows contribute zero; this dW path is dead unless TRAIN_W.
+    if not GEMMA:
+        # forward multiplies W by normed rounded to W's dtype.
+        normed = normed.to(W.dtype.element_ty).to(tl.float32)
+    return tl.sum(dY_rows * normed, axis = 0)
+
+
+@triton.jit
+def _rms_layernorm_backward_rows(
+    dY,
+    dX,
+    X,
+    W,
+    r,
+    dW,
+    n_rows,
+    blocks_per_program,
+    dY_row_stride: tl.constexpr,
+    dX_row_stride: tl.constexpr,
+    X_row_stride: tl.constexpr,
+    n_cols: tl.constexpr,
+    eps: tl.constexpr,
+    GEMMA: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    ROWS: tl.constexpr,
+    WARPS: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
+    TRAIN_W: tl.constexpr,
+    FROM_Y: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    if LONG_INDEXING:
+        pid = pid.to(tl.int64)
+    if TRAIN_W:
+        dW_acc = tl.zeros((BLOCK_SIZE,), dtype = tl.float32)
+        block_start = pid * blocks_per_program
+        block_end = tl.minimum(block_start + blocks_per_program, tl.cdiv(n_rows, ROWS))
+        for block in range(block_start, block_end):
+            dW_acc += _rms_backward_rows_block(
+                dY,
+                dY_row_stride,
+                dX,
+                dX_row_stride,
+                X,
+                X_row_stride,
+                W,
+                r,
+                block * ROWS + tl.arange(0, ROWS),
+                n_rows,
+                n_cols,
+                GEMMA,
+                BLOCK_SIZE,
+                ROWS,
+                WARPS,
+                FROM_Y,
+            )
+        col_offsets = tl.arange(0, BLOCK_SIZE)
+        tl.store(dW + pid * n_cols + col_offsets, dW_acc, mask = col_offsets < n_cols)
     else:
-        tl.store(dY + rows[:, None] * dY_row_stride + col_offsets[None, :], output, mask = mask)
+        _rms_backward_rows_block(
+            dY,
+            dY_row_stride,
+            dX,
+            dX_row_stride,
+            X,
+            X_row_stride,
+            W,
+            r,
+            pid * ROWS + tl.arange(0, ROWS),
+            n_rows,
+            n_cols,
+            GEMMA,
+            BLOCK_SIZE,
+            ROWS,
+            WARPS,
+            FROM_Y,
+        )
+
+
+@triton.jit
+def _rms_sum_dw_partials(
+    partials, dW, n_programs, n_cols, BLOCK_ROWS: tl.constexpr, BLOCK_COLS: tl.constexpr
+):
+    # Fixed tile order, so eager and torch.compile give the same bytes.
+    cols = tl.program_id(0) * BLOCK_COLS + tl.arange(0, BLOCK_COLS)
+    col_mask = cols < n_cols
+    acc = tl.zeros((BLOCK_ROWS, BLOCK_COLS), dtype = tl.float32)
+    for start in tl.range(0, n_programs, BLOCK_ROWS, num_stages = 3):
+        rows = start + tl.arange(0, BLOCK_ROWS)
+        mask = (rows < n_programs)[:, None] & col_mask[None, :]
+        acc += tl.load(partials + rows[:, None] * n_cols + cols[None, :], mask = mask, other = 0)
+    tl.store(dW + cols, tl.sum(acc, axis = 0).to(dW.dtype.element_ty), mask = col_mask)
+
+
+def _cdiv(a, b):
+    # triton.cdiv's formula without its call overhead (a ConstexprFunction on recent Triton).
+    return (a + b - 1) // b
+
+
+_cached_settings = functools.lru_cache(maxsize = None)(calculate_settings)
+
+
+def _settings(n_cols):
+    # Cached per width for eager calls (host bound at small shapes); tracing calls it directly.
+    if torch.compiler.is_compiling():
+        return calculate_settings(n_cols)
+    return _cached_settings(n_cols)
+
+
+def _launch(wrap, kernel, grid, args, n_tensors, constexprs, device, **options):
+    # Eager CUDA skips Triton's arg binding (triton_launch.py); traced / non-Triton keep kernel[grid].
+    if wrap is _eager_kernel and device.type == "cuda" and not torch.compiler.is_compiling():
+        fn = kernel
+        if isinstance(kernel, triton.runtime.autotuner.Heuristics):
+            # What Heuristics.run does; these heuristics only read their own constexpr.
+            fn, constexprs = kernel.fn, dict(constexprs)
+            for name, heuristic in kernel.values.items():
+                constexprs[name] = heuristic(constexprs)
+        if isinstance(fn, triton.runtime.jit.JITFunction):
+            launch(fn, grid, args, n_tensors, constexprs, device.index, **options)
+            return
+    wrap(kernel)[grid](*args, **constexprs, **options)
 
 
 # Off on ROCm (64-lane wavefronts reduce in another order) and before Triton 3.6 (slower backward).
@@ -313,7 +516,7 @@ def _multirow_settings(n_cols):
     # Only widths 33..128 (one element per lane) can replay the one-row order; others stay one-row.
     if not _MULTIROW:
         return None
-    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+    BLOCK_SIZE, num_warps = _settings(n_cols)
     if num_warps != 4 or not (64 <= BLOCK_SIZE <= 128):
         return None
     return BLOCK_SIZE, _MULTIROW_ELEMENTS // BLOCK_SIZE, BLOCK_SIZE // 32, _MULTIROW_NUM_WARPS
@@ -359,8 +562,8 @@ def _multirow_self_check(device, dtype, W_dtype, n_cols, eps, gemma, multirow):
         results = []
         for rows in (False, multirow):
             Y, r = _rms_forward(X, W, eps, gemma, _eager_kernel, rows)
-            dX = dY.clone()
-            _rms_backward(dY.clone() if gemma else dX, dX, X, W, r, eps, gemma, _eager_kernel, rows)
+            dX = torch.empty_like(dY)
+            _rms_backward(dY, dX, X, W, r, eps, gemma, _eager_kernel, rows)
             results.append((Y, r, dX))
         return all(torch.equal(_bits(a), _bits(b)) for a, b in zip(*results))
 
@@ -403,55 +606,107 @@ def _rms_forward(
 ):
     # multirow: None picks (self-checked), False forces one row, settings force multi-row.
     n_rows, n_cols = X.shape
-    Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = X.device)
-    r = torch.empty(n_rows, dtype = torch.float32, device = X.device)
+    device = X.device
+    Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = device)
+    r = torch.empty(n_rows, dtype = torch.float32, device = device)
     if multirow is None:
         multirow = _multirow_checked(X, W, eps, gemma)
     long = long_indexing(X, Y, block = _INDEX_MARGIN)
     if multirow:
         BLOCK_SIZE, ROWS, WARPS, num_warps = multirow
         try:
-            wrap(_rms_layernorm_forward_rows)[((n_rows + ROWS - 1) // ROWS,)](
-                Y,
-                Y.stride(0),
-                X,
-                X.stride(0),
-                W,
-                r,
-                n_rows,
-                n_cols,
-                eps,
-                GEMMA = gemma,
-                BLOCK_SIZE = BLOCK_SIZE,
-                ROWS = ROWS,
-                WARPS = WARPS,
-                # int32 rows measured slower only for the Gemma multi-row forward: keep main's int64.
-                LONG_INDEXING = long or gemma,
+            _launch(
+                wrap,
+                _rms_layernorm_forward_rows,
+                ((n_rows + ROWS - 1) // ROWS,),
+                (Y, X, W, r, n_rows),
+                4,
+                dict(
+                    Y_row_stride = Y.stride(0),
+                    X_row_stride = X.stride(0),
+                    n_cols = n_cols,
+                    eps = eps,
+                    GEMMA = gemma,
+                    BLOCK_SIZE = BLOCK_SIZE,
+                    ROWS = ROWS,
+                    WARPS = WARPS,
+                    # int32 rows measured slower only for the Gemma multi-row forward: keep main's int64.
+                    LONG_INDEXING = long or gemma,
+                ),
+                device,
                 num_warps = num_warps,
+                enable_fp_fusion = True,
             )
             return Y, r
         except Exception as error:
             if _multirow_must_raise(error, wrap):
                 raise
             _multirow_disable(f"launch failed: {error!r}")
-    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
-    fx = _gemma_rms_layernorm_forward if gemma else _rms_layernorm_forward
-    wrap(fx)[(n_rows,)](
-        Y,
-        Y.stride(0),
-        X,
-        X.stride(0),
-        W,
-        W.stride(0),
-        r,
-        r.stride(0),
-        n_cols,
-        eps,
-        LONG_INDEXING = long,
-        BLOCK_SIZE = BLOCK_SIZE,
+    BLOCK_SIZE, num_warps = _settings(n_cols)
+    _launch(
+        wrap,
+        _gemma_rms_layernorm_forward if gemma else _rms_layernorm_forward,
+        (n_rows,),
+        (Y, X, W, r),
+        4,
+        dict(
+            Y_row_stride = Y.stride(0),
+            X_row_stride = X.stride(0),
+            W_row_stride = W.stride(0),
+            r_row_stride = r.stride(0),
+            n_cols = n_cols,
+            eps = eps,
+            LONG_INDEXING = long,
+            BLOCK_SIZE = BLOCK_SIZE,
+        ),
+        device,
         num_warps = num_warps,
+        enable_fp_fusion = True,
     )
     return Y, r
+
+
+_DW_PROGRAMS_PER_SM = 4
+
+
+@functools.lru_cache(maxsize = None)
+def _sm_count(device):
+    try:
+        return int(torch.cuda.get_device_properties(device).multi_processor_count)
+    except Exception:
+        return 128
+
+
+@functools.lru_cache(maxsize = None)
+def _max_sm_threads(device):
+    try:
+        return int(torch.cuda.get_device_properties(device).max_threads_per_multi_processor)
+    except Exception:
+        return 0
+
+
+def _dw_split(units, max_programs):
+    per_program = max(1, _cdiv(units, max(1, min(units, max_programs))))
+    return max(1, _cdiv(units, per_program)), per_program
+
+
+def _dw_launch(units, device):
+    return _dw_split(units, _sm_count(device) * _DW_PROGRAMS_PER_SM)
+
+
+@functools.lru_cache(maxsize = None)
+def _dw_row_config(device, n_cols):
+    # Cached (host bound). 64-warp SMs, <= 16 elems/lane: cap registers at 64 so all programs stay resident.
+    BLOCK_SIZE, num_warps = _settings(n_cols)
+    per_sm, options = _DW_PROGRAMS_PER_SM, {}
+    if (
+        device.type == "cuda"
+        and not torch.version.hip
+        and BLOCK_SIZE <= 512 * num_warps
+        and _max_sm_threads(device) >= 2048
+    ):
+        per_sm, options = max(1, 32 // num_warps), {"maxnreg": 64}
+    return BLOCK_SIZE, num_warps, _sm_count(device) * per_sm, options
 
 
 def _rms_backward(
@@ -464,61 +719,129 @@ def _rms_backward(
     gemma,
     wrap,
     multirow = None,
+    train_w = False,
+    from_y = False,
 ):
-    # Non-Gemma writes dX over dY (the kernel ignores dX); Gemma writes into dX.
     n_rows, n_cols = dY.shape
+    device = dY.device
     if multirow is None:
         multirow = _multirow_checked(X, W, eps, gemma)
     long = long_indexing(dY, dX, X, block = _INDEX_MARGIN)
+    partials = None
     if multirow:
         BLOCK_SIZE, ROWS, WARPS, num_warps = multirow
+        programs, per_program = _cdiv(n_rows, ROWS), 1
+        if train_w:
+            programs, per_program = _dw_launch(programs, device)
+            partials = torch.empty((programs, n_cols), dtype = torch.float32, device = device)
         try:
-            wrap(_rms_layernorm_backward_rows)[((n_rows + ROWS - 1) // ROWS,)](
-                dY,
-                dY.stride(0),
-                dX,
-                dX.stride(0),
-                X,
-                X.stride(0),
-                W,
-                r,
-                n_rows,
-                n_cols,
-                eps,
-                GEMMA = gemma,
-                BLOCK_SIZE = BLOCK_SIZE,
-                ROWS = ROWS,
-                WARPS = WARPS,
-                LONG_INDEXING = long,
+            _launch(
+                wrap,
+                _rms_layernorm_backward_rows,
+                (programs,),
+                (dY, dX, X, W, r, r if partials is None else partials, n_rows, per_program),
+                6,
+                dict(
+                    dY_row_stride = dY.stride(0),
+                    dX_row_stride = dX.stride(0),
+                    X_row_stride = X.stride(0),
+                    n_cols = n_cols,
+                    eps = eps,
+                    GEMMA = gemma,
+                    BLOCK_SIZE = BLOCK_SIZE,
+                    ROWS = ROWS,
+                    WARPS = WARPS,
+                    LONG_INDEXING = long,
+                    TRAIN_W = train_w,
+                    FROM_Y = from_y,
+                ),
+                device,
                 num_warps = num_warps,
+                enable_fp_fusion = True,
             )
-            return
         except Exception as error:
             if _multirow_must_raise(error, wrap):
                 raise
             _multirow_disable(f"launch failed: {error!r}")
-    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
-    wrap(_rms_layernorm_backward)[(n_rows,)](
-        dY,
-        dY.stride(0),
-        dX,
-        dX.stride(0),
-        X,
-        X.stride(0),
-        W,
-        W.stride(0),
-        r,
-        r.stride(0),
-        n_cols,
-        eps,
-        GEMMA = gemma,
-        LONG_INDEXING = long,
-        BLOCK_SIZE = BLOCK_SIZE,
+        else:
+            return _rms_sum_partials(partials, W, wrap)
+    programs, per_program, options = n_rows, 1, {}
+    if train_w:
+        BLOCK_SIZE, num_warps, max_programs, options = _dw_row_config(device, int(n_cols))
+        programs, per_program = _dw_split(n_rows, max_programs)
+        partials = torch.empty((programs, n_cols), dtype = torch.float32, device = device)
+    else:
+        BLOCK_SIZE, num_warps = _settings(n_cols)
+    _launch(
+        wrap,
+        _rms_layernorm_backward,
+        (programs,),
+        (dY, dX, X, W, r, r if partials is None else partials, n_rows, per_program),
+        6,
+        dict(
+            dY_row_stride = dY.stride(0),
+            dX_row_stride = dX.stride(0),
+            X_row_stride = X.stride(0),
+            W_row_stride = W.stride(0),
+            r_row_stride = r.stride(0),
+            n_cols = n_cols,
+            eps = eps,
+            GEMMA = gemma,
+            LONG_INDEXING = long,
+            BLOCK_SIZE = BLOCK_SIZE,
+            TRAIN_W = train_w,
+            FROM_Y = from_y,
+        ),
+        device,
         num_warps = num_warps,
+        **options,
+        enable_fp_fusion = True,
     )
+    return _rms_sum_partials(partials, W, wrap)
+
+
+def _rms_sum_partials(partials, W, wrap):
+    if partials is None:
+        return None
+    programs, n_cols = partials.shape
+    dW = torch.empty(n_cols, dtype = W.dtype, device = partials.device)
+    _launch(
+        wrap,
+        _rms_sum_dw_partials,
+        (_cdiv(n_cols, 64),),
+        (partials, dW, programs, n_cols),
+        2,
+        dict(BLOCK_ROWS = 64, BLOCK_COLS = 64),
+        partials.device,
+        enable_fp_fusion = True,
+    )
+    return dW
 
 
 _eager_kernel = lambda kernel: kernel
+
+# Opt-in: save the output Y (which LoRA_QKV / LoRA_MLP already hold) instead of the input X and
+# recompute normed = Y / W in backward. Saves one T x D activation per norm; dX is no longer bitwise.
+_SAVE_OUTPUT = os.environ.get("UNSLOTH_RMSNORM_SAVE_OUTPUT", "0") == "1"
+
+
+def _save_output_ok(W, gemma, dtype):
+    # Y / W needs |W| (|1 + W| for Gemma) clear of 0 and fp16 Y not subnormal. Cached per weight version.
+    key = (W._version, W.data_ptr(), gemma, dtype)
+    cached = getattr(W, "_unsloth_save_output", None)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    if W.device.type == "cuda" and torch.cuda.is_current_stream_capturing():
+        # .item() would sync inside CUDA graph capture: save X for this call, check eagerly later.
+        return False
+    with torch.no_grad():
+        w = W.float() + 1.0 if gemma else W.float()
+        ok = bool((w.isfinite().all() & (w.abs().amin() >= 16 * torch.finfo(dtype).tiny)).item())
+    try:
+        W._unsloth_save_output = (key, ok)
+    except Exception:
+        pass
+    return ok
 
 
 class Fast_RMS_Layernorm(torch.autograd.Function):
@@ -529,6 +852,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         W: torch.Tensor,
         eps: float,
         gemma: bool = False,
+        save_output: bool = False,
     ):
         shape = X.shape
         dim: int = shape[-1]
@@ -539,8 +863,22 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
             Y, r = _rms_forward(X, W, eps, gemma, _eager_kernel)
         ctx.eps = eps
         ctx.GEMMA = gemma
-        ctx.save_for_backward(X, W, r)
-        return Y.view(*shape)
+        Y = Y.view(*shape)
+        # save_output: the caller guarantees nothing writes into Y (an untracked Triton write would
+        # corrupt dX silently). Only frozen W: a trained W changes every step.
+        ctx.FROM_Y = (
+            save_output
+            and _SAVE_OUTPUT
+            and not ctx.needs_input_grad[1]
+            and _save_output_ok(W, gemma, Y.dtype)
+        )
+        ctx.save_for_backward(Y if ctx.FROM_Y else X, W, r)
+        if ctx.FROM_Y:
+            # LoRA_QKV and LoRA_MLP use this marker to preserve Y and its tiled views.
+            Y._unsloth_rmsnorm_saved = True
+            if Y._base is not None:
+                Y._base._unsloth_rmsnorm_saved = True
+        return Y
 
     @staticmethod
     def backward(ctx, dY: torch.Tensor):
@@ -548,14 +886,27 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         dim: int = shape[-1]
         dY = dY.reshape(-1, dim).contiguous()
         X, W, r = ctx.saved_tensors
-        dX = torch.empty_like(dY) if ctx.GEMMA else dY
+        X = X.view(-1, dim)
+        # allocate dX because autograd may share dY with other nodes or the caller.
+        dX = torch.empty_like(dY)
         with torch_gpu_device(dY.device):
-            _rms_backward(dY, dX, X, W, r, ctx.eps, ctx.GEMMA, _eager_kernel)
+            dW = _rms_backward(
+                dY,
+                dX,
+                X,
+                W,
+                r,
+                ctx.eps,
+                ctx.GEMMA,
+                _eager_kernel,
+                train_w = ctx.needs_input_grad[1],
+                from_y = ctx.FROM_Y,
+            )
         dX = dX.view(*shape)
-        return dX, None, None, None
+        return dX, dW, None, None, None
 
 
-# Compiled graphs take these ops: same kernels, fresh outputs (the Function writes dX over dY).
+# compiled graphs use these ops with the same kernels as the Function.
 _TRACEABLE = hasattr(torch.library, "triton_op") and hasattr(torch.library, "wrap_triton")
 
 
@@ -598,19 +949,35 @@ if _TRACEABLE:
     def _rms_layernorm_op(
         X: torch.Tensor, W: torch.Tensor, eps: float, gemma: bool
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Called eagerly (outside a compiled graph) the launch needs X's device made current.
+        # eager launches outside compiled graphs need X's device made current.
         with torch_gpu_device(X.device):
             return _rms_forward(X, W, eps, gemma, _traced_kernel)
 
     @torch.library.triton_op("unsloth::rms_layernorm_backward", mutates_args = ())
     def _rms_layernorm_backward_op(
-        dY: torch.Tensor, X: torch.Tensor, W: torch.Tensor, r: torch.Tensor, eps: float, gemma: bool
-    ) -> torch.Tensor:
+        dY: torch.Tensor,
+        X: torch.Tensor,
+        W: torch.Tensor,
+        r: torch.Tensor,
+        eps: float,
+        gemma: bool,
+        train_w: bool,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         dX = torch.empty_like(dY)
-        # Non-Gemma rewrites its dY argument, so it gets a copy.
         with torch_gpu_device(dY.device):
-            _rms_backward(dY if gemma else dX.copy_(dY), dX, X, W, r, eps, gemma, _traced_kernel)
-        return dX
+            dW = _rms_backward(
+                dY,
+                dX,
+                X,
+                W,
+                r,
+                eps,
+                gemma,
+                _traced_kernel,
+                train_w = train_w,
+            )
+        # empty dW represents a frozen weight because ops return tensors only.
+        return dX, dW if train_w else W.new_empty(0)
 
     def _rms_setup_context(ctx, inputs, output):
         X, W, eps, gemma = inputs
@@ -619,8 +986,11 @@ if _TRACEABLE:
 
     def _rms_layernorm_op_backward(ctx, dY, dr):
         X, W, r = ctx.saved_tensors
-        dX = torch.ops.unsloth.rms_layernorm_backward(dY.contiguous(), X, W, r, ctx.eps, ctx.gemma)
-        return dX, None, None, None
+        train_w = ctx.needs_input_grad[1]
+        dX, dW = torch.ops.unsloth.rms_layernorm_backward(
+            dY.contiguous(), X, W, r, ctx.eps, ctx.gemma, train_w
+        )
+        return dX, dW if train_w else None, None, None
 
     _rms_layernorm_op.register_autograd(
         _rms_layernorm_op_backward, setup_context = _rms_setup_context
@@ -629,27 +999,34 @@ if _TRACEABLE:
 
 
 @torch.compiler.disable
-def _fast_rms_layernorm_untraced(X, W, eps, gemma):
-    return Fast_RMS_Layernorm.apply(X, W, eps, gemma)
+def _fast_rms_layernorm_untraced(
+    X,
+    W,
+    eps,
+    gemma,
+    save_output = False,
+):
+    return Fast_RMS_Layernorm.apply(X, W, eps, gemma, save_output)
 
 
 def fast_rms_layernorm(
     layernorm,
     X: torch.Tensor,
     gemma: bool = False,
+    save_output: bool = False,
 ):
     W: torch.Tensor = layernorm.weight
     eps: float = (
         layernorm.variance_epsilon if hasattr(layernorm, "variance_epsilon") else layernorm.eps
     )
     if not torch.compiler.is_compiling():
-        return Fast_RMS_Layernorm.apply(X, W, eps, gemma)
+        return Fast_RMS_Layernorm.apply(X, W, eps, gemma, save_output)
     if (
         not _TRACEABLE
         or X.device.type != "cuda"
         or (X.dtype == torch.bfloat16 and not _BF16_TRACEABLE)
     ):
-        return _fast_rms_layernorm_untraced(X, W, eps, gemma)
+        return _fast_rms_layernorm_untraced(X, W, eps, gemma, save_output)
     shape = X.shape
     Y, _ = torch.ops.unsloth.rms_layernorm(
         X.reshape(-1, shape[-1]).contiguous(), W.contiguous(), eps, gemma

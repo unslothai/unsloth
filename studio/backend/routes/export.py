@@ -146,6 +146,7 @@ async def load_checkpoint(
             base_model = base_model,
             max_seq_length = request.max_seq_length,
             load_in_4bit = load_in_4bit,
+            offload_layers = request.offload_layers,
             trust_remote_code = request.trust_remote_code,
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
             hf_token = export_hf_token,
@@ -372,6 +373,20 @@ def _export_details(
         return {"output_path": output_path}
 
 
+def _with_drafter(
+    details: Optional[Dict[str, Any]], output_path: Optional[str]
+) -> Optional[Dict[str, Any]]:
+    """Adds the trained drafter an export carries (drafter.json), when there is one."""
+    try:
+        from core.export.drafter_export import export_drafter_details
+        drafter = export_drafter_details(output_path)
+    except Exception:
+        drafter = None
+    if drafter is None or details is None:
+        return details
+    return {**details, "drafter": drafter}
+
+
 def _decision_export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
     """A decision GGUF lands in the run folder's gguf/; not registered as a chat model folder."""
     if not output_path:
@@ -456,7 +471,10 @@ async def export_merged_model(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+            details = _with_drafter(
+                await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+                output_path,
+            ),
         )
     except HTTPException:
         raise
@@ -517,7 +535,10 @@ async def export_base_model(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+            details = _with_drafter(
+                await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+                output_path,
+            ),
         )
     except HTTPException:
         raise
@@ -573,7 +594,10 @@ async def export_gguf(
         if getattr(backend, "decision", None):
             details = await asyncio.to_thread(_decision_export_details, output_path)
         else:
-            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True)
+            details = _with_drafter(
+                await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+                output_path,
+            )
         return ExportOperationResponse(success = True, message = message, details = details)
     except HTTPException:
         raise
@@ -731,7 +755,10 @@ async def export_lora_adapter(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+            details = _with_drafter(
+                await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+                output_path,
+            ),
         )
     except HTTPException:
         raise

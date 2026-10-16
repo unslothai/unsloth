@@ -78,6 +78,8 @@ from core.inference.tool_loop_controller import (
 from core.inference.chat_template_helpers import (
     append_assistant_turn,
     trailing_assistant_resume_kind,
+    forced_tool_name,
+    forced_turn_tools,
 )
 from core.inference.passthrough_healing import nudge_enabled
 from state.tool_approvals import (
@@ -646,6 +648,8 @@ def run_safetensors_tool_loop(
     images_sink: Optional[list] = None,
     caller_image_indexes: "tuple[int, ...]" = (),
     context_fitter: Optional[Callable[[list, list, list], dict]] = None,
+    tool_choice = None,
+    disable_parallel_tool_use: bool = False,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -754,14 +758,20 @@ def run_safetensors_tool_loop(
     # Autoinject ran a KB search outside the controller, so it counts as an
     # executed tool for the plan-without-action gate.
     rag_autoinjected = bool(_auto)
+    # As on llama-server: a forced tool is the only one offered until a call runs or is denied.
+    forced_resolved = rag_autoinjected and forced_tool_name(tool_choice) == "search_knowledge_base"
 
     unrestricted_tools = not tools
     # Gate telling a genuine NAME[ARGS] rehearsal from inactive-name prose; built from the
     # ORIGINAL tools list so a spent one-shot still reads as a tool name. None = unrestricted.
-    _enabled_names_gate = None if unrestricted_tools else set(_active_tool_names(tools))
+    from core.inference.tools import mcp_loadable_specs
+
+    # Plus the MCP tools a search can load mid-turn (#10997).
+    _loadable_mcp = [] if unrestricted_tools else mcp_loadable_specs(tools)
+    _detect_tools = [] if unrestricted_tools else list(tools or []) + _loadable_mcp
+    _enabled_names_gate = None if unrestricted_tools else set(_active_tool_names(_detect_tools))
     # Detection must see the same names as the strip gate (ORIGINAL list, incl. a spent
     # one-shot), else its repeat is stripped but never drained and the turn ends blank.
-    _detect_tools = [] if unrestricted_tools else list(tools or [])
     # Sanitized at construction: prepare_call authorizes against the controller, so a tool
     # dropped from the prompt for unsafe markup must leave the controller too. The gates above
     # keep the ORIGINAL names: those decide what LOOKS like a call, not what may run (#7066).
@@ -838,11 +848,18 @@ def run_safetensors_tool_loop(
             if not active_tools and not unrestricted_tools:
                 final_attempt_done = True
                 active_tools = []
+            elif not forced_resolved:
+                active_tools = forced_turn_tools(tool_choice, active_tools)
 
         tool_protocol_active = not final_attempt_done and (unrestricted_tools or bool(active_tools))
         tool_xml_signals = TOOL_XML_SIGNALS if tool_protocol_active else ()
         # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
-        _enabled_tool_names = None if unrestricted_tools else set(_active_tool_names(active_tools))
+        _enabled_tool_names = (
+            None
+            if unrestricted_tools
+            else set(_active_tool_names(active_tools))
+            | (set(_active_tool_names(_loadable_mcp)) if active_tools else set())
+        )
 
         # Refit every iteration: tool results grow the prompt after the first turn. Given
         # the prompt, this turn's tools and the live branch; returns `messages` and `events`.
@@ -1485,6 +1502,9 @@ def run_safetensors_tool_loop(
                     _MAX_TOOL_CALLS_PER_TURN,
                 )
             tool_calls = deduped
+            # Truncated before the assistant turn is built, so extra calls never run.
+            if disable_parallel_tool_use and len(tool_calls) > 1:
+                tool_calls, over_cap = tool_calls[:1], []
 
         assistant_msg: dict = {"role": "assistant", "content": content_text}
         assistant_appended = False
@@ -1805,7 +1825,11 @@ def run_safetensors_tool_loop(
             completion = tool_controller.record_result(decision, result)
             if provisional_match:
                 provisional_resolved = True
-            _turn_executed_real_tool = True
+            # Loading MCP tools is not a tool round, or a budget of one could never call what it found.
+            if decision.tool_name != "mcp_tool_search":
+                _turn_executed_real_tool = True
+            # Any executed call, discovery included, releases a forced choice (as on llama-server).
+            forced_resolved = True
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
             # Parsed only when there is a sink for them.
@@ -1863,6 +1887,7 @@ def run_safetensors_tool_loop(
                 caller_images = trim_image_turns(conversation, images_sink, keep = caller_images)
 
         yield {"type": "status", "text": ""}
+        forced_resolved = forced_resolved or tool_denied
 
         if tool_controller.force_final_answer:
             final_attempt_done = True
