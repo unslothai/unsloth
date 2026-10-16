@@ -160,3 +160,20 @@ test("full-token paint containment reserves no substitute height and clears for 
   assert.ok(print);
   assert.match(print, /\[data-unsloth-fence-paint\]\s*\{\s*contain: none !important;\s*\}/);
 });
+
+test("full-token fences retain intrinsic width without viewport-driven containment", () => {
+  assert.doesNotMatch(DEFER, /data-unsloth-fence-contained/);
+  assert.doesNotMatch(INDEX_CSS, /data-unsloth-fence-contained/);
+  const selector = ".aui-thread-root [data-unsloth-fence-paint] pre";
+  const at = INDEX_CSS.indexOf(selector);
+  assert.ok(at >= 0);
+  const [open, close] = layerBounds(INDEX_CSS, "utilities");
+  assert.ok(at > open && at < close);
+  const rule = INDEX_CSS.slice(at + selector.length, INDEX_CSS.indexOf("}", at) + 1);
+  assert.match(rule, /^\s*\{\s*width: max-content;\s*\}$/);
+  const print = printBlocks(INDEX_CSS).find((block) => block.includes(selector));
+  assert.ok(print);
+  const printAt = print.indexOf(selector);
+  const printRule = print.slice(printAt + selector.length, print.indexOf("}", printAt) + 1);
+  assert.match(printRule, /^\s*\{\s*width: auto;\s*\}$/);
+});
