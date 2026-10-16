@@ -490,6 +490,85 @@ def _same_count_on_every_rank(count, accelerator):
     return int(bounds[0]) == -int(bounds[1])
 
 
+def _label_count(chunk):
+    """Tokens TRL scores for token accuracy: shifted labels that are not -100."""
+    labels = chunk.get("shift_labels")
+    if labels is None:
+        labels = chunk.get("labels")
+        if labels is None:
+            return 0
+        labels = labels[..., 1:]
+    return int((labels != -100).sum())
+
+
+def _entropy_count(trainer, chunk):
+    """Tokens TRL averages entropy over: the label mask on fused-head TRL, else the attention mask
+    (plus prompt-tuning virtual tokens) or every position when padding-free."""
+    style = getattr(trainer, "_unsloth_token_budget_entropy_style", None)
+    if style is None:
+        try:
+            source = inspect.getsource(type(trainer).compute_loss)
+        except Exception:
+            source = ""
+        style = "labels" if "label_mask" in source else "attention"
+        trainer._unsloth_token_budget_entropy_style = style
+    if style == "labels":
+        return _label_count(chunk)
+    if "attention_mask" in chunk:
+        mask = chunk["attention_mask"]
+        virtual = int(getattr(trainer, "num_virtual_tokens", 0) or 0)
+        return int(mask.sum()) + virtual * mask.shape[0]
+    if "position_ids" in chunk:
+        return int(chunk["position_ids"].numel())
+    return 0
+
+
+# Per-forward ratio metrics TRL appends once per compute_loss call and later averages per entry.
+_RATIO_METRICS = {
+    "mean_token_accuracy": lambda trainer, chunk: _label_count(chunk),
+    "entropy": _entropy_count,
+}
+
+
+def _metric_lengths(trainer):
+    metrics = getattr(trainer, "_metrics", None)
+    metrics = metrics.get("train") if isinstance(metrics, Mapping) else None
+    if not isinstance(metrics, Mapping):
+        return None, None
+    lengths = {
+        key: len(metrics[key])
+        for key in _RATIO_METRICS
+        if key in metrics and isinstance(metrics[key], list)
+    }
+    return metrics, lengths
+
+
+def _merge_chunk_metrics(trainer, metrics, lengths, chunks, accelerator):
+    """Fold the per-chunk ratio entries back into one entry for the micro-batch, weighting each chunk by
+    the tokens TRL divided by, so the logged value matches an unsplit step."""
+    keys = [key for key in _RATIO_METRICS if key in metrics and isinstance(metrics[key], list)]
+    keys = [key for key in keys if len(metrics[key]) - lengths.get(key, 0) == len(chunks)]
+    if not keys:
+        return
+    weights = torch.tensor(
+        [[_RATIO_METRICS[key](trainer, chunk) for chunk in chunks] for key in keys],
+        dtype = torch.float64,
+    )
+    if accelerator is not None and getattr(accelerator, "num_processes", 1) > 1:
+        import torch.distributed as dist
+        if dist.is_available() and dist.is_initialized():
+            # TRL gathers the counts of every rank before dividing.
+            weights = weights.to(accelerator.device)
+            dist.all_reduce(weights)
+            weights = weights.cpu()
+    for key, row in zip(keys, weights.tolist()):
+        start = lengths.get(key, 0)
+        values = metrics[key][start:]
+        total = sum(row)
+        merged = sum(v * w for v, w in zip(values, row)) / total if total > 0 else 0.0
+        metrics[key][start:] = [merged]
+
+
 def install_token_budget(trainer):
     """Install whichever of UNSLOTH_TOKEN_BALANCE / UNSLOTH_TOKEN_BUDGET is set on `trainer`."""
     balance = os.environ.get(_TOKEN_BALANCE_ENV, "0").lower() in ("1", "true", "yes", "on")
@@ -548,6 +627,7 @@ def install_token_budget(trainer):
             if len(chunks) == 1:
                 return original_training_step(model, inputs, num_items_in_batch, *args, **kwargs)
             trainer._unsloth_token_budget_splits += 1
+            metrics, lengths = _metric_lengths(trainer)
             total = None
             for i, chunk in enumerate(chunks):
                 context = (
@@ -558,6 +638,8 @@ def install_token_budget(trainer):
                 with context:
                     loss = original_training_step(model, chunk, num_items_in_batch, *args, **kwargs)
                 total = loss if total is None else total + loss
+            if metrics is not None:
+                _merge_chunk_metrics(trainer, metrics, lengths, chunks, accelerator)
             return total
 
         trainer.training_step = training_step
