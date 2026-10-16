@@ -334,7 +334,9 @@ def _base_quant_state(base_layer, W):
     W_quant = getattr(W, "quant_state", None)
     if W_quant is not None:
         return W_quant
-    W_quant = getattr(base_layer, "quant_state", None)
+    # Linear4bit keeps its copy as a plain attribute. getattr would go through nn.Module.__getattr__,
+    # which raises and catches for every dense weight: 10x this function's cost on each LoRA forward.
+    W_quant = base_layer.__dict__.get("quant_state", None)
     if (
         W_quant is None
         or getattr(W, "ndim", 0) != 2
