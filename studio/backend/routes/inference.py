@@ -10098,7 +10098,6 @@ def _external_takes_mcp_images(
         namespace = _CATALOG_VISION_NAMESPACES.get(provider_type)
         if namespace and model:
             from routes.providers import cached_catalog_model_inputs
-
             inputs = cached_catalog_model_inputs(namespace, model)
             if inputs is not None:
                 return "image" in inputs
