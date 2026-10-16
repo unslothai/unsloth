@@ -698,7 +698,9 @@ def _flux3_pick_tensor_names(
         return None
     try:
         if filename.lower().endswith(".gguf"):
-            return gguf_tensor_names_from_header(_shared_gguf_header(repo_id, filename, token, None))
+            return gguf_tensor_names_from_header(
+                _shared_gguf_header(repo_id, filename, token, None)
+            )
         from huggingface_hub import HfApi
 
         meta = HfApi().parse_safetensors_file_metadata(repo_id, filename, token = token)
@@ -732,7 +734,9 @@ def assert_flux3_pick_compatible(
         return
     from .diffusion_families import flux3_variant_mismatch_reason
 
-    names = _flux3_pick_tensor_names(repo_id, gguf_filename, normalize_token(hf_token), allow_network)
+    names = _flux3_pick_tensor_names(
+        repo_id, gguf_filename, normalize_token(hf_token), allow_network
+    )
     reason = flux3_variant_mismatch_reason(name, Path(str(gguf_filename)).name, names)
     if reason is not None:
         raise ValueError(reason)

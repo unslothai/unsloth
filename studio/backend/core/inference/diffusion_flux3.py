@@ -217,7 +217,11 @@ def flux3_pipeline_class() -> type:
             from diffusers.loaders import Flux3LoraLoaderMixin as lora
         except ImportError:
             lora = None
-        bases = (_Flux3KleinPipelineMixin,) + ((lora,) if lora is not None else ()) + (DiffusionPipeline,)
+        bases = (
+            (_Flux3KleinPipelineMixin,)
+            + ((lora,) if lora is not None else ())
+            + (DiffusionPipeline,)
+        )
         _PIPELINE_CLASS = type("Flux3KleinPipeline", bases, {})
     return _PIPELINE_CLASS
 

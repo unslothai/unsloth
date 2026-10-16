@@ -1141,7 +1141,13 @@ def _with_supplied_components(load: Callable[..., dict]) -> Callable[..., dict]:
     return wrapper
 
 
-def _generation_chunks(family: Any, jobs: list, batch_size: int, *, layer_count: Any = None) -> list:
+def _generation_chunks(
+    family: Any,
+    jobs: list,
+    batch_size: int,
+    *,
+    layer_count: Any = None,
+) -> list:
     """Per-forward chunks of ``(prompt, seed)`` jobs. Layered: one input per forward. FLUX.3 runs one image per
     modular call, so each image is its own chunk: every one then gets its own encode, denoise and decode phase, and
     the text-encoder release that comes with entering denoise (one chunk of several images would release it once,

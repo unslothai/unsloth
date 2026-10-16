@@ -732,7 +732,10 @@ def test_every_flux3_image_is_its_own_generation_chunk():
 
 def _modular_base(tmp_path):
     root = tmp_path / "klein"
-    index = {"_class_name": "Flux3DistilledModularPipeline", "_blocks_class_name": FLUX3_DISTILLED_BLOCKS}
+    index = {
+        "_class_name": "Flux3DistilledModularPipeline",
+        "_blocks_class_name": FLUX3_DISTILLED_BLOCKS,
+    }
     for component, lib, cls in (
         ("text_encoder", "transformers", "Qwen3VLForConditionalGeneration"),
         ("transformer", "diffusers", "Flux3Transformer2DModel"),
@@ -750,7 +753,6 @@ def _modular_base(tmp_path):
 def _flux3_installed(monkeypatch):
     # The CPU suite runs on a released diffusers without the FLUX.3 blocks; the checks below come after that gate.
     from core.inference import diffusion as d
-
     monkeypatch.setattr(d, "assert_pipeline_class_available", lambda *a, **k: None)
 
 
