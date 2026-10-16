@@ -5054,7 +5054,7 @@ def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
     if label is None:
         return None
     key = _gguf_variant_key(rel_path)
-    # custom folders use the family filename when a second build collides with the legacy quant key (#13926).
+    # a second same-quant build in a custom folder is keyed by its family (#13926)
     want_family = gguf_variant_family(want) if want.lower().endswith(".gguf") else want
     if _variant_keys_match(key, want) or (
         gguf_variant_family(rel_path).casefold() == want_family.strip().casefold()

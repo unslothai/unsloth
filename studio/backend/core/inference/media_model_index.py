@@ -518,8 +518,7 @@ def satisfied_by(status: dict[str, Any], name: str, pick: MediaModelPick) -> boo
     """
     if not resident_is_pick(status, name, pick):
         return False
-    # A full filename distinguishes same-token builds after a real load. Without one, ambiguity
-    # still blocks the skip instead of serving whichever sibling happens to be resident.
+    # only a resident filename can tell same-token builds apart; without one ambiguity blocks the skip
     return not pick.ambiguous or bool(str(status.get("gguf_filename") or "").strip())
 
 
