@@ -4618,6 +4618,13 @@ class VideoBackend:
     ) -> dict[str, Any]:
         """``{component: source}`` for the text encoders this load will take PRE-CAST from a
         hosted checkpoint instead of the base repo's dense weights (``{}`` when none)."""
+        if getattr(fam, "name", None) == "ltx-2.5":
+            # The sidecar worker loads LTX-2.5's hosted int8 ConvRot Gemma 4 encoder; resolving it here is what lets
+            # the plan, the estimate and the pre-fetch stage that file and drop the dense text_encoder/ shards.
+            from .video_ltx25 import ltx25_te_prequant_sources
+            return ltx25_te_prequant_sources(
+                text_encoder_quant, base or str(getattr(fam, "base_repo", "") or "")
+            )
         from .diffusion_te_prequant import te_prequant_sources_for_base
         return te_prequant_sources_for_base(
             fam,
@@ -7120,6 +7127,7 @@ class VideoBackend:
                 resident = encoder_resident_for_plan(plan),
                 budget_mib = (getattr(plan, "estimates", None) or {}).get("safe_device_budget_mib"),
                 te_quant = ltx25_te_quant_scheme(text_encoder_quant),
+                base_repo = base,
             )
             # Installed only while this load is current: a load superseded during the start must not overwrite the
             # newer load's worker (whose token-scoped cleanup could then never find it).
@@ -7223,6 +7231,8 @@ class VideoBackend:
             c
             for c in tuple(_te_prequant_skipped or ()) + tuple(_denoiser_prequant_skipped or ())
             if c not in pipe_kwargs
+            # LTX-2.5's skipped encoder is the worker's: it loads the hosted file, else re-reads the Hub itself.
+            and not (ltx25_client is not None and c == "text_encoder")
         ]
         if missing_dense and _base_local_dir:
             logger.warning(
