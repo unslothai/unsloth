@@ -7,6 +7,7 @@ import {
   type ConversationMarkdownMessage,
   buildConversationMarkdown,
 } from "./conversation-markdown.ts";
+import { parseExternalModelId } from "../external-providers.ts";
 import { stripSearchImageTokens } from "../search-images/search-images.ts";
 
 type StoredConversationMessage = {
@@ -25,7 +26,7 @@ type ConversationMarkdownExportDependencies<
     filename: string,
     mimeType: string,
   ) => Promise<void>;
-  readonly exportTimestamp: () => string;
+  readonly exportBasename: (threadId: string) => Promise<string>;
   readonly notifyNoContent: () => void;
 };
 
@@ -59,6 +60,50 @@ export function createConversationMarkdownBuilder<
   };
 }
 
+// UTF-8 bytes, leaving room under the usual 255-byte name limit for " (YYYY-MM-DD).jsonl".
+const MAX_EXPORT_BASENAME_BYTES = 200;
+
+function filenamePart(text: string): string {
+  return (
+    text
+      .replace(/\s+/g, " ")
+      // Bidi controls too: `x\u202egpj.exe` would display as `xexe.jpg`.
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\\/:*?"<>|\u0000-\u001f\u007f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "_")
+      .trim()
+  );
+}
+
+function localDateStamp(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/** `<model> - <title> (YYYY-MM-DD)`, dropping a missing part; model = last segment of its id. */
+export function conversationExportBasename(
+  thread:
+    | { readonly title?: string | null; readonly modelId?: string | null }
+    | null
+    | undefined,
+  date: Date,
+): string {
+  const modelId = parseExternalModelId(thread?.modelId)?.modelId ?? thread?.modelId ?? "";
+  const model = filenamePart(modelId.split("/").pop() ?? "");
+  const title = filenamePart(thread?.title ?? "");
+  const name = [model, title].filter(Boolean).join(" - ") || "conversation";
+  // Cut on a code point (no lone surrogate); Windows refuses a trailing dot or space.
+  const encoder = new TextEncoder();
+  let capped = "";
+  let bytes = 0;
+  for (const char of name) {
+    bytes += encoder.encode(char).length;
+    if (bytes > MAX_EXPORT_BASENAME_BYTES) break;
+    capped += char;
+  }
+  capped = capped.replace(/[. ]+$/, "");
+  return `${capped || "conversation"} (${localDateStamp(date)})`;
+}
+
 /** A title safe to interpolate into a heading: a line break would end it. */
 function headingText(title: string): string {
   return title.replace(/\s+/g, " ").trim();
@@ -90,7 +135,7 @@ export function createConversationMarkdownExporter<
   loadMessages,
   renderMessage,
   download,
-  exportTimestamp,
+  exportBasename,
   notifyNoContent,
 }: ConversationMarkdownExportDependencies<Message>): (
   threadId: string,
@@ -109,7 +154,7 @@ export function createConversationMarkdownExporter<
     }
     await download(
       markdown,
-      `conversation-${exportTimestamp()}.${CONVERSATION_MARKDOWN_EXTENSION}`,
+      `${await exportBasename(threadId)}.${CONVERSATION_MARKDOWN_EXTENSION}`,
       CONVERSATION_MARKDOWN_MIME_TYPE,
     );
   };

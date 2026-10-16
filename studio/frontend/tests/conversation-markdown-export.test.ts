@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildNamedConversationsMarkdown,
+  conversationExportBasename,
   createConversationMarkdownBuilder,
   createConversationMarkdownExporter,
 } from "../src/features/chat/utils/conversation-markdown-export.ts";
@@ -32,12 +33,12 @@ function exporterFor(
     download: async (content, filename, mimeType) => {
       downloads.push({ content, filename, mimeType });
     },
-    exportTimestamp: () => "2026-07-31T00-00-00",
+    exportBasename: async (threadId) => `named-${threadId}`,
     notifyNoContent: () => notifications.push("empty"),
   });
 }
 
-test("downloads a timestamped Markdown conversation", async () => {
+test("downloads a Markdown conversation under the thread's name", async () => {
   const downloads: Array<{
     content: string;
     filename: string;
@@ -53,7 +54,7 @@ test("downloads a timestamped Markdown conversation", async () => {
   assert.deepEqual(downloads, [
     {
       content: "<!-- unsloth-chat-v1:[14] -->\n\n## User\n\nHello\n",
-      filename: "conversation-2026-07-31T00-00-00.md",
+      filename: "named-thread-1.md",
       mimeType: "text/markdown",
     },
   ]);
@@ -161,4 +162,66 @@ test("renderer tokens never leave a thread, downloaded or copied", async () => {
   );
   assert.ok(!copied.includes("[[img:"));
   assert.ok(copied.includes(stripped));
+});
+
+const EXPORT_DAY = new Date(2026, 8, 1, 23, 30);
+
+test("an export is named after its model, title and local day", () => {
+  assert.equal(
+    conversationExportBasename(
+      { modelId: "unsloth/Gemma-4-26B-A4B", title: "Biology of Stag Beetles Explained" },
+      EXPORT_DAY,
+    ),
+    "Gemma-4-26B-A4B - Biology of Stag Beetles Explained (2026-09-01)",
+  );
+});
+
+test("an export drops whichever of model and title is missing", () => {
+  assert.equal(
+    conversationExportBasename({ title: "Untitled run" }, EXPORT_DAY),
+    "Untitled run (2026-09-01)",
+  );
+  assert.equal(
+    conversationExportBasename({ modelId: "qwen3", title: "  " }, EXPORT_DAY),
+    "qwen3 (2026-09-01)",
+  );
+  assert.equal(
+    conversationExportBasename(null, EXPORT_DAY),
+    "conversation (2026-09-01)",
+  );
+});
+
+test("an export name never carries a path separator or a trailing dot", () => {
+  assert.equal(
+    conversationExportBasename(
+      { modelId: "org/model", title: 'a/b\\c: "d"?\nnext...' },
+      EXPORT_DAY,
+    ),
+    "model - a_b_c_ _d__ next (2026-09-01)",
+  );
+});
+
+test("an export name is cut by UTF-8 bytes on a code point and drops bidi controls", () => {
+  const name = conversationExportBasename(
+    { title: `${"a".repeat(197)}\u{1F600}tail \u202Egpj.exe` },
+    EXPORT_DAY,
+  );
+  assert.equal(name, `${"a".repeat(197)} (2026-09-01)`);
+  const cjk = conversationExportBasename({ title: "\u7532".repeat(120) }, EXPORT_DAY);
+  assert.equal(cjk, `${"\u7532".repeat(66)} (2026-09-01)`);
+  assert.ok(new TextEncoder().encode(`${cjk}.jsonl`).length <= 255);
+  assert.equal(
+    conversationExportBasename({ title: "x\u202Egpj.exe" }, EXPORT_DAY),
+    "x_gpj.exe (2026-09-01)",
+  );
+});
+
+test("an external provider chat is named after the model, not its internal id", () => {
+  assert.equal(
+    conversationExportBasename(
+      { modelId: "external::provider-1::openai%2Fgpt-4o", title: "Hi" },
+      EXPORT_DAY,
+    ),
+    "gpt-4o - Hi (2026-09-01)",
+  );
 });
