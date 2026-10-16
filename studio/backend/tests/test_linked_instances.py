@@ -131,6 +131,20 @@ def test_catalog_leaves_out_media_models_no_endpoint_forwards(monkeypatch):
     assert [m["id"] for m in models] == ["@wsl/unsloth/chat"]
 
 
+def test_status_cards_leave_out_media_models_too(monkeypatch):
+    from routes.linked_instances import _status
+
+    instance = linked_instances_db.create_instance("wsl", "http://remote", REMOTE_KEY)
+    rows = [
+        {"id": "unsloth/chat", "loaded": True},
+        {"id": "unsloth/tts", "task": "text-to-speech", "loaded": True},
+    ]
+    _remote(lambda request: httpx.Response(200, json = {"data": rows}), monkeypatch)
+    status = asyncio.run(_status(instance))
+    assert status.models == ["@wsl/unsloth/chat"]
+    assert status.loaded == ["@wsl/unsloth/chat"]
+
+
 def test_offline_instance_contributes_no_models(monkeypatch):
     linked_instances_db.create_instance("wsl", "http://remote", REMOTE_KEY)
 

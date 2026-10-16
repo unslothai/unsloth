@@ -311,6 +311,10 @@ async def forward(
     )
 
 
+# Media models carry a task; only tasks whose endpoint forwards a linked id are advertised.
+FORWARDED_TASKS: frozenset[str] = frozenset()
+
+
 async def fetch_models(instance: dict) -> list[dict]:
     headers = await asyncio.to_thread(_auth_headers, instance)
     response = await _client().get(
@@ -340,14 +344,16 @@ async def probe(instance: dict) -> dict:
     return {
         "online": True,
         "error": None,
-        # A remote's own linked models are left out: no chains, no loops.
-        "models": [m for m in models if not m["id"].startswith(MODEL_PREFIX)],
+        # A remote's own linked models are left out (no chains, no loops), and so are
+        # media models whose endpoint does not forward a linked id.
+        "models": [
+            m
+            for m in models
+            if not m["id"].startswith(MODEL_PREFIX)
+            and (m.get("task") is None or m["task"] in FORWARDED_TASKS)
+        ],
         "latency_ms": round((time.monotonic() - started) * 1000),
     }
-
-
-# Media models carry a task; only tasks whose endpoint forwards a linked id are advertised.
-FORWARDED_TASKS: frozenset[str] = frozenset()
 
 
 async def _instance_catalog(instance: dict) -> list[dict]:
@@ -363,7 +369,6 @@ async def _instance_catalog(instance: dict) -> list[dict]:
             "linked_instance": instance["name"],
         }
         for model in result["models"]
-        if model.get("task") is None or model["task"] in FORWARDED_TASKS
     ]
     _catalog_cache[instance["id"]] = (time.monotonic(), objects)
     return objects
