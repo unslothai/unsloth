@@ -2862,6 +2862,10 @@ def _pick_rocm_gfx_target(
     if hip_filtered:
         _hip_vis = os.environ.get("HIP_VISIBLE_DEVICES")
         if _hip_vis is None:
+            # An all-hiding ROCR mask still means no GPU, as before survivor indexing.
+            _rocr_vis = os.environ.get("ROCR_VISIBLE_DEVICES")
+            if _rocr_vis is not None and _rocr_vis.strip() in ("", "-1"):
+                return None
             _hip_vis = os.environ.get("CUDA_VISIBLE_DEVICES")
         if _hip_vis is not None:
             return None if _hip_vis.strip() in ("", "-1") else _tokens[0]
