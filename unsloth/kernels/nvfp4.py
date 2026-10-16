@@ -410,7 +410,9 @@ _FUSED_CALLS = {"fwd": 0, "bwd": 0}
 def _read_fused_env():
     # UNSLOTH_NVFP4_FUSED: 0 dense, 1 fused, unset = per-GPU row gate (UNSLOTH_NVFP4_FUSED_MAX_ROWS overrides it).
     rows = os.environ.get("UNSLOTH_NVFP4_FUSED_MAX_ROWS")
-    return os.environ.get("UNSLOTH_NVFP4_FUSED", "auto").strip().lower(), int(rows) if rows else None
+    return os.environ.get("UNSLOTH_NVFP4_FUSED", "auto").strip().lower(), int(
+        rows
+    ) if rows else None
 
 
 _FUSED_ENV = None

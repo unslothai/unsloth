@@ -51,6 +51,11 @@ import { FreeUpSpaceDialog } from "./catalog/free-up-space-dialog";
 import { HubDetailView } from "./catalog/hub-detail-view";
 import { HubFeed } from "./catalog/hub-feed";
 import { HubTopBar } from "./catalog/hub-top-bar";
+import {
+  HUB_SPLIT_CUSTOM_WIDTH_CLASS,
+  HubSplitDivider,
+  useHubSplitWidth,
+} from "./components/hub-split-divider";
 import { buildHubTourSteps } from "./tour";
 import {
   ModelsCatalog,
@@ -893,11 +898,14 @@ export function ModelsPage() {
 
   const requestedSort: HfSortKey =
     isFeedMode && liveListChannel ? liveListChannel.sort : sortBy;
-  // ModelScope has no creation-date sort; its closest is last modified.
+  // ModelScope has neither a creation-date sort nor trending; its closest is last modified.
   const effectiveSort: HfSortKey =
-    hubSource === "modelscope" && requestedSort === "createdAt"
+    hubSource === "modelscope" &&
+    (requestedSort === "createdAt" || requestedSort === "fresh")
       ? "lastModified"
-      : requestedSort;
+      : isDatasetMode && requestedSort === "fresh"
+        ? "createdAt"
+        : requestedSort;
   const effectiveDirection: HfSortDirection = isFeedMode ? "desc" : direction;
   // The format dropdown always filters the visible list, including the feed's "Latest" list, so
   // the default (Recommended) hides unrunnable checkpoints and picking a format changes the rows.
@@ -2056,6 +2064,9 @@ export function ModelsPage() {
   // Unreachable under the full-page detail overlay.
   const catalogCovered = detailOpen && !splitMode;
 
+  const catalogPaneRef = useRef<HTMLDivElement>(null);
+  const splitWidth = useHubSplitWidth();
+
   const tour = useGuidedTourController({
     id: "hub",
     steps: useMemo(() => buildHubTourSteps({ catalogCovered }), [catalogCovered]),
@@ -2117,17 +2128,24 @@ export function ModelsPage() {
         )}
       >
         <div
+          ref={catalogPaneRef}
           data-tour="hub-catalog"
           className={cn(
             "flex min-h-0 flex-col",
             // Split mode keeps the catalog as a master pane that grows off a 460px floor; otherwise it
             // fills the area and the detail view overlays it.
             splitMode
-              ? "flex-1 lg:w-[clamp(460px,32%,620px)] lg:max-w-[44%] lg:flex-none lg:shrink-0 lg:border-r lg:border-border/60"
+              ? cn(
+                  "flex-1 lg:flex-none lg:shrink-0 lg:border-r lg:border-border/60",
+                  splitWidth.width === null
+                    ? "lg:w-[clamp(460px,32%,620px)] lg:max-w-[44%]"
+                    : HUB_SPLIT_CUSTOM_WIDTH_CLASS,
+                )
               : "flex-1",
             // A full-bleed opaque overlay, so the catalog leaves the tab order; else tabbing walks behind it.
             catalogCovered && "pointer-events-none",
           )}
+          style={splitMode ? splitWidth.style : undefined}
           aria-hidden={catalogCovered || undefined}
           inert={catalogCovered || undefined}
         >
@@ -2152,6 +2170,13 @@ export function ModelsPage() {
           )}
         </div>
 
+        {splitMode && !isCompactViewport && (
+          <HubSplitDivider
+            paneRef={catalogPaneRef}
+            width={splitWidth.width}
+            onWidthChange={splitWidth.setWidth}
+          />
+        )}
         {splitMode ? (
           detailOpen ? (
             <div

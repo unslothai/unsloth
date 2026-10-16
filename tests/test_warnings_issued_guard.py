@@ -3,6 +3,7 @@
 import ast
 import dataclasses
 import inspect
+import os
 from functools import wraps
 from pathlib import Path
 
@@ -21,6 +22,7 @@ def _load(*names):
     missing = set(names) - {n.name for n in wanted}
     assert not missing, f"not found in trainer.py: {sorted(missing)}"
     ns = {
+        "os": os,
         "torch": torch,
         "inspect": inspect,
         "dataclasses": dataclasses,

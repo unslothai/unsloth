@@ -99,6 +99,7 @@ jobs:
             tests/version_compat/test_bitsandbytes_pinned_symbols.py \
             tests/version_compat/test_transformers_pinned_symbols.py \
             tests/version_compat/test_no_dtype_kwarg_at_load.py \
+            tests/version_compat/test_trl_vllm_colocate_weight_sync.py \
             -n 4 --dist loadfile -v --tb=short
 
   cap-site-consistency:
