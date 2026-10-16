@@ -933,9 +933,8 @@ _MLX_LEGACY_SCOPES = (
 
 @contextmanager
 def _mlx_inference_scopes(model, call, int8_prefill):
-    """Hold the Zoo scopes for a generation described by `call`, Zoo's call traits. Zoo picks them, so
-    a scope it registers reaches this path with no change here. A Zoo without the registry keeps the
-    scopes Studio listed before it (none for the text batch)."""
+    """Hold the Zoo scopes Zoo picks for `call` (its call traits), so a new Zoo scope needs no Studio change.
+    A Zoo without the registry keeps the scopes Studio listed before it (none for the text batch)."""
     compose = _mlx_inference_patch("inference_scopes")
     with ExitStack() as scope:
         if compose is None and "batch" not in call:
