@@ -276,6 +276,9 @@ const HEADER_ICON = { width: 16, height: 16 } as const;
 
 const CompactCardsContext = createContext(false);
 
+/** The chat the files bar last showed, across remounts. */
+let panelThreadItemId: string | null = null;
+
 function HeaderTip({ label, children }: { label: string; children: ReactElement }) {
   return (
     <Tooltip>
@@ -1182,10 +1185,13 @@ export function ThreadDocumentsBar({
 
   // Keyed by the list item id, stable while a new chat materializes, so only a real switch drops the queue.
   const threadItemId = useAuiState(({ threadListItem }) => threadListItem.id);
-  // A hidden panel comes back in the next chat.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: resets on a chat switch
+  // A hidden panel comes back in the next chat. Keyed outside the component: sending the first
+  // message moves the composer, which remounts this bar in the same chat.
   useEffect(() => {
-    useChatRuntimeStore.getState().setRagPanelHidden(false);
+    if (panelThreadItemId !== null && panelThreadItemId !== threadItemId) {
+      useChatRuntimeStore.getState().setRagPanelHidden(false);
+    }
+    panelThreadItemId = threadItemId;
   }, [threadItemId]);
   const { enqueue: queueAttach, queued } = useUploadQueue<RagUploadItem>(
     attach,
