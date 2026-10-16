@@ -1455,3 +1455,27 @@ def test_stashed_gguf_embeds_reads_the_stashed_model_header(monkeypatch, tmp_pat
 
     monkeypatch.setattr(inference_route, "_probe_backend", _Probe)
     assert inference_route._stashed_gguf_embeds() is True
+
+
+def test_a_linked_embedding_model_is_forwarded_to_its_instance(monkeypatch):
+    # /v1/models lists a linked instance's embedding models as @name/id, so /v1/embeddings
+    # has to send them there instead of answering with a local model.
+    target = ({"id": "i1", "name": "gpu"}, "bge-small")
+    resolved = []
+    forwarded = []
+
+    async def resolve(request, model):
+        resolved.append(model)
+        return target if model == "@gpu/bge-small" else None
+
+    async def forward(request, path, linked, subject):
+        forwarded.append((path, linked, subject))
+        return "forwarded"
+
+    monkeypatch.setattr(inference_route.linked_instances, "resolve", resolve)
+    monkeypatch.setattr(inference_route, "_forward_linked", forward)
+    request = _Request({"input": "hi", "model": "@gpu/bge-small"})
+    result = asyncio.run(inference_route.openai_embeddings(request, "tester"))
+    assert result == "forwarded"
+    assert resolved == ["@gpu/bge-small"]
+    assert forwarded == [("embeddings", target, "tester")]

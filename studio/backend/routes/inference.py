@@ -31745,6 +31745,12 @@ def _embeddings_input_present(body: dict) -> bool:
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
     """OpenAI-compatible embeddings: the resident embedding GGUF when one is loaded,
     else Studio's configured embedding model."""
+    try:
+        _linked_model = _raw_body_model(await request.json())
+    except (json.JSONDecodeError, ValueError):
+        _linked_model = None
+    if linked := await linked_instances.resolve(request, _linked_model):
+        return await _forward_linked(request, "embeddings", linked, current_subject)
     llama_backend = get_llama_cpp_backend()
     # Reject a request with no input before any automatic load so an invalid request never
     # swaps or reloads the resident model (as chat/responses/messages already validate before
