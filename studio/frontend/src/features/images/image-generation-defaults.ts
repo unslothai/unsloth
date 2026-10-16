@@ -80,9 +80,15 @@ export function defaultsFor(repoId: string): {
     : DEFAULT_GEN;
 }
 
+// Families whose explicit choice outranks the name: FLUX.3 base and distilled share names (BFL's ComfyUI base
+// files are flux3_image_klein_*.safetensors), and the backend refuses a checkpoint of the other variant.
+const FAMILY_NAMES_THE_VARIANT = new Set(["flux.3-klein", "flux.3-klein-base"]);
+
 /** A recognizable variant (Schnell vs Dev) keeps its own key; an explicit family keys only an opaque path. */
 export function defaultsKeyFor(repoId: string, familyOverride: unknown): string {
-  return defaultsFor(repoId) !== DEFAULT_GEN ? repoId : (explicitFamily(familyOverride) ?? repoId);
+  const family = explicitFamily(familyOverride);
+  if (family && FAMILY_NAMES_THE_VARIANT.has(family)) return family;
+  return defaultsFor(repoId) !== DEFAULT_GEN ? repoId : (family ?? repoId);
 }
 
 /** The loaded model's recipe for a pick that got the fallback (its name named no family), else null. */

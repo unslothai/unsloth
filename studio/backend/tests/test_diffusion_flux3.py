@@ -1525,3 +1525,21 @@ def test_comfy_fused_qkv_is_split_into_bfl_projections():
     assert out[pre + "to_v.weight"][:, 0].tolist() == [8, 9, 10, 11]
     assert "mode_blocks.image.1.attn.to_q.weight" in out
     assert not any("comfy_attention" in k or "qkv" in k for k in out)
+
+
+def test_flux3_family_decides_generation_defaults_over_file_names():
+    # BFL's ComfyUI base files (flux3_image_klein_{bf16,int8_convrot,nvfp4}.safetensors) name no variant that reads as
+    # base; under the base family (which the variant check has matched to the checkpoint) they get the base recipe.
+    from core.inference.diffusion import _generation_defaults_for
+
+    base, dist = detect_family("x", "flux.3-klein-base"), detect_family("x", "flux.3-klein")
+    comfy = "black-forest-labs/flux-3-image-klein-comfy"
+    for name in ("bf16", "int8_convrot", "nvfp4"):
+        f = f"diffusion_models/flux3_image_klein_{name}.safetensors"
+        assert _generation_defaults_for(comfy, f, BASE, None, base) == {"steps": 25, "guidance": 3.5}
+        assert _generation_defaults_for("/local/dir", f, DISTILLED, None, base) == {"steps": 25, "guidance": 3.5}
+    sd = "diffusion_models/flux3_image_klein_sd_bf16.safetensors"
+    assert _generation_defaults_for(comfy, sd, DISTILLED, None, dist) == {"steps": 16, "guidance": 1.0}
+    # Not FLUX.3: names still lead (FLUX.1's base is schnell, a dev file keeps dev).
+    flux1 = detect_family("black-forest-labs/FLUX.1-dev")
+    assert _generation_defaults_for("x", "flux1-dev-Q4_K_M.gguf", "black-forest-labs/FLUX.1-schnell", None, flux1)["steps"] == 20

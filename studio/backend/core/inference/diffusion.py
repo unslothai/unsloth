@@ -1602,16 +1602,13 @@ def _generation_defaults_for(
     """The (steps, guidance) the OpenAI route renders this load with, header variant before base (FLUX.1's base is
     schnell), so the Images form can match it."""
     try:
-        # FLUX.3 last: an opaque path / base names no variant, and the family is the one thing that does.
-        family_key = getattr(family, "name", None) if is_flux3_family(family) else None
-        steps, guidance = generation_params_with_grid(
-            grid,
-            gguf_filename,
-            content_variant_hint(repo_id, gguf_filename),
-            repo_id,
-            base_repo,
-            family_key,
-        )
+        # FLUX.3 first: the variant check has matched the checkpoint to the family, while the names cannot tell the
+        # variants apart (BFL's ComfyUI base files are flux3_image_klein_*.safetensors, no "base", and a base file can
+        # sit on the distilled repo's companions).
+        identifiers = (gguf_filename, content_variant_hint(repo_id, gguf_filename), repo_id, base_repo)
+        if is_flux3_family(family):
+            identifiers = (family.name,) + identifiers
+        steps, guidance = generation_params_with_grid(grid, *identifiers)
     except Exception:  # noqa: BLE001 - status must not fail on a recipe lookup
         return None
     return {"steps": int(steps), "guidance": float(guidance)}
@@ -8315,6 +8312,8 @@ class DiffusionBackend:
                     static_plan: Optional[dict] = None
                     if cache_auto:
                         default_steps, _ = default_generation_params(
+                            # FLUX.3's family names its variant; its file names may not (see _generation_defaults_for).
+                            *((fam.name,) if is_flux3_family(fam) else ()),
                             gguf_filename,
                             content_variant_hint(repo_id, gguf_filename),
                             repo_id,

@@ -287,3 +287,19 @@ test("an opaque FLUX.3 path keys its defaults by the explicit family", () => {
     assert.deepEqual(defaultsFor(key), want);
   }
 });
+
+test("an explicit FLUX.3 family decides the recipe over a name that reads as the other variant", () => {
+  // BFL's ComfyUI base file has no "base" in its name; the backend checks it against the family.
+  const comfyBase = "black-forest-labs/flux-3-image-klein-comfy";
+  assert.equal(defaultsKeyFor(comfyBase, "flux.3-klein-base"), "flux.3-klein-base");
+  assert.deepEqual(defaultsFor(defaultsKeyFor(comfyBase, "flux.3-klein-base")), { steps: 25, guidance: 3.5 });
+  assert.deepEqual(defaultsFor(defaultsKeyFor(comfyBase, "flux.3-klein")), { steps: 16, guidance: 1 });
+  assert.deepEqual(defaultsFor(defaultsKeyFor(comfyBase, "auto")), { steps: 16, guidance: 1 });
+  assert.equal(
+    residentDefaultsKey("/models/flux3_image_klein_bf16.safetensors", "black-forest-labs/flux-3-image-klein", {
+      value: "flux.3-klein-base",
+      source: "explicit",
+    }),
+    "flux.3-klein-base",
+  );
+});
