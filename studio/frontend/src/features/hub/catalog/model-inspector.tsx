@@ -639,16 +639,16 @@ export const ModelInspector = memo(function ModelInspector({
   const downloadRepoId = model.isLocal
     ? (model.hubRepoId ?? model.id)
     : model.id;
-  const showsGgufDownloadCard =
-    !isDataset &&
-    (!model.isLocal || hasActiveHubDownload) &&
-    (model.isGguf || Boolean(preferredGgufFile));
-  const memoryLabel = showsGgufDownloadCard
-    ? ggufMemoryLabel(
-        minMemory,
-        selectedGguf?.repoId === downloadRepoId ? selectedGguf.bytes : null,
-      )
-    : minMemory;
+  // Each card reports under the id it was given; only the mounted one counts.
+  const ggufCardKey =
+    model.isLocal && !hasActiveHubDownload ? model.id : downloadRepoId;
+  const memoryLabel =
+    !isDataset && (model.isGguf || Boolean(preferredGgufFile))
+      ? ggufMemoryLabel(
+          minMemory,
+          selectedGguf?.repoId === ggufCardKey ? selectedGguf.bytes : null,
+        )
+      : minMemory;
   const languages = parseLanguageTags(model.tags);
   const datasetSizeBytes =
     datasetSize?.numBytesParquet ?? datasetSize?.numBytesOriginal ?? null;
@@ -784,6 +784,7 @@ export const ModelInspector = memo(function ModelInspector({
               onRun={runAction}
               runPending={runConfigPending}
               onChange={onInventoryChange}
+              onSelectedBytesChange={onSelectedGgufBytesChange}
             />
           ) : (
             <DownloadSection

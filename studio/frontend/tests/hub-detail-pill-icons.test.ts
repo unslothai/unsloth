@@ -52,3 +52,11 @@ test("a GGUF's memory is the selected quant, else the earlier estimate", () => {
   assert.equal(ggufMemoryLabel("3 GB", null), "3 GB");
   assert.equal(ggufMemoryLabel(null, 0), null);
 });
+
+test("both GGUF cards report their selected quant to the Memory stat", () => {
+  const inspector = readSrc("features/hub/catalog/model-inspector.tsx");
+  assert.match(inspector, /<LocalOnDeviceCard[\s\S]*?onSelectedBytesChange=\{onSelectedGgufBytesChange\}/);
+  assert.match(inspector, /<DownloadSection[\s\S]*?onSelectedGgufBytesChange=\{onSelectedGgufBytesChange\}/);
+  const local = readSrc("features/hub/catalog/local-on-device-card.tsx");
+  assert.match(local, /onSelectedBytesChange\?\.\(modelId, selectedBytes\)/);
+});
