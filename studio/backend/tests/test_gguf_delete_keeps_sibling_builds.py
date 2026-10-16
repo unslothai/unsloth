@@ -251,6 +251,25 @@ def test_a_larger_sibling_build_does_not_override_the_preferred_default(tmp_path
     assert response.default_variant == "Q4_K_M"
 
 
+def test_a_direct_file_listing_offers_no_same_quant_sibling_build(tmp_path):
+    import asyncio
+
+    from hub.services.models.gguf_variants import get_gguf_variants_response
+
+    (tmp_path / "config.json").write_text("{}")
+    (tmp_path / "alpha-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "beta-Q4_K_M.gguf").write_bytes(b"x" * 90)
+    (tmp_path / "gamma-Q8_0.gguf").write_bytes(b"x" * 80)
+
+    response = asyncio.run(
+        get_gguf_variants_response(str(tmp_path / "alpha-Q4_K_M.gguf"), prefer_local_cache = True)
+    )
+
+    files = {v.filename for v in response.variants}
+    assert "beta-Q4_K_M.gguf" not in files
+    assert {"alpha-Q4_K_M.gguf", "gamma-Q8_0.gguf"} <= files
+
+
 def test_a_bare_named_sibling_cannot_collide_with_the_legacy_quant_key(tmp_path):
     import asyncio
 

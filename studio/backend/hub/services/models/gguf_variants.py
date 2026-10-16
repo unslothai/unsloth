@@ -1696,6 +1696,19 @@ async def get_gguf_variants_answer(
             local_target = None
         if local_target is not None:
             variants, has_vision = list_local_gguf_variants(local_id)
+            if local_target.is_file():
+                # the loader opens this file whatever variant is named, so same-quant sibling builds
+                # listed beside it would load these weights
+                chosen = next(
+                    (v for v in variants if Path(v.filename).name == local_target.name), None
+                )
+                if chosen is not None:
+                    chosen_key = gguf_variant_key(chosen.filename).lower()
+                    variants = [
+                        v
+                        for v in variants
+                        if v is chosen or gguf_variant_key(v.filename).lower() != chosen_key
+                    ]
             # The load id is this path, so a scan-torn quant is still ready when the file the resolver binds opens fine.
             complete = _complete_with_servable(local_id, _complete_quants_under(local_id), variants)
             if (
