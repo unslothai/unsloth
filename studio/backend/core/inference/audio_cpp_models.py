@@ -1690,7 +1690,11 @@ def match_variant(
             return variant
     for variant in variants:
         main = variant.main_file.replace("\\", "/").lower()
-        if main == low or main.rsplit("/", 1)[-1] in (low, f"{low}.gguf"):
+        if (
+            main == low
+            or main.endswith(f"/{low}")
+            or main.rsplit("/", 1)[-1] in (low, f"{low}.gguf")
+        ):
             return variant
     quant = low.rsplit("/", 1)[-1]
     matches = [

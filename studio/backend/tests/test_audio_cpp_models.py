@@ -3102,3 +3102,4 @@ def test_filename_variant_matches_a_windows_local_primary():
     )
 
     assert acm.match_variant((variant,), filename) is variant
+    assert acm.match_variant((variant,), f"breeze_tts/{filename}") is variant
