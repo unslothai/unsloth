@@ -754,6 +754,7 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     presencePenalty: false,
   },
   qwen: OPENAI_COMPAT_BASE,
+  zai: { ...OPENAI_COMPAT_BASE, presencePenalty: false },
   huggingface: OPENAI_COMPAT_BASE,
   // OpenRouter silently drops unsupported params, so surface every knob and let the gateway
   // fan out per model.
