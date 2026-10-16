@@ -16,7 +16,9 @@ from unsloth.models.rl_replacements import grpo_trainer__generate_and_score_comp
 
 def _rewritten():
     trl_grpo = pytest.importorskip("trl.trainer.grpo_trainer")
-    source = textwrap.dedent(inspect.getsource(trl_grpo.GRPOTrainer._generate_and_score_completions))
+    source = textwrap.dedent(
+        inspect.getsource(trl_grpo.GRPOTrainer._generate_and_score_completions)
+    )
     source = textwrap.indent(source, "    ")
     out = grpo_trainer__generate_and_score_completions("_generate_and_score_completions", source)
     if "_unsloth_reward_locals = locals()" not in out:
@@ -30,11 +32,18 @@ def test_reward_locals_alias_is_deleted_before_the_next_locals_call():
         (node.lineno, kind)
         for node in ast.walk(tree)
         for kind in (
-            ("bind",) if isinstance(node, ast.Assign) and any(
+            ("bind",)
+            if isinstance(node, ast.Assign)
+            and any(
                 isinstance(t, ast.Name) and t.id == "_unsloth_reward_locals" for t in node.targets
-            ) else ("del",) if isinstance(node, ast.Delete) and any(
+            )
+            else ("del",)
+            if isinstance(node, ast.Delete)
+            and any(
                 isinstance(t, ast.Name) and t.id == "_unsloth_reward_locals" for t in node.targets
-            ) else ("locals",) if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "locals"
+            )
+            else ("locals",)
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "locals"
             else ()
         )
     )
@@ -42,7 +51,9 @@ def test_reward_locals_alias_is_deleted_before_the_next_locals_call():
     deleted = [line for line, kind in lines if kind == "del" and line > bind]
     assert deleted, lines
     # Every locals() call after the binding's own line comes after the del.
-    assert not [line for line, kind in lines if kind == "locals" and bind < line < deleted[0]], lines
+    assert not [
+        line for line, kind in lines if kind == "locals" and bind < line < deleted[0]
+    ], lines
 
 
 def test_frame_dict_is_not_kept_alive_after_return():
