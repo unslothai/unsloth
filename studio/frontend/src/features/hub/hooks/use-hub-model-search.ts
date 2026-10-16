@@ -22,6 +22,8 @@ import { mergeTaskIterators } from "../lib/merge-task-iterators";
 import { detectBaseModel } from "../lib/model-capabilities";
 import { isGgufLike } from "../lib/model-identifiers";
 import { type FreshRankable, rankFresh } from "../lib/fresh-ranking";
+import { type ProviderLogo, resolveOwnerProviderLogo } from "../lib/provider-logos";
+import { matchProviderByQuery, providerSearchTerms } from "../lib/provider-search";
 import { fetchWithTimeout } from "../lib/network";
 import {
   type UnslothSupport,
@@ -474,6 +476,87 @@ export interface HfModelSearchChannel {
   idSuffix?: string;
 }
 
+/** Unsloth uploads read per search term for a model maker's query. */
+const PROVIDER_POOL = 100;
+
+function rankListing(
+  models: FreshRankable[],
+  sortBy: HfSortKey,
+  direction: HfSortDirection,
+): FreshRankable[] {
+  if (sortBy === "fresh") {
+    return rankFresh(models, Date.now());
+  }
+  const key = (model: FreshRankable & { downloads?: number }) => {
+    if (sortBy === "trendingScore") return model.trendingScore ?? 0;
+    if (sortBy === "likes") return model.likes ?? 0;
+    if (sortBy === "downloads") return model.downloads ?? 0;
+    const date = sortBy === "createdAt" ? model.createdAt : model.updatedAt;
+    return date ? new Date(date).getTime() : 0;
+  };
+  const sign = direction === "asc" ? 1 : -1;
+  return [...models].sort((a, b) => sign * (key(a) - key(b)));
+}
+
+/**
+ * A search naming a model maker ("meta", "alibaba"): Unsloth's uploads of that maker's models, the
+ * ones shown with its avatar, in the listing's sort, then the search's own results without them.
+ */
+async function* providerUnslothFirstIterator(
+  provider: ProviderLogo,
+  inner: AsyncGenerator<unknown>,
+  opts: {
+    sortBy: HfSortKey;
+    sortDirection: HfSortDirection;
+    accessToken?: string;
+    signal: AbortSignal;
+    parameterFilter?: string;
+  },
+): AsyncGenerator<unknown> {
+  const lists = await Promise.all(
+    providerSearchTerms(provider).map(async (term) => {
+      const items: unknown[] = [];
+      try {
+        for await (const model of listModels({
+          hubUrl: getHfEndpoint(),
+          search: { query: term, owner: "unsloth" },
+          additionalFields: ALL_FIELDS,
+          fetch: makeSortFetch(opts.sortBy, opts.sortDirection, opts.signal, opts.parameterFilter),
+          sort: hubListingSort(opts.sortBy),
+          ...(opts.accessToken ? { credentials: { accessToken: opts.accessToken } } : {}),
+        })) {
+          items.push(model);
+          if (items.length >= PROVIDER_POOL) break;
+        }
+      } catch {
+        // One term failing leaves the others; the search's own results still follow.
+      }
+      return items;
+    }),
+  );
+  const pool = new Map<string, FreshRankable>();
+  for (const model of lists.flat()) {
+    const name = (model as { name?: string }).name;
+    if (
+      name &&
+      !pool.has(name) &&
+      resolveOwnerProviderLogo("unsloth", name.split("/")[1])?.id === provider.id
+    ) {
+      pool.set(name, model as FreshRankable);
+    }
+  }
+  for (const model of rankListing([...pool.values()], opts.sortBy, opts.sortDirection)) {
+    const name = (model as { name?: string }).name;
+    if (name) primeFromListing(name, opts.accessToken, model);
+    yield model;
+  }
+  for await (const model of inner) {
+    const name = (model as { name?: string } | null)?.name;
+    if (name && pool.has(name)) continue;
+    yield model;
+  }
+}
+
 const FRESH_POOL = 100;
 
 /** Ranks the newest and most trending together, then the rest by date. */
@@ -762,6 +845,11 @@ export function useHubModelSearch(
     };
   }, [query]);
 
+  // An owner/repo query names one repo; only a bare maker name widens to its Unsloth uploads.
+  const queryProvider = useMemo(
+    () => (isPublisherQuery || !trimmed ? null : matchProviderByQuery(trimmed)),
+    [isPublisherQuery, trimmed],
+  );
   const hfEndpoint = useHfEndpoint();
   const hasFilters = !!filters && hasModelSearchFilters(filters);
   const filterRange = filters ? parameterRange(filters) : "";
@@ -884,9 +972,16 @@ export function useHubModelSearch(
           signal,
         );
       }
+      const providerOpts = {
+        sortBy,
+        sortDirection,
+        accessToken,
+        signal,
+        parameterFilter: filterRange,
+      };
       // Unsloth-only typed query: search within the org rather than floating a few hits globally.
       if (unslothOnly) {
-        return listModels({
+        const orgSearch = listModels({
           hubUrl: getHfEndpoint(),
           search: { query: searchQuery, owner: "unsloth" },
           additionalFields: ALL_FIELDS,
@@ -894,11 +989,14 @@ export function useHubModelSearch(
           sort: hubListingSort(sortBy),
           ...(accessToken ? { credentials: { accessToken } } : {}),
         }) as AsyncGenerator<unknown>;
+        return queryProvider
+          ? providerUnslothFirstIterator(queryProvider, orgSearch, providerOpts)
+          : orgSearch;
       }
       // Typed query: drop the task filter so searched models appear despite wrong/missing HF task
       // metadata. For an "owner/repo" query, strip the org prefix so unsloth variants surface, then
       // pin the original publisher model. Unsloth-owned queries are left as-is.
-      return mergedModelIterator(
+      const merged = mergedModelIterator(
         searchQuery,
         undefined,
         accessToken,
@@ -909,11 +1007,15 @@ export function useHubModelSearch(
         filterRange,
         filterPriority,
       ) as AsyncGenerator<unknown>;
+      return queryProvider
+        ? providerUnslothFirstIterator(queryProvider, merged, providerOpts)
+        : merged;
     },
     [
       trimmed,
       searchQuery,
       pinnedId,
+      queryProvider,
       task,
       accessToken,
       stablePriorityIds,
