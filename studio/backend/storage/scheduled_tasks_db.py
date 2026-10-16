@@ -11,7 +11,7 @@ import time
 import uuid
 from typing import Callable, Optional
 
-from storage.studio_db import get_connection
+from storage.studio_db import delete_chat_threads, get_connection
 
 # Per account. Every run opens a chat, so this also bounds how many chats schedules can make.
 MAX_TASKS = 100
@@ -36,8 +36,18 @@ class TaskRunActive(Exception):
     """The task already has a run queued or in progress."""
 
 
+# Any fixed value: it only keeps run chat ids apart from every other uuid5.
+_RUN_CHAT_NAMESPACE = uuid.UUID("5b0e7a1e-36a4-4a39-9c1f-2f6d3c8e9a41")
+
+
 def now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def chat_id_for_run(run_id: str) -> str:
+    """The id of the chat a run writes. Derived from the run, so a chat whose run never settled
+    (Studio stopped in between) can be found and removed without the run having recorded it."""
+    return str(uuid.uuid5(_RUN_CHAT_NAMESPACE, run_id))
 
 
 def _task_from_row(row: sqlite3.Row) -> dict:
@@ -455,16 +465,30 @@ def recover_stale_runs(stale_before: int) -> int:
             is None
         ):
             return 0
-        cursor = conn.execute(
+        conn.execute("BEGIN IMMEDIATE")
+        run_ids = [
+            row[0]
+            for row in conn.execute(
+                f"SELECT id FROM scheduled_task_runs WHERE {stale}", (stale_before,)
+            ).fetchall()
+        ]
+        conn.executemany(
             "UPDATE scheduled_task_runs"
             " SET status = 'failed', finished_at = ?, error_code = 'interrupted', error = NULL"
-            f" WHERE {stale}",
-            (now_ms(), stale_before),
+            " WHERE id = ?",
+            [(now_ms(), run_id) for run_id in run_ids],
         )
         conn.commit()
-        return cursor.rowcount
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
+    # One that stopped after writing its chat but before settling left the chat behind, and a
+    # failed run has none. Deleting also keeps a save still under way from bringing it back.
+    if run_ids:
+        delete_chat_threads([chat_id_for_run(run_id) for run_id in run_ids])
+    return len(run_ids)
 
 
 def list_runs(task_id: str, limit: int = RUN_HISTORY_LIMIT) -> list[dict]:

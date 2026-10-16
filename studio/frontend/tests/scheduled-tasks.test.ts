@@ -241,10 +241,15 @@ test("a run that succeeded after its chat was deleted is not announced, least of
 
 test("of an account's tabs, the first to claim a run announces it, and the record keeps the furthest cursor", () => {
   const fresh = [finished("a", 3_000), finished("b", 3_500)];
-  // Another tab got to "a" first, and its cursor is ahead of this one's.
-  const { mine, record } = claimAnnouncements({ since: 5_000, ids: ["a"] }, { since: 4_000, ids: ["a", "b"] }, fresh);
+  // Another tab claimed "a", and its cursor is just past it.
+  const { mine, record } = claimAnnouncements({ since: 3_200, ids: ["a"] }, { since: 4_000, ids: ["a", "b"] }, fresh);
   assert.deepEqual(mine.map((run) => run.id), ["b"]);
-  assert.deepEqual(record, { since: 5_000, ids: ["a", "b"] });
+  assert.deepEqual(record, { since: 4_000, ids: ["a", "b"] });
+  // One that caught up on a long backlog moved the cursor past runs its list has since let go of.
+  const late = claimAnnouncements({ since: 3_200, ids: [] }, { since: 4_000, ids: [] }, fresh);
+  assert.deepEqual(late.mine.map((run) => run.id), ["b"]);
+  // The record never falls back to a slower tab's cursor.
+  assert.equal(claimAnnouncements({ since: 5_000, ids: [] }, { since: 4_000, ids: [] }, fresh).record.since, 5_000);
   // With no record yet, everything new is this tab's.
   const first = claimAnnouncements(null, { since: 4_000, ids: [] }, fresh);
   assert.deepEqual(first.mine.map((run) => run.id), ["a", "b"]);

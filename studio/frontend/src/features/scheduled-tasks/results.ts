@@ -103,14 +103,19 @@ export function advanceSeenRuns(
 }
 
 /** Which of `fresh` this tab announces, and the record the account's tabs share once it has. Another
- *  tab may have announced some of them already, which `shared` lists, and they stay quiet here. */
-export function claimAnnouncements<T extends { id: string }>(
+ *  tab may have announced some of them already, and they stay quiet here: the ones `shared` lists,
+ *  and any that finished before its cursor, which the tab that moved it there claimed (the list
+ *  keeps only the latest, so a long backlog outgrows it). */
+export function claimAnnouncements<T extends { id: string; finishedAt: number | null }>(
   shared: SeenRuns | null,
   cursor: SeenRuns,
   fresh: readonly T[],
 ): { mine: T[]; record: SeenRuns } {
   const announced = new Set(shared?.ids);
-  const mine = fresh.filter((run) => !announced.has(run.id));
+  const claimedBefore = shared?.since ?? Number.NEGATIVE_INFINITY;
+  const mine = fresh.filter(
+    (run) => !announced.has(run.id) && (run.finishedAt ?? Number.POSITIVE_INFINITY) >= claimedBefore,
+  );
   return {
     mine,
     record: {

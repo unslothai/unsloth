@@ -581,6 +581,57 @@ def test_a_task_deleted_mid_run_writes_no_chat(monkeypatch):
     assert studio_db.list_chat_threads() == []
 
 
+def recording_generate(asked):
+    async def generate(app, task, run, cancel_event):
+        asked.append(run["id"])
+        return Answer(content = "Done.", reasoning = "", model = "gemma-3")
+
+    return generate
+
+
+def test_a_task_deleted_before_its_claimed_run_starts_is_not_run(monkeypatch):
+    task, run = claim_manual_run()
+    asked = []
+    monkeypatch.setattr(scheduler_module, "generate_answer", recording_generate(asked))
+    # After the claim, before the run is active: no cancel can reach it yet.
+    db.delete_task(task["id"])
+    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
+    scheduler.worker_id = "worker-under-test"
+    asyncio.run(scheduler._execute(OWNER, task, run))
+
+    assert asked == []
+    assert studio_db.list_chat_threads() == []
+
+
+def test_a_run_claimed_for_an_account_disabled_since_is_not_run(monkeypatch):
+    task, run = claim_manual_run()
+    asked = []
+    monkeypatch.setattr(scheduler_module, "generate_answer", recording_generate(asked))
+    # Disabled accounts are out of job_accounts().
+    monkeypatch.setattr(scheduler_module, "job_accounts", lambda: [])
+    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
+    scheduler.worker_id = "worker-under-test"
+    asyncio.run(scheduler._execute(OWNER, task, run))
+
+    assert asked == []
+    last_run = db.get_task(task["id"])["lastRun"]
+    assert (last_run["status"], last_run["errorCode"]) == ("failed", "cancelled")
+
+
+def test_the_sweep_removes_the_chat_of_a_run_that_stopped_before_settling():
+    task, run = claim_manual_run()
+    # Studio stopped after the chat was written, before the run settled.
+    answer = Answer(content = "Written, never settled.", reasoning = "", model = "gemma-3")
+    scheduler_module.save_chat(task, run, answer, 1_000, 2_000)
+    assert len(studio_db.list_chat_threads()) == 1
+
+    assert db.recover_stale_runs(db.now_ms() + scheduler_module._STALE_RUN_MS + 1) == 1
+
+    assert studio_db.list_chat_threads() == []
+    last_run = db.get_task(task["id"])["lastRun"]
+    assert (last_run["status"], last_run["errorCode"]) == ("failed", "interrupted")
+
+
 def test_a_task_deleted_while_its_chat_is_saved_keeps_no_chat(monkeypatch):
     task, run = claim_manual_run()
 

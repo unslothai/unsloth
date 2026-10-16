@@ -256,7 +256,7 @@ def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_a
     """Write the run as a new chat: the task's prompt, then the answer. Returns the chat id."""
     from storage import studio_db
 
-    thread_id = str(uuid.uuid4())
+    thread_id = db.chat_id_for_run(run["id"])
     user_message_id = str(uuid.uuid4())
     # After the prompt even within one millisecond, which the message order relies on.
     answered_at = max(finished_at, started_at + 1)
@@ -466,11 +466,19 @@ class ScheduledTaskScheduler:
         heartbeat = asyncio.create_task(self._heartbeat(run["id"]))
         started_at = run["startedAt"] or db.now_ms()
         outcome: dict[str, Any] = {"status": "failed"}
+        # Set once the chat may be written: a run that does not end as succeeded then removes it.
+        saving = False
         try:
+            # Deleted or disabled between the claim and the line above, where no cancel could reach
+            # the run yet; one from here on finds it active.
+            if not await asyncio.to_thread(self._still_wanted, account, task["id"]):
+                outcome = {"status": "failed", "error_code": "cancelled"}
+                return
             answer = await generate_answer(self.app, task, run, cancel_event)
             # Deleted while it ran: the answer has nowhere to belong.
             if not await asyncio.to_thread(db.task_exists, task["id"]):
                 return
+            saving = True
             thread_id = await asyncio.to_thread(
                 save_chat, task, run, answer, started_at, db.now_ms()
             )
@@ -505,9 +513,17 @@ class ScheduledTaskScheduler:
             # A chat stands only for a run recorded as succeeded. Deleting a task deletes its runs
             # in the same transaction, so a run gone when it settles lost to a deletion, even one
             # that landed after the check above; one that cannot be settled at all is left to the
-            # stale-run sweep, which records it as interrupted.
-            if settled is not True and outcome.get("thread_id"):
-                await asyncio.to_thread(_discard_chat, outcome["thread_id"])
+            # stale-run sweep, which records it as interrupted. The chat's id comes from the run's,
+            # so this also reaches one whose save a shutdown left running in its thread.
+            if saving and not (outcome["status"] == "succeeded" and settled is True):
+                await asyncio.to_thread(_discard_chat, db.chat_id_for_run(run["id"]))
+
+    @staticmethod
+    def _still_wanted(account: AccountContext, task_id: str) -> bool:
+        """Whether a claimed run goes ahead: its task still there, its account still enabled."""
+        return db.task_exists(task_id) and any(
+            entry.account_id == account.account_id for entry in job_accounts()
+        )
 
     async def _settle(self, run_id: str, outcome: dict[str, Any]) -> Optional[bool]:
         """finish_run, tried again over a transient error such as a locked database. None when it
