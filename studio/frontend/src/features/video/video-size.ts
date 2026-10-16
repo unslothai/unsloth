@@ -103,7 +103,7 @@ export function snapVideoDim(value: number, limits: VideoSizeLimits): number {
 }
 
 /** The nearest size the backend accepts: kept when valid, else rescaled into the area band at the
- *  same ratio (clamped to the aspect cap), else the closest trained preset. */
+ *  nearest ratio (clamped to the aspect cap), else the closest trained preset. */
 export function fitVideoSize(
   width: number,
   height: number,
@@ -121,22 +121,25 @@ export function fitVideoSize(
     limits.maxPixels,
     Math.max(limits.minPixels, width * height),
   );
-  const w = Math.sqrt(area * ratio);
-  const h = Math.sqrt(area / ratio);
-  const round = (v: number) => Math.max(m, Math.round(v / m) * m);
-  const floor = (v: number) => Math.max(m, Math.floor(v / m) * m);
-  const ceil = (v: number) => Math.max(m, Math.ceil(v / m) * m);
-  for (const [cw, ch] of [
-    [round(w), round(h)],
-    [floor(w), floor(h)],
-    [ceil(w), ceil(h)],
-    [floor(w), round(h)],
-    [round(w), floor(h)],
-    [ceil(w), round(h)],
-    [round(w), ceil(h)],
-  ] as Array<[number, number]>) {
-    if (isValidVideoSize(cw, ch, limits)) return [cw, ch];
+  // Every grid height paired with the widths around it, scored on ratio first, then area.
+  let best: [number, number] | null = null;
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (let h = m; h <= MAX_VIDEO_SIDE; h += m) {
+    for (const w of [
+      Math.floor((h * ratio) / m) * m,
+      Math.ceil((h * ratio) / m) * m,
+    ]) {
+      if (!isValidVideoSize(w, h, limits)) continue;
+      const score =
+        Math.abs(Math.log(w / h / ratio)) * 4 +
+        Math.abs(Math.log((w * h) / area));
+      if (score < bestScore) {
+        best = [w, h];
+        bestScore = score;
+      }
+    }
   }
+  if (best) return best;
   return closestPreset(width, height, limits);
 }
 

@@ -74,3 +74,15 @@ test("before a model loads the fallback presets bound the size like the backend 
   assert.equal(limits.maxPixels, 1216 * 704);
   assert.ok(videoDimOptions(limits).every((n) => n % 32 === 0));
 });
+
+test("an extreme valid ratio stays near its shape instead of snapping to a preset", () => {
+  const limits = videoSizeLimits(ltx2Defaults(), LTX2_PRESETS);
+  for (const [w0, h0] of [
+    [1920, 480],
+    [2048, 512],
+  ]) {
+    const [w, h] = fitVideoSize(w0, h0, limits);
+    assert.ok(isValidVideoSize(w, h, limits), `${w}x${h}`);
+    assert.ok(w / h > 3.5, `${w0}x${h0} fitted to ${w}x${h}`);
+  }
+});

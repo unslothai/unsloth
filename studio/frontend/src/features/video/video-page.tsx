@@ -1428,7 +1428,7 @@ function VideoGenerator({
   const livePreviewBox = { maxWidth: shownSize[0], maxHeight: shownSize[1] };
 
   const videoPresetParams = useMemo<VideoGenerationPresetParams>(() => {
-    const resolution = sourceSized ? matchedResolution : resolutionIntent;
+    const resolution = sourceSized ? matchedResolution : videoSize;
     return {
       negativePrompt,
       width: resolution[0],
@@ -1439,7 +1439,7 @@ function VideoGenerator({
       flowShift,
       audioFlowShift,
     };
-  }, [audioFlowShift, durationIntentSeconds, flowShift, guidance, matchedResolution, negativePrompt, sourceSized, resolutionIntent, steps]);
+  }, [audioFlowShift, durationIntentSeconds, flowShift, guidance, matchedResolution, negativePrompt, sourceSized, videoSize, steps]);
   const defaultSteps = status?.defaults?.steps;
   const defaultGuidance = status?.defaults?.guidance;
   const familyDefaultFrames = status?.defaults?.num_frames;
@@ -3451,11 +3451,14 @@ function VideoGenerator({
     }
     setAspect(key);
     const [w, h] = shownSize;
+    // Leaving Match source takes the keyframe's orientation with its size.
+    const isPortrait = sourceSized ? h > w : portrait;
+    setPortrait(isPortrait);
     if (key === "custom") {
       applySize(w, h, true);
       return;
     }
-    applySize(w, snapVideoDim(w * ratioHW(key, portrait), sizeLimits), true);
+    applySize(w, snapVideoDim(w * ratioHW(key, isPortrait), sizeLimits), true);
   };
   const changeWidth = (v: number) => {
     const locked = !sourceSized && aspect !== "custom";
