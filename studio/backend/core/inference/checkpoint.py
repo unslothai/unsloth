@@ -599,11 +599,9 @@ def fit_checkpoint_context(
     measured = projected
 
     # Phase two: the epoch is full, so start a new one. keep_ratio 0.0 takes every evictable group in one pass; the
-    # primitive itself protects system, developer, final and newest user groups. The turn in progress is held as well:
-    # in a tool loop the exchanges after the newest user message are the work the model is doing right now, and the
-    # primitive keeps only the last of them, so a reset mid-turn evicted the file the model had just read and it read
-    # it again or asked for it. Those exchanges are released oldest first, and only while the reset still does not fit;
-    # releasing all of them is the previous behaviour, which the X fallback below then handles as before.
+    # primitive itself protects system, developer, final and newest user groups. It keeps only the last tool exchange
+    # of the turn in progress, so a mid-turn reset evicted the file the model had just read; the others are held too
+    # and released oldest first only while the reset does not fit.
     if (current_tokens > prompt_target or force_reset) and _resolved(can_reset):
         live = _live_turn_groups(messages)
         for released in range(len(live) + 1):

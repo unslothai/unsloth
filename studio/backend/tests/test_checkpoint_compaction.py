@@ -225,18 +225,13 @@ def _mid_turn(*results):
         (["MAIN-PY " * 100, "ls output"], [0, 1]),
         # Only the oldest exchange has to go for the rest to fit.
         (["A" * 2400, "B" * 1600, "ls output"], [1, 2]),
-        # Nothing fits but the newest: the reset this replaced, which the primitive already guarantees.
+        # Nothing fits but the newest, as on main.
         (["A" * 2400, "B" * 2400, "C" * 1600], [2]),
     ],
 )
 def test_a_reset_inside_a_tool_loop_keeps_the_turn_in_progress(results, kept):
-    """A reset mid-turn evicted every tool exchange of the turn in progress except the last.
-
-    Measured on a coding turn: the model ran `cat main.py`, the next call overflowed, and the
-    reset kept only that call, so the file it had just read was gone and it read it again or
-    asked the user for it. Older history is still reset as before; the exchanges after the
-    newest user message are released oldest first, and only while the reset does not fit.
-    """
+    """A reset mid-turn evicted every tool exchange of the turn in progress except the last,
+    so the file the model had just read with `cat` was gone and it read it again."""
     messages = _mid_turn(*results)
 
     fitted, truncation = _fit(messages)
@@ -244,7 +239,7 @@ def test_a_reset_inside_a_tool_loop_keeps_the_turn_in_progress(results, kept):
     assert truncation["fits"] is True
     assert truncation["checkpoint_started"] is True
     assert count(fitted) <= 1000
-    # Every older turn is gone, so this is still a reset and not a rolling trim.
+    # Still a reset, not a rolling trim.
     assert [m["content"] for m in fitted if m["role"] == "user"] == [
         "Read main.py and apply your changes."
     ]
