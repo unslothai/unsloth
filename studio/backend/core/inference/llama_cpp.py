@@ -31473,8 +31473,8 @@ class LlamaCppBackend:
                 # A plan across devices that emitted no split because the user's own ratio (argv or
                 # LLAMA_ARG_TENSOR_SPLIT) reaches the child: its rows were modelled against that ratio.
                 _spill_plan_rides_user_split = False
-                # Set when that gate takes the plan's split out from under its --fit off: the
-                # first spawn then revokes the plan, as the reactive arch-crash retry does.
+                # Set when that gate takes the plan's split out from under its --fit off: the gate
+                # then revokes the plan before anything prices `cmd`, as the arch-crash retry does.
                 _arch_gate_voids_plan = False
                 # A spill plan that moved no weight (fewer slots, the projector on the CPU, the
                 # draft dropped, a shorter context) pins every layer on the GPU.
@@ -33446,6 +33446,111 @@ class LlamaCppBackend:
                 if not is_vulkan_backend and _gpu_mem:
                     _child_gpu_physical_ids = self._unmasked_child_gpu_physical_ids()
 
+                # What the PLANNED argv carried, fixed before any spawn: a revocation can run on
+                # a spawn's own argv (the startup-failure retry) and again on a later argv an
+                # outer retry derives from `cmd`, which still carries the plan. Read from the
+                # live locals, the second one saw them already cleared by the first and left
+                # the plan's DirectIO, page-lock gap and checkpoint pair in place.
+                _plan_kept_every_layer_at_launch = _spill_keeps_every_layer_on_gpu
+                _plan_ckpt_emitted_at_launch = list(_auto_ckpt_emitted)
+
+                def _revoke_spill_plan(
+                    run_cmd,
+                    why,
+                    *,
+                    rearm_page_lock = True,
+                ):
+                    """``_drop_tensor_spill``, plus the locals the plan rewrote."""
+                    nonlocal n_parallel, _spill_keeps_every_layer_on_gpu
+                    nonlocal effective_ctx, max_available_ctx
+                    nonlocal kv_cache_unified, _auto_ctx_checkpoints, _auto_ckpt_emitted
+                    nonlocal _mem_host_resident
+                    reverted = self._drop_tensor_spill(run_cmd, why)
+                    if reverted is run_cmd:
+                        return run_cmd
+                    # The plan was found in THIS argv, so this argv carries what it did.
+                    _plan_kept_every_layer = _plan_kept_every_layer_at_launch
+                    _spill_keeps_every_layer_on_gpu = False
+                    # A plan that kept every layer on the card skipped the page-lock, and the
+                    # --fit on placement this hands back may leave weights in host RAM: re-arm
+                    # it like the --fit on crash retry does. Not for the CPU fallback, which
+                    # decides its own load mode.
+                    # The bookkeeping follows whether or not a lock is wanted now: the --fit on
+                    # child is the no-plan launch, which records the lock applicable, so a later
+                    # "Keep model in RAM" must relaunch instead of being judged satisfied. Same
+                    # for the DirectIO: it was applicable to the confirmed full offload the plan
+                    # made, which the --fit on crash retry drops for the same reason.
+                    if rearm_page_lock and _plan_kept_every_layer:
+                        reverted = self._drop_managed_dio(
+                            reverted,
+                            f"the tensor-spill plan that kept every layer on the GPU was "
+                            f"revoked ({why})",
+                            clear_record = False,
+                        )
+                        _mem_host_resident = True
+                        self._memory_mlock_applicable = True
+                        _rearm_lock = (
+                            ["--load-mode", "mmap+mlock"]
+                            if server_caps.get("supports_load_mode")
+                            else ["--mlock"]
+                        )
+                        # Keyed on the argv, not on _mem_host_resident: an earlier revocation of
+                        # another argv already set that, and this one still lacks the lock.
+                        if (
+                            _mem_should_mlock
+                            and _without_subsequence(reverted, _rearm_lock) == reverted
+                        ):
+                            reverted = [*reverted, *_rearm_lock]
+                            self._memory_policy_active = True
+                            logger.info(
+                                "Model Memory: re-applying the page-lock; the tensor-spill "
+                                "plan that kept every layer on the GPU was revoked (%s).",
+                                why,
+                            )
+                    # So does the plan's load mode: the fitter can put far more on the host than
+                    # the plan did, so a retry that keeps "none" turns a pageable fallback into a
+                    # host-RAM OOM.
+                    if self._fit_load_mode_flags:
+                        reverted = _without_subsequence(reverted, self._fit_load_mode_flags)
+                    _restored = (getattr(self, "_spill_plan_restore", None) or {}).get("--parallel")
+                    if _restored is not None:
+                        try:
+                            n_parallel = max(1, int(_restored))
+                        except (TypeError, ValueError):
+                            pass
+                        # The checkpoint cap is per slot and was decided at the plan's count; the
+                        # same re-decide the single-sequence and arch-crash retries make.
+                        # The plan's own pair as well as the current one: after an earlier
+                        # revocation of another argv, _auto_ckpt_emitted names that argv's pair.
+                        reverted = self._without_flag_pairs(
+                            reverted, [*_plan_ckpt_emitted_at_launch, *_auto_ckpt_emitted]
+                        )
+                        _auto_ckpt_emitted = []
+                        _auto_ctx_checkpoints = _decide_auto_ctx_checkpoints()
+                        _auto_ckpt_emitted = _emit_auto_ctx_checkpoints(reverted)
+                    # The restored argv may carry --kv-unified again (_spill_plan_append), and the
+                    # published geometry and slot-save estimate read this local.
+                    kv_cache_unified = _kv_unified_from_args(reverted)
+                    # And the context: left at the plan's value, the fallback advertises a context
+                    # the child it launched does not serve, and /props never corrects the ceiling.
+                    if "-c" in (getattr(self, "_spill_plan_restore", None) or {}):
+                        if _spill_ctx_locals_before is not None:
+                            effective_ctx, max_available_ctx = _spill_ctx_locals_before
+                            self._effective_context_length = (
+                                effective_ctx if effective_ctx > 0 else self._context_length
+                            )
+                            self._max_context_length = (
+                                max_available_ctx
+                                if max_available_ctx > 0
+                                else self._effective_context_length
+                            )
+                    # The plan's --load-mode none went and a page-lock may have come, so the
+                    # record follows the argv about to spawn, as the --fit on crash retry's
+                    # does. Not for the CPU fallback, which records its own replay.
+                    if rearm_page_lock:
+                        self._record_memory_state(reverted, env)
+                    return reverted
+
                 # The CUDA SM gate goes here, where the child's GPU visibility is
                 # finally known: both arms below write CUDA_VISIBLE_DEVICES=-1, so no
                 # kernel image loads and the abort this pre-empts cannot happen.
@@ -33612,8 +33717,8 @@ class LlamaCppBackend:
                         # The spill plan's split is positional over the devices it planned on,
                         # which come from the same gated probe: when they ARE the survivors, in
                         # order, the mask's re-indexing lines up with it and it stays. Any other
-                        # set leaves --fit off pinning a placement nothing priced, so the first
-                        # spawn revokes the plan (_arch_gate_voids_plan), like the arch-crash retry.
+                        # set leaves --fit off pinning a placement nothing priced, so the gate
+                        # revokes the plan (_arch_gate_voids_plan), like the arch-crash retry.
                         _plan_split = "--tensor-split" in self._spill_plan_flags
                         _plan_split_survives = _plan_split and _spill_plan_device_ids == [
                             int(_idx) for _idx in _survivors
@@ -33673,6 +33778,13 @@ class LlamaCppBackend:
                                 "The arch gate leaves one GPU; dropped tensor "
                                 "parallelism, which needs at least two."
                             )
+                        if _arch_gate_voids_plan:
+                            # Here, not at the first spawn: the unified-memory, DirectIO and
+                            # carve-out reads below and the host-RAM guard and pageable override
+                            # after them all price `cmd`, and the plan's --fit off and --load-mode
+                            # none would answer for a launch that never happens.
+                            cmd = _revoke_spill_plan(cmd, "arch gate")
+                            _mem_policy_for_cmd = _snapshot_policy_for_cmd()
                         logger.info(
                             "The installed llama.cpp build has no kernels for GPU(s) "
                             "left visible; pinning the child to %s.",
@@ -33962,111 +34074,6 @@ class LlamaCppBackend:
                         )
                     return stripped
 
-                # What the PLANNED argv carried, fixed before any spawn: a revocation can run on
-                # a spawn's own argv (the startup-failure retry) and again on a later argv an
-                # outer retry derives from `cmd`, which still carries the plan. Read from the
-                # live locals, the second one saw them already cleared by the first and left
-                # the plan's DirectIO, page-lock gap and checkpoint pair in place.
-                _plan_kept_every_layer_at_launch = _spill_keeps_every_layer_on_gpu
-                _plan_ckpt_emitted_at_launch = list(_auto_ckpt_emitted)
-
-                def _revoke_spill_plan(
-                    run_cmd,
-                    why,
-                    *,
-                    rearm_page_lock = True,
-                ):
-                    """``_drop_tensor_spill``, plus the locals the plan rewrote."""
-                    nonlocal n_parallel, _spill_keeps_every_layer_on_gpu
-                    nonlocal effective_ctx, max_available_ctx
-                    nonlocal kv_cache_unified, _auto_ctx_checkpoints, _auto_ckpt_emitted
-                    nonlocal _mem_host_resident
-                    reverted = self._drop_tensor_spill(run_cmd, why)
-                    if reverted is run_cmd:
-                        return run_cmd
-                    # The plan was found in THIS argv, so this argv carries what it did.
-                    _plan_kept_every_layer = _plan_kept_every_layer_at_launch
-                    _spill_keeps_every_layer_on_gpu = False
-                    # A plan that kept every layer on the card skipped the page-lock, and the
-                    # --fit on placement this hands back may leave weights in host RAM: re-arm
-                    # it like the --fit on crash retry does. Not for the CPU fallback, which
-                    # decides its own load mode.
-                    # The bookkeeping follows whether or not a lock is wanted now: the --fit on
-                    # child is the no-plan launch, which records the lock applicable, so a later
-                    # "Keep model in RAM" must relaunch instead of being judged satisfied. Same
-                    # for the DirectIO: it was applicable to the confirmed full offload the plan
-                    # made, which the --fit on crash retry drops for the same reason.
-                    if rearm_page_lock and _plan_kept_every_layer:
-                        reverted = self._drop_managed_dio(
-                            reverted,
-                            f"the tensor-spill plan that kept every layer on the GPU was "
-                            f"revoked ({why})",
-                            clear_record = False,
-                        )
-                        _mem_host_resident = True
-                        self._memory_mlock_applicable = True
-                        _rearm_lock = (
-                            ["--load-mode", "mmap+mlock"]
-                            if server_caps.get("supports_load_mode")
-                            else ["--mlock"]
-                        )
-                        # Keyed on the argv, not on _mem_host_resident: an earlier revocation of
-                        # another argv already set that, and this one still lacks the lock.
-                        if (
-                            _mem_should_mlock
-                            and _without_subsequence(reverted, _rearm_lock) == reverted
-                        ):
-                            reverted = [*reverted, *_rearm_lock]
-                            self._memory_policy_active = True
-                            logger.info(
-                                "Model Memory: re-applying the page-lock; the tensor-spill "
-                                "plan that kept every layer on the GPU was revoked (%s).",
-                                why,
-                            )
-                    # So does the plan's load mode: the fitter can put far more on the host than
-                    # the plan did, so a retry that keeps "none" turns a pageable fallback into a
-                    # host-RAM OOM.
-                    if self._fit_load_mode_flags:
-                        reverted = _without_subsequence(reverted, self._fit_load_mode_flags)
-                    _restored = (getattr(self, "_spill_plan_restore", None) or {}).get("--parallel")
-                    if _restored is not None:
-                        try:
-                            n_parallel = max(1, int(_restored))
-                        except (TypeError, ValueError):
-                            pass
-                        # The checkpoint cap is per slot and was decided at the plan's count; the
-                        # same re-decide the single-sequence and arch-crash retries make.
-                        # The plan's own pair as well as the current one: after an earlier
-                        # revocation of another argv, _auto_ckpt_emitted names that argv's pair.
-                        reverted = self._without_flag_pairs(
-                            reverted, [*_plan_ckpt_emitted_at_launch, *_auto_ckpt_emitted]
-                        )
-                        _auto_ckpt_emitted = []
-                        _auto_ctx_checkpoints = _decide_auto_ctx_checkpoints()
-                        _auto_ckpt_emitted = _emit_auto_ctx_checkpoints(reverted)
-                    # The restored argv may carry --kv-unified again (_spill_plan_append), and the
-                    # published geometry and slot-save estimate read this local.
-                    kv_cache_unified = _kv_unified_from_args(reverted)
-                    # And the context: left at the plan's value, the fallback advertises a context
-                    # the child it launched does not serve, and /props never corrects the ceiling.
-                    if "-c" in (getattr(self, "_spill_plan_restore", None) or {}):
-                        if _spill_ctx_locals_before is not None:
-                            effective_ctx, max_available_ctx = _spill_ctx_locals_before
-                            self._effective_context_length = (
-                                effective_ctx if effective_ctx > 0 else self._context_length
-                            )
-                            self._max_context_length = (
-                                max_available_ctx
-                                if max_available_ctx > 0
-                                else self._effective_context_length
-                            )
-                    # The plan's --load-mode none went and a page-lock may have come, so the
-                    # record follows the argv about to spawn, as the --fit on crash retry's
-                    # does. Not for the CPU fallback, which records its own replay.
-                    if rearm_page_lock:
-                        self._record_memory_state(reverted, env)
-                    return reverted
-
                 # Memoed only when the load ends terminally, so a recovering fallback is not blocked.
                 _sched_abort_seen = False
 
@@ -34090,8 +34097,6 @@ class LlamaCppBackend:
                     # and projector placement, and each retry changes one of them.
                     if label:
                         run_cmd = _revoke_spill_plan(run_cmd, label.lstrip("-") or "retry")
-                    elif _arch_gate_voids_plan:
-                        run_cmd = _revoke_spill_plan(run_cmd, "arch gate")
                     # The cache only rides the first pinned launch: every retry re-places.
                     if label or not _argv_loads_pinned(run_cmd, env):
                         run_cmd = self._drop_moe_cache(

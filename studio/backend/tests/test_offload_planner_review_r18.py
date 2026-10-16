@@ -166,7 +166,15 @@ PLAN = Plan(
 )
 
 
-def _gated_launch(tmp_path, monkeypatch, *, survivors, **load_kwargs):
+def _gated_launch(
+    tmp_path,
+    monkeypatch,
+    *,
+    survivors,
+    plan = PLAN,
+    hook = None,
+    **load_kwargs,
+):
     """Two supported GPUs (1, 2) the planner sized a --tensor-split for; the proactive arch gate
     then pins the child to ``survivors`` (gpu_indices None: the fit arm, nothing user-pinned)."""
     import test_offload_planner_launch as launch_mod
@@ -179,10 +187,12 @@ def _gated_launch(tmp_path, monkeypatch, *, survivors, **load_kwargs):
         backend, gguf = orig(tmp, vulkan = vulkan, memory = TWO_CARDS)
         backend._arch_gate_survivors = lambda _binary = None: list(survivors)
         backend._visibility_mask_is_unmappable = lambda: False
+        if hook is not None:
+            hook(backend)
         return backend, gguf
 
     monkeypatch.setattr(launch_mod, "_backend", hooked)
-    return launch_mod._launch_with(tmp_path, monkeypatch, PLAN, **load_kwargs)
+    return launch_mod._launch_with(tmp_path, monkeypatch, plan, **load_kwargs)
 
 
 def test_the_planned_split_survives_the_proactive_gate_when_the_survivors_are_its_devices(
@@ -227,6 +237,40 @@ def test_a_plan_riding_the_user_split_is_revoked_when_the_gate_drops_that_split(
     assert "--tensor-split" not in cmd, cmd
     assert _flag(cmd, "--fit") == "on", cmd
     assert "-ot" not in cmd, cmd
+
+
+def test_a_plan_the_gate_voids_is_gone_before_the_pre_spawn_pricing(tmp_path, monkeypatch):
+    """Revoked only at the first spawn, the host-RAM guard and the pageable override priced the
+    plan's --fit off argv and read its --load-mode none as the launch's own: the override rewrote
+    it to a mapped load and the warning blamed an unmapped load nothing was going to launch."""
+    from dataclasses import replace
+
+    from core.inference.llama_cpp import _PAGEABLE_OVERRIDE_NOTE
+
+    priced = []
+
+    def hook(backend):
+        def shortfall(cmd, *_a, **_kw):
+            priced.append(list(cmd))
+            return "The model does not fit in GPU memory; part of it runs from system RAM."
+
+        backend._launch_host_shortfall_message = shortfall
+
+    cmd, backend, _seen = _gated_launch(
+        tmp_path,
+        monkeypatch,
+        survivors = [2],
+        plan = replace(PLAN, load_mode_none = True),
+        hook = hook,
+        caps = {"supports_load_mode": True},
+    )
+    assert backend._fit_load_mode_flags == ["--load-mode", "none"], "harness: the plan chose none"
+    assert priced, "harness: the host-RAM guard ran"
+    for argv in priced:
+        assert _flag(argv, "--fit") == "on" and "-ot" not in argv, argv
+    assert _flag(cmd, "--fit") == "on", cmd
+    assert "--load-mode" not in cmd, cmd
+    assert _PAGEABLE_OVERRIDE_NOTE not in (backend.last_load_warning or "")
 
 
 # --- a projector device of any value -----------------------------------------------------------
