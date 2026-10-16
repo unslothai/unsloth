@@ -328,7 +328,7 @@ def no_os_sandbox(monkeypatch):
             backend = "bubblewrap",
             available = False,
             reason = "bubblewrap is not installed",
-            remediation = "Install bubblewrap.",
+            remediation = f"Install bubblewrap. {os_sandbox._FALLBACK_NOTE}",
         ),
     )
 
@@ -344,6 +344,7 @@ def test_a_training_run_refuses_python_rewards_without_the_os_sandbox(no_os_sand
         )
     assert "Install bubblewrap." in str(err.value)
     assert '"auto"' in str(err.value)
+    assert "still run" not in str(err.value)
 
 
 def test_opting_into_software_safeguards_runs_and_reports_it(no_os_sandbox):

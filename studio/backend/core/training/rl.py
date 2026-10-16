@@ -246,7 +246,7 @@ def _reward_funcs(
     """In ``reward_specs`` order, since TRL pairs ``reward_weights`` with them by position.
     ``mode`` is the os_sandbox mode: ``required`` refuses a host without OS isolation, ``auto``
     is the user's opt-in to software safeguards. The worker's isolation is copied into ``isolation``."""
-    from core.inference.os_sandbox import SandboxUnavailableError
+    from core.inference.os_sandbox import _FALLBACK_NOTE, SandboxUnavailableError
     from core.training.python_rewards import PythonRewardError
 
     python = [s for s in reward_specs if s.get("kind") == "python"]
@@ -255,9 +255,11 @@ def _reward_funcs(
         try:
             worker = worker_cls(python, mode = mode).start()
         except SandboxUnavailableError as exc:
+            # The sandbox's own fallback note says tools "still run", which reads wrong on a refusal.
+            remediation = (exc.remediation or "").replace(_FALLBACK_NOTE, "").strip()
             raise PythonRewardError(
                 f"Python rewards need the OS sandbox, and it is not available here ({exc}). "
-                f"{exc.remediation or ''} To run them with software safeguards only, which do not "
+                f"{remediation} To run them with software safeguards only, which do not "
                 "stop a reward from reading your files, writing outside its folder or using the "
                 f"network, set {PYTHON_REWARD_ISOLATION_FIELD} to \"auto\"."
             ) from exc
