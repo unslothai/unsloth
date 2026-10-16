@@ -155,6 +155,7 @@ def _fp8_state(encoder):
     # _cast_fp8 is diffusers' layerwise casting; the fp8 file it writes is what the loader is checked against.
     pytest.importorskip("diffusers.hooks")
     from core.inference.diffusion_precision import _cast_fp8
+
     _cast_fp8(encoder, types.SimpleNamespace(dtype = torch.float32))
     return dict(encoder.state_dict())
 
