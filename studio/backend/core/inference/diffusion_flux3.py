@@ -54,6 +54,23 @@ FLUX3_COMPONENT_FOLDERS = {
 }
 
 
+# The prompt upsampler step Diffusers main puts first in both auto block graphs since huggingface/diffusers#15058
+# (2026-10-16). It needs the separate ~19 GB Qwen3.5-9B upsampler, which Studio never loads, and would otherwise run
+# on every call (its text-to-image branch has no trigger input), so it is dropped, as its docstring prescribes.
+FLUX3_PROMPT_UPSAMPLER_STEP = "prompt_upsampler"
+
+
+def flux3_blocks(blocks_class_name: str) -> Any:
+    """The named FLUX.3 auto blocks without the prompt upsampler step (absent before diffusers#15058)."""
+    import diffusers
+
+    blocks = getattr(diffusers, blocks_class_name)()
+    sub_blocks = getattr(blocks, "sub_blocks", None)
+    if sub_blocks is not None and FLUX3_PROMPT_UPSAMPLER_STEP in sub_blocks:
+        sub_blocks.pop(FLUX3_PROMPT_UPSAMPLER_STEP)
+    return blocks
+
+
 def is_flux3_family(fam: Any) -> bool:
     return getattr(fam, "name", None) in FLUX3_FAMILY_NAMES
 
@@ -280,8 +297,7 @@ class _Flux3KleinPipelineMixin:
         import diffusers
 
         if self._modular is None:
-            blocks = getattr(diffusers, self.config.blocks_class_name)()
-            self._modular = blocks.init_pipeline()
+            self._modular = flux3_blocks(self.config.blocks_class_name).init_pipeline()
         mp = self._modular
         updates = {}
         for name in ("transformer", "vae", "text_encoder", "tokenizer", "scheduler"):
@@ -545,7 +561,7 @@ def load_flux3_pipeline(
     if reason is not None:
         raise ValueError(reason)
     # The scheduler is the block graph's own (shift 6.93, the reference timestep shift); the repos ship none.
-    scheduler = getattr(diffusers, blocks)().init_pipeline().scheduler
+    scheduler = flux3_blocks(blocks).init_pipeline().scheduler
     return flux3_pipeline_class()(
         transformer = transformer,
         vae = vae,

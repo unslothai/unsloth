@@ -1974,3 +1974,21 @@ def test_flux3_reference_edits_use_the_measured_activations(monkeypatch):
     assert act is not None and act == d.calibrated_image_activation("flux.3-klein", max_speed = True)
     # the base runs CFG (two denoiser batches) and has no measured row: it keeps the flat estimate
     assert d._calibrated_activation(_family("flux.3-klein-base"), nvidia) is None
+
+
+@pytest.mark.parametrize("with_upsampler", [False, True])
+def test_the_block_graph_drops_the_prompt_upsampler_step(monkeypatch, with_upsampler):
+    # diffusers#15058 puts a prompt upsampler step first in both auto block graphs; its text-to-image branch has no
+    # trigger input, so it would run on every call and need the ~19 GB upsampler Studio never loads.
+    import diffusers
+    from core.inference.diffusion_flux3 import FLUX3_DISTILLED_BLOCKS, flux3_blocks
+
+    class _Blocks:
+        def __init__(self):
+            steps = ["text_encoder", "vae_encoder", "denoise", "decode"]
+            self.sub_blocks = dict.fromkeys((["prompt_upsampler"] if with_upsampler else []) + steps)
+
+    monkeypatch.setattr(diffusers, FLUX3_DISTILLED_BLOCKS, _Blocks, raising = False)
+    assert list(flux3_blocks(FLUX3_DISTILLED_BLOCKS).sub_blocks) == [
+        "text_encoder", "vae_encoder", "denoise", "decode"
+    ]
