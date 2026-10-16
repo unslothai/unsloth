@@ -1450,7 +1450,11 @@ class _OneCommitListings:
     a lowercased repo to the commit a role was already fetched under (a re-plan after the checkpoint fetch), and that
     repo is then listed at exactly that commit."""
 
-    def __init__(self, api: Any, pins: Optional[dict[str, str]] = None):
+    def __init__(
+        self,
+        api: Any,
+        pins: Optional[dict[str, str]] = None,
+    ):
         self._api = api
         self._pins = {k.lower(): v for k, v in (pins or {}).items() if k and v}
         self._infos: dict[str, Any] = {}
@@ -1529,7 +1533,11 @@ def _plan_fetch(
             return _PlannedFetch(repo, cached[0], cached[1])
     meta = {s.rfilename: s for s in (getattr(info, "siblings", None) or [])}
     files = tuple(
-        (name, _sibling_etag(meta[name]) if name in meta else None, int(getattr(meta.get(name), "size", 0) or 0))
+        (
+            name,
+            _sibling_etag(meta[name]) if name in meta else None,
+            int(getattr(meta.get(name), "size", 0) or 0),
+        )
         for name in wanted
     )
     revision = getattr(info, "sha", None) if repo.lower() == (listing or "").lower() else None
@@ -1766,7 +1774,6 @@ def _upstream_whole_in_one_root(repo_id: str, files: tuple) -> bool:
     roots = [Path(hub_cache_dir())]
     try:
         from huggingface_hub import constants
-
         if Path(constants.HF_HUB_CACHE) != roots[0]:
             roots.append(Path(constants.HF_HUB_CACHE))
     except Exception:  # noqa: BLE001 -- the live root alone
@@ -4038,7 +4045,9 @@ class VideoBackend:
                         checkpoint = True,
                     )
                 )
-                checkpoint_revision = checkpoint_plan.revision if checkpoint_plan is not None else None
+                checkpoint_revision = (
+                    checkpoint_plan.revision if checkpoint_plan is not None else None
+                )
                 checkpoint_local = Path(
                     hf_hub_download_with_xet_fallback(
                         checkpoint_repo,
@@ -4251,8 +4260,11 @@ class VideoBackend:
 
             # Every hub-id config read of the base during assembly (encoder / VAE / transformer configs, the LTX-2.5
             # companions and encoder worker) reads the commit the plan pinned; a no-op for an unpinned load.
-            with pread_safetensors(), pinned_repo_revision(
-                kwargs.get("_base_fetch_repo"), kwargs.get("_base_fetch_revision")
+            with (
+                pread_safetensors(),
+                pinned_repo_revision(
+                    kwargs.get("_base_fetch_repo"), kwargs.get("_base_fetch_revision")
+                ),
             ):
                 self.load_pipeline(**kwargs)
             with self._lock:
@@ -6939,7 +6951,6 @@ class VideoBackend:
         roots = [Path(hub_cache_dir())]
         try:
             from huggingface_hub import constants
-
             if Path(constants.HF_HUB_CACHE) != roots[0]:
                 roots.append(Path(constants.HF_HUB_CACHE))
         except Exception:  # noqa: BLE001 -- the live root alone
@@ -6960,7 +6971,10 @@ class VideoBackend:
                     folder = root / ("models--" + repo.replace("/", "--"))
                     try:
                         if etag:
-                            candidates = [folder / "blobs" / etag, folder / "blobs" / f"{etag}.incomplete"]
+                            candidates = [
+                                folder / "blobs" / etag,
+                                folder / "blobs" / f"{etag}.incomplete",
+                            ]
                         else:
                             ref = folder / "refs" / "main"
                             rev = entry.revision or (
@@ -7722,11 +7736,16 @@ class VideoBackend:
         if is_ltx2_pipeline_class(fam.pipeline_class):
             ensure_ltx2_pipelines_importable(logger)
         pipeline_cls = getattr(diffusers, fam.pipeline_class)
+
         # cache_dir pins every loader call to the live cache root, so a mid-session change cannot split one model across
         # roots.
         def _pinned_base_kwargs() -> dict[str, Any]:
             """A hub-id base read takes the plan's commit; the staged dir already is that commit."""
-            return {"revision": _base_fetch_revision} if _base_fetch_revision and not _base_local_dir else {}
+            return (
+                {"revision": _base_fetch_revision}
+                if _base_fetch_revision and not _base_local_dir
+                else {}
+            )
 
         pipe_kwargs: dict[str, Any] = {
             "torch_dtype": dtype,
@@ -8075,7 +8094,9 @@ class VideoBackend:
                         Path(str(partner_path)).name,
                     )
                 pipe = pipeline_cls.from_pretrained(
-                    _base_local_dir or fetch_base, **_pinned_base_kwargs(), **{**pipe_kwargs, **experts}
+                    _base_local_dir or fetch_base,
+                    **_pinned_base_kwargs(),
+                    **{**pipe_kwargs, **experts},
                 )
 
         # The dtype dict already loads the Wan VAE at float32; belt-and-suspenders for any path that bypassed it (e.g. a
@@ -9046,7 +9067,11 @@ class VideoBackend:
             load_kwargs["token"] = hf_token
         pipe = diffusers.ModularPipeline.from_pretrained(
             _base_local_dir or fetch_base,
-            **({"revision": _base_fetch_revision} if _base_fetch_revision and not _base_local_dir else {}),
+            **(
+                {"revision": _base_fetch_revision}
+                if _base_fetch_revision and not _base_local_dir
+                else {}
+            ),
             **load_kwargs,
         )
         transformer_quant_engaged: Optional[str] = None
