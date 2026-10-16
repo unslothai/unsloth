@@ -442,3 +442,39 @@ def test_a_cancel_while_linking_stops_the_vm_and_drops_the_link(monkeypatch):
     assert job.state == "cancelled"
     assert fake.kinds()[-1] == "stop"
     assert linked_instances_db.list_instances() == [] and cl.list_sessions() == []
+
+
+def test_a_cancel_racing_the_ready_transition_never_leaves_a_cancelled_vm_running(monkeypatch):
+    # The cancel endpoint can fire between the last cancel check and the job turning ready.
+    # Either the cancel is honored (VM stopped) or it finds the job ready and does nothing.
+    fake = FakeColab()
+    monkeypatch.setattr(cl, "run_shell", fake)
+    job = _job()
+    monkeypatch.setattr(cl, "_job", job)
+    real_create = linked_instances_db.create_instance
+
+    def create_then_cancel(*args, **kwargs):
+        instance = real_create(*args, **kwargs)
+        cl.cancel_launch()
+        return instance
+
+    monkeypatch.setattr(cl.linked_instances_db, "create_instance", create_then_cancel)
+    cl._run_job(job)
+    assert job.state == "cancelled" and fake.kinds()[-1] == "stop"
+
+    fake = FakeColab()
+    monkeypatch.setattr(cl, "run_shell", fake)
+    monkeypatch.setattr(cl.linked_instances_db, "create_instance", real_create)
+    job = _job(name = "colab-t4", gpu = "T4")
+    monkeypatch.setattr(cl, "_job", job)
+    real_add = job.add
+
+    def add_then_cancel(line):
+        real_add(line)
+        if line.startswith("Linked as"):
+            cl.cancel_launch()
+
+    monkeypatch.setattr(job, "add", add_then_cancel)
+    cl._run_job(job)
+    assert job.state == "ready" and not job.cancel.is_set()
+    assert "stop" not in fake.kinds()

@@ -469,6 +469,22 @@ class LaunchJob:
     log: deque = field(default_factory = lambda: deque(maxlen = LOG_LINES))
     cancel: threading.Event = field(default_factory = threading.Event)
     _log_lock: threading.Lock = field(default_factory = threading.Lock, repr = False)
+    _state_lock: threading.Lock = field(default_factory = threading.Lock, repr = False)
+
+    def request_cancel(self) -> None:
+        with self._state_lock:
+            if self.state == "running":
+                self.cancel.set()
+
+    def finish_ready(self) -> bool:
+        """Mark the job ready unless a cancel got in first. Shares a lock with request_cancel,
+        so a cancel either lands before this and is honored, or finds the job already ready."""
+        with self._state_lock:
+            if self.cancel.is_set():
+                return False
+            self.stage = "ready"
+            self.state = "ready"
+            return True
 
     def add(self, line: str) -> None:
         with self._log_lock:
@@ -525,8 +541,8 @@ def start_launch(gpu: str, name: str) -> dict:
 def cancel_launch() -> Optional[dict]:
     with _lock:
         job = _job
-    if job and job.state == "running":
-        job.cancel.set()
+    if job:
+        job.request_cancel()
     return current_job()
 
 
@@ -639,12 +655,10 @@ def _run_job(job: LaunchJob) -> None:
         linked_instances_db.set_colab_session_instance(job.session, instance["id"])
         # A cancel that landed while linking (URL checks can wait on DNS) still tears the VM
         # and its new link down, rather than finishing as ready.
-        if job.cancel.is_set():
+        if not job.finish_ready():
             raise Cancelled()
-        job.add(f"Linked as @{job.name} ({base_url}).")
-        job.stage = "ready"
-        job.state = "ready"
         allocated = False
+        job.add(f"Linked as @{job.name} ({base_url}).")
     except Cancelled:
         job.state = "cancelled"
         job.add("Cancelled.")
