@@ -1464,6 +1464,51 @@ def test_companion_staging_is_scoped_to_the_folders_flux3_loads(tmp_path, monkey
     ]
 
 
+def test_the_dense_cache_probe_sees_only_the_flux3_transformer_folder(tmp_path, monkeypatch):
+    # The AUTO dense fast path asks whether the base transformer is cached; BFL's variants/ packages are not part of
+    # it, or a cached dense transformer would read as missing and the GGUF would be kept.
+    import torch
+    from core.inference import diffusion as d
+
+    _flux3_installed(monkeypatch)
+    _fake_hub(monkeypatch, {DISTILLED: _OFFICIAL_LISTING})
+    monkeypatch.setattr(d, "hub_cache_dir", lambda: str(tmp_path / "cold"))
+    seen = []
+
+    def _needed(self, fam, kwargs, *, companion_files = None, transformer_files = None, **_):
+        seen.append(tuple(transformer_files or ()))
+        return False
+
+    monkeypatch.setattr(d.DiffusionBackend, "_dense_quant_prefetch_needed", _needed)
+    picks = tmp_path / "picks"
+    picks.mkdir()
+    (picks / "klein.gguf").write_bytes(b"GGUF")
+    d.DiffusionBackend().download_plan(
+        str(picks),
+        gguf_filename = "klein.gguf",
+        base_repo = DISTILLED,
+        model_kind = "gguf",
+        family_override = FLUX3_KLEIN_FAMILY_NAME,
+        allow_device_probe = True,
+        memory_verdict = False,
+        discover_text_encoders = False,
+    )
+    assert seen, "the dense prefetch gate was never asked"
+    for files in seen:
+        assert files == ("transformer/diffusion_pytorch_model-00001-of-00002.safetensors",)
+
+
+def test_the_flux3_single_file_transformer_config_comes_from_the_staged_base():
+    # The transformer config is read from the staged companions, like the assembly after it, not re-resolved
+    # through fetch_base (an offline load from another cache root would fail there).
+    import inspect
+    from core.inference import diffusion as d
+
+    src = inspect.getsource(d.DiffusionBackend)
+    assert '"config": (_base_local_dir or fetch_base)\n' in src
+    assert "if is_flux3_family(fam)\n" in src.split('"config": (_base_local_dir or fetch_base)', 1)[1][:200]
+
+
 def test_the_download_plan_reports_a_flux3_pick_of_the_other_variant(tmp_path, monkeypatch):
     # The Images page stages the plan before it calls load, so the plan carries the same verdict as the load.
     from safetensors.torch import save_file

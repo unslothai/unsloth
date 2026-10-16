@@ -5154,6 +5154,8 @@ class DiffusionBackend:
                     for f in kept
                     if f not in skip
                     and _base_file_downloaded(f, include_transformer = True, manifest = base_manifest)
+                    # A scoped assembler's dense loader opens only transformer/, not BFL's variants/ packages.
+                    and (companion_components is None or f.split("/", 1)[0] == "transformer")
                 )
                 # Rebinding before base_filter is ever CALLED, so the loop below reads the answer.
                 include_transformer = bool(include_transformer(companions, transformer_files))
@@ -7830,7 +7832,11 @@ class DiffusionBackend:
                             # Transformer-only single file; VAE/text-encoder/scheduler come from the base repo.
                             sf_kwargs: dict[str, Any] = {
                                 "torch_dtype": dtype,
-                                "config": fetch_base,
+                                # FLUX.3 reads the config from the staged companions, as its assembly below does: the
+                                # validated base holds transformer/config.json, and fetch_base would re-resolve it.
+                                "config": (_base_local_dir or fetch_base)
+                                if is_flux3_family(fam)
+                                else fetch_base,
                                 "subfolder": "transformer",
                                 "token": hf_token,
                                 "cache_dir": hub_cache_dir(),
