@@ -6544,13 +6544,34 @@ def _draft_tensors_placed_off_card(
             return True
         if flag in _DRAFT_CPU_MOE_COUNT_FLAGS:
             _, eq, inline = raw.partition("=")
-            if _is_positive_int(inline if eq else (values[i + 1] if i + 1 < len(values) else "")):
+            if _draft_cpu_moe_count_not_zero(
+                inline if eq else (values[i + 1] if i + 1 < len(values) else "")
+            ):
                 return True
     source = os.environ if env is None else env
+    # Raw is_truthy (common/arg.cpp): no stripping, no case folding.
     return bool(
         source.get("LLAMA_ARG_SPEC_DRAFT_CPU_MOE") in _LLAMA_ARG_TRUE_VALUES
-        or _is_positive_int(source.get("LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE"))
+        or (
+            source.get("LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE") is not None
+            and _draft_cpu_moe_count_not_zero(source.get("LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE"))
+        )
     )
+
+
+def _stoi_prefix(value: Optional[str]) -> Optional[int]:
+    """``std::stoi``: leading whitespace skipped, an optional sign, then the longest digit
+    run (trailing text ignored); None where it throws (no digits)."""
+    match = re.match(r"\s*([+-]?\d+)", str(value or ""))
+    return int(match.group(1)) if match else None
+
+
+def _draft_cpu_moe_count_not_zero(value: Optional[str]) -> bool:
+    """Whether a ``-ncmoed`` / ``LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE`` value is anything but
+    a parsed 0. Positive places drafter experts on the CPU; negative or unparseable makes
+    arg.cpp throw (``value < 0`` -> invalid_argument, std::stoi), so the child never
+    places anything the fit could price: conservative either way."""
+    return _stoi_prefix(value) != 0
 
 
 def _draft_is_split_across_host(

@@ -260,6 +260,33 @@ def test_cpu_fallback_leaves_an_explicitly_placed_projector_alone(extra_args, en
     assert LlamaCppBackend._cpu_fallback_request_eligible(intent, extra_args, env) is expected
 
 
+# --- draft CPU-MoE counts parse like std::stoi ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, expected",
+    [
+        # Negative: arg.cpp throws (value < 0), so nothing is priceable; abstain.
+        (["--spec-draft-n-cpu-moe", "-1"], {}, True),
+        (["-ncmoed=-3"], {}, True),
+        ([], {"LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE": "-1"}, True),
+        # std::stoi skips leading whitespace and ignores trailing text.
+        (["-ncmoed", " 2"], {}, True),
+        ([], {"LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE": "4abc"}, True),
+        # Controls: zero places nothing; positive places experts on the CPU.
+        (["-ncmoed", "0"], {}, False),
+        ([], {"LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE": " 0"}, False),
+        (["-ncmoed", "2"], {}, True),
+        # is_truthy is a raw comparison: a padded value is not truthy upstream.
+        ([], {"LLAMA_ARG_SPEC_DRAFT_CPU_MOE": " 1"}, False),
+        ([], {"LLAMA_ARG_SPEC_DRAFT_CPU_MOE": "1"}, True),
+        ([], {}, False),
+    ],
+)
+def test_draft_cpu_moe_counts_follow_upstream_parsing(extra_args, env, expected):
+    assert llama_cpp_module._draft_tensors_placed_off_card(extra_args, env) is expected
+
+
 # --- the one per-device --fit-target reader ---------------------------------------------
 
 
