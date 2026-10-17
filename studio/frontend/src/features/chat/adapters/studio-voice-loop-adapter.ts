@@ -280,20 +280,27 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     voiceTrace("session.start", { playback: isVoicePlaybackActive() });
     // A mic picked in Settings mid-session: this session keeps the old device, so
     // end it (once nothing is being said) and the re-arm opens the new one.
+    // Reopen on the current device: a mic picked in Settings, an earbud pulled out
+    // (its track ends), or the device list changing under a "default" pin.
+    const reopen = (why: string, detail?: Record<string, unknown>) => {
+      if (ended || utteranceInFlight) return;
+      voiceTrace("session.reopen", { why, ...detail });
+      teardown();
+      finish("stopped");
+      setTimeout(() => requestVoiceResume(), 0);
+    };
     let unsubMic: (() => void) | null = useVoiceSettingsStore.subscribe(
       (state, prev) => {
-        if (state.micDeviceId === prev.micDeviceId || ended) return;
-        if (utteranceInFlight) return;
-        voiceTrace("session.micSwitch", { to: state.micDeviceId });
-        teardown();
-        finish("stopped");
-        setTimeout(() => requestVoiceResume(), 0);
+        if (state.micDeviceId !== prev.micDeviceId) reopen("micSwitch", { to: state.micDeviceId });
       },
     );
+    const onDevicesChanged = () => reopen("deviceChange");
+    navigator.mediaDevices.addEventListener?.("devicechange", onDevicesChanged);
 
     const teardown = () => {
       unsubMic?.();
       unsubMic = null;
+      navigator.mediaDevices.removeEventListener?.("devicechange", onDevicesChanged);
       // Mic is closing: no longer hearing the user, so drop the orb's salmon
       // "hearing you" state (the utterance ended or was cancelled).
       useChatRuntimeStore.getState().setVoiceHearing(false);
@@ -577,6 +584,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           return;
         }
         sampleRate = audioCtx.sampleRate;
+        for (const track of stream.getAudioTracks()) {
+          track.addEventListener("ended", () => reopen("trackEnded", { label: track.label }));
+        }
         source = audioCtx.createMediaStreamSource(stream);
         attachInputSpectrum(audioCtx, source);
         processor = audioCtx.createScriptProcessor(4096, 1, 1);
