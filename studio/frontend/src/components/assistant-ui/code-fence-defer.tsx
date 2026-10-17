@@ -39,6 +39,7 @@ import {
   initialHighlightProgress,
   advanceHighlightProgress,
   EMPTY_HIGHLIGHT_PROGRESS,
+  EMPTY_HIGHLIGHT_COUNTS,
   HIGHLIGHT_BATCH_TOKENS,
   type HighlightProgress,
   needsHighlightBatches,
@@ -1033,23 +1034,15 @@ const FenceLines = memo(function FenceLines({
   const [previous, setPrevious] = useState<{
     tokens: TokenLine[];
     chunks: FenceLineChunks<TokenLine>;
-    highlighted: HighlightProgress | null;
-    limits: FenceLineChunks<number> | null;
-  }>(() => ({ tokens, chunks: updateFenceChunks(null, tokens), highlighted,
-    limits: highlighted ? updateFenceChunks(null, highlighted.counts) : null }));
-  const current = previous.tokens === tokens && previous.highlighted === highlighted
+  }>(() => ({ tokens, chunks: updateFenceChunks(null, tokens) }));
+  const current = previous.tokens === tokens
     ? previous
-    : {
-      tokens,
-      chunks: previous.tokens === tokens ? previous.chunks : updateFenceChunks(previous.chunks, tokens),
-      highlighted,
-      limits: highlighted ? updateFenceChunks(previous.limits, highlighted.counts) : null,
-    };
+    : { tokens, chunks: updateFenceChunks(previous.chunks, tokens) };
   if (current !== previous) setPrevious(current);
   return <>{current.chunks.map((lines, index) => <FenceLineChunk
     key={index}
     lines={lines}
-    limits={current.limits === null ? null : current.limits[index] ?? EMPTY_HIGHLIGHT_PROGRESS.counts}
+    limits={highlighted === null ? null : highlighted.counts[index] ?? EMPTY_HIGHLIGHT_COUNTS}
     dense={dense}
   />)}</>;
 });
@@ -1265,12 +1258,18 @@ const watchHighlighting = (): void => {
   });
 };
 
+let highlightTeardownPending = false;
 const unwatchHighlighting = (): void => {
-  if (!highlightWatching || highlightQueue.pending() > 0) return;
-  highlightWatching = false;
-  window.removeEventListener("resize", highlightResize);
-  highlightFindObserver?.disconnect();
-  highlightFindObserver = null;
+  if (!highlightWatching || highlightTeardownPending) return;
+  highlightTeardownPending = true;
+  queueMicrotask(() => {
+    highlightTeardownPending = false;
+    if (!highlightWatching || highlightQueue.pending() > 0) return;
+    highlightWatching = false;
+    window.removeEventListener("resize", highlightResize);
+    highlightFindObserver?.disconnect();
+    highlightFindObserver = null;
+  });
 };
 
 export function queueFenceWork(work: () => void): () => void {
