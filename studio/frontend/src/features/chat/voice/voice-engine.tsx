@@ -52,6 +52,7 @@ import {
   registerVoiceBargeAbort,
   registerVoiceBargeIn,
   registerVoiceListen,
+  registerVoiceParkedText,
   registerVoicePlayback,
   registerVoiceReplyText,
   registerVoiceResume,
@@ -364,6 +365,9 @@ export const VoiceEngine: FC = () => {
     // shows but gets no reply). Use the normal composer.send() for the very first
     // utterance; it creates the thread and runs. Coalescing kicks in from turn 2 on.
     if (thread.getState().messages.length === 0) {
+      // send() takes the box, not `text`: parked turns were never in it (the re-arm
+      // clears it), so an empty box here sent nothing at all.
+      composer.setText(text);
       composer.send();
       composer.setText("");
       setTimeout(() => deferredClear(1), DEFERRED_CLEAR_MS);
@@ -384,7 +388,8 @@ export const VoiceEngine: FC = () => {
     }
 
     if (!appended) {
-      // Fallback: old immediate-send behavior (text is still in the composer).
+      // Fallback: old immediate-send behavior.
+      composer.setText(text);
       composer.send();
       composer.setText("");
       setTimeout(() => deferredClear(1), DEFERRED_CLEAR_MS);
@@ -432,7 +437,11 @@ export const VoiceEngine: FC = () => {
 
   useEffect(() => {
     registerVoiceReplyText(() => latestAssistantText());
-    return () => registerVoiceReplyText(null);
+    registerVoiceParkedText(() => pendingForVoiceRef.current.join(" "));
+    return () => {
+      registerVoiceReplyText(null);
+      registerVoiceParkedText(null);
+    };
   }, [latestAssistantText]);
 
   // Text of the trailing user bubbles (one coalesced prompt may be several).
@@ -463,6 +472,7 @@ export const VoiceEngine: FC = () => {
     const composer = auiRef.current.composer();
     if (composer.getState().dictation) composer.stopDictation();
     let text = (spoken ?? composer.getState().text).trim();
+    voiceTrace("engine.submit", { text });
     const pending = pendingForVoiceRef.current;
     if (useChatRuntimeStore.getState().voiceSlotLoading) {
       // A reply sent now would land before the voice can speak it. Park the turn;

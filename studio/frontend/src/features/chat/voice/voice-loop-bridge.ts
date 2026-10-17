@@ -241,6 +241,17 @@ export function getVoiceReplyText(): string {
   return voiceReplyText?.() ?? "";
 }
 
+let voiceParkedText: (() => string) | null = null;
+
+export function registerVoiceParkedText(fn: (() => string) | null): void {
+  voiceParkedText = fn;
+}
+
+/** Turns parked while the voice loads, so the adapter can show them stacking in the composer. */
+export function getVoiceParkedText(): string {
+  return voiceParkedText?.() ?? "";
+}
+
 /** Set once by the loop's module as it loads, which voice mode needs before it can go active. */
 export function registerVoiceListen(
   fn: () => DictationAdapter.Session | null,

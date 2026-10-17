@@ -11,6 +11,7 @@ import {
 import {
   isBackchannel,
   isReplyEcho,
+  isSttNoise,
   joinTurn,
 } from "@/features/chat/voice/turn-complete";
 import {
@@ -23,10 +24,11 @@ import {
   judgeTurnComplete,
 } from "@/features/chat/voice/voice-models-client";
 import { attachInputSpectrum, detachInputSpectrum } from "@/features/chat/voice/voice-spectrum";
-import { publishVadDecision } from "@/features/chat/voice/voice-decisions";
+import { publishSttDecision, publishVadDecision } from "@/features/chat/voice/voice-decisions";
 import { voiceTrace } from "@/features/chat/voice/voice-trace";
 import {
   isVoicePlaybackActive,
+  getVoiceParkedText,
   getVoiceReplyText,
   requestVoiceBargeAbort,
   requestVoiceBargeIn,
@@ -234,6 +236,16 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       resolveEnded = resolve;
     });
 
+    // Every transcript shown is the whole turn so far, led by the turns parked for a
+    // loading voice (display only: the engine joins those itself when it sends).
+    const shown = (transcript: string): string => {
+      const parked = getVoiceParkedText();
+      return parked && transcript ? `${parked} ${transcript}` : parked || transcript;
+    };
+    const emitSpeech = (transcript: string, isFinal: boolean) => {
+      for (const cb of speechCallbacks) cb({ transcript: shown(transcript), isFinal });
+    };
+
     const session: DictationAdapter.Session = {
       status: { type: "starting" },
       stop: async () => {
@@ -257,9 +269,10 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       onSpeech: (cb) => {
         speechCallbacks.add(cb);
         // The composer starts each session empty and every transcript emitted
-        // here is the whole turn so far, so show the held fragment through the
-        // same path instead of pre-filling the box (that doubled it).
-        if (heldTurn) cb({ transcript: heldTurn.text, isFinal: false });
+        // here is the whole turn so far, so show the parked turns and the held
+        // fragment through the same path instead of pre-filling the box (that doubled it).
+        const lead = shown(heldTurn?.text ?? "");
+        if (lead) cb({ transcript: lead, isFinal: false });
         return () => speechCallbacks.delete(cb);
       },
     };
@@ -341,8 +354,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         // The rest never came: the fragment was the whole turn after all.
         const text = heldTurn.text;
         heldTurn = null;
-        for (const cb of speechCallbacks)
-          cb({ transcript: text, isFinal: true });
+        emitSpeech(text, true);
         finish("stopped", text);
         setTimeout(() => requestVoiceSubmit(text), 0);
         return;
@@ -427,6 +439,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           // STT invents a repeated token ("Ha, ha, ha...", "Thank you.
           // Thank you...") from noise/breath/silence. Drop it and keep listening
           // rather than sending garbage as a prompt.
+          publishSttDecision(false, "repeated word");
           transcript = "";
         }
         voiceTrace("stt", { transcript, bargedIn, heldTurn: heldTurn?.text ?? null });
@@ -434,14 +447,18 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           // The reply's own voice got through the detector. Not a turn: let the
           // reply pick back up and keep listening.
           voiceTrace("barge.abort", { why: "echo" });
+          publishSttDecision(false, "echo of the reply");
           requestVoiceBargeAbort();
           finish("stopped");
           setTimeout(() => requestVoiceResume(), 0);
           return;
         }
-        if (transcript && isBackchannel(transcript)) {
-          // A breath or "mm" that cleared the speech gate. Not a turn: keep listening,
-          // and keep any held fragment waiting for its real continuation.
+        if (transcript && (isBackchannel(transcript) || isSttNoise(transcript))) {
+          // A breath or "mm" that cleared the speech gate, or the "Thank you." STT
+          // writes for a cough. Not a turn: keep listening, and keep any held
+          // fragment waiting for its real continuation.
+          voiceTrace("stt.drop", { transcript, why: "noise" });
+          publishSttDecision(false, isBackchannel(transcript) ? "breath" : "cough");
           if (bargedIn) {
             voiceTrace("barge.abort", { why: "backchannel" });
             requestVoiceBargeAbort();
@@ -464,7 +481,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             text: transcript,
             at: heldTurn?.at ?? performance.now(),
           };
-          for (const cb of speechCallbacks) cb({ transcript, isFinal: false });
+          emitSpeech(transcript, false);
           finish("stopped");
           setTimeout(() => requestVoiceResume(), 0);
           return;
@@ -482,8 +499,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           for (let i = stepChars; i < total; i += stepChars) {
             if (ended) return;
             const partial = transcript.slice(0, i);
-            for (const cb of speechCallbacks)
-              cb({ transcript: partial, isFinal: false });
+            emitSpeech(partial, false);
             await new Promise<void>((r) => setTimeout(r, REVEAL_CHAR_MS));
           }
           if (ended) return;
@@ -492,7 +508,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           // state updates land first, submit the turn. requestVoiceSubmit is a
           // no-op outside voice mode, so plain Dictate-button use just fills the
           // composer as before.
-          for (const cb of speechCallbacks) cb({ transcript, isFinal: true });
+          emitSpeech(transcript, true);
           finish("stopped", transcript);
           setTimeout(() => requestVoiceSubmit(transcript), 0);
         } else {

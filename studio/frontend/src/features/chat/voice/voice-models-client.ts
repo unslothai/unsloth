@@ -21,20 +21,29 @@ export const JUDGE_SEND_THRESHOLD = 0.65;
 async function post<T>(path: string, body: unknown): Promise<T | null> {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS);
-  try {
-    const res = await authFetch(`/api/inference/voice/${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: ctl.signal,
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
+  const call = (async () => {
+    try {
+      const res = await authFetch(`/api/inference/voice/${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: ctl.signal,
+      });
+      if (!res.ok) return null;
+      return (await res.json()) as T;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  })();
+  // A fetch the abort never reaches would strand the turn behind it (the reply stays
+  // held, nothing is sent), so the caller gets its answer on the clock either way.
+  let settle: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<null>((r) => {
+    settle = setTimeout(() => r(null), TIMEOUT_MS * 2);
+  });
+  return Promise.race([call, late]).finally(() => clearTimeout(settle));
 }
 
 /** P(the user has finished the turn), or null without the judge. */

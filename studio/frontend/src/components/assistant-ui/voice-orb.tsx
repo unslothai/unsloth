@@ -511,6 +511,7 @@ const VoiceDecisionCaption: FC = () => {
       text: `mid-think · ${d.interject.action} ${Math.round(d.interject.confidence * 100)}%`,
     },
     d.vad && { at: d.vad.at, text: `vad · ${d.vad.kept ? "kept" : "dropped"}` },
+    d.stt && { at: d.stt.at, text: `stt · ${d.stt.kept ? "kept" : `dropped, ${d.stt.why}`}` },
   ]
     .filter((x): x is { at: number; text: string } => Boolean(x))
     .sort((a, b) => b.at - a.at)[0];

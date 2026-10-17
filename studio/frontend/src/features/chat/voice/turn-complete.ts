@@ -18,6 +18,15 @@ export function isBackchannel(text: string): boolean {
   return words.length > 0 && words.every((w) => BACKCHANNEL.has(w) || /^(m+|h+m+|u+h+|a+h+|o+h+)$/.test(w));
 }
 
+// What STT writes for a cough, a breath or a clipped burst of the reply when there
+// were no words in it. Only ever dropped as the whole transcript.
+const STT_NOISE = new Set(["you", "thank you", "thank you very much", "thanks", "thanks for watching", "bye", "the end"]);
+
+/** True when the transcript is one of the phrases STT invents on non-speech audio. */
+export function isSttNoise(text: string): boolean {
+  return STT_NOISE.has(text.toLowerCase().replace(/[^\p{L}\s]/gu, " ").trim().replace(/\s+/g, " "));
+}
+
 /** Join a held fragment and the speech that followed it into one turn. */
 export function joinTurn(held: string, next: string): string {
   const a = held.trim();
