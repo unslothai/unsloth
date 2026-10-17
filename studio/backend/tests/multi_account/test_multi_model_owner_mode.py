@@ -18,7 +18,11 @@ from utils.account_context import AccountContext, bind_account, reset_account, r
 class FakeLlama:
     holds_no_vram = False
 
-    def __init__(self, identifier = None, variant = None):
+    def __init__(
+        self,
+        identifier = None,
+        variant = None,
+    ):
         self.model_identifier, self.hf_variant = identifier, variant
         self.is_loaded = self.is_active = identifier is not None
         self.is_vision, self.context_length = False, 4096
@@ -49,10 +53,14 @@ def fresh_mode_cache():
 
 
 @pytest.mark.parametrize("mode, keeps", [("fit", True), ("always", True), ("off", False)])
-def test_a_managed_load_reads_the_owners_mode_and_keeps_its_idle_models(accounts, monkeypatch, fresh_mode_cache, mode, keeps):
+def test_a_managed_load_reads_the_owners_mode_and_keeps_its_idle_models(
+    accounts, monkeypatch, fresh_mode_cache, mode, keeps
+):
     alice = accounts["alice"]
     ctx = AccountContext(alice.account_id, alice.username, alice.role)
-    multi_model_settings.set_multi_model_mode(mode)  # isolated_auth binds OWNER; alice's DB never stores it
+    multi_model_settings.set_multi_model_mode(
+        mode
+    )  # isolated_auth binds OWNER; alice's DB never stores it
     extra = model_slots.ExtraSlot(FakeLlama("org/B-GGUF", "Q8_0"), FakeOrch(), "owner")
     monkeypatch.setattr(inf, "_llama_cpp_backend", FakeLlama("org/A-GGUF", "Q4_K_M"))
     monkeypatch.setattr(orchestrator, "_inference_backend", FakeOrch())

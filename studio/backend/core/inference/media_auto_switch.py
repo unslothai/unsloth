@@ -376,7 +376,10 @@ async def _gated_start_load(
                             retry_after = int(exc.detail["retry_after"]),
                         ) from exc
                     headers = {k.lower(): v for k, v in (exc.headers or {}).items()}
-                    if headers.get("x-unsloth-refusal") == MULTI_MODEL_REFUSAL_HEADERS["X-Unsloth-Refusal"]:
+                    if (
+                        headers.get("x-unsloth-refusal")
+                        == MULTI_MODEL_REFUSAL_HEADERS["X-Unsloth-Refusal"]
+                    ):
                         # Keep multiple models loaded is set to Always: waiting does not help, so no Retry-After.
                         refusal = refuse(
                             exc.detail if isinstance(exc.detail, str) else str(exc.detail),

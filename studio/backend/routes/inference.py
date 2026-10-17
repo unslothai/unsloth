@@ -3301,7 +3301,11 @@ _DEFERRED_ERROR_KEY = "_deferred_error"
 _DEFERRED_ERROR_HEADERS = ("x-unsloth-refusal", "retry-after")
 
 
-def _deferred_error_body(status_code: int, detail, headers: Optional[dict] = None) -> bytes:
+def _deferred_error_body(
+    status_code: int,
+    detail,
+    headers: Optional[dict] = None,
+) -> bytes:
     body = {_DEFERRED_ERROR_KEY: {"status_code": status_code, "detail": detail}}
     kept = {
         name.lower(): value
@@ -12215,7 +12219,9 @@ async def _maybe_auto_switch_model(
     try:
         await _resolve_and_switch()
     except MultiModelAlwaysRefusal as exc:
-        raise exc.as_http_exception(getattr(getattr(fastapi_request, "url", None), "path", None)) from exc
+        raise exc.as_http_exception(
+            getattr(getattr(fastapi_request, "url", None), "path", None)
+        ) from exc
     except HTTPException as exc:
         path = getattr(getattr(fastapi_request, "url", None), "path", None)
         if (
@@ -18634,7 +18640,8 @@ async def load_model_gated(
         evicted += [
             slot["model"]
             for index, slot in enumerate(evicted_slots)
-            if slot.get("model") and (index < idle_unloaded or slot.get("kind") in ("image", "video"))
+            if slot.get("model")
+            and (index < idle_unloaded or slot.get("kind") in ("image", "video"))
         ]
         if isinstance(response, LoadResponse):
             if evicted:
@@ -18718,7 +18725,9 @@ def _primary_chat_reports() -> list[dict]:
     found = []
     llama = get_llama_cpp_backend()
     if getattr(llama, "is_loaded", False):
-        found.append({"kind": "chat", "model": _llama_status_model_ids(llama)[0] or "", "account": account})
+        found.append(
+            {"kind": "chat", "model": _llama_status_model_ids(llama)[0] or "", "account": account}
+        )
     report = _orchestrator_chat_report(_peek_inference_backend(), account)
     if report is not None:
         found.append(report)
@@ -18810,7 +18819,6 @@ def _reassert_chat_claim(policy: str) -> None:
         acquire_for_request,
         policy_kwargs,
     )
-
     try:
         acquire_for_request(CHAT, **policy_kwargs(policy))
     except MultiModelAlwaysRefusal:
@@ -19401,7 +19409,12 @@ async def _load_model_impl(
         if replacing and (serving or (request.engine != "auto" and model_slots.slots)):
             await _refuse_replacing_under_always(
                 request,
-                (_model_key(request), request.model_path, _requested_model_id, scan_folder_public_id),
+                (
+                    _model_key(request),
+                    request.model_path,
+                    _requested_model_id,
+                    scan_folder_public_id,
+                ),
             )
         from utils.multi_model_settings import get_multi_model_mode
 
