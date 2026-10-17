@@ -856,7 +856,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         " ON data_recipe_executions(recipe_id, created_at)"
     )
     # next_run_at is NULL when nothing is left to run: a paused task, or a one-time task that ran.
-    # notify is which finished runs the app announces: all, failures or none.
+    # notify is which finished runs the app announces: all, failures or none. named is 0 for a task
+    # whose title was taken from its instructions, so an edit can keep it following them.
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS scheduled_tasks (
@@ -870,14 +871,18 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             next_run_at INTEGER,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
-            notify TEXT NOT NULL DEFAULT 'all'
+            notify TEXT NOT NULL DEFAULT 'all',
+            named INTEGER NOT NULL DEFAULT 1
         )
         """
     )
-    if "notify" not in {
+    scheduled_task_cols = {
         row[1] for row in conn.execute("PRAGMA table_info(scheduled_tasks)").fetchall()
-    }:
+    }
+    if "notify" not in scheduled_task_cols:
         conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN notify TEXT NOT NULL DEFAULT 'all'")
+    if "named" not in scheduled_task_cols:
+        conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN named INTEGER NOT NULL DEFAULT 1")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next_run ON scheduled_tasks(next_run_at)"
     )

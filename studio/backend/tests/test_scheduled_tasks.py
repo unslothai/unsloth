@@ -48,6 +48,7 @@ def make_task(**overrides) -> dict:
         "timezone": "UTC",
         "enabled": True,
         "notify": "all",
+        "named": True,
         "nextRunAt": ms("2026-10-14T09:00:00+00:00"),
         "createdAt": 1,
         "updatedAt": 1,
@@ -325,6 +326,7 @@ def test_create_list_and_read(client, monkeypatch):
     assert task["title"] == "Morning brief"
     assert task["status"] == "active"
     assert task["notify"] == "all"
+    assert task["named"] is True
     assert task["nextRunAt"] == ms("2026-10-15T09:00:00+00:00")
     assert task["lastRun"] is None
     assert "ownerSubject" not in task
@@ -399,6 +401,14 @@ def test_a_notification_setting_is_kept_and_keeps_an_overdue_run_due(client):
     assert create(client, notify = "failures").json()["notify"] == "failures"
 
 
+def test_whether_a_task_was_named_is_kept(client):
+    unnamed = create(client, title = "Write a haiku about mornings.", named = False).json()
+    assert unnamed["named"] is False
+    named = client.patch(f"/api/scheduled-tasks/{unnamed['id']}", json = {"named": True}).json()
+    assert named["named"] is True
+    assert client.get(f"/api/scheduled-tasks/{unnamed['id']}").json()["named"] is True
+
+
 def test_a_database_from_before_notification_settings_gains_them():
     conn = sqlite3.connect(":memory:")
     try:
@@ -415,7 +425,8 @@ def test_a_database_from_before_notification_settings_gains_them():
         )
         studio_db._ensure_schema(conn)
         studio_db._ensure_schema(conn)
-        assert conn.execute("SELECT notify FROM scheduled_tasks").fetchall() == [("all",)]
+        # Tasks made before either setting notify of every run and count as named.
+        assert conn.execute("SELECT notify, named FROM scheduled_tasks").fetchall() == [("all", 1)]
     finally:
         conn.close()
 

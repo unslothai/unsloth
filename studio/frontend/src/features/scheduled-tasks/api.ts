@@ -43,6 +43,8 @@ export interface ScheduledTask {
   timezone: string;
   enabled: boolean;
   notify: TaskNotify;
+  /** False when the title was taken from the instructions rather than typed. */
+  named: boolean;
   status: "active" | "paused" | "completed";
   nextRunAt: number | null;
   createdAt: number;
@@ -56,6 +58,7 @@ export interface ScheduledTaskInput {
   schedule: TaskSchedule;
   timezone: string;
   notify: TaskNotify;
+  named: boolean;
 }
 
 export type ScheduledTaskPatch = Partial<ScheduledTaskInput> & { enabled?: boolean };

@@ -38,7 +38,6 @@ import {
   formFromSchedule,
   formatClock,
   localDateKey,
-  nameToEdit,
   sameSchedule,
   scheduleFormComplete,
   scheduleFromForm,
@@ -115,7 +114,8 @@ export function TaskDialog({
   const create = useScheduledTasksStore((state) => state.create);
   const update = useScheduledTasksStore((state) => state.update);
   const [now] = useState(() => new Date());
-  const [title, setTitle] = useState(task ? nameToEdit(task) : "");
+  // A task named after its instructions edits with an empty name, so the name keeps following them.
+  const [title, setTitle] = useState(task?.named ? task.title : "");
   const [prompt, setPrompt] = useState(task?.prompt ?? "");
   const [form, setForm] = useState<ScheduleForm>(() =>
     task ? formFromSchedule(task.schedule, now) : defaultScheduleForm(now),
@@ -127,7 +127,8 @@ export function TaskDialog({
   // An edit keeps the zone the task was made in; a new task takes this browser's.
   const timezone = task?.timezone ?? browserTimeZone();
   const valid = prompt.trim() !== "" && scheduleFormComplete(form);
-  const finalTitle = title.trim() || titleFromPrompt(prompt);
+  const named = title.trim() !== "";
+  const finalTitle = named ? title.trim() : titleFromPrompt(prompt);
 
   const patchForm = (patch: Partial<ScheduleForm>) => setForm((current) => ({ ...current, ...patch }));
   const toggleDay = (day: number) =>
@@ -150,10 +151,11 @@ export function TaskDialog({
         if (finalTitle !== task.title) patch.title = finalTitle;
         if (prompt.trim() !== task.prompt) patch.prompt = prompt.trim();
         if (!sameSchedule(schedule, task.schedule)) patch.schedule = schedule;
+        if (named !== task.named) patch.named = named;
         if (notify !== task.notify) patch.notify = notify;
         if (Object.keys(patch).length > 0) await update(task.id, patch);
       } else {
-        await create({ title: finalTitle, prompt: prompt.trim(), schedule, timezone, notify });
+        await create({ title: finalTitle, prompt: prompt.trim(), schedule, timezone, notify, named });
       }
       onClose();
     } catch (error) {

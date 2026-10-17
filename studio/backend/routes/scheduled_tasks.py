@@ -46,6 +46,8 @@ class ScheduledTaskCreate(BaseModel):
     timezone: TimeZoneName
     enabled: bool = True
     notify: Notify = "all"
+    # False when the title was taken from the instructions rather than typed.
+    named: bool = True
 
 
 class ScheduledTaskUpdate(BaseModel):
@@ -57,6 +59,7 @@ class ScheduledTaskUpdate(BaseModel):
     timezone: Optional[TimeZoneName] = None
     enabled: Optional[bool] = None
     notify: Optional[Notify] = None
+    named: Optional[bool] = None
 
 
 class ScheduledTaskRun(BaseModel):
@@ -89,6 +92,7 @@ class ScheduledTask(BaseModel):
     timezone: str
     enabled: bool
     notify: Notify
+    named: bool
     # paused: switched off; completed: a one-time task that has run; active: anything else.
     status: Literal["active", "paused", "completed"]
     nextRunAt: Optional[int] = None
@@ -158,6 +162,7 @@ def create_scheduled_task(
         "timezone": payload.timezone,
         "enabled": payload.enabled,
         "notify": payload.notify,
+        "named": payload.named,
         "createdAt": now,
         "updatedAt": now,
     }

@@ -25,6 +25,7 @@ def seed_scheduled_task(account) -> dict[str, str]:
             "timezone": "UTC",
             "enabled": False,
             "notify": "all",
+            "named": True,
             "nextRunAt": None,
             "createdAt": now,
             "updatedAt": now,

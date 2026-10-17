@@ -368,17 +368,21 @@ export function TasksPage() {
   useEffect(() => {
     void refresh();
     // Changes made elsewhere send this tab no event: another tab's are marked in storage, and one
-    // made from another browser or device shows once this tab is looked at again.
+    // made from another browser or device shows once this window is looked at again (shown again,
+    // or focused while it stayed visible).
     const onStorage = (event: StorageEvent) => {
       if (event.key === SCHEDULED_TASKS_WRITTEN_KEY) void refresh();
     };
     const onVisible = () => {
       if (document.visibilityState === "visible") void refresh();
     };
+    const onFocus = () => void refresh();
     window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [refresh]);

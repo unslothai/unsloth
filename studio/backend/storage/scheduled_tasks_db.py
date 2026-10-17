@@ -60,6 +60,7 @@ def _task_from_row(row: sqlite3.Row) -> dict:
         "timezone": row["timezone"],
         "enabled": bool(row["enabled"]),
         "notify": row["notify"],
+        "named": bool(row["named"]),
         "nextRunAt": row["next_run_at"],
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
@@ -146,8 +147,8 @@ def create_task(task: dict) -> dict:
             """
             INSERT INTO scheduled_tasks
                 (id, owner_subject, title, prompt, schedule_json, timezone, enabled, notify,
-                 next_run_at, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 named, next_run_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task["id"],
@@ -158,6 +159,7 @@ def create_task(task: dict) -> dict:
                 task["timezone"],
                 1 if task["enabled"] else 0,
                 task["notify"],
+                1 if task["named"] else 0,
                 task["nextRunAt"],
                 task["createdAt"],
                 task["updatedAt"],
@@ -202,7 +204,7 @@ def update_task(
             """
             UPDATE scheduled_tasks
             SET title = ?, prompt = ?, schedule_json = ?, timezone = ?, enabled = ?, notify = ?,
-                next_run_at = ?, updated_at = ?
+                named = ?, next_run_at = ?, updated_at = ?
             WHERE id = ?
             """,
             (
@@ -212,6 +214,7 @@ def update_task(
                 task["timezone"],
                 1 if task["enabled"] else 0,
                 task["notify"],
+                1 if task["named"] else 0,
                 task["nextRunAt"],
                 now_ms(),
                 task_id,
