@@ -173,35 +173,59 @@ def release_lease(
 
 
 LEASE_HEADER = b"x-unsloth-bench-lease"
+LOAD_PATHS = ("/api/inference/load", "/api/inference/unload")
+
+
+def _sweep_holds_against(holder: Optional[str]) -> bool:
+    return bool(
+        _lease
+        and _lease["kind"] == "sweep"
+        and _lease["expires"] > time.monotonic()
+        and holder != _lease["holder"]
+    )
+
+
+def load_refused(holder: Optional[str]) -> bool:
+    """A load reloads the one llama-server, so mid-sweep it would run the next rows under other settings."""
+    with _lease_lock:
+        return _sweep_holds_against(holder)
 
 
 def note_inference_request(holder: Optional[str]) -> None:
     """Count a generation that is not the sweep's own while a sweep holds the server."""
     with _lease_lock:
-        if (
-            _lease
-            and _lease["kind"] == "sweep"
-            and _lease["expires"] > time.monotonic()
-            and holder != _lease["holder"]
-        ):
+        if _sweep_holds_against(holder):
             _lease["outside"] += 1
 
 
 class BenchmarkTrafficMiddleware:
-    """Pure ASGI: a sweep shares the one llama-server, so other traffic during it is counted and
-    shown with the run instead of being refused."""
+    """Pure ASGI: a sweep shares the one llama-server. Other generations during it are counted and
+    shown with the run; other loads, which would swap the server under its rows, are refused."""
 
     def __init__(self, app):
         self.app = app
 
     async def __call__(self, scope, receive, send):
         if _lease is not None and scope.get("type") == "http" and scope.get("method") == "POST":
-            from core.inference.llama_keepwarm import _is_inference_path
+            from core.inference.llama_keepwarm import _carries_bearer_credentials, _is_inference_path
 
-            if _is_inference_path(scope.get("path") or ""):
-                holder = next(
-                    (v.decode("latin-1") for k, v in scope.get("headers") or () if k.lower() == LEASE_HEADER),
-                    None,
-                )
+            path = scope.get("path") or ""
+            holder = next(
+                (v.decode("latin-1") for k, v in scope.get("headers") or () if k.lower() == LEASE_HEADER),
+                None,
+            )
+            # Uncredentialed calls go on to the route's own 401.
+            if path in LOAD_PATHS and _carries_bearer_credentials(scope, path) and load_refused(holder):
+                from starlette.responses import JSONResponse
+
+                await JSONResponse(
+                    {
+                        "detail": "A benchmark is running on this model. Stop it on the Benchmarks "
+                        "page or let it finish, then try again."
+                    },
+                    status_code = 409,
+                )(scope, receive, send)
+                return
+            if _is_inference_path(path):
                 note_inference_request(holder)
         await self.app(scope, receive, send)

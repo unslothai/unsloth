@@ -49,6 +49,11 @@ export interface RunnerEvents {
 
 export class BenchSetupError extends Error {}
 
+/** While a sweep holds the server, the backend only takes loads that carry its lease. */
+function leaseHeaders(holder?: string): Record<string, string> {
+  return holder ? { "X-Unsloth-Bench-Lease": holder } : {};
+}
+
 function servedSubset(st: InferenceStatusResponse): Record<string, unknown> {
   const keys = [
     "speculative_type",
@@ -196,7 +201,7 @@ async function streamOnce(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(leaseHolder ? { "X-Unsloth-Bench-Lease": leaseHolder } : {}),
+      ...leaseHeaders(leaseHolder),
     },
     body: JSON.stringify({
       model,
@@ -356,7 +361,7 @@ export async function runBenchmark(
           gguf_variant: config.tuneVariant ?? null,
           force_reload: true,
         },
-        { signal, runtime: "chat" },
+        { signal, runtime: "chat", headers: leaseHeaders(events.leaseHolder) },
       );
       status = await getInferenceStatus(signal);
     }
@@ -413,7 +418,11 @@ export async function runBenchmark(
       let modelId: string;
       try {
         const loaded = await withLimit(LOAD_LIMIT_MS, signal, "Loading", (s) =>
-          loadModel(variantLoad(base, variant), { signal: s, runtime: "chat" }),
+          loadModel(variantLoad(base, variant), {
+            signal: s,
+            runtime: "chat",
+            headers: leaseHeaders(events.leaseHolder),
+          }),
         );
         modelId = loaded.model;
       } catch (err) {
@@ -581,7 +590,7 @@ export async function runBenchmark(
       events.onProgress("Restoring your original settings");
       // Restore the model chat had open, not the one a tuneModel run swapped in.
       // Keep the finished run, but tell the user if chat was left on the benchmark model.
-      await restore(original, originalLoad).catch((err) =>
+      await restore(original, originalLoad, events.leaseHolder).catch((err) =>
         events.onRestoreError?.(
           err instanceof Error ? err.message : String(err),
         ),
@@ -597,6 +606,7 @@ export async function runBenchmark(
 export async function restore(
   before: InferenceStatusResponse,
   base: ReturnType<typeof chatBaseLoad>,
+  leaseHolder?: string,
 ): Promise<void> {
   await loadModel(
     {
@@ -605,6 +615,6 @@ export async function restore(
         before.requested_llama_extra_args ?? base.llama_extra_args,
       force_reload: true,
     },
-    { runtime: "chat" },
+    { runtime: "chat", headers: leaseHeaders(leaseHolder) },
   );
 }
