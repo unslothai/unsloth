@@ -15,8 +15,10 @@ import {
   LoaderCircleIcon,
   MicIcon,
   MicOffIcon,
+  InfoIcon,
   PencilLineIcon,
 } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, type FC } from "react";
 
@@ -264,11 +266,18 @@ const RING_R = 106;
 // Exact thirds, butt-capped so the three meet with no gap; the judge owns the
 // left third, the filler the top-right, the mid-think call the bottom-right.
 const ARC_DEG = 120;
-const ARCS: Array<{ key: keyof VoiceDecisions; start: number; color: string }> = [
-  { key: "turn", start: 180, color: "#fb7185" },
-  { key: "filler", start: 300, color: "#38bdf8" },
-  { key: "interject", start: 60, color: "#818cf8" },
+const ARCS: Array<{ key: keyof VoiceDecisions; start: number; color: string; label: string }> = [
+  { key: "turn", start: 180, color: "#fb7185", label: "turn" },
+  { key: "filler", start: 300, color: "#38bdf8", label: "filler" },
+  { key: "interject", start: 60, color: "#818cf8", label: "interrupt" },
 ];
+
+/** Short value for the label beside each arc. */
+function arcValue(d: VoiceDecisions, key: keyof VoiceDecisions): string {
+  if (key === "turn") return d.turn ? `${Math.round(d.turn.p * 100)}% ${d.turn.sent ? "sent" : "wait"}` : "";
+  if (key === "filler") return d.filler ? (d.filler.phrase ? "spoke" : "quiet") : "";
+  return d.interject ? `${d.interject.action} ${Math.round(d.interject.confidence * 100)}%` : "";
+}
 
 const VoiceDecisionRing: FC = () => {
   const d = useVoiceDecisions();
@@ -290,8 +299,42 @@ const VoiceDecisionRing: FC = () => {
       {ARCS.map((arc) => {
         const rotate = `rotate(${arc.start - 90} ${RING / 2} ${RING / 2})`;
         const v = fill(arc.key);
+        // Label at the arc's midpoint, just outside the ring; left arc reads right-aligned.
+        const mid = ((arc.start + ARC_DEG / 2) * Math.PI) / 180;
+        const lx = RING / 2 + Math.sin(mid) * (RING_R + 14);
+        const ly = RING / 2 - Math.cos(mid) * (RING_R + 14);
+        const anchor = Math.sin(mid) < -0.1 ? "end" : Math.sin(mid) > 0.1 ? "start" : "middle";
+        const value = arcValue(d, arc.key);
         return (
-          <g key={arc.key} transform={rotate}>
+          <g key={arc.key}>
+          <text
+            x={lx}
+            y={ly}
+            textAnchor={anchor}
+            dominantBaseline="central"
+            fill={arc.color}
+            fillOpacity={0.85}
+            fontSize={11}
+            letterSpacing="0.14em"
+            style={{ fontFamily: "var(--font-heading)", textTransform: "uppercase" }}
+          >
+            {arc.label}
+          </text>
+          {value && (
+            <text
+              x={lx}
+              y={ly + 14}
+              textAnchor={anchor}
+              dominantBaseline="central"
+              fill={arc.color}
+              fillOpacity={0.7}
+              fontSize={11}
+              style={{ fontFamily: "var(--font-heading)" }}
+            >
+              {value}
+            </text>
+          )}
+          <g transform={rotate}>
             <circle
               cx={RING / 2}
               cy={RING / 2}
@@ -316,11 +359,67 @@ const VoiceDecisionRing: FC = () => {
               style={{ transition: "stroke-dasharray 320ms ease-out, stroke-opacity 220ms ease-out" }}
             />
           </g>
+          </g>
         );
       })}
     </svg>
   );
 };
+
+// A small "?" beside the state caption: what the ring and the orb colours mean.
+const VoiceHelpButton: FC = () => (
+  <Popover>
+    <PopoverTrigger asChild>
+      <button
+        type="button"
+        aria-label="What voice mode is detecting"
+        className="grid size-6 place-items-center rounded-full text-foreground/40 transition-colors hover:text-foreground/80"
+      >
+        <InfoIcon className="size-4" />
+      </button>
+    </PopoverTrigger>
+    <PopoverContent
+      align="center"
+      sideOffset={8}
+      className="menu-soft-surface w-80 rounded-lg border-0 p-3 text-ui-13 ring-0"
+    >
+      <div className="pb-2 text-ui-11 font-semibold uppercase tracking-wide text-muted-foreground">
+        What the ring shows
+      </div>
+      <ul className="flex flex-col gap-2">
+        <li className="flex gap-2">
+          <span className="mt-1.5 size-2 shrink-0 rounded-full" style={{ background: "#fb7185" }} />
+          <span>
+            <span className="font-medium">Turn</span>: how sure the turn judge is that you finished
+            speaking. Low and it keeps listening with your words in the box.
+          </span>
+        </li>
+        <li className="flex gap-2">
+          <span className="mt-1.5 size-2 shrink-0 rounded-full" style={{ background: "#38bdf8" }} />
+          <span>
+            <span className="font-medium">Filler</span>: whether it said a short line while the
+            model thinks, like "let me check". Quiet on greetings and short answers.
+          </span>
+        </li>
+        <li className="flex gap-2">
+          <span className="mt-1.5 size-2 shrink-0 rounded-full" style={{ background: "#818cf8" }} />
+          <span>
+            <span className="font-medium">Interrupt</span>: what it did with speech that landed while
+            the model was thinking. Restart folds it into the request, queue holds it for after
+            the reply, ignore drops it.
+          </span>
+        </li>
+        <li className="flex gap-2">
+          <span className="mt-1.5 size-2 shrink-0 rounded-full" style={{ background: "#34d399" }} />
+          <span>
+            Every clip and every interruption is checked for a real voice first, so a cough or a
+            door never reaches the models.
+          </span>
+        </li>
+      </ul>
+    </PopoverContent>
+  </Popover>
+);
 
 // One line under the state caption naming the newest call, so the arcs never
 // need a legend. Empties when the loop stops.
@@ -474,7 +573,7 @@ export const VoiceOrb: FC = () => {
 
         {/* Live caption: names the current state so the color never needs a
             legend. Studio heading font (Hellix / Space Grotesk) to match chrome. */}
-        <div className="h-5">
+        <div className="flex h-5 items-center gap-2">
           <AnimatePresence mode="wait">
             {meta && (
               <motion.span
@@ -490,6 +589,7 @@ export const VoiceOrb: FC = () => {
               </motion.span>
             )}
           </AnimatePresence>
+          {showOverlay && <VoiceHelpButton />}
         </div>
         {showOverlay && <VoiceDecisionCaption />}
       </div>
