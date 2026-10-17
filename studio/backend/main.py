@@ -922,6 +922,12 @@ async def lifespan(app: FastAPI):
 
     app.state.research_supervisor = ResearchSupervisor(app)
     app.state.research_supervisor.start()
+    try:
+        # The supervisor resumes runs that asked to stop with their tab; their watches died with the old process.
+        from routes.research_runs import rearm_unattended_research_runs
+        rearm_unattended_research_runs(app)
+    except Exception as exc:
+        _lifespan_log.warning("re-arming unattended research runs failed: %s", exc)
 
     from core.inference.chat_generation_runs import ChatGenerationSupervisor
 

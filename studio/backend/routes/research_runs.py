@@ -206,15 +206,25 @@ def _attendance_id(run_id: str) -> str:
     return f"research:{run_id}"
 
 
-def _watch_if_unattended_stop(request: Request, run: dict) -> None:
-    """Cancel ``run`` the way the cancel route does once no tab is following it, if its owner asked."""
+def _watch_if_unattended_stop(
+    app: Any,
+    run: dict,
+    *,
+    replace: bool = False,
+) -> None:
+    """Cancel ``run`` the way the cancel route does once no tab is following it, if its owner asked.
+
+    ``replace`` for a new attempt under the run's id: a rebind or retry starts its own grace, and a
+    rebound attempt that keeps running drops the watch the previous attempt left behind.
+    """
+    run_id = run["id"]
     if not (run.get("config") or {}).get("stopWhenUnattended"):
+        if replace:
+            unattended_runs.unwatch(_attendance_id(run_id), current_account_id() or "")
         return
     if run["status"] in db.TERMINAL_STATUSES or run["status"] == "cancelling":
         return
-    run_id = run["id"]
     account = current_account()
-    app = request.app
 
     def settled() -> bool:
         current = run_as(account, db.get_run, run_id)
@@ -237,8 +247,24 @@ def _watch_if_unattended_stop(request: Request, run: dict) -> None:
             await asyncio.to_thread(run_as, account, _sync_assistant, current)
 
     unattended_runs.watch(
-        _attendance_id(run_id), current_account_id() or "", settled = settled, cancel = cancel
+        _attendance_id(run_id),
+        current_account_id() or "",
+        settled = settled,
+        cancel = cancel,
+        replace = replace,
     )
+
+
+def rearm_unattended_research_runs(app: Any) -> None:
+    """Watch every unsettled run that asked to stop with its tab, after a restart emptied the watches.
+
+    The supervisor resumes these runs on its own, so waiting for a follower to reattach would let a
+    run whose tab never comes back finish despite the setting. Its grace starts now.
+    """
+    from core.training.account_jobs import job_accounts
+    for account in job_accounts():
+        for run in run_as(account, db.list_all_active):
+            run_as(account, _watch_if_unattended_stop, app, run)
 
 
 def _is_sensitive_key(key: object) -> bool:
@@ -529,7 +555,8 @@ def create_research_run(
     if supervisor is not None:
         supervisor.note_request_address(request)
         supervisor.wake()
-    _watch_if_unattended_stop(request, run)
+    # A rebind reuses a stopped run's id, so this attempt replaces whatever watch that one left.
+    _watch_if_unattended_stop(request.app, run, replace = True)
     return run
 
 
@@ -639,8 +666,8 @@ def retry_research_run(
         supervisor.wake()
     run = _require_run(run_id)
     _sync_assistant(run)
-    # The watch ended when the run settled; the retried run is the same run again.
-    _watch_if_unattended_stop(request, run)
+    # A new attempt under the same id, with a grace of its own.
+    _watch_if_unattended_stop(request.app, run, replace = True)
     return run
 
 
@@ -658,8 +685,9 @@ async def research_events(
     opening = _require_run(run_id)
     header_after = int(last_event_id) if last_event_id and last_event_id.isdigit() else 0
     cursor = max(after or 0, header_after)
-    # A run that outlived a restart lost its watch with the process; its follower re-arms it.
-    _watch_if_unattended_stop(request, opening)
+    # Re-armed by its follower too: idempotent, and a watch can only have been lost with the process.
+    if (opening.get("config") or {}).get("stopWhenUnattended"):
+        _watch_if_unattended_stop(request.app, opening)
     # One token per stream, so a closing tab clears only its own stamp (state/run_subscribers.py).
     attendance_id = _attendance_id(run_id)
     follower = run_subscribers.new_follower_token()

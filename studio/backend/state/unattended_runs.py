@@ -16,7 +16,7 @@ counts its grace from when it was watched, so a tab that closes between admissio
 event stream still stops the run.
 
 In memory, like ``run_subscribers``: a chat run does not survive a restart anyway, and a Deep
-Research run re-arms its watch from its stored config when a follower reattaches.
+Research run is re-armed from its stored config at startup and whenever a follower reattaches.
 """
 
 from __future__ import annotations
@@ -84,18 +84,21 @@ def watch(
     *,
     settled: Callable[[], bool],
     cancel: Callable[[], Awaitable[None]],
+    replace: bool = False,
 ) -> None:
     """Stop ``attendance_id`` once it has gone ``_GRACE_S`` with no follower.
 
-    ``attendance_id`` is the id its followers stamp in ``run_subscribers``. Idempotent: a run
-    already watched keeps the watch it has, so re-arming on every reattach cannot reset its grace.
-    Safe from any thread; nothing here touches the loop.
+    ``attendance_id`` is the id its followers stamp in ``run_subscribers``. Idempotent by default:
+    a run already watched keeps the watch it has, so re-arming on every reattach cannot reset its
+    grace. ``replace`` is for a new attempt under the same id (a rebound or retried Deep Research
+    run), which must not inherit the previous attempt's grace. Safe from any thread; nothing here
+    touches the loop.
     """
     if not attendance_id:
         return
     key = _key(account_id, attendance_id)
     with _LOCK:
-        if key in _WATCHES:
+        if key in _WATCHES and not replace:
             return
         _WATCHES[key] = _Watch(
             attendance_id = attendance_id,
@@ -104,6 +107,12 @@ def watch(
             cancel = cancel,
             unattended_since = time.monotonic(),
         )
+
+
+def unwatch(attendance_id: str, account_id: str = "") -> None:
+    """Let ``attendance_id`` run on unattended, e.g. a run id rebound to an attempt that keeps running."""
+    with _LOCK:
+        _WATCHES.pop(_key(account_id, attendance_id), None)
 
 
 def _drop(key: tuple[str, str], entry: _Watch) -> None:
@@ -133,12 +142,13 @@ async def check_once(now: float | None = None) -> list[str]:
             continue
         if now - entry.unattended_since < _GRACE_S:
             continue
-        _drop(key, entry)
         try:
             await entry.cancel()
         except Exception as exc:
+            # Kept, so the next pass tries again: a lost writer-lock race must not let the run go on for good.
             logger.warning("Stopping unattended run %s failed: %s", entry.attendance_id, exc)
             continue
+        _drop(key, entry)
         logger.info(
             "Stopped run %s: no tab has watched it for %.0fs", entry.attendance_id, _GRACE_S
         )

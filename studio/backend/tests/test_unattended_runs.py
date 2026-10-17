@@ -133,6 +133,39 @@ def test_watches_are_scoped_to_their_account():
     assert cancelled == ["alice"]
 
 
+def test_a_failed_cancel_keeps_the_watch_and_tries_again():
+    attempts = []
+
+    async def cancel():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("database is locked")
+
+    unattended_runs.watch("run-1", settled = lambda: False, cancel = cancel)
+    assert asyncio.run(unattended_runs.check_once(_past_grace())) == []
+    assert unattended_runs.watched_for_tests("run-1")
+    assert asyncio.run(unattended_runs.check_once(_past_grace())) == ["run-1"]
+    assert len(attempts) == 2
+    assert not unattended_runs.watched_for_tests("run-1")
+
+
+def test_a_replacing_watch_starts_a_fresh_grace_and_unwatch_ends_it():
+    stale = _watch()
+    # The first attempt has used up its grace by the time the second one is admitted.
+    unattended_runs._WATCHES[("", "run-1")].unattended_since -= unattended_runs._GRACE_S + 1
+    fresh: list[str] = []
+
+    async def cancel():
+        fresh.append("run-1")
+
+    unattended_runs.watch("run-1", settled = lambda: False, cancel = cancel, replace = True)
+    assert asyncio.run(unattended_runs.check_once(time.monotonic())) == []
+    assert stale == [] and fresh == []
+    unattended_runs.unwatch("run-1")
+    assert asyncio.run(unattended_runs.check_once(_past_grace())) == []
+    assert stale == [] and fresh == []
+
+
 def test_a_failing_check_keeps_the_watch():
     def settled():
         raise RuntimeError("database is locked")
@@ -193,13 +226,15 @@ def _research_request():
 
 def test_research_left_running_is_not_watched(studio_home):
     _cancelled, request = _research_request()
-    research_routes._watch_if_unattended_stop(request, _research_run(stop_when_unattended = False))
+    research_routes._watch_if_unattended_stop(
+        request.app, _research_run(stop_when_unattended = False)
+    )
     assert not unattended_runs.watched_for_tests("research:run-1", current_account_id() or "")
 
 
 def test_research_nobody_follows_is_cancelled(studio_home):
     cancelled, request = _research_request()
-    research_routes._watch_if_unattended_stop(request, _research_run(stop_when_unattended = True))
+    research_routes._watch_if_unattended_stop(request.app, _research_run(stop_when_unattended = True))
     assert unattended_runs.watched_for_tests("research:run-1", current_account_id() or "")
     assert asyncio.run(unattended_runs.check_once(_past_grace())) == ["research:run-1"]
     run = research_db.get_run("run-1")
@@ -209,12 +244,41 @@ def test_research_nobody_follows_is_cancelled(studio_home):
 
 def test_followed_research_keeps_going(studio_home):
     cancelled, request = _research_request()
-    research_routes._watch_if_unattended_stop(request, _research_run(stop_when_unattended = True))
+    research_routes._watch_if_unattended_stop(request.app, _research_run(stop_when_unattended = True))
     # Stamped the way the events stream stamps it, under the follower's account.
     run_subscribers.mark_subscriber_seen("research:run-1", "tab-a", current_account_id() or "")
     assert asyncio.run(unattended_runs.check_once(_past_grace())) == []
     assert research_db.get_run("run-1")["status"] not in research_db.TERMINAL_STATUSES
     assert cancelled == []
+
+
+def test_a_rebound_research_run_that_keeps_running_drops_the_old_watch(studio_home):
+    _cancelled, request = _research_request()
+    account = current_account_id() or ""
+    research_routes._watch_if_unattended_stop(request.app, _research_run(stop_when_unattended = True))
+    assert unattended_runs.watched_for_tests("research:run-1", account)
+    # rebind_cancelled reuses the id; the new attempt keeps running, so the stale watch must go.
+    rebound = {**research_db.get_run("run-1"), "config": {"model": "local-model"}}
+    research_routes._watch_if_unattended_stop(request.app, rebound, replace = True)
+    assert not unattended_runs.watched_for_tests("research:run-1", account)
+
+
+def test_startup_rearms_only_the_research_runs_that_asked_to_stop(studio_home):
+    _cancelled, request = _research_request()
+    _research_run(stop_when_unattended = True)
+    account = current_account_id() or ""
+    research_routes.rearm_unattended_research_runs(request.app)
+    assert unattended_runs.watched_for_tests("research:run-1", account)
+    # Nobody reconnects after the restart, so the resumed run still stops.
+    assert asyncio.run(unattended_runs.check_once(_past_grace())) == ["research:run-1"]
+    assert research_db.get_run("run-1")["status"] in {"cancelling", "cancelled"}
+
+
+def test_startup_leaves_research_that_keeps_running_alone(studio_home):
+    _cancelled, request = _research_request()
+    _research_run(stop_when_unattended = False)
+    research_routes.rearm_unattended_research_runs(request.app)
+    assert not unattended_runs.watched_for_tests("research:run-1", current_account_id() or "")
 
 
 def test_chat_admission_takes_the_choice_and_defaults_to_running_on():

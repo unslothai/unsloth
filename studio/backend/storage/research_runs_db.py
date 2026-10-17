@@ -504,6 +504,20 @@ def list_active(thread_id: str) -> list[dict]:
     return [run for row in rows if (run := get_run(row["id"])) is not None]
 
 
+def list_all_active() -> list[dict]:
+    """Every unsettled run in this account, for startup work that is not scoped to one thread."""
+    conn = get_connection()
+    try:
+        placeholders = ",".join("?" for _ in ACTIVE_STATUSES)
+        rows = conn.execute(
+            f"SELECT id FROM research_runs WHERE status IN ({placeholders}) ORDER BY created_at",
+            tuple(sorted(ACTIVE_STATUSES)),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [run for row in rows if (run := get_run(row["id"])) is not None]
+
+
 def has_thread_claim(thread_id: str) -> bool:
     conn = get_connection()
     try:
