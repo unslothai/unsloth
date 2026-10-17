@@ -2713,6 +2713,13 @@ export const de = {
         "Ältere Runden wandern in ein durchsuchbares Archiv, wenn ein Chat voll läuft.",
       autoCompactKeywords:
         "Komprimierung automatisch Kontext Fenster kürzen gleitend Prüfpunkt Reserve Archiv Abruf Suche compaction rolling checkpoint headroom archive retrieval rag",
+      keepRunningWhenTabClosed: "Nach dem Schließen des Tabs weiterlaufen",
+      keepRunningWhenTabClosedDescription:
+        "Antworten, Websuche und Deep Research laufen auf dem Server weiter, wenn der Tab geschlossen wird. Ausschalten, um sie stattdessen zu stoppen.",
+      keepRunningWhenTabClosedHint:
+        "Öffne den Chat auf einem beliebigen Gerät erneut, um einen weitergelaufenen Lauf aufzugreifen. Wenn ausgeschaltet, stoppt ein Lauf etwa eine Minute nachdem sein letzter Tab geschlossen wurde, sodass ein Neuladen ihn nicht stoppt. Gilt für Läufe, die nach der Änderung gestartet werden. Temporäre Chats, Antworten von API-Modellen oder auf Anhänge und Schritte mit dem Browser-Panel stoppen immer mit ihrem Tab.",
+      keepRunningWhenTabClosedKeywords:
+        "Hintergrund Tab schließen geschlossen verlassen weiterlaufen fortsetzen stoppen abbrechen Websuche Gerät Handy background tab close keep running continue stop cancel deep research web search resume",
       firstTokenLabel: "Wartelimit für das erste Token",
       firstTokenDescription: "Wie lange lokale GGUF-Modelle ohne Fortschritt bei der Prompt-Verarbeitung auf das erste Token warten dürfen. Gilt für neue Wartezeiten aller Konten. Bei „Unbegrenzt“ wird gewartet, bis du stoppst.",
       firstTokenDefault: "20 Min. (Standard)",

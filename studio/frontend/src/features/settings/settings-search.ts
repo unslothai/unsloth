@@ -128,6 +128,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.projectAttachments",
     "settings.chat.rememberParamsPerModel",
     "settings.chat.autoCompact",
+    "settings.chat.keepRunningWhenTabClosed",
     "settings.chat.toolResultLimit",
     "settings.chat.firstTokenLabel",
     "settings.chat.autoScroll",
@@ -437,6 +438,8 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.resources.modelMemory.noRamReserve":
     "settings.resources.modelMemory.modelMemoryKeywords",
   "settings.chat.autoCompact": "settings.chat.autoCompactKeywords",
+  "settings.chat.keepRunningWhenTabClosed":
+    "settings.chat.keepRunningWhenTabClosedKeywords",
   "settings.chat.firstTokenLabel": "settings.chat.firstTokenKeywords",
   "settings.chat.toolResultLimit": "settings.chat.toolResultLimitKeywords",
   // match action verbs omitted from these descriptive labels.

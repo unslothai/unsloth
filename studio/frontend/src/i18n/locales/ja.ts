@@ -2655,6 +2655,13 @@ export const ja = {
         "チャットの文脈が満杯になると、古いターンは検索可能なアーカイブに移ります。",
       autoCompactKeywords:
         "圧縮 自動圧縮 コンテキスト ウィンドウ 切り詰め スライディング チェックポイント 余裕 アーカイブ 検索 取得 compaction rolling headroom archive retrieval rag",
+      keepRunningWhenTabClosed: "タブを閉じた後も実行を続ける",
+      keepRunningWhenTabClosedDescription:
+        "タブを閉じた後も、応答、ウェブ検索、Deep Research はサーバーで続行されます。オフにすると代わりに停止します。",
+      keepRunningWhenTabClosedHint:
+        "続行された実行は、どのデバイスでもチャットを開き直すと確認できます。オフの場合、最後のタブが閉じてから約 1 分以内に実行が停止するため、再読み込みでは停止しません。変更後に開始した実行に適用されます。一時チャット、API モデルからの応答や添付ファイルへの応答、ブラウザーパネルを使うターンは常にタブと一緒に停止します。",
+      keepRunningWhenTabClosedKeywords:
+        "バックグラウンド タブ 閉じる 離れる 実行を続ける 継続 停止 キャンセル ウェブ検索 デバイス スマートフォン background tab close keep running continue stop cancel deep research web search resume",
       firstTokenLabel: "最初のトークンの待機上限",
       firstTokenDescription: "ローカル GGUF モデルが、プロンプト処理の進捗がないまま最初のトークンを待てる時間です。すべてのアカウントの新しい待機に適用されます。「無制限」では停止するまで待ち続けます。",
       firstTokenDefault: "20 分（既定）",

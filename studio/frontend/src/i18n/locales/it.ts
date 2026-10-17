@@ -2618,6 +2618,13 @@ export const it = {
         "I turni più vecchi passano in un archivio consultabile quando una chat riempie il contesto.",
       autoCompactKeywords:
         "compattazione automatica contesto finestra troncare scorrevole checkpoint margine archivio recupero ricerca compaction rolling headroom archive retrieval rag",
+      keepRunningWhenTabClosed: "Continua dopo la chiusura della scheda",
+      keepRunningWhenTabClosedDescription:
+        "Risposte, ricerca web e Deep Research continuano sul server dopo la chiusura della scheda. Disattiva per fermarle invece.",
+      keepRunningWhenTabClosedHint:
+        "Riapri la chat su qualsiasi dispositivo per riprendere un'esecuzione che è andata avanti. Se disattivato, un'esecuzione si ferma circa un minuto dopo la chiusura della sua ultima scheda, quindi un ricaricamento non la ferma. Vale per le esecuzioni avviate dopo la modifica. Le chat temporanee, le risposte dei modelli API o agli allegati e i turni che usano il pannello del browser si fermano sempre con la loro scheda.",
+      keepRunningWhenTabClosedKeywords:
+        "background scheda chiudere chiusa uscire continuare fermare annullare ricerca web dispositivo telefono tab close keep running continue stop cancel deep research web search resume",
       firstTokenLabel: "Limite di attesa del primo token",
       firstTokenDescription: "Per quanto tempo i modelli GGUF locali possono attendere il primo token senza progressi nell’elaborazione del prompt. Si applica alle nuove attese di tutti gli account. Con «Illimitato» l’attesa continua finché non interrompi.",
       firstTokenDefault: "20 min (predefinito)",

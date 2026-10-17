@@ -2710,6 +2710,13 @@ export const fr = {
         "Les anciens échanges vont dans une archive consultable quand un chat sature son contexte.",
       autoCompactKeywords:
         "compaction automatique contexte fenêtre tronquer glissante point de contrôle marge archive récupération recherche rolling checkpoint headroom retrieval rag",
+      keepRunningWhenTabClosed: "Continuer après la fermeture de l’onglet",
+      keepRunningWhenTabClosedDescription:
+        "Les réponses, la recherche web et Deep Research continuent sur le serveur après la fermeture de l’onglet. Désactivez pour les arrêter à la place.",
+      keepRunningWhenTabClosedHint:
+        "Rouvrez la conversation sur n’importe quel appareil pour retrouver une exécution qui a continué. Désactivé, une exécution s’arrête environ une minute après la fermeture de son dernier onglet, donc un rechargement ne l’arrête pas. S’applique aux exécutions lancées après la modification. Les conversations temporaires, les réponses des modèles API ou à des pièces jointes et les tours qui utilisent le panneau du navigateur s’arrêtent toujours avec leur onglet.",
+      keepRunningWhenTabClosedKeywords:
+        "arrière-plan onglet fermer fermé quitter continuer arrêter annuler recherche web appareil téléphone background tab close keep running continue stop cancel deep research web search resume",
       firstTokenLabel: "Limite d’attente du premier jeton",
       firstTokenDescription: "Durée pendant laquelle les modèles GGUF locaux peuvent attendre le premier jeton sans progression du traitement du prompt. S’applique aux nouvelles attentes de tous les comptes. Avec « Illimité », l’attente continue jusqu’à ce que vous arrêtiez.",
       firstTokenDefault: "20 min (par défaut)",

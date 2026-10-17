@@ -2722,6 +2722,13 @@ export const en = {
         "Older turns move to a searchable archive when a chat fills its context.",
       autoCompactKeywords:
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search",
+      keepRunningWhenTabClosed: "Keep running after the tab closes",
+      keepRunningWhenTabClosedDescription:
+        "Replies, web search, and Deep Research keep going on the server after the tab closes. Turn off to stop them instead.",
+      keepRunningWhenTabClosedHint:
+        "Reopen the chat on any device to pick up a run that kept going. When off, a run stops within about a minute of its last tab closing, so a reload does not stop it. Applies to runs started after you change this. Temporary chats, replies from API models or to attachments, and turns that use the browser panel always stop with their tab.",
+      keepRunningWhenTabClosedKeywords:
+        "background tab close closed leave keep running continue stop cancel deep research web search resume reconnect device phone",
       firstTokenLabel: "First-token waiting limit",
       firstTokenDescription: "How long local GGUF models may wait without prompt-processing progress before the first token. Applies to new waits for all accounts. Unlimited keeps waiting until you stop.",
       firstTokenDefault: "20 min (default)",
