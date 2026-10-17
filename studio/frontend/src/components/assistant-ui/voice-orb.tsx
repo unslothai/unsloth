@@ -261,11 +261,13 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
 // has spoken; a filled arc never moves on its own.
 const RING = 232;
 const RING_R = 106;
-const ARC_DEG = 100;
+// Exact thirds, butt-capped so the three meet with no gap; the judge owns the
+// left third, the filler the top-right, the mid-think call the bottom-right.
+const ARC_DEG = 120;
 const ARCS: Array<{ key: keyof VoiceDecisions; start: number; color: string }> = [
-  { key: "turn", start: 230, color: "#fb7185" },
-  { key: "filler", start: 350, color: "#38bdf8" },
-  { key: "interject", start: 110, color: "#818cf8" },
+  { key: "turn", start: 180, color: "#fb7185" },
+  { key: "filler", start: 300, color: "#38bdf8" },
+  { key: "interject", start: 60, color: "#818cf8" },
 ];
 
 const VoiceDecisionRing: FC = () => {
@@ -298,7 +300,7 @@ const VoiceDecisionRing: FC = () => {
               stroke={arc.color}
               strokeOpacity={0.22}
               strokeWidth={5}
-              strokeLinecap="round"
+              strokeLinecap="butt"
               strokeDasharray={`${arcLen} ${circ}`}
             />
             <circle
@@ -309,7 +311,7 @@ const VoiceDecisionRing: FC = () => {
               stroke={arc.color}
               strokeOpacity={v > 0 ? 1 : 0}
               strokeWidth={5}
-              strokeLinecap="round"
+              strokeLinecap="butt"
               strokeDasharray={`${Math.max(0, arcLen * v)} ${circ}`}
               style={{ transition: "stroke-dasharray 320ms ease-out, stroke-opacity 220ms ease-out" }}
             />
