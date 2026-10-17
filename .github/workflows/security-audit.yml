@@ -167,7 +167,7 @@ jobs:
       # crates.io advisories, GitHub release artefacts (osv-scanner
       # binary), Semgrep registry, and TruffleHog's own GitHub action.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: block
           disable-sudo: true
@@ -198,7 +198,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '22'
 
@@ -645,7 +645,7 @@ jobs:
       # ─────────────────────────────────────────────────────────────
       - name: TruffleHog (secrets in diff)
         continue-on-error: true
-        uses: trufflesecurity/trufflehog@4dd8831c5f12599465d4d45c3c447b4018a34c85  # v3.97.9
+        uses: trufflesecurity/trufflehog@e76dff8a7e57d6df0c60ad8cbf5d5cba505a8fc9  # v3.99.2
         with:
           path: ./
           base: ${{ github.event.pull_request.base.sha || '' }}
@@ -800,7 +800,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()
         with:
           name: advisory-audit-logs
@@ -888,7 +888,7 @@ jobs:
       # Per-job allowlist: pip-scan-packages only fetches PyPI archives
       # via scan_packages.py + pip download. No npm or cargo traffic.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: block
           disable-sudo: true
@@ -1070,7 +1070,7 @@ jobs:
             exit "$rc"
           fi
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()
         with:
           name: scan-packages-log-${{ matrix.shard.id }}
@@ -1117,7 +1117,7 @@ jobs:
       # registry.npmjs.org. GitHub endpoints retained for checkout +
       # setup-python action machinery.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: block
           disable-sudo: true
@@ -1174,7 +1174,7 @@ jobs:
             exit "$rc"
           fi
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()
         with:
           name: scan-npm-packages-log
@@ -1203,7 +1203,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: audit
           disable-sudo: true
@@ -1221,7 +1221,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '22'
 
@@ -1295,7 +1295,7 @@ jobs:
           echo "Not a pull_request event; install-script diff requires a base ref."
           echo "This step is intentionally a no-op outside PR triggers."
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()
         with:
           name: npm-audit-signatures-log
