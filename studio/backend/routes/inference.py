@@ -11354,7 +11354,7 @@ async def _auto_switch_npu_model(
     The caller has checked auto-switch is on. Same lock, gates, waiter count, cancellation and
     deferred claim as a GGUF switch.
     """
-    from core.inference.gpu_arbiter import require_no_foreign_generations
+    from core.inference.gpu_arbiter import MultiModelAlwaysRefusal, require_no_foreign_generations
     from core.inference.llama_keepwarm import inference_lifecycle_gate, model_load_gate
     from utils.openai_auto_switch_settings import get_model_override, resolve_fit_max_seq_length
 
@@ -11398,6 +11398,8 @@ async def _auto_switch_npu_model(
                         )
                         loaded_ok = True
                         _raise_if_cancelled()
+                    except MultiModelAlwaysRefusal as exc:
+                        raise exc.as_http_exception(switch_path) from exc
                     finally:
                         if not claim_resident:
                             # Preview-owned until the route's 2xx claims it, so a later rejection
@@ -12208,8 +12210,12 @@ async def _maybe_auto_switch_model(
             if waiter_noted:
                 _note_switch_waiter(key, -1)
 
+    from core.inference.gpu_arbiter import MultiModelAlwaysRefusal
+
     try:
         await _resolve_and_switch()
+    except MultiModelAlwaysRefusal as exc:
+        raise exc.as_http_exception(getattr(getattr(fastapi_request, "url", None), "path", None)) from exc
     except HTTPException as exc:
         path = getattr(getattr(fastapi_request, "url", None), "path", None)
         if (
@@ -12408,8 +12414,8 @@ def release_chat_after_kept_models() -> bool:
 
 def reap_dead_managed_engine(backend) -> None:
     """A crashed engine leaves nothing resident, so its claim and sharers go with it."""
-    from core.inference.gpu_arbiter import CHAT, current_owner
-    if backend.reap_dead_managed_engine() and (release_chat_gpu_claim() or current_owner() != CHAT):
+    from core.inference.gpu_arbiter import CHAT, holds
+    if backend.reap_dead_managed_engine() and (release_chat_gpu_claim() or not holds(CHAT)):
         account_access.clear_resident("chat")
 
 
@@ -12562,10 +12568,11 @@ async def load_model_for_preview(
                     DIFFUSION,
                     VIDEO,
                     GpuOwnerBusyError,
-                    current_owner,
+                    MultiModelAlwaysRefusal,
+                    holds,
                 )
 
-                if current_owner() in (DIFFUSION, VIDEO):
+                if holds(DIFFUSION) or holds(VIDEO):
                     untrack_current_request(scope)
                     raise HTTPException(
                         status_code = 503,
@@ -12603,7 +12610,7 @@ async def load_model_for_preview(
                         allow_gpu_owner_eviction = False,
                     )
                     loaded_ok = True
-                except GpuOwnerBusyError as exc:
+                except (GpuOwnerBusyError, MultiModelAlwaysRefusal) as exc:
                     untrack_current_request(scope)
                     raise HTTPException(
                         status_code = 503,
@@ -18454,11 +18461,20 @@ async def load_model_gated(
     # then gets unloaded by the pre-swap teardown. Rechecked under the gate: an
     # install can reserve while this request queues on the gate, so the pre-gate
     # check alone is only a fast path.
+    from core.inference.gpu_arbiter import (
+        MultiModelAlwaysRefusal,
+        eviction_sink,
+        note_evictions,
+        refusal_for,
+    )
     from core.inference.llama_cpp import GpuMemoryShortError
     from core.inference.llama_keepwarm import inference_lifecycle_gate, model_load_gate
 
     extra = None
     evicted: list[str] = []
+    # Every model this load unloads, as {kind, model}: kept slots dropped here and anything the arbiter evicts.
+    evicted_slots: list[dict] = []
+    sink_token = None
     attempt = _begin_load_attempt(request, current_subject)
     with _scoped_load_attempts_lock:
         _pending_load_attempts[attempt.token] = attempt
@@ -18474,6 +18490,7 @@ async def load_model_gated(
         # model mid-load. Auto-switch calls the tracked impl directly since it already
         # holds this gate.
         async with model_load_gate():
+            sink_token = eviction_sink.set(evicted_slots)
             # Chosen under the gate, so two loads cannot both claim an empty primary.
             extra = await _select_load_slot(request)
             new_slot = extra is not None and extra not in model_slots.slots
@@ -18515,17 +18532,42 @@ async def load_model_gated(
                         )
                         break
                     except (GpuMemoryShortError, HTTPException) as exc:
-                        if not isinstance(exc, GpuMemoryShortError):
+                        measured = isinstance(exc, GpuMemoryShortError)
+                        if not measured:
                             # A non-GGUF load reports no fit up front: its out-of-memory failure
                             # makes room the same way, one idle kept model at a time.
                             if extra is None or not _ran_out_of_memory(exc):
                                 raise
-                            exc = GpuMemoryShortError(str(exc.detail))
+                            detail = exc.detail
+                            exc = GpuMemoryShortError(
+                                str(detail.get("message") or detail)
+                                if isinstance(detail, dict)
+                                else str(detail)
+                            )
+                        from utils.multi_model_settings import get_multi_model_mode
+
+                        if await asyncio.to_thread(get_multi_model_mode) == "always":
+                            # Always unloads nothing: try once more beside the others, else refuse.
+                            if exc.capped and not request.force_alongside:
+                                request = request.model_copy(update = {"force_alongside": True})
+                                continue
+                            if measured:
+                                # Its Always copy already says nothing is unloaded to make room.
+                                raise MultiModelAlwaysRefusal(str(exc), kind = "chat") from exc
+                            raise refusal_for(
+                                await asyncio.to_thread(chat_eviction_reports)
+                            ) from exc
                         # No chat may start on a victim between its pick and teardown.
                         async with inference_lifecycle_gate() if new_slot else nullcontext():
-                            dropped = await asyncio.to_thread(
-                                model_slots.evict, extra, exc.short_mib, exc.gpu_indices
+                            victims = await asyncio.to_thread(
+                                model_slots.eviction_victims, extra, exc.short_mib, exc.gpu_indices
                             )
+                            # Named before the drop, while their public ids are still live.
+                            reports = await asyncio.to_thread(
+                                lambda: {slot: _kept_slot_reports(slot) for slot in victims}
+                            )
+                            dropped = await asyncio.to_thread(model_slots.evict_these, victims)
+                        note_evictions([r for slot in dropped for r in reports.get(slot, ())])
                         if not dropped:
                             if exc.capped:
                                 request = request.model_copy(update = {"force_alongside": True})
@@ -18541,6 +18583,9 @@ async def load_model_gated(
                             await asyncio.to_thread(model_slots.drop, extra)
                             model_slots.loading, extra = None, None
                             replaced = _primary_model_label()
+                            replaced_reports = await asyncio.to_thread(
+                                model_slots.in_slot, None, _primary_chat_reports
+                            )
                             request = request.model_copy(
                                 update = {"alongside": False, "force_alongside": False}
                             )
@@ -18551,6 +18596,7 @@ async def load_model_gated(
                                 # As a pick does before a switch: the active model goes first, so
                                 # the new one is placed on a GPU it no longer shares.
                                 await asyncio.to_thread(_unload_primary)
+                                note_evictions(replaced_reports)
                                 response = await _run_tracked_load_model_impl(
                                     request,
                                     fastapi_request,
@@ -18581,10 +18627,23 @@ async def load_model_gated(
         # it is a plain attribute write and holding the gate for it would only widen
         # the window that blocks unload.
         get_llama_cpp_backend()._loaded_by_user_action = user_initiated
-        if evicted and isinstance(response, LoadResponse):
-            response.evicted = evicted
+        # Media a chat load freed is listed too, under its model id.
+        evicted += [
+            slot["model"]
+            for slot in evicted_slots
+            if slot.get("kind") in ("image", "video") and slot.get("model")
+        ]
+        if isinstance(response, LoadResponse):
+            if evicted:
+                response.evicted = evicted
+            response.evicted_slots = list(evicted_slots)
         return response
+    except MultiModelAlwaysRefusal as exc:
+        path = getattr(getattr(fastapi_request, "url", None), "path", None)
+        raise exc.as_http_exception(path) from exc
     finally:
+        if sink_token is not None:
+            eviction_sink.reset(sink_token)
         try:
             if extra is not None:
                 model_slots.loading = None
@@ -18636,6 +18695,125 @@ def _primary_model_label() -> Optional[str]:
     return getattr(_peek_inference_backend(), "active_model_name", None)
 
 
+def _orchestrator_chat_report(backend, account) -> Optional[dict]:
+    from core.inference.native_audio import NATIVE_AUDIO_TYPES
+
+    name = getattr(backend, "active_model_name", None)
+    if not name:
+        return None
+    entry = (getattr(backend, "models", None) or {}).get(name) or {}
+    kind = "audio" if entry.get("audio_type") in NATIVE_AUDIO_TYPES else "chat"
+    return {"kind": kind, "model": _orchestrator_public_model_id(backend) or "", "account": account}
+
+
+def _primary_chat_reports() -> list[dict]:
+    """Reports for the loaded primary chat model; call through ``model_slots.in_slot(None, ...)``."""
+    from core.inference.npu_backend import peek_npu_backend
+    from hub.services.models.account_access import _resident_loader
+
+    account = _resident_loader("chat")
+    found = []
+    llama = get_llama_cpp_backend()
+    if getattr(llama, "is_loaded", False):
+        found.append({"kind": "chat", "model": _llama_status_model_ids(llama)[0] or "", "account": account})
+    report = _orchestrator_chat_report(_peek_inference_backend(), account)
+    if report is not None:
+        found.append(report)
+    npu = peek_npu_backend()
+    npu_model = npu.loaded_model if npu is not None else None
+    if npu_model is not None:
+        found.append({"kind": "chat", "model": npu_model.id or "", "account": account})
+    return found
+
+
+def _kept_slot_reports(slot) -> list[dict]:
+    """Reports for one kept slot, evaluated in the slot as the status code does."""
+
+    def collect() -> list[dict]:
+        found = []
+        if getattr(slot.llama, "is_loaded", False):
+            model = _llama_public_model_id(slot.llama) or ""
+            found.append({"kind": "chat", "model": model, "account": slot.account})
+        report = _orchestrator_chat_report(slot.orchestrator, slot.account)
+        if report is not None:
+            found.append(report)
+        return found
+
+    try:
+        return model_slots.in_slot(slot, collect)
+    except Exception as exc:  # noqa: BLE001 - a report never blocks an eviction
+        logger.warning("Could not list a model kept alongside: %s", exc)
+        return []
+
+
+def chat_eviction_reports() -> list[dict]:
+    """``{kind, model, account}`` for every loaded chat model, read before an eviction tears it down.
+
+    The GPU arbiter calls this under its lock, so it never calls back into the arbiter, never
+    takes ``model_slots.lock`` and never raises. Models still loading and stuck slots are skipped.
+    """
+    reports: list[dict] = []
+    try:
+        reports += model_slots.in_slot(None, _primary_chat_reports)
+    except Exception as exc:  # noqa: BLE001 - a report never blocks an eviction
+        logger.warning("Could not list the active chat model: %s", exc)
+    try:
+        filling = model_slots.loading[0] if model_slots.loading else None
+        for slot in list(model_slots.slots):
+            if slot is not filling:
+                reports += _kept_slot_reports(slot)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not list the models kept alongside: %s", exc)
+    return reports
+
+
+async def _refuse_replacing_under_always(request: LoadRequest, names) -> None:
+    """Under Always, refuse a load that would replace the serving primary with another repo, or
+    whose vLLM/SGLang engine would retire a kept model. Runs before any teardown."""
+    from core.inference.gpu_arbiter import refusal_for
+    from core.inference.openai_auto_download import split_model_ref
+    from utils.multi_model_settings import get_multi_model_mode
+
+    if await asyncio.to_thread(get_multi_model_mode) != "always":
+        return
+    if request.engine != "auto":
+        for slot in list(model_slots.slots):
+            if model_slots.in_use(slot):
+                raise refusal_for(await asyncio.to_thread(_kept_slot_reports, slot))
+    try:
+        reports = await asyncio.to_thread(model_slots.in_slot, None, _primary_chat_reports)
+    except Exception:  # noqa: BLE001 - nothing to name, so nothing to protect
+        reports = []
+    if not reports:
+        return
+    # The bare repo id, so another quant of the same repo is allowed; the full name for an NPU id.
+    candidates = dict.fromkeys(
+        ref for name in names if name for ref in (split_model_ref(name)[0], name) if ref
+    )
+    for ref in candidates:
+        if await asyncio.to_thread(
+            model_slots.in_slot, None, functools.partial(_loaded_satisfies, ref)
+        ):
+            return
+    raise refusal_for(reports)
+
+
+def _reassert_chat_claim(policy: str) -> None:
+    """Re-assert CHAT for a chat model already loaded. Under Always a refusal is ignored: the
+    model stays usable and nothing is unloaded."""
+    from core.inference.gpu_arbiter import (
+        CHAT,
+        MultiModelAlwaysRefusal,
+        acquire_for_request,
+        policy_kwargs,
+    )
+
+    try:
+        acquire_for_request(CHAT, **policy_kwargs(policy))
+    except MultiModelAlwaysRefusal:
+        pass
+
+
 async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     """The extra slot already serving the model, or a new one for ``alongside``. None is the primary."""
     from core.inference.npu_backend import is_npu_model_path
@@ -18660,7 +18838,15 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     # at the first load after it is idle.
     if not await asyncio.to_thread(get_multi_model_enabled):
         if model_slots.slots:
+            from core.inference.gpu_arbiter import note_evictions
+
+            kept = await asyncio.to_thread(
+                lambda: {slot: _kept_slot_reports(slot) for slot in list(model_slots.slots)}
+            )
             await asyncio.to_thread(model_slots.unload_idle)
+            note_evictions(
+                [r for slot, found in kept.items() if slot not in model_slots.slots for r in found]
+            )
         return None
     if not request.alongside:
         return None
@@ -18980,6 +19166,9 @@ async def _load_model_impl(
     from core.inference.npu_backend import is_npu_model_path
 
     if is_npu_model_path(request.model_path):
+        # The NPU model replaces the primary: under Always only the one already serving may reload.
+        if routed_slot.get() is None:
+            await _refuse_replacing_under_always(request, (request.model_path,))
         return await _load_npu_model(
             request,
             current_request_counted = current_request_counted,
@@ -19014,6 +19203,7 @@ async def _load_model_impl(
     _cache_footprint_before = _hub_cache_footprint(request.model_path)
     _lora_base_before_this_load = _lora_base_already_in_the_hub_cache(request.model_path)
     from core.inference.llama_cpp import GpuMemoryShortError, LlamaServerNotFoundError
+    from core.inference.gpu_arbiter import MultiModelAlwaysRefusal
 
     def _raise_if_scoped_load_cancelled() -> None:
         if load_cancel_event is not None and load_cancel_event.is_set():
@@ -19187,7 +19377,8 @@ async def _load_model_impl(
         # already-loaded fast paths below re-assert CHAT themselves. Deferred past validation so a doomed load evicts nothing.
         from core.inference.gpu_arbiter import (
             acquire_for_request,
-            current_owner,
+            holds,
+            policy_kwargs,
             CHAT,
             DIFFUSION,
             VIDEO,
@@ -19202,6 +19393,16 @@ async def _load_model_impl(
             or getattr(backend, "active_model_name", None)
             or (replacing and _resident_npu_model() is not None)
         )
+        # Under Always, a load that would unload the serving primary or a kept model is refused
+        # here, before any teardown; another quant, context or engine of the same repo is not.
+        if replacing and (serving or (request.engine != "auto" and model_slots.slots)):
+            await _refuse_replacing_under_always(
+                request,
+                (_model_key(request), request.model_path, _requested_model_id, scan_folder_public_id),
+            )
+        from utils.multi_model_settings import get_multi_model_mode
+
+        multi_model_mode = await asyncio.to_thread(get_multi_model_mode)
 
         # Resolve once so dedupe, admission and launch use the same slot count.
         _n_parallel = _resolve_parallel_slots(request, fastapi_request)
@@ -19281,7 +19482,7 @@ async def _load_model_impl(
                 # held) to correct a drifted owner. Unless the resident server is a confirmed
                 # zero-VRAM one, which coexists with an image/video pipeline.
                 if not llama_backend.holds_no_vram:
-                    await asyncio.to_thread(acquire_for_request, CHAT)
+                    await asyncio.to_thread(_reassert_chat_claim, multi_model_mode)
                 return reused
         if not (request.gguf_variant or is_direct_gguf_request):
             _inherit_resident_load_in_4bit(backend, request, model_identifier)
@@ -19324,7 +19525,7 @@ async def _load_model_impl(
                 # Requested chat model already resident: assert CHAT ownership (no-op when held) to correct a drifted owner.
                 # Owns no GPU, so the arbiter would cancel a generation for nothing.
                 if not _resident_audio_holds_no_gpu(backend):
-                    await asyncio.to_thread(acquire_for_request, CHAT)
+                    await asyncio.to_thread(_reassert_chat_claim, multi_model_mode)
                 if replacing:
                     account_access.join_resident("chat")
                 if request._advertised_id:
@@ -19742,6 +19943,7 @@ async def _load_model_impl(
                     handoff_kwargs["allow_evict"] = False
                 if not replacing:
                     handoff_kwargs["alongside"] = True
+                handoff_kwargs.update(policy_kwargs(multi_model_mode))
                 await asyncio.to_thread(
                     acquire_for_request,
                     CHAT,
@@ -19753,7 +19955,12 @@ async def _load_model_impl(
                 if isinstance(exc, OwnerChangedError):
                     raise HTTPException(status_code = 409, detail = str(exc)) from exc
                 raise
-            if post_media_handoff_gpu is not None and post_media_handoff_needed_gb is not None:
+            # Wait for the freed VRAM only when the media model was actually evicted.
+            if (
+                post_media_handoff_gpu is not None
+                and post_media_handoff_needed_gb is not None
+                and not holds(expected_native_owner[0])
+            ):
                 settled = await asyncio.to_thread(
                     _wait_for_native_audio_gpu_free_gb,
                     post_media_handoff_gpu,
@@ -19918,7 +20125,7 @@ async def _load_model_impl(
             # Recovery may turn an automatic GPU request into a zero-VRAM load.
             if llama_backend.holds_no_vram:
                 chat_load_needs_gpu = False
-            if chat_load_needs_gpu and current_owner() != CHAT:
+            if chat_load_needs_gpu and not holds(CHAT):
                 await asyncio.to_thread(llama_backend.unload_model)
                 raise HTTPException(
                     status_code = 409,
@@ -20131,7 +20338,7 @@ async def _load_model_impl(
 
         # Same guard the GGUF branch runs above: an Images/Video acquire can land between this load's cancellation and its publish, so this load undoes itself.
         # On a clean server the owner is None, so ungated this unloads what it loaded.
-        if chat_load_needs_gpu and current_owner() != CHAT:
+        if chat_load_needs_gpu and not holds(CHAT):
             await asyncio.to_thread(backend.unload_model, config.identifier)
             # The worker's base CUDA context outlives the model unload, so kill it too.
             await asyncio.to_thread(backend._shutdown_subprocess, 5.0)
@@ -20307,6 +20514,8 @@ async def _load_model_impl(
         raise HTTPException(status_code = 400, detail = redacted_msg)
     except GpuMemoryShortError:
         raise  # load_model_gated makes room and retries
+    except MultiModelAlwaysRefusal:
+        raise  # the route answers 409 with the refusal header
     except LlamaServerNotFoundError as e:
         # Missing GGUF runtime: 400 with the install message, not a generic 500.
         logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
@@ -22806,6 +23015,9 @@ async def get_status(current_subject: str, model: Optional[str] = None):
     slot = await _route_to_extra_slot(model)
     response = await _slot_status(current_subject)
     if isinstance(response, InferenceStatusResponse):
+        from utils.multi_model_settings import get_multi_model_mode
+
+        response.multi_model_mode = await asyncio.to_thread(get_multi_model_mode)
         active = response.active_model
         response.serving = [active] if active else []
         response.serving_checkpoints = [response.model_identifier or active] if active else []
@@ -49885,6 +50097,9 @@ async def load_diffusion_model_gated(
     )
     from core.inference.gpu_arbiter import (
         acquire_for_request,
+        eviction_sink,
+        MultiModelAlwaysRefusal,
+        policy_kwargs,
         require_no_foreign_generations,
         release,
         DIFFUSION,
@@ -50197,12 +50412,25 @@ async def load_diffusion_model_gated(
                 ),
             )
 
+        # Every model this load unloads, as {kind, model}.
+        evicted_slots: list[dict] = []
         if needs_gpu:
+            from utils.multi_model_settings import get_multi_model_mode
+
+            # Read outside the arbiter lock.
+            multi_model_mode = await asyncio.to_thread(get_multi_model_mode)
+
             # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts DIFFUSION before
             # the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps the same span.
             def _acquire_and_begin():
-                with _diffusion_training_admission():
-                    return acquire_for_request(DIFFUSION, _begin_load)
+                sink_token = eviction_sink.set(evicted_slots)
+                try:
+                    with _diffusion_training_admission():
+                        return acquire_for_request(
+                            DIFFUSION, _begin_load, **policy_kwargs(multi_model_mode)
+                        )
+                finally:
+                    eviction_sink.reset(sink_token)
 
             status_dict = await asyncio.to_thread(_acquire_and_begin)
         else:
@@ -50225,11 +50453,18 @@ async def load_diffusion_model_gated(
             *(r for r in account_access.media_component_file_references(request) if r),
         )
         reset_media_load_progress("image")
+        status_dict = {
+            **status_dict,
+            "evicted": [slot["model"] for slot in evicted_slots if slot.get("model")],
+            "evicted_slots": evicted_slots,
+        }
         return DiffusionStatusResponse(**(await asyncio.to_thread(annotate_status, status_dict)))
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
     except account_access.GpuBusyForAnotherAccountError as exc:
         raise account_access.gpu_busy_error() from exc
+    except MultiModelAlwaysRefusal as exc:
+        raise exc.as_http_exception() from exc
     except RuntimeError as exc:
         # A load is already in progress.
         raise HTTPException(status_code = 409, detail = str(exc))
