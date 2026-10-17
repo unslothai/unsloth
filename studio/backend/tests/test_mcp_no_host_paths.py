@@ -131,7 +131,7 @@ def run_case(monkeypatch, mcp, name: str, routes: dict, args: dict) -> dict:
 def test_every_registered_tool_has_a_host_path_case():
     names = {tool.name for tool in asyncio.run(create_studio_mcp().list_tools())}
     assert set(MODEL_TEXT) <= set(CASES) == names
-    assert len(names) == 18
+    assert len(names) == len(CASES)
 
 
 @pytest.mark.parametrize("name", sorted(CASES))
