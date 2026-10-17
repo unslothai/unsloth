@@ -159,6 +159,7 @@ import {
 } from "@/features/chat/api/chat-adapter";
 import {
   loadVoiceMode,
+  requestVoiceStopSpeaking,
   requestVoiceToggle,
   useVoiceAvailable,
   useVoiceRequested,
@@ -7629,6 +7630,11 @@ const ComposerRightControls: FC<{
   // these). Kept mounted (display:none) only so composer state stays consistent.
   const voiceEngaged = useChatRuntimeStore((s) => s.voiceMode !== "off");
   const voiceRequested = useVoiceRequested();
+  // The reply keeps speaking after its run has ended, when the run's own stop
+  // button is already gone.
+  const voiceSpeaking = useChatRuntimeStore(
+    (s) => s.voiceOrbState === "speaking" || s.voiceOrbState === "synthesizing",
+  );
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
@@ -7675,6 +7681,20 @@ const ComposerRightControls: FC<{
           )}
         </ComposerPrimitive.If>
       </div>
+      {voiceEngaged && voiceSpeaking ? (
+        <AuiIf condition={({ thread }) => !thread.isRunning}>
+          <Button
+            type="button"
+            variant="default"
+            size="icon"
+            className="aui-composer-cancel ml-1.5 size-9 rounded-full"
+            aria-label="Stop speaking"
+            onClick={requestVoiceStopSpeaking}
+          >
+            <SquareIcon className="size-3 fill-current" />
+          </Button>
+        </AuiIf>
+      ) : null}
       <AuiIf
         condition={({ thread }) =>
           !thread.isRunning && !isQueueRunning && !isResearchActive

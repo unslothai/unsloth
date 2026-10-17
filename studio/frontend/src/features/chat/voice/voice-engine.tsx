@@ -56,6 +56,7 @@ import {
   registerVoicePlayback,
   registerVoiceReplyText,
   registerVoiceResume,
+  registerVoiceStopSpeaking,
   registerVoiceSubmit,
   registerVoiceThreadReset,
   registerVoiceToggle,
@@ -944,6 +945,25 @@ export const VoiceEngine: FC = () => {
       registerVoiceToggle(null);
     };
   }, [toggle]);
+
+  // The composer's stop button while a reply is being spoken after its run ended.
+  useEffect(() => {
+    registerVoiceStopSpeaking(() => {
+      if (voiceModeRef.current !== "active") return;
+      voiceTrace("engine.stopSpeaking", { speaking: isSpeakingRef.current, playing: isPlayingRef.current });
+      stop();
+      const thread = auiRef.current.thread();
+      if (thread.getState().isRunning) {
+        try {
+          thread.cancelRun();
+        } catch {
+          // Run may have ended between the check and here.
+        }
+      }
+      resumeListen();
+    });
+    return () => registerVoiceStopSpeaking(null);
+  }, [stop, resumeListen]);
 
   // Expose resumeListen so the dictation adapter can re-arm the mic after a
   // recoverable no-speech timeout. It self-guards: no-op unless voice is active.

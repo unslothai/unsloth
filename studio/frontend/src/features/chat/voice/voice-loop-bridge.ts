@@ -220,6 +220,18 @@ export function requestVoiceSubmit(text?: string): void {
   voiceSubmit?.(text);
 }
 
+let voiceStopSpeaking: (() => void) | null = null;
+
+/** Called by the mounted voice loop. Pass null on teardown. */
+export function registerVoiceStopSpeaking(fn: (() => void) | null): void {
+  voiceStopSpeaking = fn;
+}
+
+/** Cut the reply being spoken (and the run behind it) and go back to listening. */
+export function requestVoiceStopSpeaking(): void {
+  voiceStopSpeaking?.();
+}
+
 /** Called by the mounted voice loop. Pass null on teardown. */
 export function registerVoicePlayback(fn: (() => boolean) | null): void {
   voicePlayback = fn;
