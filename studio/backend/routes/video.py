@@ -489,7 +489,7 @@ async def load_video_model_gated(
                     return acquire_for_request(VIDEO, _begin_load, **fit_kwargs)
 
             from core.inference.chat_swap_kv import save_chat_kv_before_swap
-            swap = await save_chat_kv_before_swap(VIDEO, "video")
+            swap = await save_chat_kv_before_swap(VIDEO, "video", **fit_kwargs)
             try:
                 status_dict = await asyncio.to_thread(_acquire_and_begin)
             finally:

@@ -99,8 +99,10 @@ def commit_after_chat_unload(unloaded_identity) -> bool:
 class SwapSave:
     """Handle the load route closes in a finally around its acquire."""
 
-    def __init__(self, manifest: Optional[dict] = None):
+    def __init__(self, manifest: Optional[dict] = None, *, log_swap: bool = True):
         self._manifest = manifest
+        # Off logs the eviction here; When they fit's residency code already logs it as "evicted".
+        self._log_swap = log_swap
 
     def close(self) -> None:
         global _pending, _committed
@@ -117,7 +119,7 @@ class SwapSave:
                     _committed, committed = None, True
             if dropped:
                 _delete(manifest)
-            elif committed:
+            elif committed and self._log_swap:
                 from core.inference import llama_keepwarm
                 llama_keepwarm._note_idle_unload_event(manifest.get("identity"), reason = "swap")
         except Exception as exc:  # noqa: BLE001 - the load already ran
@@ -177,16 +179,20 @@ def _save_in_thread(llama, should_abort, abort: threading.Event, loop, future) -
 
 
 async def save_chat_kv_before_swap(
-    owner: str, media: str, *, need_mib: Optional[dict] = None
+    owner: str, media: str, *, policy: Optional[str] = None, need_mib: Optional[dict] = None, **_ignored
 ) -> SwapSave:
-    """Save the chat KV if acquiring ``owner`` will evict the chat model; never raises."""
+    """Save the chat KV if acquiring ``owner`` will evict the chat model; never raises.
+
+    ``policy`` and ``need_mib`` are the keywords the route passes to the acquire, so the peek
+    predicts that exact acquire."""
     global _pending
     try:
         from core.inference import gpu_arbiter
         from core.inference.llama_keepwarm import _loaded_identity
         from utils.openai_auto_switch_settings import get_auto_unload_keep_kv
 
-        if not gpu_arbiter.would_evict(owner, policy = _policy(), need_mib = need_mib):
+        policy = policy or _policy()
+        if not gpu_arbiter.would_evict(owner, policy = policy, need_mib = need_mib):
             return SwapSave()
         if not await asyncio.to_thread(get_auto_unload_keep_kv):
             return SwapSave()
@@ -251,4 +257,4 @@ async def save_chat_kv_before_swap(
     with _lock:
         older, _pending = _pending, entry
     _delete(older)
-    return SwapSave(entry)
+    return SwapSave(entry, log_swap = policy == "off")
