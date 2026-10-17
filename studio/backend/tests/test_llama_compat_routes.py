@@ -1134,6 +1134,7 @@ def _no_local_gguf(monkeypatch):
 
     monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *a, **k: None)
     monkeypatch.setattr(resolver, "resolve_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "local_gguf_pinned_variant", lambda *a, **k: None)
     monkeypatch.setattr(overrides, "resolve_override_for_load", lambda *a, **k: (None, {}))
     monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *a, **k: True)
     return resolver
@@ -1378,6 +1379,118 @@ def test_management_unload_keeps_a_resident_of_another_quant(monkeypatch, _no_lo
         assert c.post("/models/unload", json = {"model": QWEN + ":Q8_0"}).status_code == 200
         assert c.post("/models/unload", json = {"model": QWEN + ":UD-Q4_K_XL"}).status_code == 200
     assert calls == [("unload", "/media/models/qwen/model.gguf")]
+
+
+def test_management_unload_keeps_a_resident_of_another_named_build(monkeypatch, _no_local_gguf):
+    build = QWEN + ":beta-Q4_K_M"
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **kwargs: (
+            "/media/models/qwen/model.gguf",
+            "beta-Q4_K_M",
+            QWEN,
+        ),
+    )
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "local_gguf_pinned_variant",
+        lambda requested, **kwargs: "beta-Q4_K_M" if requested == build else None,
+    )
+    backend = _Backend()
+    backend.hf_variant = "Q4_K_M"
+    pin = {"id": build, "object": "model", "loaded": False}
+    mod, calls = _management(backend = backend, catalog = CATALOG + [pin])
+
+    with _client(mod) as client:
+        assert client.post("/models/unload", json = {"model": build}).status_code == 200
+
+    assert calls == []
+
+
+def test_management_unload_keeps_a_resident_of_another_quant_directory_build(
+    monkeypatch, _no_local_gguf
+):
+    build = "custom-model:Q4_K_M/beta-Q4_K_M"
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **kwargs: ("/media/models/custom", "Q4_K_M/beta-Q4_K_M", "custom-model"),
+    )
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "local_gguf_pinned_variant",
+        lambda requested, **kwargs: "Q4_K_M/beta-Q4_K_M" if requested == build else None,
+    )
+    backend = _Backend()
+    backend.hf_variant = "Q4_K_M"
+    backend.model_identifier = "/media/models/custom"
+    backend._openai_advertised_id = "custom-model"
+    pin = {"id": build, "object": "model", "loaded": False}
+    mod, calls = _management(backend = backend, catalog = CATALOG + [pin])
+
+    with _client(mod) as client:
+        assert client.post("/models/unload", json = {"model": build}).status_code == 200
+
+    assert calls == []
+
+
+def test_management_unload_releases_a_build_loaded_by_its_rekeyed_stem(monkeypatch, _no_local_gguf):
+    build = QWEN + ":Q4_K_M"
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **kwargs: ("/media/models/qwen/model.gguf", "Q4_K_M", QWEN),
+    )
+
+    def _pinned(requested, **kwargs):
+        return {build: "Q4_K_M", QWEN + ":beta-q4_k_m": "Q4_K_M"}.get(requested)
+
+    monkeypatch.setattr(_no_local_gguf, "local_gguf_pinned_variant", _pinned)
+    backend = _Backend()
+    backend.hf_variant = "beta-Q4_K_M"
+    pin = {"id": build, "object": "model", "loaded": False}
+    mod, calls = _management(backend = backend, catalog = CATALOG + [pin])
+
+    with _client(mod) as client:
+        assert client.post("/models/unload", json = {"model": build}).status_code == 200
+
+    assert calls != []
+
+
+def test_an_indexed_build_key_matches_its_listed_base_row(monkeypatch, _no_local_gguf):
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "local_gguf_pinned_variant",
+        lambda requested, **kwargs: "Q4_K_M" if requested == QWEN + ":beta-Q4_K_M" else None,
+    )
+    catalog = [{"id": QWEN, "object": "model"}]
+    mod, _calls = _management(backend = _Backend(), catalog = catalog)
+
+    assert mod._catalog_match(catalog, QWEN + ":beta-Q4_K_M") is not None
+    assert mod._catalog_match(catalog, QWEN + ":gamma-Q4_K_M") is None
+
+
+def test_a_build_key_is_matched_after_a_cold_index_scan(monkeypatch, _no_local_gguf):
+    import asyncio
+
+    warm = []
+
+    def _pinned(requested, allow_scan = True):
+        if allow_scan:
+            warm.append(requested)
+        return "beta-Q4_K_M" if warm and requested == QWEN + ":beta-Q4_K_M" else None
+
+    monkeypatch.setattr(_no_local_gguf, "local_gguf_pinned_variant", _pinned)
+    catalog = [{"id": QWEN, "object": "model"}]
+    mod, _calls = _management(backend = _Backend(), catalog = catalog)
+
+    async def _catalog():
+        return catalog
+
+    monkeypatch.setattr(mod, "_chat_catalog", _catalog)
+
+    assert asyncio.run(mod._catalog_row(QWEN + ":beta-Q4_K_M"))[0] == QWEN + ":beta-Q4_K_M"
 
 
 def test_management_unload_of_a_bare_id_ignores_the_preferred_quant(monkeypatch, _no_local_gguf):

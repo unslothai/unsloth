@@ -45,6 +45,9 @@ class _LocalGgufEntry:
     # Later rows answering the same key whose variants the winner lacks (a parked
     # scan-folder copy beside the active cache); a pin on one of those resolves there.
     alternates: tuple["_LocalGgufEntry", ...] = ()
+    withheld: tuple[str, ...] = ()  # listed build keys that cannot be served (torn split sets)
+    build_aliases: tuple[tuple[str, str], ...] = ()  # see _build_family_aliases
+    exact_builds: bool = False  # custom folder: a build-shaped suffix names one file, never a tag
 
 
 _CACHE_TTL_S = 5.0
@@ -345,6 +348,30 @@ def _legacy_variant_aliases(variants) -> tuple[tuple[str, str], ...]:
         return ()
 
 
+def _build_family_aliases(variants) -> tuple[tuple[str, str], ...]:
+    """``(file family, current key)`` per custom-folder build: a stem key a build was advertised
+    under keeps naming it after a sibling's removal hands it the bare quant key."""
+    try:
+        from hub.utils.gguf import gguf_variant_family
+
+        current = {str(v.quant).lower() for v in variants if getattr(v, "quant", None)}
+        seen: dict[str, Optional[str]] = {}
+        for variant in variants:
+            quant = getattr(variant, "quant", None)
+            filename = getattr(variant, "filename", None)
+            if not quant or not filename:
+                continue
+            relative = str(filename).replace("\\", "/")
+            # the family (beta-Q4_K_M) and the filename key a collision falls back to (F16.gguf)
+            for spelling in {gguf_variant_family(relative).lower(), relative.lower()}:
+                if not spelling or spelling in current:
+                    continue
+                seen[spelling] = None if spelling in seen else str(quant)
+        return tuple((family, quant) for family, quant in seen.items() if quant is not None)
+    except Exception:
+        return ()
+
+
 def _local_gguf_entry(
     loader_id: str,
     info,
@@ -441,6 +468,21 @@ def _local_gguf_entry(
             offered, _ = inventory_variants(str(load_dir))
             complete_files = {str(v.filename).casefold() for v in offered if v.quant in complete}
             variants = [v for v in variants if str(v.filename).casefold() in complete_files]
+        withheld: tuple[str, ...] = ()
+        if cache_repo_dir is None:
+            listed = variants
+            variants = [
+                variant
+                for variant in variants
+                if getattr(variant, "filename", None)
+                and _split_set_is_loadable(Path(load_dir) / variant.filename)
+            ]
+            kept = {str(v.quant).lower() for v in variants if getattr(v, "quant", None)}
+            withheld = tuple(
+                str(v.quant).lower()
+                for v in listed
+                if getattr(v, "quant", None) and str(v.quant).lower() not in kept
+            )
         quants = tuple(v.quant for v in variants if getattr(v, "quant", None))
         if not quants:
             return None
@@ -452,15 +494,45 @@ def _local_gguf_entry(
         # preferred_quant is order-sensitive: rank only default_gguf_scope, or a sibling checkpoint can win.
         from hub.utils.gguf import default_gguf_scope
 
-        best = preferred_quant(
-            default_gguf_scope(
-                quants,
-                getattr(info, "id", None),
-                getattr(info, "model_id", None),
-                loader_id,
-                str(cache_repo_dir) if cache_repo_dir is not None else None,
-            )
+        scope = default_gguf_scope(
+            quants,
+            getattr(info, "id", None),
+            getattr(info, "model_id", None),
+            loader_id,
+            str(cache_repo_dir) if cache_repo_dir is not None else None,
         )
+        best = preferred_quant(scope)
+        from hub.utils.gguf import gguf_variant_key
+
+        legacy_groups: dict[str, int] = {}
+        for variant in variants:
+            legacy = gguf_variant_key(variant.filename).casefold()
+            legacy_groups[legacy] = legacy_groups.get(legacy, 0) + 1
+        if any(count > 1 for count in legacy_groups.values()):
+            try:
+                detected = detect_gguf_model(str(load_dir))
+                relative = (
+                    Path(detected).relative_to(Path(load_dir)).as_posix() if detected else None
+                )
+                preferred = next((v for v in variants if v.quant == best), None)
+                preferred_group = (
+                    gguf_variant_key(preferred.filename).casefold() if preferred else None
+                )
+                # detection only breaks ties between builds of the preferred quant
+                selected = next(
+                    (
+                        variant
+                        for variant in variants
+                        if variant.filename == relative
+                        and gguf_variant_key(variant.filename).casefold() == preferred_group
+                        and legacy_groups.get(preferred_group, 0) > 1
+                    ),
+                    None,
+                )
+                if selected is not None and selected.quant in scope:
+                    best = selected.quant
+            except (OSError, RuntimeError, ValueError):
+                pass
         if best and quants[0] != best:
             quants = (best, *(q for q in quants if q != best))
         return _LocalGgufEntry(
@@ -469,6 +541,9 @@ def _local_gguf_entry(
             quants,
             repo_level_companions = cache_repo_dir is not None,
             aliases = _legacy_variant_aliases(variants),
+            withheld = withheld,
+            build_aliases = _build_family_aliases(variants) if cache_repo_dir is None else (),
+            exact_builds = cache_repo_dir is None,
         )
     except Exception:
         return None
@@ -1386,9 +1461,12 @@ def _resolve_from_index(
         for v in entry.variants:
             if v.lower() == wanted:
                 return _result(entry, v)
+        # a listed build that cannot be served misses, never answered by a sibling or alias
+        if wanted in entry.withheld:
+            return None
         # ahead of both branches below: one refuses a retired spelling, the other answers it
         # with a different quant
-        for legacy, current in entry.aliases:
+        for legacy, current in (*entry.aliases, *entry.build_aliases):
             if legacy == wanted:
                 return _result(entry, current)
         # A pin may name a variant another local row of the same repo holds (a parked
@@ -1404,13 +1482,25 @@ def _resolve_from_index(
                     return _result(alternate, current)
         from core.inference.openai_auto_download import looks_like_quant
 
-        if looks_like_quant(variant):
+        if looks_like_quant(variant) or _names_missing_build(entry, wanted):
             return None
         # ":latest" or ":8b" names no file, so it means the repo; a real quant that is not on disk still misses, or a
         # swap would serve the wrong weights.
         return _result(entry, entry.variants[0] if entry.variants else None)
     except Exception:
         return None
+
+
+def _split_set_is_loadable(path) -> bool:
+    """Whether the loader finds a complete shard set here or, like it, behind a shard-1 symlink."""
+    from utils.models.model_config import colocated_split_shards
+
+    if colocated_split_shards(path)[1]:
+        return True
+    try:
+        return path.is_symlink() and colocated_split_shards(path.resolve())[1]
+    except OSError:
+        return False
 
 
 def local_gguf_pinned_variant(requested: str, allow_scan: bool = True) -> Optional[str]:
@@ -1432,7 +1522,9 @@ def local_gguf_pinned_variant(requested: str, allow_scan: bool = True) -> Option
     for variant in entry.variants:
         if variant.lower() == wanted:
             return variant
-    for legacy, current in entry.aliases:
+    if wanted in entry.withheld:
+        return None
+    for legacy, current in (*entry.aliases, *entry.build_aliases):
         if legacy == wanted:
             return current
     # A parked copy beside the cache holds quants the id's owner does not; a pin on one
@@ -1445,6 +1537,48 @@ def local_gguf_pinned_variant(requested: str, allow_scan: bool = True) -> Option
             if legacy == wanted:
                 return current
     return None
+
+
+def _names_missing_build(entry: _LocalGgufEntry, wanted: str) -> bool:
+    """Whether *wanted* is a custom-folder build stem (``beta-Q4_K_M``) no indexed build answers."""
+    from core.inference.openai_auto_download import looks_like_quant
+    from hub.utils.gguf import extract_quant_token
+
+    return (
+        entry.exact_builds
+        and ("/" in wanted or not looks_like_quant(wanted))
+        and extract_quant_token(wanted) is not None
+        and all(v.lower() != wanted for v in entry.variants)
+        and all(legacy != wanted for legacy, _ in (*entry.aliases, *entry.build_aliases))
+    )
+
+
+def local_gguf_same_build(base: Optional[str], resident: str, wanted: str) -> bool:
+    """Whether *resident* names *wanted*, verbatim or through *base*'s index (a build loaded by
+    its stem, ``alpha-Q4_K_M``, is the build the bare key ``Q4_K_M`` now names)."""
+    resident = (resident or "").strip().lower()
+    wanted = (wanted or "").strip().lower()
+    if resident == wanted:
+        return True
+    if not base or not resident:
+        return False
+    canonical = local_gguf_pinned_variant(f"{base}:{resident}", allow_scan = False)
+    return canonical is not None and canonical.lower() == wanted
+
+
+def local_gguf_withheld(requested: str) -> bool:
+    """Whether ``repo:BUILD`` names a build the last index cannot serve: torn, or no longer there."""
+    base, sep, wanted = requested.rpartition(":")
+    if not sep:
+        return False
+    try:
+        entry = _snapshot()[1].get(base.strip().lower())
+    except Exception:
+        return False
+    if entry is None:
+        return False
+    wanted = wanted.strip().lower()
+    return wanted in entry.withheld or _names_missing_build(entry, wanted)
 
 
 def local_target_is_gguf(load_path: Optional[str], loader_id: Optional[str] = None) -> bool:

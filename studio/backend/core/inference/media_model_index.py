@@ -180,7 +180,8 @@ def _add_gguf_picks(
     one id cannot mean different weights here than in the picker.
     """
     from core.inference.openai_auto_download import preferred_quant
-    from hub.utils.gguf import default_gguf_scope
+    from hub.utils.gguf import default_gguf_scope, gguf_variant_family, gguf_variant_key
+    from hub.utils.gguf import list_local_gguf_variants as list_build_variants
     from utils.models.model_config import list_local_gguf_variants
 
     if load_dir.is_file():
@@ -199,7 +200,9 @@ def _add_gguf_picks(
             )
         return True
     # filenames come back relative to this directory, which is what the loader joins them onto
-    variants, _ = list_local_gguf_variants(str(load_dir))
+    variants, _ = list_build_variants(str(load_dir))
+    legacy_variants, _ = list_local_gguf_variants(str(load_dir))
+    legacy_quants = {variant.filename: variant.quant for variant in legacy_variants}
     by_quant = {v.quant: v for v in variants if v.quant}
     if not by_quant:
         return False
@@ -211,15 +214,76 @@ def _add_gguf_picks(
     }
     if not openable:
         return True
+    primary_keys: dict[str, str] = {}
     for quant, variant in openable.items():
         # model_id stays the bare id so a "not found" error lists models, not one row per quant
+        names = [f"{key}:{quant}" for key in keys]
+        primary_keys.update((name.strip().lower(), variant.filename) for name in names)
         _register(
             index,
-            [f"{key}:{quant}" for key in keys],
+            names,
             MediaModelPick(keys[0], load_path, variant.filename, "gguf"),
         )
+    for quant, variant in openable.items():
+        legacy_quant = legacy_quants.get(variant.filename)
+        if legacy_quant and legacy_quant.lower() != quant.lower():
+            names = [
+                name
+                for name in (f"{key}:{legacy_quant}" for key in keys)
+                if primary_keys.get(name.strip().lower(), variant.filename) == variant.filename
+            ]
+            _register(
+                index,
+                names,
+                MediaModelPick(keys[0], load_path, variant.filename, "gguf"),
+            )
+    # a build's stem or filename key keeps naming it after a sibling's removal re-keys it
+    claims: dict[str, list[str]] = {}
+    for quant, variant in openable.items():
+        relative = variant.filename.replace("\\", "/")
+        for spelling in {gguf_variant_family(relative), relative}:
+            if spelling and spelling.lower() != quant.lower():
+                claims.setdefault(spelling.lower(), []).append(variant.filename)
+    for spelling, files in claims.items():
+        if len(set(files)) != 1:
+            continue
+        names = [
+            name
+            for name in (f"{key}:{spelling}" for key in keys)
+            if primary_keys.get(name.strip().lower(), files[0]) == files[0]
+        ]
+        _register(index, names, MediaModelPick(keys[0], load_path, files[0], "gguf"))
     scope = default_gguf_scope(list(openable), *keys, getattr(info, "id", None), str(on_disk))
-    best = preferred_quant(scope) or scope[0]
+    best = None
+    legacy_groups: dict[str, int] = {}
+    for variant in openable.values():
+        legacy = gguf_variant_key(variant.filename).lower()
+        legacy_groups[legacy] = legacy_groups.get(legacy, 0) + 1
+    try:
+        root = Path(load_path)
+        if root.is_dir():
+            from utils.models.model_config import detect_gguf_model
+
+            detected = detect_gguf_model(load_path)
+            relative = Path(detected).relative_to(root).as_posix() if detected else None
+            preferred = preferred_quant(scope) or scope[0]
+            preferred_group = gguf_variant_key(openable[preferred].filename).lower()
+            # detection only breaks ties between builds of the preferred quant
+            selected = next(
+                (
+                    quant
+                    for quant, variant in openable.items()
+                    if variant.filename == relative
+                    and gguf_variant_key(variant.filename).lower() == preferred_group
+                    and legacy_groups.get(preferred_group, 0) > 1
+                ),
+                None,
+            )
+            if selected in scope:
+                best = selected
+    except (OSError, RuntimeError, ValueError, KeyError):
+        pass
+    best = best or preferred_quant(scope) or scope[0]
     _register(
         index,
         keys,
@@ -459,6 +523,9 @@ def resident_is_pick(status: dict[str, Any], name: str, pick: MediaModelPick) ->
         )
     if pick.model_kind != "gguf" and not resident_is_gguf(status):
         return True
+    resident_filename = str(status.get("gguf_filename") or "").strip()
+    if resident_filename:
+        return os.path.normcase(resident_filename) == os.path.normcase(pick.gguf_filename or "")
     loaded_quant = str(status.get("gguf_variant") or "").strip().lower()
     return loaded_quant == published_token(pick)
 
@@ -483,8 +550,8 @@ def satisfied_by(status: dict[str, Any], name: str, pick: MediaModelPick) -> boo
     """
     if not resident_is_pick(status, name, pick):
         return False
-    # ambiguity only blocks the skip, never the "did my load land" check: the reload settles it
-    return not pick.ambiguous
+    # only a resident filename can tell same-token builds apart; without one ambiguity blocks the skip
+    return not pick.ambiguous or bool(str(status.get("gguf_filename") or "").strip())
 
 
 def expected_partition(pick: MediaModelPick) -> Optional[str]:

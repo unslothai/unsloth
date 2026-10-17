@@ -35,6 +35,7 @@ import time
 from typing import Any, Callable, Optional
 
 from core.inference.gpu_arbiter import DIFFUSION, VIDEO
+from core.inference import media_locality
 from core.inference.media_locality import is_edit_only, missing_download_bytes
 from core.inference.media_model_index import (
     IMAGE_TASK,
@@ -340,6 +341,15 @@ async def _gated_start_load(
                 openai_errors = openai_errors,
             ):
                 raise busy(kind, openai_errors)
+            # Ranked once: the check below and the load it starts both use this card.
+            planned = media_locality.pin_planned_gpu_ordinal(
+                await bounded(
+                    asyncio.to_thread(media_locality.plan_gpu_ordinal),
+                    deadline,
+                    kind = kind,
+                    openai_errors = openai_errors,
+                )
+            )
             await _require_local(
                 owner,
                 pick,
@@ -352,6 +362,7 @@ async def _gated_start_load(
             # begin_load, and holding both media gates and chat's that long blocks every unrelated request. On expiry
             # the load keeps going without them.
             setup = asyncio.ensure_future(_start_load(owner, pick, current_subject, hf_token))
+            media_locality._PLANNED_ORDINAL.reset(planned)  # the task copied the context
             setup.add_done_callback(_consume_detached_error)
             with contextlib.suppress(asyncio.TimeoutError):
                 try:

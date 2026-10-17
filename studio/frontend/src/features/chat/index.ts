@@ -315,6 +315,7 @@ export {
 export {
   PLUS_MENU_ORDER,
   normalizePlusMenuOrder,
+  keepSavedSlot,
   splitPlusMenuItems,
   usePlusMenuPrefsStore,
   type PlusMenuItemId,

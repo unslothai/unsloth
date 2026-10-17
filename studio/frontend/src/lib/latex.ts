@@ -997,7 +997,7 @@ function findLinkDestinationRegions(content: string): Array<[number, number]> {
   LINK_DEST_RE.lastIndex = 0;
   while ((match = LINK_DEST_RE.exec(content)) !== null) {
     // escaped separators make searches unsafe; use the `d` flag's bounds.
-    regions.push(match.indices![1]);
+    regions.push(match.indices![1]!);
   }
   return regions;
 }
