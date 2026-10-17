@@ -330,11 +330,15 @@ const VoiceDecisionRing: FC = () => {
         const ly = C - Math.cos(mid) * (RING_R + 18);
         const anchor = Math.sin(mid) < -0.1 ? "end" : Math.sin(mid) > 0.1 ? "start" : "middle";
         const value = arcValue(d, arc.key);
+        // The top arc's two lines stack upward, away from the ring; the side arcs stack down.
+        const above = Math.cos(mid) > 0.5;
+        const labelY = above ? ly - 14 : ly;
+        const valueY = above ? ly : ly + 14;
         return (
           <g key={arc.key}>
             <text
               x={lx}
-              y={ly}
+              y={labelY}
               textAnchor={anchor}
               dominantBaseline="central"
               fill={arc.color}
@@ -348,7 +352,7 @@ const VoiceDecisionRing: FC = () => {
             {value && (
               <text
                 x={lx}
-                y={ly + 14}
+                y={valueY}
                 textAnchor={anchor}
                 dominantBaseline="central"
                 fill={arc.color}
