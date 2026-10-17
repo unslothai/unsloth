@@ -119,7 +119,11 @@ import {
   recommendedPageModels,
   rowOnPage,
 } from "./page-models";
-import { catalogModelOption, catalogMoreRows } from "./audio-catalog-rows";
+import {
+  catalogModelOption,
+  catalogMoreRows,
+  withCatalogPipelineTag,
+} from "./audio-catalog-rows";
 import { useAudioCatalog } from "./hooks/use-audio-catalog";
 import {
   referenceTranscript,
@@ -1537,6 +1541,11 @@ export function AudioPage({
     (row: PageModelRow) => rowOnPage(pageWorkflow, row, pagePrefs),
     [pageWorkflow, pagePrefs],
   );
+  const selectModel = useCallback(
+    (id: string, meta: Parameters<typeof handleModelSelect>[1]) =>
+      handleModelSelect(id, withCatalogPipelineTag(audioCatalog.byId, id, meta)),
+    [audioCatalog.byId, handleModelSelect],
+  );
   const sttOnDeviceModels = downloadedSttArtifacts.map((artifact) => {
     const catalogModel = MODELS_BY_MODE.transcribe.find(
       (model) => model.id.toLowerCase() === artifact.repoId.toLowerCase(),
@@ -1707,7 +1716,7 @@ export function AudioPage({
                     : undefined
               }
               value={selectorValue}
-              onValueChange={handleModelSelect}
+              onValueChange={selectModel}
               onEject={
                 audioEjectAvailable({
                   mode,

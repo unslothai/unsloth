@@ -65,6 +65,16 @@ export function catalogById(
   return map;
 }
 
+/** A More row has no Hub pipeline tag, so a catalog ASR pick names its own: the page then loads
+ *  it as speech-to-text instead of speech. */
+export function withCatalogPipelineTag<
+  M extends { pipelineTag?: string | null },
+>(byId: ReadonlyMap<string, { task?: string | null }>, id: string, meta: M): M {
+  if (meta.pipelineTag || byId.get(id.trim().toLowerCase())?.task !== "asr")
+    return meta;
+  return { ...meta, pipelineTag: "automatic-speech-recognition" };
+}
+
 const STATUS_ORDER: readonly string[] = [
   "supported",
   "community",
