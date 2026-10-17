@@ -61,6 +61,7 @@ import {
   registerVoiceToggle,
   setVoiceMode as setLoopVoiceMode,
 } from "@/features/chat/voice/voice-loop-bridge";
+import { voiceServing } from "@/features/chat/voice/voice-slot";
 import { cn } from "@/lib/utils";
 import { useAui } from "@assistant-ui/react";
 import { MessageSquareIcon, MicOffIcon } from "lucide-react";
@@ -463,6 +464,8 @@ export const VoiceEngine: FC = () => {
     return parts.join(" ");
   }, []);
 
+  const sendTranscriptRef = useRef<(text: string) => void>(() => {});
+  const sendTranscript = useCallback((text: string) => sendTranscriptRef.current(text), []);
   // Submit a transcript: the adapter's own when it passes one (the composer can be
   // mid-reveal or already cleared by then), else whatever is in the box. Ends
   // dictation and sends; the run-lifecycle effect then speaks the reply and
@@ -496,6 +499,37 @@ export const VoiceEngine: FC = () => {
       resumeListen();
       return;
     }
+    // The store can believe the voice is loaded after the backend has dropped it
+    // (an idle unload, a restart): the reply then ran before the voice came back.
+    // One status read settles it; a missing voice parks the turn and reloads.
+    const store = useChatRuntimeStore.getState();
+    const ensure = store.ensureVoiceSlotLoaded;
+    const sendNow = () => sendTranscript(text);
+    if (!ensure || isSpeakingRef.current) {
+      sendNow();
+      return;
+    }
+    const sent = text;
+    void voiceServing(store.selectedVoiceModelId).then(
+      (serving) => {
+        if (voiceModeRef.current !== "active") return;
+        if (serving) {
+          sendNow();
+          return;
+        }
+        voiceTrace("engine.holdForVoice", { text: sent, why: "not serving" });
+        pendingForVoiceRef.current.push(sent);
+        useChatRuntimeStore.getState().setVoiceSlotLoaded(false);
+        void ensure();
+        resumeListen();
+      },
+      () => sendNow(),
+    );
+  }, [resumeListen, sendTranscript]);
+
+  // The send itself, once the text is final and the voice is known to be up.
+  function sendTranscriptImpl(text: string) {
+    const composer = auiRef.current.composer();
     // Decide the thinking filler for this turn now, so the run's request can tell
     // the model what was said. A reply that ended in a question wants a short
     // answer, so no filler there.
@@ -543,7 +577,8 @@ export const VoiceEngine: FC = () => {
       return;
     }
     commitUtterance(text);
-  }, [resumeListen, resumePlayback, stop, latestAssistantText, latestAssistantIsReasoning, lastUserPrompt, clearFiller, commitUtterance]);
+  }
+  sendTranscriptRef.current = sendTranscriptImpl;
 
 
   // Sync derived orb state to the store so VoiceOrb can read it without prop-drilling.
@@ -750,8 +785,12 @@ export const VoiceEngine: FC = () => {
     }
     if (streamBegun) {
       // Flush the remaining sentences (incl. the trailing one) and finish; the
-      // stream's consumer calls resumeListen when playback drains.
-      endStreamRef.current(text);
+      // stream's consumer calls resumeListen when playback drains. Read again
+      // after a beat: the last token ("?") landed after isRunning flipped once.
+      setTimeout(() => {
+        const final = latestAssistantText();
+        endStreamRef.current(final.length >= text.length ? final : text);
+      }, 150);
     } else {
       // Voice mode was switched on while this run was already generating, so the
       // run-start branch never opened a session. Speak the finished reply whole;

@@ -177,7 +177,15 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
         url = await request();
       }
       if (reqRef.current !== reqId) return null;
-      return await ctx.decodeAudioData(wavBytesFromDataUrl(url));
+      const bytes = wavBytesFromDataUrl(url);
+      try {
+        return await ctx.decodeAudioData(bytes.slice(0));
+      } catch (error) {
+        // A clip the decoder refused once has decoded on the second try; one retry
+        // before the sentence is given up as unspeakable.
+        voiceTrace("tts.decodeRetry", { bytes: bytes.byteLength });
+        return await ctx.decodeAudioData(bytes.slice(0));
+      }
     },
     [],
   );
@@ -236,6 +244,10 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
             }
           } catch (error) {
             if (!live()) return;
+            voiceTrace("tts.error", {
+              i: st.next - 1,
+              message: error instanceof Error ? error.message : String(error),
+            });
             // One toast per reply: a voice that is down fails every sentence.
             if (failedReqRef.current !== reqId) {
               failedReqRef.current = reqId;
