@@ -346,12 +346,14 @@ export function TasksPage() {
   const { edit: editId, create } = useSearch({ strict: false });
   useEffect(() => {
     if (!create) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the URL asks for the dialog once, then is cleared.
     setEditing(null);
     void navigate({ to: "/tasks", search: {}, replace: true });
   }, [create, navigate]);
   useEffect(() => {
     if (!editId || status !== "ready") return;
     const target = tasks.find((task) => task.id === editId);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- as above, once the list has the task.
     if (target) setEditing(target);
     else toast.info(t("scheduledTasks.taskMissing"));
     void navigate({ to: "/tasks", search: {}, replace: true });

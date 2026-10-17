@@ -287,3 +287,9 @@ export function titleFromPrompt(prompt: string): string {
   const space = cut.lastIndexOf(" ");
   return `${(space > AUTO_TITLE_LENGTH / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
+
+/** What the name field shows when editing: nothing for a task named after its instructions, so the
+ *  name keeps following them when they change rather than freezing as a cut-off copy. */
+export function nameToEdit(task: { title: string; prompt: string }): string {
+  return task.title === titleFromPrompt(task.prompt) ? "" : task.title;
+}

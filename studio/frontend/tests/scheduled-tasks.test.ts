@@ -26,6 +26,7 @@ import {
   type TaskSchedule,
   defaultScheduleForm,
   formFromSchedule,
+  nameToEdit,
   relativeTimeParts,
   sameSchedule,
   scheduleFormComplete,
@@ -470,4 +471,10 @@ test("a task left unnamed is named after its instructions' first line", () => {
   const title = titleFromPrompt(long);
   assert.ok(title.endsWith("…") && title.length <= 61, title);
   assert.ok(long.startsWith(title.slice(0, -1)), "cut at a word, from the start");
+});
+
+test("a task named after its instructions edits with an empty name, which keeps following them", () => {
+  const prompt = "Write a short upbeat note to start the day with three ideas for staying focused";
+  assert.equal(nameToEdit({ title: titleFromPrompt(prompt), prompt }), "");
+  assert.equal(nameToEdit({ title: "Morning note", prompt }), "Morning note");
 });

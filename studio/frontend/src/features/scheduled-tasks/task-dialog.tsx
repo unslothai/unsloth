@@ -38,6 +38,7 @@ import {
   formFromSchedule,
   formatClock,
   localDateKey,
+  nameToEdit,
   sameSchedule,
   scheduleFormComplete,
   scheduleFromForm,
@@ -114,7 +115,7 @@ export function TaskDialog({
   const create = useScheduledTasksStore((state) => state.create);
   const update = useScheduledTasksStore((state) => state.update);
   const [now] = useState(() => new Date());
-  const [title, setTitle] = useState(task?.title ?? "");
+  const [title, setTitle] = useState(task ? nameToEdit(task) : "");
   const [prompt, setPrompt] = useState(task?.prompt ?? "");
   const [form, setForm] = useState<ScheduleForm>(() =>
     task ? formFromSchedule(task.schedule, now) : defaultScheduleForm(now),
