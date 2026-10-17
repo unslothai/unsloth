@@ -3,6 +3,7 @@
 
 import { create } from "zustand";
 import { AUTH_SESSION_CLEARED_EVENT, getAuthSessionEpoch } from "@/features/auth";
+import { notifyChatHistoryUpdated } from "@/features/chat";
 import {
   type ScheduledTask,
   type ScheduledTaskInput,
@@ -15,9 +16,17 @@ import {
 } from "./api";
 import { SCHEDULED_TASKS_CHANGED_EVENT, SCHEDULED_TASK_RUNS_FINISHED_EVENT } from "./results";
 
+/** Written with every change, so the account's other tabs, which this tab's DOM events never
+ *  reach, hear of it as a storage event and show it too. */
+export const SCHEDULED_TASKS_WRITTEN_KEY = "unsloth_scheduled_tasks_written";
+
 function announceChange(): void {
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new Event(SCHEDULED_TASKS_CHANGED_EVENT));
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event(SCHEDULED_TASKS_CHANGED_EVENT));
+  try {
+    localStorage.setItem(SCHEDULED_TASKS_WRITTEN_KEY, `${Date.now()}.${Math.random()}`);
+  } catch {
+    // Without storage, another tab shows the change when it next refreshes.
   }
 }
 
@@ -97,6 +106,9 @@ export const useScheduledTasksStore = create<ScheduledTasksState>()((set, get) =
         () => deleteScheduledTask(id),
         () => set((state) => ({ tasks: state.tasks.filter((task) => task.id !== id) })),
       );
+      // A run that finished just before keeps its chat, but its record went with the task, so the
+      // results poll will never report it: Recents has to look for that chat itself.
+      notifyChatHistoryUpdated();
     },
     runNow: async (id) => {
       await write(

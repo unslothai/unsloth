@@ -55,7 +55,7 @@ import {
   summarizeSchedule,
   waitForDue,
 } from "./schedule";
-import { useScheduledTasksStore } from "./store";
+import { SCHEDULED_TASKS_WRITTEN_KEY, useScheduledTasksStore } from "./store";
 import { TaskDialog } from "./task-dialog";
 import { useUnseenScheduledRuns } from "./unseen";
 
@@ -365,6 +365,20 @@ export function TasksPage() {
 
   useEffect(() => {
     void refresh();
+    // Changes made elsewhere send this tab no event: another tab's are marked in storage, and one
+    // made from another browser or device shows once this tab is looked at again.
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === SCHEDULED_TASKS_WRITTEN_KEY) void refresh();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+    window.addEventListener("storage", onStorage);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [refresh]);
 
   // Re-read just after the next task is due, so its row turns to Running and its next run moves on.

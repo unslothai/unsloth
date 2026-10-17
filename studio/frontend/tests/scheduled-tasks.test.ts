@@ -5,7 +5,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 import * as formatFastApiError from "../src/lib/format-fastapi-error.ts";
+import * as zustand from "zustand";
 import type * as ScheduledTasksApi from "../src/features/scheduled-tasks/api.ts";
+import type * as ScheduledTasksStore from "../src/features/scheduled-tasks/store.ts";
 import {
   ACTIVE_POLL_MS,
   CATCH_UP_MS,
@@ -381,6 +383,45 @@ test("the client reaches every scheduled task route", async () => {
     notify: "failures",
   });
   assert.deepEqual(c.requests[2].body, { enabled: false });
+});
+
+test("a task change reaches the account's other tabs, and a deletion has Recents look again", async () => {
+  const globals = globalThis as Record<string, unknown>;
+  const saved = { window: globals.window, localStorage: globals.localStorage };
+  const stored = new Map<string, string>();
+  globals.window = new EventTarget();
+  globals.localStorage = { setItem: (key: string, value: string) => void stored.set(key, value) };
+  let historyRefreshes = 0;
+  try {
+    const store = loadWithStubs<typeof ScheduledTasksStore>(
+      new URL("../src/features/scheduled-tasks/store.ts", import.meta.url),
+      {
+        zustand,
+        "@/features/auth": { AUTH_SESSION_CLEARED_EVENT: "signed-out", getAuthSessionEpoch: () => 1 },
+        "@/features/chat": {
+          notifyChatHistoryUpdated: () => {
+            historyRefreshes += 1;
+          },
+        },
+        "./api": { deleteScheduledTask: async () => undefined },
+        "./results": {
+          SCHEDULED_TASKS_CHANGED_EVENT: "changed",
+          SCHEDULED_TASK_RUNS_FINISHED_EVENT: "finished",
+        },
+      },
+    );
+    await store.useScheduledTasksStore.getState().remove("t1");
+    const first = stored.get(store.SCHEDULED_TASKS_WRITTEN_KEY);
+    assert.ok(first);
+    // A run that finished just before the deletion kept its chat, which no result will announce.
+    assert.equal(historyRefreshes, 1);
+    // A new value each time, so other tabs hear every change, not just the first.
+    await store.useScheduledTasksStore.getState().remove("t2");
+    assert.notEqual(stored.get(store.SCHEDULED_TASKS_WRITTEN_KEY), first);
+  } finally {
+    globals.window = saved.window;
+    globals.localStorage = saved.localStorage;
+  }
 });
 
 test("a refused request carries the server's reason", async () => {
