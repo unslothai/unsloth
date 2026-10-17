@@ -166,6 +166,10 @@ PENALTIES = {
     ("i2i", "distilled"): (1.05, 0.0),
     ("i2i", "base"): (1.0, 0.0),
 }
+# ComfyUI and BFL's reference penalize every generated token and never the prompt. llama-server feeds the prompt into
+# the penalty history unless it has `penalize_prompt` (unslothai/llama.cpp#283); with it the window spans the whole
+# caption. Older servers keep their default 64-token window: a wider one there would mostly penalize the system prompt.
+GENERATED_ONLY_PENALTIES = {"penalize_prompt": False, "repeat_last_n": 4096}
 
 # ── reference preparation (diffusers prepare_reference) ─────────────────────────────────────────────────────────────
 MAX_REFERENCES = 10
@@ -607,6 +611,7 @@ class PromptUpsamplerSidecar:
         self._api_key: Optional[str] = None
         self._key: Optional[tuple] = None
         self._gpu_layers: Optional[int] = None
+        self._penalize_prompt_supported = False
         self._loading = False
         self._starting_process: Optional[subprocess.Popen] = None
         self._load_cancel = threading.Event()
@@ -670,6 +675,7 @@ class PromptUpsamplerSidecar:
             self._api_key = None
             self._key = None
             self._gpu_layers = None
+            self._penalize_prompt_supported = False
 
     def unload(self, wait: bool = True) -> None:
         """Stop the server. ``wait=False`` leaves a busy one alone."""
@@ -812,10 +818,12 @@ class PromptUpsamplerSidecar:
                 if self._load_cancel.is_set():
                     raise UpsamplerCancelledError("The prompt upsampler load was cancelled.")
                 raise RuntimeError("llama-server did not become ready for the prompt upsampler.")
+            penalize_prompt_supported = _server_has_penalize_prompt(port, api_key)
             with self._lock:
                 self._process = process
                 self._port = port
                 self._api_key = api_key
+                self._penalize_prompt_supported = penalize_prompt_supported
                 self._key = (binary, model, mmproj)
                 self._gpu_layers = layers
                 self._generation += 1
@@ -855,7 +863,10 @@ class PromptUpsamplerSidecar:
                 self._launch(binary, model, mmproj)
             with self._lock:
                 port, api_key = self._port, self._api_key
+                generated_only = self._penalize_prompt_supported
                 self._active_requests += 1
+            if generated_only:
+                payload = {**payload, **GENERATED_ONLY_PENALTIES}
             try:
                 return _post_chat(port, payload, api_key = api_key, cancel_event = cancel_event)
             finally:
@@ -882,6 +893,23 @@ def _wait_for_server(process, port: int, cancel_event: threading.Event) -> bool:
     from core.inference.stt_mtmd_sidecar import MtmdSttSidecar
 
     return MtmdSttSidecar._wait_for_server(process, port, cancel_event)
+
+
+def _server_has_penalize_prompt(port: int, api_key: Optional[str] = None) -> bool:
+    """Whether this llama-server takes the `penalize_prompt` request field: builds that have it echo it among the
+    default generation settings in /props. Any failure reads as an older server."""
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout = 10)
+    try:
+        connection.request("GET", "/props", headers = {"Authorization": f"Bearer {api_key}"} if api_key else {})
+        response = connection.getresponse()
+        if response.status != 200:
+            return False
+        settings = (json.loads(response.read()) or {}).get("default_generation_settings") or {}
+        return "penalize_prompt" in settings or "penalize_prompt" in (settings.get("params") or {})
+    except (OSError, ValueError, AttributeError, http.client.HTTPException):
+        return False
+    finally:
+        connection.close()
 
 
 def _post_chat(

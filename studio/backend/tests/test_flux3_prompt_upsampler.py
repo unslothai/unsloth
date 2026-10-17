@@ -385,6 +385,66 @@ def test_post_chat_parses_the_reply(monkeypatch):
     assert sent["headers"]["Authorization"] == "Bearer k"
 
 
+@pytest.mark.parametrize(
+    "status, props, expected",
+    [
+        (200, {"default_generation_settings": {"params": {"penalize_prompt": True}}}, True),
+        (200, {"default_generation_settings": {"penalize_prompt": True}}, True),
+        (200, {"default_generation_settings": {"params": {"presence_penalty": 0.0}}}, False),
+        (200, {}, False),
+        (404, {}, False),
+        (200, None, False),
+    ],
+)
+def test_penalize_prompt_probe(monkeypatch, status, props, expected):
+    import json
+
+    class _Response:
+        def __init__(self):
+            self.status = status
+
+        def read(self):
+            return b"not json" if props is None else json.dumps(props).encode()
+
+    class _Connection:
+        def __init__(self, host, port, timeout = None):
+            pass
+
+        def request(self, method, path, headers = None):
+            assert (method, path) == ("GET", "/props")
+
+        def getresponse(self):
+            return _Response()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(pup.http.client, "HTTPConnection", _Connection)
+    assert pup._server_has_penalize_prompt(4321) is expected
+
+
+@pytest.mark.parametrize("supported", [True, False])
+def test_generated_only_penalties_follow_the_server(monkeypatch, supported):
+    sent = {}
+    sidecar = pup.PromptUpsamplerSidecar()
+
+    def _fake_launch(binary, model, mmproj):
+        sidecar._process = type("P", (), {"poll": lambda self: None})()
+        sidecar._port, sidecar._key = 4321, (binary, model, mmproj)
+        sidecar._penalize_prompt_supported = supported
+
+    monkeypatch.setattr(sidecar, "_launch", _fake_launch)
+    monkeypatch.setattr(sidecar, "_schedule_idle_locked", lambda: None)
+    monkeypatch.setattr(pup, "_post_chat", lambda port, payload, **kw: sent.update(payload) or "caption")
+    payload = pup.build_chat_payload("a", "base")
+    assert sidecar.generate(payload, binary = "b", model = "m", mmproj = None) == "caption"
+    if supported:
+        assert sent["penalize_prompt"] is False and sent["repeat_last_n"] == 4096
+    else:
+        assert "penalize_prompt" not in sent and "repeat_last_n" not in sent
+    assert sent["presence_penalty"] == 1.5 and "penalize_prompt" not in payload
+
+
 # ── the download state reuses the dictation worker ──────────────────────────────────────────────────────────────────
 def test_download_state_targets_the_unsloth_repo(monkeypatch):
     state = pup._get_download_state()
