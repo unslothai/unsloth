@@ -38,7 +38,6 @@ MAX_CAPTION_CHARS = 2000
 
 def _ref(path: Any) -> Optional[str]:
     from hub.utils.host_paths import cache_reference
-
     return cache_reference(path) if isinstance(path, str) and path else None
 
 
@@ -221,9 +220,7 @@ async def _upload_images(
         )
     )
     return DatasetsResult(
-        image_dataset = ImageDatasetUpload.from_route(
-            saved, name = opt_text(saved.get("name")) or name
-        )
+        image_dataset = ImageDatasetUpload.from_route(saved, name = opt_text(saved.get("name")) or name)
     )
 
 

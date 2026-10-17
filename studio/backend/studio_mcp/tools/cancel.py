@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from fastmcp.exceptions import ToolError
 
-from studio_mcp import export_jobs
+from studio_mcp import export_jobs, model_downloads
 from studio_mcp.caller import current_caller
 from studio_mcp.outputs import CancelResult
 from studio_mcp.tools import DESTRUCTIVE, EXPORT_STATUS, as_dict, opt_text, route_json
@@ -25,6 +25,7 @@ CancelKind = Literal[
     "video",
     "chat",
     "dataset_download",
+    "model_download",
 ]
 START_CANCELLED = "training_start_cancelled"
 NEEDS_ID = {
@@ -32,6 +33,7 @@ NEEDS_ID = {
     "recipe": "the recipe job id",
     "chat": "the chat's cancel_id",
     "dataset_download": "the dataset's repo_id",
+    "model_download": "the id download_model returned",
 }
 # The route each other kind posts to, and the body field that carries its id (or ``save``), if any.
 ROUTES = {
@@ -103,7 +105,7 @@ async def cancel(
     id: Optional[str] = None,
     save: bool = True,
 ) -> CancelResult:
-    """Stop Unsloth Studio work. "training" stops the LLM training run ``id`` (or the current one) at its next safe point, saving a checkpoint unless ``save`` is false. "training_start" withdraws a start request that has not begun. "diffusion_training" stops image LoRA training, saving the partial adapter unless ``save`` is false. "export" stops the running export and unloads its checkpoint; with ``id`` (an export_model job) only that job's own step, never someone else's export. "recipe" stops recipe job ``id``. "image" and "video" stop the generation in progress. "chat" stops the reply with cancel_id ``id``. "dataset_download" stops downloading the dataset ``id`` (its repo id). Audio runs cannot be cancelled. ``cancelled`` says whether this call stopped something."""
+    """Stop Unsloth Studio work. "training" stops the LLM training run ``id`` (or the current one) at its next safe point, saving a checkpoint unless ``save`` is false. "training_start" withdraws a start request that has not begun. "diffusion_training" stops image LoRA training, saving the partial adapter unless ``save`` is false. "export" stops the running export and unloads its checkpoint; with ``id`` (an export_model job) only that job's own step, never someone else's export. "recipe" stops recipe job ``id``. "image" and "video" stop the generation in progress. "chat" stops the reply with cancel_id ``id``. "dataset_download" stops downloading the dataset ``id`` (its repo id). "model_download" stops the model download ``id`` that download_model returned; a speech-to-text download can't be stopped here. Audio runs cannot be cancelled. ``cancelled`` says whether this call stopped something."""
     caller = current_caller()
 
     def done(cancelled: bool, message: Optional[str]) -> CancelResult:
@@ -138,6 +140,11 @@ async def cancel(
         if not _stopped(kind, answer):
             return done(False, _message(answer))
         return done(True, "The export was stopped and its checkpoint unloaded.")
+    elif kind == "model_download":
+        stopped, state = await model_downloads.cancel_parts(caller, id)
+        if stopped:
+            return done(True, "Unsloth Studio is stopping the download.")
+        return done(False, f"Nothing to stop: the download is {state or 'not found'}.")
     else:
         path, id_field = ROUTES[kind]
         answer = await route_json(

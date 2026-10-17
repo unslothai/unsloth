@@ -36,6 +36,8 @@ from .test_mcp_tools_audio import TRANSCRIPT, VERBOSE
 from .test_mcp_tools_cancel import PAYLOADS as CANCEL_PAYLOADS
 from .test_mcp_tools_datasets import PAYLOADS as DATASETS_PAYLOADS
 from .test_mcp_tools_datasets_images import PAYLOADS as IMAGE_DATASET_PAYLOADS
+from .test_mcp_tools_download import TOOL_PAYLOADS as DOWNLOAD_PAYLOADS
+from .test_mcp_train_to_use import _routes as TRAIN_TO_USE_ROUTES
 from .test_mcp_tools_datasets_upload import PAYLOADS as UPLOAD_PAYLOADS
 from .test_mcp_tools_images import PAYLOADS as IMAGES_PAYLOADS
 from .test_mcp_tools_loading import PAYLOADS as LOADING_PAYLOADS
@@ -72,8 +74,13 @@ EXPORT_PAYLOADS = {
 CASES: dict[str, Any] = {
     "studio_status": (STATUS_PAYLOADS, {}),
     "list_models": (MODELS_PAYLOADS, {"model": "unsloth/Qwen3-0.6B"}),
-    "load_model": (LOADING_PAYLOADS, {"model": "unsloth/Llama-3.2-1B-Instruct-GGUF"}),
+    "load_model": [
+        (LOADING_PAYLOADS, {"model": "unsloth/Llama-3.2-1B-Instruct-GGUF"}),
+        (TRAIN_TO_USE_ROUTES([f"{OUT}/qwen-lora"]), {"checkpoint": "qwen-lora"}),
+        (TRAIN_TO_USE_ROUTES([f"{OUT}/qwen-lora"]), {"export": "qwen-GGUF", "variant": "Q4_K_M"}),
+    ],
     "unload_model": (LOADING_PAYLOADS, {}),
+    "download_model": (DOWNLOAD_PAYLOADS, {"model": "unsloth/Qwen3-0.6B-GGUF"}),
     "chat": (TEXT_PAYLOADS, {"prompt": "hi"}),
     "embed": (TEXT_PAYLOADS, {"texts": ["a", "b"]}),
     "system_one": (TEXT_PAYLOADS, {"state": "x", "questions": {"urgent": {"type": "noul"}}}),
@@ -83,6 +90,7 @@ CASES: dict[str, Any] = {
         (VIDEO_PAYLOADS, {"kind": "video"}),
         (VIDEO_PAYLOADS, {"kind": "video", "id": "video-1"}),
         (RECIPE_PAYLOADS, {"kind": "recipe", "id": "job-1", "rows": 2}),
+        (DOWNLOAD_PAYLOADS, {"kind": "download", "id": "a/b::Q4_K_M"}),
     ],
     "start_training": [
         (TRAINING_PAYLOADS, {"config": {"model_name": "m"}}),
@@ -96,6 +104,7 @@ CASES: dict[str, Any] = {
     "cancel": [
         (CANCEL_PAYLOADS, {"kind": "training"}),
         (CANCEL_PAYLOADS, {"kind": "recipe", "id": "rec-1"}),
+        (DOWNLOAD_PAYLOADS, {"kind": "model_download", "id": "a/b::Q4_K_M"}),
     ],
     "run_recipe": (RECIPE_PAYLOADS, {"recipe": {"columns": [{"name": "q"}]}}),
     "datasets": [

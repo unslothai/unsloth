@@ -135,7 +135,6 @@ async def _checked_trainable(validated: Any, caller: Caller) -> tuple[Any, Optio
     if audio_type is None:
         # Imported here so a test can patch the module attribute; any failure is no verdict.
         from utils.models import model_config
-
         try:
             audio_type, _known = await asyncio.to_thread(
                 model_config.detect_audio_type_checked,

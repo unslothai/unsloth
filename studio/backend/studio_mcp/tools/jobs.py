@@ -16,7 +16,7 @@ from studio_mcp.caller import Caller, current_caller
 from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
 from studio_mcp.media import INLINE_CAP, image_content, media_result, public_url, resource_link
-from studio_mcp import export_jobs
+from studio_mcp import export_jobs, model_downloads
 from studio_mcp.outputs import (
     ExportInfo,
     JobStatus,
@@ -154,17 +154,21 @@ async def _export_job(caller: Caller, job_id: Optional[str]) -> ToolResult:
 
 
 async def get_job(
-    kind: Literal["video", "recipe", "export"],
+    kind: Literal["video", "recipe", "export", "download"],
     id: Optional[str] = None,
     rows: Annotated[Optional[int], Field(ge = 1, le = 500)] = None,
     offset: Annotated[int, Field(ge = 0)] = 0,
 ) -> ToolResult:
-    """The state of a long-running job. kind "video": with ``id``, its status and progress, and once completed a thumbnail plus the video's URL; without ``id``, recent video jobs. kind "recipe": a data recipe job's status and progress (without ``id``, the current one), and with ``rows`` that many generated rows from ``offset``. Unsloth Studio runs one recipe at a time; a recipe job id is not tied to an account. kind "export": an export_model job by its id (without ``id``, this key's export jobs), with its output named relative to Unsloth Studio's exports folder."""
+    """The state of a long-running job. kind "video": with ``id``, its status and progress, and once completed a thumbnail plus the video's URL; without ``id``, recent video jobs. kind "recipe": a data recipe job's status and progress (without ``id``, the current one), and with ``rows`` that many generated rows from ``offset``. Unsloth Studio runs one recipe at a time; a recipe job id is not tied to an account. kind "export": an export_model job by its id (without ``id``, this key's export jobs), with its output named relative to Unsloth Studio's exports folder. kind "download": a download_model download by the id it returned."""
     caller = current_caller()
     if kind == "recipe":
         return await _recipe_job(caller, id, rows, offset)
     if kind == "export":
         return await _export_job(caller, id)
+    if kind == "download":
+        if not id:
+            raise ToolError('get_job(kind="download") needs id: the id download_model returned.')
+        return media_result([], await model_downloads.status(caller, id))
     if id is None:
         return await _video_jobs(caller)
     return await _video_job(caller, id)

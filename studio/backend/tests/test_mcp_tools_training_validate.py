@@ -16,7 +16,11 @@ TRAINABLE = "Trainable text-to-speech models: unsloth/orpheus-3b-0.1-ft, sesame/
 def _detect(monkeypatch, answer):
     seen = []
 
-    def detect(name, hf_token = None, **_kw):
+    def detect(
+        name,
+        hf_token = None,
+        **_kw,
+    ):
         seen.append((name, hf_token))
         if isinstance(answer, Exception):
             raise answer
@@ -26,7 +30,11 @@ def _detect(monkeypatch, answer):
     return seen
 
 
-def _validate(monkeypatch, config, kind = "llm"):
+def _validate(
+    monkeypatch,
+    config,
+    kind = "llm",
+):
     result, studio = run_tool(
         monkeypatch, {}, "start_training", {"config": config, "kind": kind, "validate_only": True}
     )

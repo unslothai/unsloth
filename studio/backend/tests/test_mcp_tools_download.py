@@ -13,7 +13,16 @@ from fastmcp.exceptions import ToolError
 
 from studio_mcp import loading, model_downloads
 
-from .mcp_harness import WHISPER, bodies, fake_studio, make_caller, queries, sequence, stt_state
+from .mcp_harness import (
+    WHISPER,
+    bodies,
+    fake_studio,
+    make_caller,
+    queries,
+    run_tool,
+    sequence,
+    stt_state,
+)
 
 GGUF = "unsloth/Qwen3-0.6B-GGUF"
 VARIANTS = {"default_variant": "Q4_K_M", "variants": [{"quant": "Q8_0"}, {"quant": "Q4_K_M"}]}
@@ -281,3 +290,38 @@ def test_wait_reads_the_parts_download_model_staged_for_this_account():
     ]
     wait(studio, model = "org/FLUX", kind = "image", budget_s = 0)
     assert [q["repo_id"] for q in queries(studio, STATUS)] == [FLUX, VAE]
+
+
+# The tools over MCP: download_model, get_job(kind="download") and cancel(kind="model_download").
+TOOL_PAYLOADS = {
+    ("GET", "/api/hub/gguf-variants"): VARIANTS,
+    ("POST", START): STARTED,
+    ("GET", STATUS): {"state": "error", "error": "401 gated repo", "generation": 1, "attempt": 1},
+    ("POST", CANCEL): {"job_key": "unsloth/qwen3-0.6b-gguf::q4_k_m", "state": "cancelling"},
+}
+
+
+def test_download_model_returns_the_id_get_job_and_cancel_take(monkeypatch):
+    result, studio = run_tool(monkeypatch, TOOL_PAYLOADS, "download_model", {"model": GGUF})
+    ref = result["structuredContent"]
+    assert ref["id"] == f"{GGUF}::Q4_K_M" and ref["status"] == "running"
+    assert bodies(studio, START) == [
+        {"repo_id": GGUF, "transport_mode": "auto", "gguf_variant": "Q4_K_M"}
+    ]
+    job, studio = run_tool(
+        monkeypatch, TOOL_PAYLOADS, "get_job", {"kind": "download", "id": ref["id"]}
+    )
+    assert job["structuredContent"]["status"] == "failed"
+    assert job["structuredContent"]["error"] == "401 gated repo"
+    assert queries(studio, STATUS) == [{"repo_id": GGUF, "gguf_variant": "Q4_K_M"}]
+    stopped, studio = run_tool(
+        monkeypatch, TOOL_PAYLOADS, "cancel", {"kind": "model_download", "id": ref["id"]}
+    )
+    assert stopped["structuredContent"]["cancelled"] is True
+    assert bodies(studio, CANCEL) == [{"repo_id": GGUF, "gguf_variant": "Q4_K_M"}]
+
+
+def test_get_job_download_needs_the_id(monkeypatch):
+    result, studio = run_tool(monkeypatch, TOOL_PAYLOADS, "get_job", {"kind": "download"})
+    assert result["isError"] is True and "download_model" in result["content"][0]["text"]
+    assert studio.state.calls == []

@@ -247,8 +247,8 @@ api_key_format = "Bearer {token}"
 | `generate_video` | Start a video. Poll it with `get_job`. |
 | `get_job` | The state of a video, recipe or export job. |
 | `run_recipe` | Validate, preview or run a Data Recipe. |
-| `datasets` | List, check, download and follow training datasets. |
-| `start_training` | Start LLM or image LoRA training. Follow it with `studio_status`. |
+| `datasets` | List, check, upload, download and follow training datasets, and upload image datasets for image LoRA training. |
+| `start_training` | Start LLM, text-to-speech or image LoRA training. Follow it with `studio_status`. |
 | `list_training_runs` | Past runs and their checkpoints, by name. |
 | `export_model` | Export a checkpoint to GGUF, merged weights, a LoRA adapter or the base model. |
 | `cancel` | Stop training, a start request, image training, an export, a recipe, an image or video generation, a chat reply or a dataset download. |

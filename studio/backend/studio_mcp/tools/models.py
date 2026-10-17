@@ -5,14 +5,15 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 from urllib.parse import quote
 
 from fastmcp import Context
+from pydantic import Field
 
-from studio_mcp import loading
+from studio_mcp import loading, model_downloads, trained_models
 from studio_mcp.caller import current_caller
-from studio_mcp.outputs import LoadResult, ModelEntry, ModelList, UnloadResult
+from studio_mcp.outputs import DownloadRef, LoadResult, ModelEntry, ModelList, UnloadResult
 from studio_mcp.tools import DESTRUCTIVE, READ_ONLY, WRITES, as_dict, opt_text, route_json
 
 # "tts" and "audio" are what list_models reports for audio models; they load in the llm slot.
@@ -110,7 +111,23 @@ async def list_models(
 
 
 async def load_model(
-    model: str,
+    model: Optional[str] = None,
+    checkpoint: Annotated[
+        Optional[str],
+        Field(
+            description = "Load a training checkpoint instead of model: a name from "
+            'list_training_runs(include_checkpoints=true), "<run folder>" or "<run folder>/checkpoint-N".'
+        ),
+    ] = None,
+    export: Annotated[
+        Optional[str],
+        Field(
+            description = "Load an export instead of model: its output name as export_model and "
+            'get_job(kind="export") report it, relative to Unsloth Studio\'s exports folder. A merged or '
+            'LoRA export is found when its save_directory has two levels, such as "<run>/<name>"; '
+            "variant picks a GGUF export's quantization."
+        ),
+    ] = None,
     kind: ModelKind = "llm",
     variant: Optional[str] = None,
     max_seq_length: Optional[int] = None,
@@ -120,22 +137,27 @@ async def load_model(
 ) -> LoadResult:
     """Load a model into Unsloth Studio, downloading it first if needed, and wait until it is ready; progress is reported while it loads. ``kind`` "llm" covers chat, vision, embedding and audio models, and the "tts" and "audio" kinds list_models reports load the same way; "image" and "video" load the generation models and "stt" a speech-to-text model (downloaded first when needed). ``model`` is an id from list_models or a Hugging Face repo id; ``variant`` picks a GGUF quantization such as Q4_K_M. ``max_seq_length`` 0 or unset lets Unsloth Studio choose the context, and ``load_in_4bit`` picks 4-bit weights (both llm only). ``hf_token`` is for gated repos. Loading may unload other models to make room, for example a chat model to fit an image model; they are listed in ``evicted``."""
     caller = current_caller()
+    trained = await trained_models.resolve(
+        caller, model = model, checkpoint = checkpoint, export = export, kind = kind, variant = variant
+    )
     if kind == "stt":
         return await loading.load_stt(caller, ctx, model = model, variant = variant, hf_token = hf_token)
     if kind in loading.MEDIA_ROUTES:
         return await loading.load_media(
             caller, ctx, kind = kind, model = model, variant = variant, hf_token = hf_token
         )
-    return await loading.load_llm(
+    result = await loading.load_llm(
         caller,
         ctx,
-        model = model,
+        model = trained.ref if trained else model,
         variant = variant,
         max_seq_length = max_seq_length,
         load_in_4bit = load_in_4bit,
         hf_token = hf_token,
         kind = kind,
     )
+    # The route echoes the minted ref; the agent gets the name it asked for.
+    return trained.renamed(result) if trained else result
 
 
 async def unload_model(kind: ModelKind = "llm", model: Optional[str] = None) -> UnloadResult:
@@ -147,4 +169,28 @@ async def unload_model(kind: ModelKind = "llm", model: Optional[str] = None) -> 
     return await loading.unload_llm(current_caller(), model)
 
 
-TOOLS = ((list_models, READ_ONLY), (load_model, WRITES), (unload_model, DESTRUCTIVE))
+async def download_model(
+    model: str,
+    kind: ModelKind = "llm",
+    variant: Optional[str] = None,
+    hf_token: Optional[str] = None,
+    ctx: Optional[Context] = None,
+) -> DownloadRef:
+    """Download a model ahead of time without loading it, so a later load_model starts sooner.
+    The download keeps running in Unsloth Studio's download manager after this returns.
+    ``kind`` is the kind load_model takes: "llm", "tts" and "audio" fetch the repo (for a GGUF repo only ``variant``, by default the recommended one), "image" and "video" the files their load reads, and "stt" a speech-to-text model.
+    Follow it with get_job(kind="download", id=<the returned id>) and stop it with cancel(kind="model_download", id=<the same id>).
+    A speech-to-text download finishes before this returns, so it has no id.
+    load_model waits for a running download of the same model.
+    ``hf_token`` is for gated repos."""
+    return await model_downloads.start(
+        current_caller(), ctx, model = model, kind = kind, variant = variant, hf_token = hf_token
+    )
+
+
+TOOLS = (
+    (list_models, READ_ONLY),
+    (load_model, WRITES),
+    (unload_model, DESTRUCTIVE),
+    (download_model, WRITES),
+)

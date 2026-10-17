@@ -1,0 +1,117 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Load a checkpoint or an export by name. The listing routes give host paths; the load goes out with a ``ref:`` handle minted from that path, and the agent only ever sees the name it asked for."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Optional
+
+from hub.utils.host_paths import cache_reference, redact_paths_in_text
+from studio_mcp import checkpoints
+from studio_mcp.caller import Caller
+from studio_mcp.errors import tool_error
+from studio_mcp.outputs import LoadResult
+from studio_mcp.tools import as_dict, leaf_name, opt_text, route_json
+
+NOT_LLM_KINDS = ("image", "video", "stt")
+
+
+@dataclass(frozen = True)
+class TrainedModel:
+    name: str
+    ref: str = field(repr = False)
+    is_lora: bool
+    gguf_variant: Optional[str] = None
+    # Every listed path or ref -> its name, to name models the load evicted.
+    known: dict[str, str] = field(default_factory = dict, repr = False)
+
+    def renamed(self, result: LoadResult) -> LoadResult:
+        evicted = [self.known.get(entry, entry) for entry in result.evicted]
+        return result.model_copy(update = {"model": self.name, "evicted": evicted})
+
+
+def _known(rows: list[tuple[str, str]]) -> dict[str, str]:
+    known = {}
+    for path, name in rows:
+        known[path] = name
+        known[cache_reference(path)] = name
+    return known
+
+
+def _parent(path: str) -> str:
+    trimmed = path.rstrip("\\/")
+    return trimmed[: len(trimmed) - len(leaf_name(trimmed))].rstrip("\\/") or trimmed
+
+
+async def resolve_checkpoint(caller: Caller, name: str) -> TrainedModel:
+    found, _folders = await checkpoints.list_checkpoints(caller)
+    match = next((c for c in found if c.name == name), None)
+    if match is None:
+        available = ", ".join(sorted(c.name for c in found)[:20]) or "none"
+        raise tool_error(f"No checkpoint named {name}. Available: {available}")
+    # The load route detects LoRA on disk; a full finetune has no peft_type.
+    return TrainedModel(
+        name = name,
+        ref = cache_reference(match.path),
+        is_lora = match.peft_type is not None,
+        known = _known([(c.path, c.name) for c in found]),
+    )
+
+
+async def resolve_export(caller: Caller, name: str, variant: Optional[str]) -> TrainedModel:
+    listing = await route_json("GET", "/api/models/loras", caller = caller, hub_header = True)
+    rows = []
+    for row in as_dict(listing).get("loras") or []:
+        row = as_dict(row)
+        label, path = opt_text(row.get("display_name")), opt_text(row.get("adapter_path"))
+        if row.get("source") == "exported" and label and path:
+            # The scan names a two-level export "run / name"; export_model reports "run/name".
+            rows.append((label.replace(" / ", "/"), path, row.get("export_type")))
+    match = [r for r in rows if r[0] == name] or [
+        r for r in rows if r[0].casefold() == name.casefold()
+    ]
+    if len(match) != 1:
+        available = ", ".join(sorted({r[0] for r in rows})[:20]) or "none"
+        # A hint, since the scrub would read "<run>/<name>" as a path; the names are scrubbed here.
+        raise tool_error(
+            f"No export named {name}.",
+            hint = "A merged or LoRA export is found when its save_directory has two levels, "
+            f'such as "<run>/<name>". Available: {redact_paths_in_text(available)}',
+        )
+    _label, path, export_type = match[0]
+    gguf_variant = None
+    if export_type == "gguf" and variant:
+        # The scan picks one .gguf file; the folder plus the variant picks the quantization asked for.
+        path, gguf_variant = _parent(path), variant
+    return TrainedModel(
+        name = name,
+        ref = cache_reference(path),
+        is_lora = export_type == "lora",
+        gguf_variant = gguf_variant,
+        known = _known([(r[1], r[0]) for r in rows]),
+    )
+
+
+async def resolve(
+    caller: Caller,
+    *,
+    model: Optional[str],
+    checkpoint: Optional[str],
+    export: Optional[str],
+    kind: str,
+    variant: Optional[str],
+) -> Optional[TrainedModel]:
+    """None for a plain ``model`` load; refusals come before any route call."""
+    if sum(value is not None for value in (model, checkpoint, export)) != 1:
+        raise tool_error("load_model needs exactly one of model, checkpoint or export.")
+    if model is not None:
+        return None
+    if kind in NOT_LLM_KINDS:
+        raise tool_error(
+            'checkpoint and export load chat and text-to-speech models; use kind "llm", "tts" or "audio".'
+        )
+    if checkpoint is not None:
+        return await resolve_checkpoint(caller, checkpoint)
+    return await resolve_export(caller, export, variant)
