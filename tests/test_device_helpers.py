@@ -189,6 +189,10 @@ def test_model_call_sites_use_shared_cache_dispatch():
     q_galore_source = (REPO_ROOT / "unsloth" / "optimizers" / "q_galore_adamw.py").read_text(
         encoding = "utf-8"
     )
+    rl_source = (REPO_ROOT / "unsloth" / "models" / "rl.py").read_text(encoding = "utf-8")
+    synthetic_source = (REPO_ROOT / "unsloth" / "dataprep" / "synthetic.py").read_text(
+        encoding = "utf-8"
+    )
 
     assert "torch.xpu.empty_cache()" not in llama_source
     assert "torch.xpu.empty_cache()" not in vision_source
@@ -210,6 +214,14 @@ def test_model_call_sites_use_shared_cache_dispatch():
     assert "clean_gpu_cache()" in loader_utils_source
     assert "torch.cuda.synchronize()" not in q_galore_source
     assert "device_synchronize()" in q_galore_source
+    # The vLLM resume / teardown releases were keyed off CUDA too, so on NPU / XPU the
+    # sleep-and-free path returned before flushing and the freed blocks stayed reserved.
+    assert "if not torch.cuda.is_available():\n        return" not in rl_source
+    assert "DEVICE_COUNT < 1" in rl_source
+    assert "torch.cuda.empty_cache()" not in rl_source
+    assert "clean_gpu_cache()" in rl_source
+    assert "torch.cuda.empty_cache()" not in synthetic_source
+    assert "clean_gpu_cache()" in synthetic_source
 
 
 NPU_PROPERTIES = types.SimpleNamespace(
