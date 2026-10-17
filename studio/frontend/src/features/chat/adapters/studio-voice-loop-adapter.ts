@@ -571,6 +571,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         // Created after the mic await, outside the user gesture; a suspended context delivers
         // no audioprocess callbacks and the loop only ever hits its no-speech timeout.
         await audioCtx.resume();
+        // A cancel during that await tore the context down.
+        if (ended || !audioCtx) {
+          teardown();
+          return;
+        }
         sampleRate = audioCtx.sampleRate;
         source = audioCtx.createMediaStreamSource(stream);
         attachInputSpectrum(audioCtx, source);

@@ -560,8 +560,13 @@ export const VoiceEngine: FC = () => {
     // separate question to hold for after the reply, or is nothing to act on.
     if (thread.getState().isRunning && latestAssistantIsReasoning()) {
       const elapsedS = (Date.now() - runStartedAtRef.current) / 1000;
-      void interjectAction(lastUserPrompt(), text, elapsedS).then((action) => {
-        voiceTrace("engine.interject", { action, text });
+      void interjectAction(lastUserPrompt(), text, elapsedS).then((verdict) => {
+        // The judge may wave off a short backchannel ("uh true", "okay"); a whole
+        // sentence said over the model's thinking is the user cutting in, and
+        // dropping it read as the interrupt not working.
+        const words = text.split(/\s+/).filter(Boolean).length;
+        const action = verdict === "ignore" && words > 3 ? "restart" : verdict;
+        voiceTrace("engine.interject", { action, verdict, words, text });
         if (voiceModeRef.current !== "active") return;
         if (action === "ignore" || action === "queue") {
           if (action === "queue") queuedUtteranceRef.current.push(text);
