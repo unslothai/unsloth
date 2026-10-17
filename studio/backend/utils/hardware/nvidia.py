@@ -587,6 +587,131 @@ def get_compute_capabilities() -> dict[int, tuple[int, int]]:
     return capabilities
 
 
+def get_card_identities() -> dict[int, tuple[str, ...]]:
+    """nvidia-smi row index -> (name, total memory, compute cap, max SM clock), no mask and no torch.
+
+    Equal rows pick the same precision and artifacts on either card. {} when unreadable.
+    """
+    try:
+        result = gpu_query.run_nvidia_smi(
+            [
+                _nvidia_smi_executable(),
+                "--query-gpu=index,name,memory.total,compute_cap,clocks.max.sm",
+                "--format=csv,noheader",
+            ],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if result.returncode != 0:
+        return {}
+    identities: dict[int, tuple[str, ...]] = {}
+    for line in result.stdout.strip().splitlines():
+        index, *fields = (part.strip() for part in line.split(","))
+        if not index.isdigit() or len(fields) != 4:
+            return {}
+        identities[int(index)] = tuple(fields)
+    return identities
+
+
+# Driver API only: cuInit enumerates devices under the inherited CUDA_VISIBLE_DEVICES / CUDA_DEVICE_ORDER
+# without creating a context, and runs in a child so the Studio process never initialises CUDA.
+_CUDA_BUS_ID_SCRIPT = r"""
+import ctypes, sys
+lib = ctypes.WinDLL("nvcuda.dll") if sys.platform == "win32" else ctypes.CDLL("libcuda.so.1")
+if lib.cuInit(0) != 0:
+    sys.exit(3)
+count = ctypes.c_int(0)
+if lib.cuDeviceGetCount(ctypes.byref(count)) != 0:
+    sys.exit(4)
+for ordinal in range(count.value):
+    dev = ctypes.c_int(0)
+    buf = ctypes.create_string_buffer(64)
+    integrated = ctypes.c_int(0)
+    if (
+        lib.cuDeviceGet(ctypes.byref(dev), ordinal) != 0
+        or lib.cuDeviceGetPCIBusId(buf, 64, dev) != 0
+        or lib.cuDeviceGetAttribute(ctypes.byref(integrated), 18, dev) != 0  # CU_DEVICE_ATTRIBUTE_INTEGRATED
+    ):
+        sys.exit(5)
+    print(buf.value.decode(), integrated.value)
+"""
+
+
+def _normalize_bus_id(bus_id: str) -> Optional[tuple[int, str]]:
+    """'00000000:3B:00.0' (nvidia-smi) and '0000:3b:00.0' (driver API) -> (domain, 'BUS:DEV.FN')."""
+    domain, sep, rest = bus_id.strip().partition(":")
+    if not sep:
+        return None
+    try:
+        return int(domain, 16), rest.upper()
+    except ValueError:
+        return None
+
+
+def get_cuda_ordinal_smi_rows() -> Optional[list[int]]:
+    """nvidia-smi row index for each CUDA ordinal of this process's environment, matched by PCI bus id.
+
+    Establishes the ordinal mapping under any CUDA_DEVICE_ORDER / numeric mask without opening a CUDA
+    context here: the ordinals come from a short child on the driver API, the rows from nvidia-smi.
+    None when either side is unreadable or the two do not join; [] when an integrated card is among them,
+    whose nvidia-smi memory is a carve-out rather than its shared pool.
+    """
+    import sys
+
+    from utils.child_stdio import utf8_child_env
+
+    try:
+        child = subprocess.run(
+            [sys.executable, "-c", _CUDA_BUS_ID_SCRIPT],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 15,
+            env = utf8_child_env(child_env_without_native_path_secret()),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+        smi = gpu_query.run_nvidia_smi(
+            [_nvidia_smi_executable(), "--query-gpu=index,pci.bus_id", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if child.returncode != 0 or smi.returncode != 0:
+        return None
+    row_by_bus: dict[tuple[int, str], int] = {}
+    for line in smi.stdout.strip().splitlines():
+        index, _, bus_id = (part.strip() for part in line.partition(","))
+        key = _normalize_bus_id(bus_id)
+        if not index.isdigit() or key is None:
+            return None
+        row_by_bus[key] = int(index)
+    rows = []
+    for line in child.stdout.strip().splitlines():
+        bus_id, _, integrated = line.strip().partition(" ")
+        key = _normalize_bus_id(bus_id)
+        if key not in row_by_bus or integrated not in ("0", "1"):
+            return None
+        if integrated == "1":
+            # The row is a carve-out or N/A; only torch reports the shared pool. Known, so cacheable.
+            return []
+        rows.append(row_by_bus[key])
+    return rows or None
+
+
 def get_physical_gpu_inventory() -> dict[str, Any]:
     """Every NVIDIA GPU the driver enumerates, with no visibility mask and no torch. Display-only inventory: ``index`` is nvidia-smi's own row number, a physical id and NOT something a caller may pin, because the whole point of this probe is that PyTorch cannot open these devices. A failed probe comes back as a structured unavailable result, so this never raises out of an endpoint."""
     rows = _query_gpu_inventory("get_physical_gpu_inventory")
