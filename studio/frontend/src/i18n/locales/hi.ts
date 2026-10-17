@@ -1791,9 +1791,6 @@ export const hi = {
         showLoadedModels: "लोड किए गए मॉडल का संकेतक",
         showLoadedModelsDescription:
           "नीचे दाएं कोने में एक छोटा कार्ड दिखाएं जिसमें वर्तमान में मेमोरी में मौजूद हर मॉडल (चैट, स्पीच, इमेज, वीडियो) सूचीबद्ध हो, और हर एक को हटाने के लिए एक बटन हो।",
-        showWhisperUpdates: "whisper.cpp अपडेट सूचनाएं",
-        showWhisperUpdatesDescription:
-          "स्पीच-टू-टेक्स्ट मॉडल के लिए जब कोई नया whisper.cpp बिल्ड उपलब्ध हो तो सूचित करें। यदि आप ऑडियो ट्रांसक्राइब नहीं करते हैं तो बंद कर दें।",
         showAudioCppUpdates: "audio.cpp अपडेट सूचनाएं",
         showAudioCppUpdatesDescription:
           "जब ऑडियो पेजों के लिए audio.cpp रनटाइम को अपडेट की ज़रूरत हो तो सूचित करें। यदि आप कभी ऑडियो का उपयोग नहीं करते हैं तो बंद कर दें।",

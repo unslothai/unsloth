@@ -183,14 +183,15 @@ export function LlamaUpdateBanner({
   const [shownChannels, setShownChannels] = useState<
     readonly NotificationChannel[]
   >([]);
+  // whisper.cpp rides along with llama.cpp and audio.cpp: listed in their card, never a reason to show it.
   const due: UpdateComponentFlags = {
     llama: useNotificationDue("llama"),
-    whisper: useNotificationDue("whisper"),
+    whisper: false,
     audio: useNotificationDue("audio"),
   };
   const muted: UpdateComponentFlags = {
     llama: useNotificationFrequency("llama") === "off",
-    whisper: useNotificationFrequency("whisper") === "off",
+    whisper: true,
     audio: useNotificationFrequency("audio") === "off",
   };
   const [changelogVersion, setChangelogVersion] = useState<string | null>(null);

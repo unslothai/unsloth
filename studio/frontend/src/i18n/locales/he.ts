@@ -1896,9 +1896,6 @@ export const he = {
         showLoadedModels: "חיווי מודלים טעונים",
         showLoadedModelsDescription:
           "הצג כרטיס קטן בפינה הימנית התחתונה המפרט כל מודל שנמצא כרגע בזיכרון (צ'אט, דיבור, תמונה, וידאו), עם כפתור לפריקת כל אחד מהם.",
-        showWhisperUpdates: "התראות עדכון של whisper.cpp",
-        showWhisperUpdatesDescription:
-          "הודע כאשר גרסת build חדשה יותר של whisper.cpp זמינה עבור מודלים של המרת דיבור לטקסט. כבה אם אינך מתמלל אודיו אף פעם.",
         showAudioCppUpdates: "התראות עדכון של audio.cpp",
         showAudioCppUpdatesDescription:
           "הודע כאשר סביבת הריצה של audio.cpp צריכה עדכון עבור דפי האודיו. כבה אם אינך משתמש באודיו אף פעם.",
