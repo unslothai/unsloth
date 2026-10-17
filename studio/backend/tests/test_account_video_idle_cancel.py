@@ -65,7 +65,7 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(auth_storage, "_bootstrap_password", None)
     monkeypatch.setattr(video, "_generation_account", None, raising = False)
     monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: gpu_arbiter.VIDEO)
-    monkeypatch.setattr(gpu_arbiter, "owner_account", lambda: ALICE.account_id)
+    monkeypatch.setattr(gpu_arbiter, "owner_account", lambda *_a, **_k: ALICE.account_id)
     monkeypatch.setattr(account_access, "repo_is_public", lambda *args, **kwargs: True)
     yield
 
@@ -119,7 +119,7 @@ def test_idle_cancel_still_stops_the_callers_own_render_started_in_the_gap(monke
 
 def test_single_user_cancel_still_works_and_is_a_no_op_when_idle(monkeypatch):
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: False)
-    monkeypatch.setattr(gpu_arbiter, "owner_account", lambda: OWNER.account_id)
+    monkeypatch.setattr(gpu_arbiter, "owner_account", lambda *_a, **_k: OWNER.account_id)
     backend = VideoBackend()
     _install(monkeypatch, backend)
 
