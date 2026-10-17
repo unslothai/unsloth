@@ -390,22 +390,6 @@ def _summed_tool_loop_stats(total, turn):
     return summed
 
 
-def _with_turn_context_tokens(summed, prior, turn):
-    if not isinstance(summed, dict):
-        return summed
-    turn_usage = (turn.get("usage") if isinstance(turn, dict) else None) or {}
-    prior_usage = (prior.get("usage") if isinstance(prior, dict) else None) or {}
-    if turn_usage.get("prompt_tokens"):
-        context = (turn_usage.get("prompt_tokens") or 0) + (
-            turn_usage.get("completion_tokens") or 0
-        )
-    else:
-        context = prior_usage.get("context_tokens") or 0
-    if not context:
-        return summed
-    return {**summed, "usage": {**(summed.get("usage") or {}), "context_tokens": context}}
-
-
 def _encoded_images(images, to_base64) -> list:
     """Replayed MCP pictures arrive already PNG-encoded; a caller's decoded list does not."""
     return [one if isinstance(one, str) else to_base64(one) for one in images or ()]
@@ -3382,12 +3366,8 @@ class InferenceOrchestrator:
                 # A turn that never reported (one a cancel interrupted) folds in as nothing, leaving the turns that
                 # did
                 if stats_holder is not None:
-                    prior_stats = stats_holder.get("stats")
-                    turn_report = turn_stats.get("stats")
-                    stats_holder["stats"] = _with_turn_context_tokens(
-                        _summed_tool_loop_stats(prior_stats, turn_report),
-                        prior_stats,
-                        turn_report,
+                    stats_holder["stats"] = _summed_tool_loop_stats(
+                        stats_holder.get("stats"), turn_stats.get("stats")
                     )
 
         initial = list(messages)
