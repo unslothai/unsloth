@@ -4840,6 +4840,12 @@ class DiffusionGenerateRequest(BaseModel):
         "forward pass (plain text-to-image only). Overrides `prompt` for the images; "
         "`prompt` is still required as the fallback/display value.",
     )
+    enhance_prompt: Optional[bool] = Field(
+        None,
+        description = "Rewrite the prompt with the FLUX.3 prompt upsampler before encoding. Null = the "
+        "family default (on for every FLUX.3 Klein family); ignored by every other family. An "
+        "unavailable or failing upsampler leaves the prompt as typed.",
+    )
     seeds: Optional[list[int]] = Field(
         None,
         min_length = 1,
@@ -5037,6 +5043,16 @@ class GalleryImage(BaseModel):
     id: str = Field(..., description = "Stable id (the on-disk filename stem)")
     url: str = Field(..., description = "Relative URL to fetch the PNG bytes")
     prompt: str = Field(..., description = "Prompt used")
+    enhanced_prompt: Optional[str] = Field(
+        None,
+        description = "The caption the prompt upsampler wrote and the model encoded; null when "
+        "not enhanced. Replaying it with enhance_prompt=false reproduces the image.",
+    )
+    prompt_enhancement: Optional[Literal["applied", "off", "unavailable", "failed"]] = Field(
+        None,
+        description = "Prompt upsampling outcome for families that have one: applied | off | "
+        "unavailable (not downloaded or no llama-server) | failed; null otherwise.",
+    )
     negative_prompt: Optional[str] = Field(None, description = "Negative prompt, if any")
     width: int = Field(..., description = "Image width")
     height: int = Field(..., description = "Image height")
@@ -5201,6 +5217,40 @@ class GalleryListResponse(BaseModel):
     has_more: bool = Field(False, description = "Whether older images remain past this page")
 
 
+class PromptUpsamplerDownloadRequest(BaseModel):
+    """Body of POST /images/prompt-upsampler/download (optional)."""
+
+    hf_token: Optional[str] = Field(None, description = "Hugging Face token for the download")
+
+
+class PromptUpsamplerPreviewRequest(BaseModel):
+    """Enhance one prompt with the FLUX.3 prompt upsampler without generating."""
+
+    prompt: str = Field(..., min_length = 1, description = "The prompt as typed")
+    reference_images: Optional[list[str]] = Field(
+        None,
+        max_length = 10,
+        description = "Reference images (base64/data-URL, as /images/generate) for an edit, in order",
+    )
+    variant: Optional[Literal["distilled", "base"]] = Field(
+        None,
+        description = "Sampling variant; null = the loaded FLUX.3 family's (distilled when none is loaded)",
+    )
+
+    @field_validator("reference_images")
+    @classmethod
+    def _bounded_reference_items(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        if value is not None:
+            for item in value:
+                if len(item) > 32 * 1024 * 1024:
+                    raise ValueError("each reference image must be at most 32 MiB (base64)")
+        return value
+
+
+class PromptUpsamplerPreviewResponse(BaseModel):
+    enhanced_prompt: str = Field(..., description = "The caption the upsampler wrote")
+
+
 class DiffusionGenerateProgressResponse(BaseModel):
     """Live per-step progress for an in-flight generation."""
 
@@ -5211,12 +5261,16 @@ class DiffusionGenerateProgressResponse(BaseModel):
     eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
     phase: Optional[str] = Field(
         None,
-        description = "encode | denoise | decode; null from engines that report no phase (sd.cpp)",
+        description = "enhance (FLUX.3 prompt upsampling, before the run) | encode | denoise | decode; null "
+        "from engines that report no phase (sd.cpp)",
     )
     preview: Optional[str] = Field(
         None, description = "Live latent preview of the image being denoised, as a JPEG data URL"
     )
     preview_seq: int = Field(0, description = "Moves each time a new preview is published")
+    message: Optional[str] = Field(
+        None, description = "Status text for a phase with no steps (phase 'enhance': 'Enhancing prompt...')"
+    )
     target: Optional[Literal["connection"]] = Field(
         None,
         description = "'connection' when the run is on a saved image connection, so a page that "
@@ -5348,6 +5402,13 @@ class DiffusionStatusResponse(BaseModel):
     supported_families: List[str] = Field(default_factory = list, description = "Loadable families")
     modular_families: List[str] = Field(
         default_factory = list, description = "Loadable families shipped as Modular Diffusers pipelines"
+    )
+    supports_prompt_upsampler: bool = Field(
+        False,
+        description = "Whether the loaded family can enhance prompts with the FLUX.3 prompt upsampler",
+    )
+    prompt_upsampler_default: bool = Field(
+        False, description = "Whether enhance_prompt defaults to on for the loaded family"
     )
     base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
     device: Optional[str] = Field(None, description = "Device the pipeline is on")

@@ -5,6 +5,7 @@
 models when they fit. STT is evicted before chat when training needs memory.
 """
 
+import sys
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hub.utils.hf_tokens import HfTokenArg, normalize_token
@@ -664,6 +665,18 @@ def free_stt_model_for_training(reason: str) -> List[str]:
                 freed.append(f"stt:{audiocpp_model}")
     except Exception as e:
         logger.warning("Could not unload audio.cpp STT model: %s", e)
+
+    # The FLUX.3 prompt upsampler's llama-server, only if Images ever started it.
+    upsampler_module = sys.modules.get("core.inference.flux3_prompt_upsampler")
+    if upsampler_module is not None:
+        try:
+            upsampler = upsampler_module.get_sidecar()
+            if upsampler.holds_vram() or upsampler.is_loading():
+                logger.info("Unloading the FLUX.3 prompt upsampler for training (%s)", reason)
+                upsampler.unload()
+                freed.append("image:prompt-upsampler")
+        except Exception as e:
+            logger.warning("Could not unload the FLUX.3 prompt upsampler: %s", e)
 
     return freed
 

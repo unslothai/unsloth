@@ -659,6 +659,10 @@ export const INFO_RECIPE_KEYS = [
   "controlnet",
   "controlnet_guidance",
   "batch_index",
+  // FLUX.3 prompt upsampling: the caption encoded and the outcome. A restore re-sends the caption with
+  // enhance_prompt off, which the Images page drives itself.
+  "enhanced_prompt",
+  "prompt_enhancement",
   "created_at",
   "engine",
   "generator",
