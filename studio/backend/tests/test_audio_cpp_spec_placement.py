@@ -126,7 +126,12 @@ PLACEMENTS = [
 ]
 
 
-def _resolve(hub, family, spec, files = ("m-q8_0.gguf",)):
+def _resolve(
+    hub,
+    family,
+    spec,
+    files = ("m-q8_0.gguf",),
+):
     repo = f"someone/{family}-GGUF"
     snap = _snapshot(hub, repo)
     for name in files:

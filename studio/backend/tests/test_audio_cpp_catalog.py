@@ -75,7 +75,13 @@ def env(tmp_path, monkeypatch):
         assert token is None and folder == ""
         return list(umbrella if repo_id == AUDIO_CPP_REPO else DRAMA)
 
-    def header(repo_id, filename, hf_token = None, *, size = None):
+    def header(
+        repo_id,
+        filename,
+        hf_token = None,
+        *,
+        size = None,
+    ):
         calls["header"] += 1
         assert hf_token is False
         return NEW_TTS if filename.startswith("New-TTS-GGUF/") else None

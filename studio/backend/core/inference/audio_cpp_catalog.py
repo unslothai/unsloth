@@ -223,7 +223,11 @@ def _bounded(jobs: dict[str, Callable[[], Any]]) -> dict[str, Any]:
     return out
 
 
-def _ranked(files: Sequence[RepoFile], folder: str, policy = None) -> Optional[acm.AudioCppVariant]:
+def _ranked(
+    files: Sequence[RepoFile],
+    folder: str,
+    policy = None,
+) -> Optional[acm.AudioCppVariant]:
     if policy is not None and policy.package:
         variants = acm._package_variants(policy, files, folder)
     else:

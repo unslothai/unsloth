@@ -1090,9 +1090,7 @@ def _family_from_spec_tasks(
                 text = "optional" if request is None else "unused"
                 clone = CloneSpec("required" if "reference_text" in names else text)
             if token == "clon":
-                return AudioCppFamily(
-                    family, "tts", server_task = "clon", speaks = False, clone = clone
-                )
+                return AudioCppFamily(family, "tts", server_task = "clon", speaks = False, clone = clone)
             return AudioCppFamily(family, "tts", server_task = token, clone = clone)
         if token == "gen":
             music = _spec_music(tasks, request)
