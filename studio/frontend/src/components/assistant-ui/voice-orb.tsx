@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { voiceOutputLevel } from "@/features/chat/hooks/use-tts-player";
 import {
   useVoiceDecisions,
   type VoiceDecisions,
@@ -21,6 +20,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, type FC } from "react";
+import { SPECTRUM_BANDS, readSpectrum } from "@/features/chat/voice/voice-spectrum";
 
 export const orbConfig = {
   // Voice is open but no chat model is loaded, so nothing can answer a turn. The
@@ -119,14 +119,13 @@ const orbMeta: Record<OrbStateName, { label: string; icon: IconKind }> = {
   thinking: { label: "Thinking", icon: "brain" },
   generating: { label: "Writing the answer", icon: "dots" },
   synthesizing: { label: "Generating voice", icon: "waveform" },
-  speaking: { label: "Speaking", icon: "bars-live" },
+  speaking: { label: "Speaking", icon: "waveform" },
 };
 
 type IconKind =
   | "mic"
   | "mic-off"
   | "wave"
-  | "bars-live"
   | "dots"
   | "brain"
   | "spinner"
@@ -160,59 +159,102 @@ const Dots: FC = () => (
   </div>
 );
 
-// Speaking: black equalizer bars driven by the ACTUAL TTS output loudness
-// (voiceOutputLevel), set imperatively per animation frame so there are no React
-// re-renders. The group still rides the ball's breathe; the bar HEIGHTS move with
-// the audio. SPEAK_GAIN scales the RMS toward full height on loud speech (tunable).
-const SPEAK_GAIN = 5.5;
-const SpeakingBars: FC = () => {
-  const refs = useRef<Array<HTMLSpanElement | null>>([]);
+
+// The sphere's edge is the live spectrum of whoever is talking: your mic while the
+// loop listens or hears you, the reply while it speaks. Log bands from low at the
+// bottom to high at the top, mirrored, blurred round the ring and slowly turning so
+// a held vowel still moves. A quiet orb is a plain circle; nothing reaches the ring.
+const ORB_BOX = 184;
+const ORB_R = 70;
+const BLOB_AMP = 16;
+const BLOB_POINTS = 96;
+const SPECTRUM_SIDE: Partial<Record<OrbStateName, "input" | "output">> = {
+  listening: "input",
+  hearing: "input",
+  speaking: "output",
+};
+
+function blobPath(bands: Float32Array, t: number, level: number): string {
+  const c = ORB_BOX / 2;
+  const n = bands.length;
+  let d = "";
+  for (let i = 0; i <= BLOB_POINTS; i++) {
+    const a = (i / BLOB_POINTS) * Math.PI * 2;
+    // Angle from the bottom, folded so left and right mirror; the slow turn keeps it alive.
+    const fold = (1 - Math.cos(a - Math.PI / 2 + t * 0.15)) / 2;
+    const x = fold * (n - 1);
+    const lo = Math.floor(x);
+    const hi = Math.min(n - 1, lo + 1);
+    const v = bands[lo] + (bands[hi] - bands[lo]) * (x - lo);
+    const r = ORB_R + level * 3 + v * BLOB_AMP;
+    d += `${i ? "L" : "M"}${(c + Math.cos(a) * r).toFixed(1)} ${(c + Math.sin(a) * r).toFixed(1)}`;
+  }
+  return `path("${d}Z")`;
+}
+
+/** Drives one element's clip-path from the live spectrum of `side`; a circle when idle. */
+function useBlobClip(
+  ref: React.RefObject<HTMLDivElement | null>,
+  side: "input" | "output" | undefined,
+  active: boolean,
+): void {
   useEffect(() => {
-    const weights = [0.55, 0.85, 1, 0.82, 0.5];
-    const smooth = [0, 0, 0, 0, 0];
+    const el = ref.current;
+    if (!el) return;
+    if (!side || !active) {
+      el.style.clipPath = "";
+      return;
+    }
+    const raw = new Float32Array(SPECTRUM_BANDS);
+    const smooth = new Float32Array(SPECTRUM_BANDS);
     let raf = 0;
     const tick = () => {
-      const lvl = Math.min(1, voiceOutputLevel.current * SPEAK_GAIN);
-      const t = performance.now() / 1000;
-      for (let i = 0; i < refs.current.length; i++) {
-        // Per-bar shimmer so the band isn't a flat block, scaled by loudness.
-        const shimmer = 0.78 + 0.22 * Math.sin(t * 9 + i * 1.7);
-        const target = Math.min(1, 0.16 + lvl * weights[i] * shimmer);
-        smooth[i] += (target - smooth[i]) * 0.4;
-        const el = refs.current[i];
-        if (el) el.style.transform = `scaleY(${Math.max(0.14, smooth[i])})`;
+      const level = readSpectrum(side, raw);
+      // Blur round the ring so bands blend into a contour instead of spikes.
+      for (let i = 0; i < SPECTRUM_BANDS; i++) {
+        let sum = 0;
+        let w = 0;
+        for (let k = -3; k <= 3; k++) {
+          const j = Math.min(SPECTRUM_BANDS - 1, Math.max(0, i + k));
+          const g = Math.exp(-(k * k) / 4);
+          sum += raw[j] * g;
+          w += g;
+        }
+        smooth[i] = sum / w;
       }
+      el.style.clipPath = blobPath(smooth, performance.now() / 1000, level);
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, []);
+    return () => {
+      cancelAnimationFrame(raf);
+      el.style.clipPath = "";
+    };
+  }, [ref, side, active]);
+}
+
+// A plain circle that leaves the orb's edge once per speech-detector verdict: green
+// when the clip was kept, grey when it was dropped. A circle on purpose, so it reads
+// as a call on your audio whichever voice the blob is showing.
+const VadRipple: FC = () => {
+  const d = useVoiceDecisions();
+  if (!d.vad) return null;
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 5, height: 40 }}>
-      {[0, 1, 2, 3, 4].map((i) => (
-        <span
-          key={i}
-          ref={(el) => {
-            refs.current[i] = el;
-          }}
-          style={{
-            width: 6,
-            height: 40,
-            borderRadius: 3,
-            background: HOLE,
-            transformOrigin: "center",
-            boxShadow: DEBOSS_BOX,
-            willChange: "transform",
-          }}
-        />
-      ))}
-    </div>
+    <span
+      key={d.vad.at}
+      aria-hidden
+      className="pointer-events-none absolute rounded-full"
+      style={{
+        width: ORB_BOX,
+        height: ORB_BOX,
+        border: `3px solid ${d.vad.kept ? "#34d399" : "#8a8a8a"}`,
+        animation: "voice-vad-ripple 700ms ease-out forwards",
+      }}
+    />
   );
 };
 
 const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
-  // Speaking: live equalizer bars that move with the audio output.
-  if (icon === "bars-live") return <SpeakingBars />;
   // Soundwave (hearing): a static glyph -- the ball's pulse supplies the motion
   // and the icon rides it, growing/shrinking with the sphere, not on its own.
   if (icon === "wave")
@@ -465,6 +507,7 @@ const VoiceDecisionCaption: FC = () => {
       at: d.interject.at,
       text: `mid-think · ${d.interject.action} ${Math.round(d.interject.confidence * 100)}%`,
     },
+    d.vad && { at: d.vad.at, text: `vad · ${d.vad.kept ? "kept" : "dropped"}` },
   ]
     .filter((x): x is { at: number; text: string } => Boolean(x))
     .sort((a, b) => b.at - a.at)[0];
@@ -522,6 +565,8 @@ export const VoiceOrb: FC = () => {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [showOverlay, setVoiceOrbCollapsed]);
 
+  const blobRef = useRef<HTMLDivElement | null>(null);
+  useBlobClip(blobRef, orbState ? SPECTRUM_SIDE[orbState] : undefined, showOverlay);
   return (
     <>
       <style>{`
@@ -536,6 +581,10 @@ export const VoiceOrb: FC = () => {
         @keyframes voice-orb-speak {
           0%, 100% { transform: scale(1);    }
           50%       { transform: scale(1.1);  }
+        }
+        @keyframes voice-vad-ripple {
+          0%   { transform: scale(1);    opacity: 0.9; }
+          100% { transform: scale(1.14); opacity: 0;   }
         }
       `}</style>
 
@@ -564,19 +613,17 @@ export const VoiceOrb: FC = () => {
             surface rather than floating on top. */}
         <div className="relative grid place-items-center" style={{ width: RING, height: RING }}>
         {showOverlay && <VoiceDecisionRing />}
+        <VadRipple />
         <div
           // Transition the two things that change between states, not `all`:
           // that was also animating transform, which fights the breathe keyframe
           // on every state swap.
-          className="grid place-items-center transition-[background,box-shadow] duration-300"
+          className="relative grid place-items-center transition-[box-shadow] duration-300"
           aria-hidden
           style={{
             width: 140,
             height: 140,
             borderRadius: "50%",
-            // No state yet falls back to the resting tones, not to listening's
-            // green: a green orb with no loop behind it reads as live.
-            background: cfg?.gradient ?? ORB_IDLE_GRADIENT,
             boxShadow: cfg?.shadow ?? "none",
             // The keyframe and its 32px blurred shadow only run while the orb is
             // on screen. Minimized, the loop keeps going and orbState stays set,
@@ -589,6 +636,20 @@ export const VoiceOrb: FC = () => {
                 : undefined,
           }}
         >
+          {/* The coloured body, bigger than the shadow disc so the spectrum can push
+              past it; clipped to the live blob (a circle when nothing is talking). */}
+          <div
+            ref={blobRef}
+            className="absolute grid place-items-center transition-[background] duration-300"
+            style={{
+              width: ORB_BOX,
+              height: ORB_BOX,
+              borderRadius: "50%",
+              // No state yet falls back to the resting tones, not to listening's
+              // green: a green orb with no loop behind it reads as live.
+              background: cfg?.gradient ?? ORB_IDLE_GRADIENT,
+            }}
+          />
           {/* Keyed on visibility too, so the icon unmounts when minimized: the
               speaking bars run a requestAnimationFrame loop that has no business
               ticking under a hidden overlay. */}

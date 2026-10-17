@@ -52,11 +52,11 @@ test("a click with the loop registered toggles at once and is not replayed later
 
 test("the voice chunk is rendered only once Voice is requested", () => {
   const thread = read("components/assistant-ui/thread.tsx");
-  for (const name of ["VoiceOrb", "VoiceEngine", "VoiceControlButton"]) {
+  for (const name of ["VoiceOrb", "VoiceEngine", "VoiceMuteButton", "VoiceControlButton"]) {
     const at = thread.indexOf(`<${name} />`);
     assert.ok(at > 0, name);
     const gate = thread.lastIndexOf("{voiceRequested && (", at);
-    assert.ok(gate > 0 && at - gate < 120, `${name} is gated on voiceRequested`);
+    assert.ok(gate > 0 && at - gate < 160, `${name} is gated on voiceRequested`);
   }
 });
 

@@ -10,9 +10,11 @@ export interface VoiceDecisions {
   turn: { p: number; sent: boolean; at: number } | null;
   filler: { phrase: string; at: number } | null;
   interject: { action: "restart" | "ignore" | "queue"; confidence: number; at: number } | null;
+  /** Whether the speech detector kept the last clip. */
+  vad: { kept: boolean; at: number } | null;
 }
 
-let state: VoiceDecisions = { turn: null, filler: null, interject: null };
+let state: VoiceDecisions = { turn: null, filler: null, interject: null, vad: null };
 const listeners = new Set<() => void>();
 
 function emit(next: Partial<VoiceDecisions>): void {
@@ -28,8 +30,10 @@ export const publishInterjectDecision = (
   action: "restart" | "ignore" | "queue",
   confidence: number,
 ): void => emit({ interject: { action, confidence, at: Date.now() } });
+export const publishVadDecision = (kept: boolean): void =>
+  emit({ vad: { kept, at: Date.now() } });
 export const clearVoiceDecisions = (): void =>
-  emit({ turn: null, filler: null, interject: null });
+  emit({ turn: null, filler: null, interject: null, vad: null });
 
 export function useVoiceDecisions(): VoiceDecisions {
   return useSyncExternalStore(

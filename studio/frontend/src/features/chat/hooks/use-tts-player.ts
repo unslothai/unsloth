@@ -7,6 +7,7 @@ import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { splitIntoSentences, stripForSpeech } from "../voice/speech-text";
 import { getVoicePlayContext } from "../voice/voice-loop-bridge";
+import { outputSpectrumNode } from "../voice/voice-spectrum";
 import { voiceTtsCanClone } from "../voice/voice-models";
 
 // While the LLM is still writing, only terminated sentences are safe to speak;
@@ -187,7 +188,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       if (ctx.state !== "running" && !pausedRef.current) void ctx.resume().catch(() => {});
       const source = ctx.createBufferSource();
       source.buffer = buffer;
-      source.connect(ctx.destination);
+      source.connect(outputSpectrumNode(ctx));
       const start = Math.max(ctx.currentTime + 0.02, playHeadRef.current);
       const clip: Clip = { source, start, env: envelopeOf(buffer) };
       source.onended = () => {

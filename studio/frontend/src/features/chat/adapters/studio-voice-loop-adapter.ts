@@ -22,6 +22,8 @@ import {
   JUDGE_SEND_THRESHOLD,
   judgeTurnComplete,
 } from "@/features/chat/voice/voice-models-client";
+import { attachInputSpectrum, detachInputSpectrum } from "@/features/chat/voice/voice-spectrum";
+import { publishVadDecision } from "@/features/chat/voice/voice-decisions";
 import {
   isVoicePlaybackActive,
   getVoiceReplyText,
@@ -263,6 +265,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       source = null;
       stream?.getTracks().forEach((t) => t.stop());
       stream = null;
+      detachInputSpectrum();
       void audioCtx?.close().catch(() => {});
       audioCtx = null;
     };
@@ -288,7 +291,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           blob,
           useChatRuntimeStore.getState().selectedVadModelId,
         );
-        return result.speech_ms >= VAD_MIN_SPEECH_MS;
+        const kept = result.speech_ms >= VAD_MIN_SPEECH_MS;
+        publishVadDecision(kept);
+        return kept;
       } catch (error) {
         if (error instanceof VadUnavailableError) vadDisabled = true;
         return null;
@@ -512,6 +517,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         await audioCtx.resume();
         sampleRate = audioCtx.sampleRate;
         source = audioCtx.createMediaStreamSource(stream);
+        attachInputSpectrum(audioCtx, source);
         processor = audioCtx.createScriptProcessor(4096, 1, 1);
         startedAt = performance.now();
         lastVoiceAt = startedAt;
