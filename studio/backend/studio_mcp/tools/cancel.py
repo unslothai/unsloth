@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from fastmcp.exceptions import ToolError
 
-from studio_mcp import export_jobs
+from studio_mcp import export_jobs, video_queue
 from studio_mcp.caller import current_caller
 from studio_mcp.outputs import CancelResult
 from studio_mcp.tools import DESTRUCTIVE, EXPORT_STATUS, as_dict, opt_text, route_json
@@ -138,6 +138,8 @@ async def cancel(
         if not _stopped(kind, answer):
             return done(False, _message(answer))
         return done(True, "The export was stopped and its checkpoint unloaded.")
+    elif kind == "video" and id and video_queue.is_queue_id(id):
+        return done(*video_queue.cancel(caller.account_id, id))
     else:
         path, id_field = ROUTES[kind]
         answer = await route_json(

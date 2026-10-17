@@ -5,18 +5,86 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 from urllib.parse import quote
 
 from fastmcp import Context
+from fastmcp.exceptions import ToolError
+from fastmcp.tools import ToolResult
+from pydantic import Field
 
-from studio_mcp import loading
+from studio_mcp import loading, placement
 from studio_mcp.caller import current_caller
-from studio_mcp.outputs import LoadResult, ModelEntry, ModelList, UnloadResult
+from studio_mcp.media import media_result
+from studio_mcp.outputs import (
+    LoadResult,
+    ModelEntry,
+    ModelList,
+    PlanLoadResult,
+    UnloadAllResult,
+    UnloadResult,
+)
 from studio_mcp.tools import DESTRUCTIVE, READ_ONLY, WRITES, as_dict, opt_text, route_json
 
 # "tts" and "audio" are what list_models reports for audio models; they load in the llm slot.
 ModelKind = Literal["llm", "image", "video", "stt", "tts", "audio"]
+UnloadKind = Literal["llm", "image", "video", "stt", "tts", "audio", "all"]
+
+MemoryMode = Annotated[
+    Optional[Literal["auto", "fast", "balanced", "low_vram"]],
+    Field(
+        description = 'Image and video. "auto" (the default) measures free VRAM and picks how much of the model to move off the GPU; "low_vram" keeps the least on the GPU, for when other GPU work is resident; "fast" and "balanced" keep more. With Keep multiple models loaded set to When they fit, an image or video model whose transformer stays on the GPU loads beside the chat model.'
+    ),
+]
+SpeedMode = Annotated[
+    Optional[Literal["off", "eager", "default", "max"]],
+    Field(
+        description = "Image and video: how hard Unsloth Studio compiles the model for speed; unset uses the model's default."
+    ),
+]
+TransformerQuant = Annotated[
+    Optional[Literal["auto", "none", "off", "int8", "fp8", "nvfp4", "mxfp8"]],
+    Field(
+        description = 'Image only: quantize the transformer on load to save VRAM; unset or "auto" lets Unsloth Studio choose.'
+    ),
+]
+TextEncoderQuant = Annotated[
+    Optional[Literal["auto", "none", "off", "fp8", "fp8_dynamic", "int8", "nvfp4"]],
+    Field(
+        description = 'Image only: quantize the text encoder on load; unset or "auto" lets Unsloth Studio choose.'
+    ),
+]
+H3Task = Annotated[
+    Optional[Literal["fl2va", "ref2va"]],
+    Field(
+        description = 'Video, H3 models only: "fl2va" animates from a first and last frame, "ref2va" from reference images.'
+    ),
+]
+Device = Annotated[
+    Optional[Literal["auto", "cpu", "gpu"]],
+    Field(
+        description = 'llm, tts and audio: where the model runs. "cpu" keeps the GPU free, so a resident image or video model stays loaded; to keep the chat model loaded as well, also pass alongside=true. For kind "llm" it needs a GGUF model, and a vision GGUF still uses the GPU for its projector. "gpu" is never moved to the CPU silently; placement.device reports where the model ended up. Unset leaves the choice to Unsloth Studio.'
+    ),
+]
+Alongside = Annotated[
+    Optional[bool],
+    Field(
+        description = 'llm, tts and audio: keep the chat and speech models already loaded instead of replacing the active one. Needs Keep multiple models loaded set to When they fit or Always; under Off it is ignored. It never keeps image or video models. Under Always, a device="cpu" load beside a serving chat model sends it automatically. alongside_applied says whether the earlier chat model is still serving.'
+    ),
+]
+KvCacheType = Annotated[
+    Optional[Literal["f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "f32"]],
+    Field(
+        description = 'GGUF chat models: the KV cache type; "q8_0" roughly halves the context memory of "f16".'
+    ),
+]
+GpuLayers = Annotated[
+    Optional[int],
+    Field(
+        ge = 0,
+        description = "GGUF models: how many layers to put on the GPU (0 runs on the CPU); unset lets Unsloth Studio fit as many as it can.",
+    ),
+]
 
 KIND_BY_TASK = {
     "text-to-image": "image",
@@ -113,18 +181,44 @@ async def load_model(
     model: str,
     kind: ModelKind = "llm",
     variant: Optional[str] = None,
+    memory_mode: MemoryMode = None,
+    speed_mode: SpeedMode = None,
+    transformer_quant: TransformerQuant = None,
+    text_encoder_quant: TextEncoderQuant = None,
+    h3_task: H3Task = None,
     max_seq_length: Optional[int] = None,
     load_in_4bit: bool = True,
+    device: Device = None,
+    alongside: Alongside = None,
+    kv_cache_type: KvCacheType = None,
+    gpu_layers: GpuLayers = None,
     hf_token: Optional[str] = None,
     ctx: Optional[Context] = None,
 ) -> LoadResult:
     """Load a model into Unsloth Studio, downloading it first if needed, and wait until it is ready; progress is reported while it loads. ``kind`` "llm" covers chat, vision, embedding and audio models, and the "tts" and "audio" kinds list_models reports load the same way; "image" and "video" load the generation models and "stt" a speech-to-text model (downloaded first when needed). ``model`` is an id from list_models or a Hugging Face repo id; ``variant`` picks a GGUF quantization such as Q4_K_M. ``max_seq_length`` 0 or unset lets Unsloth Studio choose the context, and ``load_in_4bit`` picks 4-bit weights (both llm only). ``hf_token`` is for gated repos. Loading may unload other models to make room, for example a chat model to fit an image model; they are listed in ``evicted``."""
     caller = current_caller()
+    knobs = placement.media_knobs(
+        kind,
+        memory_mode = memory_mode,
+        speed_mode = speed_mode,
+        transformer_quant = transformer_quant,
+        text_encoder_quant = text_encoder_quant,
+        h3_task = h3_task,
+    )
+    where = {
+        "device": device,
+        "alongside": alongside,
+        "kv_cache_type": kv_cache_type,
+        "gpu_layers": gpu_layers,
+    }
+    placement.check_placement(kind, model, variant, **where)
+    # Pre-load guard 3: a GGUF variant that is partly on disk and not downloading under Unsloth Studio.
+    await placement.refuse_partial_variant(caller, model, kind, variant, hf_token)
     if kind == "stt":
         return await loading.load_stt(caller, ctx, model = model, variant = variant, hf_token = hf_token)
     if kind in loading.MEDIA_ROUTES:
         return await loading.load_media(
-            caller, ctx, kind = kind, model = model, variant = variant, hf_token = hf_token
+            caller, ctx, kind = kind, model = model, variant = variant, hf_token = hf_token, knobs = knobs
         )
     return await loading.load_llm(
         caller,
@@ -135,16 +229,64 @@ async def load_model(
         load_in_4bit = load_in_4bit,
         hf_token = hf_token,
         kind = kind,
+        **where,
     )
 
 
-async def unload_model(kind: ModelKind = "llm", model: Optional[str] = None) -> UnloadResult:
-    """Unload a model to free memory. Without ``model`` the active one of that kind is unloaded; image and video have one slot each, so ``model`` is ignored there. The embedding model is managed by Unsloth Studio and is not unloaded here. ``unloaded`` is false when nothing matching was loaded."""
+async def unload_model(kind: UnloadKind = "llm", model: Optional[str] = None) -> ToolResult:
+    """Unload a model to free memory.
+    Without ``model`` the active one of that kind is unloaded; image and video have one slot each, so ``model`` is ignored there.
+    kind "all" unloads every chat, speech, image, video and speech-to-text model in one call and lists them under ``unloaded``.
+    The embedding model is managed by Unsloth Studio and is not unloaded here.
+    ``unloaded`` is false when nothing matching was loaded."""
+    if kind == "all":
+        if model is not None:
+            raise ToolError("unload_model(kind='all') takes no model.")
+        return media_result([], await loading.unload_all(current_caller()))
     if kind == "stt":
-        return await loading.unload_stt(current_caller(), model)
+        return media_result([], await loading.unload_stt(current_caller(), model))
     if kind in loading.MEDIA_ROUTES:
-        return await loading.unload_media(current_caller(), kind)
-    return await loading.unload_llm(current_caller(), model)
+        return media_result([], await loading.unload_media(current_caller(), kind))
+    return media_result([], await loading.unload_llm(current_caller(), model))
 
 
-TOOLS = ((list_models, READ_ONLY), (load_model, WRITES), (unload_model, DESTRUCTIVE))
+def _unload_schema() -> dict[str, Any]:
+    # One object for both answers: ``unloaded`` is a bool for one kind and the list of models for "all".
+    one, every = UnloadResult.model_json_schema(), UnloadAllResult.model_json_schema()
+    unloaded = {"anyOf": [one["properties"]["unloaded"], every["properties"]["unloaded"]]}
+    return {
+        "type": "object",
+        "$defs": every.get("$defs", {}),
+        "properties": {**one["properties"], "unloaded": unloaded},
+        "required": ["kind", "unloaded"],
+    }
+
+
+async def plan_load(
+    model: str,
+    kind: ModelKind = "llm",
+    variant: Optional[str] = None,
+    device: Device = None,
+    alongside: Alongside = None,
+) -> PlanLoadResult:
+    """Preview a load_model call without loading or downloading anything.
+    ``variants`` lists a GGUF repo's quantizations with their size and whether each is downloaded or only partly on disk; ``download_bytes`` is what the load would still download, and ``est_gpu_bytes`` the GPU memory a downloaded GGUF chat model is estimated to take.
+    ``residents`` are the models loaded now, and ``would_evict`` the ones this load would unload; pass the same ``device`` and ``alongside`` you would pass to load_model.
+    Under Keep multiple models loaded set to Off the prediction is exact; under When they fit it is an upper bound (``would_evict_exact`` false), since a model that fits stays.
+    Under Always nothing is unloaded and ``would_refuse`` says the load may be refused instead; unload_model(kind="all"), alongside=true or device="cpu" avoid that."""
+    return await placement.plan_load(
+        current_caller(),
+        model = model,
+        kind = kind,
+        variant = variant,
+        device = device,
+        alongside = alongside,
+    )
+
+
+TOOLS = (
+    (list_models, READ_ONLY),
+    (load_model, WRITES),
+    (unload_model, DESTRUCTIVE, _unload_schema()),
+    (plan_load, READ_ONLY),
+)

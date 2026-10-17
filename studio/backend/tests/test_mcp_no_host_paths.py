@@ -36,6 +36,7 @@ from .test_mcp_tools_cancel import PAYLOADS as CANCEL_PAYLOADS
 from .test_mcp_tools_datasets import PAYLOADS as DATASETS_PAYLOADS
 from .test_mcp_tools_images import PAYLOADS as IMAGES_PAYLOADS
 from .test_mcp_tools_loading import PAYLOADS as LOADING_PAYLOADS
+from .test_mcp_tools_plan_load import _world as plan_world
 from .test_mcp_tools_models import PAYLOADS as MODELS_PAYLOADS
 from .test_mcp_tools_recipe import PAYLOADS as RECIPE_PAYLOADS
 from .test_mcp_tools_status import PAYLOADS as STATUS_PAYLOADS
@@ -71,6 +72,10 @@ CASES: dict[str, Any] = {
     "list_models": (MODELS_PAYLOADS, {"model": "unsloth/Qwen3-0.6B"}),
     "load_model": (LOADING_PAYLOADS, {"model": "unsloth/Llama-3.2-1B-Instruct-GGUF"}),
     "unload_model": (LOADING_PAYLOADS, {}),
+    "plan_load": (
+        plan_world("off", ["unsloth/Qwen3-0.6B-GGUF"]),
+        {"model": "unsloth/Qwen3-0.6B-GGUF"},
+    ),
     "chat": (TEXT_PAYLOADS, {"prompt": "hi"}),
     "embed": (TEXT_PAYLOADS, {"texts": ["a", "b"]}),
     "system_one": (TEXT_PAYLOADS, {"state": "x", "questions": {"urgent": {"type": "noul"}}}),

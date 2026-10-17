@@ -60,6 +60,8 @@ def test_load_sends_the_body_and_reports_the_result(monkeypatch, kind):
         "model": LLM,
         "loaded": True,
         "display_name": "Llama 3.2 1B",
+        "placement": None,
+        "alongside_applied": None,
         "evicted": ["unsloth/Qwen3-0.6B"],
     }
     assert bodies(studio, "/api/inference/load") == [
@@ -223,6 +225,7 @@ def test_a_gguf_image_repo_sends_its_gguf_filename(monkeypatch, fast_polls, extr
         monkeypatch, studio, "load_model", {"model": FLUX_GGUF, "kind": "image", **extra}
     )
     loaded = {"kind": "image", "model": FLUX_GGUF, "loaded": True, "display_name": None}
+    loaded.update(placement = None, alongside_applied = None)
     assert result["structuredContent"] == {**loaded, "evicted": []}
     expected = {"model_path": FLUX_GGUF, "gguf_filename": filename, "model_kind": "gguf"}
     expected.update({"hf_token": extra["hf_token"]} if "hf_token" in extra else {})

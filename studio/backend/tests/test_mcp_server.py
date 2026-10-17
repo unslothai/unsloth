@@ -12,6 +12,7 @@ READ_ONLY = {
     "get_job",
     "list_models",
     "list_training_runs",
+    "plan_load",
     "studio_status",
     "system_one",
 }
@@ -73,8 +74,8 @@ SCHEMA_FACTS = [
     (
         "load_model",
         "parameters/properties",
-        lambda props: set(props)
-        == {"model", "kind", "variant", "max_seq_length", "load_in_4bit", "hf_token"},
+        lambda props: {"model", "kind", "variant", "max_seq_length", "load_in_4bit", "hf_token"}
+        <= set(props),
     ),
     ("load_model", "parameters/properties/kind/default", "llm"),
     (

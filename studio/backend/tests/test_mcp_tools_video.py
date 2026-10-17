@@ -75,6 +75,8 @@ def test_generate_video_starts_a_job_with_string_fields(monkeypatch):
     assert result["structuredContent"] == {
         "id": "video-1",
         "status": "queued",
+        "queue_position": None,
+        "eta_s": None,
         "progress": 0,
         "model": "Lightricks/LTX-Video",
         "seconds": "4",
@@ -99,6 +101,8 @@ def test_a_completed_job_returns_its_thumbnail_and_a_link_never_the_mp4(monkeypa
         "id": "video-1",
         "status": "completed",
         "progress_percent": 100.0,
+        "queue_position": None,
+        "eta_s": None,
         "error": None,
         "video": {
             "url": "http://192.168.1.20:8888/v1/videos/video-1/content",

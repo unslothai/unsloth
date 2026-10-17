@@ -237,7 +237,8 @@ api_key_format = "Bearer {token}"
 | `studio_status` | What is loaded, loading and running: chat, image, video, speech-to-text and embedding models, training, export and GPUs. |
 | `list_models` | Models Unsloth Studio can serve, by kind. With `model`, its training defaults. |
 | `load_model` | Load a chat, image, video or speech-to-text model, downloading it first if needed. Reports progress. |
-| `unload_model` | Unload a model. |
+| `unload_model` | Unload a model, or every chat, speech, image, video and speech-to-text model with `kind="all"`. The embedding model stays. |
+| `plan_load` | Preview a load without loading anything: GGUF variants and sizes, bytes to download, and the models it would unload. |
 | `chat` | Ask the loaded model, with optional images. Returns a `cancel_id`. |
 | `embed` | Embed up to 2048 texts. |
 | `system_one` | Ask the Decision API typed questions. The Decision API must be on. |

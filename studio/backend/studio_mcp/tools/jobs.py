@@ -16,7 +16,7 @@ from studio_mcp.caller import Caller, current_caller
 from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
 from studio_mcp.media import INLINE_CAP, image_content, media_result, public_url, resource_link
-from studio_mcp import export_jobs
+from studio_mcp import export_jobs, video_queue
 from studio_mcp.outputs import (
     ExportInfo,
     JobStatus,
@@ -167,6 +167,11 @@ async def get_job(
         return await _export_job(caller, id)
     if id is None:
         return await _video_jobs(caller)
+    if video_queue.is_queue_id(id):
+        item = video_queue.lookup(caller.account_id, id)
+        if item.video_id:
+            return await _video_job(caller, item.video_id)
+        return media_result([], await video_queue.job_status(item))
     return await _video_job(caller, id)
 
 
