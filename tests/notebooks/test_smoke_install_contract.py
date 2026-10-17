@@ -564,3 +564,20 @@ def test_loading_the_stub_helper_leaves_sys_path_alone():
     needle = "sys.path" + ".insert(0, str(REPO / " + chr(34) + "tests" + chr(34) + "))"
     source = Path(__file__).read_text(encoding = "utf-8")
     assert needle not in source, "a sys.path insert of the tests dir is back in this file"
+
+
+def test_the_install_cell_runs_uv_the_way_colab_does():
+    """Colab sets UV_SYSTEM_PYTHON, so the notebooks' `!uv pip install` lines target the system interpreter.
+
+    The smoke venv is the system interpreter too. Without the variable, uv refuses with "No virtual
+    environment found", the cell's install is skipped, and `!unsloth install-kernels` then fails as a
+    missing command (Nemotron-3-Nano and Qwen3_5 Vision on the 2026-10-17 cron).
+    """
+    steps = [step for step in _job()["steps"] if "_smoke.py" in str(step.get("run", ""))]
+    assert steps, "no step runs the converted install cell any more; update this guard"
+    for step in steps:
+        env = {**(_job().get("env") or {}), **(step.get("env") or {})}
+        assert str(env.get("UV_SYSTEM_PYTHON", "")).lower() in ("1", "true"), (
+            f"step {step.get('name')!r} runs the notebook's install cell without UV_SYSTEM_PYTHON, "
+            "which Colab sets"
+        )

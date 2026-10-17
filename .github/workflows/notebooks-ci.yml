@@ -729,6 +729,11 @@ jobs:
         timeout-minutes: 10
         env:
           NOTEBOOK: ${{ matrix.notebook }}
+          # Colab sets this (checked on release-colab-external-images_20261014), so the
+          # notebooks' `!uv pip install` lines install into the system interpreter there.
+          # Without it uv stops with "No virtual environment found", the install never
+          # happens, and the next `!unsloth install-kernels` fails as a missing command.
+          UV_SYSTEM_PYTHON: 'true'
         run: |
           set -euo pipefail
           # Convert THIS notebook only, and take whatever file the converter
