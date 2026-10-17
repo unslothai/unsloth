@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { splitIntoSentences, stripForSpeech } from "../voice/speech-text";
 import { getVoicePlayContext } from "../voice/voice-loop-bridge";
 import { outputSpectrumNode } from "../voice/voice-spectrum";
+import { voiceTrace } from "../voice/voice-trace";
 import { voiceTtsCanClone } from "../voice/voice-models";
 
 // While the LLM is still writing, only terminated sentences are safe to speak;
@@ -124,6 +125,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   }, []);
 
   const stop = useCallback(() => {
+    voiceTrace("tts.stop", { clips: clipsRef.current.size, stream: Boolean(streamRef.current) });
     reqRef.current += 1;
     if (pausedRef.current) {
       pausedRef.current = false;
@@ -193,7 +195,10 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       const clip: Clip = { source, start, env: envelopeOf(buffer) };
       source.onended = () => {
         clipsRef.current.delete(clip);
-        if (clipsRef.current.size === 0) setIsPlaying(false);
+        if (clipsRef.current.size === 0) {
+          voiceTrace("tts.lastClipEnded", { stream: Boolean(streamRef.current) });
+          setIsPlaying(false);
+        }
       };
       clipsRef.current.add(clip);
       source.start(start);
@@ -305,12 +310,14 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   // Held even with no clip scheduled yet: the next sentence is often still
   // synthesizing when a burst lands, and it must not start under the check.
   const pausePlayback = useCallback(() => {
+    voiceTrace("tts.pause", { paused: pausedRef.current, stream: Boolean(streamRef.current), clips: clipsRef.current.size });
     if (pausedRef.current || !streamRef.current) return;
     pausedRef.current = true;
     void getPlayCtx()?.suspend().catch(() => {});
   }, []);
 
   const resumePlayback = useCallback(() => {
+    voiceTrace("tts.resume", { paused: pausedRef.current, stream: Boolean(streamRef.current), clips: clipsRef.current.size, ctx: getPlayCtx()?.state });
     if (!pausedRef.current) return;
     pausedRef.current = false;
     void getPlayCtx()?.resume().catch(() => {});

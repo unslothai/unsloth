@@ -26336,6 +26336,12 @@ class VoiceJudgeRequest(BaseModel):
     text: str
 
 
+class VoiceTraceRequest(BaseModel):
+    event: str
+    detail: dict | None = None
+    t: float | None = None
+
+
 class VoiceFillerRequest(BaseModel):
     text: str
     prev_q: bool = False
@@ -26360,7 +26366,25 @@ def _voice_model_or_503(name: str):
 async def voice_models_status(current_subject: str = Depends(get_current_subject)):
     from core.inference.voice_models import get_voice_models
 
-    return JSONResponse(content = await asyncio.to_thread(get_voice_models().status))
+    status = await asyncio.to_thread(get_voice_models().status)
+    status["trace"] = bool(os.environ.get("UNSLOTH_VAD_DEBUG_DIR"))
+    return JSONResponse(content = status)
+
+
+@studio_router.post("/voice/trace")
+async def voice_trace(payload: VoiceTraceRequest, current_subject: str = Depends(get_current_subject)):
+    """Append one loop event to ``voice-trace.jsonl`` beside the VAD debug clips; a no-op without that dir."""
+    folder = os.environ.get("UNSLOTH_VAD_DEBUG_DIR")
+    if not folder:
+        return JSONResponse(content = {"ok": False})
+    line = json.dumps({"at": time.time(), "t": payload.t, "event": payload.event, "detail": payload.detail or {}})
+    def _append() -> None:
+        root = Path(folder)
+        root.mkdir(parents = True, exist_ok = True)
+        with open(root / "voice-trace.jsonl", "a", encoding = "utf-8") as f:
+            f.write(line + "\n")
+    await asyncio.to_thread(_append)
+    return JSONResponse(content = {"ok": True})
 
 
 @studio_router.post("/voice/judge")

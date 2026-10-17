@@ -24,6 +24,7 @@ import {
 } from "@/features/chat/voice/voice-models-client";
 import { attachInputSpectrum, detachInputSpectrum } from "@/features/chat/voice/voice-spectrum";
 import { publishVadDecision } from "@/features/chat/voice/voice-decisions";
+import { voiceTrace } from "@/features/chat/voice/voice-trace";
 import {
   isVoicePlaybackActive,
   getVoiceReplyText,
@@ -276,6 +277,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     ) => {
       if (ended) return;
       ended = true;
+      voiceTrace("session.finish", { reason, transcript: transcript ?? null, bargedIn });
       session.status = { type: "ended", reason };
       if (transcript) {
         for (const cb of speechEndCallbacks) cb({ transcript });
@@ -293,6 +295,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         );
         const kept = result.speech_ms >= VAD_MIN_SPEECH_MS;
         publishVadDecision(kept);
+        voiceTrace("vad", { kept, speech_ms: result.speech_ms, bargedIn, bargeConfirming });
         return kept;
       } catch (error) {
         if (error instanceof VadUnavailableError) vadDisabled = true;
@@ -304,6 +307,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     // model's own voice, ambient noise). End quietly and re-arm, mirroring the Web Speech
     // "no-speech" path so the loop keeps listening without feeding STT junk to hallucinate on.
     const endWithoutSpeech = () => {
+      voiceTrace("session.noSpeech", { bargedIn });
       // A burst that held the reply was not the user after all.
       if (bargedIn) requestVoiceBargeAbort();
       if (heldTurn) {
@@ -398,9 +402,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           // rather than sending garbage as a prompt.
           transcript = "";
         }
+        voiceTrace("stt", { transcript, bargedIn, heldTurn: heldTurn?.text ?? null });
         if (transcript && bargedIn && isReplyEcho(transcript, getVoiceReplyText())) {
           // The reply's own voice got through the detector. Not a turn: let the
           // reply pick back up and keep listening.
+          voiceTrace("barge.abort", { why: "echo" });
           requestVoiceBargeAbort();
           finish("stopped");
           setTimeout(() => requestVoiceResume(), 0);
@@ -409,7 +415,10 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         if (transcript && isBackchannel(transcript)) {
           // A breath or "mm" that cleared the speech gate. Not a turn: keep listening,
           // and keep any held fragment waiting for its real continuation.
-          if (bargedIn) requestVoiceBargeAbort();
+          if (bargedIn) {
+            voiceTrace("barge.abort", { why: "backchannel" });
+            requestVoiceBargeAbort();
+          }
           finish("stopped");
           setTimeout(() => requestVoiceResume(), 0);
           return;
@@ -461,7 +470,10 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           setTimeout(() => requestVoiceSubmit(), 0);
         } else {
           // STT heard nothing usable in the burst that held the reply.
-          if (bargedIn) requestVoiceBargeAbort();
+          if (bargedIn) {
+            voiceTrace("barge.abort", { why: "empty" });
+            requestVoiceBargeAbort();
+          }
           finish("stopped");
           setTimeout(() => requestVoiceResume(), 0);
         }
@@ -580,6 +592,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             if (!stepBargeGate(bargeGate, rms, frameMs)) return;
             const commitBarge = () => {
               bargedIn = true;
+              voiceTrace("barge.commit", { loudMs: bargeGate.loudMs });
               requestVoiceBargeIn();
               for (const frame of preroll.splice(0)) {
                 chunks.push(frame);

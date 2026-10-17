@@ -44,6 +44,7 @@ import {
   interjectAction,
 } from "@/features/chat/voice/voice-models-client";
 import { clearVoiceDecisions } from "@/features/chat/voice/voice-decisions";
+import { voiceTrace } from "@/features/chat/voice/voice-trace";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { deriveOrbState } from "@/features/chat/voice/orb-state";
 import {
@@ -335,10 +336,12 @@ export const VoiceEngine: FC = () => {
     // Barge-in: the instant the user speaks, cut the audio and the in-flight run.
     // This utterance supersedes whatever the model was saying. Cover the tail
     // clip (isPlaying) too, not just an active streaming session (isSpeaking).
+    voiceTrace("engine.commitUtterance", { text, speaking: isSpeakingRef.current, playing: isPlayingRef.current });
     if (isSpeakingRef.current || isPlayingRef.current) stop();
     const thread = auiRef.current.thread();
     if (thread.getState().isRunning) {
       try {
+        voiceTrace("engine.cancelRun", {});
         thread.cancelRun();
       } catch {
         // Run may have ended between the check and here.
@@ -881,11 +884,13 @@ export const VoiceEngine: FC = () => {
   // that was a cough or a hum lets the reply carry on from where it was held.
   useEffect(() => {
     registerVoiceBargeIn(() => {
+      voiceTrace("engine.bargeIn", { speaking: isSpeakingRef.current, playing: isPlayingRef.current });
       if (voiceModeRef.current !== "active") return;
       if (!isSpeakingRef.current && !isPlayingRef.current) return;
       pausePlayback();
     });
     registerVoiceBargeAbort(() => {
+      voiceTrace("engine.bargeAbort", { speaking: isSpeakingRef.current, playing: isPlayingRef.current });
       if (voiceModeRef.current !== "active") return;
       resumePlayback();
     });
