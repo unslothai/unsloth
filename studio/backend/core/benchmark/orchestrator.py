@@ -276,12 +276,15 @@ class BenchmarkOrchestrator:
                 self._active = False
 
     def cancel(self) -> bool:
-        if not self._active:
-            return False
-        self._cancel_requested = True
-        self._cancel_event.set()
-        self._last_op_status = "cancelled"
-        self._active = False
+        # Same lock as run()'s submit, so a Stop lands either before it (nothing submitted) or
+        # after it (the worker is recorded and drains).
+        with self._lock:
+            if not self._active:
+                return False
+            self._cancel_requested = True
+            self._cancel_event.set()
+            self._last_op_status = "cancelled"
+            self._active = False
         logger.info("Benchmark cancel requested")
         return True
 
