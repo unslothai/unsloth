@@ -948,6 +948,156 @@ def _with_comfy_compat_rows(
     return existing + found
 
 
+def _holds_weights(directory: Path) -> bool:
+    """Any non-dotfile content: dotfiles alone (``.gitattributes`` from an aborted download)
+    are not weights."""
+    return any(entry.name[:1] != "." for entry in directory.iterdir())
+
+
+def _holds_loadable_weights(directory: Path) -> bool:
+    """Whether *directory* holds weights a loader can open: a whole GGUF quant, or non-GGUF
+    weights as before.
+
+    A GGUF folder carrying only companions (an mmproj adapter, a drafter, an imatrix) or an
+    unfinished quant is not weights: the completeness walk drops the companions and keeps only
+    quant files that are all on disk. A folder with no GGUF at all stays permissive -- a
+    checkpoint or pipeline keeps answering the way the scanners classify it. A folder holding
+    non-GGUF weights beside an unfinished GGUF is read strictly (the GGUF side decides):
+    mixed layouts are rare, and not vouching for a torn GGUF errs toward the loadable parked
+    copy.
+    """
+    from hub.utils.gguf import iter_gguf_files
+    from hub.utils.inventory_scan import complete_snapshot_variants
+
+    if not any(iter_gguf_files(directory, recursive = True)):
+        return _holds_weights(directory)
+    # A whole quant is a label the completeness walk judges complete: it excludes the
+    # companions (mmproj, drafters, imatrix) and counts shard sets. Deliberately not
+    # list_local_gguf_variants here: that resolves the registered custom roots through the
+    # database, and a scan must not reload the scan folders it was handed.
+    return bool(complete_snapshot_variants(str(directory)))
+
+
+def _cache_layout_claim_dir(m) -> Optional[Path]:
+    """The snapshot dir the cache-layout claim judges -- the newest snapshot of a
+    ``models--*`` repo dir, or the snapshot dir a scan-folder row names -- or None for any
+    other row (a file, a plain directory, a manifest store).
+
+    The row names the newest snapshot, but the loaders resolve the newest COMPLETE one, so
+    an aborted re-download beside a complete revision still serves; a repo dir without any
+    snapshot is bookkeeping only.
+    """
+    p = Path(m.path)
+    if not p.is_dir():
+        return None
+    if p.name.startswith("models--"):
+        snapshot = _resolve_hf_cache_realpath(p)
+        if snapshot is None:
+            return None
+        named = Path(snapshot)
+        return None if named.resolve() == p.resolve() else named
+    if p.parent.name == "snapshots" and p.parent.parent.name.startswith("models--"):
+        return p
+    return None
+
+
+def _row_answers_repo_id(m: LocalModelInfo) -> bool:
+    """Whether *m* can serve its repo id, so it may claim it against a parked copy.
+
+    A row answers when it holds loadable weights (see ``_holds_loadable_weights``): a
+    weightless skeleton, a partial pull with only leftovers, or a GGUF folder carrying just
+    companions has nothing to load, and letting it claim the repo id would take the id away
+    from the loadable parked copy instead (see ``_merge_scan_folder_row``). ``partial`` alone
+    decides nothing here: a partial row beside a complete revision still serves, because the
+    loaders resolve the newest COMPLETE snapshot, and it must keep the id for the listing and
+    the media index to agree with the load. Any other row -- a file row, a manifest store --
+    answers as before.
+    """
+    try:
+        p = Path(m.path)
+        if p.is_file():
+            return True
+        if not p.is_dir():
+            return False
+        named = _cache_layout_claim_dir(m)
+        if named is None:
+            # A cache repo without any snapshot is bookkeeping only and serves nothing;
+            # any other non-cache row counts its non-dotfile content, as the scan classifies it.
+            return False if p.name.startswith("models--") else _holds_weights(p)
+        if _holds_loadable_weights(named):
+            return True
+        return any(
+            sibling.is_dir() and _holds_loadable_weights(sibling)
+            for sibling in named.parent.iterdir()
+            if sibling != named
+        )
+    except OSError:
+        # An unreadable row keeps today's claiming behavior rather than dropping ids.
+        return True
+
+
+def _partial_row_serves(m) -> bool:
+    """Whether a partial row still serves, so the media index may keep its names.
+
+    Only a cache-layout row can: the loaders resolve its newest COMPLETE snapshot, so an
+    aborted re-download beside a complete revision still loads. Any other partial row -- a
+    pipeline pull whose payload never finished -- does not, and advertising it would only
+    cost a failed load; the caller keeps skipping it.
+    """
+    try:
+        return _cache_layout_claim_dir(m) is not None and _row_answers_repo_id(m)
+    except OSError:
+        return False
+
+
+def _merge_scan_folder_row(
+    m: LocalModelInfo,
+    configured_cache_roots: tuple[Path, ...],
+    claimed_repo_ids: Optional[set[str]] = None,
+) -> LocalModelInfo:
+    """Source attribution for a row a registered scan folder contributed.
+
+    Keep an already-attributed source: a registered ~/.ollama/models (or a folder shadowing the
+    HF cache) must not re-stamp its rows as generic custom entries. A cache-layout copy parked
+    outside the configured caches becomes the user's custom row, so the dedupe below keys it by
+    its own path instead of collapsing it by repo id into the active-cache entry, which can be a
+    weightless skeleton of an aborted download while the parked copy is the loadable one -- the
+    same cached-plus-parked listing the Hub inventory side keeps (#12258).
+
+    ``model_id`` is cleared with the relabel only when another row already answers to the repo
+    id (``claimed_repo_ids``, casefolded -- a row answers when it holds weights, see
+    ``_row_answers_repo_id``): the media index maps names to picks, and two rows of
+    one repo both answering to it would read as ambiguous and resolve for nobody. The cache row
+    keeps the repo id then; a parked-only copy keeps it and claims it, so a media request by repo
+    id still finds it.
+    ``active_cache`` is cleared too, like the Hub promotion: the row is not a cache entry
+    anymore.
+    """
+    from hub.utils.paths import path_is_same_or_child
+
+    if m.source in ("hf_cache", "ollama", "hermes"):
+        if m.source == "hf_cache" and not any(
+            path_is_same_or_child(Path(m.path), root) for root in configured_cache_roots
+        ):
+            repo_key = m.model_id.casefold() if m.model_id else None
+            claimed = claimed_repo_ids if claimed_repo_ids is not None else set()
+            answers = _row_answers_repo_id(m)
+            # A parked copy that cannot serve gives the id up like a shadowed one: the id
+            # must stay with a loadable row, whichever scan folder it sits in.
+            shadowed = repo_key is not None and (repo_key in claimed or not answers)
+            if repo_key is not None and answers:
+                claimed.add(repo_key)
+            return m.model_copy(
+                update = {
+                    "source": "custom",
+                    "model_id": None if shadowed else m.model_id,
+                    "active_cache": None,
+                }
+            )
+        return m
+    return m.model_copy(update = {"source": "custom"})
+
+
 def collect_local_models(
     models_root: Path,
     *,
@@ -1001,6 +1151,14 @@ def collect_local_models(
             continue
         seen_hf.add(cache_key)
         hf_sources.append((cache_dir, cache_key == active_cache_key))
+
+    # Real roots of every configured HF cache, for the scan-folder merge below: a folder registered
+    # over one of them keeps the cache attribution for its rows, a parked copy elsewhere does not.
+    configured_cache_roots = tuple(
+        Path(resolved)
+        for resolved in map(_safe_resolve, [cache_dir for cache_dir, _active in hf_sources])
+        if resolved
+    )
 
     state_repositories = []
     state_cache_dirs = [cache_dir for cache_dir, _active_cache in hf_sources]
@@ -1061,6 +1219,13 @@ def collect_local_models(
     from hub.services.models.local_inventory import _local_model_path_is_symlink
 
     custom_identities: set[str] = set()
+    # Repo ids the configured caches (and the other built-in sources) already answer to; a parked
+    # scan-folder copy of one of those gives its repo id up (see _merge_scan_folder_row). A row
+    # answers only when it holds weights: a weightless skeleton or partial download must not
+    # claim the id away from the loadable parked copy.
+    claimed_repo_ids = {
+        m.model_id.casefold() for m in local_models if m.model_id and _row_answers_repo_id(m)
+    }
     for folder in custom_folders:
         folder_path = Path(folder["path"])
         try:
@@ -1146,12 +1311,11 @@ def collect_local_models(
                 continue
             if not _local_model_path_is_symlink(below_root):
                 custom_identities.add(_compat_inventory_path_identity(m.path))
-        # Keep an already-attributed source: a registered ~/.ollama/models (or a folder shadowing the HF
-        # cache) must not re-stamp its rows as generic custom entries.
+        # Keep an already-attributed source (a registered ~/.ollama/models, or a folder shadowing
+        # the HF cache) unless it is a cache-layout copy parked outside every configured cache
+        # root -- that one becomes the custom row the picker lists (see _merge_scan_folder_row).
         local_models += [
-            m
-            if m.source in ("hf_cache", "ollama", "hermes")
-            else m.model_copy(update = {"source": "custom"})
+            _merge_scan_folder_row(m, configured_cache_roots, claimed_repo_ids)
             for m in custom_models
         ]
 

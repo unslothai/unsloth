@@ -1179,6 +1179,29 @@ def test_describe_local_miss_is_failsafe(monkeypatch):
     assert resolver.describe_local_miss("") == (resolver.MISS_MODEL_NOT_FOUND, ())
 
 
+def test_describe_local_miss_lists_alternates_and_legacy_spellings(monkeypatch):
+    # The parked copy's quants live in the winner's alternates, and the legacy spellings the
+    # resolver still accepts (aliases) are pinnable too: the message must name both, or it
+    # hides labels a pin on them does resolve.
+    from dataclasses import replace
+
+    primary = _entry("Org/Model-GGUF", "Q8_0")
+    alternate = replace(
+        _entry("Org/Model-GGUF", "UD-Q4_K_XL"),
+        aliases = (("model-bf16-ud-q4_k_xl", "UD-Q4_K_XL"),),
+    )
+    monkeypatch.setattr(
+        resolver,
+        "_build_index",
+        lambda: {"org/model-gguf": replace(primary, alternates = (alternate,))},
+    )
+    resolver._scan = (0.0, {})
+    assert resolver.describe_local_miss("Org/Model-GGUF:Q6_K") == (
+        resolver.MISS_VARIANT_NOT_FOUND,
+        ("Q8_0", "UD-Q4_K_XL", "model-bf16-ud-q4_k_xl"),
+    )
+
+
 def test_resolver_exact_id_with_colon_wins(monkeypatch):
     # A local id that itself contains a colon (e.g. a Windows path) must match
     # exactly rather than being split at the drive-letter colon.
