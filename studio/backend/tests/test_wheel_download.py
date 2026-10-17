@@ -39,7 +39,8 @@ def no_project_config(tmp_path, monkeypatch):
     monkeypatch.setattr(wheel_utils, "_uv_project_config_found", lambda: False)
     monkeypatch.delenv("UV_CONFIG_FILE", raising = False)
     monkeypatch.delenv("UV_NO_CONFIG", raising = False)
-    monkeypatch.delenv("UV_PROJECT", raising = False)
+    for name in wheel_utils._UV_PROJECT_DIR_ENV:
+        monkeypatch.delenv(name, raising = False)
     return tmp_path
 
 
@@ -75,7 +76,10 @@ def test_no_static_metadata_for_what_is_not_a_plain_wheel(url, no_project_config
     assert not (tmp_path / "uv.toml").exists()
 
 
-@pytest.mark.parametrize("variable", ["UV_CONFIG_FILE", "UV_NO_CONFIG", "UV_PROJECT"])
+@pytest.mark.parametrize(
+    "variable",
+    ["UV_CONFIG_FILE", "UV_NO_CONFIG", "UV_PROJECT", "UV_WORKING_DIR", "UV_WORKING_DIRECTORY"],
+)
 def test_no_static_metadata_where_uv_would_not_read_it(
     variable, no_project_config, tmp_path, monkeypatch
 ):
@@ -222,8 +226,9 @@ def test_real_uv_fetches_the_wheel_once(
 
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason = "needs uv on PATH")
-def test_real_uv_still_honours_the_users_uv_project(
-    no_range_server, no_project_config, tmp_path, monkeypatch
+@pytest.mark.parametrize("variable", ["UV_PROJECT", "UV_WORKING_DIR", "UV_WORKING_DIRECTORY"])
+def test_real_uv_still_honours_the_users_project_dir(
+    variable, no_range_server, no_project_config, tmp_path, monkeypatch
 ):
     url, _ = no_range_server
     venv = tmp_path / "venv"
@@ -233,7 +238,7 @@ def test_real_uv_still_honours_the_users_uv_project(
     chosen.mkdir()
     # Unsatisfiable, so honouring this config shows as a refusal.
     (chosen / "uv.toml").write_text('required-version = "==0.0.1"\n', encoding = "utf-8")
-    monkeypatch.setenv("UV_PROJECT", str(chosen))
+    monkeypatch.setenv(variable, str(chosen))
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
     monkeypatch.setenv("NO_PROXY", "127.0.0.1")
     installer, result = wheel_utils.install_wheel(url, python_executable = str(python), use_uv = True)[

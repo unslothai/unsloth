@@ -481,6 +481,8 @@ def flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
 
 
 _WHEEL_FILENAME_FIELD_RE = re.compile(r"[A-Za-z0-9._+!]+")
+# Each picks the directory uv discovers its project config from; --project would override it.
+_UV_PROJECT_DIR_ENV = ("UV_PROJECT", "UV_WORKING_DIR", "UV_WORKING_DIRECTORY")
 
 
 def _uv_project_config_found() -> bool:
@@ -512,8 +514,7 @@ def _uv_static_metadata_config(wheel_url: str, config_dir: str) -> bool:
     """
     if os.environ.get("UV_CONFIG_FILE") or os.environ.get("UV_NO_CONFIG"):
         return False
-    # --project would replace the user's project and its config.
-    if os.environ.get("UV_PROJECT") or _uv_project_config_found():
+    if any(os.environ.get(name) for name in _UV_PROJECT_DIR_ENV) or _uv_project_config_found():
         return False
     filename = urllib.parse.unquote(urllib.parse.urlsplit(wheel_url).path.rsplit("/", 1)[-1])
     fields = filename[: -len(".whl")].split("-") if filename.endswith(".whl") else []
