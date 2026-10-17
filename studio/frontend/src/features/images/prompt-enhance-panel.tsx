@@ -27,6 +27,7 @@ import {
   ENHANCE_PROMPT_LABEL,
   type PromptUpsamplerPreviewRequest,
   type PromptUpsamplerStatus,
+  upsamplerDownloadBytes,
   upsamplerDownloadFraction,
 } from "./lib/prompt-enhance";
 
@@ -82,7 +83,8 @@ function UpsamplerDownloadNotice({
   const [busy, setBusy] = useState(false);
   const { download } = status;
   const fraction = upsamplerDownloadFraction(download);
-  const size = status.size_bytes > 0 ? formatBytes(status.size_bytes) : null;
+  const downloadBytes = upsamplerDownloadBytes(status);
+  const size = downloadBytes > 0 ? formatBytes(downloadBytes) : null;
   const start = async () => {
     setBusy(true);
     try {

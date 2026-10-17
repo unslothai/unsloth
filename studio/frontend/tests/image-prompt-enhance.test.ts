@@ -16,6 +16,7 @@ import {
   promptUpsamplerCapability,
   readEnhanceChoices,
   resolveEnhancePrompt,
+  upsamplerDownloadBytes,
   upsamplerDownloadFraction,
   upsamplerVariantFor,
   withEnhanceChoice,
@@ -142,6 +143,7 @@ test("status parsing tolerates missing and malformed fields", () => {
     repo: "unsloth/FLUX.3-prompt-upsampler-GGUF",
     filename: "upsampler-Q4_K_M.gguf",
     size_bytes: 5_600_000_000,
+    mmproj_size_bytes: 900_000_000,
     mmproj_downloaded: false,
     download: { downloading: true, model: "x", error: null, bytes_total: 200, bytes_done: 50, download_id: "d1" },
   });
@@ -150,6 +152,9 @@ test("status parsing tolerates missing and malformed fields", () => {
   assert.equal(full.download.downloading, true);
   assert.equal(full.download.download_id, "d1");
   assert.equal(upsamplerDownloadFraction(full.download), 0.25);
+  // The button fetches the vision projector too, until it is on disk.
+  assert.equal(upsamplerDownloadBytes(full), 6_500_000_000);
+  assert.equal(upsamplerDownloadBytes({ ...full, mmproj_downloaded: true }), 5_600_000_000);
 
   const empty = parsePromptUpsamplerStatus(null);
   assert.deepEqual(

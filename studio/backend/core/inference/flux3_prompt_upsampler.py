@@ -967,6 +967,13 @@ def get_sidecar() -> PromptUpsamplerSidecar:
         return _sidecar
 
 
+def unload_sidecar() -> None:
+    """Stop the server if one was ever started (the FLUX.3 model it serves was unloaded). Never creates one."""
+    sidecar = _sidecar
+    if sidecar is not None:
+        sidecar.unload(wait = False)
+
+
 # ── upsampling with cache, progress and fallback ────────────────────────────────────────────────────────────────────
 _cache_lock = threading.Lock()
 _cache: "collections.OrderedDict[tuple, str]" = collections.OrderedDict()

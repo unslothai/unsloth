@@ -50176,8 +50176,12 @@ async def _enhance_generate_prompts(backend, request: DiffusionGenerateRequest):
         family = status.get("family") if status.get("loaded") else None
     except Exception as exc:  # noqa: BLE001 -- no status, no upsampling
         logger.debug("flux3.prompt_upsampler: status probe failed: %s", exc)
-        family = None
+        status, family = {}, None
     if not pup.supports_family(family):
+        return pup.EnhanceOutcome(status = None)
+    # A workflow the family refuses fails in the run anyway: no upsampler start (or vision load) ahead of that 400.
+    workflows = status.get("workflows") or []
+    if request.workflow and workflows and request.workflow not in workflows:
         return pup.EnhanceOutcome(status = None)
     if not pup.resolve_enhance(family, request.enhance_prompt):
         return pup.EnhanceOutcome(status = pup.STATUS_OFF)
@@ -51107,6 +51111,10 @@ async def unload_diffusion_model(
     if account_access.account_scope() is not None:
         unload = functools.partial(unload, expected_account = current_account_id())
     status_dict = await asyncio.to_thread(unload)
+    # The FLUX.3 prompt upsampler serves the image model: it leaves with it instead of holding VRAM to its keep-alive.
+    from core.inference.flux3_prompt_upsampler import unload_sidecar as unload_prompt_upsampler
+
+    await asyncio.to_thread(unload_prompt_upsampler)
     # Drop DIFFUSION ownership only if nothing is resident AND no load is in flight, or a later chat load skips eviction and
     # OOMs the new pipeline. An in-flight load reads is_loaded False, so gate on loading_repo_ids() and use release_if.
     engine = get_active_diffusion_engine()

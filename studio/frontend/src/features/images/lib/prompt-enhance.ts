@@ -39,6 +39,7 @@ export interface PromptUpsamplerStatus {
   repo: string;
   filename: string;
   size_bytes: number;
+  mmproj_size_bytes: number;
   mmproj_downloaded: boolean;
   download: PromptUpsamplerDownload;
 }
@@ -85,9 +86,15 @@ export function parsePromptUpsamplerStatus(raw: unknown): PromptUpsamplerStatus 
     repo: str(body.repo) ?? "",
     filename: str(body.filename) ?? "",
     size_bytes: num(body.size_bytes) ?? 0,
+    mmproj_size_bytes: num(body.mmproj_size_bytes) ?? 0,
     mmproj_downloaded: body.mmproj_downloaded === true,
     download,
   };
+}
+
+/** Bytes the Download button fetches: the model plus the vision projector (edits) when that is still missing. */
+export function upsamplerDownloadBytes(status: PromptUpsamplerStatus): number {
+  return status.size_bytes + (status.mmproj_downloaded ? 0 : status.mmproj_size_bytes);
 }
 
 /** 0..1 download fraction, or null when the total is not known yet. */

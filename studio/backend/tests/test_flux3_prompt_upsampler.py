@@ -600,6 +600,32 @@ def test_generate_other_family_passes_through(routes, runnable):
     assert image["enhanced_prompt"] is None and image["prompt_enhancement"] is None
 
 
+def test_generate_skips_the_upsampler_for_a_workflow_the_family_refuses(routes, runnable, monkeypatch):
+    client, backend, saved = routes
+    monkeypatch.setattr(
+        backend, "status", lambda: {**_FluxBackend.status(backend), "workflows": ["txt2img", "reference"]}
+    )
+    client.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "make it night time", "workflow": "edit", "init_image": "data:,", "steps": 4},
+    )
+    assert runnable.calls == []
+    client.post("/api/inference/images/generate", json = {"prompt": "a cat", "steps": 4})
+    assert len(runnable.calls) == 1
+
+
+def test_unload_sidecar_never_creates_one(monkeypatch):
+    monkeypatch.setattr(pup, "_sidecar", None)
+    pup.unload_sidecar()
+    assert pup._sidecar is None
+    released = []
+    sidecar = pup.PromptUpsamplerSidecar()
+    monkeypatch.setattr(sidecar, "unload", lambda wait = True: released.append(wait))
+    monkeypatch.setattr(pup, "_sidecar", sidecar)
+    pup.unload_sidecar()
+    assert released == [False]
+
+
 def test_generate_upsampler_failure_never_fails_the_image(routes, runnable):
     client, backend, saved = routes
     runnable.error = RuntimeError("server died")
