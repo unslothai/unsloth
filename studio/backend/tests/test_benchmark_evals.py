@@ -354,6 +354,18 @@ def test_a_run_stopped_before_it_submits_never_reaches_the_worker(monkeypatch):
     assert backend.try_begin() is not None
 
 
+def test_the_summary_names_the_model_from_the_runs_own_args():
+    data = {
+        "results": {"copa": {"acc,none": 0.8}},
+        "configs": {"copa": {"metadata": {"version": 1.0}}},
+        "config": {"model": "unsloth-studio-gguf", "model_args": {"model": "Qwen3-4B Q4_K_M"}},
+    }
+    assert parse_run_summary("benchmark_copa_20261002_120000", data)["model"] == "Qwen3-4B Q4_K_M"
+    data["config"] = {}
+    data["configs"]["copa"]["metadata"]["model"] = "from metadata"
+    assert parse_run_summary("benchmark_copa_20261002_120000", data)["model"] == "from metadata"
+
+
 def test_stop_wins_over_a_run_that_finishes_in_the_same_poll(monkeypatch):
     release = threading.Event()
     backend = _orchestrator(

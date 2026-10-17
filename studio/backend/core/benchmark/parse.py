@@ -91,7 +91,14 @@ def parse_run_summary(
     task_config = configs.get(task_name) or configs.get(leaves[0], {})
     metadata = task_config.get("metadata", {}) if isinstance(task_config, dict) else {}
 
-    model = metadata.get("model", "unknown") if isinstance(metadata, dict) else "unknown"
+    # The run's own model_args are the record of what ran; lm_eval copies them into task
+    # metadata only when it builds the TaskManager itself.
+    run_args = (data.get("config") or {}).get("model_args")
+    model = (
+        (run_args.get("model") if isinstance(run_args, dict) else None)
+        or (metadata.get("model") if isinstance(metadata, dict) else None)
+        or "unknown"
+    )
 
     created_at = dir_name
     ts_match = re.search(r"_(\d{8}_\d{6})$", dir_name)
