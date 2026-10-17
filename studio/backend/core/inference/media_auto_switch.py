@@ -34,7 +34,7 @@ import functools
 import time
 from typing import Any, Callable, Optional
 
-from core.inference.gpu_arbiter import DIFFUSION, VIDEO
+from core.inference.gpu_arbiter import DIFFUSION, MULTI_MODEL_REFUSAL_HEADERS, VIDEO
 from core.inference import media_locality
 from core.inference.media_locality import is_edit_only, missing_download_bytes
 from core.inference.media_model_index import (
@@ -375,6 +375,17 @@ async def _gated_start_load(
                             openai_errors,
                             retry_after = int(exc.detail["retry_after"]),
                         ) from exc
+                    headers = {k.lower(): v for k, v in (exc.headers or {}).items()}
+                    if headers.get("x-unsloth-refusal") == MULTI_MODEL_REFUSAL_HEADERS["X-Unsloth-Refusal"]:
+                        # Keep multiple models loaded is set to Always: waiting does not help, so no Retry-After.
+                        refusal = refuse(
+                            exc.detail if isinstance(exc.detail, str) else str(exc.detail),
+                            status_code = 409,
+                            openai_errors = openai_errors,
+                            code = "multi_model_always",
+                        )
+                        refusal.headers = dict(MULTI_MODEL_REFUSAL_HEADERS)
+                        raise refusal from exc
                     raise
             return False
     finally:
