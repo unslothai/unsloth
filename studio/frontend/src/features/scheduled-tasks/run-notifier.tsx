@@ -23,6 +23,7 @@ import {
   readSeenRuns,
   runErrorText,
   runsToAnnounce,
+  runsToNotify,
   serializeSeenRuns,
 } from "./results";
 import { useUnseenScheduledRuns } from "./unseen";
@@ -156,9 +157,9 @@ export function ScheduledTaskRunNotifier() {
     };
 
     // In the one tab that claimed them: the chats marked unread, the unseen dots (which reach
-    // the account's other tabs through storage), the toasts, and a system notification. A tab
-    // that lost the claim marks nothing, so it cannot bring back a dot the user cleared meanwhile
-    // by opening the chat in the faster tab.
+    // the account's other tabs through storage), and, for the runs their tasks want to hear of,
+    // the toasts and a system notification. A tab that lost the claim marks nothing, so it cannot
+    // bring back a dot the user cleared meanwhile by opening the chat in the faster tab.
     const announce = (claimed: FinishedScheduledTaskRun[]) => {
       const runs = runsToAnnounce(claimed);
       if (runs.length === 0) return;
@@ -173,12 +174,14 @@ export function ScheduledTaskRunNotifier() {
         })),
         pathnameRef.current === "/tasks",
       );
-      if (runs.length > INDIVIDUAL_TOASTS) {
-        toast(translate("scheduledTasks.toast.many", { count: runs.length }), {
+      const notified = runsToNotify(runs);
+      if (notified.length === 0) return;
+      if (notified.length > INDIVIDUAL_TOASTS) {
+        toast(translate("scheduledTasks.toast.many", { count: notified.length }), {
           action: { label: translate("scheduledTasks.toast.view"), onClick: openTasks },
         });
       } else {
-        for (const run of runs) {
+        for (const run of notified) {
           const threadId = run.threadId;
           if (run.status === "succeeded" && threadId) {
             toast.success(translate("scheduledTasks.toast.finished", { title: run.taskTitle }), {
@@ -195,7 +198,7 @@ export function ScheduledTaskRunNotifier() {
           }
         }
       }
-      if (windowIsInBackground()) notifySystem(runs);
+      if (windowIsInBackground()) notifySystem(notified);
     };
 
     const schedule = (delay: number) => {

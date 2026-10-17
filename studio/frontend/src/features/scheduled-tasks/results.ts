@@ -154,12 +154,21 @@ export async function collectFinishedRuns(
   }
 }
 
-/** The finished runs worth a toast: one that succeeded but whose chat is already gone (deleted,
+/** The finished runs worth announcing: one that succeeded but whose chat is already gone (deleted,
  *  say, from another tab) has nothing to open, and it did not fail either. */
 export function runsToAnnounce<T extends { status: string; threadId: string | null }>(
   runs: readonly T[],
 ): T[] {
   return runs.filter((run) => run.status !== "succeeded" || run.threadId !== null);
+}
+
+/** Of the runs announced, those their tasks want a toast and a system notification for. */
+export function runsToNotify<T extends { status: string; taskNotify: string }>(
+  runs: readonly T[],
+): T[] {
+  return runs.filter(
+    (run) => run.taskNotify === "all" || (run.taskNotify === "failures" && run.status === "failed"),
+  );
 }
 
 type Translate = (key: TranslationKey, values?: InterpolationValues) => string;

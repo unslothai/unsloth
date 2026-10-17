@@ -4092,7 +4092,7 @@ export const ja = {
       monthly: "毎月 {day} 日 {time}",
     },
     form: {
-      createTitle: "新しいスケジュール済みタスク",
+      createTitle: "タスクをスケジュール",
       editTitle: "スケジュール済みタスクを編集",
       name: "名前",
       namePlaceholder: "名前（任意）",
@@ -4110,8 +4110,12 @@ export const ja = {
       days: "曜日",
       dayOfMonth: "日にち",
       lastDayNote: "その日がない月は、月末に実行されます。",
-      timezone: "時刻は {timezone} です。",
-      create: "タスクを作成",
+      advanced: "詳細設定",
+      notifications: "通知",
+      notifyAll: "毎回",
+      notifyFailures: "失敗時のみ",
+      notifyNone: "オフ",
+      create: "作成",
     },
     deleteDialog: {
       title: "スケジュール済みタスクを削除しますか？",

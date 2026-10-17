@@ -9,6 +9,10 @@ export const SCHEDULED_TASKS_API = "/api/scheduled-tasks";
 
 export type TaskRunStatus = "queued" | "running" | "succeeded" | "failed";
 
+/** Which finished runs a task announces with a toast and a system notification. Every run still
+ *  brings its chat into Recents, marked unread. */
+export type TaskNotify = "all" | "failures" | "none";
+
 export interface ScheduledTaskRun {
   id: string;
   taskId: string;
@@ -28,6 +32,7 @@ export interface ScheduledTaskRun {
 
 export interface FinishedScheduledTaskRun extends ScheduledTaskRun {
   taskTitle: string;
+  taskNotify: TaskNotify;
 }
 
 export interface ScheduledTask {
@@ -37,6 +42,7 @@ export interface ScheduledTask {
   schedule: TaskSchedule;
   timezone: string;
   enabled: boolean;
+  notify: TaskNotify;
   status: "active" | "paused" | "completed";
   nextRunAt: number | null;
   createdAt: number;
@@ -49,6 +55,7 @@ export interface ScheduledTaskInput {
   prompt: string;
   schedule: TaskSchedule;
   timezone: string;
+  notify: TaskNotify;
 }
 
 export type ScheduledTaskPatch = Partial<ScheduledTaskInput> & { enabled?: boolean };

@@ -4196,7 +4196,7 @@ export const en = {
       monthly: "Every month on day {day} at {time}",
     },
     form: {
-      createTitle: "New scheduled task",
+      createTitle: "Schedule a task",
       editTitle: "Edit scheduled task",
       name: "Name",
       // Left blank, the name is taken from the first line of the instructions.
@@ -4215,8 +4215,13 @@ export const en = {
       days: "Days",
       dayOfMonth: "Day of the month",
       lastDayNote: "Months without this day run on their last day.",
-      timezone: "Times are in {timezone}.",
-      create: "Create task",
+      advanced: "Advanced",
+      notifications: "Notifications",
+      // Which of a task's finished runs get a toast and a system notification.
+      notifyAll: "Every run",
+      notifyFailures: "Only failures",
+      notifyNone: "Off",
+      create: "Create",
     },
     deleteDialog: {
       title: "Delete scheduled task?",

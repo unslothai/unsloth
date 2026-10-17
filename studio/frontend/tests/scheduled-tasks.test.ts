@@ -17,6 +17,7 @@ import {
   readSeenRuns,
   runErrorText,
   runsToAnnounce,
+  runsToNotify,
   serializeSeenRuns,
 } from "../src/features/scheduled-tasks/results.ts";
 import {
@@ -29,7 +30,9 @@ import {
   scheduleFormComplete,
   scheduleFromForm,
   summarizeSchedule,
+  timeChoices,
   titleFromPrompt,
+  zoneLabel,
 } from "../src/features/scheduled-tasks/schedule.ts";
 
 // ICU puts a narrow no-break space before AM/PM; compare the words, not the spacing.
@@ -221,6 +224,7 @@ function finished(id: string, finishedAt: number): ScheduledTasksApi.FinishedSch
     errorCode: null,
     error: null,
     taskTitle: "Morning brief",
+    taskNotify: "all",
   };
 }
 
@@ -245,6 +249,16 @@ test("a run that succeeded after its chat was deleted is not announced, least of
   const gone = { ...finished("gone", 2_000), threadId: null };
   const failed = { ...finished("failed", 3_000), status: "failed" as const, threadId: null };
   assert.deepEqual(runsToAnnounce([ready, gone, failed]).map((run) => run.id), ["ready", "failed"]);
+});
+
+test("a task's toasts cover every run, only its failures, or none", () => {
+  const ok = finished("ok", 1_000);
+  const bad = { ...finished("bad", 2_000), status: "failed" as const, threadId: null };
+  const notified = (taskNotify: ScheduledTasksApi.TaskNotify) =>
+    runsToNotify([ok, bad].map((run) => ({ ...run, taskNotify }))).map((run) => run.id);
+  assert.deepEqual(notified("all"), ["ok", "bad"]);
+  assert.deepEqual(notified("failures"), ["bad"]);
+  assert.deepEqual(notified("none"), []);
 });
 
 test("of an account's tabs, the first to claim a run announces it, and the record keeps the furthest cursor", () => {
@@ -329,7 +343,13 @@ test("the client reaches every scheduled task route", async () => {
   const schedule: TaskSchedule = { kind: "daily", time: "09:00" };
   // The server's clock comes with the list, for timing refreshes by.
   assert.deepEqual(await c.api.listScheduledTasks(), { tasks: [], now: 7 });
-  await c.api.createScheduledTask({ title: "Brief", prompt: "Hi", schedule, timezone: "UTC" });
+  await c.api.createScheduledTask({
+    title: "Brief",
+    prompt: "Hi",
+    schedule,
+    timezone: "UTC",
+    notify: "failures",
+  });
   await c.api.updateScheduledTask("a/b", { enabled: false });
   assert.equal(await c.api.deleteScheduledTask("t1"), undefined);
   await c.api.runScheduledTaskNow("t1");
@@ -352,6 +372,7 @@ test("the client reaches every scheduled task route", async () => {
     prompt: "Hi",
     schedule,
     timezone: "UTC",
+    notify: "failures",
   });
   assert.deepEqual(c.requests[2].body, { enabled: false });
 });
@@ -361,6 +382,29 @@ test("a refused request carries the server's reason", async () => {
   await assert.rejects(c.api.updateScheduledTask("t1", { enabled: true }), {
     message: "Pick a time in the future.",
   });
+});
+
+test("times are offered every quarter hour, keeping a saved one that falls between", () => {
+  const choices = timeChoices("09:00");
+  assert.equal(choices.length, 96);
+  assert.deepEqual(choices.slice(0, 3), ["00:00", "00:15", "00:30"]);
+  assert.equal(choices.at(-1), "23:45");
+  const kept = timeChoices("09:07");
+  const nine = kept.indexOf("09:00");
+  assert.deepEqual(kept.slice(nine, nine + 3), ["09:00", "09:07", "09:15"]);
+  assert.equal(timeChoices("9am").length, 96);
+});
+
+test("a time's zone is named as briefly as the locale allows", () => {
+  const at = Date.UTC(2026, 9, 17, 12);
+  // An abbreviation for the zone itself holds across daylight saving.
+  assert.equal(zoneLabel("America/Los_Angeles", "en-US", at), "PT");
+  assert.equal(zoneLabel("Europe/Berlin", "de", at), "MEZ");
+  // Failing one, the offset, not a phrase like "Türkiye Time".
+  assert.equal(zoneLabel("Europe/Istanbul", "en-US", at), "GMT+3");
+  assert.equal(zoneLabel("UTC", "en-US", at), "UTC");
+  // A zone the browser does not know is written out.
+  assert.equal(zoneLabel("Nowhere/Special", "en-US", at), "Nowhere/Special");
 });
 
 test("a task left unnamed is named after its instructions' first line", () => {

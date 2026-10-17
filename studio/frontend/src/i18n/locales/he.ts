@@ -4261,7 +4261,7 @@ export const he = {
       monthly: "בכל חודש ביום {day} ב-{time}",
     },
     form: {
-      createTitle: "משימה מתוזמנת חדשה",
+      createTitle: "תזמון משימה",
       editTitle: "עריכת משימה מתוזמנת",
       name: "שם",
       namePlaceholder: "שם (אופציונלי)",
@@ -4279,8 +4279,12 @@ export const he = {
       days: "ימים",
       dayOfMonth: "יום בחודש",
       lastDayNote: "בחודשים שאין בהם יום זה, המשימה רצה ביום האחרון.",
-      timezone: "השעות לפי {timezone}.",
-      create: "צור משימה",
+      advanced: "מתקדם",
+      notifications: "התראות",
+      notifyAll: "כל הרצה",
+      notifyFailures: "רק בכישלון",
+      notifyNone: "כבויות",
+      create: "יצירה",
     },
     deleteDialog: {
       title: "למחוק את המשימה המתוזמנת?",

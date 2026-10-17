@@ -4178,7 +4178,7 @@ export const ptBR = {
       monthly: "Todo mês no dia {day} às {time}",
     },
     form: {
-      createTitle: "Nova tarefa agendada",
+      createTitle: "Agendar uma tarefa",
       editTitle: "Editar tarefa agendada",
       name: "Nome",
       namePlaceholder: "Nome (opcional)",
@@ -4196,8 +4196,12 @@ export const ptBR = {
       days: "Dias",
       dayOfMonth: "Dia do mês",
       lastDayNote: "Nos meses sem esse dia, ela é executada no último dia.",
-      timezone: "Horários em {timezone}.",
-      create: "Criar tarefa",
+      advanced: "Avançado",
+      notifications: "Notificações",
+      notifyAll: "Cada execução",
+      notifyFailures: "Só em caso de falha",
+      notifyNone: "Desativadas",
+      create: "Criar",
     },
     deleteDialog: {
       title: "Excluir tarefa agendada?",

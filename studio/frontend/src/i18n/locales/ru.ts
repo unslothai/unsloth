@@ -4175,7 +4175,7 @@ export const ru = {
       monthly: "Каждый месяц, {day}-го числа, в {time}",
     },
     form: {
-      createTitle: "Новая запланированная задача",
+      createTitle: "Запланировать задачу",
       editTitle: "Изменить запланированную задачу",
       name: "Название",
       namePlaceholder: "Название (необязательно)",
@@ -4193,8 +4193,12 @@ export const ru = {
       days: "Дни",
       dayOfMonth: "День месяца",
       lastDayNote: "В месяцы без этого дня задача выполняется в последний день.",
-      timezone: "Время указано в часовом поясе {timezone}.",
-      create: "Создать задачу",
+      advanced: "Дополнительно",
+      notifications: "Уведомления",
+      notifyAll: "Каждый запуск",
+      notifyFailures: "Только ошибки",
+      notifyNone: "Выключены",
+      create: "Создать",
     },
     deleteDialog: {
       title: "Удалить запланированную задачу?",

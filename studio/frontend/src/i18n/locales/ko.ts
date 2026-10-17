@@ -4134,7 +4134,7 @@ export const ko = {
       monthly: "매월 {day}일 {time}",
     },
     form: {
-      createTitle: "새 예약 작업",
+      createTitle: "작업 예약",
       editTitle: "예약 작업 편집",
       name: "이름",
       namePlaceholder: "이름 (선택 사항)",
@@ -4152,8 +4152,12 @@ export const ko = {
       days: "요일",
       dayOfMonth: "날짜(일)",
       lastDayNote: "해당 날짜가 없는 달에는 마지막 날에 실행됩니다.",
-      timezone: "시간은 {timezone} 기준입니다.",
-      create: "작업 만들기",
+      advanced: "고급",
+      notifications: "알림",
+      notifyAll: "모든 실행",
+      notifyFailures: "실패 시에만",
+      notifyNone: "끄기",
+      create: "만들기",
     },
     deleteDialog: {
       title: "예약된 작업을 삭제할까요?",

@@ -4156,7 +4156,7 @@ export const hi = {
       monthly: "हर महीने की {day} तारीख को {time} बजे",
     },
     form: {
-      createTitle: "नया शेड्यूल किया गया टास्क",
+      createTitle: "टास्क शेड्यूल करें",
       editTitle: "शेड्यूल किया गया टास्क संपादित करें",
       name: "नाम",
       namePlaceholder: "नाम (वैकल्पिक)",
@@ -4174,8 +4174,12 @@ export const hi = {
       days: "दिन",
       dayOfMonth: "महीने का दिन",
       lastDayNote: "जिन महीनों में यह दिन नहीं होता, उनमें यह आखिरी दिन चलता है।",
-      timezone: "समय {timezone} के अनुसार है।",
-      create: "टास्क बनाएँ",
+      advanced: "उन्नत",
+      notifications: "सूचनाएँ",
+      notifyAll: "हर रन",
+      notifyFailures: "सिर्फ़ विफल होने पर",
+      notifyNone: "बंद",
+      create: "बनाएँ",
     },
     deleteDialog: {
       title: "शेड्यूल किया गया टास्क हटाएँ?",

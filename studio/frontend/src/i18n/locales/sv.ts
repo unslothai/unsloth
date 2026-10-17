@@ -4398,7 +4398,7 @@ export const sv = {
       monthly: "Dag {day} varje månad kl. {time}",
     },
     form: {
-      createTitle: "Ny schemalagd uppgift",
+      createTitle: "Schemalägg en uppgift",
       editTitle: "Redigera schemalagd uppgift",
       name: "Namn",
       namePlaceholder: "Namn (valfritt)",
@@ -4416,8 +4416,12 @@ export const sv = {
       days: "Dagar",
       dayOfMonth: "Dag i månaden",
       lastDayNote: "Månader utan den dagen körs den på sista dagen.",
-      timezone: "Tiderna anges i {timezone}.",
-      create: "Skapa uppgift",
+      advanced: "Avancerat",
+      notifications: "Aviseringar",
+      notifyAll: "Varje körning",
+      notifyFailures: "Bara vid fel",
+      notifyNone: "Av",
+      create: "Skapa",
     },
     deleteDialog: {
       title: "Ta bort schemalagd uppgift?",

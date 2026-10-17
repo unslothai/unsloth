@@ -4048,7 +4048,7 @@ export const zhCN = {
       monthly: "每月 {day} 日 {time}",
     },
     form: {
-      createTitle: "新建定时任务",
+      createTitle: "安排任务",
       editTitle: "编辑定时任务",
       name: "名称",
       namePlaceholder: "名称（可选）",
@@ -4066,8 +4066,12 @@ export const zhCN = {
       days: "星期",
       dayOfMonth: "每月日期",
       lastDayNote: "没有这一天的月份会在最后一天运行。",
-      timezone: "时间以 {timezone} 为准。",
-      create: "创建任务",
+      advanced: "高级",
+      notifications: "通知",
+      notifyAll: "每次运行",
+      notifyFailures: "仅失败时",
+      notifyNone: "关闭",
+      create: "创建",
     },
     deleteDialog: {
       title: "删除定时任务？",

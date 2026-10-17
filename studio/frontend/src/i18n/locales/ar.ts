@@ -4145,7 +4145,7 @@ export const ar = {
       monthly: "كل شهر في اليوم {day} في {time}",
     },
     form: {
-      createTitle: "مهمة مجدولة جديدة",
+      createTitle: "جدولة مهمة",
       editTitle: "تعديل المهمة المجدولة",
       name: "الاسم",
       namePlaceholder: "الاسم (اختياري)",
@@ -4163,8 +4163,12 @@ export const ar = {
       days: "الأيام",
       dayOfMonth: "يوم الشهر",
       lastDayNote: "في الأشهر التي لا تحتوي على هذا اليوم، تعمل في آخر يوم.",
-      timezone: "الأوقات بتوقيت {timezone}.",
-      create: "إنشاء المهمة",
+      advanced: "متقدم",
+      notifications: "الإشعارات",
+      notifyAll: "كل تشغيل",
+      notifyFailures: "عند الفشل فقط",
+      notifyNone: "إيقاف",
+      create: "إنشاء",
     },
     deleteDialog: {
       title: "حذف المهمة المجدولة؟",

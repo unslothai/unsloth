@@ -131,6 +131,39 @@ export function formatClock(time: string, locale: string): string {
   }).format(Date.UTC(2000, 0, 1, hour, minute));
 }
 
+/** The times the form offers, every quarter hour, plus `current` when it falls between them (a
+ *  task saved at 09:07 keeps its time). */
+export function timeChoices(current: string): string[] {
+  const times = Array.from(
+    { length: 96 },
+    (_, index) => `${pad(Math.floor(index / 4))}:${pad((index % 4) * 15)}`,
+  );
+  return !CLOCK.test(current) || times.includes(current) ? times : [...times, current].sort();
+}
+
+/** A time zone as briefly as the locale names it beside a time: "PT", "MEZ", or failing a short
+ *  name its offset at `at`, "GMT+3". */
+export function zoneLabel(timeZone: string, locale: string, at: number): string {
+  const name = (style: "short" | "shortGeneric") => {
+    try {
+      return (
+        new Intl.DateTimeFormat(locale, { timeZone, timeZoneName: style })
+          .formatToParts(at)
+          .find((part) => part.type === "timeZoneName")?.value ?? ""
+      );
+    } catch {
+      return "";
+    }
+  };
+  // The generic name holds across daylight saving, but past an abbreviation it is a phrase.
+  const generic = name("shortGeneric");
+  const specific = name("short");
+  if (generic && !/\s/.test(generic) && (!specific || generic.length <= specific.length)) {
+    return generic;
+  }
+  return specific || timeZone;
+}
+
 /** An ISO weekday's name as the locale writes it. */
 export function weekdayName(day: number, locale: string, width: "short" | "long"): string {
   // 2024-01-01 was a Monday, so day d of that week is ISO weekday d.

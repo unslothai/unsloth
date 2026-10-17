@@ -4218,7 +4218,7 @@ export const es = {
       monthly: "Cada mes el día {day} a las {time}",
     },
     form: {
-      createTitle: "Nueva tarea programada",
+      createTitle: "Programar una tarea",
       editTitle: "Editar tarea programada",
       name: "Nombre",
       namePlaceholder: "Nombre (opcional)",
@@ -4236,8 +4236,12 @@ export const es = {
       days: "Días",
       dayOfMonth: "Día del mes",
       lastDayNote: "En los meses sin este día, se ejecuta el último día.",
-      timezone: "Las horas están en {timezone}.",
-      create: "Crear tarea",
+      advanced: "Avanzado",
+      notifications: "Notificaciones",
+      notifyAll: "Cada ejecución",
+      notifyFailures: "Solo si falla",
+      notifyNone: "Desactivadas",
+      create: "Crear",
     },
     deleteDialog: {
       title: "¿Eliminar la tarea programada?",

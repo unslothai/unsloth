@@ -4219,7 +4219,7 @@ export const de = {
       monthly: "Monatlich am {day}. um {time}",
     },
     form: {
-      createTitle: "Neue geplante Aufgabe",
+      createTitle: "Aufgabe planen",
       editTitle: "Geplante Aufgabe bearbeiten",
       name: "Name",
       namePlaceholder: "Name (optional)",
@@ -4237,8 +4237,12 @@ export const de = {
       days: "Tage",
       dayOfMonth: "Tag im Monat",
       lastDayNote: "In Monaten ohne diesen Tag läuft sie am letzten Tag.",
-      timezone: "Zeitangaben in {timezone}.",
-      create: "Aufgabe erstellen",
+      advanced: "Erweitert",
+      notifications: "Benachrichtigungen",
+      notifyAll: "Jede Ausführung",
+      notifyFailures: "Nur bei Fehlern",
+      notifyNone: "Aus",
+      create: "Erstellen",
     },
     deleteDialog: {
       title: "Geplante Aufgabe löschen?",

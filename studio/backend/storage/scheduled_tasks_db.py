@@ -59,6 +59,7 @@ def _task_from_row(row: sqlite3.Row) -> dict:
         "schedule": json.loads(row["schedule_json"]),
         "timezone": row["timezone"],
         "enabled": bool(row["enabled"]),
+        "notify": row["notify"],
         "nextRunAt": row["next_run_at"],
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
@@ -144,9 +145,9 @@ def create_task(task: dict) -> dict:
         conn.execute(
             """
             INSERT INTO scheduled_tasks
-                (id, owner_subject, title, prompt, schedule_json, timezone, enabled, next_run_at,
-                 created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, owner_subject, title, prompt, schedule_json, timezone, enabled, notify,
+                 next_run_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task["id"],
@@ -156,6 +157,7 @@ def create_task(task: dict) -> dict:
                 json.dumps(task["schedule"]),
                 task["timezone"],
                 1 if task["enabled"] else 0,
+                task["notify"],
                 task["nextRunAt"],
                 task["createdAt"],
                 task["updatedAt"],
@@ -199,7 +201,7 @@ def update_task(
         conn.execute(
             """
             UPDATE scheduled_tasks
-            SET title = ?, prompt = ?, schedule_json = ?, timezone = ?, enabled = ?,
+            SET title = ?, prompt = ?, schedule_json = ?, timezone = ?, enabled = ?, notify = ?,
                 next_run_at = ?, updated_at = ?
             WHERE id = ?
             """,
@@ -209,6 +211,7 @@ def update_task(
                 json.dumps(task["schedule"]),
                 task["timezone"],
                 1 if task["enabled"] else 0,
+                task["notify"],
                 task["nextRunAt"],
                 now_ms(),
                 task_id,
@@ -520,7 +523,8 @@ ACTIVITY_LIMIT = 200
 
 def activity(since: Optional[int]) -> dict:
     """What a client watching for results needs: runs finished at or after ``since`` (oldest
-    first, each with its task's title), how many are queued or running, and the next run time.
+    first, each with its task's title and which runs it announces), how many are queued or
+    running, and the next run time.
 
     At most ACTIVITY_LIMIT runs; ``more`` says there are others, which a call from the last
     run's ``finishedAt`` returns (repeating any that finished in that same millisecond).
@@ -535,7 +539,8 @@ def activity(since: Optional[int]) -> dict:
         if since is not None:
             rows = conn.execute(
                 """
-                SELECT r.*, t.title AS task_title FROM scheduled_task_runs r
+                SELECT r.*, t.title AS task_title, t.notify AS task_notify
+                FROM scheduled_task_runs r
                 JOIN scheduled_tasks t ON t.id = r.task_id
                 WHERE r.finished_at IS NOT NULL AND r.finished_at >= ?
                 ORDER BY r.finished_at, r.rowid LIMIT ?
@@ -544,7 +549,11 @@ def activity(since: Optional[int]) -> dict:
             ).fetchall()
             more = len(rows) > ACTIVITY_LIMIT
             runs = [
-                {**_run_from_row(row), "taskTitle": row["task_title"]}
+                {
+                    **_run_from_row(row),
+                    "taskTitle": row["task_title"],
+                    "taskNotify": row["task_notify"],
+                }
                 for row in rows[:ACTIVITY_LIMIT]
             ]
         (active,) = conn.execute(

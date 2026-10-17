@@ -4220,7 +4220,7 @@ export const it = {
       monthly: "Ogni mese il giorno {day} alle {time}",
     },
     form: {
-      createTitle: "Nuova attività pianificata",
+      createTitle: "Pianifica un’attività",
       editTitle: "Modifica attività pianificata",
       name: "Nome",
       namePlaceholder: "Nome (facoltativo)",
@@ -4238,8 +4238,12 @@ export const it = {
       days: "Giorni",
       dayOfMonth: "Giorno del mese",
       lastDayNote: "Nei mesi senza questo giorno viene eseguita l’ultimo giorno.",
-      timezone: "Gli orari sono in {timezone}.",
-      create: "Crea attività",
+      advanced: "Avanzate",
+      notifications: "Notifiche",
+      notifyAll: "Ogni esecuzione",
+      notifyFailures: "Solo se non riesce",
+      notifyNone: "Disattivate",
+      create: "Crea",
     },
     deleteDialog: {
       title: "Eliminare l’attività pianificata?",

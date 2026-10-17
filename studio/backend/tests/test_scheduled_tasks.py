@@ -47,6 +47,7 @@ def make_task(**overrides) -> dict:
         "schedule": {"kind": "daily", "time": "09:00"},
         "timezone": "UTC",
         "enabled": True,
+        "notify": "all",
         "nextRunAt": ms("2026-10-14T09:00:00+00:00"),
         "createdAt": 1,
         "updatedAt": 1,
@@ -323,6 +324,7 @@ def test_create_list_and_read(client, monkeypatch):
     task = response.json()
     assert task["title"] == "Morning brief"
     assert task["status"] == "active"
+    assert task["notify"] == "all"
     assert task["nextRunAt"] == ms("2026-10-15T09:00:00+00:00")
     assert task["lastRun"] is None
     assert "ownerSubject" not in task
@@ -343,6 +345,7 @@ def test_create_list_and_read(client, monkeypatch):
         ({"timezone": "Nowhere/Special"}, 400),
         ({"schedule": {"kind": "once", "at": "2020-01-01T09:00"}}, 400),
         ({"model": "some-model"}, 422),
+        ({"notify": "sometimes"}, 422),
     ],
 )
 def test_invalid_tasks_are_refused(client, overrides, status):
@@ -385,6 +388,36 @@ def test_a_rename_or_resent_timing_keeps_an_overdue_run_due(client):
         json = {"enabled": True, "schedule": {"kind": "daily", "time": "09:00"}, "timezone": "UTC"},
     ).json()
     assert resent["nextRunAt"] == ms("2026-10-14T09:00:00+00:00")
+
+
+def test_a_notification_setting_is_kept_and_keeps_an_overdue_run_due(client):
+    make_task(nextRunAt = ms("2026-10-14T09:00:00+00:00"))
+    muted = client.patch("/api/scheduled-tasks/task-1", json = {"notify": "none"}).json()
+    assert muted["notify"] == "none"
+    assert muted["nextRunAt"] == ms("2026-10-14T09:00:00+00:00")
+    assert client.get("/api/scheduled-tasks/task-1").json()["notify"] == "none"
+    assert create(client, notify = "failures").json()["notify"] == "failures"
+
+
+def test_a_database_from_before_notification_settings_gains_them():
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute(
+            """CREATE TABLE scheduled_tasks (
+                id TEXT NOT NULL PRIMARY KEY, owner_subject TEXT NOT NULL, title TEXT NOT NULL,
+                prompt TEXT NOT NULL, schedule_json TEXT NOT NULL, timezone TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1, next_run_at INTEGER,
+                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+            )"""
+        )
+        conn.execute(
+            "INSERT INTO scheduled_tasks VALUES ('t', 'u', 'T', 'P', '{}', 'UTC', 1, NULL, 1, 1)"
+        )
+        studio_db._ensure_schema(conn)
+        studio_db._ensure_schema(conn)
+        assert conn.execute("SELECT notify FROM scheduled_tasks").fetchall() == [("all",)]
+    finally:
+        conn.close()
 
 
 def test_a_new_schedule_moves_the_next_run(client, monkeypatch):
@@ -431,7 +464,7 @@ def test_run_now_queues_one_run_at_a_time_and_delete_removes_it(client):
 
 
 def test_activity_lists_runs_finished_since_a_cursor(client):
-    make_task()
+    make_task(notify = "failures")
     db.request_run("task-1")
     _task, run = db.claim_next(db.now_ms(), "worker", next_run_for)
     first = client.get("/api/scheduled-tasks/runs").json()
@@ -439,8 +472,9 @@ def test_activity_lists_runs_finished_since_a_cursor(client):
     db.finish_run(run["id"], "worker", status = "failed", error_code = "no_model")
 
     later = client.get("/api/scheduled-tasks/runs", params = {"since": first["now"]}).json()
-    assert [(r["taskTitle"], r["errorCode"]) for r in later["runs"]] == [
-        ("Morning brief", "no_model")
+    # With what its task announces, for the client to decide on a toast.
+    assert [(r["taskTitle"], r["taskNotify"], r["errorCode"]) for r in later["runs"]] == [
+        ("Morning brief", "failures", "no_model")
     ]
     assert later["activeRuns"] == 0
     assert later["nextRunAt"] == ms("2026-10-14T09:00:00+00:00")

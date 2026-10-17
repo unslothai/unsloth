@@ -32,6 +32,9 @@ Title = Annotated[str, Field(max_length = 120), AfterValidator(_not_blank)]
 Prompt = Annotated[str, Field(max_length = 20_000), AfterValidator(_not_blank)]
 # IANA name from the browser (Intl), so a task keeps its wall-clock time across DST.
 TimeZoneName = Annotated[str, Field(max_length = 64)]
+# Which finished runs the app announces with a toast and a system notification. Every run still
+# brings its chat into Recents, marked unread.
+Notify = Literal["all", "failures", "none"]
 
 
 class ScheduledTaskCreate(BaseModel):
@@ -42,6 +45,7 @@ class ScheduledTaskCreate(BaseModel):
     schedule: Schedule
     timezone: TimeZoneName
     enabled: bool = True
+    notify: Notify = "all"
 
 
 class ScheduledTaskUpdate(BaseModel):
@@ -52,6 +56,7 @@ class ScheduledTaskUpdate(BaseModel):
     schedule: Optional[Schedule] = None
     timezone: Optional[TimeZoneName] = None
     enabled: Optional[bool] = None
+    notify: Optional[Notify] = None
 
 
 class ScheduledTaskRun(BaseModel):
@@ -73,6 +78,7 @@ class ScheduledTaskRun(BaseModel):
 
 class FinishedScheduledTaskRun(ScheduledTaskRun):
     taskTitle: str
+    taskNotify: Notify
 
 
 class ScheduledTask(BaseModel):
@@ -82,6 +88,7 @@ class ScheduledTask(BaseModel):
     schedule: Schedule
     timezone: str
     enabled: bool
+    notify: Notify
     # paused: switched off; completed: a one-time task that has run; active: anything else.
     status: Literal["active", "paused", "completed"]
     nextRunAt: Optional[int] = None
@@ -150,6 +157,7 @@ def create_scheduled_task(
         "schedule": payload.schedule.model_dump(),
         "timezone": payload.timezone,
         "enabled": payload.enabled,
+        "notify": payload.notify,
         "createdAt": now,
         "updatedAt": now,
     }

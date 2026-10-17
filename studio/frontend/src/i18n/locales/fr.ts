@@ -4230,7 +4230,7 @@ export const fr = {
       monthly: "Tous les mois le {day} à {time}",
     },
     form: {
-      createTitle: "Nouvelle tâche planifiée",
+      createTitle: "Planifier une tâche",
       editTitle: "Modifier la tâche planifiée",
       name: "Nom",
       namePlaceholder: "Nom (facultatif)",
@@ -4248,8 +4248,12 @@ export const fr = {
       days: "Jours",
       dayOfMonth: "Jour du mois",
       lastDayNote: "Les mois sans ce jour, elle s’exécute le dernier jour.",
-      timezone: "Les heures sont en {timezone}.",
-      create: "Créer la tâche",
+      advanced: "Avancé",
+      notifications: "Notifications",
+      notifyAll: "Chaque exécution",
+      notifyFailures: "Seulement en cas d’échec",
+      notifyNone: "Désactivées",
+      create: "Créer",
     },
     deleteDialog: {
       title: "Supprimer la tâche planifiée ?",
