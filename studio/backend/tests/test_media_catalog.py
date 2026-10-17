@@ -69,6 +69,28 @@ def test_mirror_ids_resolve_back_to_their_family(selectable):
         assert detect(row["id"]).name == row["family"], row["id"]
 
 
+def test_apple_silicon_drops_the_video_families_it_cannot_run(selectable):
+    everywhere = {(r["family"], r["id"]) for r in _rows() if r["kind"] == "video"}
+    on_mps = media_catalog.media_catalog_payload(device = "mps").models
+    dropped = {fam.name for fam in video_families._FAMILIES if fam.modular_workflow}
+    assert dropped and {(r.family, r.id) for r in on_mps if r.kind == "video"} == {
+        row for row in everywhere if row[0] not in dropped
+    }
+
+
+def test_the_route_asks_for_the_device(client, monkeypatch):
+    from core.inference import diffusion_device
+
+    seen = []
+    target = type("Target", (), {"device": "mps"})()
+    monkeypatch.setattr(diffusion_device, "resolve_diffusion_device_target", lambda: target)
+    monkeypatch.setattr(
+        media_catalog, "media_catalog_payload", lambda device = None: seen.append(device) or PAYLOAD
+    )
+    assert client.get("/api/inference/media/catalog").status_code == 200
+    assert seen == ["mps"]
+
+
 def test_an_unselectable_family_is_left_out(selectable):
     selectable.update({"flux.1", "wan2.2-ti2v-5b"})
     families = {row["family"] for row in _rows()}
@@ -98,7 +120,7 @@ PAYLOAD = media_catalog.MediaCatalogResponse(
 
 
 def test_the_route_serves_every_row_to_the_owner(client, monkeypatch):
-    monkeypatch.setattr(media_catalog, "media_catalog_payload", lambda: PAYLOAD)
+    monkeypatch.setattr(media_catalog, "media_catalog_payload", lambda device = None: PAYLOAD)
     response = client.get("/api/inference/media/catalog")
     assert response.status_code == 200
     assert media_catalog.MediaCatalogResponse.model_validate(response.json()) == PAYLOAD
@@ -106,7 +128,7 @@ def test_the_route_serves_every_row_to_the_owner(client, monkeypatch):
 
 
 def test_a_managed_account_sees_only_the_rows_it_may_use(client, monkeypatch):
-    monkeypatch.setattr(media_catalog, "media_catalog_payload", lambda: PAYLOAD)
+    monkeypatch.setattr(media_catalog, "media_catalog_payload", lambda device = None: PAYLOAD)
     seen = []
     monkeypatch.setattr(account_access, "managed_account", lambda: True)
     monkeypatch.setattr(account_access, "model_grants", lambda: set())
@@ -123,7 +145,7 @@ def test_a_managed_account_sees_only_the_rows_it_may_use(client, monkeypatch):
 
 
 def test_a_builder_failure_answers_503_without_its_text(client, monkeypatch):
-    def build():
+    def build(device = None):
         raise RuntimeError("/home/me/.cache/huggingface exploded")
 
     monkeypatch.setattr(media_catalog, "media_catalog_payload", build)

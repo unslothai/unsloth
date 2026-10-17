@@ -487,6 +487,11 @@ def doctor(
         help = "Check the Unsloth Studio MCP server, the API key and agent timeouts. "
         "Skips the GPU checks unless --gpus is also given.",
     ),
+    env_var: str = typer.Option(
+        "UNSLOTH_API_KEY",
+        "--env-var",
+        help = "With --mcp: the environment variable that holds the Unsloth Studio API key.",
+    ),
     timeout: float = typer.Option(
         60.0,
         "--timeout",
@@ -501,7 +506,7 @@ def doctor(
     code = 0
     if mcp:
         from unsloth_cli.commands.mcp import mcp_doctor
-        code = mcp_doctor()
+        code = mcp_doctor(env_var)
     if not run_gpus:
         if not mcp:
             typer.echo("Nothing to check.")

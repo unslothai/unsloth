@@ -154,7 +154,10 @@ def test_timeouts_read_from_codex_and_claude(env, monkeypatch):
         '[mcp_servers.other]\nurl = "http://h/mcp/"\ntool_timeout_sec = 400\n\n'
         '[mcp_servers.unrelated]\ncommand = "x"\n'
     )
+    # Another server is ours only when its URL is this Unsloth Studio's, not any /mcp/ URL.
     found = mcp_mod._codex_timeouts("unsloth-studio")
+    assert [(label, s) for label, s, _ in found] == [("Codex unsloth-studio", 60)]
+    found = mcp_mod._codex_timeouts("unsloth-studio", ("http://h/mcp/",))
     assert [(label, s) for label, s, _ in found] == [
         ("Codex unsloth-studio", 60),
         ("Codex other", 400),
@@ -198,10 +201,20 @@ def test_doctor_mcp_ok_with_advice(env, monkeypatch):
     assert "LEAKCANARY" not in result.output
 
 
+def test_doctor_mcp_checks_the_named_env_var(env, monkeypatch):
+    _stub_http(monkeypatch, {})
+    monkeypatch.delenv("UNSLOTH_API_KEY", raising = False)
+    monkeypatch.setenv("MY_STUDIO_KEY", "sk-unsloth-LEAKCANARY0123456789")
+    result = CliRunner().invoke(_cli(), ["--mcp", "--env-var", "MY_STUDIO_KEY"])
+    assert result.exit_code == 0, result.output
+    assert "API key (MY_STUDIO_KEY): set, accepted" in result.output
+    assert "LEAKCANARY" not in result.output
+
+
 @pytest.mark.parametrize("gpu_code, mcp_code", [(0, 1), (1, 0), (0, 0)])
 def test_doctor_mcp_with_gpus_runs_both_and_keeps_the_worst_code(monkeypatch, gpu_code, mcp_code):
     ran = []
-    monkeypatch.setattr(mcp_mod, "mcp_doctor", lambda: ran.append("mcp") or mcp_code)
+    monkeypatch.setattr(mcp_mod, "mcp_doctor", lambda env_var: ran.append("mcp") or mcp_code)
 
     def gpu_checks(timeout):
         ran.append("gpus")

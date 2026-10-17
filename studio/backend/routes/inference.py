@@ -51245,10 +51245,18 @@ async def audio_catalog(current_subject: str = Depends(get_current_subject)):
 @studio_router.get("/media/catalog")
 async def media_catalog(current_subject: str = Depends(get_current_subject)):
     """The image and video models Unsloth Studio can offer, filtered to what this account may see."""
+    from core.inference.diffusion_device import resolve_diffusion_device_target
     from core.inference.media_catalog import MediaCatalogResponse, media_catalog_payload
 
+    def device() -> Optional[str]:
+        # The Video page hides families the device can't run (Apple Silicon); so does the catalog.
+        try:
+            return resolve_diffusion_device_target().device
+        except Exception:  # noqa: BLE001 - no device read: list every family
+            return None
+
     try:
-        payload = await asyncio.to_thread(media_catalog_payload)
+        payload = await asyncio.to_thread(lambda: media_catalog_payload(device()))
         rows = await asyncio.to_thread(
             account_access.filter_model_rows, [m.model_dump() for m in payload.models]
         )

@@ -132,6 +132,7 @@ def test_film_prompt_shows_fitting_models_and_free_gpu(stubbed):
     # Audio rows are only the ones a film can use: music for the bed, speak for the voice-over.
     assert "- audio (music): unsloth/ACE-Step (8.0 GB)" in text
     assert "unsloth/wake-word" not in text and "unsloth/voice-clone-only" not in text
+    assert 'kind="audio", workflow="music")' in text and 'kind="tts", workflow="speak")' in text
     assert "unsloth/tts-4" in text and "unsloth/tts-5" not in text
     assert sorted(stubbed) == [("audio", "catalog"), ("tts", "catalog"), ("video", "catalog")]
 

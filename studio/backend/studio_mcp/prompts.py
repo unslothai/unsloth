@@ -148,9 +148,10 @@ async def make_short_film(idea: str, length_seconds: str = "20") -> str:
         "and lighting the same in every shot.\n"
         '6. Poll get_job(kind="video", id=<job id>) until each shot is completed and keep its URL.\n'
         '7. Call unload_model(kind="video") before loading an audio model, so Unsloth Studio has room.\n'
-        '8. For music, load a list_models(source="catalog", kind="audio") row and call '
+        '8. For music, load a list_models(source="catalog", kind="audio", workflow="music") row and call '
         'generate_audio(workflow="music", mode="song", instrumental=true, duration_s=<length>); '
-        'for a voice-over, load a kind="tts" row and call generate_audio(workflow="speak", text=<script>).\n'
+        'for a voice-over, load a list_models(source="catalog", kind="tts", workflow="speak") row and '
+        'call generate_audio(workflow="speak", text=<script>).\n'
         "9. Unload each model when you are done with it, then download the clips and audio from their "
         "Unsloth Studio URLs and stitch them yourself, for example with ffmpeg.\n"
     )

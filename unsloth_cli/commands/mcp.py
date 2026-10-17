@@ -108,6 +108,15 @@ def _codex_block(name: str, url: str, env_var: str, timeout: int) -> str:
     )
 
 
+def _comment_tail(chunk: str) -> str:
+    # Blank and comment lines at the end of a table usually describe the next one: keep them.
+    lines = chunk.splitlines(True)
+    end = len(lines)
+    while end and (not lines[end - 1].strip() or lines[end - 1].lstrip().startswith("#")):
+        end -= 1
+    return "".join(lines[end:])
+
+
 def codex_merge(existing_text: str, name: str, url: str, env_var: str, timeout: int) -> str:
     """Replace the [mcp_servers.NAME] table (and its subtables) in place, or append it."""
     header = _codex_header(name)
@@ -117,9 +126,11 @@ def codex_merge(existing_text: str, name: str, url: str, env_var: str, timeout: 
         if not header.match(chunk):
             out.append(chunk)
         elif not placed:
-            tail = chunk[len(chunk.rstrip()) :]
-            out.append(block.rstrip("\n") + (tail if "\n" in tail else "\n"))
+            out.append(block + _comment_tail(chunk))
             placed = True
+        else:
+            tail = _comment_tail(chunk)
+            out.append(tail if "#" in tail else "")
     text = "".join(out)
     if not placed:
         if text.strip():
@@ -172,13 +183,28 @@ def codex_check(old_text: str, new_text: str, name: str, expected: dict) -> None
         raise ValueError("other settings would change")
 
 
+# A key pasted into an older entry must not reach the terminal; env-var references stay readable.
+_SECRETS = (
+    (re.compile(r"(Bearer\s+)(?!\$\{)[^\s\"'\\]+"), r"\1***"),
+    (re.compile(r"""^([-+ ]?\s*bearer_token\s*=\s*)(["']).*?\2""", re.M), r"\1\2***\2"),
+)
+
+
+def _redact(text: str) -> str:
+    for pattern, replacement in _SECRETS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
 def _diff(path: Path, old_text: Optional[str], new_text: str) -> str:
-    return "".join(
-        difflib.unified_diff(
-            (old_text or "").splitlines(True),
-            new_text.splitlines(True),
-            fromfile = str(path) if old_text is not None else "/dev/null",
-            tofile = str(path),
+    return _redact(
+        "".join(
+            difflib.unified_diff(
+                (old_text or "").splitlines(True),
+                new_text.splitlines(True),
+                fromfile = str(path) if old_text is not None else "/dev/null",
+                tofile = str(path),
+            )
         )
     )
 
@@ -207,6 +233,8 @@ def _read_json_config(path: Path) -> Tuple[Optional[str], dict]:
             f"Couldn't parse {path} as a JSON object, so it was left as is. "
             "Fix it and re-run, or add the entry by hand (see `unsloth mcp add generic`)."
         )
+    if not isinstance(data.get("mcpServers", {}), dict):
+        _fail(f'"mcpServers" in {path} is not an object, so the file was left as is.')
     return text, data
 
 
@@ -255,20 +283,25 @@ def _add_claude(name, url, env_var, dry_run) -> Tuple[str, Path]:
             typer.echo("Would run: " + shlex.join(argv))
         return "dry-run", path
     for argv in commands:
-        _run_claude(argv)
+        removed = current is not None and argv is commands[-1]
+        _run_claude(
+            argv, removed and f"The old {name} entry was already removed; re-run this command."
+        )
     if _read_json_config(path)[1].get("mcpServers", {}).get(name) != entry:
         typer.echo(f"Check the result with `claude mcp get {name}`: it is not what was asked.")
     return "written", path
 
 
-def _run_claude(argv: List[str]) -> None:
+def _run_claude(argv: List[str], after: Optional[str] = None) -> None:
     run = dict(stdin = subprocess.DEVNULL, capture_output = True, text = True, timeout = 60)
+    note = f"\n{after}" if after else ""
     try:
         done = subprocess.run(argv, **run)
     except (OSError, subprocess.TimeoutExpired) as e:
-        _fail(f"`claude mcp {argv[2]}` failed: {e}")
+        _fail(f"`claude mcp {argv[2]}` failed: {e}{note}")
     if done.returncode != 0:
-        _fail(f"`claude mcp {argv[2]}` failed:\n{(done.stderr or done.stdout).strip()}")
+        output = _redact((done.stderr or done.stdout).strip())
+        _fail(f"`claude mcp {argv[2]}` failed:\n{output}{note}")
 
 
 def _add_codex(name, url, env_var, timeout, dry_run) -> Tuple[str, Path]:
@@ -329,6 +362,8 @@ def add(
         path = Path.home() / ".cursor" / "mcp.json"
         state, _ = _add_json(path, lambda d: cursor_merge(d, name, target, env_var), dry_run)
     else:
+        if output.suffix.lower() not in (".json", ".jsonc"):
+            _fail("--output must be a .json file; for another format, paste the printed entry.")
         entry = claude_entry(target, env_var)
         state, _ = _add_json(output, lambda d: _with_server(d, name, entry), dry_run)
         path = output
@@ -378,11 +413,14 @@ def _probe(url: str, key: Optional[str], timeout: float, data: Optional[bytes]):
         return None, str(getattr(e, "reason", None) or e)
 
 
-def _ours(name: str, key: str, entry) -> bool:
-    return isinstance(entry, dict) and (key == name or str(entry.get("url", "")).endswith("/mcp/"))
+def _ours(name: str, key: str, entry, urls: Tuple[str, ...]) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    url = str(entry.get("url", ""))
+    return key == name or (url.startswith(("http://", "https://")) and mcp_url(url) in urls)
 
 
-def _codex_timeouts(name: str) -> List[Tuple[str, float, str]]:
+def _codex_timeouts(name: str, urls: Tuple[str, ...] = ()) -> List[Tuple[str, float, str]]:
     loads = _toml_loads()
     try:
         text = (_codex_source_home() / "config.toml").read_text(encoding = "utf-8")
@@ -393,17 +431,17 @@ def _codex_timeouts(name: str) -> List[Tuple[str, float, str]]:
     found = [
         (key, entry.get("tool_timeout_sec", _CODEX_DEFAULT_TIMEOUT_S))
         for key, entry in servers.items()
-        if _ours(name, key, entry)
+        if _ours(name, key, entry, urls)
     ]
     return [(f"Codex {key}", s, fix) for key, s in found if isinstance(s, (int, float))]
 
 
-def _claude_timeouts(name: str) -> List[Tuple[str, float, str]]:
+def _claude_timeouts(name: str, urls: Tuple[str, ...] = ()) -> List[Tuple[str, float, str]]:
     root = os.environ.get("CLAUDE_CONFIG_DIR")
     settings = (Path(root).expanduser() if root else Path.home() / ".claude") / "settings.json"
     try:
         servers = json.loads(claude_config_path().read_text(encoding = "utf-8"))["mcpServers"]
-        if not any(_ours(name, k, v) for k, v in servers.items()):
+        if not any(_ours(name, k, v, urls) for k, v in servers.items()):
             return []
         value = os.environ.get("MCP_TOOL_TIMEOUT")
         if value is None:
@@ -415,8 +453,11 @@ def _claude_timeouts(name: str) -> List[Tuple[str, float, str]]:
 
 def gather_mcp_facts(env_var: str = "UNSLOTH_API_KEY", timeout: float = 5.0) -> McpFacts:
     facts = McpFacts(env_var = env_var)
-    facts.timeouts = _codex_timeouts("unsloth-studio") + _claude_timeouts("unsloth-studio")
     facts.base = find_studio_server(timeout = min(timeout, 3.0))
+    urls = (mcp_url(facts.base),) if facts.base else ()
+    facts.timeouts = _codex_timeouts("unsloth-studio", urls) + _claude_timeouts(
+        "unsloth-studio", urls
+    )
     if facts.base is None:
         return facts
     key = os.environ.get(env_var) or None

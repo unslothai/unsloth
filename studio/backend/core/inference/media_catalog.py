@@ -59,8 +59,8 @@ def _row(
     )
 
 
-def media_catalog_payload() -> MediaCatalogResponse:
-    """Every selectable image family, then every available video family and its GGUF repo, in registry order."""
+def media_catalog_payload(device: Optional[str] = None) -> MediaCatalogResponse:
+    """Every selectable image family, then every video family ``device`` can run and its GGUF repo, in registry order."""
     bf16_gb = {
         info["family"]: info["estimated_resident_gb"].get("bf16")
         for info in family_inference_infos()
@@ -70,7 +70,7 @@ def media_catalog_payload() -> MediaCatalogResponse:
         for fam in IMAGE_FAMILIES
         if family_selectable(fam)
     ]
-    for fam in pipeline_available_video_families():
+    for fam in pipeline_available_video_families(device = device):
         sizes = fam.bf16_components_gb
         rows.append(_row("video", fam.name, fam.base_repo, sum(sizes) if sizes else None))
         if fam.gguf_repo:

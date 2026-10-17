@@ -330,6 +330,64 @@ def test_generic_prints_or_merges(home):
     assert data["x"] == 1 and set(data["mcpServers"]) == {"a", "unsloth-studio"}
 
 
+def test_codex_merge_keeps_comments_about_the_next_table():
+    old = '[mcp_servers.unsloth-studio]\nurl = "old"\n\n# the work proxy\n[mcp_servers.work]\nurl = "w"\n'
+    new = mcp_mod.codex_merge(old, "unsloth-studio", URL, "K", 300)
+    assert "\n\n# the work proxy\n[mcp_servers.work]\n" in new and 'url = "old"' not in new
+
+
+def test_dry_run_never_prints_a_key_already_in_a_config(home, fake_claude):
+    literal = {"url": "u", "headers": {"Authorization": "Bearer sk-unsloth-OLDKEY0123"}}
+    cursor = home / "home" / ".cursor" / "mcp.json"
+    cursor.parent.mkdir()
+    cursor.write_text(json.dumps({"mcpServers": {"unsloth-studio": literal}}))
+    claude = home / "claude" / ".claude.json"
+    claude.write_text(json.dumps({"mcpServers": {"unsloth-studio": literal}}))
+    codex = home / "codex" / "config.toml"
+    codex.write_text(
+        '[mcp_servers.unsloth-studio]\nurl = "u"\nbearer_token = "sk-unsloth-OLDKEY0123"\n'
+    )
+    for agent in ("cursor", "claude-code", "codex"):
+        result = _add(agent, "--url", URL, "--dry-run")
+        assert result.exit_code == 0, result.output
+        assert "OLDKEY" not in result.output and "***" in result.output, agent
+    assert fake_claude == []
+
+
+def test_a_non_object_mcp_servers_is_left_alone(home):
+    path = home / "home" / ".cursor" / "mcp.json"
+    path.parent.mkdir()
+    path.write_text('{"mcpServers": ["mine"]}')
+    result = _add("cursor", "--url", URL)
+    assert result.exit_code == 1 and "not an object" in result.output
+    assert path.read_text() == '{"mcpServers": ["mine"]}'
+
+
+def test_generic_output_must_be_json(home):
+    out = home / "agent.toml"
+    out.write_text("[x]\n")
+    result = _add("generic", "--url", URL, "--output", str(out))
+    assert result.exit_code == 1 and ".json" in result.output
+    assert out.read_text() == "[x]\n"
+
+
+def test_a_failed_add_after_remove_says_the_entry_is_gone(home, fake_claude, monkeypatch):
+    (home / "claude" / ".claude.json").write_text(
+        json.dumps({"mcpServers": {"unsloth-studio": {"url": "old"}}})
+    )
+    fake = mcp_mod.subprocess.run
+
+    def run(argv, **kwargs):
+        if argv[2] == "add":
+            return mcp_mod.subprocess.CompletedProcess(argv, 1, "", "add broke")
+        return fake(argv, **kwargs)
+
+    monkeypatch.setattr(mcp_mod.subprocess, "run", run)
+    result = _add("claude-code", "--url", URL)
+    assert result.exit_code == 1 and "add broke" in result.output
+    assert "already removed" in result.output
+
+
 BAD = ["--env-var=BAD-NAME", "--env-var=$(id)", "--name=a b", "--name=x]\n[y", "--url=file:///e"]
 
 
