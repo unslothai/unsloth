@@ -10150,6 +10150,8 @@ def _prepare_tool_launch(
     user_folder: bool = False,
 ):
     """Fall back only when the backend is unavailable; unsafe workdirs, build failures and (outside `full`) planner errors refuse."""
+    if user_folder and plan.requested_mode == "auto":
+        os_sandbox.recheck_overran_workdir(plan.workdir)
     if host_access_approved and plan.requested_mode == "auto":
         return _software_safeguards_launch(plan, "user_approved_host_access")
     # A project folder the owner picked is host access they granted: the isolation's workdir scan would refuse common
@@ -10511,6 +10513,11 @@ _sessions_free = threading.Condition(_active_sessions_lock)
 
 def _workdir_key(session_id: "str | None") -> tuple[str, str]:
     return current_account_id(), session_id or _ANON_KEY
+
+
+def workdir_scan_overran(session_id: "str | None") -> bool:
+    workdir = _workdirs.get(_workdir_key(session_id))
+    return workdir is not None and os_sandbox.workdir_scan_overran(workdir)
 
 
 def _session_key(session_id: "str | None") -> tuple[str, str]:
