@@ -12,6 +12,7 @@ const HUB_PROVIDER_IDS = new Map([
   ["huggingface", "huggingface"],
   ["kimi", "moonshotai"],
   ["qwen", "qwen"],
+  ["qwencloud", "qwen"],
 ]);
 
 const HUB_LOGO_PATHS = new Map(

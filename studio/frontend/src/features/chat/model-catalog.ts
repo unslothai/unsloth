@@ -177,6 +177,7 @@ let mergedNamespaces: Map<string, Readonly<Record<string, ModelCatalogSnapshotEn
  *  way; without this every Codex lookup resolved to null and read as "not published". */
 const CATALOG_NAMESPACE_ALIASES: Record<string, string> = {
   openai_codex: "openai",
+  qwencloud: "qwen",
 };
 
 function catalogNamespace(providerType: string): string {

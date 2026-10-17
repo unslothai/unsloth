@@ -1258,6 +1258,7 @@ const CATALOG_REASONING_WIRE: Record<string, ReasoningWire> = {
   kimi: { levels: [], off: "unified" },
   deepseek: { levels: ["low", "high", "max"], aliases: { minimal: "low", medium: "high", xhigh: "high" }, off: "unified" },
   qwen: { levels: [], off: "unified" },
+  qwencloud: { levels: [], off: "unified" },
   huggingface: { levels: null, off: "unified" },
   ollama: { levels: null, off: "unified" },
   // A vLLM older than 0.21 400s on the wider levels; the backend then leaves them to the template default.
@@ -1432,6 +1433,7 @@ export function getExternalReasoningCapabilities(
     case "ollama":
     case "deepseek":
     case "qwen":
+    case "qwencloud":
     case "huggingface":
       return catalogCapabilities(normalizedProvider, normalizedModel) ?? withEnableThinkingStyle();
     case "vllm":

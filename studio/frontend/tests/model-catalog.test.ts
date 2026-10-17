@@ -177,6 +177,16 @@ test("Qwen only has a wire toggle, so a ladder collapses to on/off", () => {
   assert.equal(getExternalReasoningCapabilities("kimi", "kimi-k2.6").supportsReasoning, true);
 });
 
+test("QwenCloud reads the Qwen catalog for its thinking toggle and vision", () => {
+  for (const model of ["qwen3.8-max", "qwen3.7-plus", "qwen3.8-flash"]) {
+    const caps = getExternalReasoningCapabilities("qwencloud", model);
+    assert.equal(caps.reasoningStyle, "enable_thinking", model);
+    assert.equal(caps.supportsReasoning, true, model);
+    assert.equal(caps.supportsReasoningOff, true, model);
+    assert.equal(providerModelSupportsVision("qwencloud", model), true, model);
+  }
+});
+
 test("Kimi K3's documented always-on effort ladder outranks the catalog's toggle", () => {
   // models.dev lists a toggle, but the Kimi API has no thinking switch for kimi-k3.
   const caps = getExternalReasoningCapabilities("kimi", "kimi-k3");
