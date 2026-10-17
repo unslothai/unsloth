@@ -184,7 +184,8 @@ async def load_model(
         Optional[str],
         Field(
             description = "Load a training checkpoint instead of model: a name from "
-            'list_training_runs(include_checkpoints=true), "<run folder>" or "<run folder>/checkpoint-N".'
+            'list_training_runs(include_checkpoints=true), "<run folder>" or "<run folder>/checkpoint-N". '
+            "It becomes the active model: chat with it by leaving chat's model unset."
         ),
     ] = None,
     export: Annotated[
@@ -193,7 +194,8 @@ async def load_model(
             description = "Load an export instead of model: its output name as export_model and "
             'get_job(kind="export") report it, relative to Unsloth Studio\'s exports folder. A merged or '
             'LoRA export is found when its save_directory has two levels, such as "<run>/<name>"; '
-            "variant picks a GGUF export's quantization."
+            "variant picks a GGUF export's quantization. "
+            "It becomes the active model: chat with it by leaving chat's model unset."
         ),
     ] = None,
     kind: ModelKind = "llm",
