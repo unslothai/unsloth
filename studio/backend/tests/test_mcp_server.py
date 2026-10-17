@@ -8,6 +8,7 @@ import pytest
 from mcp_server import INSTRUCTIONS, create_studio_mcp
 
 READ_ONLY = {
+    "analyze_audio",
     "embed",
     "get_job",
     "list_models",
@@ -80,7 +81,18 @@ SCHEMA_FACTS = [
     (
         "cancel",
         "parameters/properties/kind/enum",
-        lambda kinds: "audio" not in kinds and len(kinds) == 9,
+        lambda kinds: {
+            "training",
+            "training_start",
+            "diffusion_training",
+            "export",
+            "recipe",
+            "image",
+            "video",
+            "chat",
+            "dataset_download",
+        }
+        <= set(kinds),
     ),
     ("get_job", "parameters/properties/kind/enum", lambda kinds: {"video", "recipe"} <= set(kinds)),
 ]

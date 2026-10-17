@@ -79,12 +79,43 @@ def audio_options(rows: Any) -> Optional[list[AudioOption]]:
     return options or None
 
 
+class MusicModeBounds(ToolOutput):
+    # A music mode's duration_s range and default, in seconds.
+    id: RouteText
+    min_s: Optional[float] = None
+    max_s: Optional[float] = None
+    default_s: Optional[float] = None
+
+
 class ChatModel(ToolOutput):
     id: RouteText
     display_name: Optional[RouteText] = None
     is_gguf: Optional[bool] = None
     # The active audio model's options for generate_audio, built-in voices included.
     audio_options: Optional[list[AudioOption]] = None
+    # The active music model's duration_s bounds per mode; a longer duration is clamped.
+    audio_music: Optional[list[MusicModeBounds]] = None
+
+    @staticmethod
+    def music_modes(raw: Any) -> Optional[list[MusicModeBounds]]:
+        """The bounds of each mode in a status ``audio_music``, or None when it lists none."""
+        from studio_mcp.tools import number
+
+        modes = raw.get("modes") if isinstance(raw, dict) else None
+        bounds = []
+        for mode in modes if isinstance(modes, list) else []:
+            duration = mode.get("duration") if isinstance(mode, dict) else None
+            if not isinstance(duration, dict) or not isinstance(mode.get("id"), str):
+                continue
+            bounds.append(
+                MusicModeBounds(
+                    id = mode["id"],
+                    min_s = number(duration.get("min")),
+                    max_s = number(duration.get("max")),
+                    default_s = number(duration.get("default")),
+                )
+            )
+        return bounds or None
 
 
 class ChatSlot(ToolOutput):
@@ -271,14 +302,36 @@ class AudioResult(ToolOutput):
     model: Optional[RouteText] = None
     group_id: Optional[RouteText] = None
     clips: list[AudioClip] = []
+    # Options sent that the model does not take; they were left out.
+    ignored_options: list[RouteText] = []
+    # Values Unsloth Studio used instead of the ones asked for, such as a clamped duration_s.
+    applied: dict[str, float] = {}
+    warnings: list[RouteText] = []
+    # Pass to cancel(kind="audio", id=...) from another call to stop the run.
+    cancel_id: Optional[str] = None
     # False when Studio could not save the clip to Audio history; the audio then comes back inline only.
     saved: bool = True
+
+    @classmethod
+    def from_route(cls, payload: Any, **overrides: Any) -> "AudioResult":
+        applied = payload.get("applied") if isinstance(payload, dict) else None
+        overrides.setdefault(
+            "applied",
+            {
+                name: float(value)
+                for name, value in (applied.items() if isinstance(applied, dict) else ())
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            },
+        )
+        return super().from_route(payload, **overrides)
 
 
 class TranscriptSegment(ToolOutput):
     start: Optional[float] = None
     end: Optional[float] = None
     text: str = ""
+    # The speaker's label, such as "Speaker 1", when transcribe was asked for speakers.
+    speaker: Optional[RouteText] = None
 
 
 class TranscriptResult(ToolOutput):
@@ -286,7 +339,27 @@ class TranscriptResult(ToolOutput):
     language: Optional[RouteText] = None
     model: Optional[RouteText] = None
     segments: Optional[list[TranscriptSegment]] = None
+    # 1 - word error rate against expected_text, from 0 to 1; None without expected_text.
+    match_score: Optional[float] = None
     saved_to_history: bool = False
+
+
+class AnalysisResult(ToolOutput):
+    duration_s: Optional[float] = None
+    sample_rate: Optional[int] = None
+    channels: Optional[int] = None
+    # BS.1770 loudness; None for silence.
+    integrated_lufs: Optional[float] = None
+    true_peak_dbtp: Optional[float] = None
+    clipped_samples: Optional[int] = None
+    clipping_ratio: Optional[float] = None
+    # Where the sound starts and ends; None for silence.
+    speech_start_s: Optional[float] = None
+    speech_end_s: Optional[float] = None
+    # Model-written, so never rewritten; only with expected_text.
+    transcript: Optional[str] = None
+    match_score: Optional[float] = None
+    stt_model: Optional[RouteText] = None
 
 
 class VideoJobRef(ToolOutput):

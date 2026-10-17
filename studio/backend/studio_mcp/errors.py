@@ -169,3 +169,62 @@ def raise_for_route(
         except (ValueError, UnicodeDecodeError):
             return None
     return raise_for_payload(payload)
+
+
+# Audio failures carry a code (detail.code on /api, error.code on /v1); each gets what to do next.
+_UPDATE_AUDIO_RUNTIME = (
+    "Update the audio runtime (`unsloth studio update`), then load the model again."
+)
+AUDIO_HINTS = {
+    "out_of_memory": "Load the audio model again with device='cpu'{variants}.",
+    "gpu_unavailable": "Load the audio model again with device='cpu'.",
+    "runtime_missing": _UPDATE_AUDIO_RUNTIME,
+    "family_unknown_to_runtime": _UPDATE_AUDIO_RUNTIME,
+    "espeak_missing": _UPDATE_AUDIO_RUNTIME,
+    "runtime_stopped": "Retry once; if it fails again, run studio_status and load_model the audio "
+    "model again.",
+    "file_incomplete": "Download the model again, or load another variant.",
+}
+
+
+def _audio_failure(body: Any) -> Optional[dict]:
+    if not isinstance(body, dict):
+        return None
+    for holder in (body.get("detail"), body.get("error")):
+        if isinstance(holder, dict) and isinstance(holder.get("code"), str):
+            return holder if holder["code"] in AUDIO_HINTS else None
+    return None
+
+
+def audio_code(body: Any) -> Optional[str]:
+    """The audio failure code a route's error body names, if it is one MCP has a hint for."""
+    failure = _audio_failure(body)
+    return failure["code"] if failure is not None else None
+
+
+def audio_hint(body: Any) -> Optional[str]:
+    failure = _audio_failure(body)
+    if failure is None:
+        return None
+    names = []
+    for row in failure.get("smaller_variants") or []:
+        name = row.get("variant") if isinstance(row, dict) else row
+        if isinstance(name, str) and name:
+            names.append(name)
+    variants = (
+        f", or a smaller variant with load_model(variant=...): {', '.join(names)}" if names else ""
+    )
+    return AUDIO_HINTS[failure["code"]].format(variants = variants)
+
+
+def raise_for_audio(resp: httpx.Response, *, hints: Optional[Mapping[int, str]] = None) -> Any:
+    """``raise_for_route`` for an audio route: a coded failure starts with its ``[code]`` tag and ends with what to do about it."""
+    body = _body(resp) if resp.status_code >= 400 else None
+    code = audio_code(body)
+    if code is None or _gpu_busy(body) is not None:
+        return raise_for_route(resp, hints = hints)
+    try:
+        return raise_for_route(resp, hints = {**(hints or {}), resp.status_code: audio_hint(body)})
+    except ToolError as exc:
+        text = str(exc)
+        raise ToolError(text if text.startswith("[") else f"[{code}] {text}") from None

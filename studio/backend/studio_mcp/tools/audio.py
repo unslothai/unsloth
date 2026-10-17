@@ -1,21 +1,25 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Audio tools: ``generate_audio`` runs any Audio page workflow and ``transcribe`` turns speech into text."""
+"""Audio tools: ``generate_audio`` runs any Audio page workflow, ``transcribe`` turns speech into text and ``analyze_audio`` measures a clip."""
 
 from __future__ import annotations
 
 import base64
 import binascii
-from typing import Any, Literal, Optional
+import time
+import uuid
+from dataclasses import dataclass
+from typing import Annotated, Any, Literal, Optional
 
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from fastmcp.tools import ToolResult
+from pydantic import Field
 
 from studio_mcp import loading
 from studio_mcp.caller import Caller, current_caller
-from studio_mcp.errors import raise_for_route
+from studio_mcp.errors import raise_for_audio, raise_for_route
 from studio_mcp.forward import forward, ndjson_last
 from studio_mcp.inputs import AudioInput, audio_bytes, audio_ref, upload_audio
 from studio_mcp.media import (
@@ -26,8 +30,14 @@ from studio_mcp.media import (
     public_url,
     resource_link,
 )
-from studio_mcp.outputs import AudioClip, AudioResult, TranscriptResult, TranscriptSegment
-from studio_mcp.tools import WRITES, opt_text, present, route_json, strings, try_json
+from studio_mcp.outputs import (
+    AnalysisResult,
+    AudioClip,
+    AudioResult,
+    TranscriptResult,
+    TranscriptSegment,
+)
+from studio_mcp.tools import READ_ONLY, WRITES, opt_text, present, route_json, strings, try_json
 
 LOAD_AUDIO_HINT = "Load a text-to-speech or music model with load_model(kind='tts') first."
 NOT_LOADED = "No model loaded"
@@ -76,6 +86,142 @@ async def _checked_options(
     return checked
 
 
+@dataclass
+class _Run:
+    cancelled: bool = False
+    in_flight: bool = False
+
+
+# generate_audio runs by (account, cancel_id), and ids cancelled lately; the route keeps an early
+# cancel as long, so a reused id would be stopped on arrival.
+_RUNS: dict[tuple[str, str], _Run] = {}
+_CANCELLED: dict[tuple[str, str], float] = {}
+CANCEL_MEMORY_S = 30.0
+
+
+def _forget_old_cancels() -> None:
+    cutoff = time.monotonic() - CANCEL_MEMORY_S
+    for key in [key for key, at in _CANCELLED.items() if at < cutoff]:
+        del _CANCELLED[key]
+
+
+def stop_run(account: str, cancel_id: str) -> Optional[bool]:
+    """Mark run ``cancel_id`` cancelled: None when no generate_audio run here has that id, True when it stops between takes, False when a take is running and the route must stop it."""
+    _forget_old_cancels()
+    _CANCELLED[(account, cancel_id)] = time.monotonic()
+    run = _RUNS.get((account, cancel_id))
+    if run is None:
+        return None
+    run.cancelled = True
+    return not run.in_flight
+
+
+async def _post_run(caller: Caller, body: dict[str, Any]) -> Any:
+    response = await forward(caller, "POST", "/v1/audio/run", json_body = body)
+    named = response.status_code == 400 and NOT_LOADED in response.text
+    return raise_for_audio(response, hints = {400: LOAD_AUDIO_HINT} if named else None)
+
+
+async def _takes_how(caller: Caller, body: dict[str, Any]) -> Optional[str]:
+    """How the loaded music model makes variations of this mode: "batch", "sequential" or None."""
+    status = await try_json(caller, "/api/inference/status")
+    if not isinstance(status, dict):
+        return None
+    if body.get("model") and body["model"] != status.get("model_identifier"):
+        return None
+    music = status.get("audio_music")
+    modes = music.get("modes") if isinstance(music, dict) else None
+    for mode in modes if isinstance(modes, list) else []:
+        if isinstance(mode, dict) and mode.get("id") == (body.get("mode") or "song"):
+            how = mode.get("variations")
+            return opt_text(how.get("how")) if isinstance(how, dict) else None
+    return None
+
+
+def _merge_take(merged: dict[str, Any], payload: dict[str, Any]) -> None:
+    merged["clips"].extend(row for row in payload.get("clips") or [] if isinstance(row, dict))
+    merged["model"] = payload.get("model") or merged.get("model")
+    for key in ("ignored_options", "warnings"):
+        for item in payload.get(key) or []:
+            if item not in merged[key]:
+                merged[key].append(item)
+    if isinstance(payload.get("applied"), dict):
+        merged["applied"].update(payload["applied"])
+
+
+async def _run_takes(
+    caller: Caller, body: dict[str, Any], *, variations: int, cancel_id: str
+) -> Any:
+    """Run ``body`` under ``cancel_id``. Music whose model makes variations one at a time goes take by take under one group_id, as the Audio page sends it, so a cancel keeps the finished takes."""
+    key = (caller.account_id, cancel_id)
+    _forget_old_cancels()
+    if key in _RUNS or key in _CANCELLED:
+        raise ToolError(
+            f"cancel_id {cancel_id!r} is running or was just cancelled; pass a new cancel_id."
+        )
+    run = _RUNS[key] = _Run()
+    try:
+        takes = variations if body["workflow"] == "music" else 1
+        sequential = takes > 1 and await _takes_how(caller, body) == "sequential"
+        if run.cancelled:
+            raise ToolError("The audio run was cancelled before it started.")
+        if not sequential:
+            run.in_flight = True
+            payload = await _post_run(caller, {**body, "cancel_id": cancel_id})
+            if isinstance(payload, dict):
+                payload["cancel_id"] = cancel_id
+            return payload
+        group_id = uuid.uuid4().hex
+        seed = body.get("seed")
+        single = {name: value for name, value in body.items() if name != "variations"}
+        merged: dict[str, Any] = {
+            "clips": [],
+            "group_id": group_id,
+            "ignored_options": [],
+            "warnings": [],
+            "applied": {},
+            "cancel_id": cancel_id,
+        }
+        finished = 0
+        for take in range(1, takes + 1):
+            if run.cancelled:
+                break
+            sent = {**single, "take": take, "group_id": group_id, "cancel_id": cancel_id}
+            if seed is not None:
+                sent["seed"] = seed
+            run.in_flight = True
+            try:
+                payload = await _post_run(caller, sent)
+            except ToolError as exc:
+                if not merged["clips"]:
+                    raise
+                if not run.cancelled:
+                    merged["warnings"].append(f"Take {take} of {takes} failed: {exc}")
+                break
+            finally:
+                run.in_flight = False
+            if not isinstance(payload, dict):
+                break
+            if take == 1:
+                # Later takes reuse take 1's seed, as the Audio page does.
+                first = next(iter(payload.get("clips") or []), None)
+                drawn = first.get("seed") if isinstance(first, dict) else None
+                seed = drawn if isinstance(drawn, int) and not isinstance(drawn, bool) else seed
+            _merge_take(merged, payload)
+            finished = take
+            if isinstance(payload.get("audio"), dict):
+                # History could not save this take, so it came back inline; stop here.
+                merged["audio"] = payload["audio"]
+                break
+        if run.cancelled and finished < takes:
+            merged["warnings"].append(f"Stopped after take {finished} of {takes}: cancelled.")
+        return merged
+    finally:
+        _RUNS.pop(key, None)
+        if run.cancelled:
+            _CANCELLED[key] = time.monotonic()
+
+
 async def generate_audio(
     workflow: Literal["clone", "speak", "edit", "convert", "music", "separate"],
     text: Optional[str] = None,
@@ -92,6 +238,16 @@ async def generate_audio(
     instrumental: bool = False,
     duration_s: Optional[float] = None,
     variations: int = 1,
+    cancel_id: Annotated[
+        Optional[str],
+        Field(
+            min_length = 8,
+            max_length = 64,
+            pattern = r"^[A-Za-z0-9_-]+$",
+            description = "Your id for this run, so cancel(kind='audio', id=...) can stop it from "
+            "another call; made when omitted and returned as cancel_id.",
+        ),
+    ] = None,
     edit: Optional[dict[str, Any]] = None,
     convert: Optional[dict[str, Any]] = None,
     speed: Optional[float] = None,
@@ -99,7 +255,7 @@ async def generate_audio(
     max_tokens: Optional[int] = None,
     options: Optional[dict[str, Any]] = None,
 ) -> ToolResult:
-    """Run an Audio page workflow with the audio model loaded in Unsloth Studio; clips are saved to Audio history and returned inline when small, else as links. clone: speak ``text`` in the voice of ``reference`` (a clip, or a saved voice as voice_id; ``reference_text`` is its transcript). speak: ``text`` in the loaded model's default voice, or a saved voice via ``reference``. edit: change the words or delivery of ``source`` per ``edit``. convert: make ``source`` sound like ``target``. music: ``mode`` song or sfx from ``text`` (the style) and ``lyrics``; ``variations`` up to 4 share a group_id. separate: split ``source`` into stems. ``options`` are the loaded model's ``audio_options`` that studio_status lists, such as a built-in ``voice``. Audio inputs are an Unsloth Studio id, inline base64 with a filename, or a path on the Unsloth Studio computer."""
+    """Run an Audio page workflow with the audio model loaded in Unsloth Studio; clips are saved to Audio history and returned inline when small, else as links. clone: speak ``text`` in the voice of ``reference`` (a clip, or a saved voice as voice_id; ``reference_text`` is its transcript). speak: ``text`` in the loaded model's default voice, or a saved voice via ``reference``. edit: change the words or delivery of ``source`` per ``edit``. convert: make ``source`` sound like ``target``. music: ``mode`` song or sfx from ``text`` (the style) and ``lyrics``; ``variations`` up to 4 share a group_id. separate: split ``source`` into stems. ``options`` are the loaded model's ``audio_options`` that studio_status lists, such as a built-in ``voice``. Audio inputs are an Unsloth Studio id, inline base64 with a filename, or a path on the Unsloth Studio computer. Failures start with a [code] tag, such as [runtime_stopped] (retry once, then reload) or [out_of_memory] (CPU or a smaller variant)."""
     caller = current_caller()
     inputs: dict[str, Any] = {}
     for key, audio in (
@@ -134,12 +290,8 @@ async def generate_audio(
         body["instrumental"] = True
     if variations != 1:
         body["variations"] = variations
-    payload = await route_json(
-        "POST",
-        "/v1/audio/run",
-        caller = caller,
-        json_body = body,
-        hint_if = (NOT_LOADED, {400: LOAD_AUDIO_HINT}),
+    payload = await _run_takes(
+        caller, body, variations = variations, cancel_id = cancel_id or f"mcp-{uuid.uuid4().hex}"
     )
     if not isinstance(payload, dict):
         raise ToolError("Unsloth Studio returned no audio")
@@ -184,7 +336,29 @@ def _segments(payload: dict) -> list[TranscriptSegment]:
     rows = payload.get("segments")
     if not isinstance(rows, list):
         return []
-    return [TranscriptSegment.from_route(row) for row in rows if isinstance(row, dict)]
+    speakers = payload.get("speakers") if isinstance(payload.get("speakers"), list) else []
+    labels = {str(s.get("id")): s.get("label") for s in speakers if isinstance(s, dict)}
+    return [
+        TranscriptSegment.from_route(row, speaker = _speaker(row.get("speaker"), labels))
+        for row in rows
+        if isinstance(row, dict)
+    ]
+
+
+def _speaker(raw: Any, labels: dict[str, Any]) -> Optional[str]:
+    if raw is None or isinstance(raw, bool):
+        return None
+    return opt_text(labels.get(str(raw))) or opt_text(str(raw))
+
+
+def _scored(result: TranscriptResult, expected: Optional[str]) -> TranscriptResult:
+    """``result`` with match_score against ``expected``, when given."""
+    if expected is None:
+        return result
+    from core.inference.audio_metrics import match_score
+
+    score = round(match_score(expected, result.text), 4)
+    return result.model_copy(update = {"match_score": score})
 
 
 def _default_stt(status: dict) -> Optional[str]:
@@ -250,6 +424,7 @@ async def _transcribe_source(
     *,
     language: Optional[str],
     timestamps: bool,
+    speakers: bool = False,
     model: Optional[str],
 ) -> TranscriptResult:
     """Audio Unsloth Studio already holds, transcribed by id; this route saves the transcript to history and streams NDJSON."""
@@ -262,6 +437,10 @@ async def _transcribe_source(
     }
     if language:
         body["language"] = language
+    if speakers:
+        body["speakers"] = True
+    # A diarized transcript comes back with its segments.
+    timestamps = timestamps or speakers
 
     async def send():
         response = await forward(
@@ -307,17 +486,40 @@ async def transcribe(
     language: Optional[str] = None,
     translate: bool = False,
     timestamps: bool = False,
+    speakers: Annotated[
+        bool,
+        Field(
+            description = "Label who speaks each segment (segments[].speaker); needs a model that "
+            "tells speakers apart, such as MOSS-Transcribe-Diarize or VibeVoice-ASR."
+        ),
+    ] = False,
+    expected_text: Annotated[
+        Optional[str],
+        Field(
+            max_length = 20000,
+            description = "The words the audio should say; adds match_score, 1.0 when every "
+            "word matches.",
+        ),
+    ] = None,
     model: Optional[str] = None,
     ctx: Optional[Context] = None,
 ) -> TranscriptResult:
-    """Transcribe speech with Unsloth Studio's speech-to-text, or translate it to English with ``translate``. ``audio`` is inline base64 with a filename, a path on the Unsloth Studio computer, or an Unsloth Studio id. Audio over 25 MB or given by id is stored with Unsloth Studio first and its transcript is saved to Audio history (``saved_to_history``); translation needs a smaller file. ``timestamps`` adds segments and needs a model that times them, such as Qwen3-ASR (audio.cpp) or Parakeet-TDT; others refuse it, and translation has none. A missing model is downloaded first. Without ``model`` the loaded speech-to-text model or Unsloth Studio's default is used."""
-    if translate and timestamps:
+    """Transcribe speech with Unsloth Studio's speech-to-text, or translate it to English with ``translate``.
+    ``audio`` is inline base64 with a filename, a path on the Unsloth Studio computer, or an Unsloth Studio id.
+    Audio over 25 MB, given by id, or sent with ``speakers`` is stored with Unsloth Studio first and its transcript is saved to Audio history (``saved_to_history``); translation needs a smaller file.
+    ``timestamps`` adds segments and needs a model that times them, such as Qwen3-ASR (audio.cpp) or Parakeet-TDT; others refuse it, and translation has none.
+    ``speakers`` labels who speaks each segment and needs a model that tells speakers apart.
+    ``expected_text`` adds match_score: 1 minus the word error rate against it, so 1.0 when every word matches.
+    A missing model is downloaded first.
+    Without ``model`` the loaded speech-to-text model or Unsloth Studio's default is used."""
+    if translate and (timestamps or speakers):
         raise ToolError(
-            "Translation returns text only; leave out timestamps, or transcribe without translate."
+            "Translation returns text only; leave out timestamps and speakers, or transcribe "
+            "without translate."
         )
     caller = current_caller()
     data, name = audio_bytes(caller, audio) if audio.is_upload else (None, None)
-    if data is None or len(data) > MULTIPART_LIMIT:
+    if speakers or data is None or len(data) > MULTIPART_LIMIT:
         if translate:
             raise ToolError("Translation needs a file under 25 MB sent as data or a path.")
         source = (
@@ -325,16 +527,28 @@ async def transcribe(
             if data is not None
             else await audio_ref(caller, audio)
         )
-        return await _transcribe_source(
-            caller, ctx, source, language = language, timestamps = timestamps, model = model
+        return _scored(
+            await _transcribe_source(
+                caller,
+                ctx,
+                source,
+                language = language,
+                timestamps = timestamps,
+                speakers = speakers,
+                model = model,
+            ),
+            expected_text,
         )
     # Without a model the multipart route runs its Transformers default, not the loaded one.
     model, engine = await _resident_stt(caller, model)
     # A whisper.cpp id is shared with Transformers, so only the stored-audio route keeps that engine.
     if engine == "gguf" and not translate:
         source = {"input_id": await upload_audio(caller, data, name)}
-        return await _transcribe_source(
-            caller, ctx, source, language = language, timestamps = timestamps, model = model
+        return _scored(
+            await _transcribe_source(
+                caller, ctx, source, language = language, timestamps = timestamps, model = model
+            ),
+            expected_text,
         )
 
     async def send():
@@ -358,7 +572,7 @@ async def transcribe(
     payload = raise_for_route(response, hints = hints)
     if not isinstance(payload, dict):
         raise ToolError("Unsloth Studio returned no transcript")
-    return TranscriptResult(
+    result = TranscriptResult(
         text = payload.get("text") if isinstance(payload.get("text"), str) else "",
         # This route answers with the text alone, so report what was asked for and what ran.
         # A translation is always English; its verbose form spells it "english".
@@ -367,6 +581,7 @@ async def transcribe(
         segments = _segments(payload) if timestamps else None,
         saved_to_history = False,
     )
+    return _scored(result, expected_text)
 
 
 async def _resident_stt(
@@ -384,4 +599,41 @@ async def _resident_stt(
     return None, None
 
 
-TOOLS = ((generate_audio, WRITES, AudioResult.model_json_schema()), (transcribe, WRITES))
+ANALYZE_STT_HINT = (
+    "Run transcribe once to download Unsloth Studio's speech-to-text model, or leave out "
+    "expected_text."
+)
+
+
+async def analyze_audio(
+    audio: AudioInput,
+    expected_text: Annotated[
+        Optional[str],
+        Field(
+            max_length = 20000,
+            description = "The words the audio should say; adds the transcript and match_score, "
+            "1.0 when every word matches.",
+        ),
+    ] = None,
+) -> AnalysisResult:
+    """Measure a clip: its duration, integrated loudness (LUFS), true peak (dBTP), clipped samples and where the sound starts and ends.
+    ``audio`` is an Unsloth Studio id (such as a clip_id from generate_audio), inline base64 with a filename, or a path on the Unsloth Studio computer.
+    With ``expected_text`` the clip is also transcribed by the loaded or default speech-to-text model, and match_score is 1 minus the word error rate.
+    Nothing is added to Audio history."""
+    caller = current_caller()
+    body = {**await audio_ref(caller, audio), **present(expected_text = expected_text)}
+    payload = await route_json(
+        "POST",
+        "/api/inference/audio/analyze",
+        caller = caller,
+        json_body = body,
+        hint_if = (NOT_DOWNLOADED, {409: ANALYZE_STT_HINT}),
+    )
+    return AnalysisResult.from_route(payload)
+
+
+TOOLS = (
+    (generate_audio, WRITES, AudioResult.model_json_schema()),
+    (transcribe, WRITES),
+    (analyze_audio, READ_ONLY),
+)
