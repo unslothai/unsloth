@@ -140,9 +140,9 @@ export const VoiceEngine: FC = () => {
   const rearmSeqRef = useRef(0);
   // Called after speaking ends (or immediately if there's nothing to speak).
   const resumeListen = useCallback(() => {
-    // every re-arm (a turn ending, a chat model arriving) waits for a voice still loading;
-    // the load finishing calls back in here
-    if (useChatRuntimeStore.getState().voiceSlotLoading) return;
+    // A voice still loading no longer shuts the mic: listening never needed the
+    // voice, and a shut mic mid-swap lost what was said and flushed a held
+    // fragment as a whole turn. What waits for the voice is the SEND (below).
     // After a session ends (no-speech finish, silence timer), the composer's
     // dictation field can lag a few frames before clearing. Clicking Dictate
     // while it is still set would toggle dictation OFF and kill the loop, so
@@ -215,6 +215,8 @@ export const VoiceEngine: FC = () => {
   // Speech that landed while the model was still thinking and the interject model
   // called a separate question: held here and sent once the reply has been heard.
   const queuedUtteranceRef = useRef<string | null>(null);
+  // A finished turn that arrived while the voice was still loading.
+  const pendingForVoiceRef = useRef<string | null>(null);
   const submitRef = useRef<() => void>(() => {});
   const runStartedAtRef = useRef(0);
   const onPlaybackEnd = useCallback(() => {
@@ -478,6 +480,15 @@ export const VoiceEngine: FC = () => {
       resumeListen();
       return;
     }
+    if (useChatRuntimeStore.getState().voiceSlotLoading) {
+      // A reply sent now would land before the voice can speak it. Park the turn
+      // in the composer; the slot finishing its load sends it.
+      voiceTrace("engine.holdForVoice", { text });
+      composer.setText(text);
+      pendingForVoiceRef.current = text;
+      resumeListen();
+      return;
+    }
     // Decide the thinking filler for this turn now, so the run's request can tell
     // the model what was said. A reply that ended in a question wants a short
     // answer, so no filler there.
@@ -579,6 +590,15 @@ export const VoiceEngine: FC = () => {
     wasSlotLoadingRef.current = voiceSlotLoading;
     if (!was || voiceSlotLoading) return;
     if (voiceModeRef.current !== "active" || !hasChatModelRef.current) return;
+    const pending = pendingForVoiceRef.current;
+    if (pending) {
+      pendingForVoiceRef.current = null;
+      const composer = auiRef.current.composer();
+      if (composer.getState().dictation) composer.stopDictation();
+      composer.setText(pending);
+      submitRef.current();
+      return;
+    }
     resumeListen();
   }, [voiceSlotLoading, resumeListen]);
 
@@ -794,6 +814,7 @@ export const VoiceEngine: FC = () => {
       clearFiller();
       setPendingFiller(null);
       queuedUtteranceRef.current = null;
+      pendingForVoiceRef.current = null;
       clearVoiceDecisions();
       stop();
       const composer = auiRef.current.composer();
@@ -821,6 +842,7 @@ export const VoiceEngine: FC = () => {
     clearFiller();
     setPendingFiller(null);
     queuedUtteranceRef.current = null;
+    pendingForVoiceRef.current = null;
     stop();
     const composer = auiRef.current.composer();
     if (composer.getState().dictation) composer.stopDictation();
