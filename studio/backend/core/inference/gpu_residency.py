@@ -451,15 +451,15 @@ def _overlaps(gpus: Optional[Iterable[int]], target: Optional[Iterable[int]]) ->
 
 
 def _record_evicted(slots: list[dict], evicted: Optional[list], freed: list[str]) -> None:
+    """Report evictions the way acquire_for does (to ``evicted`` or the route's sink) and log them."""
     try:
         from core.inference.api_monitor import api_monitor
     except Exception:  # noqa: BLE001
         api_monitor = None
+    arb.note_evictions(slots, evicted)
     for slot in slots:
         model = slot.get("model") or slot.get("kind") or ""
         freed.append(model)
-        if evicted is not None:
-            evicted.append(dict(slot))
         if api_monitor is not None:
             try:
                 api_monitor.record_lifecycle(event = "unload", model = model, reason = "evicted")
