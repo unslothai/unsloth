@@ -36230,7 +36230,7 @@ class LlamaCppBackend:
             )
 
     def _other_planned_vram_mib(self) -> dict[int, int]:
-        """MiB per GPU the other serving backends' running servers hold."""
+        """MiB per GPU the other serving backends' running servers and the resident image/video models hold."""
         held: dict[int, int] = {}
         serving = _serving_backends_snapshot()
         if self not in serving:
@@ -36240,6 +36240,11 @@ class LlamaCppBackend:
                 continue
             for idx, mib in getattr(backend, "_planned_vram_mib", {}).items():
                 held[idx] = held.get(idx, 0) + mib
+        # Weights plus generation headroom, the full figure _net_of_held_vram needs (empty under Off).
+        from core.inference.gpu_residency import media_held_mib
+
+        for idx, mib in media_held_mib().items():
+            held[idx] = held.get(idx, 0) + mib
         return held
 
     def _note_server_pid(self, pid: int) -> None:

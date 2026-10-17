@@ -311,15 +311,24 @@ async def _gated_start_load(
     re-plan and the load registration take.
     """
     from fastapi import HTTPException
+    from core.inference import gpu_residency
     from core.inference.media_keepwarm import admission_gate
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
-    needed = (
-        (inference_lifecycle_gate(), admission_gate(DIFFUSION), admission_gate(VIDEO))
-        if takes_the_gpu
-        else (admission_gate(owner),)
-    )
     try:
+        # Under Always a chat load's GPUs aren't known yet, so it overlaps every card: refuse now
+        # (retryable) instead of queueing on chat's gate behind it. Off and fit keep the wait.
+        if (
+            takes_the_gpu
+            and gpu_residency.chat_load_in_flight()
+            and await asyncio.to_thread(gpu_residency.current_policy) == "always"
+        ):
+            raise gpu_residency.chat_loading_http_exception(openai_errors = openai_errors)
+        needed = (
+            (inference_lifecycle_gate(), admission_gate(DIFFUSION), admission_gate(VIDEO))
+            if takes_the_gpu
+            else (admission_gate(owner),)
+        )
         async with contextlib.AsyncExitStack() as gates:
             for gate in needed:
                 await bounded(

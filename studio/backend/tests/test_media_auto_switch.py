@@ -1744,6 +1744,92 @@ def test_a_cpu_switch_does_not_hold_the_gates_it_cannot_evict_behind(
     assert held == []
 
 
+@contextlib.contextmanager
+def _chat_loading():
+    """A chat load in flight, as the real one shows it: chat's load lock held."""
+    assert chat._load_lock.acquire(blocking = False)
+    try:
+        yield
+    finally:
+        chat._load_lock.release()
+
+
+@pytest.mark.parametrize("openai_errors", [False, True])
+def test_always_refuses_behind_a_chat_load_without_waiting(
+    flux, enabled, takes_the_gpu, backend, loads, monkeypatch, openai_errors
+):
+    # Under Always the chat load's GPUs aren't known yet, so it overlaps every card: the switch
+    # answers the retryable 409 at once instead of queueing on chat's gate behind the load.
+    import core.inference.gpu_residency as residency
+
+    monkeypatch.setattr(residency, "current_policy", lambda: "always")
+
+    def _gate():
+        raise AssertionError("an Always switch must not wait behind a chat load")
+
+    monkeypatch.setattr(chat, "inference_lifecycle_gate", _gate)
+
+    with _chat_loading():
+        began = time.monotonic()
+        with pytest.raises(HTTPException) as excinfo:
+            _switch("black-forest-labs/FLUX.1-dev", openai_errors = openai_errors)
+        elapsed = time.monotonic() - began
+
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.headers["Retry-After"] == "15"
+    detail = excinfo.value.detail
+    if openai_errors:
+        assert detail["error"]["code"] == "gpu_busy"
+    else:
+        assert detail["error"] == "gpu_busy"
+        assert detail["retry_after"] == 15
+        assert isinstance(detail["message"], str)
+        assert set(detail) == {"error", "message", "retry_after"}
+        assert "is set to Always" not in detail["message"]
+        assert "is set to keep loaded" not in detail["message"]
+    assert loads == []
+    assert elapsed < 5.0
+    # The switch's locks went back with the refusal.
+    assert not asyncio.run(_lock_is_held(arb.DIFFUSION))
+
+
+def test_fit_keeps_todays_wait_behind_a_chat_load(
+    flux, enabled, takes_the_gpu, backend, loads, monkeypatch
+):
+    # Only Always refuses: under fit the switch still queues on chat's lifecycle gate, and a
+    # load that holds it past the budget ends in today's 503.
+    import core.inference.gpu_residency as residency
+
+    monkeypatch.setattr(residency, "current_policy", lambda: "fit")
+    monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.4)
+    assert chat._lifecycle_lock.acquire(blocking = False)
+    try:
+        with _chat_loading():
+            with pytest.raises(HTTPException) as excinfo:
+                _switch("black-forest-labs/FLUX.1-dev")
+    finally:
+        chat._lifecycle_lock.release()
+
+    assert excinfo.value.status_code == 503
+    assert loads == []
+
+
+def test_cpu_switch_ignores_a_chat_load_under_always(
+    flux, enabled, backend, loads, monkeypatch
+):
+    # A CPU load evicts nothing on the GPU, so a chat load there is no reason to refuse it.
+    import core.inference.gpu_residency as residency
+
+    monkeypatch.setattr(backends, "load_takes_the_gpu", lambda: False)
+    monkeypatch.setattr(mas, "load_takes_the_gpu", lambda: False)
+    monkeypatch.setattr(residency, "current_policy", lambda: "always")
+
+    with _chat_loading():
+        _switch("black-forest-labs/FLUX.1-dev")
+
+    assert [pick.model_id for _owner, pick in loads] == ["black-forest-labs/FLUX.1-dev"]
+
+
 def test_the_video_route_refuses_a_flow_control_the_target_does_not_expose(monkeypatch):
     # LTX-2 exposes no audio_flow_shift, and _resolve_flow_shifts would only say so after the
     # switch had evicted the resident pipeline and loaded the target.
