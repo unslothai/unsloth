@@ -182,6 +182,13 @@ export function clearHeldTurn(): void {
   heldTurn = null;
 }
 
+// True from the first voiced frame until the session has emitted its transcript
+// (or given up), so a mic cycle elsewhere can wait instead of losing the turn.
+let utteranceInFlight = false;
+export function isUtteranceInFlight(): boolean {
+  return utteranceInFlight;
+}
+
 export class StudioVoiceLoopAdapter implements DictationAdapter {
   static isSupported(): boolean {
     return voiceLoopSupported();
@@ -249,6 +256,10 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       },
       onSpeech: (cb) => {
         speechCallbacks.add(cb);
+        // The composer starts each session empty and every transcript emitted
+        // here is the whole turn so far, so show the held fragment through the
+        // same path instead of pre-filling the box (that doubled it).
+        if (heldTurn) cb({ transcript: heldTurn.text, isFinal: false });
         return () => speechCallbacks.delete(cb);
       },
     };
@@ -277,6 +288,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     ) => {
       if (ended) return;
       ended = true;
+      utteranceInFlight = false;
       voiceTrace("session.finish", { reason, transcript: transcript ?? null, bargedIn });
       session.status = { type: "ended", reason };
       if (transcript) {
@@ -317,7 +329,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         for (const cb of speechCallbacks)
           cb({ transcript: text, isFinal: true });
         finish("stopped", text);
-        setTimeout(() => requestVoiceSubmit(), 0);
+        setTimeout(() => requestVoiceSubmit(text), 0);
         return;
       }
       finish("stopped");
@@ -467,7 +479,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           // composer as before.
           for (const cb of speechCallbacks) cb({ transcript, isFinal: true });
           finish("stopped", transcript);
-          setTimeout(() => requestVoiceSubmit(), 0);
+          setTimeout(() => requestVoiceSubmit(transcript), 0);
         } else {
           // STT heard nothing usable in the burst that held the reply.
           if (bargedIn) {
@@ -600,6 +612,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               }
               voicedMs = bargeGate.loudMs;
               heardSpeech = true;
+              utteranceInFlight = true;
               useChatRuntimeStore.getState().setVoiceHearing(true);
               for (const cb of speechStartCallbacks) cb();
             };
@@ -644,6 +657,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             voicedMs += frameMs;
             if (!heardSpeech) {
               heardSpeech = true;
+              utteranceInFlight = true;
               // Light the orb's salmon "hearing you" state the instant the mic
               // picks up real voice -- immediate proof the mic is capturing you.
               useChatRuntimeStore.getState().setVoiceHearing(true);

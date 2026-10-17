@@ -25,7 +25,7 @@ import {
 import {
   StudioVoiceLoopAdapter,
   clearHeldTurn,
-  getHeldTurnText,
+  isUtteranceInFlight,
   setMicMuted,
 } from "@/features/chat/adapters/studio-voice-loop-adapter";
 import { MicIcon as DictateMicIcon } from "@/lib/mic-icon";
@@ -159,17 +159,10 @@ export const VoiceEngine: FC = () => {
       // you, turn 2 went deaf). The old button-click was a no-op here because the
       // Dictate button isn't rendered while dictating; mirror that no-op.
       if (fresh.getState().dictation) return;
-      // Proactively clear any stale text on a FRESH handle before re-arming, in
-      // case the deferred post-send clear hadn't landed before this re-arm got
-      // here. Without it, turn 2's dictation appends onto turn 1's leftover text.
-      // A fragment the judge is holding stays on screen while the mic re-arms;
-      // anything else in the box is turn 1's leftover and goes.
-      const held = getHeldTurnText();
-      if (held) {
-        if (fresh.getState().text !== held) fresh.setText(held);
-      } else if (fresh.getState().text) {
-        fresh.setText("");
-      }
+      // Start from an empty box: assistant-ui appends every transcript onto the
+      // text present at startDictation, and the adapter emits the whole turn so
+      // far (a held fragment included), so leftover text here would double up.
+      if (fresh.getState().text) fresh.setText("");
       // Start dictation via the composer runtime, NOT by clicking the Dictate
       // button: in voice mode that button is hidden/replaced by the orb, so a
       // DOM query returns null and the mic never opens (silent green orb).
@@ -215,9 +208,9 @@ export const VoiceEngine: FC = () => {
   // Speech that landed while the model was still thinking and the interject model
   // called a separate question: held here and sent once the reply has been heard.
   const queuedUtteranceRef = useRef<string | null>(null);
-  // A finished turn that arrived while the voice was still loading.
-  const pendingForVoiceRef = useRef<string | null>(null);
-  const submitRef = useRef<() => void>(() => {});
+  // Turns finished while the voice was still loading; sent as one once it is up.
+  const pendingForVoiceRef = useRef<string[]>([]);
+  const submitRef = useRef<(text?: string) => void>(() => {});
   const runStartedAtRef = useRef(0);
   const onPlaybackEnd = useCallback(() => {
     const queued = queuedUtteranceRef.current;
@@ -464,28 +457,35 @@ export const VoiceEngine: FC = () => {
     return parts.join(" ");
   }, []);
 
-  // Submit a transcript. The adapter has already committed it into the composer
-  // via its onSpeech(isFinal) callback, so here we just end dictation and send it;
-  // the run-lifecycle effect then speaks the reply and re-arms the mic.
-  const submitTranscript = useCallback(() => {
+  // Submit a transcript: the adapter's own when it passes one (the composer can be
+  // mid-reveal or already cleared by then), else whatever is in the box. Ends
+  // dictation and sends; the run-lifecycle effect then speaks the reply and
+  // re-arms the mic.
+  const submitTranscript = useCallback((spoken?: string) => {
     if (voiceModeRef.current !== "active") return;
     const composer = auiRef.current.composer();
     if (composer.getState().dictation) composer.stopDictation();
-    const text = composer.getState().text.trim();
+    let text = (spoken ?? composer.getState().text).trim();
+    const pending = pendingForVoiceRef.current;
+    if (useChatRuntimeStore.getState().voiceSlotLoading) {
+      // A reply sent now would land before the voice can speak it. Park the turn;
+      // the slot finishing its load sends everything parked as one prompt.
+      if (text) {
+        voiceTrace("engine.holdForVoice", { text });
+        pending.push(text);
+      }
+      resumeListen();
+      return;
+    }
+    if (pending.length) {
+      text = [...pending, text].filter(Boolean).join(" ");
+      pendingForVoiceRef.current = [];
+    }
     if (!text) {
       // Nothing was said: a no-speech finish, or the half-duplex close the
       // run-start effect does. Neither is a barge-in, so leave a playing reply
       // alone -- cutting here is what truncated it after the first word. Just
       // re-arm; resumeListen defers that until the reply has finished speaking.
-      resumeListen();
-      return;
-    }
-    if (useChatRuntimeStore.getState().voiceSlotLoading) {
-      // A reply sent now would land before the voice can speak it. Park the turn
-      // in the composer; the slot finishing its load sends it.
-      voiceTrace("engine.holdForVoice", { text });
-      composer.setText(text);
-      pendingForVoiceRef.current = text;
       resumeListen();
       return;
     }
@@ -590,13 +590,11 @@ export const VoiceEngine: FC = () => {
     wasSlotLoadingRef.current = voiceSlotLoading;
     if (!was || voiceSlotLoading) return;
     if (voiceModeRef.current !== "active" || !hasChatModelRef.current) return;
-    const pending = pendingForVoiceRef.current;
-    if (pending) {
-      pendingForVoiceRef.current = null;
-      const composer = auiRef.current.composer();
-      if (composer.getState().dictation) composer.stopDictation();
-      composer.setText(pending);
-      submitRef.current();
+    if (pendingForVoiceRef.current.length) {
+      // Something is being said right now: cutting the session here lost a turn
+      // mid-transcription. Its own finish (or no-speech resume) sends the lot.
+      if (isUtteranceInFlight()) return;
+      submitRef.current("");
       return;
     }
     resumeListen();
@@ -814,7 +812,7 @@ export const VoiceEngine: FC = () => {
       clearFiller();
       setPendingFiller(null);
       queuedUtteranceRef.current = null;
-      pendingForVoiceRef.current = null;
+      pendingForVoiceRef.current = [];
       clearVoiceDecisions();
       stop();
       const composer = auiRef.current.composer();
@@ -842,7 +840,7 @@ export const VoiceEngine: FC = () => {
     clearFiller();
     setPendingFiller(null);
     queuedUtteranceRef.current = null;
-    pendingForVoiceRef.current = null;
+    pendingForVoiceRef.current = [];
     stop();
     const composer = auiRef.current.composer();
     if (composer.getState().dictation) composer.stopDictation();
@@ -894,12 +892,24 @@ export const VoiceEngine: FC = () => {
 
   // Expose resumeListen so the dictation adapter can re-arm the mic after a
   // recoverable no-speech timeout. It self-guards: no-op unless voice is active.
+  // A no-speech end with turns parked for a voice that has since loaded sends
+  // them instead of just re-arming.
+  const resumeOrFlush = useCallback(() => {
+    if (
+      pendingForVoiceRef.current.length &&
+      !useChatRuntimeStore.getState().voiceSlotLoading
+    ) {
+      submitRef.current("");
+      return;
+    }
+    resumeListen();
+  }, [resumeListen]);
   useEffect(() => {
-    registerVoiceResume(resumeListen);
+    registerVoiceResume(resumeOrFlush);
     return () => {
       registerVoiceResume(null);
     };
-  }, [resumeListen]);
+  }, [resumeOrFlush]);
 
   // The adapter owns end-of-utterance. A burst over the reply only holds the audio:
   // the run is cut when the utterance proves real (submitTranscript), and a burst

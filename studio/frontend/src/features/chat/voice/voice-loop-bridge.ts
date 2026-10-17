@@ -38,7 +38,7 @@ let voiceThreadReset: (() => void) | null = null;
 let voiceResume: (() => void) | null = null;
 let voiceBargeIn: (() => void) | null = null;
 let voiceBargeAbort: (() => void) | null = null;
-let voiceSubmit: (() => void) | null = null;
+let voiceSubmit: ((text?: string) => void) | null = null;
 let voicePlayback: (() => boolean) | null = null;
 let voiceListen: (() => DictationAdapter.Session | null) | null = null;
 
@@ -205,18 +205,19 @@ export function requestVoiceBargeAbort(): void {
 }
 
 /** Called by the mounted voice loop. Pass null on teardown. */
-export function registerVoiceSubmit(fn: (() => void) | null): void {
+export function registerVoiceSubmit(fn: ((text?: string) => void) | null): void {
   voiceSubmit = fn;
 }
 
 /**
- * Send the utterance the adapter has just committed into the composer. The
+ * Send the utterance the adapter has just finished (the composer text when none
+ * is given). The
  * adapter owns end-of-turn, so it is also what says the turn is ready to go: a
  * no-op outside voice mode, which is what leaves the plain Dictate button filling
  * the composer without sending.
  */
-export function requestVoiceSubmit(): void {
-  voiceSubmit?.();
+export function requestVoiceSubmit(text?: string): void {
+  voiceSubmit?.(text);
 }
 
 /** Called by the mounted voice loop. Pass null on teardown. */
