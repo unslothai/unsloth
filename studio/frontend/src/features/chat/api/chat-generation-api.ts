@@ -42,6 +42,8 @@ export interface CreateChatGenerationRunInput {
   userMessageId: string;
   assistantMessageId: string;
   requestPayload: OpenAIChatCompletionsRequest;
+  /** Stop the run once no tab follows it, instead of finishing in the background. Sent only when set. */
+  stopWhenUnattended?: boolean;
 }
 
 export interface ChatGenerationEvent {

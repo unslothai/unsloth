@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from utils.account_context import current_account, run_as
+from utils.account_context import current_account, current_account_id, run_as
 import asyncio
 import json
 import re
@@ -24,6 +24,7 @@ from core.inference.web_access_policy import normalize_website_policy
 from storage import research_runs_db as db
 from core.inference.providers import answers_decisions_only, provider_runs_local_tools
 from models.providers import MAX_JSON_SAFE_INTEGER
+from state import run_subscribers, unattended_runs
 from state.tool_policy import get_tool_policy
 from storage import mcp_servers_db, providers_db
 from storage.studio_db import get_chat_message, get_chat_thread, upsert_chat_message
@@ -86,6 +87,9 @@ class CreateResearchRun(BaseModel):
     websitePolicy: dict[str, list[str]] | None = None
     instructions: str | None = Field(default = None, max_length = 32_000)
     question: str | None = Field(default = None, max_length = 2000)
+    # The owner's "stop when I close the tab": cancel the run once no tab has followed it for a
+    # while (state/unattended_runs.py). Stored in the config, so a retry and a restart keep it.
+    stopWhenUnattended: bool = False
 
     @field_validator("budgets", mode = "before")
     @classmethod
@@ -194,6 +198,46 @@ def _sync_assistant(run: dict, text: str | None = None) -> None:
         allow_research_update = True,
         expected_research_run_id = run["id"],
         expected_research_attempt = int(run.get("retryCount") or 0),
+    )
+
+
+def _attendance_id(run_id: str) -> str:
+    # Prefixed: chat run ids are the client's, so a bare research id could collide with one.
+    return f"research:{run_id}"
+
+
+def _watch_if_unattended_stop(request: Request, run: dict) -> None:
+    """Cancel ``run`` the way the cancel route does once no tab is following it, if its owner asked."""
+    if not (run.get("config") or {}).get("stopWhenUnattended"):
+        return
+    if run["status"] in db.TERMINAL_STATUSES or run["status"] == "cancelling":
+        return
+    run_id = run["id"]
+    account = current_account()
+    app = request.app
+
+    def settled() -> bool:
+        current = run_as(account, db.get_run, run_id)
+        return (
+            current is None
+            or current["status"] in db.TERMINAL_STATUSES
+            or current["status"] == "cancelling"
+        )
+
+    async def cancel() -> None:
+        try:
+            status = await asyncio.to_thread(run_as, account, db.request_cancel, run_id)
+        except KeyError:
+            return
+        supervisor = getattr(app.state, "research_supervisor", None)
+        if supervisor is not None and status == "cancelling":
+            run_as(account, supervisor.cancel, run_id)
+        current = await asyncio.to_thread(run_as, account, db.get_run, run_id)
+        if current is not None:
+            await asyncio.to_thread(run_as, account, _sync_assistant, current)
+
+    unattended_runs.watch(
+        _attendance_id(run_id), current_account_id() or "", settled = settled, cancel = cancel
     )
 
 
@@ -422,6 +466,7 @@ def _sanitize_config(
         # stamped once so a run spanning midnight or a settings change keeps its starting date.
         "currentDate": current_date_prompt_line(request = http_request),
         "question": (payload.question or "").strip(),
+        **({"stopWhenUnattended": True} if payload.stopWhenUnattended else {}),
     }
 
 
@@ -484,6 +529,7 @@ def create_research_run(
     if supervisor is not None:
         supervisor.note_request_address(request)
         supervisor.wake()
+    _watch_if_unattended_stop(request, run)
     return run
 
 
@@ -593,6 +639,8 @@ def retry_research_run(
         supervisor.wake()
     run = _require_run(run_id)
     _sync_assistant(run)
+    # The watch ended when the run settled; the retried run is the same run again.
+    _watch_if_unattended_stop(request, run)
     return run
 
 
@@ -607,14 +655,22 @@ async def research_events(
     last_event_id: str | None = Header(None, alias = "Last-Event-ID"),
     current_subject: str = Depends(get_current_subject),
 ):
-    _require_run(run_id)
+    opening = _require_run(run_id)
     header_after = int(last_event_id) if last_event_id and last_event_id.isdigit() else 0
     cursor = max(after or 0, header_after)
+    # A run that outlived a restart lost its watch with the process; its follower re-arms it.
+    _watch_if_unattended_stop(request, opening)
+    # One token per stream, so a closing tab clears only its own stamp (state/run_subscribers.py).
+    attendance_id = _attendance_id(run_id)
+    follower = run_subscribers.new_follower_token()
+    follower_account = current_account_id() or ""
 
     async def stream():
         nonlocal cursor
         loop = asyncio.get_running_loop()
         while True:
+            # What state/unattended_runs.py reads to tell a watched run from one whose tab is gone.
+            run_subscribers.mark_subscriber_seen(attendance_id, follower, follower_account)
             # off the default executor: parked followers there starved the run's own db writes.
             events = await loop.run_in_executor(
                 _EVENT_WAIT_EXECUTOR,
@@ -647,8 +703,15 @@ async def research_events(
             if not events:
                 yield ": keep-alive\n\n"
 
+    async def stream_while_attended():
+        try:
+            async for frame in stream():
+                yield frame
+        finally:
+            run_subscribers.subscriber_departed(attendance_id, follower, follower_account)
+
     return StreamingResponse(
-        stream(),
+        stream_while_attended(),
         media_type = "text/event-stream",
         headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

@@ -303,6 +303,12 @@ export function ChatTab() {
   const setAutoCompactEnabled = useChatRuntimeStore(
     (state) => state.setAutoCompactEnabled,
   );
+  const keepRunningWhenTabClosed = useChatRuntimeStore(
+    (state) => state.keepRunningWhenTabClosed,
+  );
+  const setKeepRunningWhenTabClosed = useChatRuntimeStore(
+    (state) => state.setKeepRunningWhenTabClosed,
+  );
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
   const setShowGreetingSloth = useUserProfileStore(
     (s) => s.setShowGreetingSloth,
@@ -526,6 +532,17 @@ export function ChatTab() {
             aria-label={t("settings.chat.autoCompact")}
             checked={autoCompactEnabled}
             onCheckedChange={setAutoCompactEnabled}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.keepRunningWhenTabClosed")}
+          description={t("settings.chat.keepRunningWhenTabClosedDescription")}
+          hint={t("settings.chat.keepRunningWhenTabClosedHint")}
+        >
+          <Switch
+            aria-label={t("settings.chat.keepRunningWhenTabClosed")}
+            checked={keepRunningWhenTabClosed}
+            onCheckedChange={setKeepRunningWhenTabClosed}
           />
         </SettingsRow>
         {isOwner ? <ToolResultLimitRow /> : null}

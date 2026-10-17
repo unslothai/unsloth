@@ -2704,6 +2704,13 @@ export const es = {
         "Los turnos antiguos pasan a un archivo consultable al llenarse el contexto de un chat.",
       autoCompactKeywords:
         "compactación compactar automáticamente contexto ventana truncar deslizante checkpoint margen archivo recuperación búsqueda compaction rolling headroom archive retrieval rag",
+      keepRunningWhenTabClosed: "Seguir ejecutándose al cerrar la pestaña",
+      keepRunningWhenTabClosedDescription:
+        "Las respuestas, la búsqueda web y Deep Research siguen en el servidor después de cerrar la pestaña. Desactívalo para detenerlas.",
+      keepRunningWhenTabClosedHint:
+        "Vuelve a abrir el chat en cualquier dispositivo para retomar una ejecución que siguió en marcha. Si está desactivado, una ejecución se detiene alrededor de un minuto después de cerrarse su última pestaña, así que recargar no la detiene. Se aplica a las ejecuciones iniciadas después de cambiarlo. Los chats temporales, las respuestas de modelos de API o a archivos adjuntos y los turnos que usan el panel del navegador siempre se detienen con su pestaña.",
+      keepRunningWhenTabClosedKeywords:
+        "segundo plano pestaña cerrar cerrada salir seguir ejecutando continuar detener cancelar búsqueda web dispositivo teléfono background tab close keep running continue stop cancel deep research web search resume",
       firstTokenLabel: "Límite de espera del primer token",
       firstTokenDescription: "Cuánto pueden esperar los modelos GGUF locales sin avance en el procesamiento del prompt antes del primer token. Se aplica a las nuevas esperas de todas las cuentas. Con «Sin límite» se espera hasta que lo detengas.",
       firstTokenDefault: "20 min (predeterminado)",

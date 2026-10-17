@@ -887,6 +887,11 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _lifespan_log.warning("chat generation lease sweeper failed to start: %s", exc)
 
+    # Stops the runs whose owner asked for them to end with the tab, once no tab follows them.
+    from state import unattended_runs as _unattended_runs
+
+    _unattended_runs.start()
+
     reap_hub_orphan_workers()
     try:
         from hub.utils.download_manifest import migrate_ordinary_v2_manifests_for_downgrade
@@ -1029,6 +1034,10 @@ async def lifespan(app: FastAPI):
             await _idle_task
         except asyncio.CancelledError:
             pass
+
+    from state import unattended_runs as _unattended_runs
+
+    await _unattended_runs.stop()
 
     _research_supervisor = getattr(app.state, "research_supervisor", None)
     if _research_supervisor is not None:
