@@ -1,0 +1,171 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Maintained with the opt-in Studio Agent History virtualization feature.
+# Disposable Studio and synthetic threads only. No real chat data or model needed.
+# PR: bounded smoke and perf measurements; workflow_dispatch: full synthetic stress.
+name: Studio Agent History Browser CI
+on:
+  pull_request:
+    paths:
+      - 'studio/frontend/**'
+      - 'studio/backend/**'
+      - 'tests/studio/playwright_agent_history_*.py'
+      - 'tests/studio/studiobench/runtime/**'
+      - '.github/actions/install-unsloth-local/**'
+      - '.github/scripts/retry-with-apt-lock.sh'
+      - '.github/scripts/boot-studio-api-only.sh'
+      - '.github/scripts/wait-for-health.sh'
+      - '.github/workflows/studio-agent-history-ci.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  browser:
+    name: Focused browser (${{ matrix.suite }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["menu","native-thumb","dom","idle-scroll","perf","dom-churn-50k","dom-churn-200k","dom-churn-400k","gc-retention"]' || '["menu","native-thumb","dom","idle-scroll","perf"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Linux prerequisites
+        timeout-minutes: 7
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '120'
+        run: |
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq || { apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq; }'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install Unsloth on disposable runner, without a model
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
+          hf-token: ''
+      - name: Download Chromium without implicit apt
+        timeout-minutes: 7
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '120'
+          APT_ACQUIRE_RETRIES: '0'
+        run: |
+          python -m pip install 'playwright>=1.45,<2'
+          bash .github/scripts/retry-with-apt-lock.sh python -m playwright install chromium
+      - name: Probe browser and install missing system libraries only when necessary
+        timeout-minutes: 7
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '120'
+          APT_ACQUIRE_RETRIES: '0'
+        run: |
+          if python -c 'from playwright.sync_api import sync_playwright; p = sync_playwright().start(); b = p.chromium.launch(); b.close(); p.stop()'; then
+            echo 'Chromium launches without additional system packages'
+          else
+            bash .github/scripts/retry-with-apt-lock.sh python -m playwright install-deps chromium
+            python -c 'from playwright.sync_api import sync_playwright; p = sync_playwright().start(); b = p.chromium.launch(); b.close(); p.stop()'
+          fi
+      - name: Start disposable Studio and mask bootstrap password
+        run: |
+          bash .github/scripts/boot-studio-api-only.sh --port 18899 \
+            --log logs/studio_agent_history.log --pid-var STUDIO_AGENT_HISTORY_PID
+          bash .github/scripts/wait-for-health.sh --port 18899 \
+            --log logs/studio_agent_history.log --tmp /tmp/health_agent_history.json
+          OLD="$(cat ~/.unsloth/studio/auth/.bootstrap_password)"
+          echo "::add-mask::$OLD"
+          echo "AGENT_HISTORY_PW=$OLD" >> "$GITHUB_ENV"
+      - name: Menu, K=2..32, scrolling, search, per-thread setting
+        if: matrix.suite == 'menu'
+        timeout-minutes: 10
+        run: |
+          python tests/studio/playwright_agent_history_scroll.py \
+            --url http://127.0.0.1:18899 --username unsloth \
+            --password "$AGENT_HISTORY_PW" --messages 400
+      - name: One-gesture native scrollbar to transcript origin
+        if: matrix.suite == 'native-thumb'
+        timeout-minutes: 10
+        run: |
+          python tests/studio/playwright_agent_history_scroll.py \
+            --url http://127.0.0.1:18899 --username unsloth \
+            --password "$AGENT_HISTORY_PW" --messages 400 \
+            --critical-scrollbar-only
+      - name: Independent 4000-message/100k-DOM typing sweep
+        if: matrix.suite == 'dom'
+        timeout-minutes: 10
+        run: |
+          mkdir -p logs/agent-history
+          python tests/studio/playwright_agent_history_dom_sweep.py \
+            --url http://127.0.0.1:18899 --username unsloth \
+            --password "$AGENT_HISTORY_PW" --output logs/agent-history/dom-sweep.json
+      - name: Synthetic completed-run idle/resume heavy DOM scroll
+        if: matrix.suite == 'idle-scroll'
+        timeout-minutes: 12
+        run: |
+          mkdir -p logs/agent-history
+          python tests/studio/playwright_agent_history_idle_scroll_stress.py \
+            --url http://127.0.0.1:18899 --username unsloth \
+            --password "$AGENT_HISTORY_PW" \
+            --messages 800 --cards 400 --rounds 3 \
+            --output logs/agent-history/idle-scroll-stress.json
+      - name: Large DOM churn 50k / 200k / 400k
+        if: startsWith(matrix.suite, 'dom-churn-')
+        timeout-minutes: 22
+        run: |
+          mkdir -p logs/agent-history
+          case "${{ matrix.suite }}" in
+            dom-churn-50k) BUDGET=50000 ;;
+            dom-churn-200k) BUDGET=200000 ;;
+            dom-churn-400k) BUDGET=400000 ;;
+            *) exit 1 ;;
+          esac
+          python tests/studio/playwright_agent_history_dom_churn_stress.py \
+            --url http://127.0.0.1:18899 --username unsloth \
+            --password "$AGENT_HISTORY_PW" --messages 1000 \
+            --elements "$BUDGET" --rounds 1 \
+            --output "logs/agent-history/dom-churn-${BUDGET}.json"
+      - name: Same-anchor forced-GC DOM retention sweep
+        if: matrix.suite == 'gc-retention'
+        timeout-minutes: 22
+        run: |
+          mkdir -p logs/agent-history
+          python tests/studio/playwright_agent_history_dom_churn_stress.py \
+            --url http://127.0.0.1:18899 --username unsloth \
+            --password "$AGENT_HISTORY_PW" --messages 1000 \
+            --elements 50000 --rounds 1 --retention-cycles 30 \
+            --output logs/agent-history/gc-retention-50k.json
+      - name: Off-vs-Dynamic 2k/4k typing comparison (observational)
+        if: matrix.suite == 'perf'
+        timeout-minutes: 12
+        run: |
+          mkdir -p logs/agent-history
+          python tests/studio/playwright_agent_history_perf.py \
+            --url http://127.0.0.1:18899 --username unsloth \
+            --password "$AGENT_HISTORY_PW" \
+            --output logs/agent-history/perf.json
+      - name: Cleanup and diagnostics
+        if: always()
+        run: |
+          kill "$STUDIO_AGENT_HISTORY_PID" 2>/dev/null || true
+          mkdir -p logs/server-logs
+          cp -r ~/.unsloth/studio/logs/. logs/server-logs/ 2>/dev/null || true
+      - name: Upload evidence even for failed gates
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: agent-history-focused-${{ matrix.suite }}
+          path: |
+            logs/agent-history/
+            logs/studio_agent_history.log
+            logs/server-logs/
+          if-no-files-found: warn
+          retention-days: 1

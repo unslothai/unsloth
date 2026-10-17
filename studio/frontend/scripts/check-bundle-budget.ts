@@ -196,8 +196,13 @@ export const BUDGET = {
   // 95). Nearly all of it is searching a model maker in the Model hub (#13998, +3,038 B raw / +1,000 B transfer):
   // its owner-to-uploads search lives in use-hub-model-search, a hook the startup screen already loads, so there
   // is no separate module to lazy-load. #13999 and #13993 add 79 B raw / 58 B transfer. Raised by that growth.
-  transferBytes: 2_045_781,
-  rawBytes: 6_801_415,
+  // R6V3 virtual-history startup allowance on top of current upstream main.
+  // Fork commit 3072264 measured 106 eager chunks, 6,645.0 KiB raw
+  // and 2,004.6 KiB transfer. Keep the virtualizer and tool cards lazy.
+  // Preserve upstream's latest measured thresholds, then add only the
+  // R6V3 allowance from its tested base. Remeasure this merged CI build.
+  transferBytes: 2_068_188,
+  rawBytes: 6_829_487,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

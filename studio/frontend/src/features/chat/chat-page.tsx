@@ -279,6 +279,7 @@ import {
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
 import {
   getStoredChatThread,
+  getStoredChatThreadReadResult,
   isExpectedBackgroundChatStorageError,
   listStoredChatMessages,
   listStoredChatThreads,
@@ -2725,9 +2726,18 @@ export function ChatPage({
     if (!threadId) return;
 
     let canceled = false;
-    void getStoredChatThread(threadId)
-      .then((thread) => {
+    const controller = new AbortController();
+    // Only a confirmed missing record should abandon the open chat. A failed
+    // backend GET is not evidence of deletion (notably during rapid switches).
+    void getStoredChatThreadReadResult(threadId, {
+      bounded: true,
+      signal: controller.signal,
+    })
+      .then(({ thread }) => {
         if (canceled || thread) return;
+        // A stale read for A must not blank a newer selection B.
+        const selected = useChatRuntimeStore.getState().activeThreadId;
+        if (selected !== null && selected !== threadId) return;
         useChatRuntimeStore.getState().setActiveThreadId(null);
         toast.info("Chat not found", {
           description: "That thread no longer exists, so we opened a new chat.",
@@ -2740,14 +2750,18 @@ export function ChatPage({
           replace: true,
         });
       })
-      .catch(() => {
-        if (useChatRuntimeStore.getState().activeThreadId === threadId) {
-          useChatRuntimeStore.getState().setActiveThreadId(null);
+      .catch((error) => {
+        if (canceled || controller.signal.aborted) return;
+        // A timeout, offline backend or authentication error leaves the
+        // current thread untouched. Other chat-loading paths own their UI.
+        if (!isExpectedBackgroundChatStorageError(error)) {
+          console.warn("Could not verify chat existence; keeping selection", error);
         }
       });
 
     return () => {
       canceled = true;
+      controller.abort();
     };
   }, [active, navigate, search.thread]);
 
