@@ -202,11 +202,16 @@ test("the picker renders the More group with ListLabel through the row filter", 
     more,
     /!fitOnDeviceOnly \|\|\s*cachedIdFor\(row\.id\) !== null \|\|\s*hfModelFitsDevice\(/,
   );
-  // An empty Recommended list still shows the More group.
+  // An empty, loading or failed Recommended list still shows the More group.
   assert.match(
     src,
-    /recommendedRows\.length === 0 && moreRows\.length === 0 \?/,
+    /recommendedRows\.length \+ moreRows\.length === 0 &&\s*recommendedEmpty === "loading"/,
   );
+  assert.match(
+    src,
+    /recommendedRows\.length \+ moreRows\.length === 0 &&\s*recommendedEmpty === "failed"/,
+  );
+  assert.match(src, /recommendedRows\.length \+ moreRows\.length === 0 \?/);
   const selector = readSrc(
     "features/model-picker/components/model-selector.tsx",
   );
