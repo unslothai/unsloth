@@ -11,6 +11,7 @@ READ_ONLY = {
     "embed",
     "get_job",
     "list_models",
+    "list_media",
     "list_training_runs",
     "studio_status",
     "system_one",
@@ -18,6 +19,7 @@ READ_ONLY = {
 DESTRUCTIVE = {
     "cancel",
     "unload_model",
+    "voices",
 }
 OTHERS = {
     "chat",

@@ -52,9 +52,18 @@ def _thumbnail(request, body):
     return Response(WEBP, media_type = "image/webp")
 
 
+SIGNED = "/api/inference/video/gallery/video-1/signed-url"
+
+
 def _studio(overrides = None):
+    minted = {"url": "/api/inference/video/gallery/video-1/file-signed?token=t.1"}
     return fake_studio(
-        {**PAYLOADS, ("GET", "/v1/videos/video-1/content"): _thumbnail, **(overrides or {})}
+        {
+            **PAYLOADS,
+            ("GET", "/v1/videos/video-1/content"): _thumbnail,
+            ("GET", SIGNED): minted,
+            **(overrides or {}),
+        }
     )
 
 
@@ -102,6 +111,7 @@ def test_a_completed_job_returns_its_thumbnail_and_a_link_never_the_mp4(monkeypa
         "error": None,
         "video": {
             "url": "http://192.168.1.20:8888/v1/videos/video-1/content",
+            "download_url": "http://192.168.1.20:8888/api/inference/video/gallery/video-1/file-signed?token=t.1",
             "thumbnail_inline": True,
         },
         "recipe": None,
@@ -111,10 +121,12 @@ def test_a_completed_job_returns_its_thumbnail_and_a_link_never_the_mp4(monkeypa
     content = result["content"]
     assert [c["type"] for c in content[1:]] == ["image", "resource_link"]
     assert base64.b64decode(content[1]["data"]) == WEBP
-    assert content[2]["uri"] == "http://192.168.1.20:8888/v1/videos/video-1/content"
+    assert content[2]["uri"] == out["video"]["download_url"]
     assert content[2]["mimeType"] == "video/mp4"
     assert queries(studio, "/v1/videos/video-1/content") == [{"variant": "thumbnail"}]
-    assert not [c for c in studio.state.calls if "/gallery/" in c[1]]
+    # The link is minted for about an hour; nothing is fetched from the gallery.
+    assert queries(studio, SIGNED) == [{"ttl_s": "3600"}]
+    assert [c[1] for c in studio.state.calls if "/gallery/" in c[1]] == [SIGNED]
 
 
 def test_an_unavailable_thumbnail_leaves_only_the_link(monkeypatch):

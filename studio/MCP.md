@@ -246,6 +246,8 @@ api_key_format = "Bearer {token}"
 | `transcribe` | Speech to text, or translation to English. |
 | `generate_video` | Start a video. Poll it with `get_job`. |
 | `get_job` | The state of a video, recipe or export job. |
+| `list_media` | Earlier images, audio clips, videos, transcripts and saved voices, a page at a time. |
+| `voices` | List, save, rename and delete saved voices. |
 | `run_recipe` | Validate, preview or run a Data Recipe. |
 | `datasets` | List, check, download and follow training datasets. |
 | `start_training` | Start LLM or image LoRA training. Follow it with `studio_status`. |
@@ -261,10 +263,22 @@ cancelling an export job stops only that job's own step.
 ### Media and files
 
 Generated images, audio and videos are saved to Unsloth Studio's galleries, the same as
-in the UI. Tools return each item's id and URL. Small items also come back
-inline. Large images come back as a preview plus a link. A video comes back as a
-thumbnail plus a link, and the MP4 is never sent inline. Links point at
-Unsloth Studio's API, so fetch them with the same `Authorization: Bearer` key.
+in the UI. Tools return each item's id, its `url` and a `download_url`. The
+`download_url` works without the API key for about an hour. It is bound to your
+account and stops working when Unsloth Studio restarts, so call `list_media` for a
+fresh one. The `url` needs the same `Authorization: Bearer` key.
+
+`return_media` sets what else comes back. For images and video it defaults to
+`"inline"`: small images inline, large ones as a preview plus a link, and a video
+as a thumbnail plus a link. `"preview"` sends a small image of `preview_px` pixels
+(1024 by default), and `"link"` sends no media at all. Audio defaults to `"link"`.
+Pass `"inline"` to get a short clip itself. The MP4 is never sent inline.
+
+`list_media` pages through earlier images, audio clips, videos, transcripts and
+saved voices; pass its `next_cursor` back to get the next page. `voices` saves a
+voice from a clip, so `generate_audio` can reuse it as `reference={"voice_id": ...}`.
+A gallery video is an input too: `{"video_id": ..., "frame": "last"}` for an
+image, or `{"video_id": ..., "start_s": ..., "end_s": ...}` for its sound.
 
 Media inputs can be an Unsloth Studio id, inline data, or a file path. **A file path
 works only when the agent runs on the Unsloth Studio computer** and connects over
