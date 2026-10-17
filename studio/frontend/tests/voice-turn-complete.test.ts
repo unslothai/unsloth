@@ -6,41 +6,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isBackchannel, joinTurn, looksUnfinished } from "../src/features/chat/voice/turn-complete.ts";
-
-test("a sentence cut on a filler or connector is unfinished", () => {
-  for (const t of [
-    "Could you tell me just like",
-    "I was wondering if",
-    "So basically the",
-    "Tell me about",
-    "You know,",
-    "And then...",
-    "What do you think about, um",
-    "It's kind of",
-  ]) {
-    assert.equal(looksUnfinished(t), true, t);
-  }
-});
-
-test("a complete thought sends, short ones included", () => {
-  for (const t of [
-    "Yeah",
-    "What is the capital of France?",
-    "Tell me a joke.",
-    "Stop",
-    "Give me three colors",
-    "Name the planets in order",
-    "Could you tell me just like the three main things about it",
-  ]) {
-    assert.equal(looksUnfinished(t), false, t);
-  }
-});
-
-test("terminal punctuation wins over a dangling last word", () => {
-  assert.equal(looksUnfinished("Is that what you like?"), false);
-  assert.equal(looksUnfinished("I think so."), false);
-});
+import { isBackchannel, joinTurn } from "../src/features/chat/voice/turn-complete.ts";
 
 test("joining a held fragment reads as one sentence", () => {
   assert.equal(

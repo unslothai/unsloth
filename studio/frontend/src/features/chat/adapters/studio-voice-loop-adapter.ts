@@ -11,7 +11,6 @@ import {
 import {
   isBackchannel,
   joinTurn,
-  looksUnfinished,
 } from "@/features/chat/voice/turn-complete";
 import {
   VadUnavailableError,
@@ -153,10 +152,8 @@ function isHallucinatedTranscript(text: string): boolean {
 // the composer, so the text lives here until the turn is whole.
 let heldTurn: { text: string; at: number } | null = null;
 
-// The word list is sure when it says "unfinished" (it ends on a dangling word) and
-// unsure otherwise, so the judge only gets the unsure ones. No judge: the list's call.
+// The turn judge decides whether to wait for more; without it the turn is sent.
 async function turnUnfinished(text: string): Promise<boolean> {
-  if (looksUnfinished(text)) return true;
   const p = await judgeTurnComplete(text);
   return p !== null && p < 0.5;
 }

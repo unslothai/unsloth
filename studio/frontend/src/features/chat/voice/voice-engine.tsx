@@ -30,10 +30,10 @@ import { useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
 import {
   fillerDelayMs,
   pickStage2,
-  predictFiller,
   STAGE2_AFTER_MS,
   setPendingFiller,
   toolKindOf,
+  type FillerDecision,
   type ToolKind,
 } from "@/features/chat/voice/thinking-filler";
 import {
@@ -465,7 +465,7 @@ export const VoiceEngine: FC = () => {
     // answer, so no filler there.
     const prevReply = latestAssistantText().trimEnd();
     const prevAskedQuestion = prevReply.endsWith("?");
-    const applyFiller = (decision: ReturnType<typeof predictFiller>) => {
+    const applyFiller = (decision: FillerDecision) => {
       setPendingFiller(decision);
       clearFiller();
       if (decision.say) {
@@ -478,13 +478,11 @@ export const VoiceEngine: FC = () => {
         };
       }
     };
-    applyFiller(predictFiller(text, { prevAssistantAskedQuestion: prevAskedQuestion }));
-    // The trained model overrides the word rules when it answers before the run
-    // starts (the coalesce window); once the filler is queued it stays.
+    setPendingFiller(null);
+    clearFiller();
+    // The filler model answers inside the coalesce window, before the run starts.
     void fillerFromModel(text, prevAskedQuestion).then((fromModel) => {
-      if (!fromModel || fillerRef.current?.queued) return;
-      if (auiRef.current.thread().getState().isRunning && fillerRef.current?.timer) return;
-      applyFiller(fromModel);
+      if (fromModel && !auiRef.current.thread().getState().isRunning) applyFiller(fromModel);
     });
     const thread = auiRef.current.thread();
     // Speech while the model is still thinking (no reply text yet) is not always a

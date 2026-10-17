@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The thinking filler stays quiet on short turns and hedges on everything else.
+// Stage-2 fillers and the pending slot the run reads once.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -11,41 +11,11 @@ import {
   fillerDelayMs,
   pickStage2,
   pickWeighted,
-  predictFiller,
   setPendingFiller,
   toolKindOf,
 } from "../src/features/chat/voice/thinking-filler.ts";
 
 const zero = () => 0;
-
-test("greetings and one-liners get no filler", () => {
-  for (const t of ["hello", "hey there", "thanks", "yes", "okay cool", "no"]) {
-    assert.equal(predictFiller(t).say, false, t);
-  }
-});
-
-test("an answer to the assistant's question gets no filler", () => {
-  const d = predictFiller("the second one please", { prevAssistantAskedQuestion: true });
-  assert.equal(d.say, false);
-  assert.equal(
-    predictFiller("can you write the second one in python for me please").say,
-    true,
-  );
-});
-
-test("big asks get a hedged sentence, never a promise", () => {
-  const d = predictFiller("write me a snake game in python with a score counter", {
-    rand: () => 0.9,
-  });
-  assert.equal(d.say, true);
-  assert.equal(d.cls, "task");
-  assert.doesNotMatch(d.phrase, /\bI can (totally )?do that\b/i);
-});
-
-test("errors route to the fix class", () => {
-  const d = predictFiller("my install keeps failing with a weird error", { rand: () => 0.9 });
-  assert.equal(d.cls, "fix");
-});
 
 test("weighted pick honours the weights", () => {
   const opts = [["a", 1], ["b", 3]] as const;
