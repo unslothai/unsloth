@@ -24,10 +24,13 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-# TODO: replace the local checkout with the HF repos Borcherding/voice-judge, voice-filler,
-# voice-interject once they are published.
+# Each model is a Hugging Face repo <hub>/voice-<name> with the same layout as the local
+# checkout's <name>/ folder. A local dir (UNSLOTH_VOICE_MODELS_DIR, or the checkout) wins when
+# it holds the files; otherwise the needed files are fetched into the hub cache.
 DEFAULT_DIR = "~/git_dev/unsloth-branch-workshop/voice-endpointing-data"
 ENV_DIR = "UNSLOTH_VOICE_MODELS_DIR"
+ENV_HUB = "UNSLOTH_VOICE_MODELS_HUB"
+DEFAULT_HUB = "Borcherding"
 MODELS = ("judge", "filler", "interject")
 
 JUDGE_MAX_LENGTH = 64
@@ -44,6 +47,36 @@ INTERJECT_ACTIONS = ["restart", "ignore", "queue"]
 
 def models_dir() -> Path:
     return Path(os.environ.get(ENV_DIR) or DEFAULT_DIR).expanduser()
+
+
+def models_hub() -> str:
+    return (os.environ.get(ENV_HUB) or DEFAULT_HUB).strip()
+
+
+# What each loader reads, relative to its model dir: the hub download is limited to these.
+HUB_FILES = {
+    "judge": [f"models/{JUDGE_ONNX}/*", f"models/{JUDGE_ONNX}/onnx/*"],
+    "filler": [f"models/{FILLER_ONNX}/*", f"models/{FILLER_ONNX}/onnx*/*", f"models/{ECHO_ONNX}/*", f"models/{ECHO_ONNX}/onnx*/*", "phrases.json"],
+    "interject": ["models/tfidf_lr/*"],
+}
+# The one file that says the local folder really holds the model (a stray empty dir does not).
+_MARKER = {
+    "judge": f"models/{JUDGE_ONNX}/onnx/model_int8.onnx",
+    "filler": "phrases.json",
+    "interject": "models/tfidf_lr/model.pkl",
+}
+
+
+def resolve_model_dir(name: str, root: Path, hub: Optional[str]) -> Path:
+    """The folder holding one model: ``root/<name>`` when it is complete, else the hub snapshot."""
+    local = root / name
+    if not hub or (local / _MARKER[name]).exists():
+        if not root.is_dir():
+            raise FileNotFoundError(f"voice models dir not found: {root} (set {ENV_DIR})")
+        return local
+    from huggingface_hub import snapshot_download
+
+    return Path(snapshot_download(f"{hub}/voice-{name}", allow_patterns = HUB_FILES[name]))
 
 
 # ---------------------------------------------------------------- filler: featurize + echo slot
@@ -281,7 +314,7 @@ class _RulesEchoTagger:
 
 class _Filler:
     def __init__(self, root: Path, seed: Optional[int] = None):
-        models = root / "filler" / "models"
+        models = root / "models"
         if (models / FILLER_ONNX).is_dir():
             self.clf, self.backend = _OnnxClassifier(models / FILLER_ONNX), "onnx"
         else:
@@ -290,7 +323,7 @@ class _Filler:
             self.echo, self.echo_backend = _OnnxEchoTagger(models / ECHO_ONNX), "onnx"
         else:
             self.echo, self.echo_backend = _RulesEchoTagger(), "rules"
-        self.bank = json.load((root / "filler" / "phrases.json").open())
+        self.bank = json.load((root / "phrases.json").open())
         self.rng = random.Random(seed)
 
     def _pick(self, items: list[dict]) -> str:
@@ -402,7 +435,7 @@ class _Interject:
     backend = "tfidf"
 
     def __init__(self, root: Path):
-        with (root / "interject" / "models" / "tfidf_lr" / "model.pkl").open("rb") as f:
+        with (root / "models" / "tfidf_lr" / "model.pkl").open("rb") as f:
             self.m = _InterjectUnpickler(f).load()
 
     def proba(self, prompt: str, utterance: str, elapsed_s: float) -> dict[str, float]:
@@ -464,20 +497,23 @@ class _TorchJudge:
 
 def _Judge(root: Path):
     # The full-data int8 export when present (4 ms), else the first-pass torch weights.
-    onnx = root / "judge" / "models" / JUDGE_ONNX
+    onnx = root / "models" / JUDGE_ONNX
     if (onnx / "onnx" / "model_int8.onnx").exists():
         return _OnnxJudge(onnx)
-    return _TorchJudge(root / "judge" / "models" / "modernbert_base")
+    return _TorchJudge(root / "models" / "modernbert_base")
 
 
 # ---------------------------------------------------------------- singleton
 
 class VoiceModels:
-    def __init__(self, root: Optional[Path] = None):
+    def __init__(self, root: Optional[Path] = None, hub: Optional[str] = None):
+        # An explicit root is local-only (tests, a pinned checkout); the default also fetches from the hub.
         self.root = Path(root) if root else models_dir()
+        self.hub = hub if root else (hub or models_hub())
         self._lock = threading.Lock()
         self._models: dict[str, Any] = {}
         self._errors: dict[str, str] = {}
+        self._dirs: dict[str, Path] = {}
 
     _loaders = {"judge": _Judge, "filler": _Filler, "interject": _Interject}
 
@@ -489,11 +525,9 @@ class VoiceModels:
                 return self._models[name]
             if name in self._errors:
                 return None
-            if not self.root.is_dir():
-                self._errors[name] = f"voice models dir not found: {self.root} (set {ENV_DIR})"
-                return None
             try:
-                self._models[name] = self._loaders[name](self.root)
+                self._dirs[name] = resolve_model_dir(name, self.root, self.hub)
+                self._models[name] = self._loaders[name](self._dirs[name])
             except Exception as exc:  # noqa: BLE001 - the model stays unavailable, the route answers 503
                 self._errors[name] = f"{type(exc).__name__}: {exc}"
                 return None
@@ -513,6 +547,8 @@ class VoiceModels:
     def status(self) -> dict:
         out: dict[str, Any] = {name: self.available(name) for name in MODELS}
         out["dir"] = str(self.root)
+        out["hub"] = self.hub
+        out["dirs"] = {name: str(path) for name, path in self._dirs.items()}
         out["backends"] = {name: self.backend(name) for name in MODELS}
         filler = self._models.get("filler")
         out["backends"]["filler_echo"] = getattr(filler, "echo_backend", None)

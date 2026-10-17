@@ -73,6 +73,26 @@ def test_calls_go_through_to_the_loaded_models(tmp_path, monkeypatch):
     assert status["backends"] == {"judge": None, "filler": None, "interject": None, "filler_echo": None}
 
 
+def test_local_dir_wins_and_the_hub_is_the_fallback(tmp_path, monkeypatch):
+    local = tmp_path / "interject" / "models" / "tfidf_lr"
+    local.mkdir(parents = True)
+    (local / "model.pkl").write_bytes(b"x")
+    assert vm.resolve_model_dir("interject", tmp_path, "someone") == tmp_path / "interject"
+    with pytest.raises(FileNotFoundError):
+        vm.resolve_model_dir("judge", tmp_path / "nope", None)
+    assert vm.resolve_model_dir("judge", tmp_path, None) == tmp_path / "judge"
+    seen = {}
+    import huggingface_hub
+
+    def fake_download(repo, allow_patterns):
+        seen["repo"], seen["patterns"] = repo, allow_patterns
+        return str(tmp_path / "snap")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_download)
+    assert vm.resolve_model_dir("judge", tmp_path, "someone") == tmp_path / "snap"
+    assert seen["repo"] == "someone/voice-judge" and seen["patterns"] == vm.HUB_FILES["judge"]
+
+
 def test_env_var_picks_the_models_dir(monkeypatch, tmp_path):
     monkeypatch.setenv(vm.ENV_DIR, str(tmp_path))
     assert vm.models_dir() == tmp_path
@@ -127,7 +147,7 @@ def test_filler_phrase_and_echo_come_from_the_bank(tmp_path, monkeypatch):
     monkeypatch.setattr(vm.pickle, "load", fake_pickle_load)
     (tmp_path / "filler" / "models" / "tfidf_lr").mkdir(parents = True)
     (tmp_path / "filler" / "models" / "tfidf_lr" / "model.pkl").write_bytes(b"")
-    filler = vm._Filler(tmp_path, seed = 0)
+    filler = vm._Filler(tmp_path / "filler", seed = 0)
     assert filler.backend == "tfidf" and filler.echo_backend == "rules"
 
     out = filler.predict("write me a snake game in python")
@@ -239,7 +259,7 @@ def test_onnx_filler_is_preferred_when_its_folder_exists(tmp_path, monkeypatch):
     ))
     monkeypatch.setitem(__import__("sys").modules, "tokenizers", types.SimpleNamespace(Tokenizer = types.SimpleNamespace(from_file = _FakeTokenizer)))
 
-    filler = vm._Filler(tmp_path, seed = 0)
+    filler = vm._Filler(tmp_path / "filler", seed = 0)
     assert filler.backend == "onnx" and filler.echo_backend == "onnx"
     out = filler.predict("write me a snake game in python")
     assert out["say"] and out["class"] == "code" and out["confidence"] > 0.9
@@ -254,7 +274,7 @@ def test_onnx_echo_tagger_falls_back_to_rules_when_absent(tmp_path, monkeypatch)
         "classes": {"code": {"phrases": [{"text": "On it.", "weight": 1}]}},
         "echo_templates": {"templates": [{"text": "okay, {slot}.", "weight": 1}], "mix": {"echo_when_slot": 0.0}},
     }))
-    filler = vm._Filler(tmp_path, seed = 0)
+    filler = vm._Filler(tmp_path / "filler", seed = 0)
     assert filler.backend == "onnx" and filler.echo_backend == "rules"
     out = filler.predict("why is my install failing with this error")
     assert out["slot"] == "the install error" and out["echo"] is False and out["phrase"] == "On it."
