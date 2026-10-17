@@ -12,7 +12,26 @@ export function inventoryItemTitle(item: InventoryItem): string {
 }
 
 export function inventoryItemSize(item: InventoryItem): number {
-  return item.variant === "cached" ? item.row.bytes : 0;
+  return item.variant === "cached" ? item.row.bytes : (item.row.bytes ?? 0);
+}
+
+/** The format dropdown's order: GGUF, Safetensors, MLX, then adapters and the rest. */
+export function inventoryItemFormatRank(item: InventoryItem): number {
+  const row = item.row;
+  if (row.modelFormat === "gguf") {
+    return 0;
+  }
+  const mlx =
+    row.libraryName?.toLowerCase() === "mlx" ||
+    (row.tags ?? []).some((tag) => tag.toLowerCase() === "mlx") ||
+    (item.variant === "local" && item.row.source === "omlx");
+  if (mlx) {
+    return 2;
+  }
+  if (row.modelFormat === "safetensors" || row.modelFormat === "checkpoint") {
+    return 1;
+  }
+  return row.modelFormat === "adapter" ? 3 : 4;
 }
 
 /** row timestamp in epoch milliseconds, or null when unknown. */

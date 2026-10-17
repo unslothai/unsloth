@@ -317,6 +317,7 @@ export function buildLocalInventoryRows(
         adapterType: model.adapter_type ?? null,
         trainingMethod: model.training_method ?? null,
         updatedAt: normalizeTimestamp(model.updated_at),
+        bytes: model.size_bytes ?? null,
         partial: model.partial ?? false,
         partialTransport: model.partial_transport ?? null,
         partialResumable: model.partial_resumable === true,

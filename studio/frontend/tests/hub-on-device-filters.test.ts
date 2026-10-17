@@ -76,3 +76,24 @@ test("Exports & Fine-tunes is where a model came from, never a file format", () 
   assert.equal(matchesFormat("safetensors", "unsloth"), false);
   assert.equal(matchesFormat("mlx", "mlx"), true);
 });
+
+test("Size sorts local folders by their scanned size, and Format follows the format dropdown", async () => {
+  const { inventoryItemFormatRank, inventoryItemSize } = await import(
+    "../src/features/hub/catalog/inventory-sort.ts"
+  );
+  const local = (modelFormat: string, extra: object = {}) =>
+    ({ variant: "local", row: { modelFormat, source: "custom", ...extra } }) as never;
+  assert.equal(inventoryItemSize(local("gguf", { bytes: 5_000 })), 5_000);
+  assert.equal(inventoryItemSize(local("gguf")), 0);
+  const ranks = [
+    local("adapter"),
+    local("safetensors", { libraryName: "mlx" }),
+    local("safetensors"),
+    local("gguf"),
+  ].map(inventoryItemFormatRank);
+  assert.deepEqual(ranks, [3, 2, 1, 0]);
+  const toolbar = readSrc("features/hub/catalog/models-toolbar.tsx");
+  assert.match(toolbar, /\{ value: "format", label: "Format" \}/);
+  const view = readSrc("features/hub/inventory/view-models.ts");
+  assert.match(view, /bytes: model\.size_bytes \?\? null/);
+});

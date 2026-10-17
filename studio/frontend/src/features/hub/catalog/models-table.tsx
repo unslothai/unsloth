@@ -92,7 +92,7 @@ function ViewToggleButton({
   );
 }
 
-export type InventorySort = "recent" | "name" | "size";
+export type InventorySort = "recent" | "name" | "size" | "format";
 
 export function HubListHeader({
   title,

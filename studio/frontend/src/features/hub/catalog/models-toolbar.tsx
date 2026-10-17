@@ -69,6 +69,7 @@ const INVENTORY_SORT_OPTIONS: HubOption<InventorySort>[] = [
   { value: "recent", label: "Recent" },
   { value: "name", label: "Name" },
   { value: "size", label: "Size" },
+  { value: "format", label: "Format" },
 ];
 
 export const ModelsToolbar = memo(function ModelsToolbar({
