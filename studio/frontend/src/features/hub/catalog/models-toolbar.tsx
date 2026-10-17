@@ -42,7 +42,11 @@ import type {
   ResourceTypeFilter,
 } from "../types";
 import { type HubOption, HubOptionMenu } from "./hub-option-menu";
-import { ModelSearchFiltersControl } from "./model-search-filters";
+import {
+  ModelSearchFiltersControl,
+  type OnDeviceFilters,
+} from "./model-search-filters";
+import type { InventorySort } from "./models-table";
 import { RecentSearches } from "./recent-searches";
 
 // Widened so the format dropdown can carry the "Fine-tune ready" pseudo-option,
@@ -59,6 +63,13 @@ const SORT_OPTIONS: ReadonlyArray<{
   { value: "downloads", label: "Most downloads" },
   { value: "lastModified", label: "Recently updated" },
   { value: "likes", label: "Most likes" },
+];
+
+const INVENTORY_SORT_OPTIONS: HubOption<InventorySort>[] = [
+  { value: "recent", label: "Recent" },
+  { value: "name", label: "Name" },
+  { value: "size", label: "Size" },
+  { value: "format", label: "Format" },
 ];
 
 export const ModelsToolbar = memo(function ModelsToolbar({
@@ -90,6 +101,12 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   uploadersChanged,
   onUploadersChange,
   onResetFilters,
+  inventorySort,
+  onInventorySortChange,
+  inventoryCapabilities,
+  onInventoryCapabilitiesChange,
+  isolateFirstInventoryCapability,
+  onResetInventoryFilters,
 }: {
   searchFilters: ModelSearchFilters;
   onSearchFiltersChange: (value: ModelSearchFilters) => void;
@@ -98,6 +115,12 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   uploadersChanged: boolean;
   onUploadersChange: (value: HubUploader[]) => void;
   onResetFilters: () => void;
+  inventorySort: InventorySort;
+  onInventorySortChange: (value: InventorySort) => void;
+  inventoryCapabilities: HubCapabilityFilter[];
+  onInventoryCapabilitiesChange: (value: HubCapabilityFilter[]) => void;
+  isolateFirstInventoryCapability: boolean;
+  onResetInventoryFilters: () => void;
   tab: ModelsTab;
   onTabChange: (tab: ModelsTab) => void;
   query: string;
@@ -170,8 +193,9 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   const formatOptions = useMemo<HubOption<FormatMenuValue>[]>(() => {
     const options: HubOption<FormatMenuValue>[] = FORMAT_FILTER_OPTIONS.filter(
       (option) =>
-        (option.value !== "mlx" && option.value !== "recommended") ||
-        tab === "discover",
+        option.value === "unsloth"
+          ? tab === "downloaded"
+          : option.value !== "recommended" || tab === "discover",
     ).map((option) => ({
       value: option.value,
       triggerLabel: option.label,
@@ -193,6 +217,9 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             )}
             {option.value === "mlx" && (
               <span className="size-1.5 rounded-full bg-format-mlx" />
+            )}
+            {option.value === "unsloth" && (
+              <span className="size-1.5 rounded-full bg-primary" />
             )}
           </span>
           {option.label}
@@ -233,6 +260,24 @@ export const ModelsToolbar = memo(function ModelsToolbar({
     }
     return options;
   }, [tab, npuAvailable]);
+  const onDeviceFilters = useMemo<OnDeviceFilters | undefined>(
+    () =>
+      tab === "downloaded"
+        ? {
+            capabilities: inventoryCapabilities,
+            onCapabilitiesChange: onInventoryCapabilitiesChange,
+            isolateFirstCapability: isolateFirstInventoryCapability,
+            onReset: onResetInventoryFilters,
+          }
+        : undefined,
+    [
+      tab,
+      inventoryCapabilities,
+      onInventoryCapabilitiesChange,
+      isolateFirstInventoryCapability,
+      onResetInventoryFilters,
+    ],
+  );
   const hubSource = useHubSource();
   const showCapabilities = isDiscover && !isDataset && !npuList;
   // The size and context limits read Hugging Face metadata, so only there.
@@ -410,6 +455,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           onDatasetsChange={(on) =>
             onResourceTypeChange(on ? "datasets" : "models")
           }
+          onDevice={onDeviceFilters}
           className={cn(
             triggerBase,
             "relative inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0",
@@ -421,21 +467,21 @@ export const ModelsToolbar = memo(function ModelsToolbar({
               <button
                 type="button"
                 onClick={onManageLocalFolders}
+                aria-label="Add folder"
                 className={cn(
                   triggerBase,
-                  "field-filter inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-ui-12p5",
+                  "field-filter relative inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0",
                 )}
               >
                 <HugeiconsIcon
                   icon={FolderSearchIcon}
                   strokeWidth={1.75}
-                  className="size-3.5"
+                  className="size-[calc(18px*var(--ui-space-scale,1))]"
                 />
-                Add folder
               </button>
             </TooltipTrigger>
             <TooltipContent side="bottom" sideOffset={6}>
-              Manage local model folders
+              Add folder
             </TooltipContent>
           </Tooltip>
         )}
@@ -447,21 +493,21 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                 type="button"
                 onClick={onFreeUpSpace}
                 data-testid="free-up-space-trigger"
+                aria-label="Free up space"
                 className={cn(
                   triggerBase,
-                  "field-filter inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-ui-12p5",
+                  "field-filter relative inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0",
                 )}
               >
                 <HugeiconsIcon
                   icon={Delete02Icon}
                   strokeWidth={1.75}
-                  className="size-3.5"
+                  className="size-[calc(18px*var(--ui-space-scale,1))]"
                 />
-                Free up space
               </button>
             </TooltipTrigger>
             <TooltipContent side="bottom" sideOffset={6}>
-              Remove shared model assets no installed model needs
+              Free up space: remove shared assets no installed model needs
             </TooltipContent>
           </Tooltip>
         )}
@@ -482,6 +528,33 @@ export const ModelsToolbar = memo(function ModelsToolbar({
               triggerBase,
               "w-[calc(160px*var(--ui-space-scale,1))]",
             )}
+          />
+        )}
+
+        {tab === "downloaded" && (
+          <HubOptionMenu<InventorySort>
+            value={inventorySort}
+            options={INVENTORY_SORT_OPTIONS}
+            onValueChange={onInventorySortChange}
+            ariaLabel="Sort on-device models"
+            className={cn(
+              triggerBase,
+              "w-[calc(160px*var(--ui-space-scale,1))]",
+            )}
+            triggerContent={
+              <span className="flex items-center gap-1">
+                <HugeiconsIcon
+                  icon={ArrowUpDownIcon}
+                  strokeWidth={1.75}
+                  className="size-3.5 shrink-0"
+                />
+                <span className="truncate">
+                  {INVENTORY_SORT_OPTIONS.find(
+                    (option) => option.value === inventorySort,
+                  )?.label ?? inventorySort}
+                </span>
+              </span>
+            }
           />
         )}
 
