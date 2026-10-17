@@ -13,7 +13,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Spinner } from "@/components/ui/spinner";
 
 import { useToolAwaitingApproval } from "@/features/chat";
-import { RagDocumentTrigger } from "@/features/rag/components/rag-document-trigger";
+import { RagDocumentTrigger } from "@/features/rag";
 import { FileGlyph } from "@/lib/file-icon";
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import { type ComponentProps, memo, useMemo, useState } from "react";
@@ -36,8 +36,10 @@ import {
   citationLabel,
   citedPagesPerDocument,
   documentKey,
+  isPassage,
   topCitationPerDocument,
 } from "./citation-utils";
+import { KnowledgeBasePassages } from "./knowledge-base-passages";
 import { ScrollPane } from "./scroll-pane";
 
 export function CitationBadge({
@@ -121,6 +123,12 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
   );
   const [showAll, setShowAll] = useState(false);
   const shown = showAll ? documents : documents.slice(0, DOCUMENTS_SHOWN);
+  // Empty chunks are not passages, so this can sit below the summary's count.
+  const passageCount = useMemo(
+    () => citations.filter(isPassage).length,
+    [citations],
+  );
+  const [showPassages, setShowPassages] = useState(false);
 
   const hasText = useAuiState(({ message }) =>
     partsHaveNonEmptyText(message.content),
@@ -182,6 +190,21 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
                   >
                     Show {documents.length - shown.length} more
                   </button>
+                ) : null}
+                {passageCount > 0 ? (
+                  <button
+                    type="button"
+                    aria-expanded={showPassages}
+                    onClick={() => setShowPassages((v) => !v)}
+                    className="self-start text-xs underline-offset-2 hover:text-foreground hover:underline"
+                  >
+                    {showPassages
+                      ? "Hide passages"
+                      : `Show passages (${passageCount})`}
+                  </button>
+                ) : null}
+                {showPassages ? (
+                  <KnowledgeBasePassages citations={citations} />
                 ) : null}
               </>
             ) : resultText ? (
