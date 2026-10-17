@@ -153,9 +153,11 @@ function isHallucinatedTranscript(text: string): boolean {
 let heldTurn: { text: string; at: number } | null = null;
 
 // The turn judge decides whether to wait for more; without it the turn is sent.
+// 0.65 trades a few more waits for fewer cut-offs; the sweep is in the model card.
+const JUDGE_SEND_THRESHOLD = 0.65;
 async function turnUnfinished(text: string): Promise<boolean> {
   const p = await judgeTurnComplete(text);
-  return p !== null && p < 0.5;
+  return p !== null && p < JUDGE_SEND_THRESHOLD;
 }
 
 /** Drop a fragment waiting for its continuation: a thread switch or voice going off. */

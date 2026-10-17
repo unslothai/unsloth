@@ -266,7 +266,7 @@ def test_real_models_end_to_end():
     status = models.status()
     assert {k: status[k] for k in vm.MODELS} == {"judge": True, "filler": True, "interject": True}, status
     assert status["errors"] == {} and status["dir"] == str(vm.models_dir())
-    assert status["backends"] == {"judge": "modernbert", "filler": "onnx", "interject": "tfidf", "filler_echo": "onnx"}
+    assert status["backends"] == {"judge": "onnx", "filler": "onnx", "interject": "tfidf", "filler_echo": "onnx"}
     assert models.judge("what's the capital of france") > models.judge("what's the capital of")
     out = models.filler("write me a snake game in python")
     assert out["say"] and out["class"] == "code" and out["phrase"]

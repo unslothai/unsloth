@@ -34,6 +34,7 @@ JUDGE_MAX_LENGTH = 64
 JUDGE_THREADS = 4
 ECHO_MIN_CONF = 0.7
 FILLER_ONNX = "modernbert_l4"
+JUDGE_ONNX = "modernbert_full"
 ECHO_ONNX = "echo_distilbert_l4"
 FILLER_MAX_TOKENS = 48
 ECHO_MAX_TOKENS = 40
@@ -421,14 +422,34 @@ class _Interject:
 
 # ---------------------------------------------------------------- judge
 
-class _Judge:
+class _OnnxJudge:
+    backend = "onnx"
+
+    def __init__(self, d: Path):
+        from tokenizers import Tokenizer
+
+        self.tok = Tokenizer.from_file(str(d / "tokenizer.json"))
+        self.tok.enable_truncation(JUDGE_MAX_LENGTH)
+        self.session = _ort_session(d / "onnx" / "model_int8.onnx")
+        self.inputs = {x.name for x in self.session.get_inputs()}
+        self("warm up")
+
+    def __call__(self, text: str) -> float:
+        import numpy as np
+
+        e = self.tok.encode(text)
+        feed = {"input_ids": np.array([e.ids], dtype = np.int64), "attention_mask": np.array([e.attention_mask], dtype = np.int64)}
+        p = _softmax(self.session.run(None, {k: v for k, v in feed.items() if k in self.inputs})[0][0])
+        return float(p[1])
+
+
+class _TorchJudge:
     backend = "modernbert"
 
-    def __init__(self, root: Path):
+    def __init__(self, d: Path):
         import torch
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-        d = root / "judge" / "models" / "modernbert_base"
         torch.set_num_threads(JUDGE_THREADS)
         self.torch = torch
         self.tok = AutoTokenizer.from_pretrained(d)
@@ -439,6 +460,14 @@ class _Judge:
         with self.torch.no_grad():
             enc = self.tok([text], truncation = True, max_length = JUDGE_MAX_LENGTH, return_tensors = "pt")
             return self.torch.softmax(self.model(**enc).logits.float(), -1)[0, 1].item()
+
+
+def _Judge(root: Path):
+    # The full-data int8 export when present (4 ms), else the first-pass torch weights.
+    onnx = root / "judge" / "models" / JUDGE_ONNX
+    if (onnx / "onnx" / "model_int8.onnx").exists():
+        return _OnnxJudge(onnx)
+    return _TorchJudge(root / "judge" / "models" / "modernbert_base")
 
 
 # ---------------------------------------------------------------- singleton
