@@ -145,7 +145,7 @@ function fetchErrorMessage(
     case "localModels":
       return "Couldn't scan local models";
     case "unslothModels":
-      return "Couldn't scan Unsloth fine-tunes";
+      return "Couldn't scan trained and exported models";
     case "localDatasets":
       return "Couldn't scan local datasets";
     default:

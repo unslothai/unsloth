@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // On Device takes Discover's filter panel for capabilities, keeps format and sort as
-// dropdowns (with MLX and Studio's own fine-tunes), and icon-only folder and cleanup buttons.
+// dropdowns (with MLX and Studio's own trained and exported models), and icon-only folder and cleanup buttons.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -58,7 +58,7 @@ test("Add folder and Free up space are icon buttons with labels", () => {
   }
 });
 
-test("On Device keeps format and sort as dropdowns, with MLX and Unsloth fine-tunes", () => {
+test("On Device keeps format and sort as dropdowns, with MLX and Trained & exported", () => {
   const toolbar = readSrc("features/hub/catalog/models-toolbar.tsx");
   assert.match(toolbar, /\{!isDataset && \(\s*<HubOptionMenu<FormatMenuValue>/);
   assert.match(toolbar, /tab === "downloaded" && \(\s*<HubOptionMenu<InventorySort>/);
@@ -71,7 +71,7 @@ test("On Device keeps format and sort as dropdowns, with MLX and Unsloth fine-tu
   assert.match(page, /includeUnslothModels: true/);
 });
 
-test("Unsloth fine-tunes is where a model came from, never a file format", () => {
+test("Trained & exported is where a model came from, never a file format", () => {
   assert.equal(matchesFormat("gguf", "unsloth"), false);
   assert.equal(matchesFormat("safetensors", "unsloth"), false);
   assert.equal(matchesFormat("mlx", "mlx"), true);
