@@ -6,7 +6,7 @@
 import pytest
 from fastapi.responses import JSONResponse
 
-from studio_mcp import forward
+from studio_mcp import forward, model_downloads
 
 from .mcp_harness import bodies, fake_studio, fast_polls, run_tool, sequence, stt_state  # noqa: F401
 from .test_mcp_tools_loading import (
@@ -212,7 +212,20 @@ def test_a_variant_unsloth_studio_is_downloading_is_not_refused(monkeypatch):
     monkeypatch.setattr(
         forward, "ALLOWED_PREFIXES", (*forward.ALLOWED_PREFIXES, "/api/hub/download")
     )
-    result, _studio, sent = _load(monkeypatch, {"model": QWEN}, _partial_routes("running"))
+    # load_model waits for that download first (K16 guard 2), so let it finish.
+    monkeypatch.setattr(model_downloads, "WAIT_INTERVAL_S", 0.01)
+    routes = _partial_routes("running")
+    routes[("GET", "/api/hub/download-status")] = sequence(
+        {"state": "running"}, {"state": "complete"}
+    )
+    # Once it finishes, the variant is on disk.
+    partial = routes[("GET", "/api/hub/gguf-variants")]
+    done = {
+        **partial,
+        "variants": [{**partial["variants"][0], "downloaded": True, "partial": False}],
+    }
+    routes[("GET", "/api/hub/gguf-variants")] = sequence(partial, done)
+    result, _studio, sent = _load(monkeypatch, {"model": QWEN}, routes)
     assert result.get("isError") is not True
     assert len(sent) == 1
 

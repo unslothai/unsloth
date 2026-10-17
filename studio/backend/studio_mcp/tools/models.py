@@ -87,6 +87,9 @@ GpuLayers = Annotated[
     ),
 ]
 
+# How long load_model waits on an Unsloth Studio download of the same model before reporting it.
+DOWNLOAD_WAIT_S = 240.0
+
 KIND_BY_TASK = {
     "text-to-image": "image",
     "text-to-video": "video",
@@ -232,8 +235,12 @@ async def load_model(
         "gpu_layers": gpu_layers,
     }
     placement.check_placement(kind, trained.name if trained else model, variant, **where)
-    # A checkpoint or an export is on disk already: nothing to refuse.
+    # A checkpoint or an export is on disk already: nothing to wait for or refuse.
     if trained is None:
+        # Pre-load guard 2: wait for a download Unsloth Studio is running for this model.
+        await model_downloads.wait_for_managed(
+            caller, ctx, model = model, kind = kind, variant = variant, budget_s = DOWNLOAD_WAIT_S
+        )
         # Pre-load guard 3: a GGUF variant that is partly on disk and not downloading under Unsloth Studio.
         await placement.refuse_partial_variant(caller, model, kind, variant, hf_token)
     if kind == "stt":
@@ -251,6 +258,7 @@ async def load_model(
         load_in_4bit = load_in_4bit,
         hf_token = hf_token,
         kind = kind,
+        is_lora = trained.is_lora if trained else False,
         **where,
     )
     # The route echoes the minted ref; the agent gets the name it asked for.

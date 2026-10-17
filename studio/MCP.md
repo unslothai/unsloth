@@ -239,6 +239,7 @@ api_key_format = "Bearer {token}"
 | `load_model` | Load a chat, image, video or speech-to-text model, downloading it first if needed. Reports progress. |
 | `unload_model` | Unload a model, or every chat, speech, image, video and speech-to-text model with `kind="all"`. The embedding model stays. |
 | `plan_load` | Preview a load without loading anything: GGUF variants and sizes, bytes to download, and the models it would unload. |
+| `download_model` | Download a model ahead of time without loading it. Follow it with `get_job`; `load_model` waits for it. |
 | `chat` | Ask the loaded model, with optional images. Returns a `cancel_id`. |
 | `embed` | Embed up to 2048 texts. |
 | `system_one` | Ask the Decision API typed questions. The Decision API must be on. |

@@ -50,7 +50,7 @@ def _llm_poll(caller: Caller, model: str) -> Callable[[], Awaitable[Progress]]:
         fraction = number(loading.get("fraction")) if isinstance(loading, dict) else None
         if fraction and opt_text(loading.get("phase")):
             return min(fraction, 1.0), f"Loading into memory ({loading['phase']})"
-        if model.startswith(("/", "\\")) or ":" in model[:3]:
+        if model.startswith(("/", "\\", "ref:")) or ":" in model[:3]:
             return None
         download = await route_json(
             "GET",
