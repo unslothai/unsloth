@@ -4428,6 +4428,11 @@ html[data-chat-font] .aui-root {
 		margin-block: calc(1rem * var(--ui-space-scale, 1));
 	}
 
+	/* The cell floor's 15cqi. Not the dialog panel, which sizes to the table. */
+	.aui-md-table:not(.aui-md-table-dialog) {
+		container-type: inline-size;
+	}
+
 	/* The second mask layer keeps the scrollbar opaque under the fade. */
 	.aui-md-table-scroll {
 		--md-table-fade-start: 0px;
@@ -4484,8 +4489,10 @@ html[data-chat-font] .aui-root {
 		line-height: 1.5;
 		vertical-align: top;
 		white-space: normal;
-		/* A floor, so many columns scroll instead of breaking every word. */
-		min-width: 8rem;
+		/* Words wrap whole; `anywhere` (markdown previews set it) would shrink columns to a letter. */
+		overflow-wrap: break-word;
+		/* A floor, so many columns scroll instead of breaking every word; narrow panels lower it. */
+		min-width: min(8rem, 15cqi);
 	}
 
 	.aui-md-table :is(th, td):first-child {
@@ -4508,10 +4515,20 @@ html[data-chat-font] .aui-root {
 		align-items: center;
 		gap: 0.125rem;
 		padding-left: 1rem;
-		background: linear-gradient(to right, transparent, var(--background) 1rem);
+		isolation: isolate;
 		opacity: 0;
 		pointer-events: none;
 		transition: opacity 120ms ease;
+	}
+
+	/* On a pseudo-element, so the fade's mask leaves the copy and download menus alone. */
+	.aui-md-table-actions::before {
+		content: "";
+		position: absolute;
+		inset: 0;
+		z-index: -1;
+		background: var(--md-table-surface, var(--background));
+		mask-image: linear-gradient(to right, transparent, #000 1rem);
 	}
 
 	.aui-md-table:hover > .aui-md-table-actions,
@@ -5943,7 +5960,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 
 /* An odd-sized glyph in these 32px buttons sits on a half pixel, which paints it 0.5px right of
    its circle; an even size centers it. After the block above, which it must outrank. */
-.aui-root.aui-thread-root :is(.aui-chat-icon-btn, .aui-md-table-actions button) svg {
+:is(.aui-root.aui-thread-root, .aui-md-table.aui-md-table) :is(.aui-chat-icon-btn, .aui-md-table-actions button) svg {
 	width: round(var(--icon-size), 2px);
 	height: round(var(--icon-size), 2px);
 }
