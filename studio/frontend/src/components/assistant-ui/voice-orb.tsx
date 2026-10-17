@@ -201,8 +201,11 @@ function useBlobClip(
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    // The body is drawn bigger than the sphere so the spectrum has room; with no
+    // voice to show it is clipped back to the sphere's own size.
+    const plain = `circle(${ORB_R}px at 50% 50%)`;
     if (!side || !active) {
-      el.style.clipPath = "";
+      el.style.clipPath = plain;
       return;
     }
     const raw = new Float32Array(SPECTRUM_BANDS);
@@ -228,7 +231,7 @@ function useBlobClip(
     raf = requestAnimationFrame(tick);
     return () => {
       cancelAnimationFrame(raf);
-      el.style.clipPath = "";
+      el.style.clipPath = plain;
     };
   }, [ref, side, active]);
 }
@@ -645,6 +648,7 @@ export const VoiceOrb: FC = () => {
               width: ORB_BOX,
               height: ORB_BOX,
               borderRadius: "50%",
+              clipPath: `circle(${ORB_R}px at 50% 50%)`,
               // No state yet falls back to the resting tones, not to listening's
               // green: a green orb with no loop behind it reads as live.
               background: cfg?.gradient ?? ORB_IDLE_GRADIENT,
