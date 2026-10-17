@@ -327,6 +327,49 @@ async def save_stream(
         tmp.unlink(missing_ok = True)
 
 
+def save_from_media(
+    src: Path,
+    name: Optional[str],
+    start_s: float = 0.0,
+    end_s: Optional[float] = None,
+) -> tuple[dict[str, Any], bool]:
+    """Register the audio track of a media file (a gallery video), cut to ``[start_s, end_s)``,
+    as an input; ``(record, created)``. The same cut again returns the existing record."""
+    directory = inputs_dir()
+    full = directory / f".{uuid.uuid4().hex}.upload.tmp"
+    cut = directory / f".{uuid.uuid4().hex}.upload.tmp"
+    try:
+        try:
+            info = transcode(src, full)
+        except AudioInputError as exc:
+            if exc.status == 400 and "no audio" in exc.detail:
+                raise AudioInputError(400, "This video has no audio track.") from None
+            raise
+        rate = info["sample_rate"]
+        with wave.open(str(full), "rb") as reader:
+            total = reader.getnframes()
+            first = int(start_s * rate)
+            if first >= total:
+                raise AudioInputError(
+                    400,
+                    f"start_s is past the end of the audio ({total / rate:.2f} s); "
+                    "Unsloth Studio can only cut inside the track.",
+                )
+            last = total if end_s is None else min(total, max(first + 1, int(end_s * rate)))
+            reader.setpos(first)
+            data = reader.readframes(last - first)
+            with wave.open(str(cut), "wb") as writer:
+                writer.setparams(reader.getparams())
+                writer.writeframes(data)
+        payload = cut.read_bytes()
+        return _finish_upload(
+            directory, cut, hashlib.sha256(payload).hexdigest(), _clean_name(name), len(payload)
+        )
+    finally:
+        full.unlink(missing_ok = True)
+        cut.unlink(missing_ok = True)
+
+
 def _find_by_sha(directory: Path, sha: str) -> Optional[tuple[str, dict[str, Any]]]:
     now = _now()
     for sidecar in directory.glob("*.json"):

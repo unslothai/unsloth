@@ -50986,6 +50986,53 @@ async def get_gallery_audio_file(
     )
 
 
+@router.get("/audio/gallery/{audio_id}/signed-url")
+async def get_gallery_audio_signed_url(
+    audio_id: str,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """A key-free link to one clip (bearer-gated to mint, HMAC to use), on the mount called."""
+    from auth.authentication import request_admitted_without_credential
+
+    if request_admitted_without_credential(request):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Audio links can only be created from the Unsloth UI or with an API key.",
+        )
+    from core.inference import audio_gallery
+
+    if await asyncio.to_thread(audio_gallery.owned_audio_path, audio_id) is None:
+        raise HTTPException(status_code = 404, detail = "Audio not found.")
+    token = _sign_audio_id(audio_id)
+    return {
+        "url": _v1_url(
+            request, f"/api/inference/audio/gallery/{audio_id}/file-signed?token={token}"
+        )
+    }
+
+
+@router.get("/audio/gallery/{audio_id}/file-signed")
+async def get_gallery_audio_file_signed(audio_id: str, token: str = Query(...)):
+    """Serve one clip gated by the HMAC token instead of the bearer. No auth dependency, so the
+    token's account is bound with run_as: without it the owner's gallery would resolve."""
+    from core.inference import audio_gallery
+
+    account = media_link_account(_verify_audio_link_token(token), audio_id)
+    if account is None:
+        raise HTTPException(status_code = 401, detail = "Invalid or expired audio link.")
+    path = await asyncio.to_thread(run_as, account, audio_gallery.owned_audio_path, audio_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Audio not found.")
+    from fastapi.responses import FileResponse
+
+    return FileResponse(
+        path,
+        media_type = "audio/wav",
+        headers = {"Cache-Control": "private, max-age=31536000, immutable"},
+    )
+
+
 @studio_router.get("/audio/gallery/{audio_id}/source/file")
 async def get_gallery_audio_source_file(
     audio_id: str, current_subject: str = Depends(get_current_subject)
@@ -51607,6 +51654,38 @@ def _verify_image_link_token(token: str) -> Optional[str]:
     return image_id
 
 
+# Audio gallery links for clients without the bearer (MCP hands them to agents): own secret, so a
+# token minted for one media type never serves another. TTL is read at call time.
+_AUDIO_LINK_TTL = 3600
+_AUDIO_LINK_SECRET = _secrets.token_bytes(32)
+
+
+def _sign_audio_id(audio_id: str) -> str:
+    exp = int(time.time()) + _AUDIO_LINK_TTL
+    payload = f"{media_link_target(audio_id)}.{exp}"
+    sig = _hmac.new(_AUDIO_LINK_SECRET, payload.encode(), _hashlib.sha256).hexdigest()
+    return f"{payload}.{sig}"
+
+
+def _verify_audio_link_token(token: str) -> Optional[str]:
+    """The link target a valid, unexpired audio token names, else None."""
+    try:
+        target, exp_s, sig = token.rsplit(".", 2)
+    except ValueError:
+        return None
+    expected = _hmac.new(
+        _AUDIO_LINK_SECRET, f"{target}.{exp_s}".encode(), _hashlib.sha256
+    ).hexdigest()
+    if not _hmac.compare_digest(sig, expected):
+        return None
+    try:
+        if int(exp_s) < int(time.time()):
+            return None
+    except ValueError:
+        return None
+    return target
+
+
 def _absolute_image_url(request: Request, image_id: str) -> str:
     """The absolute, directly fetchable link for one gallery image, on the request's own
     scheme+host. Signed rather than bearer-gated (see above), so a standard image client can
@@ -51636,6 +51715,29 @@ async def get_gallery_image_file_signed(image_id: str, token: str = Query(...)):
         media_type = "image/png",
         headers = {"Cache-Control": "private, max-age=31536000, immutable"},
     )
+
+
+@studio_router.get("/images/gallery/{image_id}/signed-url")
+async def get_gallery_image_signed_url(
+    image_id: str,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """A key-free link to one gallery PNG (bearer-gated to mint, HMAC to use), relative like the
+    video one so it works behind any proxy."""
+    from auth.authentication import request_admitted_without_credential
+
+    if request_admitted_without_credential(request):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Image links can only be created from the Unsloth UI or with an API key.",
+        )
+    from core.inference import image_gallery
+
+    if await asyncio.to_thread(image_gallery.owned_image_path, image_id) is None:
+        raise HTTPException(status_code = 404, detail = "Image not found.")
+    token = _sign_image_id(image_id)
+    return {"url": f"/api/inference/images/gallery/{image_id}/file-signed?token={token}"}
 
 
 @router.post(
