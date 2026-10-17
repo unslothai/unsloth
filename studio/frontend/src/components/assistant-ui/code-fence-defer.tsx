@@ -6,6 +6,7 @@
 import type { HighlightResult } from "@streamdown/code";
 import {
   memo,
+  type CSSProperties,
   type RefObject,
   startTransition,
   useEffect,
@@ -19,6 +20,7 @@ import { flushSync } from "react-dom";
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { FENCE_HEIGHT_PROPERTY } from "./code-block-containment-mode";
 import { type FenceMode, resolveFenceMode } from "./code-fence-mode";
+import { fenceLineForeground } from "./code-fence-foreground";
 import {
   EMPTY_LINE_WINDOW,
   HYSTERESIS_VIEWPORTS,
@@ -833,30 +835,37 @@ const tokenStyle = (
  * moves far enough for the window to move. A fence growing by a character re-renders its last line
  * and nothing else.
  */
-export const FenceLine = memo(function FenceLine({
+const FenceLine = memo(function FenceLine({
   line,
   windowed,
-  inline = false,
 }: {
   line: TokenLine;
   windowed: boolean;
-  inline?: boolean;
 }) {
-  if (!inline && isBlankLine(line)) {
+  if (isBlankLine(line)) {
     return <span className={LINE_CLASS}>{"\n"}</span>;
   }
   if (!windowed) {
     // One text node for the whole line. Same characters, same block box, same height: the only
     // thing this line has given up is its colour, and it is off screen.
     return (
-      <span className={inline ? "inline" : LINE_CLASS}>
+      <span className={LINE_CLASS}>
         {plainLineText(line)}
       </span>
     );
   }
+  const foreground = fenceLineForeground(line);
   return (
-    <span className={inline ? "inline" : LINE_CLASS}>
+    <span
+      className={foreground ? `${LINE_CLASS} ${TOKEN_CLASS}` : LINE_CLASS}
+      style={
+        foreground
+          ? { "--sdm-c": foreground.light, "--shiki-dark": foreground.dark } as CSSProperties
+          : undefined
+      }
+    >
       {line.map((token, index) => {
+        if (foreground?.inherited[index]) return token.content;
         const { style, hasBackground } = tokenStyle(token);
         return (
           <span
@@ -1494,6 +1503,11 @@ export const FenceBody = memo(function FenceBody({
         <span className="ml-1 font-mono lowercase">{language}</span>
       </div>
       <div
+        data-unsloth-fence-paint={
+          !isIncomplete && !windowing && tokens.length > WINDOW_CAP_LINES
+            ? "true"
+            : undefined
+        }
         data-unsloth-fence-windowed={lineWindow === null || !measured ? undefined : "true"}
         ref={wrapper}
       >

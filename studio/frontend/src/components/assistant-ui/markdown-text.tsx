@@ -96,8 +96,6 @@ import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { markdownBlockFallback } from "./markdown-block-fallback";
 import { createCodePlugin } from "./code-plugin";
 import { CodeHighlightModeContext } from "./code-highlight-context";
-import { spellLines } from "./reasoning-code-colour";
-import { useThinkingCodeColour } from "./use-thinking-code-colour";
 import { withMathBlockMarker } from "./math-block-marker";
 import {
   MarkdownBlockBoundary,
@@ -769,8 +767,7 @@ function StreamdownBlockContent(props: BlockProps) {
   const messageHasRenderableRenderHtmlTool = useContext(
     RenderHtmlToolPresenceContext,
   );
-  const highlightMode = useContext(CodeHighlightModeContext);
-  const highlightCode = highlightMode === "all";
+  const highlightCode = useContext(CodeHighlightModeContext) === "all";
   // ONE walk, both answers. `findMermaidFence` splits the block and scans every line, and asking
   // the two questions separately walked it twice on every render of every block. Measured on a
   // 3,000 line fence: 0.118 ms per walk, so the redundant one cost 0.092 ms per render, about
@@ -859,17 +856,16 @@ function StreamdownBlockContent(props: BlockProps) {
 
     return (
       <>
-        {highlightCode || highlightMode === "settled" ? (
+        {highlightCode ? (
           <FenceBlock
-            // A closed fence in a streaming trace is settled: worker route, not the main thread.
-            isIncomplete={highlightCode ? props.isIncomplete : false}
+            isIncomplete={props.isIncomplete}
             language={codeFence.language}
             source={codeFence.source}
           />
         ) : (
           <PlainFenceBlock
             actions
-            isIncomplete={props.isIncomplete}
+            isIncomplete={false}
             language={codeFence.language}
             source={codeFence.source}
           />
@@ -912,9 +908,8 @@ function StreamdownBlockContent(props: BlockProps) {
         source={settledFence.text}
       />
     ) : (
-      <LiveThinkingFence
+      <PlainThinkingFence
         language={settledFence.language}
-        settled
         source={settledFence.text}
       />
     );
@@ -929,7 +924,7 @@ function StreamdownBlockContent(props: BlockProps) {
           source={openFence.text}
         />
       ) : (
-        <LiveThinkingFence
+        <PlainThinkingFence
           language={openFence.language}
           source={openFence.text}
         />
@@ -1162,38 +1157,17 @@ function PlainFenceBlock({
   );
 }
 
-function LiveThinkingFence({
+function PlainThinkingFence({
   language,
-  settled = false,
   source,
 }: {
   language: string | null;
-  settled?: boolean;
   source: string;
 }) {
   const languageToken = language?.trim().split(/\s+/)[0] || null;
-  const host = useRef<HTMLDivElement | null>(null);
-  const colour = useThinkingCodeColour(host, source, languageToken, settled);
-  const result = useMemo(
-    () =>
-      colour === null
-        ? null
-        : spellLines(colour, trimTrailingNewlines(source).split("\n")),
-    [colour, source],
-  );
   return (
-    <div className="relative isolate" ref={host}>
-      {result === null ? (
-        <PlainFenceShell language={languageToken} source={source} />
-      ) : (
-        <FenceBody
-          isIncomplete={!settled}
-          language={languageToken}
-          result={result}
-          source={source}
-          windowing={fenceMode() === "window"}
-        />
-      )}
+    <div className="relative isolate">
+      <PlainFenceShell language={languageToken} source={source} />
     </div>
   );
 }

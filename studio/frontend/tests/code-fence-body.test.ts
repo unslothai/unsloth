@@ -3,10 +3,16 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
+import * as React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import ts from "typescript";
 
 import {
   isBlankLine,
+  lineRendered,
   plainLineText,
+  WINDOW_CAP_LINES,
 } from "../src/components/assistant-ui/code-fence-window.ts";
 
 import { readSrc } from "./helpers/kit.ts";
@@ -49,7 +55,7 @@ test("a blank line is one line tall, not nothing", () => {
   assert.equal(isBlankLine([{ content: " " }]), false);
   assert.equal(isBlankLine([{ content: "" }, { content: "" }]), false);
   assert.ok(
-    /if \(!inline && isBlankLine\(line\)\) \{\s*return <span className=\{LINE_CLASS\}>\{"\\n"\}<\/span>;/
+    /if \(isBlankLine\(line\)\) \{\s*return <span className=\{LINE_CLASS\}>\{"\\n"\}<\/span>;/
       .test(DEFER),
     "a blank line must render the newline streamdown renders for it",
   );
@@ -102,20 +108,19 @@ test("a streaming open fence is highlighted rather than shown plain", () => {
   );
 });
 
-test("a fence in the thinking box is coloured off the main thread, while it grows only on screen", () => {
+test("thinking fences stay plain while answers retain highlighting", () => {
   assert.match(readSrc("components/assistant-ui/code-highlight-context.ts"), /export const CodeHighlightModeContext = createContext<CodeHighlightMode>\("all"\);/);
-  assert.match(MARKDOWN_TEXT, /\{highlightCode \|\| highlightMode === "settled" \? \(\s*<FenceBlock[\s\S]{0,300}isIncomplete=\{highlightCode \? props\.isIncomplete : false\}/, "a closed fence in a trace takes the deferred, worker-routed block, never the growing fence's tokenizer");
-  assert.equal((MARKDOWN_TEXT.match(/\) : \(\s*<PlainFenceBlock/g) ?? []).length, 1, "only the ``` closed fence route keeps a plain twin");
-  assert.match(MARKDOWN_TEXT, /<StreamingFenceBlock\s*language=\{openFence\.language\}\s*source=\{openFence\.text\}\s*\/>\s*\) : \(\s*<LiveThinkingFence/, "a growing thinking fence takes the viewport-gated worker route");
-  const live = MARKDOWN_TEXT.slice(MARKDOWN_TEXT.indexOf("function LiveThinkingFence("), MARKDOWN_TEXT.indexOf("function FenceBlock("));
-  assert.match(live, /useThinkingCodeColour\(host, source, languageToken, settled\)/);
-  assert.match(live, /<FenceBody\s*isIncomplete=\{!settled\}/);
-  assert.equal(/useFenceTokens|code\.highlight|noteStreamingFence/.test(live), false, "no main-thread tokenizer for a growing thinking fence");
-  assert.match(live, /result === null \? \(\s*<PlainFenceShell language=\{languageToken\} source=\{source\} \/>/, "plain until the worker answers");
+  assert.match(MARKDOWN_TEXT, /\{highlightCode \? \(\s*<FenceBlock[\s\S]{0,100}isIncomplete=\{props\.isIncomplete\}/, "completed answer fences retain their highlighted renderer");
+  assert.match(MARKDOWN_TEXT, /\) : \(\s*<PlainFenceBlock\s*actions/, "completed thinking fences retain their plain shell and copy controls");
+  assert.match(MARKDOWN_TEXT, /<StreamingFenceBlock\s*language=\{openFence\.language\}\s*source=\{openFence\.text\}\s*\/>\s*\) : \(\s*<PlainThinkingFence/, "a growing thinking fence stays plain while an answer keeps streaming tokens");
+  const start = MARKDOWN_TEXT.indexOf("function PlainThinkingFence(");
+  const thinking = MARKDOWN_TEXT.slice(start, MARKDOWN_TEXT.indexOf("\n}\n", start));
+  assert.equal(/useFenceTokens|useThinkingCodeColour|requestFullHighlight|code\.highlight|noteStreamingFence|FenceBody/.test(thinking), false, "plain thinking never queues or renders highlight tokens");
+  assert.match(thinking, /<PlainFenceShell language=\{languageToken\} source=\{source\} \/>/);
   assert.match(MARKDOWN_TEXT, /const STREAMDOWN_PLAIN_CODE_PLUGINS = \{ math, mermaid \}/);
   assert.match(MARKDOWN_TEXT, /plugins=\{\s*highlightCode \? STREAMDOWN_PLUGINS : STREAMDOWN_PLAIN_CODE_PLUGINS\s*\}/, "a fence nested in a list or a quote is plain too");
-  const start = MARKDOWN_TEXT.indexOf("function PlainFenceBlock(");
-  const plain = MARKDOWN_TEXT.slice(start, MARKDOWN_TEXT.indexOf("\n}\n", start));
+  const plainStart = MARKDOWN_TEXT.indexOf("function PlainFenceBlock(");
+  const plain = MARKDOWN_TEXT.slice(plainStart, MARKDOWN_TEXT.indexOf("\n}\n", plainStart));
   assert.equal(/useFenceTokens|requestFullHighlight|code\.highlight|noteStreamingFence/.test(plain), false);
   assert.match(plain, /<PlainFenceShell language=\{languageToken\} source=\{source\} \/>/);
   assert.match(DEFER, /<code>\{plain \? shellLines\(source\) : shellBody\(source\)\}<\/code>/);
@@ -140,11 +145,11 @@ test("a completed fence on a non-``` form keeps the bounded renderer", () => {
     ),
     "and it must render the per-line body rather than Block, or the spans remount",
   );
-  // In a thinking box the same forms, and a fence left open by Stop, keep their colour once settled.
+  // In a thinking box the same forms, and a fence left open by Stop, stay plain.
   assert.match(
     branch,
-    /\) : \(\s*<LiveThinkingFence\s*language=\{settledFence\.language\}\s*settled\s*source=\{settledFence\.text\}/,
-    "a settled tilde, four-backtick, indented or stopped fence in a trace must not drop to the plain block",
+    /\) : \(\s*<PlainThinkingFence\s*language=\{settledFence\.language\}\s*source=\{settledFence\.text\}/,
+    "a settled tilde, four-backtick, indented or stopped fence in a trace must stay plain",
   );
     // Not `FenceBlock`: that branch also owns the reach latch, the action bar and the mode switch.
   assert.ok(
@@ -339,3 +344,67 @@ test("no positional pseudo-class sits above .relative or button in a selector", 
   );
 });
 
+test("paint containment is limited to large completed full-token bodies", () => {
+  const parsed = ts.createSourceFile("code-fence-defer.tsx", DEFER, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const declaration = parsed.statements
+    .filter(ts.isVariableStatement)
+    .flatMap((statement) => [...statement.declarationList.declarations])
+    .find((node) => ts.isIdentifier(node.name) && node.name.text === "FenceBody");
+  assert.ok(declaration);
+  const { outputText } = ts.transpileModule(
+    `const ${declaration.getText(parsed)}; exports.render = FenceBody;`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React } },
+  );
+  type Token = { content: string };
+  type BodyProps = {
+    isIncomplete: boolean | undefined;
+    language: string | null;
+    result: { tokens: Token[][] } | null;
+    source: string;
+    windowing: boolean;
+  };
+  const context = {
+    exports: {} as { render: React.ComponentType<BodyProps> },
+    React,
+    memo: React.memo,
+    useMemo: React.useMemo,
+    useRef: React.useRef,
+    useLineWindow: () => ({ window: null, pins: null, measured: false }),
+    lineRendered,
+    WINDOW_CAP_LINES,
+    joinClasses: (...parts: (string | null)[]) => parts.filter(Boolean).join(" "),
+    CODE_CLASS: "",
+    PRE_CLASS: "",
+    FenceShell: ({ source }: { source: string }) => React.createElement("pre", null, source),
+    FenceLine: ({ line, windowed }: { line: Token[]; windowed: boolean }) =>
+      React.createElement("span", { "data-highlighted": String(windowed) }, plainLineText(line)),
+  };
+  runInNewContext(outputText, context);
+  const count = WINDOW_CAP_LINES + 1;
+  for (const [lines, incomplete, windowing, missing, contained] of [
+    [WINDOW_CAP_LINES, false, false, false, false],
+    [count, false, false, false, true],
+    [count, undefined, false, false, true],
+    [count, true, false, false, false],
+    [count, false, true, false, false],
+    [count, false, false, true, false],
+    [0, false, false, false, false],
+  ] as const) {
+    const tokens = Array.from({ length: lines }, (_, i) => [{ content: `line_${i};` }]);
+    const html = renderToStaticMarkup(React.createElement(context.exports.render, {
+      isIncomplete: incomplete,
+      language: "text",
+      result: missing ? null : { tokens },
+      source: "fallback",
+      windowing,
+    }));
+    assert.equal(html.includes('data-unsloth-fence-paint="true"'), contained,
+      JSON.stringify({ lines, incomplete, windowing, missing }));
+    if (!missing && lines > 0) {
+      assert.equal((html.match(/data-highlighted="true"/g) ?? []).length, lines);
+      for (const [token] of tokens) assert.ok(html.includes(`>${token.content}</span>`));
+    } else {
+      assert.match(html, /<pre>fallback<\/pre>/);
+    }
+  }
+});

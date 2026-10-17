@@ -20,9 +20,6 @@ import {
   SearchImagesEnabledContext,
 } from "./markdown-text";
 import { CodeHighlightModeContext } from "./code-highlight-context";
-import { FenceLine } from "./code-fence-defer";
-import { clipLineTokens, type TokenLine } from "./reasoning-code-colour";
-import { useThinkingCodeColour } from "./use-thinking-code-colour";
 import {
   cachedReasoningTranscriptIndex,
   resolveReasoningAnchor,
@@ -256,37 +253,14 @@ const codeRowText = (
   return nodes;
 };
 
-const colouredRow = (
-  fragment: ReasoningFragment,
-  leading: boolean,
-  tokens: readonly TokenLine[],
-): React.ReactNode[] => {
-  const nodes: React.ReactNode[] = [];
-  for (const [at, { line, column, text }] of fragment.code!.lines.entries()) {
-    if (column === 0 && line > 0 && !(leading && at === 0)) nodes.push("\n");
-    if (text === "") continue;
-    const clipped = clipLineTokens(tokens[line], column, text);
-    nodes.push(
-      clipped === null ? (
-        text
-      ) : (
-        <FenceLine key={`${line}:${column}`} line={clipped} windowed inline />
-      ),
-    );
-  }
-  return nodes;
-};
-
 const CodeRow = memo(function CodeRow({
   index,
   fragment,
   leading,
-  tokens,
 }: {
   index: number;
   fragment: ReasoningFragment;
   leading: boolean;
-  tokens: readonly TokenLine[] | null;
 }) {
   return (
     <span
@@ -294,9 +268,7 @@ const CodeRow = memo(function CodeRow({
       data-reasoning-fragment={fragment.key}
       data-reasoning-code-row=""
     >
-      {tokens === null
-        ? codeRowText(fragment, leading)
-        : colouredRow(fragment, leading, tokens)}
+      {codeRowText(fragment, leading)}
     </span>
   );
 });
@@ -334,20 +306,11 @@ function CodeGroup({
   const code = fragments[indices[0]].code!;
   const first = fragments[indices[0]];
   const last = fragments[indices[indices.length - 1]];
-  const surface = useRef<HTMLDivElement>(null);
-  const colour = useThinkingCodeColour(
-    surface,
-    code.source,
-    code.language,
-    // A trace that stopped inside a fence never closes it; it is still finished.
-    !code.incomplete || !streaming,
-  );
   const breaksAfter =
     !last.last &&
     fragments[indices[indices.length - 1] + 1]?.code?.lines[0]?.column === 0;
   return (
     <div
-      ref={surface}
       data-slot="reasoning-code-fragment"
       data-language={code.language ?? undefined}
       className={cn(
@@ -376,7 +339,6 @@ function CodeGroup({
               index={index}
               fragment={fragments[index]}
               leading={at === 0}
-              tokens={colour?.tokens ?? null}
             />
           ))}
           {breaksAfter && "\n"}
@@ -1226,7 +1188,7 @@ export function ReasoningTranscript({
 
   return (
     <SearchImagesEnabledContext.Provider value={false}>
-      <CodeHighlightModeContext.Provider value="settled">
+      <CodeHighlightModeContext.Provider value="plain">
         <div
           ref={root}
           data-slot="reasoning-transcript"

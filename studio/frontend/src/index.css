@@ -4833,6 +4833,14 @@ html[data-chat-font] .aui-root {
 		}
 	}
 
+	html[data-code-block-containment="on"] .aui-thread-root [data-unsloth-fence-paint] {
+		contain: paint;
+	}
+
+	.aui-thread-root [data-unsloth-fence-paint] pre {
+		width: max-content;
+	}
+
 	html[data-code-block-containment="on"] .aui-thread-root [data-streamdown="code-block"]:not([data-incomplete]) > [data-unsloth-fence-windowed] {
 		content-visibility: auto;
 		contain-intrinsic-size: auto var(--unsloth-fence-height);
@@ -4846,6 +4854,14 @@ html[data-chat-font] .aui-root {
 	}
 
 	@media print {
+		.aui-thread-root [data-unsloth-fence-paint] {
+			contain: none !important;
+		}
+
+		.aui-thread-root [data-unsloth-fence-paint] pre {
+			width: auto;
+		}
+
 		.aui-thread-root [data-unsloth-fence-windowed] {
 			content-visibility: visible !important;
 			contain-intrinsic-size: none !important;
