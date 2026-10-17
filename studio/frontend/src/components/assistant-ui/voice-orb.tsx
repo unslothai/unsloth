@@ -3,7 +3,10 @@
 
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { voiceOutputLevel } from "@/features/chat/hooks/use-tts-player";
-import { useVoiceDecisions } from "@/features/chat/voice/voice-decisions";
+import {
+  useVoiceDecisions,
+  type VoiceDecisions,
+} from "@/features/chat/voice/voice-decisions";
 import { cn } from "@/lib/utils";
 import {
   AudioLinesIcon,
@@ -250,59 +253,103 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
   return <MicIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />;
 };
 
-// What the three turn models last decided, one pill each. Quiet by design: it
-// reads as a status line, not a dashboard, and empties when the loop stops.
-const VoiceDecisionStrip: FC = () => {
+// What the three turn models last decided, drawn as three arcs around the orb:
+// turn judge on the left (how sure the turn is over), filler across the top
+// (lit while a line was chosen), mid-think on the right (how sure of its call).
+// Faint tracks until a model has spoken; a filled arc never moves on its own.
+const RING = 188;
+const RING_R = 86;
+const ARC_DEG = 96;
+const ARCS: Array<{ key: keyof VoiceDecisions; start: number; color: string }> = [
+  { key: "turn", start: 132, color: "#34d399" },
+  { key: "filler", start: 240, color: "#60a5fa" },
+  { key: "interject", start: 348, color: "#fbbf24" },
+];
+
+const VoiceDecisionRing: FC = () => {
   const d = useVoiceDecisions();
-  const pills: Array<{ key: string; label: string; value: string; p: number | null }> = [];
-  if (d.turn) {
-    pills.push({
-      key: "turn",
-      label: d.turn.sent ? "sent" : "waiting",
-      value: `${Math.round(d.turn.p * 100)}% done`,
-      p: d.turn.p,
-    });
-  }
-  if (d.filler) {
-    pills.push({
-      key: "filler",
-      label: "filler",
-      value: d.filler.phrase ? `"${d.filler.phrase}"` : "quiet",
-      p: null,
-    });
-  }
-  if (d.interject) {
-    pills.push({
-      key: "interject",
-      label: "mid-think",
-      value: `${d.interject.action} ${Math.round(d.interject.confidence * 100)}%`,
-      p: d.interject.confidence,
-    });
-  }
+  const circ = 2 * Math.PI * RING_R;
+  const arcLen = (circ * ARC_DEG) / 360;
+  const fill = (key: keyof VoiceDecisions): number => {
+    if (key === "turn") return d.turn ? d.turn.p : 0;
+    if (key === "filler") return d.filler ? (d.filler.phrase ? 1 : 0.08) : 0;
+    return d.interject ? d.interject.confidence : 0;
+  };
   return (
-    <div className="flex h-7 items-center gap-2">
-      <AnimatePresence>
-        {pills.map((pill) => (
-          <motion.div
-            key={pill.key + pill.value}
+    <svg
+      className="pointer-events-none absolute inset-0"
+      width={RING}
+      height={RING}
+      viewBox={`0 0 ${RING} ${RING}`}
+      aria-hidden
+    >
+      {ARCS.map((arc) => {
+        const rotate = `rotate(${arc.start - 90} ${RING / 2} ${RING / 2})`;
+        const v = fill(arc.key);
+        return (
+          <g key={arc.key} transform={rotate}>
+            <circle
+              cx={RING / 2}
+              cy={RING / 2}
+              r={RING_R}
+              fill="none"
+              stroke={arc.color}
+              strokeOpacity={0.16}
+              strokeWidth={3}
+              strokeLinecap="round"
+              strokeDasharray={`${arcLen} ${circ}`}
+            />
+            <circle
+              cx={RING / 2}
+              cy={RING / 2}
+              r={RING_R}
+              fill="none"
+              stroke={arc.color}
+              strokeOpacity={v > 0 ? 0.9 : 0}
+              strokeWidth={3}
+              strokeLinecap="round"
+              strokeDasharray={`${Math.max(0, arcLen * v)} ${circ}`}
+              style={{ transition: "stroke-dasharray 320ms ease-out, stroke-opacity 220ms ease-out" }}
+            />
+          </g>
+        );
+      })}
+    </svg>
+  );
+};
+
+// One line under the state caption naming the newest call, so the arcs never
+// need a legend. Empties when the loop stops.
+const VoiceDecisionCaption: FC = () => {
+  const d = useVoiceDecisions();
+  const latest = [
+    d.turn && {
+      at: d.turn.at,
+      text: `${d.turn.sent ? "sent" : "waiting"} · ${Math.round(d.turn.p * 100)}% done`,
+    },
+    d.filler && { at: d.filler.at, text: d.filler.phrase ? `filler · "${d.filler.phrase}"` : "filler · quiet" },
+    d.interject && {
+      at: d.interject.at,
+      text: `mid-think · ${d.interject.action} ${Math.round(d.interject.confidence * 100)}%`,
+    },
+  ]
+    .filter((x): x is { at: number; text: string } => Boolean(x))
+    .sort((a, b) => b.at - a.at)[0];
+  return (
+    <div className="h-5">
+      <AnimatePresence mode="wait">
+        {latest && (
+          <motion.span
+            key={latest.text}
             initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -4 }}
             transition={{ duration: 0.2 }}
-            className="flex items-center gap-1.5 rounded-full border border-border/60 bg-background/70 dark:bg-background/55 px-2.5 py-1 text-ui-12 text-foreground/60"
+            className="block max-w-[calc(22rem*var(--ui-space-scale,1))] truncate text-ui-12 text-foreground/45"
           >
-            <span className="uppercase tracking-[0.12em] text-foreground/40">{pill.label}</span>
-            <span className="max-w-[calc(14rem*var(--ui-space-scale,1))] truncate text-foreground/75">{pill.value}</span>
-            {pill.p !== null && (
-              <span className="h-1 w-10 overflow-hidden rounded-full bg-muted">
-                <span
-                  className="block h-full rounded-full bg-muted-foreground"
-                  style={{ width: `${Math.round(pill.p * 100)}%` }}
-                />
-              </span>
-            )}
-          </motion.div>
-        ))}
+            {latest.text}
+          </motion.span>
+        )}
       </AnimatePresence>
     </div>
   );
@@ -375,6 +422,8 @@ export const VoiceOrb: FC = () => {
             deboss ("door hole") carved into the surface. It lives INSIDE the ball,
             so it grows and shrinks with the sphere -- reading as part of the
             surface rather than floating on top. */}
+        <div className="relative grid place-items-center" style={{ width: 188, height: 188 }}>
+        {showOverlay && <VoiceDecisionRing />}
         <div
           // Transition the two things that change between states, not `all`:
           // that was also animating transform, which fights the breathe keyframe
@@ -417,6 +466,8 @@ export const VoiceOrb: FC = () => {
           </AnimatePresence>
         </div>
 
+        </div>
+
         {/* Live caption: names the current state so the color never needs a
             legend. Studio heading font (Hellix / Space Grotesk) to match chrome. */}
         <div className="h-5">
@@ -436,7 +487,7 @@ export const VoiceOrb: FC = () => {
             )}
           </AnimatePresence>
         </div>
-        {showOverlay && <VoiceDecisionStrip />}
+        {showOverlay && <VoiceDecisionCaption />}
       </div>
     </>
   );
