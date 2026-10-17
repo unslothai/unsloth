@@ -2254,6 +2254,34 @@ def test_fetch_url_raw_named_proxy_fetch_outlives_a_stalled_resolver(monkeypatch
     assert seen == ["http://stall.example.com/page"]
 
 
+def test_fetch_url_raw_named_proxy_fetch_keeps_a_late_private_answer_refused(monkeypatch):
+    import core.inference.tools as tools_mod
+
+    blocked = "Blocked: refusing to fetch non-public address 10.0.0.1."
+
+    def late_private(host, port, deadline, cancel_event):
+        time.sleep(max(0.0, deadline - time.monotonic()) + 0.02)
+        return False, blocked, []
+
+    requested = []
+    monkeypatch.setattr(tools_mod, "_resolve_with_budget", late_private)
+    monkeypatch.setattr(tools_mod, "_explicit_proxy_applies", lambda scheme, netloc: True)
+    monkeypatch.setattr(
+        tools_mod.urllib.request,
+        "build_opener",
+        lambda *handlers: type(
+            "Opener", (), {"open": lambda self, req, **kw: requested.append(req)}
+        )(),
+    )
+    err, _, _ = tools_mod._fetch_url_raw(
+        "http://example.com/page",
+        deadline = time.monotonic() + 2,
+        proxy_hostname = True,
+    )
+    assert err == blocked
+    assert requested == []
+
+
 @pytest.mark.parametrize("host", ["intranet", "foo.intranet", "printer.local", "nas.lan"])
 def test_fetch_url_raw_named_proxy_fetch_refuses_local_names(monkeypatch, host):
     import socket

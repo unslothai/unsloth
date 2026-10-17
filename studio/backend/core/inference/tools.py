@@ -16748,7 +16748,7 @@ def _fetch_url_raw(
             if (
                 not ok
                 and named
-                and time.monotonic() >= lookup_deadline
+                and reason == _fetch_budget_exceeded(lookup_deadline, None)
                 and _fetch_budget_exceeded(deadline, cancel_event) is None
             ):
                 # The lookup used up its share, not the fetch: leave the name to the proxy.
