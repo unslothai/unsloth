@@ -40,10 +40,21 @@ STATUS = StudioStatus(
 )
 
 
-def _row(id, kind, size_gb, fits_now):
+def _row(
+    id,
+    kind,
+    size_gb,
+    fits_now,
+    pages = None,
+):
     # Catalog fields come from list_models(source="catalog"); duck-typed so the test does not pin ModelEntry.
     return SimpleNamespace(
-        id = id, kind = kind, loaded = False, size_bytes = int(size_gb * 1e9), fits_now = fits_now
+        id = id,
+        kind = kind,
+        loaded = False,
+        size_bytes = int(size_gb * 1e9),
+        fits_now = fits_now,
+        audio_workflows = pages,
     )
 
 
@@ -53,8 +64,12 @@ CATALOG = {
         _row("unsloth/LTX-small", "video", 12.0, True),
         _row("unsloth/Wan-mid", "video", 18.5, True),
     ],
-    "audio": [_row("unsloth/ACE-Step", "audio", 8.0, True)],
-    "tts": [_row(f"unsloth/tts-{i}", "tts", 1.0 + i, True) for i in range(7)],
+    "audio": [
+        _row("unsloth/wake-word", "audio", 0.1, True, []),
+        _row("unsloth/ACE-Step", "audio", 8.0, True, ["music"]),
+    ],
+    "tts": [_row(f"unsloth/tts-{i}", "tts", 1.0 + i, True, ["speak"]) for i in range(7)]
+    + [_row("unsloth/voice-clone-only", "tts", 0.5, True, ["clone"])],
 }
 LLMS = [
     ModelEntry(id = "unsloth/Qwen3-0.6B", kind = "llm", loaded = True),
@@ -114,7 +129,9 @@ def test_film_prompt_shows_fitting_models_and_free_gpu(stubbed):
     # Fitting rows only, smallest first, at most five per kind.
     assert "unsloth/Wan-big" not in text
     assert text.index("unsloth/LTX-small (12.0 GB)") < text.index("unsloth/Wan-mid (18.5 GB)")
-    assert "unsloth/ACE-Step (8.0 GB)" in text
+    # Audio rows are only the ones a film can use: music for the bed, speak for the voice-over.
+    assert "- audio (music): unsloth/ACE-Step (8.0 GB)" in text
+    assert "unsloth/wake-word" not in text and "unsloth/voice-clone-only" not in text
     assert "unsloth/tts-4" in text and "unsloth/tts-5" not in text
     assert sorted(stubbed) == [("audio", "catalog"), ("tts", "catalog"), ("video", "catalog")]
 

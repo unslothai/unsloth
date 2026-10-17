@@ -7,7 +7,7 @@
 # annotation is not the ``str`` type itself as a "JSON string", and a postponed annotation is the text "str".
 
 import asyncio
-from typing import Any
+from typing import Any, Optional
 
 from studio_mcp.tools import models, status
 
@@ -15,6 +15,8 @@ MAX_CHARS = 4000
 # What the agent asked for is clipped so the recipe always fits.
 MAX_ASK_CHARS = 800
 CANDIDATES = 5
+# The Audio page a film needs from each audio kind; the catalog also holds detectors and separators.
+FILM_PAGES = {"audio": "music", "tts": "speak"}
 # GpuDevice reports GiB; sizes and fits_now use decimal GB.
 GIB_TO_GB = 1.073741824
 FALLBACK = (
@@ -50,8 +52,17 @@ def _loaded_line(studio: Any) -> str:
     return "Unsloth Studio has loaded: " + ", ".join(loaded) + "."
 
 
-def _catalog_line(kind: str, rows: Any) -> str:
-    fitting = [row for row in rows.models if getattr(row, "fits_now", None) is True]
+def _catalog_line(
+    kind: str,
+    rows: Any,
+    page: Optional[str] = None,
+) -> str:
+    fitting = [
+        row
+        for row in rows.models
+        if getattr(row, "fits_now", None) is True
+        and (page is None or page in (getattr(row, "audio_workflows", None) or []))
+    ]
     fitting.sort(key = lambda row: getattr(row, "size_bytes", None) or 0)
     if not fitting:
         return f"- {kind}: no Unsloth Studio catalog model fits the free GPU memory now; unload a model or try a low_vram row."
@@ -59,7 +70,8 @@ def _catalog_line(kind: str, rows: Any) -> str:
     for row in fitting[:CANDIDATES]:
         size = getattr(row, "size_bytes", None)
         shown.append(f"{row.id} ({_gb(size / 1e9)})" if size else row.id)
-    return f"- {kind}: " + ", ".join(shown)
+    label = f"{kind} ({page})" if page else kind
+    return f"- {label}: " + ", ".join(shown)
 
 
 def _local_line(kind: str, rows: Any) -> str:
@@ -69,7 +81,11 @@ def _local_line(kind: str, rows: Any) -> str:
     return f"- {kind}: " + ", ".join(ids)
 
 
-async def _facts(kinds: tuple[str, ...], local: bool = False) -> str:
+async def _facts(
+    kinds: tuple[str, ...],
+    local: bool = False,
+    pages: Optional[dict[str, str]] = None,
+) -> str:
     """The GPU, loaded models and model candidates as text; never raises, so a prompt renders without HTTP."""
 
     async def read(kind: str) -> Any:
@@ -94,7 +110,8 @@ async def _facts(kinds: tuple[str, ...], local: bool = False) -> str:
         if isinstance(rows, BaseException):
             lines.append(f'- {kind}: unknown; call list_models(kind="{kind}") yourself.')
         else:
-            lines.append(_local_line(kind, rows) if local else _catalog_line(kind, rows))
+            page = (pages or {}).get(kind)
+            lines.append(_local_line(kind, rows) if local else _catalog_line(kind, rows, page))
     return "\n".join(lines)
 
 
@@ -114,7 +131,7 @@ async def make_short_film(idea: str, length_seconds: str = "20") -> str:
         idea: What the film is about.
         length_seconds: The total length to aim for, in seconds.
     """
-    facts = await _facts(("video", "audio", "tts"))
+    facts = await _facts(("video", "audio", "tts"), pages = FILM_PAGES)
     length = length_seconds.strip() or "20"
     return _capped(
         f"Make a short film of about {length} seconds with Unsloth Studio.\n"
