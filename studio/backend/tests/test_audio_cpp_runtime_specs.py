@@ -22,7 +22,11 @@ COMMIT = "0097d365" + "a" * 32
 REPO = "unslothai/audio.cpp"
 
 
-def _model(folder = "Canary-180M-Flash-GGUF", family = "canary_asr", task = "asr") -> AudioCppModel:
+def _model(
+    folder = "Canary-180M-Flash-GGUF",
+    family = "canary_asr",
+    task = "asr",
+) -> AudioCppModel:
     main = RepoFile(f"{folder}/{folder.lower()}-q8_0.gguf", 4)
     variant = AudioCppVariant("Q8_0", (main,), main.path)
     return AudioCppModel(
@@ -39,7 +43,14 @@ def _model(folder = "Canary-180M-Flash-GGUF", family = "canary_asr", task = "asr
     )
 
 
-def _runtime(monkeypatch, root: Path, *, record = None, specs = None, bin_dir = "") -> Path:
+def _runtime(
+    monkeypatch,
+    root: Path,
+    *,
+    record = None,
+    specs = None,
+    bin_dir = "",
+) -> Path:
     """An audiocpp_server under ``root`` with an install record (when given) and a model_specs/ folder beside it."""
     server_dir = root / bin_dir if bin_dir else root
     server_dir.mkdir(parents = True, exist_ok = True)
@@ -133,9 +144,7 @@ def test_the_dictation_download_is_refused_before_it_starts(monkeypatch, tmp_pat
     _runtime(monkeypatch, tmp_path / "rt", record = {"release_tag": "v0.9.1-unsloth.1"})
     _missing(monkeypatch, [("x.gguf", 4)])
     model = _model()
-    monkeypatch.setattr(
-        stt_audiocpp_sidecar, "resolve_audio_cpp_stt_model", lambda *a, **kw: model
-    )
+    monkeypatch.setattr(stt_audiocpp_sidecar, "resolve_audio_cpp_stt_model", lambda *a, **kw: model)
     spawned = []
     monkeypatch.setattr(stt_download_worker, "spawn_download", lambda *a, **kw: spawned.append(a))
     import huggingface_hub
@@ -197,7 +206,11 @@ def managed(monkeypatch, tmp_path):
     root = tmp_path / "audio.cpp"
     root.mkdir()
     (root / ".unsloth-studio-owned").write_text("")
-    for name in ("AUDIOCPP_SERVER_PATH", "UNSLOTH_AUDIO_CPP_PATH", "UNSLOTH_SKIP_AUDIO_CPP_INSTALL"):
+    for name in (
+        "AUDIOCPP_SERVER_PATH",
+        "UNSLOTH_AUDIO_CPP_PATH",
+        "UNSLOTH_SKIP_AUDIO_CPP_INSTALL",
+    ):
         monkeypatch.delenv(name, raising = False)
     monkeypatch.setattr(audio_cpp_server, "managed_audio_cpp_dir", lambda: root)
     record = {"release_tag": "v0.9.2-unsloth.1", "published_repo": REPO, "source_commit": COMMIT}
@@ -243,7 +256,11 @@ def test_backfill_fetches_the_recorded_commit_then_forgets(managed):
 
 def test_backfill_commit_falls_back_to_the_manifest_then_the_version(managed):
     manifest = "b" * 40
-    _write_record(managed, source_commit = None, server_version = "audio.cpp v0.9.1-unsloth.1\ngit: 1234567 2026-10-07\nbuild: 20261007")
+    _write_record(
+        managed,
+        source_commit = None,
+        server_version = "audio.cpp v0.9.1-unsloth.1\ngit: 1234567 2026-10-07\nbuild: 20261007",
+    )
     managed.installer._release_index = lambda repo, tag: {"source_commit": manifest}
     assert audio_cpp_update._backfill_model_specs() is True
     assert managed.fetches[-1][1] == manifest

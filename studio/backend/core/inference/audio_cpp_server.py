@@ -215,7 +215,10 @@ UPDATE_IN_PROGRESS = threading.Event()
 
 
 def stale_runtime_download_problem(
-    model: AudioCppModel, binary: Optional[str] = None, *, hub_cache: Optional[Path] = None
+    model: AudioCppModel,
+    binary: Optional[str] = None,
+    *,
+    hub_cache: Optional[Path] = None,
 ) -> Optional[str]:
     """Why ``model``'s files must not be downloaded for a runtime older than v0.9.2, or None.
 

@@ -18,21 +18,53 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_audio_cpp_models import _fake_runtime, _gguf_bytes, _put, _snapshot, hub  # noqa: E402, F401
 
 
-def _float(name, default, description = "", **kw):
-    return {"name": name, "type": "float", "description": description, "required": False, "default": default, **kw}
+def _float(
+    name,
+    default,
+    description = "",
+    **kw,
+):
+    return {
+        "name": name,
+        "type": "float",
+        "description": description,
+        "required": False,
+        "default": default,
+        **kw,
+    }
 
 
-def _spec(family, *options, strict = False):
+def _spec(
+    family,
+    *options,
+    strict = False,
+):
     spec = {"family": family, "options": {"request": list(options)}}
     return {**spec, "schema_version": 1} if strict else spec
 
 
 # Request options trimmed from model_specs/ at v0.9.1 and v0.9.2.
-_STEPS = {"name": "num_inference_steps", "type": "int", "description": "", "required": False, "min": 1}
+_STEPS = {
+    "name": "num_inference_steps",
+    "type": "int",
+    "description": "",
+    "required": False,
+    "min": 1,
+}
 CHATTERBOX_OLD = _spec("chatterbox", _float("s3gen_cfg_rate", 0.7), {**_STEPS, "default": 10})
 CHATTERBOX_NEW = _spec("chatterbox", _float("flow_guidance_scale", 0.7), {**_STEPS, "default": 10})
-SEED_VC_OLD = _spec("seed_vc", _float("length_adjust", 1.0, "Output duration multiplier.", min = 0.0), {**_STEPS, "default": 30}, strict = True)
-SEED_VC_NEW = _spec("seed_vc", _float("duration_scale", 1.0, "V1 output duration multiplier.", min = 0.0), {**_STEPS, "default": 30}, strict = True)
+SEED_VC_OLD = _spec(
+    "seed_vc",
+    _float("length_adjust", 1.0, "Output duration multiplier.", min = 0.0),
+    {**_STEPS, "default": 30},
+    strict = True,
+)
+SEED_VC_NEW = _spec(
+    "seed_vc",
+    _float("duration_scale", 1.0, "V1 output duration multiplier.", min = 0.0),
+    {**_STEPS, "default": 30},
+    strict = True,
+)
 
 FOLDERS = {
     "chatterbox": ("Chatterbox-GGUF", ("chatterbox-q8_0.gguf",)),
@@ -44,7 +76,15 @@ FOLDERS = {
 }
 
 
-def _resolve(hub, monkeypatch, tmp_path, family, embedded, runtime = None, tag = None):
+def _resolve(
+    hub,
+    monkeypatch,
+    tmp_path,
+    family,
+    embedded,
+    runtime = None,
+    tag = None,
+):
     """``family``'s umbrella folder with ``embedded`` in its GGUF, ``runtime`` as its model_specs/
     entry, and an install record for ``tag`` (None: a custom build)."""
     folder, files = FOLDERS[family]
@@ -126,9 +166,17 @@ def test_ace_step_takes_the_canonical_planner_guidance_as_input(hub, monkeypatch
     assert out["lm_cfg_scale"] == 3.0 and "lm_guidance_scale" not in out
 
 
-def test_a_spec_first_runtime_takes_its_own_spec_over_an_old_strict_gguf(hub, monkeypatch, tmp_path):
+def test_a_spec_first_runtime_takes_its_own_spec_over_an_old_strict_gguf(
+    hub, monkeypatch, tmp_path
+):
     model = _resolve(
-        hub, monkeypatch, tmp_path, "seed_vc", SEED_VC_OLD, runtime = SEED_VC_NEW, tag = "v0.9.2-unsloth.1"
+        hub,
+        monkeypatch,
+        tmp_path,
+        "seed_vc",
+        SEED_VC_OLD,
+        runtime = SEED_VC_NEW,
+        tag = "v0.9.2-unsloth.1",
     )
     assert "length_adjust" in _names(model) and "duration_scale" not in _names(model)
     assert "duration_scale" in model.request_keys and "length_adjust" not in model.request_keys
@@ -138,7 +186,13 @@ def test_a_spec_first_runtime_takes_its_own_spec_over_an_old_strict_gguf(hub, mo
 
 def test_an_older_runtime_ignores_a_backfilled_model_specs(hub, monkeypatch, tmp_path):
     model = _resolve(
-        hub, monkeypatch, tmp_path, "seed_vc", SEED_VC_OLD, runtime = SEED_VC_NEW, tag = "v0.9.1-unsloth.1"
+        hub,
+        monkeypatch,
+        tmp_path,
+        "seed_vc",
+        SEED_VC_OLD,
+        runtime = SEED_VC_NEW,
+        tag = "v0.9.1-unsloth.1",
     )
     assert model.request_keys == frozenset({"length_adjust", "num_inference_steps"})
     assert [o["description"] for o in model.options if o["name"] == "length_adjust"] == [

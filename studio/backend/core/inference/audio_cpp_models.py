@@ -2230,7 +2230,9 @@ def filled_options(model: "AudioCppModel", workflow: str, values: Optional[dict]
     return _wire_option_names(out, pairs, model.request_keys)
 
 
-def _legacy_option_names(values: Optional[dict], pairs: tuple[tuple[str, str], ...]) -> Optional[dict]:
+def _legacy_option_names(
+    values: Optional[dict], pairs: tuple[tuple[str, str], ...]
+) -> Optional[dict]:
     """``values`` with renamed options under their legacy name; a legacy value given too wins."""
     if not pairs or not isinstance(values, dict):
         return values
@@ -2641,7 +2643,9 @@ def _raw_request_options(spec: Optional[dict], embedded: Optional[dict]) -> list
 
 
 def _request_keys(
-    spec: Optional[dict], embedded: Optional[dict], runtime_first: bool = False
+    spec: Optional[dict],
+    embedded: Optional[dict],
+    runtime_first: bool = False,
 ) -> Optional[frozenset[str]]:
     # v0.9.1 checks the GGUF's embedded v1 contract first; v0.9.2 checks model_specs/ and its
     # built-in specs first (model_spec/package.cpp).

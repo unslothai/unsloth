@@ -2041,11 +2041,17 @@ _SPEC_COMMIT = "0097d365a00b52a6991ad7618f0a04e8d2935e47"
 
 def _git_sha(data):
     import hashlib
-
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
-def _spec_repo(monkeypatch, files = None, *, tree = None, fail = None, bad_sha = None):
+def _spec_repo(
+    monkeypatch,
+    files = None,
+    *,
+    tree = None,
+    fail = None,
+    bad_sha = None,
+):
     """Serve ``files`` ({name: bytes}) through the tree/blob seams; returns the calls made."""
     if files is None:
         files = {
@@ -2078,13 +2084,22 @@ def _spec_repo(monkeypatch, files = None, *, tree = None, fail = None, bad_sha =
     return calls
 
 
-def _specs_release(monkeypatch, tmp_path, server_path = "bin/audiocpp_server.exe"):
+def _specs_release(
+    monkeypatch,
+    tmp_path,
+    server_path = "bin/audiocpp_server.exe",
+):
     release = dict(_release(tmp_path, CPU_ZIP, server_path = server_path), source_commit = _SPEC_COMMIT)
     monkeypatch.setattr(M, "resolve", lambda accel, token, tag = None: (FORK, release, CPU_ZIP))
     _stub_install_io(monkeypatch)
 
 
-def _install_with_specs(monkeypatch, tmp_path, server_path = "bin/audiocpp_server.exe", **specs):
+def _install_with_specs(
+    monkeypatch,
+    tmp_path,
+    server_path = "bin/audiocpp_server.exe",
+    **specs,
+):
     _specs_release(monkeypatch, tmp_path, server_path)
     calls = _spec_repo(monkeypatch, **specs)
     server = M.install(install_dir = tmp_path / "audio.cpp", accelerator = "cpu")
@@ -2133,7 +2148,12 @@ _UNSAFE_TREE = {
     [
         {"bad_sha": "seed_vc.json"},
         {"fail": "seed_vc.json"},
-        {"tree": {"truncated": True, "tree": [{"path": "a.json", "type": "blob", "sha": "0" * 40}]}},
+        {
+            "tree": {
+                "truncated": True,
+                "tree": [{"path": "a.json", "type": "blob", "sha": "0" * 40}],
+            }
+        },
         {"tree": {"truncated": False, "tree": []}},
         {"tree": _UNSAFE_TREE},
         {"files": {"list.json": b"[1, 2]"}},
@@ -2149,15 +2169,20 @@ def test_a_failed_spec_fetch_leaves_no_folder_and_installs_anyway(
     assert "model specs at 0097d365a00b not fetched" in capsys.readouterr().err
     assert "source_commit" in json.loads((tmp_path / "audio.cpp" / M.INSTALL_RECORD).read_text())
     # Unsafe or non-blob entries are never requested.
-    assert not any(c[0] == "blob" and c[3] in ("../x.json", "README.md", "nested.json") for c in calls)
+    assert not any(
+        c[0] == "blob" and c[3] in ("../x.json", "README.md", "nested.json") for c in calls
+    )
 
 
 def test_unsafe_names_are_skipped_beside_good_ones(monkeypatch, tmp_path):
     good = b'{"family": "ace_step"}'
-    tree = {"truncated": False, "tree": [
-        *_UNSAFE_TREE["tree"],
-        {"path": "ace_step.json", "type": "blob", "sha": _git_sha(good)},
-    ]}
+    tree = {
+        "truncated": False,
+        "tree": [
+            *_UNSAFE_TREE["tree"],
+            {"path": "ace_step.json", "type": "blob", "sha": _git_sha(good)},
+        ],
+    }
     dest = tmp_path / "bin"
     dest.mkdir()
     calls = _spec_repo(monkeypatch, {"ace_step.json": good}, tree = tree)
@@ -2171,7 +2196,11 @@ def test_an_offline_spec_fetch_still_installs(monkeypatch, tmp_path):
     asked = []
 
     class _Offline:
-        def open(self, request, timeout = None):
+        def open(
+            self,
+            request,
+            timeout = None,
+        ):
             asked.append(request.full_url)
             raise M.urllib.error.URLError("offline")
 
@@ -2181,7 +2210,9 @@ def test_an_offline_spec_fetch_still_installs(monkeypatch, tmp_path):
     server = M.install(install_dir = tmp_path / "audio.cpp", accelerator = "cpu")
     assert server.is_file() and not (server.parent / "model_specs").exists()
     # The real seams ask one trees URL, by commit; no blob is fetched.
-    assert set(asked) == {f"https://api.github.com/repos/{FORK}/git/trees/{_SPEC_COMMIT}:model_specs"}
+    assert set(asked) == {
+        f"https://api.github.com/repos/{FORK}/git/trees/{_SPEC_COMMIT}:model_specs"
+    }
     assert not list(tmp_path.rglob(".model_specs-*"))
 
 

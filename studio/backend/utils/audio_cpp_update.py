@@ -435,7 +435,6 @@ def _backfill_model_specs() -> bool:
     """Fetch ``model_specs/`` for a managed install made before the installer fetched it. Returns
     whether the folder was added; never raises."""
     from core.inference import audio_cpp_server
-
     try:
         binary = audio_cpp_server.find_audio_cpp_server_binary()
         if not binary or not _is_managed(binary) or audio_cpp_server.UPDATE_IN_PROGRESS.is_set():

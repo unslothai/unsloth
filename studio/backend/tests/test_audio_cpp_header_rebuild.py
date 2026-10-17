@@ -46,13 +46,22 @@ def hub(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.hf_cache_settings.active_hf_hub_cache", lambda: tmp_path)
     state = SimpleNamespace(data = NEW, heads = [], downloads = [], extra_blob = None)
 
-    def head(url, token = None, timeout = None):
+    def head(
+        url,
+        token = None,
+        timeout = None,
+    ):
         state.heads.append(url)
         return SimpleNamespace(
             commit_hash = COMMIT_NEW, etag = f'"{sha(state.data)}"', size = len(state.data)
         )
 
-    def download(repo_id, filename, token = None, cache_dir = None):
+    def download(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+    ):
         state.downloads.append(filename)
         repo_dir = Path(cache_dir) / ("models--" + repo_id.replace("/", "--"))
         snap = repo_dir / "snapshots" / (repo_dir / "refs" / "main").read_text()
