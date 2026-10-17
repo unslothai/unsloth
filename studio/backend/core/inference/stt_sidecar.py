@@ -168,6 +168,17 @@ def _downloaded_file_bytes(
     if blob_key:
         blobs = repo_cache / "blobs"
         candidates.extend((blobs / f"{blob_key}.incomplete", blobs / blob_key))
+        # huggingface_hub >= 1.18 writes a process-unique `<etag>.<8 hex>.incomplete` partial instead.
+        from hub.utils.hf_cache_state import incomplete_blob_hash
+
+        try:
+            candidates.extend(
+                partial
+                for partial in blobs.glob(f"{blob_key}.*.incomplete")
+                if incomplete_blob_hash(partial.name) == blob_key
+            )
+        except OSError:
+            pass
     if revision:
         candidates.append(repo_cache / "snapshots" / revision / filename)
     sizes: list[int] = []
