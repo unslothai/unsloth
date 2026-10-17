@@ -40,6 +40,7 @@ import {
   fillerFromModel,
   interjectAction,
 } from "@/features/chat/voice/voice-models-client";
+import { clearVoiceDecisions } from "@/features/chat/voice/voice-decisions";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { deriveOrbState } from "@/features/chat/voice/orb-state";
 import {
@@ -48,6 +49,7 @@ import {
   registerVoiceBargeIn,
   registerVoiceListen,
   registerVoicePlayback,
+  registerVoiceReplyText,
   registerVoiceResume,
   registerVoiceSubmit,
   registerVoiceThreadReset,
@@ -425,6 +427,11 @@ export const VoiceEngine: FC = () => {
     );
   }, [resumeListen, stop]);
 
+  useEffect(() => {
+    registerVoiceReplyText(() => latestAssistantText());
+    return () => registerVoiceReplyText(null);
+  }, [latestAssistantText]);
+
   // Text of the trailing user bubbles (one coalesced prompt may be several).
   const lastUserPrompt = useCallback((): string => {
     const messages = auiRef.current.thread().getState().messages;
@@ -776,6 +783,7 @@ export const VoiceEngine: FC = () => {
       clearFiller();
       setPendingFiller(null);
       queuedUtteranceRef.current = null;
+      clearVoiceDecisions();
       stop();
       const composer = auiRef.current.composer();
       if (composer.getState().dictation) composer.stopDictation();

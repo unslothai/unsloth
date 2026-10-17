@@ -28,3 +28,15 @@ export function joinTurn(held: string, next: string): string {
   const lowered = /^[A-Z][a-z]/.test(b) && !/^I\b/.test(b) ? b[0].toLowerCase() + b.slice(1) : b;
   return `${a.replace(/[,;:\-–—]$|\.\.\.$|…$/, "")} ${lowered}`;
 }
+
+const wordsOf = (t: string) =>
+  t.toLowerCase().replace(/[^\p{L}\p{N}'\s]/gu, " ").split(/\s+/).filter(Boolean);
+
+// A barge-in the detector confirmed can still be the reply itself leaking past
+// echo cancellation: the transcript then reads back a run of the reply's words.
+export function isReplyEcho(transcript: string, reply: string): boolean {
+  const t = wordsOf(transcript);
+  if (t.length === 0 || !reply) return false;
+  const r = wordsOf(reply).join(" ");
+  return r.includes(t.join(" "));
+}

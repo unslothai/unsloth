@@ -36,7 +36,7 @@ const STAGE2: Record<ToolKind | "elapsed", Weighted> = {
   ],
   elapsed: [
     ["Still on it.", 4],
-    ["Okay, this one's a bit bigger.", 3],
+    ["This is a larger request, one moment please.", 3],
     ["Almost there.", 2],
   ],
 };

@@ -229,6 +229,17 @@ export function isVoicePlaybackActive(): boolean {
   return voicePlayback?.() ?? false;
 }
 
+let voiceReplyText: (() => string) | null = null;
+
+export function registerVoiceReplyText(fn: (() => string) | null): void {
+  voiceReplyText = fn;
+}
+
+/** The reply being spoken, so a transcript of its own leak is never a turn. */
+export function getVoiceReplyText(): string {
+  return voiceReplyText?.() ?? "";
+}
+
 /** Set once by the loop's module as it loads, which voice mode needs before it can go active. */
 export function registerVoiceListen(
   fn: () => DictationAdapter.Session | null,

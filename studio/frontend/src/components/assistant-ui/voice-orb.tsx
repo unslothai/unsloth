@@ -3,6 +3,7 @@
 
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { voiceOutputLevel } from "@/features/chat/hooks/use-tts-player";
+import { useVoiceDecisions } from "@/features/chat/voice/voice-decisions";
 import { cn } from "@/lib/utils";
 import {
   AudioLinesIcon,
@@ -249,6 +250,64 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
   return <MicIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />;
 };
 
+// What the three turn models last decided, one pill each. Quiet by design: it
+// reads as a status line, not a dashboard, and empties when the loop stops.
+const VoiceDecisionStrip: FC = () => {
+  const d = useVoiceDecisions();
+  const pills: Array<{ key: string; label: string; value: string; p: number | null }> = [];
+  if (d.turn) {
+    pills.push({
+      key: "turn",
+      label: d.turn.sent ? "sent" : "waiting",
+      value: `${Math.round(d.turn.p * 100)}% done`,
+      p: d.turn.p,
+    });
+  }
+  if (d.filler) {
+    pills.push({
+      key: "filler",
+      label: "filler",
+      value: d.filler.phrase ? `"${d.filler.phrase}"` : "quiet",
+      p: null,
+    });
+  }
+  if (d.interject) {
+    pills.push({
+      key: "interject",
+      label: "mid-think",
+      value: `${d.interject.action} ${Math.round(d.interject.confidence * 100)}%`,
+      p: d.interject.confidence,
+    });
+  }
+  return (
+    <div className="flex h-7 items-center gap-2">
+      <AnimatePresence>
+        {pills.map((pill) => (
+          <motion.div
+            key={pill.key + pill.value}
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.2 }}
+            className="flex items-center gap-1.5 rounded-full border border-border/60 bg-background/60 px-2.5 py-1 text-ui-12 text-foreground/60"
+          >
+            <span className="uppercase tracking-[0.12em] text-foreground/40">{pill.label}</span>
+            <span className="max-w-[220px] truncate text-foreground/75">{pill.value}</span>
+            {pill.p !== null && (
+              <span className="h-1 w-10 overflow-hidden rounded-full bg-foreground/10">
+                <span
+                  className="block h-full rounded-full bg-foreground/50"
+                  style={{ width: `${Math.round(pill.p * 100)}%` }}
+                />
+              </span>
+            )}
+          </motion.div>
+        ))}
+      </AnimatePresence>
+    </div>
+  );
+};
+
 export const VoiceOrb: FC = () => {
   const orbState = useChatRuntimeStore((s) => s.voiceOrbState);
   // Minimized: the loop keeps running (orbState stays set) but the full-screen
@@ -377,6 +436,7 @@ export const VoiceOrb: FC = () => {
             )}
           </AnimatePresence>
         </div>
+        {showOverlay && <VoiceDecisionStrip />}
       </div>
     </>
   );

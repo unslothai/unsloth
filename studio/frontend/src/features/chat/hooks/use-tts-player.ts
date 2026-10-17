@@ -184,7 +184,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       // WebKit parks the context ("interrupted"/"suspended") when another surface takes
       // the audio session, e.g. the Audio tab mounting its players; a start() on a parked
       // context is silent, so wake it first.
-      if (ctx.state !== "running") void ctx.resume().catch(() => {});
+      if (ctx.state !== "running" && !pausedRef.current) void ctx.resume().catch(() => {});
       const source = ctx.createBufferSource();
       source.buffer = buffer;
       source.connect(ctx.destination);
@@ -301,8 +301,10 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
 
   // Suspending the context freezes every scheduled clip in place; the run loop's tail wait
   // reads the frozen clock, so nothing ends early while held.
+  // Held even with no clip scheduled yet: the next sentence is often still
+  // synthesizing when a burst lands, and it must not start under the check.
   const pausePlayback = useCallback(() => {
-    if (pausedRef.current || clipsRef.current.size === 0) return;
+    if (pausedRef.current || !streamRef.current) return;
     pausedRef.current = true;
     void getPlayCtx()?.suspend().catch(() => {});
   }, []);

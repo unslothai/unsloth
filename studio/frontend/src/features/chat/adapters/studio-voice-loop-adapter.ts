@@ -10,6 +10,7 @@ import {
 } from "@/features/chat/voice/barge-gate";
 import {
   isBackchannel,
+  isReplyEcho,
   joinTurn,
 } from "@/features/chat/voice/turn-complete";
 import {
@@ -17,9 +18,13 @@ import {
   detectSpeech,
   loadVadModel,
 } from "@/features/chat/voice/vad-client";
-import { judgeTurnComplete } from "@/features/chat/voice/voice-models-client";
+import {
+  JUDGE_SEND_THRESHOLD,
+  judgeTurnComplete,
+} from "@/features/chat/voice/voice-models-client";
 import {
   isVoicePlaybackActive,
+  getVoiceReplyText,
   requestVoiceBargeAbort,
   requestVoiceBargeIn,
   requestVoiceResume,
@@ -153,8 +158,6 @@ function isHallucinatedTranscript(text: string): boolean {
 let heldTurn: { text: string; at: number } | null = null;
 
 // The turn judge decides whether to wait for more; without it the turn is sent.
-// 0.65 trades a few more waits for fewer cut-offs; the sweep is in the model card.
-const JUDGE_SEND_THRESHOLD = 0.65;
 async function turnUnfinished(text: string): Promise<boolean> {
   const p = await judgeTurnComplete(text);
   return p !== null && p < JUDGE_SEND_THRESHOLD;
@@ -378,6 +381,14 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           // Thank you...") from noise/breath/silence. Drop it and keep listening
           // rather than sending garbage as a prompt.
           transcript = "";
+        }
+        if (transcript && bargedIn && isReplyEcho(transcript, getVoiceReplyText())) {
+          // The reply's own voice got through the detector. Not a turn: let the
+          // reply pick back up and keep listening.
+          requestVoiceBargeAbort();
+          finish("stopped");
+          setTimeout(() => requestVoiceResume(), 0);
+          return;
         }
         if (transcript && isBackchannel(transcript)) {
           // A breath or "mm" that cleared the speech gate. Not a turn: keep listening,

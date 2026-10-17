@@ -8,8 +8,15 @@
 
 import { authFetch } from "@/features/auth";
 import type { FillerDecision } from "./thinking-filler";
+import {
+  publishFillerDecision,
+  publishInterjectDecision,
+  publishTurnDecision,
+} from "./voice-decisions";
 
 const TIMEOUT_MS = 400;
+/** 0.65 trades a few more waits for fewer cut-offs; the sweep is in the model card. */
+export const JUDGE_SEND_THRESHOLD = 0.65;
 
 async function post<T>(path: string, body: unknown): Promise<T | null> {
   const ctl = new AbortController();
@@ -33,7 +40,9 @@ async function post<T>(path: string, body: unknown): Promise<T | null> {
 /** P(the user has finished the turn), or null without the judge. */
 export async function judgeTurnComplete(text: string): Promise<number | null> {
   const r = await post<{ p_complete: number }>("judge", { text });
-  return typeof r?.p_complete === "number" ? r.p_complete : null;
+  if (typeof r?.p_complete !== "number") return null;
+  publishTurnDecision(r.p_complete, r.p_complete >= JUDGE_SEND_THRESHOLD);
+  return r.p_complete;
 }
 
 export async function fillerFromModel(
@@ -45,6 +54,7 @@ export async function fillerFromModel(
     prev_q: prevAssistantAskedQuestion,
   });
   if (!r) return null;
+  publishFillerDecision(r.say ? r.phrase : "");
   return r.say
     ? { say: true, cls: r.class as FillerDecision["cls"], phrase: r.phrase }
     : { say: false, cls: "none", phrase: "" };
@@ -57,10 +67,12 @@ export async function interjectAction(
   utterance: string,
   elapsedS: number,
 ): Promise<InterjectAction | null> {
-  const r = await post<{ action: InterjectAction }>("interject", {
+  const r = await post<{ action: InterjectAction; confidence: number }>("interject", {
     prompt,
     utterance,
     elapsed_s: elapsedS,
   });
-  return r?.action ?? null;
+  if (!r?.action) return null;
+  publishInterjectDecision(r.action, r.confidence ?? 0);
+  return r.action;
 }
