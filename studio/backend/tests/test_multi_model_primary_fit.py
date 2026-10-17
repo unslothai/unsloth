@@ -102,19 +102,11 @@ def test_fit_frees_the_image_model_and_retries(env):
     assert env.retry_flags == [True, True] and flag_after is False
 
 
-def test_freed_media_goes_to_the_eviction_sink_once(env):
-    env.errors, sink = [_short()], []
-
-    async def run():
-        token = gpu_arbiter.eviction_sink.set(sink)
-        try:
-            return await inf.load_model_gated(LoadRequest(model_path = "org/C-GGUF"), None, "s")
-        finally:
-            gpu_arbiter.eviction_sink.reset(token)
-
-    response = asyncio.run(run())
-    # The route turns its sink into the answer, so the retry must not also report it on its own.
-    assert sink == [IMG] and not response.evicted
+def test_freed_media_is_reported_once(env):
+    env.errors = [_short()]
+    response, _ = _gated()
+    # The route's eviction sink carries it into both fields; the retry must not add it a second time.
+    assert response.evicted == ["org/Img"] and response.evicted_slots == [IMG]
 
 
 def test_an_idle_video_server_freed_alone_still_earns_a_full_size_retry(env, monkeypatch):
@@ -142,24 +134,28 @@ def test_capped_fit_retries_at_a_smaller_context(env, policy):
     _nothing_unloaded(env)
 
 
+def _refused(account = None) -> str:
+    """The Always refusal reaches the caller as the K2 409, header included."""
+    with pytest.raises(HTTPException) as info:
+        _gated(account)
+    assert info.value.status_code == 409
+    assert info.value.headers.get("X-Unsloth-Refusal") == "multi-model-always"
+    return str(info.value.detail)
+
+
 def test_always_refuses_with_the_numbers_for_the_owner(env):
     env.policy, env.errors = "always", [_short()]
-    with pytest.raises(gpu_arbiter.MultiModelAlwaysRefusal) as info:
-        _gated()
-    message = str(info.value)
+    message = _refused()
     assert "is set to Always" in message
     # 5000 MiB short beside 4096 MiB free: needs 8.9 GB, 4.0 GB is free.
     assert "needs about 8.9 GB of GPU memory, and 4.0 GB is free" in message
-    assert info.value.kind == "image" and info.value.model == "org/Img"
     assert env.free_calls == [] and len(env.requests) == 1
     _nothing_unloaded(env)
 
 
 def test_always_refuses_a_managed_account_with_the_plain_copy(env):
     env.policy, env.errors = "always", [_short()]
-    with pytest.raises(gpu_arbiter.MultiModelAlwaysRefusal) as info:
-        _gated(BOB)
-    message = str(info.value)
+    message = _refused(BOB)
     assert "GB" not in message
     assert "the image model org/Img, which Unsloth Studio is set to keep loaded" in message
     assert env.free_calls == []
@@ -179,9 +175,8 @@ def _oom():
 def test_non_gguf_oom_under_always_beside_an_image_model_is_refused(env, monkeypatch):
     _image_resident(monkeypatch)
     env.policy, env.errors = "always", [_oom()]
-    with pytest.raises(gpu_arbiter.MultiModelAlwaysRefusal) as info:
-        _gated()
-    assert "is set to Always" in str(info.value) and info.value.model == "org/Img"
+    message = _refused()
+    assert "is set to Always" in message and "org/Img" in message
     assert env.free_calls == []
     _nothing_unloaded(env)
 

@@ -1742,7 +1742,8 @@ def test_a_cpu_only_chat_load_does_not_take_the_gpu_arbiter():
     )
     assert load_impl.index("if replacing and not chat_load_needs_gpu:", acquire) < release
     assert load_impl.index("success = await load_with_tensor_fallback(", acquire) < release
-    assert "if chat_load_needs_gpu and current_owner() != CHAT:" in load_impl
+    assert "if chat_load_needs_gpu and not holds(CHAT):" in load_impl
+    assert "chat_load_needs_gpu and current_owner() != CHAT" not in load_impl
     # The already-loaded fast path re-asserts ownership too; same exemption.
     assert "if not llama_backend.holds_no_vram:" in load_impl
 

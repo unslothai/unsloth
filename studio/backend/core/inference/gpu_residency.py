@@ -563,9 +563,9 @@ def _kept_slot_report(slot: Any) -> dict:
     return {"kind": "chat", "model": str(getattr(request, "model_path", "") or "")}
 
 
-def media_fit_kwargs(owner: str, request: Any, gpu_ordinal: Optional[int]) -> dict:
+def media_fit_kwargs(owner: str, request: Any, gpu_ordinal: Optional[int], policy: Optional[str] = None) -> dict:
     """The acquire_for keywords for an image or video load: the policy and, when known, what it will hold."""
-    policy = current_policy()
+    policy = policy or current_policy()
     if policy == "off":
         return {}
     need = media_load_need_mib(owner, request, gpu_ordinal)
