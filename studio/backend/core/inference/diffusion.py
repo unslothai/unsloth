@@ -2544,6 +2544,21 @@ def _bg_compile_module(
     )
 
 
+def _prequant_bakes_auto_accumulate(source: Any) -> bool:
+    """Whether ``source`` is an artifact built with the auto fp8 accumulate: a hosted repo, or an entry of the local
+    pre-quant cache (``save_runtime_quant`` never caches a build quantized under a forced mode)."""
+    kind = getattr(source, "kind", None)
+    if kind == "repo":
+        return True
+    if kind != "path":
+        return False
+    try:
+        from .diffusion_prequant_cache import path_in_cache
+        return path_in_cache(getattr(source, "location", None) or "")
+    except Exception:  # noqa: BLE001
+        return False
+
+
 class DiffusionBackend:
     """Holds at most one loaded diffusers pipeline. All mutations are serialised."""
 
@@ -4590,8 +4605,9 @@ class DiffusionBackend:
                     if source is None:
                         continue
                     # The loader's checkpoint validation refuses a FORCED fp8 accumulate the artifact does not bake,
-                    # but only after the plan dropped the released shards. An operator's own file is left to it.
-                    if getattr(source, "kind", None) == "repo" and hosted_fast_accum_conflict(
+                    # but only after the plan dropped the released shards. Hosted artifacts and Studio's own local
+                    # pre-quant cache entries both bake the auto value; an operator's own file is left to it.
+                    if _prequant_bakes_auto_accumulate(source) and hosted_fast_accum_conflict(
                         rung, fast_accum
                     ):
                         continue
@@ -8060,6 +8076,18 @@ class DiffusionBackend:
                                     engaged.append(scheme)
                                 if engaged and len(engaged) == len(denoisers):
                                     transformer_quant_engaged = engaged[0]
+                                    self._save_pipeline_quant_to_cache(
+                                        pipe,
+                                        fam,
+                                        denoisers,
+                                        loras = loras,
+                                        base = base,
+                                        source_base = _base_local_dir or fetch_base,
+                                        cancel_check = lambda: self._raise_if_load_cancelled(
+                                            _load_token
+                                        ),
+                                    )
+                                    self._raise_if_load_cancelled(_load_token)
                                 else:
                                     # A clean decline can remain bf16; a partial in-place conversion is unusable.
                                     dirty = [
@@ -9185,6 +9213,12 @@ class DiffusionBackend:
                         self._prequant_fallback_note,
                     )
                 if transformer is not None:
+                    from .diffusion_prequant_cache import note_hit, path_in_cache
+
+                    if getattr(source, "kind", None) == "path" and path_in_cache(
+                        getattr(source, "location", "")
+                    ):
+                        note_hit(source.location, logger)
                     if scheme == TQ_NVFP4:
                         from .diffusion_nvfp4_linear import nvfp4_prewarm
                         nvfp4_prewarm(transformer, (1,), logger = logger)
@@ -9286,7 +9320,53 @@ class DiffusionBackend:
         check_cancelled()
         if scheme is None:
             raise RuntimeError("transformer quant unsupported for this device/scheme")
+        if fam is not None and not _has_active_lora(lora_specs):
+            # Keep this build for the next load of the same weights (diffusion_prequant_cache): it then resolves as a
+            # local pre-quant source above and the dense bf16 transformer is never read again. Best-effort.
+            from .diffusion_prequant_cache import save_runtime_quant
+            save_runtime_quant(
+                getattr(pipe, "transformer", None),
+                fam,
+                base_repo = base,
+                source_base = base_local_dir or fetch_base,
+                logger = logger,
+                cancel_check = check_cancelled,
+            )
+            check_cancelled()
         return pipe, scheme
+
+    @staticmethod
+    def _save_pipeline_quant_to_cache(
+        pipe: Any,
+        fam: Any,
+        denoisers: Any,
+        *,
+        loras: Any,
+        base: Optional[str],
+        source_base: Optional[str],
+        cancel_check: Optional[Callable[[], None]] = None,
+    ) -> Optional[str]:
+        """A full-pipeline load that quantized its one denoiser at load keeps that build for the next load of the same
+        weights (diffusion_prequant_cache), which then seeds it like a hosted checkpoint instead of reading the dense
+        transformer. A single ``transformer`` denoiser only (the cache keys that component) and no active LoRA.
+        Best-effort, never raises."""
+        try:
+            names = [attr for attr, _module in (denoisers or ())]
+            if fam is None or names != ["transformer"] or _has_active_lora(loras):
+                return None
+            from .diffusion_prequant_cache import save_runtime_quant
+
+            return save_runtime_quant(
+                getattr(pipe, "transformer", None),
+                fam,
+                base_repo = base,
+                source_base = source_base,
+                logger = logger,
+                cancel_check = cancel_check,
+            )
+        except Exception as exc:  # noqa: BLE001 - a cache write never fails a load
+            logger.warning("diffusion.prequant_cache: skipped (%s)", exc)
+            return None
 
     @staticmethod
     def _assemble_pipe(

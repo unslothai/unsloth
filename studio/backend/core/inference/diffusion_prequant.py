@@ -413,6 +413,13 @@ def _local_prequant_path_allowed(path: str) -> bool:
     symlink cannot point an allowlisted name at a file outside the allowed roots."""
     import os
 
+    # Studio's own local pre-quant cache (safetensors it wrote itself), and only that exact root.
+    try:
+        from .diffusion_prequant_cache import path_in_cache
+        if path_in_cache(path):
+            return True
+    except Exception:  # noqa: BLE001 - an unanswerable check falls back to the operator allowlist
+        pass
     roots = _allowed_prequant_roots()
     if not roots:
         return False
@@ -765,6 +772,9 @@ def prefer_cached_pickle_twins(
 
 
 _LOCAL_FILES_ONLY = contextvars.ContextVar("unsloth_prequant_local_files_only", default = False)
+# The load's own Hub token, for the probes it reaches without one in their signature (the local pre-quant cache's
+# freshness check of a gated base). Nested calls keep an outer token.
+_LOAD_HF_TOKEN: contextvars.ContextVar = contextvars.ContextVar("unsloth_prequant_hf_token", default = None)
 
 
 def scoped_local_files_only(fn: Any) -> Any:
@@ -776,9 +786,11 @@ def scoped_local_files_only(fn: Any) -> Any:
         token = _LOCAL_FILES_ONLY.set(
             bool(kwargs.get("local_files_only")) or _LOCAL_FILES_ONLY.get()
         )
+        hf_token = _LOAD_HF_TOKEN.set(kwargs.get("hf_token") or _LOAD_HF_TOKEN.get())
         try:
             return fn(*args, **kwargs)
         finally:
+            _LOAD_HF_TOKEN.reset(hf_token)
             _LOCAL_FILES_ONLY.reset(token)
 
     return _wrapper
@@ -960,7 +972,8 @@ def resolve_prequant_source(
 
     Priority: an explicit local ``path_override``; then the family's hosted repo for ``scheme``
     (variant-specific when ``base_repo`` names a base with its own baked checkpoint); then None,
-    meaning no pre-quant and the caller quantises dense. Pure: no IO, no torch.
+    meaning no pre-quant and the caller quantises dense. No torch; the only IO is the local pre-quant cache lookup
+    (``diffusion_prequant_cache``: a few KB of safetensors headers, memoised), reached only when nothing is hosted.
 
     ``task`` names the workflow / denoiser PARTITION the load is bringing up, for the families that
     host more than one under a single repo and scheme (MiniMax-H3's keyframe and reference
@@ -1054,6 +1067,20 @@ def resolve_prequant_source(
             fallback_filenames = tuple(names[1:]),
             declared_filenames = declared,
         )
+    # No hosted checkpoint: a build this machine quantized on an earlier load of the same source weights
+    # (diffusion_prequant_cache). Local reads only; the task names the denoiser component (an MoE's transformer_2).
+    try:
+        from .diffusion_prequant_cache import lookup
+        cached = lookup(
+            fam,
+            scheme,
+            base_repo = base_repo,
+            component = task if task in ("transformer_2",) else "transformer",
+        )
+    except Exception:  # noqa: BLE001 - a cache problem is a miss, never a failed load
+        cached = None
+    if cached:
+        return PrequantSource(kind = "path", location = cached, filename = None)
     return None
 
 
@@ -2215,6 +2242,30 @@ def _pin_kernel_preference(state_dict: Any, logger: Any = None) -> int:
     return pinned
 
 
+def _reports_rejected_cache_entry(fn: Any) -> Any:
+    """A local pre-quant cache entry this load could not use (corrupt bytes, a torch / torchao patch that no longer
+    reads it) is reported to the cache, so the dense build the load falls back to replaces it instead of the stale
+    entry staying "already cached" for good. A forced fp8 accumulate the entry does not bake is the request's
+    choice, not a fault in the entry, and leaves it alone."""
+
+    @functools.wraps(fn)
+    def wrapper(transformer_cls: Any, base: str, source: Any, *args: Any, **kwargs: Any) -> Any:
+        out = fn(transformer_cls, base, source, *args, **kwargs)
+        if out is None and getattr(source, "kind", None) == "path":
+            try:
+                if not hosted_fast_accum_conflict(
+                    str(kwargs.get("scheme") or ""), kwargs.get("fast_accum")
+                ):
+                    from .diffusion_prequant_cache import note_rejected
+                    note_rejected(source.location, kwargs.get("logger"))
+            except Exception:  # noqa: BLE001 - bookkeeping never changes the load's outcome
+                pass
+        return out
+
+    return wrapper
+
+
+@_reports_rejected_cache_entry
 def load_prequantized_transformer(
     transformer_cls: Any,
     base: str,
@@ -2297,6 +2348,13 @@ def load_prequantized_transformer(
         )
         if path is None:
             return None
+        if source.kind == "path":
+            # A Studio cache entry is checked against the payload digest recorded when it was written: its manifest
+            # size check passes same-size corruption, which can still deserialize into altered weights.
+            from .diffusion_prequant_cache import path_in_cache, verify_entry
+            if path_in_cache(path) and not verify_entry(path, logger):
+                _LAST_FAILURE.text = "ValueError: local pre-quant cache entry failed its payload digest"
+                return None
 
         # A ComfyUI-format file rebuilds into the same torchao weights as Studio's own checkpoint of this scheme.
         from .diffusion_comfy_quant import load_comfy_prequant, scan_comfy_quant

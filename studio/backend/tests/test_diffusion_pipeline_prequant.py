@@ -575,6 +575,30 @@ def test_a_forced_fp8_accumulate_the_artifact_cannot_bake_keeps_the_released_wei
     assert _settle(backend, transformer_quant = "fp8") == "fp8"
 
 
+
+def test_a_forced_fp8_accumulate_also_rules_out_a_local_prequant_cache_entry(monkeypatch, tmp_path):
+    """A local cache entry bakes the auto accumulate like a hosted artifact, so a forced different value must not
+    seed it (dropping the released shards for a checkpoint the load then rejects). An operator's own file is still
+    left to the loader's validation."""
+    from core.inference import diffusion_prequant_cache as cache
+
+    root = tmp_path / "prequant_cache"
+    monkeypatch.setenv(cache.ENV_DIR, str(root))
+    entry = str(root / ("e" * 32) / cache.FILE_NAME)
+    operator_file = str(tmp_path / "mine" / "fp8.safetensors")
+    backend = _settle_backend(monkeypatch)
+    for location, forced_off in ((entry, None), (operator_file, "fp8")):
+        monkeypatch.setattr(
+            dmod,
+            "denoiser_prequant_source",
+            lambda fam, scheme, _loc = location, **_k: pqmod.PrequantSource(
+                kind = "path", location = _loc, filename = None
+            ),
+        )
+        assert _settle(backend, transformer_quant = "fp8", fast_accum = False) == forced_off
+        assert _settle(backend, transformer_quant = "fp8", fast_accum = True) == "fp8"
+
+
 def test_a_forced_accumulate_never_blocks_a_scheme_that_bakes_none(monkeypatch):
     """Only fp8 records ``fast_accum``, so the int8 artifact is seeded whatever the caller forces."""
     backend = _settle_backend(monkeypatch, scheme = "int8")
