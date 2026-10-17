@@ -4881,14 +4881,10 @@ html[data-chat-font] .aui-root {
 	box-shadow: var(--composer-shadow) !important;
 }
 
-/* Icon starts at the first line's cap height, never above the text. */
+/* Icon centred on the first text line, so multi-line toasts keep it level with the title.
+   Title and description line heights are 1.5 and 1.4. */
 [data-sonner-toast][data-styled='true'] [data-icon] {
-	margin: 0.4em 0 0 !important;
-}
-
-/* Single text line: center the icon on it. Title and description line heights are 1.5 and 1.4. */
-[data-sonner-toast][data-styled='true']:not(:has([data-description])) [data-icon] {
-	margin-top: calc((1.5em - var(--ui-icon-size)) / 2) !important;
+	margin: calc((1.5em - var(--ui-icon-size)) / 2) 0 0 !important;
 }
 [data-sonner-toast][data-styled='true']:not(:has([data-title])) [data-icon] {
 	margin-top: calc((1.4em - var(--ui-icon-size)) / 2) !important;
@@ -4965,7 +4961,6 @@ html[data-chat-font] .aui-root {
 [data-sonner-toast][data-styled='true'].chat-model-load-toast [data-content] {
 	flex: 1 1 auto;
 }
-
 [data-sonner-toast][data-styled='true'].chat-model-load-toast [data-button] {
 	align-self: center;
 	flex: none;
