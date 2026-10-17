@@ -14,6 +14,7 @@ MODEL_ID = "media-local-model-Q4_K_M"
 
 IMAGE_LINK_QUERY: dict[str, str] = {}
 VIDEO_LINK_QUERY: dict[str, str] = {}
+AUDIO_LINK_QUERY: dict[str, str] = {}
 
 
 def _image_meta() -> dict:
@@ -96,6 +97,7 @@ def _wav_bytes() -> bytes:
 @seeder("media-audio")
 def seed_audio(account) -> dict[str, str]:
     from core.inference import audio_gallery
+    from routes.inference import _sign_audio_id
     from utils.account_context import run_as
 
     meta = {
@@ -107,6 +109,7 @@ def seed_audio(account) -> dict[str, str]:
         "created_at": "2026-01-01T00:00:00+00:00",
     }
     record = run_as(account, audio_gallery.save, _wav_bytes(), meta)
+    AUDIO_LINK_QUERY["token"] = run_as(account, _sign_audio_id, record["id"])
     return {"audio_id": record["id"]}
 
 
@@ -363,6 +366,9 @@ FACTORIES = {
         unauthenticated = (200,),
         reason = _LINK_IS_THE_CREDENTIAL,
     ),
+    "routes.inference:GET:/images/gallery/{image_id}/signed-url": Factory(
+        "media-image", fragment = "file-signed"
+    ),
     "routes.inference:PATCH:/images/gallery/{image_id}": Factory(
         "media-image", {"archived": True}, fragment = SENTINEL
     ),
@@ -375,6 +381,17 @@ FACTORIES = {
         "media-image-project", {"project_id": MEDIA_PROJECT_ID}, fragment = "sandbox"
     ),
     "routes.inference:GET:/audio/gallery/{audio_id}/file": Factory("media-audio"),
+    "routes.inference:GET:/audio/gallery/{audio_id}/signed-url": Factory(
+        "media-audio", fragment = "file-signed"
+    ),
+    "routes.inference:GET:/audio/gallery/{audio_id}/file-signed": Factory(
+        "media-audio",
+        query = AUDIO_LINK_QUERY,
+        owner = (200,),
+        wrong = (200,),
+        unauthenticated = (200,),
+        reason = _LINK_IS_THE_CREDENTIAL,
+    ),
     "routes.inference:GET:/audio/gallery/{audio_id}/source/file": Factory("media-audio-converted"),
     "routes.inference:PATCH:/audio/gallery/{audio_id}": Factory(
         "media-audio", {"archived": True}, fragment = SENTINEL
@@ -423,6 +440,15 @@ FACTORIES = {
         "media-video", fragment = "file-signed"
     ),
     "routes.video:GET:/video/gallery/{video_id}/export": Factory("media-video"),
+    "routes.video:GET:/video/gallery/{video_id}/frame": Factory("media-video"),
+    "routes.video:POST:/video/gallery/{video_id}/audio-input": Factory(
+        "media-video",
+        {},
+        right = (400,),
+        self_expected = (400,),
+        fragment = "no audio track",
+        reason = "the seeded clip is silent, so past the ownership check the extract refuses",
+    ),
     "routes.video:PATCH:/video/gallery/{video_id}": Factory(
         "media-video", {"archived": True}, fragment = SENTINEL
     ),

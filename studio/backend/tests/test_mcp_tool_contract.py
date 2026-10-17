@@ -322,7 +322,7 @@ PATH_CALLS = [
             ("POST", "/v1/audio/inputs"): JSONResponse({"id": "in-1"}, status_code = 201),
             ("POST", "/v1/audio/run"): {"clips": [CLIP]},
         },
-        ["/v1/audio/inputs", "/v1/audio/run", "/v1/audio/gallery/clip-1/file"],
+        ["/v1/audio/inputs", "/v1/audio/run", "/v1/audio/gallery/clip-1/signed-url"],
         lambda result, studio: call_to(studio, "/v1/audio/inputs")[3] == WAV,
     ),
     (
@@ -340,10 +340,24 @@ PATH_CALLS = [
         ),
     ),
     (
+        "voices",
+        lambda path: {"action": "save", "source": {"path": path}, "name": "Narrator"},
+        {
+            ("POST", "/v1/audio/inputs"): JSONResponse({"id": "in-1"}, status_code = 201),
+            ("POST", "/v1/audio/voices"): {"id": "voice-1", "name": "Narrator"},
+        },
+        ["/v1/audio/inputs", "/v1/audio/voices"],
+        lambda result, studio: result["structuredContent"]["voice"]["id"] == "voice-1",
+    ),
+    (
         "generate_image",
         lambda path: {"prompt": "x", "init_image": {"path": path}},
         {IMAGES: {"images": [{"id": "img-1", "width": 8, "height": 8}]}},
-        ["/api/inference/images/generate", "/api/inference/images/gallery/img-1/file"],
+        [
+            "/api/inference/images/generate",
+            "/api/inference/images/gallery/img-1/signed-url",
+            "/api/inference/images/gallery/img-1/file",
+        ],
         None,
     ),
     (
@@ -357,7 +371,7 @@ PATH_CALLS = [
 
 
 def _input_file(tmp_path, tool):
-    audio = tool in ("generate_audio", "transcribe")
+    audio = tool in ("generate_audio", "transcribe", "voices")
     path = tmp_path / ("mcp-input.wav" if audio else "mcp-input.png")
     path.write_bytes(WAV if audio else PNG)
     return str(path)

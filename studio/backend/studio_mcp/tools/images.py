@@ -18,11 +18,13 @@ from studio_mcp.forward import forward
 from studio_mcp.inputs import ImageInput, data_url, resolve_image, sniff_image
 from studio_mcp.media import (
     INLINE_CAP,
+    ReturnMedia,
     image_content,
     image_gallery_path,
     media_result,
     public_url,
     resource_link,
+    signed_url,
 )
 from studio_mcp.outputs import ImageItem, ImageResult
 from studio_mcp.tools import WRITES, integer, number, opt_text, present, route_json
@@ -50,23 +52,36 @@ async def _fetch(caller: Caller, path: str) -> Optional[bytes]:
     return response.content if response.status_code == 200 else None
 
 
-async def _image_contents(caller: Caller, item: ImageItem) -> list[Any]:
-    """The PNG inline when it must fit the cap, else a WebP thumbnail plus a link; a large original is never fetched."""
-    if item.width and item.height and item.width * item.height * 3 <= INLINE_CAP:
+async def _image_contents(
+    caller: Caller,
+    item: ImageItem,
+    return_media: ReturnMedia = "inline",
+    preview_px: Optional[int] = None,
+) -> list[Any]:
+    """inline: the PNG when it must fit the cap, else a WebP thumbnail plus a link; preview: the thumbnail plus a link; link: the link alone. A large original is never fetched."""
+    link = resource_link(item.download_url or item.url, f"{item.id}.png", "image/png")
+    if return_media == "link":
+        return [link]
+    small = item.width and item.height and item.width * item.height * 3 <= INLINE_CAP
+    if return_media == "inline" and small:
         data = await _fetch(caller, image_gallery_path(item.id))
         if data is not None and len(data) <= INLINE_CAP:
             return [image_content(data, "image/png")]
-    thumb = await _fetch(caller, image_gallery_path(item.id, thumb = True))
+    thumb = await _fetch(caller, image_gallery_path(item.id, thumb = preview_px or True))
     contents: list[Any] = []
     if thumb is not None and len(thumb) <= INLINE_CAP:
-        # Studio sends the original PNG when it cannot make the thumbnail.
+        # Unsloth Studio sends the original PNG when it cannot make the thumbnail.
         contents.append(image_content(thumb, sniff_image(thumb) or "image/webp"))
-    contents.append(resource_link(item.url, f"{item.id}.png", "image/png"))
+    contents.append(link)
     return contents
 
 
 async def run_generation(
-    caller: Caller, ctx: Optional[Context], body: dict[str, Any]
+    caller: Caller,
+    ctx: Optional[Context],
+    body: dict[str, Any],
+    return_media: ReturnMedia = "inline",
+    preview_px: Optional[int] = None,
 ) -> ToolResult:
     generate = route_json(
         "POST",
@@ -83,9 +98,13 @@ async def run_generation(
     for row in rows:
         if not isinstance(row, dict) or not opt_text(row.get("id")):
             continue
-        item = ImageItem.from_route(row, url = public_url(caller, image_gallery_path(row["id"])))
+        item = ImageItem.from_route(
+            row,
+            url = public_url(caller, image_gallery_path(row["id"])),
+            download_url = await signed_url(caller, "image", row["id"]),
+        )
         items.append(item)
-        contents.extend(await _image_contents(caller, item))
+        contents.extend(await _image_contents(caller, item, return_media, preview_px))
     return media_result(contents, ImageResult(images = items))
 
 
@@ -132,6 +151,17 @@ async def generate_image(
     strength: Optional[float] = None,
     upscale: Optional[float] = None,
     allow_oversized: bool = False,
+    return_media: Annotated[
+        ReturnMedia,
+        Field(
+            description = 'How each image comes back besides its id and links: "inline" the image when small, '
+            'else a preview; "preview" a small preview image only; "link" no image data at all.'
+        ),
+    ] = "inline",
+    preview_px: Annotated[
+        Optional[int],
+        Field(ge = 32, le = 1024, description = "Long side of a preview image in pixels; default 1024."),
+    ] = None,
     ctx: Optional[Context] = None,
 ) -> ToolResult:
     """Generate or edit images with the image model loaded in Unsloth Studio (load_model(kind="image") first). Each image is saved to the Unsloth Studio Images gallery and returned with its id and URL; images up to 1.5 MiB come back inline, larger ones as a 1024 px preview plus a link. Width and height are pixels, multiples of 16; left out, the size is 1024x1024 with 9 steps and guidance 0, which suits turbo models (raise steps and guidance for others). With ``init_image`` it is img2img (``strength`` above 0 up to 1 sets how much is redrawn; left out, the model's default); add ``mask_image`` to inpaint (white is repainted); ``upscale`` 1 to 4 enlarges ``init_image`` and lightly redraws it, still guided by the prompt; ``workflow`` "edit" follows the prompt as an instruction over init_image and ``reference_images``, "reference" draws a new image guided by them, "outpaint" fills a padded init_image under its mask. A refusal on memory grounds can be overridden with ``allow_oversized``. Progress is reported while it runs."""
@@ -156,7 +186,7 @@ async def generate_image(
     )
     if allow_oversized:
         body["allow_oversized"] = True
-    return await run_generation(caller, ctx, body)
+    return await run_generation(caller, ctx, body, return_media, preview_px)
 
 
 TOOLS = ((generate_image, WRITES, ImageResult.model_json_schema()),)

@@ -74,6 +74,12 @@ def _studio(overrides = None):
             **PAYLOADS,
             ("GET", f"{GALLERY}/img-small/file"): _png,
             ("GET", f"{GALLERY}/img-large/file"): _webp,
+            **{
+                ("GET", f"{GALLERY}/{i}/signed-url"): {
+                    "url": f"{GALLERY}/{i}/file-signed?token=t.{i}"
+                }
+                for i in ("img-small", "img-large")
+            },
             **(overrides or {}),
         }
     )
@@ -95,7 +101,14 @@ def test_txt2img_returns_ids_urls_and_inline_images(monkeypatch):
     remote = "http://192.168.1.20:8888" + GALLERY
     assert result["structuredContent"] == {
         "images": [
-            {"id": i, "url": f"{remote}/{i}/file", "width": side, "height": side, "seed": seed}
+            {
+                "id": i,
+                "url": f"{remote}/{i}/file",
+                "download_url": f"{remote}/{i}/file-signed?token=t.{i}",
+                "width": side,
+                "height": side,
+                "seed": seed,
+            }
             for i, side, seed in (("img-small", 512, 1), ("img-large", 1024, 2))
         ]
     }
@@ -106,14 +119,14 @@ def test_txt2img_returns_ids_urls_and_inline_images(monkeypatch):
     assert content[1]["mimeType"] == "image/png"
     assert base64.b64decode(content[2]["data"]) == WEBP
     assert content[2]["mimeType"] == "image/webp"
-    assert content[3]["uri"] == f"{remote}/img-large/file"
+    assert content[3]["uri"] == f"{remote}/img-large/file-signed?token=t.img-large"
     assert bodies(studio, "/api/inference/images/generate") == [
         {"prompt": "a red fox", "width": 512, "steps": 4}
     ]
     # A large image is never fetched in full; gallery files are fetched as the caller.
     assert queries(studio, f"{GALLERY}/img-large/file") == [{"thumb": "1024"}]
     fetches = [c[2] for c in studio.state.calls if "/gallery/" in c[1]]
-    assert len(fetches) == 2
+    assert len(fetches) == 4
     for headers in fetches:
         assert headers["authorization"] == "Bearer sk-unsloth-test"
         assert headers["host"] == "unsloth-mcp.invalid"

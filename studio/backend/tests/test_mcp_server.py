@@ -7,12 +7,32 @@ import pytest
 
 from mcp_server import INSTRUCTIONS, create_studio_mcp
 
-READ_ONLY = {"studio_status", "list_models", "embed", "system_one", "get_job", "list_training_runs"}
-DESTRUCTIVE = {"unload_model", "cancel"}
-OTHERS = set(
-    "load_model chat generate_image generate_audio transcribe generate_video run_recipe datasets"
-    " start_training export_model".split()
-)
+READ_ONLY = {
+    "embed",
+    "get_job",
+    "list_models",
+    "list_media",
+    "list_training_runs",
+    "studio_status",
+    "system_one",
+}
+DESTRUCTIVE = {
+    "cancel",
+    "unload_model",
+    "voices",
+}
+OTHERS = {
+    "chat",
+    "datasets",
+    "export_model",
+    "generate_audio",
+    "generate_image",
+    "generate_video",
+    "load_model",
+    "run_recipe",
+    "start_training",
+    "transcribe",
+}
 
 
 def _tools():
@@ -22,7 +42,7 @@ def _tools():
 def test_studio_mcp_registers_control_plane_tools():
     tools = _tools()
     assert READ_ONLY | DESTRUCTIVE | OTHERS == set(tools)
-    assert len(tools) == 18
+    assert len(tools) == len(READ_ONLY | DESTRUCTIVE | OTHERS)
     for name, tool in tools.items():
         hints = tool.annotations
         assert hints is not None, name

@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import base64
 import binascii
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from fastmcp.tools import ToolResult
+from pydantic import Field
 
 from studio_mcp import loading
 from studio_mcp.caller import Caller, current_caller
@@ -20,11 +21,13 @@ from studio_mcp.forward import forward, ndjson_last
 from studio_mcp.inputs import AudioInput, audio_bytes, audio_ref, upload_audio
 from studio_mcp.media import (
     INLINE_CAP,
+    ReturnMedia,
     audio_content,
     audio_gallery_path,
     media_result,
     public_url,
     resource_link,
+    signed_url,
 )
 from studio_mcp.outputs import AudioClip, AudioResult, TranscriptResult, TranscriptSegment
 from studio_mcp.tools import WRITES, opt_text, present, route_json, strings, try_json
@@ -35,15 +38,20 @@ NOT_LOADED = "No model loaded"
 _WAV_BYTES_PER_SAMPLE = 2
 
 
-async def _clip_contents(caller: Caller, clip: AudioClip) -> list[Any]:
-    """A clip inline when its WAV fits the cap, else a link; one that cannot fit is never fetched."""
+async def _clip_contents(
+    caller: Caller,
+    clip: AudioClip,
+    return_media: ReturnMedia = "link",
+) -> list[Any]:
+    """A link, or with "inline" the clip itself when its WAV fits the cap; one that cannot fit is never fetched. Audio has no preview, so "preview" is a link."""
     estimate = (clip.duration_s or 0) * (clip.sample_rate or 0) * _WAV_BYTES_PER_SAMPLE
-    if clip.duration_s and clip.sample_rate and estimate <= INLINE_CAP:
+    fits = clip.duration_s and clip.sample_rate and estimate <= INLINE_CAP
+    if return_media == "inline" and fits:
         response = await forward(caller, "GET", audio_gallery_path(clip.id))
         if response.status_code == 200 and len(response.content) <= INLINE_CAP:
             mime = response.headers.get("content-type", "audio/wav").split(";")[0]
             return [audio_content(response.content, mime)]
-    return [resource_link(clip.url, f"{clip.id}.wav", "audio/wav")]
+    return [resource_link(clip.download_url or clip.url, f"{clip.id}.wav", "audio/wav")]
 
 
 async def _checked_options(
@@ -97,6 +105,16 @@ async def generate_audio(
     speed: Optional[float] = None,
     seed: Optional[int] = None,
     max_tokens: Optional[int] = None,
+    return_media: Annotated[
+        ReturnMedia,
+        Field(
+            description = 'How each clip comes back besides its id and links: "link" (default) links only; '
+            '"inline" the WAV itself when it fits 1.5 MiB; "preview" is the same as "link" for audio.'
+        ),
+    ] = "link",
+    preview_px: Annotated[
+        Optional[int], Field(ge = 32, le = 1024, description = "Unused for audio, which has no preview.")
+    ] = None,
     options: Optional[dict[str, Any]] = None,
 ) -> ToolResult:
     """Run an Audio page workflow with the audio model loaded in Unsloth Studio; clips are saved to Audio history and returned inline when small, else as links. clone: speak ``text`` in the voice of ``reference`` (a clip, or a saved voice as voice_id; ``reference_text`` is its transcript). speak: ``text`` in the loaded model's default voice, or a saved voice via ``reference``. edit: change the words or delivery of ``source`` per ``edit``. convert: make ``source`` sound like ``target``. music: ``mode`` song or sfx from ``text`` (the style) and ``lyrics``; ``variations`` up to 4 share a group_id. separate: split ``source`` into stems. ``options`` are the loaded model's ``audio_options`` that studio_status lists, such as a built-in ``voice``. Audio inputs are an Unsloth Studio id, inline base64 with a filename, or a path on the Unsloth Studio computer."""
@@ -147,9 +165,14 @@ async def generate_audio(
     for row in payload.get("clips") or []:
         if not isinstance(row, dict) or not opt_text(row.get("id")):
             continue
-        clip = AudioClip.from_route(row, url = public_url(caller, audio_gallery_path(row["id"])))
+        # workflow, voice_id, source_clip_id and seed are copied when the route sends them.
+        clip = AudioClip.from_route(
+            row,
+            url = public_url(caller, audio_gallery_path(row["id"])),
+            download_url = await signed_url(caller, "audio", row["id"]),
+        )
         clips.append(clip)
-        contents.extend(await _clip_contents(caller, clip))
+        contents.extend(await _clip_contents(caller, clip, return_media))
     saved = True
     fallback = payload.get("audio")
     if isinstance(fallback, dict) and isinstance(fallback.get("data"), str):
@@ -293,8 +316,10 @@ async def _transcribe_source(
     raise_for_route(response, payload = payload)
     if not isinstance(payload, dict) or payload.get("type") != "complete":
         raise ToolError("The transcription did not finish")
+    record = payload.get("record") if isinstance(payload.get("record"), dict) else {}
     return TranscriptResult(
         text = payload.get("text") if isinstance(payload.get("text"), str) else "",
+        transcript_id = opt_text(record.get("id")),
         language = opt_text(payload.get("language")),
         model = model,
         segments = _segments(payload) if timestamps else None,

@@ -250,6 +250,8 @@ class SystemOneResult(ToolOutput):
 class ImageItem(ToolOutput):
     id: RouteText
     url: str
+    # Works without the API key for about an hour; None when Unsloth Studio would not mint it.
+    download_url: Optional[str] = None
     width: Optional[int] = None
     height: Optional[int] = None
     seed: Optional[int] = None
@@ -259,10 +261,29 @@ class ImageResult(ToolOutput):
     images: list[ImageItem]
 
 
+class ImageRow(ToolOutput):
+    id: RouteText
+    url: str
+    download_url: Optional[str] = None
+    prompt: Optional[RouteText] = None
+    model: Optional[RouteText] = None
+    workflow: Optional[RouteText] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    seed: Optional[int] = None
+    created_at: Optional[float] = None
+    pinned: bool = False
+
+
 class AudioClip(ToolOutput):
     id: RouteText
     role: RouteText = "output"
+    workflow: Optional[RouteText] = None
+    voice_id: Optional[RouteText] = None
+    source_clip_id: Optional[RouteText] = None
+    seed: Optional[int] = None
     url: str
+    download_url: Optional[str] = None
     duration_s: Optional[float] = None
     sample_rate: Optional[int] = None
 
@@ -275,6 +296,42 @@ class AudioResult(ToolOutput):
     saved: bool = True
 
 
+class AudioRow(ToolOutput):
+    id: RouteText
+    url: str
+    download_url: Optional[str] = None
+    prompt: Optional[RouteText] = None
+    model: Optional[RouteText] = None
+    workflow: Optional[RouteText] = None
+    role: Optional[RouteText] = None
+    group_id: Optional[RouteText] = None
+    voice_id: Optional[RouteText] = None
+    source_clip_id: Optional[RouteText] = None
+    duration_s: Optional[float] = None
+    sample_rate: Optional[int] = None
+    created_at: Optional[RouteText] = None
+    pinned: bool = False
+
+
+class VoiceRow(ToolOutput):
+    id: RouteText
+    name: RouteText
+    # Needs the API key: voices have no key-free link.
+    url: str
+    transcript: Optional[RouteText] = None
+    language: Optional[RouteText] = None
+    duration_s: Optional[float] = None
+    sample_rate: Optional[int] = None
+    created_at: Optional[RouteText] = None
+
+
+class VoicesResult(ToolOutput):
+    action: RouteText
+    voices: Optional[list[VoiceRow]] = None
+    voice: Optional[VoiceRow] = None
+    removed: Optional[bool] = None
+
+
 class TranscriptSegment(ToolOutput):
     start: Optional[float] = None
     end: Optional[float] = None
@@ -283,10 +340,23 @@ class TranscriptSegment(ToolOutput):
 
 class TranscriptResult(ToolOutput):
     text: str
+    # Its Audio history id when it was saved there.
+    transcript_id: Optional[RouteText] = None
     language: Optional[RouteText] = None
     model: Optional[RouteText] = None
     segments: Optional[list[TranscriptSegment]] = None
     saved_to_history: bool = False
+
+
+class TranscriptRow(ToolOutput):
+    id: RouteText
+    title: Optional[RouteText] = None
+    text: str = ""
+    model: Optional[RouteText] = None
+    language: Optional[RouteText] = None
+    duration: Optional[float] = None
+    segment_count: Optional[int] = None
+    created_at: Optional[RouteText] = None
 
 
 class VideoJobRef(ToolOutput):
@@ -301,7 +371,35 @@ class VideoJobRef(ToolOutput):
 class VideoInfo(ToolOutput):
     # The MP4, for the agent or its user to download; the tool never fetches it.
     url: str
+    download_url: Optional[str] = None
     thumbnail_inline: bool = False
+
+
+class VideoRow(ToolOutput):
+    id: RouteText
+    url: str
+    download_url: Optional[str] = None
+    prompt: Optional[RouteText] = None
+    model: Optional[RouteText] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    fps: Optional[float] = None
+    duration_s: Optional[float] = None
+    seed: Optional[int] = None
+    has_audio: bool = False
+    created_at: Optional[RouteText] = None
+    pinned: bool = False
+
+
+class MediaPage(ToolOutput):
+    kind: RouteText
+    images: Optional[list[ImageRow]] = None
+    audio: Optional[list[AudioRow]] = None
+    videos: Optional[list[VideoRow]] = None
+    transcripts: Optional[list[TranscriptRow]] = None
+    voices: Optional[list[VoiceRow]] = None
+    # Pass it back as cursor for the next page; None on the last page.
+    next_cursor: Optional[str] = None
 
 
 class JobSummary(ToolOutput):

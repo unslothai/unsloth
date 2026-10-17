@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from starlette.datastructures import UploadFile
 
 from auth.authentication import (
@@ -51,6 +51,7 @@ from loggers.media_progress import (
     reset_media_load_progress,
 )
 from models.inference import (
+    AudioInputRecord,
     DiffusionDownloadPlanResponse,
     GalleryFlagsPatch,
     GalleryMoveRequest,
@@ -922,8 +923,8 @@ _VIDEO_LINK_TTL = 12 * 3600
 _VIDEO_LINK_SECRET = _secrets.token_bytes(32)
 
 
-def _sign_video_id(video_id: str) -> str:
-    exp = int(_time.time()) + _VIDEO_LINK_TTL
+def _sign_video_id(video_id: str, ttl_s: Optional[int] = None) -> str:
+    exp = int(_time.time()) + (_VIDEO_LINK_TTL if ttl_s is None else ttl_s)
     payload = f"{media_link_target(video_id)}.{exp}"
     sig = _hmac.new(_VIDEO_LINK_SECRET, payload.encode(), _hashlib.sha256).hexdigest()
     return f"{payload}.{sig}"
@@ -954,10 +955,12 @@ async def get_gallery_video_signed_url(
     video_id: str,
     current_subject: str = Depends(get_current_subject),
     no_credential: Annotated[bool, Depends(request_admitted_without_credential)] = False,
+    ttl_s: Optional[int] = Query(None, ge = 60, le = 12 * 3600),
 ):
     """A directly playable, range-capable link for one clip (bearer-gated to mint, HMAC to use).
 
-    Returned as a relative URL so it works behind any proxy the page itself is served through."""
+    Returned as a relative URL so it works behind any proxy the page itself is served through.
+    ``ttl_s`` shortens the life (MCP asks for 1 h); omitted, the UI's 12 h applies."""
     if no_credential:
         raise HTTPException(
             status_code = 403,
@@ -969,7 +972,7 @@ async def get_gallery_video_signed_url(
     path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
     if path is None:
         raise HTTPException(status_code = 404, detail = "Video not found.")
-    token = _sign_video_id(video_id)
+    token = _sign_video_id(video_id, ttl_s)
     return {"url": f"/api/inference/video/gallery/{video_id}/file-signed?token={token}"}
 
 
@@ -993,6 +996,75 @@ async def get_gallery_video_file_signed(video_id: str, token: str = Query(...)):
         media_type = "video/mp4",
         headers = {"Cache-Control": "private, max-age=31536000, immutable"},
     )
+
+
+@router.get("/video/gallery/{video_id}/frame")
+async def get_gallery_video_frame(
+    video_id: str,
+    at: str = Query("first", max_length = 32),
+    max_px: Optional[int] = Query(None, ge = 32, le = 4096),
+    current_subject: str = Depends(get_current_subject),
+):
+    """One frame of an owned clip as PNG: ``at`` is ``first``, ``last`` or a time in seconds.
+    Nothing is saved to the Images gallery."""
+    from core.inference import video_gallery
+
+    path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Video not found.")
+    try:
+        data = await asyncio.to_thread(video_gallery.frame_png, path, at, max_px)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 501, detail = str(exc)) from None
+    return Response(
+        content = data,
+        media_type = "image/png",
+        headers = {"Cache-Control": "private, max-age=31536000, immutable"},
+    )
+
+
+class _VideoAudioInput(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    start_s: float = Field(0.0, ge = 0, le = 3600)
+    end_s: Optional[float] = Field(None, gt = 0, le = 3600)
+
+    @model_validator(mode = "after")
+    def _ordered(self):
+        if self.end_s is not None and self.end_s <= self.start_s:
+            raise ValueError("end_s must be after start_s.")
+        return self
+
+
+@router.post(
+    "/video/gallery/{video_id}/audio-input", status_code = 201, response_model = AudioInputRecord
+)
+async def extract_gallery_video_audio(
+    video_id: str,
+    body: _VideoAudioInput,
+    response: Response,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Register an owned clip's audio track (optionally trimmed) as an audio input; the same
+    extract again returns the existing record with 200."""
+    from core.inference import audio_inputs, video_gallery
+
+    record = await asyncio.to_thread(video_gallery.get_record, video_id)
+    path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
+    if record is None or path is None:
+        raise HTTPException(status_code = 404, detail = "Video not found.")
+    name = f"{(str(record.get('prompt') or '').strip() or 'Video')[:60]} (audio).wav"
+    try:
+        saved, created = await asyncio.to_thread(
+            audio_inputs.save_from_media, path, name, body.start_s, body.end_s
+        )
+    except audio_inputs.AudioInputError as exc:
+        raise HTTPException(status_code = exc.status, detail = exc.detail) from None
+    if not created:
+        response.status_code = 200
+    return AudioInputRecord(**saved)
 
 
 @router.get("/video/gallery/{video_id}/export")

@@ -1100,7 +1100,12 @@ def test_protected_side_effect_guards_remain_wired():
     )
     assert all(
         "request_admitted_without_credential" in inspect.getsource(handler)
-        for handler in (video.get_gallery_video_signed_url, rag.document_file_url)
+        for handler in (
+            video.get_gallery_video_signed_url,
+            rag.document_file_url,
+            inference.get_gallery_image_signed_url,
+            inference.get_gallery_audio_signed_url,
+        )
     )
     assert "request_admitted_without_credential" in inspect.getsource(
         inference.openai_image_generations

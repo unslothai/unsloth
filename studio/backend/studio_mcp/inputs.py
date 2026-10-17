@@ -9,15 +9,15 @@ import base64
 import binascii
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Annotated, Any, Literal, Optional, Union
 
 from fastmcp.exceptions import ToolError
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from studio_mcp.caller import Caller
 from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
-from studio_mcp.media import image_gallery_path
+from studio_mcp.media import image_gallery_path, video_frame_path, video_gallery_path
 
 PATH_REMOTE = (
     "File paths work only when the agent runs on the Unsloth Studio computer. "
@@ -26,21 +26,29 @@ PATH_REMOTE = (
 MAX_IMAGE_BYTES = 32 * 1024 * 1024 * 3 // 4
 IMAGE_MIMES = ("image/png", "image/jpeg", "image/webp")
 _DATA_URL = re.compile(r"^data:(image/(?:png|jpeg|webp));base64,(.*)$", re.DOTALL)
+_MEDIA_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 class ImageInput(BaseModel):
-    """Exactly one of ``path`` (a file on the Unsloth Studio computer), ``data_url`` (data:image/png|jpeg|webp;base64,...) or ``gallery_id`` (an image in the Unsloth Studio Images gallery). Inline data rides in the MCP request, which is limited to 4 MiB."""
+    """Exactly one of ``path`` (a file on the Unsloth Studio computer), ``data_url`` (data:image/png|jpeg|webp;base64,...), ``gallery_id`` (an image in the Unsloth Studio Images gallery) or ``video_id`` (one frame of a clip in the Unsloth Studio Video gallery, picked by ``frame``: "first", "last" or seconds from the start; default "first"). Inline data rides in the MCP request, which is limited to 4 MiB."""
 
     model_config = ConfigDict(extra = "forbid")
 
     path: Optional[str] = None
     data_url: Optional[str] = None
     gallery_id: Optional[str] = None
+    video_id: Optional[str] = None
+    frame: Optional[Union[Literal["first", "last"], Annotated[float, Field(ge = 0)]]] = None
 
     @model_validator(mode = "after")
     def _exactly_one(self) -> "ImageInput":
-        if sum(value is not None for value in (self.path, self.data_url, self.gallery_id)) != 1:
-            raise ValueError("Give exactly one of path, data_url or gallery_id.")
+        sources = (self.path, self.data_url, self.gallery_id, self.video_id)
+        if sum(value is not None for value in sources) != 1:
+            raise ValueError("Give exactly one of path, data_url, gallery_id or video_id.")
+        if self.frame is not None and self.video_id is None:
+            raise ValueError("frame goes with video_id.")
+        if self.video_id is not None and not _MEDIA_ID.match(self.video_id):
+            raise ValueError("Unsloth Studio video ids are letters, digits, - and _.")
         return self
 
 
@@ -98,6 +106,16 @@ async def resolve_image(
         if match is None:
             raise ToolError("data_url must be data:image/png, image/jpeg or image/webp;base64,...")
         data = decode_base64(match.group(2), max_bytes, "data_url")
+    elif image.video_id is not None:
+        # The frame is decoded by Unsloth Studio and never saved to the Images gallery.
+        at = image.frame if image.frame is not None else "first"
+        response = await forward(
+            caller, "GET", video_frame_path(image.video_id), params = {"at": str(at)}
+        )
+        raise_for_route(response)
+        data = response.content
+        if len(data) > max_bytes:
+            raise ToolError(f"A frame of video {image.video_id} is too large to send")
     else:
         response = await forward(caller, "GET", image_gallery_path(image.gallery_id))
         raise_for_route(response)
@@ -130,11 +148,11 @@ def data_url(data: bytes, mime: str) -> str:
 
 
 MAX_AUDIO_BYTES = 200 * 1024 * 1024
-_AUDIO_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_AUDIO_ID = _MEDIA_ID
 
 
 class AudioInput(BaseModel):
-    """Exactly one of ``path`` (a file on the Unsloth Studio computer), ``data_base64`` with a ``filename``, or an Unsloth Studio id: ``input_id`` (an uploaded clip), ``clip_id`` (an Audio history clip) or ``voice_id`` (a saved voice). Inline data rides in the MCP request, which is limited to 4 MiB."""
+    """Exactly one of ``path`` (a file on the Unsloth Studio computer), ``data_base64`` with a ``filename``, or an Unsloth Studio id: ``input_id`` (an uploaded clip), ``clip_id`` (an Audio history clip), ``voice_id`` (a saved voice) or ``video_id`` (the sound of a clip in the Unsloth Studio Video gallery, optionally trimmed to ``start_s``..``end_s`` seconds). Inline data rides in the MCP request, which is limited to 4 MiB."""
 
     model_config = ConfigDict(extra = "forbid")
 
@@ -144,17 +162,31 @@ class AudioInput(BaseModel):
     input_id: Optional[str] = None
     clip_id: Optional[str] = None
     voice_id: Optional[str] = None
+    video_id: Optional[str] = None
+    start_s: Optional[Annotated[float, Field(ge = 0, le = 3600)]] = None
+    end_s: Optional[Annotated[float, Field(gt = 0, le = 3600)]] = None
 
     @model_validator(mode = "after")
     def _exactly_one(self) -> "AudioInput":
-        sources = (self.path, self.data_base64, self.input_id, self.clip_id, self.voice_id)
+        sources = (
+            self.path,
+            self.data_base64,
+            self.input_id,
+            self.clip_id,
+            self.voice_id,
+            self.video_id,
+        )
         if sum(value is not None for value in sources) != 1:
             raise ValueError(
-                "Give exactly one of path, data_base64, input_id, clip_id or voice_id."
+                "Give exactly one of path, data_base64, input_id, clip_id, voice_id or video_id."
             )
         if (self.filename is not None) != (self.data_base64 is not None):
             raise ValueError("filename goes with data_base64, and data_base64 needs one.")
-        for value in (self.input_id, self.clip_id, self.voice_id):
+        if (self.start_s is not None or self.end_s is not None) and self.video_id is None:
+            raise ValueError("start_s and end_s go with video_id.")
+        if self.end_s is not None and self.end_s <= (self.start_s or 0):
+            raise ValueError("end_s must be after start_s.")
+        for value in (self.input_id, self.clip_id, self.voice_id, self.video_id):
             if value is not None and not _AUDIO_ID.match(value):
                 raise ValueError("Unsloth Studio audio ids are letters, digits, - and _.")
         return self
@@ -189,6 +221,19 @@ async def audio_ref(caller: Caller, audio: AudioInput) -> dict[str, str]:
     if audio.is_upload:
         data, name = audio_bytes(caller, audio)
         return {"input_id": await upload_audio(caller, data, name)}
+    if audio.video_id is not None:
+        # Unsloth Studio stores the clip's sound as an audio input; the same trim answers the same id.
+        trim = {"start_s": audio.start_s, "end_s": audio.end_s}
+        response = await forward(
+            caller,
+            "POST",
+            video_gallery_path(audio.video_id, "/audio-input"),
+            json_body = {key: value for key, value in trim.items() if value is not None},
+        )
+        record = raise_for_route(response)
+        if not isinstance(record, dict) or not isinstance(record.get("id"), str):
+            raise ToolError("Unsloth Studio did not store the video's audio")
+        return {"input_id": record["id"]}
     for key in ("input_id", "clip_id", "voice_id"):
         value = getattr(audio, key)
         if value is not None:

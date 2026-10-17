@@ -7,20 +7,32 @@ from __future__ import annotations
 
 import base64
 import json
-from typing import Any, Optional
-from urllib.parse import quote, urlsplit
+import re
+from typing import Any, Literal, Optional, Union
+from urllib.parse import parse_qsl, quote, urlsplit
 
 from fastmcp.exceptions import ToolError
 from fastmcp.tools import ToolResult
 from mcp.types import AudioContent, ImageContent, ResourceLink, TextContent
 
 from studio_mcp.caller import Caller
+from studio_mcp.forward import forward
 from studio_mcp.outputs import ToolOutput
 
 # Agents put inline media straight into the model's context; past this a link is kinder.
 INLINE_CAP = 1536 * 1024
 MEDIA_PREFIXES = ("/v1/", "/api/inference/")
 THUMB_SIDE = 1024
+# inline: the media itself when small; preview: a small image plus a link; link: only the link.
+ReturnMedia = Literal["inline", "preview", "link"]
+# Every link the MCP mints lasts about an hour, whatever the UI's own links last.
+MCP_LINK_TTL_S = 3600
+_TOKEN = re.compile(r"^[A-Za-z0-9_.:-]{1,512}$")
+SIGNED_BASES = {
+    "image": "/api/inference/images/gallery",
+    "audio": "/v1/audio/gallery",
+    "video": "/api/inference/video/gallery",
+}
 
 
 def image_content(data: bytes, mime: str) -> ImageContent:
@@ -62,13 +74,45 @@ def public_url(caller: Caller, path: str) -> str:
     return f"{_base(caller)}{parts.path}{query}"
 
 
-def image_gallery_path(image_id: str, thumb: bool = False) -> str:
+def image_gallery_path(image_id: str, thumb: Union[bool, int] = False) -> str:
+    """The gallery PNG, or with ``thumb`` a WebP thumbnail that many pixels on its long side (True: 1024)."""
     path = f"/api/inference/images/gallery/{quote(image_id, safe = '')}/file"
-    return f"{path}?thumb={THUMB_SIDE}" if thumb else path
+    if thumb is False:
+        return path
+    return f"{path}?thumb={THUMB_SIDE if thumb is True else int(thumb)}"
 
 
 def audio_gallery_path(clip_id: str) -> str:
     return f"/v1/audio/gallery/{quote(clip_id, safe = '')}/file"
+
+
+def video_gallery_path(video_id: str, suffix: str = "/file") -> str:
+    return f"{SIGNED_BASES['video']}/{quote(video_id, safe = '')}{suffix}"
+
+
+def video_frame_path(video_id: str) -> str:
+    return video_gallery_path(video_id, "/frame")
+
+
+def voice_path(voice_id: str = "", suffix: str = "") -> str:
+    return (
+        f"/v1/audio/voices/{quote(voice_id, safe = '')}{suffix}" if voice_id else "/v1/audio/voices"
+    )
+
+
+async def signed_url(caller: Caller, kind: str, media_id: str) -> Optional[str]:
+    """A link that works without the API key for about an hour, for this caller's account only, or None when Unsloth Studio would not mint one. Only the token is taken from the answer; the path is rebuilt here."""
+    base = f"{SIGNED_BASES[kind]}/{quote(media_id, safe = '')}"
+    params = {"ttl_s": MCP_LINK_TTL_S} if kind == "video" else None
+    try:
+        response = await forward(caller, "GET", f"{base}/signed-url", params = params)
+        url = response.json().get("url") if response.status_code == 200 else None
+        token = dict(parse_qsl(urlsplit(url).query)).get("token") if isinstance(url, str) else None
+    except Exception:
+        return None
+    if not isinstance(token, str) or not _TOKEN.match(token):
+        return None
+    return public_url(caller, f"{base}/file-signed?token={token}")
 
 
 def media_result(contents: list[Any], output: ToolOutput) -> ToolResult:
