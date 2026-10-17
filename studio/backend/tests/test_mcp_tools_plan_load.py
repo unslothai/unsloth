@@ -174,3 +174,26 @@ def test_variants_sizes_and_the_gpu_estimate(monkeypatch):
         monkeypatch, _world("off", []), "plan_load", {"model": QWEN, "variant": "Q2_K"}
     )
     assert missing["isError"] is True and "no GGUF variant Q2_K" in missing["content"][0]["text"]
+
+
+def test_another_variant_of_a_resident_repo_is_a_new_load(monkeypatch):
+    world = _world("off", [f"{QWEN}:Q4_K_M"], image = FLUX_GGUF)
+    plan = _plan(monkeypatch, world, {"model": QWEN, "variant": "Q8_0"})
+    assert _names(plan["would_evict"]) == {("llm", f"{QWEN}:Q4_K_M"), ("image", FLUX_GGUF)}
+    assert _plan(monkeypatch, world, {"model": QWEN, "variant": "Q4_K_M"})["would_evict"] == []
+    # Status naming only the bare repo cannot tell which variant serves.
+    plan = _plan(monkeypatch, _world("off", [QWEN]), {"model": QWEN, "variant": "Q8_0"})
+    assert plan["would_evict_exact"] is False
+
+
+def test_nothing_left_to_download_is_zero(monkeypatch):
+    rows = [
+        {
+            "quant": "Q8_0",
+            "filename": "b.gguf",
+            "download_remaining_bytes": 0,
+            "download_size_bytes": 800,
+        }
+    ]
+    world = {**_world("off", []), ("GET", "/api/hub/gguf-variants"): {"variants": rows}}
+    assert _plan(monkeypatch, world, {"model": QWEN, "variant": "Q8_0"})["download_bytes"] == 0

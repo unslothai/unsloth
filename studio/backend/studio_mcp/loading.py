@@ -715,6 +715,15 @@ async def unload_all(caller: Caller) -> UnloadAllResult:
             "POST", "/api/inference/unload", caller = caller, json_body = {"model_path": target}
         )
     _serving, _checkpoints, after = await _llm_resident(caller)
+    # Models held in memory behind the active one are listed only under loaded.
+    held = [name for name in after if name not in checkpoints and name not in serving]
+    for name in held:
+        await route_json(
+            "POST", "/api/inference/unload", caller = caller, json_body = {"model_path": name}
+        )
+    if held:
+        _serving, _checkpoints, after = await _llm_resident(caller)
+    pairs += [(name, name) for name in held]
     unloaded = [
         SlotModel(kind = "llm", model = name) for name, target in pairs if not {name, target} & after
     ]
