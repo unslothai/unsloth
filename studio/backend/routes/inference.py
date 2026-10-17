@@ -51242,6 +51242,25 @@ async def audio_catalog(current_subject: str = Depends(get_current_subject)):
     return payload.model_copy(update = {"models": [AudioCatalogModel(**r) for r in rows]})
 
 
+@studio_router.get("/media/catalog")
+async def media_catalog(current_subject: str = Depends(get_current_subject)):
+    """The image and video models Unsloth Studio can offer, filtered to what this account may see."""
+    from core.inference.media_catalog import MediaCatalogResponse, media_catalog_payload
+
+    try:
+        payload = await asyncio.to_thread(media_catalog_payload)
+        rows = await asyncio.to_thread(
+            account_access.filter_model_rows, [m.model_dump() for m in payload.models]
+        )
+    except Exception:  # noqa: BLE001 - no exception text reaches the client
+        logger.debug("media catalog failed", exc_info = True)
+        raise HTTPException(
+            status_code = 503,
+            detail = "Unsloth Studio could not list image and video models right now.",
+        ) from None
+    return MediaCatalogResponse(models = rows)
+
+
 @router.get("/audio/voices", response_model = AudioVoiceListResponse)
 async def list_audio_voices(request: Request, current_subject: str = Depends(get_current_subject)):
     from core.inference import audio_voices

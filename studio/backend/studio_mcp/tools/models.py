@@ -5,15 +5,29 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+import asyncio
+from typing import Annotated, Any, Literal, Optional
 from urllib.parse import quote
 
 from fastmcp import Context
+from fastmcp.exceptions import ToolError
+from pydantic import Field
 
 from studio_mcp import loading
 from studio_mcp.caller import current_caller
-from studio_mcp.outputs import LoadResult, ModelEntry, ModelList, UnloadResult
-from studio_mcp.tools import DESTRUCTIVE, READ_ONLY, WRITES, as_dict, opt_text, route_json
+from studio_mcp.outputs import HardwareSlot, LoadResult, ModelEntry, ModelList, UnloadResult
+from studio_mcp.tools import (
+    DESTRUCTIVE,
+    READ_ONLY,
+    WRITES,
+    as_dict,
+    integer,
+    opt_text,
+    route_json,
+    strings,
+    try_json,
+)
+from studio_mcp.tools.status import SLOT_ROUTES, _hardware
 
 # "tts" and "audio" are what list_models reports for audio models; they load in the llm slot.
 ModelKind = Literal["llm", "image", "video", "stt", "tts", "audio"]
@@ -50,6 +64,9 @@ TRAINING_DEFAULT_KEYS = {
 }
 
 
+CATALOG_FIELDS = ("size_bytes", "low_vram", "fits_now", "source")
+
+
 def kind_of(entry: dict) -> str:
     task = entry.get("task")
     if task is None:
@@ -60,7 +77,8 @@ def kind_of(entry: dict) -> str:
 def _entry(entry: dict) -> Optional[ModelEntry]:
     if not opt_text(entry.get("id")):
         return None
-    return ModelEntry.from_route(entry, kind = kind_of(entry))
+    # The catalog fields stay null on local rows, whatever the route sends.
+    return ModelEntry.from_route(entry, kind = kind_of(entry), **dict.fromkeys(CATALOG_FIELDS))
 
 
 def _training_defaults(details: Any) -> Optional[dict[str, Any]]:
@@ -81,13 +99,142 @@ def _same_model_id(listed: str, asked: str) -> bool:
     return listed.lower() == asked.split(":", 1)[0].lower() or listed.lower() == asked.lower()
 
 
+# The audio catalog's task -> the kind list_models reports and load_model takes.
+AUDIO_KIND = {"tts": "tts", "music": "audio", "sep": "audio", "asr": "stt", "": "audio"}
+MEDIA_KINDS = ("image", "video")
+AUDIO_KINDS = ("tts", "audio", "stt")
+# GpuDevice memory is GiB; catalog sizes are decimal GB.
+GIB_TO_GB = 1.073741824
+
+
+def free_gb(hardware: Optional[HardwareSlot]) -> Optional[float]:
+    # One load lands on one GPU, so the most free memory on any one device counts, never the sum.
+    free = [
+        (device.vram_total_gb - device.vram_used_gb) * GIB_TO_GB
+        for device in (hardware.devices if hardware else [])
+        if device.vram_total_gb is not None and device.vram_used_gb is not None
+    ]
+    return max(free) if free else None
+
+
+def fits(size_bytes: Optional[int], free: Optional[float]) -> Optional[bool]:
+    if size_bytes is None or free is None:
+        return None
+    return size_bytes / 1e9 <= free
+
+
+async def _catalog_part(path: str, label: str, others: Optional[str]) -> list:
+    try:
+        listing = await route_json("GET", path)
+    except ToolError as error:
+        hint = f" Pass kind={others} to list the others." if others else ""
+        message = f"Unsloth Studio could not list the {label} catalog: {error}{hint}"
+        raise ToolError(message) from None
+    rows = as_dict(listing).get("models")
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+async def _catalog(
+    kind: Optional[str], loaded_only: bool, workflow: Optional[str]
+) -> list[ModelEntry]:
+    if loaded_only:
+        raise ToolError("loaded_only lists resident models; use the default source.")
+    if kind == "llm":
+        return []
+    want_media = kind in (None, *MEDIA_KINDS) and not workflow
+    want_audio = kind in (None, *AUDIO_KINDS)
+    both = want_media and want_audio
+
+    async def nothing() -> list:
+        return []
+
+    media, audio, hardware = await asyncio.gather(
+        _catalog_part("/api/inference/media/catalog", "image and video", '"tts"' if both else None)
+        if want_media
+        else nothing(),
+        _catalog_part("/api/inference/audio/catalog", "audio", '"image"' if both else None)
+        if want_audio
+        else nothing(),
+        try_json(current_caller(), SLOT_ROUTES["hardware"]),
+    )
+    free = free_gb(_hardware(hardware) if isinstance(hardware, dict) else None)
+    entries = []
+    for row in media:
+        if not opt_text(row.get("id")) or row.get("kind") not in MEDIA_KINDS:
+            continue
+        size = integer(row.get("size_bytes"))
+        low_vram = row.get("low_vram") if isinstance(row.get("low_vram"), bool) else None
+        entries.append(
+            ModelEntry(
+                id = row["id"],
+                kind = row["kind"],
+                display_name = opt_text(row.get("display_name")),
+                size_bytes = size,
+                low_vram = low_vram,
+                fits_now = fits(size, free),
+                source = "catalog",
+            )
+        )
+    for row in audio:
+        if not opt_text(row.get("id")):
+            continue
+        size = integer(row.get("size_bytes"))
+        entries.append(
+            ModelEntry(
+                id = row["id"],
+                kind = AUDIO_KIND.get(row.get("task") or "", "audio"),
+                display_name = opt_text(row.get("display_name")),
+                audio_workflows = strings(row.get("workflows")),
+                size_bytes = size,
+                fits_now = fits(size, free),
+                source = "catalog",
+            )
+        )
+    return entries
+
+
+async def _training_defaults_for(model: Optional[str]) -> Optional[dict[str, Any]]:
+    if not model:
+        return None
+    details = await route_json(
+        "GET", "/api/models/config/" + quote(model, safe = "/:"), hub_header = True
+    )
+    return _training_defaults(details)
+
+
 async def list_models(
     kind: Optional[ModelKind] = None,
     loaded_only: bool = False,
     model: Optional[str] = None,
     workflow: Optional[AudioWorkflow] = None,
+    source: Annotated[
+        Literal["local", "catalog"],
+        Field(
+            description = '"local" lists downloaded and loaded models; "catalog" lists image, video '
+            "and audio models Unsloth Studio can download."
+        ),
+    ] = "local",
 ) -> ModelList:
-    """Models this Unsloth Studio can serve: loaded ones and those already downloaded. Each entry has the id to pass to load_model, its kind and whether it is loaded. ``kind`` is read from the model's task; a model with no task is reported as "llm", which also covers embedding models and unloaded text-to-speech models Unsloth Studio cannot classify yet, so pass the kind explicitly to load_model. ``loaded_only`` returns just the resident models. ``model`` narrows the list to that model (empty when it is not downloaded yet) and adds Unsloth Studio's training defaults for it, which also works for a Hugging Face repo id that is not downloaded (send X-Unsloth-HF-Token for a gated repo). ``workflow`` keeps only audio models that run that Unsloth Studio Audio page (their ``audio_workflows``), such as the ids to pass to generate_audio as ``model``."""
+    """Models this Unsloth Studio can serve: loaded ones and those already downloaded.
+    Each entry has the id to pass to load_model, its kind and whether it is loaded.
+    ``kind`` is read from the model's task; a model with no task is reported as "llm", which also covers embedding models and unloaded text-to-speech models Unsloth Studio cannot classify yet, so pass the kind explicitly to load_model.
+    ``loaded_only`` returns just the resident models.
+    ``model`` narrows the list to that model (empty when it is not downloaded yet) and adds Unsloth Studio's training defaults for it, which also works for a Hugging Face repo id that is not downloaded (send X-Unsloth-HF-Token for a gated repo).
+    ``workflow`` keeps only audio models that run that Unsloth Studio Audio page (their ``audio_workflows``), such as the ids to pass to generate_audio as ``model``.
+    With source="catalog" it lists image, video and audio models Unsloth Studio can download, with size_bytes (decimal), low_vram and fits_now (whether it fits in the free memory of one GPU right now; null when unknown).
+    LLM rows are not in the catalog: list downloaded LLMs with the default source, or load a Hugging Face id.
+    Load a catalog row with load_model(model=id, kind=its kind).
+    """
+    if source == "catalog":
+        models = await _catalog(kind, loaded_only, workflow)
+        models = [
+            entry
+            for entry in models
+            if (not kind or entry.kind == kind)
+            and (not model or _same_model_id(entry.id, model))
+            and (not workflow or workflow in (entry.audio_workflows or []))
+        ]
+        return ModelList(models = models, training_defaults = await _training_defaults_for(model))
     if loaded_only and kind == "llm" and not workflow:
         # Resident chat models without a scan of every model folder; it never lists image, video or STT.
         listing = await route_json("GET", "/api/inference/loaded-models")
@@ -104,13 +251,7 @@ async def list_models(
         if workflow and workflow not in (entry.audio_workflows or []):
             continue
         models.append(entry)
-    defaults = None
-    if model:
-        details = await route_json(
-            "GET", "/api/models/config/" + quote(model, safe = "/:"), hub_header = True
-        )
-        defaults = _training_defaults(details)
-    return ModelList(models = models, training_defaults = defaults)
+    return ModelList(models = models, training_defaults = await _training_defaults_for(model))
 
 
 async def load_model(

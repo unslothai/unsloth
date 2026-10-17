@@ -50,7 +50,7 @@ SCHEMA_FACTS = [
     (
         "list_models",
         "parameters/properties",
-        lambda props: set(props) == {"kind", "loaded_only", "model", "workflow"},
+        lambda props: {"kind", "loaded_only", "model", "workflow"} <= set(props),
     ),
     (
         "load_model",

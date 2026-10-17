@@ -182,6 +182,12 @@ class ModelEntry(ToolOutput):
     display_name: Optional[RouteText] = None
     quant: Optional[RouteText] = None
     context_length: Optional[int] = None
+    # Catalog rows only: decimal bytes, a reduced-memory artifact, whether it fits one GPU's free memory now.
+    size_bytes: Optional[int] = None
+    low_vram: Optional[bool] = None
+    fits_now: Optional[bool] = None
+    # "catalog" for list_models(source="catalog") rows.
+    source: Optional[RouteText] = None
     audio_workflows: Optional[list[RouteText]] = None
 
 
