@@ -114,11 +114,30 @@ def test_the_registry_runs_settles_fails_and_cancels_tasks():
 
 
 def test_without_an_id_only_this_accounts_jobs_are_listed(monkeypatch):
-    register_export_job(job_id = "mine", status = "completed")
+    register_export_job(job_id = "mine", status = "completed", phase = "done", output = "my-gguf")
     register_export_job(account_id = "alice-id", job_id = "theirs")
+    register_export_job(job_id = "newer", status = "failed", phase = "exporting", error = "Disk full")
     result, _studio = _get(monkeypatch, {"kind": "export"})
+    # Newest first, each with its format, phase, output and error.
     assert result["structuredContent"]["jobs"] == [
-        {"id": "mine", "status": "completed", "progress_percent": None}
+        {
+            "id": "newer",
+            "status": "failed",
+            "progress_percent": None,
+            "format": "gguf",
+            "phase": "exporting",
+            "output": None,
+            "error": "Disk full",
+        },
+        {
+            "id": "mine",
+            "status": "completed",
+            "progress_percent": None,
+            "format": "gguf",
+            "phase": "done",
+            "output": "my-gguf",
+            "error": None,
+        },
     ]
 
 

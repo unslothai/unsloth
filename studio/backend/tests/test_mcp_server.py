@@ -85,3 +85,26 @@ def test_instructions_point_agents_at_the_workflow():
     for phrase in ("studio_status", "list_models", "load_model", "get_job", "cancel"):
         assert phrase in INSTRUCTIONS
     assert "Studio computer" in INSTRUCTIONS and "galleries" in INSTRUCTIONS
+    for keyword in (
+        "chat",
+        "images",
+        "audio",
+        "speak",
+        "clone",
+        "edit",
+        "convert",
+        "music",
+        "sfx",
+        "separate",
+        "transcribe",
+        "video",
+        "datasets",
+        "fine-tune",
+        "export",
+    ):
+        assert keyword in INSTRUCTIONS, keyword
+    assert "load a model, generate, then unload_model" in INSTRUCTIONS
+    assert "speech-to-text models stay loaded" in INSTRUCTIONS
+    assert len(INSTRUCTIONS) <= 1900
+    for absent in ("wait_s", "alongside", "signed"):
+        assert absent not in INSTRUCTIONS, absent

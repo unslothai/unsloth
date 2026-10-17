@@ -2846,6 +2846,8 @@ def _build_training_status(
             "total_steps": getattr(progress, "total_steps", 0),
             "loss": getattr(progress, "loss", None),
             "learning_rate": getattr(progress, "learning_rate", None),
+            "elapsed_seconds": getattr(progress, "elapsed_seconds", None),
+            "eta_seconds": getattr(progress, "eta_seconds", None),
             "output_dir": getattr(backend, "_output_dir", None) or None,
             "drafter": getattr(progress, "drafter", None),
             "model_download_repo_id": (

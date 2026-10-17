@@ -147,6 +147,7 @@ def test_every_slot_is_reported(monkeypatch):
         "loss": 1.25,
         "progress_percent": 25.0,
         "eta_seconds": None,
+        "elapsed_seconds": None,
     }
     # Image LoRA training runs on its own trainer: start_training(kind="diffusion") is followed here.
     assert status["diffusion_training"] == {
@@ -160,6 +161,7 @@ def test_every_slot_is_reported(monkeypatch):
         "loss": 0.5,
         "progress_percent": 2.4,
         "eta_seconds": None,
+        "elapsed_seconds": None,
     }
     assert status["export"] == {
         "active": False,
@@ -258,3 +260,29 @@ def test_unloaded_slots_name_no_model(monkeypatch):
     status = _status(monkeypatch, overrides)[0]["structuredContent"]
     assert status["image"] == {"loaded": False, "model": None, "family": None, "generating": False}
     assert status["video"] == {"loaded": False, "model": None, "generating": False}
+
+
+def _training_slot(monkeypatch, details):
+    payload = {**TRAINING, "details": details}
+    overrides = {("GET", "/api/train/status"): payload}
+    return _status(monkeypatch, overrides)[0]["structuredContent"]["training"]
+
+
+def test_the_step_zero_loss_placeholder_reads_as_no_loss(monkeypatch):
+    for step in (0, None):
+        slot = _training_slot(monkeypatch, {"step": step, "total_steps": 100, "loss": 0.0})
+        assert slot["loss"] is None
+    slot = _training_slot(monkeypatch, {"step": 1, "total_steps": 100, "loss": 0.0})
+    assert slot["loss"] == 0.0
+
+
+def test_training_eta_and_elapsed_pass_through(monkeypatch):
+    details = {
+        "step": 25,
+        "total_steps": 100,
+        "loss": 1.25,
+        "eta_seconds": 90.5,
+        "elapsed_seconds": 30.0,
+    }
+    slot = _training_slot(monkeypatch, details)
+    assert (slot["loss"], slot["eta_seconds"], slot["elapsed_seconds"]) == (1.25, 90.5, 30.0)

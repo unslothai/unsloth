@@ -812,6 +812,8 @@ def test_owner_training_start_status_cancel_bytes_are_unchanged(training, monkey
             "total_steps": 0,
             "loss": None,
             "learning_rate": None,
+            "elapsed_seconds": None,
+            "eta_seconds": None,
             "output_dir": None,
             "drafter": None,
             "model_download_repo_id": None,

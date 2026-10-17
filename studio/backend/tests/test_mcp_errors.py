@@ -80,7 +80,7 @@ CASES = DETAIL_CASES + [
     ),
     pytest.param(
         _v1(404, f"No model {SENTINEL}", type = "not_found_error", code = "model_not_found"),
-        ["No model", "(model_not_found)", "(HTTP 404)"],
+        ["[model_not_found] No model", "(HTTP 404)"],
         id = "v1-envelope",
     ),
     pytest.param(
@@ -202,7 +202,9 @@ def test_tool_guidance_survives_the_scrub():
         {"error": "gpu_busy", "message": "Another account is generating.", "retry_after": 3},
         headers = {"Retry-After": "3"},
     )
-    assert _message(busy, hints = {409: "x"}) == f"{BUSY_OUT}. Retry after 3 s."
+    message = _message(busy, hints = {409: "x"})
+    assert message.startswith("[gpu_busy retry_after=3] ")
+    assert message.endswith(f"] {BUSY_OUT}. Retry after 3 s.")
 
 
 def test_a_routes_own_call_this_route_hint_is_dropped():
@@ -210,3 +212,234 @@ def test_a_routes_own_call_this_route_hint_is_dropped():
     assert str(error) == "No model loaded. Load a chat model."
     # A path outside a route hint is scrubbed, not dropped.
     assert str(tool_error("Saved to /srv/mcp-sentinel/x.png")) == "Saved to <path>"
+
+
+# The Keep multiple models loaded refusal, as the owner and a managed account see it.
+OWNER_ALWAYS = (
+    "Loading this model would unload the chat model unsloth/Qwen3-0.6B, and Keep multiple models"
+    " loaded is set to Always. Unload that model first, or choose When they fit."
+)
+MANAGED_ALWAYS = (
+    "Loading this model would unload the chat model unsloth/Qwen3-0.6B, which Unsloth Studio is"
+    " set to keep loaded. Unload that model first, or ask the Unsloth Studio owner."
+)
+ALWAYS_TAG = "[multi_model_always kind=chat] "
+TOOL_HINT = "Wait for the load to finish, then retry."
+
+
+def _padded(deferred):
+    return _response(200, content = b" " * 64 + json.dumps({"_deferred_error": deferred}).encode())
+
+
+def _assert_always(message, tag = ALWAYS_TAG):
+    assert message.startswith(tag), message
+    assert "unload_model(kind='llm')" in message
+    assert "retrying won't help" in message
+    assert "Retry after" not in message
+    assert "force_cancel_active" not in message
+    assert TOOL_HINT not in message
+
+
+@pytest.mark.parametrize(
+    "resp",
+    [
+        _padded({"status_code": 409, "detail": OWNER_ALWAYS}),
+        _response(
+            409,
+            {"detail": OWNER_ALWAYS},
+            headers = {"X-Unsloth-Refusal": "multi-model-always", "Retry-After": "5"},
+        ),
+        _response(409, {"detail": MANAGED_ALWAYS}),
+        _v1(409, OWNER_ALWAYS, type = "conflict_error", param = "model", code = "multi_model_always"),
+        # A route that copies the headers into the padded body; the copy is not the marker text.
+        _padded(
+            {
+                "status_code": 409,
+                "detail": "Loading this model would unload the chat model x.",
+                "headers": {"X-UNSLOTH-REFUSAL": "multi-model-always"},
+            }
+        ),
+        _response(
+            409, {"detail": {"code": "multi_model_always", "kind": "chat", "message": "No."}}
+        ),
+    ],
+    ids = ["padded-deferred", "header", "managed-phrase", "v1-code", "deferred-headers", "code"],
+)
+def test_a_multi_model_always_refusal_is_tagged_and_names_unload_model(resp):
+    _assert_always(_message(resp, hints = {409: TOOL_HINT}))
+
+
+def test_a_multi_model_always_refusal_of_an_unknown_kind_keeps_a_bare_tag():
+    resp = _response(409, {"detail": "Keep multiple models loaded is set to Always."})
+    message = _message(resp, hints = {409: TOOL_HINT})
+    assert message.startswith("[multi_model_always] ")
+    assert message.endswith(
+        "Call unload_model(kind=…) for the model it names to free the GPU; retrying won't help."
+    )
+
+
+def test_always_wording_on_another_status_is_not_a_refusal():
+    message = _message(_response(500, {"detail": "Keep multiple models loaded is set to Always."}))
+    assert not message.startswith("[")
+    assert "unload_model" not in message
+
+
+@pytest.mark.parametrize(
+    "resp",
+    [
+        _response(409, {"error": "gpu_busy", "message": BUSY, "retry_after": 12}),
+        _response(409, {"detail": {"error": "gpu_busy", "message": BUSY, "retry_after": 12}}),
+        _v1(409, BUSY, type = "conflict_error", code = "gpu_busy", headers = {"Retry-After": "12"}),
+    ],
+    ids = ["top-level", "detail-wrapped", "v1-envelope"],
+)
+def test_gpu_busy_is_tagged_with_its_retry_after(resp):
+    message = _message(resp, hints = {409: TOOL_HINT})
+    assert message.startswith("[gpu_busy retry_after=12] GPU busy: Another account")
+    assert message.endswith("Retry after 12 s.")
+    assert TOOL_HINT not in message
+
+
+def test_gpu_busy_without_a_number_keeps_a_bare_tag():
+    message = _message(_response(409, {"error": "gpu_busy", "message": "Busy."}))
+    assert message.startswith("[gpu_busy] GPU busy: Busy.")
+
+
+def test_a_detail_code_becomes_the_tag():
+    resp = _response(500, {"detail": {"code": "out_of_memory", "message": f"OOM at {SENTINEL}"}})
+    message = _message(resp)
+    assert message.startswith("[out_of_memory] OOM at <path>")
+    assert message.endswith("(HTTP 500)")
+    # Not a plain identifier: the message stays, the tag goes.
+    bad = _message(_response(500, {"detail": {"code": "Bad Code!", "message": "boom"}}))
+    assert bad.startswith("boom")
+
+
+def test_a_plain_string_detail_has_no_tag():
+    message = _message(_response(409, {"detail": "Another model is loading"}))
+    assert not message.startswith("[")
+    assert message.startswith("Another model is loading (HTTP 409)")
+
+
+ACTIVE = {
+    "error": "active_generations",
+    "message": (
+        "Unloading would stop 1 chat that is still generating. Stop them first, or retry with"
+        " force_cancel_active."
+    ),
+    "running": 1,
+    "thread_ids": ["thread-secret"],
+}
+
+
+@pytest.mark.parametrize(
+    "resp",
+    [_response(409, {"detail": ACTIVE}), _padded({"status_code": 409, "detail": ACTIVE})],
+    ids = ["direct", "padded"],
+)
+def test_running_chats_tell_the_agent_to_wait_or_cancel_its_own(resp):
+    message = _message(resp, hints = {409: TOOL_HINT})
+    assert message.startswith("[active_generations running=1] Unloading would stop 1 chat")
+    assert "Stop them first. (HTTP 409)" in message
+    assert message.endswith("cancel(kind='chat', id=<its cancel_id>).")
+    assert "Wait for the running chats to finish" in message
+    assert "thread" not in message
+    assert "force_cancel_active" not in message
+    assert TOOL_HINT not in message
+
+
+def _at(status, body, path):
+    return httpx.Response(
+        status,
+        content = json.dumps(body).encode(),
+        headers = {"content-type": "application/json"},
+        request = httpx.Request("POST", f"http://x{path}"),
+    )
+
+
+@pytest.mark.parametrize(
+    "resp,kind",
+    [
+        (_at(400, {"detail": "No model loaded."}, "/v1/audio/run"), "audio"),
+        (_at(400, {"detail": "No model loaded."}, "/v1/audio/transcriptions"), "stt"),
+        (_at(409, {"detail": "No model loaded"}, "/api/inference/audio/stt/load"), "stt"),
+        (_at(400, {"detail": "No model loaded."}, "/v1/images/generations"), "image"),
+        (_at(400, {"detail": "No model loaded."}, "/v1/chat/completions"), "chat"),
+        (_at(400, {"detail": "No model loaded."}, "/api/inference/unload"), "chat"),
+        (_response(409, {"detail": "No diffusion model is loaded."}), "image"),
+        (_response(503, {"detail": "No video model loaded. Load a video model first."}), "video"),
+        (_v1(400, "No model loaded. Call POST /inference/load first."), "chat"),
+    ],
+    ids = [
+        "audio-path",
+        "stt-v1-path",
+        "stt-api-path",
+        "image-path",
+        "chat-path",
+        "unload-path",
+        "diffusion-wording",
+        "video-wording",
+        "no-request",
+    ],
+)
+def test_not_loaded_names_the_kind(resp, kind):
+    assert _message(resp).startswith(f"[not_loaded kind={kind}] No ")
+
+
+def test_a_deferred_not_loaded_uses_the_route_path():
+    padded = httpx.Response(
+        200,
+        content = json.dumps(
+            {"_deferred_error": {"status_code": 400, "detail": "No model loaded."}}
+        ).encode(),
+        request = httpx.Request("POST", "http://x/api/inference/audio/load"),
+    )
+    assert _message(padded).startswith("[not_loaded kind=audio] ")
+
+
+NOISE = [f"load_tensors: layer {i} assigned to device CUDA0" for i in range(300)]
+ERRORS = [
+    "llama_model_load: error loading model: tensor 'blk.0' has wrong shape",
+    "llama_init_from_model: failed to load model",
+    "main: exiting due to model loading error",
+]
+HEAD = "llama-server failed to start (exit code 1)."
+LLAMA_FAILURE = (
+    f"{HEAD}\n\nllama-server output:\n"
+    + "\n".join(NOISE[:150] + ERRORS[:1] + NOISE[150:] + ERRORS[1:])
+    + "\n\nFull log: /srv/mcp-sentinel/logs/llama.log"
+)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        lambda: tool_error(LLAMA_FAILURE),
+        lambda: _caught(_response(500, {"detail": LLAMA_FAILURE})),
+    ],
+    ids = ["tool-error", "route"],
+)
+def test_llama_server_output_is_cut_to_its_error_lines(error):
+    message = str(error())
+    assert message.startswith(HEAD)
+    assert message.removesuffix(" (HTTP 500)").endswith(ERRORS[-1])
+    assert len(message) <= 2000
+    assert "load_tensors" not in message
+    assert "Full log" not in message
+    for line in ERRORS:
+        assert line in message
+    # Briefing an already brief message changes nothing.
+    assert str(tool_error(message)) == message
+
+
+def _caught(resp):
+    with pytest.raises(ToolError) as caught:
+        raise_for_route(resp)
+    return caught.value
+
+
+def test_a_tag_that_is_not_a_plain_code_is_dropped():
+    assert str(tool_error("boom", tag = "Bad Tag")) == "boom"
+    assert str(tool_error("boom", "Try again.", tag = "out_of_memory")).startswith(
+        "[out_of_memory] boom Try again."
+    )

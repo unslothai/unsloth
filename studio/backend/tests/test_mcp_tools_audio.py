@@ -16,11 +16,14 @@ from .mcp_harness import (
     b64,
     bodies,
     call_to,
+    call_with_progress,
+    fake_studio,
     fast_polls,  # noqa: F401  (fixture)
     form,
     openai_error,
     run_tool,
     sequence,
+    slow,
     stt_state,
 )
 
@@ -531,3 +534,17 @@ def test_an_ndjson_error_line_or_early_stop_is_a_tool_error(monkeypatch, events,
     result, _studio = _from_source(monkeypatch, {"audio": {"clip_id": "clip-7"}}, events)
     assert result["isError"] is True
     assert message is None or result["content"][0]["text"] == message
+
+
+def test_a_slow_song_sends_a_heartbeat_and_still_returns_its_clip(monkeypatch):
+    from studio_mcp import progress as progress_module
+
+    monkeypatch.setattr(progress_module, "HEARTBEAT_S", 0.05)
+    studio = fake_studio({("POST", "/v1/audio/run"): slow(RUN, 0.3), **GALLERY})
+    progress, result = call_with_progress(
+        monkeypatch, studio, "generate_audio", {"workflow": "speak", "text": "Hi"}
+    )
+    assert result["isError"] is False
+    assert result["structuredContent"]["clips"][0]["id"] == "clip-1"
+    assert len(progress) >= 2
+    assert all(p["message"].startswith("Generating audio") for p in progress)

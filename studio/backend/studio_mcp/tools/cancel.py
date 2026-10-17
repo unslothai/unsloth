@@ -39,7 +39,7 @@ ROUTES = {
     "diffusion_training": ("/api/train/diffusion/stop", "save"),
     "recipe": ("/api/data-recipe/jobs/{id}/cancel", None),
     "image": ("/api/inference/images/generate/cancel", None),
-    "video": ("/api/inference/video/generate/cancel", None),
+    "video": ("/api/inference/video/generate/cancel", "video_id"),
     "chat": ("/api/inference/cancel", "cancel_id"),
     "dataset_download": ("/api/hub/datasets/download/cancel", "repo_id"),
 }
@@ -103,7 +103,18 @@ async def cancel(
     id: Optional[str] = None,
     save: bool = True,
 ) -> CancelResult:
-    """Stop Unsloth Studio work. "training" stops the LLM training run ``id`` (or the current one) at its next safe point, saving a checkpoint unless ``save`` is false. "training_start" withdraws a start request that has not begun. "diffusion_training" stops image LoRA training, saving the partial adapter unless ``save`` is false. "export" stops the running export and unloads its checkpoint; with ``id`` (an export_model job) only that job's own step, never someone else's export. "recipe" stops recipe job ``id``. "image" and "video" stop the generation in progress. "chat" stops the reply with cancel_id ``id``. "dataset_download" stops downloading the dataset ``id`` (its repo id). Audio runs cannot be cancelled. ``cancelled`` says whether this call stopped something."""
+    """Stop Unsloth Studio work.
+    "training" stops the LLM training run ``id`` (or the current one) at its next safe point, saving a checkpoint unless ``save`` is false.
+    "training_start" withdraws a start request that has not begun.
+    "diffusion_training" stops image LoRA training, saving the partial adapter unless ``save`` is false.
+    "export" stops the running export and unloads its checkpoint; with ``id`` (an export_model job) only that job's own step, never someone else's export.
+    "recipe" stops recipe job ``id``.
+    "image" stops the generation in progress; "video" stops the render in progress, or with ``id`` only that video, refusing if it is not the one rendering.
+    "chat" stops the reply with cancel_id ``id``.
+    Audio runs cannot be cancelled.
+    "dataset_download" stops downloading the dataset ``id`` (its repo id).
+    ``cancelled`` says whether this call stopped something.
+    """
     caller = current_caller()
 
     def done(cancelled: bool, message: Optional[str]) -> CancelResult:
@@ -111,6 +122,10 @@ async def cancel(
 
     if kind in NEEDS_ID and not id:
         raise ToolError(f"cancel(kind={kind!r}) needs id: {NEEDS_ID[kind]}.")
+    if kind in ("image", "diffusion_training") and id:
+        raise ToolError(
+            f"cancel(kind={kind!r}) takes no id: this cancel stops the running one; leave id out."
+        )
     if kind == "training":
         if not id:
             status = await route_json("GET", "/api/train/status", caller = caller)
