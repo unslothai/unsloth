@@ -3810,6 +3810,8 @@ from models.inference import (
     AudioVoiceCreate,
     AudioVoiceListResponse,
     AudioVoicePatch,
+    AudioCatalogModel,
+    AudioCatalogResponse,
     TranscribeSourceRequest,
     TranscriptPatch,
     LoadResponse,
@@ -11957,21 +11959,26 @@ async def _maybe_auto_switch_model(
                         param = "instructions",
                     ),
                 )
-        if (
-            require_audio_workflow
-            and resolved is not None
-            and require_audio_workflow
-            not in await asyncio.to_thread(_target_audio_workflows, target_id, speech_type)
-        ):
-            raise HTTPException(
-                status_code = 400,
-                detail = openai_error_body(
-                    f"The requested model cannot run the {require_audio_workflow} workflow.",
-                    status = 400,
-                    code = "invalid_value",
-                    param = "model",
-                ),
+        if require_audio_workflow and resolved is not None:
+            target_workflows = await asyncio.to_thread(
+                _target_audio_workflows, target_id, speech_type
             )
+            if require_audio_workflow not in target_workflows:
+                from core.inference.audio_workflows import AUDIO_WORKFLOW_LABELS, pages_sentence
+
+                page = AUDIO_WORKFLOW_LABELS.get(require_audio_workflow, require_audio_workflow)
+                # Name the model as asked, never target_id: that can be a local path.
+                label = _audio_model_label(str(named_model or "").replace("\\", "/"))
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(
+                        f"{label} can't run {page} "
+                        f"({require_audio_workflow}). {pages_sentence(target_workflows)}",
+                        status = 400,
+                        code = "invalid_value",
+                        param = "model",
+                    ),
+                )
         # resolver branch only, like the probe above: a reload-stash restore changes no format.
         if audio_preflight is not None and resolved is not None:
             await _preflight_audio_for_switch(audio_preflight, target_is_gguf)
@@ -51213,6 +51220,26 @@ async def transcribe_audio_input(
         language = result.get("language") or None,
         model = body.model,
     )
+
+
+@studio_router.get("/audio/catalog", response_model = AudioCatalogResponse)
+async def audio_catalog(current_subject: str = Depends(get_current_subject)):
+    """The audio.cpp models Unsloth Studio can offer, filtered to what this account may see."""
+    from core.inference.audio_cpp_catalog import audio_catalog_payload
+
+    try:
+        payload = await asyncio.to_thread(audio_catalog_payload)
+        # Filter per request: the builder caches one unfiltered catalog for every account.
+        rows = await asyncio.to_thread(
+            account_access.filter_model_rows, [m.model_dump() for m in payload.models]
+        )
+    except Exception:  # noqa: BLE001 - no exception text reaches the client
+        logger.debug("audio.cpp catalog failed", exc_info = True)
+        raise HTTPException(
+            status_code = 503,
+            detail = "Unsloth Studio could not list audio models right now.",
+        ) from None
+    return payload.model_copy(update = {"models": [AudioCatalogModel(**r) for r in rows]})
 
 
 @router.get("/audio/voices", response_model = AudioVoiceListResponse)

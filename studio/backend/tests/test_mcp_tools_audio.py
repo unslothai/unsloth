@@ -166,6 +166,32 @@ def test_an_enum_option_is_sent_as_the_model_lists_it(monkeypatch, voice, sent, 
         assert body["options"] == {"voice": sent, "temperature": 0.7}
 
 
+TARGET = "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"
+
+
+# ``model`` names the model to run; the loaded model's voices only bind when it is that model.
+@pytest.mark.parametrize(
+    "active,sent,refusal",
+    [
+        ("unsloth/orpheus-3b", "Bob", None),
+        (TARGET, None, "'Bob' is not one of: vivian, ryan"),
+        (TARGET.lower() + "-other", "Bob", None),
+    ],
+)
+def test_a_named_model_skips_the_loaded_models_option_check(monkeypatch, active, sent, refusal):
+    args = {"workflow": "speak", "model": TARGET, "text": "Hi", "options": {"voice": "Bob"}}
+    status = {**CUSTOM_VOICE, "model_identifier": active}
+    routes = {("GET", "/api/inference/status"): status}
+    result, studio = _generate(monkeypatch, args, routes = routes)
+    if refusal:
+        assert result["isError"] is True and refusal in result["content"][0]["text"]
+        assert bodies(studio, "/v1/audio/run") == []
+        return
+    (body,) = bodies(studio, "/v1/audio/run")
+    AudioRunRequest.model_validate(body)
+    assert body["model"] == TARGET and body["options"] == {"voice": sent}
+
+
 def test_short_clips_are_inline_and_long_ones_are_links_never_fetched(monkeypatch):
     long_clip = _clip("long-1", duration_s = 600.0, sample_rate = 44100)
     fetched = []

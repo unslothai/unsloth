@@ -12058,22 +12058,25 @@ def test_speech_switch_admission(monkeypatch, audio_type, context, text, instruc
 
 
 @pytest.mark.parametrize(
-    "workflow, speech_type, workflows, admitted",
+    "workflow, speech_type, workflows, admitted, message",
     [
-        ("separate", None, ["separate"], True),
-        ("separate", None, [], False),
-        ("clone", "audiocpp_tts", ["speak"], False),
-        ("clone", "audiocpp_tts", ["speak", "clone"], True),
+        ("separate", None, ["separate"], True, None),
+        ("separate", None, [], False, "Separate (separate). Unsloth Studio has no Audio page"),
+        ("clone", "audiocpp_tts", ["speak"], False, "Clone (clone). It runs on Text to Speech"),
+        ("clone", "audiocpp_tts", ["speak", "clone"], True, None),
     ],
 )
-def test_audio_workflow_switch_admission(monkeypatch, workflow, speech_type, workflows, admitted):
+@pytest.mark.parametrize("requested", ["org/B-GGUF", "/srv/models/B-GGUF", r"C:\models\B-GGUF"])
+def test_audio_workflow_switch_admission(
+    monkeypatch, workflow, speech_type, workflows, admitted, message, requested
+):
     backend, recorder = _speech_case(monkeypatch, speech_type, gguf = False)
     seen = []
     monkeypatch.setattr(
         inference_route, "_target_audio_workflows", lambda *a: seen.append(a) or workflows
     )
     call = inference_route._maybe_auto_switch_model(
-        "org/B-GGUF",
+        requested,
         object(),
         "tester",
         require_speech = speech_type is not None,
@@ -12087,6 +12090,9 @@ def test_audio_workflow_switch_admission(monkeypatch, workflow, speech_type, wor
             asyncio.run(call)
         assert error.value.status_code == 400
         assert error.value.detail["error"]["param"] == "model"
+        assert error.value.detail["error"]["code"] == "invalid_value"
+        # Names the pages by label and id, with no host path from the request or the target.
+        assert error.value.detail["error"]["message"].startswith(f"B can't run {message}")
         # Refused before the resident model is evicted.
         assert recorder.calls == [] and backend.model_identifier == "org/A-GGUF"
     assert seen == [("/local/B", speech_type)]

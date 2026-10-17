@@ -86,29 +86,17 @@ import {
   CloneOutput,
   CloneRail,
   adoptReference,
-  clonePageModels,
 } from "./pages/clone-page";
-import {
-  ConvertFooter,
-  ConvertOutput,
-  ConvertRail,
-  convertPageModels,
-} from "./pages/convert-page";
-import {
-  EditFooter,
-  EditOutput,
-  EditRail,
-  editPageModels,
-} from "./pages/edit-page";
+import { ConvertFooter, ConvertOutput, ConvertRail } from "./pages/convert-page";
+import { EditFooter, EditOutput, EditRail } from "./pages/edit-page";
 import { useMusicGeneration } from "./hooks/use-music-generation";
-import { MusicOutput, MusicRail, musicPageModels } from "./pages/music-page";
+import { MusicOutput, MusicRail } from "./pages/music-page";
 import {
   SeparateFooter,
   SeparateOutput,
   SeparateRail,
-  separatePageModels,
 } from "./pages/separate-page";
-import { SpeakOutput, SpeakRail, speakPageModels } from "./pages/speak-page";
+import { SpeakOutput, SpeakRail } from "./pages/speak-page";
 import { type GenerateBlocker, TtsFooter } from "./pages/tts-workspace";
 import { TranscribeFooter, TranscribeOutput, TranscribeRail } from "./pages/transcribe-page";
 import type { SendTarget } from "./components/stem-mixer-types";
@@ -124,7 +112,19 @@ import {
   transcribeLanguageFor,
   transcribeLanguagesFor,
 } from "./transcribe-languages";
-import { type AudioPickerRow, audioRowMatchesWorkflow } from "./picker-filter";
+import {
+  type PageModelPrefs,
+  type PageModelRow,
+  pageModels,
+  recommendedPageModels,
+  rowOnPage,
+} from "./page-models";
+import {
+  catalogModelOption,
+  catalogMoreRows,
+  withCatalogPipelineTag,
+} from "./audio-catalog-rows";
+import { useAudioCatalog } from "./hooks/use-audio-catalog";
 import {
   referenceTranscript,
   useAudioCloneStore,
@@ -161,8 +161,6 @@ const HUB_TASKS_BY_MODE = {
 
 let reuseSeq = 0;
 const EXPIRED_AT = new Date(0).toISOString();
-
-const RECOMMENDED_MUSIC_MODELS = ["ACE-Step1.5-GGUF", "Stable-Audio-3-Small-Music-GGUF"];
 
 function reuseConvertInputs(clip: AudioGalleryClip) {
   const store = useAudioConvertStore.getState();
@@ -326,6 +324,11 @@ export function AudioPage({
   }, []);
 
   const isMac = usePlatformStore((s) => s.deviceType) === "mac";
+  const audioCatalog = useAudioCatalog(true);
+  const pagePrefs = useMemo<PageModelPrefs>(
+    () => ({ isMac, catalog: audioCatalog.byId }),
+    [isMac, audioCatalog.byId],
+  );
 
   const {
     lastSttRepo,
@@ -1064,49 +1067,18 @@ export function AudioPage({
     (id: string) => void pickRecommendedModel(id),
     [pickRecommendedModel],
   );
-  const recommendedMusicActions = musicPageModels(MODELS_BY_MODE.speak, isMac)
-    .filter((model) =>
-      RECOMMENDED_MUSIC_MODELS.some((name) => model.id.endsWith(`/${name}`)),
-    )
-    .sort(
-      (a, b) =>
-        RECOMMENDED_MUSIC_MODELS.findIndex((name) => a.id.endsWith(`/${name}`)) -
-        RECOMMENDED_MUSIC_MODELS.findIndex((name) => b.id.endsWith(`/${name}`)),
-    )
-    .map((model) => ({
-      label: `use ${model.name}`,
-      onClick: () => handlePickRecommended(model.id),
-    }));
-  const recommendedCloneActions = clonePageModels(MODELS_BY_MODE.speak, isMac)
-    .slice(0, 2)
-    .map((model) => ({
-      label: `use ${model.name}`,
-      onClick: () => void pickRecommendedModel(model.id),
-    }));
-  const recommendedConvertActions = convertPageModels(
-    MODELS_BY_MODE.speak,
-    isMac,
-  )
-    .slice(0, 2)
-    .map((model) => ({
-      label: `use ${model.name}`,
-      onClick: () => void pickRecommendedModel(model.id),
-    }));
-  const recommendedEditActions = editPageModels(MODELS_BY_MODE.speak, isMac)
-    .slice(0, 2)
-    .map((model) => ({
-      label: `use ${model.name}`,
-      onClick: () => void pickRecommendedModel(model.id),
-    }));
-  const recommendedSeparateActions = separatePageModels(
-    MODELS_BY_MODE.speak,
-    isMac,
-  )
-    .slice(0, 2)
-    .map((model) => ({
-      label: `use ${model.name}`,
-      onClick: () => void pickRecommendedModel(model.id),
-    }));
+  const recommendedActions = (page: AudioWorkflowId) =>
+    recommendedPageModels(page, MODELS_BY_MODE.speak, pagePrefs).map(
+      (model) => ({
+        label: `use ${model.name}`,
+        onClick: () => handlePickRecommended(model.id),
+      }),
+    );
+  const recommendedMusicActions = recommendedActions("music");
+  const recommendedCloneActions = recommendedActions("clone");
+  const recommendedConvertActions = recommendedActions("convert");
+  const recommendedEditActions = recommendedActions("edit");
+  const recommendedSeparateActions = recommendedActions("separate");
   // RVC, Seed-VC and MeanVC2 only convert; Speak must not send their users to Clone.
   const loadedConvertsOnly =
     !!status?.audio_workflows?.includes("convert") &&
@@ -1546,24 +1518,33 @@ export function AudioPage({
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [active]);
+  // Transcribe lists its seed unfiltered; Edit has no spec task, so it gets no catalog rows.
   const selectorModels =
     mode === "speak"
-      ? ttsWorkflow === "music"
-        ? musicPageModels(MODELS_BY_MODE.speak, isMac)
-        : ttsWorkflow === "clone"
-          ? clonePageModels(MODELS_BY_MODE.speak, isMac)
-          : ttsWorkflow === "edit"
-            ? editPageModels(MODELS_BY_MODE.speak, isMac)
-            : ttsWorkflow === "convert"
-              ? convertPageModels(MODELS_BY_MODE.speak, isMac)
-          : ttsWorkflow === "separate"
-            ? separatePageModels(MODELS_BY_MODE.speak, isMac)
-          : speakPageModels(MODELS_BY_MODE.speak, isMac)
+      ? pageModels(ttsWorkflow, MODELS_BY_MODE.speak, pagePrefs)
       : MODELS_BY_MODE[mode];
+  const selectorMoreModels = useMemo(
+    () =>
+      pageWorkflow === "edit"
+        ? undefined
+        : {
+            label: "More models",
+            models: pageModels(
+              pageWorkflow,
+              catalogMoreRows(audioCatalog.rows).map(catalogModelOption),
+              pagePrefs,
+            ),
+          },
+    [audioCatalog.rows, pageWorkflow, pagePrefs],
+  );
   const selectorRowFilter = useCallback(
-    (row: AudioPickerRow) =>
-      audioRowMatchesWorkflow(row, pageWorkflow),
-    [pageWorkflow],
+    (row: PageModelRow) => rowOnPage(pageWorkflow, row, pagePrefs),
+    [pageWorkflow, pagePrefs],
+  );
+  const selectModel = useCallback(
+    (id: string, meta: Parameters<typeof handleModelSelect>[1]) =>
+      handleModelSelect(id, withCatalogPipelineTag(audioCatalog.byId, id, meta)),
+    [audioCatalog.byId, handleModelSelect],
   );
   const sttOnDeviceModels = downloadedSttArtifacts.map((artifact) => {
     const catalogModel = MODELS_BY_MODE.transcribe.find(
@@ -1716,6 +1697,7 @@ export function AudioPage({
                     )
               }
               rowFilter={selectorRowFilter}
+              moreModels={selectorMoreModels}
               loadedModelIdOverride={
                 mode === "transcribe" && sttReady
                   ? (selectedSttRepo ?? undefined)
@@ -1734,7 +1716,7 @@ export function AudioPage({
                     : undefined
               }
               value={selectorValue}
-              onValueChange={handleModelSelect}
+              onValueChange={selectModel}
               onEject={
                 audioEjectAvailable({
                   mode,

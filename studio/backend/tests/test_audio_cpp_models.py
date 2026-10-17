@@ -334,14 +334,17 @@ def test_an_unknown_family_follows_its_spec_tasks_or_is_refused(hub):
     assert "Voice activity detection" in vad.unsupported
     clone_only = acm.resolve("someone/new_clone_only-GGUF", network = False)
     assert list(clone_only.workflows) == ["clone"] and clone_only.clone.reference_text == "optional"
+    new_tts = acm.resolve("someone/new_tts-GGUF", network = False)
+    assert list(new_tts.workflows) == ["speak", "clone"]
+    assert new_tts.clone.reference_text == "optional"
 
 
 def test_unsupported_task_tokens_are_refused_by_a_readable_name(hub):
     for family, tasks, message in (
-        ("smart_turn", ["turn"], "Turn detection models are not supported in Studio yet."),
-        ("new_svc", ["svc"], "Singing voice conversion models are not supported in Studio yet."),
-        ("new_s2s", ["s2s"], "Speech-to-speech models are not supported in Studio yet."),
-        ("new_odd", ["odd_task"], "Studio does not support the 'odd_task' task yet."),
+        ("smart_turn", ["turn"], "Turn detection models are not supported in Unsloth Studio yet."),
+        ("new_svc", ["svc"], "Unsloth Studio doesn't support voice conversion models yet."),
+        ("new_s2s", ["s2s"], "Speech-to-speech models are not supported in Unsloth Studio yet."),
+        ("new_odd", ["odd_task"], "Unsloth Studio does not support the 'odd_task' task yet."),
     ):
         repo = f"someone/{family}-GGUF"
         _put(_snapshot(hub, repo), "m-q8_0.gguf", _gguf_bytes(family = family, spec = {"tasks": tasks}))
@@ -517,6 +520,8 @@ _CLONE_TABLE = {
     "firered_audio": ("tts", False, "optional"),
     "vevo2": ("tts", False, "unused"),
     "miotts": ("tts", False, "unused"),
+    "mira_tts": ("tts", False, "unused"),
+    "sopro_tts": ("tts", False, "unused"),
     "breeze_tts": ("tts", True, "required"),
     "omnivoice": ("tts", True, "required"),
     "voxcpm1": ("tts", True, "required"),
