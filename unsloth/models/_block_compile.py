@@ -4,6 +4,7 @@
 """One torch.compile region per decoder layer for training (stock forward: attention, MLP or MoE,
 norms, LoRA, NF4). UNSLOTH_BLOCK_COMPILE=0 or UNSLOTH_COMPILE_DISABLE turns it off."""
 
+import contextlib
 import functools
 import os
 import sys
@@ -663,6 +664,10 @@ def _wrap(cls, compile_options):
     # Unsloth layer forwards read packed lengths on the host (packing.py): packed calls stay stock.
     unsloth_forward = getattr(original, "__module__", "").startswith("unsloth.models.")
     compiled = torch.compile(original, fullgraph = False, dynamic = None, options = compile_options)
+    # Decided here, outside the graph: inside a compiled block the forward cannot see the recompute.
+    mlp_output_unused = getattr(original, "_unsloth_mlp_output_unused", None) or (
+        lambda layer: contextlib.nullcontext()
+    )
     try:
         from unsloth_zoo.temporary_patches.utils import UNSLOTH_DECODE_COMPILE as inline_flag
     except Exception:
@@ -677,7 +682,8 @@ def _wrap(cls, compile_options):
         inline_flag[0] = True
         _IN_BLOCK[0] = mode
         try:
-            return compiled(self, hidden_states, *args, **kwargs)
+            with mlp_output_unused(self):
+                return compiled(self, hidden_states, *args, **kwargs)
         finally:
             inline_flag[0] = previous
             _IN_BLOCK[0] = _OFF

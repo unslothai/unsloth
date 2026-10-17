@@ -12,6 +12,7 @@
 import os
 import sys
 import torch
+from contextlib import contextmanager
 from unsloth_zoo.utils import Version
 from .utils import (
     _has_active_dora_adapter,
@@ -29,6 +30,48 @@ from .utils import (
 from . import rms_layernorm as _rms_layernorm
 
 _is_compiling = torch.compiler.is_compiling
+
+try:
+    from unsloth_zoo.gradient_checkpointing import in_gradient_checkpoint_recompute
+except ImportError:
+
+    def in_gradient_checkpoint_recompute():
+        return False
+
+
+# A list, not a thread-local: a compiled decoder block reads it, so Dynamo guards on its value and
+# compiles the recompute as its own graph.
+_MLP_OUTPUT_UNUSED = [False]
+
+
+@contextmanager
+def mlp_output_unused(layer):
+    """Lets LoRA_MLP skip act(e, g) and down_proj inside the checkpoint recompute of `layer`.
+
+    The recompute re-runs one decoder layer only to rebuild what its backward saves, then calls
+    torch.autograd.backward on the layer output: no value after the MLP is read. LoRA_MLP's backward
+    needs only X, e and g (it rebuilds h itself), so the rest of its forward is dead work there.
+
+    For callers whose MLP output only reaches the layer output. Active only when the layer is the whole
+    checkpoint unit: transformers set gradient_checkpointing on it, a recompute is running, and grad is on
+    (a layer inside a larger checkpointed block runs under no_grad, its output still needed).
+    Entered outside compiled code: eagerly by the layer itself, or by the block wrapper around a compiled layer.
+    """
+    if not (
+        getattr(layer, "gradient_checkpointing", False)
+        and torch.is_grad_enabled()
+        and not _is_compiling()
+        and in_gradient_checkpoint_recompute()
+    ):
+        yield
+        return
+    previous = _MLP_OUTPUT_UNUSED[0]
+    _MLP_OUTPUT_UNUSED[0] = True
+    try:
+        yield
+    finally:
+        _MLP_OUTPUT_UNUSED[0] = previous
+
 
 # Inductor before torch 2.11 miscompiles traced backward passes and produces wrong LoRA gradients.
 TRACE_LORA_FUNCTIONS = Version(torch.__version__) >= Version("2.11.0")
@@ -337,8 +380,12 @@ class LoRA_MLP(torch.autograd.Function):
         if plain:
             e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
             g = matmul_lora(X, upW, upW_quant, upA, upB, upS)
-            h = _forward_function(e, g)
-            i = matmul_lora(h, downW, downW_quant, downA, downB, downS)
+            if _MLP_OUTPUT_UNUSED[0]:
+                # Recompute: only the graph is used, see mlp_output_unused.
+                i = torch.empty_like(X)
+            else:
+                h = _forward_function(e, g)
+                i = matmul_lora(h, downW, downW_quant, downA, downB, downS)
             masks = (None, None, None)
         else:
             # Masks are drawn gate, up, down: the order PEFT's down(act(gate(X)) * up(X)) draws them in.
