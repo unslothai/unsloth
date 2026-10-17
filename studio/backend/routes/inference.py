@@ -3297,8 +3297,19 @@ _TUNNEL_KEEPALIVE_EVERY_S = 20.0
 _DEFERRED_ERROR_KEY = "_deferred_error"
 
 
-def _deferred_error_body(status_code: int, detail) -> bytes:
+# Headers a padded error keeps in its body: the status line and headers were already sent.
+_DEFERRED_ERROR_HEADERS = ("x-unsloth-refusal", "retry-after")
+
+
+def _deferred_error_body(status_code: int, detail, headers: Optional[dict] = None) -> bytes:
     body = {_DEFERRED_ERROR_KEY: {"status_code": status_code, "detail": detail}}
+    kept = {
+        name.lower(): value
+        for name, value in (headers or {}).items()
+        if name.lower() in _DEFERRED_ERROR_HEADERS
+    }
+    if kept:
+        body[_DEFERRED_ERROR_KEY]["headers"] = kept
     return json.dumps(body).encode()
 
 
@@ -3354,7 +3365,9 @@ async def _tunnel_safe_json(coro, *, label: str):
                 payload = task.result()
             except HTTPException as exc:
                 logger.info(f"{label} failed with {exc.status_code} after the response committed")
-                yield _deferred_error_body(exc.status_code, restore_inventory_handles(exc.detail))
+                yield _deferred_error_body(
+                    exc.status_code, restore_inventory_handles(exc.detail), exc.headers
+                )
             except Exception as exc:
                 logger.exception(f"{label} failed after the response was committed")
                 # A filesystem failure quotes the path it failed on, never shown to a caller
@@ -18602,7 +18615,10 @@ async def load_model_gated(
 
 
 def _ran_out_of_memory(exc: HTTPException) -> bool:
-    return exc.status_code == 500 and "out of memory" in str(exc.detail).lower()
+    detail = exc.detail
+    if isinstance(detail, dict) and detail.get("code") == "out_of_memory":
+        return True
+    return exc.status_code == 500 and "out of memory" in str(detail).lower()
 
 
 def _gate_kept_models(request: LoadRequest, cancel: bool = True) -> None:
