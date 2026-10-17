@@ -1109,6 +1109,7 @@ def stub_embeddings(monkeypatch):
 
     monkeypatch.setattr(embeddings, "encode", fake_encode)
     monkeypatch.setattr(embeddings, "dim", lambda model_name = None: dim)
+    monkeypatch.setattr(embeddings, "max_tokens", lambda model_name = None: None)
     monkeypatch.setattr(
         embeddings,
         "token_counter",
