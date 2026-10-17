@@ -1826,7 +1826,11 @@ def test_flux3_family_decides_generation_defaults_over_file_names():
     )
 
 
-def _seeded_snapshot(tmp_path, repo = "black-forest-labs/flux-3-image-klein", variant = "distilled"):
+def _seeded_snapshot(
+    tmp_path,
+    repo = "black-forest-labs/flux-3-image-klein",
+    variant = "distilled",
+):
     """What a download planned around a hosted pre-quantized seed leaves in the HF cache: the official layout with
     only the transformer config, no dense transformer shards."""
     snapshot = tmp_path / "hub" / f"models--{repo.replace('/', '--')}" / "snapshots" / "abc123"
@@ -1965,7 +1969,8 @@ def test_the_auto_switch_loads_a_seeded_flux3_snapshot_by_repo(tmp_path, monkeyp
 
 
 @pytest.mark.parametrize(
-    "variant, family", [("distilled", FLUX3_KLEIN_FAMILY_NAME), ("base", FLUX3_KLEIN_BASE_FAMILY_NAME)]
+    "variant, family",
+    [("distilled", FLUX3_KLEIN_FAMILY_NAME), ("base", FLUX3_KLEIN_BASE_FAMILY_NAME)],
 )
 def test_the_auto_switch_keeps_the_manifest_family_of_an_opaque_seeded_repo(
     tmp_path, monkeypatch, variant, family
@@ -1982,7 +1987,11 @@ def test_the_auto_switch_keeps_the_manifest_family_of_an_opaque_seeded_repo(
 
     seen = []
 
-    async def _load(request, subject, user_initiated = True):
+    async def _load(
+        request,
+        subject,
+        user_initiated = True,
+    ):
         seen.append(request)
 
     monkeypatch.setattr(route, "load_diffusion_model_gated", _load)
@@ -2008,7 +2017,11 @@ def test_the_auto_switch_adds_no_family_to_a_named_seeded_repo(tmp_path, monkeyp
 
     seen = []
 
-    async def _load(request, subject, user_initiated = True):
+    async def _load(
+        request,
+        subject,
+        user_initiated = True,
+    ):
         seen.append(request)
 
     monkeypatch.setattr(route, "load_diffusion_model_gated", _load)
