@@ -11,6 +11,13 @@ import types
 
 import torch
 
+# Non-reentrant checkpoint raises this to early-stop recomputation; unpack_hook catches it.
+# It subclasses Exception, so the compile-trial demotion loop must re-raise it (#14063).
+try:
+    from torch.utils.checkpoint import _StopRecomputationError
+except ImportError:  # pragma: no cover — older torch without early-stop control flow
+    _StopRecomputationError = ()
+
 __all__ = ["patch_block_compile"]
 
 _MARK = "_unsloth_block_compiled"
@@ -635,6 +642,11 @@ def _wrap(cls, compile_options):
                 self.__dict__["_unsloth_block_checked"] = checked | bit
                 return out
             except torch.OutOfMemoryError:
+                raise
+            except _StopRecomputationError:
+                # Checkpoint early-stop during recomputation — not a compile failure. Demoting
+                # here switches to the stock forward for the rest of the recompute and makes
+                # check_recomputed_tensors_match raise CheckpointError on distributed runs.
                 raise
             except Exception as e:
                 if os.environ.get("UNSLOTH_BLOCK_COMPILE_DEBUG") == "1":

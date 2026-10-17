@@ -131,6 +131,31 @@ def test_compile_failure_falls_back(monkeypatch, fails_in):
     assert calls == []
 
 
+def test_stop_recomputation_does_not_demote(monkeypatch):
+    """#14063: non-reentrant checkpoint early-stop must not look like a compile failure."""
+    M = _load()
+    if M._StopRecomputationError == ():
+        pytest.skip("torch has no _StopRecomputationError")
+
+    def fake_compile(fn, **kwargs):
+        def compiled(*args, **kw):
+            raise M._StopRecomputationError()
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    cls = _toy_class()
+    M._wrap(cls, {})
+    layer = cls()
+    x = torch.randn(2, 4, 8, requires_grad = True)
+    with pytest.raises(M._StopRecomputationError):
+        layer(x)
+    # Still on the first mode: demoting would force the stock forward for the rest of
+    # recomputation and trip CheckpointError on tensor-count mismatch.
+    assert layer._unsloth_block_mode == M._FIRST_MODE
+    assert layer.__dict__.get("_unsloth_block_checked", 0) == 0
+
+
 def test_cache_calls_keep_the_stock_forward(monkeypatch):
     from transformers.cache_utils import DynamicCache
 
