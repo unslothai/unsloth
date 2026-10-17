@@ -124,6 +124,7 @@ export async function showRunResult({
 /** Mirrors useSpeechGeneration's flow so Stop, phases and errors behave the same. */
 export function useCloneGeneration({
   status,
+  busy,
   busyRef,
   setBusy,
   updateGenerationPhase,
@@ -145,6 +146,7 @@ export function useCloneGeneration({
 }: Pick<
   AudioHostState,
   | "status"
+  | "busy"
   | "busyRef"
   | "setBusy"
   | "updateGenerationPhase"
@@ -290,6 +292,8 @@ export function useCloneGeneration({
   useEffect(() => {
     if (
       !reference ||
+      // A busy page would refuse the run; try again once it settles.
+      busy !== null ||
       !shouldAutoTranscribeReference({
         mode: transcriptField,
         referenceText,
@@ -305,6 +309,7 @@ export function useCloneGeneration({
     void transcribeOnce(reference);
   }, [
     reference,
+    busy,
     transcriptField,
     referenceText,
     referenceBusy,

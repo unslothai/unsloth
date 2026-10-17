@@ -16,7 +16,12 @@ from core.inference.audio_errors import sanitize_runtime_tail
 _PATTERNS = tuple(
     (code, re.compile(pattern))
     for code, pattern in (
-        ("espeak_missing", r"espeak(?!-ng has no voice matching)"),
+        # Missing library or data only: a request the runtime refuses can mention eSpeak too.
+        (
+            "espeak_missing",
+            r"could not load espeak|espeak-ng failed to initialize|espeak data package missing"
+            r"|cannot (?:read|open) espeak data|needs an audio runtime built with espeak",
+        ),
         ("runtime_missing", r"the audio runtime is not installed"),
         (
             "family_unknown_to_runtime",
@@ -60,6 +65,8 @@ _MESSAGES = {
     "Unsloth Studio, or set UNSLOTH_AUDIO_CPP_BACKEND=cpu.",
     "out_of_memory": "{name} ran out of memory. Free GPU memory, choose a smaller variant, or set "
     "the audio device to CPU.",
+    "out_of_memory_cpu": "{name} ran out of memory. Close other apps to free RAM, or choose a "
+    "smaller variant.",
     "file_incomplete": "The model file is incomplete or damaged. Delete it and download it again, "
     "or choose another variant.",
     # Runtime 4xx: the input is too big for the device (upstream CapacityError).
@@ -76,7 +83,7 @@ class AudioCppFailure:
     code: str
     message: str
     status: int
-    # smaller_variants / offload_options only: never a path or raw runtime text.
+    # smaller_variants / offload_options / device only: never a path or raw runtime text.
     extras: dict = field(default_factory = dict)
 
     def detail(self) -> dict:
@@ -91,7 +98,9 @@ class AudioCppFailure:
             return None
         code = str(data["code"])
         extras = data.get("extras") or {}
-        extras = {k: v for k, v in extras.items() if k in ("smaller_variants", "offload_options")}
+        extras = {
+            k: v for k, v in extras.items() if k in ("smaller_variants", "offload_options", "device")
+        }
         return cls(
             code,
             str(data.get("message") or ""),
@@ -138,7 +147,6 @@ def smaller_variants(
     if model is None:
         return []
     from core.inference.audio_cpp_models import quant_label, resolve
-    from hub.utils.gguf import gguf_variant_key
 
     extra = 0
     for companion in getattr(model, "companions", ()) or ():
@@ -154,12 +162,11 @@ def smaller_variants(
             free_gb is not None and estimate > free_gb
         ):
             continue
-        # The key /api/models/gguf-variants lists, so the client can pick this row.
-        key = variant.key if model.is_package else gguf_variant_key(variant.primary)
         label = variant.label or quant_label(variant.main_file)
         rows.append(
             {
-                "variant": key,
+                # The quant /api/models/gguf-variants lists for this row.
+                "variant": variant.key,
                 "label": label,
                 "size_bytes": variant.size_bytes,
                 "estimate_gb": estimate,
@@ -205,9 +212,12 @@ def classify_audio_cpp_failure(
             code == "out_of_memory" and runtime_status is not None and 400 <= runtime_status < 500
         )
         placement = "no single gpu" in lowered
+        on_cpu = code == "out_of_memory" and backend == "cpu" and not capacity
         key = "placement" if placement else "capacity" if capacity else code
+        key = "out_of_memory_cpu" if on_cpu and not placement else key
         message = _MESSAGES[key].format(name = getattr(model, "display_name", None) or "This model")
-        extras: dict = {}
+        # "device": the run was already on the CPU, so "set the audio device to CPU" can't help.
+        extras: dict = {"device": "cpu"} if on_cpu else {}
         if code == "out_of_memory" and not capacity:
             if variants := smaller_variants(model, free_gb = free_gb):
                 extras["smaller_variants"] = variants

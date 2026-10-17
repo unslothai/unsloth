@@ -2270,7 +2270,7 @@ _SEED_OPTION = dict(
     min = 0,
     max = 2147483647,
     values = None,
-    description = "Leave blank for a new random seed each take. Reuse one from a clip's menu.",
+    description = "The model default gives each take a new random seed. Reuse one from a clip's menu.",
 )
 
 

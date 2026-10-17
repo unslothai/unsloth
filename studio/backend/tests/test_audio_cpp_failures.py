@@ -128,6 +128,9 @@ def _model(sizes = (8, 4, 3, 2, 1), current = 0) -> AudioCppModel:
         # audio.cpp v0.9.2 src/community_models/granite5asr/encoder.cpp:484
         ("Failed to initialize GGML context for Granite 5 ASR encoder", "cuda", None),
         ("CosyVoice3 requires reference audio", "cuda", None),
+        # A refused request that only mentions eSpeak keeps the runtime's own reason.
+        ("zipvoice: tokenizer must be espeak, emilia, or simple", "cuda", None),
+        ("Inflect v2 eSpeak-ng produced no phonemes", "cuda", None),
         ("The audio runtime is being updated. Try again in a moment.", "cuda", None),
         ("", "cuda", None),
     ],
@@ -175,9 +178,9 @@ def test_oom_lists_smaller_variants_and_offload_options(monkeypatch):
         "Q2",
         "Q1",
     ] and "offload_options" not in failure.extras
-    # The gguf-variants key, not the internal variant key, so the client's "Use" action finds it.
+    # The quant /api/models/gguf-variants lists (variant.key), so the client's "Use" action finds it.
     assert rows[0] == {
-        "variant": "m-q3",
+        "variant": model.variants[2].key,
         "label": "Q3",
         "size_bytes": 3 * 1024**3,
         "estimate_gb": af.estimate_resident_gb(3 * 1024**3),
@@ -186,6 +189,12 @@ def test_oom_lists_smaller_variants_and_offload_options(monkeypatch):
     fits = af.smaller_variants(model, free_gb = af.estimate_resident_gb(2 * 1024**3))
     assert [row["label"] for row in fits] == ["Q2", "Q1"]
     assert af.smaller_variants(_model(current = 4)) == []
+    # Already on the CPU: no GPU advice, and the client is told not to offer CPU RAM.
+    on_cpu = af.classify_audio_cpp_failure(
+        "failed to allocate CPU buffer of size 9", backend = "cpu", model = model
+    )
+    assert on_cpu.extras["device"] == "cpu" and "GPU" not in on_cpu.message.split(" Smaller")[0]
+    assert af.AudioCppFailure.from_payload(on_cpu.payload()) == on_cpu
     # Request-time capacity error keeps 400 and offers nothing.
     text = "LFM2-Audio prefill graph does not fit in device memory at 9 prompt steps"
     capacity = af.classify_audio_cpp_failure(text, backend = "cuda", runtime_status = 400)

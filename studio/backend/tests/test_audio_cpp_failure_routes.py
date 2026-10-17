@@ -166,3 +166,22 @@ def test_generation_crash_oom_maps_to_out_of_memory(monkeypatch):
     with pytest.raises(HTTPException) as raised:
         asyncio.run(ri._generate_tts_wav("hello", payload, request = None, current_subject = "t"))
     assert raised.value.status_code == 503 and raised.value.detail["code"] == "out_of_memory"
+
+
+def test_oom_retry_and_monitor_read_the_structured_detail(monkeypatch):
+    oom = HTTPException(status_code = 503, detail = _oom().detail())
+    assert ri._ran_out_of_memory(oom)
+    other = af.classify_audio_cpp_failure("model path does not exist: /m", backend = "cuda")
+    assert not ri._ran_out_of_memory(HTTPException(status_code = 422, detail = other.detail()))
+    monitor = MagicMock()
+    monkeypatch.setattr(ri, "api_monitor", monitor)
+    monkeypatch.setattr(ri, "_request_used_api_key", lambda request: False)
+    request = SimpleNamespace(state = SimpleNamespace(), url = SimpleNamespace(path = "/x"), method = "POST")
+
+    async def run():
+        async with ri._monitored_media_request(request, model = "m", prompt = "", subject = None):
+            raise oom
+
+    with pytest.raises(HTTPException):
+        asyncio.run(run())
+    assert monitor.fail.call_args.args[1] == oom.detail["message"]

@@ -740,7 +740,15 @@ class AudioCppBackend:
         with self._server_lock:
             server = self._server
             running = server.model if server is not None and server.alive() else None
-        return server_runtime_fields(model, running)
+        fields = server_runtime_fields(model, running)
+        if self._device_fallback:
+            # A restart fell back to the CPU: the parent stops counting VRAM, the page can say so.
+            fields.update(
+                audio_device_fallback = self._device_fallback,
+                audio_cpp_backend = "cpu",
+                audio_cpu = True,
+            )
+        return fields
 
     def _record_runtime(self) -> None:
         entry = self.models.get(self.active_model_name or "")

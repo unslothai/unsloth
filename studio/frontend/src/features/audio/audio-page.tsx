@@ -651,6 +651,7 @@ export function AudioPage({
     );
   const clone = useCloneGeneration({
     status,
+    busy,
     busyRef,
     setBusy,
     updateGenerationPhase,
