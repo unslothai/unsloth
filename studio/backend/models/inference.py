@@ -475,7 +475,10 @@ class LoadRequest(BaseModel):
             "Extra arguments forwarded verbatim to llama-server for GGUF models. "
             "One token per list entry, e.g. ['--top-k', '20', '--seed', '42']. "
             "Unsloth-managed flags (model identity, port, context length, GPU placement, "
-            "auth, UI/server mode) are rejected. Ignored for non-GGUF models."
+            "auth, UI/server mode) are rejected. Ignored for non-GGUF models. "
+            "Omitted (or null), a load of the same model and variant as the previous "
+            "load reuses that load's arguments, minus any flag a field set on this "
+            "request replaces; send [] to launch with none."
         ),
     )
     reasoning_budget: int = Field(

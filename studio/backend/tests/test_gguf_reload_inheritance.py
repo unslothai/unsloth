@@ -287,6 +287,12 @@ def test_extra_args_source_default_is_none():
     assert backend.extra_args_source is None
 
 
+def test_the_load_schema_documents_extra_args_inheritance():
+    """The public schema documents the inheritance (#5401) and [] as the way out."""
+    description = LoadRequest.model_fields["llama_extra_args"].description
+    assert "previous" in description and "send [] to launch with none" in description
+
+
 def test_reasoning_budget_schema_contract():
     request = LoadRequest(model_path = "owner/repo")
     assert request.reasoning_budget == -1

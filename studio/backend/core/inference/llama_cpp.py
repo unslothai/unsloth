@@ -92,6 +92,7 @@ from core.inference.llama_server_args import (
     _CACHE_TYPE_V_FLAGS,
     _CTX_CHECKPOINTS_FLAGS,
     _DEVICE_FLAGS,
+    _FIT_TARGET_FLAGS,
     _GPU_LAYER_FLAGS,
     _LAYER_OFFLOAD_FLAGS,
     _MOE_OFFLOAD_FLAGS,
@@ -119,6 +120,8 @@ from core.inference.llama_server_args import (
     memory_state_satisfies_settings,
     fit_is_effectively_on,
     fit_target_margin_in,
+    fit_target_is_per_device,
+    fit_target_first_device_margin_in,
     MANAGED_DIO_FLAGS,
     no_reserve_requires_dio,
     resolve_launch_load_mode,
@@ -5244,11 +5247,10 @@ def _kv_offload_from_args(
 
 
 def _is_positive_int(value: Optional[str]) -> bool:
-    """Whether ``value`` parses as an int > 0 (llama.cpp's std::stoi)."""
-    try:
-        return int(str(value).strip()) > 0
-    except (TypeError, ValueError):
-        return False
+    """Whether llama.cpp's std::stoi parses ``value`` as an int > 0 (``_stoi_prefix``:
+    leading digits, trailing text ignored, so "4abc" is 4)."""
+    parsed = _stoi_prefix(value) if value is not None else None
+    return parsed is not None and parsed > 0
 
 
 def _args_place_tensors_on_cpu(extra_args: Optional[Iterable[str]] = None) -> bool:
@@ -5811,7 +5813,9 @@ def _argv_keeps_projector_on_gpu(
     )
     if not from_argv and not from_env:
         return False
-    return _resolved_mmproj_offload(tokens, env_map) is not False
+    # The ordered resolver: a named device after an offload-off is back on a device,
+    # and device none after an offload-on is in host RAM.
+    return _mmproj_placement(tokens, env_map) != "host"
 
 
 def _paravirtual_mmproj_pinnable(server_caps: Mapping[str, object]) -> bool:
@@ -5927,15 +5931,19 @@ def _mmproj_env_is_audio_only(path: Optional[str]) -> bool:
 # option and takes the last occurrence, so naming either one in the pass-through
 # extras is the user taking ownership of the placement.
 _MMPROJ_OFFLOAD_FLAGS: frozenset = frozenset({"--mmproj-offload", "--no-mmproj-offload"})
+# The projector-device option: ``none`` clears mmproj_use_gpu, any other name sets it
+# and pins that device (common/arg.cpp), so it places the projector just as surely.
+_MMPROJ_DEVICE_FLAGS: frozenset = frozenset({"--mmproj-device", "-mmdev"})
 
 
 def _extra_args_set_mmproj_offload(extra_args: Optional[Sequence[str]]) -> bool:
-    """True when the pass-through extras name either projector-placement spelling.
+    """True when the pass-through extras name any projector-placement option: either
+    offload spelling or ``--mmproj-device`` / ``-mmdev``.
 
     Matched through _flag_name rather than by string equality: arg.cpp folds
     underscores to dashes before matching, so --mmproj_offload is the same flag.
     """
-    return _extra_args_set_any_flag(extra_args, _MMPROJ_OFFLOAD_FLAGS)
+    return _extra_args_set_any_flag(extra_args, _MMPROJ_OFFLOAD_FLAGS | _MMPROJ_DEVICE_FLAGS)
 
 
 def _extra_args_mmproj_offload_value(extra_args: Optional[Sequence[str]]) -> Optional[bool]:
@@ -6030,7 +6038,8 @@ def requested_video_fps(
 
 
 def _env_sets_mmproj_offload(env: Optional[Mapping[str, str]] = None) -> bool:
-    """True when the child's environment names the projector placement at all.
+    """True when the child's environment names the projector placement at all: either
+    offload spelling or ``MTMD_BACKEND_DEVICE`` (the ``--mmproj-device`` twin).
 
     Ownership, not value: a value arg.cpp parses as neither truthy nor falsey throws
     out of common_params_parse, and a caller whose load is about to fail on their own
@@ -6040,7 +6049,7 @@ def _env_sets_mmproj_offload(env: Optional[Mapping[str, str]] = None) -> bool:
     source = os.environ if env is None else env
     return any(
         source.get(name) is not None
-        for name in (_MMPROJ_OFFLOAD_ENV_VAR, _MMPROJ_OFFLOAD_NEG_ENV_VAR)
+        for name in (_MMPROJ_OFFLOAD_ENV_VAR, _MMPROJ_OFFLOAD_NEG_ENV_VAR, "MTMD_BACKEND_DEVICE")
     )
 
 
@@ -6069,14 +6078,78 @@ def _env_mmproj_offload_value(env: Optional[Mapping[str, str]] = None) -> Option
 def _resolved_mmproj_offload(
     extra_args: Optional[Sequence[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[bool]:
-    """Where the projector actually ends up, over extras and environment together.
+    """Whether the projector is offloaded, over extras and environment together.
 
-    Same precedence the child applies: environment first, then argv on top, so a
-    pass-through flag wins over an inherited variable and only silence in both falls
-    through to None.
+    The boolean view of ``_mmproj_placement``, the one placement resolver: False for host
+    RAM, True for a device (the model's first or a named one), None when nothing places
+    it (silence on every placement option) or arg.cpp would throw on the value.
     """
-    from_args = _extra_args_mmproj_offload_value(extra_args)
-    return from_args if from_args is not None else _env_mmproj_offload_value(env)
+    if not (_extra_args_set_mmproj_offload(extra_args) or _env_sets_mmproj_offload(env)):
+        return None
+    placement = _mmproj_placement(extra_args, env)
+    return None if placement is None else placement != "host"
+
+
+def _mmproj_placement(
+    extra_args: Optional[Sequence[str]],
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    studio_cpu_pin: bool = False,
+) -> Optional[str]:
+    """Where the projector runs, replaying common/arg.cpp's last-wins order.
+
+    The one projector-placement resolver: every budget, guard, retry and detector reads
+    the placement through this (or ``_resolved_mmproj_offload``, its boolean view).
+
+    Env twins first, in option order (LLAMA_ARG_MMPROJ_OFFLOAD, then MTMD_BACKEND_DEVICE),
+    then argv left to right. --[no-]mmproj-offload sets mmproj_use_gpu; --mmproj-device
+    none clears it, any other name sets it and pins that device. ``"host"`` = not
+    offloaded; ``"default"`` = offloaded to the model's first device (devices.front());
+    ``"named"`` = pinned to a device by name (a CPU name is rejected by
+    parse_device_list); ``None`` = unreadable.
+
+    ``studio_cpu_pin``: Studio appends its own ``--no-mmproj-offload`` after the
+    pass-through extras (the automatic or paravirtual CPU pin), so it is the final token
+    and the projector is in host RAM whatever came before (clip.cpp only reads the
+    device while mmproj_use_gpu is set). An unreadable value still throws first.
+    """
+    if studio_cpu_pin:
+        extra_args = [*(extra_args or ()), "--no-mmproj-offload"]
+    source = os.environ if env is None else env
+    on_gpu, named, unreadable = True, False, False
+    env_offload = _env_mmproj_offload_value(source)
+    if env_offload is not None:
+        on_gpu = env_offload
+    elif source.get(_MMPROJ_OFFLOAD_ENV_VAR) is not None:
+        unreadable = True
+
+    def _device(value: str) -> None:
+        nonlocal on_gpu, named, unreadable
+        if value == "none":
+            on_gpu, named = False, False
+        elif value.strip():
+            on_gpu, named = True, True
+        else:
+            unreadable = True
+
+    if source.get("MTMD_BACKEND_DEVICE") is not None:
+        _device(str(source.get("MTMD_BACKEND_DEVICE")))
+    args = [str(a) for a in extra_args] if extra_args else []
+    for i, raw in enumerate(args):
+        flag = _flag_name(raw)
+        if flag == "--mmproj-offload":
+            on_gpu = True
+        elif flag == "--no-mmproj-offload":
+            on_gpu = False
+        elif flag in _MMPROJ_DEVICE_FLAGS:
+            _, eq, inline = raw.partition("=")
+            _device(inline if eq else (args[i + 1] if i + 1 < len(args) else ""))
+    # arg.cpp throws on these, so the child never places anything.
+    if unreadable:
+        return None
+    if not on_gpu:
+        return "host"
+    return "named" if named else "default"
 
 
 _OVERRIDE_TENSOR_FLAGS: frozenset = frozenset(
@@ -6458,6 +6531,66 @@ def _extra_args_draft_gpu_layers(
     return last_ngl
 
 
+# The separate drafter's tensor placement (common/arg.cpp): each appends to
+# params.speculative.draft.tensor_buft_overrides, independent of -ngld.
+_DRAFT_TENSOR_OVERRIDE_FLAGS = frozenset(
+    {"--spec-draft-override-tensor", "-otd", "--override-tensor-draft"}
+)
+_DRAFT_CPU_MOE_FLAGS = frozenset({"--spec-draft-cpu-moe", "-cmoed", "--cpu-moe-draft"})
+_DRAFT_CPU_MOE_COUNT_FLAGS = frozenset(
+    {"--spec-draft-n-cpu-moe", "--spec-draft-ncmoe", "-ncmoed", "--n-cpu-moe-draft"}
+)
+
+
+def _draft_tensors_placed_off_card(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """True when the separate drafter's TENSOR placement is set: ``-otd``, ``-cmoed``,
+    or a positive ``-ncmoed``, or their env twins ``LLAMA_ARG_SPEC_DRAFT_CPU_MOE`` /
+    ``LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE`` (``-otd`` has none).
+
+    The drafter twin of ``_args_place_tensors_on_cpu`` / ``_env_places_tensors_on_cpu``,
+    with the same rules: any ``-otd`` counts (guessing at the pattern is not worth it),
+    and a count only when positive (``-ncmoed 0`` places nothing). llama.cpp applies the
+    env first and argv on top, and both append overrides, so either side placing
+    anything is enough; a later ``-ncmoed 0`` does not undo an env count."""
+    values = [str(raw) for raw in extra_args or ()]
+    for i, raw in enumerate(values):
+        flag = _flag_name(raw)
+        if flag in _DRAFT_TENSOR_OVERRIDE_FLAGS or flag in _DRAFT_CPU_MOE_FLAGS:
+            return True
+        if flag in _DRAFT_CPU_MOE_COUNT_FLAGS:
+            _, eq, inline = raw.partition("=")
+            if _draft_cpu_moe_count_not_zero(
+                inline if eq else (values[i + 1] if i + 1 < len(values) else "")
+            ):
+                return True
+    source = os.environ if env is None else env
+    # Raw is_truthy (common/arg.cpp): no stripping, no case folding.
+    return bool(
+        source.get("LLAMA_ARG_SPEC_DRAFT_CPU_MOE") in _LLAMA_ARG_TRUE_VALUES
+        or (
+            source.get("LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE") is not None
+            and _draft_cpu_moe_count_not_zero(source.get("LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE"))
+        )
+    )
+
+
+def _stoi_prefix(value: Optional[str]) -> Optional[int]:
+    """``std::stoi``: leading whitespace skipped, an optional sign, then the longest digit
+    run (trailing text ignored); None where it throws (no digits)."""
+    match = re.match(r"\s*([+-]?\d+)", str(value or ""))
+    return int(match.group(1)) if match else None
+
+
+def _draft_cpu_moe_count_not_zero(value: Optional[str]) -> bool:
+    """Whether a ``-ncmoed`` / ``LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE`` value is anything but
+    a parsed 0. Positive places drafter experts on the CPU; negative or unparseable makes
+    arg.cpp throw (``value < 0`` -> invalid_argument, std::stoi), so the child never
+    places anything the fit could price: conservative either way."""
+    return _stoi_prefix(value) != 0
+
+
 def _draft_is_split_across_host(
     extra_args: Optional[Iterable[str]],
     env: Optional[Mapping[str, str]] = None,
@@ -6486,12 +6619,10 @@ def _draft_is_split_across_host(
     raw = _extra_args_draft_gpu_layers(extra_args, env)
     if raw is None:
         return False
-    try:
-        count = int(str(raw).strip())
-    except (TypeError, ValueError):
-        # std::stoi would throw and the child never starts: nothing to misprice.
-        return False
-    if count <= 0:
+    # std::stoi reads the leading digits ("2 layers" is 2); no digits ("auto", "all")
+    # is not a fixed count, and a throw is a child that never starts.
+    count = _stoi_prefix(raw)
+    if count is None or count <= 0:
         return False
     return not (n_draft_layers and count > n_draft_layers)
 
@@ -6590,6 +6721,21 @@ def _sidecar_adapter_bytes(extra_args: Optional[Iterable[str]]) -> Optional[int]
     return total
 
 
+def _draft_tensor_overrides_cpu_only(extra_args: Optional[Iterable[str]]) -> bool:
+    """Whether every ``-otd`` entry (they accumulate) targets the ``CPU`` buffer; True with
+    none. Buffer names match exactly (parse_tensor_buffer_overrides, common/arg.cpp)."""
+    args = [str(a) for a in extra_args] if extra_args else []
+    for i, raw in enumerate(args):
+        if _flag_name(raw) not in _DRAFT_TENSOR_OVERRIDE_FLAGS:
+            continue
+        _, eq, inline = raw.partition("=")
+        value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+        for entry in value.split(","):
+            if "=" not in entry or entry.rsplit("=", 1)[1] != "CPU":
+                return False
+    return True
+
+
 def _extra_args_draft_offloaded_to_cpu(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
@@ -6600,14 +6746,17 @@ def _extra_args_draft_offloaded_to_cpu(
     draft-only flags don't move it. Last-wins, so only each flag's final value counts.
 
     A count BETWEEN 0 and the drafter's block count is a split, not an offload; see
-    ``_draft_is_split_across_host``."""
+    ``_draft_is_split_across_host``.
+
+    A ``-otd`` naming any buffer but ``CPU`` puts those drafter tensors on that device
+    whatever the layer count says (llama-model.cpp applies the overrides per tensor), so
+    the drafter is not off the card; neither is one whose override cannot be read
+    (parse_tensor_buffer_overrides throws without ``=``)."""
+    if not _draft_tensor_overrides_cpu_only(extra_args):
+        return False
     last_ngl = _extra_args_draft_gpu_layers(extra_args, env)
-    if last_ngl is not None:
-        try:
-            if int(last_ngl) == 0:
-                return True
-        except (TypeError, ValueError):
-            pass
+    if last_ngl is not None and _stoi_prefix(last_ngl) == 0:
+        return True
     last_dev = _extra_args_draft_device(extra_args)
     if last_dev is not None:
         devs = [d.strip().lower() for d in last_dev.split(",") if d.strip()]
@@ -6633,6 +6782,49 @@ def _extra_args_device(
 def _extra_args_main_device(extra_args: Optional[Iterable[str]]) -> Optional[str]:
     """Return the last explicit main-device value, if any."""
     return _extra_args_device(extra_args, {"--device", "-dev"})
+
+
+def _child_has_one_model_device(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]
+) -> bool:
+    """Whether a child on one selected card has that card as its only model device.
+
+    A per-device ``--fit-target`` list is applied positionally (``fit_params_target[i]``,
+    common/arg.cpp) over the child's model devices: RPC servers first, then GPUs, or the
+    ``--device`` list as given (src/llama.cpp). With one model device only ``margins_s[0]``
+    is read (common/fit.cpp), so entry 0 is the card's; with an RPC server or a longer
+    ``--device`` list, which entry the card gets is unknown. The caller checks the card
+    count; this reads the pass-through argv (last wins) and its env twins."""
+    env = env or {}
+    dev_list = _extra_args_main_device(extra_args)
+    if dev_list is None:
+        dev_list = env.get("LLAMA_ARG_DEVICE")
+    return not (
+        str(_extra_args_device(extra_args, {"--rpc"}) or "").strip()
+        or str(env.get("LLAMA_ARG_RPC") or "").strip()
+        or len([d for d in str(dev_list or "").split(",") if d.strip()]) > 1
+    )
+
+
+def _child_fit_target_margin_mib(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]], *, one_model_device: bool
+) -> tuple[Optional[float], bool]:
+    """The ``--fit-target`` margin (MiB) llama.cpp keeps free on the priced card, and
+    whether that is exact.
+
+    The one per-device margin reader, shared by the MoE resident share, the load-mode fit
+    and the MoE cache's RAM admission. Same precedence as ``fit_target_margin_in``
+    (argv last wins, then the env twin). A uniform value is the card's, exact. A
+    per-device list is entry 0 when the card is the child's one model device
+    (``one_model_device``: one priced card and ``_child_has_one_model_device``), since
+    llama.cpp then reads only ``margins_s[0]`` (common/fit.cpp); otherwise which entry the
+    card gets is unknown, so the LARGEST entry comes back with ``exact`` False, for the
+    caller to abstain on or charge. ``None`` when nothing readable is set."""
+    if fit_target_is_per_device(extra_args, env):
+        if one_model_device:
+            return fit_target_first_device_margin_in(extra_args, env), True
+        return fit_target_margin_in(extra_args, env), False
+    return fit_target_margin_in(extra_args, env), True
 
 
 def _without_subsequence(tokens: List[str], run: List[str]) -> List[str]:
@@ -6784,11 +6976,67 @@ def _extra_args_draft_device(extra_args: Optional[Iterable[str]]) -> Optional[st
 
 
 _GPU_DEVICE_TOKEN_RE = re.compile(r"(CUDA|ROCm)(\d+)$", re.IGNORECASE)
-# One group per companion: llama.cpp is last-wins within a group, so only its last flag counts.
-_COMPANION_DEVICE_FLAG_GROUPS = (
-    frozenset({"--mmproj-device", "-mmdev"}),
-    frozenset({"--spec-draft-device", "-devd", "--device-draft"}),
+_MAIN_DEVICE_FLAGS = frozenset({"--device", "-dev"})
+_DRAFT_DEVICE_FLAGS = frozenset({"--spec-draft-device", "-devd", "--device-draft"})
+# One group per companion. llama.cpp is last-wins within a group for placement, but it
+# resolves every value it reads, so widening covers each occurrence.
+_COMPANION_DEVICE_FLAG_GROUPS = (_MMPROJ_DEVICE_FLAGS, _DRAFT_DEVICE_FLAGS)
+# Every option common/arg.cpp resolves by device NAME (parse_device_list), with the env
+# twin it reads first: -dev / LLAMA_ARG_DEVICE, -mmdev / MTMD_BACKEND_DEVICE (no
+# LLAMA_ARG_ prefix upstream), and -devd, which has no env twin.
+_DEVICE_LIST_OPTIONS: tuple[tuple[str, frozenset, Optional[str]], ...] = (
+    ("main", _MAIN_DEVICE_FLAGS, "LLAMA_ARG_DEVICE"),
+    ("mmproj", _MMPROJ_DEVICE_FLAGS, "MTMD_BACKEND_DEVICE"),
+    ("draft", _DRAFT_DEVICE_FLAGS, None),
 )
+
+
+class _DeviceListSite(NamedTuple):
+    """One device-list value llama.cpp parses: an env twin (``env_name``) or an argv
+    occurrence (``at`` = index of the token holding the value, ``lead`` = the inline
+    ``flag=`` prefix). ``final`` marks its group's last value, the one that places."""
+
+    group: str
+    env_name: Optional[str]
+    at: Optional[int]
+    lead: Optional[str]
+    value: str
+    final: bool
+
+
+def _device_list_sites(
+    cmd: Iterable[str], env: Optional[Mapping[str, str]] = None
+) -> list[_DeviceListSite]:
+    """Every device-list value llama.cpp parses for a launch, in its order.
+
+    arg.cpp applies each SET env twin first, then argv in order, and every handler
+    resolves its value as it runs (parse_device_list throws "invalid device" on a name
+    the child cannot see) -- a later flag overriding it does not help. So every
+    consumer that narrows or widens what the child sees reads all of these, not the
+    last-wins placement. A flag with no value left is kept with an empty value.
+    """
+    args = [str(raw) for raw in cmd]
+    env = env or {}
+    found: list[tuple[str, Optional[str], Optional[int], Optional[str], str]] = []
+    for group, _flags, env_name in _DEVICE_LIST_OPTIONS:
+        if env_name is not None and env.get(env_name) is not None:
+            found.append((group, env_name, None, None, str(env.get(env_name))))
+    group_of = {flag: group for group, flags, _ in _DEVICE_LIST_OPTIONS for flag in flags}
+    for i, raw in enumerate(args):
+        group = group_of.get(_flag_name(raw))
+        if group is None:
+            continue
+        head, eq, inline = raw.partition("=")
+        if eq:
+            found.append((group, None, i, head + "=", inline))
+        elif i + 1 < len(args):
+            found.append((group, None, i + 1, None, args[i + 1]))
+        else:
+            found.append((group, None, None, None, ""))
+    last = {entry[0]: index for index, entry in enumerate(found)}
+    return [
+        _DeviceListSite(*entry, final = last[entry[0]] == index) for index, entry in enumerate(found)
+    ]
 
 
 def _widen_pin_ids_for_companion_devices(
@@ -6797,44 +7045,44 @@ def _widen_pin_ids_for_companion_devices(
     inherited_ids: Optional[list[int]],
     *,
     allowed_ids: Optional[Iterable[int]] = None,
+    env: Optional[MutableMapping[str, str]] = None,
 ) -> tuple[list[int], str]:
-    """Fit a pinned GPU mask to the companion devices the argv names (#11810).
+    """Fit a pinned GPU mask to every device name the launch parses (#11810).
 
-    Companion ``CUDA<n>`` / ``ROCm<n>`` tokens use the unpinned numbering (position in
-    ``inherited_ids``, else the physical index). Cards they name are appended after the
-    pinned ones, the winning flag is renumbered to the child's mask, and a main
-    ``--device`` is added so ``-ngl -1`` does not spread over the extra cards. Tokens
-    the parent cannot see are left alone. ``allowed_ids`` (explicit gpu_ids) limits
-    widening to those cards. Returns the mask and a log note, empty when unchanged.
+    The sites are ``_device_list_sites``: env twins (``env``, the child's environment)
+    and every argv occurrence. The FINAL main device value (argv, else
+    ``LLAMA_ARG_DEVICE``) is the child's own numbering over the pinned cards. Every other
+    ``CUDA<n>`` / ``ROCm<n>`` -- companions, an inherited ``MTMD_BACKEND_DEVICE``, and a
+    main value a later one overrides -- uses the unpinned numbering (position in
+    ``inherited_ids``, else the physical index): cards they name are appended after the
+    pinned ones and each value is renumbered to the child's mask (env values in place),
+    and a main ``--device`` is added when none is set so ``-ngl -1`` does not spread over
+    the extra cards. Tokens the parent cannot see are left alone. ``allowed_ids``
+    (explicit gpu_ids) limits widening to those cards; an OVERRIDDEN value naming a card
+    it excludes places nothing, so it becomes ``none`` (an env twin is dropped) instead
+    of failing the launch. Returns the mask and a log note, empty when unchanged.
     """
     if not pin_ids:
         return list(pin_ids), ""
     main_ids = [int(i) for i in pin_ids]
     allowed = None if allowed_ids is None else {int(i) for i in allowed_ids}
-    # A main --device past the pinned positions would resolve to a widened companion card.
-    for token in str(_extra_args_main_device(cmd) or "").split(","):
+    all_sites = _device_list_sites(cmd, env)
+    final_main = next((s for s in all_sites if s.group == "main" and s.final), None)
+    # A main device past the pinned positions would resolve to a widened companion card.
+    for token in (final_main.value if final_main else "").split(","):
         match = _GPU_DEVICE_TOKEN_RE.match(token.strip())
         if match and int(match.group(2)) >= len(main_ids):
             return list(main_ids), ""
-    # (value index, prefix before "=" or None, [(token, physical id or None)])
-    sites: list[tuple[int, Optional[str], list[tuple[str, Optional[int]]]]] = []
+    # (site, [(token, physical id or None)])
+    sites: list[tuple[_DeviceListSite, list[tuple[str, Optional[int]]]]] = []
+    excluded_sites: list[_DeviceListSite] = []
     prefix_word = None
-    last_of_group: dict[int, int] = {}
-    for i, raw in enumerate(cmd):
-        for group, flags in enumerate(_COMPANION_DEVICE_FLAG_GROUPS):
-            if _flag_name(str(raw)) in flags:
-                last_of_group[group] = i
-    for i in sorted(last_of_group.values()):
-        raw = str(cmd[i])
-        head, eq, inline = raw.partition("=")
-        if eq:
-            at, value, lead = i, inline, head + "="
-        elif i + 1 < len(cmd):
-            at, value, lead = i + 1, str(cmd[i + 1]), None
-        else:
+    for site in all_sites:
+        if site is final_main or (site.at is None and site.env_name is None):
             continue
         tokens: list[tuple[str, Optional[int]]] = []
-        for token in value.split(","):
+        excluded = False
+        for token in site.value.split(","):
             match = _GPU_DEVICE_TOKEN_RE.match(token.strip())
             physical = None
             if match:
@@ -6845,19 +7093,28 @@ def _widen_pin_ids_for_companion_devices(
                 elif n < len(inherited_ids):
                     physical = int(inherited_ids[n])
                 if allowed is not None and physical not in main_ids and physical not in allowed:
+                    excluded = excluded or physical is not None
                     physical = None
             tokens.append((token, physical))
-        if any(physical is not None for _, physical in tokens):
-            sites.append((at, lead, tokens))
-    if not sites:
+        if excluded and not site.final:
+            excluded_sites.append(site)
+        elif any(physical is not None for _, physical in tokens):
+            sites.append((site, tokens))
+    if not sites and not excluded_sites:
         return list(main_ids), ""
     widened = list(main_ids)
-    for _, _, tokens in sites:
+    for _, tokens in sites:
         for _, physical in tokens:
             if physical is not None and physical not in widened:
                 widened.append(physical)
     changed = False
-    for at, lead, tokens in sites:
+    for site in excluded_sites:
+        if site.env_name is not None:
+            env.pop(site.env_name, None)
+        else:
+            cmd[site.at] = f"{site.lead}none" if site.lead is not None else "none"
+        changed = True
+    for site, tokens in sites:
         rewritten = []
         for token, physical in tokens:
             if physical is None:
@@ -6866,17 +7123,25 @@ def _widen_pin_ids_for_companion_devices(
             match = _GPU_DEVICE_TOKEN_RE.match(token.strip())
             rewritten.append(f"{match.group(1)}{widened.index(physical)}")
         value = ",".join(rewritten)
-        new = f"{lead}{value}" if lead is not None else value
-        if new != cmd[at]:
-            cmd[at] = new
+        if site.env_name is not None:
+            if value != env[site.env_name]:
+                env[site.env_name] = value
+                changed = True
+            continue
+        new = f"{site.lead}{value}" if site.lead is not None else value
+        if new != cmd[site.at]:
+            cmd[site.at] = new
             changed = True
-    if len(widened) > len(main_ids) and _extra_args_main_device(cmd) is None:
+    if len(widened) > len(main_ids) and final_main is None:
         # Pinned cards lead the mask, so the main model's devices are the first positions.
         cmd.extend(["--device", ",".join(f"{prefix_word}{k}" for k in range(len(main_ids)))])
         changed = True
     if not changed and widened == main_ids:
         return list(main_ids), ""
-    return widened, f"{main_ids} -> {widened}"
+    note = f"{main_ids} -> {widened}"
+    if excluded_sites:
+        note += f" ({len(excluded_sites)} overridden device value(s) outside gpu_ids cleared)"
+    return widened, note
 
 
 def _extra_args_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optional[str]:
@@ -7348,9 +7613,6 @@ _MOE_CACHE_MAX_RESIDENT_SHARE = 0.75
 # Drafted launches may get the cache. L4 gemma-4 decode cache/split at r 0.53/0.82/0.23:
 # MTP 1.76x/1.25x/0.96x, ngram-mod 1.19x/0.87x/1.11x (the band covers the losses).
 _MOE_CACHE_WITH_DRAFTER = True
-# Skip the spill micro-batch raise if it pushes more than this share of resident experts
-# off the GPU. L4 gemma-4: r 0.23 lost 14% (decode -3%), r 0.53/0.82 lost 4-6%.
-_MOE_SPILL_UB_MAX_RESIDENT_LOSS = 0.10
 # "on" = ungated v0.1.906, "off" = v0.1.905 (no cache / no raise), else auto.
 _MOE_CACHE_ENV = "UNSLOTH_MOE_CACHE"
 _MOE_SPILL_UBATCH_ENV = "UNSLOTH_MOE_SPILL_UBATCH"
@@ -7371,8 +7633,13 @@ def _moe_switch(name: str, env: Optional[Mapping[str, str]] = None) -> str:
 def _moe_resident_expert_share(
     shortfall_bytes: Optional[float], expert_bytes: Optional[int]
 ) -> Optional[float]:
-    """1 - shortfall / expert bytes (the fitter offloads experts first); None if unknown."""
-    if shortfall_bytes is None or not expert_bytes or expert_bytes <= 0:
+    """1 - shortfall / expert bytes (the fitter offloads experts first); None if unknown.
+    No shortfall keeps every expert on the GPU, whatever the expert bytes read."""
+    if shortfall_bytes is None:
+        return None
+    if shortfall_bytes <= 0:
+        return 1.0
+    if not expert_bytes or expert_bytes <= 0:
         return None
     return min(1.0, max(0.0, 1.0 - float(shortfall_bytes) / float(expert_bytes)))
 
@@ -7394,22 +7661,17 @@ def _moe_cache_share_admits(
     )
 
 
-def _moe_spill_raise_keeps_experts(
-    share_before: Optional[float],
-    share_after: Optional[float],
-    *,
-    switch: str = "auto",
-) -> bool:
-    """Keep the spill micro-batch raise? Nothing spilling = no; unpriceable = yes."""
+# Any spill keeps the raise: a cap on the resident experts it costs dropped it at low r, where
+# prompt processing gains most and decode loses little. Split pp / tg, 2048 vs default
+# micro-batch on an RTX 3090 and an RTX 6000 Ada: gemma-4-26B-A4B r 0.17 +25-32% / -2..-3%,
+# r 0.77 +12-17% / -6%; gpt-oss-20b r 0.26 +116-154% / -4..-5%, r 0.89 +27-28% / -11..-15%;
+# Qwen3-30B-A3B r 0.25 +135-155% / -3..+1%.
+def _moe_spill_raise_wanted(resident_share: Optional[float], *, switch: str = "auto") -> bool:
+    """Raise the spill micro-batch? Nothing spilling at the default micro-batch = no;
+    unpriceable = yes."""
     if switch != "auto":
         return switch == "on"
-    if share_before is None:
-        return True
-    if share_before >= 1.0:
-        return False
-    if share_after is None:
-        return True
-    return share_before - share_after <= _MOE_SPILL_UB_MAX_RESIDENT_LOSS * share_before
+    return resident_share is None or resident_share < 1.0
 
 
 # User placement: the fitter aborts on most of it, and the cache refuses >1 device (--rpc adds one).
@@ -23688,29 +23950,29 @@ class LlamaCppBackend:
 
         if not any(_flag(arg) in ("--mmproj", "-mm") for arg in args):
             return None
-        # Argv and environment at arg.cpp's own precedence. Two placements the
-        # spelling list below cannot see: LLAMA_ARG_NO_MMPROJ_OFFLOAD (falsey on
-        # presence alone) and the `disabled` token. Either already has the projector in
-        # host RAM, so respawning cannot clear the allocation failure and costs the
-        # caller the real error, which only surfaces when this returns None.
+        # Where the projector really runs, in arg.cpp's last-wins order over env, then
+        # argv: --[no-]mmproj-offload, --mmproj-device / -mmdev and their env twins
+        # (LLAMA_ARG_NO_MMPROJ_OFFLOAD is falsey on presence alone). A named device
+        # after an offload-off turns the offload back on (mmproj_use_gpu = true), and
+        # device none turns it off whatever came before. Host RAM already: respawning
+        # cannot clear the allocation failure and costs the caller the real error, which
+        # only surfaces when this returns None.
         #
-        # Only a resolved False means "already on CPU". An explicit --mmproj-offload is
-        # overridden deliberately: this is crash recovery, and the alternative is
-        # losing vision altogether.
-        if _resolved_mmproj_offload(args, env or {}) is False:
+        # An explicit --mmproj-offload or GPU name is overridden deliberately: this is
+        # crash recovery, and the alternative is losing vision altogether.
+        placement = _mmproj_placement(args, env or {})
+        if placement == "host":
             return None
-        placements = [
-            _flag(arg) for arg in args if _flag(arg) in ("--mmproj-offload", "--no-mmproj-offload")
-        ]
-        if not placements:
+        if placement is None:
             # Colloquial spellings arg.cpp itself rejects: `no` parses as neither truthy
             # nor falsey, so common_params_parse throws and the child never starts, which
-            # no retry can fix. Kept as a deliberate superset of the resolution above
-            # rather than tightened, so a value that used to skip the futile retry still
-            # does.
+            # no retry can fix. Kept as a deliberate superset, so a value that used to
+            # skip the futile retry still does.
             env_value = str((env or {}).get(_MMPROJ_OFFLOAD_ENV_VAR) or "").strip().lower()
             if env_value in ("0", "false", "off", "no"):
                 return None
+        # Appended last, so it beats every earlier placement token: mmproj_use_gpu =
+        # false, and clip.cpp only reads mmproj_device while use_gpu is set.
         return args + ["--no-mmproj-offload"]
 
     @staticmethod
@@ -24626,8 +24888,8 @@ class LlamaCppBackend:
             "-ngld",
             "--gpu-layers-draft",
             "--n-gpu-layers-draft",
-            "--mmproj-offload",
-            "--no-mmproj-offload",
+            *_MMPROJ_OFFLOAD_FLAGS,
+            *_MMPROJ_DEVICE_FLAGS,
         }
         child_env = os.environ if env is None else env
         placement_eligible = intent.gpu_memory_mode == "auto" or (
@@ -24646,10 +24908,11 @@ class LlamaCppBackend:
                 for name in (
                     *cls._CPU_FALLBACK_MAIN_PLACEMENT_ENV_VARS,
                     "LLAMA_ARG_N_GPU_LAYERS_DRAFT",
-                    "LLAMA_ARG_MMPROJ_OFFLOAD",
                     "GGML_BACKEND_PATH",
                 )
             )
+            # Any projector-placement variable, on presence (_env_sets_mmproj_offload).
+            and not _env_sets_mmproj_offload(child_env)
         )
 
     @classmethod
@@ -26621,6 +26884,7 @@ class LlamaCppBackend:
                 model_size = None  # set in the fit try; used by the APU RAM guard
                 _mtp_will_engage = False
                 _separate_draft_launches = False  # a sidecar displaces an embedded head
+                _draft_on_cpu = False  # the separate drafter is off the budget (-ngld 0 / CPU pin)
                 # "none" once the fit proves the load needs no demand paging, else None
                 # for llama.cpp's own default. Bound before the try like the verdict
                 # flags above: the except path falls through to the launch, which reads it.
@@ -26681,6 +26945,9 @@ class LlamaCppBackend:
                     # room for VRAM nothing occupies. The RESOLVED value decides, not just
                     # ownership: arg.cpp reads the env before argv, so the environment
                     # places the projector just as surely as the flag.
+                    # The ordered resolver (env, then argv, last wins): a later
+                    # --mmproj-device none is host RAM, a later named device is back on
+                    # a GPU even after --no-mmproj-offload.
                     _user_mmproj_offload = _resolved_mmproj_offload(extra_args)
                     mmproj_size = (
                         self._mmproj_vram_bytes(launch_mmproj_path)
@@ -27056,7 +27323,8 @@ class LlamaCppBackend:
                             None,
                         )
                         if _env_n_max is not None:
-                            _mtp_eff_n_max = int(str(_env_n_max).strip())
+                            # The guard above parsed it like std::stoi ("2 tokens" is 2).
+                            _mtp_eff_n_max = _stoi_prefix(_env_n_max)
                         else:
                             # Never fall through to Unsloth's platform default here:
                             # the child is drafting at the build's number, and a
@@ -27569,10 +27837,12 @@ class LlamaCppBackend:
                         # that downgrade is the non-circular order; making the check
                         # pin-aware would decide TP from a pin decided from TP.
                         and _paravirtual_mmproj_pinnable(server_caps)
-                        # Last-wins on the placement pair, so whoever named either
-                        # spelling owns it. The environment counts: arg.cpp applies
-                        # set_env before argv, so --no-mmproj-offload here would
-                        # OVERWRITE LLAMA_ARG_MMPROJ_OFFLOAD=1, not lose to it.
+                        # Last-wins on the placement options, so whoever named either
+                        # offload spelling or a projector device owns it. The
+                        # environment counts: arg.cpp applies set_env before argv, so
+                        # --no-mmproj-offload here would OVERWRITE
+                        # LLAMA_ARG_MMPROJ_OFFLOAD=1 or MTMD_BACKEND_DEVICE, not lose
+                        # to it.
                         and not _extra_args_set_mmproj_offload(extra_args)
                         and not _env_sets_mmproj_offload()
                     ):
@@ -29140,23 +29410,98 @@ class LlamaCppBackend:
                         # A --fit-ctx Studio did not emit moves llama.cpp's fit.
                         if _fit_ctx_overridden(_child_extras, _child_env):
                             return None
+                        # common/fit.cpp sizes the split before pass-through adapters load
+                        # (common_init_from_params); their tensors then follow each base
+                        # layer's buffer, so which expert slices they displace is unknown.
+                        # An unreadable adapter is unsized. Either way, unknown.
+                        if _sidecar_adapter_bytes(_child_extras) != 0:
+                            return None
+                        # A pass-through MoE cache (argv beats env, "0" turns it off) takes VRAM
+                        # these terms do not price and keeps the routed experts on the host.
+                        _cache_mib = _extra_args_device(_child_extras, {"--moe-cache-mib"})
+                        if _cache_mib is None:
+                            _cache_mib = _child_env.get("LLAMA_ARG_MOE_CACHE_MIB")
+                        if _cache_mib is not None and str(_cache_mib).strip() not in ("", "0"):
+                            return None
                         # A GPU projector Studio never sized; Vision off keeps only audio-only.
                         _env_mmproj = _child_env.get("LLAMA_ARG_MMPROJ")
                         # The emitted --mmproj replaces an inherited path (argv after env).
                         if effective_is_vision:
                             _env_mmproj = None
-                        # --mmproj-device / MTMD_BACKEND_DEVICE re-enable the GPU projector.
-                        _mmproj_dev = _extra_args_device(
-                            _child_extras, {"--mmproj-device", "-mmdev"}
+                        # Where the projector really runs, in arg.cpp's last-wins order over
+                        # --[no-]mmproj-offload, --mmproj-device / -mmdev and their env twins.
+                        # Studio's own CPU pin is appended after the extras: the final token.
+                        _mmproj_place = _mmproj_placement(
+                            _child_extras,
+                            _child_env,
+                            studio_cpu_pin = bool(
+                                _mmproj_cpu_pinned and launch_mmproj_path and effective_is_vision
+                            ),
                         )
-                        if _mmproj_dev is None:
-                            _mmproj_dev = _child_env.get("MTMD_BACKEND_DEVICE")
-                        _mmproj_dev_gpu = bool(
-                            _mmproj_dev is not None and str(_mmproj_dev).strip().lower() != "none"
-                        )
-                        if _resolved_mmproj_offload(_child_extras, _child_env) is False:
-                            if _mmproj_dev_gpu:
-                                return None
+                        _mmproj_host_bytes = 0
+                        # A named device may be a companion card gpu_ids exposes
+                        # (_widen_pin_ids_for_companion_devices); a CPU name fails
+                        # parse_device_list. Unreadable: arg.cpp throws. Either way, unknown,
+                        # and whatever the budget sized: a name after an offload-off turns the
+                        # offload back on (mmproj_use_gpu = true), past a 0-byte budget.
+                        if effective_is_vision and _mmproj_place not in ("host", "default"):
+                            return None
+                        if effective_is_vision and mmproj_size > 0 and _mmproj_place == "host":
+                            # model_size_fit charged the projector and its soft overhead to the
+                            # card (the offload resolved on). Host RAM: they are not there.
+                            _mmproj_host_bytes = mmproj_size + int(
+                                mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0)
+                            )
+                        # A drafter model pinned by --spec-draft-device to a device this
+                        # estimate cannot map to the card (common_base_params_to_speculative,
+                        # common/speculative.cpp); a CPU / none pin is already priced off
+                        # the GPU by _mtp_bytes. An embedded MTP head follows the target.
+                        # -ngld 0 under a GPU name is a CPU drafter too (llama.cpp gives every
+                        # layer the CPU buffer list), and _draft_on_cpu already dropped it
+                        # from the budget, so the name places nothing this estimate prices.
+                        if (
+                            _mtp_will_engage
+                            and not _draft_on_cpu
+                            and (_separate_draft_launches or not self._nextn_predict_layers)
+                        ):
+                            _draft_dev = _extra_args_draft_device(_child_extras)
+                            if _draft_dev is not None:
+                                _draft_devs = [
+                                    d.strip().lower() for d in _draft_dev.split(",") if d.strip()
+                                ]
+                                if not (
+                                    _draft_devs and all(d in ("cpu", "none") for d in _draft_devs)
+                                ):
+                                    return None
+                        # A fixed positive -ngld below the drafter's block count splits it
+                        # between card and host, while _mtp_bytes charges it whole to the
+                        # GPU; which slice stays on the card is unknown (the same case the
+                        # fit treats as _draft_split_across_host). -ngld 0 is already off
+                        # the budget (_cpu_draft_path), and -1 / a count above the block
+                        # count is the whole drafter on the card _mtp_bytes prices.
+                        # Draft tensor overrides and draft CPU-MoE controls move drafter
+                        # weights to the host whatever -ngld says, the same unknown slice.
+                        if (
+                            _mtp_will_engage
+                            and _mtp_draft_for_budget
+                            and (
+                                _draft_tensors_placed_off_card(_child_extras, _child_env)
+                                or _draft_is_split_across_host(
+                                    _child_extras,
+                                    _child_env,
+                                    n_draft_layers = getattr(
+                                        self._draft_backend_for(_mtp_draft_for_budget),
+                                        "_n_layers",
+                                        None,
+                                    ),
+                                )
+                            )
+                        ):
+                            return None
+                        # A projector in host RAM never reaches the card; any other one
+                        # Studio did not size is unpriced.
+                        if _mmproj_place == "host":
+                            pass
                         elif disable_vision:
                             if _mmproj_env_is_audio_only(_env_mmproj):
                                 return None
@@ -29177,15 +29522,43 @@ class LlamaCppBackend:
                             fit_target_delta_mib = _fit_target_delta_mib,
                             supports_fit_target = _supports_fit_target,
                         )
-                        # A per-device list reads as its largest entry (the larger shortfall).
-                        _margin_mib = fit_target_margin_in(_child_extras or (), None)
+                        # A per-device list: entry 0 is this card's only when it is the
+                        # child's one model device (_child_has_one_model_device).
+                        # A per-device list it cannot map to this card: unpriced.
+                        _one_model_device = _child_has_one_model_device(_child_extras, _child_env)
+                        _margin_mib, _margin_exact = _child_fit_target_margin_mib(
+                            _child_extras or (), None, one_model_device = _one_model_device
+                        )
+                        if not _margin_exact:
+                            return None
+                        # A value the child reads but this cannot (std::stoull throws on
+                        # "foo", common/arg.cpp) is no margin to fall back past: unknown.
+                        if (
+                            _margin_mib is None
+                            and _last_flag_value(_child_extras, _FIT_TARGET_FLAGS) is not None
+                        ):
+                            return None
                         if _margin_mib is None:
                             _emits = _supports_fit_target and (
                                 _auto_fit or _managed_mib != _LLAMA_FIT_TARGET_DEFAULT_MIB
                             )
-                            _env_mib = None if _emits else fit_target_margin_in((), _child_env)
+                            _env_mib = None
+                            if not _emits:
+                                _env_mib, _margin_exact = _child_fit_target_margin_mib(
+                                    (), _child_env, one_model_device = _one_model_device
+                                )
+                                if not _margin_exact:
+                                    return None
+                                if (
+                                    _env_mib is None
+                                    and str(_child_env.get("LLAMA_ARG_FIT_TARGET") or "").strip()
+                                ):
+                                    return None
                             # An inherited 0 is a valid margin, not "unset".
                             _margin_mib = _managed_mib if _env_mib is None else _env_mib
+                        # std::stoull wraps a negative entry to a margin past any card.
+                        if _margin_mib < 0:
+                            return None
                         # A lazily read table stays mmap'd on the host, never on the GPU.
                         _lazy_host = self._lazy_read_host_bytes(
                             model_path,
@@ -29202,6 +29575,7 @@ class LlamaCppBackend:
                         _need = (
                             model_size_fit
                             - _lazy_host
+                            - _mmproj_host_bytes
                             - _model_size_fit_cb
                             + _compute_buffer_pipeline
                             + (
@@ -29264,17 +29638,24 @@ class LlamaCppBackend:
                         user_named_batch = _user_named_batch,
                     )
                     _moe_ub_switch = _moe_switch(_MOE_SPILL_UBATCH_ENV)
-                    if _spill_n_ubatch != n_ubatch and _moe_ub_switch != "off":
-                        _share_before = (
-                            _moe_resident_share_now() if _moe_ub_switch == "auto" else None
+                    if _spill_n_ubatch != n_ubatch and not _moe_spill_raise_wanted(
+                        _moe_resident_share_now() if _moe_ub_switch == "auto" else None,
+                        switch = _moe_ub_switch,
+                    ):
+                        _spill_n_batch, _spill_n_ubatch = n_batch, n_ubatch
+                        if _moe_ub_switch == "auto":
+                            logger.info(
+                                "MoE experts: keeping the default --ubatch-size; the --fit "
+                                "split keeps every routed expert on the GPU."
+                            )
+                    if _spill_n_ubatch != n_ubatch:
+                        logger.info(
+                            "MoE experts are offloaded to system RAM; raising --ubatch-size "
+                            "%s -> %s for faster prompt processing.",
+                            n_ubatch if n_ubatch is not None else _DEFAULT_LLAMA_N_UBATCH,
+                            _spill_n_ubatch,
                         )
-                        _pre_raise = (
-                            n_batch,
-                            n_ubatch,
-                            _effective_ubatch,
-                            _compute_buffer_pipeline,
-                            _compute_buffer_tensor,
-                        )
+                        self._moe_spill_batch_restore = (n_batch, n_ubatch)
                         n_batch, n_ubatch = _spill_n_batch, _spill_n_ubatch
                         _effective_ubatch = _ubatch_for_slots(n_parallel)
                         # Same calls and fallbacks as above, at the new micro-batch.
@@ -29288,41 +29669,6 @@ class LlamaCppBackend:
                             n_parallel = n_parallel,
                             per_device_tensor = True,
                         ) or (self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024)
-                        _share_after = (
-                            _moe_resident_share_now()
-                            if _moe_ub_switch == "auto" and _share_before is not None
-                            else None
-                        )
-                        if _moe_spill_raise_keeps_experts(
-                            _share_before, _share_after, switch = _moe_ub_switch
-                        ):
-                            logger.info(
-                                "MoE experts are offloaded to system RAM; raising "
-                                "--ubatch-size %s -> %s for faster prompt processing.",
-                                (
-                                    _pre_raise[1]
-                                    if _pre_raise[1] is not None
-                                    else _DEFAULT_LLAMA_N_UBATCH
-                                ),
-                                _spill_n_ubatch,
-                            )
-                            self._moe_spill_batch_restore = (_pre_raise[0], _pre_raise[1])
-                        else:
-                            (
-                                n_batch,
-                                n_ubatch,
-                                _effective_ubatch,
-                                _compute_buffer_pipeline,
-                                _compute_buffer_tensor,
-                            ) = _pre_raise
-                            logger.info(
-                                "MoE experts: keeping the default --ubatch-size; %s would "
-                                "move the GPU's resident share of the routed experts "
-                                "%.0f%% -> %.0f%%.",
-                                _spill_n_ubatch,
-                                100 * (_share_before or 0.0),
-                                100 * (_share_after or 0.0),
-                            )
 
                     _moe_cache_candidate = self._moe_cache_auto_eligible(
                         caps = server_caps,
@@ -29549,17 +29895,41 @@ class LlamaCppBackend:
                     # while llama.cpp keeps the layers past the count, and their KV, in
                     # host RAM. Nothing here says which slice stays on the card, so this
                     # is the "engaged but unsized" case the fit abstains on.
+                    # Draft tensor overrides and draft CPU-MoE controls move drafter
+                    # weights to the host whatever -ngld says: the same unknown slice.
+                    # A separate drafter pinned to a GPU name by --spec-draft-device is
+                    # the same unknown: it may be a companion card or an integrated GPU
+                    # drawing on host RAM, while mtp_bytes prices it on these cards (the
+                    # resident share abstains on it too). CPU / none pins and -ngld 0
+                    # already nulled _mtp_draft_for_budget.
                     _draft_split_across_host = bool(
                         _mtp_draft_for_budget
-                        and _draft_is_split_across_host(
-                            _fit_extras,
-                            _fit_env,
-                            n_draft_layers = getattr(
-                                self._draft_backend_for(_mtp_draft_for_budget),
-                                "_n_layers",
-                                None,
-                            ),
+                        and (
+                            _extra_args_draft_device_pin(_fit_extras)
+                            or _draft_tensors_placed_off_card(_fit_extras, _fit_env)
+                            or _draft_is_split_across_host(
+                                _fit_extras,
+                                _fit_env,
+                                n_draft_layers = getattr(
+                                    self._draft_backend_for(_mtp_draft_for_budget),
+                                    "_n_layers",
+                                    None,
+                                ),
+                            )
                         )
+                    )
+                    # The same margin the resident share prices: on one card that is the
+                    # child's one model device llama.cpp reads only entry 0 of a
+                    # per-device list (_child_has_one_model_device); otherwise any entry
+                    # may be a credited card's, so the largest is charged.
+                    _fit_user_margin_mib, _ = _child_fit_target_margin_mib(
+                        _fit_extras,
+                        _fit_env,
+                        one_model_device = (
+                            len([g for g in gpus if gpu_indices is None or g[0] in gpu_indices])
+                            == 1
+                            and _child_has_one_model_device(_fit_extras, _fit_env)
+                        ),
                     )
                     _fit_margin_mib = (
                         max(
@@ -29570,7 +29940,7 @@ class LlamaCppBackend:
                                 and bool(server_caps.get("supports_fit_target")),
                                 floor_mib = _metal_fit_target_floor_mib,
                             ),
-                            fit_target_margin_in(_fit_extras, _fit_env) or 0.0,
+                            _fit_user_margin_mib or 0.0,
                         )
                         if _fitter_runs
                         else 0.0
@@ -29607,17 +29977,62 @@ class LlamaCppBackend:
                     _fit_env_mmproj_unsized = bool(_fit_env_mmproj_url) or (
                         bool(_fit_env_mmproj) and _fit_env_mmproj_bytes <= 0
                     )
-                    # Host-resident when the resolved offload says CPU, the same split
-                    # the resolved projector gets.
-                    _fit_env_mmproj_on_host = (
-                        _resolved_mmproj_offload(_fit_extras, _fit_env) is False
+                    # Host-resident when the ordered placement says CPU, the same split
+                    # the resolved projector gets. Studio's own CPU pin is appended after
+                    # the extras, so it is the final token.
+                    _fit_mmproj_studio_pin = bool(
+                        _mmproj_cpu_pinned and launch_mmproj_path and effective_is_vision
                     )
+                    _fit_mmproj_place = _mmproj_placement(
+                        _fit_extras, _fit_env, studio_cpu_pin = _fit_mmproj_studio_pin
+                    )
+                    _fit_env_mmproj_on_host = _fit_mmproj_place == "host"
                     _fit_model_size = model_size
                     if _fit_env_mmproj_unsized:
                         # Same abstain the other unreadable terms take.
                         _fit_model_size = None
                     elif _fit_model_size and not _fit_env_mmproj_on_host:
                         _fit_model_size += _fit_env_mmproj_bytes
+                    # Placements this footprint cannot split between card and host, so
+                    # they abstain like the resident-share estimate does. A projector
+                    # pinned to a named device (--mmproj-device / MTMD_BACKEND_DEVICE;
+                    # "none" or CPU keeps it in host RAM, a GPU name may be a companion
+                    # card) and a pass-through MoE cache (argv beats env, "0" turns it
+                    # off), which keeps the routed experts in host RAM.
+                    _fit_mmproj_device = _extra_args_device(
+                        _fit_extras, {"--mmproj-device", "-mmdev"}
+                    )
+                    if _fit_mmproj_device is None:
+                        _fit_mmproj_device = _fit_env.get("MTMD_BACKEND_DEVICE")
+                    _fit_cache_mib = _extra_args_device(_fit_extras, {"--moe-cache-mib"})
+                    if _fit_cache_mib is None:
+                        _fit_cache_mib = _fit_env.get("LLAMA_ARG_MOE_CACHE_MIB")
+                    # Except a device of exactly "none" the resolver already reads as
+                    # host RAM: the projector then left model_size for
+                    # mmproj_pinned_bytes, which this fit charges to host RAM, so there
+                    # is nothing to split. Both resolutions must agree, the budget's
+                    # (model_size) and this view's (inherited projector).
+                    # Studio's automatic pin took the projector out of model_size the
+                    # same way (mmproj_size 0, bytes to mmproj_pinned_bytes).
+                    _fit_mmproj_known_host = bool(
+                        _fit_env_mmproj_on_host
+                        and (
+                            not launch_mmproj_path
+                            or _user_mmproj_offload is False
+                            or (_fit_mmproj_studio_pin and not mmproj_size)
+                        )
+                    )
+                    # A device token the resolver reads as "default" (none, then a later
+                    # offload) is the model's own card, which model_size already charged.
+                    if (
+                        _fit_mmproj_device is not None
+                        and _fit_mmproj_place != "default"
+                        and not _fit_mmproj_known_host
+                        and (launch_mmproj_path or _fit_env_mmproj or _fit_env_mmproj_url)
+                    ) or (
+                        _fit_cache_mib is not None and str(_fit_cache_mib).strip() not in ("", "0")
+                    ):
+                        _fit_model_size = None
                     _fit_soft_overhead = _soft_overhead + self._inherited_mmproj_soft_overhead(
                         _fit_env_mmproj_bytes,
                         on_host = _fit_env_mmproj_on_host,
@@ -32157,19 +32572,19 @@ class LlamaCppBackend:
                     # enumerates every agent first, which segfaults on a deselected
                     # unsupported GPU (e.g. gfx1036 iGPU under a gfx103X prebuilt).
                     # Companion flags use the unpinned numbering (#11810). Skipped for a
-                    # uuid/MIG mask (CUDA<n> is ambiguous) and an inherited LLAMA_ARG_DEVICE
-                    # (the appended --device would override it).
+                    # uuid/MIG mask (CUDA<n> is ambiguous). Every device name the child
+                    # parses is fitted, env twins included (MTMD_BACKEND_DEVICE, an
+                    # inherited LLAMA_ARG_DEVICE, which as the final main value also stops
+                    # a --device being appended over it), so env goes in too.
                     _companion_widen = ""
-                    if not self._visibility_mask_is_unmappable() and not (
-                        _extra_args_main_device(cmd) is None
-                        and str(env.get("LLAMA_ARG_DEVICE", "")).strip()
-                    ):
+                    if not self._visibility_mask_is_unmappable():
                         _had_main_device = _extra_args_main_device(cmd) is not None
                         _pin_ids, _companion_widen = _widen_pin_ids_for_companion_devices(
                             cmd,
                             _pin_ids,
                             self._resolve_visible_physical_ids(),
                             allowed_ids = gpu_ids or None,
+                            env = env,
                         )
                         if _companion_widen:
                             _companion_fit_mask = list(_pin_ids)
@@ -33549,6 +33964,7 @@ class LlamaCppBackend:
                                 list(_remaining),
                                 list(_companion_fit_mask),
                                 allowed_ids = gpu_ids or None,
+                                env = env,
                             )
                             _companion_added_device = (
                                 list(cmd[-2:])
@@ -35535,10 +35951,10 @@ class LlamaCppBackend:
         (--spec-draft-ngl 0 / --spec-draft-device cpu) doesn't count."""
         _args = [str(a) for a in cmd]
         if any(a.startswith("--mmproj") or _flag_name(a) == "-mm" for a in _args):
-            # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates the whole
-            # GPU backend on it, so the projector holds no VRAM. Last flag wins.
-            _off = [a for a in _args if a in ("--mmproj-offload", "--no-mmproj-offload")]
-            if not _off or _off[-1] != "--no-mmproj-offload":
+            # Host placement clears mmproj_use_gpu and clip.cpp gates the whole GPU
+            # backend on it, so the projector holds no VRAM. The ordered resolver: env,
+            # then argv, last wins over --[no-]mmproj-offload and --mmproj-device.
+            if _mmproj_placement(_args, env or {}) != "host":
                 return True
         if _extra_args_mtp_draft_path(cmd, env) is None:
             return False
@@ -35556,36 +35972,40 @@ class LlamaCppBackend:
             LlamaCppBackend._cmd_has_gpu_device_pin(cmd, env)
             or _effective_tensor_parallel(cmd, False, env)
             or LlamaCppBackend._cmd_has_gpu_companion(cmd, env)
+            or LlamaCppBackend._cmd_names_mmproj_device(cmd, env)
+        )
+
+    @staticmethod
+    def _cmd_names_mmproj_device(cmd: list, env: Optional[Mapping[str, str]] = None) -> bool:
+        """True when any projector device value, not only the last, names a device.
+
+        arg.cpp resolves each --mmproj-device / MTMD_BACKEND_DEVICE as it reads it (env
+        first, then argv in order; parse_device_list), so a name before a final none
+        must still exist: hiding the GPUs fails the launch with "invalid device". The
+        sites are ``_device_list_sites``, the one enumeration every visibility consumer
+        reads."""
+        return any(
+            site.group == "mmproj" and site.value != "none" for site in _device_list_sites(cmd, env)
         )
 
     @staticmethod
     def _cmd_has_gpu_device_pin(cmd: list, env: Optional[Mapping[str, str]] = None) -> bool:
-        """True when the effective main or draft ``--device`` pin names a GPU."""
-        main_flags = {"--device", "-dev"}
-        draft_flags = {"--spec-draft-device", "-devd", "--device-draft"}
-        last_main: Optional[str] = None
-        last_draft: Optional[str] = None
-        args = [str(arg) for arg in cmd]
-        for index, raw in enumerate(args):
-            flag = _flag_name(raw)
-            _, equals, inline = raw.partition("=")
-            if flag not in main_flags and flag not in draft_flags:
-                continue
-            value = inline if equals else (args[index + 1] if index + 1 < len(args) else "")
-            if flag in main_flags:
-                last_main = value
-            else:
-                last_draft = value
-        if last_main is None:
-            last_main = (env or {}).get("LLAMA_ARG_DEVICE")
+        """True when any main or draft ``--device`` value, not only the last, names a GPU.
 
-        def _names_gpu(value: Optional[str]) -> bool:
-            if value is None:
-                return False
+        arg.cpp resolves each --device / -devd / LLAMA_ARG_DEVICE as it reads it (env
+        first, then argv in order; parse_device_list), so a GPU name before a final none
+        must still exist: hiding the GPUs fails the launch with "invalid device". The
+        twin of ``_cmd_names_mmproj_device`` for the main and draft device lists, over the
+        same ``_device_list_sites`` enumeration."""
+
+        def _names_gpu(value: str) -> bool:
             devices = [item.strip().lower() for item in value.split(",") if item.strip()]
             return not devices or any(item not in ("cpu", "none") for item in devices)
 
-        return _names_gpu(last_main) or _names_gpu(last_draft)
+        return any(
+            site.group in ("main", "draft") and _names_gpu(site.value)
+            for site in _device_list_sites(cmd, env)
+        )
 
     @staticmethod
     def _zero_offload_gpu_flag(

@@ -35,6 +35,7 @@ if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
 
 from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E402
+from core.inference.llama_cpp import _mmproj_placement  # noqa: E402
 
 _detect = LlamaCppBackend._is_projector_incompatibility
 _strip = LlamaCppBackend._strip_mmproj_args
@@ -180,6 +181,50 @@ class TestMmprojCpuOffload:
         retry = _mmproj_cpu(_VISION_CMD, {"LLAMA_ARG_MMPROJ_OFFLOAD": value})
         assert retry is not None
         assert retry[-1] == "--no-mmproj-offload"
+
+    @pytest.mark.parametrize(
+        "extra, env",
+        [
+            (["--no-mmproj-offload", "--mmproj-device", "CUDA0"], {}),
+            (["--no-mmproj-offload", "-mmdev=CUDA0"], {}),
+            (["--mmproj-device", "CUDA0"], {"LLAMA_ARG_MMPROJ_OFFLOAD": "0"}),
+            ([], {"LLAMA_ARG_MMPROJ_OFFLOAD": "0", "MTMD_BACKEND_DEVICE": "CUDA0"}),
+            (["--mmproj-device", "CUDA0"], {"LLAMA_ARG_NO_MMPROJ_OFFLOAD": "1"}),
+        ],
+        ids = [
+            "argv_named_after_off",
+            "short_named_after_off",
+            "argv_named_over_env_off",
+            "env_named_after_env_off",
+            "argv_named_over_env_negative",
+        ],
+    )
+    def test_a_named_device_after_an_offload_off_still_gets_the_cpu_retry(self, extra, env):
+        """A named --mmproj-device / MTMD_BACKEND_DEVICE turns GPU offload back on
+        (mmproj_use_gpu = true, common/arg.cpp), so the projector is on the card and the
+        CPU-projector retry is the rung that can keep vision. The legacy resolver read the
+        earlier offload-off and skipped it."""
+        cmd = _VISION_CMD + extra
+        retry = _mmproj_cpu(cmd, env)
+        assert retry is not None
+        assert retry[: len(cmd)] == cmd
+        # Last wins: the appended pin follows the named device, and the retry's own
+        # placement replays to host RAM.
+        assert retry[-1] == "--no-mmproj-offload"
+        assert _mmproj_placement(retry, env) == "host"
+
+    @pytest.mark.parametrize(
+        "extra, env",
+        [
+            (["--mmproj-offload", "--mmproj-device", "none"], {}),
+            (["--mmproj-device", "CUDA0", "--mmproj-device", "none"], {}),
+            ([], {"LLAMA_ARG_MMPROJ_OFFLOAD": "1", "MTMD_BACKEND_DEVICE": "none"}),
+        ],
+        ids = ["device_none_after_offload", "none_after_named", "env_none_after_env_on"],
+    )
+    def test_a_projector_already_in_host_ram_skips_the_futile_retry(self, extra, env):
+        # Controls: device none clears mmproj_use_gpu whatever came before.
+        assert _mmproj_cpu(_VISION_CMD + extra, env) is None
 
 
 class TestGpuMemoryStartFailure:

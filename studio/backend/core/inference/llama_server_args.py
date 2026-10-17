@@ -1145,7 +1145,10 @@ def fit_ctx_in(
 
 
 def fit_target_margin_in(
-    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+    args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    device: Optional[int] = None,
 ) -> Optional[float]:
     """The per-device margin an effective ``--fit-target`` asks the fitter to keep.
 
@@ -1156,7 +1159,8 @@ def fit_target_margin_in(
     load-mode fit that credits VRAM has to price it.
 
     Returns the LARGEST value in the list, because the fit charges one margin to every device it
-    credits and understating would claim a fit that is not there. ``None`` when nothing readable is
+    credits and understating would claim a fit that is not there; ``device`` reads that one
+    device's entry instead. ``None`` when nothing readable is
     set, which leaves the caller on llama.cpp's own default rather than on a guess. Last-wins over
     argv, and the env twin only when argv sets nothing, the same precedence
     ``fit_is_effectively_on`` uses.
@@ -1177,7 +1181,53 @@ def fit_target_margin_in(
             values.append(float(part))
         except ValueError:
             return None
-    return max(values) if values else None
+    if not values:
+        return None
+    if device is not None and len(values) > 1:
+        return values[device] if 0 <= device < len(values) else None
+    return max(values)
+
+
+def fit_target_is_per_device(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """Whether the effective ``--fit-target`` (same precedence as ``fit_target_margin_in``)
+    lists different margins for different devices. llama.cpp applies such a list
+    positionally (``fit_params_target[i]``, common/arg.cpp), so which entry a given card
+    gets depends on its device index in the child."""
+    raw_value = _last_flag_value(args, _FIT_TARGET_FLAGS)
+    if raw_value is None and env:
+        raw_value = env.get("LLAMA_ARG_FIT_TARGET")
+    if raw_value is None:
+        return False
+    parts = {p.strip() for p in str(raw_value).replace("/", ",").split(",") if p.strip()}
+    try:
+        return len({float(p) for p in parts}) > 1
+    except ValueError:
+        return False
+
+
+def fit_target_first_device_margin_in(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[float]:
+    """Device 0's ``--fit-target`` margin (same precedence as ``fit_target_margin_in``).
+
+    Every occurrence writes entry 0, a single value by broadcast and a list positionally
+    (``fit_params_target[i]``, common/arg.cpp), so the last one alone decides it. A child
+    with one model device only reads ``margins_s[0]`` (common/fit.cpp). ``None`` when
+    nothing readable is set."""
+    raw_value = _last_flag_value(args, _FIT_TARGET_FLAGS)
+    if raw_value is None and env:
+        raw_value = env.get("LLAMA_ARG_FIT_TARGET")
+    if raw_value is None:
+        return None
+    parts = [p.strip() for p in str(raw_value).replace("/", ",").split(",") if p.strip()]
+    if not parts:
+        return None
+    try:
+        return float(parts[0])
+    except ValueError:
+        return None
 
 
 def split_policy_starves_devices(
