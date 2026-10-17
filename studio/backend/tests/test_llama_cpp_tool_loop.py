@@ -545,6 +545,61 @@ def test_forced_web_search_tool_choice_is_sent_until_a_tool_runs(monkeypatch):
     )
 
 
+def test_web_search_keeps_to_the_requested_domains(monkeypatch):
+    queries = []
+
+    class FakeDDGS:
+        def __init__(self, **_kwargs):
+            pass
+
+        def text(
+            self,
+            query,
+            max_results = 5,
+            **_kwargs,
+        ):
+            queries.append(query)
+            return [
+                {
+                    "title": "Coroutines and Tasks",
+                    "href": "https://docs.python.org/3/library/asyncio-task.html",
+                    "body": "TaskGroup",
+                },
+                {
+                    "title": "TaskGroup?",
+                    "href": "https://stackoverflow.com/q/1",
+                    "body": "Off-site",
+                },
+            ]
+
+    monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
+    backend, _payloads = _backend_and_payloads(
+        monkeypatch,
+        [
+            _structured_tool_call("web_search", {"query": "asyncio TaskGroup"}, "call_search"),
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Search the Python docs for asyncio.TaskGroup"}],
+        [_web_search_tool()],
+        max_tool_iterations = 5,
+        permission_mode = "off",
+        website_policy = {"allowedDomains": ["docs.python.org"], "blockedDomains": []},
+    )
+
+    [result] = [
+        event["result"]
+        for event in events
+        if event.get("type") == "tool_end" and event.get("tool_name") == "web_search"
+    ]
+    assert queries == ["asyncio TaskGroup (site:docs.python.org)"]
+    assert "https://docs.python.org/3/library/asyncio-task.html" in result
+    assert "stackoverflow.com" not in result
+
+
 def test_forced_tool_choice_must_exist_in_the_catalog(monkeypatch):
     backend, payloads = _backend_and_payloads(monkeypatch, [])
 

@@ -4605,6 +4605,96 @@ class TestAnthropicMessagesToolRouting:
         assert kwargs["tool_choice"] == {"type": "function", "function": {"name": "web_search"}}
         assert [tool["function"]["name"] for tool in kwargs["tools"]] == ["web_search"]
 
+    def test_web_search_domain_limits_reach_the_tool_loop(self, monkeypatch):
+        backend = _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [
+                {
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "allowed_domains": ["Docs.Python.org"],
+                    "blocked_domains": ["reddit.com"],
+                    "max_uses": 8,
+                }
+            ],
+            tool_choice = {"type": "tool", "name": "web_search"},
+        )
+
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+        call_kind, kwargs = backend.calls[0]
+        assert call_kind == "tools"
+        assert kwargs["website_policy"] == {
+            "allowedDomains": ["docs.python.org"],
+            "blockedDomains": ["reddit.com"],
+        }
+
+    def test_web_search_domain_entries_with_a_path_limit_by_domain(self, monkeypatch):
+        backend = _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [
+                {
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "allowed_domains": ["docs.python.org/3/library", "example.com/*"],
+                }
+            ],
+        )
+
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+        assert backend.calls[0][1]["website_policy"] == {
+            "allowedDomains": ["docs.python.org", "example.com"],
+            "blockedDomains": [],
+        }
+
+    def test_web_search_without_domain_limits_is_unrestricted(self, monkeypatch):
+        backend = _mock_backend(monkeypatch)
+        payload = _basic_payload(tools = [{"type": "web_search_20250305", "name": "web_search"}])
+
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+        assert backend.calls[0][1]["website_policy"] is None
+
+    @pytest.mark.parametrize("allowed", [["https://docs.python.org"], "", {}])
+    def test_invalid_web_search_domain_is_rejected_before_generation(self, monkeypatch, allowed):
+        backend = _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [
+                {
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "allowed_domains": allowed,
+                }
+            ],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+        assert exc.value.status_code == 400
+        assert exc.value.detail["error"]["type"] == "invalid_request_error"
+        assert backend.calls == []
+
+    def test_count_tokens_rejects_an_invalid_web_search_domain(self, monkeypatch):
+        from routes.inference import anthropic_count_tokens
+
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [
+                {
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "allowed_domains": ["https://docs.python.org"],
+                }
+            ],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_count_tokens(payload, request = None, current_subject = "t"))
+
+        assert exc.value.status_code == 400
+
     def test_server_tool_choice_must_be_in_the_selected_catalog(self, monkeypatch):
         backend = _mock_backend(monkeypatch)
         payload = _basic_payload(
