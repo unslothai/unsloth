@@ -12406,6 +12406,81 @@ def release_chat_after_kept_models() -> bool:
     return model_slots.in_slot(None, lambda: release_if(CHAT, zero_vram_primary_only))
 
 
+def release_chat_after_cpu_fallback(backend, identifier) -> bool:
+    """A primary whose GPU start fell back to the CPU drops CHAT, unless something else still holds VRAM."""
+    from core.inference.gpu_arbiter import CHAT, release_if
+
+    def only_cpu_left() -> bool:
+        if getattr(backend, "active_model_name", None) != identifier:
+            return False
+        entry = (getattr(backend, "models", None) or {}).get(identifier)
+        if not isinstance(entry, dict) or entry.get("audio_device_fallback") != "cpu":
+            return False
+        llama = get_llama_cpp_backend()
+        return not model_slots.holds_vram() and (not llama.is_active or llama.holds_no_vram)
+
+    return model_slots.in_slot(None, lambda: release_if(CHAT, only_cpu_left))
+
+
+# True while load_model_gated can free memory and retry, so only there does a primary refuse a partial GPU fit.
+_primary_can_retry_fit: contextvars.ContextVar[bool] = contextvars.ContextVar("primary_can_retry_fit", default = False)
+
+
+def _media_on_target_gpus(placement) -> bool:
+    """Whether an image or video model kept loaded beside chat holds memory on the GPUs this load targets."""
+    from core.inference.gpu_residency import media_held_mib
+
+    held = media_held_mib()
+    gpus = None if placement.gpu_ids_are_vulkan_ordinals else placement.resolved_gpu_ids
+    return bool(held) and (not gpus or bool(set(held) & set(gpus)))
+
+
+def _chat_fit_kwargs(config, placement) -> dict:
+    """How the CHAT acquire shares the GPU under When they fit / Always.
+
+    audio.cpp and native audio are priced from the placement estimate. A GGUF launch prices itself (it refuses a
+    partial fit and load_model_gated makes room). Anything else has no estimate before launch: When they fit
+    evicts first, Always tries the load and turns an out-of-memory failure into its refusal.
+    """
+    from core.inference.gpu_residency import current_policy
+
+    policy = current_policy()
+    if policy == "off":
+        return {}
+    kwargs: dict = {"policy": policy}
+    gpus = placement.resolved_gpu_ids
+    if placement.native_required_gb and gpus and not placement.gpu_ids_are_vulkan_ordinals:
+        kwargs["need_mib"] = {int(g): int(placement.native_required_gb * 1024 / len(gpus)) for g in gpus}
+    elif policy == "fit" and not (config.is_gguf and _primary_can_retry_fit.get()):
+        kwargs["evict_first"] = True
+    return kwargs
+
+
+async def _make_room_for_primary(request: LoadRequest, exc, evicted: list) -> LoadRequest:
+    """A primary chat load refused a partial GPU fit beside an image or video model: return the request to retry.
+
+    When they fit frees the image or video model (cheapest first), else lets llama-server fit what it can. Always
+    only accepts a smaller context; otherwise it refuses, since nothing may be unloaded.
+    """
+    from core.inference import gpu_arbiter, gpu_residency
+
+    if exc.capped:
+        return request.model_copy(update = {"force_alongside": True})
+    if await asyncio.to_thread(gpu_residency.current_policy) == "always":
+        rows = (await asyncio.to_thread(gpu_residency._free_mib_by_gpu))[0] or {}
+        gpus = [g for g in exc.gpu_indices or () if "free_mib" in rows.get(g, {})]
+        free = sum(rows[g]["free_mib"] for g in gpus)
+        info = {"need_mib": {0: free + exc.short_mib}, "free_mib": {0: free}, "short_mib": {0: exc.short_mib}}
+        slots = [s for o in gpu_residency.MEDIA_OWNERS for s in gpu_arbiter.resident_slots(o)]
+        raise gpu_residency.need_free_refusal(info if gpus else {}, slots)
+    slots: list = []
+    await asyncio.to_thread(
+        gpu_residency.free_for, gpu_arbiter.CHAT, exc.gpu_indices, "a chat model", slots, short_mib = exc.short_mib
+    )
+    evicted += [s["model"] for s in slots if s.get("model")]
+    return request if slots else request.model_copy(update = {"force_alongside": True})
+
+
 def reap_dead_managed_engine(backend) -> None:
     """A crashed engine leaves nothing resident, so its claim and sharers go with it."""
     from core.inference.gpu_arbiter import CHAT, current_owner
@@ -18503,6 +18578,7 @@ async def load_model_gated(
                         action = "Loading a model",
                     )
 
+                _primary_can_retry_fit.set(True)
                 while True:
                     try:
                         response = await _run_tracked_load_model_impl(
@@ -18516,11 +18592,17 @@ async def load_model_gated(
                         break
                     except (GpuMemoryShortError, HTTPException) as exc:
                         if not isinstance(exc, GpuMemoryShortError):
+                            if extra is None and _ran_out_of_memory(exc):
+                                await asyncio.to_thread(_refuse_oom_beside_media_under_always)
                             # A non-GGUF load reports no fit up front: its out-of-memory failure
                             # makes room the same way, one idle kept model at a time.
                             if extra is None or not _ran_out_of_memory(exc):
                                 raise
                             exc = GpuMemoryShortError(str(exc.detail))
+                        if extra is None:
+                            # Only a primary beside an image or video model refuses a partial fit.
+                            request = await _make_room_for_primary(request, exc, evicted)
+                            continue
                         # No chat may start on a victim between its pick and teardown.
                         async with inference_lifecycle_gate() if new_slot else nullcontext():
                             dropped = await asyncio.to_thread(
@@ -18592,10 +18674,20 @@ async def load_model_gated(
                     await asyncio.to_thread(model_slots.drop, extra)
                     await asyncio.to_thread(release_chat_gpu_claim)
         finally:
+            _primary_can_retry_fit.set(False)
             # A slot that would not stop stays stuck, but this attempt is over either way.
             with _scoped_load_attempts_lock:
                 _pending_load_attempts.pop(attempt.token, None)
             _finish_load_attempt(attempt)
+
+
+def _refuse_oom_beside_media_under_always() -> None:
+    """Under Always a chat load that ran out of memory beside an image or video model is refused, not retried."""
+    from core.inference import gpu_arbiter, gpu_residency
+
+    slots = [s for o in gpu_residency.MEDIA_OWNERS if gpu_arbiter.holds(o) for s in gpu_arbiter.resident_slots(o)]
+    if slots and gpu_residency.current_policy() == "always":
+        raise gpu_arbiter.refusal_for(slots)
 
 
 def _ran_out_of_memory(exc: HTTPException) -> bool:
@@ -19493,7 +19585,9 @@ async def _load_model_impl(
             )
             if speech_codec_path is not None:
                 gguf_intent = replace(gguf_intent, audio_codec_path = speech_codec_path)
-            if not replacing and not request.force_alongside:
+            if not request.force_alongside and (
+                not replacing or (_primary_can_retry_fit.get() and _media_on_target_gpus(placement))
+            ):
                 gguf_intent = replace(gguf_intent, refuse_partial_gpu_fit = True)
             same_loaded_model = llama_backend.matches_load_source(gguf_intent)
             _loaded_companion_roots = tuple(
@@ -19742,6 +19836,7 @@ async def _load_model_impl(
                     handoff_kwargs["allow_evict"] = False
                 if not replacing:
                     handoff_kwargs["alongside"] = True
+                handoff_kwargs.update(await asyncio.to_thread(_chat_fit_kwargs, config, placement))
                 await asyncio.to_thread(
                     acquire_for_request,
                     CHAT,
@@ -20214,6 +20309,10 @@ async def _load_model_impl(
             )
         except Exception:
             pass
+
+        if replacing and chat_load_needs_gpu:
+            # A GPU start that fell back to the CPU holds no VRAM, so the claim it took would evict media for nothing.
+            await asyncio.to_thread(release_chat_after_cpu_fallback, backend, config.identifier)
 
         return LoadResponse(
             engine = request.engine,
@@ -50198,11 +50297,15 @@ async def load_diffusion_model_gated(
             )
 
         if needs_gpu:
+            from core.inference.gpu_residency import media_fit_kwargs
+
+            fit_kwargs = await asyncio.to_thread(media_fit_kwargs, DIFFUSION, request, gpu_ordinal)
+
             # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts DIFFUSION before
             # the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps the same span.
             def _acquire_and_begin():
                 with _diffusion_training_admission():
-                    return acquire_for_request(DIFFUSION, _begin_load)
+                    return acquire_for_request(DIFFUSION, _begin_load, **fit_kwargs)
 
             from core.inference.chat_swap_kv import save_chat_kv_before_swap
             swap = await save_chat_kv_before_swap(DIFFUSION, "image")

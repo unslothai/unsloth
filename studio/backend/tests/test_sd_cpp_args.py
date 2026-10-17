@@ -316,7 +316,7 @@ def test_video_load_route_skips_the_video_claim_for_a_forced_cpu_h3_load():
     assert source[branch : source.index('elif device != "cpu":', branch)].strip() == (
         "if forced_cpu:\n            status_dict = await asyncio.to_thread(_begin_load)"
     )
-    assert branch < source.index("return acquire_for_request(VIDEO, _begin_load)")
+    assert branch < source.index("return acquire_for_request(VIDEO, _begin_load")
 
 
 def test_partial_backend_specs_leave_the_diffusion_model_on_metal(monkeypatch):

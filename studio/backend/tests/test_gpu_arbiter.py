@@ -59,6 +59,244 @@ def test_reacquiring_same_owner_does_not_evict(calls):
     assert arb.current_owner() == arb.CHAT
 
 
+# Keep multiple models loaded set to When they fit / Always (gpu_residency.coreside_locked) next to Off.
+
+
+@pytest.fixture
+def cores(calls, monkeypatch):
+    import sys
+    import types
+
+    import core.inference.gpu_residency as res
+    import utils.hardware.hardware  # noqa: F401
+    from core.inference import model_slots, video_minimax_h3
+    from core.inference.api_monitor import api_monitor
+    from state import active_generations
+
+    env = types.SimpleNamespace(calls = calls, lifecycle = [], h3 = [], probes = [])
+    for name, value in {"_residents": {}, "_media_needs": {}, "_accounts": {}, "_owner_account": None,
+                        "_prior_account": None}.items():
+        monkeypatch.setattr(arb, name, value)
+    monkeypatch.setitem(arb._EVICTORS, arb.VIDEO, lambda: calls.append("evict-video"))
+    for owner, kind in ((arb.CHAT, "chat"), (arb.DIFFUSION, "image"), (arb.VIDEO, "video")):
+        monkeypatch.setitem(arb._SLOT_REPORTERS, owner, lambda kind = kind: [{"kind": kind, "model": f"org/{kind}"}])
+    monkeypatch.setattr(arb, "_release_idle_video_servers", env.h3.append)
+    monkeypatch.setattr(sys.modules["utils.hardware.hardware"], "get_parent_visible_gpu_ids", lambda: [])
+    monkeypatch.setattr(res, "chat_load_in_flight", lambda: False)
+    monkeypatch.setattr(res, "_media_busy", lambda owner: (False, False))
+    rows = {gpu: {"free_mib": 8192, "total_mib": 24576} for gpu in (0, 1)}
+    monkeypatch.setattr(res, "_free_mib_by_gpu", lambda: (rows, None))
+    monkeypatch.setattr(model_slots, "eviction_victims", lambda *args, **kwargs: [])
+    monkeypatch.setattr(video_minimax_h3, "release_h3_native_servers", lambda reason: 0)
+    monkeypatch.setattr(api_monitor, "record_lifecycle", lambda **event: env.lifecycle.append(event))
+
+    def fits(*blockers):
+        # Short while any of ``blockers`` is still resident, so a re-check after an eviction passes.
+        def probe(owner, need_mib):
+            env.probes.append(owner)
+            short = any(name in arb._view() for name in blockers)
+            return not short, {"need_mib": {0: 6144}, "free_mib": {0: 2048},
+                               "short_mib": {0: 5120} if short else {}, "reason": "short" if short else "fits"}
+        monkeypatch.setattr(res, "can_load_alongside", probe)
+
+    def no_probe(owner, need_mib):
+        raise AssertionError("can_load_alongside must not run here")
+
+    env.fits = fits
+    env.no_probe = lambda: monkeypatch.setattr(res, "can_load_alongside", no_probe)
+    active_generations.reset_for_tests()
+    yield env
+    active_generations.reset_for_tests()
+
+
+CHAT_SLOT, IMAGE_SLOT = {"kind": "chat", "model": "org/chat"}, {"kind": "image", "model": "org/image"}
+
+
+@pytest.mark.parametrize(
+    "policy, need, short, evicts",
+    [
+        ("off", {0: 4096}, False, True),  # today's swap
+        ("fit", {0: 4096}, False, False),  # fits: both stay
+        ("fit", {0: 4096}, True, True),  # short: chat freed, cheapest first
+        ("fit", None, False, True),  # unpriced: evict first, as Off does
+        ("always", {0: 4096}, False, False),  # fits: joins
+    ],
+)
+def test_image_load_beside_a_resident_chat_model_policy_matrix(cores, policy, need, short, evicts):
+    cores.fits(*([arb.CHAT] if short else []))
+    arb.acquire_for(arb.CHAT, gpu_ids = [0])
+    evicted: list = []
+    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = policy, need_mib = need, evicted = evicted)
+    assert cores.calls == (["evict-chat"] if evicts else [])
+    assert set(arb.residents()) == ({arb.DIFFUSION} if evicts else {arb.CHAT, arb.DIFFUSION})
+    assert evicted == ([CHAT_SLOT] if evicts else [])
+    # The fit path records each eviction in the API monitor; Off keeps today's silent swap.
+    assert [event["reason"] for event in cores.lifecycle] == (["evicted"] if evicts and policy != "off" else [])
+    assert arb._media_needs.get(arb.DIFFUSION) == (need if policy != "off" else None)
+
+
+@pytest.mark.parametrize("managed", [False, True])
+def test_always_refuses_an_image_load_that_does_not_fit_without_evicting(cores, managed):
+    from utils.account_context import AccountContext, run_as
+
+    cores.fits(arb.CHAT)
+    arb.acquire_for(arb.CHAT, gpu_ids = [0])
+
+    def load():
+        arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "always", need_mib = {0: 6144})
+
+    with pytest.raises(arb.MultiModelAlwaysRefusal) as refused:
+        run_as(AccountContext("b" * 32, "bob"), load) if managed else load()
+    message = str(refused.value)
+    if managed:
+        assert "is set to keep loaded" in message and "GB" not in message
+    else:
+        assert message.startswith("This model needs about 6.0 GB of GPU memory, and 2.0 GB is free")
+        assert "is set to Always" in message
+    assert cores.calls == [] and cores.lifecycle == []
+    assert set(arb.residents()) == {arb.CHAT}
+
+
+@pytest.mark.parametrize("policy", ["off", "fit", "always"])
+def test_image_load_on_another_gpu_never_evicts_chat_unless_off(cores, policy):
+    cores.no_probe()
+    arb.acquire_for(arb.CHAT, gpu_ids = [0])
+    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = policy, need_mib = {1: 4096})
+    if policy == "off":
+        assert cores.calls == ["evict-chat"]
+        assert arb.residents() == {arb.DIFFUSION: frozenset({1})}
+    else:
+        assert cores.calls == []
+        assert arb.residents() == {arb.CHAT: frozenset({0}), arb.DIFFUSION: frozenset({1})}
+
+
+@pytest.mark.parametrize(
+    "policy, priced, kwargs, short, outcome",
+    [
+        ("fit", True, {}, False, "join"),  # the launch prices the idle image model
+        ("always", True, {}, False, "join"),
+        ("fit", False, {}, False, "evict"),  # unpriced media can't be counted
+        ("always", False, {}, False, "refuse"),
+        ("fit", True, {"evict_first": True}, False, "evict"),  # no estimate before launch
+        ("fit", True, {"need_mib": {0: 6144}}, False, "join"),  # audio.cpp, priced from native_required_gb
+        ("fit", True, {"need_mib": {0: 6144}}, True, "evict"),
+    ],
+)
+def test_chat_load_beside_an_idle_image_model(cores, policy, priced, kwargs, short, outcome):
+    cores.fits(*([arb.DIFFUSION] if short else []))
+    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit" if priced else "off",
+                    need_mib = {0: 4096} if priced else None, gpu_ids = [0])
+    assert (arb.DIFFUSION in arb._media_needs) is priced
+    evicted: list = []
+
+    def load():
+        arb.acquire_for(arb.CHAT, gpu_ids = [0], policy = policy, evicted = evicted, **kwargs)
+
+    if outcome == "refuse":
+        with pytest.raises(arb.MultiModelAlwaysRefusal, match = "is set to Always"):
+            load()
+    else:
+        load()
+    assert cores.calls == (["evict-diffusion"] if outcome == "evict" else [])
+    assert evicted == ([IMAGE_SLOT] if outcome == "evict" else [])
+    expected = {"join": {arb.CHAT, arb.DIFFUSION}, "evict": {arb.CHAT}, "refuse": {arb.DIFFUSION}}[outcome]
+    assert set(arb.residents()) == expected
+
+
+@pytest.mark.parametrize(
+    "policy, need, refused",
+    [
+        ("fit", {1: 4096}, False),  # Bob's chat is on GPU 0: nothing of his is evicted
+        ("fit", {0: 4096}, True),  # short on Bob's GPU: his stream blocks the eviction
+        ("off", {1: 4096}, True),  # Off keeps the global guard
+    ],
+)
+def test_another_accounts_stream_only_blocks_evicting_its_own_resident(cores, policy, need, refused):
+    import threading
+
+    from state.active_generations import ActiveGeneration
+    from utils.account_context import AccountContext, run_as
+
+    alice, bob = AccountContext("a" * 32, "alice"), AccountContext("b" * 32, "bob")
+    cores.fits(arb.CHAT)
+    run_as(bob, arb.acquire_for, arb.CHAT, lambda: None, gpu_ids = [0])
+    with ActiveGeneration(threading.Event(), run_id = "bob-chat", account_id = bob.account_id):
+        def load():
+            run_as(alice, arb.acquire_for, arb.DIFFUSION, lambda: None, policy = policy, need_mib = need)
+
+        if refused:
+            with pytest.raises(arb.GpuBusyForAnotherAccountError):
+                load()
+        else:
+            load()
+    assert cores.calls == []
+    assert arb.holds(arb.CHAT) and arb.holds(arb.DIFFUSION) is not refused
+    assert arb.owner_account(arb.CHAT) == bob.account_id
+
+
+def test_free_for_collects_what_it_evicts_and_spares_other_gpus(cores):
+    import core.inference.gpu_residency as res
+
+    cores.fits(arb.CHAT)
+    arb.acquire_for(arb.CHAT, gpu_ids = [0])
+    arb.acquire_for(arb.VIDEO, lambda: None, policy = "fit", need_mib = {1: 4096})
+    evicted: list = []
+    freed = res.free_for(arb.DIFFUSION, [0], "test", evicted, need_mib = {0: 6144})
+    assert freed == ["org/chat"] and evicted == [CHAT_SLOT]
+    assert cores.calls == ["evict-chat"]
+    assert set(arb.residents()) == {arb.VIDEO}
+    assert cores.lifecycle == [{"event": "unload", "model": "org/chat", "reason": "evicted"}]
+
+
+@pytest.mark.parametrize("video_resident", [True, False])
+def test_a_fit_join_keeps_the_video_server_while_video_is_resident(cores, video_resident):
+    cores.fits()
+    arb.acquire_for(arb.CHAT, gpu_ids = [0])
+    if video_resident:
+        arb.acquire_for(arb.VIDEO, lambda: None, policy = "fit", need_mib = {1: 4096})
+    cores.h3.clear()
+    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit", need_mib = {0: 4096})
+    assert cores.calls == []
+    assert cores.h3 == ([] if video_resident else [f"GPU acquired for {arb.DIFFUSION}"])
+
+
+@pytest.mark.parametrize("policy", ["always", "fit"])
+def test_image_load_behind_an_in_flight_chat_load(cores, monkeypatch, policy):
+    import core.inference.gpu_residency as res
+    from fastapi import HTTPException
+
+    cores.fits(arb.CHAT)
+    monkeypatch.setattr(res, "chat_load_in_flight", lambda: True)
+    arb.acquire_for(arb.CHAT, gpu_ids = [0])
+
+    def load():
+        arb.acquire_for_request(arb.DIFFUSION, lambda: None, policy = policy, need_mib = {0: 4096})
+
+    if policy == "always":
+        # Its size isn't known yet, so Always answers the retryable K3 409 instead of the Always refusal.
+        with pytest.raises(HTTPException) as refused:
+            load()
+        assert refused.value.status_code == 409
+        detail = refused.value.detail
+        assert detail["error"] == "gpu_busy" and detail["retry_after"] == 15
+        assert detail["message"].startswith("Unsloth Studio is loading a chat model")
+        assert refused.value.headers == {"Retry-After": "15"}
+        assert cores.calls == [] and set(arb.residents()) == {arb.CHAT}
+    else:
+        load()  # today's handoff
+        assert cores.calls == ["evict-chat"] and set(arb.residents()) == {arb.DIFFUSION}
+
+
+@pytest.mark.parametrize("owner", [arb.DIFFUSION, arb.VIDEO])
+def test_a_lone_media_load_under_fit_never_probes(cores, owner):
+    cores.no_probe()
+    for _ in range(2):  # a reload of the same owner has no other resident either
+        arb.acquire_for(owner, lambda: None, policy = "fit", need_mib = {0: 4096})
+    assert cores.calls == []
+    assert arb.residents() == {owner: frozenset({0})}
+    assert arb._media_needs[owner] == {0: 4096}
+
+
 def test_release_clears_owner(calls):
     arb.acquire_for(arb.DIFFUSION)
     arb.release(arb.DIFFUSION)
