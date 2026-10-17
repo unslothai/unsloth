@@ -2535,13 +2535,18 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 lm_head_bias = None
             _head_log_softmax = chunked_hidden_states_selective_log_softmax
 
-            def chunked_hidden_states_selective_log_softmax(hidden_states, _lm_head, *args, **kwargs):
+            def chunked_hidden_states_selective_log_softmax(
+                hidden_states, _lm_head, *args, **kwargs
+            ):
                 # FSDP2's forward hooks replace Parameters. Read the current head
                 # at projection time, including the bias, instead of retaining a shard.
                 if UNSLOTH_ZOO_HAS_HEAD_BIAS:
                     kwargs["lm_head_bias"] = getattr(output_embeddings, "bias", None)
                 return _head_log_softmax(
-                    hidden_states, output_embeddings.weight, *args, **kwargs,
+                    hidden_states,
+                    output_embeddings.weight,
+                    *args,
+                    **kwargs,
                 )
 
             # Opt-in (UNSLOTH_GRPO_TRUNCATED_SUPPORT=1): score over the rollout's top_k / top_p /
