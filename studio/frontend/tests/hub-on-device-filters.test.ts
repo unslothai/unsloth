@@ -58,7 +58,7 @@ test("Add folder and Free up space are icon buttons with labels", () => {
   }
 });
 
-test("On Device keeps format and sort as dropdowns, with MLX and Trained & exported", () => {
+test("On Device keeps format and sort as dropdowns, with MLX and Exports & Fine-tunes", () => {
   const toolbar = readSrc("features/hub/catalog/models-toolbar.tsx");
   assert.match(toolbar, /\{!isDataset && \(\s*<HubOptionMenu<FormatMenuValue>/);
   assert.match(toolbar, /tab === "downloaded" && \(\s*<HubOptionMenu<InventorySort>/);
@@ -71,7 +71,7 @@ test("On Device keeps format and sort as dropdowns, with MLX and Trained & expor
   assert.match(page, /includeUnslothModels: true/);
 });
 
-test("Trained & exported is where a model came from, never a file format", () => {
+test("Exports & Fine-tunes is where a model came from, never a file format", () => {
   assert.equal(matchesFormat("gguf", "unsloth"), false);
   assert.equal(matchesFormat("safetensors", "unsloth"), false);
   assert.equal(matchesFormat("mlx", "mlx"), true);
