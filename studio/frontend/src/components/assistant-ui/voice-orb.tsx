@@ -253,17 +253,19 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
   return <MicIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />;
 };
 
-// What the three turn models last decided, drawn as three arcs around the orb:
-// turn judge on the left (how sure the turn is over), filler across the top
-// (lit while a line was chosen), mid-think on the right (how sure of its call).
-// Faint tracks until a model has spoken; a filled arc never moves on its own.
-const RING = 188;
-const RING_R = 86;
-const ARC_DEG = 96;
+// What the three turn models last decided, drawn as three arcs around the orb,
+// each in the colour of the orb state it belongs to: the turn judge on the left
+// in "hearing you" salmon (how sure the turn is over), the filler across the top
+// in "speaking" sky (lit while a line was chosen), the mid-think call on the
+// right in "thinking" indigo (how sure of its call). Faint tracks until a model
+// has spoken; a filled arc never moves on its own.
+const RING = 232;
+const RING_R = 106;
+const ARC_DEG = 100;
 const ARCS: Array<{ key: keyof VoiceDecisions; start: number; color: string }> = [
-  { key: "turn", start: 132, color: "#34d399" },
-  { key: "filler", start: 240, color: "#60a5fa" },
-  { key: "interject", start: 348, color: "#fbbf24" },
+  { key: "turn", start: 230, color: "#fb7185" },
+  { key: "filler", start: 350, color: "#38bdf8" },
+  { key: "interject", start: 110, color: "#818cf8" },
 ];
 
 const VoiceDecisionRing: FC = () => {
@@ -272,7 +274,7 @@ const VoiceDecisionRing: FC = () => {
   const arcLen = (circ * ARC_DEG) / 360;
   const fill = (key: keyof VoiceDecisions): number => {
     if (key === "turn") return d.turn ? d.turn.p : 0;
-    if (key === "filler") return d.filler ? (d.filler.phrase ? 1 : 0.08) : 0;
+    if (key === "filler") return d.filler?.phrase ? 1 : 0;
     return d.interject ? d.interject.confidence : 0;
   };
   return (
@@ -294,8 +296,8 @@ const VoiceDecisionRing: FC = () => {
               r={RING_R}
               fill="none"
               stroke={arc.color}
-              strokeOpacity={0.16}
-              strokeWidth={3}
+              strokeOpacity={0.22}
+              strokeWidth={5}
               strokeLinecap="round"
               strokeDasharray={`${arcLen} ${circ}`}
             />
@@ -305,8 +307,8 @@ const VoiceDecisionRing: FC = () => {
               r={RING_R}
               fill="none"
               stroke={arc.color}
-              strokeOpacity={v > 0 ? 0.9 : 0}
-              strokeWidth={3}
+              strokeOpacity={v > 0 ? 1 : 0}
+              strokeWidth={5}
               strokeLinecap="round"
               strokeDasharray={`${Math.max(0, arcLen * v)} ${circ}`}
               style={{ transition: "stroke-dasharray 320ms ease-out, stroke-opacity 220ms ease-out" }}
@@ -345,7 +347,7 @@ const VoiceDecisionCaption: FC = () => {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -4 }}
             transition={{ duration: 0.2 }}
-            className="block max-w-[calc(22rem*var(--ui-space-scale,1))] truncate text-ui-12 text-foreground/45"
+            className="block max-w-[calc(22rem*var(--ui-space-scale,1))] truncate text-ui-13 text-foreground/70"
           >
             {latest.text}
           </motion.span>
@@ -422,7 +424,7 @@ export const VoiceOrb: FC = () => {
             deboss ("door hole") carved into the surface. It lives INSIDE the ball,
             so it grows and shrinks with the sphere -- reading as part of the
             surface rather than floating on top. */}
-        <div className="relative grid place-items-center" style={{ width: 188, height: 188 }}>
+        <div className="relative grid place-items-center" style={{ width: RING, height: RING }}>
         {showOverlay && <VoiceDecisionRing />}
         <div
           // Transition the two things that change between states, not `all`:
