@@ -5,6 +5,8 @@ import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import type { NativeDocumentFolderSelection } from "@/features/native-intents";
+import { WorkingFolderPicker } from "./working-folder-picker";
 import {
   Dialog,
   DialogContent,
@@ -63,6 +65,13 @@ export function NewProjectDialog({
   const [staged, setStaged] = useState<StagedSource[]>([]);
   const [folders, setFolders] = useState<StagedFolder[]>([]);
   const [busy, setBusy] = useState(false);
+  const [workingFolder, setWorkingFolder] =
+    useState<NativeDocumentFolderSelection | null>(null);
+  const [pickingWorkingFolder, setPickingWorkingFolder] = useState(false);
+  const [needsReselect, setNeedsReselect] = useState(false);
+  const [createdProject, setCreatedProject] = useState<ProjectRecord | null>(
+    null,
+  );
   // A desktop drop reaches `staged` only once its native registration settles. Creating before
   // then would upload without the files the user just dropped.
   const [stagingDrop, setStagingDrop] = useState(false);
@@ -95,25 +104,39 @@ export function NewProjectDialog({
     setFolders([]);
     setStagingDrop(false);
     setPickingFolder(false);
+    setWorkingFolder(null);
+    setPickingWorkingFolder(false);
+    setNeedsReselect(false);
+    setCreatedProject(null);
   }
 
   // Every close path routes through here: callers keep this mounted, so a draft left behind would
   // resurface, and upload, on the next project.
   function close() {
-    if (busy) return;
+    if (busy || pickingWorkingFolder) return;
     reset();
     onOpenChange(false);
   }
 
   async function commitCreate() {
     const trimmed = name.trim();
-    if (!trimmed || busy || stagingDrop || pickingFolder) return;
+    if (
+      !trimmed ||
+      busy ||
+      stagingDrop ||
+      pickingFolder ||
+      pickingWorkingFolder ||
+      needsReselect
+    )
+      return;
     setBusy(true);
     // Sidebar callers keep this mounted across routes, so unmounting alone cannot tell whether the
     // user has moved on during a slow upload.
     const origin = currentRoute();
+    let project = createdProject;
     try {
-      const project = await createChatProject(trimmed);
+      project ??= await createChatProject(trimmed, workingFolder?.token);
+      setCreatedProject(project);
       // Upload before closing so the Sources panel lists them on first fetch.
       // Folders first: their leases expire in minutes, and uploads can be slow.
       await linkStagedFolders(project.id, folders);
@@ -132,6 +155,7 @@ export function NewProjectDialog({
       runtime.setActiveProjectId(project.id);
       navigate({ to: "/chat", search: { project: project.id } });
     } catch (err) {
+      if (workingFolder && !project) setNeedsReselect(true);
       toast.error("Failed to create project", {
         description: err instanceof Error ? err.message : undefined,
       });
@@ -182,13 +206,23 @@ export function NewProjectDialog({
               }
             }}
             autoFocus={true}
-            disabled={busy}
+            disabled={busy || !!createdProject}
             maxLength={120}
             placeholder="Project name"
             aria-label="Project name"
             className="min-w-0 flex-1 bg-transparent py-4 pr-4 pl-2.5 text-base outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
           />
         </div>
+        <WorkingFolderPicker
+          value={workingFolder?.displayName ?? null}
+          onChange={(value) => {
+            setWorkingFolder(value);
+            setNeedsReselect(false);
+          }}
+          disabled={busy || !!createdProject}
+          needsReselect={needsReselect}
+          onPendingChange={setPickingWorkingFolder}
+        />
         <ProjectSourceDropzone
           staged={staged}
           onChange={setStaged}
@@ -202,19 +236,33 @@ export function NewProjectDialog({
           onPendingChange={setPickingFolder}
         />
         <DialogFooter className="flex-wrap gap-2 sm:justify-end">
-          <Button type="button" variant="ghost" disabled={busy} onClick={close}>
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={busy || pickingWorkingFolder}
+            onClick={close}
+          >
             Cancel
           </Button>
           <Button
             type="button"
             onClick={() => void commitCreate()}
-            disabled={!name.trim() || busy || stagingDrop || pickingFolder}
+            disabled={
+              !name.trim() ||
+              busy ||
+              stagingDrop ||
+              pickingFolder ||
+              pickingWorkingFolder ||
+              needsReselect
+            }
           >
             {busy
               ? "Creating…"
-              : stagingDrop || pickingFolder
-                ? "Adding sources…"
-                : submitLabel}
+              : pickingWorkingFolder
+                ? "Choosing folder…"
+                : stagingDrop || pickingFolder
+                  ? "Adding sources…"
+                  : submitLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

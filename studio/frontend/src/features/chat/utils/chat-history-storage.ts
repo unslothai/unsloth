@@ -1021,6 +1021,7 @@ export async function getStoredChatProject(
 
 export async function createStoredChatProject(
   name: string,
+  nativePathLease?: string,
 ): Promise<ProjectRecord> {
   const trimmed = name.trim();
   if (!trimmed) {
@@ -1034,7 +1035,7 @@ export async function createStoredChatProject(
     archived: false,
     createdAt: now,
     updatedAt: now,
-  });
+  }, nativePathLease);
 }
 
 export async function updateStoredChatProject(

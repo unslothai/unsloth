@@ -1365,11 +1365,12 @@ export async function getChatAgentsMd(
 
 export async function saveChatProject(
   project: ProjectRecord,
+  nativePathLease?: string,
 ): Promise<ProjectRecord> {
   const response = await authFetch("/api/chat/projects", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(project),
+    body: JSON.stringify({ ...project, ...(nativePathLease ? { nativePathLease } : {}) }),
   });
   const saved = await parseJsonOrThrow<ProjectRecord>(response);
   notifyChatProjectsUpdated();

@@ -3130,7 +3130,13 @@ def _unretire_project_rag_scope(project_id: str) -> None:
         )
 
 
-def upsert_chat_project(project: dict) -> dict:
+class ProjectWorkingFolderConflictError(ValueError):
+    pass
+
+
+def upsert_chat_project(
+    project: dict, *, working_folder: Optional[tuple[str, tuple[int, int]]] = None
+) -> dict:
     existing = get_chat_project(project["id"])
     root_path = existing.get("rootPath") if existing else None
     if not root_path:
@@ -3138,6 +3144,14 @@ def upsert_chat_project(project: dict) -> dict:
     root_path = _ensure_project_workspace(root_path)
     conn = get_connection()
     try:
+        if working_folder is not None:
+            # Save the new project and its picked folder together. Existing projects
+            # must use the working-folder endpoint rather than a metadata upsert.
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute("SELECT 1 FROM chat_projects WHERE id = ?", (project["id"],)).fetchone():
+                raise ProjectWorkingFolderConflictError(
+                    "This project already exists. Change its working folder from Edit project."
+                )
         conn.execute(
             """
             INSERT INTO chat_projects
@@ -3161,6 +3175,12 @@ def upsert_chat_project(project: dict) -> dict:
                 int(project["updatedAt"]),
             ),
         )
+        if working_folder is not None:
+            path, (device, inode) = working_folder
+            conn.execute(
+                "UPDATE chat_projects SET working_folder = ?, working_folder_identity = ? WHERE id = ?",
+                (path, f"{device}:{inode}", project["id"]),
+            )
         conn.commit()
         saved = get_chat_project(project["id"]) or project
     finally:
