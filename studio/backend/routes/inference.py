@@ -3802,6 +3802,9 @@ from models.inference import (
     AudioInputTranscribeRequest,
     AudioInputTranscript,
     AudioRunInputs,
+    AudioAnalyzeRequest,
+    AudioAnalyzeResponse,
+    AudioCancelRequest,
     AudioRunRequest,
     AudioRunResponse,
     AudioSourceRef,
@@ -23546,10 +23549,11 @@ async def _generate_tts_wav(
 
     # TTS holds the model for the whole request, so unregistered a non-forced swap counted zero
     # generations and tore the model down mid-generation. Both GGUF and subprocess paths observe
-    # the request event. No cancel keys: /cancel addresses streams, and this route has none; the
-    # disconnect watcher below is the cancellation source.
+    # the request event. The only cancel key is an /audio/run cancel_id (POST /audio/cancel);
+    # otherwise the disconnect watcher below is the cancellation source.
     with _TrackedCancel(
         _audio_cancel,
+        _audio_run_cancel_key(),
         thread_id = getattr(payload, "thread_id", None),
         model = model_name,
         kind = "audio",
@@ -23867,6 +23871,8 @@ def _audio_run_clip(record: dict[str, Any], role: str = "output") -> dict[str, A
         "role": role,
         **{k: record[k] for k in ("id", "url", "sample_rate", "duration_s", "workflow")},
         "seed": (record.get("settings") or {}).get("seed"),
+        "voice_id": record.get("voice_id"),
+        "source_clip_id": record.get("source_clip_id"),
     }
 
 
@@ -24148,6 +24154,15 @@ def _read_music_outputs(run_dir: Path) -> list[tuple[bytes, int, Optional[int]]]
     return outputs
 
 
+def _clamp_note(
+    applied: dict[str, Any], warnings: list[str], asked: Optional[float], used: float
+) -> None:
+    """Report the music length used, with a warning when it differs from the one asked for."""
+    applied["duration_s"] = used
+    if asked is not None and used != asked:
+        warnings.append(f"duration_s {asked:g} clamped to {used:g}")
+
+
 async def _run_music_workflow(
     body: AudioRunRequest, request: Request, current_subject: str
 ) -> AudioRunResponse:
@@ -24184,6 +24199,8 @@ async def _run_music_workflow(
         source_path = None
         source = None
         seconds: Optional[float] = None
+        applied: dict[str, Any] = {}
+        warnings: list[str] = []
         if body.mode == "edit":
             spec = MUSIC_SPECS.get(str(family or ""))
             rate = spec.edit_rate if spec is not None else None
@@ -24209,6 +24226,7 @@ async def _run_music_workflow(
             work_s = max([work_s, *(r.end_s for r in body.edit.ranges)])
             if body.edit.action == "continue" and body.duration_s:
                 seconds = min(song_max, float(body.duration_s))
+                _clamp_note(applied, warnings, body.duration_s, seconds)
                 work_s = max(work_s, seconds)
         else:
             mode = _music_mode_rules(rules, body.mode) or {}
@@ -24217,6 +24235,7 @@ async def _run_music_workflow(
             high = float(bounds.get("max") or 240.0)
             wanted = body.duration_s if body.duration_s is not None else bounds.get("default")
             seconds = max(low, min(high, float(wanted if wanted is not None else low)))
+            _clamp_note(applied, warnings, body.duration_s, seconds)
             work_s = seconds
         variations = body.variations if body.mode != "edit" else 1
         music = {
@@ -24292,6 +24311,8 @@ async def _run_music_workflow(
                         "sample_rate": rate,
                     },
                     ignored_options = ignored,
+                    applied = applied,
+                    warnings = warnings,
                 )
             continue
         clips.append(
@@ -24303,10 +24324,16 @@ async def _run_music_workflow(
                 "duration_s": record["duration_s"],
                 "workflow": record["workflow"],
                 "seed": seed,
+                "source_clip_id": record.get("source_clip_id"),
             }
         )
     return AudioRunResponse(
-        clips = clips, group_id = group_id, model = model_name, ignored_options = ignored
+        clips = clips,
+        group_id = group_id,
+        model = model_name,
+        ignored_options = ignored,
+        applied = applied,
+        warnings = warnings,
     )
 
 
@@ -24450,7 +24477,29 @@ async def run_audio_workflow(
     return response
 
 
+# The /audio/run cancel_id, read where the run registers its cancel event.
+_AUDIO_RUN_CANCEL_ID: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "audio_run_cancel_id", default = None
+)
+
+
+def _audio_run_cancel_key() -> Optional[tuple[str, str]]:
+    # Namespaced, so a chat cancel_id can never stop an audio run.
+    cancel_id = _AUDIO_RUN_CANCEL_ID.get()
+    return ("audio", cancel_id) if cancel_id else None
+
+
 async def _dispatch_audio_run(
+    body: AudioRunRequest, request: Request, current_subject: str
+) -> AudioRunResponse:
+    token = _AUDIO_RUN_CANCEL_ID.set(body.cancel_id)
+    try:
+        return await _dispatch_audio_workflow(body, request, current_subject)
+    finally:
+        _AUDIO_RUN_CANCEL_ID.reset(token)
+
+
+async def _dispatch_audio_workflow(
     body: AudioRunRequest, request: Request, current_subject: str
 ) -> AudioRunResponse:
     if body.workflow == "separate":
@@ -24760,7 +24809,7 @@ async def _run_separation(
     try:
         await asyncio.to_thread(staging.mkdir, parents = True)
         cancel = threading.Event()
-        with _TrackedCancel(cancel, model = model_name, kind = "audio"):
+        with _TrackedCancel(cancel, _audio_run_cancel_key(), model = model_name, kind = "audio"):
             watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel))
             try:
                 outputs = await asyncio.to_thread(
@@ -24819,6 +24868,7 @@ async def _run_separation(
                 "sample_rate": record["sample_rate"],
                 "duration_s": record["duration_s"],
                 "workflow": record["workflow"],
+                "source_clip_id": record.get("source_clip_id"),
             }
             for record in records
         ],
@@ -26558,6 +26608,92 @@ async def stt_model_capabilities(
     """What ``model`` can add to a transcript (timestamps, speakers) and where it runs. Offline."""
     from core.inference import stt_capabilities
     return await asyncio.to_thread(stt_capabilities.capabilities_for, model, engine)
+
+
+@router.post("/audio/cancel")
+async def cancel_audio_run(
+    body: AudioCancelRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Stop the /audio/run sent with this cancel_id, as a disconnect would: it answers 499 and saves
+    nothing. A cancel that arrives first is kept for 30 s. Returns {"cancelled": N}."""
+    return {"cancelled": _cancel_by_cancel_id_or_stash(("audio", body.cancel_id))}
+
+
+_ANALYZE_MAX_SECONDS = 600.0
+
+
+def _analyze_metrics(path: Path) -> dict[str, Any]:
+    """Metrics for a WAV as is; anything else is decoded to a temporary 16-bit WAV first."""
+    import wave
+
+    from core.inference import audio_inputs, audio_metrics
+
+    try:
+        if audio_inputs.wav_info(path)["duration_s"] > _ANALYZE_MAX_SECONDS:
+            raise audio_inputs.AudioInputError(413, "Audio is longer than 10 minutes.")
+        return audio_metrics.measure_file(path)
+    except audio_inputs.AudioInputError:
+        raise
+    except (wave.Error, EOFError, ValueError):
+        pass
+    decoded = audio_inputs.inputs_dir() / f".analyze-{uuid.uuid4().hex}.wav"
+    try:
+        audio_inputs.transcode(path, decoded, max_seconds = _ANALYZE_MAX_SECONDS)
+        return audio_metrics.measure_file(decoded)
+    finally:
+        decoded.unlink(missing_ok = True)
+
+
+async def _analyze_transcript(source, expected_text: str, request: Request) -> dict[str, Any]:
+    """Transcribe with the resident speech-to-text model, else the default, and score the match."""
+    from core.inference import audio_inputs, stt_capabilities, stt_details, stt_registry
+    from core.inference.audio_metrics import match_score
+    from core.inference.stt_sidecar import DEFAULT_STT_MODEL
+
+    model, engine = DEFAULT_STT_MODEL, None
+    for name in stt_registry.STT_ENGINES:
+        resident = await asyncio.to_thread(_stt_resident_model, name)
+        if resident:
+            model, engine = resident, name
+            break
+    serving_engine = _resolve_serving_stt_engine(engine)
+    caps = await asyncio.to_thread(stt_capabilities.capabilities_for, model, serving_engine)
+    rate = stt_details.FIXED_SPAN_RATES.get(caps["family"], 16000)
+    try:
+        path = await asyncio.to_thread(audio_inputs.prepared_path, source, rate)
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+    result = await _transcribe_audio_result(
+        b"", model, None, False, engine, request, None, source_path = path
+    )
+    transcript = str(result.get("text") or "").strip()
+    return {
+        "transcript": transcript,
+        "stt_model": model,
+        "match_score": match_score(expected_text, transcript),
+    }
+
+
+@router.post("/audio/analyze", response_model = AudioAnalyzeResponse)
+async def analyze_audio(
+    body: AudioAnalyzeRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Measure an upload, history clip or saved voice: duration, loudness (LUFS), true peak,
+    clipping and the span that holds sound. With expected_text, also the transcript and how well
+    it matches. Nothing is saved."""
+    from core.inference import audio_inputs
+
+    ref = body.model_dump(include = {"input_id", "clip_id", "voice_id"}, exclude_none = True)
+    try:
+        source = await asyncio.to_thread(audio_inputs.resolve_source, ref)
+        metrics = await asyncio.to_thread(_analyze_metrics, source.path)
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+    if body.expected_text is not None:
+        metrics.update(await _analyze_transcript(source, body.expected_text, request))
+    return AudioAnalyzeResponse(**metrics)
 
 
 # =====================================================================

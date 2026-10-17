@@ -5852,6 +5852,13 @@ class AudioRunRequest(BaseModel):
     # One take of a music run the page sends take by take; its clips share group_id.
     take: Optional[int] = Field(None, ge = 1, le = 4)
     group_id: Optional[str] = Field(None, pattern = r"^[0-9a-f]{32}$")
+    cancel_id: Optional[str] = Field(
+        None,
+        min_length = 8,
+        max_length = 64,
+        pattern = r"^[A-Za-z0-9_-]+$",
+        description = "Your id for this run; POST it to /audio/cancel to stop the run",
+    )
 
     @model_validator(mode = "after")
     def _take_fields(self):
@@ -5925,6 +5932,8 @@ class AudioRunClip(BaseModel):
     duration_s: float
     workflow: str
     seed: Optional[int] = None
+    voice_id: Optional[str] = None
+    source_clip_id: Optional[str] = None
 
 
 class AudioRunAudio(BaseModel):
@@ -5944,6 +5953,20 @@ class AudioRunResponse(BaseModel):
     ignored_options: List[str] = Field(
         default_factory = list, description = "Sent options the model does not take; not sent"
     )
+    applied: Dict[str, Any] = Field(
+        default_factory = dict,
+        description = "Values Unsloth Studio used for settings it can change, e.g. duration_s",
+    )
+    warnings: List[str] = Field(default_factory = list)
+
+    @model_validator(mode = "after")
+    def _ignored_option_warnings(self):
+        # FastAPI validates the response model again, so add each line once.
+        for name in self.ignored_options:
+            line = f"Ignored option {name}: the model does not take it."
+            if line not in self.warnings:
+                self.warnings.append(line)
+        return self
 
 
 class AudioInputRecord(BaseModel):
@@ -6002,6 +6025,37 @@ class TranscribeSourceRequest(BaseModel):
     timestamps: bool = Field(False, description = "Ask for segment and word timestamps")
     speakers: bool = Field(False, description = "Keep who spoke each segment, when the model tells")
     title: Optional[str] = Field(None, max_length = 255, description = "Defaults to the source's name")
+
+
+class AudioAnalyzeRequest(TranscribeSourceRef):
+    """``POST /audio/analyze``: measure one clip, upload or voice; nothing is saved."""
+
+    expected_text: Optional[str] = Field(
+        None, max_length = 20000, description = "Text the audio should say; adds match_score"
+    )
+
+
+class AudioAnalyzeResponse(BaseModel):
+    duration_s: float
+    sample_rate: int
+    channels: int
+    integrated_lufs: Optional[float] = Field(None, description = "BS.1770 loudness; None for silence")
+    true_peak_dbtp: Optional[float] = None
+    clipped_samples: int
+    clipping_ratio: float
+    speech_start_s: Optional[float] = None
+    speech_end_s: Optional[float] = None
+    transcript: Optional[str] = None
+    match_score: Optional[float] = Field(
+        None, description = "1 - word error rate against expected_text"
+    )
+    stt_model: Optional[str] = None
+
+
+class AudioCancelRequest(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    cancel_id: str = Field(..., min_length = 8, max_length = 64, pattern = r"^[A-Za-z0-9_-]+$")
 
 
 class TranscriptPatch(BaseModel):
