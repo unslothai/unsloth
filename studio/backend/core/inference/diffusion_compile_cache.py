@@ -290,6 +290,8 @@ _GRAPH_SWITCHES = {
     "UNSLOTH_DIFFUSION_INT8_GEMM": "auto",
     "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT": "on",
     "UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED": "on",
+    "UNSLOTH_DIFFUSION_INT8_GEMM_AUTOTUNE": "on",
+    "UNSLOTH_DIFFUSION_INT8_GEMM_TILES": "on",
     "UNSLOTH_DIFFUSION_INT8_ROTQUANT": "auto",
     "UNSLOTH_DIFFUSION_INT8_FUSED": "on",
     "UNSLOTH_DIFFUSION_ZIMAGE_FUSED": "on",
@@ -499,6 +501,12 @@ def model_fingerprint(
     switches = graph_switches()
     if switches:
         fp["switches"] = switches
+    # The int8 latency gate's cuBLAS slots trace the stock graph in place of the fused op. Added only when present.
+    if transformer is not None:
+        from .diffusion_int8_gemm import plan_identity
+        int8_cublas = plan_identity(transformer, _current_cuda_index())
+        if int8_cublas:
+            fp["int8_gemm_cublas"] = int8_cublas
     # Added only when armed, so other bundles keep their key.
     try:
         from .diffusion_dynamic_text import fingerprint as _dynamic_text_fp
@@ -516,6 +524,14 @@ def model_fingerprint(
         if reduction_filter and reduction_config_filter_available():
             fp["inductor"]["force_filter_reduction_configs"] = True
     return fp
+
+
+def _current_cuda_index() -> Optional[int]:
+    try:
+        import torch  # noqa: PLC0415
+        return torch.cuda.current_device() if torch.cuda.is_available() else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def cache_key(env_fp: dict[str, Any], model_fp: dict[str, Any]) -> str:
@@ -554,6 +570,10 @@ class CacheContext:
     # them, and every future start would reject the cache again with no way back.
     rejected_bundle: Optional[str] = None
     last_touch: float = 0.0
+    # () -> the int8 latency gate's cuBLAS identity now; it can first tune after begin() (see _int8_plan_stale).
+    int8_plan: Any = None
+    # Set once _int8_plan_stale rejected a save: this key can never match again, so later saves stop early.
+    int8_stale: bool = False
 
 
 def begin(
@@ -657,6 +677,20 @@ def begin(
 
     _register_live(cdir)
     _touch_last_used(ctx)
+    try:
+        import weakref
+
+        import torch  # noqa: PLC0415
+        from .diffusion_int8_gemm import plan_identity
+
+        ref, index = weakref.ref(transformer), torch.cuda.current_device()
+        ctx.int8_plan = (
+            lambda: plan_identity(ref(), index)
+            if ref() is not None
+            else ctx.model_fp.get("int8_gemm_cublas")
+        )
+    except Exception:  # noqa: BLE001 - no CUDA / not weak-referenceable: keyed as begin() saw it
+        pass
 
     # Collect here as well as after a save, because the grace window can otherwise leak a bundle for
     # good: two saves for one key inside 60 s leave the first one too young to collect, and the
@@ -924,9 +958,25 @@ def _collect_superseded(cdir: Path, logger: Any) -> list[str]:
     return removed
 
 
+def _int8_plan_stale(ctx: CacheContext) -> bool:
+    """A first-time int8 latency-gate tune after begin() changed the cuBLAS slots: the graphs no longer match this
+    key. Not saved; the next load keys on the stored plan and compiles once. Never raises."""
+    try:
+        return ctx.int8_plan is not None and ctx.int8_plan() != ctx.model_fp.get("int8_gemm_cublas")
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
     """The save itself. Runs on the caller's thread (``save``) or the worker (``save_async``)."""
-    if not _save_enabled(ctx.mode) or ctx.saved:
+    if not _save_enabled(ctx.mode) or ctx.saved or ctx.int8_stale:
+        return False
+    if _int8_plan_stale(ctx):
+        ctx.int8_stale = True
+        _info(
+            logger,
+            f"compile-cache: int8 GEMM plan changed after begin; not saving under key {ctx.key}",
+        )
         return False
     # Read BEFORE the artifacts are collected: anything registered from here on is not in `data`, and iterating the
     # live set while the request thread adds to it is a "set changed size during iteration" away from failing.
@@ -1055,7 +1105,7 @@ def save_async(ctx: Optional[CacheContext], *, logger: Any = None) -> bool:
     if ctx is None:
         return False
     note_use(ctx)
-    if not _save_enabled(ctx.mode) or ctx.saved:
+    if not _save_enabled(ctx.mode) or ctx.saved or ctx.int8_stale:
         return False
     if sync_saves():
         return _write_bundle(ctx, logger)

@@ -120,6 +120,14 @@ def test_an_instance_forward_swap_keys_apart():
     assert _key(a) != _key(b)
 
 
+def test_int8_gemm_tile_switch_keys_apart(monkeypatch):
+    # with the latency gate on, TILES=0 can turn a fused shape into cuBLAS: a different traced graph
+    m = _int8()
+    k0 = _key(m)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_GEMM_TILES", "0")
+    assert _key(m) != k0
+
+
 @pytest.mark.parametrize("name,default", sorted(cc._GRAPH_SWITCHES.items()))
 @pytest.mark.parametrize("quant", ["int8", None])
 def test_graph_switches_key_apart_only_off_their_default(monkeypatch, name, default, quant):

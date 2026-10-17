@@ -19,13 +19,20 @@ def _clean(monkeypatch):
     monkeypatch.delenv(g8.INT8_GEMM_ENV, raising = False)
     monkeypatch.delenv(cq.INT8_ROTQUANT_ENV, raising = False)
     monkeypatch.delenv(g8.INT8_GEMM_TILES_ENV, raising = False)
+    # The latency gate times real kernels; tests opt in (test_latency_gate_*), everything else keeps the static table.
+    monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "0")
+    monkeypatch.delenv(g8.INT8_GEMM_TUNE_DIR_ENV, raising = False)
     g8._DEVICE_CFG.clear()
     g8._DEVICE_TILES.clear()
+    g8._DEVICE_PLAN.clear()
+    g8._PROBED.clear()
     cq._ROTQ_DEVICE.clear()
     cq._ROTQ_DEVICE_K.clear()
     yield
     g8._DEVICE_CFG.clear()
     g8._DEVICE_TILES.clear()
+    g8._DEVICE_PLAN.clear()
+    g8._PROBED.clear()
     cq._ROTQ_DEVICE.clear()
     cq._ROTQ_DEVICE_K.clear()
 
@@ -981,3 +988,623 @@ def test_every_shipped_rotq_k_tile_is_bit_exact(forced):
                 q, s = cq._rotq_launch(x, 256, kind, tile)
                 rq, rs = cq.rotquant_reference(x, 256, kind)
                 assert torch.equal(q, rq) and torch.equal(s, rs), (tile, m, k, kind)
+
+
+def test_m_buckets_and_plan_lookup():
+    assert g8.m_bucket(17) == 0 and g8.m_bucket(g8._SHAPE_MIN_M - 1) == 0
+    assert g8.m_bucket(g8._SHAPE_MIN_M) == 1 and g8.m_bucket(2047) == 1
+    assert g8.m_bucket(2048) == 2 and g8.m_bucket(1 << 20) == 2
+    tile = (64, 128, 128, 8, 4, 4)
+    g8._DEVICE_PLAN[0] = {(1024, 512, 0): g8._CUBLAS, (1024, 512, 2): tile}
+    assert not g8.fused_for(0, 512, 1024, 512)
+    assert g8.fused_for(0, 4096, 1024, 512) and g8.planned(0, 4096, 1024, 512) == tile
+    assert (
+        g8.fused_for(0, 512, 2048, 512) and g8.planned(0, 512, 2048, 512) is None
+    )  # untimed: static table
+    assert g8.fused_for(1, 512, 1024, 512)  # no plan on this device
+
+
+def test_latency_gate_op_body_honours_the_plan(monkeypatch):
+    default, alt = (128, 128, 64, 8, 4, 4), (64, 128, 128, 8, 4, 4)
+    g8._DEVICE_CFG[None] = default  # CPU tensors report device index None
+    used = []
+    monkeypatch.setattr(g8, "_launch", lambda a, w, xs, ws, bias, cfg: used.append(cfg) or "fused")
+    monkeypatch.setattr(g8, "reference", lambda *a: "stock")
+    a = torch.zeros(4096, 1024, dtype = torch.int8)
+    w = torch.zeros(2048, 1024, dtype = torch.int8)
+    xs, ws = torch.ones(4096), torch.ones(2048)
+    g8._DEVICE_PLAN[None] = {(2048, 1024, 2): alt}
+    assert g8._run(a, w, xs, ws, None) == "fused" and used == [alt]
+    g8._DEVICE_PLAN[None] = {(2048, 1024, 2): g8._CUBLAS}
+    assert g8._run(a, w, xs, ws, None) == "stock" and used == [alt]
+
+
+def test_latency_gate_alt_tile_launch_failure_falls_back_to_the_default(monkeypatch):
+    default, alt = (128, 128, 64, 8, 4, 4), (64, 128, 128, 8, 4, 4)
+    g8._DEVICE_CFG[None] = default
+    g8._DEVICE_PLAN[None] = {(2048, 1024, 2): alt, (2048, 1024, 0): g8._CUBLAS}
+    used = []
+
+    def launch(a, w, xs, ws, bias, cfg):
+        used.append(cfg)
+        if cfg == alt:
+            raise RuntimeError("out of shared memory")
+        return "fused"
+
+    monkeypatch.setattr(g8, "_launch", launch)
+    a = torch.zeros(4096, 1024, dtype = torch.int8)
+    w = torch.zeros(2048, 1024, dtype = torch.int8)
+    assert g8._run(a, w, torch.ones(4096), torch.ones(2048), None) == "fused"
+    assert used == [alt, default] and g8._DEVICE_CFG[None] == default
+    assert g8._DEVICE_PLAN[None] == {(2048, 1024, 2): default, (2048, 1024, 0): g8._CUBLAS}
+
+
+def _fake_tune_env(monkeypatch, tmp_path, ms):
+    """Device 0 probed on with the fallback tile; ``_measure`` returns ``ms(tiles)`` and counts calls."""
+    calls = []
+    monkeypatch.setenv(g8.INT8_GEMM_TUNE_DIR_ENV, str(tmp_path))
+    monkeypatch.setattr(g8, "toolchain_key", lambda index: "test-toolchain")
+    monkeypatch.setattr(g8, "_probe", lambda index, cfg: True)
+    monkeypatch.setattr(
+        g8, "_measure", lambda index, n, k, m, tiles: calls.append((n, k, m, tiles)) or ms(tiles)
+    )
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (8, 0))
+    g8._DEVICE_CFG[0] = g8._ARCH_CONFIG[(8, 0)]
+    return calls
+
+
+def test_latency_gate_picks_cublas_where_the_tile_regressed_and_persists(monkeypatch, tmp_path):
+    default = g8._ARCH_CONFIG[(8, 0)]
+    # Triton 3.8 on A100, klein double-block FFN in (ms): shipped tile 59 TOPS, best alt 288, cuBLAS 420 + one pass.
+    ms = lambda tiles: {g8._CUBLAS: 1.45, default: 7.8, **{t: 1.6 for t in tiles if t != default}}
+    calls = _fake_tune_env(monkeypatch, tmp_path, ms)
+    plan = g8.tune(0, {(18432, 3072)})
+    assert plan == {(18432, 3072, b): g8._CUBLAS for b in range(len(g8._M_BUCKETS))}
+    assert len(calls) == 3 and set(calls[0][3]) >= {default, *g8._ALT_TILES[(8, 0)]}
+    files = list(tmp_path.glob("tune_*.json"))
+    assert len(files) == 1
+    g8._DEVICE_PLAN.clear()
+    assert g8.tune(0, {(18432, 3072)}) == plan and len(calls) == 3
+
+
+def test_latency_gate_prefers_the_fused_kernel_unless_cublas_wins(monkeypatch, tmp_path):
+    default = g8._ARCH_CONFIG[(8, 0)]
+    alt = g8._ALT_TILES[(8, 0)][0]
+    # Triton 3.7: shipped tile 430 TOPS, cuBLAS + one pass a little slower; an alt tile within noise does not churn.
+    ms = lambda tiles: {g8._CUBLAS: 1.40, default: 1.10, **{t: 1.09 for t in tiles if t != default}}
+    _fake_tune_env(monkeypatch, tmp_path, ms)
+    assert set(g8.tune(0, {(18432, 3072)}).values()) == {default}
+    for cub, want in ((1.0, default), (0.9, g8._CUBLAS)):
+        g8._DEVICE_PLAN.clear()
+        for f in tmp_path.glob("tune_*.json"):
+            f.unlink()
+        ms2 = lambda tiles, cub = cub: {
+            g8._CUBLAS: cub,
+            default: 1.10,
+            **{t: 1.5 for t in tiles if t != default},
+        }
+        monkeypatch.setattr(g8, "_measure", lambda index, n, k, m, tiles, ms2 = ms2: ms2(tiles))
+        assert set(g8.tune(0, {(18432, 3072)}).values()) == {want}
+    # A100 / Triton 3.8 Z-Image: static tile regressed, the best new tile only ties cuBLAS (1.249 vs 1.256 ms): cuBLAS.
+    g8._DEVICE_PLAN.clear()
+    for f in tmp_path.glob("tune_*.json"):
+        f.unlink()
+    ms4 = lambda tiles: {
+        g8._CUBLAS: 1.256,
+        default: 6.68,
+        **{t: 1.249 for t in tiles if t != default},
+    }
+    monkeypatch.setattr(g8, "_measure", lambda index, n, k, m, tiles: ms4(tiles))
+    assert set(g8.tune(0, {(18432, 3072)}).values()) == {g8._CUBLAS}
+    g8._DEVICE_PLAN.clear()
+    for f in tmp_path.glob("tune_*.json"):
+        f.unlink()
+    g8._DEVICE_PLAN.clear()
+    for f in tmp_path.glob("tune_*.json"):
+        f.unlink()
+    ms3 = lambda tiles: {
+        g8._CUBLAS: 1.45,
+        default: 7.8,
+        **{t: (1.0 if t == alt else 1.6) for t in tiles if t != default},
+    }
+    monkeypatch.setattr(g8, "_measure", lambda index, n, k, m, tiles: ms3(tiles))
+    assert set(g8.tune(0, {(18432, 3072)}).values()) == {alt}
+    g8._DEVICE_PLAN.clear()
+    g8._PROBED.clear()
+    monkeypatch.setattr(g8, "_probe", lambda index, cfg: cfg != alt)
+    assert set(g8.tune(0, {(18432, 3072)}).values()) == {
+        default
+    }  # stored alt, not exact here: the default
+
+
+def test_latency_gate_retimes_on_a_new_toolchain_and_ignores_corrupt_files(monkeypatch, tmp_path):
+    default = g8._ARCH_CONFIG[(8, 0)]
+    calls = _fake_tune_env(
+        monkeypatch, tmp_path, lambda tiles: {g8._CUBLAS: 2.0, **{t: 1.0 for t in tiles}}
+    )
+    g8.tune(0, {(4096, 4096)})
+    assert len(calls) == 3
+    g8._DEVICE_PLAN.clear()
+    monkeypatch.setattr(g8, "toolchain_key", lambda index: "test-toolchain-triton-next")
+    g8.tune(0, {(4096, 4096)})
+    assert len(calls) == 6
+    for f in tmp_path.glob("tune_*.json"):
+        f.write_text("{not json")
+    g8._DEVICE_PLAN.clear()
+    assert set(g8.tune(0, {(4096, 4096)}).values()) == {default} and len(calls) == 9
+
+
+def test_latency_gate_alt_tile_needs_the_full_margin_over_the_static_tile(monkeypatch, tmp_path):
+    default = g8._ARCH_CONFIG[(8, 0)]
+    # 5% faster than the static tile and clear of cuBLAS: a near tie, the static tile stays.
+    ms = lambda tiles: {g8._CUBLAS: 1.2, default: 1.0, **{t: 0.95 for t in tiles if t != default}}
+    _fake_tune_env(monkeypatch, tmp_path, ms)
+    assert set(g8.tune(0, {(18432, 3072)}).values()) == {default}
+
+
+def test_latency_gate_tiles_kill_switch_times_only_the_default(monkeypatch, tmp_path):
+    default = g8._ARCH_CONFIG[(8, 0)]
+    alt = g8._ALT_TILES[(8, 0)][0]
+    ms = lambda tiles: {g8._CUBLAS: 2.0, **{t: (0.5 if t == alt else 1.0) for t in tiles}}
+    calls = _fake_tune_env(monkeypatch, tmp_path, ms)
+    assert set(g8.tune(0, {(18432, 3072)}).values()) == {alt}
+    g8._DEVICE_PLAN.clear()
+    monkeypatch.setenv(g8.INT8_GEMM_TILES_ENV, "0")
+    del calls[:]
+    assert set(g8.tune(0, {(18432, 3072)}).values()) == {
+        default
+    }  # not the alt cached with tiles on
+    assert calls and all(c[3] == (default,) for c in calls)
+
+
+def test_latency_gate_small_m_bucket_is_timed_against_the_tile_it_runs(monkeypatch, tmp_path):
+    default = g8._ARCH_CONFIG[(12, 0)]
+    rules = g8._SHAPE_TILES[(12, 0)]
+    n, k = 4096, 8192  # deep-K rule: its tile only from M >= _SHAPE_MIN_M
+    shape_tile = rules[1][4]
+    ms = lambda tiles: {g8._CUBLAS: 2.0, **{t: (0.5 if t == shape_tile else 1.0) for t in tiles}}
+    calls = _fake_tune_env(monkeypatch, tmp_path, ms)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (12, 0))
+    g8._DEVICE_CFG[0] = default
+    g8._DEVICE_TILES[0] = rules
+    assert (
+        g8.tile_for(0, g8._SHAPE_MIN_M, n, k) == shape_tile and g8.tile_for(0, 300, n, k) == default
+    )
+    g8.tune(0, {(n, k)})
+    assert all(
+        c[3][0] == g8.tile_for(0, c[2], n, k) for c in calls
+    )  # static = what tile_for runs at that M
+    assert g8.planned(0, 300, n, k) == default and g8.planned(0, 4096, n, k) == shape_tile
+
+
+def test_latency_gate_redecides_when_the_fastest_alt_fails_its_probe(monkeypatch, tmp_path):
+    default = g8._ARCH_CONFIG[(8, 0)]
+    alt = g8._ALT_TILES[(8, 0)][0]
+    # The winning alt is not bit-exact here; the static tile regressed, so cuBLAS (not the 7.8 ms default) must win.
+    ms = lambda tiles: {
+        g8._CUBLAS: 1.45,
+        default: 7.8,
+        **{t: (1.0 if t == alt else 1.6) for t in tiles if t != default},
+    }
+    _fake_tune_env(monkeypatch, tmp_path, ms)
+    monkeypatch.setattr(g8, "_probe", lambda index, cfg: cfg != alt)
+    assert set(g8.tune(0, {(18432, 3072)}).values()) == {g8._CUBLAS}
+
+
+@needs_cuda
+def test_latency_gate_autotune_off_drops_an_earlier_plan(forced, monkeypatch):
+    index = torch.cuda.current_device()
+    g8._DEVICE_PLAN[index] = {(768, 1024, b): g8._CUBLAS for b in range(len(g8._M_BUCKETS))}
+    assert g8.install(torch.nn.Sequential(_int8_linear(1024, 768, True, 2))) == 1
+    assert g8.planned(index, 4096, 768, 1024) is None and g8.fused_for(index, 4096, 768, 1024)
+
+
+def test_latency_gate_save_merges_slots_another_process_stored(tmp_path):
+    path = str(tmp_path / "tune.json")
+    g8._save_plan(path, "k", {(64, 64, 0): g8._CUBLAS}, {"64,64,0": {}})
+    g8._save_plan(
+        path, "k", {(128, 64, 0): g8._CUBLAS}, {"128,64,0": {}}
+    )  # loaded before the first save landed
+    assert g8._load_plan(path, "k") == {(64, 64, 0): g8._CUBLAS, (128, 64, 0): g8._CUBLAS}
+
+
+def test_latency_gate_concurrent_saves_keep_both_slots(monkeypatch, tmp_path):
+    import threading
+
+    path = str(tmp_path / "tune.json")
+    load, other = g8._load_plan, []
+
+    def racing_load(p, key):
+        out = load(p, key)
+        if not other:  # first reload: a second process saves in between our reload and replace
+            other.append(
+                threading.Thread(
+                    target = g8._save_plan, args = (path, "k", {(128, 64, 0): g8._CUBLAS}, {})
+                )
+            )
+            other[0].start()
+            other[0].join(0.5)
+        return out
+
+    monkeypatch.setattr(g8, "_load_plan", racing_load)
+    g8._save_plan(path, "k", {(64, 64, 0): g8._CUBLAS}, {})
+    other[0].join()
+    assert load(path, "k") == {(64, 64, 0): g8._CUBLAS, (128, 64, 0): g8._CUBLAS}
+
+
+def _plan_cache_env(monkeypatch, tmp_path, mode):
+    from core.inference import diffusion_compile_cache as cc
+
+    monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "1")
+    monkeypatch.setenv(g8.INT8_GEMM_TUNE_DIR_ENV, str(tmp_path / "tune"))
+    monkeypatch.setenv(cc._ENV_MODE, mode)
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path / "cc"))
+    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", lambda: (b"A", None), raising = False)
+    monkeypatch.setattr(
+        torch.compiler, "load_cache_artifacts", lambda data: object(), raising = False
+    )
+    model = torch.nn.Sequential(_int8_linear(1024, 768, True, 2))
+    kw = dict(family = "f", dtype = "bf16", quant = "int8", attention_backend = None, compile_kwargs = {})
+
+    def first_tune():  # as _swap does after begin(): cuBLAS for one bucket, stored for the next load
+        index = torch.cuda.current_device()
+        key = g8.toolchain_key(index)
+        g8._DEVICE_PLAN[index] = {(768, 1024, 2): g8._CUBLAS}
+        g8._save_plan(g8._tune_path(key), key, {(768, 1024, 2): g8._CUBLAS}, {})
+
+    return cc, lambda: cc.begin(transformer = model, **kw), first_tune
+
+
+@needs_cuda
+def test_latency_gate_first_tune_load_does_not_save_under_the_stale_key(monkeypatch, tmp_path):
+    cc, begin, first_tune = _plan_cache_env(monkeypatch, tmp_path, "auto")
+    ctx = begin()
+    assert not ctx.hit
+    first_tune()  # cuBLAS picked after begin(): this load's graphs do not match its key
+    assert not cc.save(ctx) and not ctx.manifest_path.exists()
+    cc.restore(ctx)
+    g8._DEVICE_PLAN.clear()
+    ctx2 = begin()  # keyed on the stored plan: compiles once, saves, then hits
+    assert not ctx2.hit and ctx2.key != ctx.key and cc.save(ctx2)
+    cc.restore(ctx2)
+    ctx3 = begin()
+    assert ctx3.hit and ctx3.key == ctx2.key
+    cc.restore(ctx3)
+
+
+@needs_cuda
+def test_latency_gate_stale_plan_stops_further_saves(monkeypatch, tmp_path):
+    cc, begin, first_tune = _plan_cache_env(monkeypatch, tmp_path, "auto")
+    ctx = begin()
+    first_tune()
+    assert not cc.save(ctx)
+    checks, plan = [], ctx.int8_plan
+    ctx.int8_plan = lambda: checks.append(1) or plan()
+    assert (
+        not cc.save_async(ctx) and not cc.save(ctx) and not checks
+    )  # nothing re-queued or re-checked
+    cc.restore(ctx)
+
+
+@needs_cuda
+def test_latency_gate_first_tune_after_a_hit_does_not_resave(monkeypatch, tmp_path):
+    cc, begin, first_tune = _plan_cache_env(monkeypatch, tmp_path, "on")  # "on" resaves after a hit
+    ctx = begin()
+    assert cc.save(ctx)
+    cc.restore(ctx)
+    ctx = begin()
+    assert ctx.hit
+    first_tune()
+    manifest = ctx.manifest_path.read_bytes()
+    assert not cc.save(ctx) and ctx.manifest_path.read_bytes() == manifest
+    cc.restore(ctx)
+
+
+@needs_cuda
+def test_latency_gate_toolchain_key_tracks_the_driver(monkeypatch):
+    index = torch.cuda.current_device()
+    monkeypatch.setattr(g8, "_driver_version", lambda: "580.00")
+    k0 = g8.toolchain_key(index)
+    monkeypatch.setattr(g8, "_driver_version", lambda: "590.00")
+    assert g8.toolchain_key(index) != k0
+
+
+@needs_cuda
+def test_latency_gate_cublas_slots_key_the_compile_cache(monkeypatch, tmp_path):
+    from core.inference import diffusion_compile_cache as cc
+
+    monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "1")
+    monkeypatch.setenv(g8.INT8_GEMM_TUNE_DIR_ENV, str(tmp_path))
+    model = torch.nn.Sequential(_int8_linear(1024, 768, True, 2))
+    fp = lambda: cc.model_fingerprint(
+        family = "f",
+        transformer = model,
+        dtype = "bf16",
+        quant = "int8",
+        attention_backend = None,
+        compile_kwargs = {},
+    )
+    index = torch.cuda.current_device()
+    k_fused = fp()
+    g8._DEVICE_PLAN[index] = {
+        (768, 1024, 2): (128, 128, 64, 8, 4, 4)
+    }  # another tile: same traced graph
+    assert fp() == k_fused
+    g8._DEVICE_PLAN[index] = {(768, 1024, 2): g8._CUBLAS}  # stock graph for this shape
+    assert fp() != k_fused
+
+
+def test_latency_gate_tiles_kill_switch_ignores_cached_shape_tiles(monkeypatch, tmp_path):
+    default = g8._ARCH_CONFIG[(12, 0)]
+    n, k = 4096, 8192  # deep-K rule
+    calls = _fake_tune_env(
+        monkeypatch, tmp_path, lambda tiles: {g8._CUBLAS: 2.0, **{t: 1.0 for t in tiles}}
+    )
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (12, 0))
+    g8._DEVICE_CFG[0] = default
+    g8._DEVICE_TILES[0] = g8._SHAPE_TILES[(12, 0)]  # probed while tiles were on
+    monkeypatch.setenv(g8.INT8_GEMM_TILES_ENV, "0")
+    assert set(g8.tune(0, {(n, k)}).values()) == {default}
+    assert calls and all(c[3] == (default,) for c in calls)
+
+
+@needs_cuda
+def test_latency_gate_timing_leaves_the_cuda_rng_alone():
+    torch.cuda.manual_seed(1234)
+    before = torch.cuda.get_rng_state()
+    g8._measure(torch.cuda.current_device(), 64, 64, 64, ())
+    assert torch.equal(torch.cuda.get_rng_state(), before)
+
+
+def test_latency_gate_kill_switch_skips_timing(monkeypatch):
+    monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "0")
+    assert not g8.autotune_enabled()
+    monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "1")
+    assert g8.autotune_enabled()
+
+
+@needs_cuda
+@pytest.mark.parametrize("pick", ["cublas", "fused"])
+def test_latency_gate_linear_is_bit_identical_eager_and_compiled(
+    forced, monkeypatch, tmp_path, pick
+):
+    """Real timing on this GPU, then the plan forced to each arm: the swapped Linear must equal torchao's eager and
+    compiled output either way, and the cuBLAS arm must not run the fused op."""
+    from torch._dynamo.utils import counters
+
+    monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "1")
+    monkeypatch.setenv(g8.INT8_GEMM_TUNE_DIR_ENV, str(tmp_path))
+    stock = _int8_linear(1024, 768, True, 2)
+    fused = _int8_linear(1024, 768, True, 2)
+    holder = torch.nn.Sequential(fused)
+    assert g8.install(holder) == 1
+    index = torch.cuda.current_device()
+    timed = dict(g8._DEVICE_PLAN[index])
+    assert set(timed) == {(768, 1024, b) for b in range(len(g8._M_BUCKETS))}
+    assert list(tmp_path.glob("tune_*.json"))
+    want = g8._CUBLAS if pick == "cublas" else forced
+    g8._DEVICE_PLAN[index] = {slot: want for slot in timed}
+    x = torch.randn(300, 1024, device = "cuda", dtype = torch.bfloat16)
+    with torch.inference_mode():
+        before = g8.call_count()
+        assert torch.equal(fused(x), stock(x))
+        assert g8.call_count() == before + (pick == "fused")
+        counters.clear()
+        torch._dynamo.reset()
+        with torch._inductor.config.patch(emulate_precision_casts = True):
+            out = torch.compile(fused, fullgraph = True)(x)
+            assert not counters["graph_break"]
+            assert torch.equal(out, torch.compile(stock, fullgraph = True)(x))
+    g8.uninstall(holder)
+
+
+@pytest.mark.parametrize(
+    "static_ms, new_ms, cublas_ms, want",
+    [
+        (
+            7.66,
+            1.64,
+            1.52,
+            "cublas",
+        ),  # A100 / Triton 3.8 klein FFN in: static regressed, new tile behind cuBLAS
+        (
+            1.07,
+            1.30,
+            1.40,
+            "static",
+        ),  # A100 / Triton 3.7: static fast, cuBLAS + epilogue pass slower
+        (
+            0.63,
+            0.66,
+            0.68,
+            "static",
+        ),  # RTX PRO 6000 deep K: cuBLAS within the margin keeps the measured tile
+        (
+            4.40,
+            1.04,
+            1.30,
+            "new",
+        ),  # L4 / Triton 3.8: static regressed, the 8-warp tile clearly beats cuBLAS
+        (1.00, 0.90, 1.30, "new"),  # a fused tile clearly faster than the static one and cuBLAS
+    ],
+)
+def test_decide_keeps_the_status_quo_unless_beaten_clearly(static_ms, new_ms, cublas_ms, want):
+    static, new = (128, 128, 128, 8, 4, 3), (64, 128, 128, 8, 4, 4)
+    got = g8.decide(static, {static: static_ms, new: new_ms}, cublas_ms)
+    assert got == {"cublas": g8._CUBLAS, "static": static, "new": new}[want]
+
+
+def _q21_model(dim = 512, ff = 1024):
+    """A Qwen-Image-2.1-shaped tree (one attention, one SwiGLU, one plain rotated Linear) of ConvRot Linears."""
+    from core.inference.diffusion_convrot import _install_rotation
+
+    def rot(i, o):
+        lin = torch.nn.Linear(i, o, bias = False)
+        _install_rotation(lin, 256)
+        return lin
+
+    attn = type("QwenImage21Attention", (torch.nn.Module,), {})()
+    attn.to_q, attn.to_k, attn.to_v = rot(dim, dim), rot(dim, dim), rot(dim, dim)
+    attn.to_out = torch.nn.ModuleList([rot(dim, dim)])
+    mlp = type("QwenImage21SwiGLUFeedForward", (torch.nn.Module,), {})()
+    mlp.gate_layer, mlp.proj, mlp.out = rot(dim, ff), rot(dim, ff), rot(ff, dim)
+    model = type("QwenImage21Transformer2DModel", (torch.nn.Module,), {})()
+    model.attn, model.mlp, model.mod = attn, mlp, rot(dim, 2 * dim)
+    return model
+
+
+def _all_cublas_gate(monkeypatch, tmp_path, cublas_wins):
+    """A100 + Triton 3.8 shaped gate on a fake device 0: cuBLAS wins every bucket (or the fused tile does)."""
+    from core.inference import diffusion_int8_fused as i8f
+
+    monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "1")
+    default = g8._ARCH_CONFIG[(8, 0)]
+    fast, slow = (1.0, 7.8) if cublas_wins else (7.8, 1.0)
+    _fake_tune_env(
+        monkeypatch, tmp_path, lambda tiles: {g8._CUBLAS: fast, **{t: slow for t in tiles}}
+    )
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(i8f, "resident_cuda_device", lambda t: torch.device("cuda", 0))
+    monkeypatch.setattr(cq, "rotquant_device_config", lambda index: (128, 32, 8, 3))
+    monkeypatch.setattr(g8, "_op", lambda: object())
+    monkeypatch.setattr(
+        g8,
+        "_eligible",
+        lambda m: ("v2", 256, None, m.weight) if hasattr(m, "convrot_groupsize") else None,
+    )
+    return default
+
+
+def _fake_stock_fusions(
+    monkeypatch,
+    model,
+    qkv = True,
+    swiglu = True,
+):
+    """What the stock-path installers leave when they engage: int8_fused's SwiGLU mark (it runs before the swap) and
+    the QKV fusion's record + to_out mark (``install_modules``, called from the swap). Either may decline."""
+    from core.inference import diffusion_int8_fused as i8f
+    from core.inference import diffusion_qwenimage21_fused as qf
+
+    calls = []
+
+    def install_modules(root, logger = None):
+        calls.append(root)
+        if qkv:
+            a = root.attn
+            a.__dict__[qf._QKV_ATTR] = (object(), a.to_q, a.to_k, a.to_v)
+            a.to_out[0].__dict__[qf._OUT_MARK] = True
+        return {}
+
+    monkeypatch.setattr(qf, "install_modules", install_modules)
+    if swiglu:
+        model.mlp.__dict__[i8f._MARK] = object()
+    return calls
+
+
+@pytest.mark.parametrize("cublas_wins", [True, False])
+def test_all_cublas_gate_yields_qwen_image_21_groups_to_their_stock_fusion(
+    monkeypatch, tmp_path, cublas_wins
+):
+    """A100 Qwen-Image-2.1: with every bucket on cuBLAS the swapped forward is rotq_i8 + cuBLAS per Linear, which
+    also locks out the QKV / SwiGLU shared-rotation fusions the kill switch runs (0.2557 vs 0.2504 s/step). The groups
+    those fusions take must stay unswapped; other Linears and a fused plan keep the swap."""
+    from core.inference import diffusion_qwenimage21_fused as qf
+
+    _all_cublas_gate(monkeypatch, tmp_path, cublas_wins)
+    model = _q21_model()
+    attn_group = qf._attn_group(model.attn)
+    ff_group = qf._ff_group(model.mlp)
+    assert len(attn_group) == 4 and len(ff_group) == 3
+    # the order the loader runs: int8_fused asks first (SwiGLU), then the int8 GEMM swap, then the QKV fusion
+    assert qf.rotated_ff(model.mlp) is cublas_wins
+    calls = _fake_stock_fusions(monkeypatch, model, swiglu = cublas_wins)
+    count = g8._swap(model)
+    swapped = {id(m) for m in model.modules() if g8.is_installed(m)}
+    assert id(model.mod) in swapped
+    for lin in attn_group + ff_group:
+        assert (id(lin) in swapped) is not cublas_wins
+    assert count == (1 if cublas_wins else 8)
+    assert len(calls) == (1 if cublas_wins else 0)
+    assert qf.arch_ok(torch.device("cuda", 0), attn_group) is cublas_wins
+    g8.uninstall(model)
+
+
+@pytest.mark.parametrize("qkv, swiglu", [(False, False), (False, True), (True, False)])
+def test_all_cublas_gate_keeps_the_swap_where_the_stock_fusion_declined(
+    monkeypatch, tmp_path, qkv, swiglu
+):
+    """A declined installer (newer diffusers QKV helper fingerprint, int8_fused probe refusal) leaves its group
+    stock; that group must keep the int8 swap rather than drop to the per-Linear stock forward."""
+    from core.inference import diffusion_qwenimage21_fused as qf
+
+    _all_cublas_gate(monkeypatch, tmp_path, True)
+    model = _q21_model()
+    _fake_stock_fusions(monkeypatch, model, qkv = qkv, swiglu = swiglu)
+    g8._swap(model)
+    swapped = {id(m) for m in model.modules() if g8.is_installed(m)}
+    for lin in qf._attn_group(model.attn):
+        assert (id(lin) in swapped) is not qkv
+    for lin in qf._ff_group(model.mlp):
+        assert (id(lin) in swapped) is not swiglu
+    assert id(model.mod) in swapped
+    g8.uninstall(model)
+
+
+def test_all_cublas_yield_respects_the_q21_kill_switch_and_other_models(monkeypatch, tmp_path):
+    from core.inference import diffusion_qwenimage21_fused as qf
+
+    _all_cublas_gate(monkeypatch, tmp_path, True)
+    monkeypatch.setenv(qf.Q21_CONVROT_FUSED_ENV, "0")
+    model = _q21_model()
+    assert g8._swap(model) == 8 and not qf.rotated_ff(model.mlp)
+    g8.uninstall(model)
+    monkeypatch.delenv(qf.Q21_CONVROT_FUSED_ENV)
+    other = torch.nn.Sequential(*_q21_model().children())  # same Linears, not a Qwen-Image-2.1 root
+    assert g8._swap(other) == 8
+    g8.uninstall(other)
+
+
+def test_gate_routes_to_cublas_needs_every_bucket(monkeypatch, tmp_path):
+    _all_cublas_gate(monkeypatch, tmp_path, True)
+    assert g8.gate_routes_to_cublas(0, {(512, 512)})
+    g8._DEVICE_PLAN[0][(512, 512, 1)] = g8._ARCH_CONFIG[(8, 0)]
+    assert not g8.gate_routes_to_cublas(0, {(512, 512)})
+    assert not g8.gate_routes_to_cublas(0, {(512, 500)})  # off-grid: never swapped, never timed
+    monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "0")
+    assert not g8.gate_routes_to_cublas(0, {(512, 512)})
+
+
+def test_swap_log_says_what_runs(monkeypatch, tmp_path):
+    """'N run the fused-dequant GEMM' must not follow a gate that sent every bucket to cuBLAS."""
+    _all_cublas_gate(monkeypatch, tmp_path, True)
+    msgs = []
+
+    class Log:
+        def info(self, fmt, *args):
+            msgs.append(fmt % args)
+
+    other = torch.nn.Sequential(*_q21_model().children())
+    g8._swap(other, Log())
+    swap_msg = [m for m in msgs if "int8 Linear(s)" in m][-1]
+    assert "0 run the fused-dequant GEMM" in swap_msg and "8 cuBLAS" in swap_msg
+    g8.uninstall(other)
+
+
+def test_latency_gate_never_times_a_bucket_at_rows_from_another_bucket(monkeypatch, tmp_path):
+    """Very large N caps the timed rows (int32 output under _TUNE_MAX_BYTES); a bucket whose capped M lands in a lower
+    bucket must not take that bucket's timing: it stays on cuBLAS untimed."""
+    default = g8._ARCH_CONFIG[(8, 0)]
+    calls = _fake_tune_env(
+        monkeypatch, tmp_path, lambda tiles: {g8._CUBLAS: 7.8, **{t: 1.0 for t in tiles}}
+    )
+    big, huge = 65536, 131072  # cap 1536 rows (bucket 1), 768 rows (bucket 0)
+    plan = g8.tune(0, {(big, 1024), (huge, 1024)})
+    assert plan[(big, 1024, 0)] == default and plan[(big, 1024, 1)] == default
+    assert plan[(big, 1024, 2)] == g8._CUBLAS
+    assert plan[(huge, 1024, 0)] == default
+    assert plan[(huge, 1024, 1)] == g8._CUBLAS and plan[(huge, 1024, 2)] == g8._CUBLAS
+    cap = lambda n, m: max(g8._MIN_ROWS, min(m, g8._TUNE_MAX_BYTES // (4 * n)))
+    assert all(g8.m_bucket(cap(n, m)) == g8.m_bucket(m) for n, _k, m, _t in calls)
+    assert len(calls) == 3

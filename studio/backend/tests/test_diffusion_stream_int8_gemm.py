@@ -163,12 +163,17 @@ needs_cuda = pytest.mark.skipif(
 def forced(monkeypatch):
     monkeypatch.setenv(g8.INT8_GEMM_ENV, "1")
     monkeypatch.delenv(g8.INT8_GEMM_STREAMED_ENV, raising = False)
+    monkeypatch.setenv(
+        g8.INT8_GEMM_AUTOTUNE_ENV, "0"
+    )  # these assert the fused path engages, not its latency gate
     g8._DEVICE_CFG.clear()
+    g8._DEVICE_PLAN.clear()
     cfg = g8.device_config(torch.cuda.current_device())
     if cfg is None:
         pytest.skip("int8 GEMM probe refused this device")
     yield cfg
     g8._DEVICE_CFG.clear()
+    g8._DEVICE_PLAN.clear()
 
 
 def _blocks(n, k, version):

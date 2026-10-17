@@ -24,6 +24,15 @@ accumulate in int32, so the output does not depend on the tile.
 Kill switch: ``UNSLOTH_DIFFUSION_INT8_GEMM=0``; ``=1`` also enables it on an unmeasured arch (still probe-gated).
 ``UNSLOTH_DIFFUSION_INT8_GEMM_TILES=0`` keeps the arch default tile for every shape.
 
+LATENCY GATE: static tiles go stale with the toolchain (A100 Triton 3.8: 128x128x128 at ~59 TOPS vs cuBLAS ~420).
+At install each swapped (N, K) is timed per M bucket (probed, per-shape and arch tiles vs cuBLAS ``_int_mm`` + one
+int32 -> bf16 pass); a winner must beat the status quo by ``_CUBLAS_MARGIN`` and alt tiles must pass the bit-exact
+probe. Results persist per toolchain under the Studio cache (``UNSLOTH_DIFFUSION_INT8_GEMM_TUNE_DIR``);
+``UNSLOTH_DIFFUSION_INT8_GEMM_AUTOTUNE=0`` keeps the static table. A cuBLAS slot still runs this module's forward
+(``rotq_i8`` + ``stock_gemm``), so where a model has its own stock-path fusion for rotated Linears (Qwen-Image-2.1:
+one rotation + act quant per shared QKV / SwiGLU input, ``diffusion_qwenimage21_fused.stock_claims``) a group whose
+every shape the gate sends to cuBLAS is left unswapped for it: the path the kill switch runs, measured faster.
+
 ConvRot Linears (MiniMax-H3, Qwen-Image-2.1 ConvRot) run ``ConvRotLinear.forward``'s own rotation first, so eager
 output stays bit-identical; kill switch ``UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT=0``.
 
@@ -39,6 +48,7 @@ call sees the onloaded copy. Kill switch ``UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED=
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import types
@@ -49,6 +59,8 @@ INT8_GEMM_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM"
 INT8_GEMM_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT"
 INT8_GEMM_STREAMED_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED"
 INT8_GEMM_TILES_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_TILES"
+INT8_GEMM_AUTOTUNE_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_AUTOTUNE"
+INT8_GEMM_TUNE_DIR_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_TUNE_DIR"
 _MIN_TRITON = (3, 2)
 # torch._int_mm needs M > 16; below that the stock path (safe_int_mm padding) stays in charge.
 _MIN_ROWS = 17
@@ -92,6 +104,23 @@ _SHAPE_TILES: dict = {
 }
 _SHAPE_MIN_M = 1024
 
+# Triton 3.8 on sm80/sm89 slows tiles with 128 int32 accumulators per thread; these 64-per-thread tiles stay fast.
+_ALT_TILES: dict = {
+    (8, 0): ((64, 128, 128, 8, 4, 4), (128, 64, 128, 8, 4, 4), (128, 128, 128, 8, 8, 3)),
+    (8, 9): ((128, 128, 128, 8, 8, 3), (128, 128, 64, 8, 8, 4), (128, 128, 64, 8, 4, 4)),
+    (12, 0): ((128, 128, 64, 8, 4, 3), (128, 128, 64, 8, 8, 4)),
+}
+# (upper bound exclusive, M timed); the first bound is _SHAPE_MIN_M so tile_for's switch never falls inside a bucket
+_M_BUCKETS = ((1024, 512), (2048, 1024), (None, 4096))
+# Replacing the status quo needs a clear win: near-tie new tiles ran 1.7-3% slower end to end than cuBLAS (A100).
+_CUBLAS_MARGIN = 1.1
+_TUNE_MAX_BYTES = 384 << 20
+_TUNE_VERSION = 2
+_CUBLAS = "cublas"
+# device -> {(n, k, bucket): tile or _CUBLAS}
+_DEVICE_PLAN: dict = {}
+_PROBED: dict = {}
+
 
 def int8_gemm_mode() -> str:
     """'off', 'force' or 'auto' from the environment."""
@@ -116,6 +145,18 @@ def streamed_enabled() -> bool:
 def tiles_enabled() -> bool:
     raw = (os.environ.get(INT8_GEMM_TILES_ENV) or "").strip().lower()
     return raw not in ("0", "off", "false", "no")
+
+
+def autotune_enabled() -> bool:
+    raw = (os.environ.get(INT8_GEMM_AUTOTUNE_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def m_bucket(m: int) -> int:
+    for i, (hi, _) in enumerate(_M_BUCKETS):
+        if hi is None or m < hi:
+            return i
+    return len(_M_BUCKETS) - 1
 
 
 def _triton_version_ok(version: Optional[str] = None) -> bool:
@@ -317,17 +358,39 @@ def tile_for(index: Any, m: int, n: int, k: int) -> Optional[tuple]:
     return cfg
 
 
+def planned(index: Any, m: int, n: int, k: int) -> Any:
+    """The latency gate's choice for this call: a tile, ``_CUBLAS``, or None (not timed: ``tile_for`` decides)."""
+    plan = _DEVICE_PLAN.get(index)
+    if not plan:
+        return None
+    return plan.get((int(n), int(k), m_bucket(m)))
+
+
+def fused_for(index: Any, m: int, n: int, k: int) -> bool:
+    """False where the latency gate measured cuBLAS faster for this shape (the caller keeps the stock forward)."""
+    return planned(index, m, n, k) != _CUBLAS
+
+
 def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
     """Op body: the probed tile for this device and shape, else (launch failure, ``_aligned`` false) the stock
     epilogue."""
     _CALLS[0] += 1
     a = a if a.stride(-1) == 1 else a.contiguous()
     index = a.device.index
-    cfg = tile_for(index, a.shape[0], w.shape[0], a.shape[1])
+    choice = planned(index, a.shape[0], w.shape[0], a.shape[1]) if _DEVICE_CFG.get(index) else None
+    if choice == _CUBLAS:
+        return reference(a, w, xs, ws, bias)
+    cfg = choice if choice is not None else tile_for(index, a.shape[0], w.shape[0], a.shape[1])
     if cfg is not None and w.stride(-1) == 1 and w.device == a.device and _aligned(a, w):
         try:
             return _launch(a, w, xs, ws, bias, cfg)
         except Exception:  # noqa: BLE001 - a failed launch keeps the stock math
+            default = _DEVICE_CFG.get(index)
+            if choice is not None and cfg != default:
+                # timed alternative tiles fall back to the probed default; cuBLAS decisions stand
+                plan = _DEVICE_PLAN.get(index, {})
+                _DEVICE_PLAN[index] = {s: (c if c == _CUBLAS else default) for s, c in plan.items()}
+                return _run(a, w, xs, ws, bias)
             if cfg != _DEVICE_CFG.get(index) and _DEVICE_TILES.get(index):
                 _DEVICE_TILES[index] = ()  # drop the shape tiles, keep the probed default
                 return _run(a, w, xs, ws, bias)
@@ -597,6 +660,8 @@ def _linear_forward(self: Any, x: Any) -> Any:
     lead = x.shape[:-1]
     if x.numel() < _MIN_ROWS * x.shape[-1]:
         return type(self).forward(self, x)
+    if fused and not fused_for(x.device.index, x.numel() // x.shape[-1], wq.shape[0], wq.shape[1]):
+        fused = False  # the latency gate measured cuBLAS faster here: torchao's own epilogue, fused by Inductor
     q = None
     if rotq:
         from .diffusion_convrot_quant import convrot_act_quant
@@ -643,6 +708,8 @@ def linear_from_q(q: Any, xs: Any, weight: Any, bias: Any) -> Optional[Any]:
     if parts[0].shape[1] % _K_ALIGN or parts[0].shape[0] % _N_ALIGN:
         return None
     if bias is not None and bias.dtype != torch.bfloat16:
+        return None
+    if not fused_for(q.device.index, q.shape[0], parts[0].shape[0], parts[0].shape[1]):
         return None
     return _OP_HANDLE(q, parts[0], xs.reshape(-1), parts[1], bias)
 
@@ -804,7 +871,37 @@ def _swap(
         recs = [(m, r) for m, r in recs if r[0] != "v1"]
     if not recs:
         return 0
+    if gemm and autotune_enabled():
+        import time
+
+        t0 = time.perf_counter()
+        try:
+            plan = tune(index, {(int(m.out_features), int(m.in_features)) for m, _ in recs})
+        except Exception:  # noqa: BLE001 - an untimed shape keeps the static tile
+            plan = _DEVICE_PLAN.get(index, {})
+        if logger is not None and plan:
+            n_cublas = sum(1 for c in plan.values() if c == _CUBLAS)
+            logger.info(
+                "diffusion.int8_gemm: latency gate %d shape bucket(s) fused, %d cuBLAS (%.1f s)",
+                len(plan) - n_cublas,
+                n_cublas,
+                time.perf_counter() - t0,
+            )
+    else:
+        _DEVICE_PLAN.pop(index, None)  # a plan from an earlier load must not outlive AUTOTUNE=0
+    yielded = _yielded(transformer, index) if gemm and device is None else set()
+    if yielded:
+        recs = [(m, r) for m, r in recs if id(m) not in yielded]
+        if logger is not None:
+            logger.info(
+                "diffusion.int8_gemm: %d ConvRot Linear(s) left to the model's stock-path fusion (latency gate: "
+                "cuBLAS for every shape)",
+                len(yielded),
+            )
+        if not recs:
+            return 0
     count = 0
+    n_fused = 0
     with _LOCK:
         if gemm:
             _OP_HANDLE = _op()
@@ -825,12 +922,28 @@ def _swap(
             module.__dict__[_MARK] = module.__dict__.get("forward", _NO_PREV)
             module.forward = types.MethodType(_linear_forward, module)
             count += 1
+    if gemm:
+        plan = _DEVICE_PLAN.get(index) or {}
+        for module, _rec in recs:
+            n, k = int(module.out_features), int(module.in_features)
+            if any(plan.get((n, k, b)) != _CUBLAS for b in range(len(_M_BUCKETS))):
+                n_fused += 1
     if logger is not None and count:
+        cap = torch.cuda.get_device_capability(index)
+        if gemm:
+            what = "run the fused-dequant GEMM (bf16 out)"
+            if n_fused < count:
+                what = (
+                    f"swapped: {n_fused} run the fused-dequant GEMM (bf16 out) in at least one M bucket, "
+                    f"{count - n_fused} cuBLAS + torchao's epilogue (latency gate)"
+                )
+        else:
+            what = "keep cuBLAS"
         logger.info(
             "diffusion.int8_gemm: %d int8 Linear(s) %s on sm_%d%d%s",
             count,
-            "run the fused-dequant GEMM (bf16 out)" if gemm else "keep cuBLAS",
-            *torch.cuda.get_device_capability(index),
+            what,
+            *cap,
             ", ConvRot rotation fused into the act quant" if rotq else "",
         )
     return count
@@ -860,3 +973,326 @@ def is_installed(module: Any) -> bool:
 
 def call_count() -> int:
     return _CALLS[0]
+
+
+def toolchain_key(index: int) -> str:
+    """What a timing depends on: GPU, torch (cuBLAS), Triton, CUDA and the kernel source."""
+    import hashlib
+    import inspect
+
+    import torch
+    import triton
+
+    src = inspect.getsource(_kernels)
+    cap = torch.cuda.get_device_capability(index)
+    return "|".join(
+        (
+            f"v{_TUNE_VERSION}",
+            torch.cuda.get_device_name(index),
+            f"sm{cap[0]}{cap[1]}",
+            f"torch{torch.__version__}",
+            f"triton{triton.__version__}",
+            f"cuda{torch.version.cuda}",
+            f"driver{_driver_version()}",
+            hashlib.sha1(src.encode("utf-8")).hexdigest()[:12],
+        )
+    )
+
+
+@lru_cache(maxsize = 1)
+def _driver_version() -> str:
+    """The NVIDIA driver build (NVML), else the CUDA driver API version: it compiles Triton's PTX, so timings move."""
+    import ctypes
+
+    for lib in ("libnvidia-ml.so.1", "nvml.dll"):
+        try:
+            nvml = ctypes.CDLL(lib)
+            if nvml.nvmlInit_v2() != 0:
+                continue
+            buf = ctypes.create_string_buffer(96)
+            ok = nvml.nvmlSystemGetDriverVersion(buf, 96) == 0
+            nvml.nvmlShutdown()
+            if ok:
+                return buf.value.decode()
+        except Exception:  # noqa: BLE001
+            continue
+    for lib in ("libcuda.so.1", "nvcuda.dll"):
+        try:
+            v = ctypes.c_int(0)
+            if ctypes.CDLL(lib).cuDriverGetVersion(ctypes.byref(v)) == 0:
+                return f"api{v.value}"
+        except Exception:  # noqa: BLE001
+            continue
+    return "unknown"
+
+
+def plan_identity(transformer: Any, index: Optional[int] = None) -> Optional[str]:
+    """The cuBLAS slots the latency gate holds for this transformer's shapes on the current device, or None (all
+    fused / gate off). Those slots trace the stock graph instead of the op, so the compile cache keys on them. No
+    timing: the in-memory plan, else the stored file."""
+    try:
+        import hashlib
+
+        import torch
+
+        if int8_gemm_mode() == "off" or not autotune_enabled() or not torch.cuda.is_available():
+            return None
+        shapes = {
+            (int(m.out_features), int(m.in_features))
+            for m in transformer.modules()
+            if _eligible(m) is not None
+        }
+        if not shapes:
+            return None
+        index = torch.cuda.current_device() if index is None else index
+        key = toolchain_key(index) + ("" if tiles_enabled() else "|tiles0")
+        plan = {**_load_plan(_tune_path(key), key), **_DEVICE_PLAN.get(index, {})}
+        slots = sorted(s for s, c in plan.items() if c == _CUBLAS and s[:2] in shapes)
+        if not slots:
+            return None
+        return hashlib.sha1(repr(slots).encode("utf-8")).hexdigest()[:16]
+    except Exception:  # noqa: BLE001 - unreadable: keyed as all fused
+        return None
+
+
+def _tune_path(key: str) -> Optional[str]:
+    import hashlib
+
+    root = (os.environ.get(INT8_GEMM_TUNE_DIR_ENV) or "").strip()
+    if not root:
+        try:
+            from utils.paths.storage_roots import cache_root
+        except Exception:  # noqa: BLE001 - outside Studio: in-memory only
+            return None
+        root = str(cache_root() / "diffusion_int8_gemm")
+    return os.path.join(
+        root, "tune_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16] + ".json"
+    )
+
+
+def _load_plan(path: Optional[str], key: str) -> dict:
+    import json
+    if path is None or not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, encoding = "utf-8") as f:
+            data = json.load(f)
+        if data.get("key") != key:
+            return {}
+        out = {}
+        for name, choice in data.get("plan", {}).items():
+            n, k, b = (int(v) for v in name.split(","))
+            out[(n, k, b)] = _CUBLAS if choice == _CUBLAS else tuple(int(v) for v in choice)
+        return out
+    except Exception:  # noqa: BLE001 - a corrupt file is re-timed
+        return {}
+
+
+def _save_plan(path: Optional[str], key: str, plan: dict, timings: dict) -> None:
+    if path is None:
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok = True)
+        try:
+            from filelock import FileLock
+            lock: Any = FileLock(f"{path}.lock", timeout = 60)
+        except ImportError:
+            lock = contextlib.nullcontext()
+        with lock:
+            _merge_and_write(path, key, plan, timings)
+    except Exception:  # noqa: BLE001 - read-only cache / lock timeout: timed again next load
+        pass
+
+
+def _merge_and_write(path: str, key: str, plan: dict, timings: dict) -> None:
+    """Under the file lock: merge what another process stored since our load, then replace."""
+    import json
+
+    plan = {**_load_plan(path, key), **plan}
+    try:
+        with open(path, encoding = "utf-8") as f:
+            old = json.load(f)
+        if old.get("key") == key:
+            timings = {**old.get("ms", {}), **timings}
+    except Exception:  # noqa: BLE001
+        pass
+    data = {
+        "key": key,
+        "plan": {
+            f"{n},{k},{b}": (c if c == _CUBLAS else list(c))
+            for (n, k, b), c in sorted(plan.items())
+        },
+        "ms": timings,
+    }
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    with open(tmp, "w", encoding = "utf-8") as f:
+        json.dump(data, f, indent = 1, sort_keys = True)
+    os.replace(tmp, path)
+
+
+def gate_routes_to_cublas(index: Any, shapes: Any) -> bool:
+    """True when the latency gate sends every M bucket of every ``(n, k)`` in ``shapes`` to cuBLAS on device ``index``,
+    so the fused GEMM never runs for them. Times missing slots: eager only, never under trace."""
+    try:
+        if index is None or int8_gemm_mode() == "off" or not autotune_enabled():
+            return False
+        shapes = {(int(n), int(k)) for n, k in shapes}
+        if not shapes or any(k % _K_ALIGN or n % _N_ALIGN for n, k in shapes):
+            return False
+        if device_config(index) is None:
+            return False
+        slots = [(n, k, b) for n, k in shapes for b in range(len(_M_BUCKETS))]
+        plan = _DEVICE_PLAN.get(index) or {}
+        if any(slot not in plan for slot in slots):
+            plan = tune(index, shapes)
+        return all(plan.get(slot) == _CUBLAS for slot in slots)
+    except Exception:  # noqa: BLE001 - unknown: keep the swap
+        return False
+
+
+def _yielded(transformer: Any, index: Any) -> set:
+    """ids of the rotated Linears a model's own stock-path fusion took because the gate left them all on cuBLAS. The
+    QKV fusion installs here (idempotent; its patch stage re-runs it) and only what a fusion actually claimed is
+    yielded: a declined install (helper fingerprint, kernel probe) keeps the swap."""
+    try:
+        from .diffusion_qwenimage21_fused import claimed, install_modules, stock_claims
+
+        groups = stock_claims(transformer)
+        want: set = set()
+        for group in groups:
+            if gate_routes_to_cublas(
+                index, {(int(m.out_features), int(m.in_features)) for m in group}
+            ):
+                want.update(id(m) for m in group)
+        if not want:
+            return set()
+        install_modules(transformer)
+        return want & claimed(transformer)
+    except Exception:  # noqa: BLE001 - unknown: keep the swap
+        return set()
+
+
+def _time_ms(
+    fn: Any,
+    iters: int = 3,
+    rounds: int = 3,
+) -> float:
+    import torch
+
+    fn()
+    torch.cuda.synchronize()
+    best = []
+    for _ in range(rounds):
+        start, end = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
+        start.record()
+        for _ in range(iters):
+            fn()
+        end.record()
+        end.synchronize()
+        best.append(start.elapsed_time(end) / iters)
+    best.sort()
+    return best[len(best) // 2]
+
+
+def _timed_rows(n: int, m: int) -> int:
+    """The M a bucket is timed at: its representative, capped so the int32 output stays under ``_TUNE_MAX_BYTES``."""
+    return max(_MIN_ROWS, min(m, _TUNE_MAX_BYTES // (4 * n)))
+
+
+def _measure(index: int, n: int, k: int, m: int, tiles: tuple) -> dict:
+    """ms per arm at [m, k] x [n, k]: each candidate tile and ``_CUBLAS`` (``_int_mm`` + one int32 -> bf16 pass)."""
+    import torch
+
+    dev = torch.device("cuda", index)
+    m = _timed_rows(n, m)
+    with torch.cuda.device(dev):
+        g = torch.Generator(device = dev).manual_seed(
+            0
+        )  # private: the caller's CUDA RNG stream is untouched
+        a = torch.randint(-127, 128, (m, k), generator = g, device = dev, dtype = torch.int8)
+        w = torch.randint(-127, 128, (n, k), generator = g, device = dev, dtype = torch.int8)
+        xs = torch.full((m,), 1e-3, device = dev, dtype = torch.bfloat16)
+        ws = torch.full((n,), 1e-3, device = dev, dtype = torch.bfloat16)
+        out: dict = {}
+
+        def cublas():
+            return torch._int_mm(a, w.t()).to(torch.bfloat16)
+
+        out[_CUBLAS] = _time_ms(cublas)
+        for tile in tiles:
+            try:
+                out[tile] = _time_ms(lambda tile = tile: _launch(a, w, xs, ws, None, tile))
+            except Exception:  # noqa: BLE001 - out of shared memory on this part, ...
+                continue
+        del a, w, xs, ws
+    return out
+
+
+def _probed(index: int, tile: tuple) -> bool:
+    seen = _PROBED.setdefault(index, {})
+    if tile not in seen:
+        seen[tile] = tile == _DEVICE_CFG.get(index) or _probe(index, tile)
+    return seen[tile]
+
+
+def decide(static: Any, fused_ms: dict, cublas_ms: float) -> Any:
+    """The tile or ``_CUBLAS`` for one bucket from its timings (ms per arm); ``static`` is the status quo."""
+    fastest = min(fused_ms, key = fused_ms.get)
+    stays = static in fused_ms and cublas_ms * _CUBLAS_MARGIN >= fused_ms[static]
+    if static in fused_ms and fused_ms[fastest] * _CUBLAS_MARGIN > fused_ms[static]:
+        return static if stays else _CUBLAS
+    if fused_ms[fastest] * _CUBLAS_MARGIN <= cublas_ms:
+        return fastest  # a new tile, clearly faster than both the static tile and cuBLAS
+    return static if stays else _CUBLAS
+
+
+def tune(index: int, shapes: Any) -> dict:
+    """Latency gate for ``(n, k)`` shapes on device ``index`` (fused GEMM already probed on): fills ``_DEVICE_PLAN``
+    from the toolchain's file, times what is missing, writes it back. Must run eagerly (not under capture / trace)."""
+    import torch
+
+    default = _DEVICE_CFG.get(index)
+    if default is None:
+        return {}
+    cap = tuple(torch.cuda.get_device_capability(index))
+    # UNSLOTH_DIFFUSION_INT8_GEMM_TILES=0: default tile vs cuBLAS only, in its own file
+    alts = _ALT_TILES.get(cap, ()) if tiles_enabled() else ()
+    key = toolchain_key(index) + ("" if tiles_enabled() else "|tiles0")
+    path = _tune_path(key)
+    plan = _DEVICE_PLAN.setdefault(index, {})
+    stored = _load_plan(path, key)
+    timings: dict = {}
+    dirty = False
+    for n, k in sorted(shapes):
+        if k % _K_ALIGN or n % _N_ALIGN:
+            continue
+        for b, (_, rep_m) in enumerate(_M_BUCKETS):
+            slot = (n, k, b)
+            choice = stored.get(slot)
+            if choice is None and m_bucket(_timed_rows(n, rep_m)) != b:
+                # very large N: the capped row count falls in a lower bucket, so a timing would not describe this one
+                choice = _CUBLAS
+                stored[slot] = choice
+                dirty = True
+            if choice is None:
+                static = tile_for(index, rep_m, n, k) if tiles_enabled() else default
+                tiles = tuple(dict.fromkeys((static, default, *alts)))
+                ms = _measure(index, n, k, rep_m, tiles)
+                timings[f"{n},{k},{b}"] = {str(t): round(v, 4) for t, v in ms.items()}
+                fused_ms = {t: v for t, v in ms.items() if t != _CUBLAS}
+                if not fused_ms:
+                    continue
+                choice = decide(static, fused_ms, ms[_CUBLAS])
+                while choice != _CUBLAS and not _probed(index, choice):
+                    del fused_ms[choice]  # not bit-exact here: decide among the remaining arms
+                    choice = decide(static, fused_ms, ms[_CUBLAS]) if fused_ms else _CUBLAS
+                stored[slot] = choice
+                dirty = True
+            if choice != _CUBLAS and not _probed(index, choice):
+                choice = (
+                    default  # an alternative tile that is not bit-exact here: the probed default
+                )
+            plan[slot] = choice
+    if dirty:
+        _save_plan(path, key, stored, timings)
+    return plan
