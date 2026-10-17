@@ -196,8 +196,12 @@ export const BUDGET = {
   // 95). Nearly all of it is searching a model maker in the Model hub (#13998, +3,038 B raw / +1,000 B transfer):
   // its owner-to-uploads search lives in use-hub-model-search, a hook the startup screen already loads, so there
   // is no separate module to lazy-load. #13999 and #13993 add 79 B raw / 58 B transfer. Raised by that growth.
-  transferBytes: 2_045_781,
-  rawBytes: 6_801_415,
+  // The llama-bench tab adds 1,540 B raw / 259 B transfer (6,800,533 -> 6,802,073 B raw, 2,045,384 -> 2,045,643 B
+  // transfer over the Benchmarks page at fa44a8594c, one machine and build, Node 24, chunk count unchanged at 95).
+  // Its code is all in the lazy Benchmarks route; what reaches startup is the route's longer preload list.
+  // Raised by that growth.
+  transferBytes: 2_046_040,
+  rawBytes: 6_802_955,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
