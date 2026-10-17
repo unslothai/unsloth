@@ -12473,12 +12473,17 @@ async def _make_room_for_primary(request: LoadRequest, exc, evicted: list) -> Lo
         info = {"need_mib": {0: free + exc.short_mib}, "free_mib": {0: free}, "short_mib": {0: exc.short_mib}}
         slots = [s for o in gpu_residency.MEDIA_OWNERS for s in gpu_arbiter.resident_slots(o)]
         raise gpu_residency.need_free_refusal(info if gpus else {}, slots)
-    slots: list = []
-    await asyncio.to_thread(
+    # The route's eviction sink when it keeps one (it reports the slots itself), else the plain list.
+    sink = gpu_arbiter.eviction_sink.get()
+    slots: list = sink if sink is not None else []
+    before = len(slots)
+    freed = await asyncio.to_thread(
         gpu_residency.free_for, gpu_arbiter.CHAT, exc.gpu_indices, "a chat model", slots, short_mib = exc.short_mib
     )
-    evicted += [s["model"] for s in slots if s.get("model")]
-    return request if slots else request.model_copy(update = {"force_alongside": True})
+    if sink is None:
+        evicted += [s["model"] for s in slots[before:] if s.get("model")]
+    # Anything freed (an idle video server counts) earns a retry at full size; else llama-server fits what it can.
+    return request if freed else request.model_copy(update = {"force_alongside": True})
 
 
 def reap_dead_managed_engine(backend) -> None:
@@ -18633,6 +18638,8 @@ async def load_model_gated(
                                 # As a pick does before a switch: the active model goes first, so
                                 # the new one is placed on a GPU it no longer shares.
                                 await asyncio.to_thread(_unload_primary)
+                                # No retry follows this load, so it must not refuse a partial fit beside media.
+                                _primary_can_retry_fit.set(False)
                                 response = await _run_tracked_load_model_impl(
                                     request,
                                     fastapi_request,
