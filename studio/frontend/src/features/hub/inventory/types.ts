@@ -85,7 +85,6 @@ export interface LocalInventoryRow {
   modelId?: string | null;
   displayName?: string;
   path: string;
-  /** On-disk size the scan measured, when it did. */
   bytes?: number | null;
   isGguf: boolean;
   modelFormat: ModelInventoryFormat;

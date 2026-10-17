@@ -273,7 +273,6 @@ export async function listLocalModels(): Promise<LocalModelListResponse> {
   return parseJsonOrThrow<LocalModelListResponse>(response);
 }
 
-/** Models fine-tuned or exported in Studio, listed with source "unsloth". */
 export async function listUnslothModels(): Promise<LocalModelListResponse> {
   const response = await withHubTimeout(INVENTORY_TIMEOUT_MS, (signal) =>
     authFetch("/api/hub/unsloth-models", { signal }),

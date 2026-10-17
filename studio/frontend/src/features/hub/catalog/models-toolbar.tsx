@@ -117,7 +117,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onResetFilters: () => void;
   inventorySort: InventorySort;
   onInventorySortChange: (value: InventorySort) => void;
-  /** On Device's capability picks, kept apart from Discover's. */
   inventoryCapabilities: HubCapabilityFilter[];
   onInventoryCapabilitiesChange: (value: HubCapabilityFilter[]) => void;
   isolateFirstInventoryCapability: boolean;

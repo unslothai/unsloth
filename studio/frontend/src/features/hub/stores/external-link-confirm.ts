@@ -16,7 +16,6 @@ export const useExternalLinkConfirm = create<ExternalLinkConfirmStore>((set) => 
   dismiss: () => set({ pendingUrl: null }),
 }));
 
-/** Unsloth's own site: unsloth.ai and its subdomains, over http(s). */
 export function isUnslothSiteUrl(url: string): boolean {
   try {
     const { protocol, hostname } = new URL(url);
