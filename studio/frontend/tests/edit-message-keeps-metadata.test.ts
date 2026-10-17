@@ -5,7 +5,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { MessageRepository } from "@assistant-ui/core/internal";
+import type { ThreadMessage } from "@assistant-ui/react";
+import ts from "@typescript/typescript6";
+import type { MessageRecord } from "../src/features/chat/types.ts";
 import * as researchSync from "../src/features/chat/utils/research-message-sync.ts";
+import {
+  branchContextUsage,
+  contextUsageMarkers,
+  revisionTotal,
+  threadBranchRecords,
+} from "../src/features/chat/utils/saved-context-usage.ts";
+import { readSrc } from "./helpers/kit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 type Exported = {
@@ -55,6 +65,25 @@ const CUSTOM = {
   timing: { tokensPerSecond: 42.5, durationMs: 1200 },
   contextTruncation: { dropped: 4, fits: true },
 };
+
+const provider = ts.createSourceFile(
+  "runtime-provider.tsx",
+  readSrc("features/chat/runtime-provider.tsx"),
+  ts.ScriptTarget.Latest,
+  true,
+  ts.ScriptKind.TSX,
+);
+const hydration = ["cloneContent", "cloneAttachments", "toThreadMessage"].map((name) => {
+  const declaration = provider.statements.find(
+    (node) => ts.isFunctionDeclaration(node) && node.name?.text === name,
+  );
+  assert.ok(declaration, `${name} was not found`);
+  return declaration.getText(provider);
+}).join("\n");
+const hydrateUser = new Function(ts.transpileModule(
+  `${hydration}\nreturn toThreadMessage;`,
+  { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } },
+).outputText)() as (record: MessageRecord) => ThreadMessage;
 
 function harness() {
   const saved: Record<string, unknown>[] = [];
@@ -151,6 +180,79 @@ test("saving a reply unchanged does not mark it revised, however the parts were 
     });
     assert.equal("revision" in ((h.saved[0].metadata ?? {}) as Record<string, unknown>), false);
   }
+});
+
+for (const modelId of ["unsloth/gguf-model", "external::openai::gpt-x"]) {
+  for (const editedId of ["u0", "a0"]) {
+    test(`an edit after reloading a revised user invalidates saved context: ${modelId}, ${editedId}`, async () => {
+      const h = harness();
+      const user: MessageRecord = {
+        id: "u0",
+        threadId: "remote-1",
+        role: "user",
+        content: [{ type: "text", text: "edited prompt" }],
+        createdAt: 1000,
+        metadata: { revision: 1, createdAtEstimated: true },
+      };
+      const assistant: MessageRecord = {
+        id: "a0",
+        threadId: "remote-1",
+        parentId: "u0",
+        role: "assistant",
+        content: [{ type: "text", text: "the original reply" }],
+        createdAt: 2000,
+      };
+      const usage = {
+        promptTokens: 90,
+        completionTokens: 10,
+        totalTokens: 100,
+        cachedTokens: 0,
+        modelId,
+        ...contextUsageMarkers([user, assistant]),
+      };
+      let exported = thread(assistant.content as unknown[]);
+      exported.messages[0].message = hydrateUser(user) as unknown as Record<string, unknown>;
+      exported.messages[1].message.metadata = { custom: { contextUsage: usage } };
+
+      await h.module.updateThreadMessage({
+        thread: { export: () => exported, import: (data) => { exported = data; } },
+        messageId: editedId,
+        remoteId: "remote-1",
+        newText: "a much longer edited message ".repeat(10),
+        isIncognito: false,
+      });
+
+      const messages = exported.messages.map(({ message }) => message) as unknown as ThreadMessage[];
+      const window = modelId.startsWith("external::") ? null : 4096;
+      const shown = branchContextUsage(threadBranchRecords(messages), modelId, window, window);
+      assert.ok(shown);
+      assert.equal(shown.estimated, true, "the pre-edit count was accepted as exact");
+      assert.equal(revisionTotal(messages), 2);
+      assert.equal(h.saved.length, 1);
+    });
+  }
+}
+
+test("reloading and saving a user unchanged preserves its revision and timestamp flag", async () => {
+  const h = harness();
+  const user: MessageRecord = {
+    id: "u0",
+    threadId: "remote-1",
+    role: "user",
+    content: [{ type: "text", text: "edited prompt" }],
+    createdAt: 1000,
+    metadata: { revision: 3, createdAtEstimated: true },
+  };
+  const exported = thread([]);
+  exported.messages[0].message = hydrateUser(user) as unknown as Record<string, unknown>;
+  await h.module.updateThreadMessage({
+    thread: { export: () => exported, import: () => {} },
+    messageId: "u0",
+    remoteId: "remote-1",
+    newText: h.module.extractTaggedText(user.content),
+    isIncognito: false,
+  });
+  assert.deepEqual(h.saved[0].metadata, user.metadata);
 });
 
 test("editing clears stale Gemini continuation replay and keeps other metadata", async () => {

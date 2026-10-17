@@ -1382,7 +1382,10 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
       content: content as Extract<ThreadMessage, { role: "user" }>["content"],
       attachments: cloneAttachments(m.attachments),
       metadata: {
-        custom: m.metadata?.createdAtEstimated === true ? { createdAtEstimated: true } : {},
+        custom: {
+          ...(m.metadata?.createdAtEstimated === true ? { createdAtEstimated: true } : {}),
+          ...(typeof m.metadata?.revision === "number" ? { revision: m.metadata.revision } : {}),
+        },
       },
     };
   }
