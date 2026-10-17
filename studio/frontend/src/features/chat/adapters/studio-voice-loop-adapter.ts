@@ -277,6 +277,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       },
     };
 
+    voiceTrace("session.start", { playback: isVoicePlaybackActive() });
     // A mic picked in Settings mid-session: this session keeps the old device, so
     // end it (once nothing is being said) and the re-arm opens the new one.
     let unsubMic: (() => void) | null = useVoiceSettingsStore.subscribe(

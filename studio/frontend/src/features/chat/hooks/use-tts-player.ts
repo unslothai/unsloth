@@ -227,9 +227,13 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
           st.next++;
           if (!sentence) continue;
           try {
+            voiceTrace("tts.sentence", { i: st.next - 1, text: sentence });
             const buffer = await synthesize(sentence, reqId);
             if (!live()) return;
-            if (buffer) schedule(buffer);
+            if (buffer) {
+              voiceTrace("tts.clip", { i: st.next - 1, seconds: Math.round(buffer.duration * 100) / 100 });
+              schedule(buffer);
+            }
           } catch (error) {
             if (!live()) return;
             // One toast per reply: a voice that is down fails every sentence.
@@ -253,6 +257,14 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
         if (ctx && ctx.currentTime > playHeadRef.current + 0.5) break;
         await sleep(50);
       }
+      if (!live()) return;
+      // onended fires when the graph is done, not the speaker: the last word is
+      // still in the output buffer (a Bluetooth headset holds a few hundred ms),
+      // and re-arming the mic that instant reconfigures the audio route under it.
+      const latencyMs =
+        ((ctx?.outputLatency ?? 0) + (ctx?.baseLatency ?? 0)) * 1000;
+      voiceTrace("tts.streamDone", { latencyMs: Math.round(latencyMs) });
+      await sleep(Math.max(250, latencyMs + 150));
       if (!live()) return;
       streamRef.current = null;
       setIsSpeaking(false);
@@ -297,6 +309,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       st.sentences.push(all[st.sentences.length - st.extra] ?? "");
     }
     st.final = true;
+    voiceTrace("tts.streamEnd", { sentences: st.sentences.length, tail: finalText.slice(-60) });
   }, []);
 
   const speak = useCallback(
