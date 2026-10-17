@@ -183,38 +183,6 @@ def codex_check(old_text: str, new_text: str, name: str, expected: dict) -> None
         raise ValueError("other settings would change")
 
 
-# Dry runs show only our own entry, and mask whatever an older one may hold: a pasted key, a
-# token, other headers. Env-var references and plain settings stay readable.
-_SECRET_KEY_RE = re.compile(r"auth|token|key|secret|password|header|env|cookie", re.I)
-_PLAIN_KEYS = ("url", "type", "transport", "command", "args")
-_QUOTED_RE = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'[^']*'")
-_TOML_KEY_RE = re.compile(r"^\s*([A-Za-z0-9_.\"'-]+)\s*=")
-
-
-def _masked(value, secret: bool = False):
-    if isinstance(value, dict):
-        return {
-            k: _masked(v, secret or (k not in _PLAIN_KEYS and bool(_SECRET_KEY_RE.search(k))))
-            for k, v in value.items()
-        }
-    if isinstance(value, list):
-        return [_masked(v, secret) for v in value]
-    if secret and isinstance(value, str) and not re.fullmatch(r"(Bearer\s+)?\$\{[^}]*\}", value):
-        return "***"
-    return value
-
-
-def _masked_toml(text: str) -> str:
-    lines = []
-    for line in text.splitlines(True):
-        key = _TOML_KEY_RE.match(line)
-        name = key.group(1).strip("\"'") if key else ""
-        if key and name not in _PLAIN_KEYS and not name.endswith("_env_var"):
-            line = line[: key.end()] + _QUOTED_RE.sub('"***"', line[key.end() :])
-        lines.append(line)
-    return "".join(lines)
-
-
 def _redact(text: str) -> str:
     # Last line of defence for text we don't parse, such as claude's own error output.
     text = re.sub(r"(?i)(bearer\s+)(?!\$\{)\S+", r"\1***", text)
@@ -232,19 +200,26 @@ def _diff(path: Path, old_text: Optional[str], new_text: str) -> str:
     )
 
 
+def _show_entry(path: Path, name: str, entry_text: str, replaces: bool) -> None:
+    # Only the new entry, which names an env var: an old one may hold a key pasted in by hand.
+    typer.echo(_diff(path, None, entry_text), nl = False)
+    if replaces:
+        typer.echo(f"This replaces the current {name} entry; its old values are not shown.")
+
+
 def write_config(
     path: Path,
     old_text: Optional[str],
     new_text: str,
     *,
     dry_run: bool,
-    shown: Tuple[Optional[str], str],
+    shown: Tuple[str, str, bool],
 ) -> str:
-    """Write ``new_text``; a dry run prints only ``shown``, the (masked) old and new entry."""
+    """Write ``new_text``; a dry run prints only ``shown``: (name, new entry text, replaces)."""
     if old_text == new_text:
         return "unchanged"
     if dry_run:
-        typer.echo(_diff(path, *shown), nl = False)
+        _show_entry(path, *shown)
         return "dry-run"
     mode = None if old_text is None else path.stat().st_mode & 0o777
     _write_app_file(path, new_text)
@@ -273,17 +248,13 @@ def _json_text(data: dict) -> str:
     return json.dumps(data, indent = 2, ensure_ascii = False) + "\n"
 
 
-def _entry_text(name: str, entry) -> Optional[str]:
-    return None if entry is None else _json_text({name: _masked(entry)})
-
-
 def _merge_json_file(
     path: Path, name: str, data: dict, text: Optional[str], new: dict, dry_run: bool
 ) -> str:
     if text is not None and new == data:
         return "unchanged"
-    old_entry = data.get("mcpServers", {}).get(name)
-    shown = (_entry_text(name, old_entry), _entry_text(name, new["mcpServers"][name]))
+    replaces = name in data.get("mcpServers", {})
+    shown = (name, _json_text({name: new["mcpServers"][name]}), replaces)
     return write_config(path, text, _json_text(new), dry_run = dry_run, shown = shown)
 
 
@@ -316,7 +287,7 @@ def _add_claude(name, url, env_var, dry_run) -> Tuple[str, Path]:
         [exe, *_CLAUDE_ADD, name, url, "--header", f"Authorization: {_bearer(env_var)}"]
     )
     if dry_run:
-        typer.echo(_diff(path, _entry_text(name, current), _entry_text(name, entry)), nl = False)
+        _show_entry(path, name, _json_text({name: entry}), current is not None)
         for argv in commands:
             typer.echo("Would run: " + shlex.join(argv))
         return "dry-run", path
@@ -355,10 +326,9 @@ def _add_codex(name, url, env_var, timeout, dry_run) -> Tuple[str, Path]:
             f"Couldn't update {path} safely ({e}), so it was left as is. Add this table by hand:\n\n"
             + _codex_block(name, url, env_var, timeout)
         )
-    header = _codex_header(name)
     chunks = re.split(r"(?m)^(?=[ \t]*\[)", old)
-    ours = "".join(chunk for chunk in chunks if header.match(chunk)) or None
-    shown = (ours and _masked_toml(ours), _codex_block(name, url, env_var, timeout))
+    replaces = any(_codex_header(name).match(chunk) for chunk in chunks)
+    shown = (name, _codex_block(name, url, env_var, timeout), replaces)
     return write_config(path, text, new, dry_run = dry_run, shown = shown), path
 
 

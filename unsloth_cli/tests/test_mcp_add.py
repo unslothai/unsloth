@@ -356,7 +356,8 @@ def test_dry_run_never_prints_a_key_already_in_a_config(home, fake_claude):
     for agent in ("cursor", "claude-code", "codex"):
         result = _add(agent, "--url", URL, "--dry-run")
         assert result.exit_code == 0, result.output
-        assert "OLDKEY" not in result.output and "***" in result.output, (agent, result.output)
+        assert "OLDKEY" not in result.output, (agent, result.output)
+        assert "its old values are not shown" in result.output, agent
         assert "${UNSLOTH_API_KEY}" in result.output or "UNSLOTH_API_KEY" in result.output
     assert fake_claude == []
 

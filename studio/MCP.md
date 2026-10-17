@@ -146,8 +146,8 @@ unsloth mcp add cursor --dry-run
 - The entry names the `UNSLOTH_API_KEY` environment variable, never the key
   itself, and the command never prints a key. Pick another variable with `--env-var`.
 - It finds a running Unsloth Studio on this computer, or takes `--url`.
-- `--dry-run` prints the change as a diff and writes nothing. Running it again
-  changes nothing.
+- `--dry-run` prints the entry it would write and writes nothing. Running it
+  again changes nothing.
 - A config file it creates is readable by you only (mode 0600).
 - `codex` also sets `tool_timeout_sec = 300`.
 - `generic` prints a JSON entry to paste into any other agent's config.
