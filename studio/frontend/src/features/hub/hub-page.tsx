@@ -115,6 +115,7 @@ import {
   hubAudioRunRefused,
   hubAudioTask,
 } from "./lib/model-run-selection";
+import { inventoryRowFormat } from "./catalog/inventory-sort";
 import { matchesInventoryCapabilities } from "./lib/model-type-filter";
 import { resolveOwnerProviderLogo } from "./lib/provider-logos";
 import { subscribeResidentStatusRefresh } from "./lib/resident-status-refresh";
@@ -1251,7 +1252,7 @@ export function ModelsPage() {
             // does, so a dataset whose id/title/path contains an infra needle is not dropped.
             isDatasetMode ||
             (deferredFormatFilter !== "unsloth" &&
-              matchesFormat(row.modelFormat, deferredFormatFilter) &&
+              matchesFormat(inventoryRowFormat(row), deferredFormatFilter) &&
               matchesInventoryCapabilities(row, inventoryCapabilities) &&
               isVisibleInventoryRow(row)),
         ),
@@ -1277,7 +1278,7 @@ export function ModelsPage() {
             isDatasetMode ||
             ((deferredFormatFilter === "unsloth"
               ? row.source === "unsloth"
-              : matchesFormat(row.modelFormat, deferredFormatFilter)) &&
+              : matchesFormat(inventoryRowFormat(row), deferredFormatFilter)) &&
               matchesInventoryCapabilities(row, inventoryCapabilities) &&
               isVisibleInventoryRow(row)),
         ),

@@ -63,10 +63,9 @@ export function ExternalLinkConfirmDialog() {
             </p>
           </div>
         )}
-        <AlertDialogFooter className="grid grid-cols-2">
-          <AlertDialogCancel className="w-full">Cancel</AlertDialogCancel>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction
-            className="w-full"
             onClick={() => {
               if (pendingUrl) openLink(pendingUrl);
               dismiss();

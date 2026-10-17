@@ -348,6 +348,14 @@ export function useHubInventory(
   const refreshLocalModelInventory = localModelInventory.refresh;
   const refreshLocalDatasetInventory = localDatasetInventory.refresh;
   const refreshUnslothModelInventory = unslothModelInventory.refresh;
+  // Training and export finish elsewhere without bumping the inventory version, so each visit rescans.
+  const unslothModelsEnabled =
+    enabled && !isDatasetMode && includeLocal && includeUnslothModels;
+  useEffect(() => {
+    if (unslothModelsEnabled) {
+      refreshUnslothModelInventory().catch(() => undefined);
+    }
+  }, [unslothModelsEnabled, refreshUnslothModelInventory]);
   const refreshModelInventoryIfOlderThan = modelInventory.refreshIfOlderThan;
   const refreshDatasetInventoryIfOlderThan =
     datasetInventory.refreshIfOlderThan;

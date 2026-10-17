@@ -58,3 +58,18 @@ def test_nothing_trained_lists_nothing(tmp_path, monkeypatch):
 
 def test_unsloth_rows_have_their_host_paths_redacted():
     assert "unsloth" in HOST_PATH_LOCAL_SOURCES
+
+
+def test_a_gguf_export_with_several_quants_offers_all_of_them(tmp_path, monkeypatch):
+    _, exports = _roots(tmp_path, monkeypatch)
+    export = exports / "my-run-finetune-gguf"
+    export.mkdir()
+    (export / "my-run-Q4_K_M.gguf").write_bytes(b"GGUF" + b"\0" * 64)
+    (export / "my-run-Q8_0.gguf").write_bytes(b"GGUF" + b"\0" * 128)
+
+    rows = local_inventory._scan_unsloth_models()
+
+    # The folder, so the card offers every quant, not just the largest file.
+    [row] = rows
+    assert Path(row.path).resolve() == export.resolve()
+    assert row.capabilities.requires_variant

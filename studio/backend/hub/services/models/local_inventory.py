@@ -1469,22 +1469,19 @@ def _scan_unsloth_models() -> List[LocalModelInfo]:
     rows: List[LocalModelInfo] = []
     for name, raw_path in found:
         path = Path(raw_path)
+        # A GGUF export is named by its largest quant; its folder lists every quant it holds.
+        if path.suffix.lower() == ".gguf":
+            path = path.parent
         try:
             updated_at = path.stat().st_mtime
         except OSError:
             continue
         classified = _classify_local_path(path, "unsloth", display_name = name, updated_at = updated_at)
         rows.extend(_apply_payload_partial(path, classified))
-    return rows
+    return _classify_unsloth_models(rows)
 
 
-async def list_unsloth_models_response() -> LocalModelListResponse:
-    try:
-        models = await asyncio.to_thread(_scan_unsloth_models)
-    except Exception as e:
-        logger.error("Error listing Unsloth models: %s", scrub_paths(e), exc_info = True)
-        raise _http_error(status_code = 500, detail = f"Failed to list Unsloth models: {str(e)}")
-    response = LocalModelListResponse(models_dir = str(outputs_root()), models = models)
+def _classify_unsloth_models(models: List[LocalModelInfo]) -> List[LocalModelInfo]:
     try:
         from hub.services.models import catalog_classification
 
@@ -1492,9 +1489,20 @@ async def list_unsloth_models_response() -> LocalModelListResponse:
         for model in models:
             task, audio_type = catalog_classification._local_model_classification(model)
             classified.append(model.model_copy(update = {"task": task, "audio_type": audio_type}))
-        response = response.model_copy(update = {"models": classified})
+        return classified
     except Exception as e:  # noqa: BLE001 -- classification never breaks the listing
         logger.warning("Could not classify Unsloth model tasks: %s", scrub_paths(e))
+        return models
+
+
+async def list_unsloth_models_response() -> LocalModelListResponse:
+    # Off the loop with the scan: classifying a GGUF reads its header.
+    try:
+        models = await asyncio.to_thread(_scan_unsloth_models)
+    except Exception as e:
+        logger.error("Error listing Unsloth models: %s", scrub_paths(e), exc_info = True)
+        raise _http_error(status_code = 500, detail = f"Failed to list Unsloth models: {str(e)}")
+    response = LocalModelListResponse(models_dir = str(outputs_root()), models = models)
     return await _account_local_response(response)
 
 

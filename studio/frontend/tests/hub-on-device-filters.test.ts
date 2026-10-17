@@ -97,3 +97,28 @@ test("Size sorts local folders by their scanned size, and Format follows the for
   const view = readSrc("features/hub/inventory/view-models.ts");
   assert.match(view, /bytes: model\.size_bytes \?\? null/);
 });
+
+test("the MLX format finds MLX folders, which the scan reports as safetensors", async () => {
+  const { inventoryRowFormat } = await import(
+    "../src/features/hub/catalog/inventory-sort.ts"
+  );
+  const row = (extra: object) =>
+    ({ kind: "local", modelFormat: "safetensors", source: "custom", ...extra }) as never;
+  const mlxByLibrary = row({ libraryName: "MLX" });
+  const mlxByTag = row({ tags: ["mlx"] });
+  const omlx = row({ source: "omlx" });
+  const plain = row({});
+  for (const mlx of [mlxByLibrary, mlxByTag, omlx]) {
+    assert.equal(matchesFormat(inventoryRowFormat(mlx), "mlx"), true);
+    assert.equal(matchesFormat(inventoryRowFormat(mlx), "checkpoint"), false);
+  }
+  assert.equal(matchesFormat(inventoryRowFormat(plain), "mlx"), false);
+  assert.equal(matchesFormat(inventoryRowFormat(plain), "checkpoint"), true);
+  const page = readSrc("features/hub/hub-page.tsx");
+  assert.doesNotMatch(page, /matchesFormat\(row\.modelFormat, deferredFormatFilter\)/);
+});
+
+test("each Hub visit rescans Studio's trained and exported models", () => {
+  const inventory = readSrc("features/hub/inventory/use-hub-inventory.ts");
+  assert.match(inventory, /if \(unslothModelsEnabled\) \{\s*refreshUnslothModelInventory\(\)/);
+});
