@@ -96,9 +96,8 @@ enum Upstream {
         address: String,
         auth: Option<(String, String)>,
     },
-    /// What a Windows PAC script's `SOCKS` names, as WinINet and Chromium read it, or a Linux
-    /// desktop's `socks4(a)` proxy.
-    #[cfg(any(windows, target_os = "linux", test))]
+    /// What a Windows PAC script's `SOCKS` names, as WinINet and Chromium read it, a Linux
+    /// desktop's `socks4(a)` proxy, or a `socks4(a)://` proxy variable.
     Socks4 { address: String },
 }
 
@@ -541,7 +540,6 @@ fn system_proxy(proxies: &[Matcher], destination: &http::Uri) -> Result<Option<U
                 .raw_auth()
                 .map(|(user, pass)| (user.to_owned(), pass.to_owned())),
         },
-        #[cfg(any(windows, target_os = "linux", test))]
         Some("socks4" | "socks4a") => Upstream::Socks4 {
             address: address(1080),
         },
@@ -617,7 +615,6 @@ async fn connect_via(
     let (address, http_auth) = match upstream {
         Upstream::Http { address, auth } => (address, auth),
         Upstream::Socks { address, .. } => (address, &None),
-        #[cfg(any(windows, target_os = "linux", test))]
         Upstream::Socks4 { address } => (address, &None),
     };
     let deadline = tokio::time::Instant::now() + TIMEOUT;
@@ -637,7 +634,6 @@ async fn connect_via(
             Upstream::Socks { auth, .. } => {
                 Some(socks_connect(&mut stream, &host, request.port, auth.as_ref()).await)
             }
-            #[cfg(any(windows, target_os = "linux", test))]
             Upstream::Socks4 { .. } => Some(socks4_connect(&mut stream, &host, request.port).await),
         };
         if let Some(connected) = socks {
@@ -760,7 +756,6 @@ async fn socks_connect(
 }
 
 /// A SOCKS4a CONNECT that names `host`, so the proxy resolves it. SOCKS4 has no IPv6.
-#[cfg(any(windows, target_os = "linux", test))]
 async fn socks4_connect(stream: &mut TcpStream, host: &Host<String>, port: u16) -> Option<()> {
     let mut connect = vec![4, 1];
     connect.extend_from_slice(&port.to_be_bytes());
