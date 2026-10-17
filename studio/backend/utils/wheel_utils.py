@@ -480,16 +480,11 @@ def flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
     )
 
 
-# A wheel filename's leading fields, in the characters a name and version can carry.
 _WHEEL_FILENAME_FIELD_RE = re.compile(r"[A-Za-z0-9._+!]+")
 
 
 def _uv_project_config_found() -> bool:
-    """Whether uv would discover a project config from the working directory.
-
-    uv reads only one, so pointing --project elsewhere would drop that file: never wanted
-    for an input setup.sh / setup.ps1 already honour (_mirror_uv_project_config).
-    """
+    """Whether uv would find a project config from the cwd, which --project elsewhere drops."""
     try:
         directory = os.getcwd()
     except OSError:
@@ -512,16 +507,12 @@ def _uv_project_config_found() -> bool:
 def _uv_static_metadata_config(wheel_url: str, config_dir: str) -> bool:
     """Write a uv.toml into ``config_dir`` that gives uv the wheel's metadata; True if written.
 
-    uv needs a direct-URL wheel's METADATA to resolve it, and reads it with range requests. On a
-    GitHub release asset the ranged GET follows a cross-origin redirect and comes back without
-    Content-Range, so uv streams the whole wheel for METADATA and then fetches it again to
-    install it (astral-sh/uv#18998): two copies of a 427 MB flash-attn wheel. With the metadata
-    given statically uv makes the one fetch, into its own cache, so a reinstall still revalidates
-    rather than downloads. --no-deps makes the empty requires-dist exact.
+    uv's ranged METADATA read fails on GitHub release assets, so it downloads the wheel twice
+    (astral-sh/uv#18998). --no-deps makes the empty requires-dist exact.
     """
     if os.environ.get("UV_CONFIG_FILE") or os.environ.get("UV_NO_CONFIG"):
-        return False  # uv would not read the file; it runs as before
-    # --project would override the user's chosen project, and with it that project's config.
+        return False
+    # --project would replace the user's project and its config.
     if os.environ.get("UV_PROJECT") or _uv_project_config_found():
         return False
     filename = urllib.parse.unquote(urllib.parse.urlsplit(wheel_url).path.rsplit("/", 1)[-1])
@@ -563,8 +554,7 @@ def install_wheel(
         uv_cmd.append(wheel_url)
         config_dir = tempfile.mkdtemp(prefix = "unsloth-uv-")
         try:
-            # --project, not cwd: uv takes the uv.toml as its project config while relative paths
-            # (UV_CACHE_DIR, UV_CONSTRAINT, ...) still resolve here. User and system configs apply.
+            # --project, not cwd, so relative paths such as UV_CACHE_DIR still resolve here.
             if _uv_static_metadata_config(wheel_url, config_dir):
                 uv_cmd[1:1] = ["--project", config_dir]
             result = run(

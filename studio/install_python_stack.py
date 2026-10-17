@@ -7541,21 +7541,15 @@ def _stdout_is_tty() -> bool:
         return False
 
 
-# A minute, like ssm_runtime's heartbeat: often enough to show life, rarely enough to stay readable.
 _HEARTBEAT_NOTE_SECONDS = 60
 _HEARTBEAT_TICK_SECONDS = 1
-# Wide enough for "flash-attn 120:00"; the label after it is padded back to this width.
+# Fits "flash-attn 120:00", so the final padded label overwrites every frame.
 _HEARTBEAT_WIDTH = 30
 
 
 @contextlib.contextmanager
 def _install_heartbeat(label: str):
-    """Show that a long, quiet install is still running, since its output is captured.
-
-    A 427 MB wheel on a slow link takes many minutes, and the bar alone read as a hang. On a
-    terminal the elapsed time is redrawn on the bar line every second; when stdout is captured
-    a note goes out once a minute, flushed because a pipe is block-buffered.
-    """
+    """Show a quiet install is alive: elapsed time on a TTY bar, else a flushed note each minute."""
     in_place = not VERBOSE and _PROGRESS_LINE_ACTIVE and _stdout_is_tty()
     done = threading.Event()
     started = time.monotonic()

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""install_wheel gives uv a direct-URL wheel's metadata, so uv fetches the wheel once.
-
-Without it uv reads METADATA with range requests, and where those fail (a GitHub release asset
-behind its cross-origin redirect, astral-sh/uv#18998) it streams the whole wheel for METADATA
-and then fetches it again to install: two copies of a 427 MB flash-attn wheel.
-"""
+"""install_wheel gives uv a URL wheel's metadata, so uv fetches it once (astral-sh/uv#18998)."""
 
 import http.server
 import io
@@ -40,7 +35,6 @@ FLASH_ATTN_TOML = (
 
 @pytest.fixture
 def no_project_config(tmp_path, monkeypatch):
-    """Run from a directory with no uv.toml or [tool.uv] above it, and no uv config overrides."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(wheel_utils, "_uv_project_config_found", lambda: False)
     monkeypatch.delenv("UV_CONFIG_FILE", raising = False)
@@ -99,7 +93,6 @@ def test_no_static_metadata_where_uv_would_not_read_it(
     ],
 )
 def test_project_config_is_found_from_a_parent(name, text, found, tmp_path, monkeypatch):
-    """A config uv would discover from the working directory must not be shadowed."""
     (tmp_path / name).write_text(text, encoding = "utf-8")
     child = tmp_path / "a" / "b"
     child.mkdir(parents = True)
@@ -126,7 +119,6 @@ def test_uv_reads_the_metadata_and_pip_runs_as_before(no_project_config, monkeyp
     attempts = wheel_utils.install_wheel(FLASH_ATTN, python_executable = "PY", use_uv = True, run = run)
     assert [installer for installer, _ in attempts] == ["uv", "pip"]
     (uv_cmd, project, uv_toml), (pip_cmd, _, _) = run.calls
-    # Still the URL: uv downloads and caches it itself, so a reinstall stays a cache hit.
     assert uv_cmd == [
         "uv",
         "--project",
@@ -151,11 +143,7 @@ def test_uv_runs_as_before_when_a_project_config_applies(monkeypatch):
     assert run.calls[0][0] == ["uv", "pip", "install", "--python", "PY", "--no-deps", FLASH_ATTN]
 
 
-# -- Against real uv ----------------------------------------------------------------------------
-
-
 def _wheel_bytes(name: str, version: str) -> bytes:
-    """A minimal valid pure-Python wheel."""
     dist = f"{name}-{version}.dist-info"
     files = {
         f"{name}/__init__.py": "VALUE = 1\n",
@@ -173,10 +161,7 @@ def _wheel_bytes(name: str, version: str) -> bytes:
 
 @pytest.fixture
 def no_range_server():
-    """Serves one wheel like the redirected GitHub asset: no Range answer, but ETag revalidation.
-
-    ``gets`` counts the GETs that sent the body.
-    """
+    """Serves a wheel like a GitHub asset: no Range, ETag honoured; ``gets`` counts bodies sent."""
     body = _wheel_bytes("rangeless_kernel", "1.0.0")
     etag = '"0x1"'
     gets: list[str] = []
@@ -223,8 +208,7 @@ def test_real_uv_fetches_the_wheel_once(
     venv = tmp_path / "venv"
     subprocess.run(["uv", "venv", "-q", "--python", sys.executable, str(venv)], check = True)
     python = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
-    # Relative on purpose: it must resolve against the caller's directory, not the config's,
-    # which is deleted after each install and would take the cache with it.
+    # Relative on purpose: it must resolve against the cwd, not the deleted config dir.
     monkeypatch.setenv("UV_CACHE_DIR", "relative-uv-cache")
     monkeypatch.setenv("NO_PROXY", "127.0.0.1")
     if not static_metadata:
@@ -233,7 +217,6 @@ def test_real_uv_fetches_the_wheel_once(
     assert [(i, r.returncode) for i, r in attempts] == [("uv", 0)], attempts[-1][1].stdout
     assert len(gets) == expected_gets, gets
     assert (no_project_config / "relative-uv-cache").is_dir()
-    # A reinstall is answered from uv's own cache.
     wheel_utils.install_wheel(url, python_executable = str(python), use_uv = True, reinstall = True)
     assert len(gets) == expected_gets, gets
 
@@ -242,14 +225,13 @@ def test_real_uv_fetches_the_wheel_once(
 def test_real_uv_still_honours_the_users_uv_project(
     no_range_server, no_project_config, tmp_path, monkeypatch
 ):
-    """--project would replace UV_PROJECT, and the config of the project the user chose with it."""
     url, _ = no_range_server
     venv = tmp_path / "venv"
     subprocess.run(["uv", "venv", "-q", "--python", sys.executable, str(venv)], check = True)
     python = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
     chosen = tmp_path / "chosen-project"
     chosen.mkdir()
-    # A requirement no uv meets, so honouring the chosen config is visible as a refusal.
+    # Unsatisfiable, so honouring this config shows as a refusal.
     (chosen / "uv.toml").write_text('required-version = "==0.0.1"\n', encoding = "utf-8")
     monkeypatch.setenv("UV_PROJECT", str(chosen))
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))

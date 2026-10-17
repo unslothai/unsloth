@@ -48,7 +48,7 @@ def _no_mirror(monkeypatch):
     monkeypatch.delenv("UNSLOTH_PYTORCH_MIRROR", raising = False)
     # Forces the mamba_ssm decision below sm80; an inherited value would override the mocked Triton.
     monkeypatch.delenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", raising = False)
-    # The installer commands below are the subject; test_wheel_download covers uv's --project.
+    # test_wheel_download covers uv's --project.
     monkeypatch.setattr(wheel_utils, "_uv_static_metadata_config", lambda *args: False)
 
 
