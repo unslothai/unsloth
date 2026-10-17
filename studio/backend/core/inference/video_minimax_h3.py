@@ -1758,6 +1758,9 @@ class MiniMaxH3NativeRuntime:
     offload_refusal: Optional[str] = None
     # Auto only: re-fit inputs, so an offloaded render is judged on live readings rather than the load's.
     fit_inputs: Any = None
+    # Free VRAM of the render card(s) right now (bytes, or ``{sd.cpp device: bytes}``), read before each sd.cpp launch
+    # to turn the committed ``--max-vram -1`` into an explicit budget; None keeps sd.cpp's own reading.
+    vram_free_probe: Optional[Callable[[], Any]] = None
 
 
 # 0 / false / off: every render on a fresh one-shot sd-cli.
@@ -1868,6 +1871,8 @@ class H3NativeServerSlot:
         self._server: Any = None
         self._stopping: Any = None
         self._signature: Optional[tuple] = None
+        # The argv flags the live (or last) server actually started with, ``launch_transform`` applied.
+        self.launched_flags: Optional[tuple[str, ...]] = None
         self._lock = threading.RLock()
         self._busy = 0
         self._release_pending: Optional[str] = None
@@ -1903,11 +1908,15 @@ class H3NativeServerSlot:
         *,
         cancel_event: Any = None,
         pre_spawn: "Optional[Callable[[], Any]]" = None,
+        launch_transform: "Optional[Callable[[tuple[str, ...]], Any]]" = None,
     ) -> Any:
         """The live server for this (flags, env), (re)spawning one if needed. ``cancel_event`` aborts a start: the
         render holds the generate lock through the model load, so unload and Cancel would otherwise wait it out.
         ``pre_spawn`` runs only when a process is about to start, under the slot lock and after any old server has
-        stopped: it returns the flags to start with (a live memory fit) or raises to refuse the start."""
+        stopped: it returns the flags to start with (a live memory fit) or raises to refuse the start.
+        ``launch_transform`` then rewrites only the argv the process starts with (the explicit ``--max-vram`` budget
+        read at this moment); the signature keeps the untransformed flags, so a budget that differs launch to launch
+        never makes a reusable server look stale."""
         import threading
 
         from .sd_cpp_backend import register_tree_holder, unregister_tree_holder
@@ -1931,6 +1940,9 @@ class H3NativeServerSlot:
                 # Reuse was decided above, under this lock: from here a process starts, so it is fitted now.
                 flag_tuple = tuple(pre_spawn())
                 wanted = self._signature_for(flag_tuple, env_pairs)
+            launch_tuple = (
+                tuple(launch_transform(flag_tuple)) if launch_transform is not None else flag_tuple
+            )
             server = SdCppServer(self.server_binary)
             managed = is_managed_binary(self.server_binary)
             self._server = server
@@ -1954,7 +1966,7 @@ class H3NativeServerSlot:
             try:
                 server.start(
                     self.files,
-                    offload = list(flag_tuple),
+                    offload = list(launch_tuple),
                     env = dict(env_pairs) or None,
                     # A context flag on sd-server (per-run on sd-cli); same RNG keeps seeds identical across paths.
                     extra_args = ["--rng", "cpu"],
@@ -1971,6 +1983,7 @@ class H3NativeServerSlot:
                     unregister_tree_holder(self)
                 raise
             started.set()
+            self.launched_flags = launch_tuple
             if cancel_event is not None and cancel_event.is_set() and not server.is_alive():
                 self._stop_locked("cancelled")
                 raise SdCppCancelled("sd-server start was cancelled.")
@@ -2025,6 +2038,10 @@ class H3NativeServerSlot:
             return True
         finally:
             self._lock.release()
+
+    @property
+    def release_pending(self) -> Optional[str]:
+        return self._release_pending
 
     def stop(self, reason: str = "stopped") -> None:
         with self._lock:

@@ -1508,6 +1508,159 @@ def _h3_launch_flags(
     return list(flags + tuple(device_backend_flags(inputs.device_name, list(flags))))
 
 
+def _h3_budgeted_launch_flags(
+    runtime: Any,
+    flags: "Sequence[str]",
+    *,
+    cap: Any = None,
+) -> list[str]:
+    """``flags`` as one sd.cpp process should start: the committed ``--max-vram -1`` placeholder replaced by an
+    explicit budget from the card's free VRAM read now (``runtime.vram_free_probe``), never above ``cap`` (a retry's
+    smaller budget). Anything unknown -- no probe, an unreadable card, too little left, the kill switch -- keeps the
+    flags as committed, i.e. sd.cpp's own reading."""
+    from .sd_cpp_args import (
+        explicit_vram_budget_enabled,
+        graph_cut_budget_gib,
+        max_vram_is_auto,
+        max_vram_value,
+        with_max_vram_budget,
+    )
+
+    out = list(flags)
+    if not explicit_vram_budget_enabled() or not max_vram_is_auto(max_vram_value(out)):
+        return out
+    probe = getattr(runtime, "vram_free_probe", None)
+    try:
+        free = probe() if probe is not None else None
+    except Exception:  # noqa: BLE001 -- an unreadable card keeps sd.cpp's own reading
+        free = None
+    if isinstance(free, dict):
+        budget: Any = {}
+        for name, value in free.items():
+            gib = graph_cut_budget_gib(value)
+            limit = cap.get(name) if isinstance(cap, dict) else cap
+            if gib is None:
+                budget = None
+                break
+            budget[name] = min(gib, float(limit)) if limit is not None else gib
+    else:
+        budget = graph_cut_budget_gib(free)
+        if budget is not None and cap is not None and not isinstance(cap, dict):
+            budget = min(budget, float(cap))
+    if not budget:
+        if cap is not None:
+            # A retry with no fresh reading still runs smaller than the budget that failed.
+            out = with_max_vram_budget(out, cap)
+        logger.info(
+            "video.h3_native_vram_budget: free VRAM unreadable or too small (%s); %s",
+            free,
+            f"--max-vram {max_vram_value(out)}" if cap is not None else "keeping --max-vram -1",
+        )
+        return out
+    out = with_max_vram_budget(out, budget)
+    logger.info(
+        "video.h3_native_vram_budget: --max-vram %s (free %s at launch%s)",
+        max_vram_value(out),
+        free,
+        f", capped by retry budget {cap}" if cap is not None else "",
+    )
+    return out
+
+
+def _h3_retry_vram_cap(launched: "Optional[Sequence[str]]", error: str) -> Any:
+    """The smaller budget to retry a render with after a device OOM under an explicit ``--max-vram``, or None (not an
+    OOM, no explicit budget, or already at the floor)."""
+    from .sd_cpp_args import (
+        GRAPH_CUT_RETRY_SCALE,
+        explicit_max_vram_gib,
+        is_device_oom_text,
+        scaled_vram_budget,
+    )
+
+    if not launched or not is_device_oom_text(error):
+        return None
+    budget = explicit_max_vram_gib(launched)
+    if budget is None:
+        return None
+    return scaled_vram_budget(budget, GRAPH_CUT_RETRY_SCALE)
+
+
+def _h3_cuda_cc_fallback(
+    cuda_cc: "Optional[tuple[int, int]]",
+    *,
+    binary: Optional[str],
+    native_device: Optional[str],
+    listed_accelerator: Optional[bool],
+    accelerator_names: "Sequence[Any]",
+    device_name: Optional[str],
+) -> "Optional[tuple[int, int]]":
+    """The compute capability the BF16 cuBLAS route is decided on, when sd-cli's ``--list-devices`` could not be read.
+
+    The listing is the only source ``sd_cpp_cuda_compute_capability`` has, and one probe that times out (a stalled
+    driver on a busy host) or exits non-zero left it None, which silently dropped a known sm80+ card onto the exact
+    kernels (H3 at 8 GB: 29.3 vs ~5 s/step). torch is a second reading of the same CUDA runtime under the same mask; it
+    is consulted only for a CUDA build whose listing is missing, never to override one that was read."""
+    from .sd_cpp_backend import (
+        _accelerator_class_of,
+        sd_cpp_device_listing_known,
+        torch_cuda_compute_capability,
+    )
+
+    if cuda_cc is not None or native_device == "cpu" or listed_accelerator is None:
+        return cuda_cc
+    if sd_cpp_device_listing_known(binary):
+        return cuda_cc
+    if not any(
+        isinstance(name, str) and _accelerator_class_of(name) == "cuda"
+        for name in accelerator_names
+    ):
+        return cuda_cc
+    ordinal: Optional[int] = None
+    if device_name:
+        head = device_name.rstrip("0123456789")
+        if head.upper() != "CUDA" or not device_name[len(head) :]:
+            return cuda_cc
+        ordinal = int(device_name[len(head) :])
+    fallback = torch_cuda_compute_capability(ordinal)
+    logger.warning(
+        "video.h3_cuda_cc_fallback: sd-cli --list-devices was unreadable; compute capability %s from torch "
+        "(device %s)",
+        fallback,
+        device_name or "lowest visible",
+    )
+    return fallback
+
+
+def _pairs(flags: "Sequence[str]") -> "list[tuple[str, str]]":
+    """``(flag, value)`` for each flag followed by a value, for log lines."""
+    items = list(flags or ())
+    return [(items[i], items[i + 1]) for i in range(len(items) - 1) if items[i].startswith("--")]
+
+
+def _h3_one_shot_with_vram_retry(
+    runtime: Any,
+    run: "Callable[[list[str]], Any]",
+    render_flags: "Sequence[str]",
+    cancel: threading.Event,
+) -> Any:
+    """One sd-cli render with the explicit ``--max-vram`` budget, retried once at a smaller one on a device OOM."""
+    launch = _h3_budgeted_launch_flags(runtime, render_flags)
+    try:
+        return run(launch)
+    except RuntimeError as exc:
+        if cancel.is_set():
+            raise
+        cap = _h3_retry_vram_cap(launch, str(exc))
+        if cap is None:
+            raise
+        logger.warning(
+            "video.h3_native_vram_retry: device out of memory under --max-vram %s (sd-cli); retrying once with %s",
+            dict(_pairs(launch)).get("--max-vram"),
+            cap,
+        )
+    return run(_h3_budgeted_launch_flags(runtime, render_flags, cap = cap))
+
+
 def _torch_pci_slot(ordinal: Optional[int]) -> Optional[str]:
     """``DDDD:BB:DD`` of the torch-visible card at *ordinal* (no function digit: torch does not report it)."""
     if ordinal is None:
@@ -4261,6 +4414,14 @@ class VideoBackend:
                 if native_device != "cpu" and listed_accelerator is not None
                 else None
             )
+            native_cuda_cc = _h3_cuda_cc_fallback(
+                native_cuda_cc,
+                binary = binary,
+                native_device = native_device,
+                listed_accelerator = listed_accelerator,
+                accelerator_names = (decided_accelerator, accelerator),
+                device_name = native_device_name,
+            )
             # What the executable itself renders on: an unowned build (SD_CLI_PATH) has no install record.
             native_listed_class, native_listed_description = (
                 sd_cpp_listed_device(binary, native_device_name, probe = False)
@@ -4462,6 +4623,16 @@ class VideoBackend:
             offloaded_flags = native_fit_flags,
             offload_refusal = native_fit_refusal,
             fit_inputs = native_fit_inputs,
+            # The card sd.cpp runs on: the pinned one, or its default device (visible ordinal 0) when unpinned.
+            vram_free_probe = (
+                functools.partial(
+                    _h3_card_free_bytes,
+                    native_device,
+                    native_ordinal if native_device_name else None,
+                )
+                if native_device != "cpu"
+                else None
+            ),
             env = native_env,
             cudnn = native_cudnn,
             server_slot = (
@@ -11115,47 +11286,78 @@ class VideoBackend:
         )
         render_flags = list(runtime.offload_flags) if flags is None else list(flags)
         render_env = dict(runtime.env) if env is None else dict(env)
+        from .sd_cpp_args import is_device_oom_text
+
         slot.begin_render()
         try:
-            try:
-                server = slot.get(
-                    render_flags,
-                    render_env,
-                    cancel_event = cancel,
-                    pre_spawn = functools.partial(
-                        _h3_launch_flags, runtime, render_flags, memory_mode
-                    ),
-                )
-            except (SdCppCancelled, H3NativeMemoryRefusal):
-                raise
-            except Exception as exc:  # noqa: BLE001 - any start failure leaves the one-shot path
-                if cancel.is_set():
-                    raise SdCppCancelled("sd-server start was cancelled.") from exc
-                logger.warning("video.h3_native_server_start_failed (using sd-cli): %s", exc)
-                slot.disable(f"start failed: {exc}")
-                return None
-            try:
-                data = server.vid_gen(payload, on_step = on_log, cancel_event = cancel)
-            except SdCppServerUnsupported as exc:
-                logger.warning("video.h3_native_server_unsupported (using sd-cli): %s", exc)
-                slot.disable(str(exc))
-                return None
-            except SdCppCancelled:
-                raise
-            except RuntimeError as exc:
-                if cancel.is_set():
-                    raise SdCppCancelled("sd-server generation was cancelled.") from exc
-                if not server.is_alive():
-                    logger.warning(
-                        "video.h3_native_server_died (retrying once on sd-cli, staying one-shot): %s",
-                        exc,
+            retry_cap: Any = None
+            while True:
+                try:
+                    server = slot.get(
+                        render_flags,
+                        render_env,
+                        cancel_event = cancel,
+                        pre_spawn = functools.partial(
+                            _h3_launch_flags, runtime, render_flags, memory_mode
+                        ),
+                        launch_transform = functools.partial(
+                            _h3_budgeted_launch_flags, runtime, cap = retry_cap
+                        ),
                     )
-                    slot.disable(f"server died: {exc}")
+                except (SdCppCancelled, H3NativeMemoryRefusal):
+                    raise
+                except Exception as exc:  # noqa: BLE001 - any start failure leaves the one-shot path
+                    if cancel.is_set():
+                        raise SdCppCancelled("sd-server start was cancelled.") from exc
+                    if retry_cap is not None and is_device_oom_text(str(exc)):
+                        slot.stop("render failed")
+                        raise
+                    logger.warning("video.h3_native_server_start_failed (using sd-cli): %s", exc)
+                    slot.disable(f"start failed: {exc}")
                     return None
-                slot.stop("render failed")
-                raise
-            Path(output_path).write_bytes(data)
-            return Path(output_path)
+                try:
+                    data = server.vid_gen(payload, on_step = on_log, cancel_event = cancel)
+                except SdCppServerUnsupported as exc:
+                    logger.warning("video.h3_native_server_unsupported (using sd-cli): %s", exc)
+                    slot.disable(str(exc))
+                    return None
+                except SdCppCancelled:
+                    raise
+                except RuntimeError as exc:
+                    if cancel.is_set():
+                        raise SdCppCancelled("sd-server generation was cancelled.") from exc
+                    # Device OOM under an explicit budget (another process took VRAM since the launch reading):
+                    # one more start at a smaller budget, on a fresh server, before anything else.
+                    cap = (
+                        _h3_retry_vram_cap(getattr(slot, "launched_flags", None), str(exc))
+                        if retry_cap is None and getattr(slot, "release_pending", None) is None
+                        else None
+                    )
+                    if cap is not None:
+                        logger.warning(
+                            "video.h3_native_vram_retry: device out of memory under --max-vram %s; "
+                            "retrying once with %s: %s",
+                            dict(_pairs(getattr(slot, "launched_flags", ()))).get("--max-vram"),
+                            cap,
+                            str(exc).splitlines()[0] if str(exc) else exc,
+                        )
+                        slot.stop("device out of memory; retrying with a smaller VRAM budget")
+                        retry_cap = cap
+                        continue
+                    if retry_cap is not None and is_device_oom_text(str(exc)):
+                        slot.stop("render failed")
+                        raise
+                    if not server.is_alive():
+                        logger.warning(
+                            "video.h3_native_server_died (retrying once on sd-cli, staying one-shot): %s",
+                            exc,
+                        )
+                        slot.disable(f"server died: {exc}")
+                        return None
+                    slot.stop("render failed")
+                    raise
+                Path(output_path).write_bytes(data)
+                return Path(output_path)
         finally:
             try:
                 slot.end_render()
@@ -11371,14 +11573,19 @@ class VideoBackend:
                                 memory_mode = state.memory_mode,
                                 reuse_live_server = False,
                             )
-                            generated = runtime.engine.generate_video(
-                                runtime.files,
-                                video_params,
-                                output_path = str(output_path),
-                                offload = render_flags,
-                                env = dict(runtime.env) or None,
-                                on_log = on_log,
-                                cancel_event = cancel,
+                            generated = _h3_one_shot_with_vram_retry(
+                                runtime,
+                                lambda launch_flags: runtime.engine.generate_video(
+                                    runtime.files,
+                                    video_params,
+                                    output_path = str(output_path),
+                                    offload = launch_flags,
+                                    env = dict(runtime.env) or None,
+                                    on_log = on_log,
+                                    cancel_event = cancel,
+                                ),
+                                render_flags,
+                                cancel,
                             )
                 except SdCppCancelled:
                     raise RuntimeError(VIDEO_CANCELLED_MSG) from None
