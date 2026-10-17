@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -34,7 +35,7 @@ import {
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useId, useState } from "react";
 import type { HubCapabilityFilter } from "../lib/model-capabilities";
 import {
   HUB_UPLOADERS,
@@ -435,6 +436,7 @@ function SegmentedRow<T extends string>({
   options: readonly (readonly [T, string])[];
   onChange: (value: T) => void;
 }) {
+  const pillId = useId();
   return (
     <div className="flex items-center justify-between gap-3 px-3">
       <span className="text-ui-12 text-muted-foreground">
@@ -463,10 +465,16 @@ function SegmentedRow<T extends string>({
               className={cn(
                 "relative flex h-8 cursor-pointer items-center rounded-full px-3 text-xs font-medium transition-colors",
                 active
-                  ? "hub-tab-toggle-pill text-foreground dark:bg-[color-mix(in_srgb,var(--accent),white_8%)]!"
+                  ? "text-foreground"
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
+              {active && (
+                <SegmentedPill
+                  group={`${pillId}-segment`}
+                  className="dark:bg-[color-mix(in_srgb,var(--accent),white_8%)]!"
+                />
+              )}
               <span className="relative z-10">{text}</span>
             </button>
           );

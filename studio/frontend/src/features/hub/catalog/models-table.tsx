@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { useVllmAvailable, useVllmPlatform } from "@/features/model-picker";
 import {
   Tooltip,
@@ -34,7 +35,7 @@ import {
 } from "lucide-react";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, memo, useMemo } from "react";
+import { type ReactNode, memo, useId, useMemo } from "react";
 import type { DiscoverRow } from "../types";
 import { HubOptionMenu } from "./hub-option-menu";
 import {
@@ -64,11 +65,13 @@ export type AllModelsView = "two" | "split";
 
 function ViewToggleButton({
   active,
+  pillId,
   label,
   icon,
   onClick,
 }: {
   active: boolean;
+  pillId: string;
   label: string;
   icon: IconSvgElement;
   onClick: () => void;
@@ -82,12 +85,13 @@ function ViewToggleButton({
           aria-label={label}
           onClick={onClick}
           className={cn(
-            "relative z-10 inline-flex size-8 cursor-pointer items-center justify-center rounded-full transition-colors",
+            "relative inline-flex size-8 cursor-pointer items-center justify-center rounded-full transition-colors",
             active
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
           )}
         >
+          {active && <SegmentedPill group={pillId} />}
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-3.5" />
         </button>
       </TooltipTrigger>
@@ -187,6 +191,7 @@ export function HubListHeader({
   isRefreshing?: boolean;
   actions?: ReactNode;
 }) {
+  const viewPillId = useId();
   const accessibleLabel =
     count && count > 0 ? `${title} (${count.toLocaleString()})` : undefined;
 
@@ -254,20 +259,15 @@ export function HubListHeader({
               className="hub-tab-toggle relative inline-flex h-8 shrink-0 items-center rounded-full"
               aria-label="Results layout"
             >
-              <span
-                aria-hidden="true"
-                className="hub-tab-toggle-pill pointer-events-none absolute inset-y-0 left-0 w-8 rounded-full transition-transform duration-200 ease-out"
-                style={{
-                  transform: `translateX(${view === "split" ? 100 : 0}%)`,
-                }}
-              />
               <ViewToggleButton
+                pillId={viewPillId}
                 active={view === "two"}
                 label="Two columns"
                 icon={LayoutTwoColumnIcon}
                 onClick={() => onViewChange("two")}
               />
               <ViewToggleButton
+                pillId={viewPillId}
                 active={view === "split"}
                 label="Split view"
                 icon={ViewSidebarLeftIcon}
