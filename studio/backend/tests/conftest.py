@@ -1446,3 +1446,14 @@ def traced_offload_hooks(monkeypatch):
             orig = getattr(fn, "_unsloth_orig", None)
             if orig is not None:
                 monkeypatch.setattr(cls, name, orig)
+
+
+@pytest.fixture(scope = "session")
+def _kernel_lock_dir(tmp_path_factory):
+    return str(tmp_path_factory.mktemp("kernel-locks"))
+
+
+@pytest.fixture(autouse = True)
+def _isolated_kernel_install_locks(monkeypatch, _kernel_lock_dir):
+    # Tests never take (or create) the environment's real kernel install locks.
+    monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", _kernel_lock_dir)

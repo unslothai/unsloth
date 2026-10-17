@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,8 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from utils import kernel_install  # noqa: E402
+
+_REAL_LOCK_PATH = kernel_install._kernel_lock_path
 
 _REPO = _BACKEND.parent.parent
 _PT = "https://download.pytorch.org/whl"
@@ -137,6 +140,20 @@ class _Runner:
 
 _COLAB = _env("2.11.0+cu130", "13.0")
 _COLAB_XFORMERS = f"{_PT}/cu130/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl"
+
+
+@pytest.fixture(autouse = True)
+def _nothing_installed_and_online(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        kernel_install, "_kernel_lock_path", lambda name: str(tmp_path / f"{name}.lock")
+    )
+    # Every copy of the module (and any child process) uses the test's folder too.
+    monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", str(tmp_path / "locks"))
+    # Tests that need an installed distribution say so; the host's own packages and offline
+    # switches must not decide them.
+    monkeypatch.setattr(kernel_install, "_installed_version", lambda distribution: None)
+    for name in ("UV_OFFLINE", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+        monkeypatch.delenv(name, raising = False)
 
 
 @pytest.fixture
@@ -513,10 +530,148 @@ def test_main_installs_all_by_default_in_dependency_order(monkeypatch, argv, exp
     order = []
     monkeypatch.setattr(kernel_install, "probe_torch_wheel_env", lambda **kwargs: _COLAB)
     monkeypatch.setattr(
-        kernel_install, "install_kernel", lambda name, env, dry_run = False: order.append(name) or 0
+        kernel_install, "install_kernel", lambda name, env, **kwargs: order.append(name) or 0
     )
     assert kernel_install.main(argv) == 0
     assert order == expected
+
+
+# A GPU-less image build (Docker, CI) provisions for the GPU it will run on only when asked to.
+
+
+@pytest.mark.parametrize("opt_in", ["flag", "env"])
+def test_install_kernels_without_gpu_installs_mamba_ssm_headless(uv, monkeypatch, opt_in):
+    uv(False)
+    monkeypatch.setattr(kernel_install.sys, "platform", "linux")
+    monkeypatch.setattr(kernel_install, "probe_torch_wheel_env", lambda **kwargs: _COLAB)
+    monkeypatch.setattr(kernel_install, "url_exists", lambda url: True)
+    run = _Runner([False, True], capability = "None")
+    real = kernel_install.install_kernel
+    monkeypatch.setattr(
+        kernel_install,
+        "install_kernel",
+        lambda name, env, **kwargs: real(name, env, run = run, exists = lambda url: True, **kwargs),
+    )
+    argv = ["mamba_ssm"]
+    monkeypatch.delenv("UNSLOTH_INSTALL_KERNELS_WITHOUT_GPU", raising = False)
+    if opt_in == "flag":
+        argv.append("--without-gpu")
+    else:
+        monkeypatch.setenv("UNSLOTH_INSTALL_KERNELS_WITHOUT_GPU", "1")
+    assert kernel_install.main(argv) == 0
+    assert run.installer_calls[0][-1].endswith(
+        "mamba_ssm-2.3.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
+    )
+
+
+@pytest.mark.parametrize("strict, code", [(False, 0), (True, 2)])
+def test_a_requested_kernel_skipped_without_a_gpu_is_listed_and_fails_only_with_strict(
+    monkeypatch, capsys, strict, code
+):
+    # 9f5b13325 and 4a6429a65 exit 0 here, and `set -e` install scripts rely on it.
+    monkeypatch.delenv("UNSLOTH_INSTALL_KERNELS_WITHOUT_GPU", raising = False)
+    monkeypatch.setattr(kernel_install, "probe_torch_wheel_env", lambda **kwargs: _COLAB)
+    run = _Runner([], capability = "None")
+    real = kernel_install.install_kernel
+    monkeypatch.setattr(
+        kernel_install,
+        "install_kernel",
+        lambda name, env, **kwargs: real(name, env, run = run, exists = lambda url: True, **kwargs),
+    )
+    assert kernel_install.main(["mamba_ssm"] + (["--strict"] if strict else [])) == code
+    assert run.installer_calls == []
+    out = capsys.readouterr().out
+    assert "--without-gpu" in out
+    assert "not installed on this machine: mamba_ssm" in out
+
+
+@pytest.mark.parametrize(
+    "name, env, capability",
+    [
+        # A ROCm source build: no CUDA wheel resolves.
+        ("causal_conv1d", None, "9 0"),
+        # A GPU-hidden builder with an earlier install.
+        ("mamba_ssm", _COLAB, "None"),
+        ("flash_attn", _COLAB, "None"),
+    ],
+)
+def test_an_already_working_kernel_is_success_before_any_skip(
+    monkeypatch, capsys, name, env, capability
+):
+    monkeypatch.setattr(
+        kernel_install,
+        "_installed_version",
+        lambda distribution: "1.0" if distribution == kernel_install.KERNELS[name][0] else None,
+    )
+    monkeypatch.setattr(kernel_install, "probe_torch_wheel_env", lambda **kwargs: env)
+    run = _Runner([True], capability = capability)
+    real = kernel_install.install_kernel
+    monkeypatch.setattr(
+        kernel_install,
+        "install_kernel",
+        lambda n, e, **kwargs: real(n, e, run = run, exists = lambda url: True, **kwargs),
+    )
+    assert kernel_install.main([name, "--strict"]) == 0
+    assert run.installer_calls == []
+    assert not any("get_device_capability" in " ".join(c) for c in run.calls)
+    out = capsys.readouterr().out
+    assert f"{name} already installed and loads" in out
+    assert "not installed on this machine" not in out
+
+
+def test_an_installed_kernel_that_does_not_load_still_installs(uv, monkeypatch):
+    uv(False)
+    run = _Runner([False, False, True], capability = "9 0")
+    monkeypatch.setattr(kernel_install, "_installed_version", lambda distribution: "1.0")
+    assert (
+        kernel_install.install_kernel("causal_conv1d", _COLAB, run = run, exists = lambda url: True)
+        == 0
+    )
+    assert run.installer_calls
+
+
+@pytest.mark.parametrize("variable", ["UV_OFFLINE", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
+def test_the_cli_installs_nothing_offline(monkeypatch, capsys, variable):
+    monkeypatch.setenv(variable, "1")
+    run = _Runner([], capability = "9 0")
+    url_checks = []
+    assert (
+        kernel_install.install_kernel(
+            "causal_conv1d", _COLAB, run = run, exists = lambda url: url_checks.append(url)
+        )
+        == 0
+    )
+    assert run.calls == [] and url_checks == []
+    assert "offline" in capsys.readouterr().out
+
+
+def test_offline_an_already_working_kernel_still_succeeds(monkeypatch, capsys):
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    monkeypatch.setattr(kernel_install, "_installed_version", lambda distribution: "1.0")
+    run = _Runner([True], capability = "9 0")
+    assert (
+        kernel_install.install_kernel("causal_conv1d", _COLAB, run = run, exists = lambda url: True)
+        == 0
+    )
+    assert "already installed and loads" in capsys.readouterr().out
+
+
+def test_the_default_run_lists_skipped_kernels_and_keeps_its_exit_code(monkeypatch, capsys):
+    monkeypatch.setattr(kernel_install, "probe_torch_wheel_env", lambda **kwargs: _COLAB)
+
+    def _install(
+        name,
+        env,
+        skipped = None,
+        **kwargs,
+    ):
+        if name == "mamba_ssm":
+            skipped.append(name)
+        return 0
+
+    monkeypatch.setattr(kernel_install, "install_kernel", _install)
+    assert kernel_install.main([]) == 0
+    assert "not installed on this machine: mamba_ssm" in capsys.readouterr().out
 
 
 def test_flash_attn_without_a_wheel_never_probes_the_gpu():
@@ -676,7 +831,8 @@ def test_source_build_run_kwargs(monkeypatch):
     kwargs, gcc = kernel_install.source_build_run_kwargs(
         is_hip = False, gcc_install_dir = lambda: pytest.fail("non-HIP never looks for gcc")
     )
-    assert gcc is None and "timeout" not in kwargs
+    # CUDA builds get the same overall deadline as ROCm ones.
+    assert gcc is None and kwargs["timeout"] == 1800
     assert kwargs["encoding"] == "utf-8" and kwargs["stderr"] == subprocess.STDOUT
 
     kwargs, gcc = kernel_install.source_build_run_kwargs(
@@ -737,3 +893,195 @@ def test_windows_mamba_ssm_installs_with_triton(uv, monkeypatch):
     assert run.installer_calls[0][-1].endswith(
         "mamba_ssm-2.3.2.post1+cu13torch2.13cxx11abiTRUE-cp313-cp313-win_amd64.whl"
     )
+
+
+@pytest.mark.parametrize(
+    "capability, below",
+    [((7, 5), True), ((7, 0), True), ((8, 0), False), ((12, 0), False), (None, False)],
+)
+def test_flash_attn_floor_is_sm80_and_no_visible_gpu_is_not_below(monkeypatch, capability, below):
+    monkeypatch.setattr(kernel_install, "_gpu_capability", lambda run: capability)
+    monkeypatch.setattr(kernel_install, "_torch_is_hip", lambda run: False)
+    assert kernel_install.gpu_below_flash_attn_floor() is below
+
+
+def test_rocm_never_takes_the_sm80_floor(monkeypatch):
+    # ROCm reports a gfx version as its capability; the sm80 floor is an NVIDIA rule.
+    monkeypatch.setattr(kernel_install, "_gpu_capability", lambda run: (7, 5))
+    monkeypatch.setattr(kernel_install, "_torch_is_hip", lambda run: True)
+    assert kernel_install.gpu_below_flash_attn_floor() is False
+
+
+def test_the_hip_probe_reads_torch_version_hip():
+    def run(cmd, **kwargs):
+        assert "torch.version.hip" in cmd[-1]
+        return SimpleNamespace(returncode = 0, stdout = "True\n")
+
+    assert kernel_install._torch_is_hip(run) is True
+
+
+def test_install_wheel_never_falls_back_to_pip_under_uv_offline(monkeypatch):
+    # uv refuses the index under UV_OFFLINE; pip has no such switch and would reach it.
+    from utils import wheel_utils
+
+    monkeypatch.setattr(wheel_utils.shutil, "which", lambda name: "/usr/bin/uv")
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 1, stdout = "offline")
+
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    attempts = wheel_utils.install_wheel(
+        "https://example.invalid/k.whl", python_executable = sys.executable, use_uv = True, run = run
+    )
+    assert [installer for installer, _ in attempts] == ["uv"]
+    assert all(cmd[0] == "uv" for cmd in calls)
+
+    monkeypatch.delenv("UV_OFFLINE")
+    calls.clear()
+    attempts = wheel_utils.install_wheel(
+        "https://example.invalid/k.whl", python_executable = sys.executable, use_uv = True, run = run
+    )
+    assert [installer for installer, _ in attempts] == ["uv", "pip"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX process groups")
+def test_a_timed_out_build_stops_its_whole_process_tree(tmp_path):
+    # pip / uv start nvcc / hipcc / ninja; a timeout must stop those too, not just the leader.
+    pid_file = tmp_path / "grandchild.pid"
+    script = (
+        "import subprocess, sys, time; "
+        "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+        f"open({str(pid_file)!r}, 'w').write(str(p.pid)); "
+        "time.sleep(60)"
+    )
+    # A generous timeout: on a loaded host the child can take seconds to start its grandchild.
+    with pytest.raises(subprocess.TimeoutExpired):
+        kernel_install.run_process_tree(
+            [sys.executable, "-c", script], timeout = 15, stdout = subprocess.PIPE
+        )
+    assert pid_file.exists(), "the build never started its grandchild within the timeout"
+    grandchild = int(pid_file.read_text())
+    for _ in range(100):
+        try:
+            os.kill(grandchild, 0)
+        except ProcessLookupError:
+            break
+        # Reaped by init once killed; a zombie still answers kill(0) briefly.
+        try:
+            with open(f"/proc/{grandchild}/stat") as stat:
+                if stat.read().split()[2] == "Z":
+                    break
+        except FileNotFoundError:
+            break
+        time.sleep(0.1)
+    else:
+        os.kill(grandchild, 9)
+        pytest.fail("the build's grandchild outlived the timeout")
+
+
+def test_a_test_double_runner_is_called_as_given():
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(kwargs)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    kernel_install.run_process_tree(["x"], run = run, timeout = 5, text = True)
+    assert calls == [{"timeout": 5, "text": True}]
+
+
+def test_the_kernel_lock_is_exclusive_bounded_and_beats_while_waiting(tmp_path, monkeypatch):
+    monkeypatch.setattr(kernel_install, "_kernel_lock_path", lambda name: str(tmp_path / name))
+    beats = []
+    with kernel_install.kernel_install_lock("causal_conv1d") as first:
+        assert first is True
+        with kernel_install.kernel_install_lock(
+            "causal_conv1d", on_wait = lambda: beats.append(1), wait_seconds = 1.2, beat_seconds = 0.4
+        ) as second:
+            assert second is False  # held elsewhere past the bound: install nothing
+        with kernel_install.kernel_install_lock("mamba_ssm", wait_seconds = 0) as other:
+            assert other is True  # one lock per kernel
+    assert len(beats) >= 2
+    with kernel_install.kernel_install_lock("causal_conv1d", wait_seconds = 0) as again:
+        assert again is True  # released
+
+
+def test_the_kernel_lock_is_per_environment(monkeypatch, tmp_path):
+    monkeypatch.delenv("UNSLOTH_KERNEL_LOCK_DIR", raising = False)
+    first_env, other_env = tmp_path / "a", tmp_path / "b"
+    first_env.mkdir()
+    other_env.mkdir()
+    monkeypatch.setattr(kernel_install.sys, "prefix", str(first_env))
+    first = _REAL_LOCK_PATH("causal_conv1d")
+    monkeypatch.setattr(kernel_install.sys, "prefix", str(other_env))
+    assert _REAL_LOCK_PATH("causal_conv1d") != first
+
+
+def test_the_lock_lives_beside_the_environment_when_writable(monkeypatch, tmp_path):
+    monkeypatch.delenv("UNSLOTH_KERNEL_LOCK_DIR", raising = False)
+    env = tmp_path / "venv"
+    env.mkdir()
+    monkeypatch.setattr(kernel_install.sys, "prefix", str(env))
+    assert _REAL_LOCK_PATH("mamba_ssm") == str(env / ".unsloth-kernel-locks" / "mamba_ssm.lock")
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason = "POSIX permissions, non-root")
+def test_a_read_only_environment_falls_back_to_one_temp_lock(monkeypatch, tmp_path):
+    monkeypatch.delenv("UNSLOTH_KERNEL_LOCK_DIR", raising = False)
+    env = tmp_path / "venv"
+    env.mkdir()
+    env.chmod(0o555)
+    try:
+        monkeypatch.setattr(kernel_install.sys, "prefix", str(env))
+        monkeypatch.setattr("tempfile.tempdir", str(tmp_path / "tmp"))
+        (tmp_path / "tmp").mkdir()
+        first = _REAL_LOCK_PATH("mamba_ssm")
+        assert first.startswith(str(tmp_path / "tmp")) and first == _REAL_LOCK_PATH("mamba_ssm")
+    finally:
+        env.chmod(0o755)
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason = "POSIX permissions, non-root")
+def test_a_lock_that_cannot_be_opened_installs_nothing(monkeypatch, tmp_path):
+    lock = tmp_path / "ro.lock"
+    lock.write_text("")
+    lock.chmod(0o444)
+    monkeypatch.setattr(kernel_install, "_kernel_lock_path", lambda name: str(lock))
+    with kernel_install.kernel_install_lock("causal_conv1d", wait_seconds = 0) as held:
+        assert held is False
+
+
+def test_a_lock_the_filesystem_cannot_take_installs_nothing(monkeypatch, tmp_path):
+    import errno
+
+    monkeypatch.setattr(kernel_install, "_kernel_lock_path", lambda name: str(tmp_path / "x.lock"))
+
+    def _no_locks(*args):
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr("fcntl.flock", _no_locks)
+    with kernel_install.kernel_install_lock("causal_conv1d", wait_seconds = 0) as held:
+        assert held is False
+
+
+def test_the_cli_installs_under_the_studio_lock(uv, monkeypatch, capsys):
+    import contextlib
+
+    uv(False)
+    taken = []
+
+    @contextlib.contextmanager
+    def _busy(name, **kwargs):
+        taken.append(name)
+        yield False
+
+    monkeypatch.setattr(kernel_install, "kernel_install_lock", _busy)
+    run = _Runner([], capability = "9 0")
+    assert (
+        kernel_install.install_kernel("causal_conv1d", _COLAB, run = run, exists = lambda url: True)
+        == 0
+    )
+    assert taken == ["causal_conv1d"] and run.installer_calls == []
+    assert "install lock" in capsys.readouterr().out

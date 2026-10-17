@@ -8,6 +8,7 @@ worker wiring, and that the training worker shares the same tables and pinned ke
 """
 
 import json
+import contextlib
 import sys
 import types
 from pathlib import Path
@@ -21,18 +22,35 @@ if str(_BACKEND) not in sys.path:
 
 from utils import ssm_runtime  # noqa: E402
 
+_REAL_MAMBA_SSM_FLOOR_REASON = ssm_runtime._mamba_ssm_floor_reason
+
 
 @pytest.fixture(autouse = True)
-def _clear_offline_environment(monkeypatch):
+def _clear_offline_environment(monkeypatch, tmp_path):
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("UV_OFFLINE", raising = False)
+    # Per-process memos: each test is its own process here.
+    monkeypatch.setattr(ssm_runtime, "_TORCH_ENV", {})
+    monkeypatch.setattr(ssm_runtime, "_FAILED_INSTALLS", set())
+    monkeypatch.setattr(ssm_runtime, "_MODEL_CONFIGS", {})
+    monkeypatch.setattr(ssm_runtime, "_REMOTE_SOURCES", {})
+    monkeypatch.setattr(ssm_runtime, "_NATIVE_MODELING_CACHE", {})
+    from utils import kernel_install
 
-
-@pytest.fixture(autouse = True)
-def _cuda_host_with_triton(monkeypatch):
-    # A CUDA torch with Triton, where zoo's Triton conv runs; the platform tests below override it.
-    monkeypatch.delenv("UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D", raising = False)
-    monkeypatch.setattr(ssm_runtime, "_zoo_triton_platform_usable", lambda: True)
+    monkeypatch.setattr(
+        kernel_install, "_kernel_lock_path", lambda name: str(tmp_path / f"{name}.lock")
+    )
+    # Every copy of the module (and any child process) uses the test's folder too.
+    monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", str(tmp_path / "locks"))
+    # This host's GPU must not decide the optional-mamba floor; its own tests set it.
+    monkeypatch.setattr(ssm_runtime, "_mamba_ssm_floor_reason", lambda: None)
+    # Nor its torch build: a CUDA torch unless a test says otherwise.
+    monkeypatch.setattr(
+        ssm_runtime,
+        "probe_torch_wheel_env",
+        lambda **k: {"cuda_version": "12.8", "cuda_major": "12"},
+    )
 
 
 class _Result:
@@ -164,9 +182,10 @@ def test_causal_only_model_skips_mamba(monkeypatch):
 
 
 def test_failure_raises_runtime_error(monkeypatch):
-    # A true SSM model whose mamba-ssm cannot install is fatal (cryptic mid-load import
-    # otherwise). "Nemotron-3-Nano-30B-A3B" matches the SSM substrings.
+    # A required-family model this transformers has no native implementation of cannot load
+    # without mamba-ssm, so a failed install is fatal (cryptic mid-load import otherwise).
     monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: False)
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda model_type: False)
     with pytest.raises(RuntimeError):
         ssm_runtime.ensure_ssm_runtime("unsloth/Nemotron-3-Nano-30B-A3B")
 
@@ -205,7 +224,10 @@ def test_install_kernel_idempotent_when_present(monkeypatch):
     assert called == []  # short-circuits before touching the network
 
 
-@pytest.mark.parametrize("offline_variable", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
+# UV_OFFLINE too: uv refuses the index and install_wheel's pip fallback would not.
+@pytest.mark.parametrize(
+    "offline_variable", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "UV_OFFLINE"]
+)
 def test_install_kernel_skips_all_install_work_offline(monkeypatch, offline_variable):
     monkeypatch.setenv(offline_variable, "on")
     monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: False)
@@ -239,11 +261,13 @@ def test_install_kernel_skips_all_install_work_offline(monkeypatch, offline_vari
 
 
 def test_install_kernel_uses_prebuilt_wheel(monkeypatch):
-    # not importable before install, importable after the wheel lands
-    states = iter([False, True])
+    # not importable before install (or once the lock is held), importable after the wheel lands
+    states = iter([False, False, True])
     monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: next(states))
     monkeypatch.setattr(
-        ssm_runtime, "probe_torch_wheel_env", lambda timeout = 30, include_windows = False: {"x": "y"}
+        ssm_runtime,
+        "probe_torch_wheel_env",
+        lambda timeout = 30, include_windows = False: {"x": "y", "cuda_version": "12.8"},
     )
     seen = {}
     monkeypatch.setattr(
@@ -284,7 +308,9 @@ def test_install_kernel_heartbeats_during_prebuilt_wheel(monkeypatch):
     monkeypatch.setattr(ssm_runtime, "_HEARTBEAT_SECONDS", 0.05)
     monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: False)
     monkeypatch.setattr(
-        ssm_runtime, "probe_torch_wheel_env", lambda timeout = 30, include_windows = False: {}
+        ssm_runtime,
+        "probe_torch_wheel_env",
+        lambda timeout = 30, include_windows = False: {"cuda_version": "12.8"},
     )
     monkeypatch.setattr(
         ssm_runtime,
@@ -341,7 +367,9 @@ def test_install_kernel_heartbeats_through_the_import_check(monkeypatch):
 
     monkeypatch.setattr(ssm_runtime, "_HEARTBEAT_SECONDS", 0.05)
     monkeypatch.setattr(
-        ssm_runtime, "probe_torch_wheel_env", lambda timeout = 30, include_windows = False: {}
+        ssm_runtime,
+        "probe_torch_wheel_env",
+        lambda timeout = 30, include_windows = False: {"cuda_version": "12.8"},
     )
     monkeypatch.setattr(
         ssm_runtime,
@@ -359,7 +387,7 @@ def test_install_kernel_heartbeats_through_the_import_check(monkeypatch):
 
     def slow_importable(name):
         seen["n"] += 1
-        if seen["n"] == 1:
+        if seen["n"] <= 2:  # before install, and again once the lock is held
             return False
         import_started.set()
         assert import_released.wait(1.0)
@@ -408,10 +436,12 @@ def test_heartbeat_does_not_emit_after_the_block(monkeypatch):
 
 def test_install_kernel_falls_back_to_source(monkeypatch):
     # no wheel -> source build -> importable after install
-    states = iter([False, True])  # before install, after install
+    states = iter([False, False, True])  # before install, after the lock, after install
     monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: next(states))
     monkeypatch.setattr(
-        ssm_runtime, "probe_torch_wheel_env", lambda timeout = 30, include_windows = False: {}
+        ssm_runtime,
+        "probe_torch_wheel_env",
+        lambda timeout = 30, include_windows = False: {"cuda_version": "12.8"},
     )
     monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **k: None)
     pip_cmds = []
@@ -514,23 +544,35 @@ def _windows_install_kernel(
     monkeypatch.setattr(ssm_runtime.sys, "platform", "win32")
     # shutil.which consults sys.platform, and a Linux host cannot answer as Windows.
     monkeypatch.setattr(ssm_runtime.shutil, "which", lambda *a, **k: None)
-    states = iter([False, importable_after])
+    # Before install, once the lock is held, after the wheel.
+    states = iter([False, False, importable_after])
     monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: next(states))
     probe_kwargs = {}
     monkeypatch.setattr(
         ssm_runtime,
         "probe_torch_wheel_env",
-        lambda **k: probe_kwargs.update(k) or {"platform_tag": "win_amd64"},
+        lambda **k: probe_kwargs.update(k) or {"platform_tag": "win_amd64", "cuda_version": "13.0"},
     )
     monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **k: wheel_url)
     monkeypatch.setattr(ssm_runtime, "url_exists", lambda u: exists)
+    present = {"value": False}
+    monkeypatch.setattr(ssm_runtime, "_installed_distribution", lambda name: present["value"])
     installs = []
-    monkeypatch.setattr(
-        ssm_runtime,
-        "install_wheel",
-        lambda url, **k: installs.append(url) or [("uv", _Result(returncode = outcome_rc))],
-    )
+
+    def _install_wheel(url, **k):
+        installs.append(url)
+        present["value"] = outcome_rc == 0
+        return [("uv", _Result(returncode = outcome_rc))]
+
+    monkeypatch.setattr(ssm_runtime, "install_wheel", _install_wheel)
     ran = []
+
+    def _run(cmd, **k):
+        ran.append(cmd)
+        if "uninstall" in cmd:
+            present["value"] = False
+        return _Result()
+
     ok = ssm_runtime._install_kernel(
         import_name = "causal_conv1d",
         display_name = "causal-conv1d",
@@ -539,7 +581,7 @@ def _windows_install_kernel(
         release_tag = "v1.6.1.post4",
         release_base_url = "https://github.com/Dao-AILab/causal-conv1d/releases/download",
         status_cb = None,
-        run = lambda cmd, **k: ran.append(cmd) or _Result(),
+        run = _run,
     )
     assert probe_kwargs.get("include_windows") is True
     return ok, ran, installs
@@ -554,9 +596,7 @@ def test_windows_installs_the_published_wheel(monkeypatch):
     assert ran == []
 
 
-@pytest.mark.parametrize(
-    ("wheel_url", "exists"), [(None, False), ("https://x/w.whl", False), ("https://x/w.whl", None)]
-)
+@pytest.mark.parametrize(("wheel_url", "exists"), [(None, False), ("https://x/w.whl", False)])
 def test_windows_never_source_builds_without_a_wheel(monkeypatch, wheel_url, exists):
     ok, ran, installs = _windows_install_kernel(monkeypatch, wheel_url = wheel_url, exists = exists)
     assert ok is False
@@ -575,12 +615,14 @@ def test_windows_rejected_wheel_is_removed_not_source_built(monkeypatch):
 
 
 def test_wheel_installed_but_not_importable_falls_back_to_source(monkeypatch):
-    # top: not importable; after wheel: still not importable (ABI mismatch) -> source build;
-    # after source build: importable.
-    states = iter([False, False, True])
+    # top and under the lock: not importable; after wheel: still not importable (ABI mismatch)
+    # -> source build; after source build: importable.
+    states = iter([False, False, False, True])
     monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: next(states))
     monkeypatch.setattr(
-        ssm_runtime, "probe_torch_wheel_env", lambda timeout = 30, include_windows = False: {}
+        ssm_runtime,
+        "probe_torch_wheel_env",
+        lambda timeout = 30, include_windows = False: {"cuda_version": "12.8"},
     )
     monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **k: "https://x/w.whl")
     monkeypatch.setattr(ssm_runtime, "url_exists", lambda u: True)
@@ -630,10 +672,12 @@ def test_hip_source_build_requires_hipcc(monkeypatch):
 def test_source_build_reinstalls_to_replace_broken_wheel(monkeypatch):
     # Reached only when not importable (possibly a broken wheel at the pinned version);
     # the source build must reinstall so it replaces it instead of no-opping.
-    states = iter([False, True])
+    states = iter([False, False, True])
     monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: next(states))
     monkeypatch.setattr(
-        ssm_runtime, "probe_torch_wheel_env", lambda timeout = 30, include_windows = False: {}
+        ssm_runtime,
+        "probe_torch_wheel_env",
+        lambda timeout = 30, include_windows = False: {"cuda_version": "12.8"},
     )
     monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **k: None)
     cmds = []
@@ -652,7 +696,7 @@ def test_source_build_reinstalls_to_replace_broken_wheel(monkeypatch):
 
 def test_hip_uv_source_build_uses_no_cache(monkeypatch):
     # ROCm uv source build must skip the cache to avoid reusing stale partial HIP builds.
-    states = iter([False, True])
+    states = iter([False, False, True])
     monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: next(states))
     monkeypatch.setattr(
         ssm_runtime,
@@ -682,8 +726,8 @@ def test_hip_uv_source_build_uses_no_cache(monkeypatch):
 
 def test_inference_worker_calls_ensure_ssm_runtime():
     src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
-    assert "from utils.ssm_runtime import (\n            ensure_ssm_runtime," in src
-    assert "ensure_ssm_runtime(" in src
+    assert "provision_ssm_kernels" in src
+    assert "provision_ssm_kernels(" in src
 
 
 def test_inference_worker_skips_ssm_on_mlx_and_checks_lora_base():
@@ -883,23 +927,22 @@ def test_nested_text_config_resolves_causal_conv1d(tmp_path):
     assert ssm_runtime.resolved_model_wants_causal_conv1d(target, target, None) is True
 
 
-# ── Qwen3.5 / 3.6 / Qwen3-Next run on unsloth-zoo's Triton conv, never causal-conv1d ──
+# ── Qwen3.5 / 3.6 / Qwen3-Next get causal-conv1d on demand, on every platform ──
 
 
-_ZOO_GDN_NAMES = [
+_QWEN_GDN_NAMES = [
     "Qwen/Qwen3-Next-80B-A3B",
-    "Qwen/Qwen3-Next-80B-A3B-Instruct",
     "unsloth/Qwen3.5-2B",
-    "unsloth/Qwen3.5-35B-A3B-GGUF",
     "unsloth/Qwen3.6-27B",
     "my-org/qwen3_5-finetune",
 ]
 
 
-@pytest.mark.parametrize("name", _ZOO_GDN_NAMES)
-def test_zoo_gdn_models_request_no_kernels(monkeypatch, name):
-    monkeypatch.delenv(ssm_runtime.ZOO_TRITON_CAUSAL_CONV1D_KILL_SWITCH, raising = False)
-    assert ssm_runtime.model_wants_causal_conv1d(name) is False
+@pytest.mark.parametrize("name", _QWEN_GDN_NAMES)
+def test_qwen_gdn_models_install_causal_conv1d_on_demand(monkeypatch, name):
+    # zoo's Triton conv has no decode update and a sequence-sized dW scratch: keep the native kernel.
+    monkeypatch.delenv("UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D", raising = False)
+    assert ssm_runtime.model_wants_causal_conv1d(name) is True
     assert ssm_runtime.model_is_ssm(name) is False
     installed = []
     monkeypatch.setattr(
@@ -908,14 +951,7 @@ def test_zoo_gdn_models_request_no_kernels(monkeypatch, name):
         lambda *, import_name, **_: installed.append(import_name) or True,
     )
     ssm_runtime.ensure_ssm_runtime(name)
-    assert installed == []
-
-
-@pytest.mark.parametrize("name", _ZOO_GDN_NAMES)
-def test_zoo_kill_switch_brings_the_causal_conv1d_request_back(monkeypatch, name):
-    monkeypatch.setenv(ssm_runtime.ZOO_TRITON_CAUSAL_CONV1D_KILL_SWITCH, "1")
-    assert ssm_runtime.model_wants_causal_conv1d(name) is True
-    assert ssm_runtime.model_is_ssm(name) is False
+    assert installed == ["causal_conv1d"]
 
 
 @pytest.mark.parametrize(
@@ -928,27 +964,23 @@ def test_zoo_kill_switch_brings_the_causal_conv1d_request_back(monkeypatch, name
             "text_config": {"model_type": "qwen3_5_text"},
             "vision_config": {"model_type": "qwen3_5_vision"},
         },
-        {
-            "model_type": "qwen3_5_moe",
-            "architectures": ["Qwen3_5MoeForConditionalGeneration"],
-            "text_config": {"model_type": "qwen3_5_moe_text"},
-            "vision_config": {"model_type": "qwen3_5_moe_vision"},
-        },
     ],
-    ids = ["qwen3_next", "qwen3_5", "qwen3_5_moe"],
+    ids = ["qwen3_next", "qwen3_5"],
 )
-def test_zoo_gdn_configs_resolve_to_no_causal_conv1d(monkeypatch, tmp_path, config):
+def test_qwen_gdn_configs_resolve_to_causal_conv1d(monkeypatch, tmp_path, config):
+    monkeypatch.delenv("UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D", raising = False)
     target = str(_write_config(tmp_path / "renamed", config))
-    monkeypatch.delenv(ssm_runtime.ZOO_TRITON_CAUSAL_CONV1D_KILL_SWITCH, raising = False)
-    assert ssm_runtime.model_config_wants_causal_conv1d(config) is False
-    assert ssm_runtime.resolved_model_wants_causal_conv1d("acme/x", target, None) is False
-    monkeypatch.setenv(ssm_runtime.ZOO_TRITON_CAUSAL_CONV1D_KILL_SWITCH, "1")
     assert ssm_runtime.model_config_wants_causal_conv1d(config) is True
+    assert ssm_runtime.resolved_model_wants_causal_conv1d("acme/x", target, None) is True
 
 
-def test_a_config_mixing_a_zoo_gdn_type_with_another_hybrid_still_requests_it():
-    config = {"model_type": "qwen3_5", "text_config": {"model_type": "lfm2"}}
-    assert ssm_runtime.model_config_wants_causal_conv1d(config) is True
+def test_the_zoo_exemption_is_gone():
+    for name in (
+        "ZOO_GDN_MODEL_TYPES",
+        "zoo_triton_causal_conv1d_usable",
+        "_zoo_triton_platform_usable",
+    ):
+        assert not hasattr(ssm_runtime, name)
 
 
 @pytest.mark.parametrize(
@@ -964,28 +996,6 @@ def test_mamba2_hybrids_still_install_both_on_demand(monkeypatch, name):
     )
     ssm_runtime.ensure_ssm_runtime(name)
     assert order == ["causal_conv1d", "mamba_ssm"]
-
-
-def test_zoo_gdn_model_types_match_unsloth_zoo():
-    """Studio's list must equal the models unsloth-zoo's Triton conv patches."""
-    import ast
-    import importlib.util
-
-    spec = importlib.util.find_spec("unsloth_zoo")
-    if spec is None or spec.origin is None:
-        pytest.skip("unsloth_zoo not installed")
-    source_path = Path(spec.origin).parent / "temporary_patches" / "gdn_causal_conv1d.py"
-    if not source_path.is_file():
-        pytest.skip("this unsloth_zoo has no Triton causal conv")
-    tree = ast.parse(source_path.read_text(encoding = "utf-8"))
-    values = [
-        node.value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Assign)
-        and any(isinstance(t, ast.Name) and t.id == "_GDN_MODELING" for t in node.targets)
-    ]
-    assert len(values) == 1
-    assert set(ast.literal_eval(values[0])) == ssm_runtime.ZOO_GDN_MODEL_TYPES
 
 
 # ── mamba-ssm resolved from the config, not only the name ─────────────────────
@@ -1011,12 +1021,6 @@ def test_renamed_or_unlisted_ssm_models_resolve_from_their_config(tmp_path, name
     assert ssm_runtime.resolved_model_is_ssm(name, target, None) is True
     # Every mamba-ssm model also wants causal-conv1d.
     assert ssm_runtime.resolved_model_wants_causal_conv1d(name, target, None) is True
-    assert (
-        ssm_runtime.resolved_model_wants_causal_conv1d(
-            name, target, None, scan_modeling_source = False
-        )
-        is True
-    )
 
 
 def test_a_nested_ssm_text_config_resolves_too(tmp_path):
@@ -1052,90 +1056,9 @@ def test_resolved_answers_override_the_name(monkeypatch):
 
 def test_the_mamba_ssm_failure_names_the_offline_remedy(monkeypatch):
     monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: False)
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda model_type: False)
     with pytest.raises(RuntimeError, match = "unsloth install-kernels"):
         ssm_runtime.ensure_ssm_runtime("tiiuae/Falcon-H1-0.5B")
-
-
-# ── zoo's Triton conv only counts where it can run ────────────────────────────
-
-
-# The real (cached) platform check, captured before the autouse fixture replaces it.
-_REAL_PLATFORM_USABLE = ssm_runtime._zoo_triton_platform_usable.__wrapped__
-
-
-@pytest.mark.parametrize(
-    "platform, triton, torch_version, usable",
-    [
-        ("linux", True, "2.13.0", True),
-        ("linux", True, "2.13.0+cu130", True),
-        ("win32", True, "2.13.0+cu130", True),
-        ("linux", True, "2.11.0+rocm7.1", False),
-        ("win32", False, "2.13.0+cu130", False),
-        ("darwin", True, "2.13.0", False),
-        ("linux", True, None, False),
-        ("linux", True, "2.13.0+cpu", False),
-        ("win32", True, "2.13.0", False),
-    ],
-    ids = [
-        "linux-pypi-cuda",
-        "linux-cu130",
-        "windows-triton",
-        "rocm",
-        "windows-no-triton",
-        "macos",
-        "no-torch",
-        "cpu-torch",
-        "windows-pypi-cpu",
-    ],
-)
-def test_zoo_triton_conv_platform_check(monkeypatch, platform, triton, torch_version, usable):
-    monkeypatch.setattr(ssm_runtime.sys, "platform", platform)
-    monkeypatch.delitem(ssm_runtime.sys.modules, "torch", raising = False)
-    real_find_spec = ssm_runtime.importlib.util.find_spec
-    monkeypatch.setattr(
-        ssm_runtime.importlib.util,
-        "find_spec",
-        lambda name, *a: (
-            (object() if triton else None) if name == "triton" else real_find_spec(name, *a)
-        ),
-    )
-
-    def _version(name):
-        if torch_version is None:
-            raise ssm_runtime.importlib.metadata.PackageNotFoundError(name)
-        return torch_version
-
-    monkeypatch.setattr(ssm_runtime.importlib.metadata, "version", _version)
-    assert _REAL_PLATFORM_USABLE() is usable
-
-
-def test_zoo_triton_conv_platform_check_reads_an_imported_torch(monkeypatch):
-    import types
-
-    monkeypatch.setattr(ssm_runtime.sys, "platform", "linux")
-    monkeypatch.setattr(ssm_runtime.importlib.util, "find_spec", lambda name, *a: object())
-    fake = types.SimpleNamespace(version = types.SimpleNamespace(cuda = None, hip = "7.1"))
-    monkeypatch.setitem(ssm_runtime.sys.modules, "torch", fake)
-    assert _REAL_PLATFORM_USABLE() is False
-    fake.version = types.SimpleNamespace(cuda = "13.0", hip = None)
-    assert _REAL_PLATFORM_USABLE() is True
-
-
-@pytest.mark.parametrize("name", ["unsloth/Qwen3.5-2B", "Qwen/Qwen3-Next-80B-A3B"])
-def test_qwen_keeps_causal_conv1d_where_zoo_triton_conv_cannot_run(monkeypatch, tmp_path, name):
-    monkeypatch.setattr(ssm_runtime, "_zoo_triton_platform_usable", lambda: False)
-    assert ssm_runtime.model_wants_causal_conv1d(name) is True
-    config = {"model_type": "qwen3_5", "text_config": {"model_type": "qwen3_5_text"}}
-    assert ssm_runtime.model_config_wants_causal_conv1d(config) is True
-
-
-def test_the_platform_check_is_not_run_for_unrelated_models(monkeypatch):
-    def _boom():
-        raise AssertionError("the platform check must not run for a non-Qwen model")
-
-    monkeypatch.setattr(ssm_runtime, "_zoo_triton_platform_usable", _boom)
-    assert ssm_runtime.model_wants_causal_conv1d("unsloth/Llama-3.2-1B") is False
-    assert ssm_runtime.model_wants_causal_conv1d("LiquidAI/LFM2-1.2B") is True
 
 
 # ── in-process installs reach an already-imported transformers ────────────────
@@ -1180,26 +1103,776 @@ def test_refresh_is_a_no_op_without_transformers_and_never_raises(monkeypatch):
     ssm_runtime.refresh_transformers_kernel_gates()
 
 
+class _Queue(list):
+    def put(self, item):
+        self.append(item)
+
+
 def test_inference_worker_resolves_kernels_from_the_base_config(monkeypatch, tmp_path):
     from core.inference import worker as iw
 
     target = str(_write_config(tmp_path / "renamed", {"model_type": "nemotron_h"}))
     seen = []
-    monkeypatch.setattr(
-        ssm_runtime,
-        "ensure_ssm_runtime",
-        lambda probe, **kwargs: seen.append(
-            (probe, kwargs["wants_causal_conv1d"], kwargs["is_ssm"])
-        ),
-    )
-    refreshed = []
-    monkeypatch.setattr(
-        ssm_runtime, "refresh_transformers_kernel_gates", lambda: refreshed.append(1)
-    )
-    assert iw._ensure_ssm_kernels([("renamed", target)], resp_queue = None, hf_token = None)
-    assert seen == [("renamed", True, True)]
-    assert refreshed == [1]
+
+    def _ensure(probe, **kwargs):
+        seen.append(
+            (probe, kwargs["wants_causal_conv1d"], kwargs["is_ssm"], kwargs["mamba_ssm_required"])
+        )
+        return []
+
+    monkeypatch.setattr(ssm_runtime, "ensure_ssm_runtime", _ensure)
+    assert iw._ensure_ssm_kernels([("renamed", target)], resp_queue = _Queue(), hf_token = None)
+    assert seen == [("renamed", True, True, True)]
 
     src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
-    assert "_ensure_ssm_kernels(ssm_targets, resp_queue, hf_token)" in src
-    assert "_ensure_ssm_kernels(_ssm_targets, resp_queue, _hf_token)" in src
+    assert "_ensure_ssm_kernels(ssm_targets, resp_queue, hf_token, trust_remote_code)" in src
+    assert "_ensure_ssm_kernels(_ssm_targets, resp_queue, _hf_token, _trust_remote_code)" in src
+
+
+# ── mamba-ssm is fatal only where the model cannot load without it ────────────
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["state-spaces/mamba-130m-hf", "ai21labs/Jamba-v0.1", "Zyphra/Zamba2-7B", "ibm/Bamba-9B"],
+)
+def test_a_missing_mamba_ssm_is_not_fatal_for_models_with_a_torch_path(monkeypatch, name):
+    monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: False)
+    messages = []
+    assert ssm_runtime.model_requires_mamba_ssm(name) is False
+    ssm_runtime.ensure_ssm_runtime(name, status_cb = messages.append)  # no raise
+    assert any("torch path" in message for message in messages)
+
+
+@pytest.mark.parametrize(
+    "model_type, required",
+    [
+        ("nemotron_h", True),
+        ("falcon_h1", True),
+        ("granitemoehybrid", True),
+        ("mamba", False),
+        ("mamba2", False),
+        ("falcon_mamba", False),
+        ("jamba", False),
+        ("zamba", False),
+        ("zamba2", False),
+        ("bamba", False),
+    ],
+)
+def test_only_the_old_fatal_set_requires_mamba_ssm(tmp_path, model_type, required):
+    target = str(_write_config(tmp_path / "ckpt", {"model_type": model_type}))
+    kernels = ssm_runtime.resolve_ssm_kernels("acme/x", target, None)
+    assert kernels.mamba_ssm is True and kernels.causal_conv1d is True
+    assert kernels.mamba_ssm_required is required
+
+
+def test_windows_without_triton_is_fatal_only_for_the_required_set(monkeypatch):
+    monkeypatch.setattr(ssm_runtime.sys, "platform", "win32")
+    monkeypatch.setattr(ssm_runtime.importlib.util, "find_spec", lambda name, *a: None)
+    monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: True)
+    ssm_runtime.ensure_ssm_runtime("ai21labs/Jamba-v0.1")  # no raise
+    with pytest.raises(RuntimeError, match = "Triton"):
+        ssm_runtime.ensure_ssm_runtime("tiiuae/Falcon-H1-0.5B")
+
+
+# ── a local adapter's base decides the kernels ───────────────────────────────
+
+
+def _local_adapter(tmp_path, base: str) -> str:
+    adapter = tmp_path / "my-finetune-v3"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": base, "peft_type": "LORA"}), encoding = "utf-8"
+    )
+    return str(adapter)
+
+
+def test_an_unrelatedly_named_local_adapter_resolves_through_its_falcon_h1_base(tmp_path):
+    base = str(_write_config(tmp_path / "base", {"model_type": "falcon_h1"}))
+    adapter = _local_adapter(tmp_path, base)
+    kernels = ssm_runtime.resolve_ssm_kernels(adapter, adapter, None)
+    assert (kernels.causal_conv1d, kernels.mamba_ssm, kernels.mamba_ssm_required) == (
+        True,
+        True,
+        True,
+    )
+    assert ssm_runtime.resolved_model_is_ssm(adapter, adapter, None) is True
+    assert ssm_runtime.resolved_model_wants_causal_conv1d(adapter, adapter, None) is True
+
+
+def test_the_authorized_adapter_base_pin_wins(tmp_path):
+    llama = str(_write_config(tmp_path / "llama", {"model_type": "llama"}))
+    falcon = str(_write_config(tmp_path / "falcon", {"model_type": "falcon_h1"}))
+    adapter = _local_adapter(tmp_path, llama)
+    assert ssm_runtime.resolved_model_is_ssm(adapter, adapter, None) is False
+    assert ssm_runtime.resolved_model_is_ssm(adapter, adapter, None, adapter_base = falcon) is True
+
+
+def test_the_training_worker_passes_the_adapter_base_pin():
+    src = (_BACKEND / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
+    assert 'adapter_base = config.get("adapter_base_pin") or None' in src
+
+
+# ── the modeling-source scan works without importing transformers ─────────────
+
+
+def test_the_modeling_source_scan_reads_files_without_importing_transformers(monkeypatch, tmp_path):
+    package = tmp_path / "transformers"
+    model_dir = package / "models" / "convnet_x"
+    model_dir.mkdir(parents = True)
+    (package / "__init__.py").write_text("raise RuntimeError('must not be imported')\n")
+    (model_dir / "modeling_convnet_x.py").write_text(
+        "from causal_conv1d import causal_conv1d_fn\n", encoding = "utf-8"
+    )
+    plain = package / "models" / "plain_x"
+    plain.mkdir()
+    (plain / "modeling_plain_x.py").write_text("import torch\n", encoding = "utf-8")
+    spec = types.SimpleNamespace(
+        submodule_search_locations = [str(package)], origin = str(package / "__init__.py")
+    )
+    real_find_spec = ssm_runtime.importlib.util.find_spec
+    monkeypatch.setattr(
+        ssm_runtime.importlib.util,
+        "find_spec",
+        lambda name, *a: spec if name == "transformers" else real_find_spec(name, *a),
+    )
+    monkeypatch.setattr(ssm_runtime, "_TRANSFORMERS_CAUSAL_CONV1D_MODEL_TYPE_CACHE", {})
+    monkeypatch.delitem(sys.modules, "transformers", raising = False)
+
+    assert ssm_runtime.model_config_wants_causal_conv1d({"model_type": "convnet_x"}) is True
+    assert ssm_runtime.model_config_wants_causal_conv1d({"model_type": "plain_x"}) is False
+    assert "transformers" not in sys.modules
+
+
+# ── wheel availability, failures, cleanup, locking, backend gate, floor (#13971 audit) ──────────
+
+
+def _kernel_kwargs(**overrides):
+    kwargs = dict(
+        import_name = "causal_conv1d",
+        display_name = "causal-conv1d",
+        pypi_name = "causal-conv1d",
+        package_version = "1.6.1",
+        release_tag = "v1.6.1.post4",
+        release_base_url = "x",
+        status_cb = None,
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+class _Host:
+    """A fake environment: what imports, what is installed, what each step does, per kernel."""
+
+    def __init__(
+        self,
+        monkeypatch,
+        *,
+        env,
+        wheel_url = True,
+        head = True,
+        wheel_ok = True,
+        build_ok = False,
+        platform = "linux",
+    ):
+        self.env = env
+        self.installed: set[str] = set()
+        self.imports: set[str] = set()
+        self.wheel_ok = wheel_ok
+        self.build_ok = build_ok
+        self.wheels: list[str] = []
+        self.commands: list[list[str]] = []
+        self.statuses: list[str] = []
+        monkeypatch.setattr(ssm_runtime.sys, "platform", platform)
+        monkeypatch.setattr(ssm_runtime.shutil, "which", lambda name: None)
+        monkeypatch.setattr(ssm_runtime, "probe_torch_wheel_env", lambda **k: env)
+        monkeypatch.setattr(
+            ssm_runtime,
+            "direct_wheel_url",
+            lambda **k: f"https://x/{k['filename_prefix']}.whl" if wheel_url else None,
+        )
+        monkeypatch.setattr(ssm_runtime, "url_exists", lambda url: head)
+        monkeypatch.setattr(ssm_runtime, "install_wheel", self.install_wheel)
+        monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: name in self.imports)
+        monkeypatch.setattr(
+            ssm_runtime,
+            "_installed_distribution",
+            lambda name: name.replace("-", "_") in self.installed,
+        )
+
+    def install_wheel(self, url, **kwargs):
+        self.wheels.append(url)
+        name = url.rsplit("/", 1)[-1].removesuffix(".whl")
+        self.installed.add(name)  # a download leaves the distribution behind either way
+        if self.wheel_ok:
+            self.imports.add(name)
+        return [("uv", _Result(returncode = 0))]
+
+    def run(self, cmd, **kwargs):
+        self.commands.append(list(cmd))
+        joined = " ".join(cmd)
+        name = "mamba_ssm" if "mamba-ssm" in joined else "causal_conv1d"
+        if "uninstall" in cmd:
+            self.installed.discard(name)
+            self.imports.discard(name)
+        else:  # a source build
+            self.installed.add(name)
+            if self.build_ok:
+                self.imports.add(name)
+        return _Result(returncode = 0 if self.build_ok else 1)
+
+    def install(self, **overrides):
+        return ssm_runtime._install_kernel(
+            **_kernel_kwargs(status_cb = self.statuses.append, **overrides), run = self.run
+        )
+
+    @property
+    def builds(self):
+        return [cmd for cmd in self.commands if "uninstall" not in cmd]
+
+
+_CUDA = {"cuda_version": "12.8", "cuda_major": "12", "platform_tag": "linux_x86_64"}
+_WINDOWS = {"cuda_version": "13.0", "cuda_major": "13", "platform_tag": "win_amd64"}
+
+
+@pytest.mark.parametrize("platform, env", [("linux", _CUDA), ("win32", _WINDOWS)])
+def test_an_unanswered_head_still_downloads_the_wheel(monkeypatch, platform, env):
+    host = _Host(monkeypatch, env = env, head = None, platform = platform)
+    assert host.install() is True
+    assert host.wheels == ["https://x/causal_conv1d.whl"]
+    assert host.builds == []  # the wheel worked: no source build
+
+
+def test_a_required_hybrid_loads_when_only_head_is_refused(monkeypatch):
+    host = _Host(monkeypatch, env = _CUDA, head = None)
+    monkeypatch.setattr(ssm_runtime.importlib.util, "find_spec", lambda *a, **k: object())
+    installed = ssm_runtime.ensure_ssm_runtime(
+        "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
+        run = host.run,
+        wants_causal_conv1d = True,
+        is_ssm = True,
+        mamba_ssm_required = True,
+    )
+    assert installed == ["causal_conv1d", "mamba_ssm"]
+    assert len(host.wheels) == 2
+
+
+def test_a_failed_download_after_an_unanswered_head_falls_back(monkeypatch):
+    host = _Host(monkeypatch, env = _CUDA, head = None, wheel_ok = False, build_ok = True)
+    assert host.install() is True
+    assert len(host.builds) == 1  # the real download failed: then the source build
+
+
+def test_a_failed_install_is_not_retried_in_this_process(monkeypatch):
+    host = _Host(monkeypatch, env = _CUDA, head = False, build_ok = False)
+    assert host.install() is False
+    assert host.install() is False
+    assert len(host.builds) == 1
+
+
+def test_a_failed_install_is_retried_once_the_toolchain_changes(monkeypatch):
+    host = _Host(monkeypatch, env = _CUDA, head = False, build_ok = False)
+    assert host.install() is False
+    monkeypatch.setenv("CUDA_HOME", "/opt/cuda-new")
+    host.install()
+    assert len(host.builds) == 2
+
+
+@pytest.mark.parametrize("env", [_CUDA, {"hip_version": "6.4", "platform_tag": "linux_x86_64"}])
+def test_optional_mamba_ssm_is_wheel_only(monkeypatch, env):
+    host = _Host(monkeypatch, env = env, head = False, build_ok = True)
+    monkeypatch.setattr(
+        ssm_runtime.shutil, "which", lambda name: "/usr/bin/hipcc" if name == "hipcc" else None
+    )
+    host_installs = ssm_runtime.ensure_ssm_runtime(
+        "ai21labs/Jamba-v0.1",
+        run = host.run,
+        wants_causal_conv1d = False,
+        is_ssm = True,
+        mamba_ssm_required = False,
+    )
+    # causal-conv1d keeps its source fallback; mamba-ssm for an optional family does not.
+    assert not any("mamba-ssm==" in " ".join(cmd) for cmd in host.builds)
+    assert any("causal-conv1d==" in " ".join(cmd) for cmd in host.builds)
+    assert "mamba_ssm" not in host_installs
+
+
+def test_a_required_hybrid_keeps_the_mamba_ssm_source_fallback(monkeypatch):
+    host = _Host(monkeypatch, env = _CUDA, head = False, build_ok = True)
+    ssm_runtime.ensure_ssm_runtime(
+        "tiiuae/Falcon-H1-0.5B",
+        run = host.run,
+        wants_causal_conv1d = True,
+        is_ssm = True,
+        mamba_ssm_required = True,
+    )
+    assert any("mamba-ssm==" in " ".join(cmd) for cmd in host.builds)
+
+
+def test_a_cuda_source_build_has_the_hip_deadline(monkeypatch):
+    seen = {}
+
+    def run(cmd, **kwargs):
+        seen.update(kwargs)
+        return _Result(returncode = 1)
+
+    host = _Host(monkeypatch, env = _CUDA, head = False)
+    ssm_runtime._install_kernel(**_kernel_kwargs(), run = run)
+    assert seen.get("timeout") == 1800
+
+
+@pytest.mark.parametrize("wheel_ok, head", [(False, True), (False, False)])
+def test_a_broken_install_is_removed_not_left_behind(monkeypatch, wheel_ok, head):
+    host = _Host(monkeypatch, env = _CUDA, head = head, wheel_ok = wheel_ok, build_ok = False)
+    assert host.install() is False
+    assert host.installed == set()
+    assert any("uninstall" in cmd for cmd in host.commands)
+
+
+def test_the_install_runs_under_the_kernel_lock_and_rechecks(monkeypatch):
+    from utils import kernel_install
+
+    host = _Host(monkeypatch, env = _CUDA)
+    held = {}
+
+    @contextlib.contextmanager
+    def _lock(name, **kwargs):
+        held["name"] = name
+        host.imports.add(name)  # a peer installed it while this process waited
+        yield True
+
+    monkeypatch.setattr(kernel_install, "kernel_install_lock", _lock)
+    assert host.install() is True
+    assert held["name"] == "causal_conv1d"
+    assert host.wheels == [] and host.commands == []
+
+
+def test_a_lock_held_past_the_bound_installs_nothing(monkeypatch):
+    from utils import kernel_install
+
+    host = _Host(monkeypatch, env = _CUDA)
+
+    @contextlib.contextmanager
+    def _busy(name, **kwargs):
+        yield False
+
+    monkeypatch.setattr(kernel_install, "kernel_install_lock", _busy)
+    assert host.install() is False
+    assert host.wheels == [] and host.commands == []
+    assert any("install lock" in message for message in host.statuses)
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        None,  # the torch probe failed
+        {"cuda_version": "", "hip_version": "", "platform_tag": "linux_x86_64"},  # CPU / XPU
+    ],
+)
+def test_no_cuda_or_rocm_torch_installs_nothing(monkeypatch, env):
+    host = _Host(monkeypatch, env = env, head = True)
+    assert host.install() is False
+    assert host.wheels == [] and host.commands == []
+    assert any("CUDA or ROCm" in message for message in host.statuses)
+
+
+def test_a_required_hybrid_on_an_xpu_torch_is_skipped_not_fatal(monkeypatch):
+    host = _Host(monkeypatch, env = {"cuda_version": "", "platform_tag": "linux_x86_64"})
+    monkeypatch.setattr(ssm_runtime.importlib.util, "find_spec", lambda *a, **k: object())
+    assert (
+        ssm_runtime.ensure_ssm_runtime(
+            "tiiuae/Falcon-H1-0.5B",
+            run = host.run,
+            wants_causal_conv1d = True,
+            is_ssm = True,
+            mamba_ssm_required = True,
+        )
+        == []
+    )
+
+
+def test_optional_mamba_ssm_is_skipped_below_the_setup_floor(monkeypatch):
+    host = _Host(monkeypatch, env = _CUDA)
+    monkeypatch.setattr(
+        ssm_runtime,
+        "_mamba_ssm_floor_reason",
+        lambda: "needs sm80, or sm75 with Triton 3.4+ (torch 2.8+), and Triton is 3.3",
+    )
+    ssm_runtime.ensure_ssm_runtime(
+        "ai21labs/Jamba-v0.1",
+        status_cb = host.statuses.append,
+        run = host.run,
+        wants_causal_conv1d = True,
+        is_ssm = True,
+        mamba_ssm_required = False,
+    )
+    assert host.wheels == ["https://x/causal_conv1d.whl"]  # causal-conv1d only
+    assert any("Skipping mamba-ssm" in message for message in host.statuses)
+
+
+def test_a_required_hybrid_ignores_the_floor_as_before(monkeypatch):
+    host = _Host(monkeypatch, env = _CUDA)
+    monkeypatch.setattr(
+        ssm_runtime, "_mamba_ssm_floor_reason", lambda: pytest.fail("no floor for these")
+    )
+    monkeypatch.setattr(ssm_runtime.importlib.util, "find_spec", lambda *a, **k: object())
+    ssm_runtime.ensure_ssm_runtime(
+        "tiiuae/Falcon-H1-0.5B",
+        run = host.run,
+        wants_causal_conv1d = True,
+        is_ssm = True,
+        mamba_ssm_required = True,
+    )
+    assert len(host.wheels) == 2
+
+
+@pytest.mark.parametrize(
+    "capability, triton, skipped",
+    [((7, 5), (3, 3), True), ((7, 5), (3, 4), False), ((8, 0), None, False), (None, None, True)],
+)
+def test_the_runtime_floor_is_setups(monkeypatch, capability, triton, skipped):
+    from utils import kernel_install
+
+    monkeypatch.delitem(sys.modules, "torch", raising = False)
+    monkeypatch.delenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", raising = False)
+    monkeypatch.setattr(kernel_install, "_gpu_capability", lambda run: capability)
+    monkeypatch.setattr(kernel_install, "_triton_version", lambda run: triton)
+    assert (_REAL_MAMBA_SSM_FLOOR_REASON() is not None) is skipped
+
+
+def test_provisioning_reads_the_config_once_per_process(monkeypatch):
+    reads = []
+    monkeypatch.setattr(
+        "utils.transformers_version._load_config_json",
+        lambda target, token: reads.append(target) or {"model_type": "llama"},
+    )
+    monkeypatch.setattr(ssm_runtime, "ensure_ssm_runtime", lambda *a, **k: [])
+    for _ in range(3):
+        ssm_runtime.provision_ssm_kernels("acme/llama", "acme/llama", None)
+    assert reads == ["acme/llama"]
+
+
+def test_a_caller_with_the_config_skips_the_read(monkeypatch):
+    monkeypatch.setattr(
+        "utils.transformers_version._load_config_json",
+        lambda *a, **k: pytest.fail("the caller already has the config"),
+    )
+    kernels = ssm_runtime.resolve_ssm_kernels(
+        "acme/hybrid", "acme/hybrid", None, model_config = {"model_type": "nemotron_h"}
+    )
+    assert kernels.mamba_ssm_required
+
+
+def test_the_preflight_and_handle_load_share_one_failed_attempt(monkeypatch):
+    # The inference worker provisions before its transformers import and again in _handle_load:
+    # a failed optional build must not run twice (two 30-minute HIP builds before).
+    host = _Host(
+        monkeypatch, env = {"hip_version": "6.4", "platform_tag": "linux_x86_64"}, head = False
+    )
+    monkeypatch.setattr(ssm_runtime.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(ssm_runtime, "_hipcc_gcc_install_dir", lambda: None)
+    monkeypatch.setattr(ssm_runtime.importlib.util, "find_spec", lambda *a, **k: object())
+    for _stage in ("preflight", "_handle_load"):
+        ssm_runtime.ensure_ssm_runtime(
+            "ai21labs/Jamba-v0.1",
+            run = host.run,
+            wants_causal_conv1d = True,
+            is_ssm = True,
+            mamba_ssm_required = False,
+        )
+    assert len(host.builds) == 1  # one causal-conv1d build; mamba-ssm is wheel-only here
+
+
+@pytest.mark.parametrize("torch_mm", ["2.13", "2.14"])
+def test_no_pinned_source_build_on_torch_213_and_later(monkeypatch, torch_mm):
+    # causal-conv1d 1.6.1 / mamba-ssm 2.3.1 build at C++17; torch 2.13+ headers need C++20, so the
+    # build is a certain multi-minute failure: only the prebuilt wheel serves these.
+    host = _Host(monkeypatch, env = {**_CUDA, "torch_mm": torch_mm}, wheel_url = False)
+    assert host.install() is False
+    assert host.builds == []
+    assert any("cannot be built from source" in message for message in host.statuses)
+
+
+def test_torch_212_keeps_the_source_fallback(monkeypatch):
+    host = _Host(monkeypatch, env = {**_CUDA, "torch_mm": "2.12"}, head = False, build_ok = True)
+    assert host.install() is True
+    assert len(host.builds) == 1
+
+
+# ── when a missing mamba-ssm refuses the load (AMD hardware report, PR #13971) ──────────────────
+
+_NVIDIA_REMOTE_NEMOTRON = """
+from transformers.utils.import_utils import is_mamba_2_ssm_available
+
+if is_mamba_2_ssm_available():
+    from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
+else:
+    mamba_chunk_scan_combined = None
+
+try:
+    from mamba_ssm.ops.triton.layernorm_gated import rmsnorm_fn
+except ImportError:
+    raise ImportError("mamba-ssm is required by the Mamba model but cannot be imported")
+"""
+
+_GATED_REMOTE = """
+try:
+    from mamba_ssm.ops.triton.layernorm_gated import rmsnorm_fn
+except ImportError:
+    rmsnorm_fn = None
+if is_mamba_2_ssm_available():
+    import mamba_ssm
+"""
+
+
+def _checkpoint(
+    tmp_path,
+    model_type,
+    auto_map = None,
+    modeling = None,
+    name = "ckpt",
+):
+    folder = tmp_path / name
+    folder.mkdir()
+    config = {"model_type": model_type}
+    if auto_map:
+        config["auto_map"] = auto_map
+    (folder / "config.json").write_text(json.dumps(config))
+    for filename, text in (modeling or {}).items():
+        (folder / filename).write_text(text)
+    return str(folder)
+
+
+def _failing_mamba(monkeypatch):
+    attempts = []
+
+    def _install(**kwargs):
+        attempts.append((kwargs["import_name"], kwargs.get("allow_source_build")))
+        return False
+
+    monkeypatch.setattr(ssm_runtime, "_install_kernel", _install)
+    monkeypatch.setattr(ssm_runtime.importlib.util, "find_spec", lambda *a, **k: object())
+    return attempts
+
+
+@pytest.mark.parametrize("model_type", ["nemotron_h", "falcon_h1", "granitemoehybrid"])
+def test_a_native_required_hybrid_loads_with_a_warning(monkeypatch, tmp_path, model_type):
+    # The native transformers model runs without mamba-ssm (it trains on Windows ROCm with none):
+    # still worth a source build, but a failure is a warning, not a refused load.
+    attempts = _failing_mamba(monkeypatch)
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda t: True)
+    statuses = []
+    kernels, installed = ssm_runtime.provision_ssm_kernels(
+        "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
+        _checkpoint(tmp_path, model_type),
+        None,
+        status_cb = statuses.append,
+    )
+    assert kernels.mamba_ssm_required and not kernels.mamba_ssm_fatal
+    assert ("mamba_ssm", True) in attempts  # the source fallback is kept for these three
+    assert installed == []
+    assert any("Warning: could not install mamba-ssm" in message for message in statuses)
+
+
+def test_remote_code_that_imports_mamba_ssm_still_refuses(monkeypatch, tmp_path):
+    _failing_mamba(monkeypatch)
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda t: True)
+    target = _checkpoint(
+        tmp_path,
+        "nemotron_h",
+        auto_map = {"AutoModelForCausalLM": "modeling_nemotron_h.NemotronHForCausalLM"},
+        modeling = {"modeling_nemotron_h.py": _NVIDIA_REMOTE_NEMOTRON},
+    )
+    with pytest.raises(RuntimeError, match = "Could not install mamba-ssm"):
+        ssm_runtime.provision_ssm_kernels(target, target, None, trust_remote_code = True)
+
+
+def test_the_same_checkpoint_without_trust_loads_natively(monkeypatch, tmp_path):
+    # auto_map is only followed under trust_remote_code (or when transformers lacks the model).
+    _failing_mamba(monkeypatch)
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda t: True)
+    target = _checkpoint(
+        tmp_path,
+        "nemotron_h",
+        auto_map = {"AutoModelForCausalLM": "modeling_nemotron_h.NemotronHForCausalLM"},
+        modeling = {"modeling_nemotron_h.py": _NVIDIA_REMOTE_NEMOTRON},
+    )
+    kernels, _ = ssm_runtime.provision_ssm_kernels(target, target, None, trust_remote_code = False)
+    assert not kernels.mamba_ssm_fatal
+
+
+def test_remote_code_with_a_guarded_import_loads(monkeypatch, tmp_path):
+    _failing_mamba(monkeypatch)
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda t: True)
+    target = _checkpoint(
+        tmp_path,
+        "nemotron_h",
+        auto_map = {"AutoModelForCausalLM": "model.CustomForCausalLM"},
+        modeling = {"model.py": _GATED_REMOTE},
+    )
+    kernels, _ = ssm_runtime.provision_ssm_kernels(target, target, None, trust_remote_code = True)
+    assert not kernels.mamba_ssm_fatal
+
+
+def test_unreadable_remote_code_is_treated_as_requiring_it(monkeypatch, tmp_path):
+    _failing_mamba(monkeypatch)
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda t: True)
+    target = _checkpoint(
+        tmp_path,
+        "falcon_h1",
+        auto_map = {"AutoModelForCausalLM": "modeling_falcon_h1.FalconH1ForCausalLM"},
+    )
+    with pytest.raises(RuntimeError):
+        ssm_runtime.provision_ssm_kernels(target, target, None, trust_remote_code = True)
+
+
+@pytest.mark.parametrize("model_type", ["nemotron_h", "falcon_h1"])
+def test_a_transformers_without_the_native_model_still_refuses(monkeypatch, tmp_path, model_type):
+    _failing_mamba(monkeypatch)
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda t: False)
+    target = _checkpoint(tmp_path, model_type)
+    with pytest.raises(RuntimeError, match = "Could not install mamba-ssm"):
+        ssm_runtime.provision_ssm_kernels(target, target, None)
+
+
+def test_windows_without_triton_refuses_only_a_fatal_load(monkeypatch, tmp_path):
+    monkeypatch.setattr(ssm_runtime.sys, "platform", "win32")
+    monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: False)
+    monkeypatch.setattr(
+        ssm_runtime.importlib.util,
+        "find_spec",
+        lambda name, *a, **k: None if name == "triton" else object(),
+    )
+    statuses = []
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda t: True)
+    ssm_runtime.provision_ssm_kernels(
+        "x", _checkpoint(tmp_path, "nemotron_h", name = "a"), None, status_cb = statuses.append
+    )
+    assert any("triton-windows" in message for message in statuses)
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda t: False)
+    with pytest.raises(RuntimeError, match = "triton-windows"):
+        ssm_runtime.provision_ssm_kernels("x", _checkpoint(tmp_path, "nemotron_h", name = "b"), None)
+
+
+def test_native_modeling_is_read_from_the_installed_transformers(monkeypatch, tmp_path):
+    models = tmp_path / "transformers" / "models"
+    (models / "falcon_h1").mkdir(parents = True)
+    (models / "falcon_h1" / "modeling_falcon_h1.py").write_text("")
+    (models / "nemotron_h").mkdir()
+    (models / "nemotron_h" / "configuration_nemotron_h.py").write_text("")
+    monkeypatch.setattr(ssm_runtime, "_transformers_models_dir", lambda: models)
+    monkeypatch.setattr(ssm_runtime, "_NATIVE_MODELING_CACHE", {})
+    assert ssm_runtime.native_modeling_available("falcon_h1") is True
+    assert ssm_runtime.native_modeling_available("nemotron_h") is False  # config only
+    assert ssm_runtime.native_modeling_available("granitemoehybrid") is False
+
+
+@pytest.mark.parametrize(
+    "source, fatal",
+    [
+        ("import mamba_ssm\n", True),
+        ("from mamba_ssm.ops import x\n", True),
+        (_NVIDIA_REMOTE_NEMOTRON, True),
+        (_GATED_REMOTE, False),
+        ("def f():\n    import mamba_ssm\n", False),
+        ("import torch\n", False),
+        ("def broken(:\n", True),
+    ],
+)
+def test_the_unconditional_import_scan(source, fatal):
+    assert ssm_runtime._imports_mamba_ssm_unconditionally(source) is fatal
+
+
+# ── final-audit items (PR #13971) ────────────────────────────────────────────────────────────────
+
+
+def test_a_native_granite_4_tiny_preview_loads_with_a_warning(monkeypatch, tmp_path):
+    # ibm-granite/granite-4.0-tiny-preview: model_type granitemoehybrid, native in transformers.
+    _failing_mamba(monkeypatch)
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda t: t == "granitemoehybrid")
+    statuses = []
+    target = _checkpoint(tmp_path, "granitemoehybrid", name = "granite-4.0-tiny-preview")
+    kernels, _ = ssm_runtime.provision_ssm_kernels(
+        "ibm-granite/granite-4.0-tiny-preview", target, None, status_cb = statuses.append
+    )
+    assert kernels.mamba_ssm_required and not kernels.mamba_ssm_fatal
+    assert any("Warning: could not install mamba-ssm" in message for message in statuses)
+
+
+def test_a_transient_config_miss_is_read_again(monkeypatch):
+    reads = iter([None, {"model_type": "qwen3_5"}])
+    calls = []
+
+    def _load(target, token):
+        calls.append(target)
+        return next(reads)
+
+    monkeypatch.setattr("utils.transformers_version._load_config_json", _load)
+    assert ssm_runtime.resolve_ssm_kernels("acme/m", "acme/m", None).causal_conv1d is False
+    assert ssm_runtime.resolve_ssm_kernels("acme/m", "acme/m", None).causal_conv1d is True
+    assert ssm_runtime.resolve_ssm_kernels("acme/m", "acme/m", None).causal_conv1d is True
+    assert calls == ["acme/m", "acme/m"]  # the successful read is the one remembered
+
+
+def test_a_kernel_a_peer_installed_counts_as_new_to_this_worker(monkeypatch):
+    from utils import kernel_install
+
+    host = _Host(monkeypatch, env = _CUDA)
+
+    @contextlib.contextmanager
+    def _lock(name, **kwargs):
+        host.imports.add(name)  # a peer installed it while this process waited
+        yield True
+
+    monkeypatch.setattr(kernel_install, "kernel_install_lock", _lock)
+    newly = []
+    assert ssm_runtime._install_kernel(**_kernel_kwargs(), run = host.run, newly_installed = newly)
+    assert newly == ["causal_conv1d"]  # so inference refreshes or restarts its modeling modules
+
+
+@pytest.mark.parametrize("required, budget", [(False, 120), (True, 2400)])
+def test_optional_accelerations_wait_briefly_for_a_peer(monkeypatch, required, budget):
+    from utils import kernel_install
+
+    seen = {}
+
+    @contextlib.contextmanager
+    def _lock(name, **kwargs):
+        seen.update(kwargs)
+        yield False
+
+    host = _Host(monkeypatch, env = _CUDA)
+    monkeypatch.setattr(kernel_install, "kernel_install_lock", _lock)
+    host.install(required = required)
+    assert seen["wait_seconds"] == budget
+
+
+def test_ensure_waits_long_only_for_the_required_families(monkeypatch):
+    budgets = {}
+    monkeypatch.setattr(
+        ssm_runtime,
+        "_install_kernel",
+        lambda **k: budgets.setdefault((k["import_name"], k["required"]), True),
+    )
+    monkeypatch.setattr(ssm_runtime.importlib.util, "find_spec", lambda *a, **k: object())
+    ssm_runtime.ensure_ssm_runtime(
+        "q", wants_causal_conv1d = True, is_ssm = False, mamba_ssm_required = False
+    )
+    ssm_runtime.ensure_ssm_runtime(
+        "f", wants_causal_conv1d = True, is_ssm = True, mamba_ssm_required = True
+    )
+    assert set(budgets) == {("causal_conv1d", False), ("causal_conv1d", True), ("mamba_ssm", True)}
+
+
+def test_an_installer_that_cannot_start_still_cleans_up_and_is_remembered(monkeypatch):
+    host = _Host(monkeypatch, env = _CUDA, head = True)
+    host.installed.add("causal_conv1d")  # a broken copy left by an earlier attempt
+
+    def _cannot_start(url, **kwargs):
+        raise OSError("uv: No such file or directory")
+
+    monkeypatch.setattr(ssm_runtime, "install_wheel", _cannot_start)
+    assert host.install() is False
+    assert any("uninstall" in cmd for cmd in host.commands)  # cleanup ran
+    assert host.install() is False
+    assert len([cmd for cmd in host.commands if "uninstall" in cmd]) == 1  # not retried

@@ -11,13 +11,16 @@ The CLI is wheel-only (never a source build) and uses --no-deps so torch is neve
 from __future__ import annotations
 
 import argparse
+import errno
+import importlib.metadata
 import os
 import platform
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from utils.child_stdio import utf8_child_env
 from utils.wheel_utils import (
@@ -30,6 +33,7 @@ from utils.wheel_utils import (
     direct_wheel_url,
     flash_attn_wheel_url,
     install_wheel,
+    package_installs_offline_env,
     probe_torch_wheel_env,
     redact_url_credentials,
     url_exists,
@@ -142,12 +146,184 @@ def source_build_command(spec: str, *, use_uv: bool, is_hip: bool, reinstall: bo
     return cmd
 
 
+SOURCE_BUILD_TIMEOUT = 1800
+# The real runner, captured at import: a caller handing in anything else (a test double, or
+# subprocess.run patched over) gets exactly that called.
+_SUBPROCESS_RUN = subprocess.run
+
+
+def run_process_tree(
+    cmd: list[str],
+    *,
+    run: Callable[..., Any] = _SUBPROCESS_RUN,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess:
+    """``run(cmd, **kwargs)``, but when *run* is the real ``subprocess.run`` a ``timeout`` stops the
+    whole process tree (pip / uv and the nvcc / hipcc / ninja they start), not just its leader,
+    which ``subprocess.run`` alone would leave compiling. Raises ``TimeoutExpired`` as run does."""
+    timeout = kwargs.pop("timeout", None)
+    if run is not _SUBPROCESS_RUN or timeout is None:
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        return run(cmd, **kwargs)
+    if os.name == "nt":
+        kwargs.setdefault("creationflags", getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+    else:
+        kwargs["start_new_session"] = True
+    with subprocess.Popen(cmd, **kwargs) as process:
+        try:
+            stdout, stderr = process.communicate(timeout = timeout)
+        except subprocess.TimeoutExpired:
+            _kill_process_tree(process)
+            process.communicate()
+            raise subprocess.TimeoutExpired(cmd, timeout)
+        except BaseException:
+            _kill_process_tree(process)
+            raise
+    return subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
+
+
+def _kill_process_tree(process: subprocess.Popen) -> None:
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+                timeout = 60,
+            )
+        else:
+            import signal
+            os.killpg(process.pid, signal.SIGKILL)
+    except Exception:
+        pass
+    try:
+        process.kill()
+    except Exception:
+        pass
+
+
+# Long enough for one source build under another process's lock, then give up rather than block.
+KERNEL_LOCK_WAIT = SOURCE_BUILD_TIMEOUT + 600
+_LOCK_CONTENDED = frozenset(
+    code
+    for code in (
+        getattr(errno, "EACCES", None),
+        getattr(errno, "EAGAIN", None),
+        getattr(errno, "EWOULDBLOCK", None),
+        getattr(errno, "EDEADLK", None),
+        getattr(errno, "EDEADLOCK", None),
+    )
+    if code is not None
+)
+
+
+# How long an optional acceleration (causal-conv1d, an optional mamba-ssm wheel, flash-attn) waits
+# for another process's install of it before the load goes on without it.
+OPTIONAL_KERNEL_LOCK_WAIT = 120
+
+
+def _kernel_lock_path(name: str) -> str:
+    """The one lock file for installing *name* into this environment, shared by every entry point
+    that installs or removes it (Studio workers, setup, ``unsloth install-kernels``): beside the
+    environment when it is writable, else one per environment in the temp folder."""
+    import hashlib
+    import tempfile
+
+    override = os.environ.get("UNSLOTH_KERNEL_LOCK_DIR")
+    if override:
+        os.makedirs(override, exist_ok = True)
+        return os.path.join(override, f"{name}.lock")
+    folder = os.path.join(sys.prefix, ".unsloth-kernel-locks")
+    try:
+        os.makedirs(folder, exist_ok = True)
+        if os.access(folder, os.W_OK):
+            return os.path.join(folder, f"{name}.lock")
+    except OSError:
+        pass
+    env = hashlib.sha256(os.path.realpath(sys.prefix).encode("utf-8")).hexdigest()[:16]
+    folder = os.path.join(tempfile.gettempdir(), "unsloth-kernel-locks")
+    os.makedirs(folder, exist_ok = True)
+    return os.path.join(folder, f"{env}-{name}.lock")
+
+
+@contextmanager
+def kernel_install_lock(
+    name: str,
+    *,
+    on_wait: Callable[[], None] | None = None,
+    wait_seconds: float = KERNEL_LOCK_WAIT,
+    beat_seconds: float = 60.0,
+) -> Iterator[bool]:
+    """Hold the cross-process lock for installing kernel *name* into this environment, covering the
+    whole precheck / install / verify / cleanup transaction. Yields True when held, False when it
+    is not: another process kept it past *wait_seconds*, or the lock cannot be opened or taken at
+    all. Either way the caller installs nothing rather than race a peer unguarded. *on_wait* is
+    called when the wait starts and every *beat_seconds* while it lasts."""
+    import time
+
+    try:
+        handle = open(_kernel_lock_path(name), "a+b")
+    except OSError as exc:
+        logger_message = f"Unsloth: cannot open the {name} install lock ({exc}); not installing it."
+        print(logger_message, file = sys.stderr)
+        yield False
+        return
+    held = False
+    try:
+        deadline = time.monotonic() + wait_seconds
+        next_beat = 0.0
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                held = True
+                break
+            except (OSError, ImportError) as exc:
+                if not isinstance(exc, OSError) or exc.errno not in _LOCK_CONTENDED:
+                    print(
+                        f"Unsloth: cannot take the {name} install lock ({exc}); not installing it.",
+                        file = sys.stderr,
+                    )
+                    break
+                now = time.monotonic()
+                if now >= deadline:
+                    break
+                if on_wait is not None and now >= next_beat:
+                    next_beat = now + beat_seconds
+                    try:
+                        on_wait()
+                    except Exception:
+                        pass
+                time.sleep(0.5)
+        yield held
+    finally:
+        if held:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except (OSError, ImportError):
+                pass
+        if not handle.closed:
+            handle.close()
+
+
 def source_build_run_kwargs(
     *, is_hip: bool, gcc_install_dir: Callable[[], str | None]
 ) -> tuple[dict[str, Any], str | None]:
     """subprocess.run kwargs for a source build, and the gcc dir added to HIPCC_COMPILE_FLAGS_APPEND
-    (None when nothing was added). Non-HIP builds have no timeout so slow builds (causal-conv1d on
-    aarch64) are not aborted; ROCm builds take 10-30 min, bounded at 1800 s."""
+    (None when nothing was added). ROCm builds take 10-30 min; every build is bounded at
+    SOURCE_BUILD_TIMEOUT (1800 s)."""
     kwargs: dict[str, Any] = {
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
@@ -157,9 +333,11 @@ def source_build_run_kwargs(
         "errors": "replace",
         "env": utf8_child_env(),
     }
+    # One overall deadline for every source build, CUDA as well as ROCm: run it through
+    # run_process_tree so a timeout also stops the compilers pip / uv started.
+    kwargs["timeout"] = SOURCE_BUILD_TIMEOUT
     if not is_hip:
         return kwargs, None
-    kwargs["timeout"] = 1800
     existing = os.environ.get("HIPCC_COMPILE_FLAGS_APPEND", "")
     if "--gcc-install-dir" in existing:
         return kwargs, None
@@ -202,6 +380,7 @@ KERNELS = {
 }
 
 _PINNED = {"causal_conv1d": CAUSAL_CONV1D, "mamba_ssm": MAMBA_SSM}
+_WITHOUT_GPU_ENV = "UNSLOTH_INSTALL_KERNELS_WITHOUT_GPU"
 
 
 def resolve_wheel_url(name: str, env: dict[str, str] | None) -> str | None:
@@ -276,6 +455,39 @@ def _gpu_capability(run: Callable[..., subprocess.CompletedProcess]) -> tuple[in
     return _CAPABILITY[run]
 
 
+def gpu_below_flash_attn_floor(
+    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> bool:
+    """Whether the best visible CUDA GPU is below sm80, where Unsloth leaves FlashAttention 2 off
+    (a T4 is sm75), so a flash-attn download would go unused. No visible GPU answers False: an
+    image build installs ahead of the GPU it will run on."""
+    capability = _gpu_capability(run)
+    # ROCm reports a gfx version, not an sm, as its capability: the floor is NVIDIA's.
+    return capability is not None and capability < (8, 0) and not _torch_is_hip(run)
+
+
+_HIP: dict = {}
+
+
+def _torch_is_hip(run: Callable[..., subprocess.CompletedProcess]) -> bool:
+    """Whether torch is a ROCm build. Probed once per runner, and only below sm80."""
+    if run not in _HIP:
+        try:
+            result = run(
+                [sys.executable, "-c", "import torch; print(bool(torch.version.hip))"],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 120,
+            )
+            _HIP[run] = result.stdout.strip() == "True"
+        except Exception:
+            _HIP[run] = False
+    return _HIP[run]
+
+
 def _probe_gpu_capability(
     run: Callable[..., subprocess.CompletedProcess],
 ) -> tuple[int, int] | None:
@@ -309,6 +521,13 @@ def _loads(check: str, run: Callable[..., subprocess.CompletedProcess]) -> bool:
     return result.returncode == 0
 
 
+def _installed_version(distribution: str) -> str | None:
+    try:
+        return importlib.metadata.version(distribution)
+    except Exception:
+        return None
+
+
 def _outside_venv() -> bool:
     # Colab and other system interpreters: uv refuses them without --system.
     return sys.prefix == sys.base_prefix
@@ -328,70 +547,99 @@ def install_kernel(
     dry_run: bool = False,
     run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
     exists: Callable[[str], bool | None] = url_exists,
+    install_without_gpu: bool = False,
+    skipped: list[str] | None = None,
 ) -> int:
+    # install_without_gpu: no visible GPU yet (an image build for the GPU it will run on) still
+    # installs. Each kernel left uninstalled for this machine is appended to *skipped*.
     distribution, check = KERNELS[name]
+
+    def skip(message: str) -> int:
+        print(message)
+        if skipped is not None:
+            skipped.append(name)
+        return 0
+
+    # A copy that already loads (a ROCm source build, a GPU-hidden image builder's earlier install)
+    # is success whatever the wheel, GPU and network checks below would say.
+    if not dry_run and _installed_version(distribution) is not None and _loads(check, run):
+        print(f"Unsloth: {name} already installed and loads.")
+        return 0
+    if package_installs_offline_env():
+        return skip(
+            f"Unsloth: not installing {name} while offline "
+            "(UV_OFFLINE / HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE)."
+        )
     url = resolve_wheel_url(name, env)
     if name in _GPU_GATED and url is not None:
         capability = _gpu_capability(run)
-        if capability is None:
-            print(f"Unsloth: skipping {name}, which needs sm80 or newer (no CUDA GPU is visible).")
-            return 0
+        if capability is None and not install_without_gpu:
+            return skip(
+                f"Unsloth: skipping {name}, which needs sm80 or newer (no CUDA GPU is visible; "
+                "pass --without-gpu to install it for the GPU this image will run on)."
+            )
         if capability is not None and capability < (8, 0):
             reason = _pre_ampere_skip_reason(name, capability, run)
             if reason is not None:
-                print(
+                return skip(
                     f"Unsloth: skipping {name}, which {reason} "
                     f"(the best GPU is sm{capability[0]}{capability[1]})."
                 )
-                return 0
     torch_desc = f"torch {env.get('torch_version')}" if env else "this environment"
     # Only a 404 proves nothing is published; an unreachable check falls through to the install.
     if url is None or exists(url) is False:
-        print(f"Unsloth: no prebuilt {name} for {torch_desc}; using the torch fallback.")
-        return 0
+        return skip(f"Unsloth: no prebuilt {name} for {torch_desc}; using the torch fallback.")
     # mamba_ssm imports triton at load; on Windows that is triton-windows, which its metadata cannot name.
     if name == "mamba_ssm" and sys.platform == "win32" and not _loads("import triton", run):
-        print(
+        return skip(
             "Unsloth: skipping mamba_ssm, which needs Triton on Windows; "
             "install triton-windows first (Studio setup does), then re-run."
         )
-        return 0
     # UNSLOTH_PYTORCH_MIRROR may carry credentials, and notebook output gets shared.
     shown = redact_url_credentials(url)
     if dry_run:
         print(shown)
         return 0
-    if _loads(check, run):
-        print(f"Unsloth: {name} already installed and loads.")
+    # The lock Studio's workers take for the same kernel: never install or remove it under a
+    # running load's precheck / verify.
+    with kernel_install_lock(
+        name, on_wait = lambda: print(f"Unsloth: waiting for another process installing {name}...")
+    ) as held:
+        if not held:
+            return skip(f"Unsloth: could not take the {name} install lock; not installing it.")
+        if _loads(check, run):
+            print(f"Unsloth: {name} already installed and loads.")
+            return 0
+        failures: list[subprocess.CompletedProcess] = []
+        outcome = install_prebuilt(
+            url,
+            install = install_wheel,
+            verify = lambda: _loads(check, run),
+            on_failed = lambda _installer, result: failures.append(result),
+            use_uv = True,
+            uv_needs_system = _outside_venv(),
+            reinstall = True,
+            run = run,
+        )
+        if outcome == "failed":
+            print(
+                f"Unsloth: installing {name} from {shown} failed; using the torch fallback.\n"
+                + failures[-1].stdout[-2000:].replace(url, shown)
+            )
+            return 1
+        if outcome == "rejected":
+            # A wheel that imports but whose extension cannot load would be picked up and crash later.
+            removed = (
+                "removed it"
+                if _uninstall(distribution, run)
+                else f"run `pip uninstall {distribution}`"
+            )
+            print(
+                f"Unsloth: {name} from {shown} does not load with {torch_desc}; {removed}, using the torch fallback."
+            )
+            return 1
+        print(f"Unsloth: installed {name} ({shown.rsplit('/', 1)[-1]}).")
         return 0
-    failures: list[subprocess.CompletedProcess] = []
-    outcome = install_prebuilt(
-        url,
-        install = install_wheel,
-        verify = lambda: _loads(check, run),
-        on_failed = lambda _installer, result: failures.append(result),
-        use_uv = True,
-        uv_needs_system = _outside_venv(),
-        reinstall = True,
-        run = run,
-    )
-    if outcome == "failed":
-        print(
-            f"Unsloth: installing {name} from {shown} failed; using the torch fallback.\n"
-            + failures[-1].stdout[-2000:].replace(url, shown)
-        )
-        return 1
-    if outcome == "rejected":
-        # A wheel that imports but whose extension cannot load would be picked up and crash later.
-        removed = (
-            "removed it" if _uninstall(distribution, run) else f"run `pip uninstall {distribution}`"
-        )
-        print(
-            f"Unsloth: {name} from {shown} does not load with {torch_desc}; {removed}, using the torch fallback."
-        )
-        return 1
-    print(f"Unsloth: installed {name} ({shown.rsplit('/', 1)[-1]}).")
-    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -408,11 +656,45 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--dry-run", action = "store_true", help = "print the resolved wheel URL and install nothing"
     )
+    parser.add_argument(
+        "--without-gpu",
+        action = "store_true",
+        help = (
+            "install the GPU-gated kernels (flash_attn, mamba_ssm) even though no CUDA GPU is "
+            f"visible, e.g. in an image build; also {_WITHOUT_GPU_ENV}=1"
+        ),
+    )
+    parser.add_argument(
+        "--strict",
+        action = "store_true",
+        help = "exit 2 when a requested kernel was skipped (no GPU, no wheel, offline)",
+    )
     args = parser.parse_args(argv)
+    without_gpu = args.without_gpu or os.environ.get(_WITHOUT_GPU_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
     env = probe_torch_wheel_env(timeout = 120, include_windows = True)
     status = 0
+    skipped: list[str] = []
     for name in [name for name in KERNELS if not args.kernels or name in args.kernels]:
-        status = max(status, install_kernel(name, env, dry_run = args.dry_run))
+        status = max(
+            status,
+            install_kernel(
+                name,
+                env,
+                dry_run = args.dry_run,
+                install_without_gpu = without_gpu,
+                skipped = skipped,
+            ),
+        )
+    if skipped:
+        print(f"Unsloth: not installed on this machine: {', '.join(skipped)}.")
+        # A skip stays exit 0, as scripts running under `set -e` expect; --strict opts in.
+        if args.strict and status == 0:
+            status = 2
     return status
 
 

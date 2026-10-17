@@ -85,6 +85,7 @@ from utils.wheel_utils import (
     flash_attn_wheel_url,
     install_wheel,
     is_windows_wheel_env,
+    pinned_source_build_supported,
     probe_torch_wheel_env,
     url_exists,
 )
@@ -304,6 +305,22 @@ def _is_model_cache_artifact_error(error: BaseException | None) -> bool:
             return True
         current = current.__cause__ or current.__context__
     return False
+
+
+def _package_installs_offline() -> bool:
+    # UV_OFFLINE too: uv would refuse the index and install_wheel's pip fallback would not.
+    try:
+        from utils.utils import package_installs_offline
+        return package_installs_offline()
+    except Exception:
+        return os.environ.get("UV_OFFLINE", "").strip().lower() in {
+            "1",
+            "true",
+            "t",
+            "yes",
+            "y",
+            "on",
+        }
 
 
 def _model_offline_mode_enabled() -> bool:
@@ -1421,7 +1438,13 @@ def _reject_install(event_queue: Any, pypi_name: str, display_name: str, reason:
 
 
 def _install_package_wheel_first(
-    *, event_queue: Any, import_name: str, display_name: str, pypi_name: str, **kwargs: Any
+    *,
+    event_queue: Any,
+    import_name: str,
+    display_name: str,
+    pypi_name: str,
+    required: bool = False,
+    **kwargs: Any,
 ) -> bool:
     """Install a fast-path package, wheel first, and never leave an unusable one behind. The two
     "touch nothing" guards run here, outside the cleanup: an already-working package returns
@@ -1433,23 +1456,59 @@ def _install_package_wheel_first(
         logger.info("%s already installed", display_name)
         return True
 
-    if _model_offline_mode_enabled():
+    if _model_offline_mode_enabled() or _package_installs_offline():
         logger.info("Skipping %s installation while offline", display_name)
         return False
 
-    installed = False
-    try:
-        installed = _attempt_package_install(
-            event_queue = event_queue,
-            import_name = import_name,
-            display_name = display_name,
-            pypi_name = pypi_name,
-            **kwargs,
-        )
-        return installed
-    finally:
-        if not installed:
-            _reject_install(event_queue, pypi_name, display_name, "will not import")
+    # The runtime's failed-attempt memo (same key): the eager install and the fast-path hook, or a
+    # chat load in the same process, never repeat a failed (possibly half-hour) build.
+    from utils.ssm_runtime import _FAILED_INSTALLS, _failure_key
+
+    failure_key = _failure_key(import_name)
+    if failure_key in _FAILED_INSTALLS:
+        logger.info("%s already failed to install in this process; not retrying", display_name)
+        return False
+
+    from utils.kernel_install import (
+        KERNEL_LOCK_WAIT,
+        OPTIONAL_KERNEL_LOCK_WAIT,
+        kernel_install_lock,
+    )
+
+    # One install per package and environment at a time, across Studio workers: precheck, install,
+    # verify and cleanup are one transaction, or a failed peer could remove what another verified.
+    # An optional acceleration does not hold a run for a peer's half-hour build.
+    with kernel_install_lock(
+        import_name,
+        on_wait = lambda: _send_status(
+            event_queue, f"Waiting for another process installing {display_name}..."
+        ),
+        wait_seconds = KERNEL_LOCK_WAIT if required else OPTIONAL_KERNEL_LOCK_WAIT,
+    ) as held:
+        if not held:
+            _send_status(
+                event_queue,
+                f"Could not take the {display_name} install lock (another process is installing "
+                "it, or the lock is unavailable); continuing without it",
+            )
+            return False
+        if _is_importable(import_name):
+            logger.info("%s installed by another process", display_name)
+            return True
+        installed = False
+        try:
+            installed = _attempt_package_install(
+                event_queue = event_queue,
+                import_name = import_name,
+                display_name = display_name,
+                pypi_name = pypi_name,
+                **kwargs,
+            )
+            return installed
+        finally:
+            if not installed:
+                _FAILED_INSTALLS.add(failure_key)
+                _reject_install(event_queue, pypi_name, display_name, "will not import")
 
 
 def _attempt_package_install(
@@ -1465,12 +1524,19 @@ def _attempt_package_install(
     wheel_url_builder: Callable[[dict[str, str] | None], str | None] | None = None,
     pypi_spec: str | None = None,
     pypi_status_message: str | None = None,
+    allow_source_build: bool = True,
 ) -> bool:
     """The install itself. Call it through _install_package_wheel_first, never directly."""
     # Set when a wheel installed but would not import; see the uninstall before the fallback.
     wheel_rejected = False
 
     env = probe_torch_wheel_env(timeout = 30, include_windows = True)
+    if not env or not (env.get("cuda_version") or env.get("cuda_major") or env.get("hip_version")):
+        # These are CUDA / ROCm extensions: CPU-only, XPU, MPS or an unreadable torch builds none.
+        _send_status(
+            event_queue, f"{display_name} needs a CUDA or ROCm build of torch; skipping it"
+        )
+        return False
     # Windows is wheel-only: a PyPI fallback there is a source build needing MSVC + the CUDA toolkit.
     wheel_only = sys.platform == "win32" or is_windows_wheel_env(env)
     if wheel_url_builder is not None:
@@ -1487,7 +1553,14 @@ def _attempt_package_install(
     wheel_available = url_exists(wheel_url) if wheel_url else False
     if wheel_url is None:
         logger.info("No compatible %s wheel candidate", display_name)
-    elif wheel_available:
+    elif wheel_available is not False:
+        # Only a 404 proves nothing is published: an unanswered HEAD (a proxy refusing HEAD but
+        # serving the download) still tries the wheel, and falls back only if that fails.
+        if wheel_available is None:
+            _send_status(
+                event_queue,
+                f"Could not check the {display_name} prebuilt wheel; trying to download it.",
+            )
         _send_status(event_queue, f"Installing {display_name} for faster training...")
         outcome = install_prebuilt(
             wheel_url,
@@ -1513,17 +1586,23 @@ def _attempt_package_install(
                 "removing it" if wheel_only else "falling back to PyPI",
             )
             wheel_rejected = True
-    elif wheel_available is None:
-        _send_status(
-            event_queue,
-            f"Could not check the {display_name} prebuilt wheel; "
-            + ("skipping it." if wheel_only else "installing from PyPI."),
-        )
     else:
         logger.info("No published %s wheel found: %s", display_name, wheel_url)
 
     if wheel_only:
         logger.info("%s: no usable prebuilt wheel for Windows; skipping", display_name)
+        return False
+    if not allow_source_build:
+        _send_status(event_queue, f"No usable prebuilt {display_name} for this torch; skipping it")
+        return False
+    if pypi_version is not None and not pinned_source_build_supported(env):
+        # The pinned causal-conv1d / mamba-ssm sources build at C++17 and torch 2.13+ needs
+        # C++20: a certain failure after minutes of compiling.
+        _send_status(
+            event_queue,
+            f"No prebuilt {display_name} for torch {env.get('torch_mm')}, and it cannot be built "
+            "from source for it; skipping it",
+        )
         return False
 
     is_hip = env and env.get("hip_version")
@@ -1587,8 +1666,11 @@ def _attempt_package_install(
             _gcc_dir,
         )
 
+    from utils.kernel_install import run_process_tree
+
     try:
-        result = _sp.run(pypi_cmd, **_run_kwargs)
+        # Bounded, and a timeout stops the compilers pip / uv started too.
+        result = run_process_tree(pypi_cmd, run = _sp.run, **_run_kwargs)
     except _sp.TimeoutExpired:
         logger.error(
             "%s installation timed out after %ds",
@@ -1683,20 +1765,43 @@ def _ensure_mamba_ssm(
     model_name: str,
     *,
     required: bool | None = None,
+    essential: bool | None = None,
 ) -> None:
     # `required` is the config-resolved answer (resolved_model_is_ssm); the name is the fallback.
+    # `essential`: Nemotron-H, Falcon-H1, Granite-4.0-H, which may build it from source. Training
+    # stays best effort as at 9f5b13325: their native transformers path can run without it, so a
+    # missing mamba-ssm is left to the model load. The others have a torch path and get mamba-ssm
+    # only as a prebuilt wheel where unsloth_zoo keeps its fast path on, never as a source build.
     if required is None:
         required = _model_is_ssm(model_name)
     if not required:
         return
+    if essential is None:
+        # Unspecified (the worker passes the config's answer): only the families named for it
+        # (Nemotron-H, Falcon-H1, Granite-4.0-H) may build from source, never Mamba / Mamba2 /
+        # Jamba / Zamba / Bamba, which a caller leaving it out must not turn into a source build.
+        from utils.ssm_runtime import model_requires_mamba_ssm
+        essential = model_requires_mamba_ssm(model_name)
 
     if sys.platform == "win32" and importlib.util.find_spec("triton") is None:
         # mamba_ssm imports triton at load and the wheel goes in --no-deps.
         _send_status(event_queue, "mamba-ssm needs Triton on Windows (triton-windows); skipping it")
         return
 
+    if not essential and not _is_importable(MAMBA_SSM.import_name):
+        from utils.ssm_runtime import _mamba_ssm_floor_reason
+        reason = _mamba_ssm_floor_reason()
+        if reason is not None:
+            _send_status(event_queue, f"Skipping mamba-ssm, which {reason}")
+            return
+
     logger.info("SSM model detected; setting up mamba-ssm after causal-conv1d")
-    _install_package_wheel_first(event_queue = event_queue, **_pinned_kernel_kwargs(MAMBA_SSM))
+    _install_package_wheel_first(
+        event_queue = event_queue,
+        **_pinned_kernel_kwargs(MAMBA_SSM),
+        allow_source_build = essential,
+        required = essential,
+    )
 
 
 def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
@@ -2144,8 +2249,39 @@ def _should_try_runtime_flash_attn_install(max_seq_length: int) -> bool:
     return sys.platform.startswith("linux") or sys.platform == "win32"
 
 
+def _flash_attn_gpu_below_floor() -> bool:
+    """Whether the best visible GPU is below sm80, where Unsloth leaves FlashAttention 2 off. Asks
+    the torch this worker already imported when there is one (no child process); ROCm never takes
+    the NVIDIA floor; no visible GPU is not below it."""
+    torch = sys.modules.get("torch")
+    if torch is not None:
+        try:
+            if getattr(torch.version, "hip", None):
+                return False
+            if not torch.cuda.is_available():
+                return False
+            count = torch.cuda.device_count()
+            return count > 0 and max(
+                tuple(torch.cuda.get_device_capability(i)) for i in range(count)
+            ) < (8, 0)
+        except Exception as exc:
+            logger.debug("In-process GPU capability check failed (%s); probing a child", exc)
+    from utils.kernel_install import gpu_below_flash_attn_floor
+
+    return gpu_below_flash_attn_floor()
+
+
 def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -> None:
     if not _should_try_runtime_flash_attn_install(max_seq_length):
+        return
+    if _is_importable("flash_attn"):
+        # Already usable: nothing to download, so no capability probe either.
+        logger.info("flash-attn already installed")
+        return
+
+    if _flash_attn_gpu_below_floor():
+        # Unsloth only turns FlashAttention 2 on from sm80 (a T4 is sm75): nothing to download.
+        _send_status(event_queue, "flash-attn needs an sm80 or newer GPU; continuing without it")
         return
 
     installed = _install_package_wheel_first(
@@ -4028,25 +4164,25 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # 2) mamba-ssm + flash-attn keep their substring / size gates.
     # 3) FLA gated-delta kernels: vendored by unsloth_zoo, nothing to install.
     # Laya decision models are ModernBERT encoders: none of these apply.
-    # Clef decision models are Qwen3.5 backbones: zoo's gated-delta and Triton conv kernels cover them.
+    # Clef decision models are Qwen3.5 backbones and need the same gated-delta / conv kernels.
     if (
         not config.get("is_decision")
         or config.get("decision_layout") in ("clef", "llm")
         or _decision_has_llm_backbone(model_load_target, _worker_hf_token(config))
     ):
         try:
-            from utils.ssm_runtime import (
-                resolved_model_is_ssm,
-                resolved_model_wants_causal_conv1d,
-            )
+            from utils.ssm_runtime import resolve_ssm_kernels
 
-            is_ssm = resolved_model_is_ssm(model_name, model_load_target, _worker_hf_token(config))
-            # Every mamba-ssm model also runs causal-conv1d.
-            wants_causal_conv1d = is_ssm or resolved_model_wants_causal_conv1d(
+            # A continued local adapter loads from its folder, but its base decides the kernels:
+            # the authorized pin when the run was checked, else the adapter's recorded base.
+            kernels = resolve_ssm_kernels(
                 model_name,
                 model_load_target,
                 _worker_hf_token(config),
+                adapter_base = config.get("adapter_base_pin") or None,
             )
+            is_ssm = kernels.mamba_ssm
+            wants_causal_conv1d = kernels.causal_conv1d
             _ensure_causal_conv1d_fast_path(
                 event_queue,
                 model_name,
@@ -4057,7 +4193,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 model_name,
                 install_causal_conv1d = wants_causal_conv1d,
             )
-            _ensure_mamba_ssm(event_queue, model_name, required = is_ssm)
+            _ensure_mamba_ssm(
+                event_queue,
+                model_name,
+                required = is_ssm,
+                essential = kernels.mamba_ssm_required,
+            )
             _ensure_flash_attn_for_long_context(
                 event_queue,
                 int(config.get("max_seq_length", 2048)),

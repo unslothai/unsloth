@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+from types import SimpleNamespace
 import builtins
 import importlib.metadata
 import inspect
@@ -33,9 +34,37 @@ not_on_windows = pytest.mark.skipif(
 
 
 @pytest.fixture(autouse = True)
-def _clear_offline_environment(monkeypatch):
+def _clear_offline_environment(monkeypatch, tmp_path):
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("UV_OFFLINE", raising = False)
+    # A CUDA torch with nothing published for it unless a test says otherwise: the host's own
+    # torch and the network must not decide the tests.
+    monkeypatch.setattr(
+        worker,
+        "probe_torch_wheel_env",
+        lambda timeout = 30, include_windows = False: {
+            "python_tag": "cp313",
+            "abi_tag": "cp313",
+            "torch_mm": "0.0",
+            "torch_version": "0.0.0",
+            "cuda_version": "12.8",
+            "cuda_major": "12",
+            "hip_version": "",
+            "cxx11abi": "TRUE",
+            "platform_tag": "linux_x86_64",
+        },
+    )
+    monkeypatch.setattr(worker, "url_exists", lambda url: False)
+    # Per-process memo and the environment's lock file: each test is its own process here.
+    from utils import kernel_install, ssm_runtime
+
+    monkeypatch.setattr(ssm_runtime, "_FAILED_INSTALLS", set())
+    monkeypatch.setattr(
+        kernel_install, "_kernel_lock_path", lambda name: str(tmp_path / f"{name}.lock")
+    )
+    # Every copy of the module (and any child process) uses the test's folder too.
+    monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", str(tmp_path / "locks"))
 
 
 @pytest.fixture(autouse = True)
@@ -530,7 +559,10 @@ def test_runtime_flash_attn_skip_env_avoids_all_install_work(monkeypatch):
     worker._sp.run.assert_not_called()
 
 
-@pytest.mark.parametrize("offline_variable", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
+# UV_OFFLINE too: uv refuses the index and install_wheel's pip fallback would not.
+@pytest.mark.parametrize(
+    "offline_variable", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "UV_OFFLINE"]
+)
 def test_wheel_first_install_skips_all_install_work_offline(monkeypatch, offline_variable):
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
@@ -603,22 +635,11 @@ def test_causal_conv1d_fast_path_preserves_wheel_first_install_args(monkeypatch)
 
 
 @not_on_windows
-def test_causal_conv1d_fast_path_skips_qwen3_6_variants_on_zoo_triton_conv(monkeypatch):
-    # unsloth-zoo runs Qwen3.5 / 3.6 / Qwen3-Next on its own Triton causal conv (on a CUDA torch
-    # with Triton, pinned here so a CPU-only CI host answers the same).
-    from utils import ssm_runtime
-
+def test_causal_conv1d_fast_path_includes_qwen3_6_variants(monkeypatch):
+    # The native kernel: zoo's Triton conv has no decode update and a sequence-sized dW scratch.
     install_mock = mock.Mock(return_value = True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
-    monkeypatch.setattr(ssm_runtime, "_zoo_triton_platform_usable", lambda: True)
-    monkeypatch.delenv("UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D", raising = False)
 
-    for model_name in ("unsloth/Qwen3.6-4B", "unsloth/Qwen3_6-4B"):
-        worker._ensure_causal_conv1d_fast_path(event_queue = [], model_name = model_name)
-    assert install_mock.call_count == 0
-
-    # zoo's kill switch puts them back on the prebuilt causal-conv1d.
-    monkeypatch.setenv("UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D", "1")
     for model_name in ("unsloth/Qwen3.6-4B", "unsloth/Qwen3_6-4B"):
         worker._ensure_causal_conv1d_fast_path(event_queue = [], model_name = model_name)
     assert install_mock.call_count == 2
@@ -627,6 +648,9 @@ def test_causal_conv1d_fast_path_skips_qwen3_6_variants_on_zoo_triton_conv(monke
 def test_mamba_ssm_follows_the_resolved_answer_not_the_name(monkeypatch):
     install_mock = mock.Mock(return_value = True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
+    # Not the sm80 floor under test: keep a GPU-less runner from skipping the optional family.
+    monkeypatch.setattr("utils.ssm_runtime._mamba_ssm_floor_reason", lambda: None)
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
     # A real hybrid whose id lacks the substrings (resolved from its config) still installs.
     worker._ensure_mamba_ssm(
         event_queue = [], model_name = "nvidia/NVIDIA-Nemotron-Nano-9B-v2", required = True
@@ -658,6 +682,8 @@ def test_mamba_ssm_path_preserves_wheel_first_install_args(monkeypatch):
         filename_prefix = "mamba_ssm",
         release_tag = worker.MAMBA_SSM.release_tag,
         release_base_url = "https://github.com/state-spaces/mamba/releases/download",
+        allow_source_build = True,
+        required = True,
     )
 
 
@@ -1005,7 +1031,9 @@ def test_no_install_path_pips_flash_linear_attention_or_tilelang(monkeypatch, uv
     monkeypatch.setattr(worker, "_is_importable", lambda name: False)
     monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: True)
     monkeypatch.setattr(
-        worker, "probe_torch_wheel_env", lambda timeout = 30, include_windows = False: {}
+        worker,
+        "probe_torch_wheel_env",
+        lambda timeout = 30, include_windows = False: {"cuda_version": "12.8"},
     )
     monkeypatch.setattr(worker, "url_exists", lambda url: False)
     monkeypatch.setattr(worker, "install_wheel", mock.Mock())
@@ -1530,7 +1558,10 @@ def test_windows_mamba_ssm_needs_triton(monkeypatch):
     install_mock = mock.Mock(return_value = True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
     monkeypatch.setattr(worker.importlib.util, "find_spec", lambda name, *a: None)
-    worker._ensure_mamba_ssm(event_queue = [], model_name = "tiiuae/Falcon-H1-0.5B-Instruct")
+    # A family with a torch path skips it; one that needs it stops (its own test below).
+    worker._ensure_mamba_ssm(
+        event_queue = [], model_name = "ai21labs/Jamba-v0.1", required = True, essential = False
+    )
     install_mock.assert_not_called()
     assert any("triton-windows" in message for message in statuses)
 
@@ -1596,7 +1627,7 @@ def test_windows_installs_a_published_wheel(monkeypatch):
 
 @pytest.mark.parametrize(
     ("wheel_url", "exists"),
-    [(None, False), ("https://x/fa.whl", False), ("https://x/fa.whl", None)],
+    [(None, False), ("https://x/fa.whl", False)],
 )
 def test_windows_never_falls_back_to_pypi(monkeypatch, wheel_url, exists):
     ok, runs, installed = _windows_attempt(
@@ -1612,3 +1643,424 @@ def test_windows_rejected_wheel_does_not_fall_back_to_pypi(monkeypatch):
     )
     assert ok is False and installed is True
     assert runs == []
+
+
+@pytest.mark.parametrize("capability, installs", [((7, 5), False), ((8, 0), True), ((12, 0), True)])
+def test_long_context_flash_attn_is_not_downloaded_below_sm80(monkeypatch, capability, installs):
+    from utils import kernel_install
+
+    statuses: list[str] = []
+    install_mock = mock.Mock(return_value = True)
+    monkeypatch.setattr(worker, "_should_try_runtime_flash_attn_install", lambda length: True)
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
+    # No torch in this worker yet: the child probe answers.
+    monkeypatch.delitem(worker.sys.modules, "torch", raising = False)
+    monkeypatch.setattr(kernel_install, "_gpu_capability", lambda run: capability)
+    monkeypatch.setattr(kernel_install, "_torch_is_hip", lambda run: False)
+    monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
+    monkeypatch.setattr(worker, "_send_status", lambda queue, message: statuses.append(message))
+    worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 65536)
+    assert install_mock.called is installs
+    if not installs:
+        assert any("sm80" in message for message in statuses)
+
+
+def _fake_torch(capabilities, hip = None):
+    cuda = SimpleNamespace(
+        is_available = lambda: bool(capabilities),
+        device_count = lambda: len(capabilities),
+        get_device_capability = lambda i: capabilities[i],
+    )
+    return SimpleNamespace(version = SimpleNamespace(hip = hip), cuda = cuda)
+
+
+def _no_child_probe(*args, **kwargs):
+    raise AssertionError("the worker's own torch answers; no child probe")
+
+
+def test_an_importable_flash_attn_skips_the_capability_probe(monkeypatch):
+    from utils import kernel_install
+
+    install_mock = mock.Mock(return_value = True)
+    monkeypatch.setattr(worker, "_should_try_runtime_flash_attn_install", lambda length: True)
+    monkeypatch.setattr(worker, "_is_importable", lambda name: name == "flash_attn")
+    monkeypatch.setattr(kernel_install, "_gpu_capability", _no_child_probe)
+    monkeypatch.setattr(worker, "_flash_attn_gpu_below_floor", _no_child_probe)
+    monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
+    worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 65536)
+    assert not install_mock.called
+
+
+@pytest.mark.parametrize(
+    "capabilities, hip, below",
+    [
+        ([(7, 5)], None, True),
+        ([(7, 5), (8, 6)], None, False),
+        ([(9, 0)], None, False),
+        ([], None, False),
+        # ROCm reports a gfx version: never the NVIDIA floor.
+        ([(7, 5)], "6.4.0", False),
+    ],
+)
+def test_the_floor_reuses_the_workers_own_torch(monkeypatch, capabilities, hip, below):
+    from utils import kernel_install
+
+    monkeypatch.setitem(worker.sys.modules, "torch", _fake_torch(capabilities, hip))
+    monkeypatch.setattr(kernel_install, "_gpu_capability", _no_child_probe)
+    assert worker._flash_attn_gpu_below_floor() is below
+
+
+def test_rocm_long_context_still_installs_flash_attn(monkeypatch):
+    install_mock = mock.Mock(return_value = True)
+    monkeypatch.setattr(worker, "_should_try_runtime_flash_attn_install", lambda length: True)
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
+    monkeypatch.setitem(worker.sys.modules, "torch", _fake_torch([(7, 5)], "6.4.0"))
+    monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
+    worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 65536)
+    assert install_mock.called
+
+
+# An unanswered HEAD (a proxy refusing HEAD but serving the download) is not "unpublished": setup
+# always tried the wheel then, and only a real download / import failure falls back.
+
+
+def test_windows_an_unanswered_head_still_downloads_the_wheel(monkeypatch):
+    ok, runs, installed = _windows_attempt(
+        monkeypatch,
+        wheel_url = "https://x/fa-win_amd64.whl",
+        exists = None,
+        importable_after_install = True,
+    )
+    assert ok is True and installed is True
+    assert runs == []
+
+
+def test_linux_an_unanswered_head_installs_the_wheel_not_a_source_build(monkeypatch):
+    monkeypatch.setattr(worker.sys, "platform", "linux")
+    # A cell upstream publishes, so the resolver names a wheel.
+    monkeypatch.setattr(
+        worker,
+        "probe_torch_wheel_env",
+        lambda **k: {
+            "python_tag": "cp313",
+            "torch_mm": "2.10",
+            "cuda_version": "12.8",
+            "cuda_major": "12",
+            "cxx11abi": "TRUE",
+            "platform_tag": "linux_x86_64",
+        },
+    )
+    monkeypatch.setattr(worker, "url_exists", lambda url: None)
+    installs = []
+    monkeypatch.setattr(
+        worker,
+        "install_wheel",
+        lambda url, **k: installs.append(url)
+        or [("uv", subprocess.CompletedProcess(["uv"], 0, ""))],
+    )
+    monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: bool(installs))
+    monkeypatch.setattr(worker, "_send_status", lambda queue, message: None)
+    builds = []
+    monkeypatch.setattr(
+        worker._sp,
+        "run",
+        lambda cmd, **k: builds.append(cmd) or subprocess.CompletedProcess(cmd, 0, ""),
+    )
+    ok = worker._attempt_package_install(
+        event_queue = [],
+        **worker._pinned_kernel_kwargs(worker.MAMBA_SSM),
+    )
+    assert ok is True
+    assert len(installs) == 1 and builds == []
+
+
+# Optional mamba-ssm (Mamba, Jamba, Zamba, Bamba...): a prebuilt wheel or the torch path, never a
+# source build; the families that cannot load without it keep the source fallback.
+
+
+@pytest.mark.parametrize("essential", [False, True])
+def test_optional_mamba_ssm_never_source_builds(monkeypatch, essential):
+    monkeypatch.setattr(worker.sys, "platform", "linux")
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
+    monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: False)
+    monkeypatch.setattr("utils.ssm_runtime._mamba_ssm_floor_reason", lambda: None)
+    monkeypatch.setattr(worker, "_send_status", lambda queue, message: None)
+    monkeypatch.setattr(worker, "_reject_install", lambda *a, **k: None)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: None)
+    builds = []
+    monkeypatch.setattr(
+        worker._sp,
+        "run",
+        lambda cmd, **k: builds.append(cmd) or subprocess.CompletedProcess(cmd, 1, ""),
+    )
+    worker._ensure_mamba_ssm([], "ai21labs/Jamba-v0.1", required = True, essential = essential)
+    assert bool([cmd for cmd in builds if "mamba-ssm==" in " ".join(cmd)]) is essential
+
+
+def test_optional_mamba_ssm_is_skipped_below_the_setup_floor(monkeypatch):
+    statuses = []
+    install = mock.Mock()
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
+    monkeypatch.setattr(
+        "utils.ssm_runtime._mamba_ssm_floor_reason",
+        lambda: "needs sm80, or sm75 with Triton 3.4+ (torch 2.8+), and Triton is 3.3",
+    )
+    monkeypatch.setattr(worker, "_install_package_wheel_first", install)
+    monkeypatch.setattr(worker, "_send_status", lambda queue, message: statuses.append(message))
+    worker._ensure_mamba_ssm([], "ai21labs/Jamba-v0.1", required = True, essential = False)
+    assert not install.called
+    assert any("sm75 with Triton 3.4" in message for message in statuses)
+
+
+def test_a_required_hybrid_on_a_t4_still_installs_mamba_ssm(monkeypatch):
+    # As before setup stopped provisioning: Nemotron-H / Falcon-H1 / Granite-4.0-H install it on
+    # any GPU (the runtime never applied setup's floor to them).
+    install = mock.Mock()
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
+    monkeypatch.setattr(
+        "utils.ssm_runtime._mamba_ssm_floor_reason", lambda: pytest.fail("no floor for these")
+    )
+    monkeypatch.setattr(worker, "_install_package_wheel_first", install)
+    worker._ensure_mamba_ssm([], "tiiuae/Falcon-H1-0.5B", required = True, essential = True)
+    assert install.called
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        None,  # the probe failed
+        {"cuda_version": "", "hip_version": "", "platform_tag": "linux_x86_64"},  # CPU / XPU torch
+    ],
+)
+def test_no_cuda_or_rocm_torch_installs_nothing(monkeypatch, env):
+    monkeypatch.setattr(worker, "probe_torch_wheel_env", lambda **k: env)
+    statuses = []
+    monkeypatch.setattr(worker, "_send_status", lambda queue, message: statuses.append(message))
+    install = mock.Mock()
+    monkeypatch.setattr(worker, "install_wheel", install)
+    builds = []
+    monkeypatch.setattr(worker._sp, "run", lambda cmd, **k: builds.append(cmd))
+    assert (
+        worker._attempt_package_install(
+            event_queue = [], **worker._pinned_kernel_kwargs(worker.CAUSAL_CONV1D)
+        )
+        is False
+    )
+    assert not install.called and builds == []
+    assert any("CUDA or ROCm" in message for message in statuses)
+
+
+def test_the_training_install_runs_under_the_kernel_lock(monkeypatch):
+    from utils import kernel_install
+
+    entered = []
+
+    class _Lock:
+        def __init__(self, name, **kwargs):
+            entered.append(name)
+
+        def __enter__(self):
+            return False  # another process kept it
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(kernel_install, "kernel_install_lock", _Lock)
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
+    attempt = mock.Mock()
+    monkeypatch.setattr(worker, "_attempt_package_install", attempt)
+    monkeypatch.setattr(worker, "_send_status", lambda queue, message: None)
+    assert (
+        worker._install_package_wheel_first(
+            event_queue = [], **worker._pinned_kernel_kwargs(worker.CAUSAL_CONV1D)
+        )
+        is False
+    )
+    assert entered == ["causal_conv1d"] and not attempt.called
+
+
+def test_a_peer_finishing_the_install_while_waiting_is_success(monkeypatch):
+    states = iter([False, True])  # before the lock, then after it
+    monkeypatch.setattr(worker, "_is_importable", lambda name: next(states))
+    attempt = mock.Mock()
+    monkeypatch.setattr(worker, "_attempt_package_install", attempt)
+    assert worker._install_package_wheel_first(
+        event_queue = [], **worker._pinned_kernel_kwargs(worker.CAUSAL_CONV1D)
+    )
+    assert not attempt.called
+
+
+@pytest.mark.parametrize("torch_mm", ["2.13", "2.14"])
+def test_no_pinned_source_build_on_torch_213_and_later(monkeypatch, torch_mm):
+    monkeypatch.setattr(worker.sys, "platform", "linux")
+    monkeypatch.setattr(
+        worker,
+        "probe_torch_wheel_env",
+        lambda **k: {"cuda_version": "12.8", "cuda_major": "12", "torch_mm": torch_mm},
+    )
+    monkeypatch.setattr(worker, "direct_wheel_url", lambda **k: None)
+    statuses = []
+    monkeypatch.setattr(worker, "_send_status", lambda queue, message: statuses.append(message))
+    builds = []
+    monkeypatch.setattr(worker._sp, "run", lambda cmd, **k: builds.append(cmd))
+    assert (
+        worker._attempt_package_install(
+            event_queue = [], **worker._pinned_kernel_kwargs(worker.CAUSAL_CONV1D)
+        )
+        is False
+    )
+    assert builds == []
+    assert any("cannot be built from source" in message for message in statuses)
+
+
+# Training stays best effort as at 9f5b13325, even for the hybrids that need mamba-ssm: their
+# native transformers path can run without it, so a failed install never stops the run here.
+
+
+def test_a_required_hybrid_without_mamba_ssm_does_not_stop_training(monkeypatch):
+    monkeypatch.setattr(worker.sys, "platform", "linux")
+    monkeypatch.setattr(worker, "_install_package_wheel_first", lambda **k: False)
+    monkeypatch.setattr(worker, "probe_torch_wheel_env", lambda **k: {"cuda_version": "12.8"})
+    worker._ensure_mamba_ssm([], "tiiuae/Falcon-H1-0.5B", required = True, essential = True)
+
+
+def test_a_required_hybrid_on_windows_without_triton_does_not_stop_training(monkeypatch):
+    monkeypatch.setattr(worker.sys, "platform", "win32")
+    monkeypatch.setattr(
+        worker.importlib.util, "find_spec", lambda name, *a: None if name == "triton" else object()
+    )
+    install = mock.Mock()
+    monkeypatch.setattr(worker, "_install_package_wheel_first", install)
+    statuses = []
+    monkeypatch.setattr(worker, "_send_status", lambda queue, message: statuses.append(message))
+    worker._ensure_mamba_ssm([], "tiiuae/Falcon-H1-0.5B", required = True, essential = True)
+    assert not install.called
+    assert any("triton-windows" in message for message in statuses)
+
+
+@pytest.mark.parametrize(
+    "essential, env",
+    [
+        (False, {"cuda_version": "12.8"}),  # optional: the torch path
+        (True, {"cuda_version": "", "hip_version": ""}),  # CPU / XPU torch: nothing to install
+    ],
+)
+def test_no_stop_for_optional_families_or_a_non_cuda_torch(monkeypatch, essential, env):
+    monkeypatch.setattr(worker.sys, "platform", "linux")
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
+    monkeypatch.setattr("utils.ssm_runtime._mamba_ssm_floor_reason", lambda: None)
+    monkeypatch.setattr(worker, "_install_package_wheel_first", lambda **k: False)
+    monkeypatch.setattr(worker, "probe_torch_wheel_env", lambda **k: env)
+    worker._ensure_mamba_ssm([], "ai21labs/Jamba-v0.1", required = True, essential = essential)
+
+
+def test_the_eager_install_and_the_hook_share_one_failed_attempt(monkeypatch):
+    # A failed (possibly 30-minute HIP) build is never repeated in one worker, nor after a chat
+    # load in the same process already failed it.
+    attempts = []
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
+    monkeypatch.setattr(
+        worker, "_attempt_package_install", lambda **k: attempts.append(k["import_name"]) or False
+    )
+    monkeypatch.setattr(worker, "_reject_install", lambda *a, **k: None)
+    for _caller in ("eager", "hook"):
+        assert (
+            worker._install_package_wheel_first(
+                event_queue = [], **worker._pinned_kernel_kwargs(worker.CAUSAL_CONV1D)
+            )
+            is False
+        )
+    assert attempts == ["causal_conv1d"]
+
+    from utils import ssm_runtime
+
+    ssm_runtime._FAILED_INSTALLS.add(ssm_runtime._failure_key("mamba_ssm"))
+    worker._install_package_wheel_first(
+        event_queue = [], **worker._pinned_kernel_kwargs(worker.MAMBA_SSM)
+    )
+    assert attempts == ["causal_conv1d"]
+
+
+@pytest.mark.parametrize("required, budget", [(False, 120), (True, 2400)])
+def test_training_waits_long_only_for_a_required_kernel(monkeypatch, required, budget):
+    import contextlib
+
+    from utils import kernel_install
+
+    seen = {}
+
+    @contextlib.contextmanager
+    def _lock(name, **kwargs):
+        seen.update(kwargs)
+        yield False
+
+    monkeypatch.setattr(kernel_install, "kernel_install_lock", _lock)
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
+    monkeypatch.setattr(worker, "_send_status", lambda queue, message: None)
+    worker._install_package_wheel_first(
+        event_queue = [], required = required, **worker._pinned_kernel_kwargs(worker.MAMBA_SSM)
+    )
+    assert seen["wait_seconds"] == budget
+
+
+# Real ROCm gfx1151: the training block compiled mamba-ssm from source for a Mamba2 model (60 s)
+# where the inference path stayed wheel-only. Driven as the hardware harness drives it.
+
+
+def _hip_mamba2_host(monkeypatch, tmp_path):
+    import json
+
+    model = tmp_path / "tiny-mamba2"
+    model.mkdir()
+    (model / "config.json").write_text(json.dumps({"model_type": "mamba2"}))
+    monkeypatch.setattr(worker.sys, "platform", "linux")
+    monkeypatch.setattr(
+        worker,
+        "probe_torch_wheel_env",
+        lambda **k: {
+            "hip_version": "7.1",
+            "torch_mm": "2.10",
+            "python_tag": "cp312",
+            "cxx11abi": "TRUE",
+            "platform_tag": "linux_x86_64",
+        },
+    )
+    monkeypatch.setattr(worker.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(worker, "_hipcc_gcc_install_dir", lambda: None)
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
+    monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: False)
+    monkeypatch.setattr("utils.ssm_runtime._mamba_ssm_floor_reason", lambda: None)
+    statuses = []
+    monkeypatch.setattr(worker, "_send_status", lambda queue, message: statuses.append(message))
+    monkeypatch.setattr(worker, "_reject_install", lambda *a, **k: None)
+    builds = []
+    monkeypatch.setattr(
+        worker._sp,
+        "run",
+        lambda cmd, **k: builds.append(list(cmd)) or subprocess.CompletedProcess(cmd, 1, ""),
+    )
+    return str(model), builds, statuses
+
+
+@pytest.mark.parametrize("caller", ["harness", "worker"])
+def test_a_mamba2_model_on_rocm_never_builds_mamba_ssm_in_training(monkeypatch, tmp_path, caller):
+    from utils import ssm_runtime
+
+    model, builds, statuses = _hip_mamba2_host(monkeypatch, tmp_path)
+    kernels = ssm_runtime.resolve_ssm_kernels(model, model, None, adapter_base = None)
+    assert kernels.mamba_ssm and not kernels.mamba_ssm_required
+    if caller == "harness":
+        # scripts/v4_amd/ondemand_probe.py: no `essential`, as an older caller would.
+        worker._ensure_mamba_ssm([], model, required = kernels.mamba_ssm)
+    else:
+        worker._ensure_mamba_ssm(
+            [], model, required = kernels.mamba_ssm, essential = kernels.mamba_ssm_required
+        )
+    assert not [cmd for cmd in builds if "mamba-ssm==" in " ".join(cmd)]
+    assert not any("Compiling mamba-ssm" in message for message in statuses)
+
+
+def test_a_required_hybrid_on_rocm_keeps_its_mamba_ssm_source_build(monkeypatch, tmp_path):
+    _, builds, statuses = _hip_mamba2_host(monkeypatch, tmp_path)
+    worker._ensure_mamba_ssm([], "tiiuae/Falcon-H1-0.5B", required = True)
+    assert [cmd for cmd in builds if "mamba-ssm==" in " ".join(cmd)]

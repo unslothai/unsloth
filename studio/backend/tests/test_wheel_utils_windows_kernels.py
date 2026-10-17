@@ -167,7 +167,17 @@ def woa_env(**overrides):
     )
 
 
-@pytest.mark.parametrize("python_tag", ["cp311", "cp312", "cp313"])
+@pytest.mark.parametrize("python_tag", ["cp311", "cp312"])
+def test_win_arm64_unpublished_interpreters_resolve_to_nothing(python_tag):
+    # The release carries cp313 only for win_arm64; a cp311 / cp312 URL would be a 404.
+    e = woa_env(python_tag = python_tag, abi_tag = python_tag)
+    assert kernel_install.CAUSAL_CONV1D.wheel_url(e) is None
+    assert kernel_install.MAMBA_SSM.wheel_url(e) is None
+    # flash-attn stays NVIDIA's, which publishes every interpreter.
+    assert wheel_utils.flash_attn_wheel_url(e).startswith(NVIDIA)
+
+
+@pytest.mark.parametrize("python_tag", ["cp313"])
 def test_win_arm64_causal_conv1d_and_mamba_are_ours(python_tag):
     e = woa_env(python_tag = python_tag, abi_tag = python_tag)
     assert kernel_install.CAUSAL_CONV1D.wheel_url(e) == (
@@ -215,10 +225,12 @@ def test_an_env_without_abi_tag_is_read_as_a_gil_build():
             "cp313",
             f"{OURS}flash_attn-2.8.4+cu13torch2.13cxx11abiTRUE-cp313-cp313-linux_x86_64.whl",
         ),
+        # Built by the workflow on request, but not published: no URL rather than a 404.
+        ("2.14", "cp312", None),
         (
             "2.14",
-            "cp312",
-            f"{OURS}flash_attn-2.8.4+cu13torch2.14cxx11abiTRUE-cp312-cp312-linux_x86_64.whl",
+            "cp313",
+            f"{OURS}flash_attn-2.8.4+cu13torch2.14cxx11abiTRUE-cp313-cp313-linux_x86_64.whl",
         ),
         (
             "2.11",
@@ -239,9 +251,11 @@ def test_linux_flash_attn_urls_unchanged(torch_mm, python_tag, expected):
     assert wheel_utils.flash_attn_wheel_url(e) == expected
 
 
-def test_linux_free_threaded_keeps_resolving_as_before():
-    # Linux has never looked at abi_tag; adding it must not change a Linux answer.
+def test_linux_free_threaded_is_not_served_the_gil_wheel():
+    # The release carries cp313-cp313 only; a free-threaded cp313t interpreter cannot install it.
     e = env(platform_tag = "linux_x86_64", cxx11abi = "TRUE", abi_tag = "cp313t")
+    assert wheel_utils.flash_attn_wheel_url(e) is None
+    e = env(platform_tag = "linux_x86_64", cxx11abi = "TRUE", abi_tag = "cp313")
     assert wheel_utils.flash_attn_wheel_url(e) == (
         f"{OURS}flash_attn-2.8.4+cu13torch2.13cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
     )

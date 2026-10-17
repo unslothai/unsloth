@@ -239,6 +239,85 @@ def _send_response(resp_queue: Any, response: dict) -> None:
         logger.error("Failed to send response: %s", exc)
 
 
+def _nemotron_auto_trust(checkpoint_path: str, hf_token) -> bool:
+    """Whether a NemotronH/Nano checkpoint gets trust_remote_code without the user asking: a
+    genuine first-party Hub repo only (not a local/spoof name starting with "unsloth/"),
+    authenticated so private repos resolve."""
+    _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
+    _cp_lower = str(checkpoint_path).lower()
+    if not (
+        any(sub in _cp_lower for sub in _NEMOTRON_TRUST_SUBSTRINGS)
+        and (_cp_lower.startswith("unsloth/") or _cp_lower.startswith("nvidia/"))
+    ):
+        return False
+    from utils.security.trusted_org import is_trusted_org_repo
+
+    return is_trusted_org_repo(checkpoint_path, hf_token = hf_token)
+
+
+def _export_uses_cuda_kernels(device_backend) -> bool:
+    """causal-conv1d / mamba-ssm are CUDA / ROCm extensions, so only a CUDA export (ROCm reports as
+    "cuda" too) provisions them: MLX, CPU, XPU, an unspecified backend and any macOS export never
+    load them. ssm_runtime then checks the torch build itself."""
+    return sys.platform != "darwin" and str(device_backend or "") in ("cuda", "rocm")
+
+
+def _provision_ssm_kernels(
+    checkpoint_path: str,
+    base_model: str | None,
+    hf_token,
+    resp_queue: Any,
+    device_backend = None,
+    trust_remote_code = None,
+) -> bool:
+    """Install the causal-conv1d / mamba-ssm a checkpoint needs before Unsloth and its modeling
+    import, decided from its config (a LoRA's base config), as a training or chat load does.
+    Returns False after reporting a failure only for a model that cannot load without mamba-ssm."""
+    if not _export_uses_cuda_kernels(device_backend):
+        return True
+    try:
+        from utils.ssm_runtime import provision_ssm_kernels, ssm_probe_identifier
+        from utils.transformers_version import _remote_lora_base
+    except Exception as exc:
+        logger.debug("ssm_runtime unavailable (%s); skipping SSM kernel install", exc)
+        return True
+    base = base_model
+    if not base:
+        try:
+            # Raw HTTP, no ML import; a local adapter's base is read by the provisioner itself.
+            base = _remote_lora_base(checkpoint_path, hf_token or None)
+        except Exception as exc:
+            logger.debug("Could not resolve the adapter base for SSM kernels: %s", exc)
+    status = lambda message: _send_response(
+        resp_queue, {"type": "status", "message": message, "ts": time.time()}
+    )
+    try:
+        # The trust the load will use decides whether an auto_map model runs its remote code.
+        trusted = bool(trust_remote_code) or _nemotron_auto_trust(checkpoint_path, hf_token or None)
+        provision_ssm_kernels(
+            ssm_probe_identifier(checkpoint_path, base),
+            checkpoint_path,
+            hf_token or None,
+            adapter_base = base,
+            trust_remote_code = trusted,
+            status_cb = status,
+        )
+        return True
+    except Exception as exc:
+        _send_response(
+            resp_queue,
+            {
+                "type": "error",
+                "error": (
+                    "This model needs SSM kernel libraries (causal-conv1d / mamba-ssm) "
+                    f"that could not be installed: {exc}"
+                ),
+                "ts": time.time(),
+            },
+        )
+        return False
+
+
 def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     from hub.utils.hf_tokens import hf_token_arg
 
@@ -265,23 +344,12 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     base_model = cmd.get("base_model") or None
 
     # Auto-enable trust_remote_code for NemotronH/Nano models.
-    if not trust_remote_code:
-        from utils.security.trusted_org import is_trusted_org_repo
-
-        _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
-        _cp_lower = checkpoint_path.lower()
-        if (
-            any(sub in _cp_lower for sub in _NEMOTRON_TRUST_SUBSTRINGS)
-            and (_cp_lower.startswith("unsloth/") or _cp_lower.startswith("nvidia/"))
-            # Genuine first-party Hub repo only (not a local/spoof name starting
-            # with "unsloth/"); authenticated so private repos resolve.
-            and is_trusted_org_repo(checkpoint_path, hf_token = hf_token)
-        ):
-            trust_remote_code = True
-            logger.info(
-                "Auto-enabled trust_remote_code for Nemotron model: %s",
-                checkpoint_path,
-            )
+    if not trust_remote_code and _nemotron_auto_trust(checkpoint_path, hf_token):
+        trust_remote_code = True
+        logger.info(
+            "Auto-enabled trust_remote_code for Nemotron model: %s",
+            checkpoint_path,
+        )
 
     # Malware gate: a poisoned pickle deserializes on load even with
     # trust_remote_code False, so check HF's security scan (metadata-only) every
@@ -598,6 +666,20 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
             )
             return
 
+        # Before Unsloth and the modeling import: transformers captures its kernel gates at import,
+        # and some remote modeling code (Nemotron-H) cannot import at all without mamba-ssm. Inside
+        # the activation window, so it adds no Hub reachability probe of its own; an MLX / CPU /
+        # macOS export installs nothing.
+        if not _provision_ssm_kernels(
+            checkpoint_path,
+            config.get("base_model") or None,
+            config.get("hf_token"),
+            resp_queue,
+            config.get("device_backend"),
+            trust_remote_code = config.get("trust_remote_code"),
+        ):
+            return
+
     # Importable Triton isn't enough on AMD: its clang-cl JIT also needs the MSVC CRT headers (#7595).
     if sys.platform == "win32":
         from core._msvc_env import gate_torch_compile_on_windows
@@ -686,6 +768,15 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
             if cmd_type == "load":
                 # Load a new checkpoint, reusing this subprocess.
                 backend.cleanup_memory()
+                if not _provision_ssm_kernels(
+                    cmd["checkpoint_path"],
+                    cmd.get("base_model") or None,
+                    cmd.get("hf_token"),
+                    resp_queue,
+                    config.get("device_backend"),
+                    trust_remote_code = cmd.get("trust_remote_code"),
+                ):
+                    continue
                 # Offline window also covers this load's Hub preflights (re-probed per load).
                 with _offline_window_if_unreachable():
                     _handle_load(backend, cmd, resp_queue)

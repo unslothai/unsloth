@@ -40,6 +40,15 @@ def hf_env_offline() -> bool:
     return False
 
 
+def package_installs_offline() -> bool:
+    """True when an on-demand package install (a kernel wheel, a source build) must not reach the
+    network: the HF offline switches above, or UV_OFFLINE, the operator's no-network switch for
+    installs. Under UV_OFFLINE uv refuses the index, and install_wheel's pip fallback would then
+    reach it anyway, so such an install is skipped outright."""
+    from utils.wheel_utils import uv_offline
+    return hf_env_offline() or uv_offline()
+
+
 def anonymous_and_offline(hf_token, *, repo_id: Optional[str] = None) -> bool:
     """The one condition under which a Hub-reaching request can only be answered by disk.
 

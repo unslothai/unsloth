@@ -131,12 +131,12 @@ _UNSLOTH_PREBUILT_VERSIONS = {
     "mamba_ssm": "2.3.2.post1",
 }
 
-# platform_tag -> (cxx11abi field, published interpreters or None for any). The Windows cu130 torch also reports cxx11abi True; Windows publishes cp313 GIL builds only, and so does linux_aarch64 (upstream's aarch64 wheels stop at torch 2.10).
+# platform_tag -> (cxx11abi field, published interpreters or None for any). The Windows cu130 torch also reports cxx11abi True. Only what the release actually carries: torch 2.13 / 2.14 are published for cp313 GIL builds on every platform (the workflow can build cp311 / cp312 cells, but none has been published, and a URL for one is a 404 in front of the fallback).
 _UNSLOTH_PREBUILT_PLATFORMS: dict[str, tuple[str, frozenset[str] | None]] = {
-    "linux_x86_64": ("TRUE", None),
+    "linux_x86_64": ("TRUE", frozenset({"cp313"})),
     "win_amd64": ("TRUE", frozenset({"cp313"})),
     "linux_aarch64": ("TRUE", frozenset({"cp313"})),
-    "win_arm64": ("TRUE", frozenset({"cp311", "cp312", "cp313"})),
+    "win_arm64": ("TRUE", frozenset({"cp313"})),
 }
 
 # (platform, torch minor) cells outside _UNSLOTH_PREBUILT_TORCH_MM, with their interpreters. Upstream's torch2.10 wheels (and their 2.11 / 2.12 reuse above) have no Windows asset, so win_amd64 torch 2.10, 2.11 and 2.12 are ours; an existing install keeps its minor (a fresh one takes 2.13 on cp313), hence three interpreters.
@@ -250,6 +250,56 @@ def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | No
     return f"{UNSLOTH_PREBUILT_RELEASE_BASE_URL}/{UNSLOTH_PREBUILT_RELEASE_TAG}/{filename}"
 
 
+# The cells the pinned upstream releases publish (causal-conv1d v1.6.1.post4, mamba-ssm v2.3.1,
+# identical for both): (platform, CUDA major, cxx11abi) -> torch minors, each for cp310-cp313.
+# Read from the two release asset lists; anything else (CUDA 13 before torch 2.9, aarch64 before
+# 2.7, an abiFALSE torch after 2.6, any interpreter outside cp310-cp313) is a URL that 404s in
+# front of the source fallback, so it resolves to nothing instead.
+_UPSTREAM_SSM_PINS = {
+    "causal_conv1d": CAUSAL_CONV1D_PACKAGE_VERSION,
+    "mamba_ssm": MAMBA_SSM_PACKAGE_VERSION,
+}
+_UPSTREAM_SSM_CELLS: dict[tuple[str, str, str], frozenset[str]] = {
+    ("linux_x86_64", "11", "FALSE"): frozenset({"2.6"}),
+    ("linux_x86_64", "11", "TRUE"): frozenset({"2.6", "2.7"}),
+    ("linux_x86_64", "12", "FALSE"): frozenset({"2.6"}),
+    ("linux_x86_64", "12", "TRUE"): frozenset({"2.6", "2.7", "2.8", "2.9", "2.10"}),
+    ("linux_x86_64", "13", "TRUE"): frozenset({"2.9", "2.10"}),
+    ("linux_aarch64", "12", "TRUE"): frozenset({"2.7", "2.8", "2.9", "2.10"}),
+    ("linux_aarch64", "13", "TRUE"): frozenset({"2.9", "2.10"}),
+}
+_UPSTREAM_SSM_PYTHONS = frozenset({"cp310", "cp311", "cp312", "cp313"})
+
+
+def _upstream_ssm_cell_published(filename_prefix: str, package_version: str, env: dict) -> bool:
+    if _UPSTREAM_SSM_PINS.get(filename_prefix) != package_version:
+        return True  # not a pinned release this table describes: unchanged
+    torch_mm = prebuilt_wheel_torch_mm(str(env.get("torch_mm")))
+    cell = (str(env.get("platform_tag")), str(env.get("cuda_major")), str(env.get("cxx11abi")))
+    python_tag = env.get("python_tag")
+    return (
+        torch_mm in _UPSTREAM_SSM_CELLS.get(cell, frozenset())
+        and python_tag in _UPSTREAM_SSM_PYTHONS
+        and (env.get("abi_tag") or python_tag) == python_tag
+    )
+
+
+# The newest torch the pinned causal-conv1d 1.6.1 / mamba-ssm 2.3.1 compile against: torch 2.13
+# raised its headers to C++20 and both build at C++17 (the prebuilt workflow moved to
+# causal-conv1d 1.7.0 and patches mamba-ssm for it, see .github/scripts/patch_mamba_cxx20.py).
+PINNED_SOURCE_BUILD_MAX_TORCH = (2, 12)
+
+
+def pinned_source_build_supported(env: dict[str, str] | None) -> bool:
+    """Whether a source build of the pinned causal-conv1d / mamba-ssm (or their upstream wheels)
+    can work with this torch; from torch 2.13 on only our prebuilt wheels can."""
+    try:
+        major, minor = (int(part) for part in str((env or {}).get("torch_mm") or "").split(".")[:2])
+    except ValueError:
+        return True  # unknown: leave the decision to the build, as before
+    return (major, minor) <= PINNED_SOURCE_BUILD_MAX_TORCH
+
+
 def direct_wheel_url(
     *,
     filename_prefix: str,
@@ -265,8 +315,10 @@ def direct_wheel_url(
     ours = unsloth_prebuilt_wheel_url(filename_prefix = filename_prefix, env = env)
     if ours is not None:
         return ours
-    # No upstream release has a Windows asset.
-    if is_windows_wheel_env(env):
+    # No upstream release has a Windows asset, nor one for torch 2.13 or later (see above).
+    if is_windows_wheel_env(env) or not pinned_source_build_supported(env):
+        return None
+    if not _upstream_ssm_cell_published(filename_prefix, package_version, env):
         return None
 
     filename = (
@@ -478,6 +530,25 @@ def flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
     )
 
 
+_UV_OFFLINE_TRUE_VALUES = frozenset({"1", "true", "t", "yes", "y", "on"})
+_HF_OFFLINE_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def uv_offline() -> bool:
+    """UV_OFFLINE, the operator's no-network switch for installs, in uv's boolish spellings."""
+    return os.environ.get("UV_OFFLINE", "").strip().lower() in _UV_OFFLINE_TRUE_VALUES
+
+
+def package_installs_offline_env() -> bool:
+    """The environment half of utils.utils.package_installs_offline, for callers that cannot import
+    the backend (`unsloth install-kernels` runs under --no-deps): HF_HUB_OFFLINE,
+    TRANSFORMERS_OFFLINE or UV_OFFLINE."""
+    return uv_offline() or any(
+        os.environ.get(name, "").strip().lower() in _HF_OFFLINE_TRUE_VALUES
+        for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    )
+
+
 def install_wheel(
     wheel_url: str,
     *,
@@ -509,6 +580,9 @@ def install_wheel(
         )
         attempts.append(("uv", result))
         if result.returncode == 0:
+            return attempts
+        # uv refused the network under UV_OFFLINE; pip has no such switch and would reach it.
+        if uv_offline():
             return attempts
 
     pip_cmd = [python_executable, "-m", "pip", "install", "--no-deps"]
