@@ -429,6 +429,7 @@ class _ServedWindowHandler(_Handler):
 
 def _served(**attrs):
     ep_mod._served_windows.clear()
+    ep_mod._served_templates.clear()
     return type("Served", (_ServedWindowHandler,), {"gets": [], **attrs})
 
 
@@ -496,6 +497,31 @@ def test_an_older_llama_server_is_read_from_props_for_the_model():
     assert len(sent["messages"]) < len(_long_chat())
     assert _fits(sent, 8_192)
     assert old.gets == ["/v1/models", "/props?model=a-model"]
+
+
+def test_a_llama_server_template_default_is_sent_along_with_the_date(monkeypatch):
+    monkeypatch.setattr(
+        ri, "current_date_prompt_line", lambda **_kwargs: "The current date is 2026-08-15."
+    )
+    qwen = (
+        "{% if messages[0]['role'] == 'system' %}{% set sys = messages[0]['content'] %}"
+        "{% set rest = messages[1:] %}{% else %}"
+        "{% set sys = 'You are Qwen, created by Alibaba Cloud.' %}{% set rest = messages %}{% endif %}"
+        "<|im_start|>system\n{{ sys }}<|im_end|>\n"
+        "{% for m in rest %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
+    )
+    server = _served(
+        models = [{"id": "a-model", "owned_by": "llamacpp"}], props = {"chat_template": qwen}
+    )
+    _, sent = _proxy("llama_cpp", [{"role": "user", "content": "who are you?"}], handler = server)
+    assert sent["messages"] == [
+        {
+            "role": "system",
+            "content": "The current date is 2026-08-15.\n\nYou are Qwen, created by Alibaba Cloud.",
+        },
+        {"role": "user", "content": "who are you?"},
+    ]
+    assert server.gets == ["/props?model=a-model"]
 
 
 def test_a_window_the_request_states_is_kept_over_the_served_one():
