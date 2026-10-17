@@ -619,6 +619,9 @@ export interface RestorableRecipe {
   model_kind?: string;
   sampler?: string;
   schedule_type?: string;
+  // The prompt upsampler's caption and outcome; restore decides the Enhance prompt toggle from them.
+  enhanced_prompt?: string | null;
+  prompt_enhancement?: "applied" | "off" | "unavailable" | "failed" | null;
 }
 
 export const APPLIED_RECIPE_KEYS = [
@@ -640,6 +643,8 @@ export const APPLIED_RECIPE_KEYS = [
   "localized_edit",
   "sampler",
   "schedule_type",
+  "enhanced_prompt",
+  "prompt_enhancement",
 ] as const;
 
 /** Known but not applied: loading a model or a ControlNet image stays the user's call. */
@@ -771,6 +776,14 @@ export function recipeSettings(
     model_kind: r.model_kind === "connection" ? "connection" : undefined,
     sampler: str(r.sampler),
     schedule_type: str(r.schedule_type),
+    enhanced_prompt: str(r.enhanced_prompt) ?? null,
+    prompt_enhancement:
+      r.prompt_enhancement === "applied" ||
+      r.prompt_enhancement === "off" ||
+      r.prompt_enhancement === "unavailable" ||
+      r.prompt_enhancement === "failed"
+        ? r.prompt_enhancement
+        : null,
   };
 }
 

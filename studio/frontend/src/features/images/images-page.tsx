@@ -314,6 +314,18 @@ import {
   SCHEDULE_LABELS,
   withSamplerChoice,
 } from "./lib/sampler-choice";
+import {
+  enhancePromptRequestField,
+  enhanceRestoreFor,
+  enhancementNotice,
+  hasEnhancedPrompt,
+  promptUpsamplerCapability,
+  readEnhanceChoices,
+  resolveEnhancePrompt,
+  upsamplerVariantFor,
+  withEnhanceChoice,
+} from "./lib/prompt-enhance";
+import { EnhancedPromptRecipeRow, EnhancePromptControls } from "./prompt-enhance-panel";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
@@ -1244,7 +1256,7 @@ function RecipePopover({
   active,
 }: {
   image: GalleryImage;
-  onRestore: (image: GalleryImage) => void;
+  onRestore: (image: GalleryImage, exactCaption?: boolean) => void;
   active: boolean;
 }) {
   // Controlled + force-closed off-tab: PopoverContent portals to body, so the inert page wrapper cannot contain it.
@@ -1275,6 +1287,9 @@ function RecipePopover({
         </div>
         <div className="flex min-h-0 flex-col gap-2 overflow-y-auto overscroll-contain px-4 py-3 text-xs">
           <RecipeRow label="Prompt" value={image.prompt} wrap />
+          {hasEnhancedPrompt(image) ? (
+            <EnhancedPromptRecipeRow caption={(image.enhanced_prompt ?? "").trim()} />
+          ) : null}
           {image.negative_prompt ? (
             <RecipeRow label="Negative" value={image.negative_prompt} wrap />
           ) : null}
@@ -1365,6 +1380,17 @@ function RecipePopover({
             <HugeiconsIcon icon={Refresh01Icon} className="size-4" />
             Restore these settings
           </Button>
+          {/* The caption that actually ran, with Enhance prompt off, so the run reproduces without the upsampler. */}
+          {image.prompt_enhancement === "applied" && hasEnhancedPrompt(image) ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="mt-1 w-full gap-1.5"
+              onClick={() => onRestore(image, true)}
+            >
+              Restore with the enhanced prompt
+            </Button>
+          ) : null}
         </div>
       </PopoverContent>
     </Popover>
@@ -1593,6 +1619,9 @@ export function ImagesPage({
   const [steps, setSteps] = useState(DEFAULT_GEN.steps);
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
   const [samplerChoices, setSamplerChoices] = useState(readSamplerChoices);
+  const [enhanceChoices, setEnhanceChoices] = useState(readEnhanceChoices);
+  // The family it was set under ("" = before a model loaded, which applies to whichever family loads next).
+  const [enhanceOverrideState, setEnhanceOverrideState] = useState<{ family: string; on: boolean } | null>(null);
   // A recipe restored while unloaded: Generate recalls the model, uses this, and stores it for that model.
   const [restoredSampler, setRestoredSampler] = useState<Partial<SamplerChoice> | null>(null);
   // Whether the user has taken the recipe since the pick still waiting for its status: a preset
@@ -2072,6 +2101,35 @@ export function ImagesPage({
       );
     },
     [samplerChoice, samplerModelKey, samplerOptions],
+  );
+  // Enhance prompt (FLUX.3's prompt upsampler): stored per family, defaulting to the family's own default. A
+  // restore or "Use as prompt" sets a one-off override that the next toggle or family change drops.
+  const upsamplerCapability = promptUpsamplerCapability(status, Boolean(external));
+  const enhanceFamilyKey = upsamplerCapability.supported ? (status?.family ?? "") : "";
+  // Derived rather than cleared in an effect: a switch to another loaded family simply stops matching.
+  const enhanceOverride =
+    enhanceOverrideState &&
+    (enhanceOverrideState.family === "" || enhanceOverrideState.family === enhanceFamilyKey)
+      ? enhanceOverrideState.on
+      : null;
+  const setEnhanceOverride = useCallback(
+    (on: boolean | null) =>
+      setEnhanceOverrideState(on === null ? null : { family: enhanceFamilyKey, on }),
+    [enhanceFamilyKey],
+  );
+  const enhanceOn = resolveEnhancePrompt({
+    capability: upsamplerCapability,
+    stored: enhanceChoices[enhanceFamilyKey],
+    override: enhanceOverride,
+  });
+  const changeEnhancePrompt = useCallback(
+    (on: boolean) => {
+      setEnhanceOverride(null);
+      setEnhanceChoices((all) =>
+        withEnhanceChoice(all, enhanceFamilyKey, on, upsamplerCapability.defaultOn),
+      );
+    },
+    [enhanceFamilyKey, setEnhanceOverride, upsamplerCapability.defaultOn],
   );
   useEffect(() => {
     if (!controlnetSupported) {
@@ -2567,7 +2625,7 @@ export function ImagesPage({
     [dropFromStrip],
   );
 
-  const restoreSettings = useCallback((image: GalleryImage) => {
+  const restoreSettings = useCallback((image: GalleryImage, exactCaption = false) => {
     const viaConnection = image.model_kind === "connection";
     // Negative prompt only applies when guidance>0; do not restore a hidden value.
     const restoredNegative = image.guidance > 0 ? (image.negative_prompt ?? "") : "";
@@ -2617,7 +2675,11 @@ export function ImagesPage({
     const reopened: WorkflowId =
       image.workflow === "edit" ? "edit" : image.workflow === "reference" ? "reference" : "create";
     setWorkflow(reopened);
-    setPromptFor(reopened, image.prompt);
+    // An enhanced run restores the user's prompt with Enhance prompt on, or (exactCaption) the caption it ran with
+    // the toggle off. Records without an outcome leave the toggle alone.
+    const enhanceRestore = enhanceRestoreFor(image, exactCaption);
+    setPromptFor(reopened, enhanceRestore.prompt);
+    if (enhanceRestore.enhance !== null) setEnhanceOverride(enhanceRestore.enhance);
     setInitImage(null);
     setMaskImage(null);
     setReferenceImages(
@@ -2647,7 +2709,7 @@ export function ImagesPage({
     } else {
       toast.success("Settings restored to inputs", rescaled);
     }
-  }, [changeSamplerChoice, samplerOptions.length, setPromptFor, setWorkflow, sizeLimits]);
+  }, [changeSamplerChoice, samplerOptions.length, setEnhanceOverride, setPromptFor, setWorkflow, sizeLimits]);
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
@@ -4733,6 +4795,7 @@ export function ImagesPage({
             allow_oversized: allowOversizedSent ? true : undefined,
             live_preview: livePreview,
             ...samplerRequestFields(samplerOptions, samplerChoice),
+            ...enhancePromptRequestField(upsamplerCapability, enhanceOn),
             ...condFields,
             // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only
             // adapters that applied. Gated on loraCapable, since a restore can leave adapters in state.
@@ -4779,6 +4842,11 @@ export function ImagesPage({
         setImages((prev) => mergeGenerated(prev, res.images));
         res.images.forEach((image) => knownIds.add(image.id));
         if (res.images[0]) setSelectedId(res.images[0].id);
+        // Asked for enhancement and did not get it: say so once, without blocking the result.
+        if (enhanceOn && upsamplerCapability.supported) {
+          const notice = enhancementNotice(res.images[0]?.prompt_enhancement);
+          if (notice) toast.info(notice.title, { id: "prompt-enhancement-notice", description: notice.description });
+        }
         res.images.forEach((image) => void ensureSrc(image));
         setGenDone(i + 1);
       }
@@ -4820,7 +4888,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, allowOversized, livePreview, prompt, negativePrompt, negativeCapable, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeCapable, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -5776,6 +5844,29 @@ export function ImagesPage({
                 onChange={(e) => setPrompt(e.target.value)}
               />
             </Field>
+            {upsamplerCapability.supported && (
+              <EnhancePromptControls
+                enabled={enhanceOn}
+                onEnabledChange={changeEnhancePrompt}
+                prompt={prompt}
+                previewRequest={() => {
+                  // Edit and Reference condition on their images, so the caption describes them too.
+                  const conditioned = workflow === "edit" || workflow === "reference";
+                  const images = conditioned
+                    ? [initImage, ...referenceImages].filter((src): src is string => Boolean(src))
+                    : [];
+                  return {
+                    prompt: prompt.trim(),
+                    variant: upsamplerVariantFor(status?.family),
+                    ...(images.length ? { reference_images: images } : {}),
+                  };
+                }}
+                onUseCaption={(caption) => {
+                  setPrompt(caption);
+                  setEnhanceOverride(false);
+                }}
+              />
+            )}
             {negativeCapable && (
               <NegativePromptField
                 value={negativePrompt}
