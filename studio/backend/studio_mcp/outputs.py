@@ -96,12 +96,29 @@ class ImageSlot(ToolOutput):
     loaded: bool = False
     model: Optional[RouteText] = None
     family: Optional[RouteText] = None
+    # What the loaded model runs, e.g. txt2img, img2img, inpaint, edit, reference.
+    workflows: list[RouteText] = []
+    # The steps and guidance an omitted value resolves to.
+    generation_defaults: Optional[dict[str, Union[StrictInt, StrictFloat]]] = None
+    # Width and height must be multiples of this.
+    dimension_multiple: Optional[int] = None
+    # init_image plus reference_images together hold at most this many images.
+    max_condition_images: Optional[int] = None
+    # How the loaded model reads prompts, in one or two sentences.
+    prompt_hint: Optional[RouteText] = None
     generating: bool = False
 
 
 class VideoSlot(ToolOutput):
     loaded: bool = False
     model: Optional[RouteText] = None
+    # How the loaded model reads prompts, in one or two sentences.
+    prompt_hint: Optional[RouteText] = None
+    supports_last_frame: bool = False
+    # Whether the loaded model takes reference_images and reference_audios.
+    references: bool = False
+    # "WIDTHxHEIGHT" sizes the loaded model renders.
+    size_presets: list[RouteText] = []
     generating: bool = False
 
 
@@ -253,6 +270,9 @@ class ImageItem(ToolOutput):
     width: Optional[int] = None
     height: Optional[int] = None
     seed: Optional[int] = None
+    # Set on images from a seeds or prompts batch: the image's own seed and its place in the batch.
+    batch_seed: Optional[int] = None
+    batch_index: Optional[int] = None
 
 
 class ImageResult(ToolOutput):
@@ -296,6 +316,8 @@ class VideoJobRef(ToolOutput):
     model: Optional[RouteText] = None
     seconds: Optional[RouteText] = None
     size: Optional[RouteText] = None
+    # Pass it again with the same settings to repeat this take.
+    seed: Optional[int] = None
 
 
 class VideoInfo(ToolOutput):
@@ -341,6 +363,8 @@ class ExportInfo(ToolOutput):
 class JobStatus(ToolOutput):
     kind: RouteText
     id: Optional[RouteText] = None
+    # A video job's seed.
+    seed: Optional[int] = None
     status: Optional[RouteText] = None
     progress_percent: Optional[float] = None
     error: Optional[RouteText] = None

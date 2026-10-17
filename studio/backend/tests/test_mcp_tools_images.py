@@ -95,7 +95,15 @@ def test_txt2img_returns_ids_urls_and_inline_images(monkeypatch):
     remote = "http://192.168.1.20:8888" + GALLERY
     assert result["structuredContent"] == {
         "images": [
-            {"id": i, "url": f"{remote}/{i}/file", "width": side, "height": side, "seed": seed}
+            {
+                "id": i,
+                "url": f"{remote}/{i}/file",
+                "width": side,
+                "height": side,
+                "seed": seed,
+                "batch_seed": None,
+                "batch_index": None,
+            }
             for i, side, seed in (("img-small", 512, 1), ("img-large", 1024, 2))
         ]
     }
@@ -117,6 +125,81 @@ def test_txt2img_returns_ids_urls_and_inline_images(monkeypatch):
     for headers in fetches:
         assert headers["authorization"] == "Bearer sk-unsloth-test"
         assert headers["host"] == "unsloth-mcp.invalid"
+
+
+REFUSALS = {
+    "R1": "Reference needs init_image: pass the hero as init_image plus reference_images.",
+    "R2": 'workflow="edit" needs init_image: it is the image the instruction changes.',
+    "R3": 'workflow="outpaint" needs init_image: it is the image to extend.',
+    "R4": 'workflow="outpaint" needs mask_image: white marks the padded border to fill.',
+    "R5": "upscale must be above 1 (up to 4); for a same-size redraw leave upscale out and set strength.",
+}
+
+
+@pytest.mark.parametrize(
+    "refusal,args",
+    [
+        ("R1", {"reference_images": [PNG_URL]}),
+        ("R1", {"reference_images": [{"gallery_id": "ref-1"}]}),
+        ("R1", {"workflow": "reference"}),
+        ("R1", {"workflow": "reference", "reference_images": [{"gallery_id": "ref-1"}]}),
+        ("R2", {"workflow": "edit"}),
+        ("R3", {"workflow": "outpaint"}),
+        ("R4", {"workflow": "outpaint", "init_image": PNG_URL}),
+        ("R4", {"workflow": "outpaint", "init_image": {"gallery_id": "src-1"}}),
+        ("R5", {"init_image": PNG_URL, "upscale": 1}),
+        ("R5", {"init_image": {"gallery_id": "src-1"}, "upscale": 0.5}),
+    ],
+)
+def test_a_workflow_missing_its_images_is_refused_before_any_call(monkeypatch, refusal, args):
+    result, studio = _generate(monkeypatch, {"prompt": "the same knight", **args})
+    assert result["isError"] is True
+    assert REFUSALS[refusal] in result["content"][0]["text"]
+    # Refused before resolve_image, so a gallery_id input is never fetched.
+    assert studio.state.calls == []
+
+
+def test_upscale_without_init_image_keeps_its_own_refusal(monkeypatch):
+    result, studio = _generate(monkeypatch, {"prompt": "x", "upscale": 1})
+    assert result["isError"] is True
+    assert result["content"][0]["text"].startswith("upscale needs init_image")
+    assert studio.state.calls == []
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"workflow": "reference", "init_image": PNG_URL, "reference_images": [PNG_URL]},
+        {"init_image": PNG_URL, "reference_images": [PNG_URL, PNG_URL]},
+        {"workflow": "outpaint", "init_image": PNG_URL, "mask_image": PNG_URL},
+        {"init_image": PNG_URL, "mask_image": PNG_URL},
+        {"workflow": "edit", "init_image": PNG_URL},
+        {"init_image": PNG_URL, "upscale": 2},
+    ],
+)
+def test_workflows_with_their_images_send_the_same_body(monkeypatch, args):
+    result, studio = _generate(monkeypatch, {"prompt": "x", **args})
+    assert result["isError"] is False
+    png = data_url(PNG, "image/png")
+    images = {
+        key: [png] * len(value) if isinstance(value, list) else png
+        for key, value in args.items()
+        if key in ("init_image", "mask_image", "reference_images")
+    }
+    assert bodies(studio, "/api/inference/images/generate") == [{"prompt": "x", **args, **images}]
+
+
+def test_seeds_and_prompts_make_a_batch_and_rows_carry_their_batch_fields(monkeypatch):
+    rows = [
+        {**_image("img-small", 512, 11), "batch_seed": 11, "batch_index": 0},
+        {**_image("img-large", 1024, 12), "batch_seed": 12, "batch_index": 1},
+    ]
+    args = {"prompt": "a fox", "seeds": [11, 12], "prompts": ["a fox", "a fox at night"]}
+    result, studio = _generate(monkeypatch, args, {GENERATE: {"images": rows}})
+    assert result["isError"] is False
+    assert bodies(studio, "/api/inference/images/generate") == [args]
+    images = result["structuredContent"]["images"]
+    assert [(i["batch_seed"], i["batch_index"]) for i in images] == [(11, 0), (12, 1)]
 
 
 def test_a_thumbnail_studio_could_not_make_keeps_its_png_type(monkeypatch):

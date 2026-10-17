@@ -237,6 +237,8 @@ class VideoFamily:
     # True when the pipeline returns synchronized audio (LTX-2): export muxes the track and size estimates count the
     # audio VAE + vocoder.
     has_audio: bool = False
+    # One or two sentences on how this family reads prompts; None when it has no quirks.
+    prompt_hint: Optional[str] = None
     # Wan2.2-A14B dual-expert MoE: a second DiT handles the low-noise steps with its own guidance kwarg
     transformer2_class: Optional[str] = None
     is_moe: bool = False
