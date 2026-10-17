@@ -281,30 +281,11 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
 // has spoken; a filled arc never moves on its own.
 const RING = 232;
 const RING_R = 106;
-// Exact thirds that meet with no gap; the judge owns the left third, the filler
-// the top-right, the mid-think call the bottom-right. Each arc is a filled band
-// whose ends are cut on a slant, so the three seams read as bevels.
+// Three thirds with rounded ends and a small gap at each seam; the judge owns the
+// left third, the filler the top-right, the mid-think call the bottom-right.
 const ARC_DEG = 120;
 const RING_W = 5;
-const BEVEL_DEG = 2.4;
-
-/** A band of the ring from `start` to `end` (degrees, clockwise from 12), ends cut on a slant. */
-function bandPath(c: number, start: number, end: number): string {
-  const ro = RING_R + RING_W / 2;
-  const ri = RING_R - RING_W / 2;
-  const pt = (r: number, deg: number): string => {
-    const a = (deg * Math.PI) / 180;
-    return `${(c + Math.sin(a) * r).toFixed(2)} ${(c - Math.cos(a) * r).toFixed(2)}`;
-  };
-  const large = end - start > 180 ? 1 : 0;
-  return [
-    `M ${pt(ro, start + BEVEL_DEG)}`,
-    `A ${ro} ${ro} 0 ${large} 1 ${pt(ro, end + BEVEL_DEG)}`,
-    `L ${pt(ri, end - BEVEL_DEG)}`,
-    `A ${ri} ${ri} 0 ${large} 0 ${pt(ri, start - BEVEL_DEG)}`,
-    "Z",
-  ].join(" ");
-}
+const GAP_DEG = 7;
 const ARCS: Array<{ key: keyof VoiceDecisions; start: number; color: string; label: string }> = [
   { key: "turn", start: 180, color: "#fb7185", label: "turn" },
   { key: "filler", start: 300, color: "#38bdf8", label: "filler" },
@@ -322,6 +303,9 @@ const VoiceDecisionRing: FC = () => {
   const d = useVoiceDecisions();
   // The canvas is wider than the ring so the labels outside it are never clipped.
   const PAD = 110;
+  const circ = 2 * Math.PI * RING_R;
+  // The gap is split between both ends, and a round cap adds half the width on each side.
+  const arcLen = (circ * (ARC_DEG - GAP_DEG)) / 360 - RING_W;
   const SIZE = RING + PAD * 2;
   const C = SIZE / 2;
   const fill = (key: keyof VoiceDecisions): number => {
@@ -375,14 +359,32 @@ const VoiceDecisionRing: FC = () => {
                 {value}
               </text>
             )}
-            <path d={bandPath(C, arc.start, arc.start + ARC_DEG)} fill={arc.color} fillOpacity={0.22} />
-            {v > 0 && (
-              <path
-                d={bandPath(C, arc.start, arc.start + ARC_DEG * v)}
-                fill={arc.color}
-                style={{ transition: "opacity 220ms ease-out" }}
+            <g transform={`rotate(${arc.start + GAP_DEG / 2 - 90} ${C} ${C})`}>
+              <circle
+                cx={C}
+                cy={C}
+                r={RING_R}
+                fill="none"
+                stroke={arc.color}
+                strokeOpacity={0.18}
+                strokeWidth={RING_W}
+                strokeLinecap="round"
+                strokeDasharray={`${arcLen} ${circ}`}
               />
-            )}
+              {v > 0 && (
+                <circle
+                  cx={C}
+                  cy={C}
+                  r={RING_R}
+                  fill="none"
+                  stroke={arc.color}
+                  strokeWidth={RING_W}
+                  strokeLinecap="round"
+                  strokeDasharray={`${Math.max(1, arcLen * v)} ${circ}`}
+                  style={{ transition: "stroke-dasharray 320ms ease-out" }}
+                />
+              )}
+            </g>
           </g>
         );
       })}

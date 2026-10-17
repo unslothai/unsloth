@@ -931,7 +931,7 @@ export const VoiceMuteButton: FC = () => {
     setMicMuted(muted);
   }, [muted]);
   useEffect(() => {
-    if (voiceMode !== "active") return;
+    if (voiceMode === "off") return;
     const onKey = (event: KeyboardEvent) => {
       if (!event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
       if (event.key.toLowerCase() !== "m") return;
@@ -941,7 +941,8 @@ export const VoiceMuteButton: FC = () => {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [voiceMode, setVoiceMuted]);
-  if (voiceMode !== "active") return null;
+  // Shown from the moment voice mode is armed, so the mic can be muted while the models load.
+  if (voiceMode === "off") return null;
   const label = muted ? "Unmute microphone (Ctrl+M)" : "Mute microphone (Ctrl+M)";
   return (
     <TooltipIconButton
