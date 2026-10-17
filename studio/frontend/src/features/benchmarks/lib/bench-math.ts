@@ -844,6 +844,8 @@ export interface RunMeta {
   os?: string | null;
   cpuThreads?: number | null;
   ramGb?: number | null;
+  /** Other generations the server took while this sweep held it; they share its slots and GPU. */
+  outsideRequests?: number | null;
 }
 
 export interface BenchConfig {
@@ -1225,11 +1227,15 @@ export function footerLines(run: BenchRun): string[] {
     m.studioVersion ? `Unsloth ${m.studioVersion}` : "",
     new Date(run.createdAt).toISOString().slice(0, 10),
   ].filter(Boolean);
+  const outside = m.outsideRequests ?? 0;
   return [
     what.join(" · "),
     baseLine(run.base, run.config.variants),
     machine.join(" · "),
     build.join(" · "),
+    outside > 0
+      ? `${outside} other request${outside === 1 ? "" : "s"} reached the server during this run, so some rows may read slow`
+      : "",
   ].filter(Boolean);
 }
 

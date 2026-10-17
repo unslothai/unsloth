@@ -43,6 +43,8 @@ export interface RunnerEvents {
   onRestoreError?: (message: string) => void;
   /** False once another runner holds the lease: its loads own the server, so skip the restore. */
   ownsServer?: () => boolean;
+  /** Sent with every generation so the server can tell the sweep's own traffic from anyone else's. */
+  leaseHolder?: string;
 }
 
 export class BenchSetupError extends Error {}
@@ -187,11 +189,15 @@ async function streamOnce(
   config: BenchConfig,
   sampling: ChatSampling,
   signal: AbortSignal,
+  leaseHolder?: string,
 ): Promise<Completion> {
   const started = performance.now();
   const res = await authFetch("/v1/chat/completions", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(leaseHolder ? { "X-Unsloth-Bench-Lease": leaseHolder } : {}),
+    },
     body: JSON.stringify({
       model,
       messages: [{ role: "user", content: prompt }],
@@ -473,7 +479,14 @@ export async function runBenchmark(
             signal,
             "A generation",
             (s) =>
-              streamOnce(modelId, prompts[promptIndex], config, sampling, s),
+              streamOnce(
+                modelId,
+                prompts[promptIndex],
+                config,
+                sampling,
+                s,
+                events.leaseHolder,
+              ),
           );
         } catch (err) {
           if (signal.aborted) throw abortError();

@@ -281,7 +281,7 @@ export const useBenchmarksStore = create<BenchmarksState>()(
             return { live: { run, progress: progress ?? s.live.progress } };
           });
         try {
-          const run = await runBenchmark(
+          const measured = await runBenchmark(
             effective,
             {
               // Copy results: the runner keeps pushing into its own array and also emits
@@ -303,9 +303,16 @@ export const useBenchmarksStore = create<BenchmarksState>()(
                   error: `The run finished but your chat model could not be restored: ${message}`,
                 }),
               ownsServer: () => leaseLost === null,
+              leaseHolder: holder,
             },
             runController.signal,
           );
+          const outside = leaseLost
+            ? 0
+            : await takeBenchLease(holder).catch(() => 0);
+          const run: BenchRun = outside
+            ? { ...measured, meta: { ...measured.meta, outsideRequests: outside } }
+            : measured;
           // Keep the run when it measured rows, or when it only produced failure/skip
           // diagnostics, so those reasons survive in History. A bare cancel is dropped.
           const worthSaving =

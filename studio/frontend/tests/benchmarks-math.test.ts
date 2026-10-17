@@ -215,6 +215,10 @@ test("the markdown export carries provenance and the rows that did not run", () 
     "AMD Radeon AI PRO R9700 32 GB · Vulkan",
     "llama.cpp b10840 · 2026-09-10",
   ]);
+  assert.equal(
+    footerLines({ ...run, meta: { ...run.meta, outsideRequests: 2 } }).at(-1),
+    "2 other requests reached the server during this run, so some rows may read slow",
+  );
   const md = toMarkdown(run, aggregate(run.results, run.config.variants, OFF.label));
   assert.match(md, /\| MTP · 3 draft tokens \| 56\.0 tok\/s \| \+93% \|/);
   assert.match(md, /- DFlash · 3 draft tokens: skipped, this model ships no drafter for this mode/);
