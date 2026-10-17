@@ -4,6 +4,7 @@
 import { isTauri } from "@/lib/api-base";
 import {
   clearAuthTokens,
+  getAuthToken,
   hasAuthToken,
   hasRefreshToken,
   mustChangePassword,
@@ -11,7 +12,8 @@ import {
   storeAuthTokens,
 } from "./session";
 import { refreshSession } from "./api";
-import { setLoginMode } from "./login-client";
+import { sessionAccount } from "./account-session";
+import { fetchAuthStatus } from "./login-client";
 import {
   OWNER_BROWSER_ACCOUNT,
   transitionBrowserAccount,
@@ -102,12 +104,30 @@ async function doTauriAutoAuth(options: TauriAutoAuthOptions): Promise<boolean> 
       return options.force === true;
     }
     tauriLoginRequired = false;
+    // The secret answers for the shell, not for whoever signed in to the document: a managed
+    // session that still refreshes keeps the webview, as it does on the login_required path.
+    if (
+      sessionAccount(getAuthToken())?.isOwner === false &&
+      hasRefreshToken() &&
+      (await refreshSession()) &&
+      hasAuthToken()
+    ) {
+      tauriLoginRequired = true;
+      clearTauriAuthFailure();
+      if (mustChangePassword()) {
+        const { router } = await import("@/app/router");
+        await router.navigate({ to: "/change-password", replace: true });
+      }
+      return true;
+    }
     // Owner tokens after the last managed account is deleted must not inherit its browser data.
     await transitionBrowserAccount(OWNER_BROWSER_ACCOUNT, "/chat", () => {
       storeAuthTokens(tokens.access_token, tokens.refresh_token);
       setMustChangePassword(false);
-      setLoginMode("single");
     });
+    // Owner tokens no longer imply a one-account install: the owner keeps signing in while the
+    // bootstrap password stands, so the login mode has to come from the server.
+    await fetchAuthStatus().catch(() => undefined);
     clearTauriAuthFailure();
     return true;
   } catch (error) {

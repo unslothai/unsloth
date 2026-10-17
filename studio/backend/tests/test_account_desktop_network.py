@@ -120,6 +120,46 @@ def test_desktop_single_response_bytes_and_return_to_single(monkeypatch):
     )
 
 
+def seed_owner_on_bootstrap_password():
+    storage.delete_user(storage.DEFAULT_ADMIN_USERNAME)
+    storage.create_initial_user(
+        storage.DEFAULT_ADMIN_USERNAME,
+        "bootstrap-password",
+        secrets.token_urlsafe(32),
+        must_change_password = True,
+    )
+
+
+def test_desktop_multi_signs_the_owner_in_while_the_bootstrap_password_stands():
+    """A managed account alone must not lock the desktop owner out: until the owner sets a password
+    no credential could complete the login the multi-account refusal asks for."""
+    seed_owner_on_bootstrap_password()
+    raw = storage.create_desktop_secret()
+    add_managed()
+    assert policy.installation_is_multi_user()
+    with client() as http:
+        response = http.post("/api/auth/desktop-login", json = {"secret": raw})
+        assert response.status_code == 200
+        tokens = response.json()
+        assert tokens["account_id"] == "owner" and tokens["must_change_password"] is False
+        owner = http.get("/owner", headers = {"Authorization": f"Bearer {tokens['access_token']}"})
+        assert owner.status_code == 200 and owner.json() == {"account_id": "owner"}
+        assert http.post("/api/auth/desktop-login", json = {"secret": raw + "x"}).status_code == 401
+
+
+def test_desktop_multi_asks_for_a_login_once_the_owner_sets_a_password():
+    seed_owner_on_bootstrap_password()
+    raw = storage.create_desktop_secret()
+    add_managed()
+    with client() as http:
+        assert "access_token" in http.post("/api/auth/desktop-login", json = {"secret": raw}).json()
+        assert storage.update_password(
+            storage.DEFAULT_ADMIN_USERNAME, "chosen-password", preserve_desktop_secret = True
+        )
+        response = http.post("/api/auth/desktop-login", json = {"secret": raw})
+        assert response.json() == {"login_required": True, "login_mode": "multi"}
+
+
 @pytest.mark.parametrize("desktop", [False, True])
 def test_managed_account_cannot_set_desktop_initial_password(desktop):
     add_managed(must_change = True)
