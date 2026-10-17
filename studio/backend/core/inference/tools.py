@@ -16738,6 +16738,12 @@ def _fetch_url_raw(
             if not ok and not (named and reason.startswith(_RESOLVE_FAILED)):
                 return reason, "", ""
             if named:
+                from .browser_agent import _host_problem
+
+                # The proxy resolves what it gets, so a local name must not reach it, as in the desktop's page proxy.
+                local = _host_problem(current_host)
+                if local:
+                    return f"Blocked: {local}.", "", ""
                 # Enterprise proxies need the hostname in CONNECT for policy and TLS interception, and they resolve
                 # it, so nothing rebinds behind us.
                 request_url = urlunparse(cp._replace(netloc = validated_netloc))

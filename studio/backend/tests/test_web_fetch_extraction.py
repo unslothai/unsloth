@@ -2207,6 +2207,56 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(
         assert handler._origin == ("example.com" if named else None)
 
 
+@pytest.mark.parametrize(
+    "host",
+    ["intranet", "printer.local", "nas.lan", "router.home.arpa", "home.arpa", "wiki.intranet"],
+)
+def test_fetch_url_raw_named_proxy_fetch_refuses_local_names(monkeypatch, host):
+    import socket
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    import core.inference.tools as tools_mod
+
+    seen = []
+
+    class Proxy(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            seen.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    for name in ("NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy"):
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{server.server_address[1]}")
+    monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{server.server_address[1]}")
+    real_getaddrinfo = socket.getaddrinfo
+
+    def nxdomain(name, *args, **kwargs):
+        if name == host:
+            raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+        return real_getaddrinfo(name, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", nxdomain)
+    try:
+        err, _, _ = tools_mod._fetch_url_raw(
+            f"http://{host}/page",
+            deadline = time.monotonic() + 4,
+            proxy_hostname = True,
+        )
+    finally:
+        server.shutdown()
+    assert err == f"Blocked: {host} is a local name."
+    assert seen == []
+
+
 def test_fetch_url_raw_proxy_scheme_key_case_insensitive(monkeypatch):
     # A Windows registry ProxyServer value keeps the case it was written in, so
     # getproxies can return "HTTPS". ProxyHandler lowercases its keys, so an
