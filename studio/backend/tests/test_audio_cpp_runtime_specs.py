@@ -201,6 +201,23 @@ def test_a_hub_download_job_is_refused_on_an_old_runtime(monkeypatch, tmp_path):
     with pytest.raises(HTTPException) as refused:
         asyncio.run(downloads._audio_cpp_target(model.id, "Q8_0", persist = True))
     assert refused.value.status_code == 409 and refused.value.detail == MESSAGE
+    # A cached model whose companion is missing is refused too: the job would fetch the companion.
+    codec = replace(_model("MioCodec-GGUF", "miocodec", "codec"), from_hub = True)
+    tts = replace(
+        _model("MioTTS-GGUF", "miotts", "tts"),
+        from_hub = True,
+        companions = (acm.CompanionModel(codec.id, "Q8_0", "codec_model"),),
+    )
+    monkeypatch.setattr(acm, "resolve", lambda ident, *a, **kw: codec if ident == codec.id else tts)
+    monkeypatch.setattr(
+        audio_cpp_files,
+        "missing_files",
+        lambda m, *, hub_cache = None: [] if m is tts else [("codec.gguf", 4)],
+    )
+    with pytest.raises(HTTPException, match = "409"):
+        asyncio.run(downloads._audio_cpp_target(tts.id, "Q8_0", persist = True))
+    monkeypatch.setattr(acm, "resolve", lambda *a, **kw: model)
+    _missing(monkeypatch, [("x.gguf", 4)])
     # Status and progress polls resolve the same row without the gate.
     assert asyncio.run(downloads._audio_cpp_target(model.id, "Q8_0"))[0] == model.repo_id
 

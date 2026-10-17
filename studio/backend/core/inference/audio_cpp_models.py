@@ -2757,9 +2757,22 @@ def download_target(
             AudioCppRuntimeTooOldError,
             stale_runtime_download_problem,
         )
-        problem = stale_runtime_download_problem(model)
-        if problem:
-            raise AudioCppRuntimeTooOldError(problem)
+
+        # The planner adds the companions' files (MioTTS's MioCodec) to the same job.
+        checked = [model]
+        for companion in model.companions:
+            try:
+                found = resolve(
+                    companion.id, companion.variant, hf_token, network = not hub_offline()
+                )
+            except Exception:  # noqa: BLE001 - the planner reports a companion it cannot find
+                found = None
+            if found is not None:
+                checked.append(found)
+        for item in checked:
+            problem = stale_runtime_download_problem(item)
+            if problem:
+                raise AudioCppRuntimeTooOldError(problem)
     from hub.utils.gguf import gguf_variant_key
 
     key = gguf_variant_key(model.variant.primary)
