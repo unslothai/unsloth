@@ -18474,6 +18474,7 @@ async def load_model_gated(
     evicted: list[str] = []
     # Every model this load unloads, as {kind, model}: kept slots dropped here and anything the arbiter evicts.
     evicted_slots: list[dict] = []
+    idle_unloaded = 0
     sink_token = None
     attempt = _begin_load_attempt(request, current_subject)
     with _scoped_load_attempts_lock:
@@ -18493,6 +18494,8 @@ async def load_model_gated(
             sink_token = eviction_sink.set(evicted_slots)
             # Chosen under the gate, so two loads cannot both claim an empty primary.
             extra = await _select_load_slot(request)
+            # Idle kept models the pick unloaded (setting off) have no entry in ``evicted`` yet.
+            idle_unloaded = len(evicted_slots)
             new_slot = extra is not None and extra not in model_slots.slots
             if new_slot:
                 model_slots.slots.append(extra)
@@ -18627,11 +18630,11 @@ async def load_model_gated(
         # it is a plain attribute write and holding the gate for it would only widen
         # the window that blocks unload.
         get_llama_cpp_backend()._loaded_by_user_action = user_initiated
-        # Media a chat load freed is listed too, under its model id.
+        # Idle kept models the pick unloaded and media a chat load freed are listed too, under their model ids.
         evicted += [
             slot["model"]
-            for slot in evicted_slots
-            if slot.get("kind") in ("image", "video") and slot.get("model")
+            for index, slot in enumerate(evicted_slots)
+            if slot.get("model") and (index < idle_unloaded or slot.get("kind") in ("image", "video"))
         ]
         if isinstance(response, LoadResponse):
             if evicted:
