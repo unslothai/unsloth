@@ -153,11 +153,11 @@ test("each variant sends its extra args explicitly, so ngram tuning never leaks 
 test("a fallen-back or silently kept load is caught before it is measured", () => {
   assert.equal(servedMismatch(MTP3, { speculative_type: "mtp" }), null);
   assert.equal(servedMismatch(MTP3, { speculative_type: "default", spec_fallback_reason: "binary_no_mtp" }), "this llama.cpp build has no MTP support");
-  assert.equal(servedMismatch(MTP3, { speculative_type: "ngram" }), "Studio served ngram instead of mtp");
+  assert.equal(servedMismatch(MTP3, { speculative_type: "ngram" }), "The server ran ngram instead of mtp");
   // A KV row never picked a mode, so an old fallback on the base load is not its problem.
   const kv: Variant = { label: "KV cache q4_0", load: { cache_type_kv: "q4_0" } };
   assert.equal(servedMismatch(kv, { spec_fallback_reason: "binary_no_mtp", cache_type_kv: "q4_0" }), null);
-  assert.equal(servedMismatch(kv, { cache_type_kv: "f16" }), "Studio served KV f16 instead of q4_0");
+  assert.equal(servedMismatch(kv, { cache_type_kv: "f16" }), "The server ran KV f16 instead of q4_0");
 });
 
 test("custom prompts split on --- lines", () => {
@@ -215,6 +215,10 @@ test("the markdown export carries provenance and the rows that did not run", () 
     "AMD Radeon AI PRO R9700 32 GB · Vulkan",
     "llama.cpp b10840 · 2026-09-10",
   ]);
+  assert.equal(
+    footerLines({ ...run, meta: { ...run.meta, outsideRequests: 2 } }).at(-1),
+    "2 other requests reached the server during this run, so some rows may read slow",
+  );
   const md = toMarkdown(run, aggregate(run.results, run.config.variants, OFF.label));
   assert.match(md, /\| MTP · 3 draft tokens \| 56\.0 tok\/s \| \+93% \|/);
   assert.match(md, /- DFlash · 3 draft tokens: skipped, this model ships no drafter for this mode/);
@@ -270,7 +274,7 @@ test("offload rows scale to the MoE layer count and run from the least VRAM to t
   assert.deepEqual(
     rows.map((r) => r.label),
     [
-      "Studio auto",
+      "Auto fit",
       "Experts on CPU · all 40 layers",
       "Experts on CPU · 30 of 40 layers",
       "Experts on CPU · 20 of 40 layers",
@@ -291,7 +295,7 @@ test("a dense model gets GPU layer steps, and an unknown shape still gets sensib
   assert.deepEqual(
     dense.map((r) => r.label),
     [
-      "Studio auto",
+      "Auto fit",
       "GPU layers · 10 of 40",
       "GPU layers · 20 of 40",
       "GPU layers · 30 of 40",
@@ -324,7 +328,7 @@ test("the fastest tile names the baseline when nothing beats it, and the ratio d
     auto.label,
   );
   const hl = highlights(rows);
-  assert.equal(hl.best?.label, "Studio auto");
+  assert.equal(hl.best?.label, "Auto fit");
   assert.ok(hl.speedup !== null && hl.speedup < 0.05);
 });
 
@@ -346,10 +350,10 @@ test("offload rows are skipped on a virtualised Mac GPU, where every load runs o
     label: "12 layers on GPU",
     load: { gpu_memory_mode: "manual", gpu_layers: 12, n_cpu_moe: 0 },
   };
-  const auto: Variant = { label: "Studio auto", load: { gpu_memory_mode: "auto", gpu_layers: -1 } };
+  const auto: Variant = { label: "Auto fit", load: { gpu_memory_mode: "auto", gpu_layers: -1 } };
   assert.equal(
     servedMismatch(manual, { gpu_placement_paravirtual: true }),
-    "this Mac's GPU is virtualised, so Studio runs every load on the CPU",
+    "this Mac's GPU is virtualised, so every load runs on the CPU",
   );
   assert.equal(servedMismatch(manual, { gpu_placement_paravirtual: false }), null);
   assert.equal(servedMismatch(auto, { gpu_placement_paravirtual: true }), null);
@@ -359,7 +363,7 @@ test("a context row served with a smaller window is skipped, not charted at its 
   const ctx128k: Variant = { label: "128K", load: { max_seq_length: 131072 } };
   assert.equal(
     servedMismatch(ctx128k, { context_length: 65536 }),
-    "Studio served a 65536-token context instead of 131072",
+    "The server ran a 65536-token context instead of 131072",
   );
   assert.equal(servedMismatch(ctx128k, { context_length: 131072 }), null);
   assert.equal(servedMismatch(ctx128k, {}), null);

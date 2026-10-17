@@ -68,10 +68,11 @@ export async function deleteBenchRun(id: string): Promise<void> {
 /** Another runner holds the lease: renewing a held one means this run lost the server. */
 export class BenchLeaseHeldError extends Error {}
 
+/** Resolves to how many other generations reached the server under this lease so far. */
 export async function takeBenchLease(
   holder: string,
   kind: "sweep" | "llama-bench" | "evals" = "sweep",
-): Promise<void> {
+): Promise<number> {
   const res = await authFetch("/api/benchmarks/lease", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -84,6 +85,8 @@ export async function takeBenchLease(
     );
   }
   if (!res.ok) throw new Error(`Starting the run failed (${res.status})`);
+  const body = await res.json().catch(() => null);
+  return typeof body?.outside === "number" ? body.outside : 0;
 }
 
 export async function releaseBenchLease(holder: string): Promise<void> {

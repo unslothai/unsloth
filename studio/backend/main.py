@@ -1722,6 +1722,10 @@ from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware  # noqa: E402
 
 app.add_middleware(LlamaKeepWarmMiddleware)
 
+from routes.benchmarks import BenchmarkTrafficMiddleware  # noqa: E402
+
+app.add_middleware(BenchmarkTrafficMiddleware)
+
 
 from starlette.responses import RedirectResponse as _RedirectResponse  # noqa: E402
 

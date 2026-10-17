@@ -152,8 +152,14 @@ def take_lease(lease: BenchmarkLease, current_subject: str = Depends(get_current
                     "Stop it or let it finish first.",
                 },
             )
-        _lease = {"holder": lease.holder, "kind": lease.kind, "expires": now + LEASE_TTL_SECONDS}
-    return {"ttl": LEASE_TTL_SECONDS}
+        outside = _lease["outside"] if _lease and _lease["holder"] == lease.holder else 0
+        _lease = {
+            "holder": lease.holder,
+            "kind": lease.kind,
+            "expires": now + LEASE_TTL_SECONDS,
+            "outside": outside,
+        }
+    return {"ttl": LEASE_TTL_SECONDS, "outside": outside}
 
 
 @router.delete("/lease", status_code = 204)
@@ -164,3 +170,38 @@ def release_lease(
     with _lease_lock:
         if _lease and _lease["holder"] == holder:
             _lease = None
+
+
+LEASE_HEADER = b"x-unsloth-bench-lease"
+
+
+def note_inference_request(holder: Optional[str]) -> None:
+    """Count a generation that is not the sweep's own while a sweep holds the server."""
+    with _lease_lock:
+        if (
+            _lease
+            and _lease["kind"] == "sweep"
+            and _lease["expires"] > time.monotonic()
+            and holder != _lease["holder"]
+        ):
+            _lease["outside"] += 1
+
+
+class BenchmarkTrafficMiddleware:
+    """Pure ASGI: a sweep shares the one llama-server, so other traffic during it is counted and
+    shown with the run instead of being refused."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if _lease is not None and scope.get("type") == "http" and scope.get("method") == "POST":
+            from core.inference.llama_keepwarm import _is_inference_path
+
+            if _is_inference_path(scope.get("path") or ""):
+                holder = next(
+                    (v.decode("latin-1") for k, v in scope.get("headers") or () if k.lower() == LEASE_HEADER),
+                    None,
+                )
+                note_inference_request(holder)
+        await self.app(scope, receive, send)

@@ -195,3 +195,25 @@ def test_an_abandoned_lease_expires(monkeypatch):
         lambda: now + benchmarks_routes.LEASE_TTL_SECONDS + 1,
     )
     assert client.post("/api/benchmarks/lease", json = {"holder": "tab-bbbbbbbb"}).status_code == 200
+
+
+def test_other_traffic_during_a_sweep_is_counted_on_its_lease(monkeypatch):
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(benchmarks_routes.router, prefix = "/api/benchmarks")
+    app.post("/v1/chat/completions")(lambda: {})
+    app.add_middleware(benchmarks_routes.BenchmarkTrafficMiddleware)
+    client = TestClient(app)
+    mine = {"holder": "tab-aaaaaaaa", "kind": "sweep"}
+
+    client.post("/v1/chat/completions")  # no lease yet: nothing to count
+    assert client.post("/api/benchmarks/lease", json = mine).json()["outside"] == 0
+    client.post("/v1/chat/completions", headers = {"X-Unsloth-Bench-Lease": mine["holder"]})
+    client.post("/v1/chat/completions")
+    client.post("/v1/chat/completions", headers = {"X-Unsloth-Bench-Lease": "tab-bbbbbbbb"})
+    # Renewing keeps the count; a new holder starts from zero.
+    assert client.post("/api/benchmarks/lease", json = mine).json()["outside"] == 2
+    client.delete("/api/benchmarks/lease", params = {"holder": mine["holder"]})
+    other = {"holder": "tab-cccccccc", "kind": "sweep"}
+    assert client.post("/api/benchmarks/lease", json = other).json()["outside"] == 0
