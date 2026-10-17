@@ -235,7 +235,7 @@ export function McpAccessSection({
                           )}
                         >
                           {os === option.os && (
-                            <SegmentedPill layoutId={`${pillId}-shell`} />
+                            <SegmentedPill group={`${pillId}-shell`} />
                           )}
                           {t(option.labelKey)}
                         </button>

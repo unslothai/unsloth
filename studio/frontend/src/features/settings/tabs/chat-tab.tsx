@@ -555,7 +555,7 @@ export function ChatTab() {
                 )}
               >
                 {autoScrollWhileGenerating === follow && (
-                  <SegmentedPill layoutId={`${pillId}-auto-scroll`} />
+                  <SegmentedPill group={`${pillId}-auto-scroll`} />
                 )}
                 {t(
                   follow

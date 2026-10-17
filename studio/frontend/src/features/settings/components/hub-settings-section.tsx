@@ -164,7 +164,7 @@ export function HubSettingsSection() {
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
-                {active && <SegmentedPill layoutId={`${pillId}-source`} />}
+                {active && <SegmentedPill group={`${pillId}-source`} />}
                 <span className="relative z-10">{option.label}</span>
               </button>
             );

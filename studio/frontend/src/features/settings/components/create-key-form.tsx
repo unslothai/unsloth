@@ -72,7 +72,7 @@ export function CreateKeyForm({
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
-                {active && <SegmentedPill layoutId={`${pillId}-expiry`} />}
+                {active && <SegmentedPill group={`${pillId}-expiry`} />}
                 {p.value === null ? t("settings.apiKeys.never") : p.label}
               </button>
             );

@@ -2,7 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { cn } from "@/lib/utils";
-import type { ReactNode } from "react";
+import { type ReactNode, useId } from "react";
+import { SegmentedPill } from "./segmented-control";
 import {
   type SegmentedSize,
   segmentedSegmentLabel,
@@ -33,6 +34,7 @@ export function SegmentedTabsList<T extends string>({
   size?: SegmentedSize;
   className?: string;
 }) {
+  const pillId = useId();
   return (
     <TabsList
       unstyled={true}
@@ -50,8 +52,7 @@ export function SegmentedTabsList<T extends string>({
             key={option.value}
             value={option.value}
             disabled={option.disabled}
-            // TabsTrigger's own layoutId pill, in the segmented look.
-            indicatorClassName="hub-tab-toggle-pill pointer-events-none rounded-full"
+            indicator={<SegmentedPill group={`${pillId}-pill`} />}
             className={cn(
               "relative h-full min-w-0 flex-1 cursor-pointer rounded-full border-0 py-0",
               segmentedSegmentLabel,

@@ -1167,7 +1167,7 @@ export function AgentsTab() {
             )}
           >
             {commandOs === "unix" && (
-              <SegmentedPill layoutId={`${pillId}-shell`} />
+              <SegmentedPill group={`${pillId}-shell`} />
             )}
             {t("settings.apiKeys.osUnix")}
           </button>
@@ -1187,7 +1187,7 @@ export function AgentsTab() {
             )}
           >
             {commandOs === "windows" && (
-              <SegmentedPill layoutId={`${pillId}-shell`} />
+              <SegmentedPill group={`${pillId}-shell`} />
             )}
             {t("settings.apiKeys.osWindows")}
           </button>

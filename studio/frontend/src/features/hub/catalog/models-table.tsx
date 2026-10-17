@@ -91,7 +91,7 @@ function ViewToggleButton({
               : "text-muted-foreground hover:text-foreground",
           )}
         >
-          {active && <SegmentedPill layoutId={pillId} />}
+          {active && <SegmentedPill group={pillId} />}
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-3.5" />
         </button>
       </TooltipTrigger>

@@ -2,14 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { cn } from "@/lib/utils";
-import { motion } from "motion/react";
-import { type ReactNode, useId } from "react";
+import { type ReactNode, useId, useLayoutEffect, useRef } from "react";
 import {
-  SEGMENTED_PILL_SPRING,
   type SegmentedSize,
   segmentedSegmentLabel,
   segmentedTrackHeight,
 } from "./segmented-control-styles";
+import { watchSegmentedPill } from "./segmented-pill-slide";
 
 interface SegmentedControlOption<T extends string> {
   value: T;
@@ -17,30 +16,53 @@ interface SegmentedControlOption<T extends string> {
   disabled?: boolean;
 }
 
+const HIDDEN = { display: "none" } as const;
+
 /** The selected segment's pill. Render it inside the active (`relative`)
- *  segment only. The shared `layoutId` (unique per control) slides it from the
- *  old segment to the new one, like the Settings sidebar; MotionConfig turns
- *  that off under reduced motion. It sits at -z-10 in the track, so the track
- *  must isolate (`.hub-tab-toggle` does) and the segments must not: a segment
- *  with its own stacking context lets the sliding pill cover its neighbours'
- *  labels. */
+ *  segment only, with a `group` id unique to the control: when the selection
+ *  moves, the new pill slides in from the old one's place on the compositor
+ *  (see segmented-pill-slide), or appears in place under reduced motion. It
+ *  sits at -z-10 in the track, so the track must isolate (`.hub-tab-toggle`
+ *  does) and the segments must not: a segment with its own stacking context
+ *  lets the sliding pill cover its neighbours' labels. */
 export function SegmentedPill({
-  layoutId,
+  group,
   className,
 }: {
-  layoutId: string;
+  group: string;
   className?: string;
 }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    if (!ref.current) return;
+    return watchSegmentedPill(group, ref.current);
+  }, [group]);
   return (
-    <motion.span
+    <span
+      ref={ref}
       aria-hidden="true"
-      layoutId={layoutId}
-      transition={SEGMENTED_PILL_SPRING}
       className={cn(
         "hub-tab-toggle-pill pointer-events-none absolute inset-0 -z-10 rounded-full",
         className,
       )}
-    />
+    >
+      {/* Shown only while sliding between segments of different widths:
+          the pill's shadow, then its fill. */}
+      <span
+        className={cn(
+          "hub-tab-toggle-pill absolute inset-y-0 left-0 rounded-full",
+          className,
+        )}
+        style={HIDDEN}
+      />
+      <span
+        className={cn(
+          "hub-tab-toggle-pill absolute inset-0 rounded-full",
+          className,
+        )}
+        style={HIDDEN}
+      />
+    </span>
   );
 }
 
@@ -84,7 +106,7 @@ export function SegmentedControl<T extends string>({
               option.disabled && "cursor-not-allowed opacity-50",
             )}
           >
-            {active && <SegmentedPill layoutId={`${name}-pill`} />}
+            {active && <SegmentedPill group={`${name}-pill`} />}
             <input
               type="radio"
               name={name}

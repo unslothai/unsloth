@@ -90,7 +90,7 @@ export function TransportToggle() {
                 )}
               >
                 {active && !disabled && (
-                  <SegmentedPill layoutId={`${pillId}-transport`} />
+                  <SegmentedPill group={`${pillId}-transport`} />
                 )}
                 {opt.label}
               </button>

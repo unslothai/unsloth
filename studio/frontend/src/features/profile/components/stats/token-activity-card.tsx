@@ -477,7 +477,7 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
                 )}
               >
                 {mode === option && (
-                  <SegmentedPill layoutId={`${pillId}-mode`} />
+                  <SegmentedPill group={`${pillId}-mode`} />
                 )}
                 {t(`settings.profile.stats.mode.${option}`)}
               </button>

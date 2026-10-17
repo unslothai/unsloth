@@ -93,9 +93,13 @@ export function PillTabs({
               : "text-muted-foreground hover:text-foreground",
           )}
         >
-          {value === tab.value && <SegmentedPill layoutId={`${pillId}-pill`} />}
+          {value === tab.value && <SegmentedPill group={`${pillId}-pill`} />}
           {tab.icon}
-          <span className="min-w-0 truncate">{tab.label}</span>
+          {/* Consumers target the label by this marker; a bare `> span`
+              would also match the pill. */}
+          <span data-pill-tab-label className="min-w-0 truncate">
+            {tab.label}
+          </span>
         </button>
       ))}
     </div>

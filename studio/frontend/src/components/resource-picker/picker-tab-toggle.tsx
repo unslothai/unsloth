@@ -79,7 +79,7 @@ export function PickerTabToggle<T extends string>({
                 : "text-muted-foreground hover:text-foreground",
             )}
           >
-            {selected && <SegmentedPill layoutId={`${pillId}-pill`} />}
+            {selected && <SegmentedPill group={`${pillId}-pill`} />}
             {entry.label}
           </button>
         );

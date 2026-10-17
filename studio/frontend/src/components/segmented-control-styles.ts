@@ -10,11 +10,3 @@ export const segmentedTrackHeight: Record<SegmentedSize, string> = {
 
 export const segmentedSegmentLabel =
   "whitespace-nowrap px-3 text-ui-12p5" as const;
-
-/** Spring the design system gives segmented controls (design.md, 2.5 Motion). */
-export const SEGMENTED_PILL_SPRING = {
-  type: "spring",
-  stiffness: 500,
-  damping: 35,
-  mass: 0.5,
-} as const;

@@ -124,7 +124,7 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
                   )}
                 >
                   {prefs.followUpBehavior === behavior && (
-                    <SegmentedPill layoutId={`${pillId}-follow-up`} />
+                    <SegmentedPill group={`${pillId}-follow-up`} />
                   )}
                   {t(
                     behavior === "queue"

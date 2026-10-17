@@ -282,7 +282,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
               : "text-muted-foreground hover:text-foreground",
           )}
         >
-          {tab === "discover" && <SegmentedPill layoutId={viewPillId} />}
+          {tab === "discover" && <SegmentedPill group={viewPillId} />}
           Discover
         </button>
         <button
@@ -297,7 +297,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
               : "text-muted-foreground hover:text-foreground",
           )}
         >
-          {tab === "downloaded" && <SegmentedPill layoutId={viewPillId} />}
+          {tab === "downloaded" && <SegmentedPill group={viewPillId} />}
           On Device
         </button>
       </div>

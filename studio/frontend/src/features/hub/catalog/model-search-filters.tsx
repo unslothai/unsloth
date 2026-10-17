@@ -471,7 +471,7 @@ function SegmentedRow<T extends string>({
             >
               {active && (
                 <SegmentedPill
-                  layoutId={`${pillId}-segment`}
+                  group={`${pillId}-segment`}
                   className="dark:bg-[color-mix(in_srgb,var(--accent),white_8%)]!"
                 />
               )}

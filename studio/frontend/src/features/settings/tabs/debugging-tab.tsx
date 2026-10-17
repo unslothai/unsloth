@@ -589,7 +589,7 @@ export function DebuggingTab() {
                         : "text-muted-foreground hover:text-foreground",
                     )}
                   >
-                    {active && <SegmentedPill layoutId={`${pillId}-mode`} />}
+                    {active && <SegmentedPill group={`${pillId}-mode`} />}
                     <span className="relative z-10">
                       {modeLabel(candidate)}
                     </span>

@@ -967,7 +967,7 @@ export function UsageExamples({
                       : "text-muted-foreground hover:text-foreground",
                   )}
                 >
-                  {active && <SegmentedPill layoutId={`${pillId}-lang`} />}
+                  {active && <SegmentedPill group={`${pillId}-lang`} />}
                   {labelKey ? t(labelKey) : tab.label}
                 </button>
               );
@@ -991,7 +991,7 @@ export function UsageExamples({
               )}
             >
               {os === "unix" && (
-                <SegmentedPill layoutId={`${pillId}-os`} />
+                <SegmentedPill group={`${pillId}-os`} />
               )}
               {t("settings.apiKeys.osUnix")}
             </button>
@@ -1010,7 +1010,7 @@ export function UsageExamples({
               )}
             >
               {os === "windows" && (
-                <SegmentedPill layoutId={`${pillId}-os`} />
+                <SegmentedPill group={`${pillId}-os`} />
               )}
               {t("settings.apiKeys.osWindows")}
             </button>
@@ -1078,7 +1078,7 @@ export function UsageExamples({
                       : "text-muted-foreground hover:text-foreground",
                   )}
                 >
-                  {active && <SegmentedPill layoutId={`${pillId}-agent`} />}
+                  {active && <SegmentedPill group={`${pillId}-agent`} />}
                   {AGENT_LABELS[id] ?? id}
                   {installed ? (
                     <span

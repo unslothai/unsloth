@@ -279,7 +279,7 @@ export function ProfilePersonalizationPanel() {
                       )}
                     >
                       {avatarShape === shape && (
-                        <SegmentedPill layoutId={`${pillId}-avatar-shape`} />
+                        <SegmentedPill group={`${pillId}-avatar-shape`} />
                       )}
                       {shape === "circle"
                         ? t("settings.profile.avatarShapeCircle")

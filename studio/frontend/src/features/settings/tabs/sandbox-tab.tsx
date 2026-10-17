@@ -309,7 +309,7 @@ function PermissionsSection() {
                     : "text-muted-foreground hover:text-foreground disabled:hover:text-muted-foreground",
                 )}
               >
-                {selected && <SegmentedPill layoutId={`${pillId}-level`} />}
+                {selected && <SegmentedPill group={`${pillId}-level`} />}
                 {t(SANDBOX_LEVEL_TEXT[level].name)}
               </button>
             );

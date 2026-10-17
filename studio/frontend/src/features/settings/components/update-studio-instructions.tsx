@@ -176,12 +176,12 @@ function UpdateDocsLinks(): ReactElement {
 function ShellToggleButton({
   active,
   label,
-  pillLayoutId,
+  pillGroup,
   onClick,
 }: {
   active: boolean;
   label: string;
-  pillLayoutId: string;
+  pillGroup: string;
   onClick: () => void;
 }): ReactElement {
   return (
@@ -196,7 +196,7 @@ function ShellToggleButton({
           : "cursor-pointer text-muted-foreground hover:text-foreground",
       )}
     >
-      {active && <SegmentedPill layoutId={pillLayoutId} />}
+      {active && <SegmentedPill group={pillGroup} />}
       {label}
     </button>
   );
@@ -273,13 +273,13 @@ export function UpdateStudioInstructions({
           <ShellToggleButton
             active={!windows}
             label="MacOS / Linux"
-            pillLayoutId={`${pillId}-shell`}
+            pillGroup={`${pillId}-shell`}
             onClick={() => setShellOverride("unix")}
           />
           <ShellToggleButton
             active={windows}
             label="Windows"
-            pillLayoutId={`${pillId}-shell`}
+            pillGroup={`${pillId}-shell`}
             onClick={() => setShellOverride("windows")}
           />
         </div>

@@ -162,7 +162,7 @@ export function DownloadTransportRow() {
                   )}
                 >
                   {active && !disabled && (
-                    <SegmentedPill layoutId={`${pillId}-transport`} />
+                    <SegmentedPill group={`${pillId}-transport`} />
                   )}
                   <span className="relative z-10">{t(opt.labelKey)}</span>
                 </button>

@@ -74,12 +74,12 @@ const RUN_LABEL: Record<AudioRunWorkflow, TranslationKey> = {
 
 function Pill({
   active,
-  pillLayoutId,
+  pillGroup,
   onClick,
   children,
 }: {
   active: boolean;
-  pillLayoutId: string;
+  pillGroup: string;
   onClick: () => void;
   children: ReactNode;
 }) {
@@ -95,7 +95,7 @@ function Pill({
           : "text-muted-foreground hover:text-foreground",
       )}
     >
-      {active && <SegmentedPill layoutId={pillLayoutId} />}
+      {active && <SegmentedPill group={pillGroup} />}
       {children}
     </button>
   );
@@ -270,7 +270,7 @@ export function AudioApiExamples({
               <Pill
                 key={id}
                 active={tab === id}
-                pillLayoutId={`${pillId}-tab`}
+                pillGroup={`${pillId}-tab`}
                 onClick={() => {
                   setTab(id);
                   setStoredTab(id);
@@ -285,7 +285,7 @@ export function AudioApiExamples({
               <Pill
                 key={item.id}
                 active={lang === item.id}
-                pillLayoutId={`${pillId}-lang`}
+                pillGroup={`${pillId}-lang`}
                 onClick={() => {
                   setLang(item.id);
                   const stored = audioLangToStore(
@@ -306,7 +306,7 @@ export function AudioApiExamples({
               <Pill
                 key={id}
                 active={run === id}
-                pillLayoutId={`${pillId}-run`}
+                pillGroup={`${pillId}-run`}
                 onClick={() => setRun(id)}
               >
                 {t(RUN_LABEL[id])}
@@ -318,7 +318,7 @@ export function AudioApiExamples({
           <div className="isolate flex min-w-0 items-center gap-0.5 border-b border-border px-2 py-1.5">
             <Pill
               active={os === "unix"}
-              pillLayoutId={`${pillId}-os`}
+              pillGroup={`${pillId}-os`}
               onClick={() => {
                 setOs("unix");
                 setStoredOs("unix");
@@ -328,7 +328,7 @@ export function AudioApiExamples({
             </Pill>
             <Pill
               active={os === "windows"}
-              pillLayoutId={`${pillId}-os`}
+              pillGroup={`${pillId}-os`}
               onClick={() => {
                 setOs("windows");
                 setStoredOs("windows");
