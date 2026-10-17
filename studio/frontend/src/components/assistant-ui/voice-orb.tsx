@@ -321,7 +321,7 @@ function arcValue(d: VoiceDecisions, key: keyof VoiceDecisions): string {
 const VoiceDecisionRing: FC = () => {
   const d = useVoiceDecisions();
   // The canvas is wider than the ring so the labels outside it are never clipped.
-  const PAD = 56;
+  const PAD = 110;
   const SIZE = RING + PAD * 2;
   const C = SIZE / 2;
   const fill = (key: keyof VoiceDecisions): number => {
