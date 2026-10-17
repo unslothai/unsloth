@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import os
 import platform
+import re
+import shutil
 import sys
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -23,6 +26,10 @@ _INSTALL_TIMEOUT_SECONDS = 1800
 # setup.sh / setup.ps1 leave the managed tree alone when any of these is set, so an update would not take effect.
 _SETUP_SKIP_VARS = ("AUDIOCPP_SERVER_PATH", "UNSLOTH_AUDIO_CPP_PATH")
 _EXIT_BUSY = 3
+_COMMIT = re.compile(r"[0-9a-f]{7,40}")
+_VERSION_COMMIT = re.compile(r"^git: ([0-9a-f]{7,40})\b", re.MULTILINE)
+_backfill_started = False
+_backfill_lock = threading.Lock()
 
 
 class _AudioPhaseError(RuntimeError):
@@ -405,3 +412,77 @@ def run_chained_phase(phase: dict, set_progress) -> dict:
             return _install(phase, set_progress, unloaded)
     finally:
         audio_cpp_server.UPDATE_IN_PROGRESS.clear()
+
+
+def _spec_commit(installer, record: dict, repo: str, tag: str) -> Optional[str]:
+    """The source commit the install was built from: the record, the release manifest, else the server version string."""
+    commit = record.get("source_commit")
+    if isinstance(commit, str) and _COMMIT.fullmatch(commit):
+        return commit
+    try:
+        commit = (installer._release_index(repo, tag) or {}).get("source_commit")
+    except Exception as exc:  # noqa: BLE001 - offline or rate-limited; try the version string
+        logger.debug("audio.cpp spec backfill: release lookup failed", error = str(exc))
+        commit = None
+    if isinstance(commit, str) and _COMMIT.fullmatch(commit):
+        return commit
+    version = record.get("server_version")
+    match = _VERSION_COMMIT.search(version) if isinstance(version, str) else None
+    return match.group(1) if match else None
+
+
+def _backfill_model_specs() -> bool:
+    """Fetch ``model_specs/`` for a managed install made before the installer fetched it. Returns
+    whether the folder was added; never raises."""
+    from core.inference import audio_cpp_server
+    try:
+        binary = audio_cpp_server.find_audio_cpp_server_binary()
+        if not binary or not _is_managed(binary) or audio_cpp_server.UPDATE_IN_PROGRESS.is_set():
+            return False
+        bin_dir = Path(binary).parent
+        record = audio_cpp_server.read_install_record(binary)
+        tag = _tag(record)
+        repo = record.get("published_repo")
+        if tag is None or not isinstance(repo, str) or (bin_dir / "model_specs").exists():
+            return False
+        installer = _installer()
+        commit = _spec_commit(installer, record, repo, tag)
+        if commit is None:
+            logger.info("audio.cpp spec backfill: no source commit", tag = tag)
+            return False
+        core = installer.core
+        managed_dir = audio_cpp_server.managed_audio_cpp_dir().resolve()
+        with core.install_lock(core.install_lock_path(managed_dir), timeout = 2):
+            # An update may have replaced the tree while the lock was taken.
+            if audio_cpp_server.UPDATE_IN_PROGRESS.is_set() or (bin_dir / "model_specs").exists():
+                return False
+            if audio_cpp_server.read_install_record(binary).get("release_tag") != tag:
+                return False
+            for leftover in bin_dir.glob(".model_specs-*"):
+                # From a fetch killed mid-way; only the exact name model_specs is ever read.
+                shutil.rmtree(leftover, ignore_errors = True)
+            if not installer._fetch_model_specs(repo, commit, bin_dir):
+                logger.info("audio.cpp spec backfill: fetch failed", tag = tag)
+                return False
+        from core.inference import audio_cpp_models
+
+        audio_cpp_models.forget()
+        logger.info("audio.cpp spec backfill: added model_specs", tag = tag, commit = commit)
+        return True
+    except Exception as exc:  # noqa: BLE001 - families stay unknown, as before
+        logger.debug("audio.cpp spec backfill failed", error = str(exc))
+        return False
+
+
+def start_model_specs_backfill() -> None:
+    """Run the spec backfill once per process on a daemon thread, unless update checks are disabled."""
+    global _backfill_started
+    if update_checks_disabled():
+        return
+    with _backfill_lock:
+        if _backfill_started:
+            return
+        _backfill_started = True
+    threading.Thread(
+        target = _backfill_model_specs, daemon = True, name = "audio-cpp-spec-backfill"
+    ).start()

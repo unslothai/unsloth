@@ -42,6 +42,7 @@ import argparse
 import datetime
 import fnmatch
 import glob
+import hashlib
 import json
 import os
 import platform
@@ -54,6 +55,7 @@ import tempfile
 import urllib.error
 import urllib.request
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -528,6 +530,7 @@ def _release_index(
                     if isinstance(a, dict) and isinstance(a.get("name"), str)
                 ],
                 "checksums": None,
+                "source_commit": None,
             }
     else:
         release = {
@@ -542,6 +545,7 @@ def _release_index(
                 for a in bundle.manifest.get("artifacts") or []
             ],
             "checksums": checksums,
+            "source_commit": bundle.manifest.get("source_commit"),
         }
     _RELEASE_INDEX_MEMO[key] = release
     return release
@@ -675,6 +679,92 @@ def _extract(archive: Path, target: Path) -> None:
                 if link != base and base not in link.parents:
                     raise RuntimeError(f"unsafe link in archive: {member.name!r}")
         tf.extractall(target)
+
+
+MODEL_SPECS_DIR = "model_specs"
+_COMMIT = re.compile(r"[0-9a-f]{7,40}")
+_REPO_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+_SPEC_NAME = re.compile(r"[a-z0-9_]+\.json")
+# The specs are optional, so a network that blocks GitHub costs one short try, not retries.
+_SPEC_TIMEOUT = 10
+
+
+def _spec_tree(repo: str, commit: str) -> object:
+    """The GitHub trees listing of ``model_specs/`` at ``commit`` (one API call)."""
+    url = f"https://api.github.com/repos/{repo}/git/trees/{commit}:{MODEL_SPECS_DIR}"
+    data = core.download_bytes(
+        _OPS, url, timeout = _SPEC_TIMEOUT, attempts = 1, headers = _OPS.github_api_headers(url)
+    )
+    return json.loads(data.decode("utf-8"))
+
+
+def _spec_blob(repo: str, commit: str, name: str) -> bytes:
+    url = f"https://raw.githubusercontent.com/{repo}/{commit}/{MODEL_SPECS_DIR}/{name}"
+    return core.download_bytes(_OPS, url, timeout = _SPEC_TIMEOUT, attempts = 1)
+
+
+def _spec_bytes(repo: str, commit: str, name: str, blob_sha: str) -> bytes:
+    data = _spec_blob(repo, commit, name)
+    got = hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+    if got != blob_sha:
+        raise RuntimeError(f"{name}: git blob sha {got} != {blob_sha}")
+    if not isinstance(json.loads(data.decode("utf-8")), dict):
+        raise RuntimeError(f"{name} is not a JSON object")
+    return data
+
+
+def _fetch_model_specs(repo: str, commit: Optional[str], dest_dir: Path) -> bool:
+    """Put audio.cpp's ``model_specs/*.json`` at ``commit`` into ``dest_dir/model_specs``, the folder
+    Unsloth Studio reads to tell which model families this runtime loads. All or nothing: every file is
+    checked against its git blob sha and must parse, else no folder is left. Never raises; True when
+    the folder is there afterwards (one already present is kept as is, with no network call).
+
+    Always by commit (the manifest's ``source_commit``), never the release tag: the fork's release
+    tags all point at its packaging commit, whose ``model_specs`` is an older tree."""
+    dest_dir = Path(dest_dir)
+    dest = dest_dir / MODEL_SPECS_DIR
+    if dest.is_dir():
+        return True
+    if not isinstance(commit, str) or not _COMMIT.fullmatch(commit):
+        log("no source commit for this release; model specs not fetched")
+        return False
+    if not isinstance(repo, str) or not _REPO_NAME.fullmatch(repo):
+        log(f"unexpected repo {repo!r}; model specs not fetched")
+        return False
+    tmp = None
+    try:
+        tree = _spec_tree(repo, commit)
+        if not isinstance(tree, dict) or tree.get("truncated") or not tree.get("tree"):
+            raise RuntimeError("empty or truncated model_specs listing")
+        entries = {
+            e["path"]: e["sha"]
+            for e in tree["tree"]
+            if isinstance(e, dict)
+            and e.get("type") == "blob"
+            and isinstance(e.get("path"), str)
+            and _SPEC_NAME.fullmatch(e["path"])
+            and isinstance(e.get("sha"), str)
+        }
+        if not entries:
+            raise RuntimeError("no spec files in the model_specs listing")
+        with ThreadPoolExecutor(max_workers = 8) as pool:
+            blobs = dict(
+                zip(
+                    entries,
+                    pool.map(lambda item: _spec_bytes(repo, commit, *item), entries.items()),
+                )
+            )
+        tmp = Path(tempfile.mkdtemp(prefix = ".model_specs-", dir = str(dest_dir)))
+        for name, data in blobs.items():
+            (tmp / name).write_bytes(data)
+        os.replace(tmp, dest)
+        tmp = None
+    except Exception as exc:  # noqa: BLE001 - offline, 404, rate limit, bad blob: install goes on
+        log(f"model specs at {commit[:12]} not fetched ({exc})")
+    finally:
+        if tmp is not None:
+            shutil.rmtree(tmp, ignore_errors = True)
+    return dest.is_dir()
 
 
 def _locate_server(root: Path) -> Optional[Path]:
@@ -1166,12 +1256,19 @@ def _install_locked(
             extra_dirs = _cuda_runtime_dirs(backend),
             require_vulkan_device = requested == "auto" and backend == "vulkan",
         )
+        # Next to the server (bin/ in Windows bundles), where Unsloth Studio looks for it. A failed
+        # fetch only leaves the families unknown, so it never fails the install.
+        source_commit = release.get("source_commit")
+        if _fetch_model_specs(repo, source_commit, server.parent):
+            specs = len(list((server.parent / MODEL_SPECS_DIR).glob("*.json")))
+            print(f"audio.cpp: {specs} model specs beside the server", flush = True)
         (tree / OWNERSHIP_MARKER).touch()
         record = {
             "schema_version": 1,
             "component": "audio.cpp",
             "published_repo": repo,
             "release_tag": tag,
+            "source_commit": source_commit,
             "asset": chosen,
             "asset_sha256": digest,
             "cudart_asset": cudart_used,

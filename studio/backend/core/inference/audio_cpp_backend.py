@@ -403,12 +403,77 @@ class AudioCppBackend:
 
     def _ensure_downloaded(self, model: AudioCppModel, hf_token: Optional[str]) -> bool:
         """Fetch what the model and its companions still lack; True when the model's own files were."""
+        from core.inference.audio_cpp_server import stale_runtime_download_problem
+
+        companions = [
+            (companion, _resolve_companion(model, companion, hf_token, network = True))
+            for companion in model.companions
+        ]
+        # The model itself passed model_runtime_problem; its companions download separately.
+        for _companion, companion_model in companions:
+            problem = stale_runtime_download_problem(companion_model)
+            if problem:
+                raise RuntimeError(problem)
         fetched = self._download_missing(model, hf_token)
-        for companion in model.companions:
-            companion_model = _resolve_companion(model, companion, hf_token, network = True)
+        for companion, companion_model in companions:
             if self._download_missing(companion_model, hf_token):
                 forget(companion.id)
         return fetched
+
+    @staticmethod
+    def _rebuild_header_only(
+        model: AudioCppModel,
+        path: str,
+        hf_token: Optional[str],
+        cache_dir: str,
+        cancel_event = None,
+    ) -> bool:
+        """Place a republished GGUF whose tensors are unchanged from the cached older copy, fetching
+        only its new header. False means download it as usual; never raises."""
+        try:
+            from hub.utils import gguf_header_delta as delta
+            from core.inference.audio_cpp_models import hub_offline, snapshot_dirs
+
+            if (
+                hub_offline()
+                or not path.lower().endswith(".gguf")
+                or not delta.delta_enabled()
+                or (cancel_event is not None and cancel_event.is_set())
+            ):
+                return False
+            if not any((s / path).is_file() for s in snapshot_dirs(model.repo_id, Path(cache_dir))):
+                return False
+            from huggingface_hub import get_hf_file_metadata, hf_hub_url
+            from huggingface_hub.file_download import (
+                _cache_commit_hash_for_specific_revision,
+                repo_folder_name,
+            )
+
+            token = hf_token or None
+            meta = get_hf_file_metadata(hf_hub_url(model.repo_id, path), token = token, timeout = 10)
+            etag = (getattr(meta, "etag", None) or "").strip('"').lower()
+            listed = next((f.sha256 for f in model.variant.files if f.path == path), "")
+            commit = getattr(meta, "commit_hash", None) or ""
+            if (listed and listed != etag) or not commit:
+                return False
+            # Pinned to the new commit: refs/main still names the old snapshot, which holds this path.
+            result = delta.prepare_media_gguf(
+                model.repo_id,
+                path,
+                token,
+                revision = commit,
+                cache_dir = cache_dir,
+                cancel_event = cancel_event,
+                metadata_fn = lambda: meta,
+            )
+            if not result.placed:
+                return False
+            repo_dir = Path(cache_dir) / repo_folder_name(repo_id = model.repo_id, repo_type = "model")
+            _cache_commit_hash_for_specific_revision(str(repo_dir), "main", commit)
+            return True
+        except Exception as exc:  # noqa: BLE001 - an optimisation only: the normal download follows
+            logger.info("audio.cpp: header-only rebuild of %s skipped: %s", path, exc)
+            return False
 
     @staticmethod
     def _download_missing(
@@ -424,6 +489,15 @@ class AudioCppBackend:
         from utils.hf_cache_settings import active_hf_hub_cache
 
         cache_dir = str(active_hf_hub_cache())
+        rebuilt = [
+            path
+            for path, _size in missing
+            if AudioCppBackend._rebuild_header_only(model, path, hf_token, cache_dir, cancel_event)
+        ]
+        if rebuilt:
+            # refs/main now names the rebuilt files' commit; the variant's unchanged files are linked
+            # into it from blobs already on disk.
+            missing = audio_cpp_files.missing_files(model)
         for path, _size in missing:
             if cancel_event is not None and cancel_event.is_set():
                 raise AudioCppRequestCancelledError("Request cancelled.")

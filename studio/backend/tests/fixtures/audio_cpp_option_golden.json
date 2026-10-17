@@ -96,6 +96,9 @@
   "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF": [
    {"exclude":["language","return_timestamps","seed"],"include":{"speed":{"default":1.0},"text_chunk_size":{"default":240},"voice":{"default":"af_heart"}},"optional":{},"workflow":"speak"}
   ],
+  "audio-cpp/audio.cpp-gguf/KugelAudio-0-Open-GGUF": [
+   {"exclude":[],"include":{"do_sample":{"default":false},"guidance_scale":{"default":3.0},"max_tokens":{"default":2048},"num_inference_steps":{"default":20},"temperature":{"default":1.0},"text_chunk_mode":{"default":"default"},"text_chunk_size":{"default":300},"voice":{"default":"default"}},"optional":{"voice_id":{"default":"default"}},"workflow":"speak"}
+  ],
   "audio-cpp/audio.cpp-gguf/MOSS-TTS-Local-v1.5-GGUF": [
    {"exclude":[],"include":{"do_sample":{"default":true},"max_tokens":{"default":4096},"repetition_penalty":{"default":1.0},"temperature":{"default":1.7},"text_temperature":{"default":1.0},"top_k":{"default":25},"top_p":{"default":0.8}},"optional":{},"workflow":"speak"},
    {"exclude":["voice"],"include":{"do_sample":{"default":true},"max_tokens":{"default":4096},"repetition_penalty":{"default":1.0},"temperature":{"default":1.7},"text_temperature":{"default":1.0},"top_k":{"default":25},"top_p":{"default":0.8}},"optional":{},"workflow":"clone"}
@@ -184,6 +187,9 @@
   "audio-cpp/audio.cpp-gguf/VoxCPM2-GGUF": [
    {"exclude":["prompt_text"],"include":{"guidance_scale":{"default":2.0},"min_tokens":{"default":2},"num_inference_steps":{"default":10},"retry_badcase":{"default":true},"retry_badcase_max_times":{"default":3},"retry_badcase_ratio_threshold":{"default":6.0},"text_chunk_mode":{"default":"tag_aware"}},"optional":{"max_tokens":{"default":null}},"workflow":"speak"},
    {"exclude":["prompt_text","voice"],"include":{"guidance_scale":{"default":2.0},"min_tokens":{"default":2},"num_inference_steps":{"default":10},"retry_badcase":{"default":true},"retry_badcase_max_times":{"default":3},"retry_badcase_ratio_threshold":{"default":6.0},"text_chunk_mode":{"default":"tag_aware"}},"optional":{"max_tokens":{"default":null}},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Voxtral-4B-TTS-2603-GGUF": [
+   {"exclude":["voice"],"include":{"guidance_scale":{"default":1.2},"max_tokens":{"default":2048},"num_inference_steps":{"default":7},"text_chunk_mode":{"default":"default"},"text_chunk_size":{"default":300},"voice_id":{"default":"casual_male","values":["casual_female","casual_male","cheerful_female","neutral_female","neutral_male","pt_male","pt_female","nl_male","nl_female","it_male","it_female","fr_male","fr_female","es_male","es_female","de_male","de_female","ar_male","hi_male","hi_female"]}},"optional":{},"workflow":"speak"}
   ]
  }
 }

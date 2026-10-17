@@ -125,6 +125,9 @@ def _nemotron_language(language: str, code: str) -> Optional[str]:
 
 def _runtime_language(family: str, language: Optional[str]) -> Optional[str]:
     """``language`` in the form ``family`` reads it, or None to let the model detect it."""
+    if family in ("owsm", "owsm_ctc"):
+        # OWSM takes ISO 639-3 codes ("<en>" fails) and defaults to English; detect instead.
+        return "auto"
     code = normalize_whisper_language(language)
     if not code:
         return None
@@ -485,6 +488,11 @@ class _AudioCppDownloadState:
         repo = None
         try:
             model = resolve_audio_cpp_stt_model(model_id, network = True, hf_token = hf_token)
+            problem = audio_cpp_server.stale_runtime_download_problem(
+                model, None, hub_cache = hub_cache
+            )
+            if problem:
+                raise SttModelIdError(problem)
             repo = model.repo_id
             if not repo:
                 raise RuntimeError("a local model file has nothing to download")
@@ -1036,9 +1044,13 @@ class AudioCppSttSidecar:
                     on_phase = on_phase,
                 )
                 _notify(on_phase, "transcribing")
+                # A strict spec without a language option (Hviske-v6) has no use for one.
+                keys = entry.request_keys
                 payload = self._post_details(
                     path,
-                    _runtime_language(entry.family, language),
+                    _runtime_language(entry.family, language)
+                    if keys is None or "language" in keys
+                    else None,
                     cancel_event,
                     dict(_TIMESTAMP_OPTIONS) if aligned else {},
                 )

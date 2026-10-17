@@ -64,6 +64,10 @@ class AudioCppUnavailableError(RuntimeError):
     """audiocpp_server is missing, failed to start, or stopped answering."""
 
 
+class AudioCppRuntimeTooOldError(AudioCppUnavailableError):
+    """The installed runtime is older than the GGUFs a download would fetch."""
+
+
 class AudioCppStartCancelledError(RuntimeError):
     """A start was cancelled (training pre-empted it, or Unsloth is shutting down)."""
 
@@ -161,6 +165,26 @@ def read_install_record(binary: str) -> dict:
     return {}
 
 
+# audio.cpp v0.9.2 validates requests against its own model_specs/ before a GGUF's embedded
+# spec, renamed several options, and reads the refreshed GGUFs' new option names.
+SPEC_FIRST_RUNTIME = (0, 9, 2)
+
+
+def runtime_release_key(binary: Optional[str] = None) -> Optional[tuple[int, int, int]]:
+    """``(major, minor, patch)`` of the installed prebuilt runtime, or None for a custom build or
+    an unreadable tag. Reads only the install record, so it is safe on hot paths."""
+    try:
+        binary = binary if binary is not None else find_audio_cpp_server_binary()
+        if not binary:
+            return None
+        from utils.audio_cpp_freshness import parse_release_version
+
+        key = parse_release_version(read_install_record(binary).get("release_tag"))
+    except Exception:  # noqa: BLE001 - an unknown runtime is not an old one
+        return None
+    return tuple(key[:3]) if key else None
+
+
 def is_available() -> bool:
     return find_audio_cpp_server_binary() is not None
 
@@ -194,6 +218,33 @@ def binary_has_espeak(binary: Optional[str]) -> bool:
 UPDATE_IN_PROGRESS = threading.Event()
 
 
+def stale_runtime_download_problem(
+    model: AudioCppModel,
+    binary: Optional[str] = None,
+    *,
+    hub_cache: Optional[Path] = None,
+) -> Optional[str]:
+    """Why ``model``'s files must not be downloaded for a runtime older than v0.9.2, or None.
+
+    The audio GGUFs on the Hub track the newest runtime, so an older one could load a fresh
+    download wrongly. A complete cache, a local file or an unknown runtime is never refused.
+    """
+    release = runtime_release_key(binary)
+    if release is None or release >= SPEC_FIRST_RUNTIME or model.local_path:
+        return None
+    from core.inference.audio_cpp_files import missing_files
+
+    try:
+        if not missing_files(model, hub_cache = hub_cache):
+            return None
+    except Exception:  # noqa: BLE001 - an unreadable cache is the download's to report
+        return None
+    return (
+        f"{model.display_name} needs a newer audio runtime before its files can be downloaded. "
+        "Update the audio runtime from the update banner, or run `unsloth studio update`."
+    )
+
+
 def model_runtime_problem(model: AudioCppModel, binary: Optional[str] = None) -> Optional[str]:
     """Why ``model`` cannot run on the installed runtime, or None when it can."""
     if UPDATE_IN_PROGRESS.is_set():
@@ -208,6 +259,9 @@ def model_runtime_problem(model: AudioCppModel, binary: Optional[str] = None) ->
             f"{model.display_name} needs an audio runtime built with eSpeak-ng, and the installed one "
             "has none. Run `unsloth studio update` to install the Unsloth audio runtime."
         )
+    problem = stale_runtime_download_problem(model, binary)
+    if problem:
+        return problem
     from core.inference.audio_cpp_files import served_path_problem
 
     try:
