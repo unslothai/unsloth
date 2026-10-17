@@ -960,7 +960,18 @@ async def delete_threads(
     # is gone, so drop them rather than leaking scopes per deleted chat.
     await run_in_threadpool(_remove_thread_rag_data, payload.ids, cutoff = cutoff)
     await run_in_threadpool(chat_originals.sweep)
+    # The voice decision log keeps transcripts keyed by thread id; a deleted chat's rows go with it.
+    await run_in_threadpool(_remove_voice_log_rows, payload.ids)
     return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
+
+
+def _remove_voice_log_rows(thread_ids) -> None:
+    try:
+        from core.inference import voice_log
+
+        voice_log.delete_thread_rows(thread_ids)
+    except Exception:  # noqa: BLE001 - deletion must still complete
+        logger.warning("Could not remove the voice decision log rows for %s", thread_ids, exc_info = True)
 
 
 def _archive_cutoff() -> str:

@@ -26332,8 +26332,12 @@ async def vad_detect(
 
 
 # Voice mode's small text models: is the turn finished, what filler to say, what an interruption means.
+# They sit on ``router`` so ``/v1/voice/*`` mirrors them for API clients; ``log`` opts a call into the
+# voice decision log (the app sends it from its settings toggle, an API client has to ask).
 class VoiceJudgeRequest(BaseModel):
     text: str
+    log: bool = False
+    thread_id: Optional[str] = None
 
 
 class VoiceTraceRequest(BaseModel):
@@ -26345,12 +26349,22 @@ class VoiceTraceRequest(BaseModel):
 class VoiceFillerRequest(BaseModel):
     text: str
     prev_q: bool = False
+    log: bool = False
+    thread_id: Optional[str] = None
 
 
 class VoiceInterjectRequest(BaseModel):
     prompt: str
     utterance: str
     elapsed_s: float = 2.0
+    log: bool = False
+    thread_id: Optional[str] = None
+
+
+class VoiceOutcomeRequest(BaseModel):
+    id: str
+    outcome: str
+    detail: dict | None = None
 
 
 def _voice_model_or_503(name: str):
@@ -26360,6 +26374,21 @@ def _voice_model_or_503(name: str):
     if not models.available(name):
         raise HTTPException(status_code = 503, detail = f"Voice {name} model is unavailable: {models.reason(name)}")
     return models
+
+
+def _voice_log_source(request: Request) -> str:
+    return "api" if request.url.path.startswith("/v1/") else "app"
+
+
+async def _voice_log_row(request: Request, payload, model: str, inputs: dict, verdict: str, confidence, ms: float) -> Optional[str]:
+    if not payload.log:
+        return None
+    from core.inference import voice_log
+
+    return await asyncio.to_thread(
+        voice_log.append, model, inputs, verdict, confidence, ms,
+        thread_id = payload.thread_id, source = _voice_log_source(request),
+    )
 
 
 @studio_router.get("/voice/models/status")
@@ -26387,30 +26416,90 @@ async def voice_trace(payload: VoiceTraceRequest, current_subject: str = Depends
     return JSONResponse(content = {"ok": True})
 
 
-@studio_router.post("/voice/judge")
-async def voice_judge(payload: VoiceJudgeRequest, current_subject: str = Depends(get_current_subject)):
-    """``{p_complete, ms}``: P(the user has finished the turn) for the transcript so far."""
+@router.post("/voice/judge")
+async def voice_judge(payload: VoiceJudgeRequest, request: Request, current_subject: str = Depends(get_current_subject)):
+    """``{p_complete, ms, id}``: P(the user has finished the turn) for the transcript so far."""
+    from core.inference.voice_log import judge_verdict
+
     models = await asyncio.to_thread(_voice_model_or_503, "judge")
     t0 = time.perf_counter()
     p = await asyncio.to_thread(models.judge, payload.text)
-    return JSONResponse(content = {"p_complete": round(p, 4), "ms": round((time.perf_counter() - t0) * 1000, 2)})
+    ms = round((time.perf_counter() - t0) * 1000, 2)
+    row_id = await _voice_log_row(request, payload, "judge", {"text": payload.text}, judge_verdict(p), p, ms)
+    return JSONResponse(content = {"p_complete": round(p, 4), "ms": ms, "id": row_id})
 
 
-@studio_router.post("/voice/filler")
-async def voice_filler(payload: VoiceFillerRequest, current_subject: str = Depends(get_current_subject)):
-    """``{say, class, confidence, phrase, slot, echo, ms}``: the filler to speak while the reply is generated."""
+@router.post("/voice/filler")
+async def voice_filler(payload: VoiceFillerRequest, request: Request, current_subject: str = Depends(get_current_subject)):
+    """``{say, class, confidence, phrase, slot, echo, ms, id}``: the filler to speak while the reply is generated."""
     models = await asyncio.to_thread(_voice_model_or_503, "filler")
-    return JSONResponse(content = await asyncio.to_thread(models.filler, payload.text, payload.prev_q))
+    result = await asyncio.to_thread(models.filler, payload.text, payload.prev_q)
+    inputs = {"text": payload.text, "prev_q": payload.prev_q, "class": result.get("class")}
+    result["id"] = await _voice_log_row(
+        request, payload, "filler", inputs, "say" if result.get("say") else "quiet",
+        result.get("confidence"), float(result.get("ms") or 0),
+    )
+    return JSONResponse(content = result)
 
 
-@studio_router.post("/voice/interject")
-async def voice_interject(payload: VoiceInterjectRequest, current_subject: str = Depends(get_current_subject)):
-    """``{action, confidence, probs, merged_prompt, ms}``: restart, ignore or queue an utterance mid-reply."""
+@router.post("/voice/interject")
+async def voice_interject(payload: VoiceInterjectRequest, request: Request, current_subject: str = Depends(get_current_subject)):
+    """``{action, confidence, probs, merged_prompt, ms, id}``: restart, ignore or queue an utterance mid-reply."""
     models = await asyncio.to_thread(_voice_model_or_503, "interject")
     t0 = time.perf_counter()
     result = await asyncio.to_thread(models.interject, payload.prompt, payload.utterance, payload.elapsed_s)
     result["ms"] = round((time.perf_counter() - t0) * 1000, 2)
+    inputs = {"prompt": payload.prompt, "utterance": payload.utterance, "elapsed_s": payload.elapsed_s}
+    result["id"] = await _voice_log_row(
+        request, payload, "interject", inputs, str(result.get("action")), result.get("confidence"), result["ms"],
+    )
     return JSONResponse(content = result)
+
+
+@router.post("/voice/outcome")
+async def voice_outcome(payload: VoiceOutcomeRequest, current_subject: str = Depends(get_current_subject)):
+    """What happened after a logged verdict, keyed by the ``id`` the call returned."""
+    from core.inference import voice_log
+
+    await asyncio.to_thread(voice_log.set_outcome, payload.id, payload.outcome, payload.detail)
+    return JSONResponse(content = {"ok": True})
+
+
+@studio_router.get("/voice/laya/stats")
+async def voice_laya_stats(current_subject: str = Depends(get_current_subject)):
+    from core.inference import voice_log
+
+    return JSONResponse(content = await asyncio.to_thread(voice_log.stats))
+
+
+@studio_router.get("/voice/laya/export")
+async def voice_laya_export(
+    model: str = Query("all", pattern = "^(all|judge|filler|interject)$"),
+    only: str = Query("disagreements", pattern = "^(all|disagreements)$"),
+    thread_id: Optional[str] = Query(None, max_length = 256),
+    since: Optional[str] = Query(None, max_length = 64),
+    mix: bool = False,
+    current_subject: str = Depends(get_current_subject),
+):
+    """JSONL in the training-row shape (``text``, ``label`` plus the log fields), as a download."""
+    from core.inference import voice_log
+
+    rows = await asyncio.to_thread(
+        voice_log.export_rows, model = model, only = only, thread_id = thread_id, since = since, mix = mix,
+    )
+    name = f"laya-{model}-{only}.jsonl"
+    return Response(
+        content = voice_log.to_jsonl(rows),
+        media_type = "application/jsonl",
+        headers = {"Content-Disposition": f'attachment; filename="{name}"', "X-Row-Count": str(len(rows))},
+    )
+
+
+@studio_router.delete("/voice/laya/log")
+async def voice_laya_clear(current_subject: str = Depends(get_current_subject)):
+    from core.inference import voice_log
+
+    return JSONResponse(content = {"removed": await asyncio.to_thread(voice_log.clear)})
 
 
 # =====================================================================
