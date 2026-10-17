@@ -760,8 +760,9 @@ def _varlen_seq_idx_applies(seq_idx, args, kwargs) -> bool:
     tensor = _varlen_input(args, kwargs)
     if tensor is None or tensor.dim() < 2 or seq_idx.shape[0] != tensor.shape[0]:
         return False
-    # causal_conv1d_fn takes (batch, dim, seqlen), the others (batch, seqlen, ...).
-    return total in (tensor.shape[1], tensor.shape[-1])
+    # causal_conv1d_fn takes (batch, dim, seqlen), the others (batch, seqlen, ...). Compared with ==:
+    # after a dynamic-shape recompile Dynamo evaluated `total in (...)` False for a matching row.
+    return total == tensor.shape[1] or total == tensor.shape[-1]
 
 
 def _wrap_mamba2_seq_idx_call(orig, *, hit_attr = "_unsloth_varlen_fused_hit"):
@@ -946,6 +947,12 @@ def _install_kwargs_probes(namespace) -> None:
 
         probe._unsloth_varlen_probe_of = fn
         namespace[name] = probe
+        # Dynamo reads an inlined function's globals through sys.modules[__name__]; Unsloth's compiled
+        # modules import transformers' __name__, so both namespaces must hold the same probe or the
+        # block compile guards one object and traces the other.
+        alias = getattr(sys.modules.get(namespace.get("__name__")), "__dict__", None)
+        if isinstance(alias, dict) and alias is not namespace and callable(alias.get(name)):
+            alias[name] = probe
 
 
 def _wrap_kwargs_mixer_forward(module) -> None:
@@ -956,6 +963,13 @@ def _wrap_kwargs_mixer_forward(module) -> None:
         varlen = getattr(module, "_unsloth_varlen", None)
         if varlen is None or not _varlen_seq_idx_applies(varlen[1], args, kwargs):
             return forward_orig(*args, **kwargs)
+        return _packed_forward(varlen, args, kwargs)
+
+    # Eager even inside a compiled block: Dynamo folds torch.compiler.is_exporting() to True, so the
+    # hub-kernel wrappers trace their torch reference, which drops seq_idx / cu_seqlens and runs the
+    # packed documents into each other (Qwen3.5-0.8B per-document cosine 0.71).
+    @torch.compiler.disable
+    def _packed_forward(varlen, args, kwargs):
         varlen = _varlen_on(varlen, args, kwargs)
         if kwargs.get("seq_idx") is None:
             kwargs["seq_idx"] = varlen[1]
