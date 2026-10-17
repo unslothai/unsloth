@@ -292,7 +292,7 @@ async def get_job(
     offset: Annotated[int, Field(ge = 0)] = 0,
 ) -> ToolResult:
     """The state of a long-running job.
-    Follow every long job with ``wait_s`` instead of polling: the call checks every 2 s, reports progress, and returns once the job finishes, its status or phase changes, or ``wait_s`` runs out; a running job then gives ``poll_after_s``.
+    Follow every long job with ``wait_s`` instead of polling: the call checks every 2 s, reports progress, and returns once the job finishes, its status changes (for an export or a training run, also its phase), or ``wait_s`` runs out; a running job then gives ``poll_after_s``.
     kind "video": with ``id``, its status and progress, and once completed a thumbnail plus the video's URL; without ``id``, recent video jobs.
     kind "recipe": a data recipe job's status and progress (without ``id``, the current one), and with ``rows`` that many generated rows from ``offset``.
     Unsloth Studio runs one recipe at a time; a recipe job id is not tied to an account.

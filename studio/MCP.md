@@ -254,7 +254,7 @@ api_key_format = "Bearer {token}"
 | `cancel` | Stop training, a start request, image training, an export, a recipe, an image or video generation, a chat reply or a dataset download. |
 
 Long work keeps running in Unsloth Studio when a tool call times out.
-Follow every long job with `get_job(kind=…, id=…, wait_s=…)`: it checks every 2 s and returns once the job finishes, its status or phase changes, or `wait_s` runs out.
+Follow every long job with `get_job(kind=…, id=…, wait_s=…)`: it checks every 2 s and returns once the job finishes, its status changes (for an export or a training run, also its phase), or `wait_s` runs out.
 `wait_s` is at most 240; 50 stays under Codex's 60 s default tool timeout, and longer waits need a longer client timeout.
 `load_model` waits up to `wait_s` too (240 s when unset), then returns `status: "loading"` and a `job_id` for `get_job(kind="load")`.
 Stop work with `cancel`.
