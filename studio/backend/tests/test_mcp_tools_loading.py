@@ -514,6 +514,7 @@ def test_a_slow_load_returns_early_and_get_job_returns_its_result(monkeypatch, f
         assert again["job_id"] == early["job_id"]
         job = call("get_job", {"kind": "load", "id": early["job_id"], "wait_s": 30})
     assert job["structuredContent"]["status"] == "completed"
+    assert job["structuredContent"]["progress_percent"] == 100.0
     assert job["structuredContent"]["poll_after_s"] is None
     load = job["structuredContent"]["load"]
     assert (load["loaded"], load["status"], load["model"]) == (True, "loaded", LTX)
