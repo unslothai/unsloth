@@ -64,6 +64,10 @@ class AudioCppUnavailableError(RuntimeError):
     """audiocpp_server is missing, failed to start, or stopped answering."""
 
 
+class AudioCppRuntimeTooOldError(AudioCppUnavailableError):
+    """The installed runtime is older than the GGUFs a download would fetch."""
+
+
 class AudioCppStartCancelledError(RuntimeError):
     """A start was cancelled (training pre-empted it, or Unsloth is shutting down)."""
 

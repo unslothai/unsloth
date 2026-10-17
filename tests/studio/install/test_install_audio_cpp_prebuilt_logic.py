@@ -2209,10 +2209,8 @@ def test_an_offline_spec_fetch_still_installs(monkeypatch, tmp_path):
     monkeypatch.setattr(M.core, "_URL_OPENER", _Offline())
     server = M.install(install_dir = tmp_path / "audio.cpp", accelerator = "cpu")
     assert server.is_file() and not (server.parent / "model_specs").exists()
-    # The real seams ask one trees URL, by commit; no blob is fetched.
-    assert set(asked) == {
-        f"https://api.github.com/repos/{FORK}/git/trees/{_SPEC_COMMIT}:model_specs"
-    }
+    # The real seams ask one trees URL, once, by commit; no retry and no blob.
+    assert asked == [f"https://api.github.com/repos/{FORK}/git/trees/{_SPEC_COMMIT}:model_specs"]
     assert not list(tmp_path.rglob(".model_specs-*"))
 
 

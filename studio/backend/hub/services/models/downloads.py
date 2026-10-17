@@ -230,11 +230,15 @@ async def _audio_cpp_target(
     text = (repo_id or "").strip()
     if not text.lower().startswith("audio-cpp/audio.cpp-gguf/"):
         return text, variant
+    from core.inference.audio_cpp_server import AudioCppRuntimeTooOldError
+
     try:
         from core.inference.audio_cpp_models import download_target
         target = await asyncio.to_thread(
             download_target, text, (variant or "").strip() or None, hf_token, persist
         )
+    except AudioCppRuntimeTooOldError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - an unresolvable row downloads nothing
         logger.warning("Could not resolve the audio model %s for download: %s", text, exc)
         target = None

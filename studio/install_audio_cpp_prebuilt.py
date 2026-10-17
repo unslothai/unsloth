@@ -685,18 +685,22 @@ MODEL_SPECS_DIR = "model_specs"
 _COMMIT = re.compile(r"[0-9a-f]{7,40}")
 _REPO_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _SPEC_NAME = re.compile(r"[a-z0-9_]+\.json")
+# The specs are optional, so a network that blocks GitHub costs one short try, not retries.
+_SPEC_TIMEOUT = 10
 
 
 def _spec_tree(repo: str, commit: str) -> object:
     """The GitHub trees listing of ``model_specs/`` at ``commit`` (one API call)."""
-    return core.fetch_json(
-        _OPS, f"https://api.github.com/repos/{repo}/git/trees/{commit}:{MODEL_SPECS_DIR}"
+    url = f"https://api.github.com/repos/{repo}/git/trees/{commit}:{MODEL_SPECS_DIR}"
+    data = core.download_bytes(
+        _OPS, url, timeout = _SPEC_TIMEOUT, attempts = 1, headers = _OPS.github_api_headers(url)
     )
+    return json.loads(data.decode("utf-8"))
 
 
 def _spec_blob(repo: str, commit: str, name: str) -> bytes:
     url = f"https://raw.githubusercontent.com/{repo}/{commit}/{MODEL_SPECS_DIR}/{name}"
-    return core.download_bytes(_OPS, url, timeout = 30)
+    return core.download_bytes(_OPS, url, timeout = _SPEC_TIMEOUT, attempts = 1)
 
 
 def _spec_bytes(repo: str, commit: str, name: str, blob_sha: str) -> bytes:

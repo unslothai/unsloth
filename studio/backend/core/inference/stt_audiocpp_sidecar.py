@@ -1044,7 +1044,7 @@ class AudioCppSttSidecar:
                     on_phase = on_phase,
                 )
                 _notify(on_phase, "transcribing")
-                # A strict spec without a language option (Hviske-v6) rejects one.
+                # A strict spec without a language option (Hviske-v6) has no use for one.
                 keys = entry.request_keys
                 payload = self._post_details(
                     path,

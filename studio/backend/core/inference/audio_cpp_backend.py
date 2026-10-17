@@ -403,9 +403,19 @@ class AudioCppBackend:
 
     def _ensure_downloaded(self, model: AudioCppModel, hf_token: Optional[str]) -> bool:
         """Fetch what the model and its companions still lack; True when the model's own files were."""
+        from core.inference.audio_cpp_server import stale_runtime_download_problem
+
+        companions = [
+            (companion, _resolve_companion(model, companion, hf_token, network = True))
+            for companion in model.companions
+        ]
+        # The model itself passed model_runtime_problem; its companions download separately.
+        for _companion, companion_model in companions:
+            problem = stale_runtime_download_problem(companion_model)
+            if problem:
+                raise RuntimeError(problem)
         fetched = self._download_missing(model, hf_token)
-        for companion in model.companions:
-            companion_model = _resolve_companion(model, companion, hf_token, network = True)
+        for companion, companion_model in companions:
             if self._download_missing(companion_model, hf_token):
                 forget(companion.id)
         return fetched

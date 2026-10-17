@@ -159,6 +159,52 @@ def test_the_dictation_download_is_refused_before_it_starts(monkeypatch, tmp_pat
     assert spawned == []
 
 
+def test_a_missing_companion_is_refused_before_any_download(monkeypatch, tmp_path):
+    _runtime(monkeypatch, tmp_path / "rt", record = {"release_tag": "v0.9.1-unsloth.1"})
+    tts = replace(
+        _model("MioTTS-GGUF", "miotts", "tts"),
+        companions = (
+            acm.CompanionModel("audio-cpp/audio.cpp-gguf/MioCodec-GGUF", "Q8_0", "codec_model"),
+        ),
+    )
+    codec = _model("MioCodec-GGUF", "miocodec", "codec")
+    # The TTS files are cached; only the codec still has files to fetch.
+    monkeypatch.setattr(
+        audio_cpp_files,
+        "missing_files",
+        lambda model, *, hub_cache = None: [] if model is tts else [("codec.gguf", 4)],
+    )
+    monkeypatch.setattr(audio_cpp_backend, "_resolve_companion", lambda *a, **kw: codec)
+    downloads = []
+    monkeypatch.setattr(
+        audio_cpp_backend.AudioCppBackend,
+        "_download_missing",
+        staticmethod(lambda model, *a, **kw: downloads.append(model.id)),
+    )
+    assert audio_cpp_server.model_runtime_problem(tts) is None
+    with pytest.raises(RuntimeError, match = "MioCodec-GGUF needs a newer audio runtime"):
+        audio_cpp_backend.AudioCppBackend()._ensure_downloaded(tts, None)
+    assert downloads == []
+
+
+def test_a_hub_download_job_is_refused_on_an_old_runtime(monkeypatch, tmp_path):
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from hub.services.models import downloads
+
+    _runtime(monkeypatch, tmp_path / "rt", record = {"release_tag": "v0.9.1-unsloth.1"})
+    _missing(monkeypatch, [("x.gguf", 4)])
+    model = replace(_model(), from_hub = True)
+    monkeypatch.setattr(acm, "resolve", lambda *a, **kw: model)
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(downloads._audio_cpp_target(model.id, "Q8_0", persist = True))
+    assert refused.value.status_code == 409 and refused.value.detail == MESSAGE
+    # Status and progress polls resolve the same row without the gate.
+    assert asyncio.run(downloads._audio_cpp_target(model.id, "Q8_0"))[0] == model.repo_id
+
+
 def test_runtime_knows_family_reads_the_folder_beside_the_server(monkeypatch, tmp_path):
     # Windows bundles keep the server and its fetched folder under bin/.
     _runtime(

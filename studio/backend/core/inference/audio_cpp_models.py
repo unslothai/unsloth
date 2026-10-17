@@ -2751,6 +2751,15 @@ def download_target(
     model = resolve(identifier, variant, hf_token, network = not hub_offline())
     if model is None or not model.repo_id or not model.variant.primary:
         return None
+    if persist:
+        # A Hub download job starts here; an old runtime must not fetch GGUFs it cannot load.
+        from core.inference.audio_cpp_server import (
+            AudioCppRuntimeTooOldError,
+            stale_runtime_download_problem,
+        )
+        problem = stale_runtime_download_problem(model)
+        if problem:
+            raise AudioCppRuntimeTooOldError(problem)
     from hub.utils.gguf import gguf_variant_key
 
     key = gguf_variant_key(model.variant.primary)
