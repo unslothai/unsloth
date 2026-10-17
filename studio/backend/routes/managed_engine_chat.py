@@ -319,6 +319,7 @@ async def managed_tool_chat(
                         auto_heal = payload.auto_heal_tool_calls,
                         nudge_tool_calls = payload.nudge_tool_calls,
                         deduplicate_tool_calls = payload.deduplicate_tool_calls,
+                        parallel_tool_calls = getattr(payload, "parallel_tool_calls", None),
                         on_withheld_tool_call = None if ui_events else stripper.arm,
                         on_provider_turn_end = None if ui_events else stripper.end_turn,
                     ),

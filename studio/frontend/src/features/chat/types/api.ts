@@ -54,6 +54,8 @@ export interface LoadModelRequest {
   engine_gpu_memory_utilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";
   model_path: string;
+  /** Omitted, the persisted setting applies; a rollback sends what the previous load asked for. */
+  exact_concurrency?: string | null;
   /** Opaque client attempt ID used to cancel only this in-flight load. */
   load_request_id?: string | null;
 
@@ -277,6 +279,8 @@ export interface LoadModelResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   context_length_enforced?: boolean | null;
+  exact_concurrency?: string | null;
+  requested_exact_concurrency?: string | null;
   context_unbounded_when_batched?: boolean;
   supports_reasoning?: boolean;
   reasoning_style?:
@@ -489,6 +493,9 @@ export interface InferenceStatusResponse {
   // biome-ignore lint/style/useNamingConvention: API schema
   requested_reasoning_budget_message?: string;
   parallel_slots?: number | null;
+    /** Absent on a backend that predates the switch, which reads as "off". */
+  exact_concurrency?: string | null;
+  requested_exact_concurrency?: string | null;
   /** batch size (--batch-size) the active load was invoked with; null = default */
   requested_n_batch?: number | null;
   /** micro-batch size (--ubatch-size) the active load was invoked with; null = default */
@@ -852,6 +859,9 @@ export interface OpenAIChatChunk {
     latest_turn_role?: string;
     // prompt share of context_length after the reply reserve, calculated by the fit
     prompt_target?: number;
+    // Only "preempt_gave_up" so far: not a truncation, it rides this event because it reaches
+    // everyone.
+    reason?: string;
   };
 }
 

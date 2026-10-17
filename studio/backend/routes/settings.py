@@ -77,6 +77,17 @@ from utils.upload_limits import (
     upload_limit_bytes,
     upload_limit_label,
 )
+from utils.exact_concurrency_settings import (
+    get_exact_concurrency,
+    set_exact_concurrency,
+)
+from core.inference.llama_exact import (
+    DEFAULT_EXACT_SETTING,
+    EXACT_OFF,
+    EXACT_STATE_OFF,
+    exact_setting_env,
+    resolve_exact_setting,
+)
 from utils.cache_inventory import CACHE_KEYS, cache_inventory, purge_caches
 from utils.xet_notice_settings import reserve_xet_notice
 from utils.chat_preferences_settings import (
@@ -835,6 +846,24 @@ class ModelMemoryResponse(BaseModel):
     # Soft RLIMIT_MEMLOCK when finite. mlock cannot exceed it, so the UI warns that residency will not
     # fully pin a larger model. None means unlimited (macOS) or not applicable (Windows).
     memlock_limit_bytes: Optional[int] = None
+
+
+class ExactConcurrencyPayload(BaseModel):
+    exact_concurrency: Literal["auto", "off", "on"]
+
+
+class ExactConcurrencyResponse(BaseModel):
+    # None when nothing is stored, which differs from a stored "off".
+    exact_concurrency: Optional[str] = None
+    effective: str
+    default: str = DEFAULT_EXACT_SETTING
+    # Set while UNSLOTH_LLAMA_EXACT_CONCURRENCY pins the machine; saving then changes nothing.
+    env_override: Optional[str] = None
+    active: str
+    reload_required: bool
+    # Exact mode needs server parking, which the environment opts into.
+    parking_available: bool = True
+    parking_prerequisite: Optional[str] = None
 
 
 class VramBudgetPayload(BaseModel):
@@ -2047,6 +2076,108 @@ def update_model_memory(
             log = logger,
         ) from exc
     return _model_memory_response()
+
+
+def _exact_concurrency_active() -> str:
+    try:
+        from routes.inference import get_llama_cpp_backend
+        backend = get_llama_cpp_backend()
+    except Exception:
+        return EXACT_STATE_OFF
+    if not getattr(backend, "is_active", False):
+        return EXACT_STATE_OFF
+    return str(getattr(backend, "exact_concurrency", EXACT_STATE_OFF) or EXACT_STATE_OFF)
+
+
+def _resident_llama_backends() -> list:
+    """The primary backend and every extra model slot serving beside it."""
+    backends = []
+    try:
+        from routes.inference import get_llama_cpp_backend
+        backends.append(get_llama_cpp_backend())
+    except Exception:
+        pass
+    try:
+        from core.inference.llama_cpp import _serving_backends_snapshot
+        backends += [b for b in _serving_backends_snapshot() if all(b is not o for o in backends)]
+    except Exception:
+        pass
+    return backends
+
+
+def _exact_concurrency_reload_required(effective: str) -> bool:
+    """True when a child is running under a setting the next load would not repeat. Compared against
+    what that child was ASKED for: an `auto` that came up `unavailable` is still this setting.
+    Every resident model is asked, not only the primary: an extra slot loaded under the old
+    setting keeps it for every chat routed there. A load still starting has no child yet but has
+    resolved its setting, so it is answered from that."""
+    for backend in _resident_llama_backends():
+        pending = getattr(backend, "_exact_setting_pending", None)
+        if pending is not None:
+            if str(pending) != effective:
+                return True
+            continue
+        if not getattr(backend, "is_active", False):
+            continue
+        # A diffusion runner records `off` because it cannot apply the setting.
+        if getattr(backend, "is_diffusion", False):
+            continue
+        if str(getattr(backend, "requested_exact_concurrency", EXACT_OFF)) != effective:
+            return True
+    return False
+
+
+def _exact_parking_prerequisite() -> Optional[str]:
+    """What has to be set before the server can park, else None. Exact mode cannot run without
+    the server parking, so a selector offering Auto and On where preemption is switched off
+    offered two choices that could not work."""
+    from core.inference import llama_preemption as _preemption
+
+    if not _preemption.preemption_wanted():
+        return f"{_preemption.PREEMPT_ENV}=1"
+    if _preemption.preempt_mode_setting() == _preemption.PREEMPT_MODE_STUDIO:
+        return f"{_preemption.PREEMPT_MODE_ENV}={_preemption.PREEMPT_MODE_SERVER}"
+    return None
+
+
+def _exact_concurrency_response() -> ExactConcurrencyResponse:
+    stored = get_exact_concurrency()
+    effective = resolve_exact_setting(None, stored = stored)
+    prerequisite = _exact_parking_prerequisite()
+    return ExactConcurrencyResponse(
+        exact_concurrency = stored,
+        effective = effective,
+        env_override = exact_setting_env(),
+        active = _exact_concurrency_active(),
+        reload_required = _exact_concurrency_reload_required(effective),
+        parking_available = prerequisite is None,
+        parking_prerequisite = prerequisite,
+    )
+
+
+@router.get("/exact-concurrency", response_model = ExactConcurrencyResponse)
+def get_exact_concurrency_setting(
+    current_subject: str = Depends(get_current_subject),
+) -> ExactConcurrencyResponse:
+    return _exact_concurrency_response()
+
+
+# Machine-wide: a managed account switching it on can make every later load fail.
+@_owner_settings_router.put("/exact-concurrency", response_model = ExactConcurrencyResponse)
+def update_exact_concurrency_setting(
+    payload: ExactConcurrencyPayload, current_subject: str = Depends(get_current_subject)
+) -> ExactConcurrencyResponse:
+    try:
+        set_exact_concurrency(payload.exact_concurrency)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid exact concurrency setting."),
+            event = "settings.update_exact_concurrency_failed",
+            log = logger,
+        ) from exc
+    return _exact_concurrency_response()
 
 
 LAST_LOCAL_MODEL_SETTING_KEY = "last_local_model_load"

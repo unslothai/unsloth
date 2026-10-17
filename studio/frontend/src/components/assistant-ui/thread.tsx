@@ -215,14 +215,16 @@ import {
   CONTINUATION_RUN_CONFIG_KEY,
   type ContinuationRequest,
   incompleteLabel,
-  incompleteRemedy,
+  incompleteRemedyFor,
   isContinuableContent,
   isProviderReportedReason,
   modeAllowsContinuation,
   providerCompactionContinuationFields,
   readContinuationSource,
   readIncompleteInfo,
+  readPreemptRecomputedFields,
   readTextThoughtSignature,
+  resumesWithoutText,
   claimAutoContinue,
   forgetAutoContinue,
   recordAutoContinue,
@@ -7794,13 +7796,13 @@ const GeneratingIndicator: FC = () => {
   );
 };
 
-// Placeholder when stop fires before any visible content (e.g. mid-think).
 const CancelledIndicator: FC = () => {
   const show = useAuiState(
     ({ message }) =>
       message.content.length === 0 &&
       message.status?.type === "incomplete" &&
-      message.status?.reason === "cancelled",
+      message.status?.reason === "cancelled" &&
+      readIncompleteInfo(message.metadata)?.reason !== "paused",
   );
   if (!show) {
     return null;
@@ -7886,6 +7888,17 @@ function useContinuation() {
       }),
     [messageContent, thoughtResumable, geminiReplayTurns],
   );
+  // The same question with the "there must be text" half dropped, for a turn the backend gave up
+  // on before its first token.
+  const continuableIfEmpty = useMemo(
+    () =>
+      isContinuableContent(messageContent, {
+        thought: thoughtResumable,
+        replay: geminiReplayTurns.length > 0,
+        allowEmpty: true,
+      }),
+    [messageContent, thoughtResumable, geminiReplayTurns],
+  );
   // Audio input re-listens to the recording and answers afresh rather than resuming,
   // so continuing there would append a second answer.
   const fromAudioInput = useAuiState(({ thread }) =>
@@ -7902,10 +7915,15 @@ function useContinuation() {
   const stamped = readIncompleteInfo(metadata);
   const cancelled =
     status?.type === "incomplete" && status?.reason === "cancelled";
+  // `paused` has no assistant-ui status of its own, so `restoredAssistantStatus` maps it to
+  // `cancelled` and a reload would relabel a backend pause as "Response stopped".
   const reason =
     cancelled && !isProviderReportedReason(stamped?.reason)
       ? ("cancelled" as const)
       : stamped?.reason;
+  // A turn the backend gave up on can be empty: the chat was evicted while still prefilling, and
+  // both content gates below are written for a turn that has text.
+  const noTextIsExpected = resumesWithoutText(reason);
   const carriedReasoning = thoughtResumable ? reasoning : "";
 
   const canResume =
@@ -7913,16 +7931,17 @@ function useContinuation() {
     !isRunning &&
     !researchRunId &&
     !researchActive &&
-    continuable &&
+    (noTextIsExpected ? continuableIfEmpty : continuable) &&
     modeAllowsContinuation({
       fromAudioInput,
       audioOutputModel,
     }) &&
-    Boolean(
-      partial.trim() ||
-        carriedReasoning.trim() ||
-        geminiReplayTurns.length > 0,
-    );
+    (noTextIsExpected ||
+      Boolean(
+        partial.trim() ||
+          carriedReasoning.trim() ||
+          geminiReplayTurns.length > 0,
+      ));
 
   const reasoningDuration = readThoughtDuration(metadata);
   // Hands the started run back, untyped: the only handle identified with THIS run.
@@ -7942,6 +7961,7 @@ function useContinuation() {
       ...(answerParts.length > 0 ? { answerParts } : {}),
       ...(geminiReplayTurns.length > 0 ? { geminiReplayTurns } : {}),
       ...providerCompactionContinuationFields(metadata),
+      ...readPreemptRecomputedFields(metadata),
     };
     return aui.thread().startRun({
       parentId: parent,
@@ -7988,8 +8008,7 @@ const ContinueMessageBarForLastMessage: FC = () => {
 
   const resumable = Boolean(reason) && canResume;
 
-  // A cut with a remedy is one resuming cannot undo, so the way out replaces the button.
-  const remedy = reason ? incompleteRemedy(reason) : null;
+  const remedy = reason ? incompleteRemedyFor(reason, canResume) : null;
 
   // The parent is what every round of one logical turn shares; the message id changes
   // each round, because a continuation runs as a sibling.

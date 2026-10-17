@@ -18,31 +18,65 @@ import pytest
 SOURCE_PATH = Path(__file__).resolve().parents[2] / "studio" / "backend" / "routes" / "inference.py"
 SRC = SOURCE_PATH.read_text(encoding = "utf-8")
 _TREE = ast.parse(SRC)
+PREEMPTION_PATH = SOURCE_PATH.parents[1] / "core" / "inference" / "llama_preemption.py"
+PREEMPTION_SRC = PREEMPTION_PATH.read_text(encoding = "utf-8")
 
 _TICK_S = 0.05
 
 _WANTED = {"_LlamaStreamKeepalive", "_LLAMA_STREAM_KEEPALIVE", "_aiter_llama_stream_items"}
+# What the pump reads to tell a parked slot from a stall: cut whole, so the pump runs as shipped.
+_PARK_HELPERS = {
+    "_OPENAI_PREEMPT_SSE_PAUSED",
+    "_OPENAI_PREEMPT_SSE_RESUMED",
+    "_OPENAI_PREEMPT_SSE_RECOMPUTED",
+    "_OPENAI_PREEMPT_SSE_KEEPALIVE",
+    "_SERVER_PARK_SSE_BY_COMMENT",
+    "_server_park_sse",
+    "_NO_LIVE_READ_TIMEOUT",
+    "_live_read_timeout",
+    "_install_park_aware_read",
+    "_probe_off_the_loop",
+    "_async_iterator_is_closed",
+    "_ceiling_for_first_read",
+    "_RAW_PARK_STALL_CAP_S",
+}
+_PREEMPTION_WANTED = {
+    "_PARK_NOTICE_RE",
+    "_PARK_NOTICE_MAX_LINE",
+    "parse_server_park_notice",
+    "ServerParkNotices",
+}
+
+
+def _cut(src: str, wanted: set) -> list:
+    chunks = []
+    for node in ast.parse(src).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            ok = node.name in wanted
+        elif isinstance(node, ast.Assign):
+            ok = any(t.id in wanted for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign):
+            ok = isinstance(node.target, ast.Name) and node.target.id in wanted
+        else:
+            ok = False
+        if not ok:
+            continue
+        segment = ast.get_source_segment(src, node)
+        assert segment is not None, f"could not cut {getattr(node, 'name', node)} from source"
+        chunks.append(segment)
+    assert len(chunks) == len(wanted), f"expected {len(wanted)} definitions, cut {len(chunks)}"
+    return chunks
 
 
 def _load_pump():
     """The real pump, cut from disk and exec'd against stubs: importing
     `routes.inference` would pull in the whole backend package."""
-    chunks = []
-    for node in _TREE.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            wanted = node.name in _WANTED
-        elif isinstance(node, ast.Assign):
-            wanted = any(t.id in _WANTED for t in node.targets if isinstance(t, ast.Name))
-        else:
-            wanted = False
-        if not wanted:
-            continue
-        segment = ast.get_source_segment(SRC, node)
-        assert segment is not None, f"could not cut {getattr(node, 'name', node)} from source"
-        chunks.append(segment)
-    assert len(chunks) == len(_WANTED), f"expected {len(_WANTED)} definitions, cut {len(chunks)}"
+    chunks = _cut(PREEMPTION_SRC, _PREEMPTION_WANTED) + _cut(SRC, _WANTED | _PARK_HELPERS)
 
     namespace = {
+        "re": __import__("re"),
+        "inspect": __import__("inspect"),
+        "logger": __import__("logging").getLogger(__name__),
         "asyncio": asyncio,
         "httpx": httpx,
         "time": time,

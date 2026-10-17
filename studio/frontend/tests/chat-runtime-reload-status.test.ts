@@ -51,8 +51,12 @@ test("first-token recovery ignores role and control chunks", () => {
       { choices: [], quote_cut: true },
       { choices: [], usage: { completion_tokens: 1 } },
       { choices: [{ delta: { content: "token" } }] },
+      // A pause or resume notice relayed by the durable run's worker. It is a status line,
+      // not output, so it must neither start the first-chunk clock nor read as progress.
+      { _admissionStatus: "paused" },
+      { _admissionStatus: "resumed" },
     ].map(generationChunkCountsTowardTiming),
-    [true, false, false, false, true],
+    [true, false, false, false, true, false, false],
   );
   assert.equal(
     generationChunkHasSubstantiveDelta({
@@ -419,4 +423,23 @@ test("recovery persists the replay prefix statistics it has applied", () => {
   });
   assert.equal(metadata.generationFirstChunkAt, 220);
   assert.equal(metadata.generationChunkCount, 6);
+});
+
+test("an empty turn preemption gave up on is not claimed as cancelled", async () => {
+  const paused = { custom: { incomplete: { reason: "paused" } } };
+  assert.deepEqual(restoredAssistantStatus(paused), {
+    type: "incomplete",
+    reason: "cancelled",
+  });
+  assert.equal(readIncompleteInfo(paused)?.reason, "paused");
+  const { readFileSync } = await import("node:fs");
+  const thread = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  const indicator = thread.slice(thread.indexOf("const CancelledIndicator: FC"));
+  assert.match(
+    indicator.slice(0, 600),
+    /message\.status\?\.reason === "cancelled" &&\s+readIncompleteInfo\(message\.metadata\)\?\.reason !== "paused"/,
+  );
 });

@@ -103,3 +103,72 @@ def test_a_managed_account_cannot_replace_the_transformers_sidecar(monkeypatch):
         response = client.post("/api/inference/install-latest-transformers", json = {})
     assert response.status_code == 403
     assert swaps == []
+
+
+def test_a_managed_account_cannot_switch_exact_concurrency(monkeypatch):
+    from routes import settings as settings_routes
+
+    written = []
+    monkeypatch.setattr(settings_routes, "set_exact_concurrency", written.append)
+    monkeypatch.setattr(
+        settings_routes,
+        "_exact_concurrency_response",
+        lambda: settings_routes.ExactConcurrencyResponse(
+            exact_concurrency = "on",
+            effective = "on",
+            env_override = None,
+            active = "off",
+            reload_required = True,
+            parking_available = True,
+            parking_prerequisite = None,
+        ),
+    )
+
+    def _settings_app(app):
+        app.include_router(settings_routes.router, prefix = "/api/settings")
+
+    with _client(ALICE, _settings_app) as client:
+        assert (
+            client.put(
+                "/api/settings/exact-concurrency", json = {"exact_concurrency": "on"}
+            ).status_code
+            == 403
+        )
+    assert written == []
+    with _client(OWNER, _settings_app) as client:
+        assert (
+            client.put(
+                "/api/settings/exact-concurrency", json = {"exact_concurrency": "on"}
+            ).status_code
+            == 200
+        )
+    assert written == ["on"]
+
+
+def test_a_managed_accounts_load_cannot_override_exact_concurrency():
+    # The mode is machine-wide and the owner's to set: another account's per-load field is
+    # dropped, so its load follows the stored setting.
+    from types import SimpleNamespace
+
+    from core.inference.llama_cpp import GgufLoadIntent
+    from routes import inference
+
+    source = GgufLoadIntent(model_identifier = "m", gguf_path = "/m.gguf")
+    request = SimpleNamespace(exact_concurrency = "off", max_seq_length = 4096)
+
+    def _intent(account):
+        token = bind_account(account)
+        try:
+            return inference._gguf_request_intent(
+                source,
+                request,
+                chat_template_override = None,
+                extra_args = None,
+                gpu_ids = None,
+                n_parallel = 1,
+            )
+        finally:
+            reset_account(token)
+
+    assert _intent(ALICE).exact_concurrency is None
+    assert _intent(OWNER).exact_concurrency == "off"

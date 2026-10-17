@@ -91,12 +91,23 @@ def _vision_auth_headers() -> dict | None:
         return None
 
 
-def _direct_llama_slot():
+def _direct_llama_slot(*, prompt: str = "", max_tokens: int = 0):
     """Count this call against the chat backend's slots for its duration: it reaches
-    llama-server directly, so nothing else makes the slot readout show it as busy."""
+    llama-server directly, so nothing else makes the slot readout show it as busy. Its cache
+    footprint (one image, the prompt, the output cap) is counted with the preemptor too."""
     try:
-        from routes.inference import _direct_llama_request
-        return _direct_llama_request()
+        from routes.inference import (
+            _direct_llama_request,
+            _openai_llama_admission_image_tokens,
+            _prompt_kv_tokens,
+            get_llama_cpp_backend,
+        )
+        kv_tokens = (
+            _openai_llama_admission_image_tokens(get_llama_cpp_backend())
+            + _prompt_kv_tokens(prompt)
+            + max(0, int(max_tokens or 0))
+        )
+        return _direct_llama_request(kv_tokens = kv_tokens)
     except Exception:  # noqa: BLE001 - accounting must never break ingestion
         return contextlib.nullcontext()
 
@@ -135,7 +146,7 @@ def _vision_complete(
         "chat_template_kwargs": {"enable_thinking": False},
     }
     try:
-        with _direct_llama_slot():
+        with _direct_llama_slot(prompt = prompt, max_tokens = max_tokens):
             r = httpx.post(
                 f"{base_url}/v1/chat/completions",
                 json = payload,

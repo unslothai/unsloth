@@ -9103,6 +9103,44 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    def test_passthrough_holder_is_measured_at_output_not_at_prefill_progress(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        order = []
+        monkeypatch.setattr(
+            inf_mod,
+            "_openai_llama_note_raw_measured",
+            lambda **_kwargs: order.append("measured"),
+        )
+        progress = (
+            'data: {"prompt_progress":{"total":4000,"processed":%d,"cache":0,"time_ms":1},'
+            '"choices":[{"index":0,"delta":{"role":"assistant","content":null},'
+            '"finish_reason":null}]}'
+        )
+        lines = [
+            progress % 1024,
+            progress % 2048,
+            'data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}',
+            "data: [DONE]",
+        ]
+        seen = []
+
+        class _Lines(list):
+            def __iter__(self):
+                for line in super().__iter__():
+                    seen.append(line)
+                    order.append(len(seen))
+                    yield line
+
+        async def _run():
+            await self._run_passthrough_stream(monkeypatch, _Lines(lines))
+
+        asyncio.run(_run())
+        assert order.index("measured") == order.index(3) + 1, (
+            "marked measured on a prefill-only progress frame, which drops the prefill "
+            f"reserve while later batches are still to come: {order}"
+        )
+
     def test_passthrough_stream_queued_request_sends_keepalive_before_upstream(self, monkeypatch):
         import routes.inference as inf_mod
         async def _run():

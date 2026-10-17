@@ -1030,7 +1030,27 @@ def test_the_gguf_route_tells_the_gate_when_tool_choice_none_withdrew_the_loop()
         in inspect.signature(llama_cpp.LlamaCppBackend.generate_chat_completion).parameters
     )
     body = inspect.getsource(llama_cpp.LlamaCppBackend.generate_chat_completion)
-    assert body.count("tools_withheld = tools_withheld") == 2
+    # The property, not a count: every internal re-issue must forward the flag, however
+    # many there come to be. `== 2` was the number of them before preemption added the
+    # resume after a pause.
+    import ast, textwrap
+
+    tree = ast.parse(textwrap.dedent(body))
+    reissues = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "generate_chat_completion"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+    ]
+    assert len(reissues) >= 2, "the respawn retry and the length continuation, at least"
+    for call in reissues:
+        assert any(kw.arg == "tools_withheld" for kw in call.keywords), (
+            f"the internal re-issue at line {call.lineno} drops tools_withheld, so its "
+            "refit re-asks the reset question with the flag lost"
+        )
 
     route = inspect.getsource(routes_mod.produce_openai_chat_completions)
     # `_tool_loop_unusable` is `_client_disabled_tool_calls` plus the other two shapes that

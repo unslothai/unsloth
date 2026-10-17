@@ -140,6 +140,7 @@ def _run(
     supports_vision = False,
     mcp_image = None,
     continue_final_message = False,
+    preempt_signal = None,
     **policy_kwargs,
 ):
     policy_fields = {
@@ -168,6 +169,7 @@ def _run(
             ),
             policy = ToolLoopPolicy(**policy_fields),
             cancel_event = cancel_event,
+            preempt_signal = preempt_signal,
             mcp_image = mcp_image,
         )
         async for line in agen:
@@ -1632,7 +1634,8 @@ def test_a_second_call_at_one_index_keeps_its_own_argument_fragments(executed):
     )
     _run(transport)
 
-    assert [call["arguments"] for call in executed] == [{"query": "first"}, {"query": "second"}]
+    # Sorted: calls run together now; the transcript order is asserted separately.
+    assert sorted((call["arguments"]["query"] for call in executed)) == ["first", "second"]
 
 
 def test_a_fragment_naming_its_call_goes_back_to_that_call(executed):
@@ -1672,7 +1675,8 @@ def test_a_fragment_naming_its_call_goes_back_to_that_call(executed):
     )
     _run(transport)
 
-    assert [call["arguments"] for call in executed] == [{"query": "first"}, {"query": "second"}]
+    # Sorted: calls run together now; the transcript order is asserted separately.
+    assert sorted((call["arguments"]["query"] for call in executed)) == ["first", "second"]
 
 
 # ── MCP images ────────────────────────────────────────────────────

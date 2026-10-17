@@ -153,6 +153,12 @@ _STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
 # The SSE comment routes/inference.py sends while queued, not while the backend is silent.
 _ADMISSION_WAIT_COMMENT = ": admission-wait"
 _ADMISSION_DONE_COMMENT = ": admission-done"
+# Sent while preemption parks the stream; the pause is not the model's silence, so neither budget runs.
+_PREEMPT_PAUSED_COMMENT = ": preempt-paused"
+_PREEMPT_RESUMED_COMMENT = ": preempt-resumed"
+_PREEMPT_KEEPALIVE_COMMENT = ": preempt-keepalive"
+# Same bound as the route's `_RAW_PARK_STALL_CAP_S`: a park that never resumes still ends.
+_PREEMPT_PARK_STALL_CAP_SECONDS = 1800.0
 # Queue notices arrive on the configured heartbeat, so allow for a few missed ones.
 _ADMISSION_HEARTBEAT_MISSES = 3
 # Also the ceiling for any budget, so the poll loop stays bounded however long generation itself runs.
@@ -1801,6 +1807,9 @@ class ResearchSupervisor:
         usage: dict[str, int] | None = None
         semantic_output_at: float | None = None
         first_output_deadline: float | None = None
+        park_since: float | None = None
+        park_notice_at = 0.0
+        resumed_at: float | None = None
         emitted_labels = 0
 
         async def flush_progress() -> None:
@@ -1892,12 +1901,26 @@ class ResearchSupervisor:
             loop = asyncio.get_running_loop()
 
             def semantic_deadline() -> tuple[float, type[BaseException]] | None:
+                if park_since is not None:
+                    # Each notice renews the pause, up to the park cap.
+                    return (
+                        min(
+                            park_notice_at + admission_gap_budget,
+                            park_since + _PREEMPT_PARK_STALL_CAP_SECONDS,
+                        ),
+                        ModelFirstOutputTimeout
+                        if semantic_output_at is None
+                        else ModelOutputIdleTimeout,
+                    )
                 if semantic_output_at is None:
                     if first_output_deadline is None:
                         return None
                     return first_output_deadline, ModelFirstOutputTimeout
+                idle_from = semantic_output_at
+                if resumed_at is not None:
+                    idle_from = max(idle_from, resumed_at)
                 return (
-                    semantic_output_at + _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS,
+                    idle_from + _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS,
                     ModelOutputIdleTimeout,
                 )
 
@@ -2053,6 +2076,20 @@ class ResearchSupervisor:
                                 )
                             elif line.startswith(_ADMISSION_DONE_COMMENT):
                                 first_output_deadline = loop.time() + first_output_budget
+                            elif line.startswith(_PREEMPT_PAUSED_COMMENT):
+                                park_notice_at = loop.time()
+                                if park_since is None:
+                                    park_since = park_notice_at
+                            elif line.startswith(_PREEMPT_KEEPALIVE_COMMENT):
+                                if park_since is not None:
+                                    park_notice_at = loop.time()
+                            elif (
+                                line.startswith(_PREEMPT_RESUMED_COMMENT) and park_since is not None
+                            ):
+                                park_since = None
+                                resumed_at = loop.time()
+                                if semantic_output_at is None:
+                                    first_output_deadline = resumed_at + first_output_budget
                             continue
                         data = line[5:].strip()
                         if data == "[DONE]":
@@ -2083,12 +2120,14 @@ class ResearchSupervisor:
                         thought = delta.get("reasoning_content")
                         if isinstance(thought, str) and thought:
                             semantic_output_at = loop.time()
+                            park_since = None
                             if not pending_reasoning:
                                 pending_reasoning_offset = len(reasoning)
                             reasoning += thought
                             pending_reasoning += thought
                         if isinstance(text, str) and text:
                             semantic_output_at = loop.time()
+                            park_since = None
                             report += text
                             pending_report += text
                             # only a closing quote completes a title; per-token rescans cost ~170ms.

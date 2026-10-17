@@ -1,0 +1,846 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""One turn's tool calls run at the same time, in both loops, and still answer in the
+model's order under every limit that is read while the round is prepared."""
+
+from __future__ import annotations
+
+import json
+import sys
+import threading
+from pathlib import Path
+
+_TESTS_DIR = str(Path(__file__).resolve().parent)
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
+
+import pytest  # noqa: E402
+
+from core.inference import llama_cpp as llama_mod  # noqa: E402
+from core.inference import studio_tool_loop as loop_mod  # noqa: E402
+from core.inference import tool_loop_controller as controller_mod  # noqa: E402
+
+from .preempt_fakes import executed, rendezvous  # noqa: E402
+
+# pytest finds these by name; named here so the import reads as a use.
+_FIXTURES = (executed, rendezvous)
+
+# Shared fakes: a drifting copy would test a different loop.
+from test_studio_tool_loop import (  # noqa: E402
+    WEB,
+    PY,
+    FakeTransport,
+    _DONE,
+    _events,
+    _run,
+    _sse,
+)
+from test_llama_cpp_tool_loop import _done as _gguf_done  # noqa: E402
+from test_llama_cpp_tool_loop import _make_backend  # noqa: E402
+from test_llama_cpp_tool_loop import _sse as _gguf_sse  # noqa: E402
+
+_CAP = loop_mod._MAX_PARALLEL_TOOL_CALLS_PER_ROUND
+_UNLIMITED = 9999
+
+
+@pytest.fixture(autouse = True)
+def parallel_opted_in(monkeypatch):
+    """Overlap is opt-in where preemption is not armed; these cases test the overlap itself. A body
+    setting the variable runs after this, so its value wins."""
+    monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", "1")
+
+
+def _provider_round(calls, tool = "web_search"):
+    """A provider turn asking for `calls`, then a plain answer."""
+    return FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": index,
+                                "id": call_id,
+                                "function": {
+                                    "name": tool,
+                                    "arguments": json.dumps({"query": query}),
+                                },
+                            }
+                            for index, (call_id, query) in enumerate(calls)
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+
+
+def _two_calls(
+    first = "alpha",
+    second = "beta",
+    tool = "web_search",
+):
+    return _provider_round([("call_a", first), ("call_b", second)], tool = tool)
+
+
+@pytest.fixture
+def recorder(monkeypatch):
+    calls: list[dict] = []
+
+    def _execute(name, arguments, **kwargs):
+        calls.append({"name": name, "arguments": arguments})
+        return f"RESULT<{(arguments or {}).get('query')}>"
+
+    monkeypatch.setattr(loop_mod, "execute_tool", _execute)
+    monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
+    monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: name == "python")
+    return calls
+
+
+def _gguf_round(calls):
+    return [
+        _gguf_sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": i,
+                        "id": cid,
+                        "type": "function",
+                        "function": {"name": name, "arguments": json.dumps(args)},
+                    }
+                    for i, (cid, name, args) in enumerate(calls)
+                ]
+            }
+        ),
+        _gguf_done(),
+    ]
+
+
+def _gguf_events(
+    monkeypatch,
+    calls,
+    execute,
+    *,
+    tools = None,
+    **kwargs,
+):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [_gguf_round(calls), [_gguf_sse({"content": "Final answer."}), _gguf_done()]],
+        payloads,
+    )
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+    names = sorted({name for _cid, name, _args in calls})
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "go"}],
+            tools = tools or [{"type": "function", "function": {"name": name}} for name in names],
+            max_tool_iterations = 2,
+            **kwargs,
+        )
+    )
+    return events, payloads
+
+
+def _searches(count):
+    return [(f"call_{i}", "web_search", {"query": f"q{i}"}) for i in range(count)]
+
+
+def _meeting_tool(parties, timeout = 4):
+    """Returns TOGETHER only if `parties` calls are in flight at the same moment."""
+    barrier = threading.Barrier(parties, timeout = timeout)
+
+    def _execute(name, arguments, **_kwargs):
+        query = (arguments or {}).get("query")
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:
+            return f"ALONE<{query}>"
+        return f"TOGETHER<{query}>"
+
+    return _execute
+
+
+def _results(events):
+    return [end.get("result") or "" for end in events]
+
+
+# ------------------------------------------------- unset, it follows whether preemption armed
+
+
+def _order_tool(seen):
+    """Records each call's start and end. `alpha` waits a while for `beta` to start: in single file
+    it never does, so `beta` starts after `alpha` ended; overlapped it starts meanwhile."""
+    beta_started = threading.Event()
+
+    def _execute(name, arguments, **_kwargs):
+        query = (arguments or {}).get("query")
+        seen.append(("start", query))
+        if query == "beta":
+            beta_started.set()
+        else:
+            beta_started.wait(timeout = 1.0)
+        seen.append(("end", query))
+        return f"RESULT<{query}>"
+
+    return _execute
+
+
+_IN_ORDER = [("start", "alpha"), ("end", "alpha"), ("start", "beta"), ("end", "beta")]
+
+
+class TestUnsetTheRoundRunsAsBeforePreemption:
+    """With preemption off, unsupported or not armed for the request, a round runs in the model's
+    order, as it did before; an armed request overlaps, and the variable set either way wins."""
+
+    def _provider(self, monkeypatch, **kwargs):
+        seen: list = []
+        monkeypatch.setattr(loop_mod, "execute_tool", _order_tool(seen))
+        monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
+        monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda *a, **k: False)
+        ends = _events(_run(_two_calls(), **kwargs), "tool_end")
+        assert _results(ends) == ["RESULT<alpha>", "RESULT<beta>"]
+        return seen
+
+    def _gguf(self, monkeypatch, **kwargs):
+        seen: list = []
+        events, _payloads = _gguf_events(
+            monkeypatch,
+            [
+                ("call_a", "web_search", {"query": "alpha"}),
+                ("call_b", "web_search", {"query": "beta"}),
+            ],
+            _order_tool(seen),
+            **kwargs,
+        )
+        ends = [e for e in events if isinstance(e, dict) and e.get("type") == "tool_end"]
+        assert _results(ends) == ["RESULT<alpha>", "RESULT<beta>"]
+        return seen
+
+    @pytest.mark.parametrize("switch", [None, "0"], ids = ["unset", "preemption-off"])
+    def test_the_provider_loop_runs_in_order_unarmed(self, monkeypatch, switch):
+        monkeypatch.delenv("UNSLOTH_PARALLEL_TOOL_CALLS", raising = False)
+        if switch is not None:
+            monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", switch)
+        assert self._provider(monkeypatch) == _IN_ORDER
+
+    @pytest.mark.parametrize("switch", [None, "0"], ids = ["unset", "preemption-off"])
+    def test_the_gguf_loop_runs_in_order_unarmed(self, monkeypatch, switch):
+        monkeypatch.delenv("UNSLOTH_PARALLEL_TOOL_CALLS", raising = False)
+        if switch is not None:
+            monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", switch)
+        assert self._gguf(monkeypatch) == _IN_ORDER
+
+    def test_an_unbound_policy_is_not_armed(self, monkeypatch):
+        # Arming declined (an older server, no unified cache): the route binds None.
+        from core.inference.llama_preemption import DeferredPreemptionPolicy
+
+        monkeypatch.delenv("UNSLOTH_PARALLEL_TOOL_CALLS", raising = False)
+        hold = DeferredPreemptionPolicy()
+        hold.bind(None)
+        assert self._gguf(monkeypatch, preempt_policy = hold) == _IN_ORDER
+
+    def test_an_armed_provider_request_overlaps(self, monkeypatch):
+        from core.inference.llama_preemption import PreemptSignal
+
+        monkeypatch.delenv("UNSLOTH_PARALLEL_TOOL_CALLS", raising = False)
+        seen = self._provider(monkeypatch, preempt_signal = PreemptSignal())
+        assert seen.index(("start", "beta")) < seen.index(("end", "alpha")), seen
+
+    def test_an_armed_gguf_request_overlaps(self, monkeypatch):
+        from .preempt_fakes import RecordingPolicy
+
+        monkeypatch.delenv("UNSLOTH_PARALLEL_TOOL_CALLS", raising = False)
+        seen = self._gguf(monkeypatch, preempt_policy = RecordingPolicy())
+        assert seen.index(("start", "beta")) < seen.index(("end", "alpha")), seen
+
+    def test_an_explicit_opt_in_overlaps_unarmed(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", "1")
+        seen = self._gguf(monkeypatch)
+        assert seen.index(("start", "beta")) < seen.index(("end", "alpha")), seen
+
+    def test_an_explicit_off_keeps_an_armed_request_in_order(self, monkeypatch):
+        from .preempt_fakes import RecordingPolicy
+        monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", "0")
+        assert self._gguf(monkeypatch, preempt_policy = RecordingPolicy()) == _IN_ORDER
+
+
+# ------------------------------------------------------------------- the provider loop
+
+
+class TestTheProviderLoopOverlaps:
+    def test_two_calls_are_in_flight_at_once(self, rendezvous):
+        ends = _events(_run(_two_calls()), "tool_end")
+        assert len(ends) == 2
+        assert all(
+            "TOGETHER" in result for result in _results(ends)
+        ), f"a tool returned without ever meeting the other: {_results(ends)}"
+        assert sorted(rendezvous) == ["alpha", "beta"]
+
+    def test_the_switch_puts_them_back_in_single_file(self, rendezvous, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", "0")
+        ends = _events(_run(_two_calls()), "tool_end")
+        assert len(ends) == 2
+        assert all("ALONE" in result for result in _results(ends))
+
+    def test_a_gated_round_is_not_parallelised(self, rendezvous, monkeypatch):
+        monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda *a, **k: object())
+        monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda *a, **k: None)
+        monkeypatch.setattr(loop_mod, "wait_tool_decision", lambda *a, **k: "allow")
+        ends = _events(
+            _run(
+                _two_calls(tool = "python"),
+                tools = [WEB, PY],
+                permission_mode = "auto",
+                confirm_calls = True,
+            ),
+            "tool_end",
+        )
+        assert ends, "the round produced no tool results at all"
+        assert all("TOGETHER" not in result for result in _results(ends))
+
+
+class TestAProviderRoundBoundsItsOverlap:
+    """A round the model made arbitrarily long would otherwise start a worker thread and
+    a pump task per call, all of their side effects at once, with nothing bounding it."""
+
+    def test_the_two_loops_agree_on_the_cap(self):
+        assert _CAP == llama_mod._MAX_PARALLEL_TOOL_CALLS_PER_ROUND
+
+    def test_a_round_past_the_cap_runs_single_file_and_still_answers_in_order(self, rendezvous):
+        transport = _provider_round([(f"call_{i}", f"q{i}") for i in range(_CAP + 1)])
+        lines = _run(transport, tools = [WEB], max_calls = _UNLIMITED)
+        ends = _events(lines, "tool_end")
+        assert len(ends) == _CAP + 1, "every call still has to run"
+        assert all("ALONE" in result for result in _results(ends)), _results(ends)
+        assert [e.get("tool_call_id") for e in ends] == [f"call_{i}" for i in range(_CAP + 1)]
+        tool_rows = [row for row in transport.requests[1]["messages"] if row.get("role") == "tool"]
+        assert [row.get("tool_call_id") for row in tool_rows] == [
+            f"call_{i}" for i in range(_CAP + 1)
+        ], "the provider reads results by position, so a reordered history answers wrongly"
+
+
+class TestOrderIsStillTheModelsOrder:
+    def test_the_cards_and_the_replayed_transcript_follow_the_call_order(self, recorder):
+        transport = _two_calls("alpha", "beta")
+        lines = _run(transport)
+        assert [e.get("tool_call_id") for e in _events(lines, "tool_start")] == [
+            "call_a",
+            "call_b",
+        ]
+        assert [e.get("tool_call_id") for e in _events(lines, "tool_end")] == [
+            "call_a",
+            "call_b",
+        ], (
+            "the second call answered first, so a user watching the stream saw one card "
+            "fill in with another card's result"
+        )
+        messages = transport.requests[1]["messages"]
+        assistant = [m for m in messages if m.get("role") == "assistant" and m.get("tool_calls")]
+        assert assistant and [c["id"] for c in assistant[-1]["tool_calls"]] == ["call_a", "call_b"]
+        tool_rows = [m for m in messages if m.get("role") == "tool"]
+        assert [row.get("tool_call_id") for row in tool_rows] == ["call_a", "call_b"]
+        assert [row.get("content") for row in tool_rows] == ["RESULT<alpha>", "RESULT<beta>"]
+
+    def test_a_repeated_call_behind_a_running_one_answers_after_it_on_a_results_only_transport(
+        self, rendezvous, monkeypatch
+    ):
+        """Anthropic continues from tool results matched to the calls by position."""
+        monkeypatch.setattr(
+            loop_mod, "execute_tool", lambda name, arguments, **kw: f"R<{arguments['query']}>"
+        )
+
+        def call(index, ident, query):
+            args = json.dumps({"query": query})
+            return {
+                "index": index,
+                "id": ident,
+                "function": {"name": "web_search", "arguments": args},
+            }
+
+        transport = FakeTransport(
+            [
+                [_sse({"tool_calls": [call(0, "r1_0", "seen")]}), _sse(finish = "tool_calls"), _DONE],
+                [
+                    _sse({"tool_calls": [call(0, "r2_0", "fresh"), call(1, "r2_1", "seen")]}),
+                    _sse(finish = "tool_calls"),
+                    _DONE,
+                ],
+                [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+            ],
+            heals = False,
+        )
+        transport.tool_result_only_continuation = True
+        _run(transport, tools = [WEB], max_calls = _UNLIMITED)
+        calls, results = [], []
+        for row in transport.requests[2]["messages"]:
+            if row.get("role") == "assistant":
+                calls += [c.get("id") for c in row.get("tool_calls") or []]
+            if row.get("role") == "tool":
+                results.append(row.get("tool_call_id"))
+        second = [c for c in calls if str(c).startswith("r2_")]
+        assert [r for r in results if str(r).startswith("r2_")] == second, (calls, results)
+
+
+def _fast_sizing(monkeypatch):
+    monkeypatch.setattr(
+        llama_mod.LlamaCppBackend,
+        "count_chat_tokens",
+        lambda self, messages, *args, **kwargs: 8 * len(messages or []),
+    )
+
+
+class TestTheLocalGgufLoopOverlapsToo:
+    def test_two_different_searches_run_together(self, monkeypatch):
+        events, _payloads = _gguf_events(monkeypatch, _searches(2), _meeting_tool(2))
+        ends = [e for e in events if e.get("type") == "tool_end"]
+        assert len(ends) == 2
+        assert all("TOGETHER" in result for result in _results(ends)), _results(ends)
+
+    def test_the_results_arrive_in_call_order_carrying_their_own_answers(self, monkeypatch):
+        def _execute(name, arguments, **_kwargs):
+            return f"RESULT<{arguments.get('query')}>"
+
+        events, payloads = _gguf_events(
+            monkeypatch,
+            [
+                ("call_a", "web_search", {"query": "alpha"}),
+                ("call_b", "web_search", {"query": "beta"}),
+                ("call_c", "web_search", {"query": "gamma"}),
+            ],
+            _execute,
+        )
+        ends = [e for e in events if e.get("type") == "tool_end"]
+        assert [e.get("tool_call_id") for e in ends] == ["call_a", "call_b", "call_c"]
+        assert _results(ends) == ["RESULT<alpha>", "RESULT<beta>", "RESULT<gamma>"]
+        messages = payloads[1]["messages"]
+        assistant = [m for m in messages if m.get("role") == "assistant" and m.get("tool_calls")]
+        assert assistant and [c["id"] for c in assistant[-1]["tool_calls"]] == [
+            "call_a",
+            "call_b",
+            "call_c",
+        ]
+        tool_rows = [m for m in messages if m.get("role") == "tool"]
+        assert [row.get("content") for row in tool_rows] == [
+            "RESULT<alpha>",
+            "RESULT<beta>",
+            "RESULT<gamma>",
+        ], "a result was attached to a call that did not produce it"
+
+    def test_a_refused_call_keeps_its_place_in_the_round(self, monkeypatch):
+        """A call whose arguments put the prompt over the window is refused without running."""
+        payloads: list[dict] = []
+        filler = "go"
+        backend = _make_backend(
+            monkeypatch,
+            [
+                _gguf_round(
+                    [
+                        ("call_a", "web_search", {"query": "alpha"}),
+                        (
+                            "call_b",
+                            "edit_file",
+                            {
+                                "path": "x.html",
+                                "edits": [{"old_string": "", "new_string": "x" * 6000}],
+                            },
+                        ),
+                    ]
+                ),
+                [_gguf_sse({"content": "Final answer."}), _gguf_done()],
+            ],
+            payloads,
+        )
+
+        def _count(messages, *_args, **_kwargs):
+            answered_b = any(
+                m.get("role") == "tool" and m.get("tool_call_id") == "call_b" for m in messages
+            )
+            return 100000 if answered_b else 100
+
+        monkeypatch.setattr(backend, "count_chat_tokens", _count)
+        executed: list[str] = []
+
+        def _execute(name, arguments, **_kwargs):
+            executed.append(name)
+            return f"RESULT<{name}>"
+
+        monkeypatch.setattr("core.inference.tools.execute_tool", _execute)
+        events = list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": filler}],
+                tools = [
+                    {"type": "function", "function": {"name": "web_search"}},
+                    {"type": "function", "function": {"name": "edit_file"}},
+                ],
+                max_tokens = 512,
+                max_tool_iterations = 2,
+            )
+        )
+        assert executed == ["web_search"], executed
+        ends = [e for e in events if e.get("type") == "tool_end"]
+        assert [e.get("tool_call_id") for e in ends] == ["call_a", "call_b"], ends
+        assert "Nothing was written" in str(ends[1].get("result") or "")
+        tool_msgs = [m for m in payloads[1]["messages"] if m.get("role") == "tool"]
+        assert [m.get("tool_call_id") for m in tool_msgs] == ["call_a", "call_b"], tool_msgs
+
+    def test_a_refused_call_does_not_spend_the_turns_one_shot(self, monkeypatch):
+        """A call refused before it ran must not be recorded as a successful execution."""
+        payloads: list[dict] = []
+        backend = _make_backend(
+            monkeypatch,
+            [
+                _gguf_round(
+                    [
+                        ("call_a", "web_search", {"query": "alpha"}),
+                        ("call_b", "render_html", {"html": "<p>" + "x" * 6000 + "</p>"}),
+                    ]
+                ),
+                _gguf_round([("call_c", "render_html", {"html": "<p>small</p>"})]),
+                [_gguf_sse({"content": "Final answer."}), _gguf_done()],
+            ],
+            payloads,
+        )
+
+        def _count(messages, *_args, **_kwargs):
+            if "refused before it ran" in json.dumps(messages, default = str):
+                return 100
+            answered_b = any(
+                m.get("role") == "tool" and m.get("tool_call_id") == "call_b" for m in messages
+            )
+            return 100000 if answered_b else 100
+
+        monkeypatch.setattr(backend, "count_chat_tokens", _count)
+        executed: list[str] = []
+
+        def _execute(name, arguments, **_kwargs):
+            executed.append(name)
+            return f"RESULT<{name}>"
+
+        monkeypatch.setattr("core.inference.tools.execute_tool", _execute)
+        events = list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "go"}],
+                tools = [
+                    {"type": "function", "function": {"name": "web_search"}},
+                    {"type": "function", "function": {"name": "render_html"}},
+                ],
+                max_tokens = 512,
+                max_tool_iterations = 3,
+            )
+        )
+        ends = [e for e in events if e.get("type") == "tool_end"]
+        assert [e.get("tool_call_id") for e in ends[:2]] == ["call_a", "call_b"], ends
+        assert "Nothing was written" in str(ends[1].get("result") or "")
+        assert executed == ["web_search", "render_html"], executed
+        tool_msgs = [m for m in payloads[1]["messages"] if m.get("role") == "tool"]
+        assert [m.get("tool_call_id") for m in tool_msgs] == ["call_a", "call_b"], tool_msgs
+        assert "render_html" in json.dumps(payloads[1].get("tools"), default = str)
+
+    def test_a_round_of_refusals_does_not_spend_a_tool_iteration(self, monkeypatch):
+        """Nothing ran, so the caller's tool budget must not be charged for the round."""
+        payloads: list[dict] = []
+        backend = _make_backend(
+            monkeypatch,
+            [
+                _gguf_round(
+                    [
+                        (
+                            "call_a",
+                            "edit_file",
+                            {
+                                "path": "x.html",
+                                "edits": [{"old_string": "", "new_string": "x" * 6000}],
+                            },
+                        ),
+                        ("call_b", "render_html", {"html": "<p>" + "y" * 6000 + "</p>"}),
+                    ]
+                ),
+                _gguf_round([("call_c", "render_html", {"html": "<p>small</p>"})]),
+                [_gguf_sse({"content": "Final answer."}), _gguf_done()],
+            ],
+            payloads,
+        )
+
+        def _count(messages, *_args, **_kwargs):
+            refusals = json.dumps(messages, default = str).count("refused before it ran")
+            return 100000 if refusals < 2 else 100
+
+        monkeypatch.setattr(backend, "count_chat_tokens", _count)
+        executed: list[str] = []
+
+        def _execute(name, arguments, **_kwargs):
+            executed.append(name)
+            return f"RESULT<{name}>"
+
+        monkeypatch.setattr("core.inference.tools.execute_tool", _execute)
+        list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "go"}],
+                tools = [
+                    {"type": "function", "function": {"name": "edit_file"}},
+                    {"type": "function", "function": {"name": "render_html"}},
+                ],
+                max_tokens = 512,
+                max_tool_iterations = 1,
+            )
+        )
+        assert executed == ["render_html"], executed
+
+    def test_the_switch_reaches_this_loop_as_well(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", "0")
+        barrier = threading.Barrier(2, timeout = 4)
+
+        def _execute(name, arguments, **_kwargs):
+            try:
+                barrier.wait()
+            except threading.BrokenBarrierError:
+                return f"ALONE<{arguments.get('query')}>"
+            return f"TOGETHER<{arguments.get('query')}>"
+
+        events, _payloads = _gguf_events(
+            monkeypatch,
+            [
+                ("call_a", "web_search", {"query": "alpha"}),
+                ("call_b", "web_search", {"query": "beta"}),
+            ],
+            _execute,
+        )
+        ends = [e for e in events if e.get("type") == "tool_end"]
+        assert len(ends) == 2
+        assert all("ALONE" in (end.get("result") or "") for end in ends)
+
+    def test_a_round_that_repeats_a_call_stays_sequential(self, monkeypatch):
+        """The one-shot gate reads state the settle writes, so its round may not overlap."""
+        ran: list = []
+
+        def _execute(name, arguments, **_kwargs):
+            ran.append(arguments.get("query"))
+            return "search-result"
+
+        events, _payloads = _gguf_events(
+            monkeypatch,
+            [
+                ("call_a", "web_search", {"query": "same"}),
+                ("call_b", "web_search", {"query": "same"}),
+            ],
+            _execute,
+        )
+        assert ran == ["same"], "the duplicate ran, so the round was overlapped"
+        assert [e.get("type") for e in events].count("tool_end") == 1
+
+    def test_a_padded_one_shot_name_is_the_same_tool(self, monkeypatch):
+        # `prepare_call` strips names, so a padded one-shot name must not overlap.
+        ran: list = []
+
+        def _execute(name, arguments, **_kwargs):
+            ran.append(arguments.get("html"))
+            return "rendered"
+
+        _gguf_events(
+            monkeypatch,
+            [
+                ("call_a", "render_html", {"html": "<p>a</p>"}),
+                ("call_b", " render_html ", {"html": "<p>b</p>"}),
+            ],
+            _execute,
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+        )
+        assert ran == ["<p>a</p>"], f"{ran}: the one-shot ran twice in one round"
+
+    def test_the_search_cap_counts_launches_and_keeps_the_capped_calls_in_place(self, monkeypatch):
+        from core.inference.tool_call_parser import RAG_MAX_SEARCHES_PER_TURN, RAG_SEARCH_TOOLS
+
+        tool = sorted(RAG_SEARCH_TOOLS)[0]
+        assert RAG_MAX_SEARCHES_PER_TURN >= 1
+        ran: list = []
+
+        def _execute(name, arguments, **_kwargs):
+            ran.append(arguments.get("query"))
+            return f"RESULT<{arguments.get('query')}>"
+
+        n = RAG_MAX_SEARCHES_PER_TURN + 2
+        events, _payloads = _gguf_events(
+            monkeypatch,
+            [(f"call_{i}", tool, {"query": f"q{i}"}) for i in range(n)],
+            _execute,
+            tools = [{"type": "function", "function": {"name": tool}}],
+        )
+        assert len(ran) <= RAG_MAX_SEARCHES_PER_TURN, (
+            f"{len(ran)} searches ran against a cap of {RAG_MAX_SEARCHES_PER_TURN}: the "
+            "cap was read while the round was being prepared and written when it settled"
+        )
+        ends = [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"]
+        assert ends == [
+            f"call_{i}" for i in range(n)
+        ], f"cards closed {ends}: the capped calls overtook the ones still searching"
+
+
+class TestARoundIsPreparedWholeAndBounded:
+    def test_no_driver_starts_until_the_last_call_is_attached(self, monkeypatch):
+        _fast_sizing(monkeypatch)
+        order: list = []
+        real_attach = controller_mod.ToolCallDecision.as_assistant_tool_call
+        real_start = llama_mod._start_tool_call
+
+        def _attach(self_):
+            order.append(("attach", self_.tool_name))
+            return real_attach(self_)
+
+        # *args, so a stale stub fails as this test rather than as a TypeError.
+        def _start(decision, *args, **kwargs):
+            order.append(("start", decision.tool_name))
+            return real_start(decision, *args, **kwargs)
+
+        monkeypatch.setattr(controller_mod.ToolCallDecision, "as_assistant_tool_call", _attach)
+        monkeypatch.setattr(llama_mod, "_start_tool_call", _start)
+
+        def _execute(name, arguments, **_kwargs):
+            return f"RESULT<{arguments.get('query')}>"
+
+        events, _payloads = _gguf_events(monkeypatch, _searches(3), _execute)
+        ends = [e for e in events if e.get("type") == "tool_end"]
+        assert [e.get("tool_call_id") for e in ends] == ["call_0", "call_1", "call_2"]
+
+        starts = [i for i, (kind, _name) in enumerate(order) if kind == "start"]
+        attaches = [i for i, (kind, _name) in enumerate(order) if kind == "attach"]
+        assert len(starts) == 3 and len(attaches) >= 3
+        assert max(attaches) < min(
+            starts
+        ), f"a driver started before the round was attached: {order}"
+
+    def test_nine_calls_run_single_file(self, monkeypatch):
+        _fast_sizing(monkeypatch)
+        lock = threading.Lock()
+        in_flight = [0]
+        peak = [0]
+
+        def _execute(name, arguments, **_kwargs):
+            with lock:
+                in_flight[0] += 1
+                peak[0] = max(peak[0], in_flight[0])
+            try:
+                threading.Event().wait(0.05)
+            finally:
+                with lock:
+                    in_flight[0] -= 1
+            return f"RESULT<{arguments.get('query')}>"
+
+        events, _payloads = _gguf_events(monkeypatch, _searches(9), _execute)
+        assert len([e for e in events if e.get("type") == "tool_end"]) == 9
+        assert peak[0] == 1, f"a round past the cap overlapped: {peak[0]} in flight at once"
+
+    def test_eight_calls_still_overlap(self, monkeypatch):
+        _fast_sizing(monkeypatch)
+        events, _payloads = _gguf_events(monkeypatch, _searches(8), _meeting_tool(8))
+        ends = [e for e in events if e.get("type") == "tool_end"]
+        assert len(ends) == 8
+        assert all(
+            "TOGETHER" in result for result in _results(ends)
+        ), f"a round at the cap serialised: {_results(ends)}"
+
+
+class TestTheRoundIsPricedOnceForEveryCallInIt:
+    """A worker that re-prices the round from its own thread under-budgets a late call."""
+
+    def test_a_slow_call_gets_the_same_room_as_the_one_that_finished_first(self, monkeypatch):
+        """The first tool returns at once and its result settles into `conversation` while
+        the second is still running. Both were launched on the same promise of the same
+        share of the window, so both have to be handed it."""
+        payloads: list[dict] = []
+        backend = _make_backend(
+            monkeypatch,
+            [
+                _gguf_round(
+                    [
+                        ("call_a", "web_search", {"query": "alpha"}),
+                        ("call_b", "web_search", {"query": "beta"}),
+                    ]
+                ),
+                [_gguf_sse({"content": "Final answer."}), _gguf_done()],
+            ],
+            payloads,
+        )
+        main = threading.current_thread()
+        off_thread: list = []
+        lock = threading.Lock()
+        counted: list = []
+
+        def _count(messages, *_args, **_kwargs):
+            with lock:
+                if threading.current_thread() is not main:
+                    off_thread.append(threading.current_thread().name)
+                counted.append(1)
+                return 200 + 600 * (len(counted) - 1)
+
+        monkeypatch.setattr(backend, "count_chat_tokens", _count)
+        alpha_returned = threading.Event()
+        budgets: dict = {}
+
+        def _execute(name, arguments, **kwargs):
+            query = (arguments or {}).get("query")
+            budgets[query] = kwargs.get("result_budget_tokens")
+            if query == "alpha":
+                alpha_returned.set()
+                return "RESULT<alpha>"
+            alpha_returned.wait(0.2)
+            return "RESULT<beta>"
+
+        monkeypatch.setattr("core.inference.tools.execute_tool", _execute)
+        list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "go"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                max_tool_iterations = 2,
+            )
+        )
+        assert sorted(budgets) == ["alpha", "beta"], budgets
+        assert isinstance(
+            budgets["alpha"], int
+        ), f"the call was not handed result_budget_tokens: {budgets}"
+        assert budgets["alpha"] > 0, budgets
+        assert budgets["beta"] == budgets["alpha"], (
+            f"the round handed out {budgets}: the call that was still running priced "
+            "itself against a conversation the first result had already landed in, so a "
+            "valid result is cut to a window notice the model then retries against"
+        )
+        assert not off_thread, (
+            f"{len(off_thread)} count(s) came from a tool worker: the round is sized on "
+            "the generator thread precisely because `conversation` is shared and mutable"
+        )
+
+    def test_the_worker_reads_the_rounds_figure_before_it_counts_anything(self):
+        import ast
+
+        import core.inference.llama_cpp as mod
+
+        source = Path(mod.__file__).read_text(encoding = "utf-8")
+        node = next(
+            n
+            for n in ast.walk(ast.parse(source))
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "_invoke_tool"
+        )
+        folded = " ".join((ast.get_source_segment(source, node) or "").split())
+        assert "_round_budget_cell[0] is not None" in folded, folded[:200]
+        assert folded.index("_round_budget_cell[0] is not None") < folded.index(
+            "count_chat_tokens"
+        ), (
+            "the worker counts before it looks at the round's own figure, so an overlapped "
+            "round is sized once per call again"
+        )
+
+    def test_the_round_is_sized_before_its_deferred_drivers_start(self):
+        import core.inference.llama_cpp as mod
+        folded = " ".join(Path(mod.__file__).read_text(encoding = "utf-8").split())
+        assert folded.index("_round_budget_cell[0] = _round_budget") < folded.index(
+            "for _entry_index, _entry in enumerate(_pending_calls)"
+        ), (
+            "the drivers start before the cell is filled, so the first worker to run finds "
+            "it empty and counts for itself"
+        )

@@ -1281,6 +1281,11 @@ class ToolLoopController:
             active.append(copy.deepcopy(tool))
         return active
 
+    def healed_arguments(self, tool_call: Mapping[str, Any]) -> tuple[str, Any]:
+        """The name and arguments `prepare_call` classifies, after healing. Reads no state."""
+        tool_name, _coerced, arguments = self._keyed_arguments(tool_call)
+        return tool_name, arguments
+
     def prepare_call(
         self,
         tool_call: Mapping[str, Any],
@@ -1292,23 +1297,15 @@ class ToolLoopController:
         """Classify a parsed tool call before any visible event is yielded."""
         function = tool_call.get("function")
         function = function if isinstance(function, Mapping) else {}
-        tool_name = str(function.get("name") or "").strip()
+        searched_name = str(function.get("name") or "").strip()
+        # Loaded before the arguments are coerced, so they are healed against its schema.
         if (
             self._mcp_search
-            and tool_name.startswith(MCP_TOOL_PREFIX)
-            and tool_name not in self._allowed_tool_names
+            and searched_name.startswith(MCP_TOOL_PREFIX)
+            and searched_name not in self._allowed_tool_names
         ):
-            self._load_mcp_tools([_mcp_tool_spec(tool_name)])
-        coerced = coerce_tool_arguments(
-            function.get("arguments", {}),
-            heal = self._auto_heal_tool_calls,
-            tool_name = tool_name,
-            tool_schemas = self._tools,
-        )
-        arguments = coerced.arguments
-        if tool_name == "web_search" and UNPARSED_ARGUMENTS_KEY not in arguments:
-            from core.inference.tools import canonicalize_web_search_arguments
-            arguments = canonicalize_web_search_arguments(arguments)
+            self._load_mcp_tools([_mcp_tool_spec(searched_name)])
+        tool_name, coerced, arguments = self._keyed_arguments(tool_call)
         key = canonical_tool_call_key(tool_name, arguments)
         mcp = mcp_display_parts(tool_name)
         provenance = tool_event_provenance(
@@ -1352,6 +1349,30 @@ class ToolLoopController:
             status_text = status_for_tool(tool_name, arguments),
             noop_result = noop,
         )
+
+    def _keyed_arguments(self, tool_call: Mapping[str, Any]):
+        """Name, coercion and the arguments a call is keyed on: healed, and a web search's
+        accepted spellings folded to one."""
+        function = tool_call.get("function")
+        function = function if isinstance(function, Mapping) else {}
+        tool_name = str(function.get("name") or "").strip()
+        coerced = coerce_tool_arguments(
+            function.get("arguments", {}),
+            heal = self._auto_heal_tool_calls,
+            tool_name = tool_name,
+            tool_schemas = self._tools,
+        )
+        arguments = coerced.arguments
+        if tool_name == "web_search" and UNPARSED_ARGUMENTS_KEY not in arguments:
+            from core.inference.tools import canonicalize_web_search_arguments
+            arguments = canonicalize_web_search_arguments(arguments)
+        return tool_name, coerced, arguments
+
+    def call_key(self, tool_call: Mapping[str, Any]) -> str:
+        """The key ``prepare_call`` will file this call under. A round's parallel gate compares
+        these: keyed on raw arguments, two calls healing to one key both ran."""
+        tool_name, _coerced, arguments = self._keyed_arguments(tool_call)
+        return canonical_tool_call_key(tool_name, arguments)
 
     def reprepare_call(
         self,

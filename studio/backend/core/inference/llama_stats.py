@@ -14,11 +14,108 @@ import os
 import re
 import threading
 import time
+import json
 import urllib.request
 
 # Prometheus body lines: "llamacpp:<name>[{labels}] <value>" (skip "#" HELP/TYPE).
 _METRIC_RE = re.compile(r"^llamacpp:(\w+)(?:\{[^}]*\})?\s+([0-9.eE+-]+)", re.MULTILINE)
 _OFF = {"0", "false", "no", "off"}
+
+
+def fetch_llama_slots(
+    base_url,
+    timeout_s = 3.0,
+    headers = None,
+):
+    """One ``GET /slots`` read as a list, or None if it could not be read.
+
+    ``headers`` carries the backend's ``Authorization`` when the load was launched with
+    ``--api-key``, llama.cpp exempting only ``/health`` from the key check: unauthenticated the read
+    answers 401 and reads back as None, switching the residency probe off. /metrics cannot replace
+    this, saying nothing about cells still held by IDLE slots: one held 16383 of a 16384 cache while
+    the scheduler believed it nearly empty. None means "cannot tell", never "the cache is empty".
+    """
+    url = f"{str(base_url).rstrip('/')}/slots"
+    try:
+        with _loopback_opener().open(
+            urllib.request.Request(url, headers = dict(headers or {})), timeout = timeout_s
+        ) as r:
+            if r.status != 200:
+                return None
+            payload = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, list) else None
+
+
+def erase_llama_slot(
+    base_url,
+    slot_id,
+    timeout_s = 3.0,
+    headers = None,
+) -> int:
+    """Drop one idle slot's cached prompt. Returns tokens erased, 0 on any failure. Cheaper than
+    preempting: the cache belongs to a finished request, so this costs a future prefix hit."""
+    url = f"{str(base_url).rstrip('/')}/slots/{int(slot_id)}?action=erase"
+    try:
+        # Authorized for the same reason the read above is: a 401 returns 0 tokens erased, so a
+        # paused slot's cells are never released.
+        request = urllib.request.Request(url, method = "POST", data = b"", headers = dict(headers or {}))
+        with _loopback_opener().open(request, timeout = timeout_s) as r:
+            if r.status != 200:
+                return 0
+            payload = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return 0
+    try:
+        return max(0, int(payload.get("n_erased") or 0))
+    except (AttributeError, TypeError, ValueError):
+        return 0
+
+
+def _loopback_opener():
+    """No proxy, so the bearer only ever goes to the loopback server."""
+    opener = urllib.request.OpenerDirector()
+    for handler in (
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPHandler(),
+        urllib.request.HTTPDefaultErrorHandler(),
+        urllib.request.HTTPErrorProcessor(),
+    ):
+        opener.add_handler(handler)
+    return opener
+
+
+def scrape_llama_metrics(
+    base_url,
+    timeout_s = 3.0,
+    *,
+    headers = None,
+    opener = None,
+):
+    """One /metrics read as a {name: float} dict, or None if it could not be read. Split out of the
+    daemon's own scrape so a single-sample caller reuses this parser. None means "cannot tell"."""
+    url = f"{str(base_url).rstrip('/')}/metrics"
+    if opener is None:
+        opener = _loopback_opener()
+    try:
+        with opener.open(
+            urllib.request.Request(url, headers = dict(headers or {})), timeout = timeout_s
+        ) as r:
+            if r.status != 200:
+                return None
+            body = r.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+    out = {}
+    for k, v in _METRIC_RE.findall(body):
+        try:  # a malformed value must not kill the daemon thread
+            value = float(v)
+        except ValueError:
+            continue
+        if math.isfinite(value):
+            out[k] = value
+    return out
 
 
 class LlamaServerStatsLogger:
@@ -36,17 +133,10 @@ class LlamaServerStatsLogger:
         stall_timeout_s = 600.0,
         headers = None,
     ):
-        self._url = f"{base_url.rstrip('/')}/metrics"
+        self._base_url = base_url.rstrip("/")
+        self._url = f"{self._base_url}/metrics"
         self._headers = dict(headers or {})
-        # No HTTPSHandler: it builds an SSL context this loopback scrape never needs.
-        self._opener = urllib.request.OpenerDirector()
-        for handler in (
-            urllib.request.ProxyHandler({}),
-            urllib.request.HTTPHandler(),
-            urllib.request.HTTPDefaultErrorHandler(),
-            urllib.request.HTTPErrorProcessor(),
-        ):
-            self._opener.add_handler(handler)
+        self._opener = _loopback_opener()
         self._log = logger
         self._interval = max(1.0, float(interval_s))
         self._stop = threading.Event()
@@ -67,27 +157,7 @@ class LlamaServerStatsLogger:
         self._stop.set()
 
     def _scrape(self):
-        try:
-            # No proxy: the bearer must only ever go to the loopback server.
-            with self._opener.open(
-                urllib.request.Request(self._url, headers = self._headers), timeout = 3
-            ) as r:
-                if r.status != 200:
-                    return None
-                body = r.read().decode("utf-8", "replace")
-        except Exception:
-            return None
-        out = {}
-        for k, v in _METRIC_RE.findall(body):
-            try:  # a malformed value must not kill the daemon thread
-                value = float(v)
-            except ValueError:
-                continue
-            # float() overflows a long digit string to inf without raising; _env_float
-            # refuses the same text. No printed double reaches 1.8e308, so nothing is lost.
-            if math.isfinite(value):
-                out[k] = value
-        return out
+        return scrape_llama_metrics(self._base_url, headers = self._headers, opener = self._opener)
 
     @staticmethod
     def _prompt_rate(base, tokens, seconds):

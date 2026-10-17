@@ -12,6 +12,7 @@ import math
 import os
 import threading
 import time
+import weakref
 from typing import Any, AsyncIterator
 
 from starlette.requests import Request
@@ -400,6 +401,41 @@ _ADMISSION_WAIT_MARKER = ": admission-wait"
 # Leaving the queue. Renewed unconditionally: wait renewals are rate limited, and the lease equals the first-token
 # timeout, so any age carried in is negative margin.
 _ADMISSION_DONE_MARKER = ": admission-done"
+# A durable follower never sees SSE comments, so the pause is relayed as an `_admissionStatus`
+# chunk.
+_PREEMPT_PAUSED_MARKER = ": preempt-paused"
+_PREEMPT_RESUMED_MARKER = ": preempt-resumed"
+_PREEMPT_RECOMPUTED_MARKER = ": preempt-recomputed"
+# Renewed on like a queue wait: a pause outlasting the lease reaped the run.
+_PREEMPT_KEEPALIVE_MARKER = ": preempt-keepalive"
+
+
+_ADMISSION_STATUS_BY_MARKER = {
+    _ADMISSION_WAIT_MARKER: "waiting",
+    _ADMISSION_DONE_MARKER: "admitted",
+    _PREEMPT_PAUSED_MARKER: "paused",
+    _PREEMPT_RESUMED_MARKER: "resumed",
+    _PREEMPT_RECOMPUTED_MARKER: "recomputed",
+}
+
+
+def _admission_status_chunks(text: str, last: list | None = None) -> list[dict]:
+    """The queue, pause and resume comments in one piece of the upstream stream, as chunks a
+    durable follower renders the way the legacy stream renders the comments. ``last`` holds the
+    status relayed before: the wait comment repeats every keepalive, and only a change counts."""
+    chunks: list[dict] = []
+    for line in text.replace("\r\n", "\n").split("\n"):
+        status = _ADMISSION_STATUS_BY_MARKER.get(line.strip())
+        if status is None:
+            continue
+        if last is not None:
+            if last and last[0] == status:
+                continue
+            last[:] = [status]
+        chunks.append({"_admissionStatus": status})
+    return chunks
+
+
 # A server-side tool still running. Rate limited like the wait marker.
 _TOOL_HEARTBEAT_MARKER = ": tool-heartbeat"
 # Prefill advancing while prompt_progress is dropped; renews the lease like the tool heartbeat.
@@ -431,7 +467,8 @@ def _minimum_lease_seconds() -> float:
             reason = "not a usable keep-alive cadence",
         )
         interval = float(DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S)
-    return max(1.0, interval) * 3.0
+    # Two park-probe intervals, so a short lease cannot settle a healthy parked run between probes.
+    return max(max(1.0, interval) * 3.0, 2.0 * _PARK_PROBE_MIN_INTERVAL_S)
 
 
 def _applied_lease_timeout(configured: float) -> float:
@@ -478,6 +515,60 @@ def _renew_interval_seconds() -> float:
     # The floor must stay UNDER the lease: a one second floor against a one second lease first renews no earlier than
     # expiry. A quarter keeps three renewals per window.
     return min(30.0, max(0.25, lease / 4.0))
+
+
+# The lease-derived cadence can reach 0.25s, which would scrape four times a second.
+_PARK_PROBE_MIN_INTERVAL_S = 5.0
+# Per backend: one scrape serves every silent run on that server.
+_park_probe_last: "weakref.WeakKeyDictionary[Any, tuple]" = weakref.WeakKeyDictionary()
+_park_probe_lock = threading.Lock()
+_park_probe_inflight: "weakref.WeakKeyDictionary[Any, threading.Lock]" = weakref.WeakKeyDictionary()
+
+
+def _server_park_probe_now(backend: Any) -> bool:
+    """Ask `/metrics` ourselves whether a slot is parked right now, rate limited per backend.
+
+    The read wrapper only asks at its read deadline, and before the first token that deadline IS the
+    20 minute first-token budget, so waiting for its stamp lets the sweeper cancel a healthy
+    generation first, and a shorter UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S loses outright. Bounded
+    by the wrapper's own _SERVER_PARK_STALL_CAP_S, so this cannot keep a wedged run alive. Blocking
+    (one HTTP GET); only ever called from a worker thread.
+    """
+    if not bool(getattr(backend, "server_may_park", False)):
+        return False  # nothing parks slots, so silence is a stall and /metrics is noise
+    probe = getattr(backend, "_server_park_grace", None)
+    if not callable(probe):
+        return False
+    with _park_probe_lock:
+        inflight = _park_probe_inflight.get(backend)
+        if inflight is None:
+            inflight = _park_probe_inflight[backend] = threading.Lock()
+    with inflight:
+        now = time.monotonic()
+        with _park_probe_lock:
+            last = _park_probe_last.get(backend)
+            if last is not None and now - last[0] < _PARK_PROBE_MIN_INTERVAL_S:
+                return last[1]
+        answer = bool(probe())
+        with _park_probe_lock:
+            _park_probe_last[backend] = (now, answer)
+        return answer
+
+
+def _server_park_excused_recently() -> bool:
+    """Whether the resident llama-server has lately excused a silent stream as parked from
+    `/metrics`, asking it ourselves when no stamp is in hand. Only a swap build predating the stream
+    notices parks in silence; one with them sends `: preempt-keepalive`, renewed on directly."""
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        backend = get_llama_cpp_backend()
+        probe = getattr(backend, "server_park_grace_recent", None)
+        if probe is not None and bool(probe(_renew_interval_seconds() * 2.0)):
+            return True
+        return _server_park_probe_now(backend)
+    except Exception:
+        return False
 
 
 class ChatGenerationSupervisor:
@@ -791,12 +882,15 @@ class ChatGenerationSupervisor:
                 raise RuntimeError("Local generation did not return an event stream")
             decoder = _SSEDecoder()
             last_keepalive = time.monotonic()
+            last_status: list = []
             next_raw_task = asyncio.create_task(iterator.__anext__())
             while True:
                 timeout = (
                     max(0.0, _EVENT_FLUSH_SECONDS - (time.monotonic() - last_flush))
                     if pending
-                    else None
+                    # A silent park on a build without stream notices sends no bytes, and only here
+                    # is the lease renewed.
+                    else _renew_interval_seconds()
                 )
                 # Wake to renew the lease across a first-token wait the backend is still inside its own deadline for.
                 renew_interval = _renew_interval_seconds()
@@ -809,16 +903,20 @@ class ChatGenerationSupervisor:
                     await self._try_touch_progress(run_id)
                     last_keepalive = time.monotonic()
                 if not ready:
-                    if not pending:
-                        continue
-                    await asyncio.to_thread(
-                        db.append_events,
-                        run_id,
-                        worker_token,
-                        pending,
-                    )
-                    pending = []
-                    last_flush = time.monotonic()
+                    if pending:
+                        await asyncio.to_thread(
+                            db.append_events,
+                            run_id,
+                            worker_token,
+                            pending,
+                        )
+                        pending = []
+                        last_flush = time.monotonic()
+                    elif await asyncio.to_thread(_server_park_excused_recently):
+                        now_s = time.monotonic()
+                        if now_s - last_keepalive >= _renew_interval_seconds():
+                            last_keepalive = now_s
+                            await self._try_touch_progress(run_id)
                     continue
                 try:
                     raw = next_raw_task.result()
@@ -834,6 +932,7 @@ class ChatGenerationSupervisor:
                     await self._try_touch_progress(run_id)
                 elif (
                     _ADMISSION_WAIT_MARKER in text
+                    or _PREEMPT_KEEPALIVE_MARKER in text
                     or _TOOL_HEARTBEAT_MARKER in text
                     or _PREFILL_PROGRESS_MARKER in text
                 ):
@@ -841,6 +940,16 @@ class ChatGenerationSupervisor:
                     if now_s - last_keepalive >= _renew_interval_seconds():
                         last_keepalive = now_s
                         await self._try_touch_progress(run_id)
+                status_chunks = _admission_status_chunks(text, last_status)
+                if status_chunks:
+                    # Unbatched: a batched notice would reach the follower with the resume.
+                    now_ms = db.now_ms()
+                    pending.extend(("chunk", chunk, now_ms) for chunk in status_chunks)
+                    await asyncio.to_thread(db.append_events, run_id, worker_token, pending)
+                    pending = []
+                    last_flush = time.monotonic()
+                    last_keepalive = last_flush
+                    await self._try_touch_progress(run_id)
                 for encoded in decoder.feed(text):
                     if encoded == "[DONE]":
                         saw_done = True

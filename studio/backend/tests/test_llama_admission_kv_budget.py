@@ -31,6 +31,15 @@ from core.inference.llama_admission import (
 )
 
 
+@pytest.fixture(autouse = True)
+def _isolate_process_wide_admission_state():
+    from core.inference.llama_admission import reset_llama_admission_queues
+
+    reset_llama_admission_queues()
+    yield
+    reset_llama_admission_queues()
+
+
 def _config(**overrides):
     return LlamaAdmissionConfig(**overrides)
 

@@ -742,4 +742,5 @@ def test_gguf_loop_gates_and_forwards_the_image_like_the_other_loops():
     assert src.index("image_share = mcp_image_share(") < src.index(
         "decision.as_assistant_tool_call()"
     )
-    assert "kwargs['mcp_image'] = image_share['image']" in statements
+    assert "_share = image_share," in src
+    assert "kwargs['mcp_image'] = _share['image']" in statements

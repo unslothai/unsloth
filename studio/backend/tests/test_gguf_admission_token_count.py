@@ -9,7 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from core.inference.llama_admission import LlamaAdmissionQueue
+from core.inference.llama_admission import LlamaAdmissionCancelled, LlamaAdmissionQueue
 import routes.inference as inference
 
 
@@ -479,15 +479,16 @@ def test_cancelled_tool_round_does_not_count_or_recost(cancel_during_count):
         backend.count_chat_tokens.side_effect = count
     else:
         cancel.set()
-    inference._openai_llama_admission_recost(
-        reservation,
-        payload.messages,
-        request = None,
-        llama_backend = backend,
-        payload = payload,
-        cancel_event = cancel,
-        count_prepared_prompt = True,
-    )
+    with pytest.raises(LlamaAdmissionCancelled):
+        inference._openai_llama_admission_recost(
+            reservation,
+            payload.messages,
+            request = None,
+            llama_backend = backend,
+            payload = payload,
+            cancel_event = cancel,
+            count_prepared_prompt = True,
+        )
     assert backend.count_chat_tokens.call_count == int(cancel_during_count)
     lease.recost_waiting.assert_not_called()
 
@@ -519,15 +520,16 @@ def test_stop_after_native_count_failure_skips_fallback(monkeypatch):
     backend.count_chat_tokens = MethodType(LlamaCppBackend.count_chat_tokens, backend)
     payload = _payload()
     lease = Mock()
-    inference._openai_llama_admission_recost(
-        SimpleNamespace(lease_nowait = lambda: lease),
-        payload.messages,
-        request = None,
-        llama_backend = backend,
-        payload = payload,
-        cancel_event = cancel,
-        count_prepared_prompt = True,
-    )
+    with pytest.raises(LlamaAdmissionCancelled):
+        inference._openai_llama_admission_recost(
+            SimpleNamespace(lease_nowait = lambda: lease),
+            payload.messages,
+            request = None,
+            llama_backend = backend,
+            payload = payload,
+            cancel_event = cancel,
+            count_prepared_prompt = True,
+        )
     assert calls == ["/v1/chat/completions/input_tokens"]
     lease.recost_waiting.assert_not_called()
 
@@ -606,5 +608,65 @@ def test_cancel_during_stream_admission_exits_tracker(monkeypatch):
             release.set()
             task.cancel()
             await asyncio.gather(task, return_exceptions = True)
+
+    asyncio.run(scenario())
+
+
+def test_an_exactly_counted_round_is_bounded_by_its_count_not_the_estimate(
+    monkeypatch, share_pricing
+):
+    """With the prompt counted by the tokenizer, the wire bound drops the estimate margin. The
+    bound exists only with preemption on."""
+    seen = {}
+    real = inference._openai_llama_admission_enforced_max_tokens
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(inference, "_openai_llama_admission_enforced_max_tokens", spy)
+
+    async def scenario():
+        queue = LlamaAdmissionQueue("counted-wire")
+        monkeypatch.setattr(inference, "get_llama_admission_queue", lambda _: queue)
+        backend = _backend(4000)
+        payload = _payload()
+        reservation, _ = await inference._reserve_counted_gguf_chat(
+            request = None,
+            llama_backend = backend,
+            payload = payload,
+            messages = payload.messages,
+            tool_loop = True,
+        )
+        lease = reservation.lease_nowait()
+        assert lease is not None
+        try:
+            inference._openai_llama_admission_recost(
+                reservation,
+                payload.messages,
+                request = None,
+                llama_backend = backend,
+                payload = payload,
+                output_tokens = 1024,
+                count_prepared_prompt = True,
+            )
+            assert seen.get("prompt_tokens") == 4000
+            assert seen.get("prompt_counted") is True
+            seen.clear()
+            inference._openai_llama_admission_recost(
+                reservation,
+                payload.messages,
+                request = None,
+                llama_backend = backend,
+                payload = payload,
+                output_tokens = 1024,
+                injected_tools = [{"type": "function", "function": {"name": "a"}}],
+                wire_tools = None,
+                count_prepared_prompt = True,
+            )
+            assert seen.get("prompt_counted") is True
+            assert seen.get("prompt_tokens") == 4000
+        finally:
+            lease.release()
 
     asyncio.run(scenario())

@@ -2383,6 +2383,17 @@ export const he = {
         total: "{value} סה״כ",
       },
       llamaBackend: {
+        exactConcurrency: {
+          label: "מקביליות מדויקת",
+          description: "פוגע בתפוקה כאשר צ'אטים רצים במקביל, ונכנס לתוקף בטעינת המודל הבאה.",
+          hint: "מבקש מ-llama-server פענוח שתוצאתו אינה תלויה בצ'אטים האחרים שחולקים את מטמון ה-KV, כך שצ'אט מפיק את אותם טוקנים לבדו וגם לצד שלושה שכנים. Auto מבקש וממשיך בלעדיו אם השרת מסרב; On מבקש ומכשיל את הטעינה במקום זאת; Off לעולם אינו מבקש.",
+          auto: "Auto",
+          off: "Off",
+          on: "On",
+          envLocked: "נקבע על ידי משתנה הסביבה UNSLOTH_LLAMA_EXACT_CONCURRENCY, ולכן בחירה זו אינה בשימוש.",
+          reloadRequired: "טענו מחדש את המודל כדי להחיל את ההגדרה החדשה.",
+          parkingRequired: "דורש ש-llama-server יחנה צ'אטים, דבר שכבוי כברירת מחדל: הפעילו את Studio עם {variable}. עד אז רק Off חל.",
+        },
         title: "מנוע הסקה GGUF",
         label: "סביבת חישוב (Backend)",
         description: "סביבת החישוב שבה llama.cpp משתמש להרצת מודלי GGUF.",

@@ -1,0 +1,656 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Verify that outgoing generation is bounded by its KV reservation."""
+
+from types import SimpleNamespace
+
+import pytest
+
+from routes.inference import (
+    _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS,
+    _OPENAI_LLAMA_ADMISSION_WIRE_RESERVE_TOKENS as _RESERVE,
+    _openai_llama_admission_budget,
+    _openai_llama_admission_enforced_max_tokens,
+    _openai_llama_admission_output_allowance,
+    _openai_llama_admission_prompt_tokens,
+    _openai_llama_admission_tokens,
+    _openai_llama_preemption_will_apply,
+)
+
+
+class _Payload:
+    def __init__(self, **fields):
+        self.__dict__.update(fields)
+
+    def __getattr__(self, _name):
+        return None
+
+
+def _chat(text = "hi", **fields):
+    return _Payload(messages = [{"role": "user", "content": text}], **fields)
+
+
+def _backend(
+    *,
+    window,
+    total,
+    slots,
+    unified = True,
+):
+    return SimpleNamespace(
+        context_length = window,
+        _kv_cache_context_total = total,
+        effective_parallel_slots = slots,
+        _kv_cache_unified = unified,
+    )
+
+
+def _enforced(payload, backend):
+    return _openai_llama_admission_enforced_max_tokens(payload, request = None, llama_backend = backend)
+
+
+def _prompt_tokens(payload):
+    return _openai_llama_admission_prompt_tokens(payload) or 0
+
+
+class TestEveryChatIsPermittedItsWholeWindow:
+    """The invariant MOVED. It is no longer arithmetic, it is eviction."""
+
+    # Per class: other classes assert the SHARE-based bound a default install gets.
+    pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
+    @pytest.mark.parametrize("total", [2048, 4096, 8192, 16384, 65536, 262144])
+    def test_no_request_may_exceed_its_own_window(self, total):
+        backend = _backend(window = total, total = total, slots = 4)
+        payload = _chat(max_tokens = total)
+        enforced = _enforced(payload, backend)
+        assert enforced is not None
+        assert (
+            _prompt_tokens(payload) + enforced <= total
+        ), f"{total}: a single request may occupy more than the whole window"
+
+    def test_the_whole_window_is_offered_not_a_share_whatever_the_slot_count(self):
+        enforced = _enforced(_chat(max_tokens = 16384), _backend(window = 16384, total = 16384, slots = 4))
+        assert enforced > 16384 // 4 * 3, f"permitted {enforced} still looks like a share"
+        for slots in (2, 3, 4, 8):
+            backend = _backend(window = 32768, total = 32768, slots = slots)
+            payload = _chat(max_tokens = 32768)
+            enforced = _enforced(payload, backend)
+            assert _prompt_tokens(payload) + enforced <= 32768
+            assert enforced > 32768 // max(2, slots) * 1.5
+
+    @pytest.mark.parametrize(
+        ("payload", "backend"),
+        [
+            (_chat(max_tokens = 512), _backend(window = 16384, total = 16384, slots = 4)),
+            (_chat(max_completion_tokens = 2048), _backend(window = 16384, total = 16384, slots = 4)),
+            (_chat(max_tokens = 16384), _backend(window = 16384, total = 16384, slots = 1)),
+            (_Payload(max_tokens = 16384), _backend(window = 16384, total = 16384, slots = 4)),
+            (_chat(max_tokens = 4096), _backend(window = 4096, total = 16384, slots = 4)),
+            (
+                _chat(max_tokens = 4096),
+                SimpleNamespace(context_length = None, effective_parallel_slots = 4),
+            ),
+        ],
+    )
+    def test_a_stated_cap_a_single_slot_a_private_cache_and_an_unknown_budget_are_left_alone(
+        self, payload, backend
+    ):
+        assert _enforced(payload, backend) is None
+
+
+class TestThePoolIsNeverFilledToTheLastCell:
+    """Reserve room for template overhead and llama-server's next-token check."""
+
+    pytestmark = pytest.mark.usefixtures("share_pricing")
+
+    def test_a_full_capacity_leaves_the_pool_room_to_step(self):
+        for window, slots in ((16384, 4), (16384, 2), (16384, 8), (65536, 4), (4096, 4)):
+            backend = _backend(window = window, total = window, slots = slots)
+            payload = _chat(max_tokens = window)
+            enforced = _enforced(payload, backend)
+            assert enforced is not None
+            occupancy = (_prompt_tokens(payload) + enforced) * slots
+            assert occupancy < window, f"{window}/{slots}: fills the pool to {occupancy}"
+            assert (
+                window - occupancy >= slots
+            ), f"{window}/{slots}: only {window - occupancy} cells left for {slots} sequences"
+
+    def test_a_prompt_inside_the_reserve_of_its_share_does_not_reclaim_it(self):
+        """A prompt inside the wire margin needs a larger reservation, not a one-token floor."""
+        from routes.inference import (
+            _openai_llama_admission_output_allowance as allowance,
+            _openai_llama_admission_wire_output_bound as wire_bound,
+        )
+
+        window, slots = 16384, 4
+        share = window // slots
+        for prompt in range(share - _RESERVE, share + 2):
+            charged_allowance = allowance(
+                None,
+                budget = window,
+                prompt_tokens = prompt,
+                context_window = window,
+                share = share,
+            )
+            charged = max(1, min(window, max(share, prompt + charged_allowance)))
+            sent = wire_bound(share = share, prompt_tokens = prompt, window = window, budget = window)
+            assert prompt + sent <= charged, (prompt, sent, charged)
+            assert prompt + sent != share, f"{prompt}: fills the pool to exactly its share"
+
+    def test_a_prompt_just_clear_of_the_reserve_still_takes_its_share(self):
+        """The band is only the reserve wide; below it nothing changes."""
+        from routes.inference import _openai_llama_admission_wire_output_bound as wire_bound
+
+        window, slots = 16384, 4
+        share = window // slots
+        prompt = share - _RESERVE - 1
+        sent = wire_bound(share = share, prompt_tokens = prompt, window = window, budget = window)
+        assert (prompt + sent) * slots < window
+        assert prompt + sent == share - _RESERVE
+
+    def test_the_reserve_is_taken_out_of_the_charge_not_added_to_it(self):
+        """The ledger holds `prompt + allowance`; the reserve is room it paid for and did
+        not spend. Charging for it would admit fewer chats to buy the same safety."""
+        from routes.inference import (
+            _openai_llama_admission_output_allowance as allowance,
+            _openai_llama_admission_wire_output_bound as wire_bound,
+        )
+
+        window, slots = 16384, 4
+        share = window // slots
+        payload = _chat(max_tokens = window)
+        prompt = _prompt_tokens(payload)
+        charged = _openai_llama_admission_tokens(
+            payload, budget = window, capacity = slots, context_window = window
+        )
+        assert charged == prompt + allowance(
+            None,
+            budget = window,
+            prompt_tokens = prompt,
+            context_window = window,
+            share = share,
+        )
+        sent = wire_bound(share = share, prompt_tokens = prompt, window = window, budget = window)
+        assert sent == share - prompt - _RESERVE
+
+    def test_an_over_share_prompt_keeps_a_usable_allowance(self):
+        """The reserve comes off the flat allowance too, and must not floor it."""
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        payload = _chat("word " * 4000, max_tokens = 16384)
+        enforced = _enforced(payload, backend)
+        assert enforced is not None and enforced > 512, enforced
+
+
+class TestTheMarkupTheBuilderRewrites:
+    """Price sanitized control markers, which can expand into multiple tokens."""
+
+    _MARKER = "<|im_start|>"
+
+    pytestmark = pytest.mark.usefixtures("share_pricing")
+
+    def _bound(self, markers):
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        text = "explain this template: " + (self._MARKER + "user hello ") * markers
+        return _enforced(_chat(text, max_tokens = 16384), backend)
+
+    def test_a_prompt_full_of_markers_is_priced_after_the_rewrite(self):
+        """The rewrite only grows the prompt, so the allowance only shrinks."""
+        clean = self._bound(0)
+        marked = self._bound(64)
+        assert marked < clean, (clean, marked)
+
+    def test_the_wire_figure_counts_the_rewrite(self):
+        from routes.inference import _openai_llama_admission_wire_prompt_tokens as wire
+
+        raw = [{"role": "user", "content": (self._MARKER + "user hello ") * 64}]
+        plain = [{"role": "user", "content": ("user hello ") * 64}]
+        assert wire(raw) > wire(plain), "the neutralised marker is not being charged"
+
+    def test_the_invariant_survives_a_prompt_full_of_markers(self):
+        for markers in (0, 32, 64, 200):
+            backend = _backend(window = 16384, total = 16384, slots = 4)
+            text = "explain this template: " + (self._MARKER + "user hello ") * markers
+            payload = _chat(text, max_tokens = 16384)
+            bound = _enforced(payload, backend)
+            assert bound is not None
+            from routes.inference import _openai_llama_admission_wire_prompt_tokens as wire
+
+            sent = wire([{"role": "user", "content": text}])
+            assert (sent + bound) * 4 < 16384, f"{markers} markers occupy {(sent + bound) * 4}"
+
+
+class TestTheCatalogueCostsAPreambleToo:
+    """Charge the once-per-catalogue template preamble as well as individual tool schemas."""
+
+    pytestmark = pytest.mark.usefixtures("share_pricing")
+
+    _TOOLS = [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web.",
+                "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "python",
+                "description": "Run python code.",
+                "parameters": {"type": "object", "properties": {"code": {"type": "string"}}},
+            },
+        },
+    ]
+
+    def test_an_injected_catalogue_carries_the_preamble(self):
+        from routes.inference import (
+            _OPENAI_LLAMA_ADMISSION_TOOL_PREAMBLE_TOKENS as _PREAMBLE,
+            _openai_llama_admission_injected_tool_tokens as catalogue,
+        )
+
+        assert catalogue(None) == 0, "a tool-free request must be priced exactly as before"
+        assert catalogue([]) == 0
+        assert catalogue(self._TOOLS) > _PREAMBLE
+
+    def test_a_client_catalogue_carries_it_on_the_passthrough_pricer(self):
+        """`_build_openai_passthrough_body` prices with no injected catalogue, so the
+        payload's own `tools` must earn the block there or the bound is short by it."""
+        from routes.inference import (
+            _OPENAI_LLAMA_ADMISSION_TOOL_PREAMBLE_TOKENS as _PREAMBLE,
+            _openai_llama_admission_extra_prompt_tokens as extra,
+        )
+
+        without = extra(_Payload(messages = []))
+        with_tools = extra(_Payload(messages = [], tools = self._TOOLS))
+        assert without == 0
+        assert with_tools > _PREAMBLE
+
+    def test_the_preamble_is_charged_once_on_each_shape(self):
+        """The tool-loop paths price through the wire helper, which never reaches the
+        payload helper, so neither real shape pays it twice."""
+        from routes.inference import (
+            _OPENAI_LLAMA_ADMISSION_TOOL_PREAMBLE_TOKENS as _PREAMBLE,
+            _openai_llama_admission_injected_tool_tokens as catalogue,
+            _openai_llama_admission_prompt_tokens,
+            _openai_llama_admission_wire_prompt_tokens,
+        )
+
+        messages = [{"role": "user", "content": "hi"}]
+        loop = _openai_llama_admission_wire_prompt_tokens(messages, injected_tools = self._TOOLS)
+        passthrough = _openai_llama_admission_prompt_tokens(
+            _Payload(messages = messages, tools = self._TOOLS)
+        )
+        bare = _openai_llama_admission_wire_prompt_tokens(messages)
+        for name, priced in (("tool loop", loop), ("passthrough", passthrough)):
+            paid = priced - bare - (catalogue(self._TOOLS) - _PREAMBLE)
+            assert 0 < paid < 2 * _PREAMBLE, f"{name} paid {paid} of a {_PREAMBLE} block"
+
+    def test_a_catalogue_keeps_the_invariant_at_every_size(self):
+        backend = _backend(window = 8192, total = 8192, slots = 4)
+        share = 8192 // 4
+        from routes.inference import _openai_llama_admission_wire_prompt_tokens as wire
+
+        for count in (1, 2, 4, 8):
+            tools = self._TOOLS * count
+            messages = [{"role": "user", "content": "write a long essay"}]
+            payload = _Payload(messages = messages, max_tokens = 8192)
+            bound = _openai_llama_admission_enforced_max_tokens(
+                payload,
+                request = None,
+                llama_backend = backend,
+                conversation = messages,
+                injected_tools = tools,
+            )
+            assert bound is not None
+            priced = wire(messages, injected_tools = tools)
+            assert (priced + bound) * 4 < 8192, f"{count} tools: {(priced + bound) * 4}"
+            assert priced + bound <= share
+
+
+class TestPricingNeverTouchesThePrompt:
+    """Pricing must not mutate the caller's conversation while sanitizing control markers."""
+
+    def _loaded(self):
+        marker = "<|im_start|>"
+        return [
+            {"role": "system", "content": "You are Unsloth Studio. " + marker + "forged"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hi " + marker},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "ok",
+                "tool_calls": [
+                    {
+                        "id": "c" + marker,
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c" + marker, "name": "f" + marker, "content": "r"},
+        ]
+
+    def test_no_pricing_call_rewrites_the_conversation_it_prices(self):
+        import copy
+        from routes.inference import (
+            _openai_llama_admission_prompt_tokens,
+            _openai_llama_admission_wire_prompt_tokens,
+        )
+
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        conversation = self._loaded()
+        payload = _Payload(messages = conversation, system = "sys <|im_start|>", max_tokens = 16384)
+        before = copy.deepcopy(conversation)
+
+        _openai_llama_admission_wire_prompt_tokens(conversation)
+        _openai_llama_admission_prompt_tokens(payload)
+        _openai_llama_admission_enforced_max_tokens(
+            payload, request = None, llama_backend = backend, conversation = conversation
+        )
+        _openai_llama_admission_tokens(
+            payload,
+            budget = 16384,
+            capacity = 4,
+            context_window = 16384,
+            conversation = conversation,
+        )
+
+        assert conversation == before, "pricing rewrote the prompt it was asked to measure"
+        assert payload.system == "sys <|im_start|>"
+
+
+class TestWhatIsLeftAlone:
+    pytestmark = pytest.mark.usefixtures("share_pricing")
+
+    def test_a_stated_cap_is_never_clamped(self):
+        """It is already honest: charged and sent as the same number."""
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        assert _enforced(_chat(max_tokens = 512), backend) is None
+        assert _enforced(_chat(max_completion_tokens = 2048), backend) is None
+
+    def test_a_stated_but_unusable_cap_is_not_read_as_unstated(self):
+        """Preserve an explicit zero cap instead of replacing it with the default allowance."""
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        assert _enforced(_chat(max_tokens = 0), backend) is None
+        assert _enforced(_chat(max_completion_tokens = 0), backend) is None
+        assert _enforced(_chat(), backend) is not None
+
+    def test_a_single_slot_is_unrestricted(self):
+        """One slot owns the whole cache, so there is nothing to divide."""
+        backend = _backend(window = 16384, total = 16384, slots = 1)
+        assert _enforced(_chat(max_tokens = 16384), backend) is None
+
+    def test_an_unknown_budget_changes_nothing(self):
+        backend = SimpleNamespace(context_length = None, effective_parallel_slots = 4)
+        assert _enforced(_chat(max_tokens = 4096), backend) is None
+
+    def test_a_shape_with_no_messages_is_left_alone(self):
+        """`/completions` takes a prompt string; there is nothing to measure."""
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        assert _enforced(_Payload(max_tokens = 16384), backend) is None
+
+    def test_a_private_cache_per_slot_is_unrestricted(self):
+        """Under --no-kv-unified the aggregate is N times the window, so a share IS the window and
+        no request can overrun anyone else.
+        """
+        backend = _backend(window = 4096, total = 16384, slots = 4)
+        assert _enforced(_chat(max_tokens = 4096), backend) is None
+
+
+class TestWhereAStatedCapStopsBeingStated:
+    """Caps at or above the context window must receive the same bound as unstated caps."""
+
+    def test_one_token_below_the_window_is_left_alone(self):
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        assert _enforced(_chat(max_tokens = 16383), backend) is None
+
+    def test_at_or_above_the_window_is_enforced_like_an_unstated_cap(self):
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        unstated = _enforced(_chat(), backend)
+        assert _enforced(_chat(max_tokens = 16384), backend) == unstated
+        assert _enforced(_chat(max_tokens = 999999), backend) == unstated
+
+
+class TestTheEdges:
+    pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
+    def test_a_prompt_that_fills_the_window_still_gets_a_token(self):
+        """Zero would be refused upstream, so the floor is one."""
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        enforced = _enforced(_chat("word " * 20000, max_tokens = 16384), backend)
+        assert enforced == 1
+
+    def test_the_bound_deliberately_exceeds_the_charge(self):
+        """They diverge ON PURPOSE now, and that is the whole design."""
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        payload = _chat(max_tokens = 16384)
+        charged = _openai_llama_admission_tokens(
+            payload,
+            budget = _openai_llama_admission_budget(backend),
+            capacity = 4,
+            context_window = 16384,
+        )
+        permitted = _prompt_tokens(payload) + _enforced(payload, backend)
+        assert permitted > charged, (
+            f"permitted {permitted} should exceed the charge {charged}: admission reserves "
+            "a share so several chats fit, while each may use the window"
+        )
+        assert charged <= permitted
+        assert _enforced(payload, backend) > _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+
+
+class TestChargedAndPermittedCannotDrift:
+    """Mixed prompt sizes must never be charged less KV than they may consume."""
+
+    def _charged(self, budget, share, prompt):
+        allowance = _openai_llama_admission_output_allowance(
+            None, budget = budget, prompt_tokens = prompt, context_window = budget, share = share
+        )
+        return max(1, min(budget, prompt + allowance))
+
+    def test_the_mixed_set_that_broke_the_invariant(self):
+        budget, slots = 262144, 4
+        share = budget // slots
+        admitted, used = [], 0
+        for prompt in (1, 65537, 189139, 1):
+            charged = self._charged(budget, share, prompt)
+            if len(admitted) < slots and used + charged <= budget:
+                used += charged
+                admitted.append(prompt)
+        permitted = sum(prompt + max(1, budget - prompt) for prompt in admitted)
+        assert permitted > budget, (
+            "the cache is meant to be overcommitted now; if this ever holds, admission has "
+            "gone back to dividing the window and preemption has nothing left to do"
+        )
+        assert used <= budget, f"admitted {admitted} charged {used} of {budget}"
+        assert len(admitted) <= slots
+
+    @pytest.mark.parametrize(
+        ("budget", "slots"), [(16384, 4), (4096, 4), (2048, 2), (32768, 8), (262144, 4)]
+    )
+    def test_the_charge_is_less_than_the_permission_and_a_full_capacity_still_fits(
+        self, budget, slots
+    ):
+        """Every prompt here fits its share WITH the wire reserve still in it. One inside
+        that band takes the flat allowance and is charged more than a share on purpose."""
+        share = budget // slots
+        for prompt in (1, 8, share // 2, share - _RESERVE - 2):
+            if prompt < 1:
+                continue
+            charged = self._charged(budget, share, prompt)
+            assert (
+                charged * slots <= budget or charged <= share
+            ), f"budget={budget} slots={slots} prompt={prompt}: charged {charged}"
+            assert charged < prompt + max(1, budget - prompt)
+        assert self._charged(budget, share, 8) * slots <= budget
+
+
+class TestWhenNothingWillReclaim:
+    """The window is the ceiling only while preemption can reclaim the overcommit."""
+
+    def _backend(self):
+        return _backend(window = 16384, total = 16384, slots = 4)
+
+    def test_with_the_switch_on_the_window_is_offered(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "1")
+        prompt = _prompt_tokens(_chat("hi"))
+        assert _enforced(_chat("hi"), self._backend()) == 16384 - prompt - _RESERVE
+
+    def test_an_unpausable_request_is_held_to_its_share_while_the_switch_is_on(self, monkeypatch):
+        # never chosen as a victim, so nothing reclaims what it generates past its charge
+        monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "1")
+        prompt = _prompt_tokens(_chat("hi"))
+        enforced = _openai_llama_admission_enforced_max_tokens(
+            _chat("hi"), request = None, llama_backend = self._backend(), pausable = False
+        )
+        assert enforced == 4096 - prompt - _RESERVE
+
+    def test_the_switch_off_leaves_the_wire_alone_and_charges_the_flat_allowance(self, monkeypatch):
+        """Off is what Studio did before preemption: the caller's max_tokens on the wire and the
+        flat allowance on the ledger, which four of fit."""
+        monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "0")
+        prompt = _prompt_tokens(_chat("hi"))
+        assert _enforced(_chat("hi"), self._backend()) is None
+        charged = _openai_llama_admission_tokens(
+            _chat("hi"), budget = 16384, capacity = 4, context_window = 16384
+        )
+        assert charged == prompt + _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        assert 4 * charged <= 16384
+
+    def test_with_share_pricing_and_nothing_to_reclaim_four_shares_fit(self, share_pricing):
+        prompt = _prompt_tokens(_chat("hi"))
+        enforced = _enforced(_chat("hi"), self._backend())
+        assert enforced == 4096 - prompt - _RESERVE
+        assert 4 * (prompt + enforced) <= 16384
+
+
+BUDGET, SLOTS = 16384, 4
+SHARE = BUDGET // SLOTS
+
+
+def _charged(cap, prompt, *, active):
+    return _openai_llama_admission_output_allowance(
+        cap,
+        budget = BUDGET,
+        prompt_tokens = prompt,
+        context_window = BUDGET,
+        share = SHARE,
+        preemption_active = active,
+        fair_share = True,
+    )
+
+
+class TestAStatedCapNoLongerSerialises:
+    def test_four_chats_fit_where_one_did(self):
+        prompt, cap = 3000, 6000
+        before = _charged(cap, prompt, active = False)
+        assert before == cap, "the old behaviour was to charge the cap in full"
+        assert (
+            BUDGET // (prompt + before) == 1
+        ), "which is why four chats at max_tokens 6000 ran one at a time"
+        after = _charged(cap, prompt, active = True)
+        assert (
+            BUDGET // (prompt + after) >= SLOTS
+        ), f"charged {after}, so only {BUDGET // (prompt + after)} of {SLOTS} fit"
+        assert after == _charged(
+            None, prompt, active = True
+        ), "a stated cap is charged the same as an unstated one"
+
+    def test_the_cases_that_must_not_change(self):
+        assert _charged(50, 200, active = True) == _charged(50, 200, active = False) == 50
+        for prompt in (1, 200, 1000, 3000):
+            assert _charged(None, prompt, active = True) == min(
+                _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS, SHARE - prompt
+            )
+            assert _charged(None, prompt, active = False) == SHARE - prompt
+        for cap in (BUDGET, BUDGET + 1):
+            for active in (True, False):
+                assert _charged(cap, 3000, active = active) == _charged(
+                    None, 3000, active = active
+                ), "a cap at or above the window was already unstated"
+        assert _charged(6000, BUDGET - 1, active = True) >= 1, "the charge is never zero"
+        assert _charged(1, BUDGET - 1, active = True) >= 1
+
+    def test_a_full_capacity_is_still_admitted_and_the_cache_is_deliberately_overcommitted(self):
+        prompt = 1000
+        charged = _charged(6000, prompt, active = True)
+        assert (prompt + charged) * SLOTS <= BUDGET, "a full capacity must still be admitted"
+        assert (
+            (prompt + (BUDGET - prompt)) * SLOTS > BUDGET
+        ), "the cache is meant to be overcommitted now; preemption is the enforcement"
+
+
+class TestTheGateIsTheEnforcementItself:
+    """The optimism must be switched on by exactly what makes it survivable."""
+
+    pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
+    class _Backend:
+        def __init__(self, unified):
+            self._kv_cache_unified = unified
+
+    def test_no_kv_unified_and_no_budget_mean_no_optimism(self):
+        assert _openai_llama_preemption_will_apply(self._Backend(False), BUDGET) is False
+        assert _openai_llama_preemption_will_apply(self._Backend(True), 0) is False
+        assert _openai_llama_preemption_will_apply(self._Backend(True), None) is False
+
+    @pytest.mark.parametrize(
+        "switch",
+        [
+            "UNSLOTH_LLAMA_ADMISSION_PREEMPT",
+            "UNSLOTH_LLAMA_ADMISSION_KV_BUDGET",
+            "UNSLOTH_LLAMA_ADMISSION_CONTROL",
+        ],
+    )
+    def test_every_switch_that_turns_the_enforcement_off_turns_the_optimism_off(
+        self, monkeypatch, switch
+    ):
+        backend = self._Backend(True)
+        assert _openai_llama_preemption_will_apply(backend, BUDGET) is True
+        monkeypatch.setenv(switch, "0")
+        assert _openai_llama_preemption_will_apply(backend, BUDGET) is False
+
+
+class TestAnExactlyCountedPromptKeepsOnlyTheNextTokenCell:
+    """The 64-token reserve covers template overhead an ESTIMATE can miss."""
+
+    def test_the_boundary_with_preemption_active(self):
+        from routes.inference import _openai_llama_admission_wire_output_bound as wire_bound
+
+        window = 8192
+        common = dict(share = window // 4, prompt_tokens = 7000, window = window, budget = window)
+        estimated = wire_bound(preemption_active = True, **common)
+        counted = wire_bound(preemption_active = True, prompt_counted = True, **common)
+        assert estimated == window - 7000 - _RESERVE
+        assert counted == window - 7000 - 1
+        assert 7000 + counted < window
+
+    def test_a_counted_prompt_at_the_window_still_gets_the_floor(self):
+        from routes.inference import _openai_llama_admission_wire_output_bound as wire_bound
+        for prompt in (8190, 8191, 8192, 9000):
+            sent = wire_bound(
+                share = 2048,
+                prompt_tokens = prompt,
+                window = 8192,
+                budget = 8192,
+                preemption_active = True,
+                prompt_counted = True,
+            )
+            assert sent == max(1, 8192 - prompt - 1), (prompt, sent)
+
+    def test_without_preemption_a_counted_prompt_still_fits_its_share(self):
+        from routes.inference import _openai_llama_admission_wire_output_bound as wire_bound
+
+        share = 16384 // 4
+        sent = wire_bound(
+            share = share, prompt_tokens = 1000, window = 16384, budget = 16384, prompt_counted = True
+        )
+        assert 1000 + sent == share - 1

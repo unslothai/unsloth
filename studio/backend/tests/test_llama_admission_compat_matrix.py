@@ -227,10 +227,9 @@ class TestOldCallers:
         for name in _TOOL_LOOP_HOOKS:
             assert signature.parameters[name].default is None, f"{name} must be optional"
 
-    def test_the_hook_was_appended_rather_than_inserted(self):
-        """No bare ``*`` in this signature, so every parameter is positional-or-keyword and
-        inserting one silently rebinds the arguments after it for positional callers, with
-        no exception to report it."""
+    def test_admission_parameters_were_appended_rather_than_inserted(self):
+        """No bare ``*`` in these signatures, so inserting a parameter silently rebinds
+        the arguments after it for positional callers. New ones go at the end."""
         import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend
@@ -244,6 +243,22 @@ class TestOldCallers:
         assert hooks == list(
             _TOOL_LOOP_HOOKS
         ), f"the hooks must stay together in order, got {hooks}"
+        assert names[start - 1] == "tool_choice", (
+            f"a parameter was inserted before the hook, rebinding positional callers: "
+            f"{names[start - 2:start + 1]}"
+        )
+        plain_signature = inspect.signature(LlamaCppBackend.generate_chat_completion)
+        plain = list(plain_signature.parameters)
+        at = plain.index("admission_output_allowance")
+        # main appended `compact_context` after `_allow_respawn_retry` first; ours follow it.
+        assert plain[at - 2 : at + 2] == [
+            "_allow_respawn_retry",
+            "compact_context",
+            "admission_output_allowance",
+            "on_prompt_fitted",
+        ], f"a parameter was inserted rather than appended; around it: {plain[at - 2 : at + 3]}"
+        for later in plain[at + 2 :]:
+            assert plain_signature.parameters[later].default is not inspect.Parameter.empty, later
 
     def test_the_sandbox_level_was_appended_rather_than_inserted(self):
         import inspect
@@ -254,7 +269,11 @@ class TestOldCallers:
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
         assert names.index("sandbox_level") == names.index("instruction_anchor_ids") + 1
-        assert names[-1] == "compact_context"
+        # main's `compact_context` was appended after `sandbox_level`; ours come after it.
+        assert names.index("compact_context") == names.index("sandbox_level") + 1
+        signature = inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools)
+        for later in names[names.index("compact_context") + 1 :]:
+            assert signature.parameters[later].default is None, f"{later} was not appended"
         assert names.index("promote_reasoning_only") == names.index("permission_mode") + 1
 
     def test_the_wait_timeout_has_a_sane_default(self):

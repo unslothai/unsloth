@@ -1,0 +1,2047 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Who pauses when the shared KV cache fills. llama-server admits on `prompt_tokens <
+slot.n_ctx` alone, so chats that each fit collide and it errors EVERY processing slot.
+
+On by default only where the running llama-server parks slots itself (see `preemption_enabled`).
+Anywhere else, or with `UNSLOTH_LLAMA_ADMISSION_PREEMPT=0`, an install behaves as it did before
+this module existed: no `/slots` reads on the token path, no participants, no `preempt_event`
+handed to a generation, no `: preempt-*` SSE comments, no park notices, and admission prices
+every request against its fair share. Every entry point below asks `preemption_enabled()` first."""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import math
+import re
+import sys
+import threading
+import time
+import weakref
+from collections import OrderedDict
+from dataclasses import dataclass, field
+from typing import Callable, Dict, List, Optional, Protocol, runtime_checkable
+
+from core.inference.llama_admission import (
+    LlamaAdmissionLease,
+    llama_admission_config_from_env,
+)
+from core.inference.llama_exact import EXACT_STATE_OFF, EXACT_STATES
+
+
+_SLOTS = {"slots": True} if sys.version_info >= (3, 10) else {}
+
+from loggers import get_logger
+
+_log = get_logger(__name__)
+
+
+# `=1` always arms, `=0` never; unset arms only once `/props` confirms the server parks slots
+# itself.
+PREEMPT_ENV = "UNSLOTH_LLAMA_ADMISSION_PREEMPT"
+DEFAULT_PREEMPT_ENABLED = True
+PREEMPT_SETTING_ON = "on"
+PREEMPT_SETTING_OFF = "off"
+PREEMPT_SETTING_AUTO = "auto"
+
+_server_parking_confirmed = False
+# Per backend: helpers and extra model slots run their own llama-server.
+_parking_by_backend: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+_routed_backend: Optional[Callable[[], object]] = None
+
+
+# Park notices from unslothai/llama.cpp#197, as SSE comments; a batched request appends the prompt
+# index. A test pins `llama_cpp`'s copy.
+_PARK_NOTICE_PARKED = b"\n: preempted"
+_PARK_NOTICE_RESUMED = b"\n: resumed"
+_PARK_NOTICE_RE = re.compile(r": (preempted|resumed|recomputed)(?: (0|[1-9][0-9]{0,8}))?")
+_PARK_NOTICE_MAX_LINE = 32
+
+
+def parse_server_park_notice(line) -> Optional[tuple]:
+    """``(kind, index)`` for one comment line that is exactly a park notice, else None."""
+    if isinstance(line, (bytes, bytearray)):
+        line = bytes(line).decode("utf-8", "replace")
+    if not isinstance(line, str):
+        return None
+    match = _PARK_NOTICE_RE.fullmatch(line.strip())
+    if match is None:
+        return None
+    return match.group(1), int(match.group(2) or 0)
+
+
+class ServerParkNotices:
+    """One stream's own park state, with the aggregate `/metrics` probe behind it.
+
+    `requests_preempted` counts every request, so ANY stalled stream was excused while an
+    unrelated chat sat parked, and a stream that had already resumed stayed excused for as long
+    as the neighbour did. A build that writes the notices says which request is parked, so they
+    decide; the aggregate probe stays as the documented fallback for a swap build that predates
+    them (unslothai/llama.cpp#184), bounded by the same cap, and it stops applying to a stream
+    that has said anything about itself. A batched request is parked while any prompt is.
+    """
+
+    __slots__ = ("_probe", "_parked", "_heard", "_line", "_skip")
+
+    def __init__(self, probe: Optional[Callable[[], bool]] = None) -> None:
+        self._probe = probe
+        self._parked: set = set()
+        self._heard = False
+        self._line = b""
+        self._skip = False
+
+    def _take_line(self, line: bytes) -> None:
+        notice = parse_server_park_notice(line) if line.startswith(b":") else None
+        if notice is None:
+            return
+        self._heard = True
+        kind, index = notice
+        if kind == "preempted":
+            self._parked.add(index)
+        elif kind == "resumed":
+            self._parked.discard(index)
+
+    def feed(self, data) -> None:
+        """Read a piece of this stream's body for its own park notices."""
+        if not data or not isinstance(data, (str, bytes, bytearray)):
+            return
+        if isinstance(data, str):
+            data = data.encode("utf-8", "replace")
+        data = bytes(data)
+        if b"\n" not in data and b"\r" not in data:
+            if not self._skip:
+                self._line += data
+                if len(self._line) > _PARK_NOTICE_MAX_LINE:
+                    self._line, self._skip = b"", True
+            return
+        parts = re.split(rb"\r|\n", data)
+        last = parts.pop()
+        for part in parts:
+            if not self._skip:
+                line = self._line + part
+                if len(line) <= _PARK_NOTICE_MAX_LINE:
+                    self._take_line(line)
+            self._line, self._skip = b"", False
+        self._line = last[: _PARK_NOTICE_MAX_LINE + 1]
+        if len(self._line) > _PARK_NOTICE_MAX_LINE:
+            self._line, self._skip = b"", True
+
+    def feed_line(self, line) -> None:
+        """One line from a line-oriented source, which has stripped the newline."""
+        if isinstance(line, (str, bytes, bytearray)):
+            self._line, self._skip = b"", False
+            self.feed(line)
+            self.feed(b"\n")
+
+    @property
+    def heard_a_notice(self) -> bool:
+        """Whether this build says anything per request, which retires the aggregate probe."""
+        return self._heard
+
+    @property
+    def parked(self) -> bool:
+        return bool(self._parked)
+
+    def excuses_silence(self) -> bool:
+        """Whether this stream's silence is its own park. Blocks when it falls back to the probe,
+        so callers on an event loop run it off the loop as they did the probe itself."""
+        if self._parked:
+            return True
+        if self._heard:
+            return False
+        if self._probe is None:
+            return False
+        try:
+            return bool(self._probe())
+        except Exception:
+            return False
+
+
+# `server` is llama-server's own --preempt-ram parking (unslothai/llama.cpp#184). Exclusive:
+# Studio's lower watermark would always fire first.
+PREEMPT_MODE_ENV = "UNSLOTH_LLAMA_PREEMPT_MODE"
+PREEMPT_MODE_AUTO = "auto"
+PREEMPT_MODE_STUDIO = "studio"
+PREEMPT_MODE_SERVER = "server"
+_PREEMPT_MODES = (PREEMPT_MODE_AUTO, PREEMPT_MODE_STUDIO, PREEMPT_MODE_SERVER)
+
+
+def preempt_mode_setting() -> str:
+    raw = (os.environ.get(PREEMPT_MODE_ENV) or "").strip().lower()
+    return raw if raw in _PREEMPT_MODES else PREEMPT_MODE_AUTO
+
+
+def resolve_preempt_mode(server_preempts: bool) -> str:
+    setting = preempt_mode_setting()
+    if setting == PREEMPT_MODE_STUDIO:
+        return PREEMPT_MODE_STUDIO
+    return PREEMPT_MODE_SERVER if server_preempts else PREEMPT_MODE_STUDIO
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+DEFAULT_PREEMPT_BUFFER_PER_SLOT = 192
+DEFAULT_PREEMPT_BUFFER_MIN_TOKENS = 256
+
+# Matches the stream's first-token wait: shorter dropped the reserve under a prompt still going in.
+PENDING_PREFILL_TTL_S = 1200.0
+
+# Consecutive pauses with no output between them that end the turn.
+DEFAULT_MAX_STALLED_RESUMES = 4
+
+
+def next_stall_count(stalled: int, new_tokens: int) -> int:
+    """Consecutive pauses without output, after one that decoded ``new_tokens``."""
+    return 0 if int(new_tokens or 0) > 0 else max(0, int(stalled or 0)) + 1
+
+
+def resumes_stalled(stalled: int) -> bool:
+    """Whether ``stalled`` pauses in a row without output should end the turn."""
+    return int(stalled or 0) >= DEFAULT_MAX_STALLED_RESUMES
+
+
+MAX_NESTED_RESUMES = 128
+
+
+def resumes_exhausted(resumes: int) -> bool:
+    """Whether a turn already resumed ``resumes`` times must not nest another."""
+    return int(resumes or 0) + 1 >= MAX_NESTED_RESUMES
+
+
+# A chat preempted this many times in a row outranks newest-first, so repeatedly losing does not
+# become never finishing.
+PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS = 3
+
+# Without it a chat that outgrew the shared ceiling can never be admitted or resumed.
+SOLO_MARGIN_DIVISOR = 200
+
+# An unbounded wait turned three paused chats into a 33-minute hang.
+DEFAULT_RESUME_WAIT_TIMEOUT_S = 90.0
+
+# 2 hours: 30 minutes is shorter than one answer at 2.3 tok/s on the 35B.
+MAX_RESUME_WAIT_MULTIPLE = 80
+
+
+class LlamaStreamPreempted(Exception):
+    """Aborted to free KV, not abandoned: expected to be caught and resumed."""
+
+
+class PreemptSignal:
+    """A pause request tool execution can hold off: `is_set()` is False inside an unsafe window."""
+
+    def __init__(self):
+        self._event = threading.Event()
+        self._lock = threading.RLock()
+        self._depth = 0
+        self._pending = False
+        self._reason: Optional[str] = None
+        # When the stream last saw its prefill advance, on `time.monotonic()`; 0 is never.
+        self._prefill_progress_at = 0.0
+
+    def note_prefill_progress(self) -> None:
+        """The stream this signal pauses saw its prompt processing move forward."""
+        self._prefill_progress_at = time.monotonic()
+
+    @property
+    def prefill_progress_at(self) -> float:
+        return self._prefill_progress_at
+
+    def request(self, reason: str = "kv_pressure") -> None:
+        with self._lock:
+            self._pending = True
+            self._reason = reason
+            if self._depth == 0:
+                self._event.set()
+
+    def set(self, reason: str = "kv_pressure") -> None:
+        self.request(reason)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._pending = False
+            self._reason = None
+            self._event.clear()
+
+    @property
+    def reason(self) -> Optional[str]:
+        with self._lock:
+            return self._reason
+
+    @property
+    def pending(self) -> bool:
+        with self._lock:
+            return self._pending
+
+    @property
+    def deferred(self) -> bool:
+        with self._lock:
+            return self._depth > 0
+
+    def is_set(self) -> bool:
+        return self._event.is_set()
+
+    def wait(self, timeout: Optional[float] = None) -> bool:
+        return self._event.wait(timeout = timeout)
+
+    class _Window:
+        __slots__ = ("_signal",)
+
+        def __init__(self, signal: "PreemptSignal"):
+            self._signal = signal
+
+        def __enter__(self):
+            self._signal._enter_unsafe()
+            return self._signal
+
+        def __exit__(self, *exc):
+            self._signal._exit_unsafe()
+            return False
+
+    def unsafe_window(self) -> "PreemptSignal._Window":
+        return PreemptSignal._Window(self)
+
+    def _enter_unsafe(self) -> None:
+        with self._lock:
+            self._depth += 1
+            self._event.clear()
+
+    def _exit_unsafe(self) -> None:
+        with self._lock:
+            if self._depth > 0:
+                self._depth -= 1
+            if self._depth == 0 and self._pending:
+                self._event.set()
+
+
+@dataclass
+class StreamCheckpoint:
+    """What a paused attempt had produced. Not read off the thread's trailing assistant row: an
+    aborted run never writes one, so that row lags by a whole attempt."""
+
+    visible_text: str = ""
+    reasoning_text: str = ""
+    charged_tokens: int = 0
+    resumes: int = 0
+    reason: Optional[str] = None
+
+    def has_resume_point(self) -> bool:
+        """Empty means the pause landed before the first token, so the request is re-issued whole."""
+        return bool(self.visible_text.strip())
+
+    def has_reasoning_resume_point(self) -> bool:
+        """A thought resumes as `reasoning_content`; sent as `content` it renders as the answer."""
+        return not self.visible_text.strip() and bool(self.reasoning_text.strip())
+
+    def kept_chars(self) -> int:
+        """Prose or thought. `len(visible_text)` alone read zero on every pause of a reasoning
+        model and made a livelock look like an orderly pause."""
+        if self.has_resume_point():
+            return len(self.visible_text)
+        return len(self.reasoning_text) if self.has_reasoning_resume_point() else 0
+
+
+@runtime_checkable
+class PreemptionPolicy(Protocol):
+    """``await_resume`` returning False means "stop waiting and finish the turn", so a policy
+    that dies degrades instead of hanging the chat."""
+
+    def should_preempt(self) -> bool: ...
+
+    def on_preempted(self, checkpoint: StreamCheckpoint) -> None: ...
+
+    def await_resume(
+        self,
+        timeout: Optional[float] = None,
+        *,
+        cancel_event = None,
+    ) -> bool: ...
+
+    def on_resumed(self) -> None: ...
+
+    def on_declined(self) -> None: ...
+
+
+class DeferredPreemptionPolicy:
+    """A policy handed to the stream before the real one can exist: the tool-loop generator is
+    BUILT before admission returns, and nothing can pause before it is iterated. NOT
+    ``NullPreemptionPolicy``: unbound, `await_resume` answers False, a wait with no policy behind
+    it being a turn that has to end, while Null answers True, being installed only where no pause
+    can be raised at all."""
+
+    __slots__ = ("_inner",)
+
+    def __init__(self, inner = None):
+        self._inner = inner
+
+    def bind(self, policy) -> None:
+        self._inner = policy
+
+    @property
+    def bound(self) -> bool:
+        return self._inner is not None
+
+    def should_preempt(self) -> bool:
+        return False if self._inner is None else bool(self._inner.should_preempt())
+
+    def on_preempted(self, checkpoint: StreamCheckpoint) -> None:
+        if self._inner is not None:
+            self._inner.on_preempted(checkpoint)
+
+    def await_resume(
+        self,
+        timeout: Optional[float] = None,
+        *,
+        cancel_event = None,
+    ) -> bool:
+        if self._inner is None:
+            return False
+        if cancel_event is None:
+            return bool(self._inner.await_resume(timeout))
+        try:
+            return bool(self._inner.await_resume(timeout, cancel_event = cancel_event))
+        except TypeError:
+            return bool(self._inner.await_resume(timeout))
+
+    def on_resumed(self) -> None:
+        if self._inner is not None:
+            self._inner.on_resumed()
+
+    def on_server_parked(self) -> None:
+        hook = getattr(self._inner, "on_server_parked", None)
+        if hook is not None:
+            hook()
+
+    def on_server_resumed(self) -> None:
+        hook = getattr(self._inner, "on_server_resumed", None)
+        if hook is not None:
+            hook()
+
+    def on_declined(self) -> None:
+        if self._inner is not None:
+            self._inner.on_declined()
+
+    def restart(self) -> None:
+        if self._inner is not None:
+            self._inner.restart()
+
+
+class NullPreemptionPolicy:
+    def should_preempt(self) -> bool:
+        return False
+
+    def on_preempted(self, checkpoint: StreamCheckpoint) -> None:
+        return None
+
+    def await_resume(
+        self,
+        timeout: Optional[float] = None,
+        *,
+        cancel_event = None,
+    ) -> bool:
+        return True
+
+    def on_resumed(self) -> None:
+        return None
+
+    def on_declined(self) -> None:
+        return None
+
+
+class ParticipantState:
+    """Where a generation is. Strings, not an enum, so they cross the SSE boundary untranslated."""
+
+    QUEUED = "queued"
+    DECODING = "decoding"
+    PARKED_ON_TOOL = "parked_on_tool"
+    TOOLS_RUNNING = "tools_running"
+    PREEMPTING = "preempting"
+    # No conversation to resume, so aborting is a CANCEL: never a victim, but registered or the
+    # watermark fires late.
+    STREAMING_RAW = "streaming_raw"
+    PAUSED = "paused"
+    RESUMING = "resuming"
+    DONE = "done"
+
+
+_HOLDS_KV = frozenset(
+    {
+        ParticipantState.DECODING,
+        ParticipantState.PARKED_ON_TOOL,
+        ParticipantState.TOOLS_RUNNING,
+        ParticipantState.PREEMPTING,
+        ParticipantState.STREAMING_RAW,
+        ParticipantState.RESUMING,
+    }
+)
+
+_PREEMPTABLE = frozenset(
+    {
+        ParticipantState.DECODING,
+        ParticipantState.PARKED_ON_TOOL,
+    }
+)
+
+_PARKED_ON_A_TOOL = frozenset(
+    {
+        ParticipantState.PARKED_ON_TOOL,
+        ParticipantState.TOOLS_RUNNING,
+    }
+)
+# PREEMPTING is absent on purpose: asking twice double-counts the room its pause will free.
+
+_DECODES_WHEN_TOKENS_ARRIVE = frozenset(
+    {
+        ParticipantState.TOOLS_RUNNING,
+        ParticipantState.PARKED_ON_TOOL,
+        ParticipantState.RESUMING,
+    }
+)
+
+
+def preemption_setting() -> str:
+    """``on``, ``off`` or ``auto`` (unset or unrecognised) for ``UNSLOTH_LLAMA_ADMISSION_PREEMPT``."""
+    raw = (os.environ.get(PREEMPT_ENV) or "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return PREEMPT_SETTING_ON
+    if raw in {"0", "false", "no", "off"}:
+        return PREEMPT_SETTING_OFF
+    return PREEMPT_SETTING_AUTO if DEFAULT_PREEMPT_ENABLED else PREEMPT_SETTING_OFF
+
+
+def preemption_wanted() -> bool:
+    """Whether a launch should ask the server to park: anything but an explicit off."""
+    return preemption_setting() != PREEMPT_SETTING_OFF
+
+
+def note_server_parking(confirmed: bool, backend = None) -> None:
+    """Record what ``backend``'s llama-server reported. Auto preemption follows the one the
+    request is routed to; a note with no backend is the process-wide fallback."""
+    global _server_parking_confirmed
+    if backend is None:
+        _server_parking_confirmed = bool(confirmed)
+    else:
+        _parking_by_backend[backend] = bool(confirmed)
+
+
+def set_routed_backend(resolver: Optional[Callable[[], object]]) -> None:
+    """Install the lookup for the backend serving the current request."""
+    global _routed_backend
+    _routed_backend = resolver
+
+
+def server_parking_confirmed() -> bool:
+    resolver = _routed_backend
+    if resolver is not None:
+        try:
+            confirmed = _parking_by_backend.get(resolver())
+        except Exception:
+            confirmed = None
+        if confirmed is not None:
+            return confirmed
+    return _server_parking_confirmed
+
+
+def preemption_enabled() -> bool:
+    """Whether preemption is armed now.
+
+    ``on`` always; ``off`` never; ``auto`` only while the server confirmed its own parking or
+    ``UNSLOTH_LLAMA_PREEMPT_MODE=studio`` asks Studio to pause chats. Cheap enough to be the
+    FIRST thing every gate asks: off, the caller bails out before it builds a signal, registers a
+    participant or opens a ``/slots`` round trip.
+    """
+    setting = preemption_setting()
+    if setting == PREEMPT_SETTING_ON:
+        return True
+    if setting == PREEMPT_SETTING_OFF:
+        return False
+    return server_parking_confirmed() or preempt_mode_setting() == PREEMPT_MODE_STUDIO
+
+
+def preemption_eligible() -> bool:
+    """The switches that have to be on before anything here may choose a victim.
+
+    Every charge the controller plans against is an admission lease, so with admission control or
+    the KV budget off the ledger is a column of zeroes and choosing on it pauses live streams for an
+    accounting that is not running. Read here so ``active`` and ``plan_preemptions`` cannot drift.
+    """
+    if not preemption_enabled():
+        return False
+    config = llama_admission_config_from_env()
+    return bool(config.enabled and config.kv_budget)
+
+
+def preemption_buffer_tokens(
+    budget: int,
+    *,
+    draft_tokens: int = 0,
+    slots: int = 1,
+    batch_tokens: int = 0,
+    pending_prefill: int = 0,
+) -> int:
+    """Tokens held clear of ``budget``. Zero for an unknown budget, which disables it. Never the
+    whole cache, a buffer that swallows the budget preempting everyone forever. Drafts are charged
+    on top, unreserved ones putting the cache on the shrinking-batch retry where
+    ggml-org/llama.cpp#24840 throws. The batch term is charged only while a prefill is pending."""
+    if budget <= 0:
+        return 0
+    # PER SLOT: reaction headroom scales with concurrent decoders, not cache size.
+    per_slot = _int_env("UNSLOTH_LLAMA_PREEMPT_BUFFER_PER_SLOT", DEFAULT_PREEMPT_BUFFER_PER_SLOT)
+    slot_count = max(1, int(slots or 1))
+    reserve = max(DEFAULT_PREEMPT_BUFFER_MIN_TOKENS, per_slot * slot_count)
+    # The next BATCH must fit. ONLY WHILE PREFILLING: permanent, it held a quarter of an 8192 cache.
+    n_batch = max(0, int(batch_tokens or 0))
+    reserve = max(reserve, min(n_batch, max(0, int(pending_prefill or 0))))
+    reserve += max(0, int(draft_tokens or 0)) * slot_count
+    return min(reserve, max(1, budget // 2))
+
+
+@dataclass(**_SLOTS)
+class Participant:
+    gen_id: str
+    seq: int
+    lease: Optional[LlamaAdmissionLease] = None
+    tokens: int = 0
+    base_tokens: int = 0
+    prompt_tokens: int = 0
+    measured: bool = False
+    state: str = ParticipantState.DECODING
+    consecutive_preemptions: int = 0
+    # Aborts ONLY the upstream stream; the generator and SSE response stay alive.
+    preempt_event: PreemptSignal = field(default_factory = PreemptSignal)
+    preempt_chosen_at: float = 0.0
+    # Counting reclaimed cells kept two waiting chats out of an EMPTY cache for three minutes.
+    cells_reclaimed: bool = False
+    # Erased but re-charged before the release ran, so it counts again: the next round boundary
+    # still replays the whole prompt, and must announce it so.
+    replay_pending: bool = False
+    park_seq: int = 0
+    park_charge_seq: Optional[int] = None
+    # The ONLY thing that puts the batch term in the buffer, so it must be set before the request
+    # carrying the prompt is sent.
+    pending_prefill: int = 0
+    pending_prefill_at: float = 0.0
+    generated_seen: int = 0
+    measured_at_seq: Optional[int] = None
+    unconfirmed_growth: int = 0
+    growth_at_seq: Optional[int] = None
+    charged_tokens: int = 0
+    charged_prompt_tokens: int = 0
+    # The state this holder was in when the sweep chose it. Only read while PREEMPTING, so a value
+    # left behind by an earlier round is never consulted.
+    preempted_from: str = ""
+    awaiting_victims: List[str] = field(default_factory = list)
+
+    def in_reading_tokens(self) -> int:
+        """The part of the charge a reading taken now can hold: none until measured, and not a
+        round's growth until a reading started after the round lands."""
+        if not self.measured:
+            return 0
+        return max(0, self.tokens - self.unconfirmed_growth)
+
+    def on_top_tokens(self) -> int:
+        """The part of the charge no reading holds yet, counted on top of the resident figure."""
+        return max(0, self.tokens - self.in_reading_tokens())
+
+    def replay_tokens(self) -> int:
+        """What a resume sends back as prompt: the prompt, with every paused partial folded
+        into it by `note_replayed`. The rest of the charge is output room, not replayed."""
+        return self.prompt_tokens if self.prompt_tokens > 0 else self.tokens
+
+    def resident_tokens(self, generated: int) -> int:
+        """Cells this holder occupies now that its prompt is in the cache."""
+        generated = max(0, int(generated or 0))
+        if self.prompt_tokens <= 0:
+            return self.base_tokens + generated
+        return self.prompt_tokens + generated
+
+    def prefill_pending(self, now: float) -> int:
+        """Zero for a holder whose cells are gone or which is not in the cache: a paused chat
+        submits nothing until the resume grant, which is where it announces again."""
+        if self.pending_prefill <= 0 or not self.holds_kv:
+            return 0
+        since = max(
+            self.pending_prefill_at,
+            float(getattr(self.preempt_event, "prefill_progress_at", 0.0) or 0.0),
+        )
+        if now - since > PENDING_PREFILL_TTL_S:
+            return 0
+        return self.pending_prefill
+
+    def announce_prefill(self, tokens: int) -> None:
+        self.pending_prefill = max(0, int(tokens or 0))
+        self.pending_prefill_at = time.monotonic()
+
+    def prefill_done(self) -> None:
+        self.pending_prefill = 0
+        self.pending_prefill_at = 0.0
+
+    @property
+    def promoted(self) -> bool:
+        return self.consecutive_preemptions >= PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS
+
+    @property
+    def holds_kv(self) -> bool:
+        return self.state in _HOLDS_KV and not self.cells_reclaimed
+
+    @property
+    def preemptable(self) -> bool:
+        return self.state in _PREEMPTABLE
+
+    @property
+    def parked_on_a_tool(self) -> bool:
+        """Whether an idle-slot erase takes THIS holder's cells."""
+        if self.state in _PARKED_ON_A_TOOL:
+            return True
+        return (
+            self.state == ParticipantState.PREEMPTING and self.preempted_from in _PARKED_ON_A_TOOL
+        )
+
+
+@dataclass(frozen = True, **_SLOTS)
+class PreemptionSnapshot:
+    key: str
+    budget: int
+    buffer: int
+    committed: int
+    decoding: int
+    paused: int
+    parked: int
+    slots: int = 1
+    tools_running: int = 0
+    prefilling: int = 0
+    mode: str = PREEMPT_MODE_STUDIO
+    exact: str = EXACT_STATE_OFF
+    # Ledger-only: `committed` folds in a residency reading that can still count an unregistered
+    # chat.
+    holders: int = 0
+
+
+# How long the last good `/slots` reading outlives a failed one.
+_RESIDENT_HOLD_S = 5.0
+
+
+class PreemptionController:
+    """Victim choice and the epoch, for one llama-server backend. Not a scheduler: callers ask
+    whether there is room and are told who must stop."""
+
+    __slots__ = (
+        "key",
+        "_lock",
+        "_participants",
+        "_seq",
+        "_budget",
+        "_kv_unified",
+        "_draft_tokens",
+        "_slots",
+        "_batch_tokens",
+        "_resident",
+        "_resident_seq",
+        "_last_sample_seq",
+        "_last_sample_started",
+        "_resident_at",
+        "_clock",
+        "_resume_tickets",
+        "_replaced_by",
+        "_reclaimable",
+        "_residency_probe",
+        "_drift_logged_at",
+        "_progress_tokens",
+        "_server_mode",
+        "_exact",
+    )
+
+    def __init__(self, key: str):
+        self.key = key
+        self._lock = threading.Lock()
+        self._participants: Dict[str, Participant] = {}
+        self._seq = 0
+        self._drift_logged_at = 0.0
+        self._budget = 0
+        # Upstream gates idle-slot purging on kv_unified ALONE, not idle_slot_clearing_active.
+        self._kv_unified = False
+        self._draft_tokens = 0
+        self._batch_tokens = 0
+        self._reclaimable = 0
+        self._slots = 1
+        self._resident: Optional[int] = None
+        self._resident_seq = 0
+        self._last_sample_seq = 0
+        self._last_sample_started = 0
+        self._resident_at = 0.0
+        self._clock = time.monotonic
+        # Taken BEFORE the room test, so a later smaller resume cannot book an older one's space.
+        self._resume_tickets: "OrderedDict[str, int]" = OrderedDict()
+        self._replaced_by: Dict[str, Optional[List[str]]] = {}
+        self._residency_probe: Optional[Callable[[], None]] = None
+        # Monotonic: moves whenever anybody decodes, which `committed` (a maximum) does not.
+        self._progress_tokens = 0
+        self._server_mode = False
+        self._exact = EXACT_STATE_OFF
+
+    def configure(
+        self,
+        *,
+        budget: Optional[int] = None,
+        kv_unified: Optional[bool] = None,
+        draft_tokens: Optional[int] = None,
+        slots: Optional[int] = None,
+        batch_tokens: Optional[int] = None,
+        server_mode: Optional[bool] = None,
+        exact: Optional[str] = None,
+    ) -> None:
+        """Re-read the cache this backend allocated. A reload can relaunch at a different -c."""
+        with self._lock:
+            if budget is not None:
+                self._budget = max(0, int(budget or 0))
+            if kv_unified is not None:
+                self._kv_unified = bool(kv_unified)
+            if draft_tokens is not None:
+                self._draft_tokens = max(0, int(draft_tokens or 0))
+            if slots is not None:
+                self._slots = max(1, int(slots or 1))
+            if batch_tokens is not None:
+                self._batch_tokens = max(0, int(batch_tokens or 0))
+            if server_mode is not None:
+                self._server_mode = bool(server_mode)
+            if exact is not None:
+                self._exact = str(exact) if str(exact) in EXACT_STATES else EXACT_STATE_OFF
+
+    @property
+    def server_mode(self) -> bool:
+        with self._lock:
+            return self._server_mode
+
+    @property
+    def active(self) -> bool:
+        with self._lock:
+            return bool(self._kv_unified) and self._budget > 0 and preemption_eligible()
+
+    def register(
+        self,
+        gen_id: str,
+        *,
+        lease: Optional[LlamaAdmissionLease] = None,
+        tokens: int = 0,
+        state: str = ParticipantState.DECODING,
+        signal: Optional[PreemptSignal] = None,
+        prompt_tokens: Optional[int] = None,
+    ) -> Participant:
+        """``signal`` MUST be the object the stream polls. Without it a Participant makes its
+        own and setting it reaches nobody: four chats armed, two selected, neither paused."""
+        with self._lock:
+            existing = self._participants.get(gen_id)
+            if existing is not None:
+                return existing
+            self._seq += 1
+            participant = Participant(
+                gen_id = gen_id,
+                seq = self._seq,
+                lease = lease,
+                tokens = max(0, int(tokens or 0)),
+                base_tokens = max(0, int(tokens or 0)),
+                prompt_tokens = min(max(0, int(prompt_tokens or 0)), max(0, int(tokens or 0))),
+                state = state,
+                **({} if signal is None else {"preempt_event": signal}),
+            )
+            participant.charged_tokens = participant.tokens
+            participant.charged_prompt_tokens = participant.prompt_tokens
+            # The prompt, not the charge: the output allowance is decoded, never prefilled.
+            participant.announce_prefill(participant.prompt_tokens or participant.tokens)
+            self._participants[gen_id] = participant
+            return participant
+
+    def unregister(self, gen_id: str) -> None:
+        """Drop a finished generation."""
+        with self._lock:
+            self._participants.pop(gen_id, None)
+            self._resume_tickets.pop(gen_id, None)
+            self._replaced_by.pop(gen_id, None)
+
+    def begin_resume(self, gen_id: str, want: int) -> None:
+        """Take a place in the resume line, before asking whether there is room."""
+        with self._lock:
+            self._resume_tickets.pop(gen_id, None)
+            self._resume_tickets[gen_id] = max(0, int(want or 0))
+
+    def end_resume(self, gen_id: str) -> None:
+        """Leave the resume line: granted, given up or cancelled. Idempotent."""
+        with self._lock:
+            self._resume_tickets.pop(gen_id, None)
+
+    def resume_queue_depth(self) -> int:
+        """How many waits are in the resume line."""
+        with self._lock:
+            return len(self._resume_tickets)
+
+    def _resume_reserved_locked(self, gen_id: str) -> int:
+        """Tokens the waits AHEAD of ``gen_id`` are coming back for."""
+        total = 0
+        for queued, want in self._resume_tickets.items():
+            if queued == gen_id:
+                break
+            total += want
+        return total
+
+    def _solo_ceiling_locked(self) -> int:
+        """The cache less what a lone chat still needs clear: its drafts, the estimate error and
+        the next decode step. No prefill batch: chunks are part of the history, so a lone replay of
+        W needs W cells plus the step after (a 7000 token chat at 8192 fits alone)."""
+        margin = self._draft_tokens + 1 + max(64, self._budget // SOLO_MARGIN_DIVISOR)
+        return max(1, self._budget - margin)
+
+    def outgrew_the_shared_ceiling(self, want: int) -> bool:
+        """Whether `want` can never fit beside anyone. It must not wait: no combination of
+        preemptions will admit it, so waiting is a deadlock. It runs alone."""
+        with self._lock:
+            if not self._kv_unified or self._budget <= 0 or not preemption_enabled():
+                return False
+            pending = self._pending_prefill_locked() + max(0, int(want or 0))
+            ceiling = max(0, self._budget - self._buffer_locked(pending = pending))
+            return int(want or 0) > ceiling
+
+    def cannot_ever_fit(self, want: int) -> bool:
+        """Whether `want` exceeds the cache itself. The turn ends with what it has and the
+        continuation path resumes; parking it forever is the hang."""
+        with self._lock:
+            if not self._kv_unified or self._budget <= 0 or not preemption_enabled():
+                return False
+            return int(want or 0) > self._solo_ceiling_locked()
+
+    def room_for(self, gen_id: str, want: int) -> bool:
+        """Whether a paused generation may start again yet, against the LIVE total. On the admission
+        queue's accounting a chat was let back in over the watermark and evicted at once."""
+        with self._lock:
+            if not self._kv_unified or self._budget <= 0 or not preemption_enabled():
+                return True
+            return self._room_for_locked(gen_id, want)
+
+    def try_grant_resume(self, gen_id: str, want: int) -> bool:
+        """Decide there is room AND take it, without letting go of the lock between: `room_for` only
+        answers, and two paused chats asking at once both get yes, PAUSED not being in `_HOLDS_KV`.
+        The room the waits ahead are owed (`begin_resume`) is held back, so a smaller later
+        resume cannot book the space an older one is short of. Roll back with `note_resume_failed`. The grant marks the participant RESUMING, not DECODING:
+        the lease's slot is reacquired after this, and a sweep in between would count it as freed."""
+        with self._lock:
+            if not self._kv_unified or self._budget <= 0 or not preemption_enabled():
+                return True
+            if not self._room_for_locked(gen_id, want, self._resume_reserved_locked(gen_id)):
+                return False
+            participant = self._participants.get(gen_id)
+            if participant is not None:
+                need = max(0, int(want or 0))
+                if need > 0:
+                    participant.tokens = need
+                    participant.base_tokens = need
+                if participant.prompt_tokens > 0:
+                    participant.prompt_tokens = max(participant.prompt_tokens, need)
+                participant.measured = False
+                participant.measured_at_seq = None
+                participant.unconfirmed_growth = 0
+                participant.growth_at_seq = None
+                participant.state = ParticipantState.RESUMING
+                participant.announce_prefill(need)
+            return True
+
+    def note_resume_failed(self, gen_id: str) -> None:
+        with self._lock:
+            participant = self._participants.get(gen_id)
+            if participant is not None and participant.state in (
+                ParticipantState.RESUMING,
+                ParticipantState.DECODING,
+            ):
+                participant.state = ParticipantState.PAUSED
+                participant.prefill_done()
+
+    def _my_resident_locked(self, gen_id: str) -> int:
+        """Of the residency reading, the part this generation can claim as its own."""
+        participant = self._participants.get(gen_id)
+        if participant is None or not participant.holds_kv:
+            return 0
+        return participant.in_reading_tokens()
+
+    def _room_for_locked(
+        self,
+        gen_id: str,
+        want: int,
+        reserved: int = 0,
+    ) -> bool:
+        # `want` REPLACES this generation's own announcement, so it does not pay twice.
+        pending = self._pending_prefill_locked(exclude = gen_id) + max(0, int(want or 0))
+        ceiling = max(0, self._budget - self._buffer_locked(pending = pending))
+        holders = [p for gid, p in self._participants.items() if p.holds_kv and gid != gen_id]
+        measured = sum(p.in_reading_tokens() for p in holders)
+        unmeasured = sum(p.on_top_tokens() for p in holders)
+        others = measured + unmeasured
+        if self._resident is not None:
+            # Minus idle residue: counting it deadlocked scheduling (ledger 0, slots 21304 of
+            # 14312).
+            occupied = self._resident - self._reclaimable
+            others = max(measured, occupied - self._my_resident_locked(gen_id)) + unmeasured
+        need = max(0, int(want or 0))
+        others = max(0, others)
+        reserved = max(0, int(reserved or 0))
+        if others + need + reserved <= ceiling:
+            return True
+        # A chat over the ceiling must still run alone, unless somebody ahead is owed room.
+        if need > ceiling and others == 0 and reserved == 0:
+            return need <= self._solo_ceiling_locked()
+        return False
+
+    def observe(
+        self,
+        gen_id: str,
+        generated: int,
+        *,
+        plan: bool = True,
+    ) -> List["Participant"]:
+        """Live growth during generation, and THE watermark sweep. It cannot live only between
+        rounds: one round can generate thousands of tokens. Returns whoever must stop, signalled;
+        ``plan = False`` records the growth only, for a caller that reclaims before it plans.
+
+        Gated first: off, the surfaces hand out `on_tokens = None` and no chat reaches here, but
+        the tool loops re-baseline through `note_tokens`, and that sweeps."""
+        if not preemption_enabled():
+            return []
+        with self._lock:
+            participant = self._participants.get(gen_id)
+            if participant is not None:
+                reported = max(0, int(generated or 0))
+                # A fall means a resumed attempt restarted its count.
+                previous = participant.generated_seen
+                participant.generated_seen = reported
+                self._progress_tokens += (reported - previous) if reported >= previous else reported
+                participant.tokens = participant.resident_tokens(reported)
+                if reported > 0:
+                    if not participant.measured and participant.measured_at_seq is None:
+                        self._resident_seq += 1
+                        participant.measured_at_seq = self._resident_seq
+                    if participant.unconfirmed_growth > 0 and participant.growth_at_seq is None:
+                        self._resident_seq += 1
+                        participant.growth_at_seq = self._resident_seq
+                    participant.cells_reclaimed = False
+                    participant.replay_pending = False
+                    participant.prefill_done()
+                # A token proves decoding: a round streaming only tool-call deltas was unpreemptable
+                # past the ceiling.
+                if participant.state in _DECODES_WHEN_TOKENS_ARRIVE:
+                    participant.state = ParticipantState.DECODING
+        if not plan:
+            return []
+        return self.plan_preemptions(needed = 0)
+
+    def set_residency_probe(self, probe: Optional[Callable[[], None]]) -> None:
+        """Register a way to re-read the cache on demand. The ledger adds up prompt ESTIMATES; a
+        reading a second old can be a thousand tokens stale when a resume grant uses it.
+
+        Refused while the switch is off: the call sites register one unconditionally and each is a
+        per-request closure kept on a process-lifetime controller. Clearing (`probe = None`) is
+        always allowed, so flipping the switch off never strands an earlier request's probe."""
+        if probe is not None and not preemption_enabled():
+            return
+        self._residency_probe = probe
+
+    def refresh_residency(self) -> None:
+        probe = self._residency_probe
+        if probe is None:
+            return
+        try:
+            probe()
+        except Exception:
+            _log.debug("residency probe failed", exc_info = True)
+
+    def residency_epoch(self) -> int:
+        """The ordering clock, taken before a `/slots` probe is sent."""
+        with self._lock:
+            self._resident_seq += 1
+            return self._resident_seq
+
+    def note_resident(
+        self,
+        resident: Optional[int],
+        reclaimable: int = 0,
+        *,
+        started_at_seq: Optional[int] = None,
+    ) -> Optional[int]:
+        """The cache as llama-server actually sees it, None when the read failed. ``reclaimable``
+        is the part held by IDLE slots: it counts toward the watermark but is erased on demand.
+        ``started_at_seq`` is `residency_epoch()` read before the probe was sent; None means
+        the reading is treated as taken now. A reading whose probe started before the last one
+        was recorded is dropped, so an arming probe past its join window cannot put an older
+        count back over a newer sample. Returns the sequence it was recorded at, for
+        `note_erased_since`, or None when nothing was recorded."""
+        with self._lock:
+            if (
+                started_at_seq is not None
+                and self._last_sample_seq
+                and started_at_seq <= self._last_sample_started
+            ):
+                return None
+            if resident is None:
+                if (
+                    self._resident is not None
+                    and self._clock() - self._resident_at <= _RESIDENT_HOLD_S
+                ):
+                    self._reclaimable = 0
+                    return None
+                self._resident = None
+                self._reclaimable = 0
+                return None
+            # Clamped: `/slots` reported 21304 for a 16384 cache, and unclamped every resume is
+            # refused.
+            ceiling = self._budget if self._budget > 0 else int(resident)
+            self._resident = max(0, min(int(resident), ceiling))
+            self._reclaimable = max(0, min(int(reclaimable or 0), self._resident))
+            self._last_sample_started = (
+                self._resident_seq if started_at_seq is None else int(started_at_seq)
+            )
+            self._resident_seq += 1
+            self._last_sample_seq = self._resident_seq
+            self._resident_at = self._clock()
+            for participant in self._participants.values():
+                if participant.growth_at_seq is not None and not (
+                    started_at_seq is not None and participant.growth_at_seq > started_at_seq
+                ):
+                    participant.unconfirmed_growth = 0
+                    participant.growth_at_seq = None
+                if participant.measured_at_seq is None:
+                    continue
+                if started_at_seq is not None and participant.measured_at_seq > started_at_seq:
+                    continue
+                participant.measured = True
+                participant.measured_at_seq = None
+            return self._last_sample_seq
+
+    def note_erased_since(
+        self, recorded_seq: Optional[int], resident: int, reclaimable: int
+    ) -> bool:
+        """The reading `note_resident` recorded at ``recorded_seq``, less what an erase it
+        planned has since freed.
+
+        Not a new sample, so it neither orders against probes nor promotes anyone: that
+        reading already promoted everyone it could. Dropped once a newer sample is in, since
+        that one saw the erase or the cells refilling.
+        """
+        with self._lock:
+            if recorded_seq is None or recorded_seq != self._last_sample_seq:
+                return False
+            if self._resident is None:
+                return False
+            self._resident = max(0, min(int(resident), self._resident))
+            self._reclaimable = max(0, min(int(reclaimable or 0), self._resident))
+            return True
+
+    def note_tokens(
+        self,
+        gen_id: str,
+        tokens: int,
+        prompt_tokens: Optional[int] = None,
+    ) -> None:
+        """What a round boundary says this run now holds."""
+        with self._lock:
+            participant = self._participants.get(gen_id)
+            if participant is not None:
+                charge = max(0, int(tokens or 0))
+                if prompt_tokens is not None:
+                    participant.prompt_tokens = min(max(0, int(prompt_tokens or 0)), charge)
+                previous = participant.tokens
+                participant.tokens = (
+                    participant.prompt_tokens if participant.prompt_tokens > 0 else charge
+                )
+                growth = participant.tokens - previous
+                replayed = participant.cells_reclaimed or participant.replay_pending
+                if replayed:
+                    participant.announce_prefill(participant.tokens)
+                elif growth > 0:
+                    participant.announce_prefill(growth)
+                elif participant.pending_prefill > participant.tokens:
+                    participant.pending_prefill = participant.tokens
+                if growth > 0:
+                    self._progress_tokens += growth
+                participant.base_tokens = charge
+                participant.generated_seen = 0
+                if replayed:
+                    participant.unconfirmed_growth = 0
+                    participant.growth_at_seq = None
+                elif growth > 0 and participant.measured:
+                    participant.unconfirmed_growth += growth
+                    participant.growth_at_seq = None
+                if replayed:
+                    participant.measured = False
+                    participant.measured_at_seq = None
+                participant.cells_reclaimed = False
+                participant.replay_pending = False
+
+    _LIVE_STATES = frozenset(
+        {
+            ParticipantState.DECODING,
+            ParticipantState.PARKED_ON_TOOL,
+            ParticipantState.TOOLS_RUNNING,
+        }
+    )
+
+    def note_state(self, gen_id: str, state: str) -> bool:
+        """Where a live tool-loop chat is. PARKED_ON_TOOL and TOOLS_RUNNING were never set by
+        anyone, so a chat on an approval prompt stayed DECODING and counted erased cells."""
+        if state not in self._LIVE_STATES:
+            return False
+        with self._lock:
+            changed = self._note_state_locked(gen_id, state)
+        if changed is None:
+            replacements: List[str] = []
+            try:
+                replacements = [
+                    v.gen_id for v in self.plan_preemptions(needed = 0) if not v.parked_on_a_tool
+                ]
+            finally:
+                with self._lock:
+                    self._replaced_by[gen_id] = replacements
+            return True
+        return changed
+
+    def _note_state_locked(self, gen_id: str, state: str) -> Optional[bool]:
+        """`note_state` under the lock: None when a pending choice was undone (and the state
+        then recorded), else whether the state changed."""
+        revoked = False
+        participant = self._participants.get(gen_id)
+        was_parked = participant is not None and participant.parked_on_a_tool
+        if (
+            participant is not None
+            and participant.state == ParticipantState.PREEMPTING
+            and state in (ParticipantState.PARKED_ON_TOOL, ParticipantState.TOOLS_RUNNING)
+        ):
+            participant.preempt_chosen_at = 0.0
+            participant.consecutive_preemptions = max(0, participant.consecutive_preemptions - 1)
+            participant.preempt_event.clear()
+            participant.state = ParticipantState.DECODING
+            self._replaced_by[gen_id] = None
+            revoked = True
+        if participant is None or participant.state not in self._LIVE_STATES:
+            return False
+        if participant.state == state:
+            return None if revoked else False
+        participant.state = state
+        if state in _PARKED_ON_A_TOOL and not was_parked:
+            participant.park_seq += 1
+            participant.park_charge_seq = getattr(participant.lease, "charge_seq", None)
+        if state == ParticipantState.DECODING:
+            if participant.cells_reclaimed:
+                participant.announce_prefill(participant.tokens)
+            participant.cells_reclaimed = False
+        return None if revoked else True
+
+    def parked_holders(self) -> Dict[str, int]:
+        """Who is parked on a tool right now, with each one's park count."""
+        with self._lock:
+            return {
+                gen_id: participant.park_seq
+                for gen_id, participant in self._participants.items()
+                if participant.parked_on_a_tool
+            }
+
+    def note_cells_reclaimed(self, only: Optional[Dict[str, int]] = None) -> int:
+        """An idle-slot reclaim just erased every idle slot."""
+        released = []
+        with self._lock:
+            for participant in self._participants.values():
+                if not participant.parked_on_a_tool:
+                    continue
+                if only is not None and only.get(participant.gen_id) != participant.park_seq:
+                    continue
+                if participant.cells_reclaimed:
+                    continue
+                participant.cells_reclaimed = True
+                participant.prefill_done()
+                released.append((participant, participant.park_seq, participant.park_charge_seq))
+        for participant, park_seq, charge_seq in released:
+            with self._lock:
+                if not participant.cells_reclaimed or participant.park_seq != park_seq:
+                    continue
+            lease = participant.lease
+            yield_parked = getattr(lease, "yield_parked_commitment", None)
+            if callable(yield_parked):
+                try:
+                    if charge_seq is None:
+                        yield_parked()
+                    else:
+                        yield_parked(charged_at = charge_seq)
+                except Exception:  # pragma: no cover - bookkeeping must not fail a run
+                    _log.debug("could not yield a parked commitment", exc_info = True)
+            if charge_seq is not None and getattr(lease, "charge_seq", charge_seq) != charge_seq:
+                # Re-charged before the scan, so the lease kept the new commitment: it is a prompt
+                # being prefilled again, and must count, reserve included.
+                with self._lock:
+                    if participant.cells_reclaimed and participant.park_seq == park_seq:
+                        participant.cells_reclaimed = False
+                        participant.announce_prefill(participant.tokens)
+                        participant.replay_pending = True
+        return len(released)
+
+    def note_cells_possibly_erased(self, only: Optional[Dict[str, int]] = None) -> int:
+        """An erase may have taken a slot another request was handed after the reading."""
+        marked = 0
+        with self._lock:
+            for participant in self._participants.values():
+                if not participant.holds_kv or participant.cells_reclaimed:
+                    continue
+                if only is not None and only.get(participant.gen_id) == participant.park_seq:
+                    continue
+                participant.replay_pending = True
+                marked += 1
+        return marked
+
+    def restart(self, gen_id: str) -> None:
+        """The same request starts over from its original prompt: the next of `n` choices."""
+        with self._lock:
+            participant = self._participants.get(gen_id)
+            if participant is None:
+                return
+            participant.tokens = participant.charged_tokens
+            participant.base_tokens = participant.charged_tokens
+            participant.prompt_tokens = participant.charged_prompt_tokens
+            participant.generated_seen = 0
+            participant.measured = False
+            participant.measured_at_seq = None
+            participant.unconfirmed_growth = 0
+            participant.growth_at_seq = None
+            participant.cells_reclaimed = False
+            participant.replay_pending = False
+            participant.consecutive_preemptions = 0
+            participant.state = ParticipantState.DECODING
+            participant.preempt_event.clear()
+            participant.announce_prefill(participant.prompt_tokens or participant.tokens)
+
+    def note_replayed(self, gen_id: str, tokens: int) -> None:
+        """Tokens a paused attempt decoded that the NEXT attempt sends back as prompt: they do not
+        leave the cache, they change category, and the stream's counter restarts at zero."""
+        with self._lock:
+            participant = self._participants.get(gen_id)
+            if participant is None:
+                return
+            replayed = max(0, int(tokens or 0))
+            participant.base_tokens = participant.base_tokens + replayed
+            if participant.prompt_tokens > 0:
+                participant.prompt_tokens = participant.prompt_tokens + replayed
+                participant.tokens = max(participant.tokens, participant.prompt_tokens)
+            else:
+                participant.tokens = max(participant.tokens, participant.base_tokens)
+
+    def wait_released(
+        self,
+        gen_ids,
+        timeout: float,
+        *,
+        poll_s: float = 0.02,
+    ) -> bool:
+        """Block until each of ``gen_ids`` has stopped being a pending victim, or ``timeout``.
+
+        A chosen chat keeps decoding into its cells until its stream sees the signal and
+        closes upstream, so the room a plan projected is not free yet. True when every one
+        has paused, finished, or declined. Blocking: never call it on the event loop."""
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        pending = list(gen_ids or ())
+        while True:
+            with self._lock:
+                seen = set(pending)
+                still: List[str] = []
+                work = list(pending)
+                while work:
+                    gid = work.pop()
+                    replaced = self._replaced_by.get(gid, ())
+                    if replaced is None:
+                        still.append(gid)
+                        continue
+                    for new in replaced:
+                        if new not in seen:
+                            seen.add(new)
+                            work.append(new)
+                    p = self._participants.get(gid)
+                    if p is not None and p.state == ParticipantState.PREEMPTING:
+                        still.append(gid)
+                pending = still
+            if not pending:
+                return True
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return False
+            time.sleep(min(poll_s, left))
+
+    def take_awaited_victims(self, gen_id: str) -> List[str]:
+        """The victims ``gen_id``'s plan chose and its route has not waited on yet."""
+        with self._lock:
+            participant = self._participants.get(gen_id)
+            if participant is None:
+                return []
+            taken, participant.awaiting_victims = participant.awaiting_victims, []
+            return taken
+
+    def set_state(self, gen_id: str, state: str) -> None:
+        """Report a safe point."""
+        with self._lock:
+            participant = self._participants.get(gen_id)
+            if participant is None:
+                return
+            if state in _PARKED_ON_A_TOOL and not participant.parked_on_a_tool:
+                participant.park_seq += 1
+                participant.park_charge_seq = getattr(participant.lease, "charge_seq", None)
+            participant.state = state
+            if state not in _HOLDS_KV:
+                participant.prefill_done()
+
+    def note_measured(self, gen_id: str) -> None:
+        """A holder that never reports tokens has prefilled: its charge stops being a
+        reservation on top of the resident figure once a reading taken after this call is in.
+
+        The raw passthroughs never call `observe` or `note_tokens`, so `_committed_locked`
+        counted them twice once `/slots` saw them, pausing every Studio chat for a holder
+        that is never a victim. Folded at once, a reading from before the prefill swallowed
+        the whole charge instead, and the raw path has no probe of its own to refresh it.
+        Idempotent; the state is left alone.
+        """
+        with self._lock:
+            participant = self._participants.get(gen_id)
+            if participant is None:
+                return
+            if not participant.measured:
+                # Bumped so the stamp is strictly past any epoch a probe already in flight captured.
+                self._resident_seq += 1
+                participant.measured_at_seq = self._resident_seq
+            participant.cells_reclaimed = False
+            participant.prefill_done()
+
+    def note_resumed(self, gen_id: str) -> None:
+        with self._lock:
+            participant = self._participants.get(gen_id)
+            if participant is None:
+                return
+            participant.preempt_event.clear()
+            participant.state = ParticipantState.DECODING
+
+    def note_declined(self, gen_id: str) -> None:
+        """A chosen victim will not pause after all, and goes on decoding: nothing else takes the
+        decision back, `observe` leaving PREEMPTING alone. Only from PREEMPTING, or this invents a holder."""
+        with self._lock:
+            participant = self._participants.get(gen_id)
+            if participant is None or participant.state != ParticipantState.PREEMPTING:
+                return
+            participant.state = ParticipantState.DECODING
+            participant.preempt_chosen_at = 0.0
+            participant.consecutive_preemptions = max(0, participant.consecutive_preemptions - 1)
+            self._replaced_by[gen_id] = None
+            # Last, inside the lock: clearing first leaves a window for a sweep to re-arm it.
+            participant.preempt_event.clear()
+        replacements: List[str] = []
+        try:
+            replacements = [
+                v.gen_id
+                for v in self.plan_preemptions(needed = 0, exclude = gen_id)
+                if not v.parked_on_a_tool
+            ]
+        finally:
+            with self._lock:
+                self._replaced_by[gen_id] = replacements
+
+    def participant(self, gen_id: str) -> Optional[Participant]:
+        """The registered participant, or None once it has finished. By reference."""
+        with self._lock:
+            return self._participants.get(gen_id)
+
+    def is_idle(self) -> bool:
+        with self._lock:
+            return not self._participants
+
+    def committed_tokens(self) -> int:
+        """What the watermark compares against the ceiling."""
+        with self._lock:
+            return self._committed_locked()
+
+    def progress_signature(self) -> tuple:
+        """What a waiter watches to tell "busy" from "stuck": `committed`, the holders,
+        `_progress_tokens`, and how many holders are inside a tool call. The token term is the one
+        that was missing: `committed` is a maximum a decoding chat can leave untouched, and one turn
+        was abandoned for "no progress" while three others decoded to completion."""
+        with self._lock:
+            return (
+                self._committed_locked(),
+                frozenset(p.gen_id for p in self._participants.values() if p.holds_kv),
+                self._progress_tokens,
+                sum(
+                    1
+                    for p in self._participants.values()
+                    if p.state == ParticipantState.TOOLS_RUNNING
+                ),
+            )
+
+    def _pending_prefill_locked(self, *, exclude: Optional[str] = None) -> int:
+        """Prompt tokens announced but not yet in the cache, across every holder. `exclude` drops
+        one participant so a caller asking "room for ME" can substitute its own figure."""
+        now = time.monotonic()
+        return sum(
+            p.prefill_pending(now)
+            for gen_id, p in self._participants.items()
+            if exclude is None or gen_id != exclude
+        )
+
+    def _buffer_locked(self, *, pending: Optional[int] = None) -> int:
+        """Tokens held clear right now. `pending` overrides the live announcement sum: answering
+        at the idle buffer admits a chat into room that stops existing in the same breath."""
+        if self._server_mode:
+            # The server reserves its own drafts and margin and parks when the next batch does not
+            # fit.
+            return 0
+        return preemption_buffer_tokens(
+            self._budget,
+            draft_tokens = self._draft_tokens,
+            slots = self._slots,
+            batch_tokens = self._batch_tokens,
+            pending_prefill = (
+                self._pending_prefill_locked() if pending is None else max(0, int(pending))
+            ),
+        )
+
+    def _prune_locked(self) -> None:
+        """Drop participants whose lease is finished with the cache. Belt and braces beside
+        ``unregister``: one branch that forgot would preempt everybody for the model load's life."""
+        dead = [
+            gen_id
+            for gen_id, p in self._participants.items()
+            if p.lease is not None and getattr(p.lease, "is_released", False)
+        ]
+        for gen_id in dead:
+            del self._participants[gen_id]
+            self._resume_tickets.pop(gen_id, None)
+
+    def _committed_locked(self) -> int:
+        self._prune_locked()
+        ledger = sum(p.tokens for p in self._participants.values() if p.holds_kv)
+        if self._resident is None:
+            return ledger
+        # Not max(ledger, resident): that double counts chats resident already includes.
+        holders = [p for p in self._participants.values() if p.holds_kv]
+        measured = sum(p.in_reading_tokens() for p in holders)
+        pending = sum(p.on_top_tokens() for p in holders)
+        return max(self._resident, measured) + pending
+
+    def _contended_locked(self) -> bool:
+        """Whether anybody else could want the room this backend is holding."""
+        holders = 0
+        for participant in self._participants.values():
+            if participant.state in (ParticipantState.QUEUED, ParticipantState.PAUSED):
+                return True
+            if participant.holds_kv:
+                holders += 1
+                if holders > 1:
+                    return True
+        return False
+
+    def contended(self) -> bool:
+        """Cheap enough for the token path: no HTTP, one lock, no arithmetic."""
+        with self._lock:
+            if not self._kv_unified or self._budget <= 0 or not preemption_enabled():
+                return False
+            return self._contended_locked()
+
+    def plan_preemptions(
+        self,
+        *,
+        needed: int = 0,
+        exclude: Optional[str] = None,
+    ) -> List[Participant]:
+        """Who must stop so ``needed`` more tokens fit; ``exclude`` is never chosen. Sets each
+        victim's ``preempt_event`` and marks it PAUSED, so decision and signal cannot drift."""
+        with self._lock:
+            if not self._kv_unified or self._budget <= 0 or not preemption_eligible():
+                return []
+            if self._server_mode:
+                return []
+            if not self._contended_locked():
+                return []
+            buffer = self._buffer_locked()
+            ceiling = max(0, self._budget - buffer)
+            # Net of holders already chosen: they are on their way out, and counting them again
+            # would stop a second chat for room the first is already giving back.
+            total = self._committed_locked() - sum(
+                p.tokens
+                for p in self._participants.values()
+                if p.holds_kv and p.state == ParticipantState.PREEMPTING and not p.parked_on_a_tool
+            )
+            want = max(0, int(needed or 0))
+            ledger = sum(p.tokens for p in self._participants.values() if p.holds_kv)
+            # Rate limited: one four-chat run emitted 1947 of these.
+            _now = time.monotonic()
+            if (
+                self._resident is not None
+                and abs(self._resident - ledger) > 256
+                and _now - self._drift_logged_at >= 5.0
+            ):
+                self._drift_logged_at = _now
+                # `ledger` is diagnostic only; `committed` is what the watermark compares.
+                holders = [p for p in self._participants.values() if p.holds_kv]
+                _log.info(
+                    "llama preemption ledger-drift: committed=%s resident=%s measured=%s "
+                    "pending=%s ledger=%s ceiling=%s buffer=%s prefilling=%s want=%s "
+                    "holders=%s",
+                    total,
+                    self._resident,
+                    sum(p.in_reading_tokens() for p in holders),
+                    sum(p.on_top_tokens() for p in holders),
+                    ledger,
+                    ceiling,
+                    buffer,
+                    self._pending_prefill_locked(),
+                    want,
+                    len(holders),
+                )
+            if total + want <= ceiling:
+                return []
+            # Parked holders first (cheapest), then NEWEST first, as vLLM V1 does. No generation is
+            # exempt.
+            # `holds_kv` too: reclaimed cells leave `preemptable` True while `holds_kv` is False.
+            victims = [
+                p
+                for p in self._participants.values()
+                if p.preemptable and p.holds_kv and p.gen_id != exclude
+            ]
+            # A THRESHOLD promotion, so repeatedly losing does not become never finishing.
+            victims.sort(
+                key = lambda p: (
+                    p.state != ParticipantState.PARKED_ON_TOOL,
+                    p.promoted,
+                    -p.seq,
+                )
+            )
+            # Leave one HOLDER standing; one already PREEMPTING does not count.
+            standing = any(
+                p.holds_kv
+                and (not p.preemptable or p.gen_id == exclude)
+                and p.state != ParticipantState.PREEMPTING
+                for p in self._participants.values()
+            )
+            spare = len(victims) if standing else max(0, len(victims) - 1)
+            chosen: List[Participant] = []
+            for victim in victims[:spare]:
+                if total + want <= ceiling:
+                    break
+                # `total` is a projection; a parked victim counts as freed only once its erase
+                # lands.
+                if victim.state not in _PARKED_ON_A_TOOL:
+                    total -= victim.tokens
+                victim.consecutive_preemptions += 1
+                victim.preempted_from = victim.state
+                victim.state = ParticipantState.PREEMPTING
+                self._replaced_by.pop(victim.gen_id, None)
+                victim.preempt_chosen_at = time.monotonic()
+                victim.preempt_event.set()
+                chosen.append(victim)
+            if chosen:
+                # A sweep that took others and left this one running broke its run of losses: the
+                # count is "in a row", so it starts again.
+                for passed_over in victims:
+                    if passed_over not in chosen:
+                        passed_over.consecutive_preemptions = 0
+            return chosen
+
+    def snapshot(self) -> PreemptionSnapshot:
+        with self._lock:
+            states = [p.state for p in self._participants.values()]
+            return PreemptionSnapshot(
+                key = self.key,
+                budget = self._budget,
+                buffer = self._buffer_locked(),
+                committed = self._committed_locked(),
+                decoding = states.count(ParticipantState.DECODING),
+                paused = states.count(ParticipantState.PAUSED),
+                parked = states.count(ParticipantState.PARKED_ON_TOOL),
+                slots = max(1, self._slots or 1),
+                tools_running = states.count(ParticipantState.TOOLS_RUNNING),
+                prefilling = self._pending_prefill_locked(),
+                mode = PREEMPT_MODE_SERVER if self._server_mode else PREEMPT_MODE_STUDIO,
+                exact = self._exact,
+                holders = sum(1 for p in self._participants.values() if p.holds_kv),
+            )
+
+
+class ControllerPreemptionPolicy:
+    """Binds one generation to the controller, satisfying ``PreemptionPolicy``. ``await_resume`` is
+    bounded twice, by the caller's timeout and by refusing to wait once the room is back. ``loop`` is
+    why this is a separate class: the stream funnels are synchronous and run on a worker thread while
+    ``resume_async`` awaits the queue's slot acquire, so the two are joined with run_coroutine_threadsafe.
+    """
+
+    __slots__ = ("_controller", "_gen_id", "_signal", "_resumes", "_stalled", "_loop")
+
+    def __init__(
+        self,
+        controller: "PreemptionController",
+        gen_id: str,
+        signal: PreemptSignal,
+        *,
+        loop = None,
+    ):
+        self._controller = controller
+        self._gen_id = gen_id
+        self._signal = signal
+        self._resumes = 0
+        self._stalled = 0
+        self._loop = loop
+
+    def should_preempt(self) -> bool:
+        return self._signal.is_set()
+
+    def on_preempted(self, checkpoint: StreamCheckpoint) -> None:
+        """The upstream response is closed, so the tokens may go back. Only once nothing can still be
+        decoding against the lease, which the stream side guarantees by calling this after teardown."""
+        self._resumes = checkpoint.resumes
+        self._stalled = next_stall_count(self._stalled, checkpoint.charged_tokens)
+        _log.info(
+            "llama preemption paused: gen_id=%s resumes=%s kept_chars=%s kept=%s charged=%s",
+            self._gen_id,
+            checkpoint.resumes,
+            checkpoint.kept_chars(),
+            "prose"
+            if checkpoint.has_resume_point()
+            else ("thought" if checkpoint.has_reasoning_resume_point() else "nothing"),
+            checkpoint.charged_tokens,
+        )
+        participant = self._controller.participant(self._gen_id)
+        if participant is None:
+            return
+        chosen_at = participant.preempt_chosen_at
+        if chosen_at:
+            _log.info(
+                "llama preemption evict-latency: gen_id=%s ms=%.1f tokens=%s",
+                self._gen_id,
+                (time.monotonic() - chosen_at) * 1000.0,
+                participant.tokens,
+            )
+            participant.preempt_chosen_at = 0.0
+        # Before the state change, so a sweep between the two sees the larger figure.
+        if checkpoint.charged_tokens and (
+            checkpoint.has_resume_point() or checkpoint.has_reasoning_resume_point()
+        ):
+            self._controller.note_replayed(self._gen_id, checkpoint.charged_tokens)
+        self._controller.set_state(self._gen_id, ParticipantState.PAUSED)
+        lease = participant.lease
+        if lease is not None:
+            try:
+                lease.preempt()
+            except Exception:
+                pass
+
+    def await_resume(
+        self,
+        timeout: Optional[float] = None,
+        *,
+        cancel_event = None,
+    ) -> bool:
+        # None means "caller stated no preference", NOT "wait forever".
+        if timeout is None:
+            timeout = DEFAULT_RESUME_WAIT_TIMEOUT_S
+        if resumes_stalled(self._stalled):
+            _log.warning(
+                "llama preemption resume-stalled: gen_id=%s resumes=%s stalled=%s",
+                self._gen_id,
+                self._resumes,
+                self._stalled,
+            )
+            return False
+        participant = self._controller.participant(self._gen_id)
+        if participant is None:
+            return False
+        lease = participant.lease
+        if lease is None:
+            return True
+        if self._loop is None:
+            return False
+        # The replay, not the charge: the output allowance is not cells the resume brings back.
+        want = max(0, int(participant.replay_tokens() or 0))
+        if self._controller.cannot_ever_fit(want):
+            # Bigger than the cache: end with `length` (continuable) rather than hang.
+            _log.info(
+                "llama preemption too-large: gen_id=%s want=%s (exceeds the cache; "
+                "finishing the turn)",
+                self._gen_id,
+                want,
+            )
+            return False
+        if self._controller.outgrew_the_shared_ceiling(want):
+            _log.info(
+                "llama preemption needs-the-cache: gen_id=%s want=%s (past the shared "
+                "ceiling; waiting for the cache to itself)",
+                self._gen_id,
+                want,
+            )
+        _log.info("llama preemption awaiting-room: gen_id=%s want=%s", self._gen_id, want)
+        # Wait for real room, or the next sweep evicts the resume again. The clock measures STALL;
+        # `hard_deadline` caps churn.
+        started = time.monotonic()
+        deadline = started + timeout
+        hard_deadline = started + timeout * MAX_RESUME_WAIT_MULTIPLE
+        last = self._controller.progress_signature()
+        self._controller.begin_resume(self._gen_id, want)
+        try:
+            self._controller.refresh_residency()
+            # try_grant_resume, not room_for: the room must be BOOKED at the instant it is found,
+            # or two waiters both find the same space and both take it.
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    # Stop pressed during the pause: there is nothing to resume, and the worker
+                    # must not sit here waiting for room for a chat nobody is reading.
+                    _log.info("llama preemption cancelled-while-paused: gen_id=%s", self._gen_id)
+                    return False
+                if self._controller.try_grant_resume(self._gen_id, want):
+                    break
+                self._controller.refresh_residency()
+                now = time.monotonic()
+                current = self._controller.progress_signature()
+                # A holder parked on a tool moves nothing, so the signature freezes while a web
+                # search runs.
+                _snap = self._controller.snapshot()
+                if _snap.parked > 0 or getattr(_snap, "tools_running", 0) > 0:
+                    deadline = now + timeout
+                if current != last:
+                    deadline = now + timeout
+                    last = current
+                if now >= deadline:
+                    _log.info(
+                        "llama preemption gave-up: gen_id=%s want=%s (no progress for %ss)",
+                        self._gen_id,
+                        want,
+                        timeout,
+                    )
+                    return False
+                if now >= hard_deadline:
+                    _log.info(
+                        "llama preemption gave-up: gen_id=%s want=%s (still unserved after "
+                        "%ss of a moving cache)",
+                        self._gen_id,
+                        want,
+                        round(now - started, 1),
+                    )
+                    return False
+                time.sleep(0.1)
+        finally:
+            self._controller.end_resume(self._gen_id)
+        try:
+            try:
+                coro = lease.resume_async(
+                    want,
+                    timeout_s = timeout,
+                    cancel_event = cancel_event,
+                    progress = self._controller.progress_signature,
+                    hard_deadline_at = hard_deadline,
+                )
+            except TypeError:
+                try:
+                    coro = lease.resume_async(
+                        want,
+                        timeout_s = timeout,
+                        cancel_event = cancel_event,
+                        progress = self._controller.progress_signature,
+                    )
+                except TypeError:
+                    coro = lease.resume_async(want, timeout_s = timeout, cancel_event = cancel_event)
+            future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+            # Backstop for a loop that never runs the coroutine; cancelled on giving up, or it held
+            # its slot place for hours.
+            try:
+                got = bool(future.result(timeout = max(0.0, hard_deadline - time.monotonic()) + 5.0))
+            except BaseException:
+                future.cancel()
+                raise
+            if not got:
+                # The grant booked room nothing will use, so hand it back.
+                self._controller.note_resume_failed(self._gen_id)
+            _log.info(
+                "llama preemption %s: gen_id=%s want=%s",
+                "resumed" if got else "gave-up",
+                self._gen_id,
+                want,
+            )
+            return got
+        except Exception as exc:
+            self._controller.note_resume_failed(self._gen_id)
+            _log.warning(
+                "llama preemption resume-failed: gen_id=%s want=%s error=%s",
+                self._gen_id,
+                want,
+                exc,
+            )
+            return False
+
+    def on_resumed(self) -> None:
+        self._controller.note_resumed(self._gen_id)
+
+    def restart(self) -> None:
+        """The next of `n` choices: the same lease, a fresh count of resumes and the ledger
+        back to what admission charged, since the last choice's partials are not replayed."""
+        self._resumes = 0
+        self._stalled = 0
+        self._controller.restart(self._gen_id)
+
+    def on_server_parked(self) -> None:
+        """llama-server parked this slot in host RAM. Nothing is handed back: the server holds
+        the sequence and will restore it without asking."""
+        participant = self._controller.participant(self._gen_id)
+        _log.info(
+            "llama preemption server-parked: gen_id=%s tokens=%s",
+            self._gen_id,
+            participant.tokens if participant is not None else None,
+        )
+        self._controller.set_state(self._gen_id, ParticipantState.PAUSED)
+
+    def on_server_resumed(self) -> None:
+        _log.info("llama preemption server-resumed: gen_id=%s", self._gen_id)
+        self._controller.note_resumed(self._gen_id)
+
+    def on_declined(self) -> None:
+        """This generation was chosen to pause and is not going to. Called instead of the pause
+        handshake, never beside it: `on_preempted` hands the lease back and this stream keeps it."""
+        _log.info("llama preemption declined: gen_id=%s (finishing instead)", self._gen_id)
+        self._controller.note_declined(self._gen_id)
+
+
+def _slot_decoded(slot: dict) -> int:
+    """Tokens this slot has generated so far, from `/slots`. ``next_token`` is a one-element LIST in
+    some builds and a bare object in others; anything else answers zero rather than raising."""
+    raw = slot.get("next_token")
+    if isinstance(raw, list):
+        raw = raw[0] if raw else None
+    if not isinstance(raw, dict):
+        return 0
+    try:
+        return max(0, int(raw.get("n_decoded") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def read_slot_occupancy(fetch: Callable[[], Optional[list]]) -> Optional[dict]:
+    """Tokens actually resident in the cache, INCLUDING slots that are idle.
+
+    llama.cpp keeps a slot's prompt cache after its request finishes and neither the admission ledger
+    nor /metrics sees that residue: ``purging slot 1 with 16383 tokens`` while four chats ran against
+    a ledger that believed the cache empty. None from ``fetch`` means "cannot say", never "empty".
+    """
+    slots = fetch()
+    if not slots:
+        return None
+    resident = 0
+    idle_tokens = 0
+    idle = []
+    idle_task = {}
+    for slot in slots:
+        # A parked slot reports its sequence but holds no cells.
+        if slot.get("is_preempted"):
+            continue
+        # Separate branches: the source field decides whether decoded tokens are added
+        # (`n_prompt_tokens_cache` was 0 in 128 samples).
+        tokens = 0
+        counts_generated = False
+        try:
+            raw_total = int(slot.get("n_prompt_tokens") or 0)
+        except (TypeError, ValueError):
+            raw_total = 0
+        try:
+            raw_cache = int(slot.get("n_prompt_tokens_cache") or 0)
+        except (TypeError, ValueError):
+            raw_cache = 0
+        if raw_total > 0:
+            tokens = raw_total
+            counts_generated = True
+        elif raw_cache > 0:
+            tokens = raw_cache
+        # `/slots` reports the prompt only; counted twice it scored 28238 cells in a 16384 cache.
+        if slot.get("is_processing") and not counts_generated:
+            tokens += _slot_decoded(slot)
+        # Idle slots count too: llama.cpp recycles them only after a decode fails.
+        resident += max(0, tokens)
+        if not slot.get("is_processing") and tokens > 0:
+            idle_tokens += max(0, tokens)
+            idle.append((slot.get("id"), max(0, tokens)))
+            idle_task[slot.get("id")] = slot.get("id_task")
+    idle.sort(key = lambda pair: -pair[1])
+    return {
+        "resident": resident,
+        "idle_tokens": idle_tokens,
+        "idle": idle,
+        "idle_task": idle_task,
+        "slots": len(slots),
+    }
+
+
+def _slot_incarnation(slots: Optional[list], slot_id) -> Optional[tuple]:
+    """``(is_processing, id_task)`` for one slot of a ``GET /slots`` reading, None if absent."""
+    for slot in slots or ():
+        if isinstance(slot, dict) and slot.get("id") == slot_id:
+            return bool(slot.get("is_processing")), slot.get("id_task")
+    return None
+
+
+def reclaim_idle_slots(
+    occupancy: Optional[dict],
+    erase: Callable[[int], int],
+    *,
+    needed: int,
+    recheck: Optional[Callable[[], Optional[list]]] = None,
+    ambiguous: Optional[list] = None,
+) -> int:
+    """Free dead residue before asking a live chat to stop. llama.cpp does this itself in
+    ``try_clear_idle_slots``, but only once the decode has ALREADY failed. Returns tokens freed.
+    ``recheck`` re-reads ``GET /slots``: llama-server defers an erase aimed at a processing slot,
+    so each erase goes only to a slot still idle on the task the reading saw, and a slot on
+    another task afterwards is added to ``ambiguous``, the erase having maybe taken its cache."""
+    if not occupancy or needed <= 0:
+        return 0
+    seen_task = occupancy.get("idle_task") or {}
+    freed = 0
+    for slot_id, tokens in occupancy.get("idle") or ():
+        if freed >= needed:
+            break
+        if slot_id is None:
+            continue
+        if recheck is not None:
+            now = _slot_incarnation(recheck(), slot_id)
+            if now is None or now[0] or now[1] != seen_task.get(slot_id, now[1]):
+                continue
+        try:
+            freed += max(0, int(erase(slot_id) or 0))
+        except Exception:
+            continue
+        if recheck is not None and ambiguous is not None:
+            after = _slot_incarnation(recheck(), slot_id)
+            if after is None or after[0] or after[1] != seen_task.get(slot_id, after[1]):
+                ambiguous.append(slot_id)
+    return freed
+
+
+_CONTROLLERS_LOCK = threading.Lock()
+_CONTROLLERS: Dict[str, PreemptionController] = {}
+
+
+def get_preemption_controller(key: str) -> PreemptionController:
+    with _CONTROLLERS_LOCK:
+        controller = _CONTROLLERS.get(key)
+        if controller is None:
+            controller = PreemptionController(key)
+            _CONTROLLERS[key] = controller
+            # base_url changes every load. is_idle takes each controller's lock, so the list is
+            # built first.
+            stale = [k for k, c in _CONTROLLERS.items() if k != key and c.is_idle()]
+            for k in stale:
+                del _CONTROLLERS[k]
+        return controller
+
+
+def reset_preemption_controllers() -> None:
+    with _CONTROLLERS_LOCK:
+        _CONTROLLERS.clear()

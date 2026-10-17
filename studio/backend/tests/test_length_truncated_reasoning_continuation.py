@@ -409,6 +409,45 @@ def test_the_final_pass_continues_a_reasoning_only_stop(monkeypatch):
     assert "Here is the answer." in "".join(_texts(events, "content"))
 
 
+def test_the_final_pass_replays_the_thought_with_the_prose_it_cut_off(monkeypatch):
+    """A reasoning model that thought, answered, and hit the window mid-answer continues
+    from both: replayed as prose alone, the next attempt is conditioned on a prefix that
+    never produced the thought the user has already read. Only what is new goes back."""
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [
+                _sse({"reasoning_content": "Plan the bird first. "}),
+                _sse({"content": "The bird "}),
+                _finish("length"),
+                _done(),
+            ],
+            [
+                _sse({"reasoning_content": "Then the pipes. "}),
+                _sse({"content": "flaps, "}),
+                _finish("length"),
+                _done(),
+            ],
+            [_sse({"content": "and the pipes scroll."}), _finish("stop"), _done()],
+        ],
+        payloads,
+    )
+
+    events = _run_no_tools(backend)
+
+    assert len(payloads) == 3
+    first = payloads[1]["messages"][-1]
+    assert first["role"] == "assistant"
+    assert first["content"] == "The bird "
+    assert first["reasoning_content"] == "Plan the bird first. "
+    second = payloads[2]["messages"][-1]
+    assert second["content"] == "The bird flaps, "
+    assert second["reasoning_content"] == "Plan the bird first. Then the pipes. "
+    assert "and the pipes scroll." in "".join(_texts(events, "content"))
+
+
 def test_the_final_pass_says_so_when_thinking_never_converges(monkeypatch):
     """Giving up silently is the original defect. The user needs something to act on."""
 

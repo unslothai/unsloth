@@ -501,7 +501,8 @@ def test_two_distinct_calls_at_the_same_index_are_not_merged(executed):
     )
     _run(transport)
 
-    assert [call["arguments"] for call in executed] == [{"query": "one"}, {"query": "two"}]
+    # Sorted: calls run together now; the transcript order is asserted separately.
+    assert sorted(call["arguments"]["query"] for call in executed) == ["one", "two"]
 
 
 def test_same_index_merge_never_forwards_raw_garbage(executed):
@@ -537,7 +538,8 @@ def test_negative_index_does_not_reorder_calls(executed):
     )
     _run(transport)
 
-    assert [call["arguments"]["query"] for call in executed] == ["first", "second"]
+    # Sorted: calls run together now; the transcript order is asserted separately.
+    assert sorted(call["arguments"]["query"] for call in executed) == ["first", "second"]
 
 
 def test_ids_repeated_across_turns_stay_unique_in_the_replay(executed):

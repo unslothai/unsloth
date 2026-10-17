@@ -70,6 +70,13 @@ for _up in Path(__file__).resolve().parents:
             sys.path.insert(0, str(_repo_shared))
         break
 
+# Registered, NOT applied: preemption is opt-in, and a module that tests it says so with
+# `pytestmark = pytest.mark.usefixtures("preemption_opted_in")`.
+from . import preempt_fakes  # noqa: E402
+
+preemption_opted_in = preempt_fakes.preemption_opted_in
+share_pricing = preempt_fakes.share_pricing
+
 # Let the diffusion patch backend lazily import unsloth_zoo on a CPU-only test host: unsloth_zoo runs accelerator
 # detection at import and raises without a GPU unless this is set. setdefault so an explicit override wins.
 os.environ.setdefault("UNSLOTH_ALLOW_CPU", "1")
@@ -1285,6 +1292,24 @@ def _process_shutdown_latch_is_clear():
         yield
     finally:
         _reopen()
+
+
+@pytest.fixture(autouse = True)
+def _admitted_inference_count_is_balanced():
+    """Restore the admitted-inference tally around every test."""
+    mod = sys.modules.get("core.inference.llama_keepwarm")
+
+    def _restore(to):
+        live = sys.modules.get("core.inference.llama_keepwarm")
+        if live is not None:
+            with live._lock:
+                live._admitted_inference = to
+
+    before = 0 if mod is None else mod._admitted_inference
+    try:
+        yield
+    finally:
+        _restore(before)
 
 
 @pytest.fixture(autouse = True)
