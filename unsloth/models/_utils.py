@@ -8120,8 +8120,30 @@ def planned_prefetch_depth(device_map_planner_kwargs):
 
 def block_swap_shaped(model):
     """PEFT wraps MoE expert weights by their shape, which reads as empty on a layer offload_layers evicted."""
-    shaped = getattr(getattr(model, "_unsloth_block_swap", None), "shaped", None)
-    return shaped() if shaped is not None else contextlib.nullcontext()
+    swapper = getattr(model, "_unsloth_block_swap", None)
+    if swapper is None:
+        return contextlib.nullcontext()
+    shaped = getattr(swapper, "shaped", None)
+    return shaped() if shaped is not None else _block_swap_shaped_fallback(swapper)
+
+
+@contextlib.contextmanager
+def _block_swap_shaped_fallback(swapper):
+    # unsloth_zoo before BlockSwap.shaped: the same zero-stride placeholders over its block fields.
+    held = []
+    try:
+        for b in swapper.blocks:
+            if not b.resident:
+                for p, e, sig in zip(b.params, b.empties, b.sig):
+                    held.append((p, e))
+                    p.data = e.new_zeros(()).expand(sig[0])
+    except AttributeError:
+        pass
+    try:
+        yield
+    finally:
+        for p, e in held:
+            p.data = e
 
 
 def finish_block_swap_load(
