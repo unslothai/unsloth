@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import {
   Select,
   SelectContent,
@@ -17,6 +18,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactElement,
   useEffect,
+  useId,
   useState,
   useSyncExternalStore,
 } from "react";
@@ -61,6 +63,7 @@ export function McpAccessSection({
   apiKey?: string | null;
 }): ReactElement | null {
   const t = useT();
+  const pillId = useId();
   const [settings, setSettings] = useState<McpAccessSettings | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -225,12 +228,15 @@ export function McpAccessSection({
                           onClick={() => setStoredOs(option.os)}
                           aria-pressed={os === option.os}
                           className={cn(
-                            "inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                            "relative inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                             os === option.os
-                              ? "hub-tab-toggle-pill text-foreground"
+                              ? "text-foreground"
                               : "text-muted-foreground hover:text-foreground",
                           )}
                         >
+                          {os === option.os && (
+                            <SegmentedPill group={`${pillId}-shell`} />
+                          )}
                           {t(option.labelKey)}
                         </button>
                       ))}
