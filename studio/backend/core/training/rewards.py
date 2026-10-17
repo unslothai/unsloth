@@ -140,9 +140,7 @@ def _match(
         return None
 
 
-_NO_REGEX_MODULE = (
-    "Regex rules need the 'regex' package, which bounds each match; it is missing from this install."
-)
+_NO_REGEX_MODULE = "Regex rules need the 'regex' package, which bounds each match; it is missing from this install."
 
 
 def _compile(pattern: Any) -> re.Pattern:
