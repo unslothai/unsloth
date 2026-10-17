@@ -729,6 +729,15 @@ jobs:
         timeout-minutes: 10
         env:
           NOTEBOOK: ${{ matrix.notebook }}
+          # Run the install cell the way Colab does (checked on a live
+          # release-colab-external-images_20261014 runtime). The notebooks pick their
+          # Colab branch on any environment key containing "COLAB_", and Colab sets
+          # UV_SYSTEM_PYTHON so their `!uv pip install` lines target the system
+          # interpreter. Without both, the cell takes the non-Colab branch and uv stops
+          # with "No virtual environment found". The marker's name matches none of the
+          # COLAB_* keys Unsloth itself reads.
+          COLAB_SMOKE_SHAPED: '1'
+          UV_SYSTEM_PYTHON: 'true'
         run: |
           set -euo pipefail
           # Convert THIS notebook only, and take whatever file the converter
