@@ -97,15 +97,24 @@ docker run -d -p 8000:8000 -p 8888:8888 -v unsloth-workspace:/workspace unsloth/
 docker run --rm -e UNSLOTH_ALLOW_CPU=1 unsloth/unsloth:core python -c "import unsloth"
 ```
 
+On ARM64 hosts without an NVIDIA GPU (Ampere, Graviton, Raspberry Pi 5), `cpu-arm64` is a much smaller Unsloth Studio image with no CUDA, PyTorch or JupyterLab, for GGUF chat and Data Recipes:
+
+```bash
+docker run -d --name unsloth-cpu -p 8000:8000 -e UNSLOTH_STUDIO_PASSWORD="mypassword" unsloth/unsloth:cpu-arm64
+```
+
+It runs as UID 10001 and keeps Unsloth Studio's data inside the container, so `docker rm` discards accounts and chats.
+
 ## Tags
 
 | Tag | Contents | Use it for |
 |---|---|---|
 | `latest`, `studio` | Unsloth Studio web UI + JupyterLab + notebooks + key-only SSH | Most users. Train and chat in the browser. |
 | `core` | Training stack + JupyterLab + notebooks, no Unsloth Studio | Notebooks, scripts, CI, slimmer pulls. |
-| `nightly-<YYYY.MM.DD>`, `core-nightly-<YYYY.MM.DD>` | The same two images, one immutable pin per daily rebuild, kept 60 days | Reproducible runs. |
+| `cpu-arm64` | Unsloth Studio only, no CUDA or PyTorch, `linux/arm64` only | ARM64 hosts without an NVIDIA GPU. GGUF chat, Data Recipes. |
+| `nightly-<YYYY.MM.DD>`, `core-nightly-<YYYY.MM.DD>`, `cpu-arm64-nightly-<YYYY.MM.DD>` | The same images, one immutable pin per daily rebuild, kept 60 days | Reproducible runs. |
 
-`latest` and `core` are rebuilt daily, not on every merge to `main`. Both are multi-arch: `linux/amd64` and `linux/arm64` (GH200, DGX Spark).
+`latest` and `core` are rebuilt daily, not on every merge to `main`. Both are multi-arch: `linux/amd64` and `linux/arm64` (GH200, DGX Spark); `cpu-arm64` is rebuilt with them.
 
 ## Supported GPUs
 
@@ -119,8 +128,8 @@ Turing has no bfloat16; Unsloth falls back to float16 there. These images are CU
 
 | Port | Service | Image |
 |---|---|---|
-| 8000 | Unsloth Studio (`UNSLOTH_STUDIO_PORT`) | `latest` |
-| 8888 | JupyterLab | both |
+| 8000 | Unsloth Studio (`UNSLOTH_STUDIO_PORT`) | `latest`, `cpu-arm64` |
+| 8888 | JupyterLab | `latest`, `core` |
 | 22 | SSH, key only, off unless `SSH_KEY` or `PUBLIC_KEY` is set | `latest` |
 
 ## Environment variables

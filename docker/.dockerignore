@@ -2,6 +2,7 @@
 !Dockerfile
 !Dockerfile.rocm
 !Dockerfile.studio-rocm
+!Dockerfile.cpu-arm64
 !entrypoint.sh
 !entrypoint-rocm.sh
 !smoke_test.py
