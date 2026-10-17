@@ -2523,6 +2523,32 @@ def _get_total_transformer_layers(model):
     return None
 
 
+def _regex_targets_as_names(
+    model,
+    target_modules,
+    layers_to_transform,
+    layers_pattern = None,
+):
+    """PEFT rejects layers_to_transform with a str target_modules, so a regex becomes the module names it matches in those layers."""
+    if layers_to_transform is None or not isinstance(target_modules, str):
+        return target_modules
+    if target_modules == "all-linear":
+        return target_modules
+    from peft import LoraConfig
+    from peft.tuners.tuners_utils import check_target_module_exists
+
+    names = [
+        name for name, _ in model.named_modules() if name and re.fullmatch(target_modules, name)
+    ]
+    # PEFT applies the layer index only to a leaf-name list, never to a full name, so filter with its own check.
+    layer_config = LoraConfig(
+        target_modules = sorted({name.rsplit(".", 1)[-1] for name in names}),
+        layers_to_transform = layers_to_transform,
+        layers_pattern = layers_pattern,
+    )
+    return [name for name in names if check_target_module_exists(layer_config, name)]
+
+
 def _architecture_skip_modules(model_types):
     """Extra modules kept out of bitsandbytes; shared by the device-map planner and the load."""
     model_types = model_types or []
@@ -4836,6 +4862,9 @@ class FastBaseModel:
             if _total_layers is not None and _total_layers > 0:
                 n = max(1, min(int(finetune_last_n_layers), _total_layers))
                 layers_to_transform = list(range(_total_layers - n, _total_layers))
+        target_modules = _regex_targets_as_names(
+            model, target_modules, layers_to_transform, layers_pattern
+        )
 
         validate_init_target_parameters(init_lora_weights, target_parameters)
 
