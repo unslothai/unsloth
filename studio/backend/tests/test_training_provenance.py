@@ -1647,3 +1647,43 @@ def test_provenance_continues_after_failed_finalization(tmp_path):
     assert backend._run_finalized is False
     assert backend._db_config[RESOURCE_PROVENANCE_KEY]["status"] == "complete"
     update.assert_called_once()
+
+
+def test_resume_refuses_a_different_training_objective(tmp_path):
+    from fastapi import HTTPException
+
+    from models.training import TrainingStartRequest
+
+    route = _load_training_route()
+    actual = _shared_setup_5(tmp_path)
+    dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
+    source_config = {
+        "model_name": "org/selected",
+        "actual_model_repo_id": "org/actual-4bit",
+        "model_snapshot_path": str(actual),
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": str(dataset),
+        "training_type": "LoRA/QLoRA",
+        "format_type": "alpaca",
+        "load_in_4bit": True,
+        "objective": "dpo",
+        RESOURCE_PROVENANCE_KEY: {
+            "version": 1,
+            "status": "complete",
+            "model_status": "attested",
+            "dataset_status": "attested",
+            "reasons": [],
+        },
+    }
+    request = TrainingStartRequest(
+        model_name = "org/selected",
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+        hf_dataset = "org/dataset",
+        objective = "orpo",
+    )
+    with pytest.raises(HTTPException) as exc:
+        route._prepare_resume_resource_provenance(
+            request, {"model_name": "org/selected", "config_json": source_config}
+        )
+    assert exc.value.status_code == 409 and "objective" in exc.value.detail

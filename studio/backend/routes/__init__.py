@@ -21,6 +21,7 @@ from routes.providers import router as providers_router
 from routes.openai_codex_auth import router as openai_codex_auth_router
 from routes.mcp_servers import router as mcp_servers_router
 from routes.skills import router as skills_router
+from routes.rewards import router as rewards_router
 from routes.rag import router as rag_router
 from routes.research_runs import router as research_runs_router
 from routes.chat_generation_runs import router as chat_generation_runs_router
@@ -44,6 +45,7 @@ __all__ = [
     "openai_codex_auth_router",
     "mcp_servers_router",
     "skills_router",
+    "rewards_router",
     "rag_router",
     "research_runs_router",
     "chat_generation_runs_router",

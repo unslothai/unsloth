@@ -9,6 +9,7 @@ import {
 import { hfApiToken, ownerOf, useHfTokenStore } from "@/features/hub";
 import {
   TRAINING_METHOD_META,
+  effectiveTrainingObjective,
   isLocalTrainingModelSelection,
   useTrainingConfigStore,
   useTrainingReadiness,
@@ -111,7 +112,10 @@ function ResourceNoticeRow({
               <HugeiconsIcon icon={InformationCircleIcon} className="size-3" />
             </button>
           </TooltipTrigger>
-          <TooltipContent side="top" className="max-w-[calc(260px*var(--ui-space-scale,1))] leading-relaxed">
+          <TooltipContent
+            side="top"
+            className="max-w-[calc(260px*var(--ui-space-scale,1))] leading-relaxed"
+          >
             {description}
           </TooltipContent>
         </Tooltip>
@@ -327,10 +331,8 @@ function datasetPreview({
 
 export function RunPreviewCard({
   paramMode,
-  startCta,
 }: {
   paramMode: ParamMode;
-  startCta: ReactElement;
 }): ReactElement {
   const t = useT();
   const locale = useLocale();
@@ -345,6 +347,7 @@ export function RunPreviewCard({
     modelLocalPath,
     modelFormat,
     trainingMethod,
+    trainingObjective,
     datasetSource,
     dataset,
     uploadedFile,
@@ -364,6 +367,7 @@ export function RunPreviewCard({
       modelLocalPath: s.modelLocalPath,
       modelFormat: s.modelFormat,
       trainingMethod: s.trainingMethod,
+      trainingObjective: effectiveTrainingObjective(s),
       datasetSource: s.datasetSource,
       dataset: s.dataset,
       uploadedFile: s.uploadedFile,
@@ -482,6 +486,14 @@ export function RunPreviewCard({
             </>
           }
         />
+        {trainingObjective !== "sft" &&
+          trainingMethod !== "cpt" &&
+          !isDecision && (
+            <MetaRow
+              label={t("rl.objective.label")}
+              value={t(`rl.objective.${trainingObjective}`)}
+            />
+          )}
         <MetaRow label={t("studio.preview.length")} value={lengthLabel} />
         <MetaRow
           label={t("studio.preview.batch")}
@@ -543,9 +555,6 @@ export function RunPreviewCard({
 
       <TransformersUpgradeNotice />
 
-      <div className="-mx-6 h-px bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]" />
-
-      <div className="-mt-2">{startCta}</div>
     </aside>
   );
 }
