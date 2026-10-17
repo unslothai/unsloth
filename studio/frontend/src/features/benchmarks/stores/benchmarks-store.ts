@@ -12,6 +12,7 @@ import { applyVariantToChat } from "../api/apply-to-chat";
 import { BenchSetupError, runBenchmark } from "../api/bench-runner";
 import {
   type BenchRunSummary,
+  BenchLeaseHeldError,
   deleteBenchRun,
   getBenchRun,
   listBenchRuns,
@@ -233,8 +234,19 @@ export const useBenchmarksStore = create<BenchmarksState>()(
           set({ error: err instanceof Error ? err.message : String(err) });
           return;
         }
+        // A missed renewal is retried; a lease another runner now holds means its loads would be
+        // charted under this run's rows, so stop.
+        // Bound to this run: a renewal still in flight after it ends must not stop the next one.
+        let leaseLost: string | null = null;
+        const runController = new AbortController();
         const renew = window.setInterval(
-          () => void takeBenchLease(holder).catch(() => undefined),
+          () =>
+            void takeBenchLease(holder).catch((err) => {
+              if (!(err instanceof BenchLeaseHeldError) || leaseLost) return;
+              if (controller !== runController) return;
+              leaseLost = `This run stopped: ${err.message}`;
+              runController.abort();
+            }),
           15_000,
         );
         const effective: BenchConfig = {
@@ -245,7 +257,7 @@ export const useBenchmarksStore = create<BenchmarksState>()(
               ? config.baseline
               : null,
         };
-        controller = new AbortController();
+        controller = runController;
         const placeholder: BenchRun = {
           id: "pending",
           createdAt: Date.now(),
@@ -297,8 +309,9 @@ export const useBenchmarksStore = create<BenchmarksState>()(
                 set({
                   error: `The run finished but your chat model could not be restored: ${message}`,
                 }),
+              ownsServer: () => leaseLost === null,
             },
-            controller.signal,
+            runController.signal,
           );
           // Keep the run when it measured rows, or when it only produced failure/skip
           // diagnostics, so those reasons survive in History. A bare cancel is dropped.
@@ -339,6 +352,7 @@ export const useBenchmarksStore = create<BenchmarksState>()(
         } finally {
           controller = null;
           window.clearInterval(renew);
+          if (leaseLost) set({ error: leaseLost });
           void releaseBenchLease(holder);
         }
       },

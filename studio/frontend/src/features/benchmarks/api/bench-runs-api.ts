@@ -65,6 +65,9 @@ export async function deleteBenchRun(id: string): Promise<void> {
 }
 
 /** Claim the GPU for a run; a run in another tab or on another device rejects with its reason. */
+/** Another runner holds the lease: renewing a held one means this run lost the server. */
+export class BenchLeaseHeldError extends Error {}
+
 export async function takeBenchLease(
   holder: string,
   kind: "sweep" | "llama-bench" | "evals" = "sweep",
@@ -76,7 +79,7 @@ export async function takeBenchLease(
   });
   if (res.status === 409) {
     const body = await res.json().catch(() => null);
-    throw new Error(
+    throw new BenchLeaseHeldError(
       body?.detail?.message ?? "Another benchmark is already running.",
     );
   }
