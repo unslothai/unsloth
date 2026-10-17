@@ -99,6 +99,9 @@ def test_a_completed_job_returns_its_thumbnail_and_a_link_never_the_mp4(monkeypa
         "id": "video-1",
         "status": "completed",
         "progress_percent": 100.0,
+        "poll_after_s": None,
+        "training": None,
+        "load": None,
         "error": None,
         "video": {
             "url": "http://192.168.1.20:8888/v1/videos/video-1/content",

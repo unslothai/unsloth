@@ -5,10 +5,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 from urllib.parse import quote
 
 from fastmcp import Context
+from pydantic import Field
 
 from studio_mcp import loading
 from studio_mcp.caller import current_caller
@@ -116,15 +117,54 @@ async def load_model(
     max_seq_length: Optional[int] = None,
     load_in_4bit: bool = True,
     hf_token: Optional[str] = None,
+    wait_s: Annotated[
+        Optional[int],
+        Field(
+            description = (
+                "Seconds to wait for the load, 0 to 240 (unset: 240). "
+                "Raise the client's tool timeout above 240 s, or pass 50 under Codex's 60 s default. "
+                "The load keeps running in Unsloth Studio either way."
+            )
+        ),
+    ] = None,
     ctx: Optional[Context] = None,
 ) -> LoadResult:
-    """Load a model into Unsloth Studio, downloading it first if needed, and wait until it is ready; progress is reported while it loads. ``kind`` "llm" covers chat, vision, embedding and audio models, and the "tts" and "audio" kinds list_models reports load the same way; "image" and "video" load the generation models and "stt" a speech-to-text model (downloaded first when needed). ``model`` is an id from list_models or a Hugging Face repo id; ``variant`` picks a GGUF quantization such as Q4_K_M. ``max_seq_length`` 0 or unset lets Unsloth Studio choose the context, and ``load_in_4bit`` picks 4-bit weights (both llm only). ``hf_token`` is for gated repos. Loading may unload other models to make room, for example a chat model to fit an image model; they are listed in ``evicted``."""
+    """Load a model into Unsloth Studio, downloading it first if needed, and report progress while it loads.
+    ``kind`` "llm" covers chat, vision, embedding and audio models, and the "tts" and "audio" kinds list_models reports load the same way; "image" and "video" load the generation models and "stt" a speech-to-text model (downloaded first when needed).
+    ``model`` is an id from list_models or a Hugging Face repo id; ``variant`` picks a GGUF quantization such as Q4_K_M.
+    ``max_seq_length`` 0 or unset lets Unsloth Studio choose the context, and ``load_in_4bit`` picks 4-bit weights (both llm only).
+    ``hf_token`` is for gated repos.
+    The call waits up to ``wait_s`` seconds (at most 240); set the client's tool timeout above that, or pass wait_s=50 under Codex's 60 s default.
+    A load that is still running then returns ``loaded`` false, ``status`` "loading" and a ``job_id``: it keeps running in Unsloth Studio, and get_job(kind="load", id=job_id, wait_s=…) follows it to the same result.
+    Calling load_model again for a load still in flight follows that load instead of starting another.
+    Loading may unload other models to make room, for example a chat model to fit an image model; ``evicted`` lists them and ``evicted_slots`` gives each one's kind."""
     caller = current_caller()
+    deadline = loading.deadline_after(wait_s)
     if kind == "stt":
-        return await loading.load_stt(caller, ctx, model = model, variant = variant, hf_token = hf_token)
+
+        async def load_stt(job: loading.LoadJob, _before: Any) -> LoadResult:
+            return await loading.load_stt(
+                caller, job, model = model, variant = variant, hf_token = hf_token
+            )
+
+        return await loading.start_load(
+            caller,
+            ctx,
+            slot = kind,
+            model = model,
+            variant = variant,
+            deadline = deadline,
+            run = load_stt,
+        )
     if kind in loading.MEDIA_ROUTES:
         return await loading.load_media(
-            caller, ctx, kind = kind, model = model, variant = variant, hf_token = hf_token
+            caller,
+            ctx,
+            kind = kind,
+            model = model,
+            variant = variant,
+            hf_token = hf_token,
+            deadline = deadline,
         )
     return await loading.load_llm(
         caller,
@@ -135,6 +175,7 @@ async def load_model(
         load_in_4bit = load_in_4bit,
         hf_token = hf_token,
         kind = kind,
+        deadline = deadline,
     )
 
 
@@ -144,7 +185,7 @@ async def unload_model(kind: ModelKind = "llm", model: Optional[str] = None) -> 
         return await loading.unload_stt(current_caller(), model)
     if kind in loading.MEDIA_ROUTES:
         return await loading.unload_media(current_caller(), kind)
-    return await loading.unload_llm(current_caller(), model)
+    return await loading.unload_llm(current_caller(), model, kind)
 
 
 TOOLS = ((list_models, READ_ONLY), (load_model, WRITES), (unload_model, DESTRUCTIVE))

@@ -1,31 +1,41 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Load and unload models per kind. A load call blocks until the model is ready (a big download can take an hour), so progress comes from polling the progress routes in a sibling task and reporting it to the agent."""
+"""Load and unload models per kind. A load (a big download can take an hour) runs as a job in the job store, so a client that stops waiting never stops it: load_model waits up to ``wait_s`` while reporting progress, then returns the job id for get_job(kind="load")."""
 
 from __future__ import annotations
 
 import asyncio
 import dataclasses
+import time
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
 
+from studio_mcp import job_store
 from studio_mcp.caller import Caller
 from studio_mcp.errors import tool_error
-from studio_mcp.outputs import LoadResult, UnloadResult
-from studio_mcp.tools import as_dict, number, opt_text, route_json, strings
+from studio_mcp.outputs import EvictedSlot, LoadResult, UnloadResult
+from studio_mcp.tools import as_dict, number, opt_text, route_json, strings, try_json
 
 POLL_INTERVAL_S = 2.0
+# The longest a load_model or get_job call waits before returning (user decision); clients must allow more.
+MAX_WAIT_S = 240
+# What a caller still waiting on a job is told to wait before its next get_job without wait_s.
+POLL_AFTER_S = 10
 
 Progress = Optional[tuple[float, str]]
 
 
 async def with_progress(
-    ctx: Optional[Context], work: Awaitable[Any], poll: Callable[[], Awaitable[Progress]]
+    ctx: Optional[Context],
+    work: Awaitable[Any],
+    poll: Callable[[], Awaitable[Progress]],
+    job: Optional[LoadJob] = None,
 ) -> Any:
-    """Await ``work`` while reporting what ``poll`` sees. A failed poll is skipped, never fatal."""
+    """Await ``work`` while reporting what ``poll`` sees, to the agent and onto ``job``. A failed poll is skipped, never fatal."""
     task = asyncio.ensure_future(work)
     try:
         while True:
@@ -36,11 +46,220 @@ async def with_progress(
                 progress = await poll()
             except Exception:
                 progress = None
+            if progress is not None and job is not None:
+                job.note(*progress)
             if progress is not None and ctx is not None:
                 await ctx.report_progress(progress[0], 1.0, progress[1])
     finally:
         if not task.done():
             task.cancel()
+
+
+@dataclass
+class LoadJob(job_store.Job):
+    kind: str = "load"
+    # The slot kind asked for (llm, tts, audio, image, video) and the model as asked.
+    slot: str = "llm"
+    model: str = ""
+    variant: Optional[str] = None
+    fraction: Optional[float] = None
+    # Each distinct (fraction, phase) the load went through, for every caller following it.
+    marks: list[tuple[float, str]] = field(default_factory = list, repr = False)
+
+    def note(self, fraction: Optional[float], phase: str) -> None:
+        self.fraction, self.phase = fraction, phase
+        if fraction is not None and (not self.marks or self.marks[-1] != (fraction, phase)):
+            self.marks.append((fraction, phase))
+
+    async def report_progress(
+        self,
+        progress: float,
+        total: Optional[float] = None,
+        message: Optional[str] = None,
+    ) -> None:
+        """Stands in for the agent's Context, so load code that reports progress records it on the job."""
+        self.note(progress, message or self.phase)
+
+
+LOADS = job_store.JobStore(
+    capacity = 32, unknown = "No such load job", failure = "The load stopped unexpectedly."
+)
+
+
+def deadline_after(wait_s: Optional[float]) -> float:
+    """When a wait of ``wait_s`` seconds (None: the longest) that starts now ends, on the monotonic clock."""
+    wait = MAX_WAIT_S if wait_s is None else max(0, min(wait_s, MAX_WAIT_S))
+    return time.monotonic() + wait
+
+
+def _same(left: Optional[str], right: Optional[str]) -> bool:
+    return bool(left) and bool(right) and left.lower() == right.lower()
+
+
+def _same_id(left: str, right: str) -> bool:
+    # A GGUF is listed as repo:variant in one place and the bare repo in another.
+    return _same(left, right) or _same(left.split(":", 1)[0], right.split(":", 1)[0])
+
+
+def _in_flight(caller: Caller, slot: str, model: str, variant: Optional[str]) -> Optional[LoadJob]:
+    for job in LOADS.running(caller.account_id):
+        if (
+            job.slot == slot
+            and _same(job.model, model)
+            and (job.variant or "").lower() == (variant or "").lower()
+        ):
+            return job
+    return None
+
+
+def _early(job: LoadJob) -> LoadResult:
+    return LoadResult(
+        kind = job.slot,
+        model = job.model,
+        loaded = False,
+        status = "loading",
+        fraction = job.fraction,
+        job_id = job.job_id,
+        poll_after_s = POLL_AFTER_S,
+    )
+
+
+def outcome(job: LoadJob) -> LoadResult:
+    """A finished load's result; a failed or cancelled one raises its error."""
+    if job.status == "completed" and isinstance(job.result, LoadResult):
+        return job.result
+    if job.status == "cancelled":
+        raise ToolError(f"The load of {job.model} was cancelled")
+    raise ToolError(job.error or f"Unsloth Studio did not load {job.model}")
+
+
+async def wait_load(ctx: Optional[Context], job: LoadJob, deadline: float) -> LoadResult:
+    """Wait for ``job`` until ``deadline`` (monotonic), reporting each step it makes; never cancels it."""
+    seen = 0 if job.task is None or not job.marks else len(job.marks) - 1
+    while True:
+        if ctx is not None:
+            for fraction, phase in job.marks[seen:]:
+                await ctx.report_progress(min(fraction, 1.0), 1.0, phase)
+        seen = len(job.marks)
+        left = deadline - time.monotonic()
+        if job.finished or job.task is None or left <= 0:
+            break
+        await asyncio.wait({job.task}, timeout = min(POLL_INTERVAL_S, left))
+    return outcome(job) if job.finished else _early(job)
+
+
+async def start_load(
+    caller: Caller,
+    ctx: Optional[Context],
+    *,
+    slot: str,
+    model: str,
+    variant: Optional[str],
+    deadline: float,
+    run: Callable[[LoadJob, dict[str, list[str]]], Awaitable[LoadResult]],
+) -> LoadResult:
+    """Run a load as a job and wait for it until ``deadline``. A repeat call for a load already in flight follows that load."""
+    job = _in_flight(caller, slot, model, variant)
+    if job is None:
+        before, chat = await _resident(caller)
+        if slot not in MEDIA_ROUTES and any(
+            _same_id(name, model) for name in strings(chat.get("loading"))
+        ):
+            # A chat load Unsloth Studio is already running (started elsewhere) is followed, not started again.
+            job = LOADS.start(
+                _new_job(caller, slot, model, variant),
+                lambda job: _watch_llm(caller, slot, model, before, job),
+            )
+        # K16, after the attach: M5 waits on a download of the same model here, then M7 refuses a partial one.
+    if job is None:
+        job = _in_flight(caller, slot, model, variant) or LOADS.start(
+            _new_job(caller, slot, model, variant), lambda job: run(job, before)
+        )
+    return await wait_load(ctx, job, deadline)
+
+
+def _new_job(caller: Caller, slot: str, model: str, variant: Optional[str]) -> LoadJob:
+    return LoadJob(
+        job_id = job_store.new_id(),
+        account_id = caller.account_id,
+        slot = slot,
+        model = model,
+        variant = variant,
+    )
+
+
+# Route slot kinds as MCP kinds.
+ROUTE_KINDS = {"chat": "llm", "audio": "audio", "image": "image", "video": "video"}
+
+
+def _media_name(status: Any) -> Optional[str]:
+    if not isinstance(status, dict) or status.get("loaded") is not True:
+        return None
+    return opt_text(status.get("display_repo_id")) or opt_text(status.get("repo_id"))
+
+
+async def _resident(caller: Caller) -> tuple[dict[str, list[str]], dict]:
+    chat, image, video = await asyncio.gather(
+        try_json(caller, "/api/inference/status"),
+        try_json(caller, MEDIA_ROUTES["image"]["status"]),
+        try_json(caller, MEDIA_ROUTES["video"]["status"]),
+    )
+    slots: dict[str, list[str]] = {}
+    # A slot that could not be read is left out: this only feeds a report.
+    if isinstance(chat, dict):
+        slots["llm"] = list(
+            dict.fromkeys([*strings(chat.get("serving")), *strings(chat.get("loaded"))])
+        )
+    for kind, status in (("image", image), ("video", video)):
+        if isinstance(status, dict):
+            name = _media_name(status)
+            slots[kind] = [name] if name else []
+    return slots, as_dict(chat)
+
+
+async def resident_slots(caller: Caller) -> dict[str, list[str]]:
+    """What each slot holds now, by MCP kind: llm (chat models), image and video."""
+    return (await _resident(caller))[0]
+
+
+def _slot_rows(rows: Any) -> list[EvictedSlot]:
+    found = []
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict) and opt_text(row.get("model")):
+            kind = opt_text(row.get("kind")) or "chat"
+            found.append(EvictedSlot(kind = ROUTE_KINDS.get(kind, kind), model = row["model"]))
+    return found
+
+
+async def finish_load(
+    caller: Caller, kind: str, model: str, before: dict[str, list[str]], answer: Any, **extras: Any
+) -> LoadResult:
+    """The LoadResult for a finished load, with what it unloaded: the load answer's ``evicted_slots``, else its ``evicted`` ids placed by the ``before`` snapshot, else a before/after diff for routes that report neither."""
+    answer = as_dict(answer)
+    named = strings(answer.get("evicted"))
+    slots = _slot_rows(answer.get("evicted_slots"))
+    if not slots and named:
+        slots = [
+            EvictedSlot(
+                kind = next(
+                    (k for k, models in before.items() if any(_same_id(name, m) for m in models)),
+                    "llm",
+                ),
+                model = name,
+            )
+            for name in named
+        ]
+    if not slots and any(before.values()):
+        after = await resident_slots(caller)
+        slots = [
+            EvictedSlot(kind = slot, model = name)
+            for slot, models in before.items()
+            if slot in after
+            for name in models
+            if not any(_same(name, m) for m in after[slot]) and not _same_id(name, model)
+        ]
+    evicted = list(dict.fromkeys([*named, *(slot.model for slot in slots)]))
+    return LoadResult(kind = kind, model = model, evicted = evicted, evicted_slots = slots, **extras)
 
 
 def _llm_poll(caller: Caller, model: str) -> Callable[[], Awaitable[Progress]]:
@@ -74,6 +293,7 @@ async def load_llm(
     load_in_4bit: bool,
     hf_token: Optional[str],
     kind: str = "llm",
+    deadline: Optional[float] = None,
 ) -> LoadResult:
     body: dict[str, Any] = {
         "model_path": model,
@@ -86,34 +306,51 @@ async def load_llm(
     token = hf_token or caller.hf_token
     if token:
         body["hf_token"] = token
-    before = await _serving_or_empty(caller)
-    payload = await with_progress(
+
+    async def run(job: LoadJob, before: dict[str, list[str]]) -> LoadResult:
+        payload = await with_progress(
+            None,
+            route_json("POST", "/api/inference/load", caller = caller, json_body = body),
+            _llm_poll(caller, model),
+            job,
+        )
+        if not isinstance(payload, dict):
+            raise ToolError("Unsloth Studio did not confirm the load")
+        return await finish_load(
+            caller,
+            kind,
+            opt_text(payload.get("model")) or model,
+            before,
+            payload,
+            display_name = opt_text(payload.get("display_name")),
+        )
+
+    return await start_load(
+        caller,
         ctx,
-        route_json("POST", "/api/inference/load", caller = caller, json_body = body),
-        _llm_poll(caller, model),
-    )
-    if not isinstance(payload, dict):
-        raise ToolError("Unsloth Studio did not confirm the load")
-    loaded = opt_text(payload.get("model")) or model
-    evicted = strings(payload.get("evicted"))
-    # Some loads (an audio engine switch) drop the chat model unlisted; only then, since the route lists its own drops by another id form.
-    if before and not evicted:
-        after = set(await _serving_or_empty(caller))
-        evicted += [
-            m for m in before if m not in after and m not in evicted and m not in (model, loaded)
-        ]
-    return LoadResult(
-        kind = kind, model = loaded, display_name = opt_text(payload.get("display_name")), evicted = evicted
+        slot = kind,
+        model = model,
+        variant = variant,
+        deadline = deadline or deadline_after(None),
+        run = run,
     )
 
 
-async def _serving_or_empty(caller: Caller) -> list[str]:
-    try:
-        serving, _checkpoints, _resident = await _llm_resident(caller)
-    except Exception:
-        # Only a report: a status read that fails must not turn a finished load into an error.
-        return []
-    return serving
+async def _watch_llm(
+    caller: Caller, kind: str, model: str, before: dict[str, list[str]], job: LoadJob
+) -> LoadResult:
+    """Follow a chat load Unsloth Studio is already running, until it serves ``model`` or stops loading it."""
+    poll = _llm_poll(caller, model)
+    while True:
+        await asyncio.sleep(POLL_INTERVAL_S)
+        status = as_dict(await route_json("GET", "/api/inference/status", caller = caller))
+        if not any(_same_id(name, model) for name in strings(status.get("loading"))):
+            if any(_same_id(name, model) for name in strings(status.get("serving"))):
+                return await finish_load(caller, kind, model, before, {})
+            raise ToolError(f"Unsloth Studio stopped loading {model} before it was ready")
+        progress = await poll()
+        if progress is not None:
+            job.note(*progress)
 
 
 async def _llm_resident(caller: Caller) -> tuple[list[str], list[str], set[str]]:
@@ -125,11 +362,15 @@ async def _llm_resident(caller: Caller) -> tuple[list[str], list[str], set[str]]
     return serving, checkpoints, {*serving, *checkpoints, *strings(status.get("loaded"))}
 
 
-async def unload_llm(caller: Caller, model: Optional[str]) -> UnloadResult:
+async def unload_llm(
+    caller: Caller,
+    model: Optional[str],
+    kind: str = "llm",
+) -> UnloadResult:
     serving, checkpoints, before = await _llm_resident(caller)
     if model is None:
         if not checkpoints:
-            return UnloadResult(kind = "llm", unloaded = False)
+            return UnloadResult(kind = kind, unloaded = False)
         target, model = checkpoints[0], (serving[0] if serving else checkpoints[0])
     else:
         # The route unloads by checkpoint id, listed in the same order as serving.
@@ -141,7 +382,7 @@ async def unload_llm(caller: Caller, model: Optional[str]) -> UnloadResult:
     _serving, _checkpoints, after = await _llm_resident(caller)
     was_loaded = bool({model, target} & before)
     return UnloadResult(
-        kind = "llm", model = model, unloaded = was_loaded and not ({model, target} & after)
+        kind = kind, model = model, unloaded = was_loaded and not ({model, target} & after)
     )
 
 
@@ -199,6 +440,7 @@ async def load_media(
     model: str,
     variant: Optional[str],
     hf_token: Optional[str],
+    deadline: Optional[float] = None,
 ) -> LoadResult:
     routes = MEDIA_ROUTES[kind]
     if hf_token:
@@ -227,10 +469,45 @@ async def load_media(
                 ):
                     body["gguf_filename"] = entry["gguf_filename"]
                     break
-    # The GPU arbiter may unload chat models to make room; diffed after the load like an LLM load.
-    before = await _serving_or_empty(caller)
-    # Starts the load in the background; its answer describes whatever was resident before.
-    await route_json("POST", routes["load"], caller = caller, json_body = body)
+
+    async def run(job: LoadJob, before: dict[str, list[str]]) -> LoadResult:
+        # The answer names what the arbiter unloaded to make room; the load itself goes on in the background.
+        answer = await with_progress(
+            None,
+            route_json("POST", routes["load"], caller = caller, json_body = body),
+            _media_poll(caller, routes),
+            job,
+        )
+        status = await _media_ready(caller, kind, model, routes, job)
+        name = _media_name(status) or model
+        return await finish_load(caller, kind, name, before, answer)
+
+    return await start_load(
+        caller,
+        ctx,
+        slot = kind,
+        model = model,
+        variant = variant,
+        deadline = deadline or deadline_after(None),
+        run = run,
+    )
+
+
+def _media_poll(caller: Caller, routes: dict[str, str]) -> Callable[[], Awaitable[Progress]]:
+    # While the load POST waits (the arbiter freeing the GPU, a chat context being saved), its phase still shows.
+    async def poll() -> Progress:
+        progress = as_dict(await route_json("GET", routes["progress"], caller = caller))
+        phase = opt_text(progress.get("phase"))
+        if phase in (None, "ready", "error"):
+            return None
+        return _media_fraction(progress) or 0.0, "Downloading" if phase == "downloading" else phase
+
+    return poll
+
+
+async def _media_ready(
+    caller: Caller, kind: str, model: str, routes: dict[str, str], job: LoadJob
+) -> dict:
     idle = 0
     while True:
         progress = as_dict(await route_json("GET", routes["progress"], caller = caller))
@@ -239,7 +516,6 @@ async def load_media(
             raise tool_error(opt_text(progress.get("error")) or f"The {kind} model failed to load")
         if phase == "ready":
             break
-        status = None
         if phase is None:
             status = await route_json("GET", routes["status"], caller = caller)
             if _resident_matches(status, model):
@@ -252,21 +528,14 @@ async def load_media(
                 )
         else:
             idle = 0
-            fraction = _media_fraction(progress)
-            if ctx is not None and fraction is not None:
-                await ctx.report_progress(
-                    fraction, 1.0, "Downloading" if phase == "downloading" else str(phase)
-                )
+            job.note(
+                _media_fraction(progress), "Downloading" if phase == "downloading" else str(phase)
+            )
         await asyncio.sleep(POLL_INTERVAL_S)
     status = await route_json("GET", routes["status"], caller = caller)
     if not _resident_matches(status, model):
         raise ToolError(f"Unsloth Studio did not finish loading {model} as the {kind} model")
-    after = set(await _serving_or_empty(caller)) if before else set()
-    return LoadResult(
-        kind = kind,
-        model = opt_text(status.get("display_repo_id")) or opt_text(status.get("repo_id")) or model,
-        evicted = [name for name in before if name not in after],
-    )
+    return status
 
 
 async def unload_media(caller: Caller, kind: str) -> UnloadResult:

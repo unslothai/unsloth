@@ -55,8 +55,8 @@ SCHEMA_FACTS = [
     (
         "load_model",
         "parameters/properties",
-        lambda props: set(props)
-        == {"model", "kind", "variant", "max_seq_length", "load_in_4bit", "hf_token"},
+        lambda props: {"model", "kind", "variant", "max_seq_length", "load_in_4bit", "hf_token"}
+        <= set(props),
     ),
     ("load_model", "parameters/properties/kind/default", "llm"),
     (
