@@ -30,11 +30,15 @@ import { SettingsSection } from "../components/settings-section";
 import { ThemeSegmented } from "../components/theme-segmented";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
+import { useAppearanceCustomStore } from "../stores/appearance-custom-store";
+
 const FONT_CONTROL_CLASS = "flex w-76 max-w-full items-center gap-2";
 const FONT_SELECT_CLASS = "w-auto min-w-0 flex-1";
 
 export function AppearanceTab() {
   const t = useT();
+  const showMascots = useAppearanceCustomStore((s) => s.customization.showMascots);
+  const patch = useAppearanceCustomStore((s) => s.patch);
   const { pinned, setPinned } = useSidebarPin();
   // The sidebar's "Customize sidebar" entry lands mid-page, so scroll its section into view.
   const sidebarNavSectionRef = useRef<HTMLDivElement | null>(null);
@@ -65,6 +69,16 @@ export function AppearanceTab() {
       </header>
 
       <SettingsSection title={t("settings.appearance.theme.title")}>
+        <SettingsRow
+          label={t("settings.appearance.custom.mascots.label")}
+          description={t("settings.appearance.custom.mascots.description")}
+        >
+          <Switch
+            aria-label={t("settings.appearance.custom.mascots.label")}
+            checked={showMascots}
+            onCheckedChange={(checked) => patch({ showMascots: checked })}
+          />
+        </SettingsRow>
         <SettingsRow label={t("settings.appearance.theme.label")}>
           <ThemeSegmented />
         </SettingsRow>

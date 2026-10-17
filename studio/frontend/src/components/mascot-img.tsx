@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { type ComponentProps, useState } from "react";
+import { useAppearanceCustomStore } from "@/features/settings";
 
 // Bundled as a data URI so the fallback ships inside the JS bundle and can
 // never 404, unlike the public-folder originals.
@@ -23,6 +24,8 @@ type MascotImgProps = { src: string } & Omit<
 // Keying on src remounts the inner component, so the retry state resets
 // whenever the source changes (greeting sloths rotate).
 export function MascotImg(props: MascotImgProps) {
+  const showMascots = useAppearanceCustomStore((s) => s.customization.showMascots);
+  if (!showMascots) return null;
   return <MascotImgInner key={props.src} {...props} />;
 }
 
