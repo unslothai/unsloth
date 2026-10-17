@@ -2723,6 +2723,8 @@ type ChatRuntimeStore = {
    *  the orb shows a distinct "hearing you" colour -- immediate feedback that your
    *  speech is being captured. Not persisted. */
   voiceHearing: boolean;
+  /** The loop keeps running but the mic frames are dropped. */
+  voiceMuted: boolean;
   /** Derived orb state written by the voice control; consumed by VoiceOrb. The
    *  union lives with deriveOrbState, which is what produces every value here. */
   voiceOrbState: VoiceOrbState | null;
@@ -2751,6 +2753,7 @@ type ChatRuntimeStore = {
   setVoiceSlotLoaded: (loaded: boolean) => void;
   setVoiceTranscribing: (transcribing: boolean) => void;
   setVoiceHearing: (hearing: boolean) => void;
+  setVoiceMuted: (muted: boolean) => void;
   setVoiceOrbState: (state: VoiceOrbState | null) => void;
   setVoiceOrbCollapsed: (collapsed: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
@@ -4558,6 +4561,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   voiceSlotLoaded: false,
   voiceTranscribing: false,
   voiceHearing: false,
+  voiceMuted: false,
   voiceOrbState: null,
   voiceOrbCollapsed: false,
   ensureVoiceSlotLoaded: null,
@@ -4784,6 +4788,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         : { voiceMode },
     ),
   setVoiceHearing: (voiceHearing) => set({ voiceHearing }),
+  setVoiceMuted: (voiceMuted) => set(voiceMuted ? { voiceMuted, voiceHearing: false } : { voiceMuted }),
   setVoiceOrbState: (voiceOrbState) => set({ voiceOrbState }),
   setVoiceOrbCollapsed: (voiceOrbCollapsed) => set({ voiceOrbCollapsed }),
   setEnsureVoiceSlotLoaded: (ensureVoiceSlotLoaded) => set({ ensureVoiceSlotLoaded }),

@@ -26,7 +26,9 @@ import {
   StudioVoiceLoopAdapter,
   clearHeldTurn,
   getHeldTurnText,
+  setMicMuted,
 } from "@/features/chat/adapters/studio-voice-loop-adapter";
+import { MicIcon as DictateMicIcon } from "@/lib/mic-icon";
 import { useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
 import {
   fillerDelayMs,
@@ -59,7 +61,7 @@ import {
 } from "@/features/chat/voice/voice-loop-bridge";
 import { cn } from "@/lib/utils";
 import { useAui } from "@assistant-ui/react";
-import { MessageSquareIcon } from "lucide-react";
+import { MessageSquareIcon, MicOffIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type FC } from "react";
 
 // Tracks the previous thread-running state across the first-send remount, so the
@@ -919,6 +921,46 @@ export const VoiceEngine: FC = () => {
 //     speaking); click re-opens the full orb.
 //   - active + full orb showing: a "back to chat" icon; click minimizes the orb
 //     so you can read/use the chat while speech-to-speech keeps running.
+// Mute: the loop stays up, the mic frames are dropped. Ctrl+M toggles it (Cmd+M
+// is the window's Minimize on macOS, so it is not used).
+export const VoiceMuteButton: FC = () => {
+  const voiceMode = useChatRuntimeStore((s) => s.voiceMode);
+  const muted = useChatRuntimeStore((s) => s.voiceMuted);
+  const setVoiceMuted = useChatRuntimeStore((s) => s.setVoiceMuted);
+  useEffect(() => {
+    setMicMuted(muted);
+  }, [muted]);
+  useEffect(() => {
+    if (voiceMode !== "active") return;
+    const onKey = (event: KeyboardEvent) => {
+      if (!event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+      if (event.key.toLowerCase() !== "m") return;
+      event.preventDefault();
+      setVoiceMuted(!useChatRuntimeStore.getState().voiceMuted);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [voiceMode, setVoiceMuted]);
+  if (voiceMode !== "active") return null;
+  const label = muted ? "Unmute microphone (Ctrl+M)" : "Mute microphone (Ctrl+M)";
+  return (
+    <TooltipIconButton
+      tooltip={label}
+      aria-label={label}
+      aria-pressed={muted}
+      variant="ghost"
+      className={cn("size-8 rounded-full", muted ? "text-destructive" : "text-foreground")}
+      onClick={() => setVoiceMuted(!muted)}
+    >
+      {muted ? (
+        <MicOffIcon className="size-5" />
+      ) : (
+        <DictateMicIcon className="unsloth-dictate-icon size-5" />
+      )}
+    </TooltipIconButton>
+  );
+};
+
 export const VoiceControlButton: FC = () => {
   const voiceMode = useChatRuntimeStore((s) => s.voiceMode);
   const orbState = useChatRuntimeStore((s) => s.voiceOrbState);

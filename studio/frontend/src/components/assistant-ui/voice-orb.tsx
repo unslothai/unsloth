@@ -7,13 +7,13 @@ import {
   useVoiceDecisions,
   type VoiceDecisions,
 } from "@/features/chat/voice/voice-decisions";
+import { MicIcon as DictateMicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
 import {
   AudioLinesIcon,
   AudioWaveformIcon,
   BrainIcon,
   LoaderCircleIcon,
-  MicIcon,
   MicOffIcon,
   InfoIcon,
   PencilLineIcon,
@@ -252,7 +252,12 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
   // mic (listening): a resting state, so the icon gets NO independent animation.
   // It rides the ball's breathe scale only, so it grows and shrinks in perfect
   // sync with the sphere -- reading as carved into the surface, not floating.
-  return <MicIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />;
+  // The same mic the composer's Dictate button uses, so the two read as one control.
+  return (
+    <span style={{ color: HOLE, filter: DEBOSS, display: "grid", width: 46, height: 46 }}>
+      <DictateMicIcon className="h-full w-full" />
+    </span>
+  );
 };
 
 // What the three turn models last decided, drawn as three arcs around the orb,
@@ -471,8 +476,15 @@ export const VoiceOrb: FC = () => {
   const setVoiceOrbCollapsed = useChatRuntimeStore((s) => s.setVoiceOrbCollapsed);
   const showOverlay = Boolean(orbState) && !collapsed;
 
+  const muted = useChatRuntimeStore((s) => s.voiceMuted);
   const cfg = orbState ? orbConfig[orbState] : null;
-  const meta = orbState ? orbMeta[orbState] : null;
+  // Muted while it would be listening: the struck mic and a plain caption.
+  const meta =
+    orbState && muted && (orbState === "listening" || orbState === "hearing")
+      ? { label: "Muted", icon: "mic-off" as const }
+      : orbState
+        ? orbMeta[orbState]
+        : null;
 
   // Esc only minimizes the orb back to chat -- it does NOT stop voice mode. The
   // single place to turn voice off is the + menu's Voice toggle, so exiting the

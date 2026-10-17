@@ -157,6 +157,12 @@ function isHallucinatedTranscript(text: string): boolean {
 // the composer, so the text lives here until the turn is whole.
 let heldTurn: { text: string; at: number } | null = null;
 
+// Mute keeps the session open and drops its frames; the no-speech clock waits.
+let micMuted = false;
+export function setMicMuted(muted: boolean): void {
+  micMuted = muted;
+}
+
 // The turn judge decides whether to wait for more; without it the turn is sent.
 async function turnUnfinished(text: string): Promise<boolean> {
   const p = await judgeTurnComplete(text);
@@ -534,8 +540,20 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             });
         }
 
+        let wasMuted = false;
         processor.onaudioprocess = (event) => {
           if (ended || finalizing) return;
+          if (micMuted) {
+            wasMuted = true;
+            return;
+          }
+          if (wasMuted) {
+            // Unmuted: the silence since is not a timeout.
+            wasMuted = false;
+            const t = performance.now();
+            startedAt = t;
+            lastVoiceAt = t;
+          }
           const input = event.inputBuffer.getChannelData(0);
 
           let sumSquares = 0;

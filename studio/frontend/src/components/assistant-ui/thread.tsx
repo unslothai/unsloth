@@ -7635,6 +7635,7 @@ const ComposerRightControls: FC<{
       {voiceRequested && (
         <Suspense fallback={null}>
           <VoiceEngine />
+          <VoiceMuteButton />
           <VoiceControlButton />
         </Suspense>
       )}
@@ -8833,6 +8834,11 @@ const VoiceEngine = lazy(() =>
 const VoiceControlButton = lazy(() =>
   loadVoiceMode().then((module) => ({
     default: module.VoiceControlButton,
+  })),
+);
+const VoiceMuteButton = lazy(() =>
+  loadVoiceMode().then((module) => ({
+    default: module.VoiceMuteButton,
   })),
 );
 const VoiceOrb = lazy(() =>
