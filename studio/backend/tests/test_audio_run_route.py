@@ -2085,7 +2085,11 @@ def test_speech_pcm_is_openais_24k_mono_samples(stub, monkeypatch, rate, channel
         assert response.content == buf.getvalue()[44:]
 
 
-def _reporting(backend, seed, ignored = ()):
+def _reporting(
+    backend,
+    seed,
+    ignored = (),
+):
     run = backend.generate_audio_response
 
     def generate(**kwargs):
@@ -2128,7 +2132,11 @@ def test_music_take_persists_group_role_variation_and_take_seed(stub, tmp_path):
     (clip,) = body["clips"]
     assert (clip["role"], clip["seed"]) == ("variation", 40)
     meta = json.loads(_sidecar(tmp_path, clip["id"]))
-    assert (meta["group_id"], meta["role"], meta["settings"]["variation"]) == (group, "variation", 2)
+    assert (meta["group_id"], meta["role"], meta["settings"]["variation"]) == (
+        group,
+        "variation",
+        2,
+    )
 
 
 @pytest.mark.parametrize(

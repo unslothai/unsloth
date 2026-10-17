@@ -37,7 +37,11 @@ def _model(sizes = (8, 4, 3, 2, 1), current = 0) -> AudioCppModel:
     "text, backend, code",
     [
         # audio.cpp v0.9.2 src/framework/text/espeak_phonemizer.cpp:93
-        ("Could not load eSpeak-ng; install the shared library or provide its path", None, "espeak_missing"),
+        (
+            "Could not load eSpeak-ng; install the shared library or provide its path",
+            None,
+            "espeak_missing",
+        ),
         # audio.cpp v0.9.2 src/framework/text/espeak_phonemizer.cpp:108
         ("eSpeak-ng failed to initialize; check its data directory", None, "espeak_missing"),
         # audio.cpp v0.9.2 src/framework/text/espeak_data.cpp:62
@@ -47,31 +51,59 @@ def _model(sizes = (8, 4, 3, 2, 1), current = 0) -> AudioCppModel:
         # audio.cpp v0.9.2 src/framework/runtime/registry.cpp:160 [v0.9.1 :134]
         ("no registered model loader can load: /m/x.gguf", None, "family_unknown_to_runtime"),
         # audio.cpp v0.9.2 src/framework/core/backend.cpp:139-144
-        ("CUDA backend requested but registry 'CUDA' has no device 0 (available: CPU)", "cuda", "gpu_unavailable"),
+        (
+            "CUDA backend requested but registry 'CUDA' has no device 0 (available: CPU)",
+            "cuda",
+            "gpu_unavailable",
+        ),
         # audio.cpp v0.9.2 src/framework/core/backend.cpp:161
         ("Failed to initialize Vulkan backend on device 0", "vulkan", "gpu_unavailable"),
         # audio.cpp v0.9.2 external/ggml/src/ggml-cuda/ggml-cuda.cu:212
-        ("ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected", "cuda", "gpu_unavailable"),
+        (
+            "ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected",
+            "cuda",
+            "gpu_unavailable",
+        ),
         # audio.cpp v0.9.2 external/ggml/src/ggml-vulkan/ggml-vulkan.cpp:6145
         ("ggml_vulkan: No devices found.", "vulkan", "gpu_unavailable"),
         # audio.cpp v0.9.2 include/engine/framework/core/backend_weight_store.h:167 [v0.9.1 :165]
         ("failed to allocate CUDA0 backend weight buffer", "cuda", "out_of_memory"),
         # audio.cpp v0.9.2 external/ggml/src/ggml-alloc.c:1133
-        ("ggml_gallocr_reserve_n: failed to allocate CUDA0 buffer of size 9663676416", "cuda", "out_of_memory"),
+        (
+            "ggml_gallocr_reserve_n: failed to allocate CUDA0 buffer of size 9663676416",
+            "cuda",
+            "out_of_memory",
+        ),
         # audio.cpp v0.9.2 external/ggml/src/ggml-cuda/ggml-cuda.cu:803
-        ("alloc: allocating 9216.00 MiB on device 0: cudaMalloc failed: out of memory", "cuda", "out_of_memory"),
+        (
+            "alloc: allocating 9216.00 MiB on device 0: cudaMalloc failed: out of memory",
+            "cuda",
+            "out_of_memory",
+        ),
         # audio.cpp v0.9.2 external/ggml/src/ggml-cuda/ggml-cuda.cu:102
         ("CUDA error: out of memory\n  current device: 0", "cuda", "out_of_memory"),
         # audio.cpp v0.9.2 external/ggml/src/ggml-vulkan/ggml-vulkan.cpp:2876
         ("ggml_vulkan: Device memory allocation of size 123 failed.", "vulkan", "out_of_memory"),
         # audio.cpp v0.9.2 src/community_models/lfm2_audio/backbone.cpp:322
-        ("LFM2-Audio prefill graph does not fit in device memory at 9 prompt steps", "cuda", "out_of_memory"),
+        (
+            "LFM2-Audio prefill graph does not fit in device memory at 9 prompt steps",
+            "cuda",
+            "out_of_memory",
+        ),
         # audio.cpp v0.9.2 app/server/runtime.cpp:2364-2367
-        ("cannot load model 'm': estimated 9 GiB + 512 MiB headroom exceeds available CUDA memory", None, "out_of_memory"),
+        (
+            "cannot load model 'm': estimated 9 GiB + 512 MiB headroom exceeds available CUDA memory",
+            None,
+            "out_of_memory",
+        ),
         # audio.cpp v0.9.2 external/ggml/src/gguf.cpp:413
         ("gguf_init_from_file_impl: failed to read magic", None, "file_incomplete"),
         # audio.cpp v0.9.2 external/ggml/src/gguf.cpp:424
-        ("gguf_init_from_file_impl: invalid magic characters: 'xxxx', expected 'GGUF'", None, "file_incomplete"),
+        (
+            "gguf_init_from_file_impl: invalid magic characters: 'xxxx', expected 'GGUF'",
+            None,
+            "file_incomplete",
+        ),
         # audio.cpp v0.9.2 external/ggml/src/gguf.cpp:720
         ("gguf_init_from_file_impl: failed to read tensor data", None, "file_incomplete"),
         # audio.cpp v0.9.2 src/framework/assets/tensor_source.cpp:1639
@@ -81,8 +113,16 @@ def _model(sizes = (8, 4, 3, 2, 1), current = 0) -> AudioCppModel:
         # audio.cpp v0.9.2 src/framework/runtime/registry.cpp:204 [v0.9.1 :160]
         ("model path does not exist: /m/x.gguf", None, "file_incomplete"),
         # A CUDA build logs its init failure on CPU launches too.
-        ("ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected", "cpu", None),
-        ("ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected", None, None),
+        (
+            "ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected",
+            "cpu",
+            None,
+        ),
+        (
+            "ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected",
+            None,
+            None,
+        ),
         # audio.cpp v0.9.2 src/framework/assets/tensor_source.cpp:1963
         ("failed to allocate GGUF context", "cuda", None),
         # audio.cpp v0.9.2 src/community_models/granite5asr/encoder.cpp:484
@@ -126,9 +166,15 @@ def test_oom_lists_smaller_variants_and_offload_options(monkeypatch):
 
     monkeypatch.setattr(models, "runtime_spec", lambda family: None)
     model = _model(sizes = (4, 8, 3, 2, 1), current = 0)
-    failure = af.classify_audio_cpp_failure("cudaMalloc failed: out of memory", backend = "cuda", model = model)
+    failure = af.classify_audio_cpp_failure(
+        "cudaMalloc failed: out of memory", backend = "cuda", model = model
+    )
     rows = failure.extras["smaller_variants"]
-    assert [row["label"] for row in rows] == ["Q3", "Q2", "Q1"] and "offload_options" not in failure.extras
+    assert [row["label"] for row in rows] == [
+        "Q3",
+        "Q2",
+        "Q1",
+    ] and "offload_options" not in failure.extras
     # The gguf-variants key, not the internal variant key, so the client's "Use" action finds it.
     assert rows[0] == {
         "variant": "m-q3",
@@ -148,9 +194,21 @@ def test_oom_lists_smaller_variants_and_offload_options(monkeypatch):
     session = [{"name": "context_length", "type": "int"}]
     monkeypatch.setattr(models, "runtime_spec", lambda family: {"options": {"session": session}})
     assert af.offload_options(_model()) == []
-    session += [{"name": "cpu_expert_layers", "type": "int"}, {"name": "disk_experts", "type": "bool"}]
-    failure = af.classify_audio_cpp_failure("cuda error: out of memory", backend = "cuda", model = _model())
+    session += [
+        {"name": "cpu_expert_layers", "type": "int"},
+        {"name": "disk_experts", "type": "bool"},
+    ]
+    failure = af.classify_audio_cpp_failure(
+        "cuda error: out of memory", backend = "cuda", model = _model()
+    )
     assert failure.extras["offload_options"] == ["cpu_expert_layers", "disk_experts"]
     assert "set cpu_expert_layers or disk_experts" in failure.message
-    assert af.failure_of(af.AudioCppFailureError("boom", failure)) is failure and af.failure_of(KeyError()) is None
-    assert af.AudioCppFailure.from_payload({"code": "nope"}) is af.AudioCppFailure.from_payload(None) is None
+    assert (
+        af.failure_of(af.AudioCppFailureError("boom", failure)) is failure
+        and af.failure_of(KeyError()) is None
+    )
+    assert (
+        af.AudioCppFailure.from_payload({"code": "nope"})
+        is af.AudioCppFailure.from_payload(None)
+        is None
+    )

@@ -31,7 +31,11 @@ def _oom() -> af.AudioCppFailure:
 def _load(side_effect) -> HTTPException:
     request = LoadRequest(model_path = "audio-cpp/audio.cpp-gguf/M-GGUF")
     with (
-        patch.object(ri, "_resolve_model_identifier_for_request", return_value = (request.model_path,) * 2 + (False,)),
+        patch.object(
+            ri,
+            "_resolve_model_identifier_for_request",
+            return_value = (request.model_path,) * 2 + (False,),
+        ),
         patch.object(ri, "resolve_effective_chat_template_override", return_value = None),
         patch.object(ri, "get_inference_backend", return_value = MagicMock(active_model_name = None)),
         patch.object(ri, "get_llama_cpp_backend", return_value = MagicMock()),
@@ -45,7 +49,9 @@ def _load(side_effect) -> HTTPException:
 def test_load_detail_is_structured_when_classified_else_500_prefix():
     error = _load(af.AudioCppFailureError("Failed to load model", _oom()))
     assert error.status_code == 503
-    assert error.detail["code"] == "out_of_memory" and "ran out of memory" in error.detail["message"]
+    assert (
+        error.detail["code"] == "out_of_memory" and "ran out of memory" in error.detail["message"]
+    )
     error = _load(RuntimeError("totally different failure"))
     assert error.status_code == 500 and error.detail.startswith("Failed to load model: ")
 
@@ -83,7 +89,12 @@ def test_v1_path_maps_detail_code_to_openai_error_code():
     assert error["code"] == "runtime_missing" and "isn't installed" in error["message"]
 
 
-def _preflight(problem, *, availability = None, prepared = None):
+def _preflight(
+    problem,
+    *,
+    availability = None,
+    prepared = None,
+):
     import utils.hardware as hardware
 
     model = _model()
@@ -113,14 +124,18 @@ def test_preflight_problem_is_503_with_code_else_501_string(problem, status, det
     with pytest.raises(HTTPException) as raised:
         _preflight(problem)
     assert raised.value.status_code == status
-    assert raised.value.detail == problem if detail is None else raised.value.detail["code"] == detail
+    assert (
+        raised.value.detail == problem if detail is None else raised.value.detail["code"] == detail
+    )
 
 
 def test_placement_refusal_lists_variants_that_fit(monkeypatch):
     monkeypatch.setattr(af, "offload_options", lambda model: [])
     availability = ri._NativeAudioAvailability({0: 7.0, 1: 5.0}, {0: 0.0, 1: 0.0})
     with pytest.raises(HTTPException) as raised:
-        _preflight(None, availability = availability, prepared = ([0, 1], {"selection_mode": "fallback_all"}))
+        _preflight(
+            None, availability = availability, prepared = ([0, 1], {"selection_mode": "fallback_all"})
+        )
     detail = raised.value.detail
     assert ri.audio_cpp_resident_gb is af.estimate_resident_gb
     assert raised.value.status_code == 400 and detail["code"] == "out_of_memory"
@@ -142,7 +157,9 @@ def test_generation_crash_oom_maps_to_out_of_memory(monkeypatch):
         models = {model: {"is_audio": True, "audio_type": "audiocpp_tts"}},
         generate_audio_response = MagicMock(side_effect = crash),
     )
-    monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False, _is_audio = False))
+    monkeypatch.setattr(
+        ri, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False, _is_audio = False)
+    )
     monkeypatch.setattr(ri, "get_inference_backend", lambda: backend)
     monkeypatch.setattr(ri, "_maybe_auto_switch_model", AsyncMock(return_value = None))
     payload = ChatCompletionRequest(model = model, messages = [{"role": "user", "content": "hello"}])

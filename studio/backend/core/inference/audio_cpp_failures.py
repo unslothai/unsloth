@@ -53,7 +53,8 @@ _UPDATE = "Update it from the update banner in Unsloth Studio, or run `unsloth s
 _MESSAGES = {
     "runtime_missing": "The audio runtime isn't installed. Install it from the update banner in "
     "Unsloth Studio, or run `unsloth studio update`.",
-    "family_unknown_to_runtime": "{name} needs a newer audio runtime than the one installed. " + _UPDATE,
+    "family_unknown_to_runtime": "{name} needs a newer audio runtime than the one installed. "
+    + _UPDATE,
     "espeak_missing": "{name} needs an audio runtime built with eSpeak-ng. " + _UPDATE,
     "gpu_unavailable": "The audio runtime could not use the GPU. Set the audio device to CPU in "
     "Unsloth Studio, or set UNSLOTH_AUDIO_CPP_BACKEND=cpu.",
@@ -91,7 +92,12 @@ class AudioCppFailure:
         code = str(data["code"])
         extras = data.get("extras") or {}
         extras = {k: v for k, v in extras.items() if k in ("smaller_variants", "offload_options")}
-        return cls(code, str(data.get("message") or ""), int(data.get("status") or _STATUS.get(code, 503)), extras)
+        return cls(
+            code,
+            str(data.get("message") or ""),
+            int(data.get("status") or _STATUS.get(code, 503)),
+            extras,
+        )
 
 
 class AudioCppFailureError(RuntimeError):
@@ -122,7 +128,12 @@ def estimate_resident_gb(size_bytes: int) -> float:
     return round(size_bytes / (1024**3) * 2.5 + 1.5, 2)
 
 
-def smaller_variants(model, *, free_gb: Optional[float] = None, limit: int = 3) -> list[dict]:
+def smaller_variants(
+    model,
+    *,
+    free_gb: Optional[float] = None,
+    limit: int = 3,
+) -> list[dict]:
     """Variants smaller than the loaded one, largest first; only those that fit ``free_gb``."""
     if model is None:
         return []
@@ -139,12 +150,21 @@ def smaller_variants(model, *, free_gb: Optional[float] = None, limit: int = 3) 
     rows = []
     for variant in sorted(model.variants, key = lambda v: v.size_bytes, reverse = True):
         estimate = estimate_resident_gb(variant.size_bytes + extra)
-        if not 0 < variant.size_bytes < model.size_bytes or (free_gb is not None and estimate > free_gb):
+        if not 0 < variant.size_bytes < model.size_bytes or (
+            free_gb is not None and estimate > free_gb
+        ):
             continue
         # The key /api/models/gguf-variants lists, so the client can pick this row.
         key = variant.key if model.is_package else gguf_variant_key(variant.primary)
         label = variant.label or quant_label(variant.main_file)
-        rows.append({"variant": key, "label": label, "size_bytes": variant.size_bytes, "estimate_gb": estimate})
+        rows.append(
+            {
+                "variant": key,
+                "label": label,
+                "size_bytes": variant.size_bytes,
+                "estimate_gb": estimate,
+            }
+        )
     return rows[:limit]
 
 
@@ -181,7 +201,9 @@ def classify_audio_cpp_failure(
         match = pattern.search(lowered)
         if match is None:
             continue
-        capacity = code == "out_of_memory" and runtime_status is not None and 400 <= runtime_status < 500
+        capacity = (
+            code == "out_of_memory" and runtime_status is not None and 400 <= runtime_status < 500
+        )
         placement = "no single gpu" in lowered
         key = "placement" if placement else "capacity" if capacity else code
         message = _MESSAGES[key].format(name = getattr(model, "display_name", None) or "This model")
@@ -189,7 +211,9 @@ def classify_audio_cpp_failure(
         if code == "out_of_memory" and not capacity:
             if variants := smaller_variants(model, free_gb = free_gb):
                 extras["smaller_variants"] = variants
-                listed = ", ".join(f"{row['label']} (~{row['estimate_gb']:.1f} GB)" for row in variants)
+                listed = ", ".join(
+                    f"{row['label']} (~{row['estimate_gb']:.1f} GB)" for row in variants
+                )
                 message += f" Smaller variants: {listed}."
             if offload := offload_options(model):
                 extras["offload_options"] = offload

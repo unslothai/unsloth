@@ -201,7 +201,8 @@ def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
         "audio_music": music_rules(model),
         "audio_options_by_workflow": options_by_workflow(model, primary),
         # Null when the spec takes any option; else the request fields it declares.
-        "audio_request_inputs": None if model.request_keys is None
+        "audio_request_inputs": None
+        if model.request_keys is None
         else sorted(n for n in ("instruct", "instruction", "language") if n in model.request_keys),
         "audio_workflow_tasks": audio_cpp_convert.workflow_tasks(model),
         "audio_convert": audio_cpp_convert.convert_caps(model),
@@ -502,7 +503,8 @@ class AudioCppBackend:
                     if force_cpu or not self._may_retry_on_cpu(exc, cancel_event):
                         raise
                     logger.warning(
-                        "audio.cpp: %s could not start on the GPU; retrying once on the CPU", model.id
+                        "audio.cpp: %s could not start on the GPU; retrying once on the CPU",
+                        model.id,
                     )
                     force_cpu = True
             if force_cpu and not self._force_cpu:
@@ -521,7 +523,9 @@ class AudioCppBackend:
             exc.detail, backend = backend, model = self._model, runtime_status = exc.status
         )
         return attach_failure(
-            AudioRuntimeError(f"The audio runtime could not {what}: {exc.detail}", status = exc.status),
+            AudioRuntimeError(
+                f"The audio runtime could not {what}: {exc.detail}", status = exc.status
+            ),
             failure,
         )
 

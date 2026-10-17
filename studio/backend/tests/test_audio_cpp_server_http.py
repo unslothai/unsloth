@@ -443,7 +443,12 @@ _GPU_FAILS = textwrap.dedent(
 _NO_GPU = "ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected"
 
 
-def _backend_whose_gpu_fails(tmp_path, monkeypatch, output, preference = None):
+def _backend_whose_gpu_fails(
+    tmp_path,
+    monkeypatch,
+    output,
+    preference = None,
+):
     """The fake server exits with ``output`` unless launched on CPU."""
     from core.inference import audio_cpp_backend as acb
 
@@ -467,7 +472,11 @@ def test_gpu_unavailable_start_retries_once_on_cpu(fake_binary, tmp_path, monkey
     try:
         backend._start_server(KOKORO)
         assert starts == [False, True]
-        assert (backend.device, backend._device_fallback, backend._server.backend) == ("cpu", "cpu", "cpu")
+        assert (backend.device, backend._device_fallback, backend._server.backend) == (
+            "cpu",
+            "cpu",
+            "cpu",
+        )
         # Sticks: a restart for this model goes straight to the CPU.
         backend._start_server(KOKORO)
         assert starts == [False, True, True]
@@ -477,9 +486,14 @@ def test_gpu_unavailable_start_retries_once_on_cpu(fake_binary, tmp_path, monkey
 
 @pytest.mark.parametrize(
     "output, preference, code",
-    [(_NO_GPU, "gpu", "gpu_unavailable"), ("failed to allocate CUDA0 backend weight buffer", None, "out_of_memory")],
+    [
+        (_NO_GPU, "gpu", "gpu_unavailable"),
+        ("failed to allocate CUDA0 backend weight buffer", None, "out_of_memory"),
+    ],
 )
-def test_pinned_gpu_or_oom_does_not_retry(fake_binary, tmp_path, monkeypatch, output, preference, code):
+def test_pinned_gpu_or_oom_does_not_retry(
+    fake_binary, tmp_path, monkeypatch, output, preference, code
+):
     from core.inference.audio_cpp_failures import failure_of
 
     backend, starts = _backend_whose_gpu_fails(tmp_path, monkeypatch, output, preference)
@@ -494,7 +508,9 @@ def test_cancelled_start_does_not_retry(monkeypatch):
     from core.inference.audio_cpp_failures import AudioCppFailure, attach_failure
 
     backend = acb.AudioCppBackend("auto")
-    gpu = attach_failure(srv.AudioCppUnavailableError("x"), AudioCppFailure("gpu_unavailable", "m", 503))
+    gpu = attach_failure(
+        srv.AudioCppUnavailableError("x"), AudioCppFailure("gpu_unavailable", "m", 503)
+    )
     assert backend._may_retry_on_cpu(gpu, threading.Event())
     cancelled = threading.Event()
     cancelled.set()

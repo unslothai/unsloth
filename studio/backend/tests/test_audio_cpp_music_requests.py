@@ -718,7 +718,12 @@ def test_legacy_music_never_asks_past_the_page_maximum():
 
 @pytest.mark.parametrize(
     "seed, take, options, sent",
-    [(40, 2, None, "42"), (40, None, None, "40"), (2**31 - 1, 1, None, "0"), (None, None, {"seed": "12"}, "12")],
+    [
+        (40, 2, None, "42"),
+        (40, None, None, "40"),
+        (2**31 - 1, 1, None, "0"),
+        (None, None, {"seed": "12"}, "12"),
+    ],
 )
 def test_a_take_is_seeded_seed_plus_take_and_a_typed_seed_skips_options(seed, take, options, sent):
     b = _backend(_model("controlfoley"))

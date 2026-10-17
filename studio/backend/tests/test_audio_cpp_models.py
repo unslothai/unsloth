@@ -3146,7 +3146,6 @@ def test_exact_audio_filename_path_wins_over_an_earlier_suffix_match():
     assert acm.match_variant((archived, exact), f"chosen/{filename}") is exact
 
 
-
 def _spec_rows(*rows):
     return {"options": {"request": [{"type": "string", **row} for row in rows]}}
 
@@ -3180,7 +3179,11 @@ def test_audio_request_inputs_and_seed_row_follow_the_declared_keys():
         return audio_cpp_backend.model_info_fields(model)["audio_request_inputs"]
 
     assert inputs(None) is None and inputs({"speed", "seed"}) == []
-    assert inputs({"language", "instruction", "instruct", "seed"}) == ["instruct", "instruction", "language"]
+    assert inputs({"language", "instruction", "instruct", "seed"}) == [
+        "instruct",
+        "instruction",
+        "language",
+    ]
     loose = _speech_model("kokoro_tts")
     strict = _speech_model("kokoro_tts", request_keys = frozenset({"speed"}))
     seeded = _speech_model("kokoro_tts", request_keys = frozenset({"speed", "seed"}))
@@ -3189,7 +3192,13 @@ def test_audio_request_inputs_and_seed_row_follow_the_declared_keys():
         assert acm.takes_seed(loose, workflow) is acm.takes_seed(seeded, workflow) is want
         assert acm.takes_seed(strict, workflow) is False
     (row,) = acm.workflow_options(loose, "speak")
-    assert [row[k] for k in ("name", "type", "min", "max", "default")] == ["seed", "int", 0, 2147483647, None]
+    assert [row[k] for k in ("name", "type", "min", "max", "default")] == [
+        "seed",
+        "int",
+        0,
+        2147483647,
+        None,
+    ]
     assert acm.workflow_options(strict, "speak") == () and acm.workflow_options(loose, "edit") == ()
 
 

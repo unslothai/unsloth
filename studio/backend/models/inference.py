@@ -1527,10 +1527,12 @@ class _InferenceRuntimeFields(BaseModel):
         ),
     )
     audio_request_inputs: Optional[List[str]] = Field(
-        None, description = "instruct/instruction/language fields a strict audio.cpp model reads, else None."
+        None,
+        description = "instruct/instruction/language fields a strict audio.cpp model reads, else None.",
     )
     audio_device_fallback: Optional[Literal["cpu"]] = Field(
-        None, description = "'cpu' when the audio.cpp model could not start on the GPU and runs on the CPU."
+        None,
+        description = "'cpu' when the audio.cpp model could not start on the GPU and runs on the CPU.",
     )
     audio_music: Optional[Dict[str, Any]] = Field(
         None,
@@ -5853,7 +5855,9 @@ class AudioRunRequest(BaseModel):
 
     @model_validator(mode = "after")
     def _take_fields(self):
-        if (self.take, self.group_id) != (None, None) and (self.workflow != "music" or self.variations != 1):
+        if (self.take, self.group_id) != (None, None) and (
+            self.workflow != "music" or self.variations != 1
+        ):
             raise ValueError("take and group_id are for music with variations 1.")
         return self
 

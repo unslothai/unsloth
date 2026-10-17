@@ -62,7 +62,11 @@ _GPU_HOST_THREADS = 8
 class AudioCppUnavailableError(RuntimeError):
     """audiocpp_server is missing, failed to start, or stopped answering."""
 
-    def __init__(self, message: str, failure = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        failure = None,
+    ) -> None:
         super().__init__(message)
         if failure is not None:
             self.audio_cpp_failure = failure

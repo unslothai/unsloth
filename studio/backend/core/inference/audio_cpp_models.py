@@ -2263,7 +2263,13 @@ def ignored_options(model: "AudioCppModel", workflow: str, values: Optional[dict
 
 
 _SEED_OPTION = dict(
-    name = "seed", type = "int", required = False, default = None, min = 0, max = 2147483647, values = None,
+    name = "seed",
+    type = "int",
+    required = False,
+    default = None,
+    min = 0,
+    max = 2147483647,
+    values = None,
     description = "Leave blank for a new random seed each take. Reuse one from a clip's menu.",
 )
 

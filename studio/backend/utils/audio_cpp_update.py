@@ -168,7 +168,12 @@ def _update_size_bytes(
     return size
 
 
-def _release_assets(repo: str, latest: str, *, force_refresh: bool = False) -> Optional[dict]:
+def _release_assets(
+    repo: str,
+    latest: str,
+    *,
+    force_refresh: bool = False,
+) -> Optional[dict]:
     assets = _freshness.latest_release_assets(repo, force_refresh = force_refresh)
     # The tag can come from the 24h disk cache while the asset list is fetched fresh, so after a newer release the two can disagree: keep only the offered release's assets.
     prefixes = (f"audio-{latest}-bin-", f"audio-{latest}-cudart-")
@@ -182,21 +187,38 @@ def _install_plan(plan: dict, *, force_refresh: bool = False) -> dict:
     from core.inference import audio_cpp_server
 
     skipped = any(os.environ.get(name) for name in _SETUP_SKIP_VARS)
-    if skipped or os.environ.get("UNSLOTH_SKIP_AUDIO_CPP_INSTALL") == "1" or update_checks_disabled():
+    if (
+        skipped
+        or os.environ.get("UNSLOTH_SKIP_AUDIO_CPP_INSTALL") == "1"
+        or update_checks_disabled()
+    ):
         return plan
     repo, pin = _target()
     latest = pin or _freshness.latest_published_release(repo, force_refresh = force_refresh)
-    assets = None if pin or latest is None else _release_assets(repo, latest, force_refresh = force_refresh)
+    assets = (
+        None
+        if pin or latest is None
+        else _release_assets(repo, latest, force_refresh = force_refresh)
+    )
     script = _installer_script()
-    if latest is None or script is None or not _host_has_prebuilt(list(assets) if assets else None, None):
+    if (
+        latest is None
+        or script is None
+        or not _host_has_prebuilt(list(assets) if assets else None, None)
+    ):
         return plan
     plan.update(
         status = {"installed_tag": None, "latest_tag": latest, "update_size_bytes": None},
         update_available = True,
         skip_reason = None,
         phase = dict(
-            install_dir = audio_cpp_server.managed_audio_cpp_dir(), script = script, accelerator = None,
-            from_tag = None, to_tag = latest, pin_release_tag = latest, repo = repo,
+            install_dir = audio_cpp_server.managed_audio_cpp_dir(),
+            script = script,
+            accelerator = None,
+            from_tag = None,
+            to_tag = latest,
+            pin_release_tag = latest,
+            repo = repo,
         ),
     )
     return plan

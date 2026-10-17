@@ -933,7 +933,6 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
 
     except Exception as exc:
         from core.inference.audio_cpp_failures import failure_of
-
         failure = failure_of(exc)
         _send_response(
             resp_queue,
