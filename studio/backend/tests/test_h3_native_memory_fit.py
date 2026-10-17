@@ -13,6 +13,8 @@ from core.inference.video_minimax_h3 import (
     H3_NATIVE_FIT_ENV,
     H3NativeMemoryRefusal,
     amdgpu_gtt_free_bytes,
+    amdgpu_vram_free_bytes,
+    h3_native_compute_bytes,
     h3_native_memory_fit,
     h3_native_offloaded_render_flags,
     vulkan_device_is_amd,
@@ -45,6 +47,8 @@ def _fit(
     sizes = Q4,
     env = None,
     swap = 0,
+    spill = 0,
+    uma = False,
 ):
     return h3_native_memory_fit(
         flags,
@@ -53,6 +57,8 @@ def _fit(
         pinned_free_bytes = gtt,
         host_ram_bytes = host,
         host_swap_bytes = swap,
+        device_spill_bytes = spill,
+        reserve_pinned = uma,
         env = env or {},
         **sizes,
     )
@@ -142,6 +148,59 @@ def test_the_16gb_card_48gb_host_decision_is_unchanged():
     assert fit.flags == AUTO + ("--clip-on-cpu",) and "GTT" in fit.note
 
 
+def test_a_uma_card_reserves_its_pinned_weights_from_the_device_budget():
+    """gfx1151 with a 0.5 GiB carve-out and 22.5 GiB of GTT free: sd.cpp reads that free memory at startup, before it
+    pins the denoiser and VAEs in the same pool, so --max-vram -1 planned one segment and the 864x480x124 render
+    failed its capacity check. Reserving the pinned set leaves the budget the compute buffer really has."""
+    spill = h3_native_compute_bytes(864, 480, 124) - (GIB // 2)
+    fit = _fit(AUTO, "auto", gtt = int(22.5 * GIB), spill = spill, host = 100 * GIB, uma = True)
+    assert fit.refusal is None
+    pinned = Q4["dit_bytes"] + Q4["vae_bytes"] + GIB
+    assert fit.max_vram == f"-{pinned / GIB:.2f}"
+    assert fit.flags == (
+        "--offload-to-cpu",
+        "--diffusion-fa",
+        "--max-vram",
+        fit.max_vram,
+        "--clip-on-cpu",
+    )
+    assert fit.max_vram == "-17.05"  # measured: sd.cpp budgeted 5.73 GiB and rendered 864x480x124
+    # Measured with the same reserve: 20 GiB free leaves no room for the compute buffer, 30 GiB renders 1344x768x124.
+    assert _fit(AUTO, "auto", gtt = 20 * GIB, spill = spill, host = 100 * GIB, uma = True).refusal
+    spill = h3_native_compute_bytes(1344, 768, 124) - (GIB // 2)
+    fit = _fit(AUTO, "auto", gtt = int(22.5 * GIB), spill = spill, host = 100 * GIB, uma = True)
+    assert "weights and activations into GPU-accessible system memory (GTT)" in fit.refusal
+    assert _fit(AUTO, "auto", gtt = 30 * GIB, spill = spill, host = 100 * GIB, uma = True).refusal is None
+
+
+def test_an_explicit_mode_on_a_uma_card_keeps_its_placement_and_gets_the_reserve():
+    fit = _fit(LOW_VRAM, "low_vram", gtt = 30 * GIB, host = 100 * GIB, uma = True)
+    assert fit.refusal is None and fit.max_vram is not None
+    assert [f for f in fit.flags if f != fit.max_vram] == [f for f in LOW_VRAM if f != "-1"]
+
+
+def test_a_uma_card_without_a_gtt_reading_keeps_max_vram_minus_one():
+    """Windows has no amdgpu sysfs, so no GTT reading: the reserve stays off and the committed -1 is kept."""
+    fit = _fit(AUTO, "auto", gtt = None, host = 100 * GIB, uma = True)
+    assert fit.refusal is None and fit.max_vram is None and fit.flags == AUTO
+
+
+def test_a_discrete_card_keeps_max_vram_minus_one():
+    fit = _fit(AUTO, "auto")
+    assert fit.max_vram is None and fit.flags[:4] == AUTO
+
+
+def test_the_compute_estimate_covers_the_measured_buffers():
+    """sd-cli's minimax_h3 compute buffer on gfx1151: 5175.60 MB at 864x480x124, 10595.71 MB at 1344x768x124."""
+    assert 5175.60 * 2**20 <= h3_native_compute_bytes(864, 480, 124) <= 6 * GIB
+    assert 10595.71 * 2**20 <= h3_native_compute_bytes(1344, 768, 124) <= 11 * GIB
+
+
+def test_a_spill_only_binds_a_vulkan_gtt_pool():
+    fit = _fit(AUTO, "auto", accelerator = "rocm", spill = 64 * GIB)
+    assert fit.refusal is None and fit.flags == AUTO
+
+
 def test_the_kill_switch_restores_the_old_flags():
     fit = _fit(AUTO, "auto", host = 1 * GIB, env = {H3_NATIVE_FIT_ENV: "0"})
     assert fit.flags == AUTO and fit.refusal is None
@@ -155,6 +214,7 @@ def _card(
     total,
     used = None,
     vendor = "0x1002",
+    vram = None,
 ):
     dev = root / "class" / "drm" / card / "device"
     dev.mkdir(parents = True)
@@ -163,6 +223,9 @@ def _card(
     (dev / "mem_info_gtt_total").write_text(f"{total}\n", encoding = "utf-8")
     if used is not None:
         (dev / "mem_info_gtt_used").write_text(f"{used}\n", encoding = "utf-8")
+    if vram is not None:
+        (dev / "mem_info_vram_total").write_text(f"{vram[0]}\n", encoding = "utf-8")
+        (dev / "mem_info_vram_used").write_text(f"{vram[1]}\n", encoding = "utf-8")
 
 
 def test_the_gtt_reading_subtracts_what_is_already_used(tmp_path):
@@ -192,6 +255,17 @@ def test_gtt_used_on_another_amd_card_shrinks_the_selected_cards_pool(tmp_path):
         "0\n", encoding = "utf-8"
     )
     assert amdgpu_gtt_free_bytes("0000:03:00", sysfs_root = str(tmp_path)) == 22 * GIB
+
+
+def test_the_vram_reading_takes_the_selected_card_or_the_only_one(tmp_path):
+    _card(tmp_path, "card0", "0000:03:00.0", total = 24 * GIB, vram = (16 * GIB, 1 * GIB))
+    assert amdgpu_vram_free_bytes(sysfs_root = str(tmp_path)) == 15 * GIB
+    _card(tmp_path, "card1", "0000:c5:00.0", total = 24 * GIB, vram = (GIB // 2, GIB // 4))
+    assert amdgpu_vram_free_bytes("0000:c5:00", sysfs_root = str(tmp_path)) == GIB // 4
+    assert amdgpu_vram_free_bytes("0000:03:00.0", sysfs_root = str(tmp_path)) == 15 * GIB
+    # Two cards and no selection: which one sd.cpp renders on is unknown.
+    assert amdgpu_vram_free_bytes(sysfs_root = str(tmp_path)) is None
+    assert amdgpu_vram_free_bytes("0000:81:00", sysfs_root = str(tmp_path)) is None
 
 
 def test_a_non_amd_drm_card_is_never_read(tmp_path):
@@ -330,6 +404,52 @@ def test_the_radv_failure_reads_as_memory_with_the_settings_that_help():
     detail = video_failure_detail(RuntimeError(_RADV_TAIL))
     assert "ran out of GPU or system memory" in detail
     assert "Low VRAM" in detail and "864x480" in detail and "quant" in detail
+
+
+def test_sd_cpps_segment_capacity_failure_reads_as_memory():
+    """sd.cpp's graph-cut executor reports a device it cannot fit this way, without any generic OOM wording."""
+    tail = (
+        "sd-cli exited 1. Last output:\n"
+        "[W] model manager cannot make enough memory available on Vulkan0: need 5687.60 MB device / 5175.60 MB "
+        "budget, available 1356.88 MB device / 11346.88 MB budget --- model_manager.cpp:1944\n"
+        "[E] minimax_h3 segment 1/1 (graph) failed during workspace capacity check --- ggml_runner.cpp:898\n"
+        "[E] generate failed --- main.cpp:939\n"
+    )
+    detail = video_failure_detail(RuntimeError(tail))
+    assert "ran out of GPU or system memory" in detail and "864x480" in detail
+    assert not sd_cpp_backend.output_shows_accelerator_failure(tail)
+    assert sd_cpp_backend.output_shows_capacity_failure(
+        "[E] minimax_h3 segment 2/9 (graph) failed during workspace capacity check"
+    )
+    assert sd_cpp_backend.output_shows_capacity_failure(
+        "[E] minimax_h3 segment 1/4 (graph) failed during allocated capacity check"
+    )
+
+
+# sd.cpp's model manager logs this when one eviction pass falls short, then recovers: renders that complete print it
+# (gfx1151, 864x480x124 with the pinned reserve: rc 0, a full video, two of these lines in its log).
+_RECOVERED_CAPACITY_WARNING = (
+    "[W] model manager cannot make enough memory available on Vulkan0: need 1038.05 MB device / 5701.21 MB "
+    "budget, available 17290.44 MB device / 5690.66 MB budget --- model_manager.cpp:1944\n"
+)
+
+
+def test_a_recovered_capacity_warning_is_not_a_capacity_failure():
+    """Only the failing segment's [E] line is a capacity failure. Read as one, the warning would hide what really
+    stopped the render: the build-level failure below must still be recorded, and an unrelated crash must not be
+    explained as memory."""
+    assert not sd_cpp_backend.output_shows_capacity_failure(_RECOVERED_CAPACITY_WARNING)
+    build_failure = (
+        "sd-cli exited 1. Last output:\n"
+        + _RECOVERED_CAPACITY_WARNING
+        + "ggml_cuda_compute_forward: error: invalid device function\n"
+    )
+    assert sd_cpp_backend.output_shows_accelerator_failure(build_failure)
+    assert sd_cpp_backend.output_shows_decisive_accelerator_failure(build_failure)
+    crash = (
+        "sd-cli exited -11. Last output:\n" + _RECOVERED_CAPACITY_WARNING + "Segmentation fault\n"
+    )
+    assert "renderer stopped unexpectedly" in video_failure_detail(RuntimeError(crash))
 
 
 def test_a_bare_device_loss_is_explained_as_likely_memory():

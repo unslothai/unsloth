@@ -1348,6 +1348,24 @@ def test_graph_cut_options_support_legacy_and_current_builds_and_fail_closed(mon
     assert bk.sd_cpp_graph_cut_options(None) == frozenset()
 
 
+def test_vulkan_uma_reads_ggml_vulkans_own_device_line(monkeypatch):
+    listing = (
+        "ggml_vulkan: Found 2 Vulkan devices:\n"
+        "ggml_vulkan: 0 = AMD Radeon RX 7900 XTX (RADV NAVI31) (radv) | uma: 0 | fp16: 1 | bf16: 0 |\n"
+        "ggml_vulkan: 1 = AMD Radeon Graphics (RADV RAPHAEL_MENDOCINO) (radv) | uma: 1 | fp16: 1 | bf16: 0 |\n"
+        "Vulkan0\tAMD Radeon RX 7900 XTX (RADV NAVI31)\nVulkan1\tAMD Radeon Graphics\nCPU\tAMD Ryzen 9 9900X\n"
+    )
+    monkeypatch.setattr(bk, "_LAST_DEVICE_LISTING", {})
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: listing)
+    assert bk.sd_cpp_vulkan_device_is_uma("/existing/sd-cli", None) is False
+    assert bk.sd_cpp_vulkan_device_is_uma("/existing/sd-cli", "Vulkan1") is True
+    assert bk.sd_cpp_vulkan_device_is_uma("/existing/sd-cli", "Vulkan2") is None
+    assert bk.sd_cpp_vulkan_device_is_uma("/existing/sd-cli", "ROCm0") is None
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: "Vulkan0\tAMD Radeon\n")
+    assert bk.sd_cpp_vulkan_device_is_uma("/existing/sd-cli", None) is None
+    assert bk.sd_cpp_vulkan_device_is_uma(None, None) is None
+
+
 def test_device_name_for_ordinal_reads_the_ggml_device_list(monkeypatch):
     monkeypatch.setattr(
         bk,
