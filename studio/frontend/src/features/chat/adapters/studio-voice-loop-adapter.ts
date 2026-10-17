@@ -22,9 +22,11 @@ import {
 import {
   JUDGE_SEND_THRESHOLD,
   judgeTurnComplete,
+  reportLayaOutcome,
 } from "@/features/chat/voice/voice-models-client";
 import { attachInputSpectrum, detachInputSpectrum } from "@/features/chat/voice/voice-spectrum";
 import { publishSttDecision, publishVadDecision } from "@/features/chat/voice/voice-decisions";
+import { QUICK_CONTINUE_MS } from "@/features/chat/voice/laya-outcomes";
 import { voiceTrace } from "@/features/chat/voice/voice-trace";
 import {
   isVoicePlaybackActive,
@@ -168,10 +170,52 @@ export function setMicMuted(muted: boolean): void {
   micMuted = muted;
 }
 
+// The decision log rows behind the judge's last answers, so the loop can report what
+// happened: the "hold" row behind heldTurn, and a "finished" row watched for more speech
+// landing inside QUICK_CONTINUE_MS (a turn the judge cut short).
+let heldJudgeId: string | null = null;
+let finishedJudge: {
+  id: string;
+  at: number;
+  quick: boolean;
+  timer: ReturnType<typeof setTimeout> | null;
+} | null = null;
+
+function watchFinished(id: string): void {
+  if (finishedJudge?.timer) clearTimeout(finishedJudge.timer);
+  const entry = { id, at: performance.now(), quick: false, timer: null as ReturnType<typeof setTimeout> | null };
+  entry.timer = setTimeout(() => {
+    if (finishedJudge === entry) finishedJudge = null;
+    reportLayaOutcome(id, "sent");
+  }, QUICK_CONTINUE_MS);
+  finishedJudge = entry;
+}
+
+// Speech inside the window is not yet a continuation: a cough clears the gate too, so
+// the report waits for the transcript.
+function noteSpeechStart(): void {
+  const f = finishedJudge;
+  if (!f || f.quick || !f.timer) return;
+  clearTimeout(f.timer);
+  f.timer = null;
+  f.quick = true;
+}
+
+function settleFinished(realSpeech: boolean): void {
+  const f = finishedJudge;
+  if (!f?.quick) return;
+  finishedJudge = null;
+  const gapMs = Math.round(performance.now() - f.at);
+  reportLayaOutcome(f.id, realSpeech ? "continued_quickly" : "sent", { gap_ms: gapMs });
+}
+
 // The turn judge decides whether to wait for more; without it the turn is sent.
 async function turnUnfinished(text: string): Promise<boolean> {
-  const p = await judgeTurnComplete(text);
-  return p !== null && p < JUDGE_SEND_THRESHOLD;
+  const r = await judgeTurnComplete(text);
+  const unfinished = r !== null && r.p < JUDGE_SEND_THRESHOLD;
+  heldJudgeId = unfinished ? (r?.id ?? null) : null;
+  if (r?.id && !unfinished) watchFinished(r.id);
+  return unfinished;
 }
 
 /** Drop a fragment waiting for its continuation: a thread switch or voice going off. */
@@ -182,6 +226,7 @@ export function getHeldTurnText(): string {
 
 export function clearHeldTurn(): void {
   heldTurn = null;
+  heldJudgeId = null;
 }
 
 // True from the first voiced frame until the session has emitted its transcript
@@ -356,12 +401,15 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     // "no-speech" path so the loop keeps listening without feeding STT junk to hallucinate on.
     const endWithoutSpeech = () => {
       voiceTrace("session.noSpeech", { bargedIn });
+      settleFinished(false);
       // A burst that held the reply was not the user after all.
       if (bargedIn) requestVoiceBargeAbort();
       if (heldTurn) {
         // The rest never came: the fragment was the whole turn after all.
         const text = heldTurn.text;
         heldTurn = null;
+        reportLayaOutcome(heldJudgeId, "flushed", { text });
+        heldJudgeId = null;
         emitSpeech(text, true);
         finish("stopped", text);
         setTimeout(() => requestVoiceSubmit(text), 0);
@@ -455,6 +503,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           // The reply's own voice got through the detector. Not a turn: let the
           // reply pick back up and keep listening.
           voiceTrace("barge.abort", { why: "echo" });
+          settleFinished(false);
           publishSttDecision(false, "echo of the reply");
           requestVoiceBargeAbort();
           finish("stopped");
@@ -466,6 +515,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           // writes for a cough. Not a turn: keep listening, and keep any held
           // fragment waiting for its real continuation.
           voiceTrace("stt.drop", { transcript, why: "noise" });
+          settleFinished(false);
           publishSttDecision(false, isBackchannel(transcript) ? "breath" : "cough");
           if (bargedIn) {
             voiceTrace("barge.abort", { why: "backchannel" });
@@ -475,8 +525,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           setTimeout(() => requestVoiceResume(), 0);
           return;
         }
+        settleFinished(Boolean(transcript));
         if (transcript && heldTurn) {
           transcript = joinTurn(heldTurn.text, transcript);
+          reportLayaOutcome(heldJudgeId, "continued", { text: transcript });
+          heldJudgeId = null;
         }
         if (
           transcript &&
@@ -660,6 +713,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               voicedMs = bargeGate.loudMs;
               heardSpeech = true;
               utteranceInFlight = true;
+              noteSpeechStart();
               useChatRuntimeStore.getState().setVoiceHearing(true);
               for (const cb of speechStartCallbacks) cb();
             };
@@ -705,6 +759,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             if (!heardSpeech) {
               heardSpeech = true;
               utteranceInFlight = true;
+              noteSpeechStart();
               // Light the orb's salmon "hearing you" state the instant the mic
               // picks up real voice -- immediate proof the mic is capturing you.
               useChatRuntimeStore.getState().setVoiceHearing(true);

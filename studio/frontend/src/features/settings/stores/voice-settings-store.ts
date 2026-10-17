@@ -186,6 +186,16 @@ export interface VoiceSettingsState {
   setTtsPitch: (value: number) => void;
   ttsVolume: number;
   setTtsVolume: (value: number) => void;
+
+  /** Log every voice-model verdict (with the transcript it judged) to the backend's decision log. Off by default. */
+  voiceLogEnabled: boolean;
+  setVoiceLogEnabled: (value: boolean) => void;
+  /** Chats that asked not to be logged; their calls send log:false whatever the toggle says. */
+  voiceLogOptOutThreadIds: string[];
+  setVoiceLogOptOut: (threadId: string, optOut: boolean) => void;
+  /** When the decision log was last exported from settings, for "Since last export". */
+  voiceLogExportedAt: number | null;
+  setVoiceLogExportedAt: (value: number | null) => void;
 }
 
 /**
@@ -372,6 +382,17 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       setTtsPitch: (ttsPitch) => set({ ttsPitch }),
       ttsVolume: 1,
       setTtsVolume: (ttsVolume) => set({ ttsVolume }),
+
+      voiceLogEnabled: false,
+      setVoiceLogEnabled: (voiceLogEnabled) => set({ voiceLogEnabled }),
+      voiceLogOptOutThreadIds: [],
+      setVoiceLogOptOut: (threadId, optOut) =>
+        set((state) => {
+          const rest = state.voiceLogOptOutThreadIds.filter((id) => id !== threadId);
+          return { voiceLogOptOutThreadIds: optOut ? [...rest, threadId] : rest };
+        }),
+      voiceLogExportedAt: null,
+      setVoiceLogExportedAt: (voiceLogExportedAt) => set({ voiceLogExportedAt }),
     }),
     {
       name: "unsloth_voice_settings",
@@ -445,6 +466,12 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           ttsRate: clampNumber(saved?.ttsRate, 0.5, 2, 1),
           ttsPitch: clampNumber(saved?.ttsPitch, 0, 2, 1),
           ttsVolume: clampNumber(saved?.ttsVolume, 0, 1, 1),
+          voiceLogEnabled: saved?.voiceLogEnabled === true,
+          voiceLogOptOutThreadIds: Array.isArray(saved?.voiceLogOptOutThreadIds)
+            ? saved.voiceLogOptOutThreadIds.filter((v): v is string => typeof v === "string" && !!v)
+            : [],
+          voiceLogExportedAt:
+            typeof saved?.voiceLogExportedAt === "number" ? saved.voiceLogExportedAt : null,
         };
       },
     },

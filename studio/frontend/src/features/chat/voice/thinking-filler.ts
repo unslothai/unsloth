@@ -11,6 +11,8 @@ export interface FillerDecision {
   say: boolean;
   cls: FillerClass | "none";
   phrase: string;
+  /** The voice decision log row this came from, when logging was on. */
+  logId?: string | null;
 }
 
 type Weighted = readonly (readonly [string, number])[];

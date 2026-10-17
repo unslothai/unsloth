@@ -42,7 +42,13 @@ import {
 import {
   fillerFromModel,
   interjectAction,
+  reportLayaOutcome,
 } from "@/features/chat/voice/voice-models-client";
+import {
+  interjectOutcomeFor,
+  REPEAT_WINDOW_MS,
+  replyEchoesFiller,
+} from "@/features/chat/voice/laya-outcomes";
 import { clearVoiceDecisions } from "@/features/chat/voice/voice-decisions";
 import { voiceTrace } from "@/features/chat/voice/voice-trace";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
@@ -270,11 +276,30 @@ export const VoiceEngine: FC = () => {
     queued: boolean;
     spokenAt: number | null;
     stage2Done: boolean;
+    /** The decision log row, cleared once its outcome is reported. */
+    logId: string | null;
   } | null>(null);
   const clearFiller = useCallback(() => {
     const f = fillerRef.current;
     if (f?.timer) clearTimeout(f.timer);
     fillerRef.current = null;
+  }, []);
+  // An ignored or queued utterance, watched for the user saying it again inside
+  // REPEAT_WINDOW_MS: that is the one signal the interrupt verdict was wrong.
+  const pendingInterjectRef = useRef<{
+    id: string;
+    verdict: "ignore" | "queue";
+    text: string;
+    at: number;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
+  const settleInterject = useCallback((later: string | null) => {
+    const p = pendingInterjectRef.current;
+    if (!p) return;
+    pendingInterjectRef.current = null;
+    clearTimeout(p.timer);
+    const gapMs = Date.now() - p.at;
+    reportLayaOutcome(p.id, interjectOutcomeFor(p.verdict, p.text, later, gapMs), { gap_ms: gapMs });
   }, []);
   const latestAssistantToolKinds = useCallback((): ToolKind[] => {
     const messages = auiRef.current.thread().getState().messages;
@@ -335,6 +360,12 @@ export const VoiceEngine: FC = () => {
     if (isSpeakingRef.current || isPlayingRef.current) stop();
     const thread = auiRef.current.thread();
     if (thread.getState().isRunning) {
+      // The barge-in cuts the filler with the reply.
+      const f = fillerRef.current;
+      if (f?.logId) {
+        reportLayaOutcome(f.logId, "cut", { queued: f.queued });
+        f.logId = null;
+      }
       try {
         voiceTrace("engine.cancelRun", {});
         thread.cancelRun();
@@ -546,9 +577,12 @@ export const VoiceEngine: FC = () => {
           queued: false,
           spokenAt: null,
           stage2Done: false,
+          logId: decision.logId ?? null,
         };
       }
     };
+    // Any new utterance settles the interrupt verdict before it.
+    settleInterject(text);
     setPendingFiller(null);
     clearFiller();
     // The filler model answers inside the coalesce window, before the run starts.
@@ -561,13 +595,31 @@ export const VoiceEngine: FC = () => {
     // separate question to hold for after the reply, or is nothing to act on.
     if (thread.getState().isRunning && latestAssistantIsReasoning()) {
       const elapsedS = (Date.now() - runStartedAtRef.current) / 1000;
-      void interjectAction(lastUserPrompt(), text, elapsedS).then((verdict) => {
+      void interjectAction(lastUserPrompt(), text, elapsedS).then((answer) => {
+        const verdict = answer?.action ?? null;
         // The judge may wave off a short backchannel ("uh true", "okay"); a whole
         // sentence said over the model's thinking is the user cutting in, and
         // dropping it read as the interrupt not working.
         const words = text.split(/\s+/).filter(Boolean).length;
         const action = verdict === "ignore" && words > 3 ? "restart" : verdict;
         voiceTrace("engine.interject", { action, verdict, words, text });
+        if (answer?.id) {
+          if (action === "ignore" || action === "queue") {
+            settleInterject(null);
+            const id = answer.id;
+            pendingInterjectRef.current = {
+              id,
+              verdict: action,
+              text,
+              at: Date.now(),
+              timer: setTimeout(() => {
+                if (pendingInterjectRef.current?.id === id) settleInterject(null);
+              }, REPEAT_WINDOW_MS),
+            };
+          } else {
+            reportLayaOutcome(answer.id, "ok", { overridden: action !== verdict });
+          }
+        }
         if (voiceModeRef.current !== "active") return;
         if (action === "ignore" || action === "queue") {
           if (action === "queue") queuedUtteranceRef.current.push(text);
@@ -778,6 +830,14 @@ export const VoiceEngine: FC = () => {
     // so it still goes first, just without the wait.
     const fillerAtEnd = fillerRef.current;
     if (fillerAtEnd && !fillerAtEnd.queued) sayAsideRef.current(fillerAtEnd.phrase);
+    if (fillerAtEnd?.logId) {
+      const outcome = !fillerAtEnd.queued
+        ? "too_late"
+        : replyEchoesFiller(latestAssistantText(), fillerAtEnd.phrase)
+          ? "echoed"
+          : "spoken";
+      reportLayaOutcome(fillerAtEnd.logId, outcome);
+    }
     clearFiller();
     if (voiceModeRef.current !== "active") return;
     // Note: no isSpeaking guard here. If a stale utterance is still speaking when
