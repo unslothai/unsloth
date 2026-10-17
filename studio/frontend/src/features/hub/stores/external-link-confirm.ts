@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { openLink } from "@/lib/open-link";
 import { create } from "zustand";
 
 interface ExternalLinkConfirmStore {
@@ -15,6 +16,20 @@ export const useExternalLinkConfirm = create<ExternalLinkConfirmStore>((set) => 
   dismiss: () => set({ pendingUrl: null }),
 }));
 
+/** Unsloth's own site: unsloth.ai and its subdomains, over http(s). */
+export function isUnslothSiteUrl(url: string): boolean {
+  try {
+    const { protocol, hostname } = new URL(url);
+    const host = hostname.toLowerCase();
+    return (
+      (protocol === "https:" || protocol === "http:") &&
+      (host === "unsloth.ai" || host.endsWith(".unsloth.ai"))
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function confirmExternalLink(url: string): boolean {
   const trimmed = url?.trim() ?? "";
   if (!trimmed || trimmed.startsWith("#")) return false;
@@ -25,6 +40,9 @@ export function confirmExternalLink(url: string): boolean {
     !lower.startsWith("mailto:")
   ) {
     return false;
+  }
+  if (isUnslothSiteUrl(trimmed)) {
+    return openLink(trimmed);
   }
   useExternalLinkConfirm.getState().request(trimmed);
   return true;
