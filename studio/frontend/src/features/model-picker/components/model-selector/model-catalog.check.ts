@@ -296,6 +296,8 @@ for (const id of [
   "unsloth/FLUX.1-dev-GGUF",
   "unsloth/FLUX.2-klein-4B-GGUF",
   "unsloth/FLUX.2-klein-9B-GGUF",
+  "unsloth/flux-3-image-klein-GGUF",
+  "unsloth/flux-3-image-klein-base-GGUF",
   "unsloth/Qwen-Image-Edit-2511-GGUF",
   "unsloth/FLUX.1-Kontext-dev-GGUF",
   ...Object.keys(OLD_SAFETENSORS_MODELS),

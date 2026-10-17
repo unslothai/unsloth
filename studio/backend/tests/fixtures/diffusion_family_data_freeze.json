@@ -19,6 +19,12 @@
    },
    "black-forest-labs/FLUX.2-klein-base-9B": null
   },
+  "flux.3-klein": {
+   "black-forest-labs/flux-3-image-klein": null
+  },
+  "flux.3-klein-base": {
+   "black-forest-labs/flux-3-image-klein-base": null
+  },
   "hidream-i1": {
    "HiDream-ai/HiDream-I1-Full": null
   },
@@ -118,6 +124,14 @@
   "flux.2-klein": [
    4,
    1.0
+  ],
+  "flux.3-klein": [
+   16,
+   1.0
+  ],
+  "flux.3-klein-base": [
+   50,
+   3.5
   ],
   "hidream-i1": [
    50,
@@ -297,6 +311,16 @@
    "filter_reduction_configs_archs": []
   },
   "flux.2-klein": {
+   "cudnn_benchmark": true,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": []
+  },
+  "flux.3-klein": {
+   "cudnn_benchmark": true,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": []
+  },
+  "flux.3-klein-base": {
    "cudnn_benchmark": true,
    "filter_reduction_configs": false,
    "filter_reduction_configs_archs": []
@@ -1146,6 +1170,252 @@
    },
    "page": "image",
    "preview_key": "flux2",
+   "te_int8_effective": "fp8"
+  },
+  "flux.3-klein": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed",
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": null,
+   "te_int8_effective": "fp8"
+  },
+  "flux.3-klein-base": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed",
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": null,
    "te_int8_effective": "fp8"
   },
   "hidream-i1": {
@@ -3205,6 +3475,12 @@
    }
   },
   "family_scheme_deny": {
+   "flux.3-klein": [
+    "nvfp4"
+   ],
+   "flux.3-klein-base": [
+    "nvfp4"
+   ],
    "qwen-image": [
     "mxfp8",
     "nvfp4"
@@ -3407,6 +3683,8 @@
    "flux.1": "FLUX.1-dev",
    "flux.2-dev": "FLUX.2-dev",
    "flux.2-klein": "FLUX.2 Klein",
+   "flux.3-klein": "FLUX.3 Klein",
+   "flux.3-klein-base": "FLUX.3 Klein Base",
    "krea-2": "Krea 2",
    "ltx-2": "LTX-2",
    "minimax-h3": "MiniMax-H3",
@@ -3422,6 +3700,8 @@
   ],
   "trusted_image_repos": [
    "alpha-vllm/lumina-image-2.0",
+   "black-forest-labs/flux-3-image-klein",
+   "black-forest-labs/flux-3-image-klein-base",
    "black-forest-labs/flux.1-dev",
    "black-forest-labs/flux.1-kontext-dev",
    "black-forest-labs/flux.1-krea-dev",

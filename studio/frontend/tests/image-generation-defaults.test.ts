@@ -255,3 +255,51 @@ test("the Images page seeds Default from the resident recipe and drops the pick 
   const revert = src.slice(src.indexOf("const revertPick = useCallback"), src.indexOf("}, []);", src.indexOf("const revertPick = useCallback")));
   assert.match(revert, /pickDefaults\.current = null/);
 });
+
+test("every FLUX.3 Klein alias the backend registers gets its family recipe", () => {
+  for (const id of [
+    "black-forest-labs/flux-3-image-klein-base",
+    "someone/flux3-image-klein-base-finetune",
+    "someone/flux3_image_klein_base",
+    "someone/flux3-klein-base-merge",
+    "flux.3-klein-base",
+  ]) {
+    assert.deepEqual(defaultsFor(id), { steps: 50, guidance: 3.5 }, id);
+  }
+  for (const id of [
+    "black-forest-labs/flux-3-image-klein",
+    "someone/flux3-image-klein-finetune",
+    "someone/flux3_image_klein",
+    "someone/flux3-klein-lora-merge",
+    "flux.3-klein",
+  ]) {
+    assert.deepEqual(defaultsFor(id), { steps: 16, guidance: 1 }, id);
+  }
+});
+
+test("an opaque FLUX.3 path keys its defaults by the explicit family", () => {
+  for (const [family, want] of [
+    ["flux.3-klein", { steps: 16, guidance: 1 }],
+    ["flux.3-klein-base", { steps: 50, guidance: 3.5 }],
+  ] as const) {
+    const key = defaultsKeyFor("/models/my-model", family);
+    assert.equal(key, family);
+    assert.deepEqual(defaultsFor(key), want);
+  }
+});
+
+test("an explicit FLUX.3 family decides the recipe over a name that reads as the other variant", () => {
+  // BFL's ComfyUI base file has no "base" in its name; the backend checks it against the family.
+  const comfyBase = "black-forest-labs/flux-3-image-klein-comfy";
+  assert.equal(defaultsKeyFor(comfyBase, "flux.3-klein-base"), "flux.3-klein-base");
+  assert.deepEqual(defaultsFor(defaultsKeyFor(comfyBase, "flux.3-klein-base")), { steps: 50, guidance: 3.5 });
+  assert.deepEqual(defaultsFor(defaultsKeyFor(comfyBase, "flux.3-klein")), { steps: 16, guidance: 1 });
+  assert.deepEqual(defaultsFor(defaultsKeyFor(comfyBase, "auto")), { steps: 16, guidance: 1 });
+  assert.equal(
+    residentDefaultsKey("/models/flux3_image_klein_bf16.safetensors", "black-forest-labs/flux-3-image-klein", {
+      value: "flux.3-klein-base",
+      source: "explicit",
+    }),
+    "flux.3-klein-base",
+  );
+});

@@ -332,6 +332,18 @@ def _pipeline_components_present(root: Path) -> bool:
             return False
         if not isinstance(index, dict):
             return False
+        if name == "modular_model_index.json" and _is_flux3_manifest(index):
+            # FLUX.3 loads a fixed set of components from fixed folders of this root and never follows a spec's
+            # source, so judge it on exactly those: the optional prompt upsampler the manifests list since
+            # 2026-10-16 lives in another (~19 GB) repo an image load never reads.
+            from core.inference.diffusion_families import local_pipeline_components_are_complete
+            from core.inference.diffusion_flux3 import FLUX3_COMPONENT_FOLDERS
+
+            if not local_pipeline_components_are_complete(
+                root, name, fixed_component_folders = FLUX3_COMPONENT_FOLDERS
+            ):
+                return False
+            continue
         for component, entry in index.items():
             if component.startswith("_") or not isinstance(entry, (list, tuple)):
                 continue
@@ -348,6 +360,46 @@ def _pipeline_components_present(root: Path) -> bool:
             if not _component_present(root / component):
                 return False
     return True
+
+
+def flux3_seeded_cache_repo(path: Any) -> Optional[str]:
+    """The Hub repo id of a FLUX.3 snapshot in the HF cache (the one refs/main names) whose only gaps are the dense
+    transformer and text-encoder weights (what a download planned around a hosted pre-quantized seed leaves: the int8
+    ConvRot encoder is the default, so a normally staged snapshot holds no dense encoder shards either), or None.
+    Everything else the loader opens, both configs and the tokenizer included, must be there; whether the seeds or
+    the dense shards the load will open are cached is the download planner's question, asked of the repo id."""
+    import json
+    try:
+        snapshot = Path(path)
+        repo_dir = snapshot.parent.parent
+        if snapshot.parent.name != "snapshots" or not repo_dir.name.startswith("models--"):
+            return None
+        # A load by repo id resolves refs/main, so only the snapshot main names may be rewritten: another (or a
+        # commit-pinned) snapshot would be swapped for a different one.
+        if (repo_dir / "refs" / "main").read_text(encoding = "utf-8").strip() != snapshot.name:
+            return None
+        index = json.loads((snapshot / "modular_model_index.json").read_text(encoding = "utf-8-sig"))
+        if not isinstance(index, dict) or not _is_flux3_manifest(index):
+            return None
+        from core.inference.diffusion_families import local_pipeline_components_are_complete
+        from core.inference.diffusion_flux3 import FLUX3_COMPONENT_FOLDERS
+
+        if not local_pipeline_components_are_complete(
+            snapshot,
+            "modular_model_index.json",
+            excluded_components = ("transformer", "text_encoder"),
+            fixed_component_folders = FLUX3_COMPONENT_FOLDERS,
+        ):
+            return None
+        owner, _, name = repo_dir.name[len("models--") :].partition("--")
+        return f"{owner}/{name}" if owner and name else None
+    except (OSError, ValueError):
+        return None
+
+
+def _is_flux3_manifest(index: dict) -> bool:
+    from core.inference.diffusion_flux3 import flux3_index_family
+    return flux3_index_family(index) is not None
 
 
 def _hosted_source(spec: Any) -> Optional[tuple[str, str, str, str]]:
@@ -525,7 +577,14 @@ def missing_download_bytes(
     target = normalized_pick(pick)
     local_pipeline = not target.gguf_filename and Path(target.model_path).is_dir()
     if local_pipeline and not _pipeline_components_present(Path(target.model_path)):
-        return UNSIZED_MISSING
+        repo = flux3_seeded_cache_repo(target.model_path) if owner == DIFFUSION else None
+        if repo is None:
+            return UNSIZED_MISSING
+        # A FLUX.3 snapshot Studio staged for a pre-quantized seed holds no dense transformer shards: whether the seed
+        # is cached and is what the load picks is the planner's question, so ask it of the repo, which is also what
+        # the switch loads (cache only), instead of requiring dense weights the load never opens.
+        target = replace(target, model_path = repo)
+        local_pipeline = False
     if owner == DIFFUSION:
         # asked of every image pick, not only local pipelines: a single-file HiDream checkpoint plans clean and its
         # assembly still loads the encoder repo unconditionally
@@ -573,6 +632,7 @@ __all__ = [
     "encoder_repo_complete",
     "hidden_ltx23_extras",
     "is_edit_only",
+    "flux3_seeded_cache_repo",
     "missing_download_bytes",
     "normalized_pick",
     "pin_planned_gpu_ordinal",

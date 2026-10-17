@@ -19,7 +19,8 @@ KEEP_LM_HEAD_ENV = "UNSLOTH_TE_KEEP_LM_HEAD"
 # By class name so this module never imports transformers.
 _HIDDEN_STATE_ONLY_CLASSES = frozenset({"Qwen3VLForConditionalGeneration"})
 
-_HIDDEN_STATE_ONLY_FAMILIES = frozenset({"qwen-image-2.1"})
+# FLUX.3 Klein stacks hidden_states[4..32] (diffusers Flux3TextEncoderStep) and never reads logits.
+_HIDDEN_STATE_ONLY_FAMILIES = frozenset({"qwen-image-2.1", "flux.3-klein", "flux.3-klein-base"})
 
 LM_HEAD_KEY = "lm_head.weight"
 

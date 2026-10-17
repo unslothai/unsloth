@@ -1,7 +1,9 @@
-# DISABLED while diffusers-pin.txt's release carries every family: the requirement line is commented
-# out and every step of the git route does nothing. To re-enable for an unreleased model, uncomment it
-# with the new commit + archive-sha256 and add the minimum to _UNRELEASED_MIN_DIFFUSERS
-# (diffusion_families.py). When active it installs by default; UNSLOTH_DIFFUSERS_MAIN=0 opts out.
+# INSTALLED BY DEFAULT, on top of diffusers-pin.txt. Set UNSLOTH_DIFFUSERS_MAIN=0 to opt out.
+# Today that is FLUX.3 Image Klein: Diffusers support merged as huggingface/diffusers#15046 on 2026-10-15 and is
+# in no release yet. The commit below is main as of 2026-10-16 (d42ebf9c, the FLUX.3 prompt upsampler block,
+# huggingface/diffusers#15058), which carries that merge; past it only FLUX.3 files changed. Studio drops the
+# upsampler step from the blocks (diffusion_flux3.flux3_blocks). Comment the line out again (and empty
+# _UNRELEASED_MIN_DIFFUSERS) once a release carries it.
 #
 # A pinned commit of Diffusers main, for models whose support has merged upstream but has not
 # reached a release yet. The last one was Qwen-Image-2.1: it merged on 2026-09-18, four weeks after
@@ -24,8 +26,8 @@
 # ``_direct_reference_is_installed`` compares what is recorded in direct_url.json and needs no
 # network, while a branch ref costs a git ls-remote on every pass.
 #
-# This exact commit is the tree the Qwen-Image-2.1 FP8 and INT8 artifacts were built and measured
-# against, so what a user gets is what was tested, not "whatever main was that day".
+# This exact commit is the tree FLUX.3 Klein was rendered and compared against in Studio, so what a
+# user gets is what was tested, not "whatever the branch was that day".
 #
 # Why the URL still says git+ when most hosts have no git. It is the requirement, not the transport:
 # a host with no working git installs the same commit from
@@ -37,7 +39,7 @@
 # Unlike a clone, an archive's bytes are not checked against the commit, so pip and uv verify this
 # SHA-256 before building; no digest line means no zip route. Bump it with the commit:
 #   curl -sL https://github.com/huggingface/diffusers/archive/<commit>.zip | sha256sum
-# archive-sha256: 7b0d00b5b44f5ca1745d477ae4a0c2da125d58b89cff8470c422d3181a797a09
+# archive-sha256: c46925a12c1b64340272dbd4c5d72a4298ecd4c96cad2c9d549b85a99ffb491f
 #
 # Retiring a pin: bump diffusers-pin.txt to the release and comment the line out (done for 0.41.0).
-# diffusers @ git+https://github.com/huggingface/diffusers.git@80c7ed262aeffbeb43ef13ae04baeb9b84515a69
+diffusers @ git+https://github.com/huggingface/diffusers.git@d42ebf9c6e0b46103b74283f5324357a67acaa04
