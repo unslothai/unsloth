@@ -721,7 +721,15 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       } catch (error) {
         teardown();
         console.error("Voice mic error:", error);
-        toast.error("Could not access the microphone for dictation.");
+        const name = error instanceof Error ? error.name : "";
+        const message = error instanceof Error ? error.message : String(error);
+        voiceTrace("session.error", { name, message, ended });
+        // A session cancelled while the mic was still opening is not a mic fault.
+        if (!ended) {
+          toast.error("Could not access the microphone for dictation.", {
+            description: name ? `${name}: ${message}` : message,
+          });
+        }
         finish("error");
       }
     })();

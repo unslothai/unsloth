@@ -11,10 +11,19 @@ let probe: Promise<boolean> | null = null;
 
 async function check(): Promise<boolean> {
   if (enabled !== null) return enabled;
+  // A probe that fails (the backend still starting after a relaunch) is not an
+  // answer: leave it unknown so the next event asks again.
   probe ??= authFetch("/api/inference/voice/models/status")
-    .then(async (r) => (r.ok ? Boolean(((await r.json()) as { trace?: boolean }).trace) : false))
-    .catch(() => false)
-    .then((on) => (enabled = on));
+    .then(async (r) => {
+      if (!r.ok) return null;
+      return Boolean(((await r.json()) as { trace?: boolean }).trace);
+    })
+    .catch(() => null)
+    .then((on) => {
+      probe = null;
+      if (on !== null) enabled = on;
+      return on ?? false;
+    });
   return probe;
 }
 
