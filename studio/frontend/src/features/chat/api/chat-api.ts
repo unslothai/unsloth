@@ -270,7 +270,7 @@ function parseErrorText(status: number, body: unknown): string {
  *  which commits the status early: a later failure can only arrive as `_deferred_error`. */
 function deferredError(
   body: unknown,
-): { status: number; message: string } | null {
+): { status: number; message: string; detail: unknown } | null {
   const deferred =
     body && typeof body === "object"
       ? (
@@ -285,7 +285,19 @@ function deferredError(
   return {
     status,
     message: parseErrorText(status, { detail: deferred.detail }),
+    detail: deferred.detail,
   };
+}
+
+/** Keeps the server's `detail`, so a structured audio.cpp failure (`{code, message}`) reaches the caller. */
+export class LoadModelError extends Error {
+  readonly status: number;
+  readonly detail: unknown;
+  constructor(message: string, status: number, detail: unknown) {
+    super(message);
+    this.status = status;
+    this.detail = detail;
+  }
 }
 
 /** `paddedLabel` opts a caller into `assertCompletedPaddedBody`; only the two padded routes may,
@@ -296,11 +308,12 @@ async function parseJsonOrThrow<T>(
 ): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(parseErrorText(response.status, body));
+    const detail = (body as { detail?: unknown } | null)?.detail;
+    throw new LoadModelError(parseErrorText(response.status, body), response.status, detail);
   }
   const deferred = deferredError(body);
   if (deferred) {
-    throw new Error(deferred.message);
+    throw new LoadModelError(deferred.message, deferred.status, deferred.detail);
   }
   if (paddedLabel !== undefined) {
     assertCompletedPaddedBody(body, paddedLabel);

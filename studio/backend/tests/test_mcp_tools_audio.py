@@ -284,8 +284,8 @@ def test_small_audio_runs_on_the_loaded_non_transformers_model(monkeypatch):
 
 
 SEGMENTS = [
-    {"start": 0.0, "end": 1.2, "text": "Hello"},
-    {"start": 1.2, "end": 2.0, "text": "from Studio."},
+    {"start": 0.0, "end": 1.2, "text": "Hello", "speaker": None},
+    {"start": 1.2, "end": 2.0, "text": "from Studio.", "speaker": None},
 ]
 
 
@@ -427,7 +427,10 @@ def test_a_stored_clip_is_transcribed_by_id_with_the_loaded_model(
         "text": "A long meeting.",
         "language": "en",
         "model": model,
-        "segments": [{"start": 0.0, "end": 5.0, "text": "A long meeting."}] if timestamps else None,
+        "segments": [{"start": 0.0, "end": 5.0, "text": "A long meeting.", "speaker": None}]
+        if timestamps
+        else None,
+        "match_score": None,
         "saved_to_history": True,
     }
     extra = {"language": "en"} if "language" in args else {}

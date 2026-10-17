@@ -9,11 +9,13 @@ import {
   fetchAudioBlob,
   runAudio,
 } from "../api";
+import { reportAudioFailure } from "../audio-failure-actions";
 import {
   type AudioOptionValues,
   audioOptionLabel,
   audioOptionSpecsFor,
   audioOptionsForRequest,
+  ignoredOptionsWarning,
   missingRequiredAudioOptions,
 } from "../audio-options";
 import { persistedClipForGeneration } from "../audio-page-policy";
@@ -22,7 +24,12 @@ import {
   selectionExpired,
   sourceRefOf,
 } from "../audio-run-request";
-import { cloneBlocker, referenceTextField } from "../clone-policy";
+import { audioModelLabel } from "../audio-workspace-utils";
+import {
+  cloneBlocker,
+  referenceTextField,
+  shouldAutoTranscribeReference,
+} from "../clone-policy";
 import type { AudioSourceInputHandle } from "../components/audio-source-input";
 import type { GenerateBlocker } from "../pages/tts-workspace";
 import { useAudioCloneStore } from "../stores/audio-clone-store";
@@ -31,6 +38,7 @@ import {
   audioModelContextFor,
   claimedOptionNames,
   collectToolRequest,
+  readsRequestInput,
   toolValueKey,
 } from "../tools/select";
 import type { AudioHostState } from "./audio-host-state";
@@ -43,6 +51,17 @@ import { useReferenceTranscribe } from "./use-reference-transcribe";
 
 export const CLONE_TEXT_FIELD_ID = "clone-text";
 export const CLONE_REFERENCE_TEXT_FIELD_ID = "clone-reference-text";
+
+export function warnIgnoredOptions(
+  names: readonly string[] | undefined,
+  model: string | null | undefined,
+): void {
+  const message = ignoredOptionsWarning(
+    names ?? [],
+    model ? audioModelLabel(model) : "This model",
+  );
+  if (message) toast.warning(message);
+}
 
 export async function showRunResult({
   response,
@@ -60,6 +79,7 @@ export async function showRunResult({
   AudioGallery,
   "refreshGallery" | "selectClip" | "setFallbackClip" | "setSelectedId"
 >): Promise<void> {
+  warnIgnoredOptions(response.ignored_options, response.model);
   // An edit whose output was not saved returns only its source clip: play the inline audio.
   // Other runs name their clips by role (variation, edit, a stem): the first one is the result.
   const clip =
@@ -121,6 +141,7 @@ export function useCloneGeneration({
   replayQueuedTtsPick,
   audioOptionValues,
   sttRepo,
+  sttReady,
 }: Pick<
   AudioHostState,
   | "status"
@@ -141,6 +162,8 @@ export function useCloneGeneration({
   Pick<AudioModelSlot, "pendingTranscribeRelease" | "replayQueuedTtsPick"> & {
     audioOptionValues: AudioOptionValues;
     sttRepo: string | null;
+    /** The STT model is on disk, so transcribing never starts a download. */
+    sttReady: boolean;
   }) {
   const reference = useAudioCloneStore((state) => state.reference);
   const referenceText = useAudioCloneStore((state) => state.referenceText);
@@ -244,6 +267,8 @@ export function useCloneGeneration({
     [audioOptionSpecs, claimedOptions],
   );
   const transcriptField = referenceTextField(toolContext, toolRequest.patch);
+  // Strict models that read no language (F5, CosyVoice3) get none.
+  const languageShown = readsRequestInput(toolContext, "language");
 
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -256,11 +281,41 @@ export function useCloneGeneration({
     selectionExpired(reference, now) ||
     (reference !== null && reference.id === expiredReferenceId);
 
+  const referenceBusy =
+    referenceStatus.phase === "uploading" ||
+    referenceStatus.phase === "recording";
+  // A model that needs the clip's words transcribes each new reference once by itself.
+  const autoTranscribed = useRef<string | null>(null);
+  const transcribeOnce = transcriber.transcribe;
+  useEffect(() => {
+    if (
+      !reference ||
+      !shouldAutoTranscribeReference({
+        mode: transcriptField,
+        referenceText,
+        referenceId: reference.id,
+        referenceBusy,
+        referenceExpired,
+        sttReady,
+        doneFor: autoTranscribed.current,
+      })
+    )
+      return;
+    autoTranscribed.current = reference.id;
+    void transcribeOnce(reference);
+  }, [
+    reference,
+    transcriptField,
+    referenceText,
+    referenceBusy,
+    referenceExpired,
+    sttReady,
+    transcribeOnce,
+  ]);
+
   const inputBlocker = cloneBlocker({
     reference,
-    referenceBusy:
-      referenceStatus.phase === "uploading" ||
-      referenceStatus.phase === "recording",
+    referenceBusy,
     referenceExpired,
     referenceError:
       referenceStatus.phase === "error" ? referenceStatus.message : null,
@@ -344,7 +399,7 @@ export function useCloneGeneration({
         {
           workflow: "clone",
           text: draftText,
-          language: state.language || null,
+          language: languageShown ? state.language || null : null,
           instructions: patch.instructions ?? null,
           inputs: {
             reference: sourceRefOf(state.reference),
@@ -375,6 +430,7 @@ export function useCloneGeneration({
     } catch (error) {
       if (!controller.signal.aborted) {
         updateGenerationPhase("finishing");
+        reportAudioFailure(error);
         const expired =
           error instanceof AudioApiError &&
           error.status === 404 &&
@@ -417,6 +473,7 @@ export function useCloneGeneration({
     toolRequest,
     generateAbort,
     transcriptField,
+    languageShown,
     refreshGallery,
     selectClip,
     setFallbackClip,
@@ -441,6 +498,7 @@ export function useCloneGeneration({
     setReferenceStatus,
     referenceExpired,
     transcriptField,
+    languageShown,
     transcriber,
     toolContext,
     toolPanels,

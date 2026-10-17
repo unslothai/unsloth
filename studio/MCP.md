@@ -243,7 +243,8 @@ api_key_format = "Bearer {token}"
 | `system_one` | Ask the Decision API typed questions. The Decision API must be on. |
 | `generate_image` | Text to image, image to image, inpaint, edit, outpaint and upscale. |
 | `generate_audio` | Clone, speak, edit, convert, music and separate. |
-| `transcribe` | Speech to text, or translation to English. |
+| `transcribe` | Speech to text, or translation to English; `speakers` labels who speaks, and `expected_text` adds a match score. |
+| `analyze_audio` | A clip's duration, loudness, true peak, clipping and speech span, plus a match score against `expected_text`. |
 | `generate_video` | Start a video. Poll it with `get_job`. |
 | `get_job` | The state of a video, recipe or export job. |
 | `run_recipe` | Validate, preview or run a Data Recipe. |

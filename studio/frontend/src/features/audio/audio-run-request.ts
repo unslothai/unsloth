@@ -165,6 +165,9 @@ export interface AudioTextRunRequest {
   speed?: number | null;
   seed?: number | null;
   max_tokens?: number | null;
+  /** One take of a sequential music run: 1-based, with the run's 32-hex group id. */
+  take?: number | null;
+  group_id?: string | null;
 }
 
 function cleanRef(
@@ -268,6 +271,8 @@ export function buildAudioRunBody(
     body.max_tokens = request.max_tokens;
   if (request.workflow === "music" && request.music) {
     Object.assign(body, musicRunFields(request.music));
+    if (Number.isInteger(request.take) && request.group_id)
+      Object.assign(body, { take: request.take, group_id: request.group_id });
   }
   return body;
 }

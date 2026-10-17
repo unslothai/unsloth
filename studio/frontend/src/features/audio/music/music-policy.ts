@@ -360,3 +360,51 @@ function editSourceRef(source: AudioSourceSelection | null) {
   if (!source || source.kind === "voice") return null;
   return sourceRefOf(source);
 }
+
+/** The id one run's takes share, as the server expects it: 32 lowercase hex digits. */
+export function newMusicGroupId(): string {
+  return crypto.randomUUID().replace(/-/g, "");
+}
+
+/** Sequential variations go one request per take, so Stop keeps the finished takes. Later takes
+ *  reuse take 1's seed (the server offsets it by take); batch and single takes stay one request. */
+export async function runMusicTakes<
+  R extends { clips: readonly { seed?: number | null }[] },
+>({
+  request,
+  count,
+  how,
+  run,
+  onTake,
+  onStatus,
+  signal,
+  groupId = newMusicGroupId(),
+}: {
+  request: AudioTextRunRequest;
+  count: number;
+  how: "batch" | "sequential" | null;
+  run: (request: AudioTextRunRequest) => Promise<R>;
+  onTake: (response: R) => Promise<void>;
+  onStatus: (status: string) => void;
+  signal?: AbortSignal;
+  groupId?: string;
+}): Promise<void> {
+  if (how !== "sequential" || count <= 1 || !request.music) {
+    await onTake(await run(request));
+    return;
+  }
+  let seed: number | null = null;
+  for (let take = 1; take <= count; take++) {
+    if (signal?.aborted) return;
+    onStatus(`Take ${take} of ${count}…`);
+    const response = await run({
+      ...request,
+      ...(seed !== null ? { seed } : {}),
+      music: { ...request.music, variations: 1 },
+      take,
+      group_id: groupId,
+    });
+    if (take === 1) seed = response.clips[0]?.seed ?? null;
+    await onTake(response);
+  }
+}

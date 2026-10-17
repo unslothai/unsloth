@@ -714,3 +714,19 @@ def test_legacy_music_never_asks_past_the_page_maximum():
     medium = _backend(_model("stable_audio", "Stable-Audio-3-Medium-GGUF", strict = False))
     medium.generate_audio_response("ambient", instructions = "ambient", max_new_tokens = 4500)
     assert _request(medium)["duration_seconds"] == 180.0
+
+
+@pytest.mark.parametrize(
+    "seed, take, options, sent",
+    [
+        (40, 2, None, "42"),
+        (40, None, None, "40"),
+        (2**31 - 1, 1, None, "0"),
+        (None, None, {"seed": "12"}, "12"),
+    ],
+)
+def test_a_take_is_seeded_seed_plus_take_and_a_typed_seed_skips_options(seed, take, options, sent):
+    b = _backend(_model("controlfoley"))
+    _run(b, mode = "sfx", text = "door", seed = seed, take = take, options = options)
+    assert _request(b)["seed"] == sent and "seed" not in (_request(b).get("options") or {})
+    assert b.last_generation_stats == {"seed": int(sent), "ignored_options": []}

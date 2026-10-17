@@ -30,6 +30,7 @@ from .mcp_harness import (
     poison,
     served,
 )
+from .test_mcp_audio_reports import ANALYZE_PAYLOADS
 from .test_mcp_tools_audio import PAYLOADS as AUDIO_PAYLOADS
 from .test_mcp_tools_audio import TRANSCRIPT, VERBOSE
 from .test_mcp_tools_cancel import PAYLOADS as CANCEL_PAYLOADS
@@ -100,12 +101,18 @@ CASES: dict[str, Any] = {
         (DATASETS_PAYLOADS, {"action": "check_format", "name": "a/b"}),
         (DATASETS_PAYLOADS, {"action": "status", "repo_id": "a/b"}),
     ],
+    "analyze_audio": (ANALYZE_PAYLOADS, {"audio": WAV_INPUT, "expected_text": "hello"}),
     "transcribe": (TRANSCRIBE_PAYLOADS, {"audio": WAV_INPUT, "timestamps": True, "language": "en"}),
     "generate_audio": (AUDIO_PAYLOADS, {"workflow": "clone", "text": "hi", "reference": WAV_INPUT}),
 }
 
 # Output keys that carry model-written text, which is the model's to say and is never rewritten.
-MODEL_TEXT = {"chat": {"text"}, "transcribe": {"text"}, "get_job": {"data_rows"}}
+MODEL_TEXT = {
+    "chat": {"text"},
+    "transcribe": {"text"},
+    "get_job": {"data_rows"},
+    "analyze_audio": {"transcript"},
+}
 
 
 def leaks(result: dict, ignore: frozenset = frozenset()) -> Optional[str]:
@@ -131,7 +138,7 @@ def run_case(monkeypatch, mcp, name: str, routes: dict, args: dict) -> dict:
 def test_every_registered_tool_has_a_host_path_case():
     names = {tool.name for tool in asyncio.run(create_studio_mcp().list_tools())}
     assert set(MODEL_TEXT) <= set(CASES) == names
-    assert len(names) == 18
+    assert len(names) == len(CASES)
 
 
 @pytest.mark.parametrize("name", sorted(CASES))

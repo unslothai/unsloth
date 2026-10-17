@@ -65,7 +65,10 @@ import {
   audioCapabilityLine,
   audioModelsForTask,
   isMusicGenerationModel,
+  musicGenerationRequiresCuda,
 } from "./catalog";
+import { audioFailureActions } from "./audio-failure-actions";
+import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import type { ClipSendHandlers } from "./components/clip-card";
 import { sendClipToMusic } from "./components/music-send-to";
 import { SaveVoiceDialog } from "./components/save-voice-dialog";
@@ -489,6 +492,9 @@ export function AudioPage({
     pendingTranscribeRelease,
     handleModelSelect,
     pickRecommendedModel,
+    pickModelVariant,
+    reloadOnCpu,
+    setLoadFailureHandlers,
     handleEject,
     trainedTtsModels,
   } = useAudioModelSlot({
@@ -638,6 +644,11 @@ export function AudioPage({
     downloadedSttArtifacts[0]?.repoId ??
     lastSttRepo ??
     null;
+  const cloneSttReady =
+    cloneSttRepo !== null &&
+    downloadedSttArtifacts.some(
+      (artifact) => artifact.repoId.toLowerCase() === cloneSttRepo.toLowerCase(),
+    );
   const clone = useCloneGeneration({
     status,
     busyRef,
@@ -657,6 +668,7 @@ export function AudioPage({
     replayQueuedTtsPick,
     audioOptionValues,
     sttRepo: cloneSttRepo,
+    sttReady: cloneSttReady,
   });
   const convert = useConvertGeneration({
     status,
@@ -911,6 +923,26 @@ export function AudioPage({
     },
     [transitionWorkflow, setPrompt],
   );
+  const handleReuseSeed = useCallback(
+    (seed: number) => {
+      const specs =
+        ttsWorkflow === "clone" ? clone.audioOptionSpecs : audioOptionSpecs;
+      if (!specs.some((spec) => spec.name === "seed")) {
+        toast.info("This model doesn't take a seed.");
+        return;
+      }
+      handleAudioOptionChange("seed", seed);
+      setAdvancedOpen(true);
+      toast.success(`Seed ${seed} set for the next take.`);
+    },
+    [
+      ttsWorkflow,
+      clone.audioOptionSpecs,
+      audioOptionSpecs,
+      handleAudioOptionChange,
+      setAdvancedOpen,
+    ],
+  );
   const [voiceClip, setVoiceClip] = useState<{
     id: string;
     name: string;
@@ -1059,6 +1091,34 @@ export function AudioPage({
     onClick: () => transitionWorkflow(loadedModelHome),
   };
   const openSelector = useCallback(() => setSelectorOpen(true), []);
+  const audioFailure = useAudioWorkspaceStore((state) => state.failure);
+  const setAudioFailure = useAudioWorkspaceStore((state) => state.setFailure);
+  const { status: runtimeUpdate, apply: applyRuntimeUpdate } =
+    useLlamaUpdateCheck({ enabled: active });
+  const handleUpdateRuntime = useCallback(async () => {
+    const result = await applyRuntimeUpdate();
+    if (result.ok) {
+      toast.success("Audio runtime updated. Load the model again.");
+      setAudioFailure(null);
+      await refreshStatus();
+    } else {
+      toast.error(`Update failed: ${result.error ?? "unknown error"}`);
+    }
+  }, [applyRuntimeUpdate, refreshStatus, setAudioFailure]);
+  const handleUseCpu = useCallback(() => {
+    setAudioDeviceState("cpu");
+    if (!reloadOnCpu()) openSelector();
+  }, [setAudioDeviceState, reloadOnCpu, openSelector]);
+  const canUpdateRuntime = runtimeUpdate?.audio?.update_available === true;
+  const onUpdateRuntime = () => void handleUpdateRuntime();
+  useEffect(() => {
+    setLoadFailureHandlers({
+      canUpdateRuntime,
+      onUpdateRuntime,
+      onChooseModel: openSelector,
+      selectCpuDevice: () => setAudioDeviceState("cpu"),
+    });
+  });
   const chooseModelAction = { label: "Choose a model", onClick: openSelector };
   const handlePickRecommended = useCallback(
     (id: string) => void pickRecommendedModel(id),
@@ -1272,12 +1332,28 @@ export function AudioPage({
         : musicStudio
           ? music.generationError
         : generationError;
+  const activeModel = status?.active_model;
   const generateFailure: GenerateBlocker | null = pageGenerationError
     ? {
         reason: /[.!?]$/.test(pageGenerationError)
           ? pageGenerationError
           : `${pageGenerationError}.`,
-        actions: [{ label: "Choose a different model", onClick: openSelector }],
+        actions: audioFailureActions(
+          audioFailure?.message === pageGenerationError
+            ? audioFailure.failure
+            : null,
+          {
+            canUpdateRuntime,
+            onUpdateRuntime,
+            onChooseModel: openSelector,
+            deviceIsCpu: audioDevice === "cpu",
+            cpuUnsupported: musicGenerationRequiresCuda(activeModel, status?.audio_type),
+            onUseCpu: handleUseCpu,
+            onUseVariant: (variant) => {
+              if (activeModel) void pickModelVariant(activeModel, variant);
+            },
+          },
+        ),
       }
     : null;
   const setCloneGenerationError = clone.setGenerationError;
@@ -1286,6 +1362,7 @@ export function AudioPage({
   const setSeparateGenerationError = separate.setGenerationError;
   const setMusicGenerationError = music.setGenerationError;
   useEffect(() => {
+    setAudioFailure(null);
     setGenerationError(null);
     setCloneGenerationError(null);
     setEditGenerationError(null);
@@ -1294,6 +1371,7 @@ export function AudioPage({
     setMusicGenerationError(null);
   }, [
     status?.active_model,
+    setAudioFailure,
     setGenerationError,
     setCloneGenerationError,
     setEditGenerationError,
@@ -1302,6 +1380,7 @@ export function AudioPage({
     setMusicGenerationError,
   ]);
   useEffect(() => {
+    if (busy === "generating") setAudioFailure(null);
     if (busy === "generating") setGenerationError(null);
     if (busy === "generating") setCloneGenerationError(null);
     if (busy === "generating") setEditGenerationError(null);
@@ -1310,6 +1389,7 @@ export function AudioPage({
     if (busy === "generating") setMusicGenerationError(null);
   }, [
     busy,
+    setAudioFailure,
     setGenerationError,
     setCloneGenerationError,
     setEditGenerationError,
@@ -2140,6 +2220,7 @@ export function AudioPage({
                   handleArchiveClip,
                   handleDownloadClipById,
                   onUseTextAgain: handleUseTextAgain,
+                  onReuseSeed: handleReuseSeed,
                   handleCopyPrompt,
                   freshClipId,
                   onFreshClipFocused: clearFreshClip,

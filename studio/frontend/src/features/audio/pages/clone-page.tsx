@@ -96,6 +96,7 @@ function CloneInputs({
           id="clone-reference"
           label="Reference"
           hint="5 to 15 s of one clear voice works best."
+          idealSeconds={[5, 15]}
           value={reference}
           onChange={adoptReference}
           disabled={disabled}
@@ -203,13 +204,15 @@ function CloneInputs({
           </div>
         )}
       </div>
-      <LanguageSelect
-        id="clone-language"
-        label="Language"
-        value={clone.language}
-        onChange={setLanguage}
-        hint="The language of the text to speak. Auto lets the model tell."
-      />
+      {clone.languageShown ? (
+        <LanguageSelect
+          id="clone-language"
+          label="Language"
+          value={clone.language}
+          onChange={setLanguage}
+          hint="The language of the text to speak. Auto lets the model tell."
+        />
+      ) : null}
     </AudioHistoryProvider>
   );
 }
