@@ -6,6 +6,7 @@ import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { splitIntoSentences, stripForSpeech } from "../voice/speech-text";
+import { planTtsChunk } from "../voice/tts-chunk-plan";
 import { getVoicePlayContext } from "../voice/voice-loop-bridge";
 import { outputSpectrumNode } from "../voice/voice-spectrum";
 import { voiceTrace } from "../voice/voice-trace";
@@ -71,9 +72,9 @@ interface Stream {
 }
 
 /**
- * Speaks a reply sentence by sentence through voice mode's audio.cpp voice while the
- * LLM is still writing it. Each sentence is one /audio/generate call; clips play in
- * order on one AudioContext playhead.
+ * Speaks a reply through voice mode's audio.cpp voice while the LLM is still
+ * writing it. The first sentence is one /audio/generate call; later sentences are
+ * merged per planTtsChunk. Clips play in order on one AudioContext playhead.
  */
 export function useTtsPlayer(onPlaybackEnd?: () => void): {
   isSpeaking: boolean;
@@ -223,6 +224,8 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     async (reqId: number) => {
       const live = () => reqRef.current === reqId;
       const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+      let first = true;
+      let waitSince: number | null = null;
       for (;;) {
         const st = streamRef.current;
         if (!live() || !st) return;
@@ -231,21 +234,37 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
             await sleep(40);
             continue;
           }
-          const sentence = stripForSpeech(st.sentences[st.next] ?? "");
-          st.next++;
-          if (!sentence) continue;
+          const pending = st.sentences.slice(st.next).map(stripForSpeech);
+          const take = planTtsChunk({
+            pending,
+            first,
+            final: st.final,
+            playing: clipsRef.current.size > 0,
+            waitedMs: waitSince === null ? 0 : performance.now() - waitSince,
+          });
+          if (take === 0) {
+            waitSince ??= performance.now();
+            await sleep(40);
+            continue;
+          }
+          waitSince = null;
+          const i = st.next;
+          st.next += take;
+          const text = pending.slice(0, take).filter(Boolean).join(" ");
+          if (!text) continue;
+          first = false;
           try {
-            voiceTrace("tts.sentence", { i: st.next - 1, text: sentence });
-            const buffer = await synthesize(sentence, reqId);
+            voiceTrace("tts.sentence", { i, sentences: take, chars: text.length, text });
+            const buffer = await synthesize(text, reqId);
             if (!live()) return;
             if (buffer) {
-              voiceTrace("tts.clip", { i: st.next - 1, seconds: Math.round(buffer.duration * 100) / 100 });
+              voiceTrace("tts.clip", { i, sentences: take, seconds: Math.round(buffer.duration * 100) / 100 });
               schedule(buffer);
             }
           } catch (error) {
             if (!live()) return;
             voiceTrace("tts.error", {
-              i: st.next - 1,
+              i,
               message: error instanceof Error ? error.message : String(error),
             });
             // One toast per reply: a voice that is down fails every sentence.
