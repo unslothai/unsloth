@@ -343,6 +343,7 @@ from datetime import datetime
 
 from routes import (
     auth_router,
+    oidc_router,
     chat_history_router,
     data_recipe_router,
     datasets_router,
@@ -1805,6 +1806,7 @@ from auth.x_api_key import XApiKeyMiddleware  # noqa: E402
 app.add_middleware(XApiKeyMiddleware)
 
 app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
+app.include_router(oidc_router, prefix = "/api/auth/oidc", tags = ["auth"])
 app.include_router(
     __import__("routes.accounts", fromlist = ["router"]).router,
     prefix = "/api/accounts",
