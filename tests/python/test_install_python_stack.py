@@ -7,6 +7,7 @@ import contextlib
 import importlib
 import inspect
 import io
+import threading
 import os
 import re
 import shutil
@@ -1104,6 +1105,53 @@ class TestProgressLineNotes:
         assert msg not in bar_lines[0], f"note glued onto the bar: {bar_lines[0]!r}"
         assert any(ln.strip() == msg for ln in out.split("\n")), out
 
+    def _heartbeat(self, *, tty: bool, beats: int) -> str:
+        """Run the flash-attn heartbeat around work that lasts ``beats`` ticks."""
+        seen = threading.Event()
+        count = [0]
+        real_draw, real_note = ips._draw_progress, ips._note
+
+        def counted(real):
+            def wrapper(*args, **kwargs):
+                real(*args, **kwargs)
+                if threading.current_thread().name == "flash-attn-heartbeat":
+                    count[0] += 1
+                    if count[0] >= beats:
+                        seen.set()
+
+            return wrapper
+
+        def emit():
+            ips._progress("flash-attn")
+            with ips._install_heartbeat("flash-attn"):
+                assert seen.wait(10), "the heartbeat never fired"
+
+        with (
+            mock.patch.object(ips, "_stdout_is_tty", return_value = tty),
+            mock.patch.object(ips, "_HEARTBEAT_TICK_SECONDS", 0.01),
+            mock.patch.object(ips, "_HEARTBEAT_NOTE_SECONDS", 0.01),
+            mock.patch.object(ips, "_draw_progress", counted(real_draw)),
+            mock.patch.object(ips, "_note", counted(real_note)),
+        ):
+            return self._render(emit)
+
+    def test_captured_install_gets_a_still_installing_note(self):
+        out = self._heartbeat(tty = False, beats = 2)
+        notes = [ln.strip() for ln in out.split("\n") if "still installing" in ln]
+        assert notes[:2] == ["still installing flash-attn (0 min)"] * 2, out
+        bar_lines = [ln for ln in out.split("\n") if "5/14" in ln]
+        assert all("still installing" not in ln for ln in bar_lines), bar_lines
+
+    def test_terminal_install_redraws_elapsed_time_on_the_bar_line(self):
+        out = self._heartbeat(tty = True, beats = 2)
+        assert "\n" not in out, "the heartbeat must stay on the bar line"
+        frames = out.split("\r")[1:]
+        assert all(" 5/14  flash-attn" in frame for frame in frames), frames
+        assert "flash-attn 0:00" in frames[1]
+        # Finished: the plain label again, padded over the elapsed time.
+        assert frames[-1].rstrip().endswith("flash-attn")
+        assert len(frames[-1]) >= max(len(frame) for frame in frames[1:-1])
+
     def test_note_aligns_under_the_step_value_column(self):
         out = self._render(lambda: (ips._progress("dependency overrides"), ips._note("hello")))
         note_line = next(ln for ln in out.split("\n") if ln.strip() == "hello")
@@ -1186,7 +1234,7 @@ class TestProgressLineNotes:
         allowed = [
             (n.lineno, n.end_lineno)
             for n in ast.walk(tree)
-            if isinstance(n, ast.FunctionDef) and n.name in {"_progress", "_end_progress_line"}
+            if isinstance(n, ast.FunctionDef) and n.name in {"_draw_progress", "_end_progress_line"}
         ]
         offenders = [
             n.lineno
@@ -1201,7 +1249,7 @@ class TestProgressLineNotes:
         ]
         assert not offenders, (
             f"install_python_stack.py:{offenders} write to sys.stdout directly; "
-            "only _progress()/_end_progress_line() may, everything else uses _safe_print()"
+            "only _draw_progress()/_end_progress_line() may, everything else uses _safe_print()"
         )
 
     def test_no_message_starts_with_a_newline(self):

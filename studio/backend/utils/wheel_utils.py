@@ -12,7 +12,9 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Callable
 
@@ -478,6 +480,59 @@ def flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
     )
 
 
+_WHEEL_FILENAME_FIELD_RE = re.compile(r"[A-Za-z0-9._+!]+")
+# Each picks the directory uv discovers its project config from; --project would override it.
+_UV_PROJECT_DIR_ENV = ("UV_PROJECT", "UV_WORKING_DIR", "UV_WORKING_DIRECTORY")
+
+
+def _uv_project_config_found() -> bool:
+    """Whether uv would find a project config from the cwd, which --project elsewhere drops."""
+    try:
+        directory = os.getcwd()
+    except OSError:
+        return True
+    while True:
+        if os.path.isfile(os.path.join(directory, "uv.toml")):
+            return True
+        try:
+            with open(os.path.join(directory, "pyproject.toml"), encoding = "utf-8") as fh:
+                if "[tool.uv" in fh.read():
+                    return True
+        except (OSError, UnicodeDecodeError):
+            pass
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            return False
+        directory = parent
+
+
+def _uv_static_metadata_config(wheel_url: str, config_dir: str) -> bool:
+    """Write a uv.toml into ``config_dir`` that gives uv the wheel's metadata; True if written.
+
+    uv's ranged METADATA read fails on GitHub release assets, so it downloads the wheel twice
+    (astral-sh/uv#18998). --no-deps makes the empty requires-dist exact.
+    """
+    if os.environ.get("UV_CONFIG_FILE") or os.environ.get("UV_NO_CONFIG"):
+        return False
+    if any(os.environ.get(name) for name in _UV_PROJECT_DIR_ENV) or _uv_project_config_found():
+        return False
+    filename = urllib.parse.unquote(urllib.parse.urlsplit(wheel_url).path.rsplit("/", 1)[-1])
+    fields = filename[: -len(".whl")].split("-") if filename.endswith(".whl") else []
+    if len(fields) not in (5, 6) or not all(
+        _WHEEL_FILENAME_FIELD_RE.fullmatch(f) for f in fields[:2]
+    ):
+        return False
+    name, version = fields[0].replace("_", "-").lower(), fields[1].lower()
+    with open(os.path.join(config_dir, "uv.toml"), "w", encoding = "utf-8") as fh:
+        fh.write(
+            "[[dependency-metadata]]\n"
+            f'name = "{name}"\n'
+            f'version = "{version}"\n'
+            "requires-dist = []\n"
+        )
+    return True
+
+
 def install_wheel(
     wheel_url: str,
     *,
@@ -498,15 +553,22 @@ def install_wheel(
         if reinstall:
             uv_cmd.append("--reinstall")
         uv_cmd.append(wheel_url)
-        result = run(
-            uv_cmd,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            env = child_env_without_native_path_secret(),
-        )
+        config_dir = tempfile.mkdtemp(prefix = "unsloth-uv-")
+        try:
+            # --project, not cwd, so relative paths such as UV_CACHE_DIR still resolve here.
+            if _uv_static_metadata_config(wheel_url, config_dir):
+                uv_cmd[1:1] = ["--project", config_dir]
+            result = run(
+                uv_cmd,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                env = child_env_without_native_path_secret(),
+            )
+        finally:
+            shutil.rmtree(config_dir, ignore_errors = True)
         attempts.append(("uv", result))
         if result.returncode == 0:
             return attempts
