@@ -9524,6 +9524,8 @@ def test_gguf_plan_budgets_a_pre_cast_text_encoder_at_its_real_size(
         gguf_filename = "model.gguf",
         base_repo = "Lightricks/LTX-2",
         family_override = "ltx-2",
+        # Pinned dense: unset now takes the family's hosted fp8 encoder.
+        text_encoder_quant = "none",
     )
     bf16_companion = calls[0]["companion_dense_mib"]
     bf16_dense = calls[0]["model_dense_mib"]
@@ -9574,18 +9576,46 @@ def test_plan_returns_to_bf16_when_the_pre_cast_encoder_does_not_inject(fake_run
 
 
 def test_plan_keeps_the_bf16_budget_without_a_hosted_pre_cast_encoder(fake_runtime, monkeypatch):
-    # Wan requests fp8 the same way, but hosts no pre-cast checkpoint: the encoder is downloaded
-    # dense and cast in place AFTER assembly, so its PEAK is bf16 and the budget must not shrink.
+    # A family that requests fp8 the same way but hosts no pre-cast checkpoint: the encoder is
+    # downloaded dense and cast in place AFTER assembly, so its PEAK is bf16 and the budget must not
+    # shrink. Every shipped generic-path family now hosts one, so the table entry is dropped here.
+    import dataclasses
+
+    import core.inference.video_families as vf
     from core.inference.video_families import detect_video_family
 
     _allow_te_prequant(monkeypatch)
-    components = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers").bf16_components_gb
+    wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    bare = dataclasses.replace(wan, te_prequant_repos = (), te_quant_auto = None)
+    monkeypatch.setattr(vf, "_FAMILIES", tuple(bare if f is wan else f for f in vf._FAMILIES))
+    import core.inference.diffusion_te_prequant as tpq
+
+    monkeypatch.setattr(tpq, "TE_INT8_CONVROT_FILES", {})
+    components = wan.bf16_components_gb
 
     calls = _capture_plan(monkeypatch)
     VideoBackend().load_pipeline(
         "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", text_encoder_quant = "fp8"
     )
     assert calls[0]["model_dense_mib"] == int(sum(components) * _MIB_PER_GB)
+
+
+def test_default_load_budgets_the_hosted_encoder_its_family_defaults_to(fake_runtime, monkeypatch):
+    # An UNSET request on a family with te_quant_auto takes the hosted fp8 encoder, so the plan is
+    # built from the pre-cast size, exactly as for an explicit fp8; "none" keeps the bf16 budget.
+    from core.inference.video_families import detect_video_family
+    scale = _allow_te_prequant(monkeypatch)
+    for repo in ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"):
+        fam = detect_video_family(repo)
+        transformer_gb, text_encoder_gb, vae_gb = fam.bf16_components_gb
+        calls = _capture_plan(monkeypatch)
+        VideoBackend().load_pipeline(repo, model_kind = "pipeline")
+        assert calls[0]["text_encoder_dense_mib"] == int(
+            text_encoder_gb * scale * _MIB_PER_GB
+        ), repo
+        calls = _capture_plan(monkeypatch)
+        VideoBackend().load_pipeline(repo, model_kind = "pipeline", text_encoder_quant = "none")
+        assert calls[0]["text_encoder_dense_mib"] == int(text_encoder_gb * _MIB_PER_GB), repo
 
 
 def test_plan_is_unchanged_when_no_text_encoder_quant_is_requested(fake_runtime, monkeypatch):
@@ -9605,13 +9635,24 @@ def test_plan_is_unchanged_when_no_text_encoder_quant_is_requested(fake_runtime,
         if fam.modular_workflow:
             continue
         calls.clear()
-        VideoBackend().load_pipeline(fam.base_repo, model_kind = "pipeline")
+        # "none": a family with te_quant_auto takes its hosted encoder on an unset request, which
+        # test_default_load_budgets_the_hosted_encoder_its_family_defaults_to covers.
+        VideoBackend().load_pipeline(
+            fam.base_repo,
+            model_kind = "pipeline",
+            text_encoder_quant = "none" if fam.te_quant_auto else None,
+        )
         # LTX-2.5's encoder runs in a second process; its CUDA context is priced on top of the table.
         from core.inference.video_ltx25 import LTX25_WORKER_RESIDENT_GB
 
         extra_gb = LTX25_WORKER_RESIDENT_GB if fam.name == "ltx-2.5" else 0.0
+        components = list(fam.bf16_components_gb)
+        if fam.name == "ltx-2.5":
+            # LTX-2.5's unset request is its int8 ConvRot encoder (ComfyUI's), so the table's encoder is priced int8.
+            from core.inference.video_ltx25 import LTX25_TE_INT8_GB
+            components[1] = LTX25_TE_INT8_GB
         assert calls[0]["model_dense_mib"] == int(
-            (sum(fam.bf16_components_gb) + extra_gb) * _MIB_PER_GB
+            (sum(components) + extra_gb) * _MIB_PER_GB
         ), fam.name
 
 
@@ -14007,3 +14048,39 @@ def test_a_diffusers_without_the_i2v_class_reports_no_first_frame(fake_runtime):
     with pytest.raises(ValueError, match = "WanImageToVideoPipeline"):
         backend.begin_generate(prompt = "p", first_frame = _data_url(64, 64))
     assert backend.generate_progress()["active"] is False
+
+
+def test_an_automatic_encoder_pick_that_does_not_engage_loads_dense_without_a_refusal(
+    fake_runtime, monkeypatch
+):
+    """Wan's unset request resolves to the hosted fp8 encoder. When nothing engages (the file is not
+    published yet and the stub pipeline has no encoder to cast), the load keeps the dense encoder and
+    reports the raw request; the same outcome on an EXPLICIT fp8 is still refused."""
+    import core.inference.diffusion_precision as precision
+    import core.inference.diffusion_te_prequant as tpq
+    import core.inference.video as video_mod
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", raising = False)
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
+    monkeypatch.setattr(tpq, "te_prequant_pipe_kwargs", lambda *a, **k: {})
+    seen = []
+
+    def _quantize(pipe, target, *, mode, **kw):
+        seen.append(mode)
+        return precision.TEQuantOutcome(None, "no text encoder could be cast", "unsupported")
+
+    monkeypatch.setattr(video_mod, "quantize_text_encoders", _quantize)
+    backend = VideoBackend()
+    status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert seen == ["fp8"]
+    assert status["resolved"]["text_encoder_quant"]["requested"] in (None, "auto")
+    backend.unload()
+    seen.clear()
+    status = VideoBackend().load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", text_encoder_quant = "none"
+    )
+    assert [precision.normalize_te_quant(m) for m in seen] == [None]
+    with pytest.raises(RuntimeError, match = "text_encoder_quant"):
+        VideoBackend().load_pipeline(
+            "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", text_encoder_quant = "fp8"
+        )

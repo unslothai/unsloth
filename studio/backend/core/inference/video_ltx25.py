@@ -84,11 +84,21 @@ TEXT_ENCODER_MIN_TRANSFORMERS = "5.10.1"
 # What the encoder worker holds on the card beyond its weights, on every plan tier: its CUDA context (~0.6 GB on
 # Hopper / Blackwell) plus allocator slack. The weights are the family table's text-encoder term.
 LTX25_WORKER_RESIDENT_GB = 1.0
-# int8 encoder is opt-in: LPIPS 0.310 vs bf16, above the 0.256 compile floor.
+# An unset text_encoder_quant runs the int8 ConvRot encoder, as ComfyUI's LTX-2.5 templates load Lightricks'
+# gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot. "none" / "off" pin the bf16 encoder; UNSLOTH_LTX25_TE_INT8=0 makes
+# an unset request bf16 again (an operator kill switch, not the default).
 LTX25_TE_QUANT_DEFAULT = "int8"
 LTX25_TE_QUANT_ENV = "UNSLOTH_LTX25_TE_INT8"
 # Measured int8 encoder weights (12,424 MiB vs 22,811 MiB bf16).
 LTX25_TE_INT8_GB = 13.1
+# The hosted build of that same at-load quantization (scripts/build_ltx25_te_int8_convrot.py): the worker loads it
+# instead of reading the 23.9 GB bf16 encoder and quantizing it, and the plan drops the dense text_encoder/ shards. A
+# file that cannot be fetched or loaded falls back to the at-load quantization of the dense encoder.
+LTX25_TE_HOSTED_REPO = "unsloth/LTX-2.5-FP8"
+LTX25_TE_HOSTED_FILE = "LTX-2.5-text_encoder-INT8-ConvRot.safetensors"
+LTX25_TE_HOSTED_FORMAT = "unsloth_ltx25_text_encoder_int8_convrot_v1"
+# The base the hosted encoder was cut from: a custom pack can keep the architecture and carry other weights.
+LTX25_TE_HOSTED_BASE = "Lightricks/LTX-2.5-Diffusers"
 # The pack's latent_upsampler/ (995,743,320 bytes), part of the family table's companions; only two-stage loads hold it.
 LTX25_LATENT_UPSAMPLER_GB = 1.0
 
@@ -676,9 +686,9 @@ def ltx25_te_quant_scheme(text_encoder_quant: Optional[str]) -> Optional[str]:
     from .diffusion_precision import normalize_te_quant, te_quant_is_auto
 
     if te_quant_is_auto(text_encoder_quant):
-        if (os.environ.get(LTX25_TE_QUANT_ENV) or "").strip().lower() in ("1", "true", "yes", "on"):
-            return LTX25_TE_QUANT_DEFAULT
-        return None
+        if (os.environ.get(LTX25_TE_QUANT_ENV) or "").strip().lower() in _OFF:
+            return None
+        return LTX25_TE_QUANT_DEFAULT
     scheme = normalize_te_quant(text_encoder_quant)
     if scheme is None or scheme == LTX25_TE_QUANT_DEFAULT:
         return scheme
@@ -686,6 +696,33 @@ def ltx25_te_quant_scheme(text_encoder_quant: Optional[str]) -> Optional[str]:
         f"LTX-2.5's Gemma 4 text encoder runs int8 (ConvRot, as in ComfyUI's LTX-2.5 workflows) or bf16, not "
         f"'{scheme}'. Pick int8 for int8, or leave it unset / Off for bf16."
     )
+
+
+def ltx25_te_prequant_sources(
+    text_encoder_quant: Optional[str], base: Optional[str]
+) -> dict[str, Any]:
+    """``{"text_encoder": source}`` when this load takes the hosted int8 ConvRot encoder, else ``{}``.
+
+    The video backend's pre-cast planner asks this for LTX-2.5, so the hosted file is fetched with the load's progress
+    and cancel, and only a file that resolves drops the dense ``text_encoder/`` shards. Pack loads of the base the file
+    was cut from only: the single-file release reads its text projections out of its own encoder file, and a custom
+    pack may carry other weights. Pure, never raises."""
+    try:
+        if ltx25_te_quant_scheme(text_encoder_quant) != LTX25_TE_QUANT_DEFAULT:
+            return {}
+        if not base or is_ltx25_single_file_base(base):
+            return {}
+        from .diffusion_te_prequant import TePrequantSource, te_base_equivalent
+
+        if not te_base_equivalent(LTX25_TE_HOSTED_BASE, str(base)):
+            return {}
+        return {
+            "text_encoder": TePrequantSource(
+                kind = "repo", location = LTX25_TE_HOSTED_REPO, filename = LTX25_TE_HOSTED_FILE
+            )
+        }
+    except Exception:  # noqa: BLE001 -- no hosted encoder: the worker quantizes the dense one
+        return {}
 
 
 def ltx25_te_budget_scale(text_encoder_quant: Optional[str], bf16_gb: float) -> float:
@@ -703,9 +740,13 @@ def ltx25_te_outcome(client: Any) -> Any:
 
     scheme = (getattr(client, "config", None) or {}).get("te_quant")
     if scheme:
-        return TEQuantOutcome(
-            scheme, "int8 ConvRot weight-only Gemma 4 encoder (ComfyUI's LTX-2.5 encoder)"
-        )
+        source = (getattr(client, "info", None) or {}).get("te_source")
+        detail = "int8 ConvRot weight-only Gemma 4 encoder (ComfyUI's LTX-2.5 encoder)"
+        if source == "hosted":
+            detail += f", loaded from {LTX25_TE_HOSTED_REPO}"
+        elif source == "quantized_at_load":
+            detail += ", quantized at load"
+        return TEQuantOutcome(scheme, detail)
     return TEQuantOutcome(None)
 
 
@@ -774,6 +815,8 @@ class Ltx25TextEncoderClient:
         single_file: Optional[str] = None,
         budget_mib: Optional[int] = None,
         te_quant: Optional[str] = None,
+        te_prequant: Optional[dict] = None,
+        hub_repo: Optional[str] = None,
     ) -> None:
         self.config = {
             "repo": repo,
@@ -790,6 +833,10 @@ class Ltx25TextEncoderClient:
             # The load's memory budget: a non-resident encoder onloads only into what the server leaves of it.
             "budget_mib": budget_mib,
             "te_quant": te_quant,
+            # The hosted int8 file ({repo, filename, mirror_path}) for an int8 load, else None; and the Hub id of the
+            # pack, where the dense fallback reads when ``repo`` is a scoped snapshot that skipped its shards.
+            "te_prequant": te_prequant,
+            "hub_repo": hub_repo,
         }
         self.cancel_event = cancel_event
         self._proc: Any = None
@@ -1069,10 +1116,24 @@ def start_text_encoder(
     resident: bool,
     budget_mib: Optional[int] = None,
     te_quant: Optional[str] = None,
+    base_repo: Optional[str] = None,
 ) -> Ltx25TextEncoderClient:
     """Check the sidecar (a named refusal before any weight is read), then spawn the encoder worker so the Gemma 4
-    load overlaps the DiT load."""
+    load overlaps the DiT load. ``base_repo`` is the upstream pack id (``repo`` may be its local snapshot); an int8
+    load of the pack the hosted encoder was cut from hands the worker that file."""
     venv_dir = ensure_text_encoder_sidecar()
+    te_prequant = None
+    hub_repo = base_repo or repo
+    sources = ltx25_te_prequant_sources(te_quant, hub_repo) if te_quant else {}
+    source = sources.get("text_encoder")
+    if source is not None:
+        from .diffusion_te_prequant import te_prequant_mirror_path
+        te_prequant = {
+            "repo": source.location,
+            "filename": source.filename,
+            "mirror_path": te_prequant_mirror_path(source.location, source.filename),
+            "base": LTX25_TE_HOSTED_BASE,
+        }
     client = Ltx25TextEncoderClient(
         repo = repo,
         hf_token = hf_token,
@@ -1085,6 +1146,8 @@ def start_text_encoder(
         single_file = LTX25_SINGLE_TEXT_ENCODER if is_ltx25_single_file_base(repo) else None,
         budget_mib = budget_mib,
         te_quant = te_quant,
+        te_prequant = te_prequant,
+        hub_repo = hub_repo if hub_repo != repo else None,
     )
     client.start()
     return client

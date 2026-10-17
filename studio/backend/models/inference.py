@@ -6210,10 +6210,11 @@ class VideoLoadRequest(BaseModel):
         "torchao int8 COMPUTE with per-family keep-bf16 selection (cc >= 8.0; falls back to fp8 "
         "for a family without a measured schedule); nvfp4 = torchao 4-bit weight-only, "
         "dequantised to bf16 per forward (cc >= 8.0). null/auto leaves the choice to the backend, "
-        "which keeps the encoder dense on every family except MiniMax-H3, where it takes the "
-        "hosted quantized conditioner; "
-        "none/off always keeps the released bf16 encoder, which on MiniMax-H3 is the only way "
-        "to ask for it. Mirrors the image backend's field.",
+        "which takes the hosted pre-quantized encoder matching ComfyUI's template for the family: "
+        "fp8 for Wan, LTX-2 / LTX-2.3 and HunyuanVideo-1.5, int8 ConvRot for LTX-2.5, and the "
+        "hosted quantized conditioner on MiniMax-H3; a host that cannot run it keeps the dense "
+        "encoder. none/off always keeps the released bf16 encoder. Mirrors the image backend's "
+        "field.",
     )
 
     h3_task: Optional[Literal["fl2va", "ref2va"]] = Field(

@@ -149,14 +149,30 @@ def _load(config: dict) -> tuple[Any, Any]:
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             repo, subfolder = "tokenizer", **common
         )
-        model = model_cls.from_pretrained(
-            repo, subfolder = "text_encoder", torch_dtype = dtype, **common
-        )
+        model = None
+        if config.get("te_quant") == TE_QUANT_INT8_CONVROT and config.get("te_prequant"):
+            try:
+                model = _load_hosted(config, model_cls, dtype, common)
+                config["_te_source"] = "hosted"
+            except Exception as exc:  # noqa: BLE001 -- the dense encoder quantized at load is the same build
+                print(
+                    f"video.ltx25_te: hosted int8 ConvRot encoder unavailable ({exc}); quantizing the dense "
+                    "encoder at load",
+                    file = sys.stderr,
+                    flush = True,
+                )
+                model = None
+        if model is None:
+            model = _load_dense(config, model_cls, dtype, common)
     model.eval()
     model.requires_grad_(False)
     _truncate_dead_tail(tokenizer, model)
     if config.get("te_quant") == TE_QUANT_INT8_CONVROT:
-        quantize_int8_convrot_(model, config.get("device") or "cpu", bool(config.get("resident")))
+        if config.get("_te_source") != "hosted":
+            quantize_int8_convrot_(
+                model, config.get("device") or "cpu", bool(config.get("resident"))
+            )
+            config["_te_source"] = "quantized_at_load"
     elif config.get("te_quant"):
         raise RuntimeError(f"unsupported text encoder precision '{config.get('te_quant')}'")
     if config.get("resident"):
@@ -164,10 +180,140 @@ def _load(config: dict) -> tuple[Any, Any]:
     return tokenizer, model
 
 
-# Matches ComfyUI's gemma4 int8-convrot encoder, built from the bf16 weights on disk (no second 15 GB download).
+# Matches ComfyUI's gemma4 int8-convrot encoder. Loaded from the hosted build of this same quantization
+# (scripts/build_ltx25_te_int8_convrot.py) when the server hands one over, else built from the bf16 weights at load.
 TE_QUANT_INT8_CONVROT = "int8"
 CONVROT_GROUP = 256
 _PROJECTIONS = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj")
+
+
+def _load_dense(config: dict, model_cls: Any, dtype: Any, common: dict) -> Any:
+    """The pack's bf16 encoder. A scoped snapshot whose dense shards the plan dropped for the hosted file has none to
+    open, so a failed read retries the pack's Hub id (``hub_repo``) the way a fresh load would fetch it."""
+    repo, hub_repo = config["repo"], config.get("hub_repo")
+    try:
+        return model_cls.from_pretrained(
+            repo, subfolder = "text_encoder", torch_dtype = dtype, **common
+        )
+    except Exception:
+        if not hub_repo or hub_repo == repo or common.get("local_files_only"):
+            raise
+    return model_cls.from_pretrained(
+        hub_repo, subfolder = "text_encoder", torch_dtype = dtype, **common
+    )
+
+
+def _hosted_path(spec: dict, common: dict) -> str:
+    mirror = spec.get("mirror_path")
+    if mirror and os.path.isfile(mirror):
+        return mirror
+    from huggingface_hub import hf_hub_download, try_to_load_from_cache
+
+    kwargs = dict(common)
+    # The server stages this file with reuse_other_cache_root (hf_hub_download_with_xet_fallback), so a copy cached
+    # only under huggingface_hub's own root counts as staged and the dense shards are dropped. Resolve it the same way,
+    # else a local_files_only load misses it here and has no dense encoder to fall back to.
+    if kwargs.get("cache_dir"):
+        try:
+            here = try_to_load_from_cache(
+                spec["repo"], spec["filename"], cache_dir = kwargs["cache_dir"]
+            )
+            if not isinstance(here, str):
+                elsewhere = try_to_load_from_cache(spec["repo"], spec["filename"], cache_dir = None)
+                if isinstance(elsewhere, str) and os.path.isfile(elsewhere):
+                    kwargs["cache_dir"] = None
+        except Exception:  # noqa: BLE001 -- an unreadable cache keeps the configured root
+            pass
+    return hf_hub_download(spec["repo"], spec["filename"], **kwargs)
+
+
+def _load_hosted(config: dict, model_cls: Any, dtype: Any, common: dict) -> Any:
+    """The hosted int8 ConvRot encoder: the skeleton meta-initialised from the pack's text_encoder config, every
+    decoder projection swapped for ``Int8ConvRotLinear``, then the file assigned in strictly (the tied lm_head is the
+    one key it lacks, re-tied to the embedding). Raises on any mismatch; the caller falls back to the at-load build."""
+    import torch
+    import transformers
+    from accelerate import init_empty_weights
+    from torch import nn
+
+    from core.inference.prequant_safetensors import load_plain_prequant_safetensors
+    from core.inference.video_ltx25 import LTX25_TE_HOSTED_FORMAT
+    from core.inference.video_minimax_h3_te import _int8_convrot_linear_class, _meta_tensor_names
+
+    spec = config["te_prequant"]
+    ckpt = load_plain_prequant_safetensors(_hosted_path(spec, common))
+    if ckpt.get("format") != LTX25_TE_HOSTED_FORMAT:
+        raise ValueError(f"not an LTX-2.5 int8 ConvRot encoder (format {ckpt.get('format')!r})")
+    meta = ckpt.get("metadata") or {}
+    quant = meta.get("quant") or {}
+    if str(meta.get("base_model_id") or "").lower() != str(spec.get("base") or "").lower():
+        raise ValueError(f"built from {meta.get('base_model_id')!r}, not {spec.get('base')!r}")
+    if meta.get("scheme") != "int8" or quant.get("group_size") != CONVROT_GROUP:
+        raise ValueError(
+            f"unexpected scheme {meta.get('scheme')!r} / group {quant.get('group_size')!r}"
+        )
+    state_dict = ckpt["state_dict"]
+    for key, tensor in list(state_dict.items()):
+        # The int8 codes and fp32 scales keep their storage; dense tensors follow the load dtype, as from_pretrained.
+        if (
+            tensor.is_floating_point()
+            and not key.endswith(".weight_scale")
+            and tensor.dtype != dtype
+        ):
+            state_dict[key] = tensor.to(dtype)
+    repo, hub_repo = config["repo"], config.get("hub_repo")
+    try:
+        cfg = transformers.AutoConfig.from_pretrained(repo, subfolder = "text_encoder", **common)
+    except Exception:
+        if not hub_repo or hub_repo == repo:
+            raise
+        cfg = transformers.AutoConfig.from_pretrained(hub_repo, subfolder = "text_encoder", **common)
+    previous = torch.get_default_dtype()
+    # from_pretrained(torch_dtype = bf16) builds under the same default, so buffers made in __init__ match it.
+    torch.set_default_dtype(dtype)
+    try:
+        with init_empty_weights(include_buffers = False):
+            model = model_cls(cfg)
+    finally:
+        torch.set_default_dtype(previous)
+    cls = _int8_convrot_linear_class()
+    for layer in _decoder_layers(model):
+        for parent in (getattr(layer, "self_attn", None), getattr(layer, "mlp", None)):
+            if parent is None:
+                continue
+            for name in _PROJECTIONS:
+                linear = getattr(parent, name, None)
+                if isinstance(linear, nn.Linear):
+                    setattr(
+                        parent,
+                        name,
+                        cls(
+                            linear.in_features,
+                            linear.out_features,
+                            linear.bias is not None,
+                            CONVROT_GROUP,
+                        ),
+                    )
+    result = model.load_state_dict(state_dict, strict = False, assign = True)
+    tied = {"lm_head.weight"} if getattr(cfg, "tie_word_embeddings", False) else set()
+    missing = set(result.missing_keys) - tied
+    if missing or result.unexpected_keys:
+        raise ValueError(
+            f"hosted encoder does not match the model: missing {sorted(missing)[:3]}, "
+            f"unexpected {sorted(result.unexpected_keys)[:3]}"
+        )
+    tie = getattr(model, "tie_weights", None)
+    if callable(tie):
+        tie()
+    stranded = _meta_tensor_names(model)
+    if stranded:
+        raise ValueError(f"{len(stranded)} tensor(s) still on the meta device, e.g. {stranded[0]}")
+    swapped = sum(1 for m in model.modules() if isinstance(m, cls))
+    if swapped != int(quant.get("linears") or -1):
+        raise ValueError(
+            f"{swapped} projections swapped, the file quantized {quant.get('linears')}"
+        )
+    return model
 
 
 def _decoder_layers(model: Any) -> Any:
@@ -502,6 +648,8 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
                 ),
                 "resident": bool(config.get("resident")),
                 "te_quant": config.get("te_quant") or None,
+                # "hosted" (the unsloth file), "quantized_at_load" (built from the dense encoder) or None (bf16).
+                "te_source": config.get("_te_source"),
                 "weights_mib": _weights_mib_or_none(model),
                 **_memory_stats(config.get("device") or ""),
             }
