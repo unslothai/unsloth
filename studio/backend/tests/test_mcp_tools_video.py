@@ -76,6 +76,7 @@ def test_generate_video_starts_a_job_with_string_fields(monkeypatch):
         "id": "video-1",
         "status": "queued",
         "progress": 0,
+        "progress_percent": 0.0,
         "model": "Lightricks/LTX-Video",
         "seconds": "4",
         "size": "704x480",
@@ -100,6 +101,7 @@ def test_a_completed_job_returns_its_thumbnail_and_a_link_never_the_mp4(monkeypa
         "status": "completed",
         "progress_percent": 100.0,
         "error": None,
+        "error_code": None,
         "video": {
             "url": "http://192.168.1.20:8888/v1/videos/video-1/content",
             "thumbnail_inline": True,
@@ -147,9 +149,25 @@ def test_an_unfinished_job_reports_progress_and_error_without_media(monkeypatch,
     assert out["status"] == job["status"]
     assert out["progress_percent"] == float(job["progress"])
     assert out["error"] == (job["error"] or {}).get("message")
+    assert out["error_code"] == (job["error"] or {}).get("code")
     assert out["video"] is None
     assert [c["type"] for c in result["content"]] == ["text"]
     assert [c[1] for c in studio.state.calls] == [path]
+
+
+def test_a_cancelled_job_reads_cancelled_not_failed(monkeypatch):
+    # The /v1 job API has no cancelled status: it reports failed with error code "cancelled".
+    job = _job(
+        "video-4",
+        "failed",
+        30,
+        error = {"code": "cancelled", "message": "Video generation was cancelled."},
+    )
+    result, _studio = _get_job(monkeypatch, {"id": "video-4"}, {("GET", "/v1/videos/video-4"): job})
+    out = result["structuredContent"]
+    assert (out["status"], out["error_code"]) == ("cancelled", "cancelled")
+    assert out["error"].startswith("Video generation was cancelled")
+    assert out["video"] is None
 
 
 def test_without_an_id_recent_jobs_are_listed(monkeypatch):

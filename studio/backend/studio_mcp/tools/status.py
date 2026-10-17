@@ -107,9 +107,11 @@ def _training(payload: dict) -> TrainingSlot:
         payload,
         step = step,
         total_steps = total,
-        loss = number(details.get("loss")),
+        # Step 0 carries a 0.0 placeholder until the first logged loss.
+        loss = number(details.get("loss")) if step else None,
         progress_percent = round(100.0 * step / total, 1) if step is not None and total else None,
         eta_seconds = number(details.get("eta_seconds")),
+        elapsed_seconds = number(details.get("elapsed_seconds")),
     )
 
 

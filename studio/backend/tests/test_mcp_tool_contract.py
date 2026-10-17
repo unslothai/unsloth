@@ -8,6 +8,7 @@ from typing import Optional
 import pytest
 from fastapi.responses import JSONResponse
 
+from studio_mcp.errors import ACTIVE_GENERATIONS_HINT
 from studio_mcp.inputs import PATH_REMOTE
 from studio_mcp.outputs import RouteText, ToolOutput, Usage
 
@@ -63,6 +64,7 @@ REFUSED = [
     ("chat", {"prompt": "x", "images": [{"data_url": data_url(b"text", "image/png")}]}, None),
     ("embed", {"texts": []}, None),
     ("embed", {"texts": ["x"] * 2049}, None),
+    ("embed", {"texts": ["x"], "top_k": 3}, "top_k needs query."),
     ("system_one", {"state": "x", "questions": {}}, None),
     ("system_one", {"state": "x", "questions": {f"q{i}": {} for i in range(65)}}, None),
     ("system_one", {"state": "x", "questions": {"q": {"type": "maybe"}}}, None),
@@ -108,6 +110,14 @@ REFUSED = [
         for kind in ("training_start", "recipe", "chat", "dataset_download")
     ],
     *[
+        (
+            "cancel",
+            {"kind": kind, "id": "x"},
+            f"cancel(kind='{kind}') takes no id: this cancel stops the running one; leave id out.",
+        )
+        for kind in ("image", "diffusion_training")
+    ],
+    *[
         ("export_model", {**EXPORT, "save_directory": directory}, None)
         for directory in ("/srv/out", "C:\\out", "~/out", "a/../../etc", "..", "  ")
     ],
@@ -131,6 +141,16 @@ def _detail(detail, status, **headers):
 
 SYSTEM_ONE = ("POST", "/v1/systemone")
 IMAGES = ("POST", "/api/inference/images/generate")
+# The load and unload routes' refusal while chats run; the chat route never sends it.
+ACTIVE_GENERATIONS = {
+    "error": "active_generations",
+    "message": (
+        "Load would stop 2 chats that are still generating. Stop them first, or retry with"
+        " force_cancel_active."
+    ),
+    "running": 2,
+    "thread_ids": ["thread-a", "thread-b"],
+}
 STT_LOAD = ("POST", "/api/inference/audio/stt/load")
 
 # (tool, args, the studio's routes, then the whole message or (check, text) pairs).
@@ -139,13 +159,24 @@ ROUTE_ERRORS = [
         "chat",
         {"prompt": "hi"},
         {CHAT: openai_error("No model loaded. Call POST /inference/load first.", 400)},
+        ("starts", "[not_loaded kind=chat] No model loaded. (HTTP 400) "),
         ("ends", "Load a chat model with load_model first; list_models shows the downloaded ones."),
     ),
     (
         "chat",
         {"prompt": "hi"},
         {CHAT: openai_error("Busy.", 409, code = "gpu_busy", headers = {"Retry-After": "5"})},
-        "GPU busy: Busy. Retry after 5 s.",
+        ("starts", "[gpu_busy retry_after=5] "),
+        ("ends", "] GPU busy: Busy. Retry after 5 s."),
+    ),
+    (
+        "chat",
+        {"prompt": "hi"},
+        {CHAT: _detail(ACTIVE_GENERATIONS, 409)},
+        ("starts", "[active_generations running=2] Load would stop 2 chats"),
+        ("ends", " (HTTP 409) " + ACTIVE_GENERATIONS_HINT),
+        ("lacks", "force_cancel_active"),
+        ("lacks", "thread"),
     ),
     (
         "embed",
@@ -176,7 +207,12 @@ ROUTE_ERRORS = [
         "generate_audio",
         {"workflow": "speak", "text": "Hi"},
         {("POST", "/v1/audio/run"): openai_error("No model loaded.", 400)},
-        "No model loaded. (HTTP 400) Load a text-to-speech or music model with load_model(kind='tts') first.",
+        ("starts", "[not_loaded kind=audio] "),
+        (
+            "ends",
+            "] No model loaded. (HTTP 400) Load a text-to-speech or music model with"
+            " load_model(kind='tts') first.",
+        ),
     ),
     (
         "generate_audio",
@@ -211,13 +247,23 @@ ROUTE_ERRORS = [
         "generate_video",
         {"prompt": "waves"},
         {("POST", "/v1/videos"): openai_error("No video model is loaded.", 503)},
-        "No video model is loaded. (HTTP 503) Load a video model with load_model(kind='video') first.",
+        ("starts", "[not_loaded kind=video] "),
+        (
+            "ends",
+            "] No video model is loaded. (HTTP 503) Load a video model with"
+            " load_model(kind='video') first.",
+        ),
     ),
     (
         "generate_image",
         {"prompt": "x"},
         {IMAGES: _detail("No diffusion model is loaded.", 409)},
-        "No diffusion model is loaded. (HTTP 409) Load an image model with load_model(kind='image') first.",
+        ("starts", "[not_loaded kind=image] "),
+        (
+            "ends",
+            "] No diffusion model is loaded. (HTTP 409) Load an image model with"
+            " load_model(kind='image') first.",
+        ),
     ),
     (
         "generate_image",
@@ -229,7 +275,8 @@ ROUTE_ERRORS = [
         "generate_image",
         {"prompt": "x", "width": 2048, "height": 2048},
         {IMAGES: _detail("Needs 30 GB.", 400, **{"X-Unsloth-Refusal": "memory-estimate"})},
-        "Needs 30 GB. Pass allow_oversized=true to try anyway.",
+        ("starts", "[memory_estimate] "),
+        ("ends", "] Needs 30 GB. Pass allow_oversized=true to try anyway."),
     ),
     (
         "run_recipe",

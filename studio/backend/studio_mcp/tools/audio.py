@@ -27,6 +27,7 @@ from studio_mcp.media import (
     resource_link,
 )
 from studio_mcp.outputs import AudioClip, AudioResult, TranscriptResult, TranscriptSegment
+from studio_mcp.progress import with_heartbeat
 from studio_mcp.tools import WRITES, opt_text, present, route_json, strings, try_json
 
 LOAD_AUDIO_HINT = "Load a text-to-speech or music model with load_model(kind='tts') first."
@@ -76,6 +77,7 @@ async def _checked_options(
     return checked
 
 
+@with_heartbeat("Generating audio")
 async def generate_audio(
     workflow: Literal["clone", "speak", "edit", "convert", "music", "separate"],
     text: Optional[str] = None,
@@ -98,6 +100,7 @@ async def generate_audio(
     seed: Optional[int] = None,
     max_tokens: Optional[int] = None,
     options: Optional[dict[str, Any]] = None,
+    ctx: Optional[Context] = None,
 ) -> ToolResult:
     """Run an Audio page workflow with the audio model loaded in Unsloth Studio; clips are saved to Audio history and returned inline when small, else as links. clone: speak ``text`` in the voice of ``reference`` (a clip, or a saved voice as voice_id; ``reference_text`` is its transcript). speak: ``text`` in the loaded model's default voice, or a saved voice via ``reference``. edit: change the words or delivery of ``source`` per ``edit``. convert: make ``source`` sound like ``target``. music: ``mode`` song or sfx from ``text`` (the style) and ``lyrics``; ``variations`` up to 4 share a group_id. separate: split ``source`` into stems. ``options`` are the loaded model's ``audio_options`` that studio_status lists, such as a built-in ``voice``. Audio inputs are an Unsloth Studio id, inline base64 with a filename, or a path on the Unsloth Studio computer."""
     caller = current_caller()
@@ -302,6 +305,7 @@ async def _transcribe_source(
     )
 
 
+@with_heartbeat("Transcribing")
 async def transcribe(
     audio: AudioInput,
     language: Optional[str] = None,

@@ -4,7 +4,7 @@
 import json
 
 import pytest
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
 from .mcp_harness import (
     DEFERRED,
@@ -452,3 +452,41 @@ def test_stt_unload_names_the_engine_and_model_in_the_query(
     assert queries(studio, f"{STT}/unload") == ([query] if query else [])
     unloads = [c[3] for c in studio.state.calls if c[1].endswith("/unload")]
     assert unloads == ([b""] if unloaded else [])
+
+
+def test_a_padded_keep_loaded_refusal_names_unload_model(monkeypatch):
+    refusal = (
+        "Loading this model would unload the chat model unsloth/Qwen3-0.6B, and Keep multiple"
+        " models loaded is set to Always. Unload that model first, or choose When they fit."
+    )
+    padded = " " * 40 + json.dumps({"_deferred_error": {"status_code": 409, "detail": refusal}})
+    routes = {**PAYLOADS, LOAD: Response(padded.encode(), media_type = "application/json")}
+    result, _studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM})
+    message = result["content"][0]["text"]
+    assert result["isError"] is True
+    assert message.startswith("[multi_model_always kind=chat] Loading this model")
+    assert message.endswith("Call unload_model(kind='llm') to free the GPU; retrying won't help.")
+    assert "Retry after" not in message
+
+
+def test_running_chats_block_a_load_with_a_wait_or_cancel_hint(monkeypatch):
+    detail = {
+        "error": "active_generations",
+        "message": (
+            "Load would stop 1 chat that is still generating. Stop them first, or retry with"
+            " force_cancel_active."
+        ),
+        "running": 1,
+        "thread_ids": ["thread-a"],
+    }
+    routes = {**PAYLOADS, LOAD: JSONResponse({"detail": detail}, status_code = 409)}
+    result, _studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM})
+    message = result["content"][0]["text"]
+    assert result["isError"] is True
+    assert message.startswith("[active_generations running=1] Load would stop 1 chat")
+    assert message.endswith(
+        "Wait for the running chats to finish, or cancel a chat you started with"
+        " cancel(kind='chat', id=<its cancel_id>)."
+    )
+    assert "thread" not in message
+    assert "force_cancel_active" not in message

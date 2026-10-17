@@ -19,6 +19,7 @@ from studio_mcp.media import INLINE_CAP, image_content, media_result, public_url
 from studio_mcp import export_jobs
 from studio_mcp.outputs import (
     ExportInfo,
+    ExportJobSummary,
     JobStatus,
     JobSummary,
     RecipeError,
@@ -53,9 +54,10 @@ async def _video_job(caller: Caller, video_id: str) -> ToolResult:
     status = JobStatus(
         kind = "video",
         id = opt_text(job.get("id")) or video_id,
-        status = opt_text(job.get("status")),
+        status = "cancelled" if error.get("code") == "cancelled" else opt_text(job.get("status")),
         progress_percent = number(job.get("progress")),
         error = opt_text(error.get("message")),
+        error_code = opt_text(error.get("code")),
         video = video,
     )
     return media_result(contents, status)
@@ -144,9 +146,17 @@ def _export_status(job: export_jobs.ExportJob) -> JobStatus:
 
 async def _export_job(caller: Caller, job_id: Optional[str]) -> ToolResult:
     if job_id is None:
+        # Newest first, with what each export made or why it failed.
         jobs = [
-            JobSummary(id = job.job_id, status = job.status)
-            for job in export_jobs.jobs_of(caller.account_id)
+            ExportJobSummary(
+                id = job.job_id,
+                status = job.status,
+                format = job.format,
+                phase = job.phase,
+                output = job.output,
+                error = job.error,
+            )
+            for job in reversed(export_jobs.jobs_of(caller.account_id))
         ]
         return media_result([], JobStatus(kind = "export", jobs = jobs))
     # Settles from its own export call, not the export status (that is whichever op ran last).

@@ -771,10 +771,35 @@ async def video_generate_progress(current_subject: str = Depends(get_current_sub
     return VideoGenerateProgressResponse(**progress)
 
 
+_CANCEL_BODY_MSG = 'Send a JSON object such as {"video_id": "..."}, or no body.'
+
+
+async def _cancel_video_id(request: Request) -> Optional[str]:
+    """The optional ``video_id`` a cancel names; no body means the running render."""
+    import json
+
+    raw = await request.body()
+    if not raw.strip():
+        return None
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        raise HTTPException(status_code = 422, detail = _CANCEL_BODY_MSG)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code = 422, detail = _CANCEL_BODY_MSG)
+    video_id = body.get("video_id")
+    if video_id is not None and not isinstance(video_id, str):
+        raise HTTPException(status_code = 422, detail = _CANCEL_BODY_MSG)
+    return video_id or None
+
+
 @router.post("/video/generate/cancel")
-async def cancel_video_generation(current_subject: str = Depends(get_current_subject)):
+async def cancel_video_generation(
+    request: Request, current_subject: str = Depends(get_current_subject)
+):
     from core.inference.video import get_video_backend
 
+    video_id = await _cancel_video_id(request)
     backend = get_video_backend()
     # One read serves check and recheck: a second read could name a successor and hand it back
     # as expected_account.
@@ -785,17 +810,24 @@ async def cancel_video_generation(current_subject: str = Depends(get_current_sub
         with _generation_lock:
             started_by = _generation_account
     if _generation_hidden(backend, started_by):
-        return {"cancelled": False}
-    if started_by is None and account_access.foreign_work_active():
-        return {"cancelled": False}
-    if reserved is None:
-        # No reservation yet: bind the cancel to the caller, else an account reserving before the
-        # executor runs would receive it.
-        from utils.account_context import current_account
-        expected = current_account().account_id
+        cancelled = False
+    elif started_by is None and account_access.foreign_work_active():
+        cancelled = False
     else:
-        expected = reserved
-    cancelled = await asyncio.to_thread(backend.cancel_generate, expected_account = expected)
+        if reserved is None:
+            # No reservation yet: bind the cancel to the caller, else an account reserving before
+            # the executor runs would receive it.
+            from utils.account_context import current_account
+            expected = current_account().account_id
+        else:
+            expected = reserved
+        # The id is rechecked under the backend's lock, so a finished render's successor is safe.
+        cancelled = await asyncio.to_thread(
+            backend.cancel_generate, expected_video_id = video_id, expected_account = expected
+        )
+    if video_id is not None and not cancelled:
+        # Hidden and foreign renders answer the same, so this reveals nothing about them.
+        raise HTTPException(status_code = 409, detail = "That video is not rendering.")
     return {"cancelled": cancelled}
 
 
