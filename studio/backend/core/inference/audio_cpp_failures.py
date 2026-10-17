@@ -99,7 +99,9 @@ class AudioCppFailure:
         code = str(data["code"])
         extras = data.get("extras") or {}
         extras = {
-            k: v for k, v in extras.items() if k in ("smaller_variants", "offload_options", "device")
+            k: v
+            for k, v in extras.items()
+            if k in ("smaller_variants", "offload_options", "device")
         }
         return cls(
             code,

@@ -176,7 +176,9 @@ def test_oom_retry_and_monitor_read_the_structured_detail(monkeypatch):
     monitor = MagicMock()
     monkeypatch.setattr(ri, "api_monitor", monitor)
     monkeypatch.setattr(ri, "_request_used_api_key", lambda request: False)
-    request = SimpleNamespace(state = SimpleNamespace(), url = SimpleNamespace(path = "/x"), method = "POST")
+    request = SimpleNamespace(
+        state = SimpleNamespace(), url = SimpleNamespace(path = "/x"), method = "POST"
+    )
 
     async def run():
         async with ri._monitored_media_request(request, model = "m", prompt = "", subject = None):
