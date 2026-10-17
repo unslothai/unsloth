@@ -52,12 +52,12 @@ UPSAMPLER_MODEL_FILES = {
 UPSAMPLER_DEFAULT_QUANT = "Q4_K_M"
 UPSAMPLER_MODEL_FILE = UPSAMPLER_MODEL_FILES[UPSAMPLER_DEFAULT_QUANT]
 # Vision projector, needed only for edits (reference images).
-UPSAMPLER_MMPROJ_FILE = "mmproj-BF16.gguf"
+UPSAMPLER_MMPROJ_FILE = "mmproj-F16.gguf"
 # Expected sizes of the files as built, for the UI before the download starts (the download reads the real ones).
 UPSAMPLER_FILE_SIZES = {
     "flux-3-image-klein-pup-Q4_K_M.gguf": 5_629_109_248,
     "flux-3-image-klein-pup-Q8_0.gguf": 9_527_501_824,
-    "mmproj-BF16.gguf": 921_704_928,
+    "mmproj-F16.gguf": 918_165_984,
 }
 # Local files instead of the repo, for testing a build before upload.
 ENV_MODEL_OVERRIDE = "UNSLOTH_FLUX3_UPSAMPLER_GGUF"
