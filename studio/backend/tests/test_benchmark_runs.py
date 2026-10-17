@@ -217,3 +217,31 @@ def test_other_traffic_during_a_sweep_is_counted_on_its_lease(monkeypatch):
     client.delete("/api/benchmarks/lease", params = {"holder": mine["holder"]})
     other = {"holder": "tab-cccccccc", "kind": "sweep"}
     assert client.post("/api/benchmarks/lease", json = other).json()["outside"] == 0
+
+
+def test_a_sweep_refuses_other_loads_until_it_lets_go(monkeypatch):
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(benchmarks_routes.router, prefix = "/api/benchmarks")
+    app.post("/api/inference/load")(lambda: {"ok": True})
+    app.post("/api/inference/unload")(lambda: {"ok": True})
+    app.add_middleware(benchmarks_routes.BenchmarkTrafficMiddleware)
+    client = TestClient(app, headers = {"Authorization": "Bearer t"})
+    mine = {"holder": "tab-aaaaaaaa", "kind": "sweep"}
+
+    assert client.post("/api/inference/load").status_code == 200
+    client.post("/api/benchmarks/lease", json = mine)
+    assert client.post("/api/inference/unload").status_code == 409
+    refused = client.post("/api/inference/load")
+    assert refused.status_code == 409 and "benchmark is running" in refused.json()["detail"]
+    own = client.post("/api/inference/load", headers = {"X-Unsloth-Bench-Lease": mine["holder"]})
+    assert own.status_code == 200
+    client.delete("/api/benchmarks/lease", params = {"holder": mine["holder"]})
+    assert client.post("/api/inference/load").status_code == 200
+    client.post("/api/benchmarks/lease", json = mine)
+    assert TestClient(app).post("/api/inference/load").status_code == 200  # the route's auth decides
+    client.delete("/api/benchmarks/lease", params = {"holder": mine["holder"]})
+    # Only sweeps fence loads: llama-bench and Evals manage the server themselves.
+    client.post("/api/benchmarks/lease", json = {"holder": "tab-bbbbbbbb", "kind": "llama-bench"})
+    assert client.post("/api/inference/load").status_code == 200
