@@ -480,16 +480,14 @@ export function RunResults({
           </div>
         </SectionCard>
       )}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <Tile
           label="Fastest"
           value={hl.best ? fmtRate(hl.best.mean) : "—"}
           detail={hl.best?.label ?? "Waiting on the first row"}
         />
         <Tile
-          label={
-            hl.baseline ? `vs ${inSentence(hl.baseline.label)}` : "Speed-up"
-          }
+          label="Speedup"
           value={
             hl.speedup
               ? `${hl.speedup.toFixed(hl.speedup >= 10 ? 0 : 2)}×`
@@ -499,18 +497,9 @@ export function RunResults({
             !hl.baseline
               ? "Star a row to compare against it"
               : hl.speedup !== null && hl.speedup < 1
-                ? `nothing beat it · baseline ${fmtRate(hl.baseline.mean)}`
-                : `baseline ${fmtRate(hl.baseline.mean)}`
+                ? `nothing beat ${inSentence(hl.baseline.label)} · ${fmtRate(hl.baseline.mean)}`
+                : `vs ${inSentence(hl.baseline.label)} · ${fmtRate(hl.baseline.mean)}`
           }
-        />
-        <Tile
-          label="Best draft acceptance"
-          value={
-            hl.bestAccept?.acceptRate != null
-              ? `${Math.round(hl.bestAccept.acceptRate * 100)}%`
-              : "—"
-          }
-          detail={hl.bestAccept?.label ?? "No speculative rows yet"}
         />
       </div>
 

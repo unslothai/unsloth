@@ -13,15 +13,10 @@ import {
 } from "@/features/chat";
 import { authFetch } from "@/features/auth";
 import { gpuMemoryDisplay } from "@/hooks/gpu-memory-display";
-import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
+import { gpuMemoryTotalsGb } from "@/hooks/gpu-vram";
 import { useSystemInfo } from "@/hooks/use-system";
 import { cn } from "@/lib/utils";
-import {
-  Chip02Icon,
-  CpuIcon,
-  GpuIcon,
-  RamMemoryIcon,
-} from "@hugeicons/core-free-icons";
+import { GpuIcon, RamMemoryIcon } from "@hugeicons/core-free-icons";
 import {
   type ReactElement,
   type ReactNode,
@@ -118,9 +113,6 @@ function MachinePills({ polling }: { polling: boolean }): ReactElement {
     : display.usageDevices;
   const names = devices.map((d) => d.name ?? "GPU");
   const vramTotal = gpuMemoryTotalsGb(devices).total;
-  const vramUsed = display.sharedOnly
-    ? null
-    : resolveGpuVramUsedGb(display.usageGpu);
   const ramTotal = sys.memory.total_gb;
   const ramUsed = Math.max(0, ramTotal - sys.memory.available_gb);
   const threads = sys.cpu.logical_count;
@@ -144,38 +136,40 @@ function MachinePills({ polling }: { polling: boolean }): ReactElement {
     )
     .join("\n");
 
+  // One pill; the rest of the machine sits in its hover, and the run's fine print keeps it all.
+  const machine = [
+    perDevice,
+    ramTotal > 0 ? `RAM: ${gb(ramUsed)} / ${gb(ramTotal)} GB` : "",
+    threads > 0 ? `CPU: ${threads} threads` : "",
+    backend.name
+      ? `llama.cpp: ${backend.name}${backend.tag ? ` ${backend.tag}` : ""}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
   return (
     <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5 sm:flex-1">
-      {gpuLabel && (
-        <StatPill icon={GpuIcon} value={gpuLabel} title={perDevice} />
-      )}
-      {vramTotal > 0 && (
+      {gpuLabel ? (
         <StatPill
-          icon={Chip02Icon}
-          value={
-            vramUsed != null
-              ? `${gb(vramUsed)} / ${gb(vramTotal)} GB`
-              : `${gb(vramTotal)} GB`
+          icon={GpuIcon}
+          value={gpuLabel}
+          label={
+            vramTotal > 0
+              ? `${gb(vramTotal)} GB${display.sharedOnly ? " shared" : ""}`
+              : undefined
           }
-          label={display.sharedOnly ? "shared" : "VRAM"}
-          title={perDevice}
+          title={machine}
         />
-      )}
-      {ramTotal > 0 && (
-        <StatPill
-          icon={RamMemoryIcon}
-          value={`${gb(ramUsed)} / ${gb(ramTotal)} GB`}
-          label="RAM"
-        />
-      )}
-      {threads > 0 && (
-        <StatPill icon={CpuIcon} value={threads} label="threads" />
-      )}
-      {backend.name && (
-        <StatPill
-          value={backend.name}
-          label={backend.tag ? `llama.cpp ${backend.tag}` : "llama.cpp"}
-        />
+      ) : (
+        ramTotal > 0 && (
+          <StatPill
+            icon={RamMemoryIcon}
+            value={`${gb(ramTotal)} GB`}
+            label="RAM"
+            title={machine}
+          />
+        )
       )}
     </div>
   );
