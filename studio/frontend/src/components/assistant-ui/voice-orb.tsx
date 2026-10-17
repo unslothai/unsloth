@@ -294,6 +294,8 @@ const VoiceDecisionRing: FC = () => {
       width={RING}
       height={RING}
       viewBox={`0 0 ${RING} ${RING}`}
+      // The labels sit outside the ring box; without this WebKit clips them at its edge.
+      style={{ overflow: "visible" }}
       aria-hidden
     >
       {ARCS.map((arc) => {
@@ -301,8 +303,8 @@ const VoiceDecisionRing: FC = () => {
         const v = fill(arc.key);
         // Label at the arc's midpoint, just outside the ring; left arc reads right-aligned.
         const mid = ((arc.start + ARC_DEG / 2) * Math.PI) / 180;
-        const lx = RING / 2 + Math.sin(mid) * (RING_R + 14);
-        const ly = RING / 2 - Math.cos(mid) * (RING_R + 14);
+        const lx = RING / 2 + Math.sin(mid) * (RING_R + 18);
+        const ly = RING / 2 - Math.cos(mid) * (RING_R + 18);
         const anchor = Math.sin(mid) < -0.1 ? "end" : Math.sin(mid) > 0.1 ? "start" : "middle";
         const value = arcValue(d, arc.key);
         return (
