@@ -24769,6 +24769,11 @@ async def _run_separation(
             except Exception as e:
                 if cancel.is_set() or isinstance(e, AudioGenerationCancelledError):
                     raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
+                from core.inference.audio_cpp_failures import failure_of
+
+                if (failure := failure_of(e)) is not None:
+                    logger.warning("Audio separation failed (%s): %s", failure.code, e)
+                    raise HTTPException(status_code = failure.status, detail = failure.detail())
                 if isinstance(e, AudioBackendUnsupportedError):
                     raise HTTPException(status_code = 501, detail = e.message)
                 if isinstance(e, AudioRuntimeError):
