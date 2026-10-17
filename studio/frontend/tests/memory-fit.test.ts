@@ -489,18 +489,18 @@ test("a figure is always finite and never negative", () => {
 test("the KV caption names the dtype, what was priced, and where it lives", () => {
   assert.equal(
     resolveKvNote({ cacheTypeKv: "q8_0", nCtx: 32768, nParallel: 1, kvOnGpu: true }),
-    "q8_0 · 32,768 tokens",
+    `q8_0 · ${(32768).toLocaleString()} tokens`,
   );
   // No dtype reported falls back to f16, several slots are named, and a cache the
   // loader moved off the GPU says where it went.
   assert.equal(
     resolveKvNote({ cacheTypeKv: null, nCtx: 4096, nParallel: 4, kvOnGpu: false }),
-    "f16 · 4,096 tokens · 4 slots · host RAM",
+    `f16 · ${(4096).toLocaleString()} tokens · 4 slots · host RAM`,
   );
   // A single slot is the unremarkable case and is not named.
   assert.equal(
     resolveKvNote({ cacheTypeKv: "f16", nCtx: 4096, nParallel: 1, kvOnGpu: false }),
-    "f16 · 4,096 tokens · host RAM",
+    `f16 · ${(4096).toLocaleString()} tokens · host RAM`,
   );
 });
 
@@ -675,7 +675,7 @@ test("an unpinned context over the card is not an overage when the floor fits", 
   assert.equal(result.totalFit, "fits");
   assert.equal(
     result.advisory?.text,
-    "Estimated at the full 40,960-token context. Auto context will shrink it to fit.",
+    `Estimated at the full ${(40960).toLocaleString()}-token context. Auto context will shrink it to fit.`,
   );
   assert.equal(result.advisory?.tone, "muted");
 });
@@ -733,7 +733,7 @@ test("a single pool draws the same verdict from the floor", () => {
   assert.equal(result.totalFit, "fits");
   assert.equal(
     result.advisory?.text,
-    "Estimated at the full 262,144-token context. Auto context will shrink it to fit.",
+    `Estimated at the full ${(262144).toLocaleString()}-token context. Auto context will shrink it to fit.`,
   );
 });
 
