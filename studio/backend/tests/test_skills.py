@@ -4,6 +4,7 @@
 import codecs
 import json
 import os
+import re
 import sys
 import threading
 from pathlib import Path
@@ -657,6 +658,30 @@ def _account_skill(studio: Path, account_id: str, name: str, description: str) -
     (root / "SKILL.md").write_text(
         f"---\nname: {name}\ndescription: {description}\n---\nBody", encoding = "utf-8"
     )
+
+
+@pytest.mark.parametrize("dockerfile", ["Dockerfile.studio", "Dockerfile.studio-rocm"])
+def test_skills_created_in_the_studio_images_outlive_the_container(
+    dockerfile, tmp_path, monkeypatch
+):
+    text = (Path(__file__).resolve().parents[3] / "docker" / dockerfile).read_text(encoding = "utf-8")
+    block = text[text.index("ENV UNSLOTH_STUDIO_HOME=") :]
+    image_env = dict(re.findall(r"(\w+)=(\S+)", block[: block.index("\n\n")]))
+    volume = tmp_path / "volume"
+    for name, value in image_env.items():
+        monkeypatch.setenv(name, value.replace(image_env["UNSLOTH_STUDIO_HOME"], str(volume)))
+    monkeypatch.setattr(skills, "studio_root", lambda: volume)
+    monkeypatch.setattr(skills, "_owner_home", lambda: tmp_path / "first-container")
+
+    record = skills.create_skill("release-notes", "Draft release notes.", "Summarize the diff.")
+    assert record["path"] == f"{volume / 'skills'}/release-notes/SKILL.md"
+
+    monkeypatch.setattr(skills, "_owner_home", lambda: tmp_path / "second-container")
+    assert [r["name"] for r in skills.list_skills()] == ["release-notes"]
+    skills.update_skill("release-notes", "Edited.", "Summarize the diff again.")
+    assert skills.read_skill_manifest("release-notes")["description"] == "Edited."
+    skills.delete_skill("release-notes")
+    assert skills.list_skills() == []
 
 
 def test_managed_account_never_sees_the_owners_home_skills(managed_accounts):
