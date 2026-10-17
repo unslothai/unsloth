@@ -110,9 +110,9 @@ async def _diffusion_parts(
     if token:
         body["hf_token"] = token
     if variant or "gguf" in model.lower():
-        filename = await loading._gguf_filename(caller, model, variant)
-        if filename:
-            body["gguf_filename"] = filename
+        entry = await loading._gguf_filename(caller, model, variant)
+        if entry:
+            body["gguf_filename"] = entry["filename"]
             body["model_kind"] = "gguf"
     plan = as_dict(
         await route_json("POST", loading.MEDIA_ROUTES[kind]["plan"], caller = caller, json_body = body)

@@ -12,9 +12,10 @@ from typing import Any, Awaitable, Callable, Optional
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
 
+from studio_mcp import placement as place
 from studio_mcp.caller import Caller
 from studio_mcp.errors import tool_error
-from studio_mcp.outputs import LoadResult, UnloadResult
+from studio_mcp.outputs import LoadResult, SlotModel, UnloadAllResult, UnloadResult
 from studio_mcp.tools import as_dict, number, opt_text, route_json, strings
 
 POLL_INTERVAL_S = 2.0
@@ -74,6 +75,11 @@ async def load_llm(
     load_in_4bit: bool,
     hf_token: Optional[str],
     kind: str = "llm",
+    device: Optional[str] = None,
+    alongside: Optional[bool] = None,
+    kv_cache_type: Optional[str] = None,
+    gpu_layers: Optional[int] = None,
+    is_lora: bool = False,
 ) -> LoadResult:
     body: dict[str, Any] = {
         "model_path": model,
@@ -82,10 +88,23 @@ async def load_llm(
     }
     if variant:
         body["gguf_variant"] = variant
+    if is_lora:
+        body["is_lora"] = True
     # The load routes read the Hub token from the body, not the header.
     token = hf_token or caller.hf_token
     if token:
         body["hf_token"] = token
+    body.update(
+        place.llm_fields(
+            kind,
+            model,
+            variant,
+            device = device,
+            alongside = await place.auto_alongside(caller, device, alongside),
+            kv_cache_type = kv_cache_type,
+            gpu_layers = gpu_layers,
+        )
+    )
     before = await _serving_or_empty(caller)
     payload = await with_progress(
         ctx,
@@ -96,14 +115,20 @@ async def load_llm(
         raise ToolError("Unsloth Studio did not confirm the load")
     loaded = opt_text(payload.get("model")) or model
     evicted = strings(payload.get("evicted"))
+    serving_after = await _serving_or_empty(caller) if before else []
     # Some loads (an audio engine switch) drop the chat model unlisted; only then, since the route lists its own drops by another id form.
     if before and not evicted:
-        after = set(await _serving_or_empty(caller))
+        after = set(serving_after)
         evicted += [
             m for m in before if m not in after and m not in evicted and m not in (model, loaded)
         ]
     return LoadResult(
-        kind = kind, model = loaded, display_name = opt_text(payload.get("display_name")), evicted = evicted
+        kind = kind,
+        model = loaded,
+        display_name = opt_text(payload.get("display_name")),
+        placement = place.llm_placement(payload, device),
+        alongside_applied = place.alongside_applied(before, serving_after, loaded),
+        evicted = evicted,
     )
 
 
@@ -175,20 +200,17 @@ def _resident_matches(status: Any, model: str) -> bool:
     return model.lower() in {name.lower() for name in names if name}
 
 
-async def _gguf_filename(caller: Caller, model: str, variant: Optional[str]) -> Optional[str]:
-    """The checkpoint file to load from a GGUF repo: the named variant, else the repo's default."""
+async def _gguf_filename(caller: Caller, model: str, variant: Optional[str]) -> Optional[dict]:
+    """The variant to load from a GGUF repo (the named one, else the repo's default), with its filename, size_bytes, downloaded and partial."""
     listing = await route_json(
         "GET", "/api/hub/gguf-variants", caller = caller, params = {"repo_id": model}, hub_header = True
     )
-    listing = as_dict(listing)
-    variants = [v for v in listing.get("variants") or [] if isinstance(v, dict)]
-    wanted = (variant or opt_text(listing.get("default_variant")) or "").lower()
-    for entry in variants:
-        if str(entry.get("quant", "")).lower() == wanted and opt_text(entry.get("filename")):
-            return entry["filename"]
+    entry = place.pick_variant(listing, variant)
+    if entry is not None and opt_text(entry.get("filename")):
+        return entry
     if variant:
         raise ToolError(f"{model} has no GGUF variant {variant}")
-    return opt_text(variants[0].get("filename")) if variants else None
+    return None
 
 
 async def load_media(
@@ -199,8 +221,10 @@ async def load_media(
     model: str,
     variant: Optional[str],
     hf_token: Optional[str],
+    knobs: Optional[dict[str, str]] = None,
 ) -> LoadResult:
     routes = MEDIA_ROUTES[kind]
+    knobs = knobs or {}
     if hf_token:
         # The GGUF lookup reads the Hub token from the header, so a gated repo needs it there too.
         caller = dataclasses.replace(caller, hf_token = hf_token)
@@ -209,12 +233,12 @@ async def load_media(
     if token:
         body["hf_token"] = token
     if variant or "gguf" in model.lower():
-        filename = await _gguf_filename(caller, model, variant)
-        if filename:
-            body["gguf_filename"] = filename
+        entry = await _gguf_filename(caller, model, variant)
+        if entry:
+            body["gguf_filename"] = entry["filename"]
             body["model_kind"] = "gguf"
     # The plan validates the pick the way the load does, before any download.
-    plan = await route_json("POST", routes["plan"], caller = caller, json_body = body)
+    plan = await place.post_plan(caller, routes["plan"], body, knobs)
     if isinstance(plan, dict):
         if opt_text(plan.get("incompatible_reason")):
             raise tool_error(plan["incompatible_reason"])
@@ -230,7 +254,7 @@ async def load_media(
     # The GPU arbiter may unload chat models to make room; diffed after the load like an LLM load.
     before = await _serving_or_empty(caller)
     # Starts the load in the background; its answer describes whatever was resident before.
-    await route_json("POST", routes["load"], caller = caller, json_body = body)
+    await route_json("POST", routes["load"], caller = caller, json_body = {**body, **knobs})
     idle = 0
     while True:
         progress = as_dict(await route_json("GET", routes["progress"], caller = caller))
@@ -265,6 +289,7 @@ async def load_media(
     return LoadResult(
         kind = kind,
         model = opt_text(status.get("display_repo_id")) or opt_text(status.get("repo_id")) or model,
+        placement = place.media_placement(status),
         evicted = [name for name in before if name not in after],
     )
 
@@ -402,3 +427,28 @@ async def unload_stt(caller: Caller, model: Optional[str]) -> UnloadResult:
     after = (await stt_status(caller)).get(engine)
     still = isinstance(after, dict) and after.get("loaded_model") == name
     return UnloadResult(kind = "stt", model = name, unloaded = not still)
+
+
+async def unload_all(caller: Caller) -> UnloadAllResult:
+    """Unload every chat slot, then the image, video and speech-to-text models. The embedding model is Unsloth Studio's own and stays."""
+    serving, checkpoints, _before = await _llm_resident(caller)
+    pairs = list(zip(serving, checkpoints))
+    # Kept models first, so unloading the primary never promotes one of them in between.
+    for _name, target in reversed(pairs):
+        await route_json(
+            "POST", "/api/inference/unload", caller = caller, json_body = {"model_path": target}
+        )
+    _serving, _checkpoints, after = await _llm_resident(caller)
+    unloaded = [
+        SlotModel(kind = "llm", model = name) for name, target in pairs if not {name, target} & after
+    ]
+    for kind in MEDIA_ROUTES:
+        result = await unload_media(caller, kind)
+        if result.unloaded and result.model:
+            unloaded.append(SlotModel(kind = kind, model = result.model))
+    for _engine in STT_ENGINES:
+        result = await unload_stt(caller, None)
+        if not (result.unloaded and result.model):
+            break
+        unloaded.append(SlotModel(kind = "stt", model = result.model))
+    return UnloadAllResult(unloaded = unloaded)

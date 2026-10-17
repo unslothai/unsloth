@@ -14,6 +14,7 @@ from fastmcp.exceptions import ToolError
 from studio_mcp.caller import Caller, current_caller
 from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
+from studio_mcp.placement import media_placement
 from studio_mcp.outputs import (
     ChatModel,
     ChatSlot,
@@ -69,6 +70,13 @@ def _media(slot: type, payload: dict) -> Any:
     model = opt_text(payload.get("display_repo_id")) or opt_text(payload.get("repo_id"))
     family = {"family": opt_text(payload.get("family"))} if slot is ImageSlot else {}
     return slot(loaded = True, model = model, **family)
+
+
+def _placed(slot: type, payload: dict) -> Any:
+    built = _media(slot, payload)
+    return (
+        built.model_copy(update = {"placement": media_placement(payload)}) if built.loaded else built
+    )
 
 
 def _stt(payload: dict) -> SttSlot:
@@ -144,8 +152,8 @@ def _hardware(payload: dict) -> HardwareSlot:
 
 BUILDERS: dict[str, Callable[[dict], Any]] = {
     "chat": _chat,
-    "image": partial(_media, ImageSlot),
-    "video": partial(_media, VideoSlot),
+    "image": partial(_placed, ImageSlot),
+    "video": partial(_placed, VideoSlot),
     "stt": _stt,
     "embedder": _embedder,
     "training": _training,

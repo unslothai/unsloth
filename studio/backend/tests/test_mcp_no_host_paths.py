@@ -41,6 +41,7 @@ from .test_mcp_train_to_use import _routes as TRAIN_TO_USE_ROUTES
 from .test_mcp_tools_datasets_upload import PAYLOADS as UPLOAD_PAYLOADS
 from .test_mcp_tools_images import PAYLOADS as IMAGES_PAYLOADS
 from .test_mcp_tools_loading import PAYLOADS as LOADING_PAYLOADS
+from .test_mcp_tools_plan_load import _world as plan_world
 from .test_mcp_tools_models import PAYLOADS as MODELS_PAYLOADS
 from .test_mcp_tools_recipe import PAYLOADS as RECIPE_PAYLOADS
 from .test_mcp_tools_status import PAYLOADS as STATUS_PAYLOADS
@@ -80,6 +81,10 @@ CASES: dict[str, Any] = {
         (TRAIN_TO_USE_ROUTES([f"{OUT}/qwen-lora"]), {"export": "qwen-GGUF", "variant": "Q4_K_M"}),
     ],
     "unload_model": (LOADING_PAYLOADS, {}),
+    "plan_load": (
+        plan_world("off", ["unsloth/Qwen3-0.6B-GGUF"]),
+        {"model": "unsloth/Qwen3-0.6B-GGUF"},
+    ),
     "download_model": (DOWNLOAD_PAYLOADS, {"model": "unsloth/Qwen3-0.6B-GGUF"}),
     "chat": (TEXT_PAYLOADS, {"prompt": "hi"}),
     "embed": (TEXT_PAYLOADS, {"texts": ["a", "b"]}),

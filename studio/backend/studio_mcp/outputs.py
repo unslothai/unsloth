@@ -79,6 +79,18 @@ def audio_options(rows: Any) -> Optional[list[AudioOption]]:
     return options or None
 
 
+class Placement(ToolOutput):
+    """Where a model ended up, as Unsloth Studio reports it after the load."""
+
+    # "cpu" or "gpu"; for a speech model that asked for the GPU and fell back, "cpu".
+    device: Optional[RouteText] = None
+    memory_mode: Optional[RouteText] = None
+    # How much of an image or video model is moved off the GPU: none, model, group, streaming or sequential.
+    offload_policy: Optional[RouteText] = None
+    transformer_quant: Optional[RouteText] = None
+    text_encoder_quant: Optional[RouteText] = None
+
+
 class ChatModel(ToolOutput):
     id: RouteText
     display_name: Optional[RouteText] = None
@@ -97,12 +109,14 @@ class ImageSlot(ToolOutput):
     model: Optional[RouteText] = None
     family: Optional[RouteText] = None
     generating: bool = False
+    placement: Optional[Placement] = None
 
 
 class VideoSlot(ToolOutput):
     loaded: bool = False
     model: Optional[RouteText] = None
     generating: bool = False
+    placement: Optional[Placement] = None
 
 
 class SttDownload(ToolOutput):
@@ -198,6 +212,9 @@ class LoadResult(ToolOutput):
     model: RouteText
     loaded: bool = True
     display_name: Optional[RouteText] = None
+    placement: Optional[Placement] = None
+    # True when the chat model that was serving before the load still serves; None when none was.
+    alongside_applied: Optional[bool] = None
     evicted: list[RouteText] = []
 
 
@@ -205,6 +222,43 @@ class UnloadResult(ToolOutput):
     kind: RouteText
     model: Optional[RouteText] = None
     unloaded: bool
+
+
+class SlotModel(ToolOutput):
+    # llm (chat, TTS and audio models share it), image, video or stt.
+    kind: RouteText
+    model: RouteText
+
+
+class UnloadAllResult(ToolOutput):
+    kind: RouteText = "all"
+    unloaded: list[SlotModel] = []
+
+
+class PlanVariant(ToolOutput):
+    variant: RouteText
+    size_bytes: Optional[int] = None
+    downloaded: bool = False
+    # Some files are on disk but not all: a download still running, or one that stopped.
+    partial: bool = False
+
+
+class PlanLoadResult(ToolOutput):
+    model: RouteText
+    kind: RouteText
+    variants: list[PlanVariant] = []
+    # Bytes still to download for this load; None when Unsloth Studio cannot tell before downloading.
+    download_bytes: Optional[int] = None
+    # The GPU memory the load is estimated to take; only known for a downloaded GGUF chat model.
+    est_gpu_bytes: Optional[int] = None
+    residents: list[SlotModel] = []
+    # off, fit or always (Keep multiple models loaded); None when this Unsloth Studio does not report it.
+    multi_model_mode: Optional[RouteText] = None
+    would_evict: list[SlotModel] = []
+    # False when would_evict is an upper bound: the load may keep some of them.
+    would_evict_exact: bool = True
+    # True when Keep multiple models loaded is Always and the load may be refused instead of unloading a model.
+    would_refuse: bool = False
 
 
 class Usage(ToolOutput):
@@ -292,6 +346,10 @@ class TranscriptResult(ToolOutput):
 class VideoJobRef(ToolOutput):
     id: RouteText
     status: RouteText
+    # Set while the video waits in this MCP server's queue behind another video; 1 is next.
+    queue_position: Optional[int] = None
+    # Seconds until the queued video is expected to start, from the running video's progress.
+    eta_s: Optional[float] = None
     progress: Optional[int] = None
     model: Optional[RouteText] = None
     seconds: Optional[RouteText] = None
@@ -354,6 +412,8 @@ class JobStatus(ToolOutput):
     id: Optional[RouteText] = None
     status: Optional[RouteText] = None
     progress_percent: Optional[float] = None
+    queue_position: Optional[int] = None
+    eta_s: Optional[float] = None
     error: Optional[RouteText] = None
     video: Optional[VideoInfo] = None
     recipe: Optional[RecipeInfo] = None

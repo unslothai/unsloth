@@ -9,10 +9,11 @@ from typing import Any, Optional
 
 from fastmcp.exceptions import ToolError
 
+from studio_mcp import video_queue
 from studio_mcp.caller import current_caller
 from studio_mcp.inputs import ImageInput, data_url, resolve_image
 from studio_mcp.outputs import VideoJobRef
-from studio_mcp.tools import WRITES, opt_text, present, route_json
+from studio_mcp.tools import WRITES, opt_text, present
 
 LOAD_VIDEO_HINT = "Load a video model with load_model(kind='video') first."
 
@@ -36,15 +37,8 @@ async def generate_video(
     if first_frame is not None:
         data, mime = await resolve_image(caller, first_frame)
         body["input_reference"] = data_url(data, mime)
-    job = await route_json(
-        "POST",
-        "/v1/videos",
-        caller = caller,
-        json_body = body,
-        hub_header = True,
-        hints = {503: LOAD_VIDEO_HINT},
-    )
-    return job_ref(job)
+    job = await video_queue.post_or_queue(caller, body, hints = {503: LOAD_VIDEO_HINT})
+    return job if isinstance(job, VideoJobRef) else job_ref(job)
 
 
 TOOLS = ((generate_video, WRITES),)
