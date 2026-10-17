@@ -102,6 +102,28 @@ def test_fit_frees_the_image_model_and_retries(env):
     assert env.retry_flags == [True, True] and flag_after is False
 
 
+def test_freed_media_goes_to_the_eviction_sink_once(env):
+    env.errors, sink = [_short()], []
+
+    async def run():
+        token = gpu_arbiter.eviction_sink.set(sink)
+        try:
+            return await inf.load_model_gated(LoadRequest(model_path = "org/C-GGUF"), None, "s")
+        finally:
+            gpu_arbiter.eviction_sink.reset(token)
+
+    response = asyncio.run(run())
+    # The route turns its sink into the answer, so the retry must not also report it on its own.
+    assert sink == [IMG] and not response.evicted
+
+
+def test_an_idle_video_server_freed_alone_still_earns_a_full_size_retry(env, monkeypatch):
+    env.errors = [_short()]
+    monkeypatch.setattr(gpu_residency, "free_for", lambda *a, **k: env.free_calls.append(a) or ["video-server"])
+    response, _ = _gated()
+    assert [r.force_alongside for r in env.requests] == [False, False] and not response.evicted
+
+
 def test_fit_with_nothing_freed_lets_llama_server_fit_what_it_can(env):
     env.errors, env.frees = [_short()], []
     response, _ = _gated()
@@ -224,3 +246,14 @@ def test_chat_fit_kwargs(monkeypatch):
     assert native_need == {"policy": "fit", "need_mib": {0: 4096, 1: 4096}}
     policy.value = "always"
     assert inf._chat_fit_kwargs(gguf, _placement([0])) == {"policy": "always"}
+
+
+def test_the_replace_fallback_never_refuses_a_partial_fit():
+    # Nothing retries the fallback load, so a refusal beside media there would escape as a raw GpuMemoryShortError.
+    import inspect
+
+    source = inspect.getsource(inf.load_model_gated)
+    unload = source.index("await asyncio.to_thread(_unload_primary)")
+    assert unload < source.index("_primary_can_retry_fit.set(False)", unload) < source.index(
+        "_run_tracked_load_model_impl", unload
+    )
