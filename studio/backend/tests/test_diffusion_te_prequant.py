@@ -553,9 +553,11 @@ def test_hosted_te_prequant_entries():
         "LTX-2-text_encoder-FP8.safetensors",
         "LTX-2-text_encoder-FP8.pt",
     )
-    # HiDream's heavyweight is TE4 (Llama-3.1-8B), engaged via hidream_te4_kwargs since the generic pass only covers text_encoder.._3.
+    # HiDream's heavyweight is TE4 (Llama-3.1-8B), engaged via hidream_te4_kwargs since the generic pass only covers
+    # text_encoder.._3; its text_encoder_3 is FLUX.1's T5-XXL, loaded from FLUX.1's text_encoder_2 file.
     assert detect_family("HiDream-ai/HiDream-I1-Full").te_prequant_repos == (
         ("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),
+        ("fp8", "text_encoder_3", "unsloth/FLUX.1-schnell-FP8", "text_encoder_2"),
     )
     assert te_prequant_repo_filenames("unsloth/HiDream-I1-Full-FP8", "text_encoder_4", "fp8") == (
         "HiDream-I1-Full-text_encoder_4-FP8.safetensors",
@@ -581,8 +583,11 @@ def test_hosted_te_prequant_entries():
     assert detect_family("hunyuanvideo-community/HunyuanImage-2.1-Diffusers").te_prequant_repos == (
         ("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),
     )
-    # flux.2-klein-4B hosts NO TE entry: its Qwen3-4B retrained layer 35's MLP, so the z-image artifact must not serve it (maxdiff 0.86).
-    assert detect_family("black-forest-labs/FLUX.2-klein-4B").te_prequant_repos == ()
+    # flux.2-klein-4B hosts its OWN entry: it ships stock Qwen3-4B while Z-Image's encoder is a variant of it (layer 35
+    # MLP maxdiff 0.86), so the z-image artifact must not serve it.
+    assert detect_family("black-forest-labs/FLUX.2-klein-4B").te_prequant_repos == (
+        ("fp8", "text_encoder", "unsloth/FLUX.2-klein-4B-FP8"),
+    )
 
 
 def _hidream_transformers_stub(monkeypatch, recorder):

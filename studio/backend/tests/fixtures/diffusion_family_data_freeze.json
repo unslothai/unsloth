@@ -794,7 +794,7 @@
    },
    "page": "image",
    "preview_key": "qwen_image",
-   "te_int8_effective": "int8"
+   "te_int8_effective": "fp8"
   },
   "flux.1": {
    "auto": {
@@ -1058,7 +1058,7 @@
    },
    "page": "image",
    "preview_key": "flux2",
-   "te_int8_effective": "int8"
+   "te_int8_effective": "fp8"
   },
   "flux.2-klein": {
    "auto": {
@@ -2152,7 +2152,7 @@
    },
    "page": "image",
    "preview_key": "qwen_image",
-   "te_int8_effective": "int8"
+   "te_int8_effective": "fp8"
   },
   "qwen-image-2.1": {
    "auto": {
@@ -2346,7 +2346,7 @@
    },
    "page": "image",
    "preview_key": "qwen_image",
-   "te_int8_effective": "int8"
+   "te_int8_effective": "fp8"
   },
   "qwen-image-layered": {
    "auto": {
@@ -2440,7 +2440,7 @@
    },
    "page": "image",
    "preview_key": null,
-   "te_int8_effective": "int8"
+   "te_int8_effective": "fp8"
   },
   "sdxl": {
    "auto": {

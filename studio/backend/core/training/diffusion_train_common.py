@@ -194,10 +194,12 @@ def _component_only_repos() -> dict[str, tuple[str, str, str]]:
                     components.setdefault(repo, (fam.name, "transformer", str(fam.base_repo)))
                 else:
                     bases.add(repo)
-        for _scheme, component, repo in getattr(fam, "te_prequant_repos", ()):
+        for row in getattr(fam, "te_prequant_repos", ()):
             components.setdefault(
-                str(repo).strip().lower(), (fam.name, str(component), str(fam.base_repo))
+                str(row[2]).strip().lower(), (fam.name, str(row[1]), str(fam.base_repo))
             )
+        for row in getattr(fam, "te_prequant_variant_repos", ()):
+            components.setdefault(str(row[3]).strip().lower(), (fam.name, str(row[2]), str(row[0])))
     return {repo: hit for repo, hit in components.items() if repo not in bases}
 
 

@@ -96,6 +96,26 @@ def te_quant_is_auto(value: Optional[str]) -> bool:
     return not normalized or normalized == "auto"
 
 
+class AutoTeQuant(str):
+    """A scheme ``resolve_te_quant_request`` picked from the family default, not one the caller typed. Equal to and
+    hashed as the plain string, so every consumer that only needs the scheme is unchanged; the type lets the planners
+    that run outside a load (download plan, memory budget) tell an automatic pick from an explicit one."""
+
+    __slots__ = ()
+
+
+def te_quant_picked_automatically(mode: Any) -> bool:
+    """Whether ``mode`` is an automatic pick: an ``AutoTeQuant``, or any mode inside a load whose raw request was
+    unset / "auto" (``diffusion_te_prequant.auto_te_request``)."""
+    if isinstance(mode, AutoTeQuant):
+        return True
+    try:
+        from .diffusion_te_prequant import te_request_is_auto
+        return te_request_is_auto()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def resolve_te_quant_request(
     value: Optional[str], auto_scheme: Optional[str]
 ) -> tuple[Optional[str], bool]:
@@ -115,7 +135,8 @@ def resolve_te_quant_request(
         return None, False
     # Validate the family's own field rather than trusting it: a typo here would otherwise reach
     # quantize_text_encoders as an unknown mode on every default load of that family.
-    return normalize_te_quant(auto_scheme), True
+    scheme = normalize_te_quant(auto_scheme)
+    return (AutoTeQuant(scheme) if scheme is not None else None), True
 
 
 def effective_te_quant(mode: Optional[str], family: Optional[str]) -> Optional[str]:
@@ -128,9 +149,70 @@ def effective_te_quant(mode: Optional[str], family: Optional[str]) -> Optional[s
     unsupported while fp8 still works.
     """
     normalized = normalize_te_quant(mode)
-    if normalized == TE_QUANT_INT8 and _TE_INT8_SKIP.get((family or "").lower()) is None:
+    if normalized == TE_QUANT_INT8 and (
+        _TE_INT8_SKIP.get((family or "").lower()) is None or _family_hosts_te_int8(family)
+    ):
+        # A family hosting an int8 ConvRot file loads it as plain tensors (no torchao), with its fp8 file behind it.
         return TE_QUANT_FP8
     return normalized
+
+
+def preflight_te_quant(
+    mode: Optional[str],
+    fam: Any,
+    base: Optional[str],
+    target: Any,
+    *,
+    supplied: Any = (),
+    local_files_only: Optional[bool] = None,
+) -> Optional[str]:
+    """The text-encoder mode a pre-load gate must check for an EXPLICIT request: None when an int8 request will
+    load the hosted int8 ConvRot file (plain tensors, no torchao, offload-safe, runs on MPS), else the mode the
+    runtime will attempt without it -- torchao int8 on a family with a keep-bf16 schedule and torchao present (with
+    its device and offload limits), fp8 otherwise -- so the gate refuses what the load would refuse."""
+    normalized = normalize_te_quant(mode)
+    family = getattr(fam, "name", None)
+    if normalized != TE_QUANT_INT8:
+        return effective_te_quant(normalized, family)
+    from .diffusion_te_prequant import (
+        TE_INT8_CONVROT_FILES,
+        explicit_int8_hosted_components,
+        explicit_int8_takes_hosted_file,
+    )
+
+    if explicit_int8_takes_hosted_file(
+        fam, base, target, supplied = supplied or (), local_files_only = local_files_only
+    ):
+        return None
+    takes = explicit_int8_hosted_components(
+        fam, base, target, supplied = supplied or (), local_files_only = local_files_only
+    )
+    missing = [c for c, ok in takes.items() if not ok]
+    supplied_hosted = [c for c in missing if c in set(supplied or ())]
+    if supplied_hosted and len(missing) < len(takes):
+        # A supplied dense encoder in one hosted slot beside a hosted int8 file in another: mixed precisions.
+        raise RuntimeError(
+            f"Text encoder precision int8 would load the hosted int8 ConvRot file for some {family} text encoders, "
+            f"but the supplied {', '.join(supplied_hosted)} is not int8, so the encoders would load at mixed "
+            "precisions. Choose fp8 or Dense (bf16), or supply every text encoder."
+        )
+    if missing and len(missing) < len(takes):
+        # Some encoders would load their hosted int8 file and the rest fall back (HiDream: T5 int8 beside an fp8
+        # Llama), a mixed build quantize_text_encoders refuses only after the download and the eviction. Refuse here.
+        files = TE_INT8_CONVROT_FILES.get((family or "").strip().lower(), {})
+        named = ", ".join(
+            f"{c} ({files[c][1]})" if c in files and len(files[c]) > 1 else c for c in missing
+        )
+        raise RuntimeError(
+            f"Text encoder precision int8 needs the hosted int8 ConvRot file for every {family} text encoder, but "
+            f"{named} is not available here while the others are, so the encoders would load at mixed precisions. "
+            "Choose fp8 for all of them, or Dense (bf16)."
+        )
+    if _family_hosts_te_int8(family):
+        if _TE_INT8_SKIP.get((family or "").lower()) is not None and torchao_quantize_importable():
+            return TE_QUANT_INT8
+        return TE_QUANT_FP8
+    return effective_te_quant(normalized, family)
 
 
 def te_quant_needs_resident_weights(mode: Optional[str]) -> bool:
@@ -238,7 +320,37 @@ class TEQuantOutcome(NamedTuple):
     partial: bool = False
 
 
+# Set on an encoder cast in place outside this pass (HiDream's text_encoder_4), so the outcome can report it.
+TE_RUNTIME_SCHEME_ATTR = "_unsloth_te_runtime_scheme"
+
+
 def quantize_text_encoders(
+    pipe: Any,
+    target: Any,
+    *,
+    mode: Optional[str],
+    family: Optional[str] = None,
+    offload_active: bool = False,
+    logger: Any = None,
+) -> TEQuantOutcome:
+    """See ``_quantize_text_encoders``; also folds in HiDream's ``text_encoder_4``, which its family loader quantizes
+    (``hidream_te4_kwargs``), so a TE4 that ended up on another scheme is reported rather than hidden."""
+    outcome = _quantize_text_encoders(
+        pipe, target, mode = mode, family = family, offload_active = offload_active, logger = logger
+    )
+    te4 = getattr(pipe, "text_encoder_4", None)
+    if te4 is None or outcome.mode is None:
+        return outcome
+    te4_scheme = _hosted_te_scheme(te4) or getattr(te4, TE_RUNTIME_SCHEME_ATTR, None)
+    if te4_scheme == outcome.mode:
+        return outcome
+    held = f"text_encoder_4 is {te4_scheme}" if te4_scheme else "text_encoder_4 stayed dense bf16"
+    reason = f"{outcome.reason}; {held}" if outcome.reason else held
+    # The fourth conditioner is not on the scheme the rest took: a mixed build, which an explicit request refuses.
+    return outcome._replace(reason = reason, status = RESOLVED_FELL_BACK, partial = True)
+
+
+def _quantize_text_encoders(
     pipe: Any,
     target: Any,
     *,
@@ -253,6 +365,7 @@ def quantize_text_encoders(
     it falls back to ``fp8``. Under ``offload_active`` the torchao modes are skipped (their
     subclasses reject ``Module.to()``); layerwise ``fp8`` still engages. Best-effort: any failure
     leaves the encoder dense."""
+    picked_automatically = te_quant_picked_automatically(mode)
     mode = normalize_te_quant(mode)
     if mode is None:
         present = [a for a in _TEXT_ENCODER_ATTRS if getattr(pipe, a, None) is not None]
@@ -274,10 +387,60 @@ def quantize_text_encoders(
             "hosted int8 ConvRot weight-only text encoder",
             RESOLVED_APPLIED,
         )
+    if (
+        mode == TE_QUANT_INT8
+        and hosted_int8
+        and _hosts_te_int8_for_all_but_small(family, hosted_int8, present)
+    ):
+        # FLUX.1's CLIP-L, HunyuanImage's ByT5: the hosted file covers the big encoder, and casting a sub-GB pooled /
+        # glyph encoder in place would be a runtime-only conversion the file does not carry. Leave them bf16.
+        dense = [a for a in present if a not in hosted_int8]
+        return TEQuantOutcome(
+            TE_QUANT_INT8,
+            f"hosted int8 ConvRot weight-only {', '.join(hosted_int8)}; {', '.join(dense)} kept bf16",
+            RESOLVED_APPLIED,
+        )
+    if picked_automatically and not any(
+        _hosted_te_scheme(getattr(pipe, a)) == mode for a in present
+    ):
+        # The automatic default is the measured hosted file and nothing else: a runtime cast (fp8, torchao int8) has a
+        # dense bf16 peak and is not what was measured, so without the file the released bf16 encoder stays.
+        label = "int8 ConvRot" if mode == TE_QUANT_INT8 else mode
+        why = "is not available (not published yet, offline, or refused, see the server log)"
+        if mode == TE_QUANT_INT8 and _family_hosts_te_int8(family):
+            from .diffusion_text_encoder_trim import KEEP_LM_HEAD_ENV, family_trims_lm_head
+            if not family_trims_lm_head(family):
+                why = f"carries no lm_head, which {KEEP_LM_HEAD_ENV} keeps"
+        _note(logger, f"automatic {label} text encoder not used; keeping the dense bf16 encoder")
+        return TEQuantOutcome(
+            None,
+            f"the hosted {label} text encoder {why}, so the automatic default kept the dense bf16 encoder",
+            RESOLVED_FELL_BACK,
+        )
+    if picked_automatically:
+        # The automatic default is the hosted file and nothing more: a sibling it does not replace (Kontext's CLIP-L)
+        # stays bf16 rather than taking a runtime cast nobody measured. The hosted encoders arrive with their hooks.
+        hosted = [a for a in present if _hosted_te_scheme(getattr(pipe, a)) == mode]
+        dense = [a for a in present if a not in hosted]
+        return TEQuantOutcome(
+            mode,
+            f"hosted {mode} {', '.join(hosted)}"
+            + (f"; {', '.join(dense)} kept bf16" if dense else ""),
+            RESOLVED_APPLIED,
+        )
     downgrade_reason = ""
     skip: Optional[tuple[int, int]] = None
     if mode == TE_QUANT_INT8:
         skip = _TE_INT8_SKIP.get((family or "").lower())
+        pre_cast = [a for a in present if _hosted_te_scheme(getattr(pipe, a)) is not None]
+        if (
+            skip is not None
+            and _family_hosts_te_int8(family)
+            and (pre_cast or not torchao_quantize_importable())
+        ):
+            # The hosted int8 file did not engage. The on-the-fly torchao int8 (the path before the file existed) is
+            # the fallback only over a dense encoder and with torchao present; otherwise fp8.
+            skip = None
         if skip is None:
             _note(logger, f"int8 has no keep-bf16 schedule for family '{family}'; using fp8")
             mode = TE_QUANT_FP8
@@ -369,6 +532,21 @@ def _hosted_te_scheme(encoder: Any) -> Optional[str]:
 
     value = getattr(encoder, TE_PREQUANT_SCHEME_ATTR, None)
     return value if isinstance(value, str) else None
+
+
+def _hosts_te_int8_for_all_but_small(family: Optional[str], hosted: list, present: list) -> bool:
+    """Whether every encoder the family hosts an int8 ConvRot file for loaded from it, so the rest are the small
+    companions the family deliberately leaves dense."""
+    try:
+        from .diffusion_te_prequant import TE_INT8_CONVROT_FILES
+
+        # HiDream's text_encoder_4 is assembled outside the attributes this pass walks.
+        listed = set(TE_INT8_CONVROT_FILES.get((family or "").strip().lower(), {})) & set(
+            _TEXT_ENCODER_ATTRS
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(listed) and listed <= set(hosted) and set(hosted) < set(present)
 
 
 def _family_hosts_te_int8(family: Optional[str]) -> bool:
