@@ -123,10 +123,10 @@ def test_official_repos_are_trusted():
 
 
 def test_generation_defaults():
-    # ComfyUI (comfy/supported_models.py Flux3) and the BFL reference: distilled 16 steps CFG 1 (edit template, BFL), base 25 at 3.5 (CFG template).
+    # ComfyUI's templates and the BFL reference: distilled 16 steps CFG 1, base 50 at 3.5.
     assert default_generation_params(DISTILLED) == (16, 1.0)
-    assert default_generation_params(BASE) == (25, 3.5)
-    assert default_generation_params("flux3_klein_base_bf16.safetensors") == (25, 3.5)
+    assert default_generation_params(BASE) == (50, 3.5)
+    assert default_generation_params("flux3_klein_base_bf16.safetensors") == (50, 3.5)
     assert default_generation_params("black-forest-labs/FLUX.2-klein-4B") == (4, 1.0)
 
 
@@ -1095,11 +1095,11 @@ def test_canonical_family_names_get_the_flux3_recipe():
     from core.inference.diffusion import _generation_defaults_for
 
     assert default_generation_params("flux.3-klein") == (16, 1.0)
-    assert default_generation_params("flux.3-klein-base") == (25, 3.5)
+    assert default_generation_params("flux.3-klein-base") == (50, 3.5)
     # An opaque local pipeline names no variant; the resident recipe falls back to the family.
     for name, want in (
         (FLUX3_KLEIN_FAMILY_NAME, (16, 1.0)),
-        (FLUX3_KLEIN_BASE_FAMILY_NAME, (25, 3.5)),
+        (FLUX3_KLEIN_BASE_FAMILY_NAME, (50, 3.5)),
     ):
         got = _generation_defaults_for(
             "/models/my-model", None, "/models/my-model", family = _family(name)
@@ -1804,11 +1804,11 @@ def test_flux3_family_decides_generation_defaults_over_file_names():
     for name in ("bf16", "int8_convrot", "nvfp4"):
         f = f"diffusion_models/flux3_image_klein_{name}.safetensors"
         assert _generation_defaults_for(comfy, f, BASE, None, base) == {
-            "steps": 25,
+            "steps": 50,
             "guidance": 3.5,
         }
         assert _generation_defaults_for("/local/dir", f, DISTILLED, None, base) == {
-            "steps": 25,
+            "steps": 50,
             "guidance": 3.5,
         }
     sd = "diffusion_models/flux3_image_klein_sd_bf16.safetensors"

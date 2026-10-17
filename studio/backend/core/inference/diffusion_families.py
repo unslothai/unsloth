@@ -1644,15 +1644,15 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("kontext", 20, 2.5),  # editing: before the generic flux.1
     ("flux.1", 20, 3.5),
     ("flux1", 20, 3.5),
-    # FLUX.3 Image Klein, ComfyUI's templates (black-forest-labs/flux-3-image-klein-comfy, workflows/): the base t2i
-    # and edit templates run 25 steps at CFG 3.5 (euler / simple; a note suggests 50 for better quality), the distilled
-    # edit template 16 steps at CFG 1 and the distilled t2i template 15. The distilled default is 16, the edit
-    # template's and the BFL reference's. Base first.
+    # FLUX.3 Image Klein, ComfyUI's templates (Comfy-Org/workflow_templates 0.11.87): the base t2i and edit templates
+    # run 50 steps at CFG 3.5 (euler / simple), raised from the launch templates' 25, which is also the BFL reference
+    # setting (diffusers' FLUX.3 pipeline defaults: 50 steps, guidance 3.5). Both distilled templates run 16 steps at
+    # CFG 1, as does the BFL reference. Base first.
     # Every registered alias plus the canonical family names (an opaque path resolves through the family).
-    ("flux.3-klein-base", 25, 3.5),
-    ("flux-3-image-klein-base", 25, 3.5),
-    ("flux3-image-klein-base", 25, 3.5),
-    ("flux3-klein-base", 25, 3.5),
+    ("flux.3-klein-base", 50, 3.5),
+    ("flux-3-image-klein-base", 50, 3.5),
+    ("flux3-image-klein-base", 50, 3.5),
+    ("flux3-klein-base", 50, 3.5),
     ("flux.3-klein", 16, 1.0),
     ("flux-3-image-klein", 16, 1.0),
     ("flux3-image-klein", 16, 1.0),
