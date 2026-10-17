@@ -50526,8 +50526,11 @@ async def generate_diffusion_image(
         if request.localized_edit is not None
         else None
     )
+    submitted = request
     result = None
     for attempt in range(2):
+        request = submitted
+        status = None
         expected_load = None
         if account_access.managed_account():
             status = backend.status()
@@ -50538,6 +50541,19 @@ async def generate_diffusion_image(
                 expected_load = load_identity(
                     status.get("repo_id"), status.get("base_repo"), status.get("family")
                 )
+        # Omitted steps or guidance follow the loaded model, read again each attempt so a replacement brings its own.
+        omitted = {"steps", "guidance"} - request.model_fields_set
+        if omitted:
+            if status is None:
+                status = await asyncio.to_thread(backend.status)
+            if status.get("loaded"):
+                steps, guidance = await asyncio.to_thread(_image_generation_defaults, status)
+                resolved = {"steps": steps, "guidance": guidance}
+                request = request.model_copy(update = {key: resolved[key] for key in omitted})
+                if expected_load is None:
+                    expected_load = load_identity(
+                        status.get("repo_id"), status.get("base_repo"), status.get("family")
+                    )
         # Ahead of the run: milestones key off the previous poll, so a resumed range logs nothing.
         reset_media_generation_progress("image")
         try:
@@ -51697,6 +51713,23 @@ async def openai_image_generations(
         )
 
 
+def _image_generation_defaults(status: dict) -> tuple[int, float]:
+    """Steps and guidance for the loaded image model: the diffusers recipe when the status reports one, else the family table (sd.cpp and MLX report none). It reads checkpoint headers, so call it off the event loop."""
+    from core.inference.diffusion_content import content_variant_hint
+    from core.inference.diffusion_families import default_generation_params
+
+    defaults = status.get("generation_defaults")
+    if isinstance(defaults, dict) and defaults.get("steps"):
+        return int(defaults["steps"]), float(defaults["guidance"])
+    # Same order as the load (FLUX.1's base is schnell).
+    return default_generation_params(
+        status.get("gguf_filename"),
+        content_variant_hint(status.get("repo_id"), status.get("gguf_filename")),
+        status.get("repo_id"),
+        status.get("base_repo"),
+    )
+
+
 # Split out so the monitor row can wrap the whole handler without reindenting it.
 async def _generate_openai_images(
     body: ImageGenerationRequest,
@@ -51709,7 +51742,6 @@ async def _generate_openai_images(
 ):
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
-    from core.inference.diffusion_families import default_generation_params
     from core.inference.gpu_arbiter import DIFFUSION
     from core.inference.media_auto_switch import maybe_auto_switch_media_model
 
@@ -51755,22 +51787,7 @@ async def _generate_openai_images(
                 ),
             )
 
-        # Same order as the load (FLUX.1's base is schnell).
-        from core.inference.diffusion_content import content_variant_hint
-
-        # Resolved by the diffusers status (a shipped grid's step count included).
-        defaults = status.get("generation_defaults")
-        if isinstance(defaults, dict) and defaults.get("steps"):
-            steps, guidance = int(defaults["steps"]), float(defaults["guidance"])
-        else:
-            steps, guidance = default_generation_params(
-                status.get("gguf_filename"),
-                await asyncio.to_thread(
-                    content_variant_hint, status.get("repo_id"), status.get("gguf_filename")
-                ),
-                status.get("repo_id"),
-                status.get("base_repo"),
-            )
+        steps, guidance = await asyncio.to_thread(_image_generation_defaults, status)
         reset_media_generation_progress("image")
         try:
             with account_access.media_generation("diffusion"):

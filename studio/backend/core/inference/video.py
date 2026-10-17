@@ -11748,6 +11748,7 @@ class VideoBackend:
             **_nvfp4_backend_fields(_video_transformer_quant_backend(state), owner = self),
             "text_encoder_quant": state.text_encoder_quant,
             "has_audio": fam.has_audio,
+            "prompt_hint": fam.prompt_hint,
             "supports_cfg": fam.supports_cfg,
             # Expose only conditioning supported by the resident partition.
             "supports_keyframes": fam.supports_keyframes and state.h3_task != H3_TASK_REFERENCES,

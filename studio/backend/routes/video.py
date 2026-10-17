@@ -1160,7 +1160,22 @@ _MAX_REMEMBERED_JOBS = 256
 _VIDEO_POLL_AFTER_MS = "2000"
 _NO_VIDEO_MODEL_MSG = "No video model loaded. Load a video model first."
 _VIDEO_FAILED_CODE = "video_generation_failed"
-_VIDEO_CREATE_FIELDS = ("prompt", "model", "seconds", "size")
+_VIDEO_CREATE_FIELDS = (
+    "prompt",
+    "model",
+    "seconds",
+    "size",
+    "seed",
+    "negative_prompt",
+    "steps",
+    "guidance",
+    "num_frames",
+    "fps",
+    "last_frame",
+)
+_VIDEO_CREATE_LISTS = ("reference_images", "reference_audios")
+# A reference audio rides as base64 in a field capped at 32 MiB, which is 24 MiB of audio.
+_VIDEO_REFERENCE_AUDIO_MAX_BYTES = 24 * 1024 * 1024
 # Upper bound on how long DELETE waits for a cancelled run to stop writing.
 _DELETE_SETTLE_TIMEOUT_S = 10.0
 
@@ -1173,6 +1188,7 @@ class _VideoJob:
     model: str
     size: str
     seconds: str
+    seed: Optional[int] = None
     status: str = "queued"
     progress: int = 0
     completed_at: Optional[int] = None
@@ -1330,7 +1346,16 @@ def _record_to_job(record: dict, job: Optional[_VideoJob] = None) -> VideoJob:
         prompt = record.get("prompt"),
         size = f"{record.get('width')}x{record.get('height')}",
         seconds = _format_seconds(record.get("duration_s") or 0.0),
+        seed = _record_seed(record, job),
     )
+
+
+def _record_seed(record: dict, job: Optional[_VideoJob]) -> Optional[int]:
+    """The seed the engine saved with the clip, else the one the job was created with."""
+    seed = record.get("seed")
+    if isinstance(seed, int) and not isinstance(seed, bool):
+        return seed
+    return job.seed if job is not None else None
 
 
 def _job_to_openai(job: _VideoJob) -> VideoJob:
@@ -1344,6 +1369,7 @@ def _job_to_openai(job: _VideoJob) -> VideoJob:
         prompt = job.prompt,
         size = job.size,
         seconds = job.seconds,
+        seed = job.seed,
         error = VideoJobError(**job.error) if job.error else None,
     )
 
@@ -1551,6 +1577,10 @@ async def _read_video_create_body(request: Request) -> tuple[dict, Any]:
         except Exception:  # noqa: BLE001
             raise _openai_video_error(400, "Could not parse the multipart form body.")
         fields = {key: form.get(key) for key in _VIDEO_CREATE_FIELDS if key in form}
+        for key in _VIDEO_CREATE_LISTS:
+            items = form.getlist(key) + form.getlist(f"{key}[]")
+            if items:
+                fields[key] = items
         reference = form.get("input_reference")
         if reference is None:
             nested_reference = {
@@ -1559,16 +1589,92 @@ async def _read_video_create_body(request: Request) -> tuple[dict, Any]:
                 if f"input_reference[{key}]" in form
             }
             reference = nested_reference or None
-        return fields, reference
+        return await _media_fields(fields), reference
     try:
         data = await request.json()
     except Exception:  # noqa: BLE001
         raise _openai_video_error(400, "Request body must be JSON or multipart/form-data.")
     if not isinstance(data, dict):
         raise _openai_video_error(400, "Request body must be a JSON object.")
-    return {key: data.get(key) for key in _VIDEO_CREATE_FIELDS if key in data}, data.get(
-        "input_reference"
+    fields = {
+        key: data.get(key) for key in _VIDEO_CREATE_FIELDS + _VIDEO_CREATE_LISTS if key in data
+    }
+    return await _media_fields(fields), data.get("input_reference")
+
+
+async def _media_fields(fields: dict) -> dict:
+    """last_frame, reference_images and uploaded reference_audios as the data URLs the engine takes.
+    Audio given as a string or an Unsloth Studio audio id is left for validation and resolution."""
+    if fields.get("last_frame") is not None:
+        fields["last_frame"] = await _reference_to_data_url(
+            fields["last_frame"], param = "last_frame"
+        )
+    images = fields.get("reference_images")
+    if isinstance(images, list):
+        fields["reference_images"] = [
+            await _reference_to_data_url(item, param = f"reference_images[{index}]")
+            for index, item in enumerate(images)
+        ]
+    audios = fields.get("reference_audios")
+    if isinstance(audios, list):
+        for index, item in enumerate(audios):
+            if isinstance(item, UploadFile):
+                audios[index] = await _audio_upload_to_data_url(item, f"reference_audios[{index}]")
+    return fields
+
+
+async def _audio_upload_to_data_url(upload: UploadFile, name: str) -> str:
+    data = await upload.read()
+    if not data:
+        raise _openai_video_error(400, f"{name} is empty.", param = "reference_audios")
+    if len(data) > _VIDEO_REFERENCE_AUDIO_MAX_BYTES:
+        raise _openai_video_error(
+            400, f"{name} is too large; the limit is 24 MB.", param = "reference_audios"
+        )
+    content_type = (upload.content_type or "").split(";")[0].strip().lower()
+    if not content_type.startswith("audio/"):
+        content_type = "application/octet-stream"
+    return f"data:{content_type};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _audio_ref_data_url(ref) -> str:
+    """An Unsloth Studio audio id as a data URL, resolved in the caller's account."""
+    import mimetypes
+
+    from core.inference import audio_inputs
+
+    source = audio_inputs.resolve_source(ref.model_dump(exclude_none = True))
+    data = source.path.read_bytes()
+    if len(data) > _VIDEO_REFERENCE_AUDIO_MAX_BYTES:
+        raise audio_inputs.AudioInputError(
+            400, "This audio is too large for a video reference; the limit is 24 MB."
+        )
+    suffix = source.path.suffix.lower()
+    mime = "audio/wav" if suffix == ".wav" else mimetypes.guess_type(source.path.name)[0]
+    return (
+        f"data:{mime or 'application/octet-stream'};base64,{base64.b64encode(data).decode('ascii')}"
     )
+
+
+def _conditioning_param(
+    body: VideoJobCreateRequest,
+    reference: Optional[str],
+    default: Optional[str] = None,
+) -> Optional[str]:
+    """The one conditioning field a request carries, to name it in a refusal: ``default`` for none, None for several."""
+    given = [
+        name
+        for name, value in (
+            ("input_reference", reference),
+            ("last_frame", body.last_frame),
+            ("reference_images", body.reference_images),
+            ("reference_audios", body.reference_audios),
+        )
+        if value
+    ]
+    if not given:
+        return default
+    return given[0] if len(given) == 1 else None
 
 
 def _validate_create_fields(fields: dict) -> VideoJobCreateRequest:
@@ -1583,15 +1689,15 @@ def _validate_create_fields(fields: dict) -> VideoJobCreateRequest:
         raise _openai_video_error(400, f"{param}: {message}" if param else message, param = param)
 
 
-async def _reference_to_data_url(reference: Any) -> Optional[str]:
+async def _reference_to_data_url(reference: Any, param: str = "input_reference") -> Optional[str]:
     if reference is None:
         return None
     if isinstance(reference, dict):
         if reference.get("file_id"):
             raise _openai_video_error(
                 400,
-                "input_reference.file_id is not supported; send the image as a file upload or a base64 data URL.",
-                param = "input_reference",
+                f"{param}.file_id is not supported; send the image as a file upload or a base64 data URL.",
+                param = param,
             )
         reference = reference.get("image_url")
         if reference is None:
@@ -1599,20 +1705,18 @@ async def _reference_to_data_url(reference: Any) -> Optional[str]:
     if isinstance(reference, UploadFile):
         data = await reference.read()
         if not data:
-            raise _openai_video_error(400, "input_reference is empty.", param = "input_reference")
+            raise _openai_video_error(400, f"{param} is empty.", param = param)
         if len(data) > VIDEO_INPUT_REFERENCE_MAX_BYTES:
             raise _openai_video_error(
                 400,
-                f"input_reference is too large; the limit is {VIDEO_INPUT_REFERENCE_MAX_BYTES // (1024 * 1024)} MB.",
-                param = "input_reference",
+                f"{param} is too large; the limit is {VIDEO_INPUT_REFERENCE_MAX_BYTES // (1024 * 1024)} MB.",
+                param = param,
             )
         content_type = (reference.content_type or "").split(";")[0].strip().lower()
         sniffed = _sniff_image_type(data)
         if not content_type.startswith("image/"):
             if sniffed is None:
-                raise _openai_video_error(
-                    400, "input_reference must be an image.", param = "input_reference"
-                )
+                raise _openai_video_error(400, f"{param} must be an image.", param = param)
             content_type = sniffed
         encoded = base64.b64encode(data).decode("ascii")
         return f"data:{content_type};base64,{encoded}"
@@ -1623,12 +1727,12 @@ async def _reference_to_data_url(reference: Any) -> Optional[str]:
         if text.lower().startswith(("http://", "https://")):
             raise _openai_video_error(
                 400,
-                "Remote input_reference URLs are not fetched; send the image as a file upload or a base64 data URL.",
-                param = "input_reference",
+                f"Remote {param} URLs are not fetched; send the image as a file upload or a base64 data URL.",
+                param = param,
             )
         return text
     raise _openai_video_error(
-        400, "input_reference must be an image file or a base64 data URL.", param = "input_reference"
+        400, f"{param} must be an image file or a base64 data URL.", param = param
     )
 
 
@@ -1690,7 +1794,37 @@ async def _create_openai_video(
     except ValueError as exc:
         raise _openai_video_error(400, str(exc), param = "seconds")
     width, height = size if size is not None else (None, None)
-    if reference is not None:
+    if reference is not None and body.reference_images:
+        raise _openai_video_error(
+            400,
+            "input_reference cannot be combined with reference_images; send that image as a reference_images entry.",
+            param = "reference_images",
+        )
+    if body.reference_audios and not body.reference_images and reference is None:
+        raise _openai_video_error(
+            400,
+            "reference audio needs at least one reference image or video to go with",
+            param = "reference_audios",
+        )
+    reference_audios: Optional[list[str]] = None
+    if body.reference_audios:
+        from core.inference.audio_inputs import AudioInputError
+
+        # Resolved while the resident model is still loaded, so a bad id costs no switch.
+        try:
+            reference_audios = [
+                item
+                if isinstance(item, str)
+                else await asyncio.to_thread(_audio_ref_data_url, item)
+                for item in body.reference_audios
+            ]
+        except AudioInputError as exc:
+            raise _openai_video_error(exc.status, exc.detail, param = "reference_audios")
+    images = [("input_reference", reference), ("last_frame", body.last_frame)]
+    images += [("reference_images", item) for item in body.reference_images or []]
+    for param, image in images:
+        if image is None:
+            continue
         # Check readability before a model switch. The conditioning path applies its own
         # keyframe or Ref2VA limit later, so this uses the broadest bounded source policy.
         from core.inference.diffusion import decode_b64_image
@@ -1698,18 +1832,17 @@ async def _create_openai_video(
             H3_REF_IMAGE_SOURCE_MAX_PIXELS,
             H3_REF_IMAGE_SOURCE_MAX_SIDE,
         )
+
         try:
             await asyncio.to_thread(
                 decode_b64_image,
-                reference,
+                image,
                 mode = "RGB",
                 max_side = H3_REF_IMAGE_SOURCE_MAX_SIDE,
                 max_pixels = H3_REF_IMAGE_SOURCE_MAX_PIXELS,
             )
         except Exception:  # noqa: BLE001 -- any decode failure is client input feedback
-            raise _openai_video_error(
-                400, "input_reference is not a readable image.", param = "input_reference"
-            )
+            raise _openai_video_error(400, f"{param} is not a readable image.", param = param)
 
     def _refuse_unservable_request(pick) -> None:
         from core.inference.media_model_index import expected_partition
@@ -1728,10 +1861,12 @@ async def _create_openai_video(
         # seconds and only refused it in begin_generate, after the resident pipeline had been evicted and the target
         # fully loaded.
         want_frames = (
-            _frames_for_seconds(
+            body.num_frames
+            if body.num_frames is not None
+            else _frames_for_seconds(
                 seconds,
                 {
-                    "fps": fam.default_fps,
+                    "fps": body.fps or fam.default_fps,
                     "frame_step": fam.frame_step,
                     "frame_offset": fam.frame_offset,
                 },
@@ -1743,14 +1878,18 @@ async def _create_openai_video(
         h3_task = expected_partition(pick)
         ref2va = h3_task == H3_TASK_REFERENCES
         validate_video_keyframe_conditioning(
-            fam, h3_task, has_keyframes = reference is not None and not ref2va
+            fam,
+            h3_task,
+            has_keyframes = (reference is not None and not ref2va) or bool(body.last_frame),
+            has_last_frame = bool(body.last_frame),
         )
         if reference is not None and not ref2va:
             assert_first_frame_pipeline_available(fam)
         validate_video_reference_conditioning(
             fam,
             h3_task,
-            has_references = reference is not None and ref2va,
+            has_references = (reference is not None and ref2va)
+            or bool(body.reference_images or reference_audios),
         )
 
     pin_requested_model = bool(
@@ -1770,10 +1909,14 @@ async def _create_openai_video(
             400, str(exc), param = "seconds" if "frame count" in str(exc) else "size"
         )
     except ValueError as exc:
-        raise _openai_video_error(400, str(exc), param = "input_reference")
+        raise _openai_video_error(
+            400, str(exc), param = _conditioning_param(body, reference, "input_reference")
+        )
 
     backend = get_video_backend()
     video_id = _VIDEO_JOB_ID_PREFIX + uuid.uuid4().hex
+    # Drawn once, outside the retry, so a model_changed retry renders the same take.
+    seed = body.seed if body.seed is not None else _secrets.randbelow(2**53)
     # Managed callers are authorized against the exact resident state, pinned to the reservation;
     # on a mismatch, re-authorize once and retry, as /video/generate does.
     pin_state = pin_requested_model or account_access.managed_account()
@@ -1797,7 +1940,9 @@ async def _create_openai_video(
         if account_access.managed_account():
             await asyncio.to_thread(account_access.require_media_generation_access, status, "video")
         defaults = status.get("defaults") or {}
-        num_frames = _frames_for_seconds(seconds, defaults) if seconds is not None else None
+        num_frames = (
+            _frames_for_seconds(seconds, defaults) if seconds is not None else body.num_frames
+        )
         try:
             generate_kwargs = dict(
                 prompt = body.prompt,
@@ -1806,7 +1951,19 @@ async def _create_openai_video(
                 duration_s = seconds,
                 input_reference = reference,
                 video_id = video_id,
+                seed = seed,
             )
+            controls = dict(
+                negative_prompt = body.negative_prompt,
+                steps = body.steps,
+                guidance = body.guidance,
+                num_frames = body.num_frames,
+                fps = body.fps,
+                last_frame = body.last_frame,
+                reference_images = body.reference_images,
+                reference_audios = reference_audios,
+            )
+            generate_kwargs.update({k: v for k, v in controls.items() if v is not None})
             if expected_state is not None:
                 generate_kwargs["expected_state"] = expected_state
             resolved = await asyncio.to_thread(backend.begin_generate, **generate_kwargs)
@@ -1815,9 +1972,7 @@ async def _create_openai_video(
                 400, str(exc), param = "seconds" if "frame count" in str(exc) else "size"
             )
         except ValueError as exc:
-            raise _openai_video_error(
-                400, str(exc), param = "input_reference" if reference is not None else None
-            )
+            raise _openai_video_error(400, str(exc), param = _conditioning_param(body, reference))
         except RuntimeError as exc:
             msg = str(exc)
             if msg == VIDEO_NOT_LOADED_MSG:
@@ -1865,6 +2020,7 @@ async def _create_openai_video(
         ),
         size = f"{width}x{height}" if width and height else "auto",
         seconds = seconds_text,
+        seed = seed,
     )
     _remember_job(job)
     return _job_to_openai(job)

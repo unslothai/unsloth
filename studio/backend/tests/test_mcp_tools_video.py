@@ -79,6 +79,7 @@ def test_generate_video_starts_a_job_with_string_fields(monkeypatch):
         "model": "Lightricks/LTX-Video",
         "seconds": "4",
         "size": "704x480",
+        "seed": None,
     }
     assert bodies(studio, "/v1/videos") == [
         {
@@ -97,6 +98,7 @@ def test_a_completed_job_returns_its_thumbnail_and_a_link_never_the_mp4(monkeypa
     assert out == {
         "kind": "video",
         "id": "video-1",
+        "seed": None,
         "status": "completed",
         "progress_percent": 100.0,
         "error": None,

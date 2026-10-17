@@ -4823,8 +4823,19 @@ class DiffusionGenerateRequest(BaseModel):
         le = 2752,
         description = "Image height in pixels (multiple of 16; the loaded model may require more)",
     )
-    steps: int = Field(9, ge = 1, le = 100, description = "Number of denoising steps")
-    guidance: float = Field(0.0, ge = 0.0, le = 20.0, description = "Classifier-free guidance scale")
+    steps: int = Field(
+        9,
+        ge = 1,
+        le = 100,
+        description = "Number of denoising steps. Omitted: the loaded model's default "
+        "(status generation_defaults).",
+    )
+    guidance: float = Field(
+        0.0,
+        ge = 0.0,
+        le = 20.0,
+        description = "Classifier-free guidance scale. Omitted: the loaded model's default.",
+    )
     # le = 2**53-1: seeds round-trip through JSON recipes, where JavaScript rounds larger integers and a restored recipe would differ.
     seed: Optional[int] = Field(
         None, ge = 0, le = 2**53 - 1, description = "Seed for reproducibility (random if omitted)"
@@ -4929,10 +4940,11 @@ class DiffusionGenerateRequest(BaseModel):
     )
     workflow: Optional[Literal["edit", "reference", "outpaint"]] = Field(
         None,
-        description = "Explicit image-conditioned workflow. edit: follow the prompt as an "
-        "instruction over init_image (and reference_images); reference: generate a new image "
-        "guided by them; outpaint: runs as inpaint over the padded init_image + mask_image and "
-        "is recorded as outpaint. Omitted keeps the workflow implied by the other fields.",
+        description = "Explicit image-conditioned workflow; every one needs init_image. edit: "
+        "follow the prompt as an instruction over init_image (and reference_images); reference: "
+        "draw a new image from init_image plus reference_images; outpaint: runs as inpaint over "
+        "the padded init_image under mask_image (required) and is recorded as outpaint. Omitted "
+        "keeps the workflow implied by the other fields.",
     )
     reference_resolution: Optional[int] = Field(
         None,
@@ -5457,6 +5469,11 @@ class DiffusionStatusResponse(BaseModel):
         description = "Whether the loaded model applies a negative prompt on this engine "
         "(drives the Negative prompt field). False for FLUX and Ideogram 4 on diffusers, and "
         "for FLUX.1 / Kontext / FLUX.2-dev on the native engine.",
+    )
+    prompt_hint: Optional[str] = Field(
+        None,
+        description = "How the loaded model reads prompts, in one or two sentences; null when "
+        "it has no tip.",
     )
     samplers: list[Dict[str, Any]] = Field(
         default_factory = list,
@@ -6054,6 +6071,55 @@ class VideoJobCreateRequest(BaseModel):
     size: Optional[str] = Field(
         None, description = "'<width>x<height>', a resolution preset of the loaded family."
     )
+    # Unsloth Studio extensions; a plain OpenAI request leaves them all out.
+    seed: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 2**53 - 1,
+        description = "Seed for a repeatable take. Omitted: Unsloth Studio draws one and returns "
+        "it on the job.",
+    )
+    negative_prompt: Optional[str] = Field(
+        None, description = "What the video should avoid, on models that take a negative prompt."
+    )
+    steps: Optional[int] = Field(
+        None, ge = 1, le = 100, description = "Number of denoising steps (default per model)."
+    )
+    guidance: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 20.0,
+        description = "Classifier-free guidance scale (default per model).",
+    )
+    num_frames: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = MAX_VIDEO_NUM_FRAMES,
+        description = "Frame count on the model's frame lattice; send seconds or num_frames, "
+        "not both.",
+    )
+    fps: Optional[int] = Field(
+        None, ge = 1, le = 120, description = "Playback frame rate (default per model)."
+    )
+    last_frame: Optional[str] = Field(
+        None,
+        max_length = 32 * 1024 * 1024,
+        description = "Image the clip ends on (MiniMax-H3 only, status supports_last_frame): a "
+        'file upload, a base64 data URL or {"image_url": ...}.',
+    )
+    reference_images: Optional[list[str]] = Field(
+        None,
+        max_length = 9,
+        description = "Subject, style or scene references, at most 9, in the shapes "
+        "input_reference takes. The prompt calls them <Picture 1>, <Picture 2>, ... in order.",
+    )
+    reference_audios: Optional[list[Union[str, AudioSourceRef]]] = Field(
+        None,
+        max_length = 3,
+        description = "Voice or score references, at most 3: a file upload, a base64 data URL "
+        'or an Unsloth Studio audio id {"input_id" | "clip_id" | "voice_id": ...}. The prompt '
+        "calls them <Audio 1>, <Audio 2>, ... in order. They need a reference image to go with.",
+    )
 
     @field_validator("model", "seconds", "size", mode = "before")
     @classmethod
@@ -6061,6 +6127,43 @@ class VideoJobCreateRequest(BaseModel):
         if value is None:
             return None
         return str(value).strip() or None
+
+    @field_validator(
+        "seed",
+        "negative_prompt",
+        "steps",
+        "guidance",
+        "num_frames",
+        "fps",
+        "last_frame",
+        mode = "before",
+    )
+    @classmethod
+    def _blank_means_omitted(cls, value):
+        # A multipart form sends an empty field as "".
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("reference_images", "reference_audios")
+    @classmethod
+    def _bounded_references(cls, value):
+        # Bound each item like last_frame, so a list cannot buffer what one field may not.
+        for item in value or []:
+            if isinstance(item, str) and len(item) > 32 * 1024 * 1024:
+                raise ValueError("each reference must be at most 32 MiB (base64)")
+        return value
+
+    @model_validator(mode = "after")
+    def _one_length_and_one_conditioning(self) -> "VideoJobCreateRequest":
+        if self.seconds is not None and self.num_frames is not None:
+            raise ValueError("Send seconds or num_frames, not both.")
+        if self.last_frame and (self.reference_images or self.reference_audios):
+            raise ValueError(
+                "keyframes and references cannot be combined: MiniMax-H3 runs them against "
+                "different denoiser partitions"
+            )
+        return self
 
 
 class VideoJobError(BaseModel):
@@ -6080,6 +6183,8 @@ class VideoJob(BaseModel):
     prompt: Optional[str] = None
     size: str
     seconds: str
+    # Unsloth Studio extension: the seed this take used; null on jobs from before seeds were kept.
+    seed: Optional[int] = None
     error: Optional[VideoJobError] = None
     remixed_from_video_id: Optional[str] = None
 
@@ -6742,6 +6847,11 @@ class VideoStatusResponse(BaseModel):
     )
     defaults: Optional[VideoGenerationDefaults] = Field(
         None, description = "Per-family generation defaults + shape constraints; null when unloaded"
+    )
+    prompt_hint: Optional[str] = Field(
+        None,
+        description = "How the loaded model reads prompts, in one or two sentences; null when "
+        "it has no tip.",
     )
     # Additive per-control provenance, same shape as the diffusion status; null when nothing is loaded.
     resolved: Optional[Dict[str, DiffusionResolvedControl]] = Field(
