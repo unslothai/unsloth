@@ -152,6 +152,11 @@ function VersionLine({
   ];
   const rowSize = bundled ? sizeLabelOf(row.sizeBytes) : null;
   const sizeSuffix = rowSize ? ` · ${rowSize}` : "";
+  // no audio.cpp runtime yet, so the offer is a first install.
+  const lead =
+    row.component === "audio.cpp" && row.installedTag === null
+      ? "Install audio.cpp"
+      : null;
   return (
     <p
       // one row per line keeps the changelog height calculation exact.
@@ -161,15 +166,17 @@ function VersionLine({
       )}
       title={
         bundled
-          ? `${row.component} ${from} \u2192 ${to}${sizeSuffix}`
+          ? `${lead ?? `${row.component} ${from} \u2192`} ${to}${sizeSuffix}`
           : undefined
       }
       data-testid="llama-update-version-line"
     >
-      {bundled ? (
+      {lead ? `${lead} ` : null}
+      {bundled && !lead ? (
         <span className="text-foreground">{row.component} </span>
       ) : null}
-      {from} &rarr; <span className="font-medium text-foreground">{to}</span>
+      {lead ? null : <>{from} &rarr; </>}
+      <span className="font-medium text-foreground">{to}</span>
       {sizeSuffix}
     </p>
   );
@@ -348,9 +355,14 @@ export function LlamaUpdateBanner({
   const phaseIndex = rows.findIndex(
     (row) => updateComponentKey(row.component) === runningPhase,
   );
+  // no audio.cpp runtime yet, so this offer installs it.
+  const firstInstall =
+    !bundled &&
+    primary?.component === "audio.cpp" &&
+    primary.installedTag === null;
   let title: string;
   if (applying && !bundled) {
-    title = `Updating ${label}...`;
+    title = `${firstInstall ? "Installing" : "Updating"} ${label}...`;
   } else if (applying) {
     title =
       phaseIndex >= 0
@@ -359,7 +371,11 @@ export function LlamaUpdateBanner({
   } else if (bundled) {
     title = `${rows.length} runtime updates`;
   } else {
-    title = backendOnly ? `New ${label} backend` : `New ${label} update`;
+    title = firstInstall
+      ? `Install ${label}`
+      : backendOnly
+        ? `New ${label} backend`
+        : `New ${label} update`;
   }
   const updateProgress = status?.job.progress ?? null;
   const jobSucceeded = status?.job.state === "success";

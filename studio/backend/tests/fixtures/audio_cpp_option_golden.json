@@ -94,7 +94,7 @@
    {"exclude":[],"include":{"speed":{"default":1.0},"text_chunk_mode":{"default":"default"},"text_chunk_size":{"default":400},"voice":{"default":"Leo"}},"optional":{},"workflow":"speak"}
   ],
   "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF": [
-   {"exclude":["language","return_timestamps","seed"],"include":{"speed":{"default":1.0},"text_chunk_size":{"default":240},"voice":{"default":"af_heart"}},"optional":{},"workflow":"speak"}
+   {"exclude":["language","return_timestamps"],"include":{"speed":{"default":1.0},"text_chunk_size":{"default":240},"voice":{"default":"af_heart"}},"optional":{},"workflow":"speak"}
   ],
   "audio-cpp/audio.cpp-gguf/MOSS-TTS-Local-v1.5-GGUF": [
    {"exclude":[],"include":{"do_sample":{"default":true},"max_tokens":{"default":4096},"repetition_penalty":{"default":1.0},"temperature":{"default":1.7},"text_temperature":{"default":1.0},"top_k":{"default":25},"top_p":{"default":0.8}},"optional":{},"workflow":"speak"},
@@ -130,7 +130,7 @@
    {"exclude":["voice"],"include":{"audio_chunk_duration":{"default":15.0},"audio_chunk_threshold":{"default":30.0},"class_temperature":{"default":0.0},"denoise":{"default":true},"guidance_scale":{"default":2.0},"layer_penalty_factor":{"default":5.0},"num_inference_steps":{"default":32},"position_temperature":{"default":5.0},"postprocess_output":{"default":true},"preprocess_prompt":{"default":true},"speed":{"default":1.0},"t_shift":{"default":0.1}},"optional":{"duration":{"default":null}},"workflow":"clone"}
   ],
   "audio-cpp/audio.cpp-gguf/Piper-TTS-GGUF": [
-   {"exclude":["seed"],"include":{"duration_variation":{"default":0.8},"speed":{"default":1.0},"text_chunk_mode":{"default":"default"},"text_chunk_size":{"default":280},"variation":{"default":0.667}},"optional":{},"workflow":"speak"}
+   {"exclude":[],"include":{"duration_variation":{"default":0.8},"speed":{"default":1.0},"text_chunk_mode":{"default":"default"},"text_chunk_size":{"default":280},"variation":{"default":0.667}},"optional":{},"workflow":"speak"}
   ],
   "audio-cpp/audio.cpp-gguf/PocketTTS-GGUF": [
    {"exclude":[],"include":{"eos_threshold":{"default":-4.0},"frames_after_eos":{"default":-1}},"optional":{"noise_clamp":{"default":null},"temperature":{"default":null},"voice":{"default":"alba"}},"workflow":"speak"},

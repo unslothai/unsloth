@@ -36,10 +36,12 @@ from core.inference.audio_cpp_models import (
     AudioCppModelError,
     CloneSpec,
     forget,
+    ignored_options,
     option_matches,
     filled_options,
     require_runnable,
     resolve,
+    takes_seed,
     workflow_options,
 )
 from core.inference.audio_cpp_server import (
@@ -47,7 +49,9 @@ from core.inference.audio_cpp_server import (
     AudioCppRequestError,
     AudioCppServer,
     AudioCppStartCancelledError,
+    AudioCppUnavailableError,
 )
+from core.inference.audio_cpp_failures import attach_failure, classify_audio_cpp_failure, failure_of
 from core.inference.audio_cpp_music import music_rules
 from core.inference.audio_task_outputs import task_outputs, wav_header
 from loggers import get_logger
@@ -144,6 +148,17 @@ _SPEAKER_LINE_RE = re.compile(r"^\s*Speaker\s*\d+\s*:", re.IGNORECASE | re.MULTI
 _MIN_SPEED, _MAX_SPEED = 0.5, 2.0
 
 
+def _seed_option(value: Any) -> Optional[int]:
+    """A typed seed option as an int in the seed field's range, else None."""
+    if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+        return None
+    try:
+        seed = int(value.strip()) if isinstance(value, str) else int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return seed if 0 <= seed <= 2147483647 else None
+
+
 def _primary_workflow(model: AudioCppModel) -> str:
     workflows = list(model.workflows)
     return "speak" if "speak" in workflows or not workflows else workflows[0]
@@ -185,6 +200,10 @@ def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
         "audio_edit": edit_rules(model),
         "audio_music": music_rules(model),
         "audio_options_by_workflow": options_by_workflow(model, primary),
+        # Null when the spec takes any option; else the request fields it declares.
+        "audio_request_inputs": None
+        if model.request_keys is None
+        else sorted(n for n in ("instruct", "instruction", "language") if n in model.request_keys),
         "audio_workflow_tasks": audio_cpp_convert.workflow_tasks(model),
         "audio_convert": audio_cpp_convert.convert_caps(model),
         "audio_convert_rules": model.convert
@@ -332,11 +351,23 @@ class AudioCppBackend:
         # Request-raised session options (Stable Audio max_batch); cleared when another model loads.
         self._session_overrides: dict[str, str] = {}
         self._status_patch: Optional[dict[str, Any]] = None
+        # "cpu" once a GPU start failed and the model was restarted on the CPU.
+        self._device_fallback: Optional[str] = None
 
     # Loading
 
     @_invalidates_gpu_memory("audio load")
-    def load_model(
+    def load_model(self, config, *args, **kwargs) -> bool:
+        try:
+            return self._load_model(config, *args, **kwargs)
+        except Exception as exc:
+            # Unsloth Studio's own refusals (runtime missing, eSpeak, newer runtime) are named here.
+            if failure_of(exc) is None:
+                model = getattr(config, "audio_cpp", None)
+                attach_failure(exc, classify_audio_cpp_failure(str(exc), model = model))
+            raise
+
+    def _load_model(
         self,
         config,
         max_seq_length: int = 2048,
@@ -382,6 +413,10 @@ class AudioCppBackend:
                 model = _reread_after_download(model, hf_token)
             self._session_overrides = {}
             self._status_patch = None
+            from core.inference.audio_device import audio_device_forces_cpu
+
+            self._device_fallback = None
+            self._force_cpu = audio_device_forces_cpu(self.device_preference)
             self._start_server(model)
             self._model = model
             self.models = {
@@ -394,6 +429,7 @@ class AudioCppBackend:
                     "context_length": 0,
                     **model_info_fields(model),
                     "audio_cpp_backend": self._server.backend if self._server else None,
+                    "audio_device_fallback": self._device_fallback,
                 }
             }
             self.active_model_name = model_name
@@ -453,15 +489,60 @@ class AudioCppBackend:
             self._stop_server_locked()
             model_path = audio_cpp_files.materialize(model)
             served = _with_session_overrides(_with_companions(model), self._session_overrides)
-            try:
-                self._server = AudioCppServer.start(
-                    served, model_path, force_cpu = self._force_cpu, cancel_event = cancel_event
-                )
-            except AudioCppStartCancelledError as exc:
-                _raise_if_cancelled(cancel_event)
-                raise RuntimeError(str(exc)) from exc
+            force_cpu = self._force_cpu
+            while True:
+                try:
+                    self._server = AudioCppServer.start(
+                        served, model_path, force_cpu = force_cpu, cancel_event = cancel_event
+                    )
+                    break
+                except AudioCppStartCancelledError as exc:
+                    _raise_if_cancelled(cancel_event)
+                    raise RuntimeError(str(exc)) from exc
+                except AudioCppUnavailableError as exc:
+                    if force_cpu or not self._may_retry_on_cpu(exc, cancel_event):
+                        raise
+                    logger.warning(
+                        "audio.cpp: %s could not start on the GPU; retrying once on the CPU",
+                        model.id,
+                    )
+                    force_cpu = True
+            if force_cpu and not self._force_cpu:
+                # Sticks for this model, so a mid-generation restart goes straight to the CPU.
+                self._force_cpu = True
+                self._device_fallback = "cpu"
             self._served_session = dict((served.model_options or {}).get("session_options") or {})
             self.device = "cpu" if self._server.backend == "cpu" else self._server.backend
+
+    def _runtime_error(self, what: str, exc: AudioCppRequestError) -> Exception:
+        """The runtime's refusal as an ``AudioRuntimeError``, with any known failure attached."""
+        from core.inference.audio_errors import AudioRuntimeError
+
+        backend = getattr(self._server, "backend", None)
+        failure = classify_audio_cpp_failure(
+            exc.detail, backend = backend, model = self._model, runtime_status = exc.status
+        )
+        return attach_failure(
+            AudioRuntimeError(
+                f"The audio runtime could not {what}: {exc.detail}", status = exc.status
+            ),
+            failure,
+        )
+
+    def _may_retry_on_cpu(self, exc: BaseException, cancel_event) -> bool:
+        """One CPU retry for a GPU that could not start, unless the user pinned the GPU."""
+        from core.inference.audio_device import audio_device_default, normalize_audio_device
+        from utils.process_lifetime import is_process_shutting_down
+
+        failure = failure_of(exc)
+        pref = self.device_preference
+        return (
+            failure is not None
+            and failure.code == "gpu_unavailable"
+            and (normalize_audio_device(pref) if pref else audio_device_default()) != "gpu"
+            and not (cancel_event is not None and cancel_event.is_set())
+            and not is_process_shutting_down()
+        )
 
     def _stop_server_locked(self) -> None:
         server = self._server
@@ -512,6 +593,7 @@ class AudioCppBackend:
         output_dir: Optional[str] = None,
     ) -> Tuple[bytes, int]:
         del top_k, min_p, repetition_penalty, use_adapter
+        self.last_generation_stats = None
         if not self.active_model_name or self.active_model_name not in self.models:
             raise RuntimeError("No active audio model")
         model = self._model
@@ -520,7 +602,25 @@ class AudioCppBackend:
         _raise_if_cancelled(cancel_event)
         if model.task == "sep":
             raise RuntimeError(f"{model.display_name} separates audio; open Separate.")
-        if workflow == "music" and music is not None:
+        audio_options = dict(audio_options or {})
+        typed = _seed_option(audio_options.pop("seed", None))
+        if (workflow == "music" and music is not None) or workflow in ("convert", "edit"):
+            wf = workflow
+        else:
+            wf = "clone" if workflow == "clone" or bool(audio_inputs) else "speak"
+        ignored = ignored_options(model, wf, audio_options)
+        audio_options = {k: v for k, v in audio_options.items() if k not in ignored}
+        seeded = takes_seed(model, wf)
+        if typed is not None and not seeded:
+            # A strict spec refuses an undeclared seed.
+            ignored = sorted({*ignored, "seed"})
+            typed = None
+        seed = seed if seed is not None else typed
+        # Music keeps its own rule (_run_music); a music model's legacy speak path sends none.
+        if seed is None and seeded and wf in ("speak", "clone") and model.task != "music":
+            seed = cm.random_seed()
+        self.last_generation_stats = {"seed": seed, "ignored_options": ignored}
+        if wf == "music":
             options = filled_options(model, "music", audio_options)
             return self._run_music(
                 model,
@@ -629,10 +729,7 @@ class AudioCppBackend:
             _raise_if_cancelled(cancel_event)
             raise
         except AudioCppRequestError as exc:
-            from core.inference.audio_errors import AudioRuntimeError
-            raise AudioRuntimeError(
-                f"The audio runtime could not generate audio: {exc.detail}", status = exc.status
-            ) from exc
+            raise self._runtime_error("generate audio", exc) from exc
         _raise_if_cancelled(cancel_event)
         return wav, _wav_sample_rate(wav)
 
@@ -700,10 +797,7 @@ class AudioCppBackend:
             _raise_if_cancelled(cancel_event)
             raise
         except AudioCppRequestError as exc:
-            from core.inference.audio_errors import AudioRuntimeError
-            raise AudioRuntimeError(
-                f"The audio runtime could not separate the track: {exc.detail}", status = exc.status
-            ) from exc
+            raise self._runtime_error("separate the track", exc) from exc
         except SeparationOutputError as exc:
             logger.warning("audio.cpp: %s answered without decodable stems: %s", model.id, exc)
             return []
@@ -1000,6 +1094,10 @@ class AudioCppBackend:
             )
         if seed is None and model.music.fixed_seed:
             seed = cm.random_seed()
+        if music.get("take"):
+            # One take of a run the page sends take by take.
+            seed = cm.take_seed(seed, int(music["take"]))
+        self.last_generation_stats = {**(self.last_generation_stats or {}), "seed": seed}
         batch = variations if mode.variations == "batch" else 1
         if mode_id == "edit":
             if not source:
@@ -1064,10 +1162,7 @@ class AudioCppBackend:
             _raise_if_cancelled(cancel_event)
             raise
         except AudioCppRequestError as exc:
-            from core.inference.audio_errors import AudioRuntimeError
-            raise AudioRuntimeError(
-                f"The audio runtime could not generate audio: {exc.detail}", status = exc.status
-            ) from exc
+            raise self._runtime_error("generate audio", exc) from exc
         _raise_if_cancelled(cancel_event)
         if output_dir:
             _write_outputs(output_dir, outputs)

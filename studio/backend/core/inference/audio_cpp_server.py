@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Optional
 
 from core.inference.audio_cpp_models import AudioCppModel
+from core.inference.audio_cpp_failures import classify_audio_cpp_failure
 from core.inference.audio_errors import sanitize_runtime_tail
 from loggers import get_logger
 from utils.prebuilt.child_env import isolate_home, scrub_env
@@ -56,12 +57,19 @@ _ERROR_BODY_BYTES = 64 * 1024
 # CUDA graph replay wedges these transducers mid-request (server spins, never answers); graphs off fixes it.
 _NO_CUDA_GRAPH_FAMILIES = frozenset({"nemotron_asr", "parakeet_tdt"})
 _GPU_HOST_THREADS = 8
-# Startup output of a GPU backend that found no device, as opposed to a model that failed to load.
-_GPU_INIT_FAILURES = ("has no device", "failed to initialize cuda", "backend requested but")
 
 
 class AudioCppUnavailableError(RuntimeError):
     """audiocpp_server is missing, failed to start, or stopped answering."""
+
+    def __init__(
+        self,
+        message: str,
+        failure = None,
+    ) -> None:
+        super().__init__(message)
+        if failure is not None:
+            self.audio_cpp_failure = failure
 
 
 class AudioCppStartCancelledError(RuntimeError):
@@ -535,17 +543,19 @@ class AudioCppServer:
                 tail = self.log_tail()
                 logger.warning("audiocpp_server exited during startup: %s", tail)
                 last = f" Last output: {sanitize_runtime_tail(tail)}" if tail else ""
-                # A CUDA build prints its CUDA init failure on CPU launches too.
-                lowered = tail.lower()
-                if self.backend != "cpu" and any(s in lowered for s in _GPU_INIT_FAILURES):
+                # The raw tail is classified; only the sanitized one is shown.
+                failure = classify_audio_cpp_failure(tail, backend = self.backend, model = self.model)
+                if failure is not None and failure.code == "gpu_unavailable":
                     raise AudioCppUnavailableError(
                         f"The audio runtime could not start on the {self.backend.upper()} backend "
                         "because no usable GPU is visible. Choose CPU for the audio device in "
-                        "Unsloth Studio, or set UNSLOTH_AUDIO_CPP_BACKEND=cpu." + last
+                        "Unsloth Studio, or set UNSLOTH_AUDIO_CPP_BACKEND=cpu." + last,
+                        failure,
                     )
                 raise AudioCppUnavailableError(
                     "The audio runtime exited before becoming ready; the model file may be "
-                    "incomplete or unsupported by this build." + last
+                    "incomplete or unsupported by this build." + last,
+                    failure,
                 )
             if self._probe():
                 return
@@ -645,13 +655,11 @@ class AudioCppServer:
             if cancel_event is not None and cancel_event.is_set():
                 raise AudioCppRequestCancelledError("Request cancelled.") from exc
             if not self.alive():
+                tail = self.log_tail()
                 raise AudioCppUnavailableError(
                     "The audio runtime stopped while serving the request."
-                    + (
-                        f" Last output: {sanitize_runtime_tail(self.log_tail())}"
-                        if self.log_tail()
-                        else ""
-                    )
+                    + (f" Last output: {sanitize_runtime_tail(tail)}" if tail else ""),
+                    classify_audio_cpp_failure(tail, backend = self.backend, model = self.model),
                 ) from exc
             raise AudioCppUnavailableError(f"The audio runtime did not answer: {exc}") from exc
         finally:

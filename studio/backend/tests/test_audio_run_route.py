@@ -181,7 +181,7 @@ def test_a_clone_run_hands_the_worker_an_account_path_and_saves_the_clip(stub, t
     assert all(not isinstance(v, (bytes, bytearray)) for v in call.values())
     assert body["audio"] is None
     (clip,) = body["clips"]
-    assert set(clip) == {"id", "role", "url", "sample_rate", "duration_s", "workflow"}
+    assert set(clip) == {"id", "role", "url", "sample_rate", "duration_s", "workflow", "seed"}
     assert (clip["role"], clip["workflow"], clip["sample_rate"]) == ("output", "clone", 24000)
     sidecar = _sidecar(tmp_path, clip["id"])
     meta = json.loads(sidecar)
@@ -192,6 +192,7 @@ def test_a_clone_run_hands_the_worker_an_account_path_and_saves_the_clip(stub, t
         "options": {"x_vector_only_mode": False},
         "reference_text_used": True,
         "speed": None,
+        "seed": None,
     }
     assert str(tmp_path) not in sidecar and "inputs" not in sidecar
 
@@ -1040,7 +1041,7 @@ def test_a_separation_prepares_44k_and_saves_every_stem_as_one_group(sep, tmp_pa
     assert body["audio"] is None and body["model"] and len(body["group_id"]) == 32
     assert stem_bytes.status_code == 200 and stem_bytes.content[:4] == b"RIFF"
     for clip in body["clips"]:
-        assert set(clip) == {"id", "role", "url", "sample_rate", "duration_s", "workflow"}
+        assert set(clip) == {"id", "role", "url", "sample_rate", "duration_s", "workflow", "seed"}
         assert (clip["workflow"], clip["sample_rate"], clip["duration_s"]) == (
             "separate",
             44100,
@@ -2082,3 +2083,73 @@ def test_speech_pcm_is_openais_24k_mono_samples(stub, monkeypatch, rate, channel
     assert abs(len(response.content) - 48000) <= 2 * 64
     if (rate, channels) == (24000, 1):
         assert response.content == buf.getvalue()[44:]
+
+
+def _reporting(
+    backend,
+    seed,
+    ignored = (),
+):
+    run = backend.generate_audio_response
+
+    def generate(**kwargs):
+        kwargs["stats_holder"]["stats"] = {"seed": seed, "ignored_options": list(ignored)}
+        return run(**kwargs)
+
+    backend.generate_audio_response = generate
+    return backend
+
+
+def test_seed_round_trip_run_response_and_gallery_settings(stub, tmp_path):
+    _reporting(stub["backend"], 77, ["top_k"])
+    with _client(ALICE) as client:
+        ref = {"reference": {"input_id": _input(ALICE)}, "reference_text": "Hi."}
+        response = _run(client, inputs = ref)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["clips"][0]["seed"] == 77 and body["ignored_options"] == ["top_k"]
+    assert json.loads(_sidecar(tmp_path, body["clips"][0]["id"]))["settings"]["seed"] == 77
+
+
+def test_generate_json_returns_seed_and_persists_settings(stub, tmp_path):
+    _reporting(stub["use"](*_KOKORO), 5, ["mode"])
+    with _client(ALICE) as client:
+        body = _generate(client).json()
+    assert (body["seed"], body["ignored_options"]) == (5, ["mode"])
+    assert json.loads(_sidecar(tmp_path, body["clip_id"]))["settings"] == {"seed": 5}
+
+
+def test_music_take_persists_group_role_variation_and_take_seed(stub, tmp_path):
+    backend = stub["use"](STABLE_AUDIO, _music_info())
+    backend.__class__ = _MusicBackend
+    backend.takes, backend.run_dirs = 1, []
+    group = "ab" * 16
+    with _client(ALICE) as client:
+        response = _music(client, take = 2, group_id = group, seed = 40)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert backend.calls[0]["music"]["take"] == 1 and body["group_id"] == group
+    (clip,) = body["clips"]
+    assert (clip["role"], clip["seed"]) == ("variation", 40)
+    meta = json.loads(_sidecar(tmp_path, clip["id"]))
+    assert (meta["group_id"], meta["role"], meta["settings"]["variation"]) == (
+        group,
+        "variation",
+        2,
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"workflow": "music", "mode": "song", "take": 1, "variations": 2},
+        {"workflow": "clone", "take": 1},
+        {"workflow": "speak", "group_id": "ab" * 16},
+        {"workflow": "music", "mode": "song", "group_id": "AB" * 16},
+        {"workflow": "music", "mode": "song", "take": 5},
+    ],
+)
+def test_take_or_group_rejected_outside_single_variation_music(stub, body):
+    with _client(ALICE) as client:
+        response = client.post("/api/inference/audio/run", json = {"text": "x", **body})
+    assert response.status_code == 422, response.text
