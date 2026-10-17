@@ -192,6 +192,8 @@ class ChatThread(BaseModel):
     forkedFromMessageId: Optional[str] = None
     forkBoundaryMessageId: Optional[str] = None
     forkTitleBase: Optional[str] = None
+    # Server-set: the scheduled task whose run made this chat.
+    scheduledTaskId: Optional[str] = None
     # Server-set on rename, move or (un)archive.
     modifiedAt: Optional[int] = None
     settings: Optional[ChatThreadSettings] = None
@@ -396,6 +398,7 @@ class ChatSidebarRow(BaseModel):
     modifiedAt: Optional[int] = None
     modelIds: Optional[list[str]] = None
     isFork: Optional[bool] = None
+    isScheduled: Optional[bool] = None
     threadTitles: Optional[list[str]] = None
     projectId: Optional[str] = None
 

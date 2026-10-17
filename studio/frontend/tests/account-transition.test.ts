@@ -6,9 +6,11 @@ import test from "node:test";
 import {
   ACCOUNT_CHROME_KEYS,
   ACCOUNT_DATABASES,
+  ACCOUNT_KEYED_PREFIXES,
   BROWSER_ACCOUNT_FENCE_KEY,
   BROWSER_ACCOUNT_KEY,
   accountDatabaseName,
+  browserAccountKey,
   accountTransitionPending,
   browserAccountMarker,
   installAccountTransitionListener,
@@ -17,6 +19,7 @@ import {
   transitionBrowserAccount,
 } from "../src/lib/account-transition.ts";
 import { RUNTIME_REPAIR_KEY } from "../src/hooks/runtime-repair-history.ts";
+import { SEEN_KEY_PREFIX, UNSEEN_KEY_PREFIX } from "../src/features/scheduled-tasks/results.ts";
 
 function browserWith(
   values: Record<string, string> = {},
@@ -148,6 +151,8 @@ test("switch removes every content prefix and preserves only listed chrome and u
     ...Object.fromEntries(content.map((key) => [key, "private"])),
     unrelated: "keep",
     "unsloth_web_update_dismissed:pip:1": "keep",
+    [`${SEEN_KEY_PREFIX}unsloth`]: "keep",
+    [`${UNSEEN_KEY_PREFIX}unsloth`]: "keep",
     [BROWSER_ACCOUNT_KEY]: "unsloth",
   });
   const changed = await transitionBrowserAccount(
@@ -167,6 +172,12 @@ test("switch removes every content prefix and preserves only listed chrome and u
     assert.equal(b.data.get(key), "chrome");
   assert.equal(b.data.get("unrelated"), "keep");
   assert.equal(b.data.get("unsloth_web_update_dismissed:pip:1"), "keep");
+  // The owner's scheduled task records wait for the owner: nothing finished meanwhile goes
+  // unannounced, and nothing it had not opened loses its dot.
+  for (const prefix of [SEEN_KEY_PREFIX, UNSEEN_KEY_PREFIX]) {
+    assert.equal(b.data.get(`${prefix}unsloth`), "keep");
+    assert.ok(ACCOUNT_KEYED_PREFIXES.some((kept) => prefix.startsWith(kept)));
+  }
   assert.equal(b.data.get("unsloth_auth_token"), "alice-token");
   assert.equal(b.data.get(BROWSER_ACCOUNT_KEY), "alice");
   assert.deepEqual(b.replaced, ["/change-password"]);
@@ -598,6 +609,18 @@ test("saved recipes live in a per-account store and are never purged", () => {
     accountDatabaseName("unsloth-data-recipes", stored("alice")),
     "unsloth-data-recipes:alice",
   );
+});
+
+test("an account's key is its id where the marker has one, so a reused username starts afresh", () => {
+  const stored = (marker: string | null) => ({ getItem: () => marker });
+  assert.equal(browserAccountKey(stored(null)), "owner");
+  assert.equal(browserAccountKey(stored("unsloth")), "owner");
+  assert.equal(browserAccountKey(stored("account:owner:unsloth")), "owner");
+  // A deleted account and the one later made under its name are two keys.
+  assert.equal(browserAccountKey(stored("account:a1:alice")), "a1");
+  assert.equal(browserAccountKey(stored("account:a2:alice")), "a2");
+  // An old marker with no id falls back to the name.
+  assert.equal(browserAccountKey(stored("alice")), "alice");
 });
 
 test("transcript recovery survives reauthentication but is cleared on account changes", async () => {

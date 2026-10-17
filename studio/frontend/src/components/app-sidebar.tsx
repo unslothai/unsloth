@@ -139,8 +139,14 @@ import {
   ArrowUpDownIcon,
   LayerIcon,
   ApiIcon,
+  Clock01Icon,
 } from "@hugeicons/core-free-icons";
-import { AiSpeechIcon, MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import {
+  AiSpeechIcon,
+  MessageCircleIcon,
+  TestTubeOutlineIcon,
+  withNoticeDot,
+} from "@/lib/hugeicons-derived";
 import {
   Tooltip,
   TooltipContent,
@@ -304,6 +310,7 @@ import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { buildChatItemMarkdown } from "@/features/chat/prompt-storage/prompt-storage-dialog";
 import { useActiveChatMenuStore } from "@/features/chat/stores/active-chat-menu-store";
 import { type PinnedPage, PinnedPageRow, usePinnedPages } from "@/features/browser";
+import { useUnseenScheduledRuns } from "@/features/scheduled-tasks";
 import { translate, useT, type TranslationKey } from "@/i18n";
 
 const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
@@ -357,11 +364,17 @@ type NavRowDef = {
   // What that spinning row says on hover; detection can take minutes on a cold host.
   pendingTooltip?: string;
   badge?: string;
+  // Something new behind the row; its icon carries the dot, and More repeats it while unpinned.
+  dot?: boolean;
+  // A "+" that makes a new one of the row's things, offered in More when the row is unpinned.
+  newAction?: { label: string; run: () => void };
   onClick: () => void;
   onIntent?: () => void;
   className?: string;
   children?: ReactNode;
 };
+
+const CLOCK_NOTICE_ICON = withNoticeDot(Clock01Icon);
 
 // row kebab with centred dots: Hugeicons draws them half a unit low.
 const MoreVerticalCenteredIcon = MoreVerticalIcon.map(([tag, attrs]) => [
@@ -937,6 +950,7 @@ const MORE_DOTS_ICON: IconSvgElement = [
   ["circle", { cx: "12", cy: "12", r: "1", stroke: "currentColor", strokeWidth: "1.5", key: "1" }],
   ["circle", { cx: "19.5", cy: "12", r: "1", stroke: "currentColor", strokeWidth: "1.5", key: "2" }],
 ];
+const MORE_DOTS_NOTICE_ICON = withNoticeDot(MORE_DOTS_ICON);
 
 // A NavItem's affordances in dropdown-item form, for the "More" flyout.
 function MoreMenuItem({
@@ -947,6 +961,7 @@ function MoreMenuItem({
   tooltip,
   badge,
   spinner,
+  newAction,
   onSelect,
   onIntent,
 }: {
@@ -957,6 +972,7 @@ function MoreMenuItem({
   tooltip?: string;
   badge?: string;
   spinner?: boolean;
+  newAction?: NavRowDef["newAction"];
   onSelect: () => void;
   onIntent?: () => void;
 }) {
@@ -968,12 +984,30 @@ function MoreMenuItem({
       onSelect={onSelect}
       onPointerEnter={disabled ? undefined : onIntent}
       onFocus={disabled ? undefined : onIntent}
-      className={cn(active && "bg-accent/60")}
+      className={cn("group/more-item", active && "bg-accent/60")}
     >
       <HugeiconsIcon icon={icon} strokeWidth={1.75} />
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {badge && <Badge variant="secondary">{badge}</Badge>}
       {spinner && <Spinner className="size-3.5 shrink-0 text-muted-foreground" />}
+      {newAction && (
+        <button
+          type="button"
+          aria-label={newAction.label}
+          title={newAction.label}
+          // The item selects on click and pointer-up; the plus is its own action, not the row's.
+          onPointerDown={(event) => event.stopPropagation()}
+          onPointerUp={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            newAction.run();
+          }}
+          className="-my-1 -mr-1 ml-auto flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition-opacity hover:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:text-foreground group-hover/more-item:opacity-100 group-data-[highlighted]/more-item:opacity-100 focus-visible:opacity-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(pointer:coarse)]:opacity-100"
+        >
+          <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-4" />
+        </button>
+      )}
     </DropdownMenuItem>
   );
 }
@@ -1262,6 +1296,9 @@ export function AppSidebar() {
   // Route alone is not enough: a page can gate its tour behind a capability check, and an entry
   // that dispatches to nobody does nothing when clicked.
   const routeTourId = getTourId(pathname);
+  // A scheduled run finished while the user was on another page.
+  const scheduledNotice =
+    useUnseenScheduledRuns((state) => state.page) && pathname !== "/tasks";
   const tourAvailable = useTourAvailable(routeTourId);
   const {
     pinned,
@@ -3325,6 +3362,14 @@ export function AppSidebar() {
         preloadSilently(router.preloadRoute({ to: "/projects" }));
       },
       className: "group/projects-item relative",
+      newAction: {
+        label: "New project",
+        run: () => {
+          setMoreOpen(false);
+          setProjectCreateMoveTarget(null);
+          setCreatingProject(true);
+        },
+      },
       // The inline "new project" affordance only fits a real row.
       children: (
         <button
@@ -3480,6 +3525,45 @@ export function AppSidebar() {
       onIntent: () => {
         preloadSilently(router.preloadRoute({ to: "/api-monitor" }));
       },
+    },
+    tasks: {
+      icon: scheduledNotice ? CLOCK_NOTICE_ICON : Clock01Icon,
+      label: t("shell.navigation.tasks"),
+      active: pathname === "/tasks",
+      dot: scheduledNotice,
+      onClick: () => {
+        navigateFromRow({ to: "/tasks" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/tasks" }));
+      },
+      className: "group/tasks-item relative",
+      newAction: {
+        label: t("scheduledTasks.newTask"),
+        run: () => {
+          setMoreOpen(false);
+          navigateFromRow({ to: "/tasks", search: { create: true } });
+          closeMobileIfOpen();
+        },
+      },
+      // Same inline "+" as Projects: opens the new-task dialog on the Scheduled page.
+      children: (
+        <button
+          type="button"
+          aria-label={t("scheduledTasks.newTask")}
+          onClick={(e) => {
+            e.stopPropagation();
+            navigateFromRow({ to: "/tasks", search: { create: true } });
+            closeMobileIfOpen();
+          }}
+          className="sidebar-row-action group-hover/tasks-item:opacity-100 group-hover/tasks-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-data-[collapsible=icon]:hidden"
+        >
+          <span className="sidebar-row-action-glyph">
+            <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-4" />
+          </span>
+        </button>
+      ),
     },
   };
   // The Projects row repeats the section, so it only earns its place while the section is absent.
@@ -5361,6 +5445,8 @@ export function AppSidebar() {
     );
     const hasUnreadActivity =
       !isGenerating && !hasQueuedActivity && alreadyUnread;
+    // A scheduled task's chat carries a clock in the same slot, once there is no news to show.
+    const showScheduledMark = Boolean(item.isScheduled) && !showWorkSpinner && !hasUnreadActivity;
     const itemClass = cn(
       variant === "project"
         ? "group/project-chat-item relative"
@@ -5379,7 +5465,7 @@ export function AppSidebar() {
       isPinned && variant !== "project" && "gap-[calc(8.5px*var(--ui-space-scale,1))]",
       // A spinner glyph cannot truncate, and the pin and the kebab overlay that same edge, so a
       // working row holds their room open whether or not it is hovered.
-      showWorkSpinner ? "pr-16" : hasUnreadActivity ? "pr-7" : undefined,
+      showWorkSpinner ? "pr-16" : hasUnreadActivity || showScheduledMark ? "pr-7" : undefined,
       // Coarse pointers reveal the actions permanently, so the spinner drops back beside
       // them (right-16, ending 78px in) and the title has to clear that, not just pr-16.
       showWorkSpinner && "[@media(pointer:coarse)]:pr-[calc(78px*var(--ui-space-scale,1))]",
@@ -5499,6 +5585,20 @@ export function AppSidebar() {
               >
                 {/* Accent, not a warning colour: a finished reply is news, not a fault. */}
                 <span className="size-2 rounded-full bg-primary" />
+              </span>
+            ) : null}
+            {showScheduledMark ? (
+              <span
+                role="img"
+                aria-label={translate("scheduledTasks.chatMark")}
+                className={cn(
+                  "pointer-events-none absolute right-2 top-1/2 z-10 flex size-4 -translate-y-1/2 items-center justify-center text-muted-foreground transition-opacity",
+                  variant === "project"
+                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0"
+                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0",
+                )}
+              >
+                <HugeiconsIcon icon={Clock01Icon} strokeWidth={1.75} className="size-3.5" />
               </span>
             ) : null}
             {variant === "project" && (
@@ -6191,7 +6291,11 @@ export function AppSidebar() {
                             className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:!size-[calc(28px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
                           >
                             <HugeiconsIcon
-                              icon={MORE_DOTS_ICON}
+                              icon={
+                                overflowNavIds.some((id) => navRows[id].dot)
+                                  ? MORE_DOTS_NOTICE_ICON
+                                  : MORE_DOTS_ICON
+                              }
                               strokeWidth={1.75}
                               className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop"
                             />
@@ -6216,7 +6320,7 @@ export function AppSidebar() {
                       side="right"
                       align="start"
                       sideOffset={6}
-                      className="sidebar-more-menu w-48 p-1"
+                      className="sidebar-more-menu w-48 p-1 [--icon-dot-ring:var(--popover)] dark:[--icon-dot-ring:var(--sidebar)]"
                       {...moreHover.content}
                       // The trigger handles its own presses.
                       onPointerDownOutside={(event) => {
@@ -6284,6 +6388,7 @@ export function AppSidebar() {
                             disabled={rowState.disabled}
                             tooltip={rowState.tooltip}
                             spinner={rowState.spinner}
+                            newAction={row.newAction}
                             onSelect={row.onClick}
                             onIntent={row.onIntent}
                           />

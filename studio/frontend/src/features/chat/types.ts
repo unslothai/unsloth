@@ -63,6 +63,8 @@ export interface ThreadRecord {
   forkTitleBase?: string | null;
   /** Last rename, move or (un)archive (server-set). */
   modifiedAt?: number | null;
+  /** The scheduled task whose run made this chat (server-set). */
+  scheduledTaskId?: string | null;
   /** this chat's own settings, applied when it is opened; absent means the global ones. */
   settings?:
     | import("./utils/thread-scoped-settings").ThreadScopedSettings

@@ -784,6 +784,7 @@ export const en = {
       images: "Images",
       video: "Video",
       audio: "Audio",
+      tasks: "Scheduled",
       // Hover text while the row spins, before this machine's capability is measured.
       trainChecking: "Checking this machine for training support...",
       videoChecking: "Checking this machine for video support...",
@@ -4143,6 +4144,109 @@ export const en = {
     resetTitle: "Reset all skills?",
     resetDescription: "Every skill goes back to how a fresh install has it: your skills and Claude skills on, bundled skills off. Your on and off choices are cleared.",
     reset: "Reset",
+  },
+  // The Scheduled page: prompts that run on a schedule, each run answered in a new chat.
+  scheduledTasks: {
+    title: "Scheduled",
+    description: "Run a prompt on a schedule. Each run opens a new chat with the answer.",
+    // Said once under the heading: nothing runs while Unsloth is closed or no model is loaded.
+    runsWhileOpen: "Tasks run on the model loaded in Chat while Unsloth is open.",
+    newTask: "New task",
+    upcoming: "Upcoming",
+    // The list's status filter: a menu of Active, Paused and Completed.
+    filterBy: "Filter by",
+    filter: "Filter tasks",
+    active: "Active",
+    noMatches: "No scheduled tasks",
+    search: "Search scheduled tasks",
+    // Read out for the dot on a task whose latest run the user has not opened yet.
+    newResult: "New result",
+    // Above a prompt a task sent; opens that task for editing.
+    sentBy: "Sent by scheduled task",
+    // Read out for the clock on a Recents row a task's run made.
+    chatMark: "Chat from a scheduled task",
+    taskMissing: "This task no longer exists.",
+    emptyTitle: "No scheduled tasks yet",
+    emptyDescription: "Get a daily summary, a weekly reminder, or anything else you want done on a schedule.",
+    createFirst: "Create a task",
+    loadFailed: "Could not load scheduled tasks.",
+    retry: "Retry",
+    // Pills beside a task's name.
+    paused: "Paused",
+    completed: "Completed",
+    running: "Running",
+    // {when} is a date and time, e.g. "Thu, Oct 15, 9:00 AM".
+    nextRun: "Next run {when}",
+    // {when} is relative, e.g. "2 hours ago".
+    lastRun: "Last run {when}",
+    // {reason} says why, e.g. "No model was loaded."
+    lastRunFailed: "Last run failed {when}: {reason}",
+    openChat: "Open chat",
+    runNow: "Run now",
+    pause: "Pause",
+    resume: "Resume",
+    edit: "Edit",
+    options: "Task options",
+    schedule: {
+      once: "Once, {date} at {time}",
+      daily: "Every day at {time}",
+      weekdays: "Every weekday at {time}",
+      // {days} is a list of short weekday names, e.g. "Mon, Wed, and Fri".
+      weekly: "Every {days} at {time}",
+      monthly: "Every month on day {day} at {time}",
+    },
+    form: {
+      createTitle: "Schedule a task",
+      editTitle: "Edit scheduled task",
+      name: "Name",
+      // Left blank, the name is taken from the first line of the instructions.
+      namePlaceholder: "Name (optional)",
+      instructions: "Instructions",
+      instructionsHint: "Sent to the model each time the task runs.",
+      instructionsPlaceholder: "Instructions…",
+      repeat: "Repeat",
+      once: "Once",
+      daily: "Daily",
+      weekdays: "Weekdays",
+      weekly: "Weekly",
+      monthly: "Monthly",
+      date: "Date",
+      time: "Time",
+      days: "Days",
+      dayOfMonth: "Day of the month",
+      lastDayNote: "Months without this day run on their last day.",
+      advanced: "Advanced",
+      notifications: "Notifications",
+      // Which of a task's finished runs get a toast and a system notification.
+      notifyAll: "Every run",
+      notifyFailures: "Only failures",
+      notifyNone: "Off",
+      create: "Create",
+    },
+    deleteDialog: {
+      title: "Delete scheduled task?",
+      description: "“{title}” will stop running. Chats it already made are kept.",
+    },
+    errors: {
+      noModel: "No model was loaded. Load a model in Chat, then run the task again.",
+      timeout: "The model took too long to answer.",
+      cancelled: "The run was stopped before it finished.",
+      interrupted: "Unsloth closed before the run finished.",
+      empty: "The model returned an empty answer.",
+      unknown: "The run failed.",
+      saveFailed: "Could not save the task",
+      updateFailed: "Could not update the task",
+      deleteFailed: "Could not delete the task",
+      runFailed: "Could not start the task",
+    },
+    toast: {
+      finished: "“{title}” is ready",
+      failed: "“{title}” failed",
+      many: "{count} scheduled tasks finished",
+      open: "Open",
+      view: "View",
+    },
+    notificationBody: "Your scheduled task finished. Open Unsloth to read the answer.",
   },
   // The Library page, its file viewer, and the menus and toasts that act on its files.
   library: {

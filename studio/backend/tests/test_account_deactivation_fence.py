@@ -8,6 +8,7 @@ authentication and waiting on a gate registers afterwards, so the fence set alon
 has to reach it too, and reactivation lifts it."""
 
 import threading
+from types import SimpleNamespace
 
 from auth import storage
 from state import active_generations
@@ -40,3 +41,20 @@ def test_retirement_fences_late_registration(matrix):
     alice = storage.get_account("alice")
     assert client.delete(f"/api/accounts/{alice.account_id}", headers = headers()).status_code == 204
     assert _register(alice) is True
+
+
+def test_deactivation_cancels_a_scheduled_run_still_waiting_for_the_model(matrix):
+    from core.scheduled_tasks.scheduler import ScheduledTaskScheduler, _ActiveRun
+
+    client, _, _ = matrix
+    alice, bob = storage.get_account("alice"), storage.get_account("bob")
+    alices_scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
+    bobs_scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
+    alices_run, bobs_run = threading.Event(), threading.Event()
+    alices_scheduler._active = _ActiveRun(alice.account_id, "task-1", "run-1", alices_run)
+    bobs_scheduler._active = _ActiveRun(bob.account_id, "task-2", "run-2", bobs_run)
+
+    url = f"/api/accounts/{alice.account_id}"
+    assert client.patch(url, headers = headers(), json = {"is_active": False}).status_code == 200
+    assert alices_run.is_set()
+    assert not bobs_run.is_set()

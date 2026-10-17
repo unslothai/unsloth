@@ -115,3 +115,28 @@ export const TextToSpeechIcon: IconSvgElement = [
     },
   ],
 ];
+
+/** `icon` with an accent dot on its top-right corner, for "something new is here". The dot's
+ *  colours go in `style`: HugeiconsIcon overwrites every child's stroke attributes. Its ring is
+ *  the surface behind the icon (`--icon-dot-ring`, the sidebar's by default), so it cuts the
+ *  outline it overlaps. */
+export function withNoticeDot(icon: IconSvgElement): IconSvgElement {
+  return [
+    ...icon,
+    [
+      "circle",
+      {
+        cx: "19",
+        cy: "5",
+        r: "3.75",
+        key: "notice-dot",
+        style: {
+          fill: "var(--primary)",
+          stroke: "var(--icon-dot-ring, var(--sidebar))",
+          strokeWidth: 2.5,
+          paintOrder: "stroke",
+        },
+      },
+    ],
+  ] as unknown as IconSvgElement;
+}

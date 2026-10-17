@@ -196,8 +196,26 @@ export const BUDGET = {
   // 95). Nearly all of it is searching a model maker in the Model hub (#13998, +3,038 B raw / +1,000 B transfer):
   // its owner-to-uploads search lives in use-hub-model-search, a hook the startup screen already loads, so there
   // is no separate module to lazy-load. #13999 and #13993 add 79 B raw / 58 B transfer. Raised by that growth.
-  transferBytes: 2_045_781,
-  rawBytes: 6_801_415,
+  // Scheduled tasks add 10,784 B raw / 4,214 B transfer (6,800,855 -> 6,811,639 B raw, 2,045,415 -> 2,049,629 B
+  // transfer against 2de9425750, one machine and build, Node 22): the notifier that announces finished runs on any
+  // page, with its per-account record and the API client it shares with the lazy Tasks page (6.1 KB raw in the entry
+  // chunk), the English strings (2.3 KB) and the Tasks icon (0.8 KB). The chunk count goes 95 -> 100 with no new
+  // module at startup: the page shares dropdown-menu, alert-dialog, use-mobile, native notifications and a Radix
+  // package with the startup set, so Rolldown splits them out of the chunks they were in; that and a few small
+  // helpers in other eager chunks are the other 1.6 KB. Raised by that growth.
+  // The Scheduled follow-ups add 4,519 B raw / 1,396 B transfer (6,811,639 -> 6,816,158 B raw, 2,049,629 ->
+  // 2,051,025 B transfer against d2bb8d702d): the unseen-runs store behind the notice dots on the sidebar's
+  // Scheduled and More icons, the scheduled-chat mark on Recents rows and "Sent by scheduled task" over its
+  // prompt, the sidebar's new-task "+", and their strings. The chunk count goes 100 -> 101. Raised by that growth.
+  // The scheduled task results poll's claim across an account's tabs and the saved-at stamp on its record add
+  // 688 B raw / 214 B transfer (6,816,102 -> 6,816,790 B raw, 2,050,957 -> 2,051,171 B transfer against
+  // 0704214ca1, one machine and build, Node 22, chunk count unchanged at 101). Raised by that growth.
+  // Each scheduled task's choice of which finished runs get a toast (every run, only failures, or none), which
+  // the results poll follows, and the schedule dialog's new strings add 210 B raw / 56 B transfer (6,817,333 ->
+  // 6,817,543 B raw, 2,051,373 -> 2,051,429 B transfer against 619b57a16a, one machine and build, Node 22, chunk
+  // count unchanged at 101). Raised by that growth.
+  transferBytes: 2_051_661,
+  rawBytes: 6_817_616,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

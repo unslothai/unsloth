@@ -40,6 +40,15 @@ export const ACCOUNT_CHROME_KEYS = new Set([
 export const ACCOUNT_CHROME_PREFIXES = [
   "unsloth_web_update_dismissed:",
 ] as const;
+/** Records named after the account they belong to, which only that account reads, kept so it
+ * carries on where it left off when it signs in again. Bookkeeping only: never add content,
+ * credentials or anything one account could learn about another from. */
+export const ACCOUNT_KEYED_PREFIXES = [
+  // The scheduled task results poll's cursor: a time and the run ids it has announced.
+  "unsloth_scheduled_tasks_seen:",
+  // Its unseen-run markers: task ids, and the chats their latest runs made.
+  "unsloth_scheduled_tasks_unseen:",
+] as const;
 /** Per-tab flags about the browser session, not the account. Never add content. */
 export const ACCOUNT_SESSION_CHROME_KEYS = new Set([USER_STOPPED_KEY]);
 /** Purged on an account change. Durable stores are named per account (`accountDatabaseName`). */
@@ -72,9 +81,9 @@ export function browserAccountMarker(account: BrowserAccount | string): string {
     : username;
 }
 
-/** The owner keeps the historical name; a managed account gets its own store. */
-export function accountDatabaseName(
-  name: string,
+/** The browser's signed-in account as `owner`, or a managed account's id: never its username alone
+ *  where the id is known, which a later account could take once this one is deleted. */
+export function browserAccountKey(
   storage: Pick<Storage, "getItem"> | null = typeof window === "undefined"
     ? null
     : window.localStorage,
@@ -85,7 +94,18 @@ export function accountDatabaseName(
   const owner =
     account.accountId === "owner" ||
     (!account.accountId && account.username === OWNER_BROWSER_ACCOUNT);
-  return owner ? name : `${name}:${account.accountId ?? account.username}`;
+  return owner ? "owner" : (account.accountId ?? account.username);
+}
+
+/** The owner keeps the historical name; a managed account gets its own store. */
+export function accountDatabaseName(
+  name: string,
+  storage: Pick<Storage, "getItem"> | null = typeof window === "undefined"
+    ? null
+    : window.localStorage,
+): string {
+  const account = browserAccountKey(storage);
+  return account === "owner" ? name : `${name}:${account}`;
 }
 
 type MarkedAccount = { accountId: string | null; username: string };
@@ -221,7 +241,8 @@ export async function transitionBrowserAccount(
         ACCOUNT_CHROME_KEYS.has(key) ||
         // About this machine's install, not the account signed in to it.
         key === RUNTIME_REPAIR_KEY ||
-        ACCOUNT_CHROME_PREFIXES.some((prefix) => key.startsWith(prefix))
+        ACCOUNT_CHROME_PREFIXES.some((prefix) => key.startsWith(prefix)) ||
+        ACCOUNT_KEYED_PREFIXES.some((prefix) => key.startsWith(prefix))
       )
         continue;
       if (key.startsWith("unsloth") || key.startsWith("chat-draft"))
