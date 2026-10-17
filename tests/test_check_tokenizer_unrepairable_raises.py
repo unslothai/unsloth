@@ -76,14 +76,28 @@ def test_in_range_tokenizer_is_returned_unchanged(tmp_path):
     assert tokenizer.sep_token_id == len(VOCAB)
 
 
-def test_slow_reload_failure_still_returns_the_tokenizer(tmp_path):
+def _no_slow_reload():
     def from_pretrained(*a, **k):
         raise OSError("no slow tokenizer")
 
+    return patch.object(tu, "AutoTokenizer", types.SimpleNamespace(from_pretrained = from_pretrained))
+
+
+def test_failed_slow_reload_still_repairs(tmp_path):
+    # transformers 4.x can't load a fast-only repo with use_fast = False.
     path = _tiny_tokenizer(tmp_path, sep_token = "<sep>")
     original = AutoTokenizer.from_pretrained(path)
-    with patch.object(tu, "AutoTokenizer", types.SimpleNamespace(from_pretrained = from_pretrained)):
-        assert tu.check_tokenizer(_model(len(VOCAB)), original, model_name = path) is original
+    with _no_slow_reload():
+        tokenizer = tu.check_tokenizer(_model(len(VOCAB)), original, model_name = path)
+    assert _max_added_id(tokenizer) < len(VOCAB)
+    assert tokenizer.sep_token is None
+
+
+def test_failed_slow_reload_still_raises_when_unrepairable(tmp_path):
+    path = _tiny_tokenizer(tmp_path, additional_special_tokens = ["<x>"])
+    original = AutoTokenizer.from_pretrained(path)
+    with _no_slow_reload(), pytest.raises(RuntimeError, match = "out of bounds memory accesses"):
+        tu.check_tokenizer(_model(len(VOCAB)), original, model_name = path)
 
 
 @pytest.fixture(scope = "module")

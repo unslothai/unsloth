@@ -1803,12 +1803,8 @@ def check_tokenizer(
                     cache_dir = reload_cache_dir,
                 )
             except Exception:
-                logger.warning_once(
-                    "Unsloth: Tokenizer is most likely buggy, and Unsloth failed to repair it.\n"
-                    "It will still work, but beware of out of bounds memory accesses.\n"
-                    "Please file an issue on the model owner's repo about this issue."
-                )
-                return tokenizer
+                # No usable slow tokenizer (fast-only repos on transformers 4.x): repair the one we have.
+                pass
             # Outside the try: an unrepairable tokenizer must raise, not come back with a warning.
             return check_tokenizer(
                 model = model,
