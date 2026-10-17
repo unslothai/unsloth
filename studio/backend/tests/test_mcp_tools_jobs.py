@@ -86,6 +86,8 @@ def test_a_wait_returns_on_a_status_change(monkeypatch, fast_polls):
         monkeypatch, {VIDEO: handler}, "get_job", {"kind": "video", "id": "vid-1", "wait_s": 30}
     )
     assert result["structuredContent"]["status"] == "in_progress"
+    # It moved on, so the next wait can start at once.
+    assert result["structuredContent"]["poll_after_s"] == 0
     assert len(reads) == 2
 
 

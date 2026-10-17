@@ -1,18 +1,25 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Single-GPU arbiter for Unsloth's heavy GPU consumers.
+"""GPU arbiter for Unsloth's heavy GPU consumers.
 
-The chat backends, diffusion, and video share one GPU. Before taking it each calls
-``acquire_for(owner)``, which evicts the current other owner so two large models never sit in VRAM
-at once. The arbiter only sequences ownership (freeing is each backend's teardown); eviction runs
-under the lock, so a transfer is atomic vs other acquires.
+The chat backends, diffusion, and video share the GPUs. Before taking them each calls
+``acquire_for(owner)``. Under the default policy that evicts every other resident, so two large
+models never sit in VRAM at once. Under "always" (Keep multiple models loaded set to Always) it
+refuses instead of evicting a chat, image or video model. The arbiter only sequences residency
+(freeing is each backend's teardown); eviction runs under the lock, so a transfer is atomic vs
+other acquires.
+
+Residents are tracked in ``_residents`` with the physical GPU ids each one uses (None when not
+known). ``_owner`` stays the last claimant, and tests may still set it directly: while it
+disagrees with ``_residents``, ``_owner`` wins.
 """
 
 from __future__ import annotations
 
 import threading
-from typing import Any, Callable, Optional
+from contextvars import ContextVar
+from typing import Any, Callable, Iterable, Optional
 
 from loggers import get_logger
 
@@ -24,16 +31,79 @@ VIDEO = "video"
 # A Decision API llama.cpp server on the GPU (the PyTorch Clef worker is not arbitrated).
 DECISIONS = "decisions"
 
+# What each kind is called in refusals and eviction reports.
+KIND_LABELS = {CHAT: "chat", DIFFUSION: "image", VIDEO: "video", DECISIONS: "decisions"}
+# Residents that "always" protects; a Decision API server is still evicted as before.
+_KEPT_UNDER_ALWAYS = frozenset({CHAT, DIFFUSION, VIDEO})
+
 _lock = threading.Lock()
 _owner: Optional[str] = None
 _owner_epoch = 0
 # Account whose load put the current owner on the GPU, so routes can refuse to evict it.
 _owner_account: Optional[str] = None
 _prior_account: Optional[str] = None
+# Every resident and the physical GPU ids it uses (None = unknown, treat as every GPU).
+_residents: dict[str, Optional[frozenset[int]]] = {}
+# (account, prior account) for residents other than ``_owner``, whose pair lives in the globals above.
+_accounts: dict[str, tuple[Optional[str], Optional[str]]] = {}
+
+# Phrases the refusal copy always contains, for readers that lose the X-Unsloth-Refusal header.
+MULTI_MODEL_REFUSAL_MARKERS = ("is set to Always", "is set to keep loaded")
+MULTI_MODEL_REFUSAL_HEADERS = {"X-Unsloth-Refusal": "multi-model-always"}
 
 
 class OwnerChangedError(RuntimeError):
     """The outgoing GPU owner changed after a pre-handoff capacity snapshot."""
+
+
+class MultiModelAlwaysRefusal(RuntimeError):
+    """A load would unload another model while Keep multiple models loaded is set to Always.
+
+    Not a ``GpuMemoryShortError``: the chat load loop answers that by evicting. Waiting does not
+    help, so routes answer 409 without Retry-After, with ``MULTI_MODEL_REFUSAL_HEADERS``.
+    """
+
+    def __init__(self, message: str, *, kind: Optional[str] = None, model: Optional[str] = None):
+        self.kind = kind
+        self.model = model
+        super().__init__(message)
+
+    def as_http_exception(self, path: Optional[str] = None):
+        from fastapi import HTTPException
+        from utils.api_errors import error_body_for_path
+
+        message = str(self)
+        detail = (
+            error_body_for_path(path, message, status = 409, code = "multi_model_always", param = "model")
+            if path and path.startswith("/v1/")
+            else message
+        )
+        return HTTPException(status_code = 409, detail = detail, headers = dict(MULTI_MODEL_REFUSAL_HEADERS))
+
+
+def always_refusal_message(kind: str, model: Optional[str] = None, *, is_owner: Optional[bool] = None) -> str:
+    """The Always refusal copy. ``kind`` is chat, audio, image or video."""
+    if is_owner is None:
+        from utils.account_context import is_owner_context
+        is_owner = is_owner_context()
+    what = f"the {kind} model {model}" if model else f"the {kind} model"
+    if is_owner:
+        return (
+            f"Loading this model would unload {what}, and Keep multiple models loaded is set to Always. "
+            "Unload that model first, or choose When they fit."
+        )
+    return (
+        f"Loading this model would unload {what}, which Unsloth Studio is set to keep loaded. "
+        "Unload that model first, or ask the Unsloth Studio owner."
+    )
+
+
+def refusal_for(slots: Iterable[dict[str, Any]], fallback_kind: str = "chat") -> MultiModelAlwaysRefusal:
+    """Build the refusal naming the first model a load would have unloaded (hidden from other accounts)."""
+    shown = public_slots(slots)
+    first = shown[0] if shown else {"kind": fallback_kind, "model": ""}
+    kind, model = first.get("kind") or fallback_kind, first.get("model") or None
+    return MultiModelAlwaysRefusal(always_refusal_message(kind, model), kind = kind, model = model)
 
 
 def _evict_chat() -> None:
@@ -99,7 +169,7 @@ def _evict_decisions() -> None:
     evict_for_gpu()
 
 
-# Patchable in tests via monkeypatch.setitem. Ownership is exclusive, so acquire_for's evict-the-current-owner
+# Patchable in tests via monkeypatch.setitem. Under the default policy acquire_for evicts every other resident, so this
 # generalises to any number of owners.
 _EVICTORS = {
     CHAT: _evict_chat,
@@ -107,6 +177,152 @@ _EVICTORS = {
     VIDEO: _evict_video,
     DECISIONS: _evict_decisions,
 }
+
+
+def _chat_slots() -> list[dict[str, str]]:
+    from routes.inference import chat_eviction_reports
+    return chat_eviction_reports()
+
+
+def _diffusion_slots() -> list[dict[str, str]]:
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+    return _media_slot("image", DIFFUSION, get_active_diffusion_engine())
+
+
+def _video_slots() -> list[dict[str, str]]:
+    from core.inference.video import get_video_backend
+    return _media_slot("video", VIDEO, get_video_backend())
+
+
+def _media_slot(kind: str, owner: str, backend: Any) -> list[dict[str, str]]:
+    status = backend.status() if hasattr(backend, "status") else None
+    if not isinstance(status, dict) or not status.get("loaded"):
+        return []
+    from core.inference.model_ids import public_model_id
+    from hub.services.models.account_access import _resident_loader
+
+    # display_repo_id is what the page shows; a bare repo_id can be a local path.
+    model = status.get("display_repo_id") or public_model_id(status.get("repo_id")) or kind
+    return [{"kind": kind, "model": str(model), "account": _resident_loader(owner)}]
+
+
+# What an owner's eviction unloads, as {kind, model} with the public model id, plus the loading account under
+# "account". Patchable like _EVICTORS. Read before the evictor runs, under _lock, so a reporter must never call back
+# into the arbiter's locking functions. One that fails reports nothing rather than blocking the acquire.
+_SLOT_REPORTERS: dict[str, Callable[[], list[dict[str, Any]]]] = {
+    CHAT: _chat_slots,
+    DIFFUSION: _diffusion_slots,
+    VIDEO: _video_slots,
+}
+
+# Where an acquire without an explicit ``evicted`` list reports, so a route can collect what a nested load evicted.
+eviction_sink: ContextVar[Optional[list]] = ContextVar("gpu_eviction_sink", default = None)
+
+
+def resident_slots(owner: str) -> list[dict[str, Any]]:
+    reporter = _SLOT_REPORTERS.get(owner)
+    if reporter is None:
+        return []
+    try:
+        return [dict(slot) for slot in reporter() or ()]
+    except Exception as exc:  # noqa: BLE001 - a report must never block an acquire
+        logger.warning("gpu_arbiter: could not list the %s models: %s", owner, exc)
+        return []
+
+
+def public_slots(slots: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
+    """``{kind, model}`` for a caller: a managed account never sees what another account loaded."""
+    try:
+        from hub.services.models.account_access import managed_account
+        from utils.account_context import current_account_id
+
+        hide, me = managed_account(), current_account_id()
+    except Exception:  # noqa: BLE001
+        hide, me = False, None
+    out = []
+    for slot in slots:
+        account = slot.get("account")
+        model = "" if hide and account is not None and account != me else str(slot.get("model") or "")
+        out.append({"kind": str(slot.get("kind") or "chat"), "model": model})
+    return out
+
+
+def note_evictions(slots: Iterable[dict[str, Any]], evicted: Optional[list] = None) -> None:
+    """Report models a route unloaded itself, to ``evicted`` or the current eviction sink."""
+    sink = evicted if evicted is not None else eviction_sink.get()
+    if sink is not None:
+        sink.extend(public_slots(slots))
+
+
+def policy_kwargs(policy: str) -> dict[str, str]:
+    """``acquire_for`` kwargs for a mode: none for "off", so callers and fakes see today's call."""
+    return {} if policy == "off" else {"policy": policy}
+
+
+def physical_gpu_ids(visible: Optional[Iterable[int]]) -> Optional[frozenset[int]]:
+    """Map visible device ordinals to physical GPU ids (CUDA_VISIBLE_DEVICES=2,3 makes ordinal 0 GPU 2)."""
+    if visible is None:
+        return None
+    ordinals = [int(i) for i in visible]
+    try:
+        from utils.hardware.hardware import get_parent_visible_gpu_ids
+        parent = get_parent_visible_gpu_ids()
+    except Exception:  # noqa: BLE001
+        parent = []
+    if not parent:
+        return frozenset(ordinals)
+    return frozenset(parent[i] if 0 <= i < len(parent) else i for i in ordinals)
+
+
+def _view(owner: Any = ...) -> dict[str, Optional[frozenset[int]]]:
+    """Residents, trusting ``_owner`` when a caller or test set it without going through the arbiter."""
+    if owner is ...:
+        owner = _owner
+    if owner is None:
+        return {}
+    if owner not in _residents:
+        return {owner: None}
+    return dict(_residents)
+
+
+def _sync_from_view() -> None:
+    """Bring ``_residents`` and ``_accounts`` in line with ``_owner`` before a mutation. Caller holds ``_lock``."""
+    global _residents
+    view = _view()
+    if view != _residents:
+        _residents = view
+    for stale in [name for name in _accounts if name not in view or name == _owner]:
+        _accounts.pop(stale, None)
+
+
+def _drop_resident(owner: str) -> None:
+    """Remove ``owner`` and recompute ``_owner`` from the residents left. Caller holds ``_lock``."""
+    global _owner, _owner_epoch, _owner_account, _prior_account
+    _sync_from_view()
+    if owner not in _residents:
+        return
+    del _residents[owner]
+    if owner == _owner:
+        if _residents:
+            _owner = next(reversed(_residents))
+            _owner_account, _prior_account = _accounts.pop(_owner, (None, None))
+        else:
+            _owner = None
+            _owner_account = None
+            _prior_account = None
+    else:
+        _accounts.pop(owner, None)
+    _owner_epoch += 1
+
+
+def holds(owner: str) -> bool:
+    """Whether ``owner`` has a model resident on a GPU. Lock-free, so register callbacks may call it."""
+    return owner in _view(current_owner())
+
+
+def residents() -> dict[str, Optional[frozenset[int]]]:
+    """Every resident owner and its physical GPU ids (None when unknown). Lock-free like ``holds``."""
+    return _view(current_owner())
 
 
 class GpuOwnerBusyError(RuntimeError):
@@ -194,11 +410,20 @@ def acquire_for(
     account_id: Optional[str] = None,
     replacing: bool = False,
     alongside: bool = False,
+    policy: str = "off",
+    evicted: Optional[list] = None,
+    gpu_ids: Optional[Iterable[int]] = None,
 ) -> Any:
-    """Make ``owner`` the sole GPU owner, evicting the other if it holds it.
+    """Make ``owner`` resident, evicting every other resident under the default policy.
 
-    ``register`` runs under the arbiter lock as ownership transfers, so a competing acquire cannot
+    ``register`` runs under the arbiter lock as residency transfers, so a competing acquire cannot
     evict this owner and let both loaders allocate VRAM at once.
+
+    ``policy`` is the Keep multiple models loaded mode, read by the caller outside the lock. "off"
+    and "fit" evict as before; "always" raises ``MultiModelAlwaysRefusal`` instead of evicting a
+    chat, image or video model. ``alongside`` is unrelated: it only decides whether the owner
+    account is re-claimed. ``evicted`` collects ``{kind, model}`` for each model an evictor
+    unloads. ``gpu_ids`` are the visible device ordinals the owner will use, when known.
     """
     global _owner, _owner_epoch, _owner_account, _prior_account
     if owner not in _EVICTORS:
@@ -211,21 +436,48 @@ def acquire_for(
             raise OwnerChangedError("The resident GPU model changed; retry the load.")
         if register is not None or replacing:
             raise_if_other_accounts_active(acting)
-        if _owner is not None and _owner != owner:
+        _sync_from_view()
+        prev_owner, prev_pair = _owner, (_owner_account, _prior_account)
+        others = [name for name in _residents if name != owner]
+        if others:
             if not allow_evict:
-                raise GpuOwnerBusyError(_owner)
+                raise GpuOwnerBusyError(others[-1])
+            if policy == "always" and owner in _KEPT_UNDER_ALWAYS:
+                kept = [name for name in others if name in _KEPT_UNDER_ALWAYS]
+                if kept:
+                    slots = [slot for name in kept for slot in resident_slots(name)]
+                    raise refusal_for(slots, KIND_LABELS[kept[0]])
             # Never evict an account mid-generation; the caller retries after its stream ends.
             busy = other_accounts_active(acting)
             if busy:
-                raise GpuBusyForAnotherAccountError(_owner, busy)
-            logger.info("gpu_arbiter: evicting %s for %s", _owner, owner)
-            _EVICTORS[_owner]()
+                raise GpuBusyForAnotherAccountError(others[-1], busy)
+            sink = evicted if evicted is not None else eviction_sink.get()
+            for name in others:
+                logger.info("gpu_arbiter: evicting %s for %s", name, owner)
+                unloading = resident_slots(name) if sink is not None else []
+                _EVICTORS[name]()
+                note_evictions(unloading, sink)
+                _drop_resident(name)
         if owner != VIDEO:
             # A resident H3 sd-server sits outside every owner's teardown.
             _release_idle_video_servers(f"GPU acquired for {owner}")
         # Records who LOADED the model; a plain re-assert must not hand it to whoever asked last.
-        claims = _owner != owner or ((register is not None or replacing) and not alongside)
+        claims = prev_owner != owner or ((register is not None or replacing) and not alongside)
+        if owner != _owner:
+            if _owner is not None:
+                # Another resident stays loaded; park its accounts while ``owner`` is the last claimant.
+                _accounts[_owner] = (_owner_account, _prior_account)
+            if owner in _accounts:
+                _owner_account, _prior_account = _accounts.pop(owner)
+            elif prev_owner is None or prev_owner not in _residents:
+                # The evicted owner's accounts carry over, as they did with a single owner.
+                _owner_account, _prior_account = prev_pair
+            else:
+                _owner_account, _prior_account = None, None
         _owner = owner
+        _residents.pop(owner, None)
+        known = physical_gpu_ids(gpu_ids)
+        _residents[owner] = known
         _owner_epoch += 1
         result = register() if register is not None else None
         # A raising registration loaded nothing and must not take residency.
@@ -241,47 +493,48 @@ def restore_owner_account(owner: str, account_id: Optional[str] = None) -> bool:
 
     with _lock:
         acting = account_id or current_account_id()
-        if _owner != owner or _owner_account != acting or _prior_account is None:
+        if owner == _owner:
+            if _owner_account != acting or _prior_account is None:
+                return False
+            _owner_account, _prior_account = _prior_account, None
+            return True
+        account, prior = _accounts.get(owner, (None, None))
+        if owner not in _view() or account != acting or prior is None:
             return False
-        _owner_account, _prior_account = _prior_account, None
+        _accounts[owner] = (prior, None)
         return True
 
 
 def release(owner: str) -> None:
-    """Drop ``owner``'s claim (no-op if it isn't the current owner)."""
-    global _owner, _owner_epoch, _owner_account, _prior_account
+    """Drop ``owner``'s residency (no-op if it isn't resident)."""
     with _lock:
-        if _owner == owner:
-            _owner = None
-            _owner_account = None
-            _prior_account = None
-            _owner_epoch += 1
+        _drop_resident(owner)
 
 
 def release_if(owner: str, predicate: Callable[[], bool]) -> bool:
-    """Drop ``owner``'s claim only if it still holds it AND ``predicate()`` is true, atomically.
+    """Drop ``owner``'s residency only if it still holds it AND ``predicate()`` is true, atomically.
 
     A slow unload's idle check and its ``release`` must not straddle a concurrent same-owner load
     whose ``acquire_for(register=...)`` re-registers ownership under this lock; evaluating the
     predicate under the lock keeps them atomic so ``release`` never clears the newer claim.
     ``predicate`` must be quick and not re-enter the arbiter. Returns True iff ownership was dropped."""
-    global _owner, _owner_epoch, _owner_account, _prior_account
     with _lock:
-        if _owner != owner or not predicate():
+        if owner not in _view() or not predicate():
             return False
-        _owner = None
-        _owner_account = None
-        _prior_account = None
-        _owner_epoch += 1
+        _drop_resident(owner)
         return True
 
 
 def current_owner() -> Optional[str]:
+    """The last claimant. Prefer ``holds()`` / ``residents()``: other models may be resident too."""
     return _owner
 
 
-def owner_account() -> Optional[str]:
-    return _owner_account
+def owner_account(owner: Optional[str] = None) -> Optional[str]:
+    """Account whose load put ``owner`` (default: the last claimant) on the GPU."""
+    if owner is None or owner == _owner:
+        return _owner_account
+    return _accounts.get(owner, (None, None))[0]
 
 
 def owner_snapshot() -> tuple[Optional[str], int]:

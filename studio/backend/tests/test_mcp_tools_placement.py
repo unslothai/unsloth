@@ -267,3 +267,37 @@ def test_unload_all_frees_every_slot_but_the_embedder(monkeypatch):
         {"model_path": "/m/llm.gguf"},
     ]
     assert not [call for call in studio.state.calls if "embedding-model" in call[1]]
+
+
+def test_a_media_load_already_downloading_the_variant_is_not_refused(monkeypatch, fast_polls):
+    studio = _media_studio(
+        "image",
+        progress = [{"phase": "downloading"}, READY],
+        statuses = [{"loaded": True, "repo_id": FLUX_GGUF}],
+    )
+    partial = {
+        "default_variant": "Q4_K_S",
+        "variants": [{"quant": "Q4_K_S", "filename": "f.gguf", "partial": True}],
+    }
+    studio.router.routes = [
+        r for r in studio.router.routes if getattr(r, "path", "") != "/api/hub/gguf-variants"
+    ]
+    studio.add_api_route("/api/hub/gguf-variants", lambda: partial, methods = ["GET"])
+    result, _studio = run_tool(
+        monkeypatch, studio, "load_model", {"model": FLUX_GGUF, "kind": "image"}
+    )
+    assert result.get("isError") is not True, result
+
+
+def test_unload_all_also_frees_models_held_behind_the_active_one(monkeypatch):
+    held = {"loaded": [LLM, QWEN], "serving": [LLM], "serving_checkpoints": ["/m/llm.gguf"]}
+    routes = {
+        STATUS_ROUTE: sequence(held, {**EMPTY_STATUS, "loaded": [QWEN]}, EMPTY_STATUS),
+        ("POST", "/api/inference/unload"): {"status": "unloaded"},
+    }
+    result, studio = run_tool(monkeypatch, routes, "unload_model", {"kind": "all"}, fallback = {})
+    assert bodies(studio, "/api/inference/unload") == [
+        {"model_path": "/m/llm.gguf"},
+        {"model_path": QWEN},
+    ]
+    assert [row["model"] for row in result["structuredContent"]["unloaded"]] == [LLM, QWEN]

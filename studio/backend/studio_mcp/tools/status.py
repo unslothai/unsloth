@@ -61,7 +61,7 @@ def _chat(payload: dict) -> ChatSlot:
         if isinstance(model_id, str)
     ]
     loading = [model for model in payload.get("loading") or [] if isinstance(model, str)]
-    return ChatSlot(loaded = loaded, loading = loading)
+    return ChatSlot(loaded = loaded, loading = loading, multi_model_mode = opt_text(payload.get("multi_model_mode")))
 
 
 def _media(slot: type, payload: dict) -> Any:

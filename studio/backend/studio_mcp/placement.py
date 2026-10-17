@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 from typing import Any, Optional
 
 from fastmcp.exceptions import ToolError
@@ -32,6 +31,10 @@ MEDIA_STATUS = {"image": "/api/inference/images/status", "video": "/api/inferenc
 MEDIA_PLAN = {
     "image": "/api/inference/images/download-plan",
     "video": "/api/inference/video/download-plan",
+}
+MEDIA_PROGRESS = {
+    "image": "/api/inference/images/load-progress",
+    "video": "/api/inference/video/load-progress",
 }
 STT_STATUS = "/api/inference/audio/stt/status"
 # audio.cpp folder ids name a GGUF repo but run on audio.cpp, which honours audio_device itself.
@@ -202,11 +205,7 @@ async def _variants(caller: Caller, model: str) -> Any:
 
 
 async def refuse_partial_variant(
-    caller: Caller,
-    model: str,
-    kind: str,
-    variant: Optional[str],
-    hf_token: Optional[str] = None,
+    caller: Caller, model: str, kind: str, variant: Optional[str]
 ) -> None:
     """Refuse a GGUF variant with only part of its files on disk that Unsloth Studio is not downloading itself; loading it fails with a misleading memory error."""
     if kind == "stt" or is_local(model) or model.lower().startswith(AUDIO_CPP_PREFIX):
@@ -214,13 +213,15 @@ async def refuse_partial_variant(
     repo, variant = _split(model, variant)
     if not is_gguf(repo, variant):
         return
-    if hf_token:
-        # A gated repo's listing needs the token in the header.
-        caller = dataclasses.replace(caller, hf_token = hf_token)
     row = pick_variant(await _variants(caller, repo), variant)
     if row is None or row.get("partial") is not True or row.get("downloaded") is True:
         return
     quant = opt_text(row.get("quant"))
+    if kind in MEDIA_PROGRESS:
+        # An image or video load already downloading it (from the Images or Video page) is not refused.
+        progress = await try_json(caller, MEDIA_PROGRESS[kind])
+        if as_dict(progress).get("phase") not in (None, "ready", "error"):
+            return
     # A download Unsloth Studio manages is waited on before this, never refused.
     state = await try_json(
         caller, "/api/hub/download-status", params = {"repo_id": repo, "gguf_variant": quant}
@@ -267,17 +268,24 @@ def predict(
     status: Any,
     slots: list[SlotModel],
     has_vision: bool = False,
+    variant: Optional[str] = None,
 ) -> tuple[list[SlotModel], bool, bool]:
     """(would_evict, would_evict_exact, would_refuse) for one load. Exact under Off; under When they fit and Always, or when the mode is unknown, an upper bound."""
     slot_kind = "llm" if kind in CHAT_KINDS else kind
-    wanted = model.split(":", 1)[0].lower() if not is_local(model) else model.lower()
-    if kind == "stt" or any(
-        s.kind == slot_kind and s.model.split(":", 1)[0].lower() == wanted for s in slots
-    ):
+    wanted = f"{model}:{variant}".lower() if variant else model.lower()
+    same_repo = [
+        s
+        for s in slots
+        if s.kind == slot_kind and s.model.split(":", 1)[0].lower() == model.lower()
+    ]
+    if kind == "stt" or any(s.model.lower() == wanted for s in slots if s.kind == slot_kind):
+        return [], True, False
+    # Status may name a GGUF by its bare repo: whether that resident is this variant is unknown.
+    exact = not (variant and any(":" not in s.model for s in same_repo))
+    if not variant and same_repo:
         return [], True, False
     chat = [s for s in slots if s.kind == "llm"]
     media = [s for s in slots if s.kind in ("image", "video")]
-    exact = True
     if kind in CHAT_KINDS:
         gpu = device != "cpu" or has_vision
         joins = (
@@ -343,10 +351,13 @@ async def plan_load(
         download = (
             0
             if row.get("downloaded") is True
-            else (
-                integer(row.get("download_remaining_bytes"))
-                or integer(row.get("download_size_bytes"))
-                or integer(row.get("size_bytes"))
+            else next(
+                (
+                    integer(row.get(key))
+                    for key in ("download_remaining_bytes", "download_size_bytes", "size_bytes")
+                    if integer(row.get(key)) is not None
+                ),
+                None,
             )
         )
     if kind in MEDIA_PLAN:
@@ -375,6 +386,7 @@ async def plan_load(
         status = status,
         slots = slots,
         has_vision = as_dict(listing).get("has_vision") is True,
+        variant = variant,
     )
     return PlanLoadResult(
         model = repo,

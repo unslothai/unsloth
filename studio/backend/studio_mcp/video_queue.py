@@ -131,13 +131,16 @@ def _settle(
 
 async def _wait_for_running(caller: Caller) -> None:
     """Until the video this queue waits on is no longer queued or in progress (or gone)."""
+    seen = False
     while (running := _running.get(caller.account_id)) is not None:
         video_id, submitted_at = running
         job = as_dict(await try_json(caller, _video_path(video_id)))
         if job.get("status") in RUNNING:
+            seen = True
             await asyncio.sleep(POLL_S)
             continue
-        if job.get("status") == "completed":
+        # Only a video this wait saw running gives a clip time; an old one would inflate every ETA.
+        if job.get("status") == "completed" and seen:
             _clip_s[caller.account_id] = time.monotonic() - submitted_at
         if _running.get(caller.account_id) == running:
             _running.pop(caller.account_id)
@@ -170,6 +173,9 @@ async def _submit(item: QueuedVideo) -> Optional[float]:
         response = await forward(
             item.caller, "POST", "/v1/videos", json_body = item.body, hub_header = True
         )
+    except httpx.HTTPError:
+        # Unsloth Studio restarting or slow to answer: the clip stays queued.
+        return RETRY_S
     finally:
         item.posting = False
     if _is_busy(response):

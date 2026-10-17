@@ -517,6 +517,7 @@ def test_a_slow_load_returns_early_and_get_job_returns_its_result(monkeypatch, f
         assert again["job_id"] == early["job_id"]
         job = call("get_job", {"kind": "load", "id": early["job_id"], "wait_s": 30})
     assert job["structuredContent"]["status"] == "completed"
+    assert job["structuredContent"]["progress_percent"] == 100.0
     assert job["structuredContent"]["poll_after_s"] is None
     load = job["structuredContent"]["load"]
     assert (load["loaded"], load["status"], load["model"]) == (True, "loaded", LTX)
@@ -630,3 +631,44 @@ def test_saving_the_chat_context_counts_as_progress(monkeypatch, fast_polls):
     )
     assert result["structuredContent"]["loaded"] is True
     assert [p["message"] for p in progress] == ["saving_chat_context"]
+
+
+def test_a_chat_load_asking_for_a_variant_never_follows_another_load(monkeypatch, fast_polls):
+    # The status names only the repo, so another variant of it loading elsewhere is not this load.
+    loading_now = {"loading": [LLM], "serving": [], "loaded": []}
+    routes = {**PAYLOADS, STATUS_ROUTE: sequence(loading_now, STATUS)}
+    _result, studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM, "variant": "Q8_0"})
+    assert len(bodies(studio, "/api/inference/load")) == 1
+
+
+def test_one_failed_status_read_does_not_end_a_followed_load(monkeypatch, fast_polls):
+    loading_now = {"loading": [LLM], "serving": [], "loaded": []}
+    busy = Response(status_code = 503)
+    routes = {**PAYLOADS, STATUS_ROUTE: sequence(loading_now, busy, loading_now, STATUS)}
+    result, studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM})
+    assert result["structuredContent"]["loaded"] is True
+    assert bodies(studio, "/api/inference/load") == []
+
+
+def test_a_listed_chat_drop_does_not_hide_a_media_eviction(monkeypatch):
+    routes = {
+        **PAYLOADS,
+        STATUS_ROUTE: sequence({**STATUS, "serving": [LLM, "unsloth/Qwen3-0.6B"]}, STATUS),
+        VIDEO_STATUS: sequence(LTX_LOADED, UNLOADED),
+    }
+    result, _studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM})
+    assert result["structuredContent"]["evicted_slots"] == [
+        {"kind": "llm", "model": "unsloth/Qwen3-0.6B"},
+        {"kind": "video", "model": LTX},
+    ]
+
+
+def test_progress_never_drops_back():
+    job = loading.LoadJob(job_id = "j", account_id = "owner")
+    job.note(0.5, "Downloading")
+    job.note(None, "saving_chat_context")
+    assert (job.fraction, job.phase, job.marks) == (
+        0.5,
+        "saving_chat_context",
+        [(0.5, "Downloading")],
+    )
