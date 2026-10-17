@@ -44,7 +44,6 @@ def _mode_from_stored(stored: dict[str, Any]) -> str:
 
 def _read_mode() -> str:
     from storage.studio_db import get_app_settings
-
     stored = run_as(
         OWNER,
         get_app_settings,
