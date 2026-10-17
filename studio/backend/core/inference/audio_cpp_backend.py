@@ -72,6 +72,24 @@ def _raise_if_cancelled(cancel_event) -> None:
         raise AudioGenerationCancelledError("Audio generation cancelled")
 
 
+def _runtime_stopped(exc: BaseException) -> BaseException:
+    """A runtime that died or went silent mid-request, as a 500 with code runtime_stopped."""
+    from core.inference.audio_cpp_failures import AudioCppFailure
+    from core.inference.audio_errors import AudioRuntimeError, sanitize_runtime_detail
+
+    reason = sanitize_runtime_detail(str(exc)).removeprefix("The audio runtime ")
+    # "stopped while serving the request. Last output: ..." -> "it quit while serving ..."
+    if reason.startswith("stopped "):
+        reason = "it quit " + reason.removeprefix("stopped ")
+    reason = reason.rstrip(".").strip() or "no reason given"
+    message = (
+        f"The audio runtime stopped: {reason}. Try again; if it fails again, load the model again."
+    )
+    return attach_failure(
+        AudioRuntimeError(message, status = 500), AudioCppFailure("runtime_stopped", message, 500)
+    )
+
+
 _inflight_lock = threading.Lock()
 _inflight: dict[tuple[str, str, str], tuple[threading.Event, list]] = {}
 
@@ -730,6 +748,10 @@ class AudioCppBackend:
             raise
         except AudioCppRequestError as exc:
             raise self._runtime_error("generate audio", exc) from exc
+        except AudioCppUnavailableError as exc:
+            if failure_of(exc) is not None:  # already named (out of memory, ...)
+                raise
+            raise _runtime_stopped(exc) from exc
         _raise_if_cancelled(cancel_event)
         return wav, _wav_sample_rate(wav)
 
@@ -798,6 +820,10 @@ class AudioCppBackend:
             raise
         except AudioCppRequestError as exc:
             raise self._runtime_error("separate the track", exc) from exc
+        except AudioCppUnavailableError as exc:
+            if failure_of(exc) is not None:  # already named (out of memory, ...)
+                raise
+            raise _runtime_stopped(exc) from exc
         except SeparationOutputError as exc:
             logger.warning("audio.cpp: %s answered without decodable stems: %s", model.id, exc)
             return []
@@ -1163,6 +1189,10 @@ class AudioCppBackend:
             raise
         except AudioCppRequestError as exc:
             raise self._runtime_error("generate audio", exc) from exc
+        except AudioCppUnavailableError as exc:
+            if failure_of(exc) is not None:  # already named (out of memory, ...)
+                raise
+            raise _runtime_stopped(exc) from exc
         _raise_if_cancelled(cancel_event)
         if output_dir:
             _write_outputs(output_dir, outputs)
