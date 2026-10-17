@@ -998,7 +998,10 @@ export function ModelsPage() {
     inventoryError,
     inventoryWarning,
     refreshInventory,
-  } = useHubInventory({ kind: isDatasetMode ? "datasets" : "models" });
+  } = useHubInventory({
+    kind: isDatasetMode ? "datasets" : "models",
+    includeUnslothModels: true,
+  });
 
   const reloadReadySent = useRef(false);
   useEffect(() => {
@@ -1244,7 +1247,8 @@ export function ModelsPage() {
             // Hidden-model filtering is model-only; datasets bypass it (and the format filter) as Discover
             // does, so a dataset whose id/title/path contains an infra needle is not dropped.
             isDatasetMode ||
-            (matchesFormat(row.modelFormat, deferredFormatFilter) &&
+            (deferredFormatFilter !== "unsloth" &&
+              matchesFormat(row.modelFormat, deferredFormatFilter) &&
               matchesInventoryCapabilities(row, inventoryCapabilities) &&
               isVisibleInventoryRow(row)),
         ),
@@ -1268,7 +1272,9 @@ export function ModelsPage() {
             // Hidden-model filtering is model-only; datasets bypass it (and the format filter) as Discover
             // does, so a dataset whose id/title/path contains an infra needle is not dropped.
             isDatasetMode ||
-            (matchesFormat(row.modelFormat, deferredFormatFilter) &&
+            ((deferredFormatFilter === "unsloth"
+              ? row.source === "unsloth"
+              : matchesFormat(row.modelFormat, deferredFormatFilter)) &&
               matchesInventoryCapabilities(row, inventoryCapabilities) &&
               isVisibleInventoryRow(row)),
         ),
@@ -1358,10 +1364,9 @@ export function ModelsPage() {
     setFirstPickArmed(true);
   }, [isDiscoverTab, urlSection, navigate]);
   const handleResetInventoryFilters = useCallback(() => {
-    setDownloadedFormat("all");
     setInventoryCapabilities([]);
     setInventoryFirstPickArmed(true);
-  }, [setDownloadedFormat]);
+  }, []);
   const handleResetPopoverFilters = useCallback(() => {
     setCapabilityFilters([]);
     setDatasetModalities([]);

@@ -47,28 +47,15 @@ import {
   DATASET_ROW_STOPS,
   type DatasetModality,
 } from "../lib/dataset-filters";
-import type { ModelFormatFilter } from "../types";
 import { CAPABILITY_FILTER_OPTIONS } from "../lib/view-models";
-import type { InventorySort } from "./models-table";
 
-/** On Device's own filters, which read the local inventory rather than the Hub search. */
+/** On Device's own capability picks, kept apart from Discover's. */
 export interface OnDeviceFilters {
-  sort: InventorySort;
-  onSortChange: (value: InventorySort) => void;
-  format: ModelFormatFilter;
-  formatOptions: readonly (readonly [ModelFormatFilter, string])[];
-  onFormatChange: (value: ModelFormatFilter) => void;
   capabilities: HubCapabilityFilter[];
   onCapabilitiesChange: (value: HubCapabilityFilter[]) => void;
   isolateFirstCapability: boolean;
   onReset: () => void;
 }
-
-const INVENTORY_SORT_OPTIONS: readonly (readonly [InventorySort, string])[] = [
-  ["recent", "Recent"],
-  ["name", "Name"],
-  ["size", "Size"],
-];
 
 const CAPABILITY_ICONS: Record<HubCapabilityFilter, IconSvgElement | null> = {
   text: TextFontIcon,
@@ -656,8 +643,7 @@ export function ModelSearchFiltersControl({
   const unslothOnly = uploaders.length === 1 && uploaders[0] === "unsloth";
   const onDeviceModels = onDevice !== undefined && !datasets;
   const filtered = onDevice
-    ? onDeviceModels &&
-      (onDevice.format !== "all" || onDevice.capabilities.length > 0)
+    ? onDeviceModels && onDevice.capabilities.length > 0
     : modalities.length > 0 ||
       (modelSections && capabilities.length > 0) ||
       uploadersChanged ||
@@ -699,28 +685,10 @@ export function ModelSearchFiltersControl({
       >
         <div className="flex min-h-0 flex-1 flex-col gap-4.25 overflow-y-auto overscroll-contain pt-2.25 pb-4.25 [scrollbar-width:thin]">
           {onDeviceModels && (
-            <>
-              <CapabilityTiles
-                capabilities={onDevice.capabilities}
-                onChange={onDevice.onCapabilitiesChange}
-                isolateFirst={onDevice.isolateFirstCapability}
-              />
-              <SegmentedRow
-                label="Format"
-                about="Lists only models saved in this format."
-                value={onDevice.format}
-                options={onDevice.formatOptions}
-                onChange={onDevice.onFormatChange}
-              />
-            </>
-          )}
-          {onDevice && (
-            <SegmentedRow
-              label="Sort by"
-              about="Recent puts the newest downloads first; Size the largest."
-              value={onDevice.sort}
-              options={INVENTORY_SORT_OPTIONS}
-              onChange={onDevice.onSortChange}
+            <CapabilityTiles
+              capabilities={onDevice.capabilities}
+              onChange={onDevice.onCapabilitiesChange}
+              isolateFirst={onDevice.isolateFirstCapability}
             />
           )}
           {modelSections && (

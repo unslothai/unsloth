@@ -28,6 +28,8 @@ export function localSourceLabel(source: LocalModelInfo["source"]): string {
       return "Hermes";
     case "custom":
       return "Custom folder";
+    case "unsloth":
+      return "Unsloth";
     case "models_dir":
       return "Models folder";
     case "hf_cache":

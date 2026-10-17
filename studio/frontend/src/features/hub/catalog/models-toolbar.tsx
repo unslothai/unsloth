@@ -65,6 +65,12 @@ const SORT_OPTIONS: ReadonlyArray<{
   { value: "likes", label: "Most likes" },
 ];
 
+const INVENTORY_SORT_OPTIONS: HubOption<InventorySort>[] = [
+  { value: "recent", label: "Recent" },
+  { value: "name", label: "Name" },
+  { value: "size", label: "Size" },
+];
+
 export const ModelsToolbar = memo(function ModelsToolbar({
   tab,
   onTabChange,
@@ -187,8 +193,9 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   const formatOptions = useMemo<HubOption<FormatMenuValue>[]>(() => {
     const options: HubOption<FormatMenuValue>[] = FORMAT_FILTER_OPTIONS.filter(
       (option) =>
-        (option.value !== "mlx" && option.value !== "recommended") ||
-        tab === "discover",
+        option.value === "unsloth"
+          ? tab === "downloaded"
+          : option.value !== "recommended" || tab === "discover",
     ).map((option) => ({
       value: option.value,
       triggerLabel: option.label,
@@ -210,6 +217,9 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             )}
             {option.value === "mlx" && (
               <span className="size-1.5 rounded-full bg-format-mlx" />
+            )}
+            {option.value === "unsloth" && (
+              <span className="size-1.5 rounded-full bg-primary" />
             )}
           </span>
           {option.label}
@@ -254,16 +264,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
     () =>
       tab === "downloaded"
         ? {
-            sort: inventorySort,
-            onSortChange: onInventorySortChange,
-            format: formatFilter,
-            formatOptions: [
-              ["all", "All"],
-              ["gguf", "GGUF"],
-              ["checkpoint", "Safetensors"],
-              ...(npuAvailable ? [["npu", "NPU"] as const] : []),
-            ],
-            onFormatChange: onFormatFilterChange,
             capabilities: inventoryCapabilities,
             onCapabilitiesChange: onInventoryCapabilitiesChange,
             isolateFirstCapability: isolateFirstInventoryCapability,
@@ -272,11 +272,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         : undefined,
     [
       tab,
-      inventorySort,
-      onInventorySortChange,
-      formatFilter,
-      npuAvailable,
-      onFormatFilterChange,
       inventoryCapabilities,
       onInventoryCapabilitiesChange,
       isolateFirstInventoryCapability,
@@ -517,7 +512,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           </Tooltip>
         )}
 
-        {isDiscover && !isDataset && (
+        {!isDataset && (
           <HubOptionMenu<FormatMenuValue>
             value={formatFilter}
             options={formatOptions}
@@ -533,6 +528,33 @@ export const ModelsToolbar = memo(function ModelsToolbar({
               triggerBase,
               "w-[calc(160px*var(--ui-space-scale,1))]",
             )}
+          />
+        )}
+
+        {tab === "downloaded" && (
+          <HubOptionMenu<InventorySort>
+            value={inventorySort}
+            options={INVENTORY_SORT_OPTIONS}
+            onValueChange={onInventorySortChange}
+            ariaLabel="Sort on-device models"
+            className={cn(
+              triggerBase,
+              "w-[calc(160px*var(--ui-space-scale,1))]",
+            )}
+            triggerContent={
+              <span className="flex items-center gap-1">
+                <HugeiconsIcon
+                  icon={ArrowUpDownIcon}
+                  strokeWidth={1.75}
+                  className="size-3.5 shrink-0"
+                />
+                <span className="truncate">
+                  {INVENTORY_SORT_OPTIONS.find(
+                    (option) => option.value === inventorySort,
+                  )?.label ?? inventorySort}
+                </span>
+              </span>
+            }
           />
         )}
 

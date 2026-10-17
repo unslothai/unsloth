@@ -12,6 +12,7 @@ import {
   listCachedDatasets,
   listLocalDatasets,
   listLocalModels,
+  listUnslothModels,
 } from "./api";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { ensureHiddenModelMatchers } from "../lib/hidden-models";
@@ -30,6 +31,7 @@ export type DeviceInventorySource =
   | "cachedModels"
   | "cachedDatasets"
   | "localModels"
+  | "unslothModels"
   | "localDatasets";
 
 export type DeviceInventoryRows = {
@@ -37,6 +39,7 @@ export type DeviceInventoryRows = {
   cachedModels: CachedModelRepo[];
   cachedDatasets: CachedDatasetRepo[];
   localModels: LocalModelInfo[];
+  unslothModels: LocalModelInfo[];
   localDatasets: LocalDatasetInfo[];
 };
 
@@ -110,6 +113,7 @@ export const useDeviceInventoryStore = create<DeviceInventoryState>(() => ({
   cachedModels: emptySource<CachedModelRepo[]>(),
   cachedDatasets: emptySource<CachedDatasetRepo[]>(),
   localModels: emptySource<LocalModelInfo[]>(),
+  unslothModels: emptySource<LocalModelInfo[]>(),
   localDatasets: emptySource<LocalDatasetInfo[]>(),
 }));
 
@@ -140,6 +144,8 @@ function fetchErrorMessage(
       return "Couldn't scan cached datasets";
     case "localModels":
       return "Couldn't scan local models";
+    case "unslothModels":
+      return "Couldn't scan Unsloth fine-tunes";
     case "localDatasets":
       return "Couldn't scan local datasets";
     default:
@@ -190,6 +196,11 @@ async function runSourceFetch<K extends DeviceInventorySource>(
         scanConfirmed: true,
       };
     }
+    case "unslothModels":
+      return {
+        rows: (await listUnslothModels()).models as DeviceInventoryRows[K],
+        scanConfirmed: true,
+      };
     case "localDatasets":
       return {
         rows: (await listLocalDatasets()).datasets as DeviceInventoryRows[K],

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// On Device takes Discover's filter panel: capabilities, format and sort live in the
-// popover, and Add folder and Free up space are icon buttons.
+// On Device takes Discover's filter panel for capabilities, keeps format and sort as
+// dropdowns (with MLX and Studio's own fine-tunes), and icon-only folder and cleanup buttons.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -14,6 +14,7 @@ registerStoreStubResolver();
 const { matchesInventoryCapabilities } = await import(
   "../src/features/hub/lib/model-type-filter.ts"
 );
+const { matchesFormat } = await import("../src/features/hub/lib/format-filters.ts");
 
 function cachedRow(id: string, pipelineTag: string | null, tags: string[] = []) {
   return {
@@ -57,13 +58,21 @@ test("Add folder and Free up space are icon buttons with labels", () => {
   }
 });
 
-test("On Device moves format and sort into the filter panel", () => {
+test("On Device keeps format and sort as dropdowns, with MLX and Unsloth fine-tunes", () => {
   const toolbar = readSrc("features/hub/catalog/models-toolbar.tsx");
-  assert.match(toolbar, /isDiscover && !isDataset && \(\s*<HubOptionMenu<FormatMenuValue>/);
-  assert.match(toolbar, /onDevice=\{onDeviceFilters\}/);
+  assert.match(toolbar, /\{!isDataset && \(\s*<HubOptionMenu<FormatMenuValue>/);
+  assert.match(toolbar, /tab === "downloaded" && \(\s*<HubOptionMenu<InventorySort>/);
+  assert.match(toolbar, /option\.value === "unsloth"\s*\? tab === "downloaded"\s*: option\.value !== "recommended" \|\| tab === "discover"/);
   const panel = readSrc("features/hub/catalog/model-search-filters.tsx");
-  assert.match(panel, /label="Format"/);
-  assert.match(panel, /label="Sort by"/);
+  assert.doesNotMatch(panel, /label="Format"|label="Sort by"/);
   const page = readSrc("features/hub/hub-page.tsx");
   assert.doesNotMatch(page, /InventorySortControl|InventoryTypeFilterControl/);
+  assert.match(page, /deferredFormatFilter === "unsloth"\s*\? row\.source === "unsloth"/);
+  assert.match(page, /includeUnslothModels: true/);
+});
+
+test("Unsloth fine-tunes is where a model came from, never a file format", () => {
+  assert.equal(matchesFormat("gguf", "unsloth"), false);
+  assert.equal(matchesFormat("safetensors", "unsloth"), false);
+  assert.equal(matchesFormat("mlx", "mlx"), true);
 });
