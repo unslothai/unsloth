@@ -7,16 +7,16 @@ import {
   useVoiceDecisions,
   type VoiceDecisions,
 } from "@/features/chat/voice/voice-decisions";
+import { EditResponseIcon, ReadAloudIcon } from "@/lib/action-bar-icons";
+import { BulbIcon } from "@/lib/bulb-icon";
 import { MicIcon as DictateMicIcon } from "@/lib/mic-icon";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { cn } from "@/lib/utils";
 import {
   AudioLinesIcon,
-  AudioWaveformIcon,
-  BrainIcon,
-  LoaderCircleIcon,
+  Loader2Icon,
   MicOffIcon,
   InfoIcon,
-  PencilLineIcon,
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { AnimatePresence, motion } from "motion/react";
@@ -220,8 +220,15 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
       <AudioLinesIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
     );
   if (icon === "dots") return <Dots />;
+  // The orb borrows the app's own glyphs where one exists for the same idea, so a
+  // state reads the same here as in the composer and the message action bar.
   if (icon === "brain")
-    return <BrainIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />;
+    // Thinking: the composer's Thinking toggle bulb.
+    return (
+      <span style={{ color: HOLE, filter: DEBOSS, display: "grid", width: 42, height: 42 }}>
+        <BulbIcon className="h-full w-full" />
+      </span>
+    );
   if (icon === "spinner")
     return (
       <motion.div
@@ -229,19 +236,25 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
         transition={{ duration: 1.1, repeat: Infinity, ease: "linear" }}
         style={{ display: "grid", placeItems: "center" }}
       >
-        <LoaderCircleIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
+        <Loader2Icon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
       </motion.div>
     );
   if (icon === "pencil")
     // Transcribing: a pencil writing down what you said. Static, rides the breathe.
+    // Transcribing: the action bar's Edit pencil.
     return (
-      <PencilLineIcon size={44} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
+      <span style={{ color: HOLE, filter: DEBOSS, display: "grid" }}>
+        <HugeiconsIcon icon={EditResponseIcon} size={44} strokeWidth={2.2} />
+      </span>
     );
   if (icon === "waveform")
     // Generating voice: a single audio waveform being built. Static like the rest,
     // so it grows/shrinks with the sphere instead of animating on its own.
+    // Generating voice: the action bar's Read aloud speaker.
     return (
-      <AudioWaveformIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
+      <span style={{ color: HOLE, filter: DEBOSS, display: "grid" }}>
+        <HugeiconsIcon icon={ReadAloudIcon} size={46} strokeWidth={2.2} />
+      </span>
     );
   if (icon === "mic-off")
     // Waiting on a chat model: the struck-through mic says the loop is open but
@@ -268,9 +281,30 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
 // has spoken; a filled arc never moves on its own.
 const RING = 232;
 const RING_R = 106;
-// Exact thirds, butt-capped so the three meet with no gap; the judge owns the
-// left third, the filler the top-right, the mid-think call the bottom-right.
+// Exact thirds that meet with no gap; the judge owns the left third, the filler
+// the top-right, the mid-think call the bottom-right. Each arc is a filled band
+// whose ends are cut on a slant, so the three seams read as bevels.
 const ARC_DEG = 120;
+const RING_W = 5;
+const BEVEL_DEG = 2.4;
+
+/** A band of the ring from `start` to `end` (degrees, clockwise from 12), ends cut on a slant. */
+function bandPath(c: number, start: number, end: number): string {
+  const ro = RING_R + RING_W / 2;
+  const ri = RING_R - RING_W / 2;
+  const pt = (r: number, deg: number): string => {
+    const a = (deg * Math.PI) / 180;
+    return `${(c + Math.sin(a) * r).toFixed(2)} ${(c - Math.cos(a) * r).toFixed(2)}`;
+  };
+  const large = end - start > 180 ? 1 : 0;
+  return [
+    `M ${pt(ro, start + BEVEL_DEG)}`,
+    `A ${ro} ${ro} 0 ${large} 1 ${pt(ro, end + BEVEL_DEG)}`,
+    `L ${pt(ri, end - BEVEL_DEG)}`,
+    `A ${ri} ${ri} 0 ${large} 0 ${pt(ri, start - BEVEL_DEG)}`,
+    "Z",
+  ].join(" ");
+}
 const ARCS: Array<{ key: keyof VoiceDecisions; start: number; color: string; label: string }> = [
   { key: "turn", start: 180, color: "#fb7185", label: "turn" },
   { key: "filler", start: 300, color: "#38bdf8", label: "filler" },
@@ -286,8 +320,6 @@ function arcValue(d: VoiceDecisions, key: keyof VoiceDecisions): string {
 
 const VoiceDecisionRing: FC = () => {
   const d = useVoiceDecisions();
-  const circ = 2 * Math.PI * RING_R;
-  const arcLen = (circ * ARC_DEG) / 360;
   // The canvas is wider than the ring so the labels outside it are never clipped.
   const PAD = 56;
   const SIZE = RING + PAD * 2;
@@ -307,7 +339,6 @@ const VoiceDecisionRing: FC = () => {
       aria-hidden
     >
       {ARCS.map((arc) => {
-        const rotate = `rotate(${arc.start - 90} ${C} ${C})`;
         const v = fill(arc.key);
         // Label at the arc's midpoint, just outside the ring; left arc reads right-aligned.
         const mid = ((arc.start + ARC_DEG / 2) * Math.PI) / 180;
@@ -344,31 +375,14 @@ const VoiceDecisionRing: FC = () => {
                 {value}
               </text>
             )}
-            <g transform={rotate}>
-              <circle
-                cx={C}
-                cy={C}
-                r={RING_R}
-                fill="none"
-                stroke={arc.color}
-                strokeOpacity={0.22}
-                strokeWidth={5}
-                strokeLinecap="butt"
-                strokeDasharray={`${arcLen} ${circ}`}
+            <path d={bandPath(C, arc.start, arc.start + ARC_DEG)} fill={arc.color} fillOpacity={0.22} />
+            {v > 0 && (
+              <path
+                d={bandPath(C, arc.start, arc.start + ARC_DEG * v)}
+                fill={arc.color}
+                style={{ transition: "opacity 220ms ease-out" }}
               />
-              <circle
-                cx={C}
-                cy={C}
-                r={RING_R}
-                fill="none"
-                stroke={arc.color}
-                strokeOpacity={v > 0 ? 1 : 0}
-                strokeWidth={5}
-                strokeLinecap="butt"
-                strokeDasharray={`${Math.max(0, arcLen * v)} ${circ}`}
-                style={{ transition: "stroke-dasharray 320ms ease-out, stroke-opacity 220ms ease-out" }}
-              />
-            </g>
+            )}
           </g>
         );
       })}
