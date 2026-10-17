@@ -326,6 +326,24 @@ def test_samples_without_a_question_show_the_prompt():
     assert extract_samples(data, "hellaswag")[0]["question"] == "A man is on a roof. He"
 
 
+def test_a_stopped_run_holds_the_slot_until_its_worker_exits(monkeypatch):
+    release = threading.Event()
+    backend = _orchestrator(monkeypatch, lambda params: (release.wait(5), {"results": {}})[1])
+    worker = threading.Thread(target = lambda: backend.run({}))
+    worker.start()
+    while not backend.is_active():
+        pass
+    assert backend.cancel()
+    worker.join(5)
+    assert not backend.is_active() and backend.is_draining()
+    assert backend.try_begin() is None
+    release.set()
+    deadline = time.time() + 5
+    while backend.is_draining() and time.time() < deadline:
+        time.sleep(0.01)
+    assert backend.try_begin() is not None
+
+
 def test_stop_wins_over_a_run_that_finishes_in_the_same_poll(monkeypatch):
     release = threading.Event()
     backend = _orchestrator(

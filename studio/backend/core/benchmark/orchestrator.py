@@ -175,6 +175,8 @@ class BenchmarkOrchestrator:
         # Single worker thread: serializes lm_eval runs so a backgrounded
         # (cancelled) run cannot compete with a new one for the inference server.
         self._executor = ThreadPoolExecutor(max_workers = 1, thread_name_prefix = "benchmark")
+        # Stop can't interrupt lm_eval, so a stopped run's worker keeps the executor until it returns.
+        self._worker: Optional[Any] = None
 
         atexit.register(self._cleanup)
         logger.info("BenchmarkOrchestrator initialized (in-process, threaded)")
@@ -223,6 +225,11 @@ class BenchmarkOrchestrator:
     def is_active(self) -> bool:
         return self._active
 
+    def is_draining(self) -> bool:
+        """A stopped run's worker is still finishing; a new run would queue behind it."""
+        worker = self._worker
+        return worker is not None and not worker.done()
+
     def was_cancelled(self) -> bool:
         return self._cancel_requested
 
@@ -249,7 +256,7 @@ class BenchmarkOrchestrator:
         """
         from utils.account_context import current_account
         with self._lock:
-            if self._active:
+            if self._active or self.is_draining():
                 return None
             self._active = True
             self._op_seq += 1
@@ -324,6 +331,8 @@ class BenchmarkOrchestrator:
         self._append_log("stdout", "Starting benchmark run...")
 
         future = self._executor.submit(_run_benchmark_task, params)
+        with self._lock:
+            self._worker = future
 
         result: Any = None
         error: Optional[str] = None

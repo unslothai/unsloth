@@ -367,7 +367,9 @@ async def run_benchmark(
         if run_seq is None:
             raise HTTPException(
                 status_code = 409,
-                detail = "A benchmark is already running.",
+                detail = "The stopped benchmark is still finishing. Try again in a moment."
+                if backend.is_draining()
+                else "A benchmark is already running.",
             )
 
         logger.info("=== Benchmark Run Request =========================")
