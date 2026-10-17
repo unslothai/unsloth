@@ -4593,6 +4593,7 @@ export const de = {
       loadColumns: "Spalten laden",
       loading: "Spalten werden geladen...",
       noDataset: "Wähle zuerst einen Datensatz.",
+      s3Unsupported: "RL-Training kann Spaltenrollen aus S3-Daten noch nicht lesen. Verwende einen Hugging-Face- oder hochgeladenen Datensatz.",
       error: "Spalten konnten nicht geladen werden: {error}",
       missing: "Noch erforderlich: {roles}",
       answerNote: "Die Antwortspalte geht nur an die Belohnungen; das Modell sieht sie nie.",

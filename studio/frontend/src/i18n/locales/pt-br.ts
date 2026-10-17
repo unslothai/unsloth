@@ -4552,6 +4552,7 @@ export const ptBR = {
       loadColumns: "Carregar colunas",
       loading: "Carregando colunas...",
       noDataset: "Escolha um conjunto de dados primeiro.",
+      s3Unsupported: "O treinamento RL ainda não consegue ler os papéis das colunas de dados no S3. Use um dataset do Hugging Face ou enviado.",
       error: "Não foi possível carregar as colunas: {error}",
       missing: "Ainda falta: {roles}",
       answerNote: "A coluna de resposta só vai para as recompensas; o modelo nunca a vê.",

@@ -101,6 +101,25 @@ test("a start whose detected modality rules out RL cancels instead of training S
   );
 });
 
+test("an RL start on S3 data stops before the column check is skipped", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(
+    new URL(
+      "../src/features/training/lib/start-fresh-training-run.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const fn = src.indexOf("async function prepareSelectedDataset(");
+  const cancel = src.indexOf(
+    'return attempt.cancel(translate("rl.dataset.s3Unsupported"));',
+    fn,
+  );
+  const skip = src.indexOf("if (!datasetName) {", fn);
+  assert.ok(fn > 0 && cancel > fn, "S3 RL start is cancelled");
+  assert.ok(skip > cancel, "before an empty dataset name skips the checks");
+});
+
 test("switching DPO to GRPO and back keeps manual preference columns", () => {
   const columns = ["q", "good", "bad", "chosen", "rejected", "answer"];
   const dpo = { q: "prompt", good: "chosen", bad: "rejected" };

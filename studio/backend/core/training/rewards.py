@@ -130,8 +130,7 @@ def _match(
     fullmatch: bool = False,
 ):
     if _rx is None:
-        compiled = re.compile(pattern, re.DOTALL | re.MULTILINE)
-        return compiled.fullmatch(text) if fullmatch else compiled.search(text)
+        raise RewardError(_NO_REGEX_MODULE)
     compiled = _rx.compile(pattern, _rx.DOTALL | _rx.MULTILINE)
     try:
         if fullmatch:
@@ -141,7 +140,14 @@ def _match(
         return None
 
 
+_NO_REGEX_MODULE = (
+    "Regex rules need the 'regex' package, which bounds each match; it is missing from this install."
+)
+
+
 def _compile(pattern: Any) -> re.Pattern:
+    if _rx is None:
+        raise RewardError(_NO_REGEX_MODULE)
     if not isinstance(pattern, str) or not pattern or len(pattern) > MAX_PATTERN_CHARS:
         raise RewardError(f"pattern must be a non-empty string under {MAX_PATTERN_CHARS} chars.")
     try:

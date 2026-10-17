@@ -247,10 +247,16 @@ export function RlDatasetRoles({
           </Button>
         </div>
       </div>
-      {!datasetName && (
-        <p className="text-ui-11p5 text-muted-foreground">
-          {t("rl.dataset.noDataset")}
+      {config.datasetSource === "s3" ? (
+        <p className="text-ui-11p5 text-destructive">
+          {t("rl.dataset.s3Unsupported")}
         </p>
+      ) : (
+        !datasetName && (
+          <p className="text-ui-11p5 text-muted-foreground">
+            {t("rl.dataset.noDataset")}
+          </p>
+        )
       )}
       {error && (
         <p className="text-ui-11p5 text-destructive">

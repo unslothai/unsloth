@@ -4508,6 +4508,7 @@ export const ko = {
       loadColumns: "열 불러오기",
       loading: "열을 불러오는 중...",
       noDataset: "먼저 데이터셋을 선택하세요.",
+      s3Unsupported: "RL 학습은 아직 S3 데이터에서 열 역할을 읽을 수 없습니다. Hugging Face 또는 업로드한 데이터셋을 사용하세요.",
       error: "열을 불러오지 못했습니다: {error}",
       missing: "아직 필요: {roles}",
       answerNote: "답변 열은 보상에만 전달되며 모델은 볼 수 없습니다.",

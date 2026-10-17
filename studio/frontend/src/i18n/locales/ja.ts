@@ -4466,6 +4466,7 @@ export const ja = {
       loadColumns: "列を読み込む",
       loading: "列を読み込み中...",
       noDataset: "先にデータセットを選んでください。",
+      s3Unsupported: "RL トレーニングはまだ S3 データから列の役割を読み取れません。Hugging Face またはアップロードしたデータセットを使ってください。",
       error: "列を読み込めませんでした: {error}",
       missing: "まだ必要: {roles}",
       answerNote: "回答列は報酬にだけ渡され、モデルには見えません。",

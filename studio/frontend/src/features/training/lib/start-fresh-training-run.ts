@@ -364,6 +364,13 @@ async function prepareSelectedDataset(
   hfToken: string | null,
 ): Promise<boolean> {
   const datasetName = getDatasetName(attempt.config);
+  if (
+    attempt.config.datasetSource === "s3" &&
+    effectiveTrainingObjective(attempt.config) !== "sft" &&
+    attempt.config.trainingMethod !== "cpt"
+  ) {
+    return attempt.cancel(translate("rl.dataset.s3Unsupported"));
+  }
   if (!datasetName) {
     return true;
   }

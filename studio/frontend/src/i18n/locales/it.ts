@@ -4594,6 +4594,7 @@ export const it = {
       loadColumns: "Carica colonne",
       loading: "Caricamento colonne...",
       noDataset: "Scegli prima un dataset.",
+      s3Unsupported: "L'addestramento RL non può ancora leggere i ruoli delle colonne dai dati S3. Usa un dataset di Hugging Face o caricato.",
       error: "Impossibile caricare le colonne: {error}",
       missing: "Ancora necessari: {roles}",
       answerNote: "La colonna della risposta va solo alle ricompense; il modello non la vede mai.",

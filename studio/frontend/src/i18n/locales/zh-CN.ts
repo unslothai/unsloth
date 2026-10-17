@@ -4422,6 +4422,7 @@ export const zhCN = {
       loadColumns: "加载列",
       loading: "正在加载列...",
       noDataset: "请先选择数据集。",
+      s3Unsupported: "RL 训练暂时无法从 S3 数据读取列角色。请使用 Hugging Face 数据集或上传的数据集。",
       error: "无法加载列：{error}",
       missing: "仍需要：{roles}",
       answerNote: "答案列只传给奖励函数，模型永远看不到。",

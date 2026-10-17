@@ -4799,6 +4799,7 @@ export const sv = {
       loadColumns: "Läs in kolumner",
       loading: "Läser in kolumner...",
       noDataset: "Välj en datauppsättning först.",
+      s3Unsupported: "RL-träning kan inte läsa kolumnroller från S3-data än. Använd ett dataset från Hugging Face eller ett uppladdat.",
       error: "Det gick inte att läsa in kolumner: {error}",
       missing: "Behövs fortfarande: {roles}",
       answerNote: "Svarskolumnen går bara till belöningarna; modellen ser den aldrig.",

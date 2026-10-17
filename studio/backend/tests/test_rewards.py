@@ -225,6 +225,14 @@ def test_catastrophic_user_regex_times_out_as_a_miss(monkeypatch):
     assert time.perf_counter() - start < 5
 
 
+
+def test_regex_rule_is_refused_without_the_timeout_engine(monkeypatch):
+    monkeypatch.setattr(rewards, "_rx", None)
+    with pytest.raises(rewards.RewardError, match = "regex"):
+        rewards.parse_reward_markdown(_md("t", "type: regex\npattern: '(a+)+$'"))
+    with pytest.raises(rewards.RewardError, match = "regex"):
+        rewards._match("(a+)+$", "a" * 40 + "!")
+
 def test_import_refuses_to_write_through_a_linked_reward(user_root, tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()

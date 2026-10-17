@@ -4604,6 +4604,7 @@ export const fr = {
       loadColumns: "Charger les colonnes",
       loading: "Chargement des colonnes...",
       noDataset: "Choisissez d'abord un jeu de données.",
+      s3Unsupported: "L'entraînement RL ne peut pas encore lire les rôles de colonnes des données S3. Utilisez un jeu de données Hugging Face ou importé.",
       error: "Impossible de charger les colonnes : {error}",
       missing: "Encore requis : {roles}",
       answerNote: "La colonne de réponse ne va qu'aux récompenses ; le modèle ne la voit jamais.",
