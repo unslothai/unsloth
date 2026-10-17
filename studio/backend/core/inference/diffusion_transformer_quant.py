@@ -1684,6 +1684,17 @@ def _quiet_config(cls: Any, **kwargs: Any) -> Any:
     return cls(**kwargs)
 
 
+def _install_fp8_unit_scale() -> None:
+    """sm_89: route torchao's per-row fp8 GEMM through the unit-scale form (see diffusion_fp8_unit_scale)."""
+    try:
+        import logging
+
+        from .diffusion_fp8_unit_scale import install
+        install(logger = logging.getLogger(__name__))
+    except Exception:  # noqa: BLE001 - never block a load on a speed path
+        pass
+
+
 def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
     """The torchao dynamic-activation config for ``scheme`` (lazy imports per branch).
     ``fast_accum`` applies to fp8 only: None auto-detects by GPU class, True/False force it."""
@@ -1703,6 +1714,7 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
         # scale 0, NaN qdata, black frames.
         from torchao.quantization import PerRow
 
+        _install_fp8_unit_scale()
         fp8_kwargs: dict = {"granularity": PerRow()}
         config_params = _inspect.signature(Float8DynamicActivationFloat8WeightConfig).parameters
         if "activation_value_lb" in config_params:

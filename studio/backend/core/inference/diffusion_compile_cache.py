@@ -303,6 +303,8 @@ _GRAPH_SWITCHES = {
     "UNSLOTH_STATIC_STREAM_MERGE_DETECT": "off",
     "UNSLOTH_TORCHAO_INDUCTOR_CONFIG": "off",
     "UNSLOTH_NVFP4_BACKEND": "raw:auto",
+    "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE": "auto",
+    "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE_MIN_ROWS": "rows:256",
     # Unset is off; "auto" protects the head + last step, so "auto" is NOT the default here.
     "UNSLOTH_NVFP4_PROTECT_STEPS": "raw",
 }
@@ -315,6 +317,13 @@ def _switch_value(name: str, default: str) -> Optional[str]:
     raw = (os.environ.get(name) or "").strip().lower()
     if not raw:
         return None
+    if default.startswith("rows:"):
+        # A row threshold keys on the value the reader uses (max(1, int)); junk falls back to the default there.
+        try:
+            rows = str(max(1, int(raw)))
+        except ValueError:
+            return None
+        return None if rows == default.partition(":")[2] else rows
     if default.startswith("raw"):
         return None if raw in _OFF_WORDS or raw == default.partition(":")[2] else raw
     value = "off" if raw in _OFF_WORDS else "on" if raw in _ON_WORDS else None
