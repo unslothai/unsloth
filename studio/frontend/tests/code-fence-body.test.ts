@@ -7,6 +7,11 @@ import { runInNewContext } from "node:vm";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
+import {
+  FENCE_CHUNK_LINES,
+  sameFenceBodyProps,
+  updateFenceChunks,
+} from "../src/components/assistant-ui/code-fence-chunks.ts";
 
 import {
   isBlankLine,
@@ -25,6 +30,7 @@ import { readSrc } from "./helpers/kit.ts";
 
 const DEFER = readSrc("components/assistant-ui/code-fence-defer.tsx");
 const MARKDOWN_TEXT = readSrc("components/assistant-ui/markdown-text.tsx");
+const LINE_SOURCE = DEFER.slice(DEFER.indexOf("const FenceLine = memo"), DEFER.indexOf("const FenceLineChunk = memo"));
 
 test("a line shows the same characters inside the window and outside it", () => {
   const line = [
@@ -42,7 +48,7 @@ test("the plain form is the tokens, never a slice of the source", () => {
   assert.equal(plainLineText([{ content: "x = 1" }]), "x = 1");
   assert.ok(
     !/source\.slice|split\(["'`]\\n["'`]\)/.test(
-      DEFER.slice(DEFER.indexOf("const FenceLine = memo")),
+      LINE_SOURCE,
     ),
     "the line renderer must not reach for the source",
   );
@@ -69,7 +75,7 @@ test("the line component is memoized, which is the whole point of it", () => {
     "FenceLine must be memoized",
   );
   assert.ok(
-    !/memo\(\s*function FenceLine[\s\S]*?\},\s*\(/.test(DEFER),
+    !/memo\(\s*function FenceLine[\s\S]*?\},\s*\(/.test(LINE_SOURCE),
     "and on the default shallow comparison: a custom comparator here would have to know that a " +
       "committed line is immutable, which is a second place for that to stop being true",
   );
@@ -123,8 +129,8 @@ test("thinking fences stay plain while answers retain highlighting", () => {
   const plain = MARKDOWN_TEXT.slice(plainStart, MARKDOWN_TEXT.indexOf("\n}\n", plainStart));
   assert.equal(/useFenceTokens|requestFullHighlight|code\.highlight|noteStreamingFence/.test(plain), false);
   assert.match(plain, /<PlainFenceShell language=\{languageToken\} source=\{source\} \/>/);
-  assert.match(DEFER, /<code>\{plain \? shellLines\(source\) : shellBody\(source\)\}<\/code>/);
-  assert.match(DEFER, /if \(index > 0\) nodes\.push\("\\n"\);\s*if \(line !== ""\) nodes\.push\(line\);/, "one text node per line and per line break, so a streamed append rewrites only the growing line and a selection above it survives");
+  assert.match(DEFER, /<code>\{plain \? <PlainFenceText source=\{source\} \/> : shellBody\(source\)\}<\/code>/);
+  assert.match(DEFER, /<PlainFenceTextChunk key=\{index\} nodes=\{nodes\} \/>/);
   assert.match(DEFER, /data-unsloth-fence-deferred=\{plain \? undefined : "true"\}/, "a plain fence is never upgraded, so it does not carry the deferred marker");
 });
 
@@ -373,6 +379,10 @@ test("paint containment is limited to large completed full-token bodies", () => 
     memo: React.memo,
     useMemo: React.useMemo,
     useRef: React.useRef,
+    useFenceHighlightLimit: () => ({ progress: null, staged: false }),
+    FENCE_CHUNK_LINES,
+    sameFenceBodyProps,
+    updateFenceChunks,
     useLineWindow: () => ({ window: null, pins: null, measured: false }),
     lineRendered,
     WINDOW_CAP_LINES,
@@ -382,6 +392,9 @@ test("paint containment is limited to large completed full-token bodies", () => 
     FenceShell: ({ source }: { source: string }) => React.createElement("pre", null, source),
     FenceLine: ({ line, windowed }: { line: Token[]; windowed: boolean }) =>
       React.createElement("span", { "data-highlighted": String(windowed) }, plainLineText(line)),
+    FenceLines: ({ tokens }: { tokens: Token[][] }) =>
+      React.createElement(React.Fragment, null, tokens.map((line, index) =>
+        React.createElement("span", { key: index, "data-highlighted": "true" }, plainLineText(line)))),
   };
   runInNewContext(outputText, context);
   const count = WINDOW_CAP_LINES + 1;

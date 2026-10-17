@@ -82,8 +82,10 @@ import {
   FenceBody,
   type FenceTokens,
   fenceMode,
+  fenceNeedsQuietWork,
   noteStreamingFence,
   PlainFenceShell,
+  queueFenceWork,
   trimmedLength,
   trimTrailingNewlines,
   useFenceReached,
@@ -992,6 +994,8 @@ function useFenceTokens(
   enabled: boolean,
   streaming: boolean,
 ): FenceTokens | null {
+  const [eager, setEager] = useState(() => !fenceNeedsQuietWork(languageToken, source, streaming));
+  if (!eager && !fenceNeedsQuietWork(languageToken, source, streaming)) setEager(true);
   const highlight = useCallback(
     (body: string, late: (result: FenceTokens) => void) =>
       streaming
@@ -1000,7 +1004,7 @@ function useFenceTokens(
     [languageToken, streaming],
   );
   const [seed] = useState<{ body: string; tokens: FenceTokens } | null>(() => {
-    if (!enabled) return null;
+    if (!enabled || !eager) return null;
     const body = trimTrailingNewlines(source);
     const options = fenceHighlightOptions(body, languageToken);
     const settled = settlesOffThread(body, streaming, options)
@@ -1013,15 +1017,7 @@ function useFenceTokens(
   );
   const wanted = useRef("");
   const seedConsumed = useRef(false);
-  /*
-   * ONE effect, and a layout one. This was two -- a passive effect for the result and the
-   * callback, plus a layout effect so an already-cached fence is coloured before its first paint.
-   * Both called `code.highlight` with the same inputs on the same deps, and the plugin's
-   * throttled `approximateResult` returns a FRESH object each call, so both `setTokens` were
-   * observable and every source change scheduled a second render of the whole body: exactly the
-   * work this branch exists to remove. A layout effect gets the before-paint colour on its own,
-   * so the passive one bought nothing.
-   */
+  const displayed = useRef(seed ? { body: seed.body, language: languageToken } : null);
   useLayoutEffect(() => {
     if (!enabled) return;
     const body = trimTrailingNewlines(source);
@@ -1030,67 +1026,112 @@ function useFenceTokens(
       seedConsumed.current = true;
       if (seed?.body === body) return;
     }
-    const late = (result: FenceTokens) => {
-      if (wanted.current === body) setTokens(result);
-    };
+    let active = true;
     let cancel: (() => void) | null = null;
     let release: (() => void) | null = null;
-    let settled: FenceTokens | null = null;
+    let cancelStart: (() => void) | null = null;
+    let cancelPublish: (() => void) | null = null;
+    let cancelFallback: (() => void) | null = null;
     const options = fenceHighlightOptions(body, languageToken);
-    if (settlesOffThread(body, streaming, options)) {
-      const failover = !tokenizesOffThread(body, streaming);
-      settled = code.cached(options);
-      if (settled === null) {
-        cancel = requestFullHighlight(
-          body,
-          languageToken,
-          (result) => {
-            if (result === null) {
-              if (failover && wanted.current === body) {
-                setTokens(highlight(body, late));
-              }
-              return;
-            }
-            release?.();
-            release = null;
-            if (wanted.current !== body) return;
-            code.seed(options, result);
-            setTokens(result);
-          },
-          false,
-          !failover,
-        );
-        if (cancel === null && failover) {
-          settled = highlight(body, late);
-        } else {
-          highlight("", () => {});
-          settled = code.cover(options).result;
-        }
-        release = awaitWorker(body.length, () => {
-          if (highlight("", () => {}) === null) return false;
-          const result = code.highlightExact(
-            fenceHighlightOptions(body, languageToken),
-            late,
-          );
-          if (result === null) return false;
-          cancel?.();
-          setTokens(result);
-          release?.();
-          release = null;
-          return true;
+    const current = (): boolean => active && wanted.current === body;
+    const defer = (): boolean => !eager && fenceNeedsQuietWork(languageToken, source, streaming);
+    const show = (result: FenceTokens | null): void => {
+      if (!current()) return;
+      displayed.current = result === null ? null : { body, language: languageToken };
+      setTokens(result);
+    };
+    const publish = (work: () => void): void => {
+      if (!current()) return;
+      cancelPublish?.();
+      cancelPublish = null;
+      if (defer()) {
+        cancelPublish = queueFenceWork(() => {
+          cancelPublish = null;
+          if (current()) work();
         });
+      } else work();
+    };
+    const late = (result: FenceTokens) => publish(() => show(result));
+    const tokenizeNow = (): boolean => {
+      if (!current() || highlight("", () => {}) === null) return false;
+      const result = code.highlightExact(options, late);
+      if (result === null) return false;
+      cancel?.();
+      cancelPublish?.();
+      cancelPublish = null;
+      show(result);
+      release?.();
+      release = null;
+      return true;
+    };
+    const start = (): void => {
+      cancelStart = null;
+      if (!current()) return;
+      let settled: FenceTokens | null = null;
+      if (settlesOffThread(body, streaming, options)) {
+        const failover = !tokenizesOffThread(body, streaming);
+        settled = code.cached(options);
+        if (settled === null) {
+          cancel = requestFullHighlight(
+            body,
+            languageToken,
+            (result) => {
+              if (!current()) return;
+              if (result === null) {
+                if (failover) publish(() => show(highlight(body, late)));
+                return;
+              }
+              cancelFallback?.();
+              cancelFallback = null;
+              release?.();
+              release = null;
+              publish(() => {
+                code.seed(options, result);
+                show(result);
+              });
+            },
+            false,
+            !failover,
+          );
+          if (cancel === null && failover) {
+            settled = highlight(body, late);
+          } else {
+            highlight("", () => {});
+            settled = code.cover(options).result;
+          }
+          release = awaitWorker(body.length, () => {
+            if (!current()) return false;
+            if (!defer()) return tokenizeNow();
+            if (cancelFallback === null) {
+              cancelFallback = queueFenceWork(() => {
+                cancelFallback = null;
+                tokenizeNow();
+              });
+            }
+            return false;
+          });
+        }
+      } else {
+        settled = highlight(body, late);
       }
-    } else {
-      settled = highlight(body, late);
-    }
-    // `settled === null` means the plugin caught a tokenization error; keeping the previous
-    // tokens would show an older, shorter body. The callback restores them if it succeeds later.
-    setTokens(settled ?? null);
+      show(settled);
+    };
+    if (defer()) {
+      if (displayed.current !== null
+        && (displayed.current.body !== body || displayed.current.language !== languageToken)) {
+        show(null);
+      }
+      cancelStart = queueFenceWork(start);
+    } else start();
     return () => {
+      active = false;
+      cancelStart?.();
+      cancelPublish?.();
+      cancelFallback?.();
       release?.();
       cancel?.();
     };
-  }, [enabled, source, highlight, seed, streaming, languageToken]);
+  }, [enabled, source, highlight, seed, streaming, languageToken, eager]);
   return tokens;
 }
 

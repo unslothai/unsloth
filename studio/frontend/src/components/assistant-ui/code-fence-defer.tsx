@@ -22,6 +22,29 @@ import { FENCE_HEIGHT_PROPERTY } from "./code-block-containment-mode";
 import { type FenceMode, resolveFenceMode } from "./code-fence-mode";
 import { fenceLineForeground } from "./code-fence-foreground";
 import {
+  FENCE_CHUNK_LINES,
+  type FenceLineChunks,
+  sameFenceBodyProps,
+  updateFenceChunks,
+} from "./code-fence-chunks";
+import {
+  type PlainFenceChunk,
+  type PlainFenceChunks,
+  updatePlainFenceChunks,
+} from "./plain-fence-chunks";
+import {
+  createFenceHighlightQueue,
+} from "./fence-highlight-queue";
+import {
+  initialHighlightProgress,
+  advanceHighlightProgress,
+  EMPTY_HIGHLIGHT_PROGRESS,
+  HIGHLIGHT_BATCH_TOKENS,
+  type HighlightProgress,
+  needsHighlightBatches,
+  retainHighlightProgress,
+} from "./fence-highlight-progress";
+import {
   EMPTY_LINE_WINDOW,
   HYSTERESIS_VIEWPORTS,
   isBlankLine,
@@ -39,6 +62,7 @@ import { planPrintTokenization } from "./code-fence-print";
 import { createFenceSpeculator } from "./fence-speculation";
 import { highlightWorkerState, streamActive } from "./use-reasoning-highlight";
 import { inputQuietIn, scheduleQuietIdleTask } from "@/lib/schedule-idle-task";
+import { inputPointerHeld } from "@/lib/input-pointer-state";
 import {
   MAX_CACHED_CHARACTERS,
   MAX_FENCES,
@@ -116,14 +140,22 @@ const shellBody = (source: string): string => {
   return trimmed === "" ? "\n" : trimmed;
 };
 
-const shellLines = (source: string): string[] => {
-  const nodes: string[] = [];
-  for (const [index, line] of shellBody(source).split("\n").entries()) {
-    if (index > 0) nodes.push("\n");
-    if (line !== "") nodes.push(line);
-  }
-  return nodes;
-};
+const PlainFenceTextChunk = memo(function PlainFenceTextChunk({
+  nodes,
+}: {
+  nodes: PlainFenceChunk;
+}) {
+  return <>{nodes}</>;
+});
+
+function PlainFenceText({ source }: { source: string }) {
+  const [previous, setPrevious] = useState<PlainFenceChunks>(() => updatePlainFenceChunks(null, source));
+  const current = previous.source === source ? previous : updatePlainFenceChunks(previous, source);
+  if (current !== previous) setPrevious(current);
+  return <>{current.chunks.map((nodes, index) => (
+    <PlainFenceTextChunk key={index} nodes={nodes} />
+  ))}</>;
+}
 
 function FenceShell({
   language,
@@ -154,7 +186,7 @@ function FenceShell({
         data-streamdown="code-block-body"
       >
         <pre>
-          <code>{plain ? shellLines(source) : shellBody(source)}</code>
+          <code>{plain ? <PlainFenceText source={source} /> : shellBody(source)}</code>
         </pre>
       </div>
     </div>
@@ -201,6 +233,19 @@ type FenceGate = {
 };
 
 const unreached = new Set<FenceGate>();
+const pendingReaches = new Map<FenceGate, () => void>();
+
+const deferReaches = (): boolean =>
+  fenceMode() === "defer" && !printing && !findBarOpen();
+
+const queueReach = (gate: FenceGate): void => {
+  if (pendingReaches.has(gate)) return;
+  const cancel = queueFenceWork(() => {
+    pendingReaches.delete(gate);
+    if (unreached.has(gate) && gateOpen(gate)) latchNow([gate]);
+  });
+  pendingReaches.set(gate, cancel);
+};
 
 /** Is this gate's fence where the observers would call it reached? */
 const gateOpen = (gate: FenceGate): boolean =>
@@ -228,6 +273,8 @@ const gateOpen = (gate: FenceGate): boolean =>
 const latchNow = (arrived: readonly FenceGate[]): void => {
   if (arrived.length === 0) return;
   for (const gate of arrived) {
+    pendingReaches.get(gate)?.();
+    pendingReaches.delete(gate);
     unreached.delete(gate);
     fenceSpeculator.remove(gate);
     gate.warm(true);
@@ -263,6 +310,10 @@ let scrollWatched = false;
 
 const onScroll = (event: Event): void => {
   if (unreached.size === 0) return;
+  if (deferReaches()) {
+    fenceSpeculator.rerank();
+    return;
+  }
   const target = event.target;
   if (target === null) return;
   const element = target === document ? null : (target as HTMLElement);
@@ -356,11 +407,17 @@ const grammarOf = (gate: FenceGate): string =>
   normalizeLanguage(gate.language ?? "text");
 
 const warmMustWait = (): boolean =>
-  typeof (globalThis as Record<string, unknown>).requestIdleCallback !== "function"
-  && (streamActive() || inputQuietIn() > 0);
+  inputPointerHeld() || inputQuietIn() > 0
+  || (typeof (globalThis as Record<string, unknown>).requestIdleCallback !== "function"
+    && streamActive());
 
 const warmGrammars = (): void => {
   warmScheduled = false;
+  if (unreached.size === 0) return;
+  if (warmMustWait()) {
+    scheduleGrammarWarm();
+    return;
+  }
   // EVERY GRAMMAR STARTS LOADING IN THE FIRST TASK. A load is cheap and asynchronous, and it is
   // what `latchNow` needs already present; only the tokenizations below are worth yielding for.
   for (const gate of unreached) {
@@ -393,6 +450,11 @@ const warmGrammars = (): void => {
 const scheduleGrammarWarm = (): void => {
   if (warmScheduled || typeof globalThis === "undefined") return;
   warmScheduled = true;
+  const quiet = inputQuietIn();
+  if (inputPointerHeld() || quiet > 0) {
+    setTimeout(warmGrammars, Math.max(80, quiet));
+    return;
+  }
   const idle = (globalThis as Record<string, unknown>).requestIdleCallback as
     | ((cb: () => void, options?: { timeout: number }) => number)
     | undefined;
@@ -427,7 +489,8 @@ const fenceSpeculator = createFenceSpeculator<FenceGate>({
   },
   enabled: () =>
     fenceMode() !== "off" && highlightWorkerState() !== "unavailable",
-  busy: () => streamActive() || highlightWorkerState() === "stalled",
+  busy: () => streamActive() || highlightWorkerState() === "stalled"
+    || inputPointerHeld() || inputQuietIn() > 0,
   eligible: (gate) => grammarsWarmed.has(grammarOf(gate)),
   rank: rankGates,
   maxChars: MAX_HIGHLIGHT_CHARS,
@@ -639,6 +702,7 @@ export function useFenceReached(
      */
   useLayoutEffect(() => {
     if (reached) return;
+    if (deferReaches()) return;
     const node = host.current;
     if (!node) return;
     // The same two questions the observers below ask, of the same two elements: is the FENCE in
@@ -679,6 +743,10 @@ export function useFenceReached(
       (entries) => {
         seen[i] = entries.some((entry) => entry.isIntersecting);
         if (!seen.every(Boolean)) return;
+        if (deferReaches()) {
+          queueReach(registered);
+          return;
+        }
         for (const each of observers) each.disconnect();
         setLatched(true);
       },
@@ -719,6 +787,8 @@ export function useFenceReached(
     return () => {
       for (const observer of observers) observer.disconnect();
       resize?.disconnect();
+      pendingReaches.get(registered)?.();
+      pendingReaches.delete(registered);
       fenceSpeculator.remove(registered);
       unreached.delete(registered);
       unwatchScrolling();
@@ -838,9 +908,11 @@ const tokenStyle = (
 const FenceLine = memo(function FenceLine({
   line,
   windowed,
+  highlighted = Number.POSITIVE_INFINITY,
 }: {
   line: TokenLine;
   windowed: boolean;
+  highlighted?: number;
 }) {
   if (isBlankLine(line)) {
     return <span className={LINE_CLASS}>{"\n"}</span>;
@@ -864,7 +936,7 @@ const FenceLine = memo(function FenceLine({
           : undefined
       }
     >
-      {line.map((token, index) => {
+      {(highlighted >= line.length ? line : line.slice(0, highlighted)).map((token, index) => {
         if (foreground?.inherited[index]) return token.content;
         const { style, hasBackground } = tokenStyle(token);
         return (
@@ -879,9 +951,107 @@ const FenceLine = memo(function FenceLine({
             {token.content}
           </span>
         );
-      })}
+      })}{highlighted < line.length ? line.slice(highlighted).map((token) => token.content).join("") : null}
     </span>
   );
+});
+
+const FenceTokenChunk = memo(function FenceTokenChunk({
+  tokens,
+  foreground,
+  start,
+  highlighted,
+}: {
+  tokens: readonly FenceToken[];
+  foreground: ReturnType<typeof fenceLineForeground>;
+  start: number;
+  highlighted: number;
+}) {
+  return <>{(highlighted >= tokens.length ? tokens : tokens.slice(0, highlighted)).map((token, index) => {
+    if (foreground?.inherited[start + index]) return token.content;
+    const { style, hasBackground } = tokenStyle(token);
+    return <span
+      className={hasBackground ? `${TOKEN_CLASS} ${TOKEN_BG_CLASS}` : TOKEN_CLASS}
+      key={index}
+      style={style}
+      {...token.htmlAttrs}
+    >{token.content}</span>;
+  })}{highlighted < tokens.length ? tokens.slice(highlighted).map((token) => token.content).join("") : null}</>;
+});
+
+const DenseFenceLine = memo(function DenseFenceLine({
+  line,
+  highlighted,
+}: {
+  line: TokenLine;
+  highlighted: number;
+}) {
+  const chunks = useMemo(() => updateFenceChunks(null, line), [line]);
+  const foreground = useMemo(() => fenceLineForeground(line), [line]);
+  return <span
+    className={foreground ? `${LINE_CLASS} ${TOKEN_CLASS}` : LINE_CLASS}
+    style={foreground
+      ? { "--sdm-c": foreground.light, "--shiki-dark": foreground.dark } as CSSProperties
+      : undefined}
+  >{chunks.map((tokens, index) => <FenceTokenChunk
+    key={index}
+    tokens={tokens}
+    foreground={foreground}
+    start={index * FENCE_CHUNK_LINES}
+    highlighted={Math.max(0, Math.min(tokens.length, highlighted - index * FENCE_CHUNK_LINES))}
+  />)}</span>;
+});
+
+const FenceLineChunk = memo(function FenceLineChunk({
+  lines,
+  limits,
+  dense,
+}: {
+  lines: readonly TokenLine[];
+  limits: readonly number[] | null;
+  dense: boolean;
+}) {
+  return <>{lines.map((line, index) => {
+    const count = limits === null ? Number.POSITIVE_INFINITY : limits[index] ?? 0;
+    return dense && line.length > HIGHLIGHT_BATCH_TOKENS
+      ? <DenseFenceLine key={index} line={line} highlighted={count} />
+      : <FenceLine key={index} line={line} windowed={count > 0}
+          highlighted={count >= line.length ? Number.POSITIVE_INFINITY : count} />;
+  })}</>;
+});
+
+const FenceLines = memo(function FenceLines({
+  tokens,
+  highlighted,
+  staged = false,
+}: {
+  tokens: TokenLine[];
+  highlighted: HighlightProgress | null;
+  staged?: boolean;
+}) {
+  const [dense] = useState(staged);
+  const [previous, setPrevious] = useState<{
+    tokens: TokenLine[];
+    chunks: FenceLineChunks<TokenLine>;
+    highlighted: HighlightProgress | null;
+    limits: FenceLineChunks<number> | null;
+  }>(() => ({ tokens, chunks: updateFenceChunks(null, tokens), highlighted,
+    limits: highlighted ? updateFenceChunks(null, highlighted.counts) : null }));
+  const current = previous.tokens === tokens && previous.highlighted === highlighted
+    ? previous
+    : {
+      tokens,
+      chunks: previous.tokens === tokens ? previous.chunks : updateFenceChunks(previous.chunks, tokens),
+      highlighted,
+      limits: highlighted ? updateFenceChunks(previous.limits, highlighted.counts) : null,
+    };
+  if (current !== previous) setPrevious(current);
+  return <>{current.chunks.map((lines, index) => <FenceLineChunk
+    key={index}
+    lines={lines}
+    limits={current.limits === null ? null : current.limits[index] ?? EMPTY_HIGHLIGHT_PROGRESS.counts}
+    dense={dense}
+  />)}</>;
 });
 
 // One scroll listener and one frame for every windowed fence: each measurement reads layout, so a
@@ -1044,6 +1214,154 @@ const findBarOpen = (): boolean =>
   typeof document !== "undefined"
   && document.documentElement.hasAttribute(FIND_BAR_FLAG);
 
+export const fenceNeedsQuietWork = (
+  language: string | null,
+  source: string,
+  streaming = false,
+): boolean =>
+  !streaming && typeof window !== "undefined" && deferReaches()
+  && !justStreamed(language, source.slice(0, FENCE_HEAD_CHARS), trimmedLength(source));
+
+let highlightWatching = false;
+let highlightFindObserver: MutationObserver | null = null;
+let highlightResizedAt = Number.NEGATIVE_INFINITY;
+
+const highlightResize = (): void => {
+  highlightResizedAt = performance.now();
+};
+
+const highlightQuietIn = (): number =>
+  Math.max(inputQuietIn(), 300 - (performance.now() - highlightResizedAt));
+
+const highlightQueue = createFenceHighlightQueue({
+  schedule: (run) => {
+    let frame = 0;
+    let cancelIdle: (() => void) | undefined;
+    const timer = setTimeout(() => {
+      frame = requestAnimationFrame(() => {
+        cancelIdle = scheduleQuietIdleTask(run, 100);
+      });
+    }, Math.max(0, highlightQuietIn(), inputPointerHeld() || liveSelection() ? 80 : 0));
+    return () => {
+      clearTimeout(timer);
+      cancelAnimationFrame(frame);
+      cancelIdle?.();
+    };
+  },
+  blocked: () => inputPointerHeld() || highlightQuietIn() > 0 || liveSelection() !== null,
+  commit: (run) => flushSync(run),
+});
+
+const watchHighlighting = (): void => {
+  if (highlightWatching) return;
+  highlightWatching = true;
+  window.addEventListener("resize", highlightResize, { passive: true });
+  highlightFindObserver = new MutationObserver(() => {
+    if (findBarOpen()) highlightQueue.flush();
+  });
+  highlightFindObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: [FIND_BAR_FLAG],
+  });
+};
+
+const unwatchHighlighting = (): void => {
+  if (!highlightWatching || highlightQueue.pending() > 0) return;
+  highlightWatching = false;
+  window.removeEventListener("resize", highlightResize);
+  highlightFindObserver?.disconnect();
+  highlightFindObserver = null;
+};
+
+export function queueFenceWork(work: () => void): () => void {
+  if (typeof window === "undefined" || printing || findBarOpen()) {
+    work();
+    return () => {};
+  }
+  watchHighlighting();
+  let cancel = () => {};
+  const finish = (): void => {
+    cancel();
+    work();
+  };
+  const remove = highlightQueue.add(() => {
+    finish();
+    return true;
+  }, finish);
+  cancel = () => {
+    remove();
+    unwatchHighlighting();
+  };
+  return cancel;
+}
+
+const visibleHighlightLine = (code: HTMLElement | null, frame: HTMLElement | null): number => {
+  const first = code?.firstElementChild;
+  if (!first || !frame) return 0;
+  const line = first.getBoundingClientRect();
+  if (line.height <= 0) return 0;
+  let top = 0;
+  let bottom = window.innerHeight;
+  for (let ancestor = frame.parentElement; ancestor !== null; ancestor = ancestor.parentElement) {
+    if (!isScrollable(ancestor)) continue;
+    const rect = ancestor.getBoundingClientRect();
+    top = Math.max(top, rect.top + ancestor.clientTop);
+    bottom = Math.min(bottom, rect.top + ancestor.clientTop + ancestor.clientHeight);
+  }
+  if (top >= bottom || line.top >= bottom) return 0;
+  return Math.max(0, Math.floor((top - line.top) / line.height));
+};
+
+function useFenceHighlightLimit(
+  tokens: FenceTokens["tokens"] | null,
+  isIncomplete: boolean | undefined,
+  windowing: boolean,
+  language: string | null,
+  source: string,
+  code: RefObject<HTMLElement | null>,
+  frame: RefObject<HTMLElement | null>,
+): { progress: HighlightProgress | null; staged: boolean } {
+  const eligible = !(typeof window === "undefined" || windowing || isIncomplete
+    || fenceMode() !== "defer"
+    || justStreamed(language, source.slice(0, FENCE_HEAD_CHARS), trimmedLength(source)));
+  const [eager, setEager] = useState(!eligible);
+  if (!eligible && !eager) setEager(true);
+  const staged = eligible && !eager;
+  const large = useMemo(
+    () => staged && tokens !== null && needsHighlightBatches(tokens, WINDOW_CAP_LINES),
+    [staged, tokens],
+  );
+  const immediate = !staged || printing || findBarOpen() || (tokens !== null && !large);
+  const [previous, setPrevious] = useState<{
+    tokens: typeof tokens;
+    progress: HighlightProgress | null;
+  }>(() => ({ tokens, progress: immediate ? null : tokens === null
+    ? EMPTY_HIGHLIGHT_PROGRESS : initialHighlightProgress(tokens) }));
+  let current = previous;
+  if (staged && previous.tokens !== tokens) {
+    current = { tokens, progress: immediate || tokens === null
+      ? null : retainHighlightProgress(previous.tokens, tokens, previous.progress) };
+  } else if (immediate && previous.progress !== null) {
+    current = { tokens, progress: null };
+  }
+  if (current !== previous) setPrevious(current);
+  const progress = immediate ? null : current.progress;
+  useLayoutEffect(() => {
+    if (progress === null || tokens === null) return;
+    watchHighlighting();
+    const cancel = highlightQueue.add(() => {
+      const visible = progress.located ? 0 : visibleHighlightLine(code.current, frame.current);
+      setPrevious({ tokens, progress: advanceHighlightProgress(tokens, progress, visible) });
+      return true;
+    }, () => setPrevious({ tokens, progress: null }));
+    return () => {
+      cancel();
+      unwatchHighlighting();
+    };
+  }, [tokens, progress, code, frame]);
+  return { progress, staged };
+}
+
 /*
  * Synchronous, and inside `flushSync`, for the same reason `latchNow` is: a normally scheduled
  * update lands after the next paint, and there is no next paint before the print snapshot.
@@ -1058,7 +1376,9 @@ const setPrinting = (value: boolean): void => {
     cancelAnimationFrame(windowFrame);
     windowFrame = 0;
   }
+  if (value) highlightQueue.flush();
   if (value) tokenizeForPrint();
+  if (value) highlightQueue.flush();
   if (windowedFences.size === 0) return;
   flushSync(remeasureWindows);
 };
@@ -1456,6 +1776,7 @@ export const FenceBody = memo(function FenceBody({
   const wrapper = useRef<HTMLDivElement | null>(null);
   const frame = useRef<HTMLDivElement | null>(null);
   const tokens = result?.tokens ?? null;
+  const highlight = useFenceHighlightLimit(tokens, isIncomplete, windowing, language, source, code, frame);
   const { window: lineWindow, pins, measured } = useLineWindow(
     code,
     surface,
@@ -1522,17 +1843,17 @@ export const FenceBody = memo(function FenceBody({
         >
           <pre className={joinClasses(languageClass, PRE_CLASS)} style={rootStyle}>
             <code className={CODE_CLASS} ref={code}>
-              {tokens.map((line, index) => (
+              {windowing ? tokens.map((line, index) => (
                 <FenceLine
                   key={index}
                   line={line}
                   windowed={lineRendered(lineWindow, pins, index)}
                 />
-              ))}
+              )) : <FenceLines tokens={tokens} highlighted={highlight.progress} staged={highlight.staged} />}
             </code>
           </pre>
         </div>
       </div>
     </div>
   );
-});
+}, sameFenceBodyProps);

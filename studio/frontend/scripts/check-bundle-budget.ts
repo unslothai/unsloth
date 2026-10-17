@@ -167,8 +167,8 @@ export const BUDGET = {
   // the resident-config check) adds 1,448 B raw / 433 B transfer, inline in the eager chat chunk (6,787,367 ->
   // 6,788,815 B raw, 2,040,805 -> 2,041,238 B transfer against 4494fa58c, one machine and build, Node 24, chunk
   // count unchanged at 95). Raised by that growth.
-  transferBytes: 2_041_433,
-  rawBytes: 6_788_948,
+  transferBytes: 2_044_652,
+  rawBytes: 6_797_828,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
