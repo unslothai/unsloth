@@ -475,10 +475,17 @@ def _load_pynvml():
 
 
 def doctor(
+    ctx: typer.Context,
     gpus: bool = typer.Option(
         True,
         "--gpus/--no-gpus",
         help = "Check GPUs, interconnect and a multi-GPU all_reduce (the default check).",
+    ),
+    mcp: bool = typer.Option(
+        False,
+        "--mcp",
+        help = "Check the Unsloth Studio MCP server, the API key and agent timeouts. "
+        "Skips the GPU checks unless --gpus is also given.",
     ),
     timeout: float = typer.Option(
         60.0,
@@ -487,9 +494,27 @@ def doctor(
     ),
 ):
     """Preflight checks for this machine. Exit status 1 means a problem was found."""
-    if not gpus:
-        typer.echo("Nothing to check.")
-        raise typer.Exit()
+    # Plain --mcp skips the GPU checks; an explicit --gpus keeps them.
+    # By name: newer typer ships its own copy of click's ParameterSource.
+    explicit = getattr(ctx.get_parameter_source("gpus"), "name", "") != "DEFAULT"
+    run_gpus = gpus if explicit else not mcp
+    code = 0
+    if mcp:
+        from unsloth_cli.commands.mcp import mcp_doctor
+        code = mcp_doctor()
+    if not run_gpus:
+        if not mcp:
+            typer.echo("Nothing to check.")
+        raise typer.Exit(code)
+    if mcp:
+        typer.echo("")
+    try:
+        _gpu_checks(timeout)
+    except typer.Exit as e:
+        raise typer.Exit(max(e.exit_code, code))
+
+
+def _gpu_checks(timeout: float):
     try:
         import torch
     except ImportError:

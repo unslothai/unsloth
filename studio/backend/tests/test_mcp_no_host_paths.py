@@ -68,7 +68,10 @@ EXPORT_PAYLOADS = {
 # tool name -> (fake Studio routes, tool arguments), or a list of them
 CASES: dict[str, Any] = {
     "studio_status": (STATUS_PAYLOADS, {}),
-    "list_models": (MODELS_PAYLOADS, {"model": "unsloth/Qwen3-0.6B"}),
+    "list_models": [
+        (MODELS_PAYLOADS, {"model": "unsloth/Qwen3-0.6B"}),
+        (MODELS_PAYLOADS, {"source": "catalog"}),
+    ],
     "load_model": (LOADING_PAYLOADS, {"model": "unsloth/Llama-3.2-1B-Instruct-GGUF"}),
     "unload_model": (LOADING_PAYLOADS, {}),
     "chat": (TEXT_PAYLOADS, {"prompt": "hi"}),

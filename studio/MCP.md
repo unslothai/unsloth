@@ -132,6 +132,38 @@ The tools changed:
 
 ### Set up an agent
 
+#### One command
+
+`unsloth mcp add` writes the agent's MCP entry for you. It supports
+`claude-code`, `codex`, `cursor` and `generic`:
+
+```bash
+unsloth mcp add claude-code
+unsloth mcp add codex --url http://192.168.1.20:8888
+unsloth mcp add cursor --dry-run
+```
+
+- The entry names the `UNSLOTH_API_KEY` environment variable, never the key
+  itself, and the command never prints a key. Pick another variable with `--env-var`.
+- It finds a running Unsloth Studio on this computer, or takes `--url`.
+- `--dry-run` prints the change as a diff and writes nothing. Running it again
+  changes nothing.
+- A config file it creates is readable by you only (mode 0600).
+- `codex` also sets `tool_timeout_sec = 300`.
+- `generic` prints a JSON entry to paste into any other agent's config.
+
+Then check the connection:
+
+```bash
+unsloth doctor --mcp
+```
+
+It checks that Unsloth Studio answers, that your key works, and that the MCP
+server is on. It also warns when an agent's tool timeout is under 240 s, because
+long tools such as `load_model` can wait that long.
+
+#### By hand
+
 Each one reads the key from the `UNSLOTH_API_KEY` environment variable, so set
 it before you start the agent. Replace `http://127.0.0.1:8888` with your own
 address.
@@ -139,13 +171,13 @@ address.
 **Claude Code** (macOS or Linux):
 
 ```bash
-claude mcp add --transport http unsloth-studio http://127.0.0.1:8888/mcp/ --header "Authorization: Bearer $UNSLOTH_API_KEY"
+claude mcp add --transport http --scope user unsloth-studio http://127.0.0.1:8888/mcp/ --header 'Authorization: Bearer ${UNSLOTH_API_KEY}'
 ```
 
 **Claude Code** (Windows PowerShell):
 
 ```powershell
-claude mcp add --transport http unsloth-studio http://127.0.0.1:8888/mcp/ --header "Authorization: Bearer $env:UNSLOTH_API_KEY"
+claude mcp add --transport http --scope user unsloth-studio http://127.0.0.1:8888/mcp/ --header 'Authorization: Bearer ${UNSLOTH_API_KEY}'
 ```
 
 **OpenAI Codex**:
@@ -235,14 +267,14 @@ api_key_format = "Bearer {token}"
 | Tool | What it does |
 |---|---|
 | `studio_status` | What is loaded, loading and running: chat, image, video, speech-to-text and embedding models, training, export and GPUs. |
-| `list_models` | Models Unsloth Studio can serve, by kind. With `model`, its training defaults. |
+| `list_models` | Models Unsloth Studio can serve, by kind or by Audio page `workflow`. With `model`, its training defaults. With `source="catalog"`, the image, video and audio models it can download, with their size and whether they fit on the GPU now. |
 | `load_model` | Load a chat, image, video or speech-to-text model, downloading it first if needed. Reports progress. |
 | `unload_model` | Unload a model. |
 | `chat` | Ask the loaded model, with optional images. Returns a `cancel_id`. |
 | `embed` | Embed up to 2048 texts. |
 | `system_one` | Ask the Decision API typed questions. The Decision API must be on. |
 | `generate_image` | Text to image, image to image, inpaint, edit, outpaint and upscale. |
-| `generate_audio` | Clone, speak, edit, convert, music and separate. |
+| `generate_audio` | Clone, speak, edit, convert, music and separate, on the loaded model or a named `model`. |
 | `transcribe` | Speech to text, or translation to English. |
 | `generate_video` | Start a video. Poll it with `get_job`. |
 | `get_job` | The state of a video, recipe or export job. |
@@ -298,6 +330,13 @@ Tool results never contain paths on the Unsloth Studio computer. Checkpoints are
 `<run folder>` or `<run folder>/checkpoint-N`. Exports are named relative to
 Unsloth Studio's exports folder, and `export_model` takes only a relative
 `save_directory`.
+
+### Prompts
+
+The server also offers two prompts, which Claude Code shows as slash commands:
+`make_short_film` and `build_dataset_and_train`. Each one reads what is loaded
+and which catalog models fit on the GPU right now, then lays out the tool calls
+for the job.
 
 ### Known limits
 
