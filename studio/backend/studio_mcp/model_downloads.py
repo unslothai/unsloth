@@ -1,0 +1,298 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Download models ahead of time through Unsloth Studio's download manager, follow and stop those downloads, and wait for one before a load."""
+
+from __future__ import annotations
+
+import asyncio
+import dataclasses
+import time
+from collections import OrderedDict
+from typing import Any, Optional
+
+from fastmcp import Context
+from fastmcp.exceptions import ToolError
+
+from studio_mcp import loading
+from studio_mcp.caller import Caller
+from studio_mcp.errors import raise_for_route, tool_error
+from studio_mcp.forward import forward
+from studio_mcp.outputs import DownloadRef, JobStatus
+from studio_mcp.tools import as_dict, number, opt_text, route_json, strings, try_json
+
+START = "/api/hub/download"
+STATUS = "/api/hub/download-status"
+PROGRESS = "/api/hub/download-progress"
+CANCEL = "/api/hub/download/cancel"
+SCOPED = "@diffusion"
+MAX_PARTS = 16
+WAIT_INTERVAL_S = 2.0
+ACTIVE = ("running", "cancelling")
+# Worst first: one failed part fails the whole download.
+PRECEDENCE = ("failed", "cancelling", "running", "cancelled", "idle", "completed")
+STATES = {"complete": "completed", "error": "failed"}
+WAITING = "Waiting for Unsloth Studio's download"
+
+Part = tuple[str, Optional[str]]
+
+# (account, kind, model) -> parts of the last download_model, so a load waits on the files it staged.
+_remembered: "OrderedDict[tuple[str, str, str], list[Part]]" = OrderedDict()
+_REMEMBER_MAX = 256
+
+
+def _remember(caller: Caller, kind: str, model: str, parts: list[Part]) -> None:
+    key = (caller.account_id, kind, model.lower())
+    _remembered[key] = parts
+    _remembered.move_to_end(key)
+    while len(_remembered) > _REMEMBER_MAX:
+        _remembered.popitem(last = False)
+
+
+def format_id(parts: list[Part]) -> str:
+    return ",".join(repo if variant is None else f"{repo}::{variant}" for repo, variant in parts)
+
+
+def parse_id(download_id: str) -> list[Part]:
+    pieces = [p.strip() for p in str(download_id or "").split(",")]
+    if len(pieces) > MAX_PARTS:
+        raise ToolError(f"A download id names at most {MAX_PARTS} downloads")
+    parts: list[Part] = []
+    for piece in pieces:
+        repo, _sep, variant = piece.partition("::")
+        if not repo.strip():
+            raise ToolError("Pass the id download_model returned")
+        parts.append((repo.strip(), variant.strip() or None))
+    return parts
+
+
+def _state(answer: Any) -> str:
+    state = opt_text(as_dict(answer).get("state")) or "idle"
+    return STATES.get(state, state)
+
+
+def _worst(states: list[str]) -> str:
+    ranked = [s for s in PRECEDENCE if s in states]
+    return ranked[0] if ranked else (states[0] if states else "idle")
+
+
+def _looks_local(model: str) -> bool:
+    return model.startswith(("/", "\\", ".")) or ":" in model[:3]
+
+
+async def _default_variant(caller: Caller, model: str) -> str:
+    listing = as_dict(
+        await route_json(
+            "GET",
+            "/api/hub/gguf-variants",
+            caller = caller,
+            params = {"repo_id": model},
+            hub_header = True,
+        )
+    )
+    quants = [
+        q for q in (opt_text(as_dict(v).get("quant")) for v in listing.get("variants") or []) if q
+    ]
+    chosen = opt_text(listing.get("default_variant")) or (quants[0] if quants else None)
+    if chosen is None:
+        raise ToolError(
+            f"Unsloth Studio found no GGUF variant of {model} to download. "
+            f"Pass variant (one of: {', '.join(quants) or 'none listed'})."
+        )
+    return chosen
+
+
+async def _diffusion_parts(
+    caller: Caller, kind: str, model: str, variant: Optional[str], token: Optional[str]
+) -> list[tuple[str, list[str]]]:
+    # The same plan body load_media sends, so the files are the ones the load reads.
+    body: dict[str, Any] = {"model_path": model}
+    if token:
+        body["hf_token"] = token
+    if variant or "gguf" in model.lower():
+        filename = await loading._gguf_filename(caller, model, variant)
+        if filename:
+            body["gguf_filename"] = filename
+            body["model_kind"] = "gguf"
+    plan = as_dict(
+        await route_json("POST", loading.MEDIA_ROUTES[kind]["plan"], caller = caller, json_body = body)
+    )
+    if opt_text(plan.get("incompatible_reason")):
+        raise tool_error(plan["incompatible_reason"])
+    if plan.get("plan_failed"):
+        raise ToolError(
+            f"Unsloth Studio could not list the files {model} needs, so it can't download them ahead of time. "
+            "Call load_model, which downloads while it loads."
+        )
+    entries = [as_dict(e) for e in plan.get("entries") or []]
+    return [
+        (e["repo_id"], strings(e.get("files")))
+        for e in entries
+        if opt_text(e.get("repo_id")) and strings(e.get("files"))
+    ]
+
+
+async def start(
+    caller: Caller,
+    ctx: Optional[Context],
+    *,
+    model: str,
+    kind: str,
+    variant: Optional[str],
+    hf_token: Optional[str],
+) -> DownloadRef:
+    if hf_token:
+        caller = dataclasses.replace(caller, hf_token = hf_token)
+    if kind == "stt":
+        status = await loading.stt_status(caller, model)
+        engine = loading.stt_engine(status, model)
+        wanted = f"{model}:{variant}" if variant and ":" not in model else model
+        if wanted not in strings(as_dict(status.get(engine)).get("downloaded_models")):
+            await loading.download_stt(
+                caller, ctx, model = model, engine = engine, hf_token = hf_token, variant = variant
+            )
+        return DownloadRef(model = model, kind = kind, variant = variant, status = "completed")
+
+    if kind in loading.MEDIA_ROUTES:
+        staged = await _diffusion_parts(caller, kind, model, variant, caller.hf_token)
+        bodies = [
+            {"repo_id": repo, "scope_id": "diffusion", "files": files, "transport_mode": "auto"}
+            for repo, files in staged
+        ]
+        parts: list[Part] = [(repo, SCOPED) for repo, _files in staged]
+    else:
+        if variant is None and "gguf" in model.lower():
+            variant = await _default_variant(caller, model)
+        bodies = [{"repo_id": model, "transport_mode": "auto"}]
+        if variant:
+            bodies[0]["gguf_variant"] = variant
+        parts = [(model, variant)]
+    if not parts:
+        # The plan lists nothing left to fetch.
+        return DownloadRef(model = model, kind = kind, variant = variant, status = "completed")
+
+    states, attached = [], False
+    for body in bodies:
+        answer = as_dict(
+            await route_json("POST", START, caller = caller, json_body = body, hub_header = True)
+        )
+        if answer.get("accepted") is False and answer.get("attached") is not True:
+            raise ToolError(
+                f"Unsloth Studio did not start downloading {body['repo_id']}: "
+                f"another download of it is {opt_text(answer.get('state')) or 'in progress'}."
+            )
+        attached = attached or answer.get("attached") is True
+        states.append(_state(answer))
+    _remember(caller, kind, model, parts)
+    return DownloadRef(
+        id = format_id(parts),
+        model = model,
+        kind = kind,
+        variant = variant,
+        status = _worst(states),
+        attached = attached,
+    )
+
+
+async def _read(caller: Caller, part: Part) -> Optional[dict]:
+    """One part's status; None when it is another account's job (404)."""
+    repo, variant = part
+    response = await forward(
+        caller, "GET", STATUS, params = {"repo_id": repo, "gguf_variant": variant or ""}
+    )
+    if response.status_code == 404:
+        return None
+    return as_dict(raise_for_route(response))
+
+
+async def status(caller: Caller, download_id: str) -> JobStatus:
+    parts = parse_id(download_id)
+    answers = [await _read(caller, part) for part in parts]
+    # A part that is not this account's reads as idle: there is nothing of yours to follow.
+    states = [_state(a) if a is not None else "idle" for a in answers]
+    error = next(
+        (opt_text(a.get("error")) for a in answers if a and opt_text(a.get("error"))), None
+    )
+    aggregate = _worst(states)
+    percent = None
+    if len(parts) == 1 and parts[0][1] is None and aggregate == "running":
+        progress = await try_json(
+            caller, PROGRESS, params = {"repo_id": parts[0][0]}, hub_header = True
+        )
+        fraction = number(as_dict(progress).get("progress"))
+        percent = round(min(fraction, 1.0) * 100, 1) if fraction is not None else None
+    single = parts[0][1] if len(parts) == 1 and parts[0][1] != SCOPED else None
+    ref = DownloadRef(
+        id = download_id, model = parts[0][0], variant = single, status = aggregate, error = error
+    )
+    return JobStatus(
+        kind = "download",
+        id = download_id,
+        status = aggregate,
+        progress_percent = percent,
+        error = error,
+        download = ref,
+    )
+
+
+async def cancel_parts(caller: Caller, download_id: str) -> tuple[bool, Optional[str]]:
+    """Stop every part; returns whether any was stopped and the overall state the answers report."""
+    states = []
+    for repo, variant in parse_id(download_id):
+        body = {"repo_id": repo, **({"gguf_variant": variant} if variant else {})}
+        response = await forward(caller, "POST", CANCEL, json_body = body)
+        if response.status_code == 404:
+            continue
+        states.append(opt_text(as_dict(raise_for_route(response)).get("state")) or "idle")
+    return "cancelling" in states, (_worst([STATES.get(s, s) for s in states]) if states else None)
+
+
+def keys_for(caller: Caller, kind: str, model: str, variant: Optional[str]) -> list[Part]:
+    """The manager jobs a load of ``model`` would read. A GGUF part with variant None still needs the repo's default."""
+    if kind == "stt" or not model or _looks_local(model):
+        return []
+    remembered = _remembered.get((caller.account_id, kind, model.lower()))
+    if kind in loading.MEDIA_ROUTES:
+        return list(remembered or [(model, SCOPED)])
+    if variant:
+        return [(model, variant)]
+    return list(remembered or [(model, None)])
+
+
+async def wait_for_managed(
+    caller: Caller,
+    ctx: Optional[Context],
+    *,
+    model: str,
+    kind: str,
+    variant: Optional[str],
+    budget_s: Optional[float],
+) -> None:
+    """Wait while Unsloth Studio's download manager is fetching ``model`` for this account. A read that fails proceeds."""
+    keys = keys_for(caller, kind, model, variant)
+    if keys and keys[0][1] is None and "gguf" in model.lower():
+        try:
+            keys = [(model, await _default_variant(caller, model))]
+        except Exception:
+            return
+    deadline = None if budget_s is None else time.monotonic() + max(budget_s, 0.0)
+    while keys:
+        active = []
+        for part in keys:
+            try:
+                answer = await _read(caller, part)
+            except Exception:
+                answer = None
+            if answer is not None and opt_text(answer.get("state")) in ACTIVE:
+                active.append(part)
+        if not active:
+            return
+        left = None if deadline is None else deadline - time.monotonic()
+        if left is not None and left <= 0:
+            raise ToolError(
+                f"Unsloth Studio is still downloading {model}. "
+                f'Follow it with get_job(kind="download", id="{format_id(keys)}"), then call load_model again.'
+            )
+        if ctx is not None:
+            await ctx.report_progress(0.0, None, WAITING)
+        await asyncio.sleep(WAIT_INTERVAL_S if left is None else min(WAIT_INTERVAL_S, left))

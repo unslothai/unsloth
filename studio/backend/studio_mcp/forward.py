@@ -29,6 +29,7 @@ ALLOWED_PREFIXES = (
     "/api/export/",
     "/api/data-recipe/",
     "/api/hub/datasets/",
+    "/api/hub/download",
     "/api/hub/gguf-variants",
     "/api/settings/embedding-model",
 )
