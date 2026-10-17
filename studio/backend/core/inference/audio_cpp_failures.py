@@ -43,7 +43,7 @@ _PATTERNS = tuple(
         ),
     )
 )
-_CODES = frozenset(code for code, _ in _PATTERNS)
+_CODES = frozenset(code for code, _ in _PATTERNS) | {"runtime_stopped"}
 _STATUS = {"file_incomplete": 422}  # else 503
 
 # Messages that already come from Unsloth Studio, so no runtime line is appended.
