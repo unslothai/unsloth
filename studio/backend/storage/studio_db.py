@@ -2946,28 +2946,36 @@ def _active_chat_generation_run_ids(
     return [row["id"] for row in sorted(rows, key = lambda row: (row["created_at"], row["id"]))]
 
 
+def delete_chat_threads_in(conn: sqlite3.Connection, ids: list[str]) -> tuple[list[str], list[str]]:
+    """Delete chats inside the caller's write transaction, so the deletion commits or rolls back
+    with whatever else that transaction records. Returns the ids of the research and chat runs
+    still active in them."""
+    _ensure_chat_attachment_inventory_current(conn)
+    thread_ids = set(ids)
+    active_research_run_ids = _active_research_run_ids(conn, thread_ids)
+    active_chat_run_ids = _active_chat_generation_run_ids(conn, thread_ids)
+    _reparent_surviving_forks(conn, thread_ids)
+    # Record the delete even when no row exists yet. A late POST carrying the same unique id
+    # must not recreate a thread after this request has confirmed deletion.
+    _tombstone_chat_threads(conn, thread_ids)
+    conn.executemany(
+        "DELETE FROM chat_attachment_tombstones WHERE thread_id = ?",
+        [(id,) for id in ids],
+    )
+    conn.executemany("DELETE FROM chat_threads WHERE id = ?", [(id,) for id in ids])
+    _mark_chat_attachment_inventory_clean(conn)
+    return active_research_run_ids, active_chat_run_ids
+
+
 def delete_chat_threads_with_active_runs(ids: list[str]) -> tuple[list[str], list[str]]:
     if not ids:
         return [], []
     conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
     try:
         conn.execute("BEGIN IMMEDIATE")
-        _ensure_chat_attachment_inventory_current(conn)
-        thread_ids = set(ids)
-        active_research_run_ids = _active_research_run_ids(conn, thread_ids)
-        active_chat_run_ids = _active_chat_generation_run_ids(conn, thread_ids)
-        _reparent_surviving_forks(conn, thread_ids)
-        # Record the delete even when no row exists yet. A late POST carrying the same unique id
-        # must not recreate a thread after this request has confirmed deletion.
-        _tombstone_chat_threads(conn, thread_ids)
-        conn.executemany(
-            "DELETE FROM chat_attachment_tombstones WHERE thread_id = ?",
-            [(id,) for id in ids],
-        )
-        conn.executemany("DELETE FROM chat_threads WHERE id = ?", [(id,) for id in ids])
-        _mark_chat_attachment_inventory_clean(conn)
+        active = delete_chat_threads_in(conn, ids)
         conn.commit()
-        return active_research_run_ids, active_chat_run_ids
+        return active
     except Exception:
         conn.rollback()
         raise

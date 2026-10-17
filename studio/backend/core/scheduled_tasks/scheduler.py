@@ -408,6 +408,12 @@ class ScheduledTaskScheduler:
                 claimed = await asyncio.to_thread(self._claim)
                 if claimed is not None:
                     account, task, run = claimed
+                    # Shutdown began after the claim was made: give it back rather than start a run
+                    # that would only be interrupted. Past this check nothing awaits before the run
+                    # is marked active, so a stop() from then on finds it and cancels it.
+                    if self._stopping:
+                        await asyncio.to_thread(self._release, account, task, run)
+                        return
                     await arun_as(account, self._execute(account, task, run))
                     continue
                 delay = await asyncio.to_thread(self._seconds_until_due)
@@ -433,6 +439,8 @@ class ScheduledTaskScheduler:
     def _claim(self) -> Optional[tuple[AccountContext, dict, dict]]:
         now = db.now_ms()
         for account in self._accounts():
+            if self._stopping:
+                return None
             try:
                 run_as(account, db.recover_stale_runs, now - _STALE_RUN_MS)
                 claimed = run_as(account, db.claim_next, now, self.worker_id, next_run_for)
@@ -441,9 +449,22 @@ class ScheduledTaskScheduler:
                 logger.exception("scheduled_tasks.claim_failed_for_account")
                 continue
             if claimed is not None:
+                # Shutdown began while the claim was made. stop() cannot cancel this thread, and
+                # may already have given up on the loop waiting for it, so the claim is given back
+                # here: its occurrence then runs at the next start instead of being used up.
+                if self._stopping:
+                    self._release(account, *claimed)
+                    return None
                 self._last_account = account.account_id
                 return (account, *claimed)
         return None
+
+    def _release(self, account: AccountContext, task: dict, run: dict) -> None:
+        try:
+            run_as(account, db.release_claim, run["id"], self.worker_id, task["nextRunAt"])
+        except Exception:
+            # Kept, the run is swept as interrupted once its heartbeat is stale.
+            logger.exception("scheduled_tasks.release_failed")
 
     def _seconds_until_due(self) -> float:
         due: Optional[int] = None
@@ -515,13 +536,15 @@ class ScheduledTaskScheduler:
         finally:
             heartbeat.cancel()
             self._active = None
-            settled = await self._settle(run["id"], outcome)
-            # A chat stands only for a run recorded as succeeded. Deleting a task deletes its runs
-            # in the same transaction, so a run gone when it settles lost to a deletion, even one
-            # that landed after the check above; one that cannot be settled at all is left to the
-            # stale-run sweep, which records it as interrupted. The chat's id comes from the run's,
+            # A chat stands only for a run recorded as succeeded: a run that fails takes the chat
+            # it may have written with it, in the transaction that records the failure.
+            discard = saving and outcome["status"] != "succeeded"
+            settled = await self._settle(run["id"], {**outcome, "discard_chat": discard})
+            # A run gone when it settles lost to a deletion, which removed the chat with the task,
+            # or to the stale-run sweep, which did too. One that cannot be settled at all is left to
+            # that sweep; removing its chat now spares the wait. The chat's id comes from the run's,
             # so this also reaches one whose save a shutdown left running in its thread.
-            if saving and not (outcome["status"] == "succeeded" and settled is True):
+            if saving and settled is not True:
                 await asyncio.to_thread(_discard_chat, db.chat_id_for_run(run["id"]))
 
     @staticmethod

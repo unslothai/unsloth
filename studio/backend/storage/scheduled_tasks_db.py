@@ -11,7 +11,7 @@ import time
 import uuid
 from typing import Callable, Optional
 
-from storage.studio_db import delete_chat_threads, get_connection
+from storage.studio_db import delete_chat_threads_in, get_connection
 
 # Per account. Every run opens a chat, so this also bounds how many chats schedules can make.
 MAX_TASKS = 100
@@ -227,12 +227,24 @@ def update_task(
 
 
 def delete_task(task_id: str) -> bool:
-    """Delete a task and its run history. Chats its runs made are left alone."""
+    """Delete a task and its run history. Chats its finished runs made are left alone; the one a
+    run still under way may be writing goes in the same transaction, and stays gone if that run's
+    save lands later."""
     conn = get_connection()
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        running = conn.execute(
+            "SELECT id FROM scheduled_task_runs WHERE task_id = ? AND status = 'running'",
+            (task_id,),
+        ).fetchall()
+        if running:
+            delete_chat_threads_in(conn, [chat_id_for_run(row["id"]) for row in running])
         cursor = conn.execute("DELETE FROM scheduled_tasks WHERE id = ?", (task_id,))
         conn.commit()
         return cursor.rowcount > 0
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -355,6 +367,44 @@ def claim_next(
         conn.close()
 
 
+def release_claim(run_id: str, worker_id: str, claimed_next_run_at: Optional[int]) -> bool:
+    """Undo a claim that will not be run (Studio began shutting down as it was made): a Run now goes
+    back to the queue, and a scheduled run is dropped and its task due again at the occurrence it
+    took, unless the task has been rescheduled or paused since (``claimed_next_run_at`` is the
+    next run the claim gave it). False when the run is no longer this worker's to give back."""
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        run = conn.execute(
+            "SELECT * FROM scheduled_task_runs WHERE id = ? AND worker_id = ? AND status = 'running'",
+            (run_id, worker_id),
+        ).fetchone()
+        if run is None:
+            conn.rollback()
+            return False
+        if run["source"] == "manual":
+            conn.execute(
+                "UPDATE scheduled_task_runs"
+                " SET status = 'queued', started_at = NULL, heartbeat_at = NULL, worker_id = NULL"
+                " WHERE id = ?",
+                (run_id,),
+            )
+        else:
+            conn.execute("DELETE FROM scheduled_task_runs WHERE id = ?", (run_id,))
+            conn.execute(
+                "UPDATE scheduled_tasks SET next_run_at = ?"
+                " WHERE id = ? AND enabled = 1 AND next_run_at IS ?",
+                (run["scheduled_for"], run["task_id"], claimed_next_run_at),
+            )
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def next_due_at() -> Optional[int]:
     """When the next run should start: now for a queued one, else the earliest due task."""
     conn = get_connection()
@@ -421,8 +471,13 @@ def finish_run(
     model: Optional[str] = None,
     error_code: Optional[str] = None,
     error: Optional[str] = None,
+    discard_chat: bool = False,
 ) -> bool:
-    """Settle a run this worker owns, and trim its task's history. False when the run is gone."""
+    """Settle a run this worker owns, and trim its task's history. False when the run is gone.
+
+    ``discard_chat`` removes the chat the run may have written in the same transaction, for a run
+    that does not succeed: no crash between the two can leave that chat behind a failed run.
+    """
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -434,6 +489,8 @@ def finish_run(
         if row is None:
             conn.rollback()
             return False
+        if discard_chat:
+            delete_chat_threads_in(conn, [chat_id_for_run(run_id)])
         # The chat can already be gone; the foreign key would refuse the whole update.
         if (
             thread_id is not None
@@ -487,6 +544,11 @@ def recover_stale_runs(stale_before: int) -> int:
             " WHERE id = ?",
             [(now_ms(), run_id) for run_id in run_ids],
         )
+        # One that stopped after writing its chat but before settling left the chat behind, and a
+        # failed run has none. Deleted in this transaction, so no crash can record the run as failed
+        # and keep its chat, and a save still under way cannot bring it back.
+        if run_ids:
+            delete_chat_threads_in(conn, [chat_id_for_run(run_id) for run_id in run_ids])
         # As finish_run does: a task whose runs keep ending this way must not pile them up.
         for task_id in {row["task_id"] for row in rows}:
             _trim_history(conn, task_id)
@@ -496,10 +558,6 @@ def recover_stale_runs(stale_before: int) -> int:
         raise
     finally:
         conn.close()
-    # One that stopped after writing its chat but before settling left the chat behind, and a
-    # failed run has none. Deleting also keeps a save still under way from bringing it back.
-    if run_ids:
-        delete_chat_threads([chat_id_for_run(run_id) for run_id in run_ids])
     return len(run_ids)
 
 

@@ -679,6 +679,81 @@ def test_the_sweep_removes_the_chat_of_a_run_that_stopped_before_settling():
     assert (last_run["status"], last_run["errorCode"]) == ("failed", "interrupted")
 
 
+def refuse_chat_deletion(conn, ids):
+    raise sqlite3.OperationalError("disk I/O error")
+
+
+def test_a_sweep_that_cannot_remove_a_chat_records_nothing(monkeypatch):
+    task, run = claim_manual_run()
+    answer = Answer(content = "Written, never settled.", reasoning = "", model = "gemma-3")
+    scheduler_module.save_chat(task, run, answer, 1_000, 2_000)
+    monkeypatch.setattr(db, "delete_chat_threads_in", refuse_chat_deletion)
+
+    with pytest.raises(sqlite3.OperationalError):
+        db.recover_stale_runs(db.now_ms() + scheduler_module._STALE_RUN_MS + 1)
+
+    # One transaction: the run is not left failed with its chat still there, out of the sweep's
+    # reach, but found again, chat and all, by the next sweep.
+    assert db.get_task(task["id"])["lastRun"]["status"] == "running"
+    assert len(studio_db.list_chat_threads()) == 1
+
+
+def test_a_run_recorded_as_failed_takes_its_chat_in_the_same_transaction(monkeypatch):
+    task, run = claim_manual_run()
+    answer = Answer(content = "Written, then failed.", reasoning = "", model = "gemma-3")
+    scheduler_module.save_chat(task, run, answer, 1_000, 2_000)
+    delete_chat_threads_in = db.delete_chat_threads_in
+    monkeypatch.setattr(db, "delete_chat_threads_in", refuse_chat_deletion)
+    with pytest.raises(sqlite3.OperationalError):
+        db.finish_run(run["id"], "worker-under-test", status = "failed", discard_chat = True)
+    assert db.get_task(task["id"])["lastRun"]["status"] == "running"
+    assert len(studio_db.list_chat_threads()) == 1
+
+    monkeypatch.setattr(db, "delete_chat_threads_in", delete_chat_threads_in)
+    assert db.finish_run(run["id"], "worker-under-test", status = "failed", discard_chat = True)
+    assert db.get_task(task["id"])["lastRun"]["status"] == "failed"
+    assert studio_db.list_chat_threads() == []
+
+
+def test_a_run_that_fails_after_writing_its_chat_leaves_none_however_soon_studio_stops(monkeypatch):
+    task, run = claim_manual_run()
+    save_chat = scheduler_module.save_chat
+
+    def save_then_fail(*args):
+        save_chat(*args)
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(scheduler_module, "generate_answer", answer_with("Half saved."))
+    monkeypatch.setattr(scheduler_module, "save_chat", save_then_fail)
+    # As if Studio stopped the moment the run was recorded: nothing after that removes the chat.
+    monkeypatch.setattr(scheduler_module, "_discard_chat", lambda thread_id: None)
+    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
+    scheduler.worker_id = "worker-under-test"
+    asyncio.run(scheduler._execute(OWNER, task, run))
+
+    assert db.get_task(task["id"])["lastRun"]["status"] == "failed"
+    assert studio_db.list_chat_threads() == []
+
+
+def test_deleting_a_task_removes_only_the_chat_its_running_run_may_be_writing():
+    task, run = claim_manual_run()
+    kept = scheduler_module.save_chat(
+        task, run, Answer(content = "Finished.", reasoning = "", model = "gemma-3"), 1_000, 2_000
+    )
+    assert db.finish_run(run["id"], "worker-under-test", status = "succeeded", thread_id = kept)
+    db.request_run(task["id"])
+    _task, running = db.claim_next(db.now_ms(), "worker-under-test", next_run_for)
+    scheduler_module.save_chat(
+        task, running, Answer(content = "Mid-run.", reasoning = "", model = "gemma-3"), 3_000, 4_000
+    )
+    assert len(studio_db.list_chat_threads()) == 2
+
+    assert db.delete_task(task["id"])
+
+    # In the deletion's own transaction, so no crash can leave it to a run that no longer exists.
+    assert [thread["id"] for thread in studio_db.list_chat_threads()] == [kept]
+
+
 def test_a_task_deleted_while_its_chat_is_saved_keeps_no_chat(monkeypatch):
     task, run = claim_manual_run()
 
@@ -966,6 +1041,95 @@ def test_the_scheduler_runs_a_due_task_and_wakes_for_run_now(monkeypatch):
     assert len(studio_db.list_chat_threads()) == 2
     # The overdue run moved the schedule on to the next 09:00 still ahead.
     assert db.get_task("task-1")["nextRunAt"] > db.now_ms()
+
+
+def test_a_claim_given_back_is_due_again_or_queued_again():
+    due_at = ms("2026-10-14T09:00:00+00:00")
+    now = ms("2026-10-14T09:00:05+00:00")
+    make_task(nextRunAt = due_at)
+    task, run = db.claim_next(now, "worker", next_run_for)
+    assert task["nextRunAt"] == ms("2026-10-15T09:00:00+00:00")
+
+    assert db.release_claim(run["id"], "worker", task["nextRunAt"])
+    returned = db.get_task("task-1")
+    assert (returned["nextRunAt"], returned["lastRun"]) == (due_at, None)
+    # Once given back it is no one's to give back again.
+    assert not db.release_claim(run["id"], "worker", task["nextRunAt"])
+
+    db.request_run("task-1")
+    task, run = db.claim_next(now, "worker", next_run_for)
+    assert run["source"] == "manual"
+    assert db.release_claim(run["id"], "worker", task["nextRunAt"])
+    assert db.get_task("task-1")["lastRun"]["status"] == "queued"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"schedule": {"kind": "daily", "time": "18:00"}},
+        {"enabled": False},
+    ],
+)
+def test_a_claim_given_back_keeps_a_schedule_changed_since(change):
+    make_task(nextRunAt = ms("2026-10-14T09:00:00+00:00"))
+    task, run = db.claim_next(ms("2026-10-14T09:00:05+00:00"), "worker", next_run_for)
+    changed = db.update_task(
+        "task-1", change, lambda t: None if not t["enabled"] else ms("2026-10-14T18:00:00+00:00")
+    )
+
+    assert db.release_claim(run["id"], "worker", task["nextRunAt"])
+    assert db.get_task("task-1")["nextRunAt"] == changed["nextRunAt"]
+
+
+def test_a_claim_made_as_shutdown_begins_is_given_back(monkeypatch):
+    monkeypatch.setattr(scheduler_module, "job_accounts", lambda: [OWNER])
+    due_at = db.now_ms() - DAY
+    make_task(nextRunAt = due_at)
+    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
+    claim_next = db.claim_next
+
+    def claim_as_stop_begins(*args):
+        claimed = claim_next(*args)
+        # stop() runs on the event loop while this thread commits; it cannot cancel the thread.
+        scheduler._stopping = True
+        return claimed
+
+    monkeypatch.setattr(db, "claim_next", claim_as_stop_begins)
+
+    assert scheduler._claim() is None
+    task = db.get_task("task-1")
+    assert (task["nextRunAt"], task["lastRun"]) == (due_at, None)
+
+
+def test_the_loop_gives_back_a_claim_that_returns_after_shutdown_began(monkeypatch):
+    monkeypatch.setattr(scheduler_module, "job_accounts", lambda: [OWNER])
+    due_at = db.now_ms() - DAY
+    make_task(nextRunAt = due_at)
+    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
+    claim = scheduler._claim
+    started = []
+
+    def claim_then_stop():
+        claimed = claim()
+        # The thread is done, and stop() begins before the loop picks the claim up.
+        scheduler._stopping = True
+        return claimed
+
+    async def execute(*args):
+        started.append(args)
+
+    monkeypatch.setattr(scheduler, "_claim", claim_then_stop)
+    monkeypatch.setattr(scheduler, "_execute", execute)
+
+    async def scenario():
+        scheduler.start()
+        await asyncio.wait_for(scheduler._task, timeout = 10)
+
+    asyncio.run(scenario())
+
+    assert started == []
+    task = db.get_task("task-1")
+    assert (task["nextRunAt"], task["lastRun"]) == (due_at, None)
 
 
 def test_a_cancellation_raised_for_a_run_ends_the_run_not_the_scheduler(monkeypatch):
