@@ -4606,7 +4606,7 @@ class FastLlamaModel:
         from .lora_init import fast_lora_init, record_fast_pissa
         from ._utils import block_swap_shaped
 
-        with fast_lora_init() as fast, block_swap_shaped(model):
+        with fast_lora_init() as fast, block_swap_shaped(model, init_lora_weights):
             model = _get_peft_model(model, lora_config)
         if fast["pissa"]:
             record_fast_pissa(model)

@@ -8118,10 +8118,11 @@ def planned_prefetch_depth(device_map_planner_kwargs):
     return depth if depth == "auto" else int(depth)
 
 
-def block_swap_shaped(model):
+def block_swap_shaped(model, init_lora_weights = True):
     """PEFT wraps MoE expert weights by their shape, which reads as empty on a layer offload_layers evicted."""
     swapper = getattr(model, "_unsloth_block_swap", None)
-    if swapper is None:
+    # PiSSA, OLoRA, LoftQ, EVA, MiCA... read the weights: a placeholder would silently init them from zeros.
+    if swapper is None or init_lora_weights not in (True, False, "gaussian"):
         return contextlib.nullcontext()
     shaped = getattr(swapper, "shaped", None)
     return shaped() if shaped is not None else _block_swap_shaped_fallback(swapper)

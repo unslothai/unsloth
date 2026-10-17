@@ -58,3 +58,14 @@ def test_no_swap_and_unknown_swappers_are_no_ops():
         pass
     with ns["block_swap_shaped"](types.SimpleNamespace(_unsloth_block_swap = object())):
         pass
+
+
+def test_data_dependent_inits_never_see_the_placeholder():
+    ns = _load()
+    for init in ("pissa", "pissa_niter_4", "olora", "loftq", "eva", "corda"):
+        swapper, w = _evicted_swapper()
+        with ns["block_swap_shaped"](types.SimpleNamespace(_unsloth_block_swap = swapper), init):
+            assert w.numel() == 0, init
+    swapper, w = _evicted_swapper()
+    with ns["block_swap_shaped"](types.SimpleNamespace(_unsloth_block_swap = swapper), "gaussian"):
+        assert w.shape == (4, 16, 8)
