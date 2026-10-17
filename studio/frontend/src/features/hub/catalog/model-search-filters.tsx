@@ -47,7 +47,28 @@ import {
   DATASET_ROW_STOPS,
   type DatasetModality,
 } from "../lib/dataset-filters";
+import type { ModelFormatFilter } from "../types";
 import { CAPABILITY_FILTER_OPTIONS } from "../lib/view-models";
+import type { InventorySort } from "./models-table";
+
+/** On Device's own filters, which read the local inventory rather than the Hub search. */
+export interface OnDeviceFilters {
+  sort: InventorySort;
+  onSortChange: (value: InventorySort) => void;
+  format: ModelFormatFilter;
+  formatOptions: readonly (readonly [ModelFormatFilter, string])[];
+  onFormatChange: (value: ModelFormatFilter) => void;
+  capabilities: HubCapabilityFilter[];
+  onCapabilitiesChange: (value: HubCapabilityFilter[]) => void;
+  isolateFirstCapability: boolean;
+  onReset: () => void;
+}
+
+const INVENTORY_SORT_OPTIONS: readonly (readonly [InventorySort, string])[] = [
+  ["recent", "Recent"],
+  ["name", "Name"],
+  ["size", "Size"],
+];
 
 const CAPABILITY_ICONS: Record<HubCapabilityFilter, IconSvgElement | null> = {
   text: TextFontIcon,
@@ -513,6 +534,75 @@ function HoverInfo({ label, children }: { label: string; children: string }) {
   );
 }
 
+/** Capability ticks: none picked means every box ticked; a model with any pick is listed. */
+function CapabilityTiles({
+  capabilities,
+  onChange,
+  isolateFirst,
+}: {
+  capabilities: HubCapabilityFilter[];
+  onChange: (value: HubCapabilityFilter[]) => void;
+  /** The first pick from the defaults keeps just that one. */
+  isolateFirst: boolean;
+}) {
+  return (
+    <fieldset>
+      <legend className={SECTION_LABEL}>
+        Capabilities
+        {capabilities.length > 0 && (
+          <button
+            type="button"
+            onClick={() => onChange([])}
+            className="cursor-pointer transition-colors hover:text-foreground"
+          >
+            Select all
+          </button>
+        )}
+      </legend>
+      <div className="grid grid-cols-2 gap-1.5 px-3">
+        {CAPABILITY_FILTER_OPTIONS.map((option) => {
+          const ticked = (key: HubCapabilityFilter) =>
+            capabilities.length === 0 || capabilities.includes(key);
+          const checked = ticked(option.value);
+          const glyph = CAPABILITY_ICONS[option.value];
+          // Kept in the list's order, so it doesn't depend on click order.
+          const next = CAPABILITY_FILTER_OPTIONS.map((o) => o.value).filter(
+            (key) => (key === option.value ? !checked : ticked(key)),
+          );
+          return (
+            <OptionTile
+              key={option.value}
+              icon={
+                glyph ? (
+                  <HugeiconsIcon
+                    icon={glyph}
+                    strokeWidth={2}
+                    className="size-4 shrink-0"
+                  />
+                ) : (
+                  <BulbIcon className="size-4 shrink-0" />
+                )
+              }
+              label={option.label}
+              checked={checked}
+              locked={next.length === 0}
+              onToggle={() =>
+                onChange(
+                  capabilities.length === 0 && isolateFirst
+                    ? [option.value]
+                    : next.length === CAPABILITY_FILTER_OPTIONS.length
+                      ? []
+                      : next,
+                )
+              }
+            />
+          );
+        })}
+      </div>
+    </fieldset>
+  );
+}
+
 /** The Hub's filter popover: capabilities, then (where the Hub search takes them) size and
  *  context limits and the uploader. Ticks apply at once; the limits on release. */
 export function ModelSearchFiltersControl({
@@ -532,6 +622,7 @@ export function ModelSearchFiltersControl({
   datasetSections,
   modalities,
   onModalitiesChange,
+  onDevice,
   className,
 }: {
   value: ModelSearchFilters;
@@ -557,15 +648,20 @@ export function ModelSearchFiltersControl({
   modalities: DatasetModality[];
   onModalitiesChange: (value: DatasetModality[]) => void;
   onDatasetsChange: (value: boolean) => void;
+  /** Set on On Device, whose sections replace the Hub search's. */
+  onDevice?: OnDeviceFilters;
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
   const unslothOnly = uploaders.length === 1 && uploaders[0] === "unsloth";
-  const filtered =
-    modalities.length > 0 ||
-    (modelSections && capabilities.length > 0) ||
-    uploadersChanged ||
-    ((showModelFilters || datasetSections) && hasModelSearchFilters(value));
+  const onDeviceModels = onDevice !== undefined && !datasets;
+  const filtered = onDevice
+    ? onDeviceModels &&
+      (onDevice.format !== "all" || onDevice.capabilities.length > 0)
+    : modalities.length > 0 ||
+      (modelSections && capabilities.length > 0) ||
+      uploadersChanged ||
+      ((showModelFilters || datasetSections) && hasModelSearchFilters(value));
   return (
     <Popover open={open} onOpenChange={setOpen}>
       {/* Icon-sized so the Discover toolbar keeps its existing single-row layout. */}
@@ -602,64 +698,38 @@ export function ModelSearchFiltersControl({
         className="hub-menu-instant hub-composer-menu menu-soft-surface gap-0 overflow-hidden w-[calc(392px*var(--ui-space-scale,1))] max-w-[calc(100vw-1rem)] ring-0"
       >
         <div className="flex min-h-0 flex-1 flex-col gap-4.25 overflow-y-auto overscroll-contain pt-2.25 pb-4.25 [scrollbar-width:thin]">
+          {onDeviceModels && (
+            <>
+              <CapabilityTiles
+                capabilities={onDevice.capabilities}
+                onChange={onDevice.onCapabilitiesChange}
+                isolateFirst={onDevice.isolateFirstCapability}
+              />
+              <SegmentedRow
+                label="Format"
+                about="Lists only models saved in this format."
+                value={onDevice.format}
+                options={onDevice.formatOptions}
+                onChange={onDevice.onFormatChange}
+              />
+            </>
+          )}
+          {onDevice && (
+            <SegmentedRow
+              label="Sort by"
+              about="Recent puts the newest downloads first; Size the largest."
+              value={onDevice.sort}
+              options={INVENTORY_SORT_OPTIONS}
+              onChange={onDevice.onSortChange}
+            />
+          )}
           {modelSections && (
             <>
-              <fieldset>
-                <legend className={SECTION_LABEL}>
-                  Capabilities
-                  {capabilities.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => onCapabilitiesChange([])}
-                      className="cursor-pointer transition-colors hover:text-foreground"
-                    >
-                      Select all
-                    </button>
-                  )}
-                </legend>
-                <div className="grid grid-cols-2 gap-1.5 px-3">
-                  {CAPABILITY_FILTER_OPTIONS.map((option) => {
-                    const ticked = (key: HubCapabilityFilter) =>
-                      capabilities.length === 0 || capabilities.includes(key);
-                    const checked = ticked(option.value);
-                    const glyph = CAPABILITY_ICONS[option.value];
-                    // Kept in the list's order, so it doesn't depend on click order.
-                    const next = CAPABILITY_FILTER_OPTIONS.map(
-                      (o) => o.value,
-                    ).filter((key) =>
-                      key === option.value ? !checked : ticked(key),
-                    );
-                    return (
-                      <OptionTile
-                        key={option.value}
-                        icon={
-                          glyph ? (
-                            <HugeiconsIcon
-                              icon={glyph}
-                              strokeWidth={2}
-                              className="size-4 shrink-0"
-                            />
-                          ) : (
-                            <BulbIcon className="size-4 shrink-0" />
-                          )
-                        }
-                        label={option.label}
-                        checked={checked}
-                        locked={next.length === 0}
-                        onToggle={() =>
-                          onCapabilitiesChange(
-                            capabilities.length === 0 && isolateFirstCapability
-                              ? [option.value]
-                              : next.length === CAPABILITY_FILTER_OPTIONS.length
-                                ? []
-                                : next,
-                          )
-                        }
-                      />
-                    );
-                  })}
-                </div>
-              </fieldset>
+              <CapabilityTiles
+                capabilities={capabilities}
+                onChange={onCapabilitiesChange}
+                isolateFirst={isolateFirstCapability}
+              />
               {showModelFilters &&
                 RANGES.map((spec) => (
                   <RangeStops
@@ -762,7 +832,7 @@ export function ModelSearchFiltersControl({
             // "Reset all" has no descenders: its ink sits 0.25em inside the text box on each side.
             className={cn(TEXT_BOX, "-my-[0.25em]")}
             disabled={!filtered}
-            onClick={onReset}
+            onClick={onDevice ? onDevice.onReset : onReset}
           >
             Reset all
           </Button>

@@ -13,16 +13,11 @@ import {
   formatRelativeShort,
 } from "@/features/hub/lib/format";
 import {
-  MODEL_TYPE_FILTER_OPTIONS,
-  type ModelTypeFilter,
-} from "@/features/hub/lib/model-type-filter";
-import {
   formatModelParamLabel,
   formatPipelineTag,
 } from "@/features/hub/lib/view-models";
 import { cn, formatCompact } from "@/lib/utils";
 import {
-  ArrowUpDownIcon,
   Download01Icon,
   FavouriteIcon,
   LayoutTwoColumnIcon,
@@ -36,7 +31,6 @@ import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, memo, useMemo } from "react";
 import type { DiscoverRow } from "../types";
-import { HubOptionMenu } from "./hub-option-menu";
 import {
   DOWNLOADING_DOT_CLASS,
   buildRowStatusTooltip,
@@ -99,72 +93,6 @@ function ViewToggleButton({
 }
 
 export type InventorySort = "recent" | "name" | "size";
-
-const INVENTORY_SORTS: { value: InventorySort; label: string }[] = [
-  { value: "recent", label: "Recent" },
-  { value: "name", label: "Name" },
-  { value: "size", label: "Size" },
-];
-
-// Sort picker as a compact dropdown pill so it sits beside the view-mode tabs.
-export function InventorySortControl({
-  value,
-  onChange,
-}: {
-  value: InventorySort;
-  onChange: (value: InventorySort) => void;
-}) {
-  const selected = INVENTORY_SORTS.find((option) => option.value === value);
-  return (
-    <HubOptionMenu<InventorySort>
-      value={value}
-      options={INVENTORY_SORTS}
-      onValueChange={onChange}
-      ariaLabel="Sort downloads"
-      align="end"
-      title={selected?.label}
-      // Capped and shrinkable so a long label truncates instead of wrapping
-      // the "On device" heading beside these pills in the narrow split pane.
-      className="h-8 min-w-[calc(72px*var(--ui-space-scale,1))] max-w-[calc(124px*var(--ui-space-scale,1))] shrink text-ui-11p5"
-      triggerContent={
-        <span className="flex min-w-0 items-center gap-1">
-          <HugeiconsIcon
-            icon={ArrowUpDownIcon}
-            strokeWidth={1.75}
-            className="size-3.5 shrink-0 text-muted-foreground"
-          />
-          <span className="truncate">{selected?.label ?? value}</span>
-        </span>
-      }
-    />
-  );
-}
-
-// Model-type filter pill (Text / Vision / Embedding / …) beside the sort pill.
-export function InventoryTypeFilterControl({
-  value,
-  onChange,
-}: {
-  value: ModelTypeFilter;
-  onChange: (value: ModelTypeFilter) => void;
-}) {
-  const selected = MODEL_TYPE_FILTER_OPTIONS.find(
-    (option) => option.value === value,
-  );
-  return (
-    <HubOptionMenu<ModelTypeFilter>
-      value={value}
-      options={MODEL_TYPE_FILTER_OPTIONS}
-      onValueChange={onChange}
-      ariaLabel="Filter by model type"
-      align="end"
-      title={selected?.label}
-      // Capped and shrinkable so a long label ("Speech to text") truncates
-      // instead of wrapping the "On device" heading beside these pills.
-      className="h-8 min-w-[calc(72px*var(--ui-space-scale,1))] max-w-[calc(124px*var(--ui-space-scale,1))] shrink text-ui-11p5"
-    />
-  );
-}
 
 export function HubListHeader({
   title,
