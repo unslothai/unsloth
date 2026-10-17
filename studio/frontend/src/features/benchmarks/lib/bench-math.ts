@@ -198,7 +198,7 @@ export function sweepVariants(
       return [
         OFF,
         {
-          label: "Auto (Studio default)",
+          label: "Auto (default)",
           load: { speculative_type: "auto", spec_draft_n_max: null },
         },
         {
@@ -329,7 +329,7 @@ export const OFFLOAD_CONTEXT = 8192;
 export function offloadVariants(shape?: ModelShape | null): Variant[] {
   const ctx = OFFLOAD_CONTEXT;
   const auto: Variant = {
-    label: "Studio auto",
+    label: "Auto fit",
     load: { gpu_memory_mode: "auto", gpu_layers: -1, n_cpu_moe: 0, max_seq_length: ctx },
   };
   const manual = (gpu_layers: number, n_cpu_moe: number) => ({
@@ -684,7 +684,7 @@ export function servedMismatch(
   // Every manual placement collapses to gpu_layers=0 there, so the rows would chart one CPU
   // config under many GPU labels.
   if (variant.load.gpu_memory_mode === "manual" && st.gpu_placement_paravirtual)
-    return "this Mac's GPU is virtualised, so Studio runs every load on the CPU";
+    return "this Mac's GPU is virtualised, so every load runs on the CPU";
   const want = variant.load.speculative_type;
   // Only rows that pick a forced mode can be let down by a fallback; the Auto row asks Studio to
   // choose, so its fallback (ngram, speculation off) is the Studio-default config we mean to measure.
@@ -698,14 +698,14 @@ export function servedMismatch(
   if (want !== undefined && want !== null && canonicalSpec(want) !== "auto") {
     const got = canonicalSpec(st.speculative_type);
     if (got !== canonicalSpec(want))
-      return `Studio served ${got} instead of ${canonicalSpec(want)}`;
+      return `The server ran ${got} instead of ${canonicalSpec(want)}`;
   }
   if (
     variant.load.cache_type_kv &&
     st.cache_type_kv &&
     st.cache_type_kv !== variant.load.cache_type_kv
   ) {
-    return `Studio served KV ${st.cache_type_kv} instead of ${variant.load.cache_type_kv}`;
+    return `The server ran KV ${st.cache_type_kv} instead of ${variant.load.cache_type_kv}`;
   }
   // A build without --kv-unified clamps multi-slot loads back to one, so a 2- or 4-slot row
   // would measure the same one-slot server; skip it instead of charting it as its own config.
@@ -716,7 +716,7 @@ export function servedMismatch(
     typeof st.parallel_slots === "number" &&
     st.parallel_slots < wantSlots
   ) {
-    return `Studio served ${st.parallel_slots} parallel slot${st.parallel_slots === 1 ? "" : "s"} instead of ${wantSlots}`;
+    return `The server ran ${st.parallel_slots} parallel slot${st.parallel_slots === 1 ? "" : "s"} instead of ${wantSlots}`;
   }
   // A load can clamp the context to what fits, so a row would chart a smaller window under its label.
   const wantCtx = variant.load.max_seq_length;
@@ -726,7 +726,7 @@ export function servedMismatch(
     typeof st.context_length === "number" &&
     st.context_length < wantCtx
   ) {
-    return `Studio served a ${st.context_length}-token context instead of ${wantCtx}`;
+    return `The server ran a ${st.context_length}-token context instead of ${wantCtx}`;
   }
   return null;
 }
@@ -844,6 +844,8 @@ export interface RunMeta {
   os?: string | null;
   cpuThreads?: number | null;
   ramGb?: number | null;
+  /** Other generations the server took while this sweep held it; they share its slots and GPU. */
+  outsideRequests?: number | null;
 }
 
 export interface BenchConfig {
@@ -1195,7 +1197,7 @@ export function ranToEnd(run: Pick<BenchRun, "outcomes">): boolean {
   );
 }
 
-/** A row's name mid-sentence: "1.9× speculation off", but "1.2× Studio auto". */
+/** A row's name mid-sentence: "1.9× speculation off", but "1.2× Auto fit". */
 export function inSentence(label: string): string {
   return label.startsWith("Speculation ") ? label.toLowerCase() : label;
 }
@@ -1225,11 +1227,15 @@ export function footerLines(run: BenchRun): string[] {
     m.studioVersion ? `Unsloth ${m.studioVersion}` : "",
     new Date(run.createdAt).toISOString().slice(0, 10),
   ].filter(Boolean);
+  const outside = m.outsideRequests ?? 0;
   return [
     what.join(" · "),
     baseLine(run.base, run.config.variants),
     machine.join(" · "),
     build.join(" · "),
+    outside > 0
+      ? `${outside} other request${outside === 1 ? "" : "s"} reached the server during this run, so some rows may read slow`
+      : "",
   ].filter(Boolean);
 }
 
