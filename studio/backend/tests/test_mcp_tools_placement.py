@@ -214,6 +214,7 @@ def test_a_variant_unsloth_studio_is_downloading_is_not_refused(monkeypatch):
     )
     # load_model waits for that download first (K16 guard 2), so let it finish.
     monkeypatch.setattr(model_downloads, "WAIT_INTERVAL_S", 0.01)
+    monkeypatch.setattr(model_downloads, "_remembered", model_downloads.OrderedDict())
     routes = _partial_routes("running")
     routes[("GET", "/api/hub/download-status")] = sequence(
         {"state": "running"}, {"state": "complete"}

@@ -174,7 +174,7 @@ SCHEMA = [
     ("parameters/properties/wait_s/maximum", 240),
     (
         "parameters/properties/kind/enum",
-        ["video", "recipe", "export", "training", "diffusion_training", "load"],
+        ["video", "recipe", "export", "training", "diffusion_training", "load", "download"],
     ),
     ("output_schema/type", "object"),
 ]

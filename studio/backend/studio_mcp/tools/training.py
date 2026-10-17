@@ -166,7 +166,7 @@ async def start_training(
 ) -> TrainingStarted:
     """Start a training job and return at once.
     This starts real GPU work, so build the config first and check it with ``validate_only`` true, which starts nothing and returns the resolved config without paths or secrets, for example {"kind": "llm", "config": {...}, "validate_only": true}.
-    Training keeps running after this returns; follow it with studio_status.
+    Training keeps running after this returns; follow it with get_job(kind="training", wait_s=50) (kind "diffusion_training" for kind "diffusion"), and an export with get_job(kind="export", wait_s=50).
 
     kind "llm": ``config`` is the Unsloth Studio training request.
     The minimum is {"model_name": a Hugging Face model repo id (not a GGUF; it is downloaded when training starts), "training_type": "LoRA/QLoRA" | "Full Finetuning" | "Continued Pretraining", "format_type": "auto" | "alpaca" | "chatml" | "sharegpt" | "conversational" | "raw", "hf_dataset": a Hugging Face dataset repo id}.

@@ -77,7 +77,8 @@ def _worst(states: list[str]) -> str:
 
 
 def _looks_local(model: str) -> bool:
-    return model.startswith(("/", "\\", ".")) or ":" in model[:3]
+    # A host path, or the ref: handle a checkpoint or export load sends.
+    return model.startswith(("/", "\\", ".", "ref:")) or ":" in model[:3]
 
 
 async def _default_variant(caller: Caller, model: str) -> str:

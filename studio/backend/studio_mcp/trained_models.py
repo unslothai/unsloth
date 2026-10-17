@@ -29,7 +29,13 @@ class TrainedModel:
 
     def renamed(self, result: LoadResult) -> LoadResult:
         evicted = [self.known.get(entry, entry) for entry in result.evicted]
-        return result.model_copy(update = {"model": self.name, "evicted": evicted})
+        slots = [
+            slot.model_copy(update = {"model": self.known.get(slot.model, slot.model)})
+            for slot in result.evicted_slots
+        ]
+        return result.model_copy(
+            update = {"model": self.name, "evicted": evicted, "evicted_slots": slots}
+        )
 
 
 def _known(rows: list[tuple[str, str]]) -> dict[str, str]:

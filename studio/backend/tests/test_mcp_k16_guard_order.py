@@ -6,10 +6,9 @@
 import pytest
 
 from studio_mcp import model_downloads
-from studio_mcp.tools import models
 
 from .mcp_harness import bodies, fast_polls, queries, run_tool, sequence  # noqa: F401
-from .test_mcp_tools_loading import PAYLOADS
+from .test_mcp_tools_loading import PAYLOADS, STATUS_ROUTE
 from .test_mcp_train_to_use import _routes as trained_routes
 
 QWEN = "unsloth/Qwen3-0.6B-GGUF"
@@ -27,6 +26,8 @@ DONE = {
 @pytest.fixture(autouse = True)
 def quick_waits(monkeypatch, fast_polls):
     monkeypatch.setattr(model_downloads, "WAIT_INTERVAL_S", 0.01)
+    # download_model calls elsewhere in the run remember what they staged; start clean.
+    monkeypatch.setattr(model_downloads, "_remembered", model_downloads.OrderedDict())
 
 
 def _load(
@@ -42,6 +43,28 @@ def _load(
     }
     result, studio = run_tool(monkeypatch, routes, "load_model", {"model": QWEN, **(args or {})})
     return result, studio, bodies(studio, "/api/inference/load")
+
+
+def test_an_attach_to_a_load_in_flight_comes_before_any_download_wait(monkeypatch):
+    # Guard 1 (attach) wins: a chat load of the same model already running is followed, and the
+    # download it may still be finishing is never read, waited on or refused.
+    loading_now = {"loading": [QWEN], "serving": [], "loaded": []}
+    loaded = {
+        "loading": [],
+        "serving": [QWEN],
+        "loaded": [QWEN],
+        "serving_checkpoints": ["/m/q.gguf"],
+    }
+    routes = {
+        **PAYLOADS,
+        STATUS_ROUTE: sequence(loading_now, loading_now, loaded),
+        ("GET", "/api/hub/gguf-variants"): PARTIAL,
+        ("GET", STATUS): {"state": "running"},
+    }
+    result, studio = run_tool(monkeypatch, routes, "load_model", {"model": QWEN})
+    assert result.get("isError") is not True, result
+    assert result["structuredContent"]["model"] == QWEN
+    assert queries(studio, STATUS) == [] and bodies(studio, "/api/inference/load") == []
 
 
 def test_a_managed_download_is_waited_on_then_loaded_not_refused(monkeypatch):
@@ -61,8 +84,7 @@ def test_an_unmanaged_partial_variant_is_still_refused(monkeypatch):
 
 
 def test_a_download_that_outlasts_the_wait_is_reported_with_its_id(monkeypatch):
-    monkeypatch.setattr(models, "DOWNLOAD_WAIT_S", 0.0)
-    result, _studio, sent = _load(monkeypatch, [PARTIAL], ["running"])
+    result, _studio, sent = _load(monkeypatch, [PARTIAL], ["running"], {"wait_s": 0})
     text = result["content"][0]["text"]
     assert result["isError"] is True and sent == []
     assert "still downloading" in text and f'id="{QWEN}::Q4_K_M"' in text
