@@ -369,3 +369,10 @@ def test_miotts_downloads_mio_codec_and_starts_with_its_path(monkeypatch, tmp_pa
     assert entry["task"] == "tts"
     kokoro = MODELS["kokoro"]()
     assert acb._with_companions(kokoro) is kokoro
+
+
+def test_a_blank_clone_seed_is_picked_by_the_server(monkeypatch):
+    monkeypatch.setattr(acb.cm, "random_seed", lambda: 99)
+    backend, server = _backend(MODELS["chatterbox"]())
+    backend.generate_audio_response(TEXT, workflow = "clone", audio_inputs = {"reference": REF})
+    assert server.calls[-1][1]["seed"] == "99" and backend.last_generation_stats["seed"] == 99

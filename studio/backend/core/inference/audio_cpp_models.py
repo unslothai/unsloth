@@ -1976,6 +1976,8 @@ def option_schema(
             continue
         if option["name"] == "voice":
             continue
+        if policy.task == "tts" and _is_alias_or_json_row(option):
+            continue
         names.add(option["name"])
         out.append(option)
     if policy.task == "tts" and policy.default_server_task != "vdes":
@@ -1997,7 +1999,17 @@ def option_schema(
                     "values": list(voices),
                 },
             )
+            # The built-in voice row is the one voice control; the server reads it for these too.
+            out = [o for o in out if o["name"] not in ("voice_id", "speaker")]
     return tuple(out)
+
+
+def _is_alias_or_json_row(option: dict) -> bool:
+    """A spec row that repeats another under a second name, or wants raw JSON typed in."""
+    description = option.get("description") or ""
+    return description.startswith("Alias of") or (
+        option["type"] == "string" and re.search(r"\bJSON\b", description) is not None
+    )
 
 
 def validate_options(schema: Sequence[dict], values: Optional[dict]) -> dict:
@@ -2228,6 +2240,34 @@ def filled_options(model: "AudioCppModel", workflow: str, values: Optional[dict]
     )
 
 
+def takes_seed(model: "AudioCppModel", workflow: str) -> bool:
+    """Speak, Clone and Music take a seed unless a strict spec leaves it out."""
+    return workflow in ("speak", "clone", "music") and (
+        model.request_keys is None or "seed" in model.request_keys
+    )
+
+
+def ignored_options(model: "AudioCppModel", workflow: str, values: Optional[dict]) -> list[str]:
+    """User-sent option names the request will not carry: not offered for ``workflow``, or left out
+    of a strict spec. ``voice`` travels top level and ``seed`` is the caller's to check."""
+    if not isinstance(values, dict):
+        return []
+    offered = {o["name"] for o in workflow_options(model, workflow)}
+    keys = model.request_keys
+    return sorted(
+        name
+        for name in map(str, values)
+        if name not in ("seed", "voice")
+        and (name not in offered or (keys is not None and name not in keys))
+    )
+
+
+_SEED_OPTION = dict(
+    name = "seed", type = "int", required = False, default = None, min = 0, max = 2147483647, values = None,
+    description = "Leave blank for a new random seed each take. Reuse one from a clip's menu.",
+)
+
+
 def workflow_options(model: "AudioCppModel", workflow: str) -> tuple[dict, ...]:
     """The options ``workflow`` shows and accepts; only Speak offers a built-in voice."""
     if workflow == "convert":
@@ -2242,7 +2282,8 @@ def workflow_options(model: "AudioCppModel", workflow: str) -> tuple[dict, ...]:
     hidden = set(model.option_hidden.get("*", ())) | set(model.option_hidden.get(workflow, ()))
     if workflow in ("clone", "edit", "convert"):
         hidden.add("voice")
-    return tuple(o for o in options if o["name"] not in hidden)
+    shown = tuple(o for o in options if o["name"] not in hidden)
+    return (*shown, dict(_SEED_OPTION)) if takes_seed(model, workflow) else shown
 
 
 def request_options(

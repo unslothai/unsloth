@@ -432,6 +432,77 @@ def test_other_early_exits_keep_pointing_at_the_model(fake_binary, tmp_path, out
     assert "unknown tensor type 42" in message
 
 
+_GPU_FAILS = textwrap.dedent(
+    """
+    import json, sys
+    if json.load(open(sys.argv[sys.argv.index("--config") + 1], encoding="utf-8"))["backend"] != "cpu":
+        print({output!r}, flush=True)
+        sys.exit(1)
+    """
+)
+_NO_GPU = "ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected"
+
+
+def _backend_whose_gpu_fails(tmp_path, monkeypatch, output, preference = None):
+    """The fake server exits with ``output`` unless launched on CPU."""
+    from core.inference import audio_cpp_backend as acb
+
+    (tmp_path / "fake_server.py").write_text(
+        _GPU_FAILS.format(output = output) + FAKE_SERVER, encoding = "utf-8"
+    )
+    starts = []
+
+    def select(binary, force_cpu):
+        starts.append(force_cpu)
+        return "cpu" if force_cpu else "cuda"
+
+    monkeypatch.setattr(srv, "select_backend", select)
+    monkeypatch.setattr(acb.audio_cpp_files, "materialize", lambda model: str(tmp_path / "m.gguf"))
+    monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising = False)
+    return acb.AudioCppBackend(preference), starts
+
+
+def test_gpu_unavailable_start_retries_once_on_cpu(fake_binary, tmp_path, monkeypatch):
+    backend, starts = _backend_whose_gpu_fails(tmp_path, monkeypatch, _NO_GPU)
+    try:
+        backend._start_server(KOKORO)
+        assert starts == [False, True]
+        assert (backend.device, backend._device_fallback, backend._server.backend) == ("cpu", "cpu", "cpu")
+        # Sticks: a restart for this model goes straight to the CPU.
+        backend._start_server(KOKORO)
+        assert starts == [False, True, True]
+    finally:
+        backend._stop_server_locked()
+
+
+@pytest.mark.parametrize(
+    "output, preference, code",
+    [(_NO_GPU, "gpu", "gpu_unavailable"), ("failed to allocate CUDA0 backend weight buffer", None, "out_of_memory")],
+)
+def test_pinned_gpu_or_oom_does_not_retry(fake_binary, tmp_path, monkeypatch, output, preference, code):
+    from core.inference.audio_cpp_failures import failure_of
+
+    backend, starts = _backend_whose_gpu_fails(tmp_path, monkeypatch, output, preference)
+    with pytest.raises(srv.AudioCppUnavailableError) as raised:
+        backend._start_server(KOKORO)
+    assert starts == [False] and backend._device_fallback is None
+    assert failure_of(raised.value).code == code
+
+
+def test_cancelled_start_does_not_retry(monkeypatch):
+    from core.inference import audio_cpp_backend as acb
+    from core.inference.audio_cpp_failures import AudioCppFailure, attach_failure
+
+    backend = acb.AudioCppBackend("auto")
+    gpu = attach_failure(srv.AudioCppUnavailableError("x"), AudioCppFailure("gpu_unavailable", "m", 503))
+    assert backend._may_retry_on_cpu(gpu, threading.Event())
+    cancelled = threading.Event()
+    cancelled.set()
+    assert not backend._may_retry_on_cpu(gpu, cancelled)
+    monkeypatch.setattr("utils.process_lifetime.is_process_shutting_down", lambda: True)
+    assert not backend._may_retry_on_cpu(gpu, None)
+
+
 def test_stop_survives_a_server_slow_to_exit_after_sigkill(tmp_path):
     # A server switching task mid-request (Vevo2 Clone <-> Edit) failed the request when the old
     # process outlived the SIGKILL wait in GPU teardown.

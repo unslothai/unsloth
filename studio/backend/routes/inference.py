@@ -8667,6 +8667,8 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         audio_workflows = None,
         audio_reference_text = None,
         audio_required_inputs = None,
+        audio_request_inputs = None,
+        audio_device_fallback = None,
         audio_options_by_workflow = None,
         audio_workflow_tasks = None,
         audio_server_task = None,
@@ -11279,7 +11281,9 @@ def _audio_cpp_switch_target(requested_model: Optional[str]) -> Optional[tuple]:
     # serve this one must be refused here rather than after the eviction.
     problem = model_runtime_problem(model)
     if problem:
-        raise HTTPException(status_code = 501, detail = problem)
+        from core.inference.audio_cpp_failures import problem_http_exception
+
+        raise problem_http_exception(problem, model)
     return (model.id, model.variant.key, model.id, False)
 
 
@@ -16564,11 +16568,7 @@ def _audio_intent_gguf_refusal(config, request) -> Optional[str]:
     )
 
 
-def audio_cpp_resident_gb(package_bytes: int) -> float:
-    """Resident GPU memory for an audio.cpp package: weights plus the runtime's graph and cache
-    buffers. Measured TTS peaks run about 3x the q8 weights (Qwen3-TTS 0.6B: 1.9 GB file, 5.9 GB
-    peak), so this errs on the side of placing the model on a card that holds it."""
-    return round(package_bytes / (1024**3) * 2.5 + 1.5, 2)
+from core.inference.audio_cpp_failures import estimate_resident_gb as audio_cpp_resident_gb
 
 
 def _native_audio_cpu_load(config, request) -> bool:
@@ -16603,9 +16603,13 @@ def _resident_audio_placement_matches(backend, request) -> bool:
     audio_type = resident.get("audio_type")
     if audio_type not in NATIVE_AUDIO_TYPES:
         return True
-    return bool(resident.get("audio_cpu", False)) == audio_load_runs_on_cpu(
-        audio_type, getattr(request, "audio_device", None)
-    )
+    device = getattr(request, "audio_device", None)
+    if resident.get("audio_device_fallback") == "cpu":
+        # Its GPU start failed: Auto would land on the CPU again, so only a pinned GPU reloads.
+        from core.inference.audio_device import audio_device_default, normalize_audio_device
+
+        return normalize_audio_device(device) != "gpu" if device else audio_device_default() != "gpu"
+    return bool(resident.get("audio_cpu", False)) == audio_load_runs_on_cpu(audio_type, device)
 
 
 def _resident_audio_holds_no_gpu(backend) -> bool:
@@ -16644,7 +16648,9 @@ async def _preflight_native_audio_placement(
         )
         if problem:
             # Refused here, before the orchestrator evicts the resident model for a load that cannot start.
-            raise HTTPException(status_code = 501, detail = problem)
+            from core.inference.audio_cpp_failures import problem_http_exception
+
+            raise problem_http_exception(problem, audio_cpp_model)
     if getattr(config, "is_lora", False):
         raise HTTPException(
             status_code = 400,
@@ -16767,10 +16773,20 @@ async def _preflight_native_audio_placement(
                 key = lambda item: (-item[1], item[0]),
             )
             if not fitting:
-                raise ValueError(
+                refusal = ValueError(
                     "No single GPU has enough free memory for this native audio model. "
                     "Select a GPU with enough free memory and try again."
                 )
+                if audio_type in AUDIO_CPP_AUDIO_TYPES and audio_cpp_model is not None:
+                    from core.inference.audio_cpp_failures import attach_failure, classify_audio_cpp_failure
+
+                    free_by_gpu = availability.effective_free_gb if availability is not None else {}
+                    free = [gb for index, gb in free_by_gpu.items() if index in candidates]
+                    failure = classify_audio_cpp_failure(
+                        str(refusal), model = audio_cpp_model, free_gb = max(free, default = None)
+                    )
+                    attach_failure(refusal, failure)
+                raise refusal
             resolved = [fitting[0][0]]
         if automatic and availability is not None and resolved and len(resolved) == 1:
             selected_gpu = resolved[0]
@@ -16787,7 +16803,11 @@ async def _preflight_native_audio_placement(
     try:
         resolved, required_gb, post_handoff_free_gb = await asyncio.to_thread(_resolve)
     except ValueError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        from core.inference.audio_cpp_failures import failure_of
+
+        failure = failure_of(exc)
+        detail = failure.detail() if failure is not None else str(exc)
+        raise HTTPException(status_code = 400, detail = detail) from exc
     return placement._replace(
         resolved_gpu_ids = resolved,
         native_required_gb = required_gb,
@@ -20229,6 +20249,8 @@ async def _load_model_impl(
             audio_convert = _model_info.get("audio_convert"),
             audio_convert_route = _model_info.get("audio_convert_route"),
             audio_required_inputs = _model_info.get("audio_required_inputs"),
+            audio_request_inputs = _model_info.get("audio_request_inputs"),
+            audio_device_fallback = _model_info.get("audio_device_fallback"),
             audio_music = _model_info.get("audio_music"),
             is_mlx = bool(_model_info.get("is_mlx", False)),
             mlx_kv_quant = _model_info.get("mlx_kv_quant"),
@@ -20296,9 +20318,15 @@ async def _load_model_impl(
         logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
+        from core.inference.audio_cpp_failures import failure_of
         from core.inference.gpu_arbiter import DECISIONS, GpuOwnerBusyError
         from utils.transformers_version import SidecarSwapInProgress
 
+        if (failure := failure_of(e)) is not None:
+            logger.warning(
+                "Load of '%s' failed (%s): %s", model_log_label, failure.code, redact_native_paths(str(e))
+            )
+            raise HTTPException(status_code = failure.status, detail = failure.detail()) from e
         if isinstance(e, account_access.GpuBusyForAnotherAccountError):
             raise account_access.gpu_busy_error() from e
         if isinstance(e, GpuOwnerBusyError) and e.owner == DECISIONS:
@@ -23049,6 +23077,8 @@ async def _slot_status(current_subject: str):
             audio_convert_route = model_info.get("audio_convert_route"),
             audio_reference_text = model_info.get("audio_reference_text"),
             audio_required_inputs = model_info.get("audio_required_inputs"),
+            audio_request_inputs = model_info.get("audio_request_inputs"),
+            audio_device_fallback = model_info.get("audio_device_fallback"),
             audio_music = model_info.get("audio_music"),
             gguf_variant = model_info.get("gguf_variant"),
             is_mlx = bool(model_info.get("is_mlx", False)),
@@ -23530,6 +23560,11 @@ async def _generate_tts_wav(
             # An idle auto-unload cancels through the backend without setting this route's event.
             if _audio_cancel.is_set() or isinstance(e, AudioGenerationCancelledError):
                 raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
+            from core.inference.audio_cpp_failures import failure_of
+
+            if (failure := failure_of(e)) is not None:
+                logger.warning("Audio generation failed (%s): %s", failure.code, e)
+                raise HTTPException(status_code = failure.status, detail = failure.detail())
             # Missing capability, not a failure: no retry helps, and the message
             # carries no path or user input, so send it as written.
             if isinstance(e, AudioBackendUnsupportedError):
@@ -23707,8 +23742,10 @@ async def generate_audio(
         )
         record = None
         if persist:
+            seed = _audio_stats(tts_stats).get("seed")
+            meta = {"settings": {"seed": seed}} if seed is not None else None
             record = await asyncio.to_thread(
-                _persist_tts_clip, wav_bytes, sample_rate, text, model_name, audio_type
+                _persist_tts_clip, wav_bytes, sample_rate, text, model_name, audio_type, meta
             )
         return record, wav_bytes, sample_rate, model_name
 
@@ -23725,6 +23762,7 @@ async def generate_audio(
             persisted_clip, wav_bytes, sample_rate, model_name = await generate()
             api_monitor.relabel(monitor_id, model_name)
     truncated = bool((tts_stats.get("stats") or {}).get("truncated"))
+    stats = _audio_stats(tts_stats)
 
     audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
     return JSONResponse(
@@ -23733,6 +23771,8 @@ async def generate_audio(
             "object": "chat.completion.audio",
             "model": model_name,
             "clip_id": persisted_clip.get("id") if persisted_clip else None,
+            "seed": stats.get("seed"),
+            "ignored_options": list(stats.get("ignored_options") or []),
             "audio": {"data": audio_b64, "format": "wav", "sample_rate": sample_rate},
             "choices": [
                 {
@@ -23773,8 +23813,13 @@ def _convert_role_error(exc, role: str):
     return exc
 
 
-def _audio_run_settings(body: AudioRunRequest, reference_text_used: bool) -> dict[str, Any]:
-    """The run's recipe for history: scalar options only."""
+def _audio_stats(holder: dict) -> dict[str, Any]:
+    stats = holder.get("stats")
+    return stats if isinstance(stats, dict) else {}
+
+
+def _audio_run_settings(body: AudioRunRequest, reference_text_used: bool, seed: Optional[int] = None) -> dict[str, Any]:
+    """The run's recipe for history: scalar options only, and the seed the run used."""
     options = {
         str(name): value
         for name, value in (body.options or {}).items()
@@ -23786,6 +23831,7 @@ def _audio_run_settings(body: AudioRunRequest, reference_text_used: bool) -> dic
         "options": options,
         "reference_text_used": reference_text_used,
         "speed": body.speed,
+        "seed": seed,
     }
 
 
@@ -23811,6 +23857,7 @@ def _audio_run_clip(record: dict[str, Any], role: str = "output") -> dict[str, A
     return {
         "role": role,
         **{k: record[k] for k in ("id", "url", "sample_rate", "duration_s", "workflow")},
+        "seed": (record.get("settings") or {}).get("seed"),
     }
 
 
@@ -23820,14 +23867,16 @@ def _audio_run_response(
     sample_rate: int,
     model_name: str,
     sources: list[dict[str, Any]] = (),
+    ignored_options: Optional[list[str]] = None,
 ) -> AudioRunResponse:
     """The clips a run made; the WAV inline when history could not keep it."""
     import base64
 
+    ignored = list(ignored_options or [])
     if record is None:
         audio = {"data": base64.b64encode(wav_bytes).decode("ascii"), "sample_rate": sample_rate}
-        return AudioRunResponse(clips = list(sources), model = model_name, audio = audio)
-    return AudioRunResponse(clips = [_audio_run_clip(record), *sources], model = model_name)
+        return AudioRunResponse(clips = list(sources), model = model_name, audio = audio, ignored_options = ignored)
+    return AudioRunResponse(clips = [_audio_run_clip(record), *sources], model = model_name, ignored_options = ignored)
 
 
 async def _run_audio_edit(
@@ -24164,6 +24213,8 @@ async def _run_music_workflow(
             "instrumental": body.instrumental,
             "duration_s": seconds,
             "variations": variations,
+            # 0-based: the backend seeds take n with seed + n.
+            "take": body.take - 1 if body.take else None,
             "edit": body.edit.model_dump() if body.edit is not None else None,
             "timeout_s": timeout_seconds(
                 family, work_s, variations, model_info.get("audio_cpp_backend")
@@ -24177,6 +24228,7 @@ async def _run_music_workflow(
             audio_options = body.options,
             seed = body.seed,
         )
+        stats: dict = {}
         wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
             body.text,
             payload,
@@ -24188,14 +24240,17 @@ async def _run_music_workflow(
                 "music": music,
                 "output_dir": str(run_dir),
             },
+            stats_holder = stats,
         )
         outputs = await asyncio.to_thread(_read_music_outputs, run_dir)
     finally:
         await asyncio.to_thread(shutil.rmtree, run_dir, ignore_errors = True)
     if not outputs:
-        outputs = [(wav_bytes, sample_rate, body.seed)]
-    group_id = uuid.uuid4().hex if len(outputs) > 1 else None
-    role = "edit" if body.mode == "edit" else ("variation" if len(outputs) > 1 else "output")
+        outputs = [(wav_bytes, sample_rate, _audio_stats(stats).get("seed", body.seed))]
+    ignored = list(_audio_stats(stats).get("ignored_options") or [])
+    many = len(outputs) > 1 or body.take is not None
+    group_id = body.group_id or (uuid.uuid4().hex if len(outputs) > 1 else None)
+    role = "edit" if body.mode == "edit" else ("variation" if many else "output")
     prompt = body.text.strip() or " ".join((body.lyrics or "").split())[:200]
     clips = []
     for index, (wav, rate, seed) in enumerate(outputs):
@@ -24203,7 +24258,7 @@ async def _run_music_workflow(
             "role": role,
             "group_id": group_id,
             "settings": _audio_music_settings(
-                body, seconds, seed, index + 1 if len(outputs) > 1 else None, song
+                body, seconds, seed, (body.take or index + 1) if many else None, song
             ),
         }
         if source is not None:
@@ -24223,6 +24278,7 @@ async def _run_music_workflow(
                         "format": "wav",
                         "sample_rate": rate,
                     },
+                    ignored_options = ignored,
                 )
             continue
         clips.append(
@@ -24233,9 +24289,10 @@ async def _run_music_workflow(
                 "sample_rate": record["sample_rate"],
                 "duration_s": record["duration_s"],
                 "workflow": record["workflow"],
+                "seed": seed,
             }
         )
-    return AudioRunResponse(clips = clips, group_id = group_id, model = model_name)
+    return AudioRunResponse(clips = clips, group_id = group_id, model = model_name, ignored_options = ignored)
 
 
 async def _run_audio_convert(
@@ -24399,10 +24456,13 @@ async def _dispatch_audio_run(
             status_code = 400,
             detail = "A music mode, lyrics, variations, a source clip and edits apply to Music only.",
         )
+    stats: dict = {}
     record, wav_bytes, sample_rate, model_name = await _speak(
-        body, request, current_subject, requested_model = body.model or _RELOAD_ONLY_MODEL
+        body, request, current_subject, requested_model = body.model or _RELOAD_ONLY_MODEL,
+        stats_holder = stats,
     )
-    return _audio_run_response(record, wav_bytes, sample_rate, model_name)
+    ignored = _audio_stats(stats).get("ignored_options")
+    return _audio_run_response(record, wav_bytes, sample_rate, model_name, [], ignored)
 
 
 async def _speak(
@@ -24451,6 +24511,7 @@ async def _speak(
         audio_options = body.options,
         seed = body.seed,
     )
+    stats = tts_kwargs.setdefault("stats_holder", {})
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
         body.text,
         payload,
@@ -24468,7 +24529,7 @@ async def _speak(
         return None, wav_bytes, sample_rate, model_name
     extra_meta: dict[str, Any] = {
         "role": "output",
-        "settings": _audio_run_settings(body, reference_text is not None),
+        "settings": _audio_run_settings(body, reference_text is not None, _audio_stats(stats).get("seed")),
     }
     if reference_source is not None:
         extra_meta["reference_name"] = reference_source.name

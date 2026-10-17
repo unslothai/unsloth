@@ -25,6 +25,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Generator, Mapping, Optional, Sequence, Tuple, Union
 from core.inference.audio_device import audio_device_forces_cpu, audio_load_runs_on_cpu
+from core.inference.audio_cpp_failures import AudioCppFailure, AudioCppFailureError, attach_failure
 from core.inference.context_refusal import ContextBudgetExceeded
 from core.inference.native_audio import NATIVE_AUDIO_TYPES, is_native_audio_model
 from core.inference.audio_errors import (
@@ -433,6 +434,8 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_edit": model_info.get("audio_edit"),
         "audio_music": model_info.get("audio_music"),
         "audio_cpp_backend": model_info.get("audio_cpp_backend"),
+        "audio_device_fallback": model_info.get("audio_device_fallback"),
+        "audio_request_inputs": model_info.get("audio_request_inputs"),
         "max_image_side": model_info.get("max_image_side"),
     }
 
@@ -2376,10 +2379,11 @@ class InferenceOrchestrator:
                         # model it would otherwise report as satisfied. Native audio only:
                         # marking anything else tells training a GPU model holds no VRAM.
                         _audio_type = model_info.get("audio_type")
+                        # An audio.cpp model that fell back to the CPU holds no VRAM either.
                         self.models[self.active_model_name]["audio_cpu"] = (
                             _audio_type in NATIVE_AUDIO_TYPES
                             and audio_load_runs_on_cpu(_audio_type, audio_device)
-                        )
+                        ) or model_info.get("audio_cpp_backend") == "cpu"
                         self.models[self.active_model_name].update(
                             _mlx_runtime_mirror_fields(model_info)
                         )
@@ -2395,6 +2399,9 @@ class InferenceOrchestrator:
                     error = resp.get("message") or resp.get("error") or "Failed to load model"
                     self.active_model_name = None
                     self.models.clear()
+                    failure = AudioCppFailure.from_payload(resp.get("failure"))
+                    if failure is not None:
+                        raise AudioCppFailureError(error, failure)
                     raise Exception(error)
 
         except Exception as exc:
@@ -4024,12 +4031,18 @@ class InferenceOrchestrator:
                                     resp.get("error", "This backend cannot generate audio."),
                                     hint = resp.get("hint"),
                                 )
+                            failure = AudioCppFailure.from_payload(resp.get("failure"))
                             if resp.get("code") == AUDIO_RUNTIME_ERROR_CODE:
-                                raise AudioRuntimeError(
-                                    resp.get("error", "Audio generation failed"),
-                                    status = resp.get("status"),
+                                raise attach_failure(
+                                    AudioRuntimeError(
+                                        resp.get("error", "Audio generation failed"),
+                                        status = resp.get("status"),
+                                    ),
+                                    failure,
                                 )
-                            raise RuntimeError(resp.get("error", "Audio generation failed"))
+                            raise attach_failure(
+                                RuntimeError(resp.get("error", "Audio generation failed")), failure
+                            )
 
                         if rtype == "error":
                             if cancel_event is not None and cancel_event.is_set():

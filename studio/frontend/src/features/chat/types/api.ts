@@ -262,6 +262,7 @@ export interface LoadModelResponse {
   is_audio?: boolean;
   audio_type?: string | null;
   audio_workflows?: string[] | null;
+  audio_device_fallback?: "cpu" | null;
   has_audio_input?: boolean;
   has_video_input?: boolean;
   inference?: {
@@ -404,6 +405,10 @@ export interface InferenceStatusResponse {
   audio_convert?: AudioConvertCaps | null;
   /** e.g. Maya1: "instruct" (its voice description). */
   audio_required_inputs?: string[] | null;
+  /** Request inputs a strict model reads (e.g. "instruct"); null when the model takes any. */
+  audio_request_inputs?: string[] | null;
+  /** "cpu" after a GPU start failed and the model loaded into CPU RAM instead. */
+  audio_device_fallback?: "cpu" | null;
   /** Unknown-shaped on purpose: validated by parseMusicCapabilities. */
   audio_music?: unknown;
   has_audio_input?: boolean;

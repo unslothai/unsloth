@@ -35,6 +35,7 @@ import {
   REFERENCE_MAX_SECONDS,
   clipReference,
 } from "../audio-run-request";
+import { referenceLengthHint } from "../clone-policy";
 import {
   type AudioSourceStatus,
   REFERENCE_EXPIRED_MESSAGE,
@@ -107,6 +108,7 @@ export function AudioSourceInput({
   expiredMessage = REFERENCE_EXPIRED_MESSAGE,
   usesFirstSeconds = REFERENCE_MAX_SECONDS,
   recordHint = "Read a sentence or two in a quiet room.",
+  idealSeconds,
 }: {
   id: string;
   label: string;
@@ -124,6 +126,8 @@ export function AudioSourceInput({
   expiredMessage?: string;
   usesFirstSeconds?: number | null;
   recordHint?: string;
+  /** Seconds that work best, e.g. a clone reference's 5 to 15 s; adds a length hint. */
+  idealSeconds?: readonly [number, number];
 }) {
   const active = useContext(AudioActiveContext);
   const source = useAudioSource({ value, onChange, maxRecordSeconds, active });
@@ -179,6 +183,9 @@ export function AudioSourceInput({
   ];
 
   const durationS = preview.durationS ?? value?.durationS ?? null;
+  const lengthHint = idealSeconds
+    ? referenceLengthHint(durationS, idealSeconds)
+    : null;
   const name = status.phase === "uploading" ? status.name : (value?.name ?? "");
 
   return (
@@ -329,6 +336,10 @@ export function AudioSourceInput({
               {usesFirstSeconds % 60 === 0 && usesFirstSeconds >= 60
                 ? `Uses the first ${usesFirstSeconds / 60} min.`
                 : `Uses the first ${usesFirstSeconds} s.`}
+            </p>
+          ) : lengthHint ? (
+            <p className="text-ui-11p5 leading-snug text-muted-foreground">
+              {lengthHint}
             </p>
           ) : null}
         </div>

@@ -1659,6 +1659,7 @@ def test_status_fields_of_a_loaded_model():
         "speed",
         "text_chunk_size",
         "mode",
+        "seed",
     ]
 
 
@@ -3143,3 +3144,78 @@ def test_exact_audio_filename_path_wins_over_an_earlier_suffix_match():
     exact = AudioCppVariant("chosen/Q8_0", (RepoFile(filename),), f"chosen/{filename}")
 
     assert acm.match_variant((archived, exact), f"chosen/{filename}") is exact
+
+
+
+def _spec_rows(*rows):
+    return {"options": {"request": [{"type": "string", **row} for row in rows]}}
+
+
+def _names(family, spec):
+    return [o["name"] for o in acm.option_schema(acm.FAMILIES[family], spec, None)]
+
+
+def test_voice_fold_and_alias_json_rows_hidden_for_tts_only():
+    voices = {"type": "enum", "values": ["a", "b"]}
+    rows = ({"name": "voice_id", **voices}, {"name": "speaker", **voices}, {"name": "speaker_id"})
+    spec = {**_spec_rows(*rows), "ui": {"builtin_voices": ["af_heart", "am_adam"]}}
+    assert _names("kokoro_tts", spec) == ["voice", "speaker_id"]
+    # Magpie reads options.voice_id on v0.9.1, so its row stays the voice control.
+    for family in ("magpie_tts", "neutts"):
+        assert _names(family, _spec_rows(*rows)) == ["voice_id", "speaker", "speaker_id"]
+    spec = _spec_rows(
+        {"name": "lang", "description": "Alias of language."},
+        {"name": "conds", "description": "A JSON array of conditioning clips."},
+        {"name": "steps", "type": "int", "description": "JSON-free steps; Alias of nothing"},
+        {"name": "note", "description": "Plain text."},
+    )
+    assert _names("magpie_tts", spec) == ["steps", "note"]
+    music = _spec_rows({"name": "complete_track_classes", "description": "A JSON list of classes."})
+    assert _names("controlfoley", music) == ["complete_track_classes"]
+
+
+def test_audio_request_inputs_and_seed_row_follow_the_declared_keys():
+    def inputs(keys):
+        model = _speech_model("kokoro_tts", request_keys = keys and frozenset(keys))
+        return audio_cpp_backend.model_info_fields(model)["audio_request_inputs"]
+
+    assert inputs(None) is None and inputs({"speed", "seed"}) == []
+    assert inputs({"language", "instruction", "instruct", "seed"}) == ["instruct", "instruction", "language"]
+    loose = _speech_model("kokoro_tts")
+    strict = _speech_model("kokoro_tts", request_keys = frozenset({"speed"}))
+    seeded = _speech_model("kokoro_tts", request_keys = frozenset({"speed", "seed"}))
+    for workflow in ("speak", "clone", "music", "edit", "convert"):
+        want = workflow in ("speak", "clone", "music")
+        assert acm.takes_seed(loose, workflow) is acm.takes_seed(seeded, workflow) is want
+        assert acm.takes_seed(strict, workflow) is False
+    (row,) = acm.workflow_options(loose, "speak")
+    assert [row[k] for k in ("name", "type", "min", "max", "default")] == ["seed", "int", 0, 2147483647, None]
+    assert acm.workflow_options(strict, "speak") == () and acm.workflow_options(loose, "edit") == ()
+
+
+@pytest.mark.parametrize(
+    "keys, options, sent, ignored",
+    [
+        # A blank seed on a seed model gets a random one.
+        (None, {"seed": ""}, "1234", []),
+        ({"speed", "seed"}, {"seed": 42, "speed": 1.5}, "42", []),
+        ({"speed", "seed"}, {"seed": "42", "speed": 1.5}, "42", []),
+        ({"speed", "seed"}, {"seed": 42.0, "speed": 1.5}, "42", []),
+        # A strict spec without seed: not sent, reported as ignored.
+        ({"speed"}, {"seed": 5}, None, ["seed"]),
+        ({"speed", "seed"}, {"mode": "b", "bogus": 1, "speed": 1.5}, "1234", ["bogus", "mode"]),
+        (None, {"voice": "am_adam", "speed": 1.5, "mode": "b", "seed": 3}, "3", []),
+    ],
+)
+def test_seed_option_and_ignored_options(monkeypatch, keys, options, sent, ignored):
+    monkeypatch.setattr(audio_cpp_music, "random_seed", lambda: 1234)
+    schema = acm.option_schema(acm.FAMILIES["kokoro_tts"], KOKORO_SPEC, None)
+    model = _speech_model("kokoro_tts", options = schema, request_keys = keys and frozenset(keys))
+    b, srv = _backend_with(model, SPEECH_WAV)
+    typed = dict(options)
+    b.generate_audio_response("hi", audio_options = typed)
+    body = srv.calls[0][1]
+    assert typed == options and body.get("seed") == sent and "seed" not in body.get("options", {})
+    if "bogus" in options:
+        assert body["options"] == {"speed": 1.5}
+    assert b.last_generation_stats == {"seed": sent and int(sent), "ignored_options": ignored}

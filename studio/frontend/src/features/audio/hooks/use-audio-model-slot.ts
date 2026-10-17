@@ -29,6 +29,11 @@ import { fetchSystemInfo } from "@/hooks/use-system";
 import { toast } from "@/lib/toast";
 import { getAudioDownloadPlan } from "../api";
 import {
+  type AudioFailureContext,
+  audioFailureActions,
+  audioFailureOf,
+} from "../audio-failure-actions";
+import {
   audioCppRuntimeProblem,
   canTransitionAudioMode,
   exactGgufLoadSelector,
@@ -72,6 +77,12 @@ import type { AudioHostState } from "./audio-host-state";
 import type { SttSidecar } from "./use-stt-sidecar";
 
 const STT_STATUS_POLL_MS = 30_000;
+
+/** What the page lends a failed load's toast action: it owns the selector, device and runtime update. */
+export type AudioLoadFailureHandlers = Pick<
+  AudioFailureContext,
+  "canUpdateRuntime" | "onUpdateRuntime" | "onChooseModel"
+> & { selectCpuDevice: () => void };
 
 export function useAudioModelSlot({
   active,
@@ -145,6 +156,13 @@ export function useAudioModelSlot({
     | "sttStatusRefreshGeneration"
   >) {
   const ttsLoadInFlight = useRef(false);
+  const loadFailureHandlers = useRef<AudioLoadFailureHandlers | null>(null);
+  const setLoadFailureHandlers = useCallback(
+    (handlers: AudioLoadFailureHandlers) => {
+      loadFailureHandlers.current = handlers;
+    },
+    [],
+  );
   const pendingRoutedTtsPick = useRef<{
     repoId: string;
     ggufFilename?: string | null;
@@ -176,6 +194,11 @@ export function useAudioModelSlot({
     generation: number;
   } | null>(null);
   const stagedTtsLoadDeferred = useRef(false);
+  const pickModelVariantRef = useRef<
+    (id: string, quant?: string) => Promise<void>
+  >(async () => {});
+  // Repeats the last load, so "Load into CPU RAM" can retry it.
+  const lastTtsLoad = useRef<((device: "cpu") => Promise<void>) | null>(null);
 
   const loadTtsModel = useCallback(
     async (
@@ -186,6 +209,8 @@ export function useAudioModelSlot({
       audioType?: string | null,
       remoteCodeApproval?: RemoteCodeApproval,
       isGguf?: boolean | null,
+      // "Load into CPU RAM" from a failed load: the device choice has not re-rendered yet.
+      deviceOverride?: "cpu",
     ) => {
       // ?model= is already cleared, so a pick arriving mid-teardown is replayed from the finally below.
       if (ttsLoadInFlight.current || busyRef.current === "generating") {
@@ -233,6 +258,16 @@ export function useAudioModelSlot({
         return;
       }
       const generation = ++ttsLoadGeneration.current;
+      lastTtsLoad.current = (device) =>
+        loadTtsModelRef.current(
+          repoId,
+          ggufFilename,
+          loadId,
+          audioType,
+          remoteCodeApproval,
+          isGguf,
+          device,
+        );
       const controller = new AbortController();
       const loadRequestId = crypto.randomUUID();
       const pending = {
@@ -275,7 +310,7 @@ export function useAudioModelSlot({
             );
           if (controller.signal.aborted || !isCurrent()) return;
         }
-        const wantsCpu = audioDevice === "cpu";
+        const wantsCpu = deviceOverride === "cpu" || audioDevice === "cpu";
         const isGgufLoad = isGgufTtsTarget({ repoId, ggufFilename, loadId, isGguf });
         const res = await loadModel(
           {
@@ -331,6 +366,12 @@ export function useAudioModelSlot({
           const workspace = useAudioWorkspaceStore.getState();
           workspace.rememberModel(loadedWorkflow, repoId);
           if (modeRef.current === "speak") workspace.commitWorkflow(loadedWorkflow);
+          if (res.audio_device_fallback === "cpu" && !wantsCpu) {
+            toast.warning(
+              "No usable GPU, so the model loaded into CPU RAM. Generation will be slower.",
+              { duration: 8000 },
+            );
+          }
           if (
             wantsCpu &&
             !isGgufLoad &&
@@ -347,7 +388,26 @@ export function useAudioModelSlot({
           });
         }
       } catch (error) {
-        if (isCurrent()) {
+        const failure = audioFailureOf(error);
+        const handlers = loadFailureHandlers.current;
+        if (isCurrent() && failure && handlers) {
+          const [action] = audioFailureActions(failure, {
+            ...handlers,
+            deviceIsCpu: deviceOverride === "cpu" || audioDevice === "cpu",
+            cpuUnsupported: musicGenerationRequiresCuda(repoId, audioType),
+            onUseVariant: (variant) =>
+              void pickModelVariantRef.current(repoId, variant),
+            onUseCpu: () => {
+              handlers.selectCpuDevice();
+              reloadOnCpuRef.current();
+            },
+          });
+          toast.error((error as Error).message, {
+            id: toastId,
+            duration: 12000,
+            action: action && { label: action.label, onClick: action.onClick },
+          });
+        } else if (isCurrent()) {
           toast.error(
             error instanceof Error ? error.message : "Model load failed.",
             { id: toastId },
@@ -372,6 +432,12 @@ export function useAudioModelSlot({
 
   const loadTtsModelRef = useRef(loadTtsModel);
   loadTtsModelRef.current = loadTtsModel;
+  /** Repeat the last load into CPU RAM; false when there is none to repeat. */
+  const reloadOnCpu = useCallback(() => {
+    void lastTtsLoad.current?.("cpu");
+    return lastTtsLoad.current !== null;
+  }, []);
+  const reloadOnCpuRef = useRef(reloadOnCpu);
   /** Start a pick that lost the race with a load still settling. Visible pages only: a load started
    *  while hidden outlives the deactivation effect that would cancel it. */
   const replayQueuedTtsPick = useCallback(() => {
@@ -1074,17 +1140,18 @@ export function useAudioModelSlot({
     };
   }, [active, isMac]);
 
-  const pickRecommendedModel = useCallback(
-    async (id: string) => {
+  /** Pick one quant of a repo (a failed load's smaller variant), or the auto choice without one. */
+  const pickModelVariant = useCallback(
+    async (id: string, quant?: string) => {
       if (busyRef.current !== null) return;
       try {
         const listing = await listGgufVariants(id, hfApiToken(getHfToken()));
-        const variant = selectAutoGgufVariant(
-          listing.variants,
-          listing.default_variant,
-        );
+        const wanted = quant?.toLowerCase();
+        const variant = wanted
+          ? listing.variants.find((v) => v.quant.toLowerCase() === wanted)
+          : selectAutoGgufVariant(listing.variants, listing.default_variant);
         if (!variant) {
-          toast.error(`${id} does not publish a runnable GGUF file.`);
+          toast.error(`${id} does not publish a ${quant ? `${quant} file` : "runnable GGUF file"}.`);
           return;
         }
         await handleModelSelect(id, {
@@ -1104,6 +1171,13 @@ export function useAudioModelSlot({
     },
     [busyRef, handleModelSelect],
   );
+  useEffect(() => {
+    pickModelVariantRef.current = pickModelVariant;
+  }, [pickModelVariant]);
+  const pickRecommendedModel = useCallback(
+    (id: string) => pickModelVariant(id),
+    [pickModelVariant],
+  );
 
   return {
     replayQueuedTtsPick,
@@ -1112,6 +1186,9 @@ export function useAudioModelSlot({
     pendingTranscribeRelease,
     handleModelSelect,
     pickRecommendedModel,
+    pickModelVariant,
+    reloadOnCpu,
+    setLoadFailureHandlers,
     handleEject,
     trainedTtsModels,
   };

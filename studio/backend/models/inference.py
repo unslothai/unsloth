@@ -1526,6 +1526,12 @@ class _InferenceRuntimeFields(BaseModel):
             "description sent as instructions)."
         ),
     )
+    audio_request_inputs: Optional[List[str]] = Field(
+        None, description = "instruct/instruction/language fields a strict audio.cpp model reads, else None."
+    )
+    audio_device_fallback: Optional[Literal["cpu"]] = Field(
+        None, description = "'cpu' when the audio.cpp model could not start on the GPU and runs on the CPU."
+    )
     audio_music: Optional[Dict[str, Any]] = Field(
         None,
         description = (
@@ -5841,6 +5847,15 @@ class AudioRunRequest(BaseModel):
     seed: Optional[int] = Field(None, ge = -(2**63), le = 2**64 - 1)
     max_tokens: Optional[int] = Field(None, ge = 1)
     convert: Optional[AudioConvertParams] = None
+    # One take of a music run the page sends take by take; its clips share group_id.
+    take: Optional[int] = Field(None, ge = 1, le = 4)
+    group_id: Optional[str] = Field(None, pattern = r"^[0-9a-f]{32}$")
+
+    @model_validator(mode = "after")
+    def _take_fields(self):
+        if (self.take, self.group_id) != (None, None) and (self.workflow != "music" or self.variations != 1):
+            raise ValueError("take and group_id are for music with variations 1.")
+        return self
 
     @model_validator(mode = "after")
     def _fields_of_the_workflow(self):
@@ -5905,6 +5920,7 @@ class AudioRunClip(BaseModel):
     sample_rate: int
     duration_s: float
     workflow: str
+    seed: Optional[int] = None
 
 
 class AudioRunAudio(BaseModel):
@@ -5920,6 +5936,9 @@ class AudioRunResponse(BaseModel):
     model: str
     audio: Optional[AudioRunAudio] = Field(
         None, description = "The audio inline, only when saving it to history failed"
+    )
+    ignored_options: List[str] = Field(
+        default_factory = list, description = "Sent options the model does not take; not sent"
     )
 
 
