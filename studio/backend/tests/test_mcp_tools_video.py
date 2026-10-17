@@ -105,6 +105,7 @@ def test_a_completed_job_returns_its_thumbnail_and_a_link_never_the_mp4(monkeypa
             "thumbnail_inline": True,
         },
         "recipe": None,
+        "download": None,
         "export": None,
         "jobs": None,
     }

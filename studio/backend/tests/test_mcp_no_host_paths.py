@@ -34,6 +34,7 @@ from .test_mcp_tools_audio import PAYLOADS as AUDIO_PAYLOADS
 from .test_mcp_tools_audio import TRANSCRIPT, VERBOSE
 from .test_mcp_tools_cancel import PAYLOADS as CANCEL_PAYLOADS
 from .test_mcp_tools_datasets import PAYLOADS as DATASETS_PAYLOADS
+from .test_mcp_tools_datasets_upload import PAYLOADS as UPLOAD_PAYLOADS
 from .test_mcp_tools_images import PAYLOADS as IMAGES_PAYLOADS
 from .test_mcp_tools_loading import PAYLOADS as LOADING_PAYLOADS
 from .test_mcp_tools_models import PAYLOADS as MODELS_PAYLOADS
@@ -99,6 +100,8 @@ CASES: dict[str, Any] = {
         (DATASETS_PAYLOADS, {"action": "list"}),
         (DATASETS_PAYLOADS, {"action": "check_format", "name": "a/b"}),
         (DATASETS_PAYLOADS, {"action": "status", "repo_id": "a/b"}),
+        (UPLOAD_PAYLOADS, {"action": "upload", "rows": [{"text": "hi"}]}),
+        (UPLOAD_PAYLOADS, {"action": "upload", "data_base64": "YSxi", "filename": "a.csv"}),
     ],
     "transcribe": (TRANSCRIBE_PAYLOADS, {"audio": WAV_INPUT, "timestamps": True, "language": "en"}),
     "generate_audio": (AUDIO_PAYLOADS, {"workflow": "clone", "text": "hi", "reference": WAV_INPUT}),

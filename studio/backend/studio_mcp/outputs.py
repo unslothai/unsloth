@@ -331,6 +331,17 @@ class RecipeInfo(ToolOutput):
     data_rows: Optional[list[dict[str, Any]]] = None
 
 
+class DownloadRef(ToolOutput):
+    # What get_job(kind="download") and cancel(kind="model_download") take; None for a speech-to-text download.
+    id: Optional[RouteText] = None
+    model: Optional[RouteText] = None
+    kind: Optional[RouteText] = None
+    variant: Optional[RouteText] = None
+    status: RouteText
+    attached: bool = False
+    error: Optional[RouteText] = None
+
+
 class ExportInfo(ToolOutput):
     format: RouteText
     # Relative to Studio's exports folder, or only a name; never a host path.
@@ -346,6 +357,7 @@ class JobStatus(ToolOutput):
     error: Optional[RouteText] = None
     video: Optional[VideoInfo] = None
     recipe: Optional[RecipeInfo] = None
+    download: Optional[DownloadRef] = None
     export: Optional[ExportInfo] = None
     jobs: Optional[list[JobSummary]] = None
 
@@ -355,6 +367,8 @@ class LocalDataset(ToolOutput):
     label: RouteText
     source: RouteText = "local"
     rows: Optional[int] = None
+    # What config.local_datasets takes for any account; ``id`` alone works for the owner only.
+    ref: Optional[RouteText] = None
 
 
 class CachedDataset(ToolOutput):
@@ -379,11 +393,32 @@ class DatasetDownload(ToolOutput):
     error: Optional[RouteText] = None
 
 
+class DatasetUpload(ToolOutput):
+    id: RouteText
+    filename: RouteText
+    # The handle config.local_datasets takes; never the stored path.
+    ref: RouteText
+
+
+class ImageDatasetUpload(ToolOutput):
+    # What start_training kind "diffusion" takes as config.data_dir.
+    name: RouteText
+    image_count: Optional[int] = None
+    caption_count: Optional[int] = None
+    uploaded: Optional[int] = None
+
+
 class DatasetsResult(ToolOutput):
     local: Optional[list[LocalDataset]] = None
     cached: Optional[list[CachedDataset]] = None
     format: Optional[DatasetFormat] = None
     download: Optional[DatasetDownload] = None
+    uploaded: Optional[DatasetUpload] = None
+    image_dataset: Optional[ImageDatasetUpload] = None
+
+
+ConfigScalar = Union[StrictBool, StrictInt, StrictFloat, RouteText]
+ConfigValue = Union[ConfigScalar, list[ConfigScalar], dict[str, ConfigScalar]]
 
 
 class TrainingStarted(ToolOutput):
@@ -391,6 +426,8 @@ class TrainingStarted(ToolOutput):
     job_id: Optional[RouteText] = None
     status: RouteText
     message: Optional[RouteText] = None
+    # validate_only: the config as the route will read it, without paths or secrets.
+    config: Optional[dict[str, ConfigValue]] = None
     # What cancel(kind="training_start") takes while the job has not begun.
     start_request_id: Optional[RouteText] = None
 
