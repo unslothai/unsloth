@@ -1826,12 +1826,12 @@ def test_flux3_family_decides_generation_defaults_over_file_names():
     )
 
 
-def _seeded_snapshot(tmp_path, repo = "black-forest-labs/flux-3-image-klein"):
+def _seeded_snapshot(tmp_path, repo = "black-forest-labs/flux-3-image-klein", variant = "distilled"):
     """What a download planned around a hosted pre-quantized seed leaves in the HF cache: the official layout with
     only the transformer config, no dense transformer shards."""
     snapshot = tmp_path / "hub" / f"models--{repo.replace('/', '--')}" / "snapshots" / "abc123"
     snapshot.parent.mkdir(parents = True)
-    _official_layout(tmp_path, "distilled", True).rename(snapshot)
+    _official_layout(tmp_path, variant, True).rename(snapshot)
     (snapshot / "transformer" / "model.safetensors").unlink()
     (snapshot.parent.parent / "refs").mkdir()
     (snapshot.parent.parent / "refs" / "main").write_text("abc123")
@@ -1962,6 +1962,60 @@ def test_the_auto_switch_loads_a_seeded_flux3_snapshot_by_repo(tmp_path, monkeyp
     asyncio.run(mas._start_load(arb.DIFFUSION, MediaModelPick(repo, str(snapshot)), "s"))
     asyncio.run(mas._start_load(arb.DIFFUSION, MediaModelPick("local/full", str(full)), "s"))
     assert seen == [(repo, repo, False), (str(full), "local/full", False)]
+
+
+@pytest.mark.parametrize(
+    "variant, family", [("distilled", FLUX3_KLEIN_FAMILY_NAME), ("base", FLUX3_KLEIN_BASE_FAMILY_NAME)]
+)
+def test_the_auto_switch_keeps_the_manifest_family_of_an_opaque_seeded_repo(
+    tmp_path, monkeypatch, variant, family
+):
+    # The scanner names an opaquely named snapshot's family from its modular_model_index.json; the repo id the switch
+    # loads by carries no such evidence, so the load must be told the family the manifest declared.
+    import asyncio
+
+    import routes.inference as route
+    from core.inference import gpu_arbiter as arb
+    from core.inference import media_auto_switch as mas
+    from core.inference.diffusion_families import detect_family_for_pick
+    from core.inference.media_model_index import MediaModelPick
+
+    seen = []
+
+    async def _load(request, subject, user_initiated = True):
+        seen.append(request)
+
+    monkeypatch.setattr(route, "load_diffusion_model_gated", _load)
+    repo = "someone/opaque-image-model"
+    snapshot = _seeded_snapshot(tmp_path, repo = repo, variant = variant)
+    assert detect_family_for_pick(str(snapshot)).name == family
+    assert detect_family_for_pick(repo) is None
+    asyncio.run(mas._start_load(arb.DIFFUSION, MediaModelPick(repo, str(snapshot)), "s"))
+    (request,) = seen
+    assert request.model_path == repo
+    assert request.family_override == family
+    assert detect_family_for_pick(request.model_path, None, request.family_override).name == family
+
+
+def test_the_auto_switch_adds_no_family_to_a_named_seeded_repo(tmp_path, monkeypatch):
+    # A repo id that already names the family the manifest declares loads exactly as before (detected, not requested).
+    import asyncio
+
+    import routes.inference as route
+    from core.inference import gpu_arbiter as arb
+    from core.inference import media_auto_switch as mas
+    from core.inference.media_model_index import MediaModelPick
+
+    seen = []
+
+    async def _load(request, subject, user_initiated = True):
+        seen.append(request)
+
+    monkeypatch.setattr(route, "load_diffusion_model_gated", _load)
+    repo = "black-forest-labs/flux-3-image-klein"
+    snapshot = _seeded_snapshot(tmp_path, repo = repo)
+    asyncio.run(mas._start_load(arb.DIFFUSION, MediaModelPick(repo, str(snapshot)), "s"))
+    assert [(r.model_path, r.family_override) for r in seen] == [(repo, None)]
 
 
 def test_flux3_reference_edits_use_the_measured_activations(monkeypatch):
