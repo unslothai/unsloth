@@ -163,6 +163,21 @@ def test_would_evict_matches_acquire_for(monkeypatch, policy, fits, current, tar
     assert predicted == ("evict-chat" in calls)
 
 
+def test_a_fit_swap_leaves_the_eviction_row_to_the_residency_code(env, monkeypatch):
+    # When they fit already logs the chat eviction as "evicted"; one eviction, one row.
+    monkeypatch.setattr(arb, "would_evict", lambda *a, **k: True)
+
+    async def _go():
+        swap = await cs.save_chat_kv_before_swap(arb.DIFFUSION, "image", policy = "fit")
+        try:
+            await asyncio.to_thread(arb.acquire_for, arb.DIFFUSION)
+        finally:
+            swap.close()
+
+    asyncio.run(_go())
+    assert kw._kv_resume["origin"] == "swap" and env.rows == []
+
+
 @pytest.mark.parametrize("owner, media", [(arb.DIFFUSION, "image"), (arb.VIDEO, "video")])
 def test_the_save_runs_before_the_acquire_and_commits_on_the_eviction(env, owner, media):
     _load(owner, media)
