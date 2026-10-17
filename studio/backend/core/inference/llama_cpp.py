@@ -486,6 +486,7 @@ from core.tool_healing import (
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.child_stdio import utf8_child_env
 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
+from utils.prebuilt.runtime_libs import oneapi_lib_dirs as _oneapi_lib_dirs
 from utils.log_retention import prune_log_dir
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
@@ -17543,6 +17544,7 @@ class LlamaCppBackend:
             if use_system_rocm and not LlamaCppBackend._prefers_bundle_only_rocm(binary):
                 lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))
             lib_dirs.append(binary_dir)
+            lib_dirs.extend(_oneapi_lib_dirs(binary_dir))
             _arch = platform.machine()  # x86_64, aarch64, etc.
 
             # Pip-installed nvidia CUDA runtime libs. The prebuilt binary links
