@@ -563,6 +563,15 @@ def _kept_slot_report(slot: Any) -> dict:
     return {"kind": "chat", "model": str(getattr(request, "model_path", "") or "")}
 
 
+def media_fit_kwargs(owner: str, request: Any, gpu_ordinal: Optional[int]) -> dict:
+    """The acquire_for keywords for an image or video load: the policy and, when known, what it will hold."""
+    policy = current_policy()
+    if policy == "off":
+        return {}
+    need = media_load_need_mib(owner, request, gpu_ordinal)
+    return {"policy": policy, **({"need_mib": need} if need else {})}
+
+
 def free_for(
     owner: str,
     gpu_ids: Optional[Iterable[int]],
@@ -627,7 +636,7 @@ def coreside_locked(
         if policy == "always":
             raise ChatLoadInFlightRefusal()
         evict_or_refuse([arb.CHAT])
-    if owner == arb.CHAT:
+    if owner == arb.CHAT and not need_mib:
         if evict_first:
             # No estimate before launch (a non-GGUF load, or a load with no retry to make room).
             return evict_or_refuse(list(kept))

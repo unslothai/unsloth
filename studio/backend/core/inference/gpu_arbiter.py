@@ -46,6 +46,8 @@ _prior_account: Optional[str] = None
 _residents: dict[str, Optional[frozenset[int]]] = {}
 # (account, prior account) for residents other than ``_owner``, whose pair lives in the globals above.
 _accounts: dict[str, tuple[Optional[str], Optional[str]]] = {}
+# What each image or video resident was admitted with under When they fit / Always (gpu_residency.MediaNeed).
+_media_needs: dict[str, dict] = {}
 
 # Phrases the refusal copy always contains, for readers that lose the X-Unsloth-Refusal header.
 MULTI_MODEL_REFUSAL_MARKERS = ("is set to Always", "is set to keep loaded")
@@ -302,6 +304,7 @@ def _drop_resident(owner: str) -> None:
     if owner not in _residents:
         return
     del _residents[owner]
+    _media_needs.pop(owner, None)
     if owner == _owner:
         if _residents:
             _owner = next(reversed(_residents))
@@ -395,9 +398,11 @@ def acquire_for_request(
     register = None,
     **kwargs,
 ) -> Any:
+    from core.inference.gpu_residency import ChatLoadInFlightRefusal
+
     try:
         return acquire_for(owner, register, **kwargs)
-    except GpuBusyForAnotherAccountError as exc:
+    except (GpuBusyForAnotherAccountError, ChatLoadInFlightRefusal) as exc:
         raise exc.as_http_exception() from exc
 
 
@@ -413,6 +418,8 @@ def acquire_for(
     policy: str = "off",
     evicted: Optional[list] = None,
     gpu_ids: Optional[Iterable[int]] = None,
+    need_mib: Optional[dict] = None,
+    evict_first: bool = False,
 ) -> Any:
     """Make ``owner`` resident, evicting every other resident under the default policy.
 
@@ -424,6 +431,10 @@ def acquire_for(
     chat, image or video model. ``alongside`` is unrelated: it only decides whether the owner
     account is re-claimed. ``evicted`` collects ``{kind, model}`` for each model an evictor
     unloads. ``gpu_ids`` are the visible device ordinals the owner will use, when known.
+
+    Under "fit" and "always" only residents on the same GPUs can be evicted (gpu_residency.coreside_locked):
+    ``need_mib`` is what an image or video load will hold per physical GPU (None: unknown, so it evicts first),
+    and ``evict_first`` makes a chat load with no estimate before launch evict as "off" does.
     """
     global _owner, _owner_epoch, _owner_account, _prior_account
     if owner not in _EVICTORS:
@@ -434,11 +445,28 @@ def acquire_for(
     with _lock:
         if expected_current is not None and (_owner, _owner_epoch) != expected_current:
             raise OwnerChangedError("The resident GPU model changed; retry the load.")
-        if register is not None or replacing:
+        coreside = policy != "off" and owner in _KEPT_UNDER_ALWAYS
+        if (register is not None or replacing) and not coreside:
             raise_if_other_accounts_active(acting)
+        elif (register is not None or replacing) and not (owner == CHAT and alongside):
+            # Only another account's work on this model blocks reloading it; residents it would evict are
+            # checked one by one.
+            from core.inference.gpu_residency import foreign_on
+
+            busy = foreign_on(owner, acting)
+            if busy:
+                raise GpuBusyForAnotherAccountError(owner, busy)
         _sync_from_view()
         prev_owner, prev_pair = _owner, (_owner_account, _prior_account)
         others = [name for name in _residents if name != owner]
+        if others and coreside:
+            from core.inference.gpu_residency import coreside_locked
+
+            coreside_locked(
+                owner, policy = policy, need_mib = need_mib, gpu_ids = gpu_ids, allow_evict = allow_evict,
+                evict_first = evict_first, acting = acting, evicted = evicted,
+            )
+            others = []
         if others:
             if not allow_evict:
                 raise GpuOwnerBusyError(others[-1])
@@ -458,7 +486,7 @@ def acquire_for(
                 _EVICTORS[name]()
                 note_evictions(unloading, sink)
                 _drop_resident(name)
-        if owner != VIDEO:
+        if owner != VIDEO and not (coreside and VIDEO in _residents):
             # A resident H3 sd-server sits outside every owner's teardown.
             _release_idle_video_servers(f"GPU acquired for {owner}")
         # Records who LOADED the model; a plain re-assert must not hand it to whoever asked last.
@@ -477,9 +505,15 @@ def acquire_for(
         _owner = owner
         _residents.pop(owner, None)
         known = physical_gpu_ids(gpu_ids)
-        _residents[owner] = known
+        _residents[owner] = known if known is not None or not need_mib else frozenset(need_mib)
         _owner_epoch += 1
         result = register() if register is not None else None
+        if owner in (DIFFUSION, VIDEO) and register is not None:
+            # The price media_held_mib() reports for this resident; unpriced residents are evicted to make room.
+            if coreside and need_mib:
+                _media_needs[owner] = need_mib
+            else:
+                _media_needs.pop(owner, None)
         # A raising registration loaded nothing and must not take residency.
         if claims:
             _prior_account, _owner_account = _owner_account, acting
