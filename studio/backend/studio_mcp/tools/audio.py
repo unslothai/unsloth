@@ -47,7 +47,10 @@ async def _clip_contents(caller: Caller, clip: AudioClip) -> list[Any]:
 
 
 async def _checked_options(
-    caller: Caller, workflow: str, options: dict[str, Any], model: Optional[str] = None
+    caller: Caller,
+    workflow: str,
+    options: dict[str, Any],
+    model: Optional[str] = None,
 ) -> dict[str, Any]:
     """``options`` with each enum value spelled as the loaded model lists it; the route drops a value it does not list, so that is refused here instead."""
     status = await try_json(caller, "/api/inference/status")
