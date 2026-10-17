@@ -5,6 +5,8 @@
 
 import json
 import re
+import threading
+import time
 
 import pytest
 
@@ -246,3 +248,45 @@ def test_a_spec_dir_read_is_capped_and_ignores_bad_files(env, monkeypatch):
     (env["specs"] / "evil.json").write_text(json.dumps({"family": "../x", "packages": []}))
     index = catalog._spec_index(env["specs"])
     assert set(index) == {"fish_drama3", "kokoro_tts"}
+
+
+def test_a_spec_with_an_empty_gguf_package_does_not_break_the_catalog(env):
+    bad = {"family": "empty_pkg", "tasks": ["tts"], "packages": [{"format": "gguf", "files": []}]}
+    (env["specs"] / "empty_pkg.json").write_text(json.dumps(bad))
+    payload = catalog.audio_catalog_payload()
+    assert payload.source == "hub"
+    assert _rows(payload)[f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF"].workflows == ["speak"]
+
+
+def test_concurrent_cold_callers_share_one_build(env, monkeypatch):
+    build, builds = catalog._build, []
+
+    def slow(*args):
+        builds.append(1)
+        time.sleep(0.2)
+        return build(*args)
+
+    monkeypatch.setattr(catalog, "_build", slow)
+    threads = [threading.Thread(target = catalog.audio_catalog_payload) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(builds) == 1
+
+
+def test_a_build_with_a_late_family_probe_is_retried_sooner(env, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(catalog.time, "monotonic", lambda: clock[0])
+    # Every probe misses the deadline, so New-TTS-GGUF stays unplaced in a Hub answer.
+    monkeypatch.setattr(catalog, "_bounded", lambda jobs: {})
+    for f in env["specs"].iterdir():
+        f.unlink()
+    payload = catalog.audio_catalog_payload()
+    assert payload.source == "hub"
+    assert not _rows(payload)[f"{AUDIO_CPP_REPO}/New-TTS-GGUF"].workflows
+    hub_calls = env["calls"]["hub"]
+    acm._listing_cache.clear()
+    clock[0] += catalog._DEGRADED_TTL_SECONDS + 1
+    catalog.audio_catalog_payload()
+    assert env["calls"]["hub"] == hub_calls + 1

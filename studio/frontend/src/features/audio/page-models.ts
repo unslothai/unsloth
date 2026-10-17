@@ -13,6 +13,7 @@ import {
   isSpeakAndCloneFamilyId,
 } from "./audio-cpp-catalog";
 import {
+  audioTaskFor,
   isMusicGenerationModel,
   macTtsCatalogChoiceIsRunnable,
 } from "./catalog";
@@ -99,7 +100,10 @@ function pagesFor(
     return known(row.audioWorkflows);
   }
   const entry = catalogEntry(row.id, prefs);
-  if (entry) return entry.supported ? known(entry.workflows) : [];
+  if (entry?.supported) return known(entry.workflows);
+  // An unsupported entry can mean the backend could not tell the family yet, so it hides only
+  // rows the bundled seed does not know.
+  if (entry && !audioCppModelFor(row.id) && !audioTaskFor(row.id)) return [];
   if (row.audioType === AUDIO_CPP_SEP_AUDIO_TYPE) return ["separate"];
   // MiniMax Music 3 is tagged text-to-speech on the Hub.
   if (isMusicGenerationModel(row.id, row.audioType)) return ["music"];

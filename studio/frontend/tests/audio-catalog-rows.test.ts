@@ -188,6 +188,24 @@ test("the picker renders the More group with ListLabel through the row filter", 
     src,
     /\.filter\(\(model\) => !rowFilter \|\| rowFilter\(\{ id: model\.id \}\)\)/,
   );
+  // The format and fit filters the Recommended rows obey apply to More rows too.
+  const more = src.slice(
+    src.indexOf("const moreRows"),
+    src.indexOf("const recommendedMeta"),
+  );
+  assert.match(
+    more,
+    /matchesFormatFilter\(model\.id, model\.isGguf \?\? true, formatFilter\)/,
+  );
+  assert.match(
+    more,
+    /!fitOnDeviceOnly \|\|\s*cachedIdFor\(row\.id\) !== null \|\|\s*hfModelFitsDevice\(/,
+  );
+  // An empty Recommended list still shows the More group.
+  assert.match(
+    src,
+    /recommendedRows\.length === 0 && moreRows\.length === 0 \?/,
+  );
   const selector = readSrc(
     "features/model-picker/components/model-selector.tsx",
   );

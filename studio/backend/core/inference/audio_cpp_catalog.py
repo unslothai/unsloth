@@ -42,6 +42,7 @@ _NO_FAMILY = "Unsloth Studio could not tell which model family this is."
 _NO_PAGE = "Unsloth Studio has no Audio page for this model yet."
 
 _cache_lock = threading.Lock()
+_build_lock = threading.Lock()
 _cache: dict[tuple, tuple[float, float, AudioCatalogResponse]] = {}
 
 
@@ -57,15 +58,18 @@ def audio_catalog_payload(*, network: bool = True) -> AudioCatalogResponse:
         key = (bool(network), str(specs_dir), specs_dir.stat().st_mtime if specs_dir else None)
     except OSError:
         key = (bool(network), None, None)
-    with _cache_lock:
-        hit = _cache.get(key)
-    if hit is not None and time.monotonic() - hit[0] < hit[1]:
-        payload = hit[2]
-    else:
-        payload = _build(network, specs_dir)
-        ttl = _LIVE_TTL_SECONDS if payload.source == "hub" else _DEGRADED_TTL_SECONDS
+    # One build at a time: concurrent cold callers wait for it rather than each listing the Hub.
+    with _build_lock:
         with _cache_lock:
-            _cache[key] = (time.monotonic(), ttl, payload)
+            hit = _cache.get(key)
+        if hit is not None and time.monotonic() - hit[0] < hit[1]:
+            payload = hit[2]
+        else:
+            payload, complete = _build(network, specs_dir)
+            live = payload.source == "hub" and complete
+            ttl = _LIVE_TTL_SECONDS if live else _DEGRADED_TTL_SECONDS
+            with _cache_lock:
+                _cache[key] = (time.monotonic(), ttl, payload)
     # Downloads change faster than the listing; downloaded_models() keeps its own short cache.
     try:
         ids = {m.id.lower() for m in acm.downloaded_models()}
@@ -122,8 +126,8 @@ def _spec_targets(index: dict[str, dict], folders: Sequence[str]) -> tuple[dict,
                 continue  # other formats are conversion sources
             repo = str({**base, **_dict(package.get("download"))}.get("repo") or "").strip()
             if not repo or repo.lower() == AUDIO_CPP_REPO.lower():
-                files = package.get("files") if isinstance(package.get("files"), list) else [""]
-                where = str(package.get("target_directory") or files[0] or "")
+                files = package.get("files") if isinstance(package.get("files"), list) else []
+                where = str(package.get("target_directory") or (files[:1] or [""])[0] or "")
                 folder = by_lower.get(where.replace("\\", "/").strip("/").split("/")[0].lower())
                 if folder:
                     umbrella.setdefault(folder, family)
@@ -292,7 +296,8 @@ def _row(
     )
 
 
-def _build(network: bool, specs_dir: Optional[Path]) -> AudioCatalogResponse:
+def _build(network: bool, specs_dir: Optional[Path]) -> tuple[AudioCatalogResponse, bool]:
+    """The catalog, and whether every family probe answered: a late one leaves a folder unplaced."""
     index = _spec_index(specs_dir)
     files: list[RepoFile] = []
     from_hub = False
@@ -342,7 +347,8 @@ def _build(network: bool, specs_dir: Optional[Path]) -> AudioCatalogResponse:
             probes[name] = lambda path = main.main_file, size = size: acm.read_remote_header(
                 AUDIO_CPP_REPO, path, False, size = size or None
             )
-    for name, header in _bounded(probes).items():
+    answered = _bounded(probes)
+    for name, header in answered.items():
         if header is not None and header.is_audio_cpp and header.family:
             found[name] = (header.family, header.spec if isinstance(header.spec, dict) else None)
     if source == "hub":
@@ -364,9 +370,10 @@ def _build(network: bool, specs_dir: Optional[Path]) -> AudioCatalogResponse:
     for repo in sorted(community, key = str.lower):
         family = community[repo]
         rows.append(_row(repo, repo, "", family, index.get(family), listings.get(repo) or []))
-    return AudioCatalogResponse(
+    payload = AudioCatalogResponse(
         source = source,
         fetched_at = fetched_at,
         runtime_specs = specs_dir is not None,
         models = rows,
     )
+    return payload, len(answered) == len(probes)
