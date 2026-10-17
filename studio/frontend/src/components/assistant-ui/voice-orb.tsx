@@ -289,14 +289,14 @@ const VoiceDecisionStrip: FC = () => {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -4 }}
             transition={{ duration: 0.2 }}
-            className="flex items-center gap-1.5 rounded-full border border-border/60 bg-background/60 px-2.5 py-1 text-ui-12 text-foreground/60"
+            className="flex items-center gap-1.5 rounded-full border border-border/60 bg-background/70 dark:bg-background/55 px-2.5 py-1 text-ui-12 text-foreground/60"
           >
             <span className="uppercase tracking-[0.12em] text-foreground/40">{pill.label}</span>
-            <span className="max-w-[220px] truncate text-foreground/75">{pill.value}</span>
+            <span className="max-w-[calc(14rem*var(--ui-space-scale,1))] truncate text-foreground/75">{pill.value}</span>
             {pill.p !== null && (
-              <span className="h-1 w-10 overflow-hidden rounded-full bg-foreground/10">
+              <span className="h-1 w-10 overflow-hidden rounded-full bg-muted">
                 <span
-                  className="block h-full rounded-full bg-foreground/50"
+                  className="block h-full rounded-full bg-muted-foreground"
                   style={{ width: `${Math.round(pill.p * 100)}%` }}
                 />
               </span>
