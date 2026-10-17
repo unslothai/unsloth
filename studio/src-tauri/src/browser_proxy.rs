@@ -406,7 +406,9 @@ fn per_protocol(
 async fn routes(proxies: &Proxies, request: &Request) -> Vec<Option<Upstream>> {
     let destination: Option<http::Uri> = match &request.forward {
         Some(forward) => forward.url.as_str().parse().ok(),
-        // Tunnels carry TLS, so they take the HTTPS proxy.
+        // What still tunnels to port 80 is cleartext (a `ws://` socket), so it takes the HTTP proxy.
+        None if request.port == 80 => format!("http://{}/", request.host).parse().ok(),
+        // Other tunnels carry TLS, so they take the HTTPS proxy.
         None => format!("https://{}:{}/", request.host, request.port)
             .parse()
             .ok(),
@@ -1493,6 +1495,20 @@ mod tests {
         (proxies, seen)
     }
 
+    /// As `system_proxy_answering`, with only an HTTP proxy set, as with System Settings'
+    /// "Web Proxy (HTTP)" alone.
+    async fn http_proxy_answering(answer: &'static str) -> (Matcher, JoinHandle<Option<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://u:p@{}", listener.local_addr().unwrap());
+        let seen = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.ok()?;
+            let (head, _) = read_head(&mut stream).await?;
+            stream.write_all(answer.as_bytes()).await.ok()?;
+            Some(head)
+        });
+        (Matcher::builder().http(&address).build(), seen)
+    }
+
     async fn exchange(proxies: Matcher, request: &str) -> String {
         exchange_all(vec![proxies], request).await
     }
@@ -1557,19 +1573,7 @@ mod tests {
 
     #[tokio::test]
     async fn plain_http_tunnels_are_forwarded_as_http_requests() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = format!("http://u:p@{}", listener.local_addr().unwrap());
-        let seen = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.ok()?;
-            let (head, _) = read_head(&mut stream).await?;
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\n\r\nhello")
-                .await
-                .ok()?;
-            Some(head)
-        });
-        // Only an HTTP proxy is set, as with System Settings' "Web Proxy (HTTP)" alone.
-        let proxies = Matcher::builder().http(&address).build();
+        let (proxies, seen) = http_proxy_answering("HTTP/1.1 200 OK\r\n\r\nhello").await;
         let host = format!("Host: {UNRESOLVABLE}\r\n");
         let inner = format!("GET /a?q=1 HTTP/1.1\r\n{host}Connection: keep-alive\r\n\r\n");
         let response = exchange_in_tunnel(proxies, &format!("{UNRESOLVABLE}:80"), &inner).await;
@@ -1583,10 +1587,12 @@ mod tests {
 
     #[tokio::test]
     async fn websocket_tunnels_to_port_80_stay_tunnels() {
-        let (proxies, seen) = system_proxy_answering("HTTP/1.1 200 OK\r\n\r\n").await;
+        // A `ws://` socket takes the HTTP proxy, which is all that is set here.
+        let (proxies, seen) = http_proxy_answering("HTTP/1.1 200 OK\r\n\r\n").await;
         let inner = "GET /ws HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
         let target = format!("{UNRESOLVABLE}:80");
-        exchange_in_tunnel(proxies, &target, inner).await;
+        // The proxy took the tunnel, so no refusal comes back.
+        assert_eq!(exchange_in_tunnel(proxies, &target, inner).await, "");
         let auth = "Proxy-Authorization: Basic dTpw";
         let expected = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n{auth}\r\n\r\n");
         assert_eq!(seen.await.unwrap().as_deref(), Some(expected.as_str()));
