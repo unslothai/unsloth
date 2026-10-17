@@ -41,6 +41,8 @@ export interface RunnerEvents {
   onProgress: (text: string) => void;
   /** Chat's model could not be put back after the sweep; the finished run is still kept. */
   onRestoreError?: (message: string) => void;
+  /** False once another runner holds the lease: its loads own the server, so skip the restore. */
+  ownsServer?: () => boolean;
 }
 
 export class BenchSetupError extends Error {}
@@ -218,6 +220,8 @@ async function streamOnce(
   // undercounts because one SSE chunk can carry more than one token.
   let usageTokens: number | null = null;
   let timings: Record<string, unknown> = {};
+  // A stream cut before [DONE] or a finish_reason measured only a prefix.
+  let finished = false;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -232,6 +236,7 @@ async function streamOnce(
         .filter((l) => l.startsWith("data:"))
         .map((l) => l.slice(5).trim())
         .join("\n");
+      if (data === "[DONE]") finished = true;
       if (!data || data === "[DONE]") continue;
       let chunk: Record<string, unknown>;
       try {
@@ -250,6 +255,7 @@ async function streamOnce(
         ? (chunk.choices as Record<string, unknown>[])
         : [];
       for (const choice of choices) {
+        if (choice.finish_reason) finished = true;
         const delta = (choice.delta ?? {}) as Record<string, unknown>;
         const piece = [
           delta.content,
@@ -263,6 +269,7 @@ async function streamOnce(
       }
     }
   }
+  if (!finished) throw new Error("The stream closed before the reply finished");
   return {
     ttftMs,
     wallMs: performance.now() - started,
@@ -552,7 +559,12 @@ export async function runBenchmark(
   } finally {
     if (run) run.finishedAt = Date.now();
     // Restore whenever chat's model may have changed: a variant ran, or the initial swap did.
-    if (config.restoreAfter && original.active_model && (run || swapped)) {
+    if (
+      config.restoreAfter &&
+      original.active_model &&
+      (run || swapped) &&
+      events.ownsServer?.() !== false
+    ) {
       events.onProgress("Restoring your original settings");
       // Restore the model chat had open, not the one a tuneModel run swapped in.
       // Keep the finished run, but tell the user if chat was left on the benchmark model.

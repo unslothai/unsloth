@@ -475,6 +475,8 @@ export interface ServedStatus {
   parallel_slots?: number | null;
   /** A virtualised Mac GPU: every load is rewritten to run on the CPU. */
   gpu_placement_paravirtual?: boolean | null;
+  /** The context window the server runs, after any fit clamp. */
+  context_length?: number | null;
 }
 
 const NGRAM_FLAGS = [
@@ -715,6 +717,16 @@ export function servedMismatch(
     st.parallel_slots < wantSlots
   ) {
     return `Studio served ${st.parallel_slots} parallel slot${st.parallel_slots === 1 ? "" : "s"} instead of ${wantSlots}`;
+  }
+  // A load can clamp the context to what fits, so a row would chart a smaller window under its label.
+  const wantCtx = variant.load.max_seq_length;
+  if (
+    wantCtx != null &&
+    wantCtx > 0 &&
+    typeof st.context_length === "number" &&
+    st.context_length < wantCtx
+  ) {
+    return `Studio served a ${st.context_length}-token context instead of ${wantCtx}`;
   }
   return null;
 }
