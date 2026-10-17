@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -922,6 +923,31 @@ def test_a_post_rename_build_ignores_the_legacy_depth_variable(tmp_path, monkeyp
     base = backend._mamba_recurrent_state_bytes(n_parallel = 4)
     assert base > 0
     assert set(charged) == {16 * base}
+
+
+@pytest.mark.parametrize("depth", ["32.0", "32 tokens", "32abc", " 32"])
+def test_an_inherited_draft_depth_reads_like_std_stoi(tmp_path, monkeypatch, depth):
+    # The depth guard (_is_positive_int) reads std::stoi's leading digits, as arg.cpp
+    # does; converting what it admitted with int() raised on "32.0" and aborted the
+    # GPU planning, so the rollback reserve must come from the same 32 the child drafts.
+    backend, gguf, _sidecar = _hybrid_reserve_backend(
+        tmp_path,
+        caps = {
+            "mtp_token": "draft-mtp",
+            "supports_ngram_mod": True,
+            "spec_draft_n_max_flag": "--spec-draft-n-max",
+            "spec_draft_n_max_default": 16,
+            "supports_kv_unified": True,
+        },
+    )
+    monkeypatch.delenv("LLAMA_ARG_DRAFT_MAX", raising = False)
+    monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_N_MAX", depth)
+
+    charged = _recorded_mtp_reserve_std(backend, gguf)
+
+    base = backend._mamba_recurrent_state_bytes(n_parallel = 4)
+    assert base > 0
+    assert set(charged) == {32 * base}
 
 
 def test_an_unreadable_help_budgets_the_deepest_shipped_draft_depth(tmp_path):
@@ -3279,7 +3305,7 @@ def test_the_launched_load_mode_is_recorded_in_the_memory_state(tmp_path, monkey
     monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
     monkeypatch.setattr(mm, "should_mlock", lambda: False)
 
-    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, "/nonexistent"))
     caps["supports_load_mode"] = True
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 40000, 48000)])
     with patch.object(LlamaCppBackend, "probe_server_capabilities", lambda *a, **k: caps):
@@ -3316,7 +3342,7 @@ def test_a_fit_derived_load_mode_is_recorded_too(tmp_path, monkeypatch):
     monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
     monkeypatch.setattr(mm, "should_mlock", lambda: False)
 
-    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, "/nonexistent"))
     caps["supports_load_mode"] = True
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 40000, 48000)])
     with (
@@ -4811,7 +4837,11 @@ def _cache_launch(
         dict(lazy or {}),
         int(expert_gib * _GIB) if moe else 0,
     )
-    full_caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    # Fallback capabilities, never the host's real llama-server: an installed build
+    # answering supports_fit_ctx and the like would change what these fixtures emit.
+    full_caps = dict(
+        LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, "/nonexistent")
+    )
     full_caps.update(_CACHE_CAPS_ON if caps is None else caps)
     backend.probe_server_capabilities = lambda _binary = None: full_caps
     if host_guard:
@@ -4982,28 +5012,25 @@ def test_the_drafter_gate_is_one_constant(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "before, after, kept",
+    "share, wanted",
     [
-        # L4 gemma-4: the 2048 compute buffer cost 14% of the resident experts at 8 GB,
-        # 6% at 12 GB and 4% at 16 GB.
-        (0.23, 0.197, False),
-        (0.527, 0.494, True),
-        (0.824, 0.791, True),
+        # Any spill keeps the raise: its decode cost does not grow as the resident share falls.
+        (0.17, True),
+        (0.527, True),
+        (0.824, True),
+        (0.0, True),
         # Nothing spills at the default micro-batch: the raise would only push experts off.
-        (1.0, 0.95, False),
-        (1.0, 1.0, False),
+        (1.0, False),
         # Unpriceable keeps today's raise.
-        (None, None, True),
-        (0.5, None, True),
-        (0.0, 0.0, True),
+        (None, True),
     ],
 )
-def test_the_spill_raise_keeps_the_resident_experts(before, after, kept):
-    keeps = llama_cpp_module._moe_spill_raise_keeps_experts
+def test_the_spill_raise_follows_the_spill(share, wanted):
+    raise_wanted = llama_cpp_module._moe_spill_raise_wanted
 
-    assert keeps(before, after) is kept
-    assert keeps(before, after, switch = "on") is True
-    assert keeps(before, after, switch = "off") is False
+    assert raise_wanted(share) is wanted
+    assert raise_wanted(share, switch = "on") is True
+    assert raise_wanted(share, switch = "off") is False
 
 
 @pytest.mark.parametrize(
@@ -5069,6 +5096,34 @@ def test_a_smaller_pass_through_parallel_keeps_the_split(tmp_path, _moe_cache_ho
 
 
 @pytest.mark.parametrize(
+    "extra_args, env, raised",
+    [
+        (["--moe-cache-mib", "4096"], {}, True),
+        (["--moe-cache-mib=auto"], {}, True),
+        ([], {"LLAMA_ARG_MOE_CACHE_MIB": "4096"}, True),
+        (["--moe-cache-mib", "0"], {"LLAMA_ARG_MOE_CACHE_MIB": "4096"}, False),
+        ([], {}, False),
+    ],
+    ids = ["argv_mib", "argv_auto", "env_mib", "argv_zero_beats_env", "no_cache"],
+)
+def test_a_pass_through_moe_cache_leaves_the_share_unpriced(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env, raised
+):
+    # 80 GiB with 60 GiB of experts on a card with 90,000 MiB free: Studio's reserve sends it to
+    # --fit on, where the fitter keeps every expert resident, so the priced share is 100% and the
+    # raise is dropped. A user's cache takes VRAM that price misses and keeps the experts on the host.
+    monkeypatch.delenv("LLAMA_ARG_MOE_CACHE_MIB", raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    backend, cmd = _cache_launch(
+        tmp_path, memory = [(0, 90_000, 98_000)], size_gib = 80, expert_gib = 60, extra_args = extra_args
+    )
+
+    assert cmd[cmd.index("--fit") + 1] == "on", cmd
+    assert (_ubatch_values(cmd) == ["2048"]) is raised, cmd
+
+
+@pytest.mark.parametrize(
     "extra_args, env",
     [
         (["--fit-ctx", "4096"], {}),
@@ -5102,6 +5157,566 @@ def test_a_fit_ctx_equal_to_studios_still_prices_the_share(tmp_path, _moe_cache_
     assert _has_moe_cache(cmd), cmd
     _backend, cmd = _cache_launch(tmp_path, caps = caps, n_ctx = 8192, extra_args = ["--fit-ctx", "4096"])
     assert not _has_moe_cache(cmd), cmd
+
+
+# With a 4096 MiB margin this card prices like _IN_BAND_CARD does at llama.cpp's 1024.
+_PER_DEVICE_FREE_MIB = 23_000
+_RESIDENT_SHARE = llama_cpp_module._moe_resident_expert_share
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, cached",
+    [
+        (["--fit-target", "512,4096"], {}, False),
+        (["-fitt=4096/512"], {}, True),
+        ([], {"LLAMA_ARG_FIT_TARGET": "512,4096"}, False),
+    ],
+    ids = ["argv", "short_slash", "env"],
+)
+def test_a_per_device_fit_target_prices_this_cards_entry(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env, cached
+):
+    """llama.cpp applies a --fit-target list positionally (fit_params_target[i]) and a
+    one-device child reads only entry 0 (common/fit.cpp). 4096 first prices like
+    _IN_BAND_CARD (the cache); 512 first leaves ~77% resident, above the band. Reading
+    the largest entry put the 512 launches inside the band."""
+    monkeypatch.delenv("LLAMA_ARG_FIT_TARGET", raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    backend, cmd = _cache_launch(
+        tmp_path, memory = [(0, _PER_DEVICE_FREE_MIB, 32_000)], extra_args = extra_args
+    )
+
+    assert _has_moe_cache(cmd) is cached, cmd
+
+
+@pytest.mark.parametrize("margin", ["4096", "4096,4096"])
+def test_a_uniform_fit_target_still_prices_the_share(
+    tmp_path, _moe_cache_host, monkeypatch, margin
+):
+    # Every device gets 4096 whatever its index, so the share is still priced.
+    monkeypatch.delenv("LLAMA_ARG_FIT_TARGET", raising = False)
+    _backend, cmd = _cache_launch(
+        tmp_path,
+        memory = [(0, _PER_DEVICE_FREE_MIB, 32_000)],
+        extra_args = ["--fit-target", margin],
+    )
+    assert _has_moe_cache(cmd), cmd
+
+
+def _priced_cache_launch(
+    tmp_path,
+    monkeypatch,
+    sizes_gib,
+    *,
+    mmproj = None,
+    mtp_path = None,
+    caps_extra = None,
+    ram_gib = 256,
+    **load_kwargs,
+):
+    """A launch on _IN_BAND_CARD with GGUFs sized by path substring. Returns the
+    command and every shortfall the resident share was priced from."""
+    seen = []
+
+    def spy(shortfall, expert_bytes):
+        seen.append(shortfall)
+        return _RESIDENT_SHARE(shortfall, expert_bytes)
+
+    monkeypatch.setattr(llama_cpp_module, "_moe_resident_expert_share", spy)
+    tmp_path.mkdir(parents = True, exist_ok = True)
+    backend, gguf = _moe_backend(tmp_path, size_gib = 20, memory = _IN_BAND_CARD)
+    backend._get_gguf_size_bytes = lambda path: int(
+        next((gib for key, gib in sizes_gib.items() if key in str(path)), 20) * _GIB
+    )
+    if mmproj is not None:
+        backend._resolve_launch_mmproj_path = lambda **_kw: str(mmproj)
+        backend._mmproj_vram_bytes = lambda path: int(sizes_gib["mmproj"] * _GIB) if path else 0
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda *a, **k: _GIB // 4
+    backend._available_system_memory_mib = lambda: int(ram_gib * 1024)
+    backend._gguf_tensor_scan = lambda _path: ("qwen3moe", {}, 15 * _GIB)
+    # Fallback capabilities, never the host's real llama-server: an installed build
+    # answering supports_fit_ctx and the like would change what these fixtures emit.
+    full_caps = dict(
+        LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, "/nonexistent")
+    )
+    full_caps.update(_CACHE_CAPS_ON)
+    full_caps.update(caps_extra or {})
+    backend.probe_server_capabilities = lambda _binary = None: full_caps
+    if mtp_path is not None:
+        backend._resolve_launch_mtp_path = lambda **_k: mtp_path
+    cmd = _launch(backend, gguf, **load_kwargs)["cmd"]
+    return cmd, seen
+
+
+def _vision_cache_launch(
+    tmp_path,
+    monkeypatch,
+    extra_args = (),
+    ram_gib = 256,
+):
+    """A 1 GiB projector Studio's auto pin cannot move (a build without
+    --no-mmproj-offload), so model_size_fit carries it."""
+    tmp_path.mkdir(parents = True, exist_ok = True)
+    mmproj = _write_gguf(tmp_path / "mmproj.gguf", architecture = "clip")
+    return _priced_cache_launch(
+        tmp_path,
+        monkeypatch,
+        {"mmproj": 1},
+        mmproj = mmproj,
+        caps_extra = {"mtp_probe_inconclusive": False, "supports_no_mmproj_offload": False},
+        is_vision = True,
+        extra_args = list(extra_args),
+        ram_gib = ram_gib,
+    )
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--mmproj-device", "none"], {}),
+        (["-mmdev=none"], {}),
+        ([], {"MTMD_BACKEND_DEVICE": "none"}),
+    ],
+    ids = ["argv", "short_equals", "env"],
+)
+def test_a_cpu_projector_is_not_charged_to_the_card(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    """--mmproj-device none sets mmproj_use_gpu = false (common/arg.cpp), so the
+    projector and its runtime allowance leave the GPU estimate."""
+    monkeypatch.delenv("MTMD_BACKEND_DEVICE", raising = False)
+    cmd, on_gpu = _vision_cache_launch(tmp_path / "gpu", monkeypatch)
+    assert "--mmproj" in cmd and on_gpu and on_gpu[-1] is not None, cmd
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    cmd, on_cpu = _vision_cache_launch(tmp_path / "cpu", monkeypatch, extra_args)
+    assert "--mmproj" in cmd and on_cpu and on_cpu[-1] is not None, cmd
+
+    charged = int(_GIB * LlamaCppBackend._MMPROJ_VRAM_SAFETY)
+    assert on_gpu[-1] - on_cpu[-1] == pytest.approx(charged, abs = 1024)
+
+
+def test_a_cpu_projector_turned_back_on_is_charged_to_the_card(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    # A later --mmproj-offload sets mmproj_use_gpu again (arg.cpp is last-wins) and the
+    # projector follows the model's device: priced like no flag at all.
+    monkeypatch.delenv("MTMD_BACKEND_DEVICE", raising = False)
+    _cmd, on_gpu = _vision_cache_launch(tmp_path / "gpu", monkeypatch)
+    _cmd, seen = _vision_cache_launch(
+        tmp_path / "back_on", monkeypatch, ["--mmproj-device", "none", "--mmproj-offload"]
+    )
+    assert seen and seen[-1] is not None and seen[-1] == pytest.approx(on_gpu[-1], abs = 1024)
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--mmproj-device", "CUDA1"], {}),
+        (["-mmdev=CUDA0"], {}),
+        (["--mmproj-device", "none", "--mmproj-device", "CUDA1"], {}),
+        ([], {"MTMD_BACKEND_DEVICE": "CUDA1"}),
+    ],
+    ids = ["argv", "short_equals", "last_wins", "env"],
+)
+def test_a_gpu_pinned_projector_is_unpriced(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    """A projector pinned to a GPU device may sit on a companion card that gpu_ids
+    exposes, so the share cannot tell whether model_size_fit's projector is on this card."""
+    monkeypatch.delenv("MTMD_BACKEND_DEVICE", raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _cmd, seen = _vision_cache_launch(tmp_path, monkeypatch, extra_args)
+    assert seen == []
+
+
+def test_a_cpu_named_projector_device_is_unpriced(tmp_path, _moe_cache_host, monkeypatch):
+    """parse_device_list rejects a CPU-type device ("invalid device: CPU"), so the child
+    never starts with --mmproj-device CPU: nothing to price."""
+    monkeypatch.delenv("MTMD_BACKEND_DEVICE", raising = False)
+    _cmd, seen = _vision_cache_launch(tmp_path, monkeypatch, ["--mmproj-device", "CPU"])
+    assert seen == []
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--mmproj-device", "none"], {}),
+        (["-mmdev=none"], {}),
+        ([], {"MTMD_BACKEND_DEVICE": "none"}),
+        # A forced cache skips the share band, never the host-RAM admission.
+        (["--mmproj-device", "none"], {"UNSLOTH_MOE_CACHE": "on"}),
+        ([], {"MTMD_BACKEND_DEVICE": "none", "UNSLOTH_MOE_CACHE": "on"}),
+    ],
+    ids = ["argv", "short_equals", "env", "argv_forced_on", "env_forced_on"],
+)
+def test_a_known_cpu_projector_keeps_the_moe_cache(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    """--mmproj-device none is host RAM (common/arg.cpp clears mmproj_use_gpu), the same
+    placement as --no-mmproj-offload, so with ample RAM the cache is admitted exactly as
+    it is for that flag rather than abstaining as for an unknown named device."""
+    monkeypatch.delenv("MTMD_BACKEND_DEVICE", raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    cmd, _seen = _vision_cache_launch(tmp_path, monkeypatch, extra_args)
+    assert "--mmproj" in cmd and _has_moe_cache(cmd), cmd
+    assert _load_mode(cmd) == "none", cmd
+
+
+@pytest.mark.parametrize(
+    "ram_gib, cached", [(25, False), (26, True)], ids = ["ram_short", "ram_enough"]
+)
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--no-mmproj-offload"], {}),
+        (["--mmproj-device", "none"], {}),
+        ([], {"MTMD_BACKEND_DEVICE": "none"}),
+        (["--mmproj-device", "none"], {"UNSLOTH_MOE_CACHE": "on"}),
+    ],
+    ids = ["no_offload", "argv_none", "env_none", "argv_none_forced_on"],
+)
+def test_a_cpu_projector_is_charged_to_host_ram_for_the_moe_cache(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env, ram_gib, cached
+):
+    """The CPU projector's bytes are pinned host RAM: at 25 GiB the experts, prompt cache
+    and 1 GiB projector do not fit (the same launch with the projector on the GPU is
+    admitted there), at 26 GiB they do. --mmproj-device none tracks --no-mmproj-offload
+    on both sides of that line, forced on or not."""
+    monkeypatch.delenv("MTMD_BACKEND_DEVICE", raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    cmd, _seen = _vision_cache_launch(tmp_path, monkeypatch, extra_args, ram_gib = ram_gib)
+    assert _has_moe_cache(cmd) is cached, cmd
+
+
+def test_a_gpu_projector_at_the_same_ram_gets_the_moe_cache(tmp_path, _moe_cache_host, monkeypatch):
+    """Control for the line above: at 25 GiB the projector on the GPU is admitted, so only
+    the host charge of a CPU projector keeps the cache off there."""
+    monkeypatch.delenv("MTMD_BACKEND_DEVICE", raising = False)
+    cmd, _seen = _vision_cache_launch(tmp_path, monkeypatch, [], ram_gib = 25)
+    assert _has_moe_cache(cmd), cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--mmproj-device", "none", "--mmproj-device", "CUDA1"], {}),
+        (["--mmproj-device", "NONE"], {}),
+    ],
+    ids = ["gpu_after", "not_exactly_none"],
+)
+def test_a_projector_none_with_a_conflicting_placement_keeps_the_split(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    """Controls: a later GPU device pins the projector to a named card and arg.cpp only
+    matches the literal none, so the load-mode fit (which cannot place a named device)
+    abstains and the cache stays off. An env offload under an argv none is host RAM
+    (env first): test_moe_share_device_margins.py."""
+    monkeypatch.delenv("MTMD_BACKEND_DEVICE", raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    cmd, _seen = _vision_cache_launch(tmp_path, monkeypatch, extra_args)
+    assert not _has_moe_cache(cmd), cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--mmproj-device", "none", "--mmproj-offload"], {}),
+        (["--mmproj-offload"], {"MTMD_BACKEND_DEVICE": "none"}),
+    ],
+    ids = ["offload_after", "env_none_argv_offload"],
+)
+def test_a_projector_offloaded_after_none_keeps_the_cache(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    """A later --mmproj-offload after device none puts the projector on the model's own
+    device (mmproj_device = devices.front(), common/arg.cpp): the resolver's "default",
+    the placement the budget charged to the card. The load-mode fit read the raw none
+    token and abstained, dropping the cache a bare --mmproj-offload keeps."""
+    monkeypatch.delenv("MTMD_BACKEND_DEVICE", raising = False)
+    cmd, _seen = _vision_cache_launch(tmp_path / "base", monkeypatch, ["--mmproj-offload"])
+    assert _has_moe_cache(cmd), cmd
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    cmd, _seen = _vision_cache_launch(tmp_path / "after", monkeypatch, extra_args)
+    assert _has_moe_cache(cmd), cmd
+    assert _load_mode(cmd) == "none", cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, expected",
+    [
+        (["--mmproj-device", "none"], {}, False),
+        (["-mmdev=none"], {}, False),
+        ([], {"MTMD_BACKEND_DEVICE": "none"}, False),
+        (["--no-mmproj-offload"], {}, False),
+        (["--mmproj-device", "none", "--mmproj-offload"], {}, True),
+        # Device none after an offload-on clears mmproj_use_gpu (last wins).
+        (["--mmproj-offload", "--mmproj-device", "none"], {}, False),
+        (["--mmproj-device", "none"], {"LLAMA_ARG_MMPROJ_OFFLOAD": "1"}, False),
+        # Any other name sets mmproj_use_gpu: offloaded, to that device.
+        (["--mmproj-device", "none", "-mmdev", "CUDA1"], {}, True),
+        (["--mmproj-device", "CUDA1"], {"MTMD_BACKEND_DEVICE": "none"}, True),
+        (["--no-mmproj-offload", "--mmproj-device", "CUDA0"], {}, True),
+        (["--mmproj-device", "NONE"], {}, True),
+        ([], {"MTMD_BACKEND_DEVICE": "CPU"}, True),
+        ([], {}, None),
+    ],
+)
+def test_the_resolved_projector_offload_reads_device_none(extra_args, env, expected):
+    """The boolean view of the ordered placement (env, then argv, last wins): device none
+    is host RAM whatever came before it, a named device is offloaded even after an
+    offload-off, and only silence on every placement option is None."""
+    assert llama_cpp_module._resolved_mmproj_offload(extra_args, env) is expected
+
+
+def _drafter_cache_launch(tmp_path, monkeypatch, extra_args):
+    """Studio's MTP sidecar (--model-draft) with a sized draft KV, so the reserve is
+    byte-accurate rather than the flat cushion the share never prices."""
+    tmp_path.mkdir(parents = True, exist_ok = True)
+    monkeypatch.setattr(LlamaCppBackend, "_mtp_draft_kv_bytes", lambda self, *a, **k: 256 << 20)
+    return _priced_cache_launch(
+        tmp_path,
+        monkeypatch,
+        {"mtp": 0.5},
+        caps_extra = {"mtp_token": "draft-mtp", "spec_draft_n_max_flag": "--spec-draft-n-max"},
+        mtp_path = "/fake/mtp.gguf",
+        mtp_draft_path = "/fake/mtp.gguf",
+        speculative_type = "mtp",
+        extra_args = list(extra_args),
+    )
+
+
+@pytest.mark.parametrize("device", ["CUDA1", "CUDA0", "Vulkan0", "CUDA0,CUDA1"])
+def test_a_drafter_pinned_to_a_gpu_keeps_the_split(tmp_path, _moe_cache_host, monkeypatch, device):
+    """A separate drafter loads on its --spec-draft-device (common_base_params_to_speculative),
+    which this estimate cannot map to the card it prices, so the share is unknown."""
+    cmd, seen = _drafter_cache_launch(tmp_path / "base", monkeypatch, [])
+    assert "--model-draft" in cmd and seen and seen[-1] is not None, cmd
+    assert _has_moe_cache(cmd), cmd
+
+    cmd, seen = _drafter_cache_launch(
+        tmp_path / "pin", monkeypatch, ["--spec-draft-device", device]
+    )
+    assert seen == [], cmd
+    assert not _has_moe_cache(cmd), cmd
+
+
+@pytest.mark.parametrize("pin", [["--spec-draft-device", "cpu"], ["-devd", "none"], ["-devd=cpu"]])
+def test_a_cpu_pinned_drafter_is_priced_off_the_card(tmp_path, _moe_cache_host, monkeypatch, pin):
+    _cmd, on_gpu = _drafter_cache_launch(tmp_path / "base", monkeypatch, [])
+    cmd, on_cpu = _drafter_cache_launch(tmp_path / "pin", monkeypatch, pin)
+
+    assert on_cpu and on_cpu[-1] is not None, cmd
+    # The drafter's weights no longer count against the card.
+    assert on_gpu[-1] - on_cpu[-1] >= 0.5 * _GIB
+
+
+def _drafter_with_blocks(monkeypatch, n_layers = 4):
+    """Give the fake drafter a readable block count, so -ngld above it means "whole"."""
+    real = LlamaCppBackend._draft_backend_for
+
+    def _with_blocks(self, path):
+        db = real(self, path)
+        if db is None:
+            db = LlamaCppBackend.__new__(LlamaCppBackend)
+        db._n_layers = n_layers
+        return db
+
+    monkeypatch.setattr(LlamaCppBackend, "_draft_backend_for", _with_blocks)
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--spec-draft-ngl", "2"], {}),
+        (["-ngld=1"], {}),
+        (["-ngld", "99", "--gpu-layers-draft", "4"], {}),
+        ([], {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "3"}),
+    ],
+    ids = ["argv", "short_equals", "last_wins_at_block_count", "env"],
+)
+def test_a_drafter_split_across_host_is_unpriced(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    """A fixed positive -ngld up to the drafter's block count leaves its tail layers (and
+    their KV) in host RAM while _mtp_bytes charges the drafter whole to the card, so the
+    share is unknown, as in the fit's _draft_split_across_host."""
+    monkeypatch.delenv("LLAMA_ARG_N_GPU_LAYERS_DRAFT", raising = False)
+    _drafter_with_blocks(monkeypatch)
+    cmd, seen = _drafter_cache_launch(tmp_path / "base", monkeypatch, [])
+    assert "--model-draft" in cmd and seen and seen[-1] is not None, cmd
+
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    cmd, seen = _drafter_cache_launch(tmp_path / "split", monkeypatch, extra_args)
+    assert seen == [], cmd
+    assert not _has_moe_cache(cmd), cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--spec-draft-ngl", "-1"], {}),
+        (["-ngld", "5"], {}),
+        (["-ngld=999"], {}),
+        ([], {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "-1"}),
+    ],
+    ids = ["minus_one", "above_blocks", "huge", "env_minus_one"],
+)
+def test_a_whole_gpu_drafter_count_keeps_the_share(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    """-ngld -1 or a count above the block count places the drafter whole on the card,
+    exactly what _mtp_bytes prices, so the share matches the unset default."""
+    monkeypatch.delenv("LLAMA_ARG_N_GPU_LAYERS_DRAFT", raising = False)
+    _drafter_with_blocks(monkeypatch)
+    _cmd, base = _drafter_cache_launch(tmp_path / "base", monkeypatch, [])
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    cmd, seen = _drafter_cache_launch(tmp_path / "whole", monkeypatch, extra_args)
+    assert seen and seen[-1] is not None, cmd
+    assert seen[-1] == pytest.approx(base[-1])
+
+
+def test_a_zero_draft_ngl_is_priced_off_the_card(tmp_path, _moe_cache_host, monkeypatch):
+    """-ngld 0 keeps the drafter on the host (_cpu_draft_path), already off the budget."""
+    monkeypatch.delenv("LLAMA_ARG_N_GPU_LAYERS_DRAFT", raising = False)
+    _drafter_with_blocks(monkeypatch)
+    _cmd, on_gpu = _drafter_cache_launch(tmp_path / "base", monkeypatch, [])
+    cmd, on_cpu = _drafter_cache_launch(tmp_path / "zero", monkeypatch, ["-ngld", "0"])
+    assert on_cpu and on_cpu[-1] is not None, cmd
+    assert on_gpu[-1] - on_cpu[-1] >= 0.5 * _GIB
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--spec-draft-device", "CUDA0", "-ngld", "0"], {}),
+        (["-devd=CUDA1", "--spec-draft-ngl=0"], {}),
+        (["--spec-draft-device", "CUDA0"], {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "0"}),
+    ],
+    ids = ["argv", "equals", "env_count"],
+)
+def test_a_gpu_named_drafter_with_zero_layers_is_priced_off_the_card(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    """-ngld 0 keeps the drafter on the host whatever --spec-draft-device names, and the
+    budget already drops it (_draft_on_cpu), so the device pin must not abstain: the
+    share is the plain CPU-placed drafter's and the cache stays."""
+    monkeypatch.delenv("LLAMA_ARG_N_GPU_LAYERS_DRAFT", raising = False)
+    _drafter_with_blocks(monkeypatch)
+    _cmd, on_gpu = _drafter_cache_launch(tmp_path / "base", monkeypatch, [])
+    _cmd, zero = _drafter_cache_launch(tmp_path / "zero", monkeypatch, ["-ngld", "0"])
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    cmd, seen = _drafter_cache_launch(tmp_path / "named", monkeypatch, extra_args)
+    assert seen and seen[-1] is not None, cmd
+    assert seen[-1] == pytest.approx(zero[-1])
+    assert on_gpu[-1] - seen[-1] >= 0.5 * _GIB
+    assert _has_moe_cache(cmd), cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [["--spec-draft-device", "CUDA0", "-ngld", "1"], ["-devd", "CUDA0", "-ngld", "-1"]],
+    ids = ["split", "whole"],
+)
+def test_a_gpu_named_drafter_with_layers_on_the_card_stays_unpriced(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args
+):
+    """Negative control: a GPU-pinned drafter with layers on a card still abstains."""
+    monkeypatch.delenv("LLAMA_ARG_N_GPU_LAYERS_DRAFT", raising = False)
+    _drafter_with_blocks(monkeypatch)
+    cmd, seen = _drafter_cache_launch(tmp_path / "pin", monkeypatch, extra_args)
+    assert seen == [], cmd
+    assert not _has_moe_cache(cmd), cmd
+
+
+_DRAFT_PLACEMENT_ENV = ("LLAMA_ARG_SPEC_DRAFT_CPU_MOE", "LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE")
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--spec-draft-override-tensor", ".*=CPU"], {}),
+        (["-otd", "exps=CPU"], {}),
+        (["--override-tensor-draft=.*=CPU"], {}),
+        (["--spec-draft-cpu-moe"], {}),
+        (["-cmoed"], {}),
+        (["--cpu-moe-draft"], {}),
+        (["--spec-draft-n-cpu-moe", "2"], {}),
+        (["--spec-draft-ncmoe=1"], {}),
+        (["-ncmoed", "3"], {}),
+        (["--n-cpu-moe-draft", "1"], {}),
+        # Env first, argv appended on top (common/arg.cpp): a later 0 adds nothing.
+        (["-ncmoed", "0"], {"LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE": "2"}),
+        ([], {"LLAMA_ARG_SPEC_DRAFT_CPU_MOE": "1"}),
+        ([], {"LLAMA_ARG_SPEC_DRAFT_CPU_MOE": "on"}),
+        ([], {"LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE": "4"}),
+    ],
+)
+def test_a_drafter_with_tensors_on_the_host_is_unpriced(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    """Draft tensor overrides and draft CPU-MoE controls move drafter weights off the
+    card whatever -ngld says, while _mtp_bytes charges the drafter whole to the GPU, so
+    the share is unknown (the same case as a drafter split by -ngld)."""
+    for name in _DRAFT_PLACEMENT_ENV:
+        monkeypatch.delenv(name, raising = False)
+    _cmd, base = _drafter_cache_launch(tmp_path / "base", monkeypatch, [])
+    assert base and base[-1] is not None
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    cmd, seen = _drafter_cache_launch(tmp_path / "placed", monkeypatch, extra_args)
+    assert seen == [], cmd
+    assert not _has_moe_cache(cmd), cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["-ncmoed", "0"], {}),
+        (["--spec-draft-n-cpu-moe=0"], {}),
+        ([], {"LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE": "0"}),
+        ([], {"LLAMA_ARG_SPEC_DRAFT_CPU_MOE": "0"}),
+        ([], {"LLAMA_ARG_SPEC_DRAFT_CPU_MOE": "off"}),
+        # llama.cpp's is_truthy is exact: "TRUE" is not a true value.
+        ([], {"LLAMA_ARG_SPEC_DRAFT_CPU_MOE": "TRUE"}),
+    ],
+)
+def test_zero_draft_placement_controls_keep_the_share(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    """Negative control: zero / false draft placement controls place nothing."""
+    for name in _DRAFT_PLACEMENT_ENV:
+        monkeypatch.delenv(name, raising = False)
+    _cmd, base = _drafter_cache_launch(tmp_path / "base", monkeypatch, [])
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    cmd, seen = _drafter_cache_launch(tmp_path / "zero", monkeypatch, extra_args)
+    assert seen and seen[-1] is not None, cmd
+    assert seen[-1] == pytest.approx(base[-1])
+    assert _has_moe_cache(cmd), cmd
+
+
+def test_draft_tensor_placement_on_a_cpu_drafter_is_priced(tmp_path, _moe_cache_host, monkeypatch):
+    """A drafter already off the budget by -ngld 0 keeps its share: there is no
+    whole-drafter GPU charge for its tensor placement to contradict."""
+    for name in _DRAFT_PLACEMENT_ENV:
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.delenv("LLAMA_ARG_N_GPU_LAYERS_DRAFT", raising = False)
+    _cmd, zero = _drafter_cache_launch(tmp_path / "zero", monkeypatch, ["-ngld", "0"])
+    cmd, seen = _drafter_cache_launch(
+        tmp_path / "both", monkeypatch, ["-ngld", "0", "-otd", ".*=CPU", "-cmoed"]
+    )
+    assert seen and seen[-1] == pytest.approx(zero[-1]), cmd
 
 
 @pytest.mark.parametrize(
@@ -5156,38 +5771,37 @@ def _ubatch_sized_compute_buffer(monkeypatch, raise_cost_gib):
 
 
 @pytest.mark.parametrize(
-    "free_mib, raised, cached",
+    "free_mib, cached",
     [
-        # ~25% resident, raise costs ~27%: default micro-batch, split.
-        (11_000, False, False),
-        # ~44% resident, the raise would cost ~15%: the cache at the default micro-batch.
-        (14_000, False, True),
-        # ~70% resident, the raise costs ~10% or less: raised, and 63% is in the band.
-        (18_000, True, True),
-        # ~83% resident, the raise costs ~8%: raised, 77% is above the band, so split.
-        (20_000, True, False),
+        # ~25% resident, ~18% after the raise: below the band, split.
+        (11_000, False),
+        # ~44% resident, ~37% after the raise: the cache.
+        (14_000, True),
+        # ~70% resident, ~63% after the raise: the cache.
+        (18_000, True),
+        # ~83% resident, ~77% after the raise: above the band, split.
+        (20_000, False),
     ],
     ids = ["tight_split", "tight_cache", "roomy_cache", "roomy_split"],
 )
-def test_the_spill_raise_is_priced_against_the_resident_experts(
-    tmp_path, _moe_cache_host, monkeypatch, free_mib, raised, cached
+def test_any_spill_raises_and_the_band_reads_the_raised_share(
+    tmp_path, _moe_cache_host, monkeypatch, free_mib, cached
 ):
     _ubatch_sized_compute_buffer(monkeypatch, 1.0)
     backend, cmd = _cache_launch(tmp_path, memory = [(0, free_mib, 32_000)])
 
-    assert _ubatch_values(cmd) == (["2048"] if raised else []), cmd
-    assert (backend._moe_spill_batch_restore is not None) is raised
+    assert _ubatch_values(cmd) == ["2048"], cmd
+    assert backend._moe_spill_batch_restore is not None
     assert _has_moe_cache(cmd) is cached, cmd
 
 
 @pytest.mark.parametrize(
     "cache_switch, cached",
-    # ~51% resident, and the raise costs ~5% of those experts (under the 10% rule): the
-    # raise stays whether or not the cache follows it.
+    # ~51% resident: the raise stays whether or not the cache follows it.
     [("auto", True), ("off", False)],
     ids = ["cache_takes_the_raise", "split_takes_the_raise"],
 )
-def test_a_cache_launch_keeps_a_raise_the_resident_rule_allows(
+def test_the_raise_stays_whether_or_not_the_cache_follows(
     tmp_path, _moe_cache_host, monkeypatch, cache_switch, cached
 ):
     _ubatch_sized_compute_buffer(monkeypatch, 0.4)
@@ -5200,19 +5814,21 @@ def test_a_cache_launch_keeps_a_raise_the_resident_rule_allows(
 
 
 @pytest.mark.parametrize(
-    "free_mib, ubatch",
-    [(11_000, ["1120"]), (14_000, ["1120"]), (18_000, ["2048"])],
-    ids = ["tight_split", "tight_cache", "roomy"],
+    "share, ubatch",
+    [(1.0, ["1120"]), (0.25, ["2048"])],
+    ids = ["nothing_spills", "spills"],
 )
 def test_a_skipped_raise_keeps_the_projector_micro_batch(
-    tmp_path, _moe_cache_host, monkeypatch, free_mib, ubatch
+    tmp_path, _moe_cache_host, monkeypatch, share, ubatch
 ):
-    """gemma-4's vision projector needs -ub 1120; a skipped 2048 raise must hand it back."""
+    """gemma-4's vision projector needs -ub 1120; a skipped 2048 raise must hand it back.
+    Studio's own budget can call a launch spilled that llama.cpp's fitter keeps whole."""
     monkeypatch.setattr(llama_cpp_module, "_launch_required_ubatch", lambda *a, **k: 1120)
-    _ubatch_sized_compute_buffer(monkeypatch, 1.0)
-    _backend, cmd = _cache_launch(tmp_path, memory = [(0, free_mib, 32_000)])
+    monkeypatch.setattr(llama_cpp_module, "_moe_resident_expert_share", lambda *_a: share)
+    backend, cmd = _cache_launch(tmp_path, memory = [(0, 14_000, 32_000)])
 
     assert _ubatch_values(cmd) == ubatch, cmd
+    assert (backend._moe_spill_batch_restore is not None) is (share < 1.0)
 
 
 def test_the_v0_1_905_workaround_args_are_honoured(tmp_path, _moe_cache_host):
@@ -5227,9 +5843,10 @@ def test_the_v0_1_905_workaround_args_are_honoured(tmp_path, _moe_cache_host):
 def test_the_spill_ubatch_switch(tmp_path, _moe_cache_host, monkeypatch):
     _ubatch_sized_compute_buffer(monkeypatch, 1.0)
 
-    # Auto skips the raise at 11,000 MiB free and keeps it at 18,000 (see above).
+    # Auto skips the raise when the fitter keeps every expert and keeps it on any spill.
     monkeypatch.setenv("UNSLOTH_MOE_SPILL_UBATCH", "on")
-    _backend, cmd = _cache_launch(tmp_path, memory = [(0, 11_000, 32_000)])
+    with patch.object(llama_cpp_module, "_moe_resident_expert_share", lambda *_a: 1.0):
+        _backend, cmd = _cache_launch(tmp_path, memory = [(0, 11_000, 32_000)])
     assert _ubatch_values(cmd) == ["2048"], cmd
 
     monkeypatch.setenv("UNSLOTH_MOE_SPILL_UBATCH", "off")
@@ -5242,7 +5859,7 @@ def test_both_switches_on_restore_the_ungated_launch(tmp_path, _moe_cache_host, 
     _ubatch_sized_compute_buffer(monkeypatch, 1.0)
     monkeypatch.setenv("UNSLOTH_MOE_CACHE", "on")
     monkeypatch.setenv("UNSLOTH_MOE_SPILL_UBATCH", "on")
-    # Auto launches neither here (25% resident, a costly raise).
+    # Auto raises here but keeps the split (25% resident, below the band).
     _backend, cmd = _cache_launch(tmp_path, memory = [(0, 11_000, 32_000)])
 
     assert _has_moe_cache(cmd) and _ubatch_values(cmd) == ["2048"], cmd
@@ -5393,7 +6010,11 @@ def test_a_cache_crash_retries_once_without_the_cache(
     backend._estimate_kv_cache_bytes = lambda *a, **k: _GIB // 4
     backend._available_system_memory_mib = lambda: 256 * 1024
     backend._gguf_tensor_scan = lambda _path: ("qwen3moe", {}, 15 * _GIB)
-    full_caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    # Fallback capabilities, never the host's real llama-server: an installed build
+    # answering supports_fit_ctx and the like would change what these fixtures emit.
+    full_caps = dict(
+        LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, "/nonexistent")
+    )
     full_caps.update(_CACHE_CAPS_ON)
     backend.probe_server_capabilities = lambda _binary = None: full_caps
 
@@ -5767,7 +6388,7 @@ def test_the_apu_guard_prices_only_resident_weights(tmp_path, monkeypatch, lazy_
         {"per_layer_token_embd.weight": _QWEN38_PLE},
         0,
     )
-    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, "/nonexistent"))
     caps.update(_CACHE_CAPS_ON)
     backend.probe_server_capabilities = lambda _binary = None: caps
 
@@ -5887,3 +6508,159 @@ def test_the_header_scan_refuses_what_it_cannot_parse(tmp_path):
     with pytest.raises(ValueError):
         LlamaCppBackend._gguf_scan_tensor_bytes(str(bad))
     assert LlamaCppBackend()._gguf_tensor_scan(str(bad)) is None
+
+
+# --- r11: every device name the child parses stays resolvable through the launch ---
+
+_LAUNCH_DEVICE_OPTIONS = (
+    "--device",
+    "-dev",
+    "--mmproj-device",
+    "-mmdev",
+    "--spec-draft-device",
+    "-devd",
+    "--device-draft",
+)
+
+
+def _launch_unresolvable_names(result, host_gpus = 2):
+    """Device names llama.cpp's parse_device_list rejects in the launched child: env twins
+    first, then every argv occurrence; "none" alone is skipped. No mask leaves all
+    ``host_gpus`` visible. Independent of the code under test."""
+    env, cmd = result["env"], [str(t) for t in result["cmd"]]
+    mask = env.get("CUDA_VISIBLE_DEVICES")
+    if mask is None:
+        visible = host_gpus
+    else:
+        visible = 0 if mask == "-1" else len([m for m in mask.split(",") if m.strip()])
+    values = [env[n] for n in ("LLAMA_ARG_DEVICE", "MTMD_BACKEND_DEVICE") if n in env]
+    for i, raw in enumerate(cmd):
+        head, eq, inline = raw.partition("=")
+        if head in _LAUNCH_DEVICE_OPTIONS:
+            values.append(inline if eq else cmd[i + 1])
+    bad = []
+    for value in values:
+        if value == "none":
+            continue
+        for name in value.split(","):
+            m = re.fullmatch(r"(CUDA|ROCm)(\d+)", name.strip())
+            if not m or int(m.group(2)) >= visible:
+                bad.append(name)
+    return bad
+
+
+def _two_gpu_pinned_to_first(tmp_path, monkeypatch, env):
+    for name in (
+        "CUDA_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "LLAMA_ARG_DEVICE",
+        "MTMD_BACKEND_DEVICE",
+        "LLAMA_ARG_MAIN_GPU",
+    ):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    backend, gguf = _backend_non_vulkan(tmp_path, memory = [(0, 12_000, 16_000), (1, 12_000, 16_000)])
+    # The planner fits GPU 0 alone (the CPU-projector budget the reviews reproduced).
+    backend._select_gpus = lambda *args, **kwargs: ([0], False)
+    return backend, gguf
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "env"),
+    [
+        pytest.param(
+            ["--mmproj-offload", "--mmproj-device", "none"],
+            {"MTMD_BACKEND_DEVICE": "CUDA1"},
+            id = "env_mtmd-mmproj_none",
+        ),
+        pytest.param(
+            ["-mmdev", "none"], {"MTMD_BACKEND_DEVICE": "CUDA1"}, id = "env_mtmd-mmdev_none"
+        ),
+        pytest.param(
+            ["--mmproj-device", "CUDA0"], {"MTMD_BACKEND_DEVICE": "CUDA1"}, id = "env_mtmd-mmproj_gpu"
+        ),
+        pytest.param(["--device", "CUDA0"], {"LLAMA_ARG_DEVICE": "CUDA1"}, id = "env_device-device"),
+        pytest.param(
+            [
+                "--mmproj-offload",
+                "--mmproj-device",
+                "none",
+                "--device",
+                "CUDA1",
+                "--device",
+                "CUDA0",
+            ],
+            {},
+            id = "device-device",
+        ),
+        pytest.param(["-dev", "CUDA1", "-dev", "CUDA0"], {}, id = "dev-dev"),
+        pytest.param(
+            ["--mmproj-device", "CUDA1"],
+            {"LLAMA_ARG_DEVICE": "CUDA0"},
+            id = "env_final_device-mmproj_gpu",
+        ),
+        pytest.param(
+            ["--spec-draft-device", "CUDA1"],
+            {"LLAMA_ARG_DEVICE": "CUDA0"},
+            id = "env_final_device-draft_gpu",
+        ),
+        # Controls fixed in r10: argv companions overridden by none.
+        pytest.param(["--mmproj-device", "CUDA1", "-mmdev", "none"], {}, id = "mmproj-mmdev_none"),
+        pytest.param(["--spec-draft-device", "CUDA1", "-devd", "none"], {}, id = "draft-devd_none"),
+    ],
+)
+def test_a_pinned_launch_keeps_every_parsed_device_name_resolvable(
+    tmp_path, monkeypatch, extra_args, env
+):
+    backend, gguf = _two_gpu_pinned_to_first(tmp_path, monkeypatch, env)
+    result = _launch(backend, gguf, extra_args = list(extra_args))
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0,1"
+    assert _launch_unresolvable_names(result) == []
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "env"),
+    [
+        pytest.param(
+            ["--mmproj-device", "none"], {"MTMD_BACKEND_DEVICE": "CUDA1"}, id = "env_mtmd-mmproj_none"
+        ),
+        pytest.param(["--mmproj-device", "CUDA1", "-mmdev", "none"], {}, id = "mmproj-mmdev_none"),
+        pytest.param(["--spec-draft-device", "CUDA1", "-devd", "none"], {}, id = "draft-devd_none"),
+    ],
+)
+def test_an_explicit_pick_clears_an_overridden_name_it_excludes(
+    tmp_path, monkeypatch, extra_args, env
+):
+    # gpu_ids [0] is the user's own pick: GPU 1 stays hidden, and the overridden value
+    # naming it (it places nothing) is cleared instead of failing "invalid device".
+    backend, gguf = _two_gpu_pinned_to_first(tmp_path, monkeypatch, env)
+    result = _launch(backend, gguf, gpu_ids = [0], extra_args = list(extra_args))
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0"
+    assert _launch_unresolvable_names(result) == []
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "env"),
+    [
+        pytest.param(
+            ["--mmproj-device", "none"], {"MTMD_BACKEND_DEVICE": "CUDA0"}, id = "env_mtmd-mmproj_none"
+        ),
+        pytest.param(
+            ["--device", "none"], {"LLAMA_ARG_DEVICE": "CUDA0"}, id = "env_device-device_none"
+        ),
+        pytest.param(["-mmdev", "CUDA0", "--mmproj-device", "none"], {}, id = "mmdev-mmproj_none"),
+        pytest.param(["-dev", "CUDA0", "--device", "none"], {}, id = "dev-device_none"),
+        pytest.param(["--device-draft", "CUDA0", "-devd", "none"], {}, id = "device_draft-devd_none"),
+    ],
+)
+def test_a_zero_offload_launch_keeps_a_parsed_gpu_name_visible(
+    tmp_path, monkeypatch, extra_args, env
+):
+    backend, gguf = _two_gpu_pinned_to_first(tmp_path, monkeypatch, env)
+    result = _launch(
+        backend, gguf, gpu_memory_mode = "manual", gpu_layers = 0, extra_args = list(extra_args)
+    )
+    assert result["env"].get("CUDA_VISIBLE_DEVICES") != "-1"
+    assert _launch_unresolvable_names(result) == []
