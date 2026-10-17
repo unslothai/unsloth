@@ -7,8 +7,6 @@ export interface RecordedToast {
   description?: string;
 }
 
-/** Every toast raised since the last clear, for the tests that assert a flow
- * reports itself exactly once. */
 export const recordedToasts: RecordedToast[] = [];
 
 function record(kind: RecordedToast["kind"]) {
@@ -24,7 +22,6 @@ function record(kind: RecordedToast["kind"]) {
   };
 }
 
-/** Swallow notifications; the real module pulls in a TSX component. */
 export const toast = {
   info: record("info"),
   error: record("error"),

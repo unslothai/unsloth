@@ -41,7 +41,6 @@ test("tool-only images never reach the model but become mcp_image", () => {
   assert.ok(!JSON.stringify(visible).includes(PRIVATE));
   assert.deepEqual(toolOnlyImages(message), [PRIVATE]);
 
-  // A reloaded thread can carry the flagged image as message content.
   const reloaded = {
     content: [
       { type: "text", text: "hi" },

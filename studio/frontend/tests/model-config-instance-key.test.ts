@@ -10,7 +10,6 @@ import type { PerModelConfig } from "../src/features/model-picker/model-config/p
 const MODEL = "unsloth/Qwen3-8B-GGUF";
 const VARIANT = "Q4_K_M";
 
-// What the model is actually running with, as useActiveModelConfig reports it.
 const LIVE: PerModelConfig = {
   customContextLength: 16384,
   maxSeqLength: null,
@@ -31,7 +30,6 @@ const LIVE: PerModelConfig = {
   selectedGpuIds: [0, 1],
 };
 
-// What ModelConfigPage would fall back to before the live config lands.
 const SAVED: PerModelConfig = {
   customContextLength: null,
   maxSeqLength: null,
@@ -52,10 +50,7 @@ const SAVED: PerModelConfig = {
   selectedGpuIds: null,
 };
 
-/**
- * ModelConfigPage reads `loadedConfig` in a useState initializer, so it seeds once per
- * MOUNTED instance, and React keeps that instance while the key is unchanged.
- */
+/** ModelConfigPage seeds from loadedConfig once per mounted instance. */
 function renderEditor(
   previous: { key: string; editing: PerModelConfig } | null,
   key: string,
@@ -68,7 +63,6 @@ function renderEditor(
 }
 
 test("the settings editor re-seeds when the live config arrives after mount", () => {
-  // Opened before status answered: loadedConfig is null first and live on the next render.
   let editor = renderEditor(
     null,
     modelConfigInstanceKey(MODEL, VARIANT, null),
@@ -81,8 +75,6 @@ test("the settings editor re-seeds when the live config arrives after mount", ()
     modelConfigInstanceKey(MODEL, VARIANT, LIVE),
     LIVE,
   );
-  // Without the live config in the key the editor would still hold SAVED, and Apply
-  // would reload the model over what it is running with.
   assert.deepEqual(editor.editing, LIVE);
 });
 
@@ -123,8 +115,7 @@ test("every mirrored setting moves the instance key", () => {
   for (const changed of changes) {
     assert.notEqual(modelConfigInstanceKey(MODEL, VARIANT, changed), base);
   }
-  // The GPU pick is an order, not a set: the list order is the device order, so a
-  // reorder is a different config and has to move the key like any other edit.
+  // GPU order is device order, so a reorder must change the key.
   assert.notEqual(
     modelConfigInstanceKey(MODEL, VARIANT, { ...LIVE, selectedGpuIds: [1, 0] }),
     base,
@@ -139,7 +130,6 @@ test("the model and its quant still key the editor", () => {
   const base = modelConfigInstanceKey(MODEL, VARIANT, LIVE);
   assert.notEqual(modelConfigInstanceKey("unsloth/Other-GGUF", VARIANT, LIVE), base);
   assert.notEqual(modelConfigInstanceKey(MODEL, "Q8_0", LIVE), base);
-  // A loose .gguf carries no quant; null and undefined are the same absence.
   assert.equal(
     modelConfigInstanceKey(MODEL, null, LIVE),
     modelConfigInstanceKey(MODEL, undefined, LIVE),
@@ -147,7 +137,6 @@ test("the model and its quant still key the editor", () => {
 });
 
 test("the arguments the model is running with key the editor", () => {
-  // Another tab relaunching with only different arguments must re-seed, or Apply resends the old list.
   const running = { ...LIVE, llamaExtraArgs: ["--numa", "distribute"] };
   const base = modelConfigInstanceKey(MODEL, VARIANT, running);
   assert.notEqual(

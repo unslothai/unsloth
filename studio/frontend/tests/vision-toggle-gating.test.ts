@@ -1,16 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// What the Disable Vision toggle is allowed to reach: the status reseed that
-// teaches a fresh tab the running model has no projector, the MLX half of
-// Advanced Settings which must never show the row, and the composer's refusal
-// message when the toggle is what is in the way.
-//
-// The reseed and the MLX row are checked at the source. The applier is one large
-// object literal with no seam to call, and the config page cannot be rendered
-// (the repo has no render harness, and importing it pulls a directory import
-// Node cannot resolve). Both follow the chat-template and llama-extra-args seed
-// tests next door.
+// The applier is one object literal and the config page cannot render under Node, so these
+// checks are source-level.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -26,10 +18,7 @@ const CONFIG_PAGE = readSrc(
 );
 
 test("both response types carry the raw disable_vision echo", () => {
-  // vision_disabled_by_user is additionally gated on the model HAVING a
-  // projector, so it cannot round-trip the switch on a text-only GGUF. The seed
-  // needs the request the load actually ran with, on the load response and the
-  // status poll alike.
+  // vision_disabled_by_user is gated on having a projector, so the seed needs the load request.
   assert.equal(
     API_TYPES.match(/^ {2}disable_vision\?: boolean;$/gm)?.length,
     2,
@@ -37,16 +26,12 @@ test("both response types carry the raw disable_vision echo", () => {
 });
 
 test("the applier seeds the switch from status, through the seed resolver", () => {
-  // Unguarded it would fight the user: every poll would stamp the running model's
-  // value over a switch that was flipped but not yet applied. The rule is in
-  // shouldSeedVisionSwitch, which vision-switch-seed.test.ts pins case by case;
-  // this only checks the applier still routes through it.
+  // Unguarded, every poll would overwrite an unapplied switch; rule in shouldSeedVisionSwitch.
   assert.match(
     APPLIER,
     /status\.disable_vision !== undefined &&\s*\n\s*shouldSeedVisionSwitch\(\{/,
   );
-  // An older backend that omits the field must change nothing at all, so no
-  // `?? false` may creep in here.
+  // An older backend omitting the field must change nothing, so no `?? false` here.
   assert.doesNotMatch(
     APPLIER,
     /disableVision: status\.disable_vision \?\? false/,
@@ -54,9 +39,7 @@ test("the applier seeds the switch from status, through the seed resolver", () =
 });
 
 test("the composer's own mirror of the flag stays unguarded", () => {
-  // loadedVisionDisabledByUser is what the image gate reads. It mirrors the live
-  // load rather than a user setting, so every poll must land on it; the seed
-  // guard here would freeze the refusal string at the first read.
+  // loadedVisionDisabledByUser mirrors the live load, so every poll must land on it.
   assert.match(
     APPLIER,
     /status\.vision_disabled_by_user !== undefined && \{\s*\n\s*loadedVisionDisabledByUser: status\.vision_disabled_by_user,/,
@@ -64,9 +47,7 @@ test("the composer's own mirror of the flag stays unguarded", () => {
 });
 
 test("the Vision row exists only in the GGUF half of Advanced Settings", () => {
-  // MLX is a separate engine with no mmproj to skip, so the row must not render
-  // for it. Checked by exact wiring, so a second switch added elsewhere fails
-  // here rather than quietly widening the control's reach.
+  // MLX has no mmproj, so the row must not render for it.
   const lines = CONFIG_PAGE.split("\n");
   const bodyOf = (name: string): string => {
     const start = lines.findIndex((line) =>
@@ -105,12 +86,10 @@ test("the Vision row exists only in the GGUF half of Advanced Settings", () => {
   );
   assert.ok(gguf.includes(">Vision</span>"));
 
-  // And the GGUF half only renders under target.isGguf, so a non-GGUF target
-  // shows no Vision switch at all.
   const gateAbove = (index: number): string => {
     for (let i = index; i >= 0; i--) {
       const line = lines[i].trim();
-      // An audio-runtime GGUF launches no llama-server, so its half is gated off too.
+      // An audio-runtime GGUF launches no llama-server.
       if (
         line === "{target.isGguf && (" ||
         line === "{target.isGguf && !audioRuntimeGguf && ("
@@ -153,8 +132,6 @@ test("switching Vision off points at the switch, not at a missing mmproj", () =>
   assert.ok(message, "attaching images should still be blocked");
   assert.match(message, /Advanced Settings/);
   assert.match(message, /Qwen3\.5 4B/);
-  // The generic copy would send someone who turned the toggle off hunting for a
-  // vision model with a valid mmproj, a problem they do not have.
   assert.doesNotMatch(message, /valid mmproj/);
   assert.doesNotMatch(message, /Load a vision-capable model/);
 });
@@ -163,29 +140,20 @@ test("every other refusal is untouched by the new branch", () => {
   const missing = reason({ visionDisabledByUser: false });
   assert.match(missing ?? "", /valid mmproj/);
   assert.doesNotMatch(missing ?? "", /Advanced Settings/);
-  // An absent flag behaves exactly as before the toggle existed.
   assert.equal(reason(), missing);
   assert.equal(reason({ visionDisabledByUser: null }), missing);
-  // No model loaded still reports the load, not the toggle.
   assert.match(
     reason({ modelLoaded: false, visionDisabledByUser: true }) ?? "",
     /Load a model before adding images/,
   );
-  // And a stale echo must not disable attach for a session that DID load its
-  // projector.
   assert.equal(
     reason({ loadedIsMultimodal: true, visionDisabledByUser: true }),
     null,
   );
 });
 
-// The rollback replays the previous load's settings after a failed switch. It must
-// send the baseline that tracks the RUNNING server, not the control field: a pending
-// per-model config is written to disableVision before the switch captures its
-// baseline, so that holds the TARGET's setting and a failed switch would roll the old
-// model back with the new model's Vision choice. Nor the narrowed image-gating field,
-// which is false for a model that cannot do images. Source-level for the same reason
-// as the reseed above: the replay sits inside one large object literal.
+// The rollback must replay the baseline of the RUNNING server: the control field already holds
+// the target's setting, and the gating field is false for non-image models.
 test("the rollback replays the loaded vision baseline, not the control or the gate", () => {
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   const replay = runtime.slice(
@@ -209,13 +177,8 @@ test("the rollback replays the loaded vision baseline, not the control or the ga
   );
 });
 
-// The other half of the same rollback: the store assignment that follows the replayed
-// request. Getting the request right is not enough, because the control the user sees
-// is seeded separately, and applyPerModelConfigToRuntime(pendingLoadConfig) runs BEFORE
-// stateBeforeUnload is captured, so the snapshot's control field already holds the
-// TARGET's setting. Seeding from it leaves the Vision row reading "off" over a restored
-// model whose projector is running, and arms the next Apply to switch it off for real.
-// Source-level for the same reason as the replay above.
+// applyPerModelConfigToRuntime runs before stateBeforeUnload is captured, so the snapshot's
+// control holds the TARGET's setting; seed from the restored model.
 test("the rollback seeds the Vision control from the restored model, not the target", () => {
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   const assignment = runtime.slice(
@@ -239,13 +202,7 @@ test("the rollback seeds the Vision control from the restored model, not the tar
   );
 });
 
-// Vision is per-model config with a default of ON, so switching to a model that saved
-// no config must give it that default rather than the outgoing model's setting. It
-// used to inherit, which loaded the new model text-only and did it silently: the
-// dedupe comparison builds its own view of an unconfigured switch out of
-// DEFAULT_PER_MODEL_CONFIG, so the two halves disagreed about the same load. This is
-// where it parts company with tensorParallel, which is deliberately standing across
-// models. Source-level for the same reason as the tests above.
+// Vision defaults ON per model; unlike tensorParallel it must not carry over from the outgoing model.
 test("an unconfigured target gets the default Vision value, not the outgoing model's", () => {
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   const decl = runtime.slice(
@@ -279,10 +236,7 @@ test("a compare pane with no saved config does not inherit the live Vision value
 });
 
 test("the Vision row is gated out for diffusion models", () => {
-  // withoutUnsupportedDiffusionSettings forces disableVision back to false and the
-  // diffusion runner never reads it, so an ungated row is a switch that flips back
-  // under the pointer and changes nothing if it did not. The batch rows above it are
-  // gated for exactly this reason.
+  // The diffusion runner ignores disableVision and it is forced false, so the row must be gated.
   assert.match(
     CONFIG_PAGE,
     /disableVision: false,/,
@@ -295,8 +249,7 @@ test("the Vision row is gated out for diffusion models", () => {
   );
   assert.notEqual(visionAt, -1, "no Vision switch to gate");
 
-  // The nearest JSX conditional boundary above the switch. A `)}` first means the
-  // gate closed before the row, i.e. the row is not inside it.
+  // A `)}` first means the gate closed before the row.
   let nearest = "none";
   for (let i = visionAt; i >= 0; i--) {
     const line = lines[i].trim();

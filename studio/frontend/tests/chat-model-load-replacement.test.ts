@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Source contracts cover decisions inside a React hook whose awaits span dialogs,
-// backend unload and load. Keep each regression named; share only its assertion runner.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -135,8 +133,6 @@ const contracts: Contract[] = [
     match: [["runtime", /residentUnloaded\?: boolean;/],
       ["inherit", /residentUnloaded: cancelledRun\.residentModelUnloaded,/], ["registration", /residentModelUnloaded: inheritedPendingRollback\?\.residentUnloaded === true,/],
       ["loadGate", /let previousWasUnloaded =\n\s*inheritedPendingRollback\?\.residentUnloaded === true;/],
-      // The rollback is gated on the inherited unloaded state; further guards (#11729's
-      // answered-failure check) may follow, and the formatter may wrap the condition.
       ["runtime", /if \(\s*previousWasUnloaded &&\s*previousCheckpoint\s*(?:&&|\))/]] },
   { name: "a failed cancellation clears the rollback the replacement would inherit",
     match: [["loop", /pendingReplacementRollback = null;/], ["loop", /if \(throwOnError\) throw new Error\(message\);/]],

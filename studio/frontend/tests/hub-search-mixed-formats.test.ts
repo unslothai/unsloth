@@ -26,7 +26,6 @@ const makeMapModel = new Function(
   () => null,
 );
 
-// Tag sets as the Hub API returns them for these repositories.
 const GPT2 = ["pytorch", "tf", "jax", "tflite", "onnx", "safetensors"];
 const MINILM = ["pytorch", "tf", "rust", "onnx", "safetensors", "openvino"];
 

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A scoped `@variant` download publishes a `model` hint, so deleting one while clearing only `gguf` leaves the row to come back until the hint expires.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 

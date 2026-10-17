@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Covers JSON framing and UTF-8 boundaries without reading the entire export.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -73,7 +71,6 @@ test("truncated JSON fails loudly instead of importing a half-read chat", async 
 });
 
 test("one mangled record is skipped, not treated as the end of the file", async () => {
-  // Balanced framing lets the scanner skip only the damaged record.
   const text = '[{"id":1},{bad},{"id":3}]';
   for (const size of [1, 5, 64, text.length]) {
     const out: unknown[] = [];
@@ -87,13 +84,11 @@ test("one mangled record is skipped, not treated as the end of the file", async 
     assert.deepEqual(malformed, ["{bad}"], `chunk size ${size}`);
   }
 
-  // Same for JSONL, which is where the old importer's leniency was visible.
   const jsonl = ['{"id":1}', "{bad}", '{"id":3}'].join("\n");
   assert.deepEqual(await collect(jsonl, 3), [{ id: 1 }, { id: 3 }]);
 });
 
 test("a row that loses its closing brace does not swallow the rows after it", async () => {
-  // Recover later rows using JSONL boundaries.
   const jsonl = ['{"id":1}', '{"id":2', '{"id":3}', '{"id":4}'].join("\n");
   for (const size of [1, 6, 64, jsonl.length]) {
     const out: unknown[] = [];
@@ -107,13 +102,11 @@ test("a row that loses its closing brace does not swallow the rows after it", as
     assert.deepEqual(malformed, ['{"id":2'], `chunk size ${size}`);
   }
 
-  // Windows line endings frame records the same way.
   const crlf = ['{"id":1}', '{"id":2', '{"id":3}'].join("\r\n");
   assert.deepEqual(await collect(crlf, 5), [{ id: 1 }, { id: 3 }]);
 });
 
 test("a broken first row is recovered even though nothing framed the file yet", async () => {
-  // With no prior record, only unindented objects establish line framing.
   const jsonl = ['{"id":1', '{"id":2}', '{"id":3}'].join("\n");
   const out: unknown[] = [];
   const malformed: string[] = [];
@@ -127,14 +120,12 @@ test("a broken first row is recovered even though nothing framed the file yet", 
 });
 
 test("a multi-line record still frames by nesting, so a pretty-printed file is not shredded", async () => {
-  // Recovery must not fire on input that is merely formatted across lines.
   const pretty = JSON.stringify({ id: 1, nested: { rows: [1, 2, 3] } }, null, 2);
   assert.deepEqual(await collect(pretty, 7), [{ id: 1, nested: { rows: [1, 2, 3] } }]);
   assert.deepEqual(await collect(JSON.stringify(TRICKY, null, 4), 11), TRICKY);
 });
 
 test("a pretty-printed record whose inner lines parse on their own stays one record", async () => {
-  // Parseable inner values must not be mistaken for JSONL records.
   const record = {
     id: "c1",
     tags: ["kept-tag"],
@@ -156,7 +147,6 @@ test("a pretty-printed record whose inner lines parse on their own stays one rec
     assert.deepEqual(malformed, [], `chunk size ${size}`);
   }
 
-  // Damaged rows after such a record are still recovered at end of input.
   const mixed = `${pretty}\n{"id":"after"\n{"id":"tail"}`;
   const after: unknown[] = [];
   const afterBad: string[] = [];
@@ -170,7 +160,6 @@ test("a pretty-printed record whose inner lines parse on their own stays one rec
 });
 
 test("a file that stops inside one record reports it once, not as a pile of fragments", async () => {
-  // Indented inner lines, one of which parses alone, must not become records.
   const truncated = '{\n  "id": 1,\n  "tags": [\n    "kept-tag"\n  ]';
   const malformed: string[] = [];
   const out: unknown[] = [];
@@ -198,7 +187,6 @@ test("byte counts are reported for progress, not decoded character counts", asyn
   assert.ok(bytes > text.length);
 });
 
-/** A File stub that emits fixed-size byte chunks. */
 function chunkedFile(text: string, name: string, chunkBytes: number): File {
   const bytes = Buffer.from(text, "utf-8");
   return {
@@ -238,19 +226,15 @@ test("multi-byte characters split across File reads decode intact, not as replac
 });
 
 test("an array that ends between records fails instead of reporting a complete import", async () => {
-  // An interrupted download stops on a record boundary as often as inside one,
-  // and every chat after the cut is missing either way.
   for (const truncated of ['[{"id":1}', '[{"id":1},', '[{"id":1},\n', "[", '[{"id":1},{"id":2}']) {
     await assert.rejects(collect(truncated, 3), SyntaxError, truncated);
   }
 
-  // The closing bracket is what makes it complete, at every chunk size.
   for (const size of [1, 4, 64]) {
     assert.deepEqual(await collect('[{"id":1},{"id":2}]', size), [{ id: 1 }, { id: 2 }]);
     assert.deepEqual(await collect('[{"id":1}]\n', size), [{ id: 1 }]);
   }
 
-  // JSONL has no closing delimiter to require.
   assert.deepEqual(await collect('{"id":1}\n{"id":2}', 5), [{ id: 1 }, { id: 2 }]);
   assert.deepEqual(await collect('{"id":1}\n{"id":2}\n', 5), [{ id: 1 }, { id: 2 }]);
 });
@@ -268,7 +252,6 @@ test("invalid UTF-8 is rejected on the desktop path and tolerated on the browser
 
   await assert.rejects(drain(decodeTextChunks(bytes(), true)), TypeError);
 
-  // A file that stops mid-character is a truncated read, not valid text.
   const cutShort = (async function* () {
     yield new Uint8Array([0xe6, 0x97]); // first two bytes of a 3-byte character
   })();
@@ -276,8 +259,7 @@ test("invalid UTF-8 is rejected on the desktop path and tolerated on the browser
 });
 
 test("the whole-file read is bounded by bytes, not by decoded string length", async () => {
-  // Three bytes per character, one UTF-16 unit each: a length check would pass a
-  // file three times the limit.
+  // Three bytes per character, one UTF-16 unit each: a length check would pass 3x the limit.
   const text = "日".repeat(64);
   const source = {
     name: "chats.csv",
@@ -293,8 +275,6 @@ test("the whole-file read is bounded by bytes, not by decoded string length", as
 });
 
 test("a pretty-printed record following a single-line one survives every chunk boundary", async () => {
-  // Recovery used to fire on the first newline of the pending record, so the
-  // same file imported differently depending on where the chunks fell.
   const record = { id: 2, tags: ["a", "b"], nested: { rows: [1, 2] } };
   const mixed = `{"id":1}\n${JSON.stringify(record, null, 2)}\n`;
   for (const size of [1, 5, 12, 64, mixed.length]) {
@@ -311,8 +291,7 @@ test("a pretty-printed record following a single-line one survives every chunk b
 });
 
 test("a broken first row is recovered while the file streams, not held until the end", async () => {
-  // With nothing emitted yet there is no proven framing, and waiting for end of
-  // input to recover would buffer the whole export.
+  // With nothing emitted yet there is no proven framing; waiting for EOF would buffer the export.
   const rows = `{"id":1\n${Array.from({ length: 60 }, (_, i) => `{"id":${i + 2}}`).join("\n")}\n`;
   let pulled = 0;
   async function* counted(): AsyncGenerator<TextChunk> {
@@ -342,8 +321,7 @@ test("a broken first row is recovered while the file streams, not held until the
 });
 
 test("a nested value at column 0 does not end the record that contains it", async () => {
-  // JSON cannot continue `{"nested":` with anything but a value, so the brace
-  // below it is nesting; after a finished value it would be the next record.
+  // After `{"nested":` only a value can follow, so the brace below it is nesting.
   const nested = '{"nested":\n{"id":2}\n}';
   for (const size of [1, 4, 9, 17, nested.length]) {
     const out: unknown[] = [];
@@ -359,9 +337,6 @@ test("a nested value at column 0 does not end the record that contains it", asyn
 });
 
 test("a pretty-printed conversation after a damaged row is framed, not shredded into lines", async () => {
-  // Line-parsing the region behind the boundary lost the whole record when it
-  // arrived in one chunk, and emitted its nested objects as records when it did
-  // not, so the outcome again depended on the chunk size.
   const conversation = {
     id: "c2",
     messages: [
@@ -384,8 +359,6 @@ test("a pretty-printed conversation after a damaged row is framed, not shredded 
 });
 
 test("an array cut mid-record explains itself instead of quoting the JSON engine", async () => {
-  // The records before the cut are still yielded, so the caller can report how
-  // many were saved; only the message the user sees changes.
   const truncated = '[{"id":1},{"id":2},{"title":"half a chat';
   for (const size of [1, 5, 64, 4096]) {
     const seen: unknown[] = [];
@@ -419,11 +392,9 @@ test("a complete array is unaffected by the truncation handling", async () => {
 });
 
 test("a record after the array's closing bracket is refused, not imported", async () => {
-  // A concatenated or corrupted export must not pass as one array's worth.
   for (const size of [1, 6, 64]) {
     await assert.rejects(collect('[{"id":1}]\n{"id":2}\n', size), SyntaxError, `chunk size ${size}`);
     await assert.rejects(collect('[{"id":1}] garbage', size), SyntaxError, `chunk size ${size}`);
-    // Trailing whitespace is still just the end of the file.
     assert.deepEqual(await collect('[{"id":1}]  \n\t\n', size), [{ id: 1 }], `chunk size ${size}`);
   }
 });

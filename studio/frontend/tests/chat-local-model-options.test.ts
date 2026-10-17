@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Chat reads local models from the shared device inventory rather than the compat
-// /api/models/local endpoint. The two disagree in ways that silently drop models, so the
-// mapping is pinned here against what each endpoint actually returns.
+// Chat reads the shared device inventory; this pins its mapping against each endpoint.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -32,9 +30,7 @@ function row(over: Record<string, unknown> = {}) {
 }
 
 test("Ollama rows are offered under their own label", () => {
-  // /api/hub/local scans read-only and returns an opaque `ollama-manifest:` id;
-  // POST /load resolves it through materialize_ollama_model_ref, so the reference
-  // is loadable as-is and Chat lists it like the picker does (PICKER_LOCAL_SOURCES).
+  // `ollama-manifest:` ids are loadable as-is via materialize_ollama_model_ref.
   const options = chatLocalModelOptions([
     row({
       id: "ollama-manifest:%2Fhome%2Fu%2F.ollama%2Fmanifests%2Fllama3",
@@ -50,14 +46,10 @@ test("Ollama rows are offered under their own label", () => {
   assert.equal(option.baseModel, "Ollama");
   assert.equal(option.isGguf, true);
   assert.equal(option.isDirectGguf, true);
-  // An explicit one-artifact source outranks a name that looks like a GGUF repo.
   assert.equal(localGgufKindFor(option, true), "direct");
 });
 
 test("Hermes downloads are offered under their own label", () => {
-  // Hermes Desktop stages one-click downloads as flat GGUFs in ~/.hermes/models. The row is a
-  // plain file path, loadable as-is; it must clear CHAT_LOCAL_SOURCES or the model Hermes
-  // just fetched is missing from the very picker it should show up in.
   const options = chatLocalModelOptions([
     row({
       id: "/home/u/.hermes/models/Qwen3.8-27B-UD-Q4_K_M.gguf",
@@ -77,9 +69,7 @@ test("Hermes downloads are offered under their own label", () => {
 });
 
 test("a directory with two weight formats yields one option per load id", () => {
-  // The shared inventory keys a row on (format, path), so this arrives as two rows with the
-  // same `id`. The selector keys on `id`, so both would share a React key and read as
-  // selected together.
+  // The inventory keys on (format, path), so one id can arrive as two rows.
   const options = chatLocalModelOptions([
     row({ model_format: "gguf", inventory_id: "models_dir:gguf:/models/demo" }),
     row({

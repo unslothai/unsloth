@@ -32,7 +32,6 @@ const TITLEBAR_BACKDROP_ATTRIBUTE_PATTERN =
 const TOUR_VIEWPORT_BACKDROP_PATTERN =
   /data-slot="dialog-overlay"[\s\S]*?data-viewport-backdrop=\{true\}/;
 
-/** Every component under src, so a new dialog cannot slip past. */
 const COMPONENTS = readdirSync(join(import.meta.dirname, "../src"), {
   recursive: true,
   encoding: "utf8",

@@ -1,13 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * A saved Hugging Face token the Hub refuses (an expired OAuth token, a revoked key) gets 401 on
- * every read, public ones included, and the browser used to report that as "Couldn't reach
- * Hugging Face". A token the Hub accepts gets 404 for what it cannot see, so a tokened 401 that
- * succeeds anonymously is the token being refused: fetchHub answers with the anonymous result
- * and records the refusal once per token.
- */
+/** A tokened 401 that succeeds anonymously is the Hub refusing the token, not a network failure. */
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -37,8 +31,6 @@ const API = "https://huggingface.co/api/models?search=qwen";
 
 type Sent = { url: string; authorization: string | null; hfAuthorization: string | null };
 
-/** A Hub that refuses *rejectedToken* with the headers the real one sends, and answers
- * anonymous reads with *anonymousStatus*. */
 function stubHub(opts: {
   rejectedToken?: string;
   anonymousStatus?: number;
@@ -100,7 +92,6 @@ test.beforeEach(() => {
 test("OAuth tokens are validated like classic tokens instead of never being checked", () => {
   assert.equal(isCompleteHfTokenShape(OAUTH), true);
   assert.equal(isCompleteHfTokenShape(CLASSIC), true);
-  // Still not while typing: a prefix or a partial body is not worth a Hub request.
   assert.equal(isCompleteHfTokenShape("hf_oauth_abc"), false);
   assert.equal(isCompleteHfTokenShape("hf_abc"), false);
   assert.equal(isCompleteHfTokenShape(`hf_${"a".repeat(33)}`), false);
@@ -127,7 +118,6 @@ test("a refused token is retried once without it and the public answer is return
       [`Bearer ${OAUTH}`, null],
     );
     assert.equal(isHfTokenRejected(OAUTH), true);
-    // Later reads skip the refused token instead of paying a 401 round trip each.
     const again = await fetchHub(API, withToken(OAUTH));
     assert.equal(again.status, 200);
     assert.deepEqual(
@@ -291,7 +281,6 @@ test("OAuth tokens are redacted from notifications and diagnostics", async () =>
 
 test("after a refusal, a read anonymous access cannot answer still tries the token once", async () => {
   noteHfTokenRejected(OAUTH, hubRejectionScope());
-  // The verifier recovered: the token works again and the private repo answers with it.
   const hub = stubHub({ anonymousStatus: 404 });
   try {
     const response = await fetchHub("https://huggingface.co/api/models/me/private", withToken(OAUTH));
@@ -550,7 +539,6 @@ test("a slow anonymous probe does not reinstate a refusal a newer tokened succes
       return new Response("[]", { status: 200 });
     }
     tokenReads += 1;
-    // The verifier fails once, then accepts the token again.
     return tokenReads === 1
       ? new Response("{}", { status: 401, headers: { "X-Error-Message": "Invalid credentials" } })
       : new Response("[]", { status: 200 });

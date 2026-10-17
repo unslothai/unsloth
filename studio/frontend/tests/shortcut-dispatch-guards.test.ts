@@ -29,14 +29,12 @@ const { isAcceptableBinding, parseBinding } = await import(
 
 const SRC__ROOT = readSrc("app/routes/__root.tsx");
 const APP_SIDEBAR = readSrc("components/app-sidebar.tsx");
-// The chat row menu's shared parts, drawn by the sidebar and by the Projects page.
 const CHAT_ROW_MENU = readSrc("features/chat/components/chat-row-menu.ts");
 const OPEN_CHAT_FOLDER = readSrc("features/chat/components/open-chat-folder-item.tsx");
 const THREAD = readSrc("components/assistant-ui/thread.tsx");
 const CHAT_PAGE = readSrc("features/chat/chat-page.tsx");
 const USE_SHORTCUT = readSrc("features/settings/hooks/use-shortcut.ts");
 
-/** A keydown the dispatcher would see, with only the fields it reads. */
 function keydown(init: { isComposing?: boolean; keyCode?: number }) {
   return {
     isComposing: init.isComposing ?? false,
@@ -44,10 +42,7 @@ function keydown(init: { isComposing?: boolean; keyCode?: number }) {
   } as unknown as KeyboardEvent;
 }
 
-// Escape cancels an IME candidate and Enter commits one, and both ship bare
-// here, so without this a CJK user dismissing a candidate answers the tool
-// call. Two signals because neither is reliable alone: isComposing on WebKit,
-// the legacy 229 on Chromium.
+// Escape/Enter drive IME candidates; isComposing covers WebKit, keyCode 229 Chromium.
 test("a keydown mid-IME-composition is not a chord", () => {
   assert.equal(isImeComposing(keydown({ isComposing: true })), true);
   assert.equal(isImeComposing(keydown({ keyCode: 229 })), true);
@@ -56,17 +51,14 @@ test("a keydown mid-IME-composition is not a chord", () => {
 });
 
 test("the dispatcher checks composition before it matches anything", async () => {
-  // Before the match, so no chord is found, and before preventDefault, so the
-  // candidate window keeps its key.
+  // Before the match and preventDefault, so the candidate window keeps its key.
   assert.match(
     USE_SHORTCUT,
     /if \(isImeComposing\(event\)\) return;\n\s*const hit = bindings\.find/,
   );
 });
 
-// Tab moves focus and a chord consumes what it answers. Bound bare to a tool
-// decision it makes that card's own buttons unreachable by keyboard, which is
-// worse than the chord not existing.
+// Bare Tab moves focus; binding it would make the card's own buttons unreachable.
 test("bare Tab is refused even for a prompt-gated action", () => {
   assert.equal(isAcceptableBinding(parseBinding("Tab")!, true), false);
   assert.equal(isAcceptableBinding(parseBinding("Shift+Tab")!, true), false);
@@ -74,7 +66,6 @@ test("bare Tab is refused even for a prompt-gated action", () => {
 });
 
 test("Tab held with a modifier is still a chord", () => {
-  // The recently-viewed walk ships on exactly these.
   assert.equal(isAcceptableBinding(parseBinding("Ctrl+Tab")!, false), true);
   assert.equal(isAcceptableBinding(parseBinding("Mod+Tab")!, false), true);
   assert.equal(isAcceptableBinding(parseBinding("Mod+Shift+Tab")!, false), true);
@@ -88,7 +79,6 @@ test("refusing Tab does not disturb the other bare-key rules", () => {
   assert.equal(isAcceptableBinding(parseBinding("Shift+Escape")!, false), true);
 });
 
-/** Install a document whose querySelectorAll answers with `els`. */
 function withElements(...els: { closest: (selector: string) => unknown }[]) {
   (globalThis as { document?: unknown }).document = {
     querySelectorAll: () => els,
@@ -97,9 +87,7 @@ function withElements(...els: { closest: (selector: string) => unknown }[]) {
 const under = { closest: () => ({}) };
 const clear = { closest: () => null };
 
-// A dialog leaves the route mounted, so a chord gated only on the route still
-// fires behind it. Radix marks the rest of the page aria-hidden for the life of
-// a modal, which is the general signal rather than a per-dialog store.
+// Radix marks the rest of the page aria-hidden under a modal; that is the general signal.
 test("a surface under a modal is not in the foreground", () => {
   withElements(under);
   assert.equal(isSurfaceInForeground(".aui-composer-input"), false);
@@ -115,9 +103,7 @@ test("a surface that is not rendered at all is not in the foreground", () => {
   assert.equal(isSurfaceInForeground(".aui-composer-input"), false);
 });
 
-// Entering Compare leaves the base view mounted and inert behind the panes, so
-// the first composer in the document is the hidden one. Asking it alone called
-// Compare backgrounded and killed its dictation chord outright.
+// Compare keeps the base view mounted and inert, so the first composer may be hidden.
 test("a hidden earlier match does not mask a visible later one", () => {
   withElements(under, clear);
   assert.equal(isSurfaceInForeground(".aui-composer-input"), true);
@@ -132,16 +118,13 @@ test("dictation asks at press time, not through enabled", async () => {
   const at = THREAD.indexOf('useShortcut(\n    "startDictation"');
   assert.notEqual(at, -1, "the dictation chord lost its call site");
   const body = THREAD.slice(at, THREAD.indexOf("\n  );", at));
-  // Inside the handler: `enabled` is read at render, and a dialog opening need
-  // not re-render this component.
+  // Inside the handler: a dialog opening need not re-render this component.
   assert.match(
     body,
     /\(\) => \{\n\s*\/\/[\s\S]*?if \(!isSurfaceInForeground\(COMPOSER_INPUT_SELECTOR\)\) return;/,
   );
 });
 
-// A write that fails with a good payload used to report nothing at all, so the
-// chord was indistinguishable from a dead key.
 test("both copy chords report a failed write", async () => {
   assert.match(
     APP_SIDEBAR,
@@ -150,8 +133,6 @@ test("both copy chords report a failed write", async () => {
   assert.match(APP_SIDEBAR, /toast\.error\("Could not copy the session id\."\)/);
 });
 
-// Current membership says nothing about where a chat's older files went: it can
-// join a project, record that session, and move back out.
 test("the sandbox probe does not skip a chat that is out of a project", async () => {
   const at = CHAT_ROW_MENU.indexOf("async function sandboxSessionIdsHolding");
   assert.notEqual(at, -1);
@@ -163,8 +144,6 @@ test("the sandbox probe does not skip a chat that is out of a project", async ()
   );
 });
 
-// Both composers register the dictation chord, and only one is on screen at a
-// time, so the foreground check has to be on both or Compare keeps the hole.
 test("both composers gate dictation on the foreground", async () => {
   for (const path of [
     "../src/components/assistant-ui/thread.tsx",
@@ -238,30 +217,24 @@ test("route shortcuts stay idle while Settings is open", async () => {
   );
 });
 
-// The sidebar used to hold the unread set in component state, which died with
-// it. A module store does not, so the next account inherits it.
+// A module store outlives the sidebar, so sign-out must reset it.
 test("signing out drops the previous account's navigation state", async () => {
   const store = await readSrcAsync("features/chat/stores/chat-navigation-store.ts");
   assert.match(store, /resetAccountState: \(\) =>/);
   // A fresh Set, or every account after the first shares one.
   assert.match(store, /set\(\{ \.\.\.ACCOUNT_STATE, unreadThreadIds: new Set\(\), unreadRowIds: \{\} \}\)/);
-  // On unmount, which is what the auth routes do to the sidebar.
   assert.match(
     APP_SIDEBAR,
     /useEffect\(\n\s*\(\) => \(\) => useChatNavigationStore\.getState\(\)\.resetAccountState\(\),\n\s*\[\],\n\s*\);/,
   );
 });
 
-// The latch holds back a repeat of the action that took the selection, not a
-// different command issued straight after it.
 test("the selection latch is keyed by action", async () => {
   assert.match(APP_SIDEBAR, /selectionActedRef = useRef<\{ id: ShortcutId; at: number \} \| null>/);
   assert.match(APP_SIDEBAR, /last\?\.id === id &&/);
   assert.doesNotMatch(APP_SIDEBAR, /followsSelectionAction\(\)/);
 });
 
-// One selector has to mean "the composer" whichever of the two is on screen, or
-// Escape stops declining in Compare and the dictation gate reads the wrong one.
 test("both composers answer to the shared selector", async () => {
   const shared = await readSrcAsync("features/chat/shared-composer.tsx");
   const { COMPOSER_INPUT_SELECTOR } = await import(
@@ -277,9 +250,7 @@ test("both composers answer to the shared selector", async () => {
   }
 });
 
-// The recording bar replaces the composer input while dictation runs, so the
-// foreground gate asks about an element that is gone for exactly as long as
-// there is a recording to stop. Stopping has to come first.
+// The recording bar replaces the input, so stopping must precede the foreground gate.
 test("stopping dictation is reachable once the input is gone", async () => {
   for (const path of [
     "../src/components/assistant-ui/thread.tsx",
@@ -299,8 +270,6 @@ test("stopping dictation is reachable once the input is gone", async () => {
   }
 });
 
-// Sending is not undoable, and a dialog over Chat leaves the chord registered
-// with the draft behind it still submittable.
 test("both composers refuse to send from behind a modal", async () => {
   for (const path of [
     "../src/components/assistant-ui/thread.tsx",
@@ -318,9 +287,7 @@ test("both composers refuse to send from behind a modal", async () => {
   }
 });
 
-// A surface that is not rendered is not covered. The mobile sidebar lives in a
-// drawer and is unmounted while it is closed, so reading "no match" as covered
-// would leave every sidebar chord dead on mobile.
+// The mobile sidebar is unmounted when closed, so no match must not mean covered.
 test("an absent surface is not a covered one", () => {
   const doc = globalThis.document;
   try {
@@ -338,15 +305,13 @@ test("an absent surface is not a covered one", () => {
     (globalThis as { document?: unknown }).document = {
       querySelectorAll: () => [covered, open],
     };
-    // One live match is enough: the base view stays mounted behind Compare.
     assert.equal(isSurfaceBackgrounded(".x"), false);
   } finally {
     (globalThis as { document?: unknown }).document = doc;
   }
 });
 
-// Window-level chords stay registered under a dialog, so the destructive ones
-// have to ask at press time whether the sidebar is still the foreground.
+// Window-level chords stay registered under a dialog, so check foreground at press time.
 test("the sidebar's mutating chords refuse to fire under a dialog", async () => {
   for (const id of [
     "archiveChat",
@@ -365,34 +330,25 @@ test("the sidebar's mutating chords refuse to fire under a dialog", async () => 
       `${id} acts on the chat behind an open dialog`,
     );
   }
-  // Covered, not "not in the foreground", or the mobile drawer kills them all.
   assert.match(APP_SIDEBAR, /isSurfaceBackgrounded\(SIDEBAR_SELECTOR\)/);
-  // And with the drawer closed the sidebar is unmounted, so the app root is
-  // what carries the modal signal there.
   assert.match(
     APP_SIDEBAR,
     /document\.querySelector\(SIDEBAR_SELECTOR\) === null &&\n\s*isSurfaceBackgrounded\("#root"\)/,
   );
 });
 
-// A chat that ran tools before and after joining a project has files in the
-// thread folder and in the project one. Probing only the thread folder
-// answered for one and hid the other.
 test("the sandbox probe leaves the shared project folder alone", async () => {
   const at = CHAT_ROW_MENU.indexOf("async function sandboxSessionIdsHolding(");
   assert.notEqual(at, -1);
   const body = CHAT_ROW_MENU.slice(at, CHAT_ROW_MENU.indexOf("\n}", at));
-  // The shared project workspace is not probed: every chat in the project
-  // writes there, so its files are no evidence about this one, and counting
-  // them reported a second folder for any chat that joined a used project.
+  // The shared project workspace is written by every chat, so it is not evidence for this one.
   assert.doesNotMatch(body, /sandboxSessionIdFor\(/);
   assert.doesNotMatch(body, /candidates\.add\(/);
   assert.equal(APP_SIDEBAR.split("sandboxSessionIdsHolding(ids)").length - 1, 1);
   assert.equal(OPEN_CHAT_FOLDER.split("sandboxSessionIdsHolding(ids)").length - 1, 1);
 });
 
-// Loading a model that drops the level in force leaves the effort set to one
-// the model does not list, and indexOf then returns -1.
+// An effort the model does not list makes indexOf return -1.
 test("an unlisted reasoning effort steps to the first supported level", async () => {
   const at = CHAT_PAGE.indexOf("const current = levels.indexOf(state.reasoningEffort);");
   assert.notEqual(at, -1);
@@ -404,9 +360,7 @@ test("an unlisted reasoning effort steps to the first supported level", async ()
   );
 });
 
-// The composer exception exists for a chord that types nothing there. Decline
-// ships on Escape, but the row takes bare keys, so it can be rebound to one
-// that does type, and the pass would then deny the request mid-sentence.
+// Decline can be rebound to a typing key, so only non-typing chords keep the composer pass.
 test("only a chord that types nothing keeps the composer exception", () => {
   const bare = (code: string) => ({
     code,
@@ -420,10 +374,7 @@ test("only a chord that types nothing keeps the composer exception", () => {
   assert.equal(typesInTextField(bare("Enter")), true);
   assert.equal(typesInTextField(bare("KeyA")), true);
   assert.equal(typesInTextField(bare("Backspace")), true);
-  // A caret key inserts nothing, but a chord on one still has an edit to
-  // stand aside for, so it does not get the pass either.
   assert.equal(typesInTextField(bare("ArrowUp")), true);
-  // Held with anything but Shift it types nothing, whatever the key is.
   assert.equal(typesInTextField({ ...bare("KeyA"), mod: true }), false);
   assert.equal(typesInTextField({ ...bare("KeyA"), shift: true }), true);
 });
@@ -436,8 +387,7 @@ test("the dispatcher drops the exception for a typing chord", async () => {
   assert.match(USE_SHORTCUT, /isTextEntryFocused\(exception\)/);
 });
 
-// Every keydown is swallowed while recording, and on a bare-key row Escape is
-// a chord rather than a cancel, so a keyboard-only user had no way out.
+// Keydowns are swallowed while recording and Escape may be a chord, so provide an exit.
 test("recording can be left from the keyboard", async () => {
   const tab = await readSrcAsync("features/settings/tabs/keyboard-shortcuts-tab.tsx");
   const at = tab.indexOf("const onKeyDown = (event: KeyboardEvent) => {");
@@ -449,7 +399,6 @@ test("recording can be left from the keyboard", async () => {
   assert.ok(exit < swallow, "the exit is swallowed before it is read");
 });
 
-// The page stays mounted under a dialog, so `enabled` still says yes.
 test("the header pickers do not open behind a dialog", async () => {
   for (const id of ["openModelPicker", "openProjectPicker"]) {
     const at = CHAT_PAGE.indexOf(`"${id}",`);
@@ -466,7 +415,6 @@ test("the header pickers do not open behind a dialog", async () => {
   );
 });
 
-// The OS file chooser is the least dismissable thing a chord can raise.
 test("both composers refuse to attach from behind a modal", async () => {
   for (const path of [
     "../src/components/assistant-ui/thread.tsx",
@@ -484,9 +432,7 @@ test("both composers refuse to attach from behind a modal", async () => {
   }
 });
 
-// Answering a tool call the user cannot see is the one decision here that must
-// not be reachable by accident, and the Chat route stays mounted under a
-// dialog, so `keyboardReady` alone still says yes.
+// The Chat route stays mounted under a dialog, so keyboardReady alone still says yes.
 test("a tool call cannot be answered from behind a dialog", async () => {
   const source = await readSrcAsync("components/assistant-ui/tool-confirmation-controls.tsx");
   for (const id of ["approveToolRequest", "declineToolRequest"]) {
@@ -501,8 +447,6 @@ test("a tool call cannot be answered from behind a dialog", async () => {
   assert.match(source, /isSurfaceBackgrounded\(COMPOSER_INPUT_SELECTOR\)/);
 });
 
-// A selection made behind a dialog is invisible and still what the mutating
-// chords act on afterwards, and the clipboard is outside the app entirely.
 test("selection and clipboard chords stop at a covered sidebar", async () => {
   for (const id of ["selectAllChats", "copyChatAsMarkdown", "copySessionId"]) {
     const at = APP_SIDEBAR.indexOf(`useShortcut("${id}", () => {`);
@@ -516,10 +460,7 @@ test("selection and clipboard chords stop at a covered sidebar", async () => {
   }
 });
 
-// The rows these chords stand in for stay enabled while the hardware verdict is
-// out: resolveNavRowState returns disabled false for a pending row on purpose,
-// so the click lands on a page that shows its own loading state. Gating the
-// chords on the unknown verdict would make them disagree with their own rows.
+// resolveNavRowState leaves pending rows enabled, so chords must match their rows.
 test("the workspace chords wait on the same verdict their rows do", async () => {
   assert.match(SRC__ROOT, /enabled: routeShortcutEnabled && !chatOnlyMeasured,/);
   assert.match(SRC__ROOT, /enabled: routeShortcutEnabled && !videoDisabled,/);
@@ -531,8 +472,6 @@ test("the workspace chords wait on the same verdict their rows do", async () => 
   );
 });
 
-// The reasoning, Fast mode and fork chords drive controls on the page behind a
-// dialog just as the pickers do.
 test("the remaining chat-page chords stop at a covered surface", async () => {
   for (const id of [
     "cycleReasoningEffort",
@@ -556,8 +495,7 @@ test("the remaining chat-page chords stop at a covered surface", async () => {
   );
 });
 
-// A non-modal popover leaves the composer the foreground, so the press-time
-// check alone does not keep the send chord out of the picker's search box.
+// A non-modal popover leaves the composer in the foreground.
 test("the send chords stand aside in any text field but the composer", async () => {
   for (const path of [
     "../src/components/assistant-ui/thread.tsx",

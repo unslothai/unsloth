@@ -7,7 +7,6 @@ export { normalizeModelIdentity } from "../../../src/features/hub/lib/model-iden
 export { isGgufLike } from "../../../src/features/hub/lib/model-identifiers.ts";
 export { classifyUnslothSupport } from "../../../src/features/hub/lib/unsloth-support.ts";
 
-/** Minimal HF-token store. */
 let token = "";
 
 export function getHfToken(): string {

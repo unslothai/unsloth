@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * The dialog is closed for the whole launch, yet its tab panels were static imports
- * and so ran before first paint. One static `./tabs/...` edge from anywhere reachable at
- * startup puts them all back, so these assert the import graph, not rendered output.
- */
+/** Tab panels must stay lazy; one static ./tabs edge pulls them all back into startup. */
 
 import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
@@ -28,10 +24,7 @@ async function* walk(dir: string): AsyncGenerator<string> {
   }
 }
 
-/**
- * Module specifiers of `import`/`export ... from` declarations, parsed rather than grepped:
- * a deferred `import(...)` is a call expression, so it is never collected.
- */
+/** Parsed, not grepped: a deferred import(...) is a call expression and is not collected. */
 const staticSpecifiers = (file: string, text: string): string[] => {
   const parsed = ts.createSourceFile(
     file,
@@ -54,7 +47,6 @@ const staticSpecifiers = (file: string, text: string): string[] => {
   return specifiers;
 };
 
-/** A tab panel, however the importer spelled the path. */
 const isTabPanel = (specifier: string): boolean =>
   /(^|\/)tabs\/[\w-]+-tab$/.test(specifier);
 
@@ -64,7 +56,6 @@ test("the dialog loads every tab panel on demand", async () => {
   const statics = staticSpecifiers(DIALOG, source).filter(isTabPanel);
   assert.deepEqual(statics, [], `settings-dialog still statically imports: ${statics}`);
 
-  // One loader per panel on disk, so a tab added later cannot go missing from the map.
   const panels = (await readdir(TABS_DIR)).filter((f) => /-tab\.tsx$/.test(f));
   assert.ok(panels.length >= 12, `only found ${panels.length} tab panels`);
   for (const file of panels) {
@@ -80,7 +71,6 @@ test("nothing else in src statically imports a tab panel", async () => {
   const offenders: string[] = [];
   for await (const file of walk(SRC)) {
     if (file.startsWith(TABS_DIR)) {
-      // A panel importing a sibling is its own business; it is already lazy.
       continue;
     }
     const text = await readFile(file, "utf8");
@@ -98,14 +88,12 @@ test("nothing else in src statically imports a tab panel", async () => {
 });
 
 test("a panel that fails to load cannot take the app down with it", async () => {
-  // Nothing above the root-mounted dialog catches, so an uncaught render throw unmounts
-  // the whole tree, not one panel.
+  // Nothing above the root-mounted dialog catches, so a render throw unmounts the whole tree.
   const source = await readFile(DIALOG, "utf8");
   const parsed = ts.createSourceFile(
     DIALOG,
     source,
     ts.ScriptTarget.ESNext,
-    // Parent pointers: the assertion is about which element encloses which.
     true,
     ts.ScriptKind.TSX,
   );
@@ -167,10 +155,9 @@ test("a panel that fails to load cannot take the app down with it", async () => 
 });
 
 test("the panels are prefetched once the dialog opens", async () => {
-  // Without this the first tab click trades the startup cost for an interaction one.
   const source = await readFile(DIALOG, "utf8");
   assert.match(source, /scheduleIdleTask/);
   assert.match(source, /Object\.values\(TAB_LOADERS\)/);
-  // It warms unselected panels, so a failed chunk must not reach the page as a rejection.
+  // It warms unselected panels, so a failed chunk must not surface as a rejection.
   assert.match(source, /load\(\)\.catch\(/);
 });

@@ -1,16 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Settings > Logs: "Download all logs (.zip)" and "Open logs folder".
-//
-// Both branches run in one process, which a plain import cannot do: `isTauri` is
-// decided once when lib/api-base evaluates. loadWithStubs re-runs the source per
-// test with the api-base it wants, and keeps "@tauri-apps/api/core" (resolvable
-// only inside a Tauri webview) out of the runner.
-//
-// The tab renders with react-dom/server, where effects never run and setState is
-// a no-op, so handlers are called off the recorded button props: what is asserted
-// is the request and the toast, not the disabled repaint.
+// isTauri is decided once at api-base evaluation, so loadWithStubs re-runs the source per test.
+// Rendered with react-dom/server, so handlers are invoked off recorded button props.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -53,7 +45,6 @@ const EXPORT_PATH = "/api/settings/debug/logs/export";
 const SAVED_PATH = "/home/tester/Downloads/unsloth-logs-20260910-101112.zip";
 const ARCHIVE_NAME = /^unsloth-logs-\d{8}-\d{6}\.zip$/;
 
-/** The shipped English message, so a renamed key fails here rather than silently. */
 function t(key: string, values?: Record<string, string>): string {
   const message = key
     .split(".")
@@ -75,7 +66,6 @@ type ToastCall = {
 };
 type ButtonProps = Record<string, unknown>;
 
-/** Let every already-resolved promise in the handler chain settle. */
 async function flush(): Promise<void> {
   for (let index = 0; index < 5; index += 1) {
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -114,9 +104,7 @@ function makeWorld(options: {
       refreshSession: async () => {
         refreshes.push(true);
         if (options.refreshFails) {
-          // What the real one does on ANY non-2xx: clear the stored tokens and
-          // resolve false, without throwing. That is why nothing here refreshes
-          // speculatively -- it would sign the user out of the whole app.
+          // The real refresh clears stored tokens on any non-2xx, so nothing refreshes speculatively.
           storedToken = null;
           return false;
         }
@@ -136,8 +124,6 @@ function makeWorld(options: {
     },
     "../lib/debug-log-error": debugLogError,
   };
-  // A getter, so "did the web build reach for Tauri at all?" is answerable:
-  // loadWithStubs reads the entry only when the module actually requires it.
   Object.defineProperty(apiStubs, "@tauri-apps/api/core", {
     enumerable: true,
     get: () => {
@@ -176,7 +162,6 @@ function makeWorld(options: {
         );
       },
     },
-    // pass-through wrappers: the markup around the buttons is not under test
     "@/components/ui/input-group": {
       InputGroup: passthrough,
       InputGroupAddon: passthrough,
@@ -280,20 +265,14 @@ test("the desktop export streams through the Tauri command", async () => {
   };
   assert.equal(args.url, `${API_BASE}${EXPORT_PATH}`);
   assert.match(args.filename, ARCHIVE_NAME);
-  // The multi-account fallback. `desktop-login` refuses to mint unconditionally
-  // on a multi-account install, so without this the owner -- signed in, looking
-  // at the owner-only tab -- could never export and signing in again would not
-  // help. The command still prefers a minted session and pins host, port and
-  // path, so this reaches nothing the tab could not reach itself.
+  // Multi-account fallback; Rust pins host, port and path, so it reaches nothing new.
   assert.equal(args.uiToken, UI_TOKEN);
-  // The whole point of the desktop branch: the response never crosses into JS.
   assert.deepEqual(world.requests, []);
 });
 
 test("the browser export fetches the route and never reaches for Tauri", async () => {
   const world = makeWorld({ isTauri: false });
 
-  // Null, not a path: only the browser knows where its downloads land.
   assert.equal(await world.api.exportAllLogs(), null);
   assert.deepEqual(world.requests, [EXPORT_PATH]);
   assert.equal(world.downloads.length, 1);
@@ -326,9 +305,6 @@ test("openLogsFolder preserves the selected path with an older backend", async (
 });
 
 test("an export that works does not touch the session", async () => {
-  // refreshSession clears both stored tokens on ANY non-2xx, so refreshing
-  // before every export would let a transient 500 on /api/auth/refresh sign the
-  // user out of the whole app just for clicking Download all logs.
   const world = makeWorld({
     isTauri: true,
     invoke: async () => SAVED_PATH,
@@ -339,11 +315,7 @@ test("an export that works does not touch the session", async () => {
 });
 
 test("a rejected token is refreshed once and the export retried", async () => {
-  // Rust uses the token once and as-is: it cannot retry a 401 by refreshing the
-  // way authFetch does. Without this, a desktop left idle past the access-token
-  // lifetime fails while holding a perfectly good refresh token. A 401 is also
-  // the one case where refreshing costs nothing, the token having already been
-  // rejected.
+  // Rust cannot refresh on a 401 like authFetch, so the frontend retries once after refreshing.
   let attempts = 0;
   const world = makeWorld({
     isTauri: true,
@@ -397,7 +369,6 @@ test("a failure that is not a 401 never reaches for the refresh token", async ()
 });
 
 test("openLogsFolder opens the reported logs root", async () => {
-  // the backend resolves a custom studio home, which open_logs_dir cannot
   const world = makeWorld({ isTauri: true });
 
   await world.api.openLogsFolder("/srv/studio-home/logs", "/other/logs/server/current.log");
@@ -407,9 +378,7 @@ test("openLogsFolder opens the reported logs root", async () => {
 });
 
 test("an archive saved at a filesystem root still reveals that root", async () => {
-  // Dropping the separator here changes the meaning rather than tidying the
-  // path: "" is not "/", and "C:" is the CURRENT directory on drive C: rather
-  // than "C:\", so Show in folder would open the wrong place or nowhere.
+  // Keep the separator: "C:" means the current directory on drive C, not "C:\\".
   const unix = makeWorld({ isTauri: true });
   await unix.api.revealSavedArchive("/unsloth-logs.zip");
   assert.deepEqual(unix.invokes, [
@@ -422,7 +391,6 @@ test("an archive saved at a filesystem root still reveals that root", async () =
     { command: "open_models_dir", args: { path: "C:\\" } },
   ]);
 
-  // A bare name has no directory at all, which is still nothing to open.
   const bare = makeWorld({ isTauri: true });
   await bare.api.revealSavedArchive("unsloth-logs.zip");
   assert.deepEqual(bare.invokes, []);
@@ -459,7 +427,6 @@ test("a rejected caller is told the session is the problem, not the backend", as
 test("the desktop stream failure carries the HTTP status back out of Rust", async () => {
   const world = makeWorld({
     isTauri: true,
-    // What `stream_url_to_path` rejects with; Rust hands back a string, not a status.
     invoke: async () => {
       throw "Download failed with status 404.";
     },
@@ -484,7 +451,6 @@ test("the download button is offered everywhere, the folder button only on deskt
     ).length,
     0,
   );
-  // The masking of credentials in the archive is stated where it is downloaded.
   assert.ok(webMarkup.includes(t("settings.debugging.exportMaskedNote")));
 
   const desktop = makeWorld({ isTauri: true });
@@ -528,8 +494,6 @@ test("a desktop export toasts the saved path and reveals that folder", async () 
     `toast "${world.toasts[0].title}" does not name the saved file`,
   );
 
-  // The reveal action must open the folder the toast just named -- Downloads --
-  // not ~/.unsloth/studio, where the logs came from.
   const action = world.toasts[0].options?.action as {
     label: string;
     onClick: () => void;

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The snapshot goes out on PATCH /api/chat/threads/{id}, whose model is extra="forbid" with
-// literal and range constraints. These pin what the client may send, and what may be per-chat.
+// PATCH /api/chat/threads/{id} is extra="forbid" with range limits; pin what may be sent.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -54,7 +53,7 @@ test("a full snapshot survives the round trip", () => {
 });
 
 test("full access is dropped rather than stored on the thread", () => {
-  // it disables the sandbox, so it is re-accepted through the warning dialog each session.
+  // It disables the sandbox, so it is re-accepted through the warning dialog each session.
   assert.deepEqual(
     sanitizeThreadScopedSettings({ permissionMode: "full" }),
     {},
@@ -76,7 +75,6 @@ test("out-of-contract values are dropped", () => {
 });
 
 test("settings that describe the installation stay out of the snapshot", () => {
-  // these belong to the install, so a chat must not start pinning its own copy of them.
   for (const key of [
     "showCanvasMenuItem",
     "collapseHtmlArtifacts",
@@ -117,7 +115,7 @@ test("every thread-scoped key is recognised and non-object input is safe", () =>
 });
 
 test("the legacy confirm toggle is owned by the chat but not stored on it", () => {
-  // loadPermissionMode falls back to it, so a per-chat change that wrote it would go global.
+  // loadPermissionMode falls back to it, so a per-chat write would go global.
   assert.equal(isThreadOwnedSettingKey("confirmToolCalls"), true);
   assert.equal(isThreadScopedSettingKey("confirmToolCalls"), false);
   assert.deepEqual(
@@ -131,15 +129,12 @@ test("the legacy confirm toggle is owned by the chat but not stored on it", () =
 });
 
 test("an empty snapshot reads as no snapshot", () => {
-  // a thread that stored nothing falls back to the installation settings, as chats did before.
   assert.equal(hasThreadScopedSettings(null), false);
   assert.equal(hasThreadScopedSettings(undefined), false);
   assert.equal(hasThreadScopedSettings({}), false);
   assert.equal(hasThreadScopedSettings({ toolsEnabled: false }), true);
 });
 
-// The reported gap: returning to a chat started under one system prompt showed whichever
-// prompt the last chat had. These live under `params`, which is all that makes them special.
 test("the sampling params and the system prompt travel with the chat", () => {
   const settings = sanitizeThreadScopedSettings({
     temperature: 0.2,
@@ -167,8 +162,7 @@ test("the sampling params and the system prompt travel with the chat", () => {
   }
 });
 
-// The bounds are the PATCH model's, so a value the server would refuse must not
-// be sent: extra="forbid" refuses the whole body on one bad field.
+// extra="forbid" refuses the whole body on one bad field.
 test("a sampling value outside the slider range is dropped", () => {
   assert.deepEqual(
     sanitizeThreadScopedSettings({
@@ -181,15 +175,13 @@ test("a sampling value outside the slider range is dropped", () => {
     }),
     {},
   );
-  // The edges themselves are inside.
   assert.deepEqual(
     sanitizeThreadScopedSettings({ temperature: 2, topP: 0, topK: 100 }),
     { temperature: 2, topP: 0, topK: 100 },
   );
 });
 
-// -1 disables top-k, and default.yaml and whole model families resolve to it, so dropping
-// it means reopening such a chat silently takes whatever top-k the installation last saw.
+// -1 disables top-k and many defaults resolve to it, so it must be kept.
 test("the disabled top-k value is kept, and it is the floor", () => {
   assert.deepEqual(sanitizeThreadScopedSettings({ topK: -1 }), { topK: -1 });
   assert.deepEqual(sanitizeThreadScopedSettings({ topK: -2 }), {});
@@ -200,14 +192,12 @@ test("a non-string prompt is dropped rather than coerced", () => {
     sanitizeThreadScopedSettings({ systemPrompt: 12, systemVariables: null }),
     {},
   );
-  // An empty prompt is a real choice, not a missing one.
   assert.deepEqual(sanitizeThreadScopedSettings({ systemPrompt: "" }), {
     systemPrompt: "",
   });
 });
 
-// Context belongs to the model that loaded, not to the conversation, so a chat
-// restoring a budget the current model cannot hold is not a thing that happens.
+// Context belongs to the loaded model, not the conversation.
 test("the context and the model are not per-chat", () => {
   for (const key of ["maxSeqLength", "maxTokens", "checkpoint"]) {
     assert.equal(isThreadScopedSettingKey(key), false, key);

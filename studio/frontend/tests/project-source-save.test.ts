@@ -12,8 +12,7 @@ import { setAuthFetchHandler } from "./helpers/store-stubs/auth.ts";
 import { recordedToasts } from "./helpers/store-stubs/toast.ts";
 
 const { storage } = installLocalStorageFake();
-// A real EventTarget in place of the inert window the fake installs: the sources
-// panel only learns about a save through a window event.
+// The sources panel only learns about a save through a window event.
 const events = new EventTarget();
 Object.assign(globalThis, {
   window: Object.assign(events, {
@@ -50,10 +49,7 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-/** Answer a job poll only when it is *this* test's job. A save leaves its
- * ingest watcher polling for as long as 300s, and node runs the next test
- * immediately, so without this the watcher of a finished test is answered by
- * the handler of the running one, and toasts and announces off the back of it. */
+/** Ingest watchers poll up to 300s across tests, so only answer this test's job. */
 function jobFor(jobId: string, input: string, body: unknown): Response {
   return input.includes(`/jobs/${jobId}`)
     ? json(body)
@@ -66,8 +62,7 @@ test.beforeEach(() => {
 });
 
 test("invalidating the probe does not refetch anyone's document list", () => {
-  // The sources panel invalidates *before* its own delete, having already
-  // dropped the row; a refetch there would put the row straight back.
+  // The panel invalidates after dropping the row; a refetch there would restore it.
   const seen = collectUpdates();
   invalidateProjectSources("p1");
   assert.deepEqual(seen, []);
@@ -93,7 +88,6 @@ test("uploads the chat under its sanitised name and reports it once", async () =
     recordedToasts.map((t) => [t.kind, t.message]),
     [["success", "Saved to project sources."]],
   );
-  // Announced after the upload, so the panel refetches a list that has it.
   assert.deepEqual(seen, ["p one"]);
 });
 
@@ -123,7 +117,6 @@ test("a rejected upload resolves false and says why", async () => {
     recordedToasts.map((t) => [t.kind, t.message, t.description]),
     [["error", "Failed to save to project sources.", "Project not found"]],
   );
-  // The probe is still invalidated, so the next chat re-reads the truth.
   assert.deepEqual(seen, ["gone"]);
 });
 
@@ -141,8 +134,7 @@ test("a quiet save still reports its own failure", async () => {
 
 test("an ingest that fails after the upload is not left silent", async () => {
   const seen = collectUpdates();
-  // A filename of its own, so a toast can be attributed to this save and not to
-  // some other test's watcher that happens to have uploaded a "Chat.md" too.
+  // A unique filename so toasts are attributable to this save.
   setAuthFetchHandler((input) => {
     if (input.includes("/jobs/")) {
       return jobFor("j4", input, {
@@ -155,11 +147,7 @@ test("an ingest that fails after the upload is not left silent", async () => {
     return json({ documentId: "d4", jobId: "j4", filename: "Unparsable.md" });
   });
   await saveMarkdownAsProjectSource("p4", "# Chat\n", "Unparsable");
-  // Wait on the announce, not on the toast: the watcher toasts and *then*
-  // announces, with no await between the two, so the announce is the last
-  // thing the failed ingest does. Polling for the toast and then asserting the
-  // count reads the count in the window between them, and fails on a runner
-  // slow enough to land a poll there.
+  // Wait on the announce, not the toast: the watcher toasts then announces with no await between.
   const announcedTwice = await waitFor(() =>
     seen.filter((id) => id === "p4").length >= 2 || undefined,
   );
@@ -167,20 +155,16 @@ test("an ingest that fails after the upload is not left silent", async () => {
     announcedTwice,
     `the failed ingest never re-announced p4, so a chip left "pending" never resolves; saw ${JSON.stringify(seen)}`,
   );
-  // The panel hides failed documents, so the success toast would otherwise be
-  // the only thing the user ever sees about a source that never arrives.
+  // The panel hides failed documents, so the toast is the only failure signal.
   const failure = recordedToasts.find(
     (t) => t.message === "Couldn't index Unparsable.md",
   );
   assert.equal(failure?.kind, "error");
   assert.equal(failure?.description, "Could not parse the document");
-  // Told exactly twice: once for the upload, once for the ingest that failed.
   assert.equal(seen.filter((id) => id === "p4").length, 2);
 });
 
-/** Poll `read` until it answers, for well past the 2s ingest poll. Anything
- * asserted on the strength of it must be something the code under test does
- * *before* what is polled for, or the wait races it. */
+/** Only assert things the code does before what is polled, or the wait races it. */
 async function waitFor<T>(read: () => T | undefined): Promise<T | undefined> {
   for (let attempt = 0; attempt < 300; attempt++) {
     const value = read();
@@ -190,15 +174,10 @@ async function waitFor<T>(read: () => T | undefined): Promise<T | undefined> {
   return undefined;
 }
 
-// The panel is a .tsx component node cannot load, so the subscription it mounts
-// lives in rag-api and is exercised here directly. These assert the refresh
-// itself runs, not merely that an event was dispatched.
+// The panel is .tsx, so its rag-api subscription is exercised directly.
 
 test("a mounted sources list refetches when a chat is saved into its project", async () => {
-  // Model the panel: subscribe, and let the callback re-run the same lister
-  // useRagDocuments.refresh calls. Before the fix, nothing here ever ran again,
-  // because the list only polls while a row it already knows is indexing, and an
-  // empty panel knows none.
+  // The list only polls while a known row indexes, so an empty panel needs the event.
   const listed: string[][] = [];
   let rows: string[] = [];
   const unsubscribe = subscribeProjectSourcesUpdated("p5", () => {
@@ -212,7 +191,6 @@ test("a mounted sources list refetches when a chat is saved into its project", a
         status: "completed",
       });
     }
-    // The upload is what puts the row on the server.
     rows = ["Chat.md"];
     return json({ documentId: "d5", jobId: "j5", filename: "Chat.md" });
   });
@@ -258,9 +236,7 @@ test("the panel subscribes, and does not resurrect a row it just deleted", async
     !src.includes("PROJECT_SOURCES_UPDATED_EVENT"),
     "the panel listens for the raw event again, bypassing the tested subscription",
   );
-  // handleRemove drops the row optimistically and *then* invalidates, so an
-  // invalidate that also refetched would re-list the row before the DELETE went
-  // out, and the panel has no request sequencing to drop the stale answer.
+  // The row is dropped optimistically before DELETE, and there is no request sequencing.
   assert.match(
     src,
     /invalidateProjectSources\(projectId\);\n\s*await remove\(documentId\);/,

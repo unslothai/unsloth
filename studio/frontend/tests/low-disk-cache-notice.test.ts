@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The property that matters is not "does it fire" but "how often": once per
-// crossing, and never again until free space climbs clear of that level.
-
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
@@ -40,7 +37,6 @@ function disk(freeGb: number, totalGb = 500) {
   return { free_gb: freeGb, total_gb: totalGb };
 }
 
-/** Feed a run of readings and collect only the levels that were announced. */
 function announce(readings: number[]): string[] {
   let state: LowDiskState = INITIAL_LOW_DISK_STATE;
   const said: string[] = [];
@@ -63,13 +59,12 @@ test("pressure is read from free space, not from percent used", () => {
 
 test("a disk the host could not read is not a warning", () => {
   assert.equal(diskPressure({ free_gb: null, total_gb: null }), null);
-  // /api/system reports zeros when psutil raised, which is not a full disk.
+  // /api/system reports zeros when psutil raised.
   assert.equal(diskPressure(disk(0, 0)), null);
   assert.equal(diskPressure({ free_gb: Number.NaN, total_gb: 100 }), null);
 });
 
 test("crossing the low threshold warns exactly once", () => {
-  // The same reading arrives on every poll.
   const readings = [100, 30, 19, 18, 18, 17, 18, 19];
   assert.deepEqual(announce(readings), ["low"]);
 });
@@ -79,14 +74,11 @@ test("falling from low to critical is worth saying again", () => {
 });
 
 test("a critical disk does not re-warn as low when it recovers a little", () => {
-  // 6 GB clears critical and is still below low, which was already said.
   assert.deepEqual(announce([3, 11, 4]), ["critical", "critical"]);
   assert.deepEqual(announce([3, 8, 4]), ["critical"]);
 });
 
 test("recovering out of critical does not disarm the low warning too", () => {
-  // 21 GB clears critical's margin but not low's own re-arm point of 25 GB, and
-  // the instantaneous pressure forgot low there and re-toasted on the next dip.
   assert.deepEqual(announce([3, 21, 19]), ["critical"]);
   assert.deepEqual(announce([3, LOW_DISK_FREE_GB + REARM_MARGIN_GB, 19]), [
     "critical",
@@ -108,7 +100,6 @@ test("hovering on the threshold does not toast on every reading", () => {
 test("a real recovery re-arms the warning", () => {
   const recovered = LOW_DISK_FREE_GB + REARM_MARGIN_GB;
   assert.deepEqual(announce([10, recovered, 10]), ["low", "low"]);
-  // One byte short of the margin is not a recovery.
   assert.deepEqual(announce([10, recovered - 0.1, 10]), ["low"]);
 });
 
@@ -123,7 +114,6 @@ test("an unreadable reading in the middle does not re-arm anything", () => {
 test("the session state is shared across mounts, not reset by them", () => {
   resetLowDiskNotices();
   assert.equal(observeDiskPressure(disk(10)), "low");
-  // Reopening Settings mounts the tab again; the warning was already given.
   assert.equal(observeDiskPressure(disk(10)), null);
   assert.equal(observeDiskPressure(disk(2)), "critical");
   resetLowDiskNotices();
@@ -138,15 +128,11 @@ test("the notice fetches its own readings rather than waiting to be told", () =>
     ),
     "utf8",
   );
-  // subscribeSystemInfo only adds a callback to a Set: it never requests
-  // /api/system, so a bare subscriber hears nothing unless the floating monitor
-  // or the resources tab happens to be open, which is not this notice's user.
-  // The notice asks for a reading itself, once, when the shell mounts.
+  // subscribeSystemInfo never fetches, so the notice requests one reading on mount.
   assert.match(hook, /checkDiskSpace\(\{ force: true \}\)/);
   assert.match(hook, /setLowDiskNotifier\(/);
   assert.match(hook, /toast\.warning\(/);
-  // The description interpolates {free} and {total} bare, so the unit has to be
-  // in the value or the toast reads "4.0 free of 500".
+  // The description interpolates {free}/{total} bare, so values must carry units.
   assert.match(
     hook,
     /\$\{value >= 100 \? value\.toFixed\(0\) : value\.toFixed\(1\)\} GB/,
@@ -155,14 +141,11 @@ test("the notice fetches its own readings rather than waiting to be told", () =>
     en.settings.resources.storage.lowDisk.description,
     /\{free\} free of \{total\}/,
   );
-  // The toast has to lead somewhere: the Storage section it is about.
   assert.match(hook, /scrollTarget: "resources-caches"/);
 });
 
 test("nothing polls the disk on a timer", () => {
-  // The point of the redesign. An interval here runs in every open tab forever to answer a
-  // question whose answer only changes when something writes to the disk, and the route it used
-  // to poll, /api/system, enumerates GPUs and reads package metadata on the way.
+  // No interval: disk space only changes when something writes.
   for (const file of [
     "../src/features/settings/hooks/use-low-disk-notice.ts",
     "../src/features/settings/low-disk-check.ts",
@@ -173,8 +156,6 @@ test("nothing polls the disk on a timer", () => {
 });
 
 test("a download asks the disk on the way past", () => {
-  // requestStart is the single funnel every download goes through, which is what lets the
-  // notice drop its timer without going silent for the user who is actually filling the disk.
   const funnel = readFileSync(
     new URL(
       "../src/features/hub/download-manager/transport-conflict.ts",
@@ -183,45 +164,35 @@ test("a download asks the disk on the way past", () => {
     "utf8",
   );
   assert.match(funnel, /import \{ checkDiskSpace \}/);
-  // void, not await: a disk reading is advice and must never gate or delay a download.
+  // void, not await: a disk reading must never delay a download.
   assert.match(funnel, /\n  void checkDiskSpace\(\);/);
 
   const check = readFileSync(
     new URL("../src/features/settings/low-disk-check.ts", import.meta.url),
     "utf8",
   );
-  // One syscall, not the GPU-enumerating route.
   assert.match(check, /"\/api\/system\/disk"/);
   assert.doesNotMatch(check, /"\/api\/system"/);
-  // A burst of downloads is still one disk.
   assert.match(check, /MIN_INTERVAL_MS/);
-  // A host that cannot answer must not surface an error or stop anything.
   assert.match(check, /return null;/);
 });
 
 test("a reading that never settles cannot silence the feature for the session", () => {
-  // inFlight is the only slot. A fetch that never resolves, or a body that never finishes
-  // reading, would hold it for the life of the page: every later check either queues behind it
-  // or is handed it, so the disk warning goes quiet for the rest of the session. That is the
-  // one failure this feature cannot report on its own, so the read is bounded.
+  // inFlight is the only slot, so a hung fetch would silence warnings; the read is bounded.
   const check = readFileSync(
     new URL("../src/features/settings/low-disk-check.ts", import.meta.url),
     "utf8",
   );
   assert.match(check, /disposableTimeoutSignal/);
   assert.match(check, /READ_TIMEOUT_MS/);
-  // The signal has to reach the request, not merely be constructed.
   assert.match(check, /authFetch\("\/api\/system\/disk", \{ signal: timeout\.signal \}\)/);
-  // The helper's documented contract: dispose once settled, or abort listeners accumulate.
   assert.match(check, /finally \{\s*\n\s*\/\/[^\n]*\n\s*timeout\.dispose\(\);/);
-  // A timeout must read as "could not tell", never as a full disk.
   const read = check.slice(check.indexOf("async function readDisk"));
   assert.match(read.slice(0, read.indexOf("\n}")), /return null;/);
 });
 
 test("a notifier that throws loses one toast, not the promise and not the session", () => {
-  // observeDiskPressure records the crossing BEFORE the notifier runs, so a throwing notifier
-  // would lose the warning and reject a detached promise nobody awaits.
+  // The crossing is recorded before the notifier runs, so a throw must be caught.
   const check = readFileSync(
     new URL("../src/features/settings/low-disk-check.ts", import.meta.url),
     "utf8",
@@ -231,17 +202,11 @@ test("a notifier that throws loses one toast, not the promise and not the sessio
   const guarded = body.indexOf("try {\n      notifier(level, disk);");
   assert.ok(guarded !== -1, "the notifier call is not guarded");
   assert.ok(observe < guarded, "the crossing is spent before the notifier is even attempted");
-  // and inFlight is still cleared, so one bad toast cannot wedge the slot either
   assert.match(body, /\.finally\(\(\) => \{\s*\n\s*inFlight = null;/);
 });
 
 test("a model load asks the disk too, because the backend downloads inside it", () => {
-  // The download manager is not the only way bytes reach the cache, so requestStart is not the
-  // whole funnel. Selecting an uncached model in Chat calls loadModel, and the BACKEND fetches
-  // the repo inside that one request (_maybe_auto_download_model in routes/inference.py): no
-  // download job is created, so neither requestStart nor the poll loop's finalize ever runs.
-  // Left to the mount reading alone, a load that fills the disk warns nobody until the next
-  // Hub operation, which is exactly the user this notice is for.
+  // loadModel downloads uncached models server-side without a download job.
   const api = readFileSync(
     new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
     "utf8",
@@ -250,25 +215,18 @@ test("a model load asks the disk too, because the backend downloads inside it", 
 
   const load = api.slice(api.indexOf("export async function loadModel"));
   const body = load.slice(0, load.indexOf("\nexport "));
-  // Before the request, throttled: picking through several models costs one reading.
   assert.match(body, /void checkDiskSpace\(\);/);
-  // And after it, forced, for the reason finalize is forced: the reading has to be taken after
-  // the write, and unforced it is swallowed by the interval or handed the pre-load figure.
+  // Forced after the load so the reading reflects the write.
   assert.match(body, /void checkDiskSpace\(\{ force: true \}\);/);
-  // In a finally: a load that FAILED is the likeliest one to have filled the disk doing it.
   assert.ok(
     body.indexOf("} finally {") < body.indexOf("void checkDiskSpace({ force: true })"),
     "the post-load reading must be in the finally, so a failed load still reports",
   );
-  // void, never awaited: a disk reading must not gate or delay a model load.
   assert.doesNotMatch(body, /await checkDiskSpace/);
 });
 
 test("a training run asks the disk on both sides of the worker's download", () => {
-  // The third cache writer, and the largest. start-fresh-training-run and
-  // resume-training-run both call startTraining directly, and the worker then pulls
-  // the base model through FastLanguageModel.from_pretrained plus any remote dataset,
-  // passing neither requestStart nor loadModel.
+  // Training pulls models via the worker, bypassing requestStart and loadModel.
   const api = readFileSync(
     new URL("../src/features/training/api/train-api.ts", import.meta.url),
     "utf8",
@@ -277,13 +235,9 @@ test("a training run asks the disk on both sides of the worker's download", () =
   const start = api.slice(api.indexOf("export async function startTraining"));
   const body = start.slice(0, start.indexOf("\nexport "));
   assert.match(body, /void checkDiskSpace\(\);/);
-  // NOT forced here, and not in a finally: the download happens in the worker long
-  // after this request returns, so a reading taken on return describes the disk
-  // BEFORE the bytes landed and would read as reassurance.
+  // Not forced here: the worker downloads long after this request returns.
   assert.doesNotMatch(body, /checkDiskSpace\(\{ force: true \}\)/);
 
-  // The post-download half lives where the run leaves the active state, which
-  // happens whether it completed or failed.
   const watch = readFileSync(
     new URL(
       "../src/features/training/hooks/use-training-completion-watch.ts",
@@ -293,8 +247,6 @@ test("a training run asks the disk on both sides of the worker's download", () =
   );
   assert.match(watch, /import \{ checkDiskSpace \}/);
   assert.match(watch, /void checkDiskSpace\(\{ force: true \}\);/);
-  // In the effect cleanup, so it fires on the active -> inactive transition rather
-  // than on every poll tick.
   const cleanup = watch.slice(watch.indexOf("return () => {"));
   assert.ok(
     cleanup.indexOf("void checkDiskSpace({ force: true })") !== -1,
@@ -314,39 +266,29 @@ test("the disk route does one syscall and no directory walk", () => {
   );
   assert.ok(route.length > 0, "the disk route is gone");
   assert.match(route, /shutil\.disk_usage/);
-  // Comments and the docstring stripped first, or a comment merely NAMING one of these names
-  // fails the check below, and a comment explaining why psutil is absent is exactly the kind of
-  // comment this route wants.
+  // Strip comments first so a comment naming these does not fail the check.
   const code = route
     .replace(/"""[\s\S]*?"""/g, "")
     .split("\n")
     .filter((line) => !line.trim().startsWith("#"))
     .join("\n");
-  // Not os.walk, not scandir, not the cache inventory: this is asked for on the way into a
-  // download and cannot afford to walk a multi-gigabyte cache.
+  // Must not walk a multi-gigabyte cache.
   assert.doesNotMatch(code, /os\.walk|scandir|cache_inventory|psutil/);
-  // Measured where the bytes land, which is a different volume whenever the model cache is on
-  // another disk from the filesystem root.
+  // The model cache may be on a different volume from root.
   assert.match(route, /hf_default_cache_dir/);
 });
 
 test("the notice is mounted in the app shell, not on one route", () => {
-  // A full disk belongs to whichever route the user is on, and the root layout
-  // is the only thing that stays mounted across navigation.
   const root = readFileSync(
     new URL("../src/app/routes/__root.tsx", import.meta.url),
     "utf8",
   );
   assert.match(root, /function LowDiskNoticeMount\(\)/);
   assert.match(root, /useLowDiskNotice\(\)/);
-  // Not during the auth flow: there is no session to warn, and no Settings to
-  // send the toast's action to.
   assert.match(root, /!isAuthFlowRoute && <LowDiskNoticeMount \/>/);
 
-  // Exactly one mount in the whole app, or the toast arrives twice on the route
-  // that also mounts it.
+  // Exactly one mount, or the toast fires twice.
   const callers = sourceFiles(new URL("../src/", import.meta.url)).filter(
-    // The declaration itself reads "function useLowDiskNotice(): void".
     (file) =>
       /(?<!function )useLowDiskNotice\(\)/.test(readFileSync(file, "utf8")),
   );
@@ -359,7 +301,6 @@ test("the notice is mounted in the app shell, not on one route", () => {
     new URL("../src/features/settings/tabs/resources-tab.tsx", import.meta.url),
     "utf8",
   );
-  // ...and the level is still not observed a second time inside Settings.
   assert.doesNotMatch(tab, /observeDiskPressure/);
 });
 
@@ -373,24 +314,18 @@ test("the cache row is reachable from settings search", () => {
 });
 
 test("a forced reading is taken after the request that is already in flight", () => {
-  // The pre-start reading and the completion reading are different questions about the same
-  // disk, and returning the first as the answer to the second reports the space as it was
-  // BEFORE the download wrote anything.
+  // A completion reading must not be handed the pre-download in-flight result.
   const check = readFileSync(
     new URL("../src/features/settings/low-disk-check.ts", import.meta.url),
     "utf8",
   );
   assert.match(check, /if \(!options\.force\) return inFlight;/);
-  // Chained behind it, and coalesced: one waiting, not one per caller.
   assert.match(check, /queued = inFlight/);
   assert.match(check, /if \(!queued\)/);
 });
 
 test("the download that used the space is the one that reports it", () => {
-  // requestStart reads the disk BEFORE a download, which is the right moment to refuse one. A
-  // download that starts with room and then eats it crosses the threshold with nobody looking:
-  // there is no interval, so without a completion-side reading the warning waits for the next
-  // download attempt. finalize is the single terminal path for complete, cancelled and error.
+  // finalize is the single terminal path for complete, cancelled and error.
   const loop = readFileSync(
     new URL("../src/features/hub/download-manager/poll-loop.ts", import.meta.url),
     "utf8",
@@ -398,11 +333,8 @@ test("the download that used the space is the one that reports it", () => {
   assert.match(loop, /import \{ checkDiskSpace \}/);
   const finalize = loop.slice(loop.indexOf("export function finalize"));
   const body = finalize.slice(0, finalize.indexOf("\nexport "));
-  // void, not await: a reading must never delay the teardown of a finished job. Forced, or the
-  // interval swallows it for any download shorter than 30 s and the in-flight pre-download
-  // reading is handed back in its place, which is the figure this call exists to correct.
+  // Forced, or the throttle returns the stale pre-download reading.
   assert.match(body, /\n  void checkDiskSpace\(\{ force: true \}\);/);
-  // After the early returns, or a job that was already terminal asks again on every poll.
   assert.ok(
     body.indexOf("TERMINAL_DISPLAY_STATES") < body.indexOf("void checkDiskSpace("),
     "the reading has to sit after the already-terminal guard, or a job that has already "
@@ -411,10 +343,7 @@ test("the download that used the space is the one that reports it", () => {
 });
 
 test("the notice is owner only, because its action is", () => {
-  // The shell mounts this hook for every authenticated user, but "resources" is in
-  // OWNER_ONLY_SETTINGS_TABS, so resolveSettingsTab sends a managed account to General.
-  // Warning someone about a disk and handing them a button that lands somewhere else is
-  // worse than not warning them: the caches are install-wide state they cannot clear.
+  // resources is owner-only, so managed accounts must not get a toast pointing there.
   const hook = readFileSync(
     new URL(
       "../src/features/settings/hooks/use-low-disk-notice.ts",
@@ -448,14 +377,8 @@ test("the notice is owner only, because its action is", () => {
 });
 
 test("a reading with no notifier registered does not spend the crossing", () => {
-  // The notice is owner-only, but the download path calls checkDiskSpace for everyone.
-  // observeDiskPressure RECORDS the level it returns, so running it with nobody listening
-  // marks the disk as already warned about: a managed account's download, or a reading that
-  // lands after logout, would leave an owner signing in later in the same SPA session hearing
-  // nothing until free space recovered past the re-arm margin.
-  //
-  // Asserted on the source rather than by driving the module, because low-disk-check.ts
-  // imports through the "@/" alias and cannot be loaded by the bare node test runner.
+  // observeDiskPressure records the level, so running it without a listener swallows
+  // the owner's later warning.
   const check = readFileSync(
     new URL("../src/features/settings/low-disk-check.ts", import.meta.url),
     "utf8",

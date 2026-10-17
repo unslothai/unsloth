@@ -188,7 +188,6 @@ test("an incognito edit is never written at all", async () => {
 });
 
 test("the turn keeps its timestamp when the export carries epoch millis", async () => {
-  // Re-dating the turn to now would reorder the thread.
   const h = harness();
   const exported = thread([{ type: "text", text: "hi" }]);
   (exported.messages[1].message as Record<string, unknown>).createdAt = 2000;
@@ -204,8 +203,6 @@ test("the turn keeps its timestamp when the export carries epoch millis", async 
   assert.equal(h.saved[0].createdAt, 2000);
 });
 
-// What a generated reply carries on `metadata.custom` after a reload. Sent back with an edit,
-// the backend refuses to detach the run and answers 409.
 const GENERATION_OWNERSHIP = {
   serverManaged: true,
   generationRunId: "run-1",
@@ -245,7 +242,6 @@ test("editing a generated reply drops the run's claim on the turn", async () => 
 });
 
 test("the strip covers the backend's whole server-managed key set", async () => {
-  // Parity only: research reports have no pencil and the backend still refuses to edit them.
   const record = await saveOwnedReply({
     ...CUSTOM,
     serverManaged: true,

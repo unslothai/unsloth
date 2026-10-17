@@ -13,20 +13,7 @@ import {
   withMathBlockMarker,
 } from "../src/components/assistant-ui/math-block-marker.ts";
 
-/*
- * The marker, RUN over hast trees shaped the way Streamdown's pipeline actually shapes them.
- *
- * THE FIXTURE'S OWN PRECONDITIONS ARE ASSERTED FIRST, and two of them live in dependencies rather
- * than in this repo, which is the case that reading our own source would never reveal:
- *
- *   - `rehype-sanitize`'s `defaultSchema` decides whether a class on a `<p>` survives at all. If it
- *     ever started allowing `className` everywhere, the whole reason this marker runs where it runs
- *     would evaporate, and every test below would still pass while the code became needlessly
- *     convoluted. So the schema is read and asserted.
- *   - Streamdown renders a list item with `[&>p]:inline`. That is the entire justification for
- *     hoisting past a paragraph inside a list item. If Streamdown drops it, the hoist becomes wrong
- *     and this test says so by name.
- */
+/* Asserts dependency preconditions: sanitize's className allowlist and Streamdown's [&>p]:inline. */
 
 type HastNode = {
   type: string;
@@ -44,11 +31,9 @@ const el = (
 const text = (value: string): HastNode =>
   ({ type: "text", value }) as unknown as HastNode;
 
-/** What `remark-math` emits for inline maths AFTER the sanitizer has been over it. */
 const inlineMath = (): HastNode =>
   el("code", [text("x^2")], { className: ["language-math"] });
 
-/** What it emits for display maths: the same `code`, wrapped in a `pre`. */
 const displayMath = (): HastNode =>
   el("pre", [el("code", [text("x^2")], { className: ["language-math"] })]);
 
@@ -95,8 +80,7 @@ test("PRECONDITION: the sanitizer would strip this class from a paragraph", asyn
 });
 
 test("PRECONDITION: Streamdown still renders a list item's paragraph inline", () => {
-  // The chunk name carries a content hash, so the directory is scanned rather than a file named.
-  // A rename must not turn this precondition into a silent pass.
+  // The chunk name carries a content hash, so the directory is scanned.
   const dist = new URL("../node_modules/streamdown/dist/", import.meta.url);
   const files = readdirSync(dist).filter((name) => name.endsWith(".js"));
   assert.ok(
@@ -135,7 +119,6 @@ test("an existing class list is preserved rather than replaced", () => {
 test("two maths roots in one paragraph mark it once", () => {
   const paragraph = el("p", [inlineMath(), text(" and "), inlineMath()]);
   const tree = root([paragraph]);
-  // The count is per maths root; the class is idempotent.
   assert.equal(markMathBlocks(tree), 2);
   assert.deepEqual(classesOf(paragraph), [MATH_BLOCK_CLASS]);
   assert.equal(countMarked(tree), 1);
@@ -150,13 +133,7 @@ test("inline wrappers are walked through to the block", () => {
 });
 
 test("maths inside a list item is abandoned, so the item keeps its number", () => {
-  // An earlier revision marked the `li`, because Streamdown gives its paragraph `[&>p]:inline` and
-  // an inline box cannot take size containment, which leaves the item as the only containable
-  // ancestor. Containing it costs the item its `::marker`: `content-visibility: auto` applies style
-  // containment, style containment scopes the automatic `list-item` counter, and the item can no
-  // longer resolve `counter(list-item)` for its own marker. Photographed on WebKitGTK 2.50.4 the
-  // number simply vanishes on the contained items. So there is no containable ancestor here at all
-  // and the maths is abandoned, as it is inside a table cell.
+  // Containing an li breaks its ::marker (style containment scopes the list-item counter).
   const paragraph = el("p", [inlineMath()]);
   const item = el("li", [paragraph]);
   const tree = root([el("ul", [item])]);
@@ -167,8 +144,6 @@ test("maths inside a list item is abandoned, so the item keeps its number", () =
 });
 
 test("maths directly inside a list item is abandoned too, not just via a paragraph", () => {
-  // The `p` inside `li` shape has its own branch. This one reaches the `li` through the ordinary
-  // tag walk, so it proves the exemption is in the tag sets rather than only in that branch.
   const item = el("li", [inlineMath()]);
   const tree = root([el("ol", [item])]);
 
@@ -177,8 +152,7 @@ test("maths directly inside a list item is abandoned too, not just via a paragra
 });
 
 test("the walk does not hoist PAST a list item and contain the whole list", () => {
-  // Containing the `ol` would lose every marker in it rather than one, so `ol` and `ul` are
-  // uncontainable and stop the walk instead of being skipped over.
+  // Containing an ol/ul would lose every marker, so they stop the walk.
   const item = el("li", [el("p", [inlineMath()])]);
   const list = el("ol", [item]);
   const tree = root([el("div", [list])]);
@@ -249,8 +223,6 @@ test("the composed attacher marks the tree and then runs the maths renderer", ()
   const fakeMathAttacher = (options: unknown) => {
     optionsSeen = options;
     return (tree: HastNode) => {
-      // PRECONDITION for this test: the marker must already have run by the time the maths
-      // renderer sees the tree, which is the whole point of composing rather than appending.
       seen.push(marked(tree.children?.[0] as HastNode) ? "marked" : "unmarked");
     };
   };
@@ -291,17 +263,7 @@ test("the composed attacher also accepts a bare attacher with no options", () =>
   assert.ok(marked(paragraph));
 });
 
-/*
- * EQUATION NUMBERS. `katex.css` resets `katexEqnNo` on `body` and increments it in
- * `.katex .eqn-num::before`. Style containment, which `content-visibility: auto` applies
- * unconditionally, scopes that increment per contained display. Measured on Chromium: three
- * numbered displays read (1) (2) (3) off and (1) (1) (1) on. The same fixture on WebKitGTK 2.50.4
- * does NOT reproduce it, 0 differing pixels against 120 for the list-marker case photographed in
- * the same frame, so the probe could see counter breakage and this engine simply does not do it.
- * Chromium is the engine most of the web UI runs in, so it decides.
- *
- * `guardEquationNumbers` runs AFTER KaTeX, because none of this markup exists before it.
- */
+/* Style containment scopes KaTeX equation counters on Chromium; this runs after KaTeX. */
 
 const withClass = (tag: string, className: string, children: HastNode[] = []): HastNode => {
   const node = el(tag, children);
@@ -329,8 +291,7 @@ test("a display WITH an equation number does not", () => {
 });
 
 test("the MathML equation number counts too", () => {
-  // `katex.css` has two counters, `katexEqnNo` and `mmlEqnNo`, and only one of them appears in a
-  // given output mode. Missing either would leave half the configurations broken.
+  // katex.css has two counters, katexEqnNo and mmlEqnNo.
   const numbered = withClass("span", "katex-display", [
     withClass("span", "katex", [withClass("span", "mml-eqn-num")]),
   ]);
@@ -339,10 +300,6 @@ test("the MathML equation number counts too", () => {
 });
 
 test("a marked block holding a numbered display is UNMARKED", () => {
-  // `markMathBlocks` runs before KaTeX, when a display is still `<pre><code>` and no `.eqn-num`
-  // exists to see. A blockquote holding both inline maths and a numbered display would otherwise
-  // scope the counter from above and break the numbering just as effectively as containing the
-  // display itself would.
   const numbered = withClass("span", "katex-display", [
     withClass("span", "katex", [withClass("span", "eqn-num")]),
   ]);
@@ -356,8 +313,6 @@ test("a marked block holding a numbered display is UNMARKED", () => {
 });
 
 test("a marked block holding an UNNUMBERED display keeps its class", () => {
-  // The control for the row above: without this, an implementation that unmarked every block
-  // holding any display at all would pass and would give up containment it did not need to.
   const plain = withClass("span", "katex-display", [withClass("span", "katex")]);
   const quote = el("blockquote", [plain]);
   quote.properties = { className: [MATH_BLOCK_CLASS] };
@@ -369,8 +324,7 @@ test("a marked block holding an UNNUMBERED display keeps its class", () => {
 });
 
 test("running the guard twice adds nothing the second time", () => {
-  // Streamdown re-renders a settled body on every mount, so the pass has to be idempotent or the
-  // class list grows without bound.
+  // Streamdown re-renders settled bodies on mount, so this must be idempotent.
   const display = withClass("span", "katex-display", [withClass("span", "katex")]);
   const tree = root([display]);
   guardEquationNumbers(tree);

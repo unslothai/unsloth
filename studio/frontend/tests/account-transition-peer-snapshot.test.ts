@@ -12,7 +12,6 @@ import {
   transitionBrowserAccount,
 } from "../src/lib/account-transition.ts";
 
-// Reuse the checked-in DOM/VM harness; execute the shipped snapshot script unchanged.
 const sibling = readFileSync(
   new URL("./reload-snapshot.test.ts", import.meta.url),
   "utf8",

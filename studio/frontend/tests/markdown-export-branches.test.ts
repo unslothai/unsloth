@@ -203,7 +203,6 @@ test("Markdown leaves out the reply a regeneration replaced", async () => {
   });
 });
 
-// Mid-switch the branch on screen is briefly an empty list, which is no opinion about which reply is showing.
 test("Markdown still exports while the switched-to chat is loading", async () => {
   const expected = "## User\n\nName one fruit.\n\n## Assistant\n\nPears.\n";
   const expectedExport = `<!-- unsloth-chat-v1:[24,20] -->\n\n${expected}`;
@@ -214,7 +213,7 @@ test("Markdown still exports while the switched-to chat is loading", async () =>
   });
 });
 
-// CSV must not follow markdown onto one branch: it is the export used to compare versions.
+// CSV writes all branches: it is the export used to compare versions.
 test("CSV still writes both replies while markdown writes one", async () => {
   const downloads: string[] = [];
   const exporters = loadExporters(regenerated, downloads, []);
