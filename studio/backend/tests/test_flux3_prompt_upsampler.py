@@ -610,6 +610,24 @@ def test_preview_errors(routes, monkeypatch):
     assert r.status_code == 501
 
 
+def test_images_status_route_carries_the_capabilities(routes, monkeypatch):
+    client, backend, saved = routes
+    from core.inference import diffusion_engine_router as engine_router
+
+    monkeypatch.setattr(engine_router, "_supported_family_capabilities", lambda: ("flux.3-klein",))
+    body = client.get("/api/inference/images/status").json()
+    assert body["supports_prompt_upsampler"] is True and body["prompt_upsampler_default"] is True
+    backend.family = "z-image"
+    body = client.get("/api/inference/images/status").json()
+    assert body["supports_prompt_upsampler"] is False and body["prompt_upsampler_default"] is False
+
+
+def test_download_status_keys_match_the_frontend():
+    assert {"downloading", "bytes_total", "bytes_done", "error", "cancelled"} <= set(
+        pup.download_status()
+    )
+
+
 def test_progress_reports_the_enhance_phase(routes, monkeypatch):
     client, backend, saved = routes
     monkeypatch.setattr(

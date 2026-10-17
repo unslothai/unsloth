@@ -221,7 +221,8 @@ def supports_family(family_name: Optional[str]) -> bool:
 
 
 def variant_for_family(family_name: Optional[str]) -> str:
-    return FLUX3_UPSAMPLER_FAMILIES.get(family_name or "", "distilled")
+    """"base" for a base family, else "distilled" (the frontend applies the same rule)."""
+    return "base" if "base" in (family_name or "") else "distilled"
 
 
 def resolve_enhance(family_name: Optional[str], enhance_prompt: Optional[bool]) -> bool:
