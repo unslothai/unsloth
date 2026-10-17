@@ -136,7 +136,7 @@ async def load_model(
     ``hf_token`` is for gated repos.
     The call waits up to ``wait_s`` seconds (at most 240); set the client's tool timeout above that, or pass wait_s=50 under Codex's 60 s default.
     A load that is still running then returns ``loaded`` false, ``status`` "loading" and a ``job_id``: it keeps running in Unsloth Studio, and get_job(kind="load", id=job_id, wait_s=…) follows it to the same result.
-    Calling load_model again for a load still in flight follows that load instead of starting another.
+    Calling load_model again with the same arguments while that load runs follows it instead of starting another, and so does a call (without ``variant``) for a chat model Unsloth Studio is already loading.
     Loading may unload other models to make room, for example a chat model to fit an image model; ``evicted`` lists them and ``evicted_slots`` gives each one's kind."""
     caller = current_caller()
     deadline = loading.deadline_after(wait_s)
