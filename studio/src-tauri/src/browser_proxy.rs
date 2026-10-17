@@ -18,6 +18,7 @@ const MAX_HEAD: usize = 16 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(30);
 // One address's share of it, so a dead first answer leaves time for the next.
 const ADDRESS_TIMEOUT: Duration = Duration::from_secs(10);
+const ESTABLISHED: &[u8] = b"HTTP/1.1 200 Connection Established\r\n\r\n";
 
 static ADDRESS: OnceLock<Result<SocketAddr, String>> = OnceLock::new();
 
@@ -687,6 +688,55 @@ async fn socks4_connect(stream: &mut TcpStream, host: &Host<String>, port: u16) 
     Some(())
 }
 
+/// The plain-HTTP request a tunnel carries, made absolute so it is routed and forwarded as one,
+/// with the body read past its head; or no request (a WebSocket upgrade, TLS), with every byte read.
+async fn untunnel(client: &mut TcpStream, tunnel: &Request) -> Option<(Option<Request>, Vec<u8>)> {
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        let read = client.read(&mut chunk).await.ok()?;
+        if read == 0 {
+            return None;
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        let method = buffer
+            .iter()
+            .take_while(|byte| byte.is_ascii_uppercase())
+            .count();
+        if method == buffer.len() && method < 16 {
+            continue;
+        }
+        if method == 0 || buffer.get(method..method + 2) != Some(b" /") {
+            return Some((None, buffer));
+        }
+        let Some(end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") else {
+            if buffer.len() > MAX_HEAD {
+                return None;
+            }
+            continue;
+        };
+        let request = std::str::from_utf8(&buffer[..end + 4])
+            .ok()
+            .filter(|head| {
+                !head
+                    .split("\r\n")
+                    .any(|line| line.to_ascii_lowercase().starts_with("upgrade:"))
+            })
+            .and_then(|head| {
+                let (method, rest) = head.split_once(' ')?;
+                parse(&format!(
+                    "{method} http://{}:{}{rest}",
+                    tunnel.host, tunnel.port
+                ))
+            })
+            .filter(|request| request.host == tunnel.host && request.port == tunnel.port);
+        return Some(match request {
+            Some(request) => (Some(request), buffer.split_off(end + 4)),
+            None => (None, buffer),
+        });
+    }
+}
+
 async fn read_head(client: &mut TcpStream) -> Option<(String, Vec<u8>)> {
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -710,10 +760,32 @@ async fn serve(mut client: TcpStream, proxies: Proxies) {
     let Ok(Some((head, rest))) = tokio::time::timeout(TIMEOUT, read_head(&mut client)).await else {
         return;
     };
-    let Some(request) = parse(&head) else {
+    let Some(mut request) = parse(&head) else {
         let _ = reply(&mut client, "400 Bad Request").await;
         return;
     };
+    let (mut rest, mut established) = (rest, false);
+    // WebKit on macOS 14+ tunnels plain-HTTP pages too; routed as tunnels they'd count as HTTPS,
+    // and a nested CONNECT to port 80 is refused by many HTTP proxies.
+    if request.forward.is_none()
+        && request.port == 80
+        && rest.is_empty()
+        && public_host(&request.host).is_ok()
+    {
+        if client.write_all(ESTABLISHED).await.is_err() {
+            return;
+        }
+        established = true;
+        let Ok(Some((inner, read))) =
+            tokio::time::timeout(TIMEOUT, untunnel(&mut client, &request)).await
+        else {
+            return;
+        };
+        if let Some(inner) = inner {
+            request = inner;
+        }
+        rest = read;
+    }
     let (mut via, mut opened) = (None, Err(Refusal::Unreachable));
     for route in routes(&proxies, &request).await {
         opened = match &route {
@@ -745,11 +817,8 @@ async fn serve(mut client: TcpStream, proxies: Proxies) {
                 .write_all(forward.head(via.as_ref()).as_bytes())
                 .await
         }
-        None => {
-            client
-                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-                .await
-        }
+        None if established => Ok(()),
+        None => client.write_all(ESTABLISHED).await,
     };
     if opened.is_ok()
         && client.write_all(&early).await.is_ok()
@@ -1462,6 +1531,64 @@ mod tests {
         let response = exchange(proxies, &format!("GET {url} HTTP/1.1\r\n\r\n")).await;
         assert_eq!(response, "HTTP/1.1 200 OK\r\n\r\nhello");
         let expected = format!("GET {url} HTTP/1.1\r\n{auth}\r\nConnection: close\r\n\r\n");
+        assert_eq!(seen.await.unwrap().as_deref(), Some(expected.as_str()));
+    }
+
+    /// Opens a tunnel to `target`, then sends `inner` through it once the tunnel is up.
+    async fn exchange_in_tunnel(proxies: Matcher, target: &str, inner: &str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let proxies = Proxies {
+            fixed: vec![proxies],
+            ..Default::default()
+        };
+        tokio::spawn(serve(listener.accept().await.unwrap().0, proxies));
+        client.write_all(tunnel(target).as_bytes()).await.unwrap();
+        let mut established = vec![0u8; ESTABLISHED.len()];
+        client.read_exact(&mut established).await.unwrap();
+        assert_eq!(established, ESTABLISHED);
+        client.write_all(inner.as_bytes()).await.unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).await.unwrap();
+        response
+    }
+
+    #[tokio::test]
+    async fn plain_http_tunnels_are_forwarded_as_http_requests() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://u:p@{}", listener.local_addr().unwrap());
+        let seen = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.ok()?;
+            let (head, _) = read_head(&mut stream).await?;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\n\r\nhello")
+                .await
+                .ok()?;
+            Some(head)
+        });
+        // Only an HTTP proxy is set, as with System Settings' "Web Proxy (HTTP)" alone.
+        let proxies = Matcher::builder().http(&address).build();
+        let host = format!("Host: {UNRESOLVABLE}\r\n");
+        let inner = format!("GET /a?q=1 HTTP/1.1\r\n{host}Connection: keep-alive\r\n\r\n");
+        let response = exchange_in_tunnel(proxies, &format!("{UNRESOLVABLE}:80"), &inner).await;
+        assert_eq!(response, "HTTP/1.1 200 OK\r\n\r\nhello");
+        let auth = "Proxy-Authorization: Basic dTpw";
+        let expected = format!(
+            "GET http://{UNRESOLVABLE}/a?q=1 HTTP/1.1\r\n{host}{auth}\r\nConnection: close\r\n\r\n"
+        );
+        assert_eq!(seen.await.unwrap().as_deref(), Some(expected.as_str()));
+    }
+
+    #[tokio::test]
+    async fn websocket_tunnels_to_port_80_stay_tunnels() {
+        let (proxies, seen) = system_proxy_answering("HTTP/1.1 200 OK\r\n\r\n").await;
+        let inner = "GET /ws HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
+        let target = format!("{UNRESOLVABLE}:80");
+        exchange_in_tunnel(proxies, &target, inner).await;
+        let auth = "Proxy-Authorization: Basic dTpw";
+        let expected = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n{auth}\r\n\r\n");
         assert_eq!(seen.await.unwrap().as_deref(), Some(expected.as_str()));
     }
 
