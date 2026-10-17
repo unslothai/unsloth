@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { looksLikeLocalPath } from "@/lib/local-path";
+import type { ModelPickTarget } from "../components/model-selector/types";
+import { isOllamaModelId } from "./model-identity";
+
+/** Where a model's load settings can say the model lives on disk. */
+export type ModelDiskLocation =
+  | { kind: "path"; path: string }
+  /** The id names a managed-cache repo: the server resolves id (+ quant) to a path. */
+  | { kind: "cachedRepo"; repoId: string; variant?: string };
+
+/**
+ * The on-disk location to show for a load-settings target.
+ *
+ * A pick from the local inventory carries its path in the meta; a standalone GGUF or a snapshot
+ * load is keyed by the path itself; anything else that could live in the managed cache keys by
+ * its repo id and is resolved by the caller through /api/models/cached-model-path. Null means
+ * there is nothing to show (external providers, undownloaded repos, Ollama stores).
+ */
+export function resolveModelLocation(
+  target: ModelPickTarget,
+): ModelDiskLocation | null {
+  const id = target.id.trim();
+
+  // Before the path test: a materialized Ollama link is itself a path, but it points into
+  // Ollama's blob store rather than naming files this app loads.
+  if (isOllamaModelId(id)) {
+    return null;
+  }
+
+  const pickedPath = target.meta.localPath?.trim();
+  if (pickedPath) {
+    return { kind: "path", path: pickedPath };
+  }
+  if (looksLikeLocalPath(id)) {
+    return { kind: "path", path: id };
+  }
+
+  if (target.meta.source === "external") {
+    return null;
+  }
+  // A repo that is not on disk yet has no path to show; the request would only 404.
+  if (target.meta.source === "hub" && target.meta.isDownloaded === false) {
+    return null;
+  }
+
+  const repoId = (target.configId ?? id).trim();
+  if (!repoId || looksLikeLocalPath(repoId) || isOllamaModelId(repoId)) {
+    return null;
+  }
+  const variant = target.ggufVariant?.trim();
+  return { kind: "cachedRepo", repoId, ...(variant ? { variant } : {}) };
+}

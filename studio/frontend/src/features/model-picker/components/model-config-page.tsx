@@ -26,10 +26,12 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
 import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
+  getCachedModelPath,
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
   resolveStagedDiffusionClassification,
@@ -68,6 +70,7 @@ import {
   resolveMemoryCapacityGb,
 } from "@/hooks/gpu-vram";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import {
   DRAFTER_MODEL_SPEC_TYPES,
   MLX_SPECULATIVE_TYPES,
@@ -76,6 +79,7 @@ import {
   mlxSpeculativeMode,
   resolveSpeculativeType,
 } from "@/lib/speculative-modes";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import {
   type ReactNode,
@@ -158,6 +162,7 @@ import {
 } from "../model-config/model-config-draft";
 import { loadedConfigSignature } from "../model-config/config-signature";
 import { ggufQuantLabel } from "../model-config/model-identity";
+import { resolveModelLocation } from "../model-config/model-location";
 import {
   CACHE_RAM_LLAMA_DEFAULT,
   CACHE_RAM_MAX,
@@ -226,6 +231,8 @@ import {
   NumericValueInput,
   type NumericValueInputHandle,
 } from "./numeric-value-input";
+import { Copy01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ChevronLeftIcon,
 } from "lucide-react";
@@ -2353,6 +2360,66 @@ function ExtraArgsRow({
   );
 }
 
+/** The model's on-disk location: load settings offer no other way to tell which copy of a model a
+ *  run will use. Read-only; copying the path is the whole affordance. */
+function ModelLocationRow({ path }: { path: string }) {
+  const [copied, setCopied] = useState(false);
+  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clear any pending reset on unmount to avoid a setState on an unmounted component.
+  useEffect(
+    () => () => {
+      if (resetTimer.current) clearTimeout(resetTimer.current);
+    },
+    [],
+  );
+
+  const handleCopy = () => {
+    void copyToClipboard(path).then((ok) => {
+      if (!ok) {
+        return;
+      }
+      setCopied(true);
+      if (resetTimer.current) clearTimeout(resetTimer.current);
+      resetTimer.current = setTimeout(() => {
+        setCopied(false);
+        resetTimer.current = null;
+      }, 1800);
+    });
+  };
+
+  return (
+    <div className="space-y-1">
+      <div className={ROW_CLASS}>
+        <span className={LABEL_CLASS}>Location</span>
+        <Tooltip delayDuration={0}>
+          <TooltipTrigger asChild={true}>
+            <button
+              type="button"
+              onClick={handleCopy}
+              aria-label="Copy model location"
+              className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+            >
+              <HugeiconsIcon
+                icon={copied ? Tick02Icon : Copy01Icon}
+                strokeWidth={1.75}
+                className="size-3.5"
+              />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="tooltip-compact">
+            {copied ? "Copied" : "Copy path"}
+          </TooltipContent>
+        </Tooltip>
+      </div>
+      {/* Wraps instead of truncating: seeing the whole path is the point. */}
+      <p className="break-all font-mono text-ui-11 leading-snug text-muted-foreground">
+        {path}
+      </p>
+    </div>
+  );
+}
+
 interface ModelConfigPageProps {
   target: ModelPickTarget;
   onBack?: () => void;
@@ -2610,6 +2677,49 @@ export function ModelConfigPage({
   const nativePathToken =
     target.meta.nativePathToken ??
     (isActiveModel ? activeNativePathToken : null);
+  // The on-disk location shown in the load settings: a picked local row carries its path, a
+  // path-shaped id (standalone GGUF, snapshot load) is the path itself, and a repo-keyed model
+  // (a cached Hub download) is resolved through the cache. Undownloaded repos and external
+  // providers never reach the request.
+  const modelLocation = useMemo(() => resolveModelLocation(target), [target]);
+  const locationRepoId =
+    modelLocation?.kind === "cachedRepo" ? modelLocation.repoId : null;
+  const locationVariant =
+    modelLocation?.kind === "cachedRepo" ? modelLocation.variant : undefined;
+  const locationKey =
+    locationRepoId != null
+      ? `${locationRepoId}\n${locationVariant ?? ""}`
+      : null;
+  // Key-matched like the staged dims below: switching targets must not keep showing the previous
+  // model's path while its own lookup is in flight.
+  const [resolvedLocation, setResolvedLocation] = useState<{
+    key: string;
+    path: string;
+  } | null>(null);
+  useEffect(() => {
+    if (locationRepoId == null) {
+      return;
+    }
+    let cancelled = false;
+    void getCachedModelPath(locationRepoId, locationVariant)
+      .then((resolved) => {
+        if (!cancelled) {
+          setResolvedLocation({
+            key: `${locationRepoId}\n${locationVariant ?? ""}`,
+            path: resolved.path,
+          });
+        }
+      })
+      // Not in the cache (a pick still to download, an external provider id): stay hidden.
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [locationRepoId, locationVariant]);
+  const cachedLocationPath =
+    resolvedLocation?.key === locationKey ? resolvedLocation.path : null;
+  const modelLocationPath =
+    modelLocation?.kind === "path" ? modelLocation.path : cachedLocationPath;
   const templateDefaults = useDefaultChatTemplate(
     target.id,
     target.ggufVariant,
@@ -3730,6 +3840,9 @@ export function ModelConfigPage({
         hasSavedSettings={savedRemember}
       />
       <div className="space-y-5">
+        {modelLocationPath ? (
+          <ModelLocationRow path={modelLocationPath} />
+        ) : null}
         {!target.isGguf && !targetIsMlx && !targetIsNpu && !classifiedIsDiffusion && !target.meta.isLora && !target.meta.audioType && (
           <InferenceEnginePicker parallelism={config.engineParallelism ?? "tensor"} onParallelismChange={engineParallelism => update({ engineParallelism })} precision={config.enginePrecision ?? "auto"} onPrecisionChange={enginePrecision => update({ enginePrecision })} kvCacheDtype={config.engineKvCacheDtype ?? "auto"} onKvCacheDtypeChange={engineKvCacheDtype => update({ engineKvCacheDtype })} gpuMemoryUtilization={config.engineGpuMemoryUtilization ?? null} onGpuMemoryUtilizationChange={engineGpuMemoryUtilization => update({ engineGpuMemoryUtilization })} seed={config.engineSeed ?? null} onSeedChange={engineSeed => update({ engineSeed })} value={config.engine ?? "auto"} onChange={engine => update({ engine })} onReadyChange={setEngineReady} onUse={handleRun} gpuIds={config.selectedGpuIds} onGpuChange={ids => update({ selectedGpuIds: ids, selectedGpuIndexKind: "physical" })} />
         )}
