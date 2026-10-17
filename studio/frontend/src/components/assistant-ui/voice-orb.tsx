@@ -283,6 +283,10 @@ const VoiceDecisionRing: FC = () => {
   const d = useVoiceDecisions();
   const circ = 2 * Math.PI * RING_R;
   const arcLen = (circ * ARC_DEG) / 360;
+  // The canvas is wider than the ring so the labels outside it are never clipped.
+  const PAD = 56;
+  const SIZE = RING + PAD * 2;
+  const C = SIZE / 2;
   const fill = (key: keyof VoiceDecisions): number => {
     if (key === "turn") return d.turn ? d.turn.p : 0;
     if (key === "filler") return d.filler?.phrase ? 1 : 0;
@@ -290,77 +294,76 @@ const VoiceDecisionRing: FC = () => {
   };
   return (
     <svg
-      className="pointer-events-none absolute inset-0"
-      width={RING}
-      height={RING}
-      viewBox={`0 0 ${RING} ${RING}`}
-      // The labels sit outside the ring box; without this WebKit clips them at its edge.
-      style={{ overflow: "visible" }}
+      className="pointer-events-none absolute"
+      style={{ left: -PAD, top: -PAD }}
+      width={SIZE}
+      height={SIZE}
+      viewBox={`0 0 ${SIZE} ${SIZE}`}
       aria-hidden
     >
       {ARCS.map((arc) => {
-        const rotate = `rotate(${arc.start - 90} ${RING / 2} ${RING / 2})`;
+        const rotate = `rotate(${arc.start - 90} ${C} ${C})`;
         const v = fill(arc.key);
         // Label at the arc's midpoint, just outside the ring; left arc reads right-aligned.
         const mid = ((arc.start + ARC_DEG / 2) * Math.PI) / 180;
-        const lx = RING / 2 + Math.sin(mid) * (RING_R + 18);
-        const ly = RING / 2 - Math.cos(mid) * (RING_R + 18);
+        const lx = C + Math.sin(mid) * (RING_R + 18);
+        const ly = C - Math.cos(mid) * (RING_R + 18);
         const anchor = Math.sin(mid) < -0.1 ? "end" : Math.sin(mid) > 0.1 ? "start" : "middle";
         const value = arcValue(d, arc.key);
         return (
           <g key={arc.key}>
-          <text
-            x={lx}
-            y={ly}
-            textAnchor={anchor}
-            dominantBaseline="central"
-            fill={arc.color}
-            fillOpacity={0.85}
-            fontSize={11}
-            letterSpacing="0.14em"
-            style={{ fontFamily: "var(--font-heading)", textTransform: "uppercase" }}
-          >
-            {arc.label}
-          </text>
-          {value && (
             <text
               x={lx}
-              y={ly + 14}
+              y={ly}
               textAnchor={anchor}
               dominantBaseline="central"
               fill={arc.color}
-              fillOpacity={0.7}
+              fillOpacity={0.85}
               fontSize={11}
-              style={{ fontFamily: "var(--font-heading)" }}
+              letterSpacing="0.14em"
+              style={{ fontFamily: "var(--font-heading)", textTransform: "uppercase" }}
             >
-              {value}
+              {arc.label}
             </text>
-          )}
-          <g transform={rotate}>
-            <circle
-              cx={RING / 2}
-              cy={RING / 2}
-              r={RING_R}
-              fill="none"
-              stroke={arc.color}
-              strokeOpacity={0.22}
-              strokeWidth={5}
-              strokeLinecap="butt"
-              strokeDasharray={`${arcLen} ${circ}`}
-            />
-            <circle
-              cx={RING / 2}
-              cy={RING / 2}
-              r={RING_R}
-              fill="none"
-              stroke={arc.color}
-              strokeOpacity={v > 0 ? 1 : 0}
-              strokeWidth={5}
-              strokeLinecap="butt"
-              strokeDasharray={`${Math.max(0, arcLen * v)} ${circ}`}
-              style={{ transition: "stroke-dasharray 320ms ease-out, stroke-opacity 220ms ease-out" }}
-            />
-          </g>
+            {value && (
+              <text
+                x={lx}
+                y={ly + 14}
+                textAnchor={anchor}
+                dominantBaseline="central"
+                fill={arc.color}
+                fillOpacity={0.7}
+                fontSize={11}
+                style={{ fontFamily: "var(--font-heading)" }}
+              >
+                {value}
+              </text>
+            )}
+            <g transform={rotate}>
+              <circle
+                cx={C}
+                cy={C}
+                r={RING_R}
+                fill="none"
+                stroke={arc.color}
+                strokeOpacity={0.22}
+                strokeWidth={5}
+                strokeLinecap="butt"
+                strokeDasharray={`${arcLen} ${circ}`}
+              />
+              <circle
+                cx={C}
+                cy={C}
+                r={RING_R}
+                fill="none"
+                stroke={arc.color}
+                strokeOpacity={v > 0 ? 1 : 0}
+                strokeWidth={5}
+                strokeLinecap="butt"
+                strokeDasharray={`${Math.max(0, arcLen * v)} ${circ}`}
+                style={{ transition: "stroke-dasharray 320ms ease-out, stroke-opacity 220ms ease-out" }}
+              />
+            </g>
           </g>
         );
       })}
