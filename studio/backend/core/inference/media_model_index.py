@@ -319,7 +319,12 @@ def _loadable_directory(load_dir: Path) -> bool:
 
 def _build_index(task: str) -> dict[str, MediaModelPick]:
     """Map every name a downloaded *task* model answers to onto its load spec."""
-    from routes.models import _cache_layout_claim_dir, _local_model_task, _partial_row_serves, collect_local_models
+    from routes.models import (
+        _cache_layout_claim_dir,
+        _local_model_task,
+        _partial_row_serves,
+        collect_local_models,
+    )
 
     index: dict[str, MediaModelPick] = {}
     try:
