@@ -7,21 +7,23 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import secrets
 from pathlib import PurePath
 from typing import Annotated, Any, Literal, Optional
 
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
-from studio_mcp.caller import current_caller
+from studio_mcp.caller import Caller, current_caller
 from studio_mcp.gate import MAX_REQUEST_BYTES
-from studio_mcp.inputs import decode_base64
+from studio_mcp.inputs import ImageInput, decode_base64, resolve_image
 from studio_mcp.outputs import (
     CachedDataset,
     DatasetDownload,
     DatasetFormat,
     DatasetsResult,
     DatasetUpload,
+    ImageDatasetUpload,
     LocalDataset,
 )
 from studio_mcp.tools import WRITES, as_dict, leaf_name, opt_text, route_json
@@ -29,6 +31,9 @@ from studio_mcp.tools import WRITES, as_dict, leaf_name, opt_text, route_json
 HUB_DATASETS = "/api/hub/datasets"
 # The training upload route's own list; anything else it answers with a 400.
 UPLOAD_EXTS = (".csv", ".json", ".jsonl", ".parquet")
+IMAGE_EXTS = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
+# The caption route's limit, which sidecars sent with an upload would skip.
+MAX_CAPTION_CHARS = 2000
 
 
 def _ref(path: Any) -> Optional[str]:
@@ -59,7 +64,7 @@ def _upload_file(
 
 
 async def datasets(
-    action: Literal["list", "check_format", "download", "status", "upload"],
+    action: Literal["list", "check_format", "download", "status", "upload", "upload_images"],
     name: Optional[str] = None,
     repo_id: Optional[str] = None,
     is_vlm: bool = False,
@@ -78,6 +83,14 @@ async def datasets(
         Optional[list[dict[str, Any]]],
         Field(min_length = 1, description = "upload: examples as JSON objects, saved as JSONL."),
     ] = None,
+    images: Annotated[
+        Optional[list[ImageInput]],
+        Field(max_length = 64, description = "upload_images: PNG, JPEG or WebP images to add."),
+    ] = None,
+    captions: Annotated[
+        Optional[list[str]],
+        Field(description = "upload_images: one caption per image, in order; empty for none."),
+    ] = None,
 ) -> DatasetsResult:
     """Training datasets.
     "list": datasets uploaded to Unsloth Studio and Hugging Face datasets already downloaded.
@@ -85,6 +98,8 @@ async def datasets(
     "download" (``repo_id``): start downloading a Hub dataset; "status" (``repo_id``): how that download is going.
     "upload": save a .csv, .json, .jsonl or .parquet file sent as ``data_base64`` with its ``filename``, or ``rows`` as JSONL.
     Put a listed or uploaded dataset's ``ref`` in start_training's config.local_datasets.
+    "upload_images" (``name``, ``images``, optional ``captions``): add captioned images to the image dataset ``name``, creating it if needed.
+    Pass that ``name`` as config.data_dir to start_training kind "diffusion".
     A ref lasts until Unsloth Studio restarts; after a restart, list or upload again for a new one.
     ``hf_token`` is for gated datasets."""
     caller = current_caller()
@@ -130,6 +145,8 @@ async def datasets(
                 ref = _ref(stored),
             )
         )
+    if action == "upload_images":
+        return await _upload_images(caller, name, images or [], captions)
     if action == "check_format":
         if not name:
             raise ToolError(
@@ -173,6 +190,39 @@ async def datasets(
     return DatasetsResult(
         download = DatasetDownload.from_route(
             state, repo_id = repo_id, state = opt_text(state.get("state")) or "unknown"
+        )
+    )
+
+
+async def _upload_images(
+    caller: Caller, name: Optional[str], images: list[ImageInput], captions: Optional[list[str]]
+) -> DatasetsResult:
+    if not (name or "").strip() or not images:
+        raise ToolError("upload_images needs name (the image dataset) and images.")
+    if captions is not None and len(captions) != len(images):
+        raise ToolError(f"captions has {len(captions)} entries for {len(images)} images.")
+    if any(len(caption) > MAX_CAPTION_CHARS for caption in captions or []):
+        raise ToolError(f"A caption is longer than {MAX_CAPTION_CHARS} characters.")
+    # Fresh stems each call: a same-named file in a later upload would replace the earlier one.
+    batch, files = secrets.token_hex(4), []
+    for i, image in enumerate(images):
+        data, mime = await resolve_image(caller, image)
+        stem = f"mcp-{batch}-{i:03d}"
+        files.append(("files", (stem + IMAGE_EXTS[mime], data, mime)))
+        if captions and captions[i].strip():
+            files.append(("files", (f"{stem}.txt", captions[i].encode(), "text/plain")))
+    saved = as_dict(
+        await route_json(
+            "POST",
+            "/api/train/diffusion/dataset",
+            caller = caller,
+            data = {"name": name, "create_only": "false"},
+            files = files,
+        )
+    )
+    return DatasetsResult(
+        image_dataset = ImageDatasetUpload.from_route(
+            saved, name = opt_text(saved.get("name")) or name
         )
     )
 

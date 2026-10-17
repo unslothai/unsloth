@@ -22,6 +22,7 @@ from studio_mcp.outputs import RouteText, ToolOutput
 
 from .mcp_harness import (
     OUT,
+    PNG_URL,
     RUN_CHECKPOINTS,
     SENTINEL_ROOTS,
     WAV_INPUT,
@@ -34,6 +35,7 @@ from .test_mcp_tools_audio import PAYLOADS as AUDIO_PAYLOADS
 from .test_mcp_tools_audio import TRANSCRIPT, VERBOSE
 from .test_mcp_tools_cancel import PAYLOADS as CANCEL_PAYLOADS
 from .test_mcp_tools_datasets import PAYLOADS as DATASETS_PAYLOADS
+from .test_mcp_tools_datasets_images import PAYLOADS as IMAGE_DATASET_PAYLOADS
 from .test_mcp_tools_datasets_upload import PAYLOADS as UPLOAD_PAYLOADS
 from .test_mcp_tools_images import PAYLOADS as IMAGES_PAYLOADS
 from .test_mcp_tools_loading import PAYLOADS as LOADING_PAYLOADS
@@ -102,6 +104,10 @@ CASES: dict[str, Any] = {
         (DATASETS_PAYLOADS, {"action": "status", "repo_id": "a/b"}),
         (UPLOAD_PAYLOADS, {"action": "upload", "rows": [{"text": "hi"}]}),
         (UPLOAD_PAYLOADS, {"action": "upload", "data_base64": "YSxi", "filename": "a.csv"}),
+        (
+            IMAGE_DATASET_PAYLOADS,
+            {"action": "upload_images", "name": "p", "images": [PNG_URL], "captions": ["c"]},
+        ),
     ],
     "transcribe": (TRANSCRIBE_PAYLOADS, {"audio": WAV_INPUT, "timestamps": True, "language": "en"}),
     "generate_audio": (AUDIO_PAYLOADS, {"workflow": "clone", "text": "hi", "reference": WAV_INPUT}),

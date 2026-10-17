@@ -353,6 +353,13 @@ PATH_CALLS = [
         ["/v1/videos"],
         None,
     ),
+    (
+        "datasets",
+        lambda path: {"action": "upload_images", "name": "my-photos", "images": [{"path": path}]},
+        {("POST", "/api/train/diffusion/dataset"): {"name": "my-photos", "uploaded": 1}},
+        ["/api/train/diffusion/dataset"],
+        None,
+    ),
 ]
 
 
