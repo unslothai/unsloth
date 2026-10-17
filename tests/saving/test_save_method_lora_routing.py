@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import json
 import os
 import sys
 import types
@@ -192,6 +193,9 @@ _GENERIC_SAVE_REAL_HELPERS = (
     "_is_adapter_save_method",
     "_honours_safe_serialization",
     "_refuse_unsaveable_text_core",
+    "_cast_state_dict_16bit",
+    "_requests_float32",
+    "_stamp_saved_config_float32",
 )
 _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
     {
@@ -202,6 +206,12 @@ _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
         "_qwen3_5_vlm_state_dict_for_save",
         "_determine_username",
         "unsloth_save_model",
+        # Trained MTP head hooks: no head is attached in these fixtures.
+        "_refuse_mtp_variant",
+        "_attached_mtp_head",
+        "_internal_mtp_save",
+        "_stitch_mtp_head",
+        "_mtp_head_tensor_names",
     }
 )
 
@@ -221,6 +231,7 @@ def _routing_environment(monkeypatch, model):
         *_GENERIC_SAVE_REAL_HELPERS,
         "unsloth_generic_save",
         os = os,
+        json = json,
         PeftModel = _PeftModel,
         PreTrainedTokenizerBase = type("Tokenizer", (), {}),
         ProcessorMixin = type("Processor", (), {}),
@@ -233,6 +244,11 @@ def _routing_environment(monkeypatch, model):
         _qwen3_5_vlm_state_dict_for_save = _not_reached,
         _determine_username = lambda repo, old, token: (repo, "owner"),
         unsloth_save_model = lambda *args, **kwargs: calls["adapter"].append(kwargs),
+        _refuse_mtp_variant = lambda model, variant: None,
+        _attached_mtp_head = lambda model: None,
+        _internal_mtp_save = contextlib.nullcontext,
+        _stitch_mtp_head = lambda model, directory: None,
+        _mtp_head_tensor_names = lambda model: [],
         lora_relative_to_original_base = lambda model: (
             calls["convert"].append(model) or contextlib.nullcontext()
         ),
@@ -241,6 +257,7 @@ def _routing_environment(monkeypatch, model):
         torch = types.SimpleNamespace(
             bfloat16 = "bfloat16",
             float16 = "float16",
+            float32 = "float32",
             save = lambda *args, **kwargs: None,
             cuda = types.SimpleNamespace(is_bf16_supported = lambda: False),
         ),
@@ -400,6 +417,13 @@ def _adapter_save_environment(monkeypatch):
         ),
         fast_save_pickle = lambda *args, **kwargs: None,
         clean_gpu_cache = lambda: None,
+        # Trained MTP head hooks: no head is attached in these fixtures.
+        _refuse_mtp_variant = lambda model, variant: None,
+        _attached_mtp_head = lambda model: None,
+        _internal_mtp_save = contextlib.nullcontext,
+        _save_mtp_head_beside_adapter = lambda model, directory: None,
+        _stitch_mtp_head = lambda model, directory: None,
+        _mtp_head_tensor_names = lambda model: [],
     ), uploads
 
 
@@ -705,7 +729,7 @@ def test_the_docstrings_describe_none_as_the_stronger_safetensors_request():
     assert (
         source.count("`None` is stronger than the default") == 4
     ), "all four save_method docstrings have to describe None the same way"
-    assert "elif safe_serialization and (n_cpus <= 2):" in source
+    assert "elif safe_serialization and (n_cpus <= 2) and not _keeps_mtp_head:" in source
     assert "if _force_safe_serialization:" in source
 
 

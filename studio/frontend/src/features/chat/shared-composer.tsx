@@ -1820,7 +1820,7 @@ export function SharedComposer({
           engine_precision: ownConfig.enginePrecision ?? "auto",
           engine_parallelism: ownConfig.engineParallelism ?? "tensor",
           ...engineLaunchFieldsFromParams(ownConfig),
-          load_in_4bit: paneEngine === "auto",
+          load_in_4bit: paneEngine === "auto" && ownConfig.loadIn4bit !== false,
           ...(paneEngine !== "auto" && ownConfig.selectedGpuIds !== undefined
             ? {
                 gpu_ids:
@@ -2620,7 +2620,15 @@ export function SharedComposer({
         className={
           ragEnabled && !ragDisabled ? "text-primary font-medium" : undefined
         }
-        onSelect={() => setRagEnabled(!ragEnabled)}
+        onSelect={() => {
+          // As in the main composer: a hidden files panel comes back rather than RAG turning off.
+          const { ragPanelHidden, setRagPanelHidden } = useChatRuntimeStore.getState();
+          if (ragEnabled && ragPanelHidden) {
+            setRagPanelHidden(false);
+            return;
+          }
+          setRagEnabled(!ragEnabled);
+        }}
       >
         <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
         Chat with files
@@ -3130,7 +3138,7 @@ export function SharedComposer({
                 <span>Images</span>
               </button>
             )}
-            {showRagPill && <KnowledgeBaseComposerButton side="top" />}
+            {showRagPill && <KnowledgeBaseComposerButton side="top" hasFilesPanel={false} />}
             {showWebFetchPill && (
               <button
                 type="button"

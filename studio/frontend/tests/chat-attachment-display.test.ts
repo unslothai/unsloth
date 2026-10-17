@@ -94,19 +94,23 @@ test("Auto lists up to six sent files, then collapses them to chips", () => {
 
 test("composer cards wrap for two rows, then become one scrolling strip", () => {
   assert.equal(COMPOSER_ATTACHMENT_MAX_ROWS, 2);
-  const fifth = (724 - 4 * 8) / 5;
-  assert.equal(composerAttachmentsOverflow(10, 724, fifth, 8), false);
-  assert.equal(composerAttachmentsOverflow(11, 724, fifth, 8), true);
-  assert.equal(composerAttachmentsOverflow(10, 724, fifth + 0.004, 8), false);
-  assert.equal(composerAttachmentsOverflow(7, 300, 105, 8), true);
-  assert.equal(composerAttachmentsOverflow(0, 724, fifth, 8), false);
-  assert.equal(composerAttachmentsOverflow(20, 724, 0, 8), false);
-  // In a chat the strip allows one row: a sixth card at a fifth of the width already scrolls.
-  assert.equal(composerAttachmentsOverflow(5, 724, fifth, 8, 1), false);
-  assert.equal(composerAttachmentsOverflow(6, 724, fifth, 8, 1), true);
+  const quarter = (724 - 3 * 8) / 4;
+  const cards = (n: number, w = quarter) => Array.from({ length: n }, () => w);
+  assert.equal(composerAttachmentsOverflow(cards(8), 724, 8), false);
+  assert.equal(composerAttachmentsOverflow(cards(9), 724, 8), true);
+  assert.equal(composerAttachmentsOverflow(cards(8, quarter + 0.004), 724, 8), false);
+  assert.equal(composerAttachmentsOverflow(cards(7, 105), 300, 8), true);
+  assert.equal(composerAttachmentsOverflow([], 724, 8), false);
+  assert.equal(composerAttachmentsOverflow(cards(20, 0), 724, 8), false);
+  // In a chat the strip allows one row: a fifth card at a quarter of the width already scrolls.
+  assert.equal(composerAttachmentsOverflow(cards(4), 724, 8, 1), false);
+  assert.equal(composerAttachmentsOverflow(cards(5), 724, 8, 1), true);
+  // Image cards take their own widths.
+  assert.equal(composerAttachmentsOverflow(cards(8, 75), 724, 8, 1), false);
+  assert.equal(composerAttachmentsOverflow([168, 168, 168, 168, 75], 724, 8, 1), true);
   assert.match(
     ATTACHMENT,
-    /const CARD_SLOT =\n\s*"shrink-0 w-\[calc\(\(100%_-_var\(--spacing\)\*8\)\/5\)\] min-w-\[calc\(7rem\*var\(--ui-space-scale,1\)\)\]";/,
+    /const CARD_SLOT =\n\s*"shrink-0 w-\[calc\(\(100%_-_var\(--spacing\)\*6\)\/4\.15\)\] min-w-\[calc\(7\.5rem\*var\(--ui-space-scale,1\)\)\]";/,
   );
   assert.match(
     ATTACHMENT,
@@ -114,7 +118,7 @@ test("composer cards wrap for two rows, then become one scrolling strip", () => 
   );
   assert.match(
     ATTACHMENT,
-    /className=\{cn\("aui-attachment-root aui-attachment-card group\/attachment-card relative", CARD_SLOT\)\}/,
+    /"aui-attachment-root aui-attachment-card group\/attachment-card relative",\n\s*src \? "shrink-0" : CARD_SLOT,/,
   );
   assert.match(
     ATTACHMENT,
@@ -380,7 +384,11 @@ test("an image card in the composer shares the file card border but has no fill"
   assert.match(card, /CARD_EDGE,\n\s*!src && CARD_SURFACE,/);
   assert.match(
     card,
-    /<CardImageOrBody name=\{name\} kind=\{kind\} src=\{src\} \/>/,
+    /Math\.min\(Math\.max\(ratio \?\? 1, MIN_IMAGE_RATIO\), MAX_IMAGE_RATIO\)/,
+  );
+  assert.match(
+    card,
+    /<CardImageOrBody name=\{name\} kind=\{kind\} src=\{src\} onRatio=\{setRatio\} \/>/,
   );
 });
 
