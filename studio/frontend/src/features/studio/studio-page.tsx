@@ -26,7 +26,9 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   type ReactElement,
   useEffect,
+  useMemo,
   useRef,
+  useState,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { HistoricalTrainingView } from "./historical-training-view";
@@ -45,15 +47,28 @@ import {
   getStudioSubtitle,
   useStudioNavigation,
 } from "./use-studio-navigation";
-import { RunPreviewCard } from "./wizard/run-preview-card";
-import { StartTrainingCta } from "./wizard/start-training-cta";
 import { useParamMode } from "./wizard/training-param-mode";
 import { TrainingWizard } from "./wizard/training-wizard";
+import {
+  trainingStepForTourTarget,
+  type TrainingStep,
+} from "./wizard/training-steps";
 
 export function StudioPage(): ReactElement {
   const signalReady = useAppShellReadySignal();
   const t = useT();
   const [paramMode, setParamMode] = useParamMode();
+  const [trainingStep, setTrainingStep] = useState<TrainingStep>("model");
+  const configTourSteps = useMemo(
+    () => studioTourSteps.map((step) => ({
+      ...step,
+      onEnter: async () => {
+        setTrainingStep(trainingStepForTourTarget(step.target));
+        await step.onEnter?.();
+      },
+    })),
+    [],
+  );
   useTrainingRuntimeLifecycle();
   useTrainingCacheReconciliation();
   const runtimeMessage = useTrainingRuntimeStore((state) => state.message);
@@ -120,7 +135,7 @@ export function StudioPage(): ReactElement {
       ? studioTrainingTourSteps
       : activeTab === "history"
         ? studioHistoryTourSteps
-        : studioTourSteps;
+        : configTourSteps;
   const tour = useGuidedTourController({
     id: "studio",
     steps: tourSteps,
@@ -239,23 +254,12 @@ export function StudioPage(): ReactElement {
             ) : (
               <>
                 <TabsContent value="configure" className="mt-0">
-                  <div className="@container/train-configure">
-                    {/* 64rem only fit windows 1376px and wider; 56rem still clears @md/train-section */}
-                    <div className="grid grid-cols-1 gap-8 @4xl/train-configure:grid-cols-[minmax(0,1fr)_320px] @5xl/train-configure:gap-10">
-                      <div className="min-w-0">
-                        <TrainingWizard
-                          paramMode={paramMode}
-                          onParamModeChange={setParamMode}
-                        />
-                      </div>
-                      <div className="@4xl/train-configure:sticky @4xl/train-configure:top-6 @4xl/train-configure:self-start">
-                        <RunPreviewCard
-                          paramMode={paramMode}
-                          startCta={<StartTrainingCta />}
-                        />
-                      </div>
-                    </div>
-                  </div>
+                  <TrainingWizard
+                    paramMode={paramMode}
+                    onParamModeChange={setParamMode}
+                    step={trainingStep}
+                    onStepChange={setTrainingStep}
+                  />
                 </TabsContent>
                 <TabsContent value="current-run" className="mt-0">
                   <LiveTrainingView />

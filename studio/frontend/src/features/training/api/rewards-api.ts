@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import type { GrpoRewardSelection } from "@/types/training";
+import {
+  checkRewardImportNames,
+  type RewardImportFile,
+} from "../lib/reward-import";
 
 export interface RewardRecord {
   name: string;
@@ -15,10 +18,54 @@ export interface RewardRecord {
   rule: Record<string, unknown> | null;
 }
 
+export interface RewardExplanation {
+  reason:
+    | "matched"
+    | "not_matched"
+    | "missing_response"
+    | "missing_reference"
+    | "invalid_response_number"
+    | "invalid_reference_number"
+    | "within_tolerance"
+    | "outside_tolerance"
+    | "invalid_json"
+    | "wrong_json_type"
+    | "missing_json_keys"
+    | "within_limit"
+    | "over_limit"
+    | "regex_timeout";
+  response?: string | null;
+  reference?: string;
+  normalized_response?: string;
+  normalized_reference?: string;
+  normalizers?: ("strip" | "lower" | "remove_commas" | "collapse_spaces")[];
+  comparison_column?: string;
+  reference_fallback?: boolean;
+  pattern?: string;
+  mode?: "fullmatch" | "search";
+  json_type?: "object" | "array" | "string" | "number";
+  required_keys?: string[];
+  missing_keys?: string[];
+  characters?: number;
+  limit?: number;
+  error?: string;
+  error_kind?: "relative" | "absolute";
+  tolerance?: number;
+}
+
 export interface RewardPreviewResponse {
-  scores: { name: string; score: number; weighted: number }[];
+  scores: {
+    name: string;
+    score: number;
+    weighted: number;
+    explanation?: RewardExplanation;
+  }[];
   total: number;
 }
+
+export type RewardPreviewItem =
+  | { name: string; markdown?: never; weight: number }
+  | { markdown: string; name?: never; weight: number };
 
 async function readJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -29,6 +76,7 @@ async function readJson<T>(res: Response): Promise<T> {
         detail = body.detail;
       }
     } catch {
+      // Retain the HTTP status when an error response has no JSON detail.
     }
     throw new Error(detail);
   }
@@ -52,6 +100,49 @@ export async function importReward(
   );
 }
 
+export async function importRewardFiles(
+  files: RewardImportFile[],
+  overwrite = false,
+) {
+  const imported: RewardRecord[] = [];
+  try {
+    // Validate the entire set with the real parser before making any writes.
+    const names: string[] = [];
+    for (const file of files) {
+      try {
+        const result = await previewRewards(
+          [{ markdown: file.markdown, weight: 1 }],
+          "",
+          null,
+        );
+        names.push(result.scores[0].name);
+      } catch (error) {
+        throw new Error(
+          `${file.path}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    checkRewardImportNames(
+      names,
+      (await listRewards()).map((r) => r.name),
+      overwrite,
+    );
+    for (const file of files) {
+      try {
+        imported.push(await importReward(file.markdown, overwrite));
+      } catch (error) {
+        throw new Error(
+          `${file.path}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    return { imported, remaining: [], error: null };
+  } catch (error) {
+    // A failed write must leave successes visible and only unsaved files to retry.
+    return { imported, remaining: files.slice(imported.length), error };
+  }
+}
+
 export async function exportReward(name: string): Promise<string> {
   const body = await readJson<{ markdown: string }>(
     await authFetch(`/api/rewards/${encodeURIComponent(name)}/export`),
@@ -69,15 +160,23 @@ export async function deleteReward(name: string): Promise<void> {
 }
 
 export async function previewRewards(
-  rewards: GrpoRewardSelection[],
+  rewards: RewardPreviewItem[],
   completion: string,
   reference: string | null,
+  signal?: AbortSignal,
+  explain = false,
 ): Promise<RewardPreviewResponse> {
   return readJson(
     await authFetch("/api/rewards/preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rewards, completion, reference }),
+      body: JSON.stringify({
+        rewards,
+        completion,
+        reference,
+        ...(explain && { explain: true }),
+      }),
+      signal,
     }),
   );
 }

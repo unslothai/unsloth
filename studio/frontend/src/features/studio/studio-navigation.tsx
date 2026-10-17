@@ -47,13 +47,12 @@ export function TrainSubNav({
             key={item.value}
             value={item.value}
             disabled={item.disabled}
-            indicatorClassName="hidden"
+            indicatorClassName="pointer-events-none inset-x-0 top-auto -bottom-[5px] h-0.5 rounded-full bg-foreground"
             className={cn(
               "relative h-9 flex-none select-none rounded-none border-0 px-0 py-0 text-ui-13 transition-colors disabled:cursor-not-allowed disabled:opacity-40",
-              "after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:rounded-full after:bg-foreground after:transition-opacity",
               active
-                ? "font-semibold text-foreground after:opacity-100"
-                : "text-muted-foreground hover:text-foreground after:opacity-0",
+                ? "font-semibold text-foreground"
+                : "text-muted-foreground hover:text-foreground",
             )}
           >
             {item.label}

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { NewBadge } from "@/components/new-badge";
+import { Button } from "@/components/ui/button";
 import { PICKER_TRIGGER_CLASS } from "@/components/resource-picker/picker-focus";
 import { SegmentedTabsList } from "@/components/segmented-tabs";
 import {
@@ -31,22 +32,22 @@ import {
   useTrainingConfigStore,
   effectiveTrainingObjective,
 } from "@/features/training";
-import { useT } from "@/i18n";
+import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { TrainingMethod } from "@/types/training";
 import {
   AiBrain01Icon,
-  Award01Icon,
   BubbleChatEditIcon,
   Database02Icon,
-  FloppyDiskIcon,
   Settings05Icon,
 } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import type { CSSProperties, ReactNode } from "react";
+import { ArrowLeftIcon, ArrowRightIcon } from "lucide-react";
+import { motion, useReducedMotion } from "motion/react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { DatasetPanel } from "../sections/dataset-section";
 import { DatasetSourceToggleAction } from "../sections/dataset-source-toggle";
 import { FieldHint } from "../sections/field-hint";
+import { SectionBox } from "../sections/section-box";
 import { ParamsSection } from "../sections/params-section";
 import { ObjectiveSelect } from "../sections/rl/objective-select";
 import { PromptFormatSection } from "../sections/rl/prompt-format-section";
@@ -55,73 +56,13 @@ import { RlDatasetRoles } from "../sections/rl/rl-dataset-roles";
 import { RlParamsSection } from "../sections/rl/rl-params-section";
 import { ConfigActions } from "./config-actions";
 import type { ParamMode } from "./training-param-mode";
-
-function SectionBox({
-  title,
-  description,
-  icon,
-  chipTint,
-  titleAction,
-  titleBadge,
-  children,
-  dataTour,
-}: {
-  title?: string;
-  titleBadge?: ReactNode;
-  description?: string;
-  icon?: IconSvgElement;
-  chipTint?: string;
-  titleAction?: ReactNode;
-  children: ReactNode;
-  dataTour?: string;
-}) {
-  return (
-    <section
-      data-tour={dataTour}
-      className="@container/train-card elevated-card flex flex-col gap-7 bg-card p-5 pb-7"
-    >
-      {title && (
-        <div className="flex flex-col items-stretch gap-3 @md/train-card:flex-row @md/train-card:items-center @md/train-card:justify-between">
-          <div className="flex min-w-0 items-center gap-3">
-            {icon && (
-              <span
-                className="train-section-chip inline-flex size-9 shrink-0 items-center justify-center rounded-full"
-                style={
-                  chipTint
-                    ? ({ "--chip-tint": chipTint } as CSSProperties)
-                    : undefined
-                }
-              >
-                <HugeiconsIcon
-                  icon={icon}
-                  strokeWidth={1.5}
-                  className="size-[calc(18px*var(--ui-space-scale,1))]"
-                />
-              </span>
-            )}
-            <div className="min-w-0">
-              <h2 className="flex select-none items-center gap-1.5 text-ui-13p5 font-semibold leading-ui-18 tracking-[-0.012em] text-foreground">
-                {title}
-                {titleBadge}
-              </h2>
-              {description && (
-                <p className="text-ui-11p5 leading-ui-15 text-muted-foreground/85">
-                  {description}
-                </p>
-              )}
-            </div>
-          </div>
-          {titleAction && (
-            <div className="w-full min-w-0 @md/train-card:w-auto @md/train-card:shrink-0">
-              {titleAction}
-            </div>
-          )}
-        </div>
-      )}
-      <div className="@container/train-section min-w-0">{children}</div>
-    </section>
-  );
-}
+import { RunPreviewCard } from "./run-preview-card";
+import { StartTrainingCta } from "./start-training-cta";
+import {
+  resolveTrainingStep,
+  trainingSteps,
+  type TrainingStep,
+} from "./training-steps";
 
 function ParamModeToggle({
   mode,
@@ -437,19 +378,54 @@ function ModelPanel() {
   );
 }
 
+const STEP_LABELS = {
+  model: "studio.wizard.modelTitle",
+  dataset: "studio.wizard.datasetTitle",
+  prompt: "studio.wizard.promptStep",
+  rewards: "rl.rewards.title",
+  parameters: "studio.wizard.settingsStep",
+  review: "studio.wizard.review",
+} as const satisfies Record<TrainingStep, TranslationKey>;
+
 export function TrainingWizard({
   paramMode,
   onParamModeChange,
+  step,
+  onStepChange,
 }: {
   paramMode: ParamMode;
   onParamModeChange: (next: ParamMode) => void;
+  step: TrainingStep;
+  onStepChange: (next: TrainingStep) => void;
 }) {
   const t = useT();
-  const objective = useTrainingConfigStore((s) =>
-    effectiveTrainingObjective(s),
-  );
-  return (
-    <div className="flex flex-col gap-6">
+  const objective = useTrainingConfigStore((s) => effectiveTrainingObjective(s));
+  const steps = trainingSteps(objective);
+  const activeStep = resolveTrainingStep(step, objective);
+  const index = steps.indexOf(activeStep);
+  const reducedMotion = useReducedMotion();
+  const [direction, setDirection] = useState(1);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const panelRefs = useRef<Partial<Record<TrainingStep, HTMLDivElement>>>({});
+  const focusOnChange = useRef(false);
+
+  useEffect(() => {
+    if (activeStep !== step) onStepChange(activeStep);
+    if (!focusOnChange.current) return;
+    focusOnChange.current = false;
+    panelRefs.current[activeStep]?.focus({ preventScroll: true });
+    containerRef.current?.scrollIntoView({ block: "start", behavior: "instant" });
+  }, [activeStep, step, onStepChange]);
+
+  function goTo(next: TrainingStep) {
+    if (next === activeStep) return;
+    setDirection(steps.indexOf(next) > index ? 1 : -1);
+    focusOnChange.current = true;
+    onStepChange(next);
+  }
+
+  const panels: Record<TrainingStep, ReactNode> = {
+    model: (
       <SectionBox
         title={t("studio.wizard.modelTitle")}
         description={t("studio.wizard.modelDescription")}
@@ -458,7 +434,8 @@ export function TrainingWizard({
       >
         <ModelPanel />
       </SectionBox>
-
+    ),
+    dataset: (
       <SectionBox
         title={t("studio.wizard.datasetTitle")}
         description={t("studio.wizard.datasetDescription")}
@@ -474,31 +451,20 @@ export function TrainingWizard({
           </div>
         )}
       </SectionBox>
-
-      {objective === "grpo" && (
-        <SectionBox
-          title={t("rl.prompt.title")}
-          titleBadge={<NewBadge />}
-          description={t("rl.prompt.description")}
-          icon={BubbleChatEditIcon}
-          chipTint="var(--chart-1)"
-        >
-          <PromptFormatSection />
-        </SectionBox>
-      )}
-
-      {objective === "grpo" && (
-        <SectionBox
-          title={t("rl.rewards.title")}
-          titleBadge={<NewBadge />}
-          description={t("rl.rewards.description")}
-          icon={Award01Icon}
-          chipTint="var(--chart-2)"
-        >
-          <RewardsSection />
-        </SectionBox>
-      )}
-
+    ),
+    prompt: (
+      <SectionBox
+        title={t("rl.prompt.title")}
+        titleBadge={<NewBadge />}
+        description={t("rl.prompt.description")}
+        icon={BubbleChatEditIcon}
+        chipTint="var(--chart-1)"
+      >
+        <PromptFormatSection />
+      </SectionBox>
+    ),
+    rewards: <RewardsSection />,
+    parameters: (
       <SectionBox
         title={t("studio.wizard.paramsTitle")}
         description={t("studio.wizard.paramsDescription")}
@@ -516,15 +482,138 @@ export function TrainingWizard({
           </div>
         )}
       </SectionBox>
+    ),
+    review: <RunPreviewCard paramMode={paramMode} />,
+  };
 
-      <SectionBox
-        title={t("studio.wizard.configTitle")}
-        description={t("studio.wizard.configDescription")}
-        icon={FloppyDiskIcon}
-        chipTint="var(--chart-3)"
-      >
+  return (
+    <div
+      ref={containerRef}
+      className="@container/training-wizard flex min-w-0 scroll-mt-6 flex-col gap-5"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p
+          aria-live="polite"
+          aria-atomic="true"
+          className="text-sm tabular-nums text-muted-foreground"
+        >
+          {t("studio.wizard.stepProgress", {
+            current: index + 1,
+            total: steps.length,
+          })}
+        </p>
         <ConfigActions />
-      </SectionBox>
+      </div>
+      <nav aria-label={t("studio.wizard.setupNavigation")}>
+        <ol className={cn(
+          "grid gap-1",
+          steps.length === 6
+            ? "grid-cols-3 @3xl/training-wizard:grid-cols-6"
+            : "grid-cols-2 @xl/training-wizard:grid-cols-4",
+        )}>
+          {steps.map((item, position) => (
+            <li key={item} className="min-w-0">
+              <Button
+                id={`training-step-${item}`}
+                type="button"
+                variant="ghost"
+                className={cn(
+                  "h-auto min-h-10 w-full justify-start gap-2 whitespace-nowrap px-2 py-2 text-start text-ui-12",
+                  item === activeStep
+                    ? "bg-muted text-foreground"
+                    : "text-muted-foreground",
+                )}
+                aria-current={item === activeStep ? "step" : undefined}
+                aria-controls={`training-panel-${item}`}
+                onClick={() => goTo(item)}
+              >
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "flex size-6 shrink-0 items-center justify-center rounded-full text-xs tabular-nums",
+                    item === activeStep
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted text-muted-foreground",
+                  )}
+                >
+                  {position + 1}
+                </span>
+                <span className="min-w-0 truncate">
+                  {t(STEP_LABELS[item])}
+                </span>
+              </Button>
+            </li>
+          ))}
+        </ol>
+      </nav>
+
+      {/* Keep panels mounted so back/forward retains local drafts and test results. */}
+      {steps.map((item) => (
+        <motion.div
+          key={item}
+          id={`training-panel-${item}`}
+          ref={(element) => {
+            panelRefs.current[item] = element ?? undefined;
+          }}
+          role="region"
+          aria-labelledby={`training-step-${item}`}
+          tabIndex={-1}
+          hidden={item !== activeStep}
+          className="min-w-0 outline-none"
+          initial={false}
+          animate={{
+            opacity: item === activeStep ? 1 : 0.6,
+            x: reducedMotion || item === activeStep ? 0 : direction * 12,
+          }}
+          transition={{
+            duration: reducedMotion ? 0 : 0.18,
+            ease: [0.16, 1, 0.3, 1],
+          }}
+        >
+          {panels[item]}
+        </motion.div>
+      ))}
+
+      <div className="sticky bottom-0 z-10 flex items-start justify-between gap-3 border-t border-border/60 bg-background py-4">
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <span className="inline-flex shrink-0">
+              <Button
+                type="button"
+                variant="outline"
+                size="icon-lg"
+                className="size-11 rounded-full"
+                aria-label={t("studio.wizard.back")}
+                disabled={index === 0}
+                onClick={() => goTo(steps[index - 1])}
+              >
+                <ArrowLeftIcon className="size-5 rtl:rotate-180" strokeWidth={1.75} />
+              </Button>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>{t("studio.wizard.back")}</TooltipContent>
+        </Tooltip>
+        {activeStep === "review" ? (
+          <div className="min-w-0 flex-1">
+            <StartTrainingCta />
+          </div>
+        ) : (
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <Button
+                type="button"
+                size="icon-lg"
+                className="size-11 rounded-full"
+                aria-label={t("studio.wizard.continue")}
+                onClick={() => goTo(steps[index + 1])}
+              >
+                <ArrowRightIcon className="size-5 rtl:rotate-180" strokeWidth={1.75} />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{t("studio.wizard.continue")}</TooltipContent>
+          </Tooltip>
+        )}
+      </div>
     </div>
   );
 }

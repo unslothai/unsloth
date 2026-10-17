@@ -62,12 +62,14 @@ class RewardPreviewRequest(BaseModel):
     rewards: list[RewardPreviewItem] = Field(..., min_length = 1, max_length = 16)
     completion: StrictStr = Field(..., max_length = 64 * 1024)
     reference: Optional[StrictStr] = Field(None, max_length = 16 * 1024)
+    explain: StrictBool = False
 
 
 class RewardPreviewScore(BaseModel):
     name: str
     score: float
     weighted: float
+    explanation: Optional[dict[str, Any]] = None
 
 
 class RewardPreviewResponse(BaseModel):
@@ -101,7 +103,7 @@ def import_reward_route(
         raise _http_error(exc) from exc
 
 
-@router.post("/preview", response_model = RewardPreviewResponse)
+@router.post("/preview", response_model = RewardPreviewResponse, response_model_exclude_unset = True)
 def preview_rewards(
     payload: RewardPreviewRequest, current_subject: str = Depends(get_current_subject)
 ) -> dict[str, Any]:
@@ -114,7 +116,9 @@ def preview_rewards(
                 spec = get_reward(item.name)
             else:
                 raise RewardError("Each preview item needs a name or markdown.")
-            [result] = preview_scores([spec], payload.completion, payload.reference)
+            [result] = preview_scores(
+                [spec], payload.completion, payload.reference, explain = payload.explain
+            )
             scores.append({**result, "weighted": result["score"] * item.weight})
     except RewardError as exc:
         raise _http_error(exc) from exc

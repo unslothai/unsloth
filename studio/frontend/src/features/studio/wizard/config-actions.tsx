@@ -149,12 +149,12 @@ export function ConfigActions() {
         <TooltipTrigger asChild={true}>
           <Button
             variant="outline"
-            size="sm"
-            className="h-9 cursor-pointer rounded-lg"
+            size="icon"
+            aria-label={t("studio.wizard.loadYaml")}
+            className="cursor-pointer"
             onClick={() => void handleLoadConfig()}
           >
             <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
-            {t("studio.wizard.loadYaml")}
           </Button>
         </TooltipTrigger>
         <TooltipContent>
@@ -165,12 +165,12 @@ export function ConfigActions() {
         <TooltipTrigger asChild={true}>
           <Button
             variant="outline"
-            size="sm"
-            className="h-9 cursor-pointer rounded-lg"
+            size="icon"
+            aria-label={t("studio.wizard.saveYaml")}
+            className="cursor-pointer"
             onClick={handleSaveConfig}
           >
             <HugeiconsIcon icon={Archive04Icon} className="size-3.5" />
-            {t("studio.wizard.saveYaml")}
           </Button>
         </TooltipTrigger>
         <TooltipContent>
@@ -181,13 +181,13 @@ export function ConfigActions() {
         <TooltipTrigger asChild={true}>
           <Button
             variant="outline"
-            size="sm"
-            className="h-9 cursor-pointer rounded-lg"
+            size="icon"
+            aria-label={t("studio.wizard.resetDefaults")}
+            className="cursor-pointer"
             onClick={handleResetConfig}
             disabled={!selectedModel}
           >
             <HugeiconsIcon icon={CleanIcon} className="size-3.5" />
-            {t("studio.wizard.resetDefaults")}
           </Button>
         </TooltipTrigger>
         <TooltipContent>

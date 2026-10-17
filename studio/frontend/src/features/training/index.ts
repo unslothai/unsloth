@@ -75,10 +75,39 @@ export {
   deleteReward,
   exportReward,
   importReward,
+  importRewardFiles,
   listRewards,
   previewRewards,
 } from "./api/rewards-api";
-export type { RewardRecord } from "./api/rewards-api";
+export {
+  checkRewardImportNames,
+  MAX_REWARD_BYTES,
+  MAX_REWARD_ZIP_BYTES,
+  readRewardZip,
+  RewardImportError,
+  type RewardImportFile,
+} from "./lib/reward-import";
+export type { RewardRecord, RewardPreviewResponse, RewardExplanation } from "./api/rewards-api";
+export {
+  NORMALIZERS,
+  RULE_TYPES,
+  RewardDraftError,
+  SAMPLE_REWARD_COMPLETION,
+  canEditReward,
+  copyRewardName,
+  defaultRewardRule,
+  groupRewardPreviews,
+  rewardDraftMarkdown,
+  rewardReference,
+  rewardReferenceColumn,
+} from "./lib/reward-editor";
+export { useRewardPreview } from "./hooks/use-reward-preview";
+export type {
+  DraftNumber,
+  DraftRule,
+  Extraction,
+  RewardDraft,
+} from "./lib/reward-editor";
 export { previewCell, useRlWorkspaceStore } from "./stores/rl-workspace-store";
 export { rlChartKeys } from "./lib/rl-chart-keys";
 export {
@@ -92,6 +121,7 @@ export {
 } from "./lib/rl-roles";
 export type { RlObjective, RlRole } from "./lib/rl-roles";
 export {
+  compareRuleScores,
   formatScore,
   readRewardHead,
   ruleTags,

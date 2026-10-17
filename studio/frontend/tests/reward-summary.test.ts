@@ -7,9 +7,13 @@ import test from "node:test";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { formatScore, readRewardHead, ruleTags, summarizeRule } = await import(
-  "../src/features/training/lib/reward-summary.ts"
-);
+const {
+  compareRuleScores,
+  formatScore,
+  readRewardHead,
+  ruleTags,
+  summarizeRule,
+} = await import("../src/features/training/lib/reward-summary.ts");
 
 // Bodies as validate_rule returns them for the bundled rewards.
 const strictXml = {
@@ -51,6 +55,7 @@ test("summaries pick a key per rule type and show the hit score", () => {
     key: "regexWhole",
     params: {},
     score: "+0.5",
+    scoreValue: 0.5,
     otherwise: null,
   });
   const exact = summarizeRule(exactAnswer);
@@ -70,6 +75,44 @@ test("summaries pick a key per rule type and show the hit score", () => {
     "length",
   );
   assert.equal(summarizeRule(null).type, null);
+});
+
+test("scores sort numerically, with stable ties and unavailable scores last", () => {
+  const zero = { type: "json_schema", score: { match: 0, miss: -1 } };
+  const penalty = { type: "length", score: { over: -10, under: 0 } };
+  const negative = { type: "regex", score: { match: -1, miss: -2 } };
+  const higher = { type: "exact_match", score: { match: 12, miss: 0 } };
+  const nearTie = { ...strictXml, score: { match: 0.501, miss: 0 } };
+  const tied = { ...strictXml, mode: "search" };
+  const unavailable = { type: "python" };
+  const rules = [
+    strictXml,
+    null,
+    penalty,
+    exactAnswer,
+    tied,
+    zero,
+    numericClose,
+    negative,
+    unavailable,
+    higher,
+    nearTie,
+  ];
+  assert.deepEqual([...rules].sort(compareRuleScores), [
+    higher,
+    numericClose,
+    exactAnswer,
+    nearTie,
+    strictXml,
+    tied,
+    zero,
+    negative,
+    penalty,
+    null,
+    unavailable,
+  ]);
+  assert.equal(summarizeRule(nearTie).score, summarizeRule(strictXml).score);
+  assert.equal(compareRuleScores({ type: "numeric", bands: [] }, null), 0);
 });
 
 test("ruleTags finds the tags a rule reads", () => {

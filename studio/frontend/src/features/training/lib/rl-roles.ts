@@ -73,9 +73,9 @@ export function resolveRlMapping(
     if (Object.values(out).includes(role)) {
       continue;
     }
-    const column = columns.find(
-      (c) => AUTO_NAMES[role].includes(c.toLowerCase()) && !(c in out),
-    );
+    const column = AUTO_NAMES[role]
+      .map((name) => columns.find((c) => c.toLowerCase() === name && !(c in out)))
+      .find((c) => c !== undefined);
     if (column) {
       out[column] = role;
     }

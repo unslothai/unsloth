@@ -14,6 +14,7 @@ export interface RewardSummary {
   key: string;
   params: Record<string, string>;
   score: string;
+  scoreValue: number | null;
   otherwise: string | null;
 }
 
@@ -59,6 +60,7 @@ export function summarizeRule(rule: Rule | null | undefined): RewardSummary {
       key: "unknown",
       params: {},
       score: "",
+      scoreValue: null,
       otherwise: null,
     };
   }
@@ -68,12 +70,14 @@ export function summarizeRule(rule: Rule | null | undefined): RewardSummary {
     hit: string,
     miss: string,
   ) => {
+    const hitValue = scoreOf(rule, hit);
     const missValue = scoreOf(rule, miss);
     return {
       type,
       key,
       params,
-      score: formatScore(scoreOf(rule, hit)),
+      score: formatScore(hitValue),
+      scoreValue: hitValue,
       otherwise: missValue === 0 ? null : formatScore(missValue),
     };
   };
@@ -113,6 +117,7 @@ export function summarizeRule(rule: Rule | null | undefined): RewardSummary {
         key: `numeric${target}`,
         params: { tag: tag ?? "", column },
         score: Number.isFinite(best) ? formatScore(best) : "",
+        scoreValue: Number.isFinite(best) ? best : null,
         otherwise: otherwise === 0 ? null : formatScore(otherwise),
       };
     }
@@ -122,9 +127,23 @@ export function summarizeRule(rule: Rule | null | undefined): RewardSummary {
         key: "unknown",
         params: {},
         score: "",
+        scoreValue: null,
         otherwise: null,
       };
   }
+}
+
+/** Highest displayed score first; unavailable scores stay at the end. */
+export function compareRuleScores(
+  a: Rule | null | undefined,
+  b: Rule | null | undefined,
+): number {
+  const left = summarizeRule(a).scoreValue;
+  const right = summarizeRule(b).scoreValue;
+  if (left === right) return 0;
+  if (left === null) return 1;
+  if (right === null) return -1;
+  return right - left;
 }
 
 /** XML-style tags a rule reads, so the prompt can be checked for asking for them. */
