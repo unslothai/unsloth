@@ -2259,6 +2259,36 @@ export function buildLocalTokenCountReasoning(): Record<string, unknown> {
   };
 }
 
+/** Which local engine would compact this chat. */
+function localCompactionEngine(
+  state: Pick<
+    ChatRuntimeState,
+    | "loadedIsGguf"
+    | "activeGgufVariant"
+    | "activeNativePathToken"
+    | "loadedIsMlx"
+    | "loadedEngine"
+  >,
+  checkpoint: string,
+): { isGguf: boolean; isMlx: boolean; isManagedEngine: boolean } {
+  // The backend's own report. An external id leaves it describing the local model still resident.
+  const local = !isExternalModelId(checkpoint);
+  return {
+    // The same owner the settings panel asks, so the body and the panel cannot disagree
+    // about the model they both describe. A catalog row would: /api/models/list can
+    // replace the row a load minted, and the variant / native path token still classify
+    // a GGUF the backend has not answered for yet.
+    isGguf: isServedByLlamaCpp({
+      loadedIsGguf: state.loadedIsGguf,
+      activeGgufVariant: state.activeGgufVariant,
+      activeNativePathToken: state.activeNativePathToken,
+      checkpoint,
+    }),
+    isMlx: local && state.loadedIsMlx === true,
+    isManagedEngine: local && state.loadedEngine === "vllm",
+  };
+}
+
 /** The tool flags a completion would send, so the count includes the schemas and the action nudge. */
 export async function buildLocalTokenCountExtras(
   threadId: string | undefined,
@@ -2288,14 +2318,22 @@ export async function buildLocalTokenCountExtras(
   // tools-on default answer and the server renders a catalog the completion does not.
   // No budget, because the completion sends none either, so a policy that injects tools
   // past this false gets the server default on both sides.
-  // The completion always sends thread_id; the server dates a thread's prompt from it.
-  const threadField = threadId ? { thread_id: threadId } : {};
+  // The completion always sends thread_id; the server dates a thread's prompt from it. Its
+  // overflow policy rides along: truncate_oldest is what puts search_conversation and the
+  // checkpoint nudge in a compacted thread's prompt, with tools off too.
+  const threadFields = {
+    ...(threadId ? { thread_id: threadId } : {}),
+    ...ggufCompactionRequestFields({
+      ...localCompactionEngine(state, state.params.checkpoint),
+      autoCompactEnabled: state.autoCompactEnabled,
+    }),
+  };
   if (!supportsTools) {
     return {
       enable_tools: false,
       bypass_permissions: bypassPermissions,
       sandbox_level: sandboxLevel,
-      ...threadField,
+      ...threadFields,
     };
   }
 
@@ -2328,7 +2366,7 @@ export async function buildLocalTokenCountExtras(
       enable_tools: false,
       bypass_permissions: bypassPermissions,
       sandbox_level: sandboxLevel,
-      ...threadField,
+      ...threadFields,
     };
   }
 
@@ -2356,7 +2394,7 @@ export async function buildLocalTokenCountExtras(
     mcp_enabled: mcpEnabledForChat,
     // Top level, not inside rag_scope: an archived thread puts search_conversation and its
     // compaction nudge in the prompt whether or not RAG is on, and the completion sends it here.
-    ...threadField,
+    ...threadFields,
     // Armed research puts the deep_research schema in the prompt, so the count carries it.
     ...(deepResearchEnabled ? { deep_research_armed: true } : {}),
     // Keeps search_knowledge_base and its grounding nudge in the prompt. No retrieval runs for
@@ -5674,22 +5712,11 @@ export function createOpenAIStreamAdapter(
       const activeModel = runtime.models.find(
         (m) => m.id === params.checkpoint,
       );
-      // The same owner the settings panel asks, so the body and the panel cannot disagree
-      // about the model they both describe. A catalog row would: /api/models/list can
-      // replace the row a load minted, and the variant / native path token still classify
-      // a GGUF the backend has not answered for yet.
-      const isGgufForCompaction = isServedByLlamaCpp({
-        loadedIsGguf: runtime.loadedIsGguf,
-        activeGgufVariant: runtime.activeGgufVariant,
-        activeNativePathToken: runtime.activeNativePathToken,
-        checkpoint: params.checkpoint,
-      });
-      // The backend's own report, for the same reason. An external id leaves it describing
-      // the local model still resident.
-      const isMlxForCompaction =
-        !isExternalModelId(params.checkpoint) && runtime.loadedIsMlx === true;
-      const isManagedEngineForCompaction =
-        !isExternalModelId(params.checkpoint) && runtime.loadedEngine === "vllm";
+      const {
+        isGguf: isGgufForCompaction,
+        isMlx: isMlxForCompaction,
+        isManagedEngine: isManagedEngineForCompaction,
+      } = localCompactionEngine(runtime, params.checkpoint);
       // Taken once, so a retried request still carries it and the next turn does not.
       const compactNow =
         takeThreadCompactionRequest(resolvedThreadId) &&

@@ -81,7 +81,13 @@ import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-g
 import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
 import { ReadSkillToolUI } from "@/components/assistant-ui/tool-ui-read-skill";
 import { SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
-import { isRewindCommand, useRewindDialogStore } from "@/features/chat";
+import {
+  isContextCommand,
+  isExternalModelId,
+  isRewindCommand,
+  useContextReportStore,
+  useRewindDialogStore,
+} from "@/features/chat";
 import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
@@ -2330,6 +2336,7 @@ export const Thread: FC<{
             resetKey={runtimeThreadId}
             viewportRef={viewportElRef}
           />
+          <ContextReportMount />
 
           {/* Bottom slack so the last message has room above the sticky
           scroll-to-bottom button (and floating composer in single mode),
@@ -5504,6 +5511,37 @@ const Composer: FC<{
         });
         return;
       }
+      // Only shows a count under the last message: the conversation and the next request are untouched.
+      if (!overlay && !hasAttachments && isContextCommand(composerText)) {
+        event.preventDefault();
+        const runtime = useChatRuntimeStore.getState();
+        // The count endpoint refuses while anything generates.
+        if (
+          threadIsRunning ||
+          aui.thread().getState().isRunning ||
+          Object.values(runtime.runningByThreadId).some(Boolean)
+        ) {
+          toast.error(translate("context.waitForResponse"));
+          return;
+        }
+        // An API model reports its usage per reply; a local one needs to be loaded to count.
+        if (
+          !runtime.params.checkpoint ||
+          (!isExternalModelId(runtime.params.checkpoint) &&
+            runtime.loadedContextLength == null)
+        ) {
+          toast.info(translate("context.noModel"));
+          return;
+        }
+        aui.composer().setText("");
+        useContextReportStore
+          .getState()
+          .showContext(
+            aui.threadListItem().getState().id,
+            aui.thread().getState().messages.at(-1)?.id ?? null,
+          );
+        return;
+      }
       if (
         !overlay &&
         !hasAttachments &&
@@ -5535,6 +5573,8 @@ const Composer: FC<{
           return;
         }
         requestThreadCompaction(referenceThreadId);
+        // The next request resets the context, so a /context report above is stale.
+        useContextReportStore.getState().dismissContext();
         clearStoredDraft();
         aui.composer().setText("");
         return;
@@ -8794,6 +8834,20 @@ const RewindDialogMount: FC = () => {
     </Suspense>
   ) : null;
 };
+
+// Loaded on first use, like the rewind dialog.
+const LazyContextReport = lazy(() =>
+  import("@/components/assistant-ui/context-report").then((module) => ({
+    default: module.ContextReport,
+  })),
+);
+
+const ContextReportMount: FC = () =>
+  useContextReportStore((s) => s.report !== null) ? (
+    <Suspense fallback={null}>
+      <LazyContextReport />
+    </Suspense>
+  ) : null;
 
 const RewindMessageButton: FC = () => {
   const aui = useAui();

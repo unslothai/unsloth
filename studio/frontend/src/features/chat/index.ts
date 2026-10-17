@@ -167,6 +167,18 @@ export {
   requestThreadCompaction,
   useCompactRequestStore,
 } from "./stores/compact-request-store";
+export { countContext } from "./api/context-breakdown";
+export {
+  shownContextReport,
+  useContextReportStore,
+} from "./stores/context-report-store";
+export {
+  type ContextView,
+  deriveContextView,
+  isContextCommand,
+  usagePercent,
+} from "./utils/context-command";
+export { formatTokenCountFull } from "./lib/context-usage-bar-state";
 export {
   folderRingKey,
   planKey,
@@ -332,6 +344,7 @@ export {
   buildExternalModelId,
   customProviderDisplayName,
   isCustomProviderType,
+  externalModelContextLength,
   isDecisionConnection,
   isExternalModelId,
   parseExternalModelId,

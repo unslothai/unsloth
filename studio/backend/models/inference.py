@@ -3427,6 +3427,24 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
         description = "[x-unsloth] Tool-call budget the completion would send. Zero suppresses the "
         "tool loop, so a count that never sees it prices a catalog the relay does not render.",
     )
+    context_overflow: Optional[Literal["error", "truncate_middle", "truncate_oldest"]] = Field(
+        None,
+        description = "[x-unsloth] Overflow policy the completion would send. truncate_oldest is "
+        "what puts search_conversation and the checkpoint nudge in a compacted thread's prompt, "
+        "so a count without it prices neither.",
+    )
+    max_tokens: Optional[int] = Field(
+        None,
+        ge = 1,
+        description = "[x-unsloth] Reply room the completion would reserve. With breakdown, sizes "
+        "compaction_budget the way the fitter does.",
+    )
+    breakdown: bool = Field(
+        False,
+        description = "[x-unsloth] Also split the total into system prompt, tool schemas and "
+        "messages, and return the rendered prompt (GGUF only; null elsewhere). Studio's "
+        "/context. Costs two more renders.",
+    )
 
     @field_validator("sandbox_level", mode = "before")
     @classmethod

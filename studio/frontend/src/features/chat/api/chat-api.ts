@@ -455,14 +455,35 @@ export async function countChatInputTokens(payload: {
   studio_tool_history?: boolean;
   /** Run the selected tools here rather than as the provider's hosted builtins. */
   run_tools_locally?: boolean;
+  /** /context: also split the total and return the rendered prompt, at two more renders. */
+  breakdown?: boolean;
+  /** Reply room the completion reserves, which sizes `compaction_budget`. */
+  max_tokens?: number;
   // `model` is informational: the endpoint counts with whatever is resident and reports which.
-}): Promise<{ input_tokens: number; model?: string }> {
+}): Promise<ChatCountTokensResponse> {
   const response = await authFetch("/api/inference/chat/count_tokens", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  return parseJsonOrThrow<{ input_tokens: number; model?: string }>(response);
+  return parseJsonOrThrow<ChatCountTokensResponse>(response);
+}
+
+export interface ChatCountTokensResponse {
+  input_tokens: number;
+  model?: string;
+  // Present only when the request asked for `breakdown`.
+  breakdown?: {
+    system: number;
+    tools: number;
+    messages: number;
+    tool_names: string[];
+  };
+  context_length?: number | null;
+  /** Prompt size at which the server compacts; null when this chat would not compact. */
+  compaction_budget?: number | null;
+  // Null where the backend cannot return the rendered text (MLX).
+  prompt?: string | null;
 }
 
 export async function validateModel(

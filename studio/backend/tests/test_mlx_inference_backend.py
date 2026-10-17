@@ -6561,6 +6561,61 @@ def test_an_mlx_count_prices_the_archive_tool_and_its_compaction_nudge(monkeypat
     ), "the count omitted the compaction nudge the completion appends"
 
 
+def test_an_mlx_count_reopens_search_conversation_with_tools_off(monkeypatch):
+    """A checkpointed thread reopens the completion's loop with search_conversation alone."""
+    from routes import inference as route
+    from state import tool_policy
+
+    monkeypatch.setattr(tool_policy, "_tool_policy_default", True)
+    monkeypatch.setattr(route, "_thread_has_conversation_archive", lambda tid: bool(tid))
+    monkeypatch.setattr(route, "_checkpoint_recall_may_enable_tools", lambda payload: True)
+    backend = _RenderRecordingBackend()
+    _count_hi(
+        monkeypatch,
+        backend,
+        template = _TOOL_TEMPLATE,
+        enable_tools = False,
+        context_overflow = "truncate_oldest",
+        thread_id = "thread-with-an-archive",
+    )
+    assert [t["function"]["name"] for t in backend.tools or []] == ["search_conversation"]
+    assert route._apply_compaction_nudge("", backend.tools) in backend.system
+
+
+class _LengthCountingBackend(_RenderRecordingBackend):
+    """Counts content characters plus five per tool, so each breakdown part is predictable."""
+
+    def count_chat_tokens(
+        self,
+        messages,
+        system_prompt = "",
+        **kwargs,
+    ):
+        super().count_chat_tokens(messages, system_prompt, **kwargs)
+        tokens = sum(len(str(m.get("content") or "")) for m in messages)
+        return tokens + 5 * len(kwargs.get("tools") or []), "mlx/model"
+
+
+def test_an_mlx_breakdown_sums_to_the_total_and_has_no_prompt(monkeypatch):
+    from state import tool_policy
+
+    monkeypatch.setattr(tool_policy, "_tool_policy_default", True)
+    served = _count_hi(
+        monkeypatch,
+        _LengthCountingBackend(),
+        template = _TOOL_TEMPLATE,
+        enabled_tools = ["web_search"],
+        breakdown = True,
+    )
+    body = json.loads(served.body)
+    parts = body["breakdown"]
+    assert (parts["tools"], parts["messages"]) == (5, 2)
+    assert parts["system"] + parts["tools"] + parts["messages"] == body["input_tokens"]
+    assert parts["tool_names"] == ["web_search"]
+    # The MLX count tokenizes in the worker and returns no rendered text.
+    assert body["prompt"] is None
+
+
 def test_an_mlx_count_prices_the_date_an_api_key_tool_loop_still_gets(monkeypatch):
     """`_wants_current_date` is false for an API-key request, but the tool-loop completion
     reapplies it with include_api_key, so a count that did not would be short that line."""

@@ -43601,6 +43601,7 @@ class LlamaCppBackend:
         continue_final_message: bool = False,
         should_abort = None,
         prefer_native: bool = False,
+        on_prompt = None,
     ) -> int:
         """Count prompt tokens for a chat request via llama-server.
 
@@ -43616,6 +43617,8 @@ class LlamaCppBackend:
         second round trip once the answer stopped mattering. Raises when it fires.
 
         ``prefer_native`` tries /v1/chat/completions/input_tokens first (one round trip).
+
+        ``on_prompt`` receives the prompt /apply-template rendered, the text the count priced.
         """
         if not self.is_loaded:
             if strict:
@@ -43713,7 +43716,8 @@ class LlamaCppBackend:
                         if continue_final_message:
                             template_body["continue_final_message"] = True
                             template_body["add_generation_prompt"] = False
-                        if prefer_native:
+                        # The native count returns no text, so a caller wanting it skips that path.
+                        if prefer_native and on_prompt is None:
                             if should_abort is not None and should_abort():
                                 raise CountAborted()
                             try:
@@ -43739,7 +43743,10 @@ class LlamaCppBackend:
                         if isinstance(prompt, str):
                             if should_abort is not None and should_abort():
                                 raise CountAborted()
-                            return _tokenize(prompt), False
+                            count = _tokenize(prompt)
+                            if on_prompt is not None:
+                                on_prompt(prompt)
+                            return count, False
                     except CountAborted:
                         # Not a template failure: swallowed, the text fallback tokenizes anyway,
                         # which is the work being declined. Must precede the generic except.

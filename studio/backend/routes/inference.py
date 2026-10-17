@@ -43003,8 +43003,18 @@ async def _mlx_count_chat_tokens(
     )
     # A budget of zero never enters the loop, so the relay is what renders.
     _budget = getattr(payload, "max_tool_calls_per_message", None)
+    # A checkpointed thread opens the completion's loop with search_conversation alone, tools off.
+    _recall_reopens_loop = (
+        not (_tools_on or _mcp_on)
+        and getattr(payload, "tool_choice", None) != "none"
+        and _checkpoint_recall_may_enable_tools(payload)
+    )
     _tools_to_use = None
-    if _takes_tools and (_tools_on or _mcp_on) and (_budget is None or _budget > 0):
+    if (
+        _takes_tools
+        and (_tools_on or _mcp_on or _recall_reopens_loop)
+        and (_budget is None or _budget > 0)
+    ):
         # Never discovery on a count: get_enabled_mcp_tools spawns stdio servers and
         # blocks on a probe timeout. Schemas come from the completion's cache and an
         # incomplete view is declined; mcp_allowed stays False as the network flag.
@@ -43210,15 +43220,21 @@ async def _mlx_count_chat_tokens(
             status_code = 503,
             detail = "Cannot count tokens while a generation is in progress.",
         )
-    try:
-        count, _counted = await asyncio.to_thread(
-            backend.count_chat_tokens,
-            messages,
+
+    def _count(count_messages, tools) -> int:
+        count, _counted = backend.count_chat_tokens(
+            count_messages,
             system_prompt or "",
-            tools = _tools_to_use,
+            tools = tools,
             enable_thinking = payload.enable_thinking,
             reasoning_effort = payload.reasoning_effort,
             preserve_thinking = payload.preserve_thinking,
+        )
+        return count
+
+    try:
+        count, breakdown = await _count_with_breakdown(
+            _count, messages, _tools_to_use, payload.breakdown
         )
     except Exception:
         raise HTTPException(
@@ -43236,9 +43252,64 @@ async def _mlx_count_chat_tokens(
         )
     # The id /status publishes as model_identifier (the raw active name, a local folder or
     # snapshot path included): the client drops a count naming any other checkpoint.
-    return JSONResponse(
-        content = {"input_tokens": int(count), "model": _count_model_id(active, via_api_key)}
+    # No rendered text: the MLX count tokenizes in the worker and returns only the total.
+    return _count_response(
+        payload,
+        count,
+        _count_model_id(active, via_api_key),
+        breakdown,
+        _monitor_context_length(),
+        None,
     )
+
+
+def _count_breakdown(count, messages: list[dict], tools) -> tuple[int, dict]:
+    """The total, split into system prompt, tool schemas and messages (Studio's /context).
+
+    Priced as cumulative renders so the parts sum to the total: everything first, then the
+    leading system turns with and without the tools. The prefixes sit behind an empty user turn
+    because a template may refuse a render without one, which leaves that turn and the
+    template's own markup in ``system``. ``count(messages, tools)`` is the exact-count call."""
+    base = []
+    for message in messages:
+        if message.get("role") != "system":
+            break
+        base.append(message)
+    base.append({"role": "user", "content": ""})
+    total = count(messages, tools)
+    bare = count(base, None)
+    with_tools = count(base, tools) if tools else bare
+    tool_tokens = max(0, with_tools - bare)
+    message_tokens = max(0, total - with_tools)
+    return total, {
+        "system": total - tool_tokens - message_tokens,
+        "tools": tool_tokens,
+        "messages": message_tokens,
+        "tool_names": [((t.get("function") or {}).get("name")) for t in tools or []],
+    }
+
+
+async def _count_with_breakdown(count, messages: list[dict], tools, breakdown: bool):
+    """``(total, parts)``; parts only when asked, since they cost two more renders."""
+    if not breakdown:
+        return await asyncio.to_thread(count, messages, tools), None
+    return await asyncio.to_thread(_count_breakdown, count, messages, tools)
+
+
+def _count_response(payload, total: int, model, parts: Optional[dict], context_length, prompt):
+    content = {"input_tokens": int(total), "model": model}
+    if parts is not None:
+        from core.inference.context_window import prompt_budget
+        content.update(
+            breakdown = parts,
+            context_length = context_length,
+            # Where the fitter starts compacting, only when this request would let it.
+            compaction_budget = prompt_budget(context_length, payload.max_tokens)
+            if context_length and _overflow_truncation_requested(payload)
+            else None,
+            prompt = prompt,
+        )
+    return JSONResponse(content = content)
 
 
 def _count_model_id(model_id, via_api_key):
@@ -43419,6 +43490,10 @@ async def chat_count_tokens(
     )
     # Schemas and the nudge are a large share of the prompt: price the completion's own selection.
     _tools_on = False if _client_disabled_tool_calls else _effective_enable_tools(payload)
+    if _tools_on and not _launcher_tool_default_applies(
+        payload, _ui_stream_events_enabled(request)
+    ):
+        _tools_on = False
     # Same rule the completion path resolves, so the two agree on whether MCP schemas are in the
     # prompt at all. MCP alone turns tools on there, hence the widened branch below.
     from state.tool_policy import get_tool_policy as _get_tool_policy_ct
@@ -43454,12 +43529,25 @@ async def chat_count_tokens(
                 status_code = 503,
                 detail = "Cannot count tokens until enabled MCP tools have been discovered.",
             )
-    if not _takes_passthrough and (_tools_on or _mcp_on) and llama_backend.supports_tools:
+    # A checkpointed thread opens the completion's loop with search_conversation alone, tools off.
+    _recall_reopens_loop = (
+        not (_tools_on or _mcp_on)
+        and not _client_disabled_tool_calls
+        and payload.max_tool_calls_per_message != 0
+        and _checkpoint_recall_may_enable_tools(payload)
+    )
+    _checkpoint_fitted = _rolling_context_policy(payload) is not None
+    if (
+        not _takes_passthrough
+        and (_tools_on or _mcp_on or _recall_reopens_loop)
+        and llama_backend.supports_tools
+    ):
         tools_to_use = await _select_request_tools(
             payload,
             tools_on = _tools_on,
             mcp_allowed = _mcp_allowed,
             supports_vision = bool(getattr(llama_backend, "is_vision", False)),
+            checkpoint_fitted = _checkpoint_fitted,
         )
         # Appended in the position _select_request_tools would have used, so the order matches.
         tools_to_use = tools_to_use + _mcp_tools
@@ -43484,6 +43572,12 @@ async def chat_count_tokens(
                 ),
                 tools_to_use,
                 rag_scope = payload.rag_scope,
+            )
+            _count_nudge = _apply_compaction_nudge(
+                _count_nudge,
+                tools_to_use,
+                checkpoint_fitted = _checkpoint_fitted,
+                payload = payload,
             )
             openai_messages = _append_to_system_message(openai_messages, _count_nudge)
 
@@ -43536,17 +43630,29 @@ async def chat_count_tokens(
 
     from core.inference.llama_cpp import CountAborted
 
-    try:
-        count = await asyncio.to_thread(
-            llama_backend.count_chat_tokens,
-            openai_messages,
+    # The first render is the full prompt: a breakdown prices the total before its prefixes.
+    _rendered: dict = {}
+
+    def _count(messages, tools) -> int:
+        return llama_backend.count_chat_tokens(
+            messages,
             None,
-            openai_tools,
+            tools,
             strict = True,
             chat_template_kwargs = _template_kwargs,
             # Polled between /apply-template and /tokenize: admission and the work are separate
             # steps, so a run starting in between is caught here and the second round trip is not.
             should_abort = lambda: model_slots.routed_generation_count() > 0,
+            **(
+                {"on_prompt": lambda text: _rendered.setdefault("prompt", text)}
+                if payload.breakdown
+                else {}
+            ),
+        )
+
+    try:
+        count, breakdown = await _count_with_breakdown(
+            _count, openai_messages, openai_tools, payload.breakdown
         )
     except CountAborted:
         raise HTTPException(
@@ -43564,11 +43670,13 @@ async def chat_count_tokens(
             status_code = 503,
             detail = "The loaded model changed while counting tokens.",
         )
-    return JSONResponse(
-        content = {
-            "input_tokens": int(count),
-            "model": _count_model_id(_tokenizer_model, via_api_key),
-        }
+    return _count_response(
+        payload,
+        count,
+        _count_model_id(_tokenizer_model, via_api_key),
+        breakdown,
+        getattr(llama_backend, "context_length", None),
+        _rendered.get("prompt"),
     )
 
 
