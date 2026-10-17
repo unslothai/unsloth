@@ -12475,7 +12475,7 @@ async def _make_room_for_primary(request: LoadRequest, exc, evicted: list) -> Lo
         raise gpu_residency.need_free_refusal(info if gpus else {}, slots)
     slots: list = []
     await asyncio.to_thread(
-        gpu_residency.free_for, CHAT, exc.gpu_indices, "a chat model", slots, short_mib = exc.short_mib
+        gpu_residency.free_for, gpu_arbiter.CHAT, exc.gpu_indices, "a chat model", slots, short_mib = exc.short_mib
     )
     evicted += [s["model"] for s in slots if s.get("model")]
     return request if slots else request.model_copy(update = {"force_alongside": True})
