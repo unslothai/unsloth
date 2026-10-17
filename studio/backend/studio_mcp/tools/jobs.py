@@ -224,7 +224,13 @@ def _load_status(job: loading.LoadJob) -> JobStatus:
         kind = "load",
         id = job.job_id,
         status = job.status,
-        progress_percent = round(100.0 * job.fraction, 1) if job.fraction is not None else None,
+        progress_percent = (
+            100.0
+            if job.status == "completed"
+            else round(100.0 * job.fraction, 1)
+            if job.fraction is not None
+            else None
+        ),
         error = job.error,
         load = job.result if job.status == "completed" else None,
     )
@@ -304,6 +310,7 @@ async def get_job(
     start = _moment(result.structured_content)
     # A listing has nothing to wait on.
     waits = id is not None or kind in ("recipe", "training", "diffusion_training")
+    moved = False
     while waits and start[0] in RUNNING:
         left = deadline - time.monotonic()
         if left <= 0:
@@ -317,10 +324,12 @@ async def get_job(
         result = latest
         now = _moment(result.structured_content)
         if now[:2] != start[:2]:
+            moved = True
             break
         if ctx is not None and now[2] is not None:
             await ctx.report_progress(min(now[2] / 100.0, 1.0), 1.0, str(now[1] or now[0]))
-    return _with_poll_after(kind, result)
+    # A wait that ended because the job moved on can be followed again at once.
+    return _with_poll_after(kind, result, 0 if moved else POLL_AFTER_S[kind])
 
 
 # Seconds a caller not using wait_s should leave before asking again, by kind.
@@ -334,11 +343,11 @@ POLL_AFTER_S = {
 }
 
 
-def _with_poll_after(kind: str, result: ToolResult) -> ToolResult:
+def _with_poll_after(kind: str, result: ToolResult, after: float) -> ToolResult:
     structured = as_dict(result.structured_content)
     if structured.get("status") not in RUNNING or structured.get("jobs") is not None:
         return result
-    status = JobStatus.model_validate({**structured, "poll_after_s": POLL_AFTER_S[kind]})
+    status = JobStatus.model_validate({**structured, "poll_after_s": after})
     return media_result(list(result.content[1:]), status)
 
 

@@ -102,6 +102,8 @@ class ChatModel(ToolOutput):
 class ChatSlot(ToolOutput):
     loaded: list[ChatModel] = []
     loading: list[RouteText] = []
+    # Keep multiple models loaded: off, fit or always. None from a server that predates it.
+    multi_model_mode: Optional[RouteText] = None
 
 
 class ImageSlot(ToolOutput):
