@@ -25,6 +25,7 @@ import {
 import {
   StudioVoiceLoopAdapter,
   clearHeldTurn,
+  getHeldTurnText,
 } from "@/features/chat/adapters/studio-voice-loop-adapter";
 import { useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
 import {
@@ -158,7 +159,12 @@ export const VoiceEngine: FC = () => {
       // Proactively clear any stale text on a FRESH handle before re-arming, in
       // case the deferred post-send clear hadn't landed before this re-arm got
       // here. Without it, turn 2's dictation appends onto turn 1's leftover text.
-      if (fresh.getState().text) {
+      // A fragment the judge is holding stays on screen while the mic re-arms;
+      // anything else in the box is turn 1's leftover and goes.
+      const held = getHeldTurnText();
+      if (held) {
+        if (fresh.getState().text !== held) fresh.setText(held);
+      } else if (fresh.getState().text) {
         fresh.setText("");
       }
       // Start dictation via the composer runtime, NOT by clicking the Dictate

@@ -164,6 +164,11 @@ async function turnUnfinished(text: string): Promise<boolean> {
 }
 
 /** Drop a fragment waiting for its continuation: a thread switch or voice going off. */
+/** The fragment the judge is holding for its continuation, shown in the composer meanwhile. */
+export function getHeldTurnText(): string {
+  return heldTurn?.text ?? "";
+}
+
 export function clearHeldTurn(): void {
   heldTurn = null;
 }
