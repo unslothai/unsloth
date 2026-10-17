@@ -236,7 +236,7 @@ api_key_format = "Bearer {token}"
 |---|---|
 | `studio_status` | What is loaded, loading and running: chat, image, video, speech-to-text and embedding models, training, export and GPUs. |
 | `list_models` | Models Unsloth Studio can serve, by kind. With `model`, its training defaults. |
-| `load_model` | Load a chat, image, video or speech-to-text model, downloading it first if needed. Reports progress. |
+| `load_model` | Load a chat, image, video or speech-to-text model, downloading it first if needed. Reports progress, waits up to `wait_s` (240 s by default) and lists what it unloaded. |
 | `unload_model` | Unload a model, or every chat, speech, image, video and speech-to-text model with `kind="all"`. The embedding model stays. |
 | `plan_load` | Preview a load without loading anything: GGUF variants and sizes, bytes to download, and the models it would unload. |
 | `chat` | Ask the loaded model, with optional images. Returns a `cancel_id`. |
@@ -246,7 +246,7 @@ api_key_format = "Bearer {token}"
 | `generate_audio` | Clone, speak, edit, convert, music and separate. |
 | `transcribe` | Speech to text, or translation to English. |
 | `generate_video` | Start a video. Poll it with `get_job`. |
-| `get_job` | The state of a video, recipe or export job. |
+| `get_job` | The state of a video, recipe, export, training or load job. With `wait_s` it waits for the job to finish or move on. |
 | `run_recipe` | Validate, preview or run a Data Recipe. |
 | `datasets` | List, check, download and follow training datasets. |
 | `start_training` | Start LLM or image LoRA training. Follow it with `studio_status`. |
@@ -254,10 +254,12 @@ api_key_format = "Bearer {token}"
 | `export_model` | Export a checkpoint to GGUF, merged weights, a LoRA adapter or the base model. |
 | `cancel` | Stop training, a start request, image training, an export, a recipe, an image or video generation, a chat reply or a dataset download. |
 
-Long work returns at once. Start it, then poll `get_job` or `studio_status`,
-and stop it with `cancel`. Audio runs cannot be cancelled. Unsloth Studio runs one
-export at a time, so `export_model` is refused while another export runs, and
-cancelling an export job stops only that job's own step.
+Long work keeps running in Unsloth Studio when a tool call times out.
+Follow every long job with `get_job(kind=…, id=…, wait_s=…)`: it checks every 2 s and returns once the job finishes, its status or phase changes, or `wait_s` runs out.
+`wait_s` is at most 240; 50 stays under Codex's 60 s default tool timeout, and longer waits need a longer client timeout.
+`load_model` waits up to `wait_s` too (240 s when unset), then returns `status: "loading"` and a `job_id` for `get_job(kind="load")`.
+Stop work with `cancel`.
+Unsloth Studio runs one export at a time, so `export_model` is refused while another export runs, and cancelling an export job stops only that job's own step.
 
 ### Media and files
 

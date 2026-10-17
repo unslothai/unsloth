@@ -1,10 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import asyncio
 import json
+import time
 
 import pytest
 from fastapi.responses import Response
+
+from studio_mcp import loading
 
 from .mcp_harness import (
     DEFERRED,
@@ -14,9 +18,11 @@ from .mcp_harness import (
     call_with_progress,
     fake_studio,
     fast_polls,  # noqa: F401  (fixture)
+    make_caller,
     queries,
     run_tool,
     sequence,
+    session,
     slow,
     stt_state,
 )
@@ -33,6 +39,8 @@ LOADED = {
 STATUS = {"loaded": [LLM], "serving": [LLM], "serving_checkpoints": ["/srv/models/llama.gguf"]}
 EMPTY_STATUS = {"loaded": [], "serving": [], "serving_checkpoints": []}
 LOAD = ("POST", "/api/inference/load")
+# A load that finished inside its wait.
+SETTLED = {"status": "loaded", "fraction": None, "job_id": None, "poll_after_s": None}
 STT = "/api/inference/audio/stt"
 STATUS_ROUTE = ("GET", "/api/inference/status")
 
@@ -49,6 +57,14 @@ PAYLOADS = {
 }
 
 
+@pytest.fixture(autouse = True)
+def _no_loads_left():
+    # A job left running by one test would be followed by the next one loading the same model.
+    loading.LOADS.reset()
+    yield
+    loading.LOADS.reset()
+
+
 # tts / audio load through the LLM route but report the kind asked for. STATUS serves LLM
 # before and after, so only the route's own evicted list counts.
 @pytest.mark.parametrize("kind", [None, "tts", "audio"])
@@ -59,10 +75,12 @@ def test_load_sends_the_body_and_reports_the_result(monkeypatch, kind):
         "kind": kind or "llm",
         "model": LLM,
         "loaded": True,
+        **SETTLED,
         "display_name": "Llama 3.2 1B",
         "placement": None,
         "alongside_applied": None,
         "evicted": ["unsloth/Qwen3-0.6B"],
+        "evicted_slots": [{"kind": "llm", "model": "unsloth/Qwen3-0.6B"}],
     }
     assert bodies(studio, "/api/inference/load") == [
         {"model_path": LLM, "load_in_4bit": True, "max_seq_length": 0, "gguf_variant": "Q4_K_M"}
@@ -224,9 +242,9 @@ def test_a_gguf_image_repo_sends_its_gguf_filename(monkeypatch, fast_polls, extr
     result, _studio = run_tool(
         monkeypatch, studio, "load_model", {"model": FLUX_GGUF, "kind": "image", **extra}
     )
-    loaded = {"kind": "image", "model": FLUX_GGUF, "loaded": True, "display_name": None}
+    loaded = {"kind": "image", "model": FLUX_GGUF, "loaded": True, **SETTLED, "display_name": None}
     loaded.update(placement = None, alongside_applied = None)
-    assert result["structuredContent"] == {**loaded, "evicted": []}
+    assert result["structuredContent"] == {**loaded, "evicted": [], "evicted_slots": []}
     expected = {"model_path": FLUX_GGUF, "gguf_filename": filename, "model_kind": "gguf"}
     expected.update({"hf_token": extra["hf_token"]} if "hf_token" in extra else {})
     assert bodies(studio, "/api/inference/images/download-plan") == [expected]
@@ -455,3 +473,160 @@ def test_stt_unload_names_the_engine_and_model_in_the_query(
     assert queries(studio, f"{STT}/unload") == ([query] if query else [])
     unloads = [c[3] for c in studio.state.calls if c[1].endswith("/unload")]
     assert unloads == ([b""] if unloaded else [])
+
+
+IMAGE_STATUS = ("GET", "/api/inference/images/status")
+VIDEO_STATUS = ("GET", "/api/inference/video/status")
+FLUX_LOADED = {"loaded": True, "repo_id": FLUX_GGUF}
+LTX_LOADED = {"loaded": True, "repo_id": LTX}
+UNLOADED = {"loaded": False}
+
+
+def _video_over_image(load_answer, *, delay = 0.0):
+    """A video load while an image model is resident; the arbiter unloads the image model."""
+    return fake_studio(
+        {
+            ("POST", "/api/inference/video/download-plan"): {"entries": []},
+            ("POST", "/api/inference/video/load"): slow(load_answer, delay),
+            ("GET", "/api/inference/video/load-progress"): READY,
+            # Read before the load, then by the load itself, then after it.
+            VIDEO_STATUS: sequence(UNLOADED, LTX_LOADED),
+            IMAGE_STATUS: sequence(FLUX_LOADED, UNLOADED),
+        }
+    )
+
+
+@pytest.mark.parametrize("wait_s,expected", [(None, 240), (300, 240), (50, 50), (0, 0), (-5, 0)])
+def test_wait_s_defaults_to_the_cap_and_is_clamped(wait_s, expected):
+    assert round(loading.deadline_after(wait_s) - time.monotonic()) == expected
+
+
+def test_a_slow_load_returns_early_and_get_job_returns_its_result(monkeypatch, fast_polls):
+    studio = _video_over_image(UNLOADED, delay = 0.5)
+    with session(monkeypatch, studio) as call:
+        early = call("load_model", {"model": LTX, "kind": "video", "wait_s": 0})[
+            "structuredContent"
+        ]
+        assert early["loaded"] is False
+        assert early["status"] == "loading"
+        assert early["poll_after_s"] == loading.POLL_AFTER_S
+        # A repeat load_model follows the load in flight instead of starting another.
+        again = call("load_model", {"model": LTX, "kind": "video", "wait_s": 0})[
+            "structuredContent"
+        ]
+        assert again["job_id"] == early["job_id"]
+        job = call("get_job", {"kind": "load", "id": early["job_id"], "wait_s": 30})
+    assert job["structuredContent"]["status"] == "completed"
+    assert job["structuredContent"]["poll_after_s"] is None
+    load = job["structuredContent"]["load"]
+    assert (load["loaded"], load["status"], load["model"]) == (True, "loaded", LTX)
+    assert load["evicted_slots"] == [{"kind": "image", "model": FLUX_GGUF}]
+    assert len(bodies(studio, "/api/inference/video/load")) == 1
+
+
+def test_a_client_that_gives_up_mid_post_does_not_lose_the_load(monkeypatch, fast_polls):
+    studio = fake_studio({**PAYLOADS, LOAD: slow(LOADED, 0.3)})
+    caller = make_caller(studio_app = studio)
+
+    async def give_up() -> loading.LoadJob:
+        call = asyncio.ensure_future(
+            loading.load_llm(
+                caller,
+                None,
+                model = LLM,
+                variant = None,
+                max_seq_length = None,
+                load_in_4bit = True,
+                hf_token = None,
+            )
+        )
+        await asyncio.sleep(0.1)
+        call.cancel()
+        (job,) = loading.LOADS.jobs_of("owner")
+        await asyncio.wait({job.task}, timeout = 5)
+        return job
+
+    job = asyncio.run(give_up())
+    assert job.status == "completed"
+    assert (job.result.model, job.result.loaded) == (LLM, True)
+
+
+def test_a_chat_load_already_in_flight_is_followed_not_started_again(monkeypatch, fast_polls):
+    loading_now = {"loading": [LLM], "serving": [], "loaded": []}
+    routes = {**PAYLOADS, STATUS_ROUTE: sequence(loading_now, loading_now, STATUS)}
+    progress, result = call_with_progress(
+        monkeypatch, fake_studio(routes), "load_model", {"model": LLM}
+    )
+    assert result["structuredContent"]["loaded"] is True
+    assert result["structuredContent"]["model"] == LLM
+    assert progress and "mmap" in progress[0]["message"]
+
+
+# What the load answer says wins: evicted_slots, else evicted placed by what was resident, else a
+# before/after diff (load routes from before evicted_slots).
+@pytest.mark.parametrize(
+    "answer,expected",
+    [
+        (
+            {
+                "evicted": [LLM],
+                "evicted_slots": [
+                    {"kind": "chat", "model": LLM},
+                    {"kind": "audio", "model": "a/tts"},
+                ],
+            },
+            [{"kind": "llm", "model": LLM}, {"kind": "audio", "model": "a/tts"}],
+        ),
+        ({"evicted": [FLUX_GGUF]}, [{"kind": "image", "model": FLUX_GGUF}]),
+        ({}, [{"kind": "image", "model": FLUX_GGUF}]),
+    ],
+)
+def test_evicted_slots_read_the_answer_then_fall_back(monkeypatch, fast_polls, answer, expected):
+    studio = _video_over_image({**UNLOADED, **answer})
+    result, _studio = run_tool(monkeypatch, studio, "load_model", {"model": LTX, "kind": "video"})
+    assert result["structuredContent"]["evicted_slots"] == expected
+    assert result["structuredContent"]["evicted"] == [slot["model"] for slot in expected]
+
+
+def test_a_tts_load_reports_the_video_model_it_unloaded(monkeypatch):
+    routes = {
+        **PAYLOADS,
+        LOAD: {**LOADED, "evicted": []},
+        STATUS_ROUTE: EMPTY_STATUS,
+        VIDEO_STATUS: sequence(LTX_LOADED, UNLOADED),
+    }
+    result, _studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM, "kind": "tts"})
+    assert result["structuredContent"]["kind"] == "tts"
+    assert result["structuredContent"]["evicted_slots"] == [{"kind": "video", "model": LTX}]
+
+
+@pytest.mark.parametrize("kind", ["tts", "audio"])
+def test_unload_echoes_the_kind_asked_for(monkeypatch, kind):
+    routes = {**PAYLOADS, STATUS_ROUTE: sequence(STATUS, EMPTY_STATUS)}
+    result, _studio = run_tool(monkeypatch, routes, "unload_model", {"kind": kind})
+    assert result["structuredContent"] == {"kind": kind, "model": LLM, "unloaded": True}
+
+
+def test_saving_the_chat_context_counts_as_progress(monkeypatch, fast_polls):
+    posted = []
+
+    async def load(request, body):
+        await asyncio.sleep(0.2)
+        posted.append(True)
+        return UNLOADED
+
+    studio = fake_studio(
+        {
+            ("POST", "/api/inference/video/download-plan"): {"entries": []},
+            ("POST", "/api/inference/video/load"): load,
+            ("GET", "/api/inference/video/load-progress"): lambda request, body: (
+                READY if posted else {"phase": "saving_chat_context"}
+            ),
+            VIDEO_STATUS: LTX_LOADED,
+        }
+    )
+    progress, result = call_with_progress(
+        monkeypatch, studio, "load_model", {"model": LTX, "kind": "video"}
+    )
+    assert result["structuredContent"]["loaded"] is True
+    assert [p["message"] for p in progress] == ["saving_chat_context"]
