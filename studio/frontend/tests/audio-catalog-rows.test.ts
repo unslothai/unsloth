@@ -13,6 +13,7 @@ const {
   catalogMoreRows,
   createAudioCatalogStore,
   umbrellaFolderFindings,
+  withCatalogPipelineTag,
 } = await import("../src/features/audio/audio-catalog-rows.ts");
 type Row = Parameters<typeof audioRowDescription>[0];
 
@@ -188,6 +189,29 @@ test("the picker renders the More group with ListLabel through the row filter", 
     src,
     /\.filter\(\(model\) => !rowFilter \|\| rowFilter\(\{ id: model\.id \}\)\)/,
   );
+  // The format and fit filters the Recommended rows obey apply to More rows too.
+  const more = src.slice(
+    src.indexOf("const moreRows"),
+    src.indexOf("const recommendedMeta"),
+  );
+  assert.match(
+    more,
+    /matchesFormatFilter\(model\.id, model\.isGguf \?\? true, formatFilter\)/,
+  );
+  assert.match(
+    more,
+    /!fitOnDeviceOnly \|\|\s*cachedIdFor\(row\.id\) !== null \|\|\s*hfModelFitsDevice\(/,
+  );
+  // An empty, loading or failed Recommended list still shows the More group.
+  assert.match(
+    src,
+    /recommendedRows\.length \+ moreRows\.length === 0 &&\s*recommendedEmpty === "loading"/,
+  );
+  assert.match(
+    src,
+    /recommendedRows\.length \+ moreRows\.length === 0 &&\s*recommendedEmpty === "failed"/,
+  );
+  assert.match(src, /recommendedRows\.length \+ moreRows\.length === 0 \?/);
   const selector = readSrc(
     "features/model-picker/components/model-selector.tsx",
   );
@@ -195,5 +219,27 @@ test("the picker renders the More group with ListLabel through the row filter", 
   assert.match(
     readSrc("features/audio/hooks/use-audio-catalog.ts"),
     /createAudioCatalogStore\(fetchAudioCatalog\)/,
+  );
+});
+
+test("a catalog ASR pick carries the speech-recognition tag so it loads on Transcribe", () => {
+  const asr = row({
+    folder: "New-ASR-GGUF",
+    task: "asr",
+    workflows: ["transcribe"],
+  });
+  const tts = row({ folder: "New-TTS-GGUF" });
+  const byId = catalogById([asr, tts]);
+  const meta = { pipelineTag: null as string | null, isGguf: true };
+  assert.equal(
+    withCatalogPipelineTag(byId, asr.id.toUpperCase(), meta).pipelineTag,
+    "automatic-speech-recognition",
+  );
+  assert.equal(withCatalogPipelineTag(byId, tts.id, meta), meta);
+  const tagged = { ...meta, pipelineTag: "text-to-speech" };
+  assert.equal(withCatalogPipelineTag(byId, asr.id, tagged), tagged);
+  assert.match(
+    readSrc("features/audio/audio-page.tsx"),
+    /handleModelSelect\(id, withCatalogPipelineTag\(audioCatalog\.byId, id, meta\)\)/,
   );
 });

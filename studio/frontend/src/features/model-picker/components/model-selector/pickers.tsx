@@ -3122,7 +3122,10 @@ export function HubModelPicker({
   npu?: NpuPickerSource;
   rowFilter?: ModelPickerRowFilter;
   /** A second Recommended group under its own ListLabel; rows reuse the recommended renderer. */
-  moreModels?: { label: string; models: ModelOption[] };
+  moreModels?: {
+    label: string;
+    models: (ModelOption & { sizeBytes?: number | null })[];
+  };
 }) {
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
@@ -4138,23 +4141,49 @@ export function HubModelPicker({
       ),
     [moreModels],
   );
-  // The "More" group: page-filtered by the caller, then the same row filter and no repeats.
+  // The "More" group: page-filtered by the caller, then the row, format and fit filters the
+  // recommended rows above use, with no repeats.
   const moreRows = useMemo<HfModelResult[]>(() => {
     const above = new Set(recommendedRows.map((r) => r.id.toLowerCase()));
+    const source = loadScopedGpu(inferenceGpu, Boolean(task));
     return (moreModels?.models ?? [])
       .filter((model) => !above.has(model.id.toLowerCase()))
       .filter((model) => !rowFilter || rowFilter({ id: model.id }))
-      .map((model) => {
-        const size = (model as { sizeBytes?: number | null }).sizeBytes;
-        return {
-          id: model.id,
-          downloads: 0,
-          likes: 0,
-          isGguf: model.isGguf ?? true,
-          estimatedSizeBytes: size ?? undefined,
-        };
-      });
-  }, [moreModels, recommendedRows, rowFilter]);
+      .filter((model) => !isHiddenModelId(model.id))
+      .filter((model) =>
+        matchesFormatFilter(model.id, model.isGguf ?? true, formatFilter),
+      )
+      .map((model) => ({
+        id: model.id,
+        downloads: 0,
+        likes: 0,
+        isGguf: model.isGguf ?? true,
+        estimatedSizeBytes: model.sizeBytes ?? undefined,
+      }))
+      .filter(
+        (row) =>
+          !fitOnDeviceOnly ||
+          cachedIdFor(row.id) !== null ||
+          hfModelFitsDevice(row, source, {
+            budgetFraction,
+            mediaLoad: diffusionLoad,
+            hostPooledMemory: gpu.loadDeviceSharesHostMemory,
+            gpuCount: source.deviceCount,
+          }),
+      );
+  }, [
+    moreModels,
+    recommendedRows,
+    rowFilter,
+    formatFilter,
+    fitOnDeviceOnly,
+    cachedIdFor,
+    inferenceGpu,
+    gpu,
+    task,
+    budgetFraction,
+    diffusionLoad,
+  ]);
 
   // Per-row meta and VRAM badge from the recommended listing's own metadata, with the curated
   // seeds behind it: a listing row wins, and a curated row it never returns keeps its chip.
@@ -8442,7 +8471,8 @@ export function HubModelPicker({
                     {showNpuBrowse ? (
                       <ListLabel divider={!npuBrowseFolded}>Unsloth</ListLabel>
                     ) : null}
-                    {recommendedRows.length === 0 &&
+                    {/* Catalog rows already listed below stand in for a pending or failed Hub list. */}
+                    {recommendedRows.length + moreRows.length === 0 &&
                     recommendedEmpty === "loading" ? (
                       <div className="flex items-center gap-2 px-5 py-3">
                         <Spinner className="size-3 text-muted-foreground" />
@@ -8450,13 +8480,13 @@ export function HubModelPicker({
                           Loading models…
                         </span>
                       </div>
-                    ) : recommendedRows.length === 0 &&
+                    ) : recommendedRows.length + moreRows.length === 0 &&
                       recommendedEmpty === "failed" ? (
                       <HubFailureHint
                         message={recommendedSearch.error}
                         onRetry={recommendedSearch.retry}
                       />
-                    ) : recommendedRows.length === 0 ? (
+                    ) : recommendedRows.length + moreRows.length === 0 ? (
                       <div className="px-2.5 py-2 text-xs text-muted-foreground">
                         No models found.
                       </div>

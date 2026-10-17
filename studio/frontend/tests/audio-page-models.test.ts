@@ -171,6 +171,37 @@ test("an unsupported catalog model lands on no page", () => {
   }
 });
 
+test("an unsupported catalog entry does not hide a model the seed knows", () => {
+  // A degraded catalog says "could not tell which model family this is" for seed folders.
+  const degraded = {
+    isMac: false,
+    catalog: catalog(
+      Object.fromEntries(SEED.map((m) => [m.id, { workflows: [] }])),
+    ),
+  };
+  for (const page of ["speak", "clone", "edit", "convert", "music"] as const) {
+    assert.deepEqual(ids(page, degraded), ids(page, { isMac: false }), page);
+  }
+  const stt = audioModelsForTask("stt");
+  const sttDegraded = {
+    isMac: false,
+    catalog: catalog(
+      Object.fromEntries(stt.map((m) => [m.id, { workflows: [] }])),
+    ),
+  };
+  for (const model of stt) {
+    assert.equal(
+      rowOnPage(
+        "transcribe",
+        { id: model.id, task: "automatic-speech-recognition" },
+        sttDegraded,
+      ),
+      true,
+      model.id,
+    );
+  }
+});
+
 test("the Audio page builds its picker lists from pageModels and the catalog hook", () => {
   const page = readSrc("features/audio/audio-page.tsx");
   assert.match(page, /const audioCatalog = useAudioCatalog\(true\);/);
@@ -182,10 +213,7 @@ test("the Audio page builds its picker lists from pageModels and the catalog hoo
     page,
     /rowOnPage\(pageWorkflow, row, pagePrefs\),\s*\[pageWorkflow, pagePrefs\]/,
   );
-  assert.match(
-    page,
-    /pageWorkflow === "transcribe" \|\| pageWorkflow === "edit"\s*\?\s*undefined/,
-  );
+  assert.match(page, /pageWorkflow === "edit"\s*\?\s*undefined/);
   assert.match(page, /moreModels=\{selectorMoreModels\}/);
   assert.doesNotMatch(
     page,

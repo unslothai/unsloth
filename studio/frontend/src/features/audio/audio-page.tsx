@@ -119,7 +119,11 @@ import {
   recommendedPageModels,
   rowOnPage,
 } from "./page-models";
-import { catalogModelOption, catalogMoreRows } from "./audio-catalog-rows";
+import {
+  catalogModelOption,
+  catalogMoreRows,
+  withCatalogPipelineTag,
+} from "./audio-catalog-rows";
 import { useAudioCatalog } from "./hooks/use-audio-catalog";
 import {
   referenceTranscript,
@@ -1514,14 +1518,14 @@ export function AudioPage({
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [active]);
-  // Transcribe lists its seed unfiltered; Edit has no spec task, so neither gets catalog rows.
+  // Transcribe lists its seed unfiltered; Edit has no spec task, so it gets no catalog rows.
   const selectorModels =
     mode === "speak"
       ? pageModels(ttsWorkflow, MODELS_BY_MODE.speak, pagePrefs)
       : MODELS_BY_MODE[mode];
   const selectorMoreModels = useMemo(
     () =>
-      pageWorkflow === "transcribe" || pageWorkflow === "edit"
+      pageWorkflow === "edit"
         ? undefined
         : {
             label: "More models",
@@ -1536,6 +1540,11 @@ export function AudioPage({
   const selectorRowFilter = useCallback(
     (row: PageModelRow) => rowOnPage(pageWorkflow, row, pagePrefs),
     [pageWorkflow, pagePrefs],
+  );
+  const selectModel = useCallback(
+    (id: string, meta: Parameters<typeof handleModelSelect>[1]) =>
+      handleModelSelect(id, withCatalogPipelineTag(audioCatalog.byId, id, meta)),
+    [audioCatalog.byId, handleModelSelect],
   );
   const sttOnDeviceModels = downloadedSttArtifacts.map((artifact) => {
     const catalogModel = MODELS_BY_MODE.transcribe.find(
@@ -1707,7 +1716,7 @@ export function AudioPage({
                     : undefined
               }
               value={selectorValue}
-              onValueChange={handleModelSelect}
+              onValueChange={selectModel}
               onEject={
                 audioEjectAvailable({
                   mode,

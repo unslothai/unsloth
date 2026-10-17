@@ -149,7 +149,10 @@ interface ModelSelectorProps {
   opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
   rowFilter?: ModelPickerRowFilter;
   /** A second Recommended group under its own label, e.g. "More models". */
-  moreModels?: { label: string; models: ModelOption[] };
+  moreModels?: {
+    label: string;
+    models: (ModelOption & { sizeBytes?: number | null })[];
+  };
   /** Hub filter the Search Hub button opens with. Also shows Search Hub on curated task pickers. */
   hubCapability?: HubCapabilityFilter;
   /** Tasks the Search Hub link narrows the Audio filter to, when the page's runs differ from `task`. */
@@ -420,7 +423,10 @@ function ModelSelectorContent({
   communityModelPolicy?: CommunityModelPolicy;
   opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
   rowFilter?: ModelPickerRowFilter;
-  moreModels?: { label: string; models: ModelOption[] };
+  moreModels?: {
+    label: string;
+    models: (ModelOption & { sizeBytes?: number | null })[];
+  };
 }) {
   const t = useT();
   const hasSelection = Boolean(value);
