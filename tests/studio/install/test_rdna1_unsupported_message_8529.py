@@ -221,17 +221,17 @@ class TestExplicitIndexPinIsHonoured:
 
 
 class TestWindowsArm64GetsNoVulkanAdvice:
-    """studio/setup.ps1 THROWS when the Vulkan variable is set on Windows ARM64 (no
-    bundle is published there), so telling an ARM64 user to set it and re-run aborts
+    """On Windows ARM64 the Vulkan variable fails the install until a llama.cpp release
+    carries the ARM64 Vulkan bundle, so telling an ARM64 user to set it and re-run aborts
     the update instead of enabling GGUF acceleration."""
 
     def test_the_throw_this_depends_on_is_still_there(self):
         src = _normalised(_SETUP_PS1)
         assert (
             "no Windows ARM64 Vulkan bundle is published" in src
-        ), "the ARM64 guard this test is built on was renamed; re-read setup.ps1"
+        ), "the ARM64 hint this test is built on was renamed; re-read setup.ps1"
 
-    # setup.ps1 runs the Python stack before its own throw, so its setter is the last advice seen.
+    # The Python stack emits the PowerShell setter too, so it is the last advice an ARM64 user sees.
     @pytest.mark.parametrize(
         "path,guard",
         [
