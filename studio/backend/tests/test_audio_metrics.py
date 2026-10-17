@@ -63,6 +63,8 @@ def test_hard_clipping_counts_and_a_clean_full_scale_sine_does_not():
     clipped = am.measure(np.clip(3.0 * _sine(1.0, 1.0, 100.0), -1.0, 1.0), RATE)
     assert clipped["clipping_ratio"] > 0.3
     assert am.measure(_sine(1.0, 1.0), RATE)["clipped_samples"] == 0
+    # A low full-scale sine lingers near the rail for several samples but never flattens.
+    assert am.measure(_sine(1.0, 1.0, 100.0), RATE)["clipped_samples"] == 0
     # Two samples at the rail are a peak, three in a row are clipping.
     burst = np.zeros((100, 1))
     burst[10:12] = 1.0
@@ -76,6 +78,10 @@ def test_silence_padding_gives_the_speech_span_and_silence_gives_none():
     report = am.measure(np.concatenate([pad, _sine(1.0, 0.3), pad]), RATE)
     assert report["speech_start_s"] == pytest.approx(0.5, abs = 0.02)
     assert report["speech_end_s"] == pytest.approx(1.5, abs = 0.02)
+    # Channels in opposite phase still hold sound.
+    tone = np.concatenate([pad, _sine(1.0, 0.3), pad])
+    report = am.measure(np.hstack([tone, -tone]), RATE)
+    assert report["speech_start_s"] == pytest.approx(0.5, abs = 0.02)
     quiet = am.measure(np.zeros((RATE, 2)), RATE)
     assert (quiet["integrated_lufs"], quiet["true_peak_dbtp"], quiet["speech_start_s"]) == (
         None,

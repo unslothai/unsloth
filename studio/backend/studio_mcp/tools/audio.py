@@ -37,7 +37,7 @@ from studio_mcp.outputs import (
     TranscriptResult,
     TranscriptSegment,
 )
-from studio_mcp.tools import READ_ONLY, WRITES, opt_text, present, route_json, strings, try_json
+from studio_mcp.tools import WRITES, opt_text, present, route_json, strings, try_json
 
 LOAD_AUDIO_HINT = "Load a text-to-speech or music model with load_model(kind='tts') first."
 NOT_LOADED = "No model loaded"
@@ -635,5 +635,6 @@ async def analyze_audio(
 TOOLS = (
     (generate_audio, WRITES, AudioResult.model_json_schema()),
     (transcribe, WRITES),
-    (analyze_audio, READ_ONLY),
+    # Not read-only: inline audio or a path is uploaded to Unsloth Studio first.
+    (analyze_audio, WRITES),
 )

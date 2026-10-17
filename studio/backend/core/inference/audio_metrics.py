@@ -23,9 +23,11 @@ _RELATIVE_GATE = 10.0
 # The K-weighting high-pass rings for well under a second; past this many seconds its impulse response is below float precision.
 _IR_SECONDS = 1.0
 _CHUNK = 1 << 18
-# Clipping: at least 3 samples in a row this close to full scale, on one side. A clean full-scale
-# sine touches the rail for one sample per peak, so it never counts.
+# Clipping: at least 3 samples in a row this close to full scale, on one side, and flat (each within
+# one 16-bit step of the last). A clean full-scale sine, even a low one that stays near the rail for
+# several samples, keeps moving at its peak, so it never counts.
 _CLIP_LEVEL = 0.999
+_CLIP_FLAT = 1.0 / 32768
 _CLIP_RUN = 3
 # Sound span: 20 ms frames louder than 40 dB under the loudest frame, never below -60 dBFS.
 _FRAME_S = 0.02
@@ -170,17 +172,18 @@ def true_peak(data: np.ndarray) -> float:
 
 
 def clipped_samples(data: np.ndarray) -> int:
-    """Samples in runs of at least ``_CLIP_RUN`` same-sign samples at full scale, per channel."""
+    """Samples in flat runs of at least ``_CLIP_RUN`` same-sign samples at full scale, per channel."""
     total = 0
     for channel in range(data.shape[1]):
-        x = data[:, channel]
+        x = data[:, channel].astype(np.float64)
         side = np.where(x >= _CLIP_LEVEL, 1, np.where(x <= -_CLIP_LEVEL, -1, 0)).astype(np.int8)
-        if not side.any():
+        if x.size < 2 or not side.any():
             continue
-        edges = np.flatnonzero(np.diff(side)) + 1
-        starts = np.concatenate(([0], edges))
-        lengths = np.diff(np.concatenate((starts, [side.size])))
-        total += int(lengths[(side[starts] != 0) & (lengths >= _CLIP_RUN)].sum())
+        # links[i]: sample i + 1 continues a flat run at the rail from sample i.
+        links = (side[1:] != 0) & (side[1:] == side[:-1]) & (np.abs(np.diff(x)) <= _CLIP_FLAT)
+        edges = np.diff(np.concatenate(([0], links.astype(np.int8), [0])))
+        samples = np.flatnonzero(edges == -1) - np.flatnonzero(edges == 1) + 1
+        total += int(samples[samples >= _CLIP_RUN].sum())
     return total
 
 
@@ -191,12 +194,12 @@ def _db(value: float) -> Optional[float]:
 def sound_span(data: np.ndarray, rate: int) -> Optional[tuple[float, float]]:
     """(start_s, end_s) of the part that holds sound, or None for silence."""
     frame = max(int(rate * _FRAME_S), 1)
-    mono = np.mean(data, axis = 1) if data.shape[1] > 1 else data[:, 0]
-    count = len(mono) // frame
+    count = data.shape[0] // frame
     if count == 0:
         return None
-    frames = mono[: count * frame].astype(np.float64).reshape(count, frame)
-    rms = np.sqrt(np.mean(frames * frames, axis = 1))
+    # Energy over every channel, so channels in opposite phase do not cancel out.
+    frames = data[: count * frame].astype(np.float64).reshape(count, frame, data.shape[1])
+    rms = np.sqrt(np.mean(frames * frames, axis = (1, 2)))
     loudest = float(rms.max())
     if loudest <= 0:
         return None

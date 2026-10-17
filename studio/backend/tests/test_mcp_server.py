@@ -8,7 +8,6 @@ import pytest
 from mcp_server import INSTRUCTIONS, create_studio_mcp
 
 READ_ONLY = {
-    "analyze_audio",
     "embed",
     "get_job",
     "list_models",
@@ -21,6 +20,7 @@ DESTRUCTIVE = {
     "unload_model",
 }
 OTHERS = {
+    "analyze_audio",
     "chat",
     "datasets",
     "export_model",
