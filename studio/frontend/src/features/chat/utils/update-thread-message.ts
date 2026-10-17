@@ -43,6 +43,14 @@ function withoutGeminiContinuationReplay<T>(metadata: T): T {
   return { ...record, custom: keptCustom } as T;
 }
 
+function withRevision<T extends ThreadMessage["metadata"]>(metadata: T): T {
+  const revision = metadata?.custom?.revision;
+  return {
+    ...metadata,
+    custom: { ...metadata?.custom, revision: (typeof revision === "number" ? revision : 0) + 1 },
+  };
+}
+
 type ThreadImportExport = {
   export: () => ExportedMessageRepository;
   import: (data: ExportedMessageRepository) => void;
@@ -234,7 +242,10 @@ export async function updateThreadMessage(args: {
       message: {
         ...m.message,
         content: finalContent,
-        metadata: withoutGeminiContinuationReplay(m.message.metadata),
+        metadata:
+          newText === extractTaggedText(originalContent)
+            ? withoutGeminiContinuationReplay(m.message.metadata)
+            : withRevision(withoutGeminiContinuationReplay(m.message.metadata)),
       },
     };
   }) as typeof currentExport.messages;

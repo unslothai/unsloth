@@ -1069,6 +1069,7 @@ def test_usage_collapses_to_at_most_one_chunk(executed):
     assert len(usage_chunks) == 1
     assert usage_chunks[0]["usage"]["prompt_tokens"] == 15
     assert usage_chunks[0]["usage"]["completion_tokens"] == 5
+    assert usage_chunks[0]["usage"]["context_tokens"] == 8
 
 
 def test_a_stream_with_no_usage_emits_no_usage_chunk(executed):
@@ -1088,6 +1089,7 @@ def test_a_forged_usage_only_chunk_cannot_multiply_the_count(executed):
     usage_chunks = [payload for payload in _payloads(lines) if "usage" in payload]
     assert len(usage_chunks) == 1
     assert usage_chunks[0]["usage"]["prompt_tokens"] == 50
+    assert usage_chunks[0]["usage"]["context_tokens"] == 1
 
 
 def test_a_truncated_turn_closes_the_card_an_id_less_call_painted(executed):

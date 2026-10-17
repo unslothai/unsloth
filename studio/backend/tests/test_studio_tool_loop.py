@@ -1007,6 +1007,168 @@ def test_usage_is_summed_into_one_chunk(executed):
     assert usages[0]["completion_tokens"] == 12
     assert usages[0]["total_tokens"] == 42
     assert usages[0]["prompt_tokens_details"]["cached_tokens"] == 10
+    assert usages[0]["context_tokens"] == 27
+
+
+def _usage_line(prompt, completion, **extra):
+    usage = {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+    }
+    usage.update(extra)
+    return "data: " + json.dumps({"choices": [], "usage": usage})
+
+
+def _usage_payloads(lines):
+    found = []
+    for line in lines:
+        raw = line[6:] if line.startswith("data: ") else ""
+        if not raw or raw == "[DONE]":
+            continue
+        payload = json.loads(raw)
+        if "usage" in payload:
+            found.append(payload["usage"])
+    return found
+
+
+_WEB_SEARCH_CALL = _sse(
+    {
+        "tool_calls": [
+            {"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": "{}"}}
+        ]
+    }
+)
+
+
+def test_usage_reports_sum_while_context_uses_the_last_turn(executed):
+    transport = FakeTransport(
+        [
+            [
+                _WEB_SEARCH_CALL,
+                _usage_line(
+                    10,
+                    2,
+                    prompt_tokens_details = {"cached_tokens": 4},
+                    completion_tokens_details = {"reasoning_tokens": 1},
+                    cache_creation_input_tokens = 3,
+                    cache_read_input_tokens = 4,
+                ),
+                _sse(finish = "tool_calls"),
+                _usage_line(
+                    10,
+                    5,
+                    prompt_tokens_details = {"cached_tokens": 6},
+                    completion_tokens_details = {"reasoning_tokens": 2},
+                    cache_creation_input_tokens = 5,
+                    cache_read_input_tokens = 6,
+                ),
+                _DONE,
+            ],
+            [
+                _sse({"content": "done"}),
+                _sse(finish = "stop"),
+                _usage_line(
+                    20,
+                    7,
+                    prompt_tokens_details = {"cached_tokens": 8},
+                    completion_tokens_details = {"reasoning_tokens": 3},
+                    cache_creation_input_tokens = 7,
+                    cache_read_input_tokens = 8,
+                ),
+                _DONE,
+            ],
+        ]
+    )
+    usages = _usage_payloads(_run(transport))
+
+    assert len(usages) == 1
+    assert usages[0]["prompt_tokens"] == 40
+    assert usages[0]["completion_tokens"] == 14
+    assert usages[0]["total_tokens"] == 54
+    assert usages[0]["prompt_tokens_details"] == {"cached_tokens": 18}
+    assert usages[0]["completion_tokens_details"] == {"reasoning_tokens": 6}
+    assert usages[0]["cache_creation_input_tokens"] == 15
+    assert usages[0]["cache_read_input_tokens"] == 18
+    assert usages[0]["context_tokens"] == 27
+
+
+def test_a_turn_reporting_its_own_context_keeps_it_while_billing_sums(executed):
+    transport = FakeTransport(
+        [
+            [_WEB_SEARCH_CALL, _sse(finish = "tool_calls"), _usage_line(50, 3), _DONE],
+            [
+                _sse({"content": "done"}),
+                _sse(finish = "stop"),
+                _usage_line(203_000, 4_500, context_tokens = 24_000),
+                _DONE,
+            ],
+        ]
+    )
+    usages = _usage_payloads(_run(transport))
+
+    assert len(usages) == 1
+    assert usages[0]["prompt_tokens"] == 203_050
+    assert usages[0]["completion_tokens"] == 4_503
+    assert usages[0]["total_tokens"] == 207_553
+    assert usages[0]["context_tokens"] == 24_000
+
+
+def test_a_partial_report_after_a_full_one_keeps_the_fields_it_omits(executed):
+    transport = FakeTransport(
+        [
+            [
+                _sse({"content": "done"}),
+                "data: "
+                + json.dumps(
+                    {
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                        "usage": {
+                            "prompt_tokens": 100,
+                            "completion_tokens": 20,
+                            "total_tokens": 120,
+                        },
+                    }
+                ),
+                "data: "
+                + json.dumps(
+                    {"choices": [], "usage": {"completion_tokens": 20, "total_tokens": None}}
+                ),
+                _DONE,
+            ],
+        ]
+    )
+    usages = _usage_payloads(_run(transport))
+
+    assert len(usages) == 1
+    assert usages[0]["prompt_tokens"] == 100
+    assert usages[0]["completion_tokens"] == 40
+    assert usages[0]["total_tokens"] == 120
+    assert usages[0]["context_tokens"] == 120
+
+
+@pytest.mark.parametrize(
+    "last_usage",
+    [{"total_tokens": 300}, {"completion_tokens": 50, "total_tokens": 300}],
+    ids = ["total_only", "total_above_its_parts"],
+)
+def test_a_turn_whose_total_exceeds_its_parts_prices_the_context_from_it(executed, last_usage):
+    transport = FakeTransport(
+        [
+            [_WEB_SEARCH_CALL, _sse(finish = "tool_calls"), _usage_line(100, 5), _DONE],
+            [
+                _sse({"content": "done"}),
+                _sse(finish = "stop"),
+                "data: " + json.dumps({"choices": [], "usage": last_usage}),
+                _DONE,
+            ],
+        ]
+    )
+    usages = _usage_payloads(_run(transport))
+
+    assert len(usages) == 1
+    assert usages[0]["total_tokens"] == 405
+    assert usages[0]["context_tokens"] == 300
 
 
 def test_a_repeated_identical_call_does_not_re_execute(executed):

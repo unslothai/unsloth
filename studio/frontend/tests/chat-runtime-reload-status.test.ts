@@ -24,6 +24,8 @@ const {
   subscribeGenerationRecoveryTriggers,
 } = await import("../src/features/chat/utils/chat-generation-recovery.ts");
 
+const MARKERS = { messageCount: 2, revision: 0, estimatedTokens: 5 };
+
 test("first-token recovery ignores role and control chunks", () => {
   assert.equal(
     generationChunkHasSubstantiveDelta({
@@ -159,6 +161,7 @@ test("terminal recovery reads cache writes from either provider's usage shape", 
         },
         usage: { prompt_tokens: 8, completion_tokens: 2, total_tokens: 10, ...usage },
         totalChunks: 1,
+        markers: MARKERS,
       }).contextUsage as { cacheWriteTokens: number }
     ).cacheWriteTokens;
   assert.equal(writesFor({ prompt_tokens_details: { cache_write_tokens: 5 } }), 5);
@@ -187,6 +190,7 @@ test("terminal recovery prices a tool loop's context, not its summed completions
     timings: {},
     firstChunkAt: 220,
     totalChunks: 4,
+    markers: MARKERS,
   });
   const usage = metadata.contextUsage as {
     totalTokens: number;
@@ -215,6 +219,7 @@ test("terminal recovery restores final local usage and timing metadata", () => {
     timings: { predicted_per_second: 12, prompt_ms: 25 },
     firstChunkAt: 220,
     totalChunks: 4,
+    markers: MARKERS,
   });
   assert.deepEqual(metadata.contextUsage, {
     promptTokens: 8,
@@ -223,6 +228,7 @@ test("terminal recovery restores final local usage and timing metadata", () => {
     cachedTokens: 3,
     cacheWriteTokens: 0,
     modelId: "local/model",
+    ...MARKERS,
   });
   assert.deepEqual(metadata.serverTimings, {
     predicted_per_second: 12,
@@ -391,6 +397,7 @@ test("recovery persists recovered usage alongside the cursor it advanced", () =>
     timings: midStream.generationRecoveryTimings as typeof timings,
     firstChunkAt: 220,
     totalChunks: 4,
+    markers: MARKERS,
   });
   assert.deepEqual(settled.contextUsage, {
     promptTokens: 8,
@@ -399,6 +406,7 @@ test("recovery persists recovered usage alongside the cursor it advanced", () =>
     cachedTokens: 0,
     cacheWriteTokens: 0,
     modelId: "local/model",
+    ...MARKERS,
   });
   assert.deepEqual(settled.serverTimings, timings);
 });

@@ -170,6 +170,7 @@ import {
   type ChatModelSwitchTarget,
 } from "./components/chat-model-notice-switch";
 import { ContextUsageBar } from "./components/context-usage-bar";
+import { contextUsageRows } from "./lib/context-usage-bar-state";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
 import { EditProjectDialog } from "./components/edit-project-dialog";
@@ -291,7 +292,8 @@ import {
 } from "./utils/document-annotations";
 import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { savedBranchHead } from "./utils/branch-head";
-import { estimateContextUsage } from "./utils/estimate-chat-tokens";
+import { branchContextUsage, estimateBranch } from "./utils/saved-context-usage";
+import { refreshContextUsage } from "./utils/refresh-context-usage";
 import { orderBySelectedBranch } from "./utils/message-order";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import {
@@ -444,31 +446,6 @@ const EXTERNAL_PROVIDER_DROPDOWN_ORDER: Record<string, number> = {
 
 function getExternalProviderDropdownRank(providerType: string): number {
   return EXTERNAL_PROVIDER_DROPDOWN_ORDER[providerType] ?? 2;
-}
-
-type RuntimeStoreState = ReturnType<typeof useChatRuntimeStore.getState>;
-
-// The newest saved usage if the active checkpoint and window could have produced it, else null.
-function savedUsageFor(
-  messages: MessageRecord[],
-  store: RuntimeStoreState,
-): RuntimeStoreState["contextUsage"] {
-  const msg = [...messages].sort((a, b) => b.createdAt - a.createdAt)[0];
-  const usage = msg?.metadata?.contextUsage as RuntimeStoreState["contextUsage"];
-  if (!usage) return null;
-  const activeCheckpoint = store.params.checkpoint;
-  const usageModelId = (usage as { modelId?: unknown }).modelId;
-  if (typeof usageModelId === "string" && usageModelId) {
-    if (!activeCheckpoint || usageModelId !== activeCheckpoint) {
-      return null;
-    }
-  }
-  // llama.cpp stops at the window, so a count past it is stale; MLX runs past it, so its count stands.
-  const limit = store.loadedIsGguf ? store.loadedContextLength : null;
-  if (typeof limit === "number" && limit > 0 && (usage.contextTokens ?? usage.totalTokens ?? 0) > limit) {
-    return null;
-  }
-  return usage;
 }
 
 function messageHasImage(message: MessageRecord): boolean {
@@ -2806,6 +2783,15 @@ export function ChatPage({
     (state) => state.nativeContextLength,
   );
   const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
+  const loadedEngine = useChatRuntimeStore((state) => state.loadedEngine);
+  const usageRows = useMemo(
+    () =>
+      contextUsageRows(
+        contextUsage,
+        isExternalModelId(contextUsage?.modelId) || loadedEngine !== "auto",
+      ),
+    [contextUsage, loadedEngine],
+  );
   const loadedIsGguf = useChatRuntimeStore((state) => state.loadedIsGguf);
   const loadedContextUnboundedWhenBatched = useChatRuntimeStore(
     (state) => state.loadedContextUnboundedWhenBatched,
@@ -4317,12 +4303,18 @@ export function ChatPage({
             messages,
             savedBranchHead(threadId, messages),
           );
-          const usage = savedUsageFor(branch, store) ?? estimateContextUsage(branch);
+          const checkpoint = store.params.checkpoint;
+          const localWindow =
+            checkpoint && !isExternalModelId(checkpoint) ? store.loadedContextLength : null;
+          const usage =
+            branchContextUsage(branch, checkpoint, localWindow, store.loadedIsGguf ? localWindow : null) ??
+            estimateBranch(branch);
           if (!usage) return;
           // key usage by the restored thread because this read can outlast a thread switch.
           store.setThreadContextUsage(threadId, usage);
           if (store.activeThreadId === threadId) {
             store.setContextUsage(usage);
+            if (usage.estimated) void refreshContextUsage({ threadId });
           }
         })
         .catch((error) => {
@@ -4845,15 +4837,11 @@ export function ChatPage({
                 used={contextUsage?.contextTokens ?? contextUsage?.totalTokens ?? null}
                 // null on external providers; the bar handles that.
                 total={loadedContextLength}
-                cached={contextUsage?.cachedTokens}
-                cacheWrites={contextUsage?.cacheWriteTokens}
-                promptTokens={contextUsage?.promptTokens}
+                cached={usageRows.cached}
+                cacheWrites={usageRows.cacheWrites}
+                promptTokens={usageRows.promptTokens}
                 // A tool turn's completionTokens sums every pass; the context holds only the last one.
-                completionTokens={
-                  contextUsage?.contextTokens !== undefined
-                    ? contextUsage.contextTokens - contextUsage.promptTokens
-                    : contextUsage?.completionTokens
-                }
+                completionTokens={usageRows.completionTokens}
                 compactionCount={compactionCount}
                 isMlx={isServedByMlx(
                   Boolean(loadedIsGguf),

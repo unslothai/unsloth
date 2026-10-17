@@ -27,6 +27,12 @@ const {
   providerCompactionConnectionKey,
   providerCompactionReplayToolCallCount,
 } = await import("../src/features/chat/utils/provider-compaction.ts");
+const { orderBySelectedBranch } = await import(
+  "../src/features/chat/utils/message-order.ts"
+);
+const { contextUsageMarkers } = await import(
+  "../src/features/chat/utils/saved-context-usage.ts"
+);
 
 const start = (id = "call_0") => ({
   type: "tool_start",
@@ -515,6 +521,8 @@ async function recoverRun(
     ...recovery,
     ...parser,
     createGenerationToolRecovery,
+    contextUsageMarkers,
+    orderBySelectedBranch,
     providerCompactionConnectionKey,
     RUN_CHECKPOINT_INTERVAL_MS,
     generationRecoveries,
@@ -550,20 +558,23 @@ async function recoverRun(
     ChatGenerationStalledError,
   });
   vm.runInContext(executable, context);
+  const stored = {
+    id: "msg",
+    role: "assistant",
+    content,
+    createdAt: 1,
+    metadata: {
+      generationRunId: "run",
+      generationSeq: options.cursor ?? 0,
+      generationStatus: "running",
+      generationSettled: false,
+      ...options.metadata,
+    },
+  };
   context.scheduleGenerationRecovery(
     "thread",
-    {
-      id: "msg",
-      content,
-      createdAt: 1,
-      metadata: {
-        generationRunId: "run",
-        generationSeq: options.cursor ?? 0,
-        generationStatus: "running",
-        generationSettled: false,
-        ...options.metadata,
-      },
-    },
+    stored,
+    [stored],
     {
       threadListItem: () => ({ getState: () => ({ remoteId: "thread" }) }),
       thread: () => ({

@@ -132,6 +132,7 @@ import {
   releasePreStreamRunReservation,
 } from "../utils/pre-stream-run-reservation";
 import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
+import { contextUsageMarkers, threadBranchRecords } from "../utils/saved-context-usage";
 import {
   apiCompactionRequestFields,
   ggufCompactionRequestFields,
@@ -6526,10 +6527,11 @@ export function createOpenAIStreamAdapter(
       // the bar after a switch to B. A first turn is adopted onto an id mid-run and autosave moves
       // activeThreadId with it, so read the adopted key, or the bar stays blank for life.
       const publishContextUsage = (
-        usage: NonNullable<
+        reported: NonNullable<
           ReturnType<typeof useChatRuntimeStore.getState>["contextUsage"]
         >,
       ) => {
+        const usage = { ...reported, modelId: params.checkpoint };
         const usageKey = liveThreadKey(serverCancel);
         const usageThreadKey = usageKey === "__default" ? null : usageKey;
         const store = useChatRuntimeStore.getState();
@@ -8995,6 +8997,10 @@ export function createOpenAIStreamAdapter(
                     cachedTokens,
                     cacheWriteTokens,
                     modelId: params.checkpoint,
+                    ...contextUsageMarkers([
+                      ...threadBranchRecords(rawMessages),
+                      { id: "", role: "assistant", content: finalContent },
+                    ]),
                   }
                 : undefined,
               responseDetails: buildResponseDetails(finishedAt),
