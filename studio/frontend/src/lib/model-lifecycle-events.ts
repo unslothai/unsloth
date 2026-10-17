@@ -116,7 +116,13 @@ export async function withModelLoadNotice<T>(
  * cancelled or evicted load leaves behind -- the Images page's own poll treats
  * it the same way, and must, "else this loop spins forever".
  */
-export type LoadPhase = "downloading" | "finalizing" | "ready" | "error" | null;
+export type LoadPhase =
+  | "downloading"
+  | "finalizing"
+  | "saving_chat_context"
+  | "ready"
+  | "error"
+  | null;
 
 /** How often the settle poll asks; overridable so a test need not sleep. */
 export const BACKGROUND_LOAD_POLL_MS = 2000;
@@ -198,7 +204,12 @@ async function settleWhenLoadEnds(
         if (Date.now() - lastHealthy >= stallMs) return;
         continue;
       }
-      if (phase !== "downloading" && phase !== "finalizing") return;
+      if (
+        phase !== "downloading" &&
+        phase !== "finalizing" &&
+        phase !== "saving_chat_context"
+      )
+        return;
       lastHealthy = Date.now();
     }
   } finally {

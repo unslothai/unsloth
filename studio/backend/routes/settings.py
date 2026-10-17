@@ -935,7 +935,8 @@ class LlamaCppPathResponse(BaseModel):
 
 
 class OpenAIAutoSwitchPayload(BaseModel):
-    enabled: bool
+    # Optional too, so a row saved outside API keys (Model memory) can't resend a stale value.
+    enabled: Optional[bool] = None
     # None leaves the stored value untouched (partial updates can't clobber it).
     auto_unload_idle_seconds: Optional[int] = Field(default = None, ge = 0)
     auto_unload_keep_kv: Optional[bool] = None
@@ -2363,9 +2364,12 @@ def update_openai_auto_switch(
             log = logger,
         ) from exc
     idle_unload_active = get_auto_unload_idle_seconds() > 0
-    if not keep_kv or not idle_unload_is_configured():
-        from core.inference.llama_keepwarm import purge_kv_resume
+    from core.inference.llama_keepwarm import purge_kv_resume
+    if not keep_kv:
         purge_kv_resume()
+    elif not idle_unload_is_configured():
+        # Only the chat TTL's own stash; one kept across a media swap survives a TTL save.
+        purge_kv_resume(origin = "idle")
     return OpenAIAutoSwitchResponse(
         enabled = enabled,
         auto_unload_idle_seconds = idle_seconds,

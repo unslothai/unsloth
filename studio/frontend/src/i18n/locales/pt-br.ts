@@ -1736,9 +1736,10 @@ export const ptBR = {
         autoDownload: "Baixar modelos ausentes",
         autoDownloadDescription:
           "Busca um GGUF indicado em uma requisição da API que ainda não foi baixado. Com isso, qualquer pessoa com uma chave de API pode consumir disco e largura de banda.",
-        keepKv: "Manter o contexto do chat ao descarregar por inatividade",
+        keepKv: "Manter o contexto do chat entre descarregamentos",
         keepKvDescription:
-          "Salva o cache KV antes de um descarregamento por inatividade, para que chats retomados não releiam o histórico. Até 10 GB em disco.",
+          "Salva o cache KV antes de um descarregamento por inatividade, ou antes que um modelo de imagem ou vídeo ocupe a GPU, para que chats retomados não releiam o histórico. Até 10 GB em disco.",
+        keepKvKeywords: "kv cache contexto troca retomar imagem video",
         apiOnly: "Descarregar apenas modelos carregados pela API",
         apiOnlyDescription:
           "O descarregamento por inatividade mantém na memória o modelo que você carregou pelo Unsloth e libera apenas os que uma requisição da API carregou.",
@@ -2367,8 +2368,17 @@ export const ptBR = {
         noRamReserveDescription: "Reduz a RAM ocupada pelos pesos do modelo.",
         noRamReserveHint: "Ignora o carregamento mapeado em memória nas versões compatíveis do Windows quando o modelo está totalmente descarregado na GPU, para que suas páginas não fiquem residentes. Caso contrário, mantém o carregamento mapeado em memória. Buffers de CPU necessários ainda podem usar RAM. Remove --no-mmap e --mlock.",
         multiModel: "Manter vários modelos carregados",
-        multiModelDescription: "Carregar um modelo mantém os outros na memória.",
-        multiModelHint: "Cada modelo carregado responde às solicitações que o nomeiam. Com várias GPUs, um novo modelo vai para uma GPU que nenhum outro modelo usa quando há espaço. Se não couber ao lado dos outros, os modelos fora de uso são descarregados primeiro e depois ele substitui o modelo ativo. O treinamento descarrega os modelos extras antes do ativo.",
+        multiModelOff: "Desativado",
+        multiModelFit: "Quando couberem",
+        multiModelAlways: "Sempre",
+        multiModelDescription: "Carregar um modelo de chat, imagem ou vídeo descarrega os outros.",
+        multiModelDescriptionFit:
+          "Carregar um modelo mantém os outros quando eles cabem. Quando não cabem, descarrega primeiro os que não estão em uso e depois o ativo.",
+        multiModelDescriptionAlways:
+          "Carregar um modelo nunca descarrega outro. Um modelo que não cabe não é carregado. A descarga automática por inatividade e o treinamento ainda liberam memória.",
+        multiModelHint: "Vale para modelos de chat, imagem e vídeo. Cada modelo de chat carregado responde às solicitações que o nomeiam. Com várias GPUs, o Unsloth Studio tenta colocar um novo modelo em uma GPU que nenhum outro modelo usa. “Quando couberem” deixa cerca de 1 GB livre. “Quando couberem” e “Sempre” nunca descarregam um modelo em outra GPU.",
+        mediaIdleUnloadDescription:
+          "Libera a VRAM descarregando os modelos de imagem e vídeo após esta quantidade de segundos de inatividade. 0 os mantém carregados; o mínimo é 60.",
         mlockVetoed: "--mlock continua desativado: fixar o modelo reservaria RAM para todo ele. A descarga automática por inatividade continua desativada.",
         mlockNotApplicable: "Totalmente na GPU: nada para bloquear na RAM do sistema. A descarga automática por inatividade continua desativada.",
         memlockCapped: "Este sistema limita a memória bloqueada a {limit}. Um modelo maior não será totalmente fixado; aumente o limite com ulimit -l.",
@@ -2378,6 +2388,10 @@ export const ptBR = {
         // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memoria ram residente fixar travar manter carregado descarregar ocioso mmap no-mmap load-mode paginacao swap",
+        multiModelKeywords:
+          "varios multiplos modelos juntos simultaneos trocar caber descarregar remover vram gpu imagem video chat sempre ocioso",
+        mediaIdleUnloadKeywords:
+          "imagem video difusao ocioso descarregar ttl tempo limite segundos liberar vram gpu memoria",
       },
       storage: {
         title: "Armazenamento",

@@ -4,6 +4,7 @@
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { parseLoadJson } from "@/lib/multi-model-refusal";
 import {
   isMemoryEstimateRefusal,
   MEMORY_REFUSAL_HEADER,
@@ -121,7 +122,13 @@ export interface DiffusionGenerateProgress {
 }
 
 export interface DiffusionLoadProgress {
-  phase: "downloading" | "finalizing" | "ready" | "error" | null;
+  phase:
+    | "downloading"
+    | "finalizing"
+    | "saving_chat_context"
+    | "ready"
+    | "error"
+    | null;
   bytes_downloaded: number;
   bytes_total: number;
   fraction: number;
@@ -366,7 +373,7 @@ export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<Di
     "image",
     body.model_path,
     async () =>
-      parseJson<DiffusionStatus>(
+      parseLoadJson<DiffusionStatus>(
         await authFetch("/api/inference/images/load", {
           method: "POST",
           headers: { "Content-Type": "application/json" },

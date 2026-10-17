@@ -7,6 +7,7 @@ import { authFetch } from "@/features/auth";
 import type { DiffusionDownloadPlan } from "@/features/images/api";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { parseLoadJson } from "@/lib/multi-model-refusal";
 
 // One Advanced control's resolved value plus provenance, same shape as the diffusion status.
 // `value` is engaged, `requested` is what the caller asked for (null = left to the backend),
@@ -131,7 +132,13 @@ export interface VideoGenerateProgress {
 }
 
 export interface VideoLoadProgress {
-  phase: "downloading" | "finalizing" | "ready" | "error" | null;
+  phase:
+    | "downloading"
+    | "finalizing"
+    | "saving_chat_context"
+    | "ready"
+    | "error"
+    | null;
   downloaded_bytes: number;
   // null when the total isn't known yet.
   expected_bytes?: number | null;
@@ -298,7 +305,7 @@ export async function loadVideoModel(body: VideoLoadRequest): Promise<VideoStatu
     "video",
     body.model_path,
     async () =>
-      parseJson<VideoStatus>(
+      parseLoadJson<VideoStatus>(
         await authFetch("/api/inference/video/load", {
           method: "POST",
           headers: { "Content-Type": "application/json" },

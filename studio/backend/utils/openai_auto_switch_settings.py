@@ -237,8 +237,8 @@ def set_openai_auto_switch(
     media_auto_switch: Any = None,
 ) -> tuple[bool, int, bool, bool, bool, int, bool]:
     """One-transaction write; ``None`` leaves a stored value untouched."""
-    parsed_enabled = _coerce_bool(enabled)
-    if parsed_enabled is None:
+    parsed_enabled = None if enabled is None else _coerce_bool(enabled)
+    if enabled is not None and parsed_enabled is None:
         raise ValueError("OpenAI auto-switch must be true or false.")
     parsed_idle = None
     if idle_seconds is not None:
@@ -282,7 +282,9 @@ def set_openai_auto_switch(
             raise ValueError("Media auto-switch must be true or false.")
     from storage.studio_db import upsert_app_settings
 
-    updates: dict[str, Any] = {OPENAI_AUTO_SWITCH_SETTING_KEY: parsed_enabled}
+    updates: dict[str, Any] = {}
+    if parsed_enabled is not None:
+        updates[OPENAI_AUTO_SWITCH_SETTING_KEY] = parsed_enabled
     if parsed_idle is not None:
         updates[AUTO_UNLOAD_IDLE_SETTING_KEY] = parsed_idle
     if parsed_media_idle is not None:
@@ -296,7 +298,8 @@ def set_openai_auto_switch(
     if parsed_media_auto_switch is not None:
         updates[MEDIA_AUTO_SWITCH_SETTING_KEY] = parsed_media_auto_switch
     upsert_app_settings(updates)
-    _invalidate(OPENAI_AUTO_SWITCH_SETTING_KEY)
+    if parsed_enabled is not None:
+        _invalidate(OPENAI_AUTO_SWITCH_SETTING_KEY)
     if parsed_idle is not None:
         _invalidate(AUTO_UNLOAD_IDLE_SETTING_KEY)
     if parsed_media_idle is not None:
@@ -310,7 +313,7 @@ def set_openai_auto_switch(
     if parsed_media_auto_switch is not None:
         _invalidate(MEDIA_AUTO_SWITCH_SETTING_KEY)
     return (
-        parsed_enabled,
+        parsed_enabled if parsed_enabled is not None else get_openai_auto_switch_enabled(),
         parsed_idle if parsed_idle is not None else get_stored_auto_unload_idle_seconds(),
         parsed_keep_kv if parsed_keep_kv is not None else get_auto_unload_keep_kv(),
         (

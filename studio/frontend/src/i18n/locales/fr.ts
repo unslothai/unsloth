@@ -1746,9 +1746,10 @@ export const fr = {
         autoDownloadDescription:
           "Récupérer un GGUF indiqué dans une requête API qui n'est pas encore téléchargé. Toute personne disposant d'une clé API peut alors consommer de l'espace disque et de la bande passante.",
         keepKv:
-          "Conserver le contexte de la discussion après un déchargement en cas d'inactivité",
+          "Conserver le contexte de la discussion entre les déchargements",
         keepKvDescription:
-          "Enregistrer le cache KV avant un déchargement en cas d'inactivité, afin qu'une discussion reprise n'ait pas à relire l'historique. Jusqu'à 10 Go sur le disque.",
+          "Enregistrer le cache KV avant un déchargement en cas d'inactivité, ou avant qu'un modèle d'image ou de vidéo prenne le GPU, afin qu'une discussion reprise n'ait pas à relire l'historique. Jusqu'à 10 Go sur le disque.",
+        keepKvKeywords: "kv cache contexte changement reprendre image video",
         apiOnly: "Décharger uniquement les modèles chargés par l'API",
         apiOnlyDescription:
           "Le déchargement en cas d'inactivité laisse en mémoire un modèle que vous avez chargé depuis Unsloth et ne libère que ceux chargés par une requête API.",
@@ -2383,8 +2384,17 @@ export const fr = {
         noRamReserveDescription: "Réduit la RAM occupée par les poids du modèle.",
         noRamReserveHint: "Ignore le chargement mappé en mémoire sur les versions Windows compatibles lorsque le modèle est entièrement déchargé sur le GPU, afin que ses pages ne restent pas résidentes. Sinon, conserve le chargement mappé en mémoire. Les tampons CPU nécessaires peuvent toujours occuper de la RAM. Supprime --no-mmap et --mlock.",
         multiModel: "Garder plusieurs modèles chargés",
-        multiModelDescription: "Charger un modèle garde les autres en mémoire.",
-        multiModelHint: "Chaque modèle chargé répond aux requêtes qui le nomment. Avec plusieurs GPU, un nouveau modèle va sur un GPU qu'aucun autre modèle n'utilise lorsqu'il y a de la place. S'il ne tient pas à côté des autres, les modèles inutilisés sont d'abord déchargés, puis il remplace le modèle actif. L'entraînement décharge les modèles supplémentaires avant le modèle actif.",
+        multiModelOff: "Désactivé",
+        multiModelFit: "S'ils tiennent",
+        multiModelAlways: "Toujours",
+        multiModelDescription: "Charger un modèle de discussion, d'image ou de vidéo décharge les autres.",
+        multiModelDescriptionFit:
+          "Charger un modèle garde les autres s'ils tiennent. Sinon, il décharge d'abord ceux qui ne sont pas utilisés, puis le modèle actif.",
+        multiModelDescriptionAlways:
+          "Charger un modèle n'en décharge jamais un autre. Un modèle qui ne tient pas n'est pas chargé. Le déchargement automatique en veille et l'entraînement libèrent toujours de la mémoire.",
+        multiModelHint: "Concerne les modèles de discussion, d'image et de vidéo. Chaque modèle de discussion chargé répond aux requêtes qui le nomment. Avec plusieurs GPU, Unsloth Studio essaie de placer un nouveau modèle sur un GPU qu'aucun autre modèle n'utilise. « S'ils tiennent » laisse environ 1 Go libre. « S'ils tiennent » et « Toujours » ne déchargent jamais un modèle sur un autre GPU.",
+        mediaIdleUnloadDescription:
+          "Libérer la VRAM en déchargeant les modèles d’image et de vidéo après ce nombre de secondes d’inactivité. 0 les maintient chargés ; le minimum est 60.",
         mlockVetoed: "--mlock reste désactivé : épingler le modèle réserverait de la RAM pour l'intégralité de celui-ci. Le déchargement automatique en veille reste désactivé.",
         mlockNotApplicable: "Entièrement sur le GPU : rien à verrouiller en RAM système. Le déchargement automatique en veille reste désactivé.",
         memlockCapped: "Ce système limite la mémoire verrouillée à {limit}. Un modèle plus grand ne sera pas entièrement épinglé ; augmentez la limite avec ulimit -l.",
@@ -2394,6 +2404,10 @@ export const fr = {
         // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memoire ram resident epingler verrouiller garder charge decharger inactif mmap no-mmap load-mode pagination echange",
+        multiModelKeywords:
+          "plusieurs modeles ensemble simultanes changer tenir decharger evincer vram gpu image video discussion toujours inactif",
+        mediaIdleUnloadKeywords:
+          "image video diffusion inactif decharger ttl delai secondes liberer vram gpu memoire",
       },
       storage: {
         title: "Stockage",

@@ -288,6 +288,7 @@ export function ResourcesTab() {
     pollMs: liveUpdates ? POLL_MS : undefined,
   });
   const storageSectionRef = useRef<HTMLElement | null>(null);
+  const modelMemoryRef = useRef<HTMLElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore(
     (s) => s.consumeScrollTarget,
@@ -334,13 +335,20 @@ export function ResourcesTab() {
   }, []);
 
   useEffect(() => {
-    if (scrollTarget !== "resources-caches") return;
+    const target = scrollTarget;
+    const sectionRef =
+      target === "resources-caches"
+        ? storageSectionRef
+        : target === "resources-model-memory"
+          ? modelMemoryRef
+          : null;
+    if (!target || !sectionRef) return;
     const frame = window.requestAnimationFrame(() => {
-      storageSectionRef.current?.scrollIntoView({
+      sectionRef.current?.scrollIntoView({
         block: "start",
         behavior: "smooth",
       });
-      consumeScrollTarget("resources-caches");
+      consumeScrollTarget(target);
     });
     return () => window.cancelAnimationFrame(frame);
   }, [consumeScrollTarget, scrollTarget]);
@@ -1032,7 +1040,7 @@ export function ResourcesTab() {
       <LlamaBackendSection />
       <InferenceEnginesSection />
 
-      <ModelMemorySection />
+      <ModelMemorySection ref={modelMemoryRef} />
 
       <SettingsSection
         ref={storageSectionRef}

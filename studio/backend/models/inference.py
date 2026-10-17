@@ -5228,9 +5228,9 @@ class DiffusionGenerateProgressResponse(BaseModel):
 class DiffusionLoadProgressResponse(BaseModel):
     """Download/finalize progress for an in-flight diffusion load."""
 
-    phase: Optional[Literal["downloading", "finalizing", "ready", "error"]] = Field(
-        None, description = "Load phase; null when idle"
-    )
+    phase: Optional[
+        Literal["downloading", "finalizing", "saving_chat_context", "ready", "error"]
+    ] = Field(None, description = "Load phase; null when idle")
     bytes_downloaded: int = Field(0, description = "Bytes present in the HF cache so far")
     bytes_total: int = Field(0, description = "Estimated total bytes to download (0 = unknown)")
     fraction: float = Field(0.0, description = "bytes_downloaded / bytes_total, clamped to [0,1]")
@@ -6561,9 +6561,9 @@ class VideoGenerateProgressResponse(BaseModel):
 class VideoLoadProgressResponse(BaseModel):
     """Download/finalize progress for an in-flight video load."""
 
-    phase: Optional[Literal["downloading", "finalizing", "ready", "error"]] = Field(
-        None, description = "Load phase; null when idle"
-    )
+    phase: Optional[
+        Literal["downloading", "finalizing", "saving_chat_context", "ready", "error"]
+    ] = Field(None, description = "Load phase; null when idle")
     downloaded_bytes: int = Field(0, description = "Bytes present in the HF cache so far")
     expected_bytes: Optional[int] = Field(
         None, description = "Estimated total bytes to download (null = unknown)"

@@ -1722,9 +1722,10 @@ export const ja = {
         autoDownload: "不足しているモデルをダウンロード",
         autoDownloadDescription:
           "API リクエストで指定された未ダウンロードの GGUF を取得します。API キーを持つ人なら誰でもディスクと帯域を消費できるようになります。",
-        keepKv: "アイドル時の自動アンロードをまたいでチャットのコンテキストを保持",
+        keepKv: "アンロードをまたいでチャットのコンテキストを保持",
         keepKvDescription:
-          "アイドル時の自動アンロードの前に KV キャッシュを保存し、再開したチャットが履歴を読み直さずに済むようにします。ディスク使用量は最大 10 GB です。",
+          "アイドル時の自動アンロードの前、または画像や動画のモデルが GPU を使う前に KV キャッシュを保存し、再開したチャットが履歴を読み直さずに済むようにします。ディスク使用量は最大 10 GB です。",
+        keepKvKeywords: "kv キャッシュ コンテキスト 切り替え 再開 画像 動画",
         apiOnly: "API が読み込んだモデルのみアンロード",
         apiOnlyDescription:
           "アイドル時の自動アンロードでは、Unsloth から自分で読み込んだモデルはメモリに残し、API リクエストが読み込んだモデルだけを解放します。",
@@ -2332,8 +2333,17 @@ export const ja = {
         noRamReserveDescription: "モデルの重みが占有する RAM を減らします。",
         noRamReserveHint: "モデルが GPU に完全にオフロードされている場合、対応する Windows ビルドではメモリマップ読み込みを行わず、ファイルのページが常駐しないようにします。それ以外ではメモリマップ読み込みを維持します。必要な CPU バッファは RAM を使用することがあります。--no-mmap と --mlock を除去します。",
         multiModel: "複数のモデルを読み込んだままにする",
-        multiModelDescription: "モデルを読み込んでも、他のモデルはメモリに残ります。",
-        multiModelHint: "読み込まれた各モデルは、そのモデルを指定したリクエストに応答します。複数の GPU がある場合、空きがあれば新しいモデルは他のモデルが使っていない GPU に配置されます。他のモデルと並べて収まらない場合は、使用中でないモデルを先にアンロードし、それでも足りなければアクティブなモデルを置き換えます。トレーニングはアクティブなモデルより先に追加のモデルをアンロードします。",
+        multiModelOff: "オフ",
+        multiModelFit: "収まる場合",
+        multiModelAlways: "常に",
+        multiModelDescription: "チャット、画像、動画のモデルを読み込むと、他のモデルはアンロードされます。",
+        multiModelDescriptionFit:
+          "モデルを読み込んでも、収まる場合は他のモデルを残します。収まらない場合は、使用中でないモデルを先にアンロードし、次にアクティブなモデルをアンロードします。",
+        multiModelDescriptionAlways:
+          "モデルを読み込んでも、他のモデルはアンロードされません。収まらないモデルは読み込まれません。アイドル時の自動アンロードとトレーニングでは引き続きメモリが解放されます。",
+        multiModelHint: "チャット、画像、動画のモデルが対象です。読み込まれた各チャットモデルは、そのモデルを指定したリクエストに応答します。複数の GPU がある場合、Unsloth Studio は新しいモデルを他のモデルが使っていない GPU に配置しようとします。「収まる場合」は約 1 GB の空きを残します。「収まる場合」と「常に」は、別の GPU 上のモデルをアンロードしません。",
+        mediaIdleUnloadDescription:
+          "指定した秒数だけアイドル状態が続くと、画像モデルと動画モデルをアンロードして VRAM を解放します。0 にすると読み込んだままになります。最小値は 60 秒です。",
         mlockVetoed: "--mlock は無効のままです。モデルを固定するとモデル全体分の RAM を確保することになります。アイドル時の自動アンロードは引き続き無効です。",
         mlockNotApplicable: "すべて GPU 上にあるため、システム RAM に固定するものはありません。アイドル時の自動アンロードは無効のままです。",
         memlockCapped: "このシステムはロック可能なメモリを {limit} に制限しています。これより大きいモデルは完全には固定されません。ulimit -l で上限を引き上げてください。",
@@ -2343,6 +2353,10 @@ export const ja = {
         // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu メモリ ram 常駐 固定 ロック 保持 ロード済み アンロード アイドル mmap no-mmap load-mode スワップ ページング",
+        multiModelKeywords:
+          "複数 モデル 同時 併用 切り替え 収まる アンロード 退避 vram gpu 画像 動画 チャット 常に アイドル",
+        mediaIdleUnloadKeywords:
+          "画像 動画 拡散 アイドル アンロード ttl タイムアウト 秒 解放 vram gpu メモリ",
       },
       storage: {
         title: "ストレージ",

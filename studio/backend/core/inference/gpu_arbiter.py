@@ -51,7 +51,10 @@ def _evict_chat() -> None:
     # not healthy. chat_load_active too, since an HF load has no process until its GGUF downloaded. unload_model sets
     # the cancel event the download loop polls, so it aborts.
     if llama.is_active or chat_load_active():
+        # unload_model clears the identity, so read it first for the pre-swap KV save.
+        unloaded = _chat_identity(llama)
         llama.unload_model()
+        _commit_swap_kv(unloaded)
     orchestrator = get_inference_backend()
     if orchestrator.active_model_name:
         orchestrator.unload_model(orchestrator.active_model_name)
@@ -73,6 +76,23 @@ def _evict_chat() -> None:
     from hub.services.models.account_access import clear_resident
 
     clear_resident(CHAT)
+
+
+def _chat_identity(llama):
+    try:
+        from core.inference.llama_keepwarm import _loaded_identity
+        return _loaded_identity(llama)
+    except Exception:
+        return None
+
+
+def _commit_swap_kv(unloaded) -> None:
+    """Promote the chat KV saved before this media load; an eviction never fails on it."""
+    try:
+        from core.inference.chat_swap_kv import commit_after_chat_unload
+        commit_after_chat_unload(unloaded)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("gpu_arbiter: could not keep the chat KV: %s", exc)
 
 
 def _evict_diffusion() -> None:
@@ -232,6 +252,30 @@ def acquire_for(
         if claims:
             _prior_account, _owner_account = _owner_account, acting
         return result
+
+
+def would_evict(owner: str, *, policy: str = "off", need_mib: Optional[dict] = None) -> bool:
+    """Lock-free peek: will ``acquire_for(owner, policy = ..., need_mib = ...)`` unload the chat model?
+    Never call it under ``_lock``."""
+    if owner == CHAT or owner not in _EVICTORS:
+        return False
+    holds = globals().get("holds")
+    if not (holds(CHAT) if callable(holds) else _owner == CHAT):
+        return False
+    if policy == "always":
+        # Always refuses the load rather than evicting.
+        return False
+    if policy == "fit" and need_mib:
+        # An unpriced load evicts first, as Off does; a priced one joins when it fits.
+        try:
+            from core.inference import gpu_residency
+            fits = getattr(gpu_residency, "can_load_alongside", None)
+        except ImportError:
+            fits = None
+        if callable(fits):
+            answer = fits(owner, need_mib)
+            return not (answer[0] if isinstance(answer, tuple) else answer)
+    return True
 
 
 def restore_owner_account(owner: str, account_id: Optional[str] = None) -> bool:

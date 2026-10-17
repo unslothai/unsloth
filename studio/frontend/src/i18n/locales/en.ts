@@ -1781,9 +1781,10 @@ export const en = {
         loadError: "Failed to load model auto-switch settings.",
         saveError: "Failed to save model auto-switch settings.",
         idleError: "Enter 0 to keep the model loaded, or at least 60 seconds.",
-        keepKv: "Keep chat context across idle unload",
+        keepKv: "Keep chat context across unloads",
         keepKvDescription:
-          "Save the KV cache before an idle unload so resumed chats skip re-reading history. Up to 10 GB on disk.",
+          "Save the KV cache before an idle unload, or before an image or video model takes the GPU, so resumed chats skip re-reading history. Up to 10 GB on disk.",
+        keepKvKeywords: "kv cache context swap resume image video",
         apiOnly: "Only unload models loaded by the API",
         apiOnlyDescription:
           "Idle unload leaves a model you loaded from Unsloth in memory, and frees only the ones an API request loaded.",
@@ -2406,8 +2407,17 @@ export const en = {
         noRamReserveDescription: "Reduce host RAM held for model weights.",
         noRamReserveHint: "Skips memory-mapped loading on supported Windows builds when the model is fully offloaded to the GPU, so its pages are not held resident. Otherwise keeps memory-mapped loading. Required CPU buffers can still use RAM. Drops --no-mmap and --mlock.",
         multiModel: "Keep multiple models loaded",
-        multiModelDescription: "Loading a model keeps the others in memory.",
-        multiModelHint: "Each loaded model answers the requests that name it. With several GPUs, a new model goes to a GPU no other model uses when one has room. When it does not fit beside the others, the models not in use are unloaded first, then it replaces the active model. Training unloads the extra models before the active one.",
+        multiModelOff: "Off",
+        multiModelFit: "When they fit",
+        multiModelAlways: "Always",
+        multiModelDescription: "Loading a chat, image or video model unloads the other ones.",
+        multiModelDescriptionFit:
+          "Loading a model keeps the others when they fit. When they don't, it unloads the ones not in use first, then the active one.",
+        multiModelDescriptionAlways:
+          "Loading a model never unloads another. A model that does not fit is not loaded. Idle auto-unload and training still free memory.",
+        multiModelHint: "Covers chat, image and video models. Each loaded chat model answers the requests that name it. With several GPUs, Unsloth Studio tries to place a new model on a GPU no other model uses. “When they fit” leaves about 1 GB spare. “When they fit” and “Always” never unload a model on another GPU.",
+        mediaIdleUnloadDescription:
+          "Free VRAM by unloading the image and video models after this many idle seconds. 0 keeps them loaded, minimum 60.",
         mlockVetoed: "--mlock stays off: pinning the model in place would reserve RAM for all of it. Idle auto-unload is still disabled.",
         mlockNotApplicable: "Fully on the GPU: nothing in system RAM to lock. Idle auto-unload stays off.",
         memlockCapped: "This system caps locked memory at {limit}. A larger model will not be fully pinned; raise the limit with ulimit -l.",
@@ -2417,6 +2427,10 @@ export const en = {
         // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memory ram resident residency pin pinned page lock locked keep loaded unload idle mmap no-mmap load-mode swap paging",
+        multiModelKeywords:
+          "multiple several models together alongside swap fit unload evict vram gpu image video chat always idle",
+        mediaIdleUnloadKeywords:
+          "image video diffusion idle unload ttl timeout seconds free vram gpu memory",
       },
       storage: {
         title: "Storage",
