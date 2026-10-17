@@ -116,8 +116,6 @@ _POLICY_OVERFETCH = 4
 _DISABLE_DNS_PINNING_ENV = "UNSLOTH_STUDIO_DISABLE_DNS_PINNING"
 # How a lookup that found no address starts, as opposed to a refused one.
 _RESOLVE_FAILED = "Failed to resolve host"
-# A proxied lookup's share of the budget: a resolver that drops queries must leave time for the proxy.
-_PROXIED_LOOKUP_TIMEOUT = 5.0
 
 # Splits the UI source-map from the result; loops strip it (like __IMAGES__).
 RAG_SOURCES_SENTINEL = "\n__RAG_SOURCES__:"
@@ -16730,38 +16728,16 @@ def _fetch_url_raw(
             proxied = _explicit_proxy_applies(cp.scheme, validated_netloc)
             # Resolved after routing: a name that reaches the proxy may resolve only there (proxy-only networks),
             # and a poisoned answer here never gets used. Non-public answers are refused either way.
-            named = proxied and proxy_hostname
-            lookup_deadline = deadline
-            if named:
-                left = (
-                    _PROXIED_LOOKUP_TIMEOUT
-                    if deadline is None
-                    else (deadline - time.monotonic()) / 2
-                )
-                lookup_deadline = time.monotonic() + max(0.0, min(_PROXIED_LOOKUP_TIMEOUT, left))
             ok, reason, pinned_ips = _resolve_with_budget(
                 current_host,
                 cp.port or (443 if cp.scheme == "https" else 80),
-                lookup_deadline,
+                deadline,
                 cancel_event,
             )
-            if (
-                not ok
-                and named
-                and reason == _fetch_budget_exceeded(lookup_deadline, None)
-                and _fetch_budget_exceeded(deadline, cancel_event) is None
-            ):
-                # The lookup used up its share, not the fetch: leave the name to the proxy.
-                reason = f"{_RESOLVE_FAILED}: no answer for {current_host!r} in time"
+            named = proxied and proxy_hostname
             if not ok and not (named and reason.startswith(_RESOLVE_FAILED)):
                 return reason, "", ""
             if named:
-                from .browser_agent import _host_problem
-
-                # The proxy resolves what it gets, so a local name must not reach it, as in the desktop's page proxy.
-                local = _host_problem(current_host)
-                if local:
-                    return f"Blocked: {local}.", "", ""
                 # Enterprise proxies need the hostname in CONNECT for policy and TLS interception, and they resolve
                 # it, so nothing rebinds behind us.
                 request_url = urlunparse(cp._replace(netloc = validated_netloc))
