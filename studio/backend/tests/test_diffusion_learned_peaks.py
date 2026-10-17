@@ -1209,7 +1209,76 @@ def test_peak_model_identity_names_the_whole_build(monkeypatch):
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert "peak_model = _peak_model_identity(repo_id, gguf_filename, kind, base)" in src
+    assert (
+        "peak_model = _peak_model_identity(repo_id, gguf_filename, kind, base, fetch_base)" in src
+    )
+
+
+def test_peak_model_identity_reads_the_unsloth_mirror_on_a_fresh_install(monkeypatch):
+    """Studio fetches a mirrored vendor base from unsloth/: with only the mirror cached, the key must still name a
+    revision (the mirror's), or learned peaks are never recorded nor read on a default install."""
+    import core.inference.diffusion as diffusion
+    import core.inference.diffusion_component_sizes as sizes
+    import core.inference.diffusion_families as families
+
+    revisions = {
+        ("unsloth/FLUX.2-klein-4B", None): "m1",
+        ("unsloth/dit-GGUF", "dit-Q4.gguf"): "g1",
+    }
+    monkeypatch.setattr(
+        sizes, "checkpoint_fingerprint", lambda repo, filename = None: revisions.get((repo, filename))
+    )
+    monkeypatch.setattr(
+        families,
+        "mirror_repo",
+        lambda repo: {"black-forest-labs/flux.2-klein-4b": "unsloth/FLUX.2-klein-4B"}.get(
+            (repo or "").lower()
+        ),
+    )
+    assert (
+        diffusion._peak_model_identity("black-forest-labs/FLUX.2-klein-4B", None, "pipeline", None)
+        == "unsloth/FLUX.2-klein-4B@m1"
+    )
+    assert diffusion._peak_model_identity(
+        "unsloth/dit-GGUF", "dit-Q4.gguf", "gguf", "black-forest-labs/FLUX.2-klein-4B"
+    ) == ("unsloth/dit-GGUF/dit-Q4.gguf@g1+unsloth/FLUX.2-klein-4B@m1")
+    # No mirror and no cached revision: still unknown.
+    assert diffusion._peak_model_identity("org/unmirrored", None, "pipeline", None) == "unknown"
+
+
+def test_peak_model_identity_keys_on_the_repo_the_load_fetched(monkeypatch):
+    """An upstream cache holding only model_index.json while the load pulled the weights from the mirror: the key
+    names the mirror the load read, not the upstream id whose index happens to be cached (and vice versa)."""
+    import core.inference.diffusion as diffusion
+    import core.inference.diffusion_component_sizes as sizes
+    import core.inference.diffusion_families as families
+
+    revisions = {
+        ("black-forest-labs/FLUX.2-klein-4B", None): "u1",
+        ("unsloth/FLUX.2-klein-4B", None): "m1",
+        ("unsloth/dit-GGUF", "dit-Q4.gguf"): "g1",
+    }
+    monkeypatch.setattr(
+        sizes, "checkpoint_fingerprint", lambda repo, filename = None: revisions.get((repo, filename))
+    )
+    monkeypatch.setattr(
+        families,
+        "mirror_repo",
+        lambda repo: {"black-forest-labs/flux.2-klein-4b": "unsloth/FLUX.2-klein-4B"}.get(
+            (repo or "").lower()
+        ),
+    )
+    up, mirror = "black-forest-labs/FLUX.2-klein-4B", "unsloth/FLUX.2-klein-4B"
+    assert diffusion._peak_model_identity(up, None, "pipeline", up, mirror) == f"{mirror}@m1"
+    assert diffusion._peak_model_identity(up, None, "pipeline", up, up) == f"{up}@u1"
+    assert (
+        diffusion._peak_model_identity("unsloth/dit-GGUF", "dit-Q4.gguf", "gguf", up, mirror)
+        == f"unsloth/dit-GGUF/dit-Q4.gguf@g1+{mirror}@m1"
+    )
+    # The load read the upstream bytes but only the mirror's revision is cached: no key, never the mirror's.
+    del revisions[(up, None)]
+    assert diffusion._peak_model_identity(up, None, "pipeline", up, up) == "unknown"
+    assert diffusion._peak_model_identity(up, None, "pipeline", up, mirror) == f"{mirror}@m1"
 
 
 def test_phase_table_seed_needs_its_measured_configuration(klein_pipe):
