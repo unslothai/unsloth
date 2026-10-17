@@ -651,6 +651,9 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
             ),
         ),
     ),
+    # Both need a reference clip on every run (mira_tts/session.cpp, sopro_tts/session.cpp).
+    AudioCppFamily("mira_tts", "tts", speaks = False, clone = CloneSpec("unused")),
+    AudioCppFamily("sopro_tts", "tts", speaks = False, clone = CloneSpec("unused")),
 )
 
 
@@ -714,6 +717,8 @@ _SEPARATION_FAMILIES: tuple[AudioCppFamily, ...] = (
     AudioCppFamily("mel_band_roformer", "sep", separation = SeparationSpec("num_overlap")),
 )
 
+
+_MULTI_FILE_PACKAGE = "This model ships as a multi-file package Unsloth Studio cannot load yet."
 
 _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
     # Text to speech. Kokoro, KittenTTS, Piper and Inflect phonemize with eSpeak-ng, which the Unsloth
@@ -950,7 +955,7 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
         AudioCppFamily(
             name,
             "",
-            unsupported = "This model ships as a multi-file package Studio cannot load yet.",
+            unsupported = _MULTI_FILE_PACKAGE,
         )
         for name in ("minimax_h3", "auk", "liveavatar", "vibeasr")
     ),
@@ -961,7 +966,9 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
     ),
     # Tasks Studio has no page for.
     *(
-        AudioCppFamily(name, "", unsupported = f"{what} models are not supported in Studio yet.")
+        AudioCppFamily(
+            name, "", unsupported = f"{what} models are not supported in Unsloth Studio yet."
+        )
         for names, what in (
             (("qwen3_forced_aligner", "mms_forced_aligner"), "Forced-alignment"),
             (("sortformer_diar", "sortformer_diar_v2", "nemotron_3_diar"), "Speaker diarization"),
@@ -975,8 +982,8 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
     AudioCppFamily(
         "samsone",
         "",
-        unsupported = "SAMSONE describes audio rather than transcribing speech, so Studio does not "
-        "offer it for transcription.",
+        unsupported = "SAMSONE describes audio rather than transcribing speech, so Unsloth Studio "
+        "does not offer it for transcription.",
     ),
 )
 
@@ -996,15 +1003,12 @@ _SPEC_TO_SERVER_TASK = {
     "design": "vdes",
     "speaker": "spk",
 }
-_SERVER_TO_STUDIO_TASK = {"tts": "tts", "gen": "music", "asr": "asr", "sep": "sep"}
 _TASK_NAMES = {
     "align": "Forced-alignment",
     "diar": "Speaker diarization",
     "sep": "Source separation",
     "vad": "Voice activity detection",
     "midi": "Music transcription",
-    "vc": "Voice conversion",
-    "svc": "Singing voice conversion",
     "s2s": "Speech-to-speech",
     "spk": "Speaker embedding",
     "turn": "Turn detection",
@@ -1013,56 +1017,102 @@ _TASK_NAMES = {
 }
 
 
+def recommended_gguf_files(spec: Optional[dict]) -> tuple[str, ...]:
+    """Base names of the GGUFs in the spec's recommended package, else its default GGUF package."""
+    packages = [p for p in (spec or {}).get("packages") or [] if isinstance(p, dict)]
+    packages = [p for p in packages if str(p.get("format") or "").lower() == "gguf"]
+    wanted = ((spec or {}).get("ui") or {}).get("recommended_package")
+    package = next((p for p in packages if wanted and p.get("id") == wanted), None) or next(
+        (p for p in packages if p.get("default") is True), None
+    )
+    files = (package or {}).get("files") or []
+    return tuple(
+        f.replace("\\", "/").rsplit("/", 1)[-1]
+        for f in files
+        if isinstance(f, str) and f.lower().endswith(".gguf")
+    )
+
+
+def _spec_music(tasks: Sequence[str], request: Optional[list]) -> MusicSpec:
+    """Music modes for a family the table does not list, from its spec tasks and options."""
+    names = {str(o.get("name")) for o in request or [] if isinstance(o, dict)}
+    sings = "lyrics" in names
+    modes = []
+    if "music" in tasks or "sfx" not in tasks:
+        modes.append(
+            MusicMode(
+                "song",
+                lyrics = "optional" if sings else "unused",
+                instrumental = "toggle" if sings else "always",
+            )
+        )
+    if "sfx" in tasks:
+        modes.append(MusicMode("sfx", duration = (1.0, 60.0, 8.0)))
+    # A declared request without ``seed`` refuses one, so it is never sent.
+    return MusicSpec(tuple(modes), fixed_seed = request is None or "seed" in names)
+
+
 def _family_from_spec_tasks(
     family: str,
     spec: Optional[dict],
     label: Optional[str] = None,
 ) -> AudioCppFamily:
-    """Policy for a family Studio does not list, from the tasks its spec declares.
+    """Policy for a family Unsloth Studio does not list, from the tasks its spec declares.
 
     The spec can be the one a GGUF embeds, newer than the installed runtime, so a family the
     runtime does not load is refused here rather than failing at load with "unsupported model
     family hint". ``label`` names the model in that refusal.
     """
     tasks = [str(t).lower() for t in (spec or {}).get("tasks") or [] if isinstance(t, str)]
-    tokens = [_SPEC_TO_SERVER_TASK.get(t, t) for t in tasks]
-    # Speech first, then music, then transcription: a model that speaks is most useful spoken.
-    # A clone-only family comes next: it loads as a cloning session and offers Clone alone.
+    # ``edit`` is a music edit for some families and a speech edit for others, so it names no page.
+    tokens = [_SPEC_TO_SERVER_TASK.get(t, t) for t in tasks if t != "edit"] or tasks
+    request = ((spec or {}).get("options") or {}).get("request") or None
+    request = request if isinstance(request, list) else None
+    # One page set per family. Speech first (with Clone when the spec clones), then music, then
+    # transcription; a clone-only family loads as a cloning session and offers Clone alone.
     for token in ("tts", "vdes", "gen", "asr", "clon", "sep"):
-        if token in tokens:
-            if runtime_knows_family(family) is False:
-                return AudioCppFamily(
-                    family,
-                    "",
-                    unsupported = f"{label or family} needs a newer audio runtime than the one installed.",
-                )
+        if token not in tokens:
+            continue
+        if runtime_knows_family(family) is False:
+            return AudioCppFamily(
+                family,
+                "",
+                unsupported = f"{label or family} needs a newer audio runtime than the one installed.",
+            )
+        if len(recommended_gguf_files(spec)) > 1:
+            return AudioCppFamily(family, "", unsupported = _MULTI_FILE_PACKAGE)
+        if token in ("tts", "vdes", "clon"):
+            clone = None
+            if "clon" in tokens:
+                # Clone always sends a reference, and a family that declares reference_text then
+                # needs it (fish_drama3, kitten_tts2); an undeclared option is refused.
+                names = {str(o.get("name")) for o in request or [] if isinstance(o, dict)}
+                text = "optional" if request is None else "unused"
+                clone = CloneSpec("required" if "reference_text" in names else text)
             if token == "clon":
                 return AudioCppFamily(
-                    family,
-                    "tts",
-                    server_task = "clon",
-                    speaks = False,
-                    clone = CloneSpec("optional"),
+                    family, "tts", server_task = "clon", speaks = False, clone = clone
                 )
-            if token == "sep":
-                return AudioCppFamily(family, "sep", separation = SeparationSpec())
-            studio = "tts" if token == "vdes" else _SERVER_TO_STUDIO_TASK[token]
-            return AudioCppFamily(family, studio, server_task = token)
+            return AudioCppFamily(family, "tts", server_task = token, clone = clone)
+        if token == "gen":
+            music = _spec_music(tasks, request)
+            return AudioCppFamily(family, "music", server_task = "gen", music = music)
+        if token == "sep":
+            return AudioCppFamily(family, "sep", separation = SeparationSpec())
+        return AudioCppFamily(family, "asr", server_task = "asr")
     if tokens:
         what = _TASK_NAMES.get(tokens[0])
-        return AudioCppFamily(
-            family,
-            "",
-            unsupported = (
-                f"{what} models are not supported in Studio yet."
-                if what
-                else f"Studio does not support the '{tokens[0]}' task yet."
-            ),
-        )
+        if tokens[0] in ("vc", "svc"):
+            message = "Unsloth Studio doesn't support voice conversion models yet."
+        elif what:
+            message = f"{what} models are not supported in Unsloth Studio yet."
+        else:
+            message = f"Unsloth Studio does not support the '{tokens[0]}' task yet."
+        return AudioCppFamily(family, "", unsupported = message)
     return AudioCppFamily(
         family,
         "",
-        unsupported = f"Studio does not know what the model family '{family}' does.",
+        unsupported = f"Unsloth Studio does not know what the model family '{family}' does.",
     )
 
 
@@ -1545,7 +1595,12 @@ def list_files(
 _QUANT_RE = re.compile(
     r"(?:^|[-_.])((?:i?q\d(?:_[a-z0-9]+)*)|bf16|f16|f32|fp16|fp32|orig)(?=$|[-_.])", re.IGNORECASE
 )
-_QUANT_PREFERENCE = ("Q8_0", "F16", "BF16", "ORIG", "Q6_K", "Q5_K_M", "Q4_K_M", "Q4_0", "F32")
+# K and IQ quants come after F32 so the established order stays as it was.
+_QUANT_PREFERENCE = (
+    *("Q8_0", "F16", "BF16", "ORIG", "Q6_K", "Q5_K_M", "Q4_K_M", "Q4_0", "F32"),
+    *("Q5_K", "Q5_K_S", "Q4_K", "Q4_K_S", "IQ4_NL", "IQ4_XS", "Q3_K_L", "Q3_K_M", "Q3_K"),
+    *("Q3_K_S", "IQ3_M", "IQ3_S", "IQ3_XS", "IQ3_XXS", "Q2_K", "IQ2_M", "IQ2_XS", "IQ2_XXS"),
+)
 _PREFERRED_SCOPES = ("turbo", "english", "tiny")
 _SKIP_FILE_RE = re.compile(
     r"(^|/)(readme[^/]*|license[^/]*|\.gitattributes|[^/]*\.(md|mp4|mp3|wav|png|jpe?g|gif))$", re.I
@@ -2485,7 +2540,7 @@ def _resolve_uncached(
             (t for t in tags if _TAG_FAMILY_RE.match(t) and t in FAMILIES), None
         ) or family_from_names(names)
     if not family:
-        reason = "Studio could not tell which model family this audio GGUF is."
+        reason = "Unsloth Studio could not tell which model family this audio GGUF is."
         variant = AudioCppVariant(quant_label(ggufs[0].path), (ggufs[0],), ggufs[0].path)
         return AudioCppModel(
             id = ref.id,
@@ -2515,6 +2570,10 @@ def _resolve_uncached(
                 AudioCppVariant(v.key, v.files, ref.local_path, label = v.label) for v in variants
             ]
         variants.sort(key = _variant_rank)
+        # The spec's recommended package leads, so two files at one quant pick the right one.
+        recommended = {f.lower() for f in recommended_gguf_files(spec or embedded)}
+        if len(recommended) == 1:
+            variants.sort(key = lambda v: Path(v.main_file).name.lower() not in recommended)
     unsupported = policy.unsupported
     if not variants:
         unsupported = (

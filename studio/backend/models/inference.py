@@ -6029,6 +6029,36 @@ class AudioVoiceListResponse(BaseModel):
     voices: List[AudioVoice] = Field(default_factory = list)
 
 
+class AudioCatalogModel(BaseModel):
+    """One audio.cpp model Unsloth Studio can offer: an umbrella folder or a Community repo."""
+
+    id: str
+    repo_id: str
+    folder: str = ""
+    source: Literal["umbrella", "community"]
+    display_name: str
+    family: Optional[str] = None
+    task: Literal["tts", "music", "asr", "sep", ""] = ""
+    workflows: List[
+        Literal["speak", "clone", "edit", "convert", "music", "separate", "transcribe"]
+    ] = Field(default_factory = list)
+    description: Optional[str] = None
+    languages: Optional[List[str]] = None
+    status: Optional[Literal["supported", "community", "experimental", "testing", "wip"]] = None
+    size_bytes: Optional[int] = None
+    downloaded: bool = False
+    unsupported_reason: Optional[str] = None
+
+
+class AudioCatalogResponse(BaseModel):
+    """The audio.cpp model catalog, with where its umbrella listing came from."""
+
+    source: Literal["hub", "saved", "cache"]
+    fetched_at: float
+    runtime_specs: bool = False
+    models: List[AudioCatalogModel] = Field(default_factory = list)
+
+
 class AudioGalleryFlagsPatch(BaseModel):
     pinned: Optional[bool] = Field(None, description = "Pin (True) or unpin (False) the clip")
     archived: Optional[bool] = Field(None, description = "Archive (True) or restore (False) the clip")

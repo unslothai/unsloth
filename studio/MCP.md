@@ -235,14 +235,14 @@ api_key_format = "Bearer {token}"
 | Tool | What it does |
 |---|---|
 | `studio_status` | What is loaded, loading and running: chat, image, video, speech-to-text and embedding models, training, export and GPUs. |
-| `list_models` | Models Unsloth Studio can serve, by kind. With `model`, its training defaults. |
+| `list_models` | Models Unsloth Studio can serve, by kind or by Audio page `workflow`. With `model`, its training defaults. |
 | `load_model` | Load a chat, image, video or speech-to-text model, downloading it first if needed. Reports progress. |
 | `unload_model` | Unload a model. |
 | `chat` | Ask the loaded model, with optional images. Returns a `cancel_id`. |
 | `embed` | Embed up to 2048 texts. |
 | `system_one` | Ask the Decision API typed questions. The Decision API must be on. |
 | `generate_image` | Text to image, image to image, inpaint, edit, outpaint and upscale. |
-| `generate_audio` | Clone, speak, edit, convert, music and separate. |
+| `generate_audio` | Clone, speak, edit, convert, music and separate, on the loaded model or a named `model`. |
 | `transcribe` | Speech to text, or translation to English. |
 | `generate_video` | Start a video. Poll it with `get_job`. |
 | `get_job` | The state of a video, recipe or export job. |

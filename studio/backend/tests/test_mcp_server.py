@@ -44,13 +44,13 @@ SCHEMA_FACTS = [
     ("generate_image", "output_schema/properties/images/type", "array"),
     ("generate_image", "output_schema/additionalProperties", False),
     ("generate_audio", "output_schema/additionalProperties", False),
-    ("generate_audio", "parameters/properties", lambda props: "text" in props),
+    ("generate_audio", "parameters/properties", lambda props: {"text", "model"} <= set(props)),
     ("studio_status", "output_schema/additionalProperties", False),
     ("studio_status", "parameters", lambda params: params.get("properties", {}) == {}),
     (
         "list_models",
         "parameters/properties",
-        lambda props: set(props) == {"kind", "loaded_only", "model"},
+        lambda props: set(props) == {"kind", "loaded_only", "model", "workflow"},
     ),
     (
         "load_model",
