@@ -337,20 +337,27 @@ def test_codex_merge_keeps_comments_about_the_next_table():
 
 
 def test_dry_run_never_prints_a_key_already_in_a_config(home, fake_claude):
-    literal = {"url": "u", "headers": {"Authorization": "Bearer sk-unsloth-OLDKEY0123"}}
+    # Older hand-written entries may hold a literal key in any spelling; other servers hold their own.
+    literal = {
+        "url": "u",
+        "headers": {"Authorization": "bearer sk-OLDKEY1", "X-Api-Key": "OLDKEY2"},
+    }
+    other = {"command": "gh-mcp", "env": {"GITHUB_TOKEN": "ghp_OLDKEY3"}}
+    servers = {"mcpServers": {"unsloth-studio": literal, "github": other}}
     cursor = home / "home" / ".cursor" / "mcp.json"
     cursor.parent.mkdir()
-    cursor.write_text(json.dumps({"mcpServers": {"unsloth-studio": literal}}))
-    claude = home / "claude" / ".claude.json"
-    claude.write_text(json.dumps({"mcpServers": {"unsloth-studio": literal}}))
-    codex = home / "codex" / "config.toml"
-    codex.write_text(
-        '[mcp_servers.unsloth-studio]\nurl = "u"\nbearer_token = "sk-unsloth-OLDKEY0123"\n'
+    cursor.write_text(json.dumps(servers, indent = 4))
+    (home / "claude" / ".claude.json").write_text(json.dumps(servers))
+    (home / "codex" / "config.toml").write_text(
+        '[mcp_servers.github]\nbearer_token = "ghp_OLDKEY3"\n\n'
+        '[mcp_servers.unsloth-studio]\nurl = "u"\nbearer_token = """sk-OLDKEY1"""\n'
+        'http_headers = { "X-Api-Key" = "OLDKEY2" }\n'
     )
     for agent in ("cursor", "claude-code", "codex"):
         result = _add(agent, "--url", URL, "--dry-run")
         assert result.exit_code == 0, result.output
-        assert "OLDKEY" not in result.output and "***" in result.output, agent
+        assert "OLDKEY" not in result.output and "***" in result.output, (agent, result.output)
+        assert "${UNSLOTH_API_KEY}" in result.output or "UNSLOTH_API_KEY" in result.output
     assert fake_claude == []
 
 

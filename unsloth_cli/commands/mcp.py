@@ -183,37 +183,68 @@ def codex_check(old_text: str, new_text: str, name: str, expected: dict) -> None
         raise ValueError("other settings would change")
 
 
-# A key pasted into an older entry must not reach the terminal; env-var references stay readable.
-_SECRETS = (
-    (re.compile(r"(Bearer\s+)(?!\$\{)[^\s\"'\\]+"), r"\1***"),
-    (re.compile(r"""^([-+ ]?\s*bearer_token\s*=\s*)(["']).*?\2""", re.M), r"\1\2***\2"),
-)
+# Dry runs show only our own entry, and mask whatever an older one may hold: a pasted key, a
+# token, other headers. Env-var references and plain settings stay readable.
+_SECRET_KEY_RE = re.compile(r"auth|token|key|secret|password|header|env|cookie", re.I)
+_PLAIN_KEYS = ("url", "type", "transport", "command", "args")
+_QUOTED_RE = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'[^']*'")
+_TOML_KEY_RE = re.compile(r"^\s*([A-Za-z0-9_.\"'-]+)\s*=")
+
+
+def _masked(value, secret: bool = False):
+    if isinstance(value, dict):
+        return {
+            k: _masked(v, secret or (k not in _PLAIN_KEYS and bool(_SECRET_KEY_RE.search(k))))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_masked(v, secret) for v in value]
+    if secret and isinstance(value, str) and not re.fullmatch(r"(Bearer\s+)?\$\{[^}]*\}", value):
+        return "***"
+    return value
+
+
+def _masked_toml(text: str) -> str:
+    lines = []
+    for line in text.splitlines(True):
+        key = _TOML_KEY_RE.match(line)
+        name = key.group(1).strip("\"'") if key else ""
+        if key and name not in _PLAIN_KEYS and not name.endswith("_env_var"):
+            line = line[: key.end()] + _QUOTED_RE.sub('"***"', line[key.end() :])
+        lines.append(line)
+    return "".join(lines)
 
 
 def _redact(text: str) -> str:
-    for pattern, replacement in _SECRETS:
-        text = pattern.sub(replacement, text)
-    return text
+    # Last line of defence for text we don't parse, such as claude's own error output.
+    text = re.sub(r"(?i)(bearer\s+)(?!\$\{)\S+", r"\1***", text)
+    return re.sub(r"sk-unsloth-\S+", "sk-unsloth-***", text)
 
 
 def _diff(path: Path, old_text: Optional[str], new_text: str) -> str:
-    return _redact(
-        "".join(
-            difflib.unified_diff(
-                (old_text or "").splitlines(True),
-                new_text.splitlines(True),
-                fromfile = str(path) if old_text is not None else "/dev/null",
-                tofile = str(path),
-            )
+    return "".join(
+        difflib.unified_diff(
+            (old_text or "").splitlines(True),
+            new_text.splitlines(True),
+            fromfile = str(path) if old_text is not None else "/dev/null",
+            tofile = str(path),
         )
     )
 
 
-def write_config(path: Path, old_text: Optional[str], new_text: str, *, dry_run: bool) -> str:
+def write_config(
+    path: Path,
+    old_text: Optional[str],
+    new_text: str,
+    *,
+    dry_run: bool,
+    shown: Tuple[Optional[str], str],
+) -> str:
+    """Write ``new_text``; a dry run prints only ``shown``, the (masked) old and new entry."""
     if old_text == new_text:
         return "unchanged"
     if dry_run:
-        typer.echo(_diff(path, old_text, new_text), nl = False)
+        typer.echo(_diff(path, *shown), nl = False)
         return "dry-run"
     mode = None if old_text is None else path.stat().st_mode & 0o777
     _write_app_file(path, new_text)
@@ -242,10 +273,18 @@ def _json_text(data: dict) -> str:
     return json.dumps(data, indent = 2, ensure_ascii = False) + "\n"
 
 
-def _merge_json_file(path: Path, data: dict, text: Optional[str], new: dict, dry_run: bool) -> str:
+def _entry_text(name: str, entry) -> Optional[str]:
+    return None if entry is None else _json_text({name: _masked(entry)})
+
+
+def _merge_json_file(
+    path: Path, name: str, data: dict, text: Optional[str], new: dict, dry_run: bool
+) -> str:
     if text is not None and new == data:
         return "unchanged"
-    return write_config(path, text, _json_text(new), dry_run = dry_run)
+    old_entry = data.get("mcpServers", {}).get(name)
+    shown = (_entry_text(name, old_entry), _entry_text(name, new["mcpServers"][name]))
+    return write_config(path, text, _json_text(new), dry_run = dry_run, shown = shown)
 
 
 def claude_config_path() -> Path:
@@ -269,7 +308,7 @@ def _add_claude(name, url, env_var, dry_run) -> Tuple[str, Path]:
     if exe is None:
         typer.echo("Claude Code was not found on PATH, so its config file is edited directly.")
         new = _with_server(data, name, entry)
-        return _merge_json_file(path, data, text, new, dry_run), path
+        return _merge_json_file(path, name, data, text, new, dry_run), path
     commands = []
     if current is not None:
         commands.append([exe, "mcp", "remove", "--scope", "user", name])
@@ -277,8 +316,7 @@ def _add_claude(name, url, env_var, dry_run) -> Tuple[str, Path]:
         [exe, *_CLAUDE_ADD, name, url, "--header", f"Authorization: {_bearer(env_var)}"]
     )
     if dry_run:
-        old = _json_text({name: current}) if current is not None else None
-        typer.echo(_diff(path, old, _json_text({name: entry})), nl = False)
+        typer.echo(_diff(path, _entry_text(name, current), _entry_text(name, entry)), nl = False)
         for argv in commands:
             typer.echo("Would run: " + shlex.join(argv))
         return "dry-run", path
@@ -317,12 +355,16 @@ def _add_codex(name, url, env_var, timeout, dry_run) -> Tuple[str, Path]:
             f"Couldn't update {path} safely ({e}), so it was left as is. Add this table by hand:\n\n"
             + _codex_block(name, url, env_var, timeout)
         )
-    return write_config(path, text, new, dry_run = dry_run), path
+    header = _codex_header(name)
+    chunks = re.split(r"(?m)^(?=[ \t]*\[)", old)
+    ours = "".join(chunk for chunk in chunks if header.match(chunk)) or None
+    shown = (ours and _masked_toml(ours), _codex_block(name, url, env_var, timeout))
+    return write_config(path, text, new, dry_run = dry_run, shown = shown), path
 
 
-def _add_json(path: Path, merge, dry_run) -> Tuple[str, Path]:
+def _add_json(path: Path, name: str, merge, dry_run) -> Tuple[str, Path]:
     text, data = _read_json_config(path)
-    return _merge_json_file(path, data, text, merge(data), dry_run), path
+    return _merge_json_file(path, name, data, text, merge(data), dry_run), path
 
 
 def _resolve_base(url: Optional[str]) -> str:
@@ -360,12 +402,12 @@ def add(
         state, path = _add_codex(name, target, env_var, timeout, dry_run)
     elif agent is Agent.cursor:
         path = Path.home() / ".cursor" / "mcp.json"
-        state, _ = _add_json(path, lambda d: cursor_merge(d, name, target, env_var), dry_run)
+        state, _ = _add_json(path, name, lambda d: cursor_merge(d, name, target, env_var), dry_run)
     else:
         if output.suffix.lower() not in (".json", ".jsonc"):
             _fail("--output must be a .json file; for another format, paste the printed entry.")
         entry = claude_entry(target, env_var)
-        state, _ = _add_json(output, lambda d: _with_server(d, name, entry), dry_run)
+        state, _ = _add_json(output, name, lambda d: _with_server(d, name, entry), dry_run)
         path = output
 
     if state == "written":
