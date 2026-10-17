@@ -5457,6 +5457,15 @@ const Composer: FC<{
     }
     wasDictatingRef.current = false;
     if (!sendAfterDictationRef.current) return;
+    // Voice mode's turn ends through the loop (requestVoiceSubmit), which
+    // appends the utterance itself. Submitting the box here as well queued a
+    // copy behind the running reply, and removing that copy from the queue
+    // could not stop the loop's own send.
+    if (voiceEngaged) {
+      sendAfterDictationRef.current = false;
+      heldTextRef.current = null;
+      return;
+    }
     // A partial transcript (a failed chunk, or an engine error after one
     // landed) belongs in the composer, but must not send half a message.
     // Silence, a thread switch mid-transcription, or a plus-menu insertion
@@ -5495,7 +5504,7 @@ const Composer: FC<{
     sendAfterDictationRef.current = false;
     heldTextRef.current = null;
     formRef.current?.requestSubmit();
-  }, [isDictating, aui, composerIdentity, dictationBlocked, composerText]);
+  }, [isDictating, aui, composerIdentity, dictationBlocked, composerText, voiceEngaged]);
 
   const handleSubmit = useCallback(
     (event: {
@@ -5510,6 +5519,13 @@ const Composer: FC<{
       pendingFollowUpBehaviorRef.current = behavior;
       if (isResearchActive) {
         event.preventDefault();
+        return;
+      }
+      // Enter or Send while the voice loop is listening ends the turn; the loop
+      // delivers the words. Sending or queueing the box here too doubled them.
+      if (voiceEngaged && isDictating) {
+        event.preventDefault();
+        aui.composer().stopDictation();
         return;
       }
       // A command, not a prompt: ahead of the model and queue gates, so it works with no model loaded.
@@ -5735,6 +5751,8 @@ const Composer: FC<{
       sendReservedComposer,
       shouldBlockSend,
       threadIsRunning,
+      voiceEngaged,
+      isDictating,
     ],
   );
 
