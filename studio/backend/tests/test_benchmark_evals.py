@@ -344,6 +344,16 @@ def test_a_stopped_run_holds_the_slot_until_its_worker_exits(monkeypatch):
     assert backend.try_begin() is not None
 
 
+def test_a_run_stopped_before_it_submits_never_reaches_the_worker(monkeypatch):
+    calls = []
+    backend = _orchestrator(monkeypatch, lambda params: calls.append(params) or {"results": {}})
+    seq = backend.try_begin()
+    assert backend.cancel()  # Stop lands between the route's claim and run()
+    assert backend.run({"x": 1}, op_seq = seq) == {}
+    assert not backend.is_draining() and calls == []
+    assert backend.try_begin() is not None
+
+
 def test_stop_wins_over_a_run_that_finishes_in_the_same_poll(monkeypatch):
     release = threading.Event()
     backend = _orchestrator(

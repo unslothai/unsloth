@@ -321,18 +321,17 @@ class BenchmarkOrchestrator:
             op_seq = self.try_begin(account)
             if op_seq is None:
                 raise RuntimeError("A benchmark is already running.")
+        # One step under the lock: a Stop between the check and the submit would otherwise free
+        # the slot before is_draining() can see this worker.
         with self._lock:
-            if op_seq != self._op_seq:
-                return {}  # stopped and superseded before it started
+            if op_seq != self._op_seq or self._cancel_event.is_set():
+                return {}  # stopped, or superseded, before it started
             cancel_event = self._cancel_event
-        my_seq = op_seq
-        clear_progress()
-
-        self._append_log("stdout", "Starting benchmark run...")
-
-        future = self._executor.submit(_run_benchmark_task, params)
-        with self._lock:
+            clear_progress()
+            future = self._executor.submit(_run_benchmark_task, params)
             self._worker = future
+        my_seq = op_seq
+        self._append_log("stdout", "Starting benchmark run...")
 
         result: Any = None
         error: Optional[str] = None
