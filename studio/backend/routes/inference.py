@@ -26667,11 +26667,9 @@ async def _analyze_transcript(source, expected_text: str, request: Request) -> d
         b"", model, None, False, engine, request, None, source_path = path
     )
     transcript = str(result.get("text") or "").strip()
-    return {
-        "transcript": transcript,
-        "stt_model": model,
-        "match_score": match_score(expected_text, transcript),
-    }
+    # Word edit distance grows with both lengths, so it stays off the event loop.
+    score = await asyncio.to_thread(match_score, expected_text, transcript)
+    return {"transcript": transcript, "stt_model": model, "match_score": score}
 
 
 @router.post("/audio/analyze", response_model = AudioAnalyzeResponse)

@@ -242,6 +242,8 @@ _UNSPACED = re.compile(r"[\u0e00-\u0e7f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\u
 
 def _words(text: str) -> list[str]:
     folded = unicodedata.normalize("NFKC", text or "").casefold()
+    # "don't" and "dont" are one word; other punctuation splits words.
+    folded = re.sub(r"(?<=\w)['\u2019](?=\w)", "", folded)
     folded = "".join(" " if unicodedata.category(ch)[0] in "PS" else ch for ch in folded)
     return _UNSPACED.sub(lambda m: f" {m.group(0)} ", folded).split()
 

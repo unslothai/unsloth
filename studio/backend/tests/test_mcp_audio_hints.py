@@ -43,6 +43,8 @@ def test_the_v1_envelope_code_gets_the_tag_and_the_generic_hint():
     message = _message(_v1(503, "Out of memory.", type = "server_error", code = "out_of_memory"))
     assert message.startswith("[out_of_memory] Out of memory.")
     assert message.endswith("Load the audio model again with device='cpu'.")
+    # The envelope's "(out_of_memory)" suffix is dropped; the tag names the code once.
+    assert message.count("out_of_memory") == 1
 
 
 def test_gpu_unavailable_points_at_the_cpu():

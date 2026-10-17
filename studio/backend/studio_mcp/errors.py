@@ -226,5 +226,6 @@ def raise_for_audio(resp: httpx.Response, *, hints: Optional[Mapping[int, str]] 
     try:
         return raise_for_route(resp, hints = {**(hints or {}), resp.status_code: audio_hint(body)})
     except ToolError as exc:
-        text = str(exc)
+        # The /v1 envelope repeats the code after the message; the tag already names it.
+        text = str(exc).replace(f" ({code})", "", 1)
         raise ToolError(text if text.startswith("[") else f"[{code}] {text}") from None

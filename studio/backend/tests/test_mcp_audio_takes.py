@@ -122,6 +122,13 @@ def test_takes_report_ignored_options_applied_and_warnings_once(monkeypatch):
     assert out["warnings"][2].startswith("Take 3 of 3 failed: Broke.")
 
 
+def test_more_than_four_variations_is_refused_before_any_take(monkeypatch):
+    result, studio = _music(monkeypatch, _take("c1"), args = {**SONG, "variations": 6})
+    assert result["isError"] is True
+    assert "variations must be 1 to 4" in result["content"][0]["text"]
+    assert bodies(studio, "/v1/audio/run") == []
+
+
 def test_a_failed_first_take_is_the_tool_error(monkeypatch):
     stopped = {"code": "runtime_stopped", "message": "The audio runtime stopped: exit 9."}
     run = JSONResponse({"detail": stopped}, status_code = 500)

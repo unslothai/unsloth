@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import time
@@ -159,6 +160,9 @@ async def _run_takes(
         raise ToolError(
             f"cancel_id {cancel_id!r} is running or was just cancelled; pass a new cancel_id."
         )
+    if not 1 <= variations <= 4:
+        # The route refuses more, but take by take only after the first four ran.
+        raise ToolError("variations must be 1 to 4.")
     run = _RUNS[key] = _Run()
     try:
         takes = variations if body["workflow"] == "music" else 1
@@ -351,13 +355,14 @@ def _speaker(raw: Any, labels: dict[str, Any]) -> Optional[str]:
     return opt_text(labels.get(str(raw))) or opt_text(str(raw))
 
 
-def _scored(result: TranscriptResult, expected: Optional[str]) -> TranscriptResult:
-    """``result`` with match_score against ``expected``, when given."""
+async def _scored(result: TranscriptResult, expected: Optional[str]) -> TranscriptResult:
+    """``result`` with match_score against ``expected``, when given; scored off the event loop,
+    which this server shares with every other request."""
     if expected is None:
         return result
     from core.inference.audio_metrics import match_score
 
-    score = round(match_score(expected, result.text), 4)
+    score = round(await asyncio.to_thread(match_score, expected, result.text), 4)
     return result.model_copy(update = {"match_score": score})
 
 
@@ -527,7 +532,7 @@ async def transcribe(
             if data is not None
             else await audio_ref(caller, audio)
         )
-        return _scored(
+        return await _scored(
             await _transcribe_source(
                 caller,
                 ctx,
@@ -544,7 +549,7 @@ async def transcribe(
     # A whisper.cpp id is shared with Transformers, so only the stored-audio route keeps that engine.
     if engine == "gguf" and not translate:
         source = {"input_id": await upload_audio(caller, data, name)}
-        return _scored(
+        return await _scored(
             await _transcribe_source(
                 caller, ctx, source, language = language, timestamps = timestamps, model = model
             ),
@@ -581,7 +586,7 @@ async def transcribe(
         segments = _segments(payload) if timestamps else None,
         saved_to_history = False,
     )
-    return _scored(result, expected_text)
+    return await _scored(result, expected_text)
 
 
 async def _resident_stt(

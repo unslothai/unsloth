@@ -106,6 +106,7 @@ def test_24_bit_wav_reads_like_16_bit(tmp_path):
 
 def test_match_score_is_one_minus_wer_after_normalising():
     assert am.match_score("Hello, World!", "hello world") == 1.0
+    assert am.match_score("Don’t stop", "dont stop") == 1.0
     assert am.match_score("the quick brown fox", "the quick red fox") == 0.75
     assert am.match_score("one two", "three four five six") == 0.0
     assert am.match_score("", "") == 1.0 and am.match_score("", "words") == 0.0
