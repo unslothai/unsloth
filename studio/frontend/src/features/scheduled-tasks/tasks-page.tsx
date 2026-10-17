@@ -48,7 +48,13 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import type { ScheduledTask } from "./api";
 import { runErrorText } from "./results";
-import { type TaskSchedule, formatMoment, relativeTimeParts, summarizeSchedule } from "./schedule";
+import {
+  type TaskSchedule,
+  formatMoment,
+  relativeTimeParts,
+  summarizeSchedule,
+  waitForDue,
+} from "./schedule";
 import { useScheduledTasksStore } from "./store";
 import { TaskDialog } from "./task-dialog";
 import { useUnseenScheduledRuns } from "./unseen";
@@ -375,17 +381,20 @@ export function TasksPage() {
   );
   useEffect(() => {
     if (soonest === null) return;
-    // Read, not subscribed to: the offset moves a little with every refresh.
-    const serverNow = Date.now() + useScheduledTasksStore.getState().serverOffset;
-    const delay = Math.max(1_000, soonest - serverNow + 2_000);
-    // Further out than a timer can wait; the minute clock re-renders long before it matters.
-    if (delay > 2 ** 31 - 1) return;
-    // Then again every few seconds while the task is still due: the scheduler may be busy with
-    // another run, and only a claim moves its next run on, which ends this.
-    let timer = window.setTimeout(function look() {
+    let timer: number | undefined;
+    const look = () => {
       void refresh();
+      // Then again every few seconds while the task is still due: the scheduler may be busy with
+      // another run, and only a claim moves its next run on, which ends this.
       timer = window.setTimeout(look, OVERDUE_REFRESH_MS);
-    }, delay);
+    };
+    const wait = () => {
+      // Read, not subscribed to: the offset moves a little with every refresh.
+      const serverNow = Date.now() + useScheduledTasksStore.getState().serverOffset;
+      const next = waitForDue(soonest, serverNow);
+      timer = window.setTimeout(next.due ? look : wait, next.delay);
+    };
+    wait();
     return () => window.clearTimeout(timer);
   }, [soonest, refresh]);
 

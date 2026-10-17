@@ -32,6 +32,7 @@ import {
   summarizeSchedule,
   timeChoices,
   titleFromPrompt,
+  waitForDue,
   zoneLabel,
 } from "../src/features/scheduled-tasks/schedule.ts";
 
@@ -405,6 +406,15 @@ test("a time's zone is named as briefly as the locale allows", () => {
   assert.equal(zoneLabel("UTC", "en-US", at), "UTC");
   // A zone the browser does not know is written out.
   assert.equal(zoneLabel("Nowhere/Special", "en-US", at), "Nowhere/Special");
+});
+
+test("the Scheduled page looks again just after the next run is due, and measures again when that is far off", () => {
+  const now = 1_000_000;
+  assert.deepEqual(waitForDue(now + 60_000, now), { delay: 62_000, due: true });
+  // Already due: soon, but not in a busy loop.
+  assert.deepEqual(waitForDue(now - 60_000, now), { delay: 1_000, due: true });
+  // A month out is further than a timer can wait: it measures again in an hour.
+  assert.deepEqual(waitForDue(now + 30 * 24 * 60 * 60_000, now), { delay: 60 * 60_000, due: false });
 });
 
 test("a task left unnamed is named after its instructions' first line", () => {

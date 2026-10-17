@@ -254,6 +254,20 @@ export function relativeTimeParts(
   return [Math.round(days / 365), "year"];
 }
 
+// Past the due time, so the scheduler has claimed the run by the time the page looks.
+const DUE_SLACK_MS = 2_000;
+// The longest the page waits before measuring again: a timer cannot wait past about 24 days, and one
+// that waits through a sleeping computer fires late.
+const LONGEST_WAIT_MS = 60 * 60_000;
+
+/** When the Scheduled page should look again for a task due at `due`, both on the server's clock:
+ *  just after it is due, or, when that is further off than a timer should wait, after an hour, to
+ *  measure again (`due` false). */
+export function waitForDue(due: number, now: number): { delay: number; due: boolean } {
+  const delay = Math.max(1_000, due - now + DUE_SLACK_MS);
+  return delay > LONGEST_WAIT_MS ? { delay: LONGEST_WAIT_MS, due: false } : { delay, due: true };
+}
+
 /** The browser's IANA zone, saved with a task so it keeps its wall-clock time across DST. */
 export function browserTimeZone(): string {
   try {
