@@ -497,8 +497,16 @@ async fn routes(proxies: &Proxies, request: &Request) -> Vec<Option<Upstream>> {
     if excepted(&proxies.exceptions, &request.host) {
         return vec![None];
     }
+    let mut route = system_proxy(&proxies.fixed, &destination);
+    if matches!(route, Ok(None)) && request.forward.is_none() && request.port != 443 {
+        // A tunnel to another port may carry plain HTTP (macOS tunnels it): a set HTTP proxy beats
+        // going direct.
+        if let Ok(http) = format!("http://{}:{}/", request.host, request.port).parse() {
+            route = system_proxy(&proxies.fixed, &http);
+        }
+    }
     // A set proxy this can't speak to leaves no route, rather than going direct around it.
-    system_proxy(&proxies.fixed, &destination).map_or_else(|()| Vec::new(), |route| vec![route])
+    route.map_or_else(|()| Vec::new(), |route| vec![route])
 }
 
 /// The first fixed setting that covers `destination`, if any. HTTP and SOCKS proxies are chained;
@@ -1658,12 +1666,15 @@ mod tests {
             fixed: vec![Matcher::builder().http("http://127.0.0.1:1").build()],
             ..Default::default()
         };
-        let http = Some(Upstream::Http {
-            address: "127.0.0.1:1".into(),
-            auth: None,
-        });
+        let http = || {
+            Some(Upstream::Http {
+                address: "127.0.0.1:1".into(),
+                auth: None,
+            })
+        };
         let to = |port| parse(&tunnel(&format!("h.example:{port}"))).unwrap();
-        assert_eq!(routes(&proxies, &to(80)).await, [http]);
+        assert_eq!(routes(&proxies, &to(80)).await, [http()]);
+        assert_eq!(routes(&proxies, &to(8080)).await, [http()]);
         assert_eq!(routes(&proxies, &to(443)).await, [None]);
     }
 
