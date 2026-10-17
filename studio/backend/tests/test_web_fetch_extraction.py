@@ -2282,7 +2282,9 @@ def test_fetch_url_raw_named_proxy_fetch_keeps_a_late_private_answer_refused(mon
     assert requested == []
 
 
-@pytest.mark.parametrize("host", ["intranet", "foo.intranet", "printer.local", "nas.lan"])
+@pytest.mark.parametrize(
+    "host", ["intranet", "foo.intranet", "printer.local", "nas.lan", "home.arpa"]
+)
 def test_fetch_url_raw_named_proxy_fetch_refuses_local_names(monkeypatch, host):
     import socket
     import threading

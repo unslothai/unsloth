@@ -394,7 +394,7 @@ def _host_problem(hostname: str) -> Optional[str]:
         ip = None
     if ip is not None:
         return None if ip.is_global else f"{host} is not a public address"
-    if host == "localhost" or "." not in host or host.endswith(_LOCAL_SUFFIXES):
+    if host == "localhost" or "." not in host or f".{host}".endswith(_LOCAL_SUFFIXES):
         return f"{host} is a local name"
     return None
 
