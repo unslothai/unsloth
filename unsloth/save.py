@@ -3613,6 +3613,11 @@ def _gguf_reuses_loaded_checkpoint(model, state_dict = None):
         return False
     if state_dict is not None or getattr(model, "_unsloth_full_finetuning", False):
         return False
+    # REAP pruned in memory: the loaded folder still holds every expert.
+    if getattr(model, "_unsloth_reap_report", None) and not getattr(
+        model, "_unsloth_reap_saved", None
+    ):
+        return False
     # The loaded folder holds the stock MTP head; a trained one needs a fresh checkpoint.
     if _attached_mtp_head(model) is not None:
         return False
@@ -6050,6 +6055,17 @@ def unsloth_generic_save(
         )
     else:
         raise_if_merging_mistral_format_view(model, save_method)
+        # Inline, builtins only: the merge rebuilds the base from disk, which still has every expert
+        # after an in-memory REAP prune (get_peft_model refuses this too; raw PEFT does not).
+        if getattr(model, "_unsloth_reap_report", None) and not getattr(
+            model, "_unsloth_reap_saved", None
+        ):
+            raise RuntimeError(
+                "Unsloth: this model was REAP pruned in memory only, but a merged save rebuilds the "
+                f"base weights from `{model.config._name_or_path}`, which still has every expert. "
+                'Nothing was written. Call `reap_prune(..., save_directory = "pruned_model")` (or '
+                "save the pruned model and load it again) before `get_peft_model`."
+            )
         from unsloth_zoo.saving_utils import merge_and_overwrite_lora
 
         # An older unsloth_zoo accepts `output_dtype` but still writes the base dtype.
