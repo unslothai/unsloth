@@ -22,7 +22,8 @@ export const ACTIVE_POLL_MS = 2_000;
 export const IDLE_POLL_MS = 5 * 60_000;
 // Past the due time, so the run has been claimed by the time the poll asks.
 const DUE_SLACK_MS = 3_000;
-/** Runs that finished longer ago than this when Studio is reopened are not announced again. */
+/** How far behind the server's present announcing resumes at most: runs that finished longer ago,
+ *  while Studio was closed or the computer asleep, are not announced. */
 export const CATCH_UP_MS = 24 * 60 * 60_000;
 // A run committed just after the server read its clock finished before the time it reported, so
 // each poll asks from a minute earlier and skips the runs it has already announced.
@@ -57,31 +58,18 @@ export interface SeenRuns {
   ids: string[];
 }
 
-/** The record as stored, with when this browser saved it. */
-export function serializeSeenRuns(seen: SeenRuns, now: number): string {
-  return JSON.stringify({ since: seen.since, ids: seen.ids, savedAt: now });
-}
-
 /** The stored record to resume from. Without one, announcing starts from the server's present and
- *  covers only what finishes from then on.
- *
- *  Its age is read on this browser's clock, from `savedAt`: `since` is the server's time, which this
- *  clock need not agree with. One saved longer ago than the catch-up window resumes from that window
- *  before now on the server's clock, which its `since` plus that age approximates, so a run that
- *  finished just before Studio was reopened is still announced and older ones are not. */
-export function readSeenRuns(stored: string | null, now: number): SeenRuns | null {
+ *  covers only what finishes from then on. How far behind it is, the first answer from the server
+ *  says (see `collectFinishedRuns`): this browser's clock plays no part. */
+export function readSeenRuns(stored: string | null): SeenRuns | null {
   let value: unknown;
   try {
     value = JSON.parse(stored ?? "null");
   } catch {
     return null;
   }
-  const { since, ids, savedAt } = (value ?? {}) as Partial<SeenRuns & { savedAt: number }>;
+  const { since, ids } = (value ?? {}) as Partial<SeenRuns>;
   if (typeof since !== "number" || !Number.isFinite(since)) return null;
-  if (typeof savedAt !== "number" || !Number.isFinite(savedAt)) return null;
-  // A clock set back since the save puts it in the future, which is recent enough.
-  const age = now - savedAt;
-  if (age > CATCH_UP_MS) return { since: since + CURSOR_SLACK_MS + age - CATCH_UP_MS, ids: [] };
   return {
     since,
     ids: (Array.isArray(ids) ? ids : [])
@@ -133,7 +121,12 @@ export function claimAnnouncements<T extends { id: string; finishedAt: number | 
 }
 
 /** The runs finished since `seen` that it has not announced, read an answer at a time, with the
- *  record moved past them. `last` is the final answer, which paces the next poll. */
+ *  record moved past them. `last` is the final answer, which paces the next poll.
+ *
+ *  A record further behind the server's present than the catch-up window (Studio closed for days,
+ *  or the computer asleep) resumes from that window instead, so a run that finished just before is
+ *  still announced and older ones are not. Measured on the server's clock alone, by its first answer:
+ *  a browser clock that disagrees with it, or was corrected meanwhile, cannot move the cursor. */
 export async function collectFinishedRuns(
   seen: SeenRuns | null,
   fetchAnswer: (since: number | null) => Promise<ScheduledTaskActivity>,
@@ -141,7 +134,12 @@ export async function collectFinishedRuns(
   const fresh: FinishedScheduledTaskRun[] = [];
   let record = seen;
   for (let page = 1; ; page += 1) {
-    const last = await fetchAnswer(record?.since ?? null);
+    let last = await fetchAnswer(record?.since ?? null);
+    const oldest = last.now - CATCH_UP_MS;
+    if (page === 1 && record !== null && record.since < oldest) {
+      record = { since: oldest, ids: record.ids };
+      last = await fetchAnswer(oldest);
+    }
     const announced = new Set(record?.ids);
     const unseen = last.runs.filter((run) => !announced.has(run.id));
     fresh.push(...unseen);

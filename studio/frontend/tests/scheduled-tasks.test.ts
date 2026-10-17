@@ -18,7 +18,6 @@ import {
   runErrorText,
   runsToAnnounce,
   runsToNotify,
-  serializeSeenRuns,
 } from "../src/features/scheduled-tasks/results.ts";
 import {
   type ScheduleSummary,
@@ -165,35 +164,41 @@ test("the results poll looks quickly while a run is going and again just after o
   assert.equal(nextPollDelay({ now: 0, activeRuns: 0, nextRunAt: null, more: true }), ACTIVE_POLL_MS);
 });
 
-test("announcing resumes from a record saved within the catch-up window, by this browser's clock", () => {
-  const now = 10 * CATCH_UP_MS;
-  const stored = (savedAt: number, since = 5_000, ids: unknown = ["run-1"]) =>
-    JSON.stringify({ since, ids, savedAt });
-  assert.deepEqual(readSeenRuns(stored(now - 60_000), now), { since: 5_000, ids: ["run-1"] });
-  // `since` is the server's time: a browser clock behind it or far ahead of it is no reason to drop it.
-  assert.deepEqual(readSeenRuns(stored(now, now + 3_600_000), now), { since: now + 3_600_000, ids: ["run-1"] });
-  assert.deepEqual(readSeenRuns(stored(now, now - 3 * CATCH_UP_MS), now)?.since, now - 3 * CATCH_UP_MS);
-  // A clock set back since the save puts the save ahead of it, which counts as recent.
-  assert.deepEqual(readSeenRuns(stored(now + 60_000), now), { since: 5_000, ids: ["run-1"] });
-  assert.deepEqual(readSeenRuns(stored(now + 2 * CATCH_UP_MS), now), { since: 5_000, ids: ["run-1"] });
-  assert.equal(readSeenRuns(null, now), null);
-  assert.equal(readSeenRuns("not json", now), null);
-  assert.equal(readSeenRuns(JSON.stringify({ ids: [], savedAt: now }), now), null);
-  assert.equal(readSeenRuns(JSON.stringify({ since: 5_000, ids: [] }), now), null);
+test("a saved record reads back as it was saved, with no clock of this browser's involved", () => {
+  const stored = (since: unknown, ids: unknown = ["run-1"]) => JSON.stringify({ since, ids });
+  assert.deepEqual(readSeenRuns(stored(5_000)), { since: 5_000, ids: ["run-1"] });
+  assert.equal(readSeenRuns(null), null);
+  assert.equal(readSeenRuns("not json"), null);
+  assert.equal(readSeenRuns(JSON.stringify({ ids: [] })), null);
+  assert.equal(readSeenRuns(stored("5000")), null);
   // Junk ids are dropped rather than failing the whole record.
-  assert.deepEqual(readSeenRuns(stored(now, 5_000, ["a", 7, null, "b"]), now), { since: 5_000, ids: ["a", "b"] });
-  // What is saved reads back.
+  assert.deepEqual(readSeenRuns(stored(5_000, ["a", 7, null, "b"])), { since: 5_000, ids: ["a", "b"] });
+  // One saved with the browser time it was written at reads the same, that time unused.
+  assert.deepEqual(readSeenRuns(JSON.stringify({ since: 5_000, ids: [], savedAt: 1 })), { since: 5_000, ids: [] });
   const seen = { since: 5_000, ids: ["a"] };
-  assert.deepEqual(readSeenRuns(serializeSeenRuns(seen, now), now + 60_000), seen);
+  assert.deepEqual(readSeenRuns(JSON.stringify(seen)), seen);
 });
 
-test("a record older than the catch-up window resumes from that window before now, on the server's clock", () => {
-  // Saved two days ago, a minute behind the server then: the server's now is about since + slack + age.
-  const savedAt = 1_000_000_000;
-  const now = savedAt + 2 * CATCH_UP_MS;
-  const since = 7_000_000;
-  const resumed = readSeenRuns(JSON.stringify({ since, ids: ["old"], savedAt }), now);
-  assert.deepEqual(resumed, { since: since + 60_000 + CATCH_UP_MS, ids: [] });
+test("a record further behind the server than the catch-up window resumes from that window, by the server's clock", async () => {
+  const now = 10 * CATCH_UP_MS;
+  const oldest = now - CATCH_UP_MS;
+  const runs = [finished("older", oldest - 60_000), finished("recent", oldest + 60_000)];
+  const asked: (number | null)[] = [];
+  const fetchAnswer = async (since: number | null) => {
+    asked.push(since);
+    const after = runs.filter((run) => since !== null && (run.finishedAt ?? 0) >= since);
+    return { now, runs: after, more: false, activeRuns: 0, nextRunAt: null };
+  };
+  // Three days behind the server's present: the window decides where to resume.
+  const resumed = await collectFinishedRuns({ since: now - 3 * CATCH_UP_MS, ids: [] }, fetchAnswer);
+  assert.deepEqual(asked, [now - 3 * CATCH_UP_MS, oldest]);
+  assert.deepEqual(resumed.fresh.map((run) => run.id), ["recent"]);
+  assert.equal(resumed.seen.since, now - 60_000);
+  // Within the window the record is the cursor, wherever this browser's clock stands.
+  asked.length = 0;
+  const kept = await collectFinishedRuns({ since: oldest - 1 + 60_000, ids: [] }, fetchAnswer);
+  assert.deepEqual(asked, [oldest - 1 + 60_000]);
+  assert.deepEqual(kept.fresh.map((run) => run.id), ["recent"]);
 });
 
 test("the record moves on every poll, a minute behind the server, and remembers what it announced", () => {

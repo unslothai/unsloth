@@ -24,7 +24,6 @@ import {
   runErrorText,
   runsToAnnounce,
   runsToNotify,
-  serializeSeenRuns,
 } from "./results";
 import { useUnseenScheduledRuns } from "./unseen";
 
@@ -42,7 +41,7 @@ function currentAccount(): string {
 
 function loadSeen(account: string): SeenRuns | null {
   try {
-    return readSeenRuns(localStorage.getItem(SEEN_KEY_PREFIX + account), Date.now());
+    return readSeenRuns(localStorage.getItem(SEEN_KEY_PREFIX + account));
   } catch {
     return null;
   }
@@ -50,7 +49,7 @@ function loadSeen(account: string): SeenRuns | null {
 
 function saveSeen(account: string, seen: SeenRuns): void {
   try {
-    localStorage.setItem(SEEN_KEY_PREFIX + account, serializeSeenRuns(seen, Date.now()));
+    localStorage.setItem(SEEN_KEY_PREFIX + account, JSON.stringify(seen));
   } catch {
     // Without storage the next launch only announces runs from then on.
   }
