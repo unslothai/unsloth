@@ -115,9 +115,9 @@ def env(monkeypatch, tmp_path):
     return llama
 
 
-def _load(owner = arb.DIFFUSION, media = "image", acquire = None):
+def _load(owner = arb.DIFFUSION, media = "image", acquire = None, **fit):
     async def _go():
-        swap = await cs.save_chat_kv_before_swap(owner, media)
+        swap = await cs.save_chat_kv_before_swap(owner, media, **fit)
         try:
             await asyncio.to_thread(acquire or (lambda: arb.acquire_for(owner)))
         finally:
@@ -164,17 +164,8 @@ def test_would_evict_matches_acquire_for(monkeypatch, policy, fits, current, tar
 
 
 def test_a_fit_swap_leaves_the_eviction_row_to_the_residency_code(env, monkeypatch):
-    # When they fit already logs the chat eviction as "evicted"; one eviction, one row.
     monkeypatch.setattr(arb, "would_evict", lambda *a, **k: True)
-
-    async def _go():
-        swap = await cs.save_chat_kv_before_swap(arb.DIFFUSION, "image", policy = "fit")
-        try:
-            await asyncio.to_thread(arb.acquire_for, arb.DIFFUSION)
-        finally:
-            swap.close()
-
-    asyncio.run(_go())
+    _load(policy = "fit")  # When they fit logs the eviction itself, as "evicted"
     assert kw._kv_resume["origin"] == "swap" and env.rows == []
 
 
