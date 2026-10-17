@@ -3787,9 +3787,31 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     # `--output-dir` is where `-O` puts the download, and `-O` itself contributes no operand.
     "curl --output-dir=/media/kuser/MEDIA_SSD/private -O https://example.com/payload",
     "wget --directory-prefix=/media/kuser/MEDIA_SSD/private https://example.com/payload",
+    f"ffmpeg -y -i in.wav {_OUTSIDE_DIR}/interview.wav",
+    f"pandoc notes.md -o {_OUTSIDE_DIR}/report.docx",
+    f"pandoc notes.md --output={_OUTSIDE_DIR}/report.docx",
+    f"magick in.png {_OUTSIDE_DIR}/photo.png",
+    r"ffmpeg -y -i in.wav C:\Users\alice\Documents\interview.wav",
+    f"pandoc notes.md -o{_OUTSIDE_DIR}/report.docx",
+    "pandoc notes.md -o /opt/report.docx",
+    "pandoc notes.md --output=/usr/share/doc/report.docx",
+    "ffmpeg -y -i in.wav /usr/share/sounds/out.wav",
+    "magick in.png /usr/share/pixmaps/photo.png",
+    "pandoc notes.md -o /report.docx",
+    "ffmpeg -y -i in.wav /report.wav",
+    "magick in.png -write /usr/share/pixmaps/mid.png out.png",
+    "convert in.png +write /usr/share/pixmaps/mid.png out.png",
+    "pandoc in.docx --extract-media=/usr/share/doc/assets -o out.md",
+    "pandoc in.docx --extract-media /usr/share/doc/assets -o out.md",
+    "pandoc in.md --log=/usr/share/doc/log.json -o out.html",
+    "ffmpeg -i in.wav -passlogfile /usr/share/doc/pass out.mp4",
+    "ffmpeg -i in.wav -y /out.wav",
+    "ffmpeg -i in.wav -shortest /usr/share/sounds/out.wav",
+    "magick compare a.png b.png /usr/share/pixmaps/diff.png",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    "import subprocess\nsubprocess.run(['ffmpeg', '-i', '/dev/zero', '/report.wav'])",
     # The filesystem root is silent for a LISTING, not for a walk that descends the whole host.
     "import os\nfor r, d, f in os.walk('/'):\n    print(f)",
     # `tempfile` creators write into `dir` when it is given.
@@ -4123,6 +4145,23 @@ _INDIRECT_BENIGN_TERMINAL = (
     "unzip a.zip",
     "cat ~/notes.txt",
     "mkdir ~/.config/myapp",
+    "ffmpeg -y -i in.wav out.wav",
+    "ffprobe /usr/share/sounds/alert.wav",
+    "ffmpeg -i /usr/share/sounds/alert.wav out.wav",
+    "magick /usr/share/pixmaps/logo.png out.png",
+    "pandoc notes.md --output=report.docx",
+    "export PATH=/home/alice/bin:$PATH",
+    "robocopy src dst /E",
+    "magick in.png -resize 50% out.png",
+    "pandoc in.docx --extract-media=media -o out.md",
+    "magick identify /usr/share/pixmaps/logo.png",
+    "ffmpeg -filter_complex_script /usr/share/doc/graph.txt -i in.wav out.wav",
+    "ffmpeg -i in.mp4 -filter_script:v /usr/share/doc/f.txt out.mp4",
+    "ffmpeg -i in.mp4 -attach /usr/share/fonts/a.ttf out.mkv",
+    "ffmpeg -i in.mp4 -/filter_complex /usr/share/doc/g.txt out.mp4",
+    "ffmpeg -fpre /usr/share/ffmpeg/libvpx-360p.ffpreset -i in.y4m out.webm",
+    "ffmpeg -vpre /usr/share/ffmpeg/x.ffpreset -i in.y4m out.webm",
+    "magick compare /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png",
 )
 
 _INDIRECT_BENIGN_PYTHON = (

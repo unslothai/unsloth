@@ -628,8 +628,7 @@ def _credential_under_silent_root(candidate: str) -> bool:
     return "/auth/" in unified + "/"
 
 
-# Commands whose file operands are READ. Deliberately narrow: only names whose operands are unambiguously paths, so a
-# command this scan does not model contributes nothing rather than a guess.
+# Commands whose file operands are READ. Deliberately narrow: only names whose operands are unambiguously paths.
 # `zcat --help`: "Usage: zcat [OPTION]... [FILE]...", uncompressing each to stdout. The
 # whole family reads the file it is given exactly as `cat` does.
 # `iconv --help`: "Usage: iconv [OPTION...] [FILE...]", so a bare operand is a file it reads.
@@ -1216,13 +1215,78 @@ _REDIR_HEREDOC_RE = re.compile(r"^\d*<<<?-?$")
 _SHELL_ASSIGN_TOKEN_RE = re.compile(r"^[A-Za-z_]\w*=")
 
 
+# `cmd /c`, `robocopy a b /E` and find's `\;`: a lone rooted word is a switch, not a path.
+_BARE_SWITCH_RE = re.compile(r"^[/\\][^/\\]*$")
+
+
+# `pandoc --help`: "-o FILE, --output=FILE  Write output to FILE"; the same spelling names the output file
+# for most tools this scan has no table for.
+_OUTPUT_FILE_FLAGS = frozenset({"-o", "--output"})
+
+# Flags that name a file or directory the command writes, beyond `-o`/`--output`: ImageMagick's
+# `-write`/`+write`, pandoc's `--extract-media`/`--log`, and ffmpeg's log, SDP, stats, progress and
+# attachment-dump files.
+_COMMAND_OUTPUT_FLAGS = {
+    "magick": frozenset({"-write", "+write"}),
+    "convert": frozenset({"-write", "+write"}),
+    "pandoc": frozenset({"--extract-media", "--log"}),
+    "ffmpeg": frozenset(
+        {"-passlogfile", "-sdp_file", "-vstats_file", "-progress", "-dump_attachment"}
+    ),
+}
+
+# Tools that name their output positionally. `ffmpeg ... {[input_options] -i input} ... output`:
+# an operand that is no option's value, or the last one, is an output; option values are read.
+# `magick input-file ... output-file` writes the last one; `compare image image [difference]` only
+# when the difference image is given.
+_POSITIONAL_OUTPUT_COMMANDS = {"ffmpeg": "not_option_value", "magick": "last", "convert": "last"}
+_MAGICK_VERB_OUTPUTS = {"identify": None, "compare": "third_image"}
+
+# ffmpeg flags that take no value, so the operand after one is still positional.
+_FFMPEG_VALUELESS_FLAGS = frozenset(
+    "-y -n -an -vn -sn -dn -shortest -nostdin -hide_banner -stats -nostats -copyts".split()
+)
+
+
+def _unlisted_command_operands(command, args) -> "list[tuple[str, bool]]":
+    outputs = _POSITIONAL_OUTPUT_COMMANDS.get(command)
+    if command == "magick" and args and args[0] in _MAGICK_VERB_OUTPUTS:
+        outputs = _MAGICK_VERB_OUTPUTS[args[0]]
+    images = [arg for arg in args[1:] if arg[:1] not in "-+" and re.search(r"[./\\]", arg)]
+    output_flags = _OUTPUT_FILE_FLAGS | _COMMAND_OUTPUT_FLAGS.get(command, frozenset())
+    operands = []
+    writes_next = False
+    for index, arg in enumerate(args):
+        writing, writes_next = writes_next, False
+        value = arg
+        if arg in output_flags or arg.split(":")[0] in output_flags:
+            writes_next = True
+            continue
+        if arg.startswith("-"):
+            flag, _, value = arg.partition("=")
+            if not value and not arg.startswith("--"):
+                flag, value = arg[:2], arg[2:]
+            writing = flag in output_flags
+        elif outputs == "last":
+            writing = writing or index == len(args) - 1
+        elif outputs == "third_image":
+            writing = writing or (len(images) >= 3 and index == len(args) - 1)
+        elif outputs == "not_option_value":
+            previous = args[index - 1] if index else ""
+            writing = writing or index == len(args) - 1 or not previous.startswith("-")
+            writing = writing or previous in _FFMPEG_VALUELESS_FLAGS
+        # A lone rooted word is a Windows switch (`/E`), unless it is the file the command writes.
+        if _looks_absolute(value) and (writing or not _BARE_SWITCH_RE.match(value)):
+            operands.append((value, writing))
+    return operands
+
+
 def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
     """Absolute file operands a command list touches, as ``(path, writing)``.
 
-    Only commands in the tables above contribute operands, and only tokens that look absolute are
-    returned -- a relative operand lands in the session workdir, and a flag value that is not a path
-    (``head -n 5``) cannot look absolute. Redirection targets are included whichever command owns
-    them, since ``> /abs/file`` truncates that file regardless.
+    Only tokens that look absolute are returned -- a relative operand lands in the session workdir,
+    and a flag value that is not a path (``head -n 5``) cannot look absolute. Redirection targets
+    are included whichever command owns them, since ``> /abs/file`` truncates that file regardless.
     """
     # Every operand this can report is absolute in some spelling, and each of those spellings needs
     # one of these characters: a POSIX root or tilde, a UNC or Windows separator, or the colon of a
@@ -1611,7 +1675,9 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
         read_cmd = True
     dest_last = command in _PATH_DEST_LAST_COMMANDS
     if not (read_cmd or write_cmd or dest_last or flag_only):
-        return launched
+        if command in _classified_terminal_commands():
+            return launched
+        return launched + _unlisted_command_operands(command, args)
     inplace = command in ("sed", "perl") and any(
         arg in _SED_INPLACE_FLAGS or arg.startswith("--in-place") or _clusters_inplace(arg)
         for arg in args
@@ -3025,7 +3091,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             # once the scan has classified the child command, `subprocess.run(["echo", "/home/x"])`
             # is the same nothing `echo /home/x` is at a terminal, and prompting on one and not the
             # other was a difference with no reason behind it.
-            if not from_command and not any(
+            if not any(
                 _token_command_base(word) in _classified_terminal_commands() for word in words
             ):
                 operands.extend((word, False) for word in words if _looks_absolute(word))
