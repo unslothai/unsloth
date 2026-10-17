@@ -1906,6 +1906,11 @@ def CausalLM_fast_forward(fast_forward_inference):
                     kwargs.get("packed_seq_lengths"),
                 )
 
+                # Fused CE bypasses lm_head.forward(), where TorchAO applies weight fake quantization.
+                weight_fake_quantizer = getattr(self.lm_head, "weight_fake_quantizer", None)
+                if weight_fake_quantizer is not None:
+                    lm_head = weight_fake_quantizer(lm_head)
+
                 # fused_linear_cross_entropy is disabled: T4 raises OutOfResources (needs 98304 shared memory
                 # against a 65536 limit).
                 loss = unsloth_fused_ce_loss(
