@@ -55,13 +55,16 @@ REFERENCE_HOST_THREADS = 192
 _THREAD_PARALLEL_MS_PER_GIB = 138.4
 _THREAD_SERIAL_MS_PER_GIB = 5.57
 
+# across DIFFERENT machines the slope is steeper (12 cloud vCPUs are ~6 physical cores on one memory controller)
 # The fit above varies threads on ONE machine; across DIFFERENT machines the slope is steeper (12 cloud vCPUs are ~6
 # physical cores on one memory controller). Least squares over dense Q4 on 12 and 48 vCPU hosts (24.21 and 6.82 ms per
-# GiB) gives a = 278.2, b = 1.03. Neither fit dominates -- at 192 threads cross-machine predicts 2.48 vs 5.498
-# measured, at 12 one-machine predicts 17.1 vs 24.21 -- so take whichever is MORE expensive: optimism quotes a spill
-# that runs several times slower than promised.
+# GiB) gives a = 278.2, b = 1.03. Neither fit dominates -- at 192 threads cross-machine predicts 2.48 vs 5.498 measured,
+# at 12 one-machine predicts 17.1 vs 24.21 -- so take whichever is MORE expensive: optimism quotes a spill that runs
+# several times slower than promised.
 _CROSS_HOST_PARALLEL_MS_PER_GIB = 278.2
 _CROSS_HOST_SERIAL_MS_PER_GIB = 1.03
+
+# residual model/measured over 70 runs (T4, L4, A100, RTX PRO 6000 at 2-48 vCPU)
 
 
 # Residual model/measured over 70 runs on T4, L4, A100 and RTX PRO 6000 (2, 8, 12, 48 vCPU), Qwen3.8-27B and
@@ -75,7 +78,9 @@ class Access(str, Enum):
 
     # : Dense FFN: large contiguous matmuls, best case for the CPU backend.
     CONTIGUOUS = "contiguous"
-    # : lm_head: one tall matvec, usually higher-bit. Parallelises worse than 64 independent FFN blocks and
+    # : lm_head: one tall matvec; parallelises worse than 64 independent FFN blocks and dequantises more bytes per
+    # output element.
+    # : lm_head: one tall matvec, usually higher-bit. Parallelises worse than 64 : independent FFN blocks and
     # dequantises more bytes per output element.
     SINGLE_MATVEC = "single_matvec"
     # : MoE experts: 8-of-256 scattered small matmuls per layer per token.
@@ -94,12 +99,13 @@ _RATE_RATIOS: dict[Access, float] = {
     Access.KV_CACHE: 20.1,
 }
 
-# Prefill streaming bandwidth, GiB/s. Bracketed by the two measurements (dense 49.4, MoE 66.9); that spread is why
-# this is a coarse constant, not a curve.
+# Prefill streaming bandwidth, GiB/s, bracketed by the two measurements (dense 49.4, MoE 66.9); that
+# spread is why it is a coarse constant, not a curve. Measured on PCIe 5 x16, so it is only the
+# DEFAULT for ``HostProfile.link_gib_s``: a caller that can read the device's link passes its own.
 PREFILL_STREAM_GIB_S = 55.0
 
-# Spilling several groups costs MORE than the sum of each alone -- contention, not amortisation. Measured 6% for the
-# dense FFN + lm_head pair. The "costs are sub-additive" reading compares throughput percentages instead of times.
+# Spilling several groups costs MORE than the sum of each alone: contention, not amortisation.
+# Measured 6% for the dense FFN + lm_head pair.
 MULTI_GROUP_CONTENTION = 0.06
 
 
@@ -110,8 +116,8 @@ class TensorGroup:
     name: str
     bytes_total: int
     access: Access
-    # : Fraction of ``bytes_total`` read per token during GENERATION. 1.0 for : dense weights; ``n_expert_used /
-    # n_expert`` for MoE experts.
+    # Fraction of ``bytes_total`` read per token during GENERATION. 1.0 for dense weights,
+    # ``n_expert_used / n_expert`` for MoE experts.
     activation_fraction: float = 1.0
 
     @property
@@ -129,9 +135,12 @@ class HostProfile:
     """
 
     threads: int = REFERENCE_HOST_THREADS
-    # : Set for unified-memory hosts (Apple Silicon, AMD APU, Vulkan iGPU) where : "spilling" moves nothing, because the
-    # two pools are one pool.
+    # Set for unified-memory hosts (Apple Silicon, AMD APU, Vulkan iGPU), where "spilling" moves
+    # nothing because the two pools are one pool.
     unified_memory: bool = False
+    # Host-to-device rate the PREFILL transfer runs at; the default keeps the reference host's PCIe 5
+    # x16 rate this module was calibrated on. Generation never crosses the link, so it is unaffected.
+    link_gib_s: float = PREFILL_STREAM_GIB_S
 
     @property
     def generation_slowdown(self) -> float:
@@ -202,19 +211,13 @@ def prefill_penalty_ms_per_token(
 ) -> float:
     """Extra milliseconds per PROMPT token during prefill.
 
-    Uses FULL bytes, not activated bytes: a 512-token ubatch selects
-    essentially every expert at least once, so sparsity buys nothing here. This
-    is the term that makes MoE's prefill penalty WORSE than a dense model's even
-    though its generation penalty is much better.
+    Uses FULL bytes, not activated bytes: a 512-token ubatch selects essentially every expert at
+    least once, so sparsity buys nothing here, which is why MoE prefill is worse than dense even
+    though MoE generation is much better. Weights are copied once per ubatch and reused across it,
+    so the per-token cost falls as ``n_ubatch`` rises.
 
-    The weights are copied once per ubatch and reused across every token in it,
-    so the per-token cost falls as ``n_ubatch`` rises -- the amortisation that
-    makes prefill so much cheaper than generation per byte moved.
-
-    ``host`` is accepted and used only for ``unified_memory``: this regime runs
-    on the GPU with the weights copied in, so it is bound by the link and NOT by
-    host cores. That asymmetry against generation is the point, so callers pass
-    the same profile to both and let each use what applies.
+    ``host`` is read for ``unified_memory`` and ``link_gib_s`` only: this regime runs on the GPU
+    with the weights copied in, so it is bound by the link and NOT by host cores.
     """
     host = host or HostProfile()
     if host.unified_memory:
@@ -226,8 +229,32 @@ def prefill_penalty_ms_per_token(
     host_bytes = sum(g.bytes_total for g in placement.host_groups) + placement.kv_host_bytes
     if host_bytes <= 0 or n_ubatch <= 0:
         return 0.0
-    per_ubatch_ms = (host_bytes / GIB) / PREFILL_STREAM_GIB_S * 1000.0
-    return per_ubatch_ms / float(n_ubatch)
+    return _prefill_per_ubatch_ms(placement, host) / float(n_ubatch)
+
+
+def _prefill_per_ubatch_ms(placement: Placement, host: HostProfile | None = None) -> float:
+    """Milliseconds to stream every host-side byte once, i.e. per micro-batch."""
+    host_bytes = sum(g.bytes_total for g in placement.host_groups) + placement.kv_host_bytes
+    if host_bytes <= 0:
+        return 0.0
+    host = host or HostProfile()
+    # A non-positive rate is not a free transfer, so fall back to the calibrated default.
+    link_gib_s = host.link_gib_s if host.link_gib_s > 0.0 else PREFILL_STREAM_GIB_S
+    return (host_bytes / GIB) / link_gib_s * 1000.0
+
+
+def prefill_penalty_ms(
+    placement: Placement,
+    n_prompt: int,
+    n_ubatch: int = 512,
+    host: HostProfile | None = None,
+) -> float:
+    """Extra milliseconds to prefill ``n_prompt`` tokens."""
+    host = host or HostProfile()
+    if host.unified_memory or n_prompt <= 0 or n_ubatch <= 0:
+        return 0.0
+    batches = -(-int(n_prompt) // int(n_ubatch))
+    return batches * _prefill_per_ubatch_ms(placement, host)
 
 
 def rank(
@@ -252,7 +279,7 @@ def rank(
         (
             c,
             n_generated * generation_penalty_ms(c, host)
-            + n_prompt * prefill_penalty_ms_per_token(c, n_ubatch, host),
+            + prefill_penalty_ms(c, n_prompt, n_ubatch, host),
         )
         for c in candidates
     ]

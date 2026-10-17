@@ -351,7 +351,16 @@ def test_guard_floors_a_header_with_no_dimensions_at_all():
 
     from routes import inference as route
 
-    blind = dict(_QWEN3_8B, vocab_size = None, embedding_length = None, kv_lora_rank = 512)
+    # The latent cache keeps the KV term alive; it is keyed on both MLA head lengths
+    # (llama-hparams.cpp:llama_hparams::is_mla), not on the LoRA rank.
+    blind = dict(
+        _QWEN3_8B,
+        vocab_size = None,
+        embedding_length = None,
+        kv_lora_rank = 512,
+        key_length_mla = 192,
+        value_length_mla = 128,
+    )
     reserve_gb = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB / 1024
     with patch.object(LlamaCppBackend, "_read_gguf_metadata", _header_reader(**blind)):
         one = route._estimate_gguf_kv_gb("/x.gguf", 8192, n_parallel = 1)
@@ -657,9 +666,11 @@ def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
     # sizing pass, embedding slot clamp, candidate split pricing, fit-time reduction, the
     # MoE expert-spill raise, the post-launch record, the drafter probe's four
     # (per-slot compute buffer, candidate footprint, one-slot trim, slot commit; #8872)
-    # the slot restore when GPU selection abandons that cut, and the plan repriced when a
-    # drafterless retry restores it
-    assert len(calls) == 12, f"expected twelve re-derivations, found {len(calls)}"
+    # the slot restore when GPU selection abandons that cut, the plan repriced when a
+    # drafterless retry restores it, and the offload planner's six (spill cache floors,
+    # _spill_ubatch_by_parallel, _kv_bytes_at, _kv_swa_bytes_at, _kv_layer_weights_at, planner
+    # slot reduction)
+    assert len(calls) == 18, f"expected eighteen re-derivations, found {len(calls)}"
     # the record must not reuse the sizing pass's value
     compact = "".join(src.split())
     assert "self._n_ubatch=max(0,int(self._DEFAULT_N_UBATCHif_launched_ubatchisNone" in compact
@@ -668,6 +679,11 @@ def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
     assert compact.index("_launched_ubatch=_ubatch_for_slots") > compact.index(
         "gpu_indices,use_fit,n_parallel=_gi_slots,False,_slots"
     )
+    planner_reduction = compact.index("n_parallel=_spill.n_parallel")
+    assert planner_reduction > compact.index(
+        "gpu_indices,use_fit,n_parallel=_gi_slots,False,_slots"
+    )
+    assert compact.index("_launched_ubatch=_ubatch_for_slots") > planner_reduction
 
 
 def test_the_guard_prices_the_output_rows_of_the_build_it_launches():

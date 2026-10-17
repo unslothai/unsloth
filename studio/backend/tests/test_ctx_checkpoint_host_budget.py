@@ -25,8 +25,10 @@ MIB = 1024**2
 
 # unsloth/Qwen3.8-27B-GGUF, read from the shipped file: arch qwen35, 65 blocks,
 # full_attention_interval 4, ssm.inner_size 6144, state_size 128, group_count 16, conv_kernel 4.
+# 64 target blocks here, where llama.cpp's (il + 1) % interval rule and a ceiling split agree,
+# so these cases price the snapshots and not the interval's rounding.
 QWEN38_27B = {
-    "_n_layers": 65,
+    "_n_layers": 64,
     "_n_kv_heads": 4,
     "_n_heads": 24,
     "_embedding_length": 5120,
@@ -73,7 +75,7 @@ def test_one_snapshot_is_the_whole_recurrent_state():
     d_inner, d_state, n_group, d_conv = 6144, 128, 16, 4
     n_embd_r = (d_conv - 1) * (d_inner + 2 * n_group * d_state)
     n_embd_s = d_state * d_inner
-    n_recurrent = 65 - -(-65 // 4)
+    n_recurrent = 64 - 64 // 4
     assert b._rollback_state_bytes(1) == n_recurrent * (n_embd_r + n_embd_s) * 4
     assert b._rollback_state_bytes(1) == pytest.approx(149.6 * MIB, rel = 0.01)
     assert b._rollback_state_bytes(1) == _backend()._rollback_state_bytes(1)
@@ -520,6 +522,7 @@ def test_a_kda_hybrid_is_priced_wherever_it_is_bounded():
         "_n_kv_heads": 1,
         "_kv_lora_rank": 512,
         "_key_length_mla": 64,
+        "_value_length_mla": 512,
         "_kda_head_dim": 128,
         "_ssm_conv_kernel": 4,
         "_n_kv_heads_by_layer": [1, 0, 1, 0, 1, 0, 1, 0],

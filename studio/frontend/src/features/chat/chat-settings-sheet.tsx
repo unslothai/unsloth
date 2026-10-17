@@ -457,6 +457,11 @@ function specFallbackMessage({
       // Not "without speculative decoding": the backend puts zero-VRAM ngram-mod in the drafter's
       // place where the build has it, so only the drafter is off.
       return `This model fits in VRAM but its ${drafter} drafter does not, so Auto kept your context length and turned ${drafter} off for this load. Choose ${drafter} in Settings to force it, at a smaller context.`;
+    case "drafter_planner":
+      // Smart offload gave the drafter's VRAM to the model's own layers. The build supports the
+      // drafter, so the default "not available in the installed llama.cpp build" names the wrong
+      // cause and an update changes nothing.
+      return `This model does not fully fit in VRAM, so Auto turned ${drafter} off for this load to keep more of the model on the GPU. Choose ${drafter} in Settings to force it, or reduce the context length.`;
     case "runtime_error":
       return `${drafter} could not start for this model on the installed llama.cpp build, so it is running without speculative decoding.`;
     case "drafter_unloadable":

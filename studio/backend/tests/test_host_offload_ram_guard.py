@@ -152,3 +152,57 @@ def test_cgroup_v1_reclaims_hierarchical_inactive_file_cache(tmp_path, monkeypat
     monkeypatch.setattr(llama_cpp_module, "_PROC_SELF_CGROUP", str(proc_cgroup))
 
     assert LlamaCppBackend._cgroup_available_memory_mib() == 12 * _MIB_PER_GB
+
+
+def _cache_bytes(cache_ram, caps = None):
+    from core.inference.llama_cpp import LlamaCppBackend
+    return LlamaCppBackend._effective_prompt_cache_bytes(cache_ram, caps)
+
+
+def test_the_prompt_cache_defaults_to_llama_cpps_own_8192_mib():
+    """Unset means llama-server's default applies: 8 GiB of host RAM (common/common.h:632)."""
+    assert _cache_bytes(None) == 8192 * 1024 * 1024
+
+
+def test_an_explicit_zero_disables_the_cache_and_costs_nothing():
+    assert _cache_bytes(0) == 0
+
+
+def test_a_typed_ceiling_is_charged_at_what_was_typed():
+    assert _cache_bytes(512) == 512 * 1024 * 1024
+
+
+def test_no_limit_is_charged_as_the_default_not_as_infinity():
+    """-1 is llama.cpp's "no limit"."""
+    assert _cache_bytes(-1) == 8192 * 1024 * 1024
+
+
+def test_a_build_without_the_flag_has_no_prompt_cache_to_charge():
+    """A server that does not accept --cache-ram has no prompt cache, so charging one would
+    refuse fits that are real."""
+    assert _cache_bytes(None, {"supports_cache_ram": False}) == 0
+    assert _cache_bytes(None, {"supports_cache_ram": True}) == 8192 * 1024 * 1024
+
+
+def test_the_load_mode_rule_matches_a_measured_ram_boundary_crossing():
+    """Pin where the (VRAM + RAM) rule switches to mmap."""
+    mib = 1024**2
+    gib = 1024**3
+    backend = object.__new__(LlamaCppBackend)
+
+    need = int(18.4 * gib) + 5520 * mib
+    gpus = [(0, 12 * 1024)]
+
+    def mode_at(ram_gib):
+        fits = backend._fits_without_paging(
+            need,
+            gpus,
+            avail_mib = int(ram_gib * 1024),
+            headroom_mib = 2048,
+        )
+        return "none" if fits is True else ("mmap" if fits is False else None)
+
+    assert mode_at(24) == "none"
+    assert mode_at(15.76) == "none"
+    assert mode_at(10.12) == "mmap"
+    assert mode_at(8.53) == "mmap"
