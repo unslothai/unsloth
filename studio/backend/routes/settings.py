@@ -108,8 +108,9 @@ from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
 from utils.multi_model_settings import (
     DEFAULT_MULTI_MODEL_ENABLED,
-    get_multi_model_enabled,
-    set_multi_model_enabled,
+    DEFAULT_MULTI_MODEL_MODE,
+    get_multi_model_mode,
+    set_multi_model_mode,
 )
 from utils.model_memory_settings import (
     DEFAULT_KEEP_RESIDENT,
@@ -567,12 +568,26 @@ def delete_custom_generation_preset(
 
 
 class MultiModelPayload(BaseModel):
-    enabled: StrictBool
+    # ``mode`` is the current shape; a bare ``enabled`` comes from an older client.
+    enabled: Optional[StrictBool] = None
+    mode: Optional[Literal["off", "fit", "always"]] = None
+
+    @model_validator(mode = "after")
+    def exactly_one(self):
+        if (self.enabled is None) == (self.mode is None):
+            raise ValueError("Send exactly one of mode or enabled.")
+        return self
 
 
 class MultiModelResponse(BaseModel):
     enabled: bool
     default_enabled: bool = DEFAULT_MULTI_MODEL_ENABLED
+    mode: Literal["off", "fit", "always"] = DEFAULT_MULTI_MODEL_MODE
+    default_mode: Literal["off", "fit", "always"] = DEFAULT_MULTI_MODEL_MODE
+
+
+def _multi_model_response(mode: str) -> MultiModelResponse:
+    return MultiModelResponse(enabled = mode != "off", mode = mode)
 
 
 class UploadLimitPayload(BaseModel):
@@ -1450,7 +1465,7 @@ def update_llama_cpp_path(
 
 @_shared_settings_router.get("/multi-model", response_model = MultiModelResponse)
 def get_multi_model(current_subject: str = Depends(get_current_subject)) -> MultiModelResponse:
-    return MultiModelResponse(enabled = get_multi_model_enabled())
+    return _multi_model_response(get_multi_model_mode())
 
 
 @_owner_settings_router.put("/multi-model", response_model = MultiModelResponse)
@@ -1459,9 +1474,14 @@ def update_multi_model(
     background_tasks: BackgroundTasks,
     current_subject: str = Depends(get_current_subject),
 ) -> MultiModelResponse:
-    """Keep the loaded models when another loads. Takes effect on the next load."""
+    """Off, When they fit or Always. Takes effect on the next load."""
     try:
-        enabled = set_multi_model_enabled(payload.enabled)
+        mode = payload.mode
+        if mode is None:
+            # A legacy "on" never downgrades Always to When they fit.
+            current = get_multi_model_mode()
+            mode = (current if current != "off" else "fit") if payload.enabled else "off"
+        set_multi_model_mode(mode)
     except Exception as exc:
         raise log_and_http_error(
             exc,
@@ -1470,12 +1490,12 @@ def update_multi_model(
             event = "settings.update_multi_model_failed",
             log = logger,
         ) from exc
-    logger.info("settings.multi_model_updated subject=%s enabled=%s", current_subject, enabled)
-    if not enabled:
+    logger.info("settings.multi_model_updated subject=%s mode=%s", current_subject, mode)
+    if mode == "off":
         # Back to one model: the idle kept ones go after the reply (a teardown can take minutes),
         # a busy one once it is ejected. One that fails to unload stays tracked as stuck.
         background_tasks.add_task(_unload_idle_models)
-    return MultiModelResponse(enabled = enabled)
+    return _multi_model_response(mode)
 
 
 def _unload_idle_models() -> None:
