@@ -1114,7 +1114,7 @@ mod pac {
             static SESSION: OnceLock<Option<Handle>> = OnceLock::new();
             SESSION
                 .get_or_init(|| unsafe {
-                    let agent = wide("Unsloth Studio");
+                    let agent = wide("Unsloth");
                     let flags = WINHTTP_FLAG_ASYNC;
                     let handle = WinHttpOpen(
                         agent.as_ptr(),
