@@ -326,7 +326,16 @@ _HIDDEN_TAIL_RE = re.compile(r"(?:[ \t]*\r?\n){4,}|[ \t]{200,}")
 _MAX_POINT = 100_000
 _MAX_MODEL_CHARS = 24000
 _REF_RE = re.compile(r"^\[?r?(\d{1,9})\]?$", re.IGNORECASE)
-_LOCAL_SUFFIXES = (".local", ".localhost", ".internal", ".lan", ".home", ".home.arpa", ".corp")
+_LOCAL_SUFFIXES = (
+    ".local",
+    ".localhost",
+    ".internal",
+    ".lan",
+    ".home",
+    ".home.arpa",
+    ".corp",
+    ".intranet",
+)
 _FENCE = "untrusted_web_content"
 
 

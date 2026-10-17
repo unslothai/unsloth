@@ -2254,7 +2254,7 @@ def test_fetch_url_raw_named_proxy_fetch_outlives_a_stalled_resolver(monkeypatch
     assert seen == ["http://stall.example.com/page"]
 
 
-@pytest.mark.parametrize("host", ["intranet", "printer.local", "nas.lan"])
+@pytest.mark.parametrize("host", ["intranet", "foo.intranet", "printer.local", "nas.lan"])
 def test_fetch_url_raw_named_proxy_fetch_refuses_local_names(monkeypatch, host):
     import socket
     import threading
