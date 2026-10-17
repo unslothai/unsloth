@@ -49,6 +49,8 @@ const QUEUED_SETTING_KEYS = [
   "maxToolCallsPerMessage",
   "toolCallTimeout",
   "autoCompactEnabled",
+  // A queued send keeps the tab-close choice it was sent with, like every setting above.
+  "keepRunningWhenTabClosed",
 ] as const;
 
 type ChatRuntimeState = ReturnType<typeof useChatRuntimeStore.getState>;

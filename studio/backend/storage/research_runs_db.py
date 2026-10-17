@@ -770,13 +770,23 @@ def approve(run_id: str, revision: int, plan_hash: str) -> str:
         conn.close()
 
 
-def request_cancel(run_id: str) -> str:
+def request_cancel(run_id: str, expected_attempt: int | None = None) -> str | None:
+    """Stop ``run_id``. With ``expected_attempt``, only if that attempt is still the run's; else None.
+
+    The attempt check shares the cancel's transaction, so a retry or rebind that commits first
+    (both bump retry_count under the same id) can never be cancelled on its predecessor's behalf.
+    """
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT status FROM research_runs WHERE id = ?", (run_id,)).fetchone()
+        row = conn.execute(
+            "SELECT status, retry_count FROM research_runs WHERE id = ?", (run_id,)
+        ).fetchone()
         if row is None:
             raise KeyError(run_id)
+        if expected_attempt is not None and int(row["retry_count"] or 0) != expected_attempt:
+            conn.commit()
+            return None
         status = row["status"]
         if status in TERMINAL_STATUSES or status == "cancelling":
             conn.commit()

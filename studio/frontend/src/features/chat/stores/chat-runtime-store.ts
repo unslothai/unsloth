@@ -6116,7 +6116,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         keepRunningWhenTabClosed,
         state.keepRunningWhenTabClosed,
       );
-      return { keepRunningWhenTabClosed };
+      return {
+        keepRunningWhenTabClosed,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setMaxToolCallsPerMessage: (maxToolCallsPerMessage) =>
     set((state) => {

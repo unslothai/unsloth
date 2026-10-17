@@ -225,6 +225,8 @@ def _watch_if_unattended_stop(
     if run["status"] in db.TERMINAL_STATUSES or run["status"] == "cancelling":
         return
     account = current_account()
+    # The watch belongs to this attempt only: a retry or rebind reuses the id and bumps retryCount.
+    attempt = int(run.get("retryCount") or 0)
 
     def settled() -> bool:
         current = run_as(account, db.get_run, run_id)
@@ -232,12 +234,18 @@ def _watch_if_unattended_stop(
             current is None
             or current["status"] in db.TERMINAL_STATUSES
             or current["status"] == "cancelling"
+            or int(current.get("retryCount") or 0) != attempt
         )
 
     async def cancel() -> None:
         try:
-            status = await asyncio.to_thread(run_as, account, db.request_cancel, run_id)
+            status = await asyncio.to_thread(
+                run_as, account, db.request_cancel, run_id, expected_attempt = attempt
+            )
         except KeyError:
+            return
+        if status is None:
+            # A newer attempt took the id between this pass's settled() read and now.
             return
         supervisor = getattr(app.state, "research_supervisor", None)
         if supervisor is not None and status == "cancelling":

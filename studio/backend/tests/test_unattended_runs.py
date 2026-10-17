@@ -252,6 +252,46 @@ def test_followed_research_keeps_going(studio_home):
     assert cancelled == []
 
 
+def _bump_attempt(run_id = "run-1"):
+    # What retry and rebind_cancelled both do to a reused id, without the rest of either.
+    conn = research_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE research_runs SET retry_count = retry_count + 1 WHERE id = ?", (run_id,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_research_cancel_only_stops_the_attempt_it_was_asked_about(studio_home):
+    run = _research_run(stop_when_unattended = True)
+    attempt = int(run["retryCount"] or 0)
+    assert research_db.request_cancel("run-1", expected_attempt = attempt + 1) is None
+    assert research_db.get_run("run-1")["status"] == run["status"]
+    assert research_db.request_cancel("run-1", expected_attempt = attempt) in {
+        "cancelling",
+        "cancelled",
+    }
+
+
+def test_an_obsolete_watch_cannot_cancel_the_attempt_that_replaced_it(studio_home):
+    cancelled, request = _research_request()
+    account = current_account_id() or ""
+    research_routes._watch_if_unattended_stop(request.app, _research_run(stop_when_unattended = True))
+    entry = unattended_runs._WATCHES[(account, "research:run-1")]
+    # A retry commits after a pass has read settled() but before it awaits cancel().
+    _bump_attempt()
+    asyncio.run(entry.cancel())
+    assert research_db.get_run("run-1")["status"] not in research_db.TERMINAL_STATUSES | {
+        "cancelling"
+    }
+    assert cancelled == []
+    # And a later pass reads the newer attempt as the end of this watch.
+    assert asyncio.run(unattended_runs.check_once(_past_grace())) == []
+    assert not unattended_runs.watched_for_tests("research:run-1", account)
+
+
 def test_a_rebound_research_run_that_keeps_running_drops_the_old_watch(studio_home):
     _cancelled, request = _research_request()
     account = current_account_id() or ""
