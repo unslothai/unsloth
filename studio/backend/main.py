@@ -559,6 +559,9 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
     if os.environ.get("UNSLOTH_DISABLE_UPDATE_CHECK") == "1":
         return
 
+    from utils.audio_cpp_update import start_model_specs_backfill
+
+    start_model_specs_backfill()
     threading.Thread(
         target = _run_llama_cpp_startup_probes,
         args = (app,),

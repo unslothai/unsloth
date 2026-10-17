@@ -37,6 +37,7 @@ from typing import Any, BinaryIO, Iterable, Optional, Sequence
 from core.inference.audio_cpp_option_table import (
     ACE_STEP_BASE_NAME,
     ENUM_PRESETS,
+    OPTION_RENAMES,
     STUDIO_OPTION_LISTS,
     OptionRule,
     rules_for,
@@ -1428,6 +1429,8 @@ def read_remote_header(
 class RepoFile:
     path: str
     size: int = 0
+    # The Hub listing's LFS sha256, when known; not part of equality.
+    sha256: str = field(default = "", compare = False)
 
 
 def hub_offline() -> bool:
@@ -1505,7 +1508,8 @@ def _hub_listing(repo_id: str, folder: str, hf_token: Optional[str]) -> list[Rep
         size = getattr(entry, "size", None)
         if size is None:  # a folder
             continue
-        out.append(RepoFile(str(entry.path), int(size or 0)))
+        sha256 = getattr(getattr(entry, "lfs", None), "sha256", "") or ""
+        out.append(RepoFile(str(entry.path), int(size or 0), str(sha256).lower()))
     return sorted(out, key = lambda f: f.path)
 
 
@@ -1864,18 +1868,14 @@ def runtime_spec(family: str) -> Optional[dict]:
 def runtime_knows_family(family: str) -> Optional[bool]:
     """Whether the installed runtime loads ``family``; None when Unsloth Studio cannot tell.
 
-    A runtime that ships ``model_specs/`` answers from it. The prebuilt bundles do not ship that
-    folder, so for the prebuilt releases in ``AUDIO_CPP_SPEC_FAMILIES_TAGS`` the families their
-    source tree specs are listed in ``audio_cpp_spec_families``. Any other runtime (no install, a
-    custom build, an unlisted tag) is unknown, and the spec's own tasks decide as before.
+    The install fetches ``model_specs/`` from the release's source commit and puts it beside the
+    server. With that folder, a family is known exactly when it has a spec file there. No folder
+    (a custom build, or a fetch that failed) means unknown, and the spec's own tasks decide.
     """
     if not family or not re.fullmatch(r"[a-z0-9_]+", family):
         return None
     try:
-        from core.inference.audio_cpp_server import (
-            find_audio_cpp_server_binary,
-            read_install_record,
-        )
+        from core.inference.audio_cpp_server import find_audio_cpp_server_binary
         binary = find_audio_cpp_server_binary()
     except Exception:  # noqa: BLE001 - no runtime, no answer
         return None
@@ -1887,17 +1887,9 @@ def runtime_knows_family(family: str) -> Optional[bool]:
         parents = list(Path(binary).resolve().parents)[:3]
         if any((parent / "model_specs").is_dir() for parent in parents):
             return False
-        tag = read_install_record(binary).get("release_tag")
     except (OSError, ValueError):
         return None
-    from core.inference.audio_cpp_spec_families import (
-        AUDIO_CPP_SPEC_FAMILIES,
-        AUDIO_CPP_SPEC_FAMILIES_TAGS,
-    )
-
-    if tag not in AUDIO_CPP_SPEC_FAMILIES_TAGS:
-        return None
-    return family in AUDIO_CPP_SPEC_FAMILIES
+    return None
 
 
 def _clean_option(raw: Any) -> Optional[dict]:
@@ -1968,10 +1960,14 @@ def option_schema(
     driven = _MUSIC_DRIVEN_OPTIONS if policy.task == "music" else frozenset()
     if policy.convert is not None:
         driven = driven | frozenset(policy.convert.hidden_options)
+    # A renamed option shows once, under the legacy name every runtime reads.
+    legacy = {canonical: old for old, canonical in OPTION_RENAMES.get(policy.family, ())}
     out = []
     names = set()
     for item in raw:
         option = _clean_option(item)
+        if option is not None and option["name"] in legacy:
+            option["name"] = legacy[option["name"]]
         if option is None or option["name"] in driven or option["name"] in names:
             continue
         if option["name"] == "voice":
@@ -2220,12 +2216,41 @@ def _apply_rule(rule: OptionRule, option: dict) -> None:
 
 def filled_options(model: "AudioCppModel", workflow: str, values: Optional[dict]) -> dict:
     """``values`` over the model's recommended defaults; tool panels send their own options."""
-    return request_options(
+    pairs = OPTION_RENAMES.get(model.family, ())
+    keys = model.request_keys
+    if pairs and keys is not None:
+        # The schema names a renamed option by its legacy name, so strict keys must too.
+        keys = keys | {old for old, canonical in pairs if canonical in keys}
+    out = request_options(
         workflow_options(model, workflow),
-        values,
-        model.request_keys,
+        _legacy_option_names(values, pairs),
+        keys,
         fill = (o["name"] for o in model.options),
     )
+    return _wire_option_names(out, pairs, model.request_keys)
+
+
+def _legacy_option_names(values: Optional[dict], pairs: tuple[tuple[str, str], ...]) -> Optional[dict]:
+    """``values`` with renamed options under their legacy name; a legacy value given too wins."""
+    if not pairs or not isinstance(values, dict):
+        return values
+    out = dict(values)
+    for old, canonical in pairs:
+        if canonical in out:
+            value = out.pop(canonical)
+            if out.get(old) is None:
+                out[old] = value
+    return out
+
+
+def _wire_option_names(
+    options: dict, pairs: tuple[tuple[str, str], ...], keys: Optional[frozenset[str]]
+) -> dict:
+    """One name per renamed option: the canonical one only when the strict contract lists it."""
+    renamed = {old: canonical for old, canonical in pairs if keys is not None and canonical in keys}
+    if not renamed:
+        return options
+    return {renamed.get(name, name): value for name, value in options.items()}
 
 
 def workflow_options(model: "AudioCppModel", workflow: str) -> tuple[dict, ...]:
@@ -2300,8 +2325,11 @@ def family_from_names(names: Iterable[str]) -> Optional[str]:
     text = " ".join(names).lower().replace(".", "")
     for family in sorted(FAMILIES, key = len, reverse = True):
         # re.escape leaves "_" alone, so the separator is matched loosely here: "Chatterbox-Turbo"
-        # is chatterbox_turbo, not chatterbox.
+        # is chatterbox_turbo, not chatterbox. A digit right after a name that ends in a letter is
+        # another family (kitten-tts2); after a digit it is a stripped version dot (IndexTTS2.5).
         pattern = re.escape(family).replace("_", "[-_]?")
+        if not family[-1].isdigit():
+            pattern += r"(?![0-9])"
         if re.search(pattern, text):
             return family
     hints = (
@@ -2315,12 +2343,13 @@ def family_from_names(names: Iterable[str]) -> Optional[str]:
         (r"nemotron.*asr", "nemotron_asr"),
         (r"pocket[-_]?tts", "pocket_tts"),
         (r"kokoro", "kokoro_tts"),
-        (r"kitten", "kitten_tts"),
+        (r"kitten(?![-_]?tts[-_]?2)", "kitten_tts"),
         (r"piper", "piper_tts"),
         (r"inflect", "inflect_v2"),
         (r"ace[-_]?step", "ace_step"),
         (r"stable[-_]?audio", "stable_audio"),
-        (r"voxtral", "voxtral_realtime"),
+        # Voxtral TTS speaks; only the realtime ASR model is voxtral_realtime.
+        (r"voxtral(?![^ ]*tts)", "voxtral_realtime"),
     )
     for pattern, family in hints:
         if re.search(pattern, text):
@@ -2504,7 +2533,14 @@ def _resolve_uncached(
         )
     spec = runtime_spec(family)
     embedded = header.spec if header is not None else None
-    policy = family_policy(family, spec or embedded, names, ref.display_name)
+    from core.inference.audio_cpp_server import SPEC_FIRST_RUNTIME, runtime_release_key
+
+    # Follow the spec the runtime checks: v0.9.2 puts model_specs/ first, an older prebuilt
+    # only the GGUF's own (a backfilled folder must not change its options or tasks).
+    release = runtime_release_key()
+    runtime_first = release is not None and release >= SPEC_FIRST_RUNTIME
+    contract = None if release is not None and not runtime_first else spec
+    policy = family_policy(family, contract or embedded, names, ref.display_name)
     if policy.package:
         # In the package's own order: its first mix is the one the runtime defaults to.
         variants = _package_variants(policy, files, ref.folder)
@@ -2575,19 +2611,19 @@ def _resolve_uncached(
         needs_espeak = policy.needs_espeak,
         request_defaults = dict(policy.request_defaults),
         model_options = dict(policy.model_options),
-        spec_options = option_schema(policy, spec, embedded),
+        spec_options = option_schema(policy, contract, embedded),
         unsupported = unsupported,
         local_path = ref.local_path,
         tags = tuple(tags),
         speaks = policy.speaks,
         clone = policy.clone,
         companions = policy.companions,
-        required_inputs = _required_inputs(spec, embedded, policy),
+        required_inputs = _required_inputs(contract, embedded, policy),
         edit = policy.edit,
         convert = policy.convert,
         separation = policy.separation,
-        music = music_with_spec_bounds(policy.music, _raw_request_options(spec, embedded)),
-        request_keys = _request_keys(spec, embedded),
+        music = music_with_spec_bounds(policy.music, _raw_request_options(contract, embedded)),
+        request_keys = _request_keys(contract, embedded, runtime_first = runtime_first),
         from_hub = from_hub,
     )
     return model.with_variant(chosen)
@@ -2604,9 +2640,16 @@ def _raw_request_options(spec: Optional[dict], embedded: Optional[dict]) -> list
     return raw if isinstance(raw, list) else []
 
 
-def _request_keys(spec: Optional[dict], embedded: Optional[dict]) -> Optional[frozenset[str]]:
-    # The server prefers an embedded v1 contract over model_specs/ (model_spec/package.cpp).
-    if isinstance(embedded, dict) and embedded.get("schema_version") is not None:
+def _request_keys(
+    spec: Optional[dict], embedded: Optional[dict], runtime_first: bool = False
+) -> Optional[frozenset[str]]:
+    # v0.9.1 checks the GGUF's embedded v1 contract first; v0.9.2 checks model_specs/ and its
+    # built-in specs first (model_spec/package.cpp).
+    if (
+        not runtime_first
+        and isinstance(embedded, dict)
+        and embedded.get("schema_version") is not None
+    ):
         if (embedded.get("options") or {}).get("request"):
             spec = None
     if _request_source(spec, embedded).get("schema_version") is None:

@@ -12,9 +12,9 @@ from pathlib import Path
 import pytest
 
 from core.inference import audio_cpp_models as acm
-from core.inference.audio_cpp_spec_families import AUDIO_CPP_SPEC_FAMILIES
 
-# Folder -> (family its GGUF header names, Audio pages), audio-cpp/audio.cpp-gguf at f861648c.
+# Folder -> (family its GGUF header names, Audio pages), audio-cpp/audio.cpp-gguf at f861648c;
+# VibeVoice-ASR-Streaming from the spec-refresh-v0.9.2 branch at 95ab5a44.
 UMBRELLA = {
     "ACE-Step1.5-GGUF": ("ace_step", ["music"]),
     "Apollo-GGUF": ("apollo", []),
@@ -31,7 +31,7 @@ UMBRELLA = {
     "Confucius4-TTS-GGUF": ("confucius4_tts", ["clone"]),
     "ControlFoley-GGUF": ("controlfoley", ["music"]),
     "CosyVoice3-GGUF": ("cosyvoice3", ["clone"]),
-    "CrisperWhisper2.0-GGUF": ("crisperwhisper", []),
+    "CrisperWhisper2.0-GGUF": ("crisperwhisper", ["transcribe"]),
     "DotTTS-Edit-GGUF": ("dots_tts", ["speak", "clone", "edit"]),
     "DotTTS-MF-GGUF": ("dots_tts", ["speak", "clone"]),
     "DotTTS-SOAR-GGUF": ("dots_tts", ["speak", "clone"]),
@@ -50,7 +50,7 @@ UMBRELLA = {
     "Higgs-Audio-v3-STT-GGUF": ("higgs_audio_stt", ["transcribe"]),
     "Higgs-Audio-v3-TTS-4B-GGUF": ("higgs_audio_tts", ["speak", "clone"]),
     "Hviske-v5.3-GGUF": ("hviske_asr", ["transcribe"]),
-    "Hviske-v6-GGUF": ("hviske_asr_v6", []),
+    "Hviske-v6-GGUF": ("hviske_asr_v6", ["transcribe"]),
     "IndexTTS2-GGUF": ("index_tts2", ["clone"]),
     "IndexTTS2.5-GGUF": ("index_tts2", ["clone"]),
     "Inflect-Micro-v2-GGUF": ("inflect_v2", ["speak"]),
@@ -60,7 +60,7 @@ UMBRELLA = {
     "KittenTTS-GGUF": ("kitten_tts", ["speak"]),
     "Kokoro-82M-GGUF": ("kokoro_tts", ["speak"]),
     "Kroko-ASR-GGUF": ("kroko_asr", ["transcribe"]),
-    "KugelAudio-0-Open-GGUF": ("kugelaudio", []),
+    "KugelAudio-0-Open-GGUF": ("kugelaudio", ["speak"]),
     "MMS-Forced-Aligner-GGUF": ("mms_forced_aligner", []),
     "MOSS-TTS-Local-v1.5-GGUF": ("moss_tts_local", ["speak", "clone"]),
     "MOSS-TTS-Nano-100M-GGUF": ("moss_tts_nano", ["speak", "clone"]),
@@ -81,8 +81,8 @@ UMBRELLA = {
     "Nemotron-3.5-ASR-Streaming-0.6B-GGUF": ("nemotron_asr", ["transcribe"]),
     "NeuTTS-2E-GGUF": ("neutts", ["speak"]),
     "Niagara-ASR-GGUF": ("niagara_asr", ["transcribe"]),
-    "OWSM-CTC-GGUF": ("owsm_ctc", []),
-    "OWSM-GGUF": ("owsm", []),
+    "OWSM-CTC-GGUF": ("owsm_ctc", ["transcribe"]),
+    "OWSM-GGUF": ("owsm", ["transcribe"]),
     "OmniVoice-GGUF": ("omnivoice", ["speak", "clone"]),
     "Parakeet-TDT-0.6B-v3-GGUF": ("parakeet_tdt", ["transcribe"]),
     "PersonaPlex-GGUF": ("personaplex", []),
@@ -114,15 +114,17 @@ UMBRELLA = {
     "Vevo2-GGUF": ("vevo2", ["clone", "edit", "convert"]),
     "VibeVoice-1.5B-GGUF": ("vibevoice", ["speak"]),
     "VibeVoice-ASR-GGUF": ("vibevoice_asr", ["transcribe"]),
+    "VibeVoice-ASR-Streaming-7B-GGUF": ("vibevoice_asr_streaming", ["transcribe"]),
     "VoxCPM1-GGUF": ("voxcpm1", ["speak", "clone"]),
     "VoxCPM2-GGUF": ("voxcpm2", ["speak", "clone"]),
-    "Voxtral-4B-TTS-2603-GGUF": ("voxtral_tts", []),
+    "Voxtral-4B-TTS-2603-GGUF": ("voxtral_tts", ["speak"]),
     "Voxtral-Mini-4B-Realtime-2602-GGUF": ("voxtral_realtime", ["transcribe"]),
 }
 
 # Families outside acm.FAMILIES are classified by the tasks their spec lists.
 SPEC_TASKS = {
     "gigaam_asr": ["asr"],
+    "hviske_asr_v6": ["asr"],
     "maya1": ["tts"],
     "crisperwhisper": ["asr", "align"],
     "kugelaudio": ["tts"],
@@ -130,6 +132,7 @@ SPEC_TASKS = {
     "owsm_ctc": ["asr"],
     "sidon": ["s2s"],
     "smart_turn": ["turn"],
+    "voxtral_tts": ["tts"],
 }
 
 TASK_PAGE = {"tts": "speak", "music": "music", "asr": "transcribe", "sep": "separate"}
@@ -139,9 +142,8 @@ CATALOG = Path(__file__).resolve().parents[2] / "frontend/src/features/audio/aud
 
 @pytest.fixture(autouse = True)
 def pinned_runtime(monkeypatch):
-    monkeypatch.setattr(
-        acm, "runtime_knows_family", lambda family: family in AUDIO_CPP_SPEC_FAMILIES
-    )
+    # A v0.9.2 runtime loads every family these GGUFs name.
+    monkeypatch.setattr(acm, "runtime_knows_family", lambda family: True)
 
 
 # Variants of a family the pinned runtime knows that only a newer runtime loads: the pickers leave

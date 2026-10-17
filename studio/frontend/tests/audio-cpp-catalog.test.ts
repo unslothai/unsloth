@@ -159,7 +159,7 @@ test("recommended ids are unique and name their Hub repo or package folder", () 
 });
 
 test("folders of the shared repo the pickers leave out are never seeded and say why", () => {
-  assert.equal(Object.keys(AUDIO_CPP_UNOFFERED_FOLDERS).length, 28);
+  assert.equal(Object.keys(AUDIO_CPP_UNOFFERED_FOLDERS).length, 22);
   for (const [folder, reason] of Object.entries(AUDIO_CPP_UNOFFERED_FOLDERS)) {
     assert.equal(audioCppModelFor(`${AUDIO_CPP_REPO}/${folder}`), null, folder);
     assert.match(folder, /-GGUF$/);
@@ -178,6 +178,7 @@ test("folders of the shared repo the pickers leave out are never seeded and say 
     ["Kroko-ASR-GGUF", ["en"]],
     ["Niagara-ASR-GGUF", ["en"]],
     ["Hviske-v5.3-GGUF", ["da"]],
+    ["Hviske-v6-GGUF", ["da"]],
     ["GigaAM-ASR-GGUF", ["ru", "en", "kk", "ky", "uz"]],
     [
       "Voxtral-Mini-4B-Realtime-2602-GGUF",
@@ -501,7 +502,7 @@ test("Settings > Voice lists every ASR model the Transcribe page offers", () => 
 });
 
 test("Transcribe's other ASR folders are listed by id, after the keyed models", () => {
-  assert.equal(AUDIO_CPP_STT_FOLDER_IDS.length, 12);
+  assert.equal(AUDIO_CPP_STT_FOLDER_IDS.length, 17);
   const keyedFolders = new Set(
     AUDIO_CPP_DICTATION_MODELS.map((model) => model.id),
   );
@@ -527,9 +528,10 @@ test("Transcribe's other ASR folders are listed by id, after the keyed models", 
       (model, index) => STT_PICKER_MODELS[index] === model,
     ),
   );
-  // The two largest sort last.
-  assert.deepEqual(AUDIO_CPP_STT_FOLDER_IDS.slice(-2), [
+  // The largest sort last.
+  assert.deepEqual(AUDIO_CPP_STT_FOLDER_IDS.slice(-3), [
     `${AUDIO_CPP_REPO}/VibeVoice-ASR-GGUF`,
+    `${AUDIO_CPP_REPO}/VibeVoice-ASR-Streaming-7B-GGUF`,
     `${AUDIO_CPP_REPO}/Voxtral-Mini-4B-Realtime-2602-GGUF`,
   ]);
   const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
