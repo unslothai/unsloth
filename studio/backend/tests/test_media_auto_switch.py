@@ -314,6 +314,32 @@ def test_a_partial_cache_row_with_a_complete_revision_stays_addressable(catalog,
     assert pick.gguf_filename == "Model-Q4_K_M.gguf"
 
 
+def test_a_parked_partial_copy_picks_its_complete_revision(catalog, tmp_path):
+    # A parked scan-folder copy names the snapshot itself, so the cache-row correction above
+    # never runs for it (load_dir == on_disk): with a re-download that stopped mid-set, the
+    # picks saw only the torn revision while the loaders served the older complete one, and
+    # the copy lost its media offer for the outage. The pick must name that revision's
+    # quant -- by path, since the repo id belongs to the active cache, not to the copy.
+    repo = tmp_path / "models--Org--Image-GGUF"
+    complete = repo / "snapshots" / ("0" * 40)
+    complete.mkdir(parents = True)
+    (complete / "Model-Q4_K_M.gguf").write_bytes(b"GGUF" + bytes((3, 0, 0, 0)) + bytes(64))
+    torn = repo / "snapshots" / ("1" * 40)
+    torn.mkdir()
+    (torn / "Model-Q4_K_M-00001-of-00002.gguf").write_bytes(
+        b"GGUF" + bytes((3, 0, 0, 0)) + bytes(64)
+    )
+
+    row = _gguf_image_info("Org/Image-GGUF", torn, source = "custom")
+    row.partial = True
+    catalog.append(row)
+
+    pick = mas.resolve_local_media_model("Org/Image-GGUF", task = mas.IMAGE_TASK)
+    assert pick is not None
+    assert pick.gguf_filename == "Model-Q4_K_M.gguf"
+    assert pick.model_path == str(complete)
+
+
 # ── the switch ──────────────────────────────────────────────────────
 
 

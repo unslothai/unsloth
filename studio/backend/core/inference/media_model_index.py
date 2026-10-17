@@ -319,7 +319,7 @@ def _loadable_directory(load_dir: Path) -> bool:
 
 def _build_index(task: str) -> dict[str, MediaModelPick]:
     """Map every name a downloaded *task* model answers to onto its load spec."""
-    from routes.models import _local_model_task, _partial_row_serves, collect_local_models
+    from routes.models import _cache_layout_claim_dir, _local_model_task, _partial_row_serves, collect_local_models
 
     index: dict[str, MediaModelPick] = {}
     try:
@@ -343,15 +343,23 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
             # an hf cache repo keeps its weights, and its model_index.json, under snapshots/<sha>
             on_disk = Path(info.path).expanduser()
             load_dir = _resolve_load_dir(on_disk)
-            if getattr(info, "partial", False) and load_dir != on_disk:
+            if getattr(info, "partial", False):
                 # An aborted re-download leaves the newest snapshot unfinished while an older
                 # revision still holds the weights; the loaders serve the newest COMPLETE
                 # snapshot, and the picks must name that directory or the names resolve to
-                # nothing.
+                # nothing. A cache row's resolver step already unwrapped the repo dir; a
+                # parked copy names the snapshot itself, and its claim dir hands the same
+                # judgement to the selector. The parked row keeps loading by path -- its
+                # repo id belongs to the active cache, not to the copy.
                 from hub.utils.gguf import select_gguf_cache_snapshot_for_repo_dir
-                serving = select_gguf_cache_snapshot_for_repo_dir(on_disk)
-                if serving is not None:
-                    load_dir = serving[3]
+                claim = _cache_layout_claim_dir(info)
+                if claim is not None:
+                    serving = select_gguf_cache_snapshot_for_repo_dir(claim.parent.parent)
+                    if serving is not None:
+                        if load_dir != on_disk:
+                            load_dir = serving[3]
+                        else:
+                            on_disk = load_dir = serving[3]
             if _add_gguf_picks(index, info, keys, on_disk, load_dir):
                 continue
             if load_dir.is_file():
