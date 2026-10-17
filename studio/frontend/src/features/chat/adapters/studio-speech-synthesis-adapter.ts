@@ -224,7 +224,7 @@ export function createConfiguredUtterance(
 export async function generateStudioTtsAudio(
   text: string,
   signal?: AbortSignal,
-  options?: { model: string; voiceId: string },
+  options?: { model: string; voiceId: string; speaker?: string },
 ): Promise<string> {
   const ttsStudioVoiceId =
     options?.voiceId ?? useVoiceSettingsStore.getState().ttsStudioVoiceId;
@@ -239,6 +239,7 @@ export async function generateStudioTtsAudio(
       max_tokens: TTS_MAX_TOKENS,
       ...(options ? { model: options.model } : {}),
       ...(ttsStudioVoiceId ? { voice_id: ttsStudioVoiceId } : {}),
+      ...(options?.speaker ? { audio_options: { voice: options.speaker } } : {}),
     }),
     signal,
   });

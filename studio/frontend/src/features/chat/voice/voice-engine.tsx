@@ -206,20 +206,17 @@ export const VoiceEngine: FC = () => {
   }, []);
 
   // Speech that landed while the model was still thinking and the interject model
-  // called a separate question: held here and sent once the reply has been heard.
-  const queuedUtteranceRef = useRef<string | null>(null);
+  // called a separate question: held here and sent, as one, once the reply has been heard.
+  const queuedUtteranceRef = useRef<string[]>([]);
   // Turns finished while the voice was still loading; sent as one once it is up.
   const pendingForVoiceRef = useRef<string[]>([]);
   const submitRef = useRef<(text?: string) => void>(() => {});
   const runStartedAtRef = useRef(0);
   const onPlaybackEnd = useCallback(() => {
     const queued = queuedUtteranceRef.current;
-    if (queued && voiceModeRef.current === "active") {
-      queuedUtteranceRef.current = null;
-      const composer = auiRef.current.composer();
-      if (composer.getState().dictation) composer.stopDictation();
-      composer.setText(queued);
-      submitRef.current();
+    if (queued.length && voiceModeRef.current === "active") {
+      queuedUtteranceRef.current = [];
+      submitRef.current(queued.join(" "));
       return;
     }
     resumeListen();
@@ -520,10 +517,14 @@ export const VoiceEngine: FC = () => {
     if (thread.getState().isRunning && latestAssistantIsReasoning()) {
       const elapsedS = (Date.now() - runStartedAtRef.current) / 1000;
       void interjectAction(lastUserPrompt(), text, elapsedS).then((action) => {
+        voiceTrace("engine.interject", { action, text });
         if (voiceModeRef.current !== "active") return;
         if (action === "ignore" || action === "queue") {
-          if (action === "queue") queuedUtteranceRef.current = text;
+          if (action === "queue") queuedUtteranceRef.current.push(text);
           composer.setText("");
+          // The barge-in held the reply; nothing cut it, so let it carry on. Without
+          // this the playback context stayed suspended and the loop looked stuck.
+          resumePlayback();
           resumeListen();
           return;
         }
@@ -532,7 +533,7 @@ export const VoiceEngine: FC = () => {
       return;
     }
     commitUtterance(text);
-  }, [resumeListen, stop, latestAssistantText, latestAssistantIsReasoning, lastUserPrompt, clearFiller, commitUtterance]);
+  }, [resumeListen, resumePlayback, stop, latestAssistantText, latestAssistantIsReasoning, lastUserPrompt, clearFiller, commitUtterance]);
 
 
   // Sync derived orb state to the store so VoiceOrb can read it without prop-drilling.
@@ -811,7 +812,7 @@ export const VoiceEngine: FC = () => {
       clearHeldTurn();
       clearFiller();
       setPendingFiller(null);
-      queuedUtteranceRef.current = null;
+      queuedUtteranceRef.current = [];
       pendingForVoiceRef.current = [];
       clearVoiceDecisions();
       stop();
@@ -839,7 +840,7 @@ export const VoiceEngine: FC = () => {
     clearHeldTurn();
     clearFiller();
     setPendingFiller(null);
-    queuedUtteranceRef.current = null;
+    queuedUtteranceRef.current = [];
     pendingForVoiceRef.current = [];
     stop();
     const composer = auiRef.current.composer();

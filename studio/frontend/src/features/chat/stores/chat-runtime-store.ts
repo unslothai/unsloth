@@ -183,6 +183,7 @@ export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
 const CHAT_VOICE_MODEL_ID_KEY = "unsloth_chat_voice_model_id";
 const CHAT_VOICE_SAVED_ID_KEY = "unsloth_chat_voice_saved_id";
+const CHAT_VOICE_SPEAKER_KEY = "unsloth_chat_voice_speaker";
 const CHAT_STT_MODEL_ID_KEY = "unsloth_chat_stt_model_id";
 const CHAT_VAD_MODEL_ID_KEY = "unsloth_chat_vad_model_id";
 export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
@@ -2700,6 +2701,8 @@ type ChatRuntimeStore = {
   selectedVoiceModelId: string;
   /** A saved Audio voice for a voice that can clone; "" is the model's own. Persisted. */
   selectedVoiceId: string;
+  /** A built-in speaker of a voice that lists several; "" is the model's default. Persisted. */
+  selectedVoiceSpeaker: string;
   /** The transcription model the loop listens with. Persisted. */
   selectedSttModelId: string;
   /** The audio.cpp voice activity detector that checks each clip for a voice. Persisted. */
@@ -2746,6 +2749,7 @@ type ChatRuntimeStore = {
   setVoiceMode: (mode: "off" | "configuring" | "active") => void;
   setSelectedVoiceModelId: (id: string) => void;
   setSelectedVoiceId: (id: string) => void;
+  setSelectedVoiceSpeaker: (speaker: string) => void;
   setSelectedSttModelId: (id: string) => void;
   setSelectedVadModelId: (id: string) => void;
   setVadSlotLoaded: (loaded: boolean) => void;
@@ -4554,6 +4558,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   // An Orpheus pick from the llama-server voice slot falls back to the default voice.
   selectedVoiceModelId: migrateVoiceTtsModel(loadString(CHAT_VOICE_MODEL_ID_KEY, "")),
   selectedVoiceId: loadString(CHAT_VOICE_SAVED_ID_KEY, ""),
+  selectedVoiceSpeaker: loadString(CHAT_VOICE_SPEAKER_KEY, ""),
   selectedSttModelId: loadString(CHAT_STT_MODEL_ID_KEY, "") || VOICE_DEFAULT_STT_MODEL,
   selectedVadModelId: loadString(CHAT_VAD_MODEL_ID_KEY, "") || VOICE_DEFAULT_VAD_MODEL,
   vadSlotLoaded: false,
@@ -4801,6 +4806,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set(() => {
       saveString(CHAT_VOICE_SAVED_ID_KEY, selectedVoiceId);
       return { selectedVoiceId };
+    }),
+  setSelectedVoiceSpeaker: (selectedVoiceSpeaker) =>
+    set(() => {
+      saveString(CHAT_VOICE_SPEAKER_KEY, selectedVoiceSpeaker);
+      return { selectedVoiceSpeaker };
     }),
   setSelectedSttModelId: (selectedSttModelId) =>
     set(() => {

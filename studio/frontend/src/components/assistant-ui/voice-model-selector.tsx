@@ -6,7 +6,16 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { authFetch } from "@/features/auth";
+import { audioVoiceLabel } from "@/features/audio/audio-options";
 import { usePlatformStore } from "@/config/env";
 import { audioModelsForTask } from "@/features/audio/catalog";
 import { VoicePicker } from "@/features/audio/components/voice-picker";
@@ -63,6 +72,9 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
   const setSavedVoiceId = useChatRuntimeStore((s) => s.setSelectedVoiceId);
   const savedVoices = useAudioVoicesStore((s) => s.voices);
   const canClone = voiceTtsCanClone(value);
+  const speaker = useChatRuntimeStore((s) => s.selectedVoiceSpeaker);
+  const setSpeaker = useChatRuntimeStore((s) => s.setSelectedVoiceSpeaker);
+  const speakers = useBuiltinSpeakers(loaded ? value : "");
 
   const models = useMemo(
     () =>
@@ -81,6 +93,11 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
   }, [voiceOpen]);
 
   const savedName = savedVoices.find((v) => v.id === savedVoiceId)?.name;
+  // OmniVoice samples a new speaker per request when nothing picks one, and voice
+  // mode speaks sentence by sentence, so the voice changes mid-reply. Neither a
+  // fixed seed nor a voice description held it steady (both measured); a saved
+  // voice is what does.
+  const randomEachSentence = speakers?.family === "omnivoice" && !savedVoiceId;
 
   return (
     <div
@@ -113,6 +130,28 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
         open={!disabled && open}
         onOpenChange={(next) => setOpen(!disabled && next)}
       />
+      {speakers && speakers.values.length > 1 && (
+        <Select
+          value={speakers.values.includes(speaker) ? speaker : ""}
+          onValueChange={setSpeaker}
+          disabled={disabled}
+        >
+          <SelectTrigger
+            size="sm"
+            className={cn("h-8.5 w-auto min-w-0 max-w-48 rounded-[10px] border-0 bg-transparent px-3 text-ui-14 text-muted-foreground shadow-none hover:bg-nav-surface-hover", className)}
+            aria-label="Choose a built-in speaker"
+          >
+            <SelectValue placeholder="Default speaker" />
+          </SelectTrigger>
+          <SelectContent>
+            {speakers.values.map((choice) => (
+              <SelectItem key={choice} value={choice}>
+                {audioVoiceLabel(choice, speakers.family)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
       {canClone && (
         <Popover
           open={!disabled && voiceOpen}
@@ -126,9 +165,19 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
                 className,
               )}
               aria-label="Choose a saved voice"
+              title={
+                randomEachSentence
+                  ? "This voice picks a new speaker for every sentence. Choose a saved voice to keep one."
+                  : undefined
+              }
             >
-              <span className="min-w-0 truncate text-ui-14 text-muted-foreground">
-                {savedName ?? "Model's own voice"}
+              <span
+                className={cn(
+                  "min-w-0 truncate text-ui-14 text-muted-foreground",
+                  randomEachSentence && "text-amber-500",
+                )}
+              >
+                {savedName ?? (randomEachSentence ? "Random voice each sentence" : "Model's own voice")}
               </span>
               <HugeiconsIcon
                 icon={ArrowDown01Icon}
@@ -172,3 +221,41 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
     </div>
   );
 };
+
+interface BuiltinSpeakers {
+  family: string | null;
+  values: string[];
+}
+
+/** The built-in speakers the loaded voice lists on its status, once it is resident. */
+function useBuiltinSpeakers(loadedId: string): BuiltinSpeakers | null {
+  const [speakers, setSpeakers] = useState<BuiltinSpeakers | null>(null);
+  useEffect(() => {
+    setSpeakers(null);
+    if (!loadedId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await authFetch(
+          `/api/inference/status?model=${encodeURIComponent(loadedId)}`,
+        );
+        if (!res.ok) return;
+        const status = (await res.json()) as {
+          audio_family?: string | null;
+          audio_options?: { name?: string; values?: unknown }[] | null;
+        };
+        const voice = (status.audio_options ?? []).find((o) => o?.name === "voice");
+        const values = Array.isArray(voice?.values)
+          ? voice.values.filter((v): v is string => typeof v === "string")
+          : [];
+        if (!cancelled) setSpeakers({ family: status.audio_family ?? null, values });
+      } catch {
+        // No speaker list: the model's default speaks.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadedId]);
+  return speakers;
+}

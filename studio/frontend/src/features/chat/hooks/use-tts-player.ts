@@ -156,10 +156,12 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       const ctx = getPlayCtx();
       if (!ctx) return null;
       const request = () => {
-        const { selectedVoiceModelId, selectedVoiceId } = useChatRuntimeStore.getState();
+        const { selectedVoiceModelId, selectedVoiceId, selectedVoiceSpeaker } =
+          useChatRuntimeStore.getState();
         return generateStudioTtsAudio(sentence, abortRef.current?.signal, {
           model: selectedVoiceModelId,
           voiceId: voiceTtsCanClone(selectedVoiceModelId) ? selectedVoiceId : "",
+          speaker: selectedVoiceSpeaker,
         });
       };
       let url: string;

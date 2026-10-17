@@ -264,7 +264,22 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       },
     };
 
+    // A mic picked in Settings mid-session: this session keeps the old device, so
+    // end it (once nothing is being said) and the re-arm opens the new one.
+    let unsubMic: (() => void) | null = useVoiceSettingsStore.subscribe(
+      (state, prev) => {
+        if (state.micDeviceId === prev.micDeviceId || ended) return;
+        if (utteranceInFlight) return;
+        voiceTrace("session.micSwitch", { to: state.micDeviceId });
+        teardown();
+        finish("stopped");
+        setTimeout(() => requestVoiceResume(), 0);
+      },
+    );
+
     const teardown = () => {
+      unsubMic?.();
+      unsubMic = null;
       // Mic is closing: no longer hearing the user, so drop the orb's salmon
       // "hearing you" state (the utterance ended or was cancelled).
       useChatRuntimeStore.getState().setVoiceHearing(false);
