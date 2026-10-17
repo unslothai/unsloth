@@ -72,6 +72,7 @@ import { DictationDictionaryView } from "../components/dictation-dictionary-view
 import { RecentDictationsView } from "../components/recent-dictations-view";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
+import { VoiceDecisionLogSection } from "../components/voice-decision-log-section";
 import {
   isTrackingSttDownload,
   trackSttDownload,
@@ -1871,6 +1872,8 @@ export function VoiceTab() {
           />
         )}
       </SettingsSection>
+
+      <VoiceDecisionLogSection />
     </div>
   );
 }
