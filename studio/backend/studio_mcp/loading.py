@@ -537,27 +537,31 @@ async def load_media(
     token = hf_token or caller.hf_token
     if token:
         body["hf_token"] = token
-    if variant or "gguf" in model.lower():
-        entry = await _gguf_filename(caller, model, variant)
-        if entry:
-            body["gguf_filename"] = entry["filename"]
-            body["model_kind"] = "gguf"
-    # The plan validates the pick the way the load does, before any download.
-    plan = await place.post_plan(caller, routes["plan"], body, knobs)
-    if isinstance(plan, dict):
-        if opt_text(plan.get("incompatible_reason")):
-            raise tool_error(plan["incompatible_reason"])
-        if "gguf_filename" not in body:
-            for entry in plan.get("entries") or []:
-                if (
-                    isinstance(entry, dict)
-                    and entry.get("checkpoint")
-                    and opt_text(entry.get("gguf_filename"))
-                ):
-                    body["gguf_filename"] = entry["gguf_filename"]
-                    break
+
+    async def prepare() -> None:
+        # Hub and plan reads run inside the job, so a slow one never holds the call past ``wait_s``.
+        if variant or "gguf" in model.lower():
+            entry = await _gguf_filename(caller, model, variant)
+            if entry:
+                body["gguf_filename"] = entry["filename"]
+                body["model_kind"] = "gguf"
+        # The plan validates the pick the way the load does, before any download.
+        plan = await place.post_plan(caller, routes["plan"], body, knobs)
+        if isinstance(plan, dict):
+            if opt_text(plan.get("incompatible_reason")):
+                raise tool_error(plan["incompatible_reason"])
+            if "gguf_filename" not in body:
+                for entry in plan.get("entries") or []:
+                    if (
+                        isinstance(entry, dict)
+                        and entry.get("checkpoint")
+                        and opt_text(entry.get("gguf_filename"))
+                    ):
+                        body["gguf_filename"] = entry["gguf_filename"]
+                        break
 
     async def run(job: LoadJob, before: dict[str, list[str]]) -> LoadResult:
+        await prepare()
         # The answer names what the arbiter unloaded to make room; the load itself goes on in the background.
         answer = await with_progress(
             None,
