@@ -193,6 +193,7 @@ from .diffusion_precision import (
     effective_te_quant,
     normalize_te_quant,
     quantize_text_encoders,
+    resolve_te_quant_request,
     te_quant_needs_resident_weights,
     te_quant_supported,
     te_quant_unsupported_reason,
@@ -303,6 +304,53 @@ def resolve_video_model_kind(gguf_filename: Optional[str], model_kind: Optional[
     if not gguf_filename:
         return "pipeline"
     return "gguf" if gguf_filename.strip().lower().endswith(".gguf") else "single_file"
+
+
+def video_te_quant_request(
+    fam: Any,
+    text_encoder_quant: Optional[str],
+    *,
+    base: Optional[str] = None,
+    speed_mode: Optional[str] = None,
+) -> tuple[Optional[str], bool]:
+    """``(request, auto_selected)``: an unset / "auto" encoder request on a family with ``te_quant_auto`` becomes that
+    scheme; anything else comes back as given, raw, because MiniMax-H3 and LTX-2.5 read the raw tri-state themselves.
+
+    ``auto_selected`` keeps the pick from being treated as a request the caller made: nobody asked for it, so a host
+    that cannot run it (fp8 below cc 8.9, a hosted file that is not there) gets the dense encoder, never a refusal.
+
+    Two limits on the automatic pick, never on an explicit scheme: Speed="off" is bit-exact, so it keeps the released
+    encoder (LTX-2.5's raw unset included, which would otherwise take int8); and only an exactly identified official
+    ``base`` takes the hosted file, so a custom pack that merely shares the folder name keeps its own weights."""
+    unset = text_encoder_quant is None or str(text_encoder_quant).strip().lower() in ("", "auto")
+    auto_scheme = getattr(fam, "te_quant_auto", None)
+    speed_off = speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
+    if unset and speed_off and (auto_scheme or getattr(fam, "name", None) == "ltx-2.5"):
+        return "none", False
+    if not auto_scheme:
+        return text_encoder_quant, False
+    mode, auto = resolve_te_quant_request(text_encoder_quant, auto_scheme)
+    if not auto:
+        return text_encoder_quant, False
+    if base is not None and not _te_base_is_official(fam, base):
+        return None, False
+    return mode, True
+
+
+def _te_base_is_official(fam: Any, base: str) -> bool:
+    """The load's base is the family's registered base (or a verified equivalent), by exact id after mirror and HF
+    cache canonicalization: no final-folder-name match."""
+    from .diffusion_families import canonical_base
+    from .diffusion_te_prequant import _TE_EQUIVALENT_BASES
+    from .model_ids import hf_cache_repo_id
+
+    registered = canonical_base(str(getattr(fam, "base_repo", "") or "")).lower()
+    loading = canonical_base(hf_cache_repo_id(str(base)) or str(base)).lower()
+    if not registered or not loading:
+        return False
+    return loading == registered or any(
+        loading in group and registered in group for group in _TE_EQUIVALENT_BASES
+    )
 
 
 def assert_video_precision_available(
@@ -697,6 +745,17 @@ def _assert_video_precision_for_target(
     ):
         return
     if getattr(fam, "name", None) == "ltx-2.5":
+        return
+    # MPS runs a family's hosted int8 ConvRot encoder without fp8 (the loader's own rule), so an explicit int8 must not
+    # be rewritten to fp8 below and then refused for the fp8 support MPS lacks.
+    from .diffusion_te_prequant import family_te_int8_convrot, int8_convrot_te_runs_on
+
+    if (
+        te_mode == "int8"
+        and model_kind in ("pipeline", "single_file")
+        and family_te_int8_convrot(fam, "text_encoder") is not None
+        and int8_convrot_te_runs_on(target)
+    ):
         return
     te_effective = effective_te_quant(te_mode, getattr(fam, "name", None))
     te_reason = None
@@ -3570,10 +3629,17 @@ class VideoBackend:
                 fam, kind, kwargs.get("gguf_filename"), kwargs.get("h3_task")
             )
             # An fp8 encoder request loads a hosted pre-cast checkpoint, so neither the estimate nor the pull includes
-            # those dense shards.
-            te_sources = self._te_prequant_sources(
+            # those dense shards. Resolved through the family default the loader applies, so an unset request on a
+            # family whose default is a hosted encoder does not stage the dense one. kwargs keep the RAW request.
+            te_planned, _ = video_te_quant_request(
                 fam,
                 kwargs.get("text_encoder_quant"),
+                base = base,
+                speed_mode = kwargs.get("speed_mode"),
+            )
+            te_sources = self._te_prequant_sources(
+                fam,
+                te_planned,
                 kwargs.get("gpu_ordinal"),
                 base = base,
             )
@@ -3605,7 +3671,7 @@ class VideoBackend:
                 transformer_quant = kwargs.get("transformer_quant"),
                 speed_mode = kwargs.get("speed_mode"),
                 memory_mode = kwargs.get("memory_mode"),
-                text_encoder_quant = kwargs.get("text_encoder_quant"),
+                text_encoder_quant = te_planned,
                 gpu_ordinal = kwargs.get("gpu_ordinal"),
                 hf_token = kwargs.get("hf_token"),
                 ltx25_dev = ltx25_dev,
@@ -3677,6 +3743,16 @@ class VideoBackend:
                         self._loading.asset_repos = self._loading.asset_repos + (
                             H3_TE_QUANT_REPO,
                             H3_LEGACY_TE_QUANT_REPO,
+                        )
+                    # The same for a hosted pre-cast encoder (unsloth/Wan2.2-TI2V-5B-FP8 for every Wan base).
+                    te_repos = tuple(
+                        src.location
+                        for src in (te_sources or {}).values()
+                        if getattr(src, "kind", None) == "repo"
+                    )
+                    if te_repos:
+                        self._loading.asset_repos = tuple(
+                            dict.fromkeys(self._loading.asset_repos + te_repos)
                         )
                     # Dense shards dropped: a delete of the seeded repo mid-fetch strands the load.
                     if skip_transformer_weights:
@@ -4623,7 +4699,15 @@ class VideoBackend:
     ) -> dict[str, Any]:
         """``{component: source}`` for the text encoders this load will take PRE-CAST from a
         hosted checkpoint instead of the base repo's dense weights (``{}`` when none)."""
+        if getattr(fam, "name", None) == "ltx-2.5":
+            # The sidecar worker loads LTX-2.5's hosted int8 ConvRot Gemma 4 encoder; resolving it here is what lets
+            # the plan, the estimate and the pre-fetch stage that file and drop the dense text_encoder/ shards.
+            from .video_ltx25 import ltx25_te_prequant_sources
+            return ltx25_te_prequant_sources(
+                text_encoder_quant, base or str(getattr(fam, "base_repo", "") or "")
+            )
         from .diffusion_te_prequant import te_prequant_sources_for_base
+
         return te_prequant_sources_for_base(
             fam,
             base or str(getattr(fam, "base_repo", "") or ""),
@@ -5730,6 +5814,11 @@ class VideoBackend:
         h3_task = _h3_single_file_task(fam, kind, gguf_filename, h3_task)
         # A dev LTX-2.5 load is single stage and never opens the latent upsampler.
         ltx25_dev = _ltx25_dev_load(fam, kind, gguf_filename, repo_id, display_repo_id)
+        # The family default the loader applies to an unset encoder request, so the plan stages the hosted encoder
+        # instead of the dense shards the load would not open. H3 keeps reading the raw request below.
+        te_planned, _ = video_te_quant_request(
+            fam, text_encoder_quant, base = base, speed_mode = load_kwargs.get("speed_mode")
+        )
         # The same resolution the load makes, so an H3 auto pick the loader will serve from a hosted checkpoint is not
         # staged dense here first: that is 66.3 GB the panel downloads and the load never opens, and the replacement
         # would then arrive outside this plan.
@@ -5754,7 +5843,7 @@ class VideoBackend:
             transformer_quant = transformer_quant,
             speed_mode = load_kwargs.get("speed_mode"),
             memory_mode = load_kwargs.get("memory_mode"),
-            text_encoder_quant = text_encoder_quant,
+            text_encoder_quant = te_planned,
             gpu_ordinal = load_kwargs.get("gpu_ordinal"),
             hf_token = hf_token,
             ltx25_dev = ltx25_dev,
@@ -5876,7 +5965,7 @@ class VideoBackend:
             # Pre-cast encoders first: only a checkpoint that really resolves earns the right to drop the dense shards
             te_sources = self._te_prequant_sources(
                 fam,
-                text_encoder_quant,
+                te_planned,
                 load_kwargs.get("gpu_ordinal"),
                 base = base,
             )
@@ -6587,6 +6676,27 @@ class VideoBackend:
 
         target = self._device_target(gpu_ordinal)
         device = target.device
+        # Text-encoder tri-state, resolved once here so the memory plan, the pre-cast injection and the dense cast below
+        # see one decision: unset / "auto" takes the family's te_quant_auto (the hosted encoder ComfyUI's template
+        # matches), "none" / "off" keep the released one, an explicit scheme pins itself. An automatic pick this card
+        # cannot run is dropped rather than refused.
+        text_encoder_quant_requested = text_encoder_quant
+        text_encoder_quant, text_encoder_quant_auto = video_te_quant_request(
+            fam,
+            text_encoder_quant,
+            base = repo_id if kind == "pipeline" else base,
+            speed_mode = speed_mode,
+        )
+        if text_encoder_quant_auto:
+            from . import diffusion_precision as _precision
+            if _precision.te_quant_supported(target, text_encoder_quant):
+                logger.info(
+                    "video.text_encoder_quant: '%s' selected automatically for %s (unset request)",
+                    text_encoder_quant,
+                    fam.name,
+                )
+            else:
+                text_encoder_quant = None
         # FlashInfer only serves hosted pre-quantised denoisers. Modular H3 installs below; a conventional load installs
         # after its live-memory plan keeps the seed (a capacity-settled seed can still be dropped).
         _nvfp4_install_wanted = (
@@ -7105,6 +7215,7 @@ class VideoBackend:
                 resident = encoder_resident_for_plan(plan),
                 budget_mib = (getattr(plan, "estimates", None) or {}).get("safe_device_budget_mib"),
                 te_quant = ltx25_te_quant_scheme(text_encoder_quant),
+                base_repo = base,
             )
             # Installed only while this load is current: a load superseded during the start must not overwrite the
             # newer load's worker (whose token-scoped cleanup could then never find it).
@@ -7151,6 +7262,9 @@ class VideoBackend:
             local_files_only = local_files_only,
         )
         pipe_kwargs.update(te_injected)
+        if text_encoder_quant_auto and not te_injected:
+            # Nobody asked for a runtime cast: without its hosted file the automatic pick keeps the released encoder.
+            text_encoder_quant = None
         # The fp8-sized budget is valid only once the pre-cast encoder is in hand. Injection is best-effort (an
         # unreachable / corrupt / base-mismatched checkpoint falls back to the dense encoder), and a dense encoder under
         # an fp8 budget under-states the resident requirement by ~11 GB for ltx-2, which is the direction that OOMs.
@@ -7208,6 +7322,8 @@ class VideoBackend:
             c
             for c in tuple(_te_prequant_skipped or ()) + tuple(_denoiser_prequant_skipped or ())
             if c not in pipe_kwargs
+            # LTX-2.5's skipped encoder is the worker's: it loads the hosted file, else re-reads the Hub itself.
+            and not (ltx25_client is not None and c == "text_encoder")
         ]
         if missing_dense and _base_local_dir:
             logger.warning(
@@ -7747,11 +7863,15 @@ class VideoBackend:
                 family = fam.name,
                 offload_active = plan.offload_policy != "none",
                 logger = logger,
+                encoders = (getattr(fam, "te_quant_auto_encoders", None) or None)
+                if text_encoder_quant_auto
+                else None,
             )
         text_encoder_quant_engaged = text_encoder_outcome.mode
         if (
             (text_encoder_quant_engaged is None or text_encoder_outcome.partial)
             and normalize_te_quant(text_encoder_quant) is not None
+            and not text_encoder_quant_auto
             and not precision_fallback_allowed()
         ):
             del pipe
@@ -8153,9 +8273,14 @@ class VideoBackend:
                         else transformer_quant_decline_status,
                     ),
                     "text_encoder_quant": (
-                        text_encoder_quant,
+                        # The RAW request: an automatic pick must not read as a scheme the caller pinned.
+                        text_encoder_quant_requested,
                         text_encoder_quant_engaged or "off",
-                        text_encoder_outcome.reason
+                        (
+                            f"{text_encoder_outcome.reason or 'engaged'} (selected automatically: the family default)"
+                            if text_encoder_quant_auto and text_encoder_quant_engaged is not None
+                            else text_encoder_outcome.reason
+                        )
                         or (
                             "dense text encoder quantised in place"
                             if text_encoder_quant_engaged is not None
