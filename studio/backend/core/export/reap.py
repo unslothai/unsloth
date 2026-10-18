@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 from pathlib import Path
@@ -66,9 +67,9 @@ def _model_parallel(distributed) -> bool:
 
 # Serialized weight formats that stay packed when Studio loads the model for REAP (16-bit request:
 # an FP8 checkpoint is kept as FP8), so Core's 16 / 32-bit weight check would refuse them after a
-# full load. Not here: bitsandbytes (a Hub "-bnb-4bit" id maps back to its 16-bit original, and
-# apply_reap refuses a 4-bit load up front) and mxfp4 (gpt-oss dequantizes to bf16 without native
-# kernels; Core refuses it clearly otherwise).
+# full load. bitsandbytes is packed too, except for the Hub ids Unsloth swaps for their 16-bit
+# original on a 16-bit load (`_maps_to_16_bit`). Not here: mxfp4 (gpt-oss dequantizes to bf16
+# without native kernels; Core refuses it clearly otherwise).
 _PACKED_QUANT_METHODS = {
     "fp8",
     "fbgemm_fp8",
@@ -95,7 +96,46 @@ _PACKED_QUANT_METHODS = {
 }
 
 
-def moe_info_from_config(config: Optional[dict]) -> Optional[dict]:
+@functools.lru_cache(maxsize = 1)
+def _int_to_float_mapper() -> dict:
+    """Unsloth's quantized-to-16-bit Hub id table, read from mapper.py (plain data) without importing
+    unsloth, which would initialize the GPU stack in the server process."""
+    import importlib.util
+
+    spec = importlib.util.find_spec("unsloth")
+    roots = list(spec.submodule_search_locations or []) if spec else []
+    for root in roots:
+        path = Path(root) / "models" / "mapper.py"
+        if path.is_file():
+            module_spec = importlib.util.spec_from_file_location("_unsloth_mapper_data", path)
+            module = importlib.util.module_from_spec(module_spec)
+            module_spec.loader.exec_module(module)
+            return dict(module.INT_TO_FLOAT_MAPPER)
+    return {}
+
+
+def _maps_to_16_bit(model: str) -> bool:
+    """A quantized Hub id Unsloth loads as its 16-bit original when asked for 16-bit."""
+    try:
+        return str(model).lower() in _int_to_float_mapper()
+    except Exception as exc:
+        logger.debug("Could not read Unsloth's model mapper: %s", exc)
+        return False
+
+
+def hub_adapter_has_mtp_head(repo: str, hf_token = None) -> bool:
+    """Unsloth's loader re-attaches a Hub LoRA repo's trained MTP head, which REAP refuses."""
+    try:
+        from huggingface_hub import HfApi
+        return bool(HfApi(token = hf_token).file_exists(repo, "mtp_head.safetensors"))
+    except Exception as exc:
+        logger.debug("Could not check '%s' for an MTP head: %s", repo, exc)
+        return False
+
+
+def moe_info_from_config(
+    config: Optional[dict], bnb_maps_to_16_bit: bool = False
+) -> Optional[dict]:
     """``{num_experts, top_k}`` (plus ``n_group`` / ``topk_group`` for group-limited routers) for a
     routed-MoE config dict, else None."""
     if not isinstance(config, dict):
@@ -115,9 +155,10 @@ def moe_info_from_config(config: Optional[dict]) -> Optional[dict]:
         return None
     if any(_model_parallel(h.get("distributed_config")) for h in holders):
         return None
+    packed = _PACKED_QUANT_METHODS | (set() if bnb_maps_to_16_bit else {"bitsandbytes"})
     if any(
         isinstance(h.get("quantization_config"), dict)
-        and str(h["quantization_config"].get("quant_method", "")).lower() in _PACKED_QUANT_METHODS
+        and str(h["quantization_config"].get("quant_method", "")).lower() in packed
         for h in holders
     ):
         return None
@@ -178,7 +219,10 @@ def moe_export_info(
                 manifest = training_manifest(str(local))
                 if manifest and manifest.get("strategy") == "mtp":
                     return None
-        return moe_info_from_config(_read_raw_config_json(model, hf_token, local_files_only, None))
+        return moe_info_from_config(
+            _read_raw_config_json(model, hf_token, local_files_only, None),
+            bnb_maps_to_16_bit = not is_local_path(model) and _maps_to_16_bit(model),
+        )
     except Exception as exc:
         logger.debug("MoE detection skipped for '%s': %s", model, exc)
         return None

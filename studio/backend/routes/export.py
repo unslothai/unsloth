@@ -445,7 +445,7 @@ async def get_moe_info(
 ):
     """Routed-expert counts for the REAP option on the export page; null counts for a dense model.
     The token (gated repos) comes in the X-HF-Token header, as for /api/models/export-size."""
-    from core.export.reap import moe_export_info
+    from core.export.reap import hub_adapter_has_mtp_head, moe_export_info
     from routes.models import _normalize_hf_token, _require_model_access_or_caller_token
     from utils.paths import is_local_path
 
@@ -473,7 +473,15 @@ async def get_moe_info(
         # A Hub LoRA repo publishes adapter_config.json, not config.json: probe its base, which is
         # authorized first like the adapter.
         from utils.models.model_config import get_base_model_from_lora_identifier
+
         base = await asyncio.to_thread(get_base_model_from_lora_identifier, model, probe_token)
+        if (
+            base
+            and base != model
+            and await asyncio.to_thread(hub_adapter_has_mtp_head, model, probe_token)
+        ):
+            # Unsloth's loader re-attaches this adapter's trained MTP head, which REAP refuses.
+            base = None
         if base and base != model:
             base_local = is_local_path(base)
             if base_local:

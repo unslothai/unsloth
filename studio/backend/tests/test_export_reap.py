@@ -852,9 +852,9 @@ def test_a_failed_upload_after_a_complete_local_save_still_syncs_the_report(
         ("gptq", False),
         ("awq", False),
         ("nvfp4", False),
-        # A Hub -bnb-4bit id maps back to 16-bit and apply_reap refuses a 4-bit load up front;
-        # gpt-oss MXFP4 dequantizes to bf16 without native kernels.
-        ("bitsandbytes", True),
+        # Packed unless the Hub id maps back to 16-bit (next test); gpt-oss MXFP4 dequantizes to
+        # bf16 without native kernels.
+        ("bitsandbytes", False),
         ("mxfp4", True),
     ],
 )
@@ -1054,3 +1054,69 @@ def test_probe_hides_reap_for_a_lora_folder_with_a_trained_mtp_head(tmp_path, wi
     if with_head:
         (lora / "mtp_head.safetensors").write_bytes(b"head")
     assert (reap_mod.moe_export_info(str(lora)) is None) is with_head
+
+
+def test_bitsandbytes_is_offered_only_for_hub_ids_unsloth_maps_to_16_bit(tmp_path, monkeypatch):
+    config = {
+        "num_experts": 8,
+        "num_experts_per_tok": 2,
+        "quantization_config": {"quant_method": "bitsandbytes", "load_in_4bit": True},
+    }
+    assert reap_mod.moe_info_from_config(config, bnb_maps_to_16_bit = True)["num_experts"] == 8
+    assert reap_mod.moe_info_from_config(config) is None
+    # A local folder never maps: loading it in 16-bit keeps the packed weights.
+    folder = tmp_path / "Qwen3-30B-A3B-bnb-4bit"
+    folder.mkdir()
+    (folder / "config.json").write_text(json.dumps(config))
+    monkeypatch.setattr(reap_mod, "_maps_to_16_bit", lambda model: True)
+    assert reap_mod.moe_export_info(str(folder)) is None
+
+
+def test_unsloth_mapper_is_read_without_importing_unsloth():
+    import sys
+
+    pytest.importorskip("importlib.util")
+    if __import__("importlib.util").util.find_spec("unsloth") is None:
+        pytest.skip("unsloth is not installed")
+    reap_mod._int_to_float_mapper.cache_clear()
+    already = "unsloth" in sys.modules
+    mapper = reap_mod._int_to_float_mapper()
+    assert any(k.endswith("-bnb-4bit") for k in mapper)
+    assert ("unsloth" in sys.modules) is already
+
+
+def test_moe_info_route_skips_a_hub_lora_with_an_mtp_head(monkeypatch):
+    from routes import export as export_route
+
+    import routes.models as models_route
+
+    # Imported inside the route from routes.models.
+    monkeypatch.setattr(models_route, "_require_model_access_or_caller_token", _async_none)
+    monkeypatch.setattr(
+        reap_mod,
+        "moe_export_info",
+        lambda model, *a, **k: None if model == "org/lora" else {"num_experts": 8, "top_k": 2},
+    )
+    monkeypatch.setattr(reap_mod, "hub_adapter_has_mtp_head", lambda repo, token = None: True)
+    import utils.models.model_config as model_config
+
+    monkeypatch.setattr(
+        model_config, "get_base_model_from_lora_identifier", lambda m, t = None: "org/moe-base"
+    )
+    res = asyncio.run(
+        export_route.get_moe_info(
+            model = "org/lora", hf_token = None, current_subject = "t", allow_ambient = False
+        )
+    )
+    assert res.num_experts is None
+    monkeypatch.setattr(reap_mod, "hub_adapter_has_mtp_head", lambda repo, token = None: False)
+    res = asyncio.run(
+        export_route.get_moe_info(
+            model = "org/lora", hf_token = None, current_subject = "t", allow_ambient = False
+        )
+    )
+    assert res.num_experts == 8
+
+
+async def _async_none(*args, **kwargs):
+    return None
