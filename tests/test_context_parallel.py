@@ -146,7 +146,7 @@ def test_training_step_divides_the_pre_shard_token_count_by_cp_size(monkeypatch)
     import trl
 
     monkeypatch.setattr(trl, "SFTTrainer", Trainer)
-    cp.patch_sft_trainer()
+    cp.patch_sft_trainer(install_cp_methods = True)
     trainer = Trainer()
     manager = _manager(size = 4)
     manager.mesh = None
@@ -226,7 +226,11 @@ def test_every_rank_builds_the_same_global_mesh(monkeypatch):
     assert built == [([[0, 1], [2, 3]], ("dp_replicate", "cp"))] * 4
 
 
-def _patched_trainer(monkeypatch, **init_attrs):
+def _patched_trainer(
+    monkeypatch,
+    install_cp_methods = True,
+    **init_attrs,
+):
     import trl
 
     class Trainer:
@@ -275,7 +279,7 @@ def _patched_trainer(monkeypatch, **init_attrs):
             return self.gather_function(torch.arange(1.0, 3.0))
 
     monkeypatch.setattr(trl, "SFTTrainer", Trainer)
-    cp.patch_sft_trainer()
+    cp.patch_sft_trainer(install_cp_methods = install_cp_methods)
     return Trainer
 
 
@@ -805,6 +809,7 @@ def _gated_trainer(
     monkeypatch,
     model = None,
     accelerator = None,
+    install_cp_methods = True,
     **args_overrides,
 ):
     """A trainer that clears every CP gate, with the manager stubbed (no process group)."""
@@ -838,7 +843,37 @@ def _gated_trainer(
             state = types.SimpleNamespace(device_mesh = None),
         )
     init = {"args": args, "accelerator": accelerator, "model": model, "train_dataset": [1]}
-    return _patched_trainer(monkeypatch, **init), args, built
+    return _patched_trainer(monkeypatch, install_cp_methods, **init), args, built
+
+
+_CP_METHODS = (
+    "train",
+    "training_step",
+    "prediction_step",
+    "evaluate",
+    "predict",
+    "evaluation_loop",
+)
+
+
+def test_cp_methods_are_wrapped_only_once_a_trainer_enables_cp(monkeypatch):
+    # With CP off the wrappers slowed torch 2.10 LoRA steps by ~35%, so only __init__ is patched.
+    import types
+
+    Trainer = _patched_trainer(monkeypatch, install_cp_methods = False)
+    assert hasattr(Trainer.__init__, "__wrapped__")
+    assert not any(hasattr(Trainer.__dict__[name], "__wrapped__") for name in _CP_METHODS)
+    trainer = Trainer(args = types.SimpleNamespace(context_parallel_size = 1))
+    assert trainer._context_parallel_manager is None
+    assert trainer.train() == "trained"
+    assert not any(hasattr(Trainer.__dict__[name], "__wrapped__") for name in _CP_METHODS)
+
+    Trainer, _, built = _gated_trainer(monkeypatch, install_cp_methods = False)
+    plain = {name: Trainer.__dict__[name] for name in _CP_METHODS}
+    Trainer()
+    assert built == [(2, "ring", "allgather")]
+    for name in _CP_METHODS:
+        assert Trainer.__dict__[name].__wrapped__ is plain[name]
 
 
 @pytest.mark.parametrize(
@@ -1219,7 +1254,7 @@ def test_inherited_trainer_methods_are_resolved_per_call(monkeypatch):
             pass
 
     monkeypatch.setattr(trl, "SFTTrainer", Trainer)
-    cp.patch_sft_trainer()
+    cp.patch_sft_trainer(install_cp_methods = True)
     monkeypatch.setattr(Base, "train", lambda self: "patched later")
     assert Trainer().train() == "patched later"
 
@@ -1269,7 +1304,7 @@ def test_total_train_batch_size_counts_cp_groups_not_ranks(monkeypatch, fsdp2):
             pass
 
     monkeypatch.setattr(trl, "SFTTrainer", Trainer)
-    cp.patch_sft_trainer()
+    cp.patch_sft_trainer(install_cp_methods = True)
     trainer = object.__new__(Trainer)
     pc = types.SimpleNamespace(cp_size = 1, sp_size = 1, tp_size = 1) if fsdp2 else None
     trainer.accelerator = types.SimpleNamespace(parallelism_config = pc)

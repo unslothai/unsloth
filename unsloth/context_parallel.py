@@ -515,7 +515,9 @@ def _restore_parallelism_config(state) -> None:
         _INSTALLED_PARALLELISM_CONFIG.clear()
 
 
-def patch_sft_trainer() -> None:
+def patch_sft_trainer(install_cp_methods: bool = False) -> None:
+    # Only __init__ is wrapped up front; the other wrappers go on the class once a trainer enables
+    # CP. With CP off they still slowed torch 2.10 LoRA steps by ~35% (gemma-4-E2B, L4 / A100).
     import trl
 
     trainer_cls = trl.SFTTrainer
@@ -690,6 +692,7 @@ def patch_sft_trainer() -> None:
         )
         manager = ContextParallelManager(size, backend, rotate_method, fsdp2 = fsdp2)
         self._context_parallel_manager = manager
+        install_methods()
         manager.attach_attention_hooks(self.model)
         _install_accelerator_state(self)
         # The ring calls the flash ops FA3 / FA4 override, so scope them to train() here too.
@@ -818,14 +821,21 @@ def patch_sft_trainer() -> None:
                 total = total // manager.size
             return total
 
-        trainer_cls.get_total_train_batch_size = patched_get_total_train_batch_size
+    def install_methods():
+        if trainer_cls.__dict__.get("__unsloth_context_parallel_methods__"):
+            return
+        trainer_cls.prediction_step = patched_prediction_step
+        trainer_cls.train = patched_train
+        trainer_cls.evaluate = patched_evaluate
+        trainer_cls.predict = patched_predict
+        trainer_cls.evaluation_loop = patched_evaluation_loop
+        trainer_cls.save_model = patched_save_model
+        trainer_cls.training_step = patched_training_step
+        if has_total_train_batch_size:
+            trainer_cls.get_total_train_batch_size = patched_get_total_train_batch_size
+        trainer_cls.__unsloth_context_parallel_methods__ = True
 
     trainer_cls.__init__ = patched_init
-    trainer_cls.prediction_step = patched_prediction_step
-    trainer_cls.train = patched_train
-    trainer_cls.evaluate = patched_evaluate
-    trainer_cls.predict = patched_predict
-    trainer_cls.evaluation_loop = patched_evaluation_loop
-    trainer_cls.save_model = patched_save_model
-    trainer_cls.training_step = patched_training_step
     trainer_cls.__unsloth_context_parallel__ = True
+    if install_cp_methods:
+        install_methods()
