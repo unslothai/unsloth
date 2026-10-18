@@ -645,10 +645,11 @@ def acquire_for(
         known = physical_gpu_ids(gpu_ids)
         gpus_now = known if known is not None or not need_mib else frozenset(need_mib)
         if owner == CHAT and held_before is not ...:
+            from core.inference import model_slots
             if register is None and not replacing and gpus_now is None:
                 # A re-assert places nothing new.
                 gpus_now = held_before
-            else:
+            elif alongside or model_slots.holds_vram():
                 # Every chat model kept loaded counts, not just the newest; unknown (None) means every GPU.
                 gpus_now = (
                     None if held_before is None or gpus_now is None else held_before | gpus_now

@@ -241,6 +241,22 @@ def test_chat_gpus_add_up_across_loads_and_survive_a_reassert(cores):
     assert arb.residents() == {arb.CHAT: None}
 
 
+def test_primary_chat_replacement_drops_the_gpus_it_left(cores, monkeypatch):
+    from core.inference import model_slots
+
+    # Replacing the primary with nothing kept alongside leaves no chat model on the old GPU.
+    arb.acquire_for(arb.CHAT, lambda: None, gpu_ids = [0], policy = "fit")
+    arb.acquire_for(arb.CHAT, lambda: None, gpu_ids = [1], policy = "fit")
+    assert arb.residents() == {arb.CHAT: frozenset({1})}
+    arb.acquire_for(arb.CHAT, lambda: None, policy = "fit")
+    arb.acquire_for(arb.CHAT, lambda: None, gpu_ids = [1], policy = "fit")
+    assert arb.residents() == {arb.CHAT: frozenset({1})}
+    # A model kept alongside still holds GPU 1, so a primary moved to GPU 0 adds up.
+    monkeypatch.setattr(model_slots, "holds_vram", lambda: True)
+    arb.acquire_for(arb.CHAT, lambda: None, gpu_ids = [0], policy = "fit")
+    assert arb.residents() == {arb.CHAT: frozenset({0, 1})}
+
+
 @pytest.mark.parametrize(
     "policy, priced, kwargs, short, outcome",
     [
