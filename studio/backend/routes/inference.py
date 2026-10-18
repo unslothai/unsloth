@@ -12496,12 +12496,14 @@ def _chat_fit_kwargs(
     config,
     placement,
     policy: Optional[str] = None,
+    credit_gb: Optional[dict] = None,
 ) -> dict:
     """How the CHAT acquire shares the GPU under When they fit / Always.
 
     audio.cpp and native audio are priced from the placement estimate. A GGUF launch prices itself (it refuses a
     partial fit and load_model_gated makes room). Anything else has no estimate before launch: When they fit
-    evicts first, Always tries the load and turns an out-of-memory failure into its refusal.
+    evicts first, Always tries the load and turns an out-of-memory failure into its refusal. ``credit_gb`` is what
+    the outgoing primary frees per GPU when this load replaces it.
     """
     if policy is None:
         from core.inference.gpu_residency import current_policy
@@ -12517,12 +12519,45 @@ def _chat_fit_kwargs(
         # Only residents on these GPUs are weighed or unloaded; the arbiter maps them back to physical ids.
         kwargs["gpu_ids"] = ordinals
     if placement.native_required_gb and gpus and not placement.gpu_ids_are_vulkan_ordinals:
+        credit = credit_gb or {}
         kwargs["need_mib"] = {
-            int(g): int(placement.native_required_gb * 1024 / len(gpus)) for g in gpus
+            int(g): max(
+                int((placement.native_required_gb / len(gpus) - credit.get(int(g), 0.0)) * 1024), 1
+            )
+            for g in gpus
         }
     elif policy == "fit" and not (config.is_gguf and _primary_can_retry_fit.get()):
         kwargs["evict_first"] = True
     return kwargs
+
+
+def _outgoing_chat_credit_gb(
+    placement, policy: str, replacing: bool, availability: "Optional[_NativeAudioAvailability]"
+) -> tuple[Optional[dict], Optional[dict]]:
+    """VRAM the primary chat model frees per GPU when a priced native load replaces it beside an image or video model.
+
+    Returns (credit, wait): the CHAT acquire charges the new load less the credit, and the load waits for ``wait`` GB
+    to be free after the teardown. (None, None) when nothing is credited.
+    """
+    if not (
+        replacing
+        and policy != "off"
+        and placement.native_required_gb
+        and placement.resolved_gpu_ids
+        and _media_on_target_gpus(placement)
+    ):
+        return None, None
+    from core.inference.gpu_arbiter import CHAT
+
+    if availability is not None and availability.owner_snapshot[0] == CHAT:
+        # The automatic placement already measured the outgoing chat model and waits for it.
+        return availability.reclaimable_gpu_gb, None
+    chat = _native_audio_post_handoff_free_gb(CHAT)
+    if chat is None:
+        return None, None
+    target = list(placement.resolved_gpu_ids)
+    share = float(placement.native_required_gb) / len(target)
+    return chat.reclaimable_gpu_gb, {int(g): share for g in target}
 
 
 async def _make_room_for_primary(request: LoadRequest, exc, evicted: list) -> LoadRequest:
@@ -16298,8 +16333,10 @@ class _NativeAudioAvailability(NamedTuple):
     owner_snapshot: tuple[Optional[str], int] = (None, 0)
 
 
-def _native_audio_post_handoff_free_gb() -> Optional[_NativeAudioAvailability]:
-    """Free VRAM after the outgoing Studio owner is torn down, or ``None``.
+def _native_audio_post_handoff_free_gb(
+    outgoing: Optional[str] = None,
+) -> Optional[_NativeAudioAvailability]:
+    """Free VRAM after the outgoing Studio owner (``outgoing``, default the last claimant) is torn down, or ``None``.
 
     Only memory attributable to a backend this CHAT handoff provably evicts is
     credited.  Training, STT, export and unknown/external processes remain in
@@ -16309,7 +16346,7 @@ def _native_audio_post_handoff_free_gb() -> Optional[_NativeAudioAvailability]:
     from core.inference.gpu_arbiter import CHAT, DIFFUSION, VIDEO, owner_snapshot
 
     outgoing_owner = owner_snapshot()
-    owner = outgoing_owner[0]
+    owner = outgoing or outgoing_owner[0]
     live: dict[int, tuple[float, float]] = {}
     reclaimable: dict[int, float] = {}
 
@@ -20142,7 +20179,18 @@ async def _load_model_impl(
                 if not replacing:
                     handoff_kwargs["alongside"] = True
                 handoff_kwargs.update(policy_kwargs(multi_model_mode))
-                handoff_kwargs.update(_chat_fit_kwargs(config, placement, multi_model_mode))
+                outgoing_chat_gb, chat_wait_gb = await asyncio.to_thread(
+                    _outgoing_chat_credit_gb,
+                    placement,
+                    multi_model_mode,
+                    replacing,
+                    final_availability if expected_native_owner is not None else None,
+                )
+                if post_chat_handoff_expected_free_gb is None:
+                    post_chat_handoff_expected_free_gb = chat_wait_gb
+                handoff_kwargs.update(
+                    _chat_fit_kwargs(config, placement, multi_model_mode, outgoing_chat_gb)
+                )
                 await asyncio.to_thread(
                     acquire_for_request,
                     CHAT,

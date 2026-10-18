@@ -1125,3 +1125,28 @@ def test_chat_resident_fast_path_adds_no_account_policy_work(route, chat_switch,
     asyncio.run(
         arun_as(OWNER, route._maybe_auto_switch_model("org/one-GGUF", request, OWNER.username))
     )
+
+
+@pytest.mark.parametrize("policy", ["fit", "always"])
+def test_native_load_replacing_the_primary_is_credited_with_its_memory(vram, monkeypatch, policy):
+    """A priced native load that replaces a 40 GB primary beside an idle image fits once the primary goes."""
+    from routes import inference as inf
+
+    v = vram(80)
+    v.policy = policy
+    v.load_chat(40)
+    assert v.load_image(20, policy = policy) == []
+    outgoing = inf._NativeAudioAvailability({0: 64.0}, {0: 40.0}, arb.owner_snapshot())
+    monkeypatch.setattr(
+        inf,
+        "_native_audio_post_handoff_free_gb",
+        lambda outgoing_owner = None: outgoing if outgoing_owner == arb.CHAT else None,
+    )
+    placement = _placement((0,), native_gb = 30.0)
+    credit, wait = inf._outgoing_chat_credit_gb(placement, policy, True, None)
+    assert credit == {0: 40.0} and wait == {0: 30.0}
+    kwargs = inf._chat_fit_kwargs(SimpleNamespace(is_gguf = False), placement, policy, credit)
+    assert v.load(arb.CHAT, {0: 30 * GIB}, replacing = True, **kwargs) == []
+    assert v.evictions == [] and arb.DIFFUSION in arb.residents()
+    # Loaded alongside, nothing is torn down, so nothing is credited.
+    assert inf._outgoing_chat_credit_gb(placement, policy, False, None) == (None, None)
