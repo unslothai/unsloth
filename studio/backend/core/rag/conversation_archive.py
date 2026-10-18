@@ -1348,20 +1348,60 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
         # arguments and what followed them: a call with a preamble renders live as name/args/text and stored as
         # name/args/args/text, so the live string is no longer contiguous. One split point, so this tolerates exactly
         # the one insertion `_probe_text` makes.
-        if is_call:
-            if not live:
-                return False
-            if live in stored:
-                return True
-            words = live.split(" ")
-            for cut in range(1, len(words)):
-                head = " ".join(words[:cut])
-                tail = " ".join(words[cut:])
-                at = stored.find(head)
-                if at >= 0 and stored.find(tail, at + len(head)) >= 0:
-                    return True
+        # Use literal space offsets instead of rebuilding both halves with split/join at every word boundary.
+        # Prefix presence is monotone as the split moves right (present, then absent); suffix presence is monotone
+        # in the opposite direction (absent, then present). Binary-search these bounds and check only their overlap.
+        # The ordered two-part match itself is NOT monotone, so every remaining candidate must still be checked.
+        # The earliest head and latest tail are sufficient to test ordered, non-overlapping placement.
+        # Literal space offsets preserve split(" ") semantics, including leading, trailing and repeated spaces.
+        if not is_call:
+            return stored == live
+
+        if not live:
             return False
-        return stored == live
+
+        if live in stored:
+            return True
+
+        # Splitting removes one space; the remaining characters must fit without overlap.
+        if len(stored) < len(live) - 1:
+            return False
+
+        cuts = [index for index, char in enumerate(live) if char == " "]
+        if not cuts:
+            return False
+
+        # Find the exclusive upper bound of splits whose head occurs in stored.
+        left, right = 0, len(cuts)
+        while left < right:
+            mid = (left + right) // 2
+            if live[:cuts[mid]] in stored:
+                left = mid + 1
+            else:
+                right = mid
+
+        prefix_stop = left
+        if prefix_stop == 0:
+            return False
+
+        # Within that range, find the first split whose tail occurs in stored.
+        left, right = 0, prefix_stop
+        while left < right:
+            mid = (left + right) // 2
+            if live[cuts[mid] + 1:] in stored:
+                right = mid
+            else:
+                left = mid + 1
+
+        for index in range(left, prefix_stop):
+            cut = cuts[index]
+            head_at = stored.find(live[:cut])
+            tail_at = stored.rfind(live[cut + 1:])
+
+            if tail_at >= head_at + cut:
+                return True
+
+        return False
 
     return [
         index
