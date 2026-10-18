@@ -626,9 +626,12 @@ def test_boundary_check_holds_after_a_dynamic_recompile():
     assert seen == [True, True]
 
 
-def test_a_packed_mixer_runs_outside_a_compiled_block():
-    # Traced, transformers' hub-kernel wrappers run their torch reference (Dynamo folds
-    # torch.compiler.is_exporting() to True), and it ignores seq_idx / cu_seqlens.
+@pytest.mark.parametrize("folds", [True, False])
+def test_a_packed_mixer_runs_outside_a_compiled_block(monkeypatch, folds):
+    # Traced, transformers' hub-kernel wrappers run their torch reference where Dynamo folds
+    # torch.compiler.is_exporting() to True (torch 2.10 / 2.11), and it ignores seq_idx / cu_seqlens.
+    # Where it does not, the packed mixer stays in the graph.
+    monkeypatch.setattr(packing_module, "_FOLDS_IS_EXPORTING", [folds])
     traced = []
 
     class Mixer(torch.nn.Module):
@@ -651,7 +654,13 @@ def test_a_packed_mixer_runs_outside_a_compiled_block():
         block(hidden)
     finally:
         torch._dynamo.reset()
-    assert traced == [False, True]  # only the packed call leaves the graph
+    assert traced == ([False, True] if folds else [True, True])  # only the packed call leaves it
+
+
+def test_is_exporting_fold_probe_matches_this_torch():
+    from packaging.version import Version
+    folds = packing_module._dynamo_folds_is_exporting()
+    assert folds == (Version(torch.__version__.split("+")[0]).release[:2] in ((2, 10), (2, 11)))
 
 
 def test_probes_and_block_adapters_match_the_namespace_dynamo_reads(monkeypatch):
