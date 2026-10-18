@@ -28,8 +28,7 @@ from storage import chat_generation_runs_db as db
 logger = get_logger(__name__)
 # Followers only see appended chunks, so this is the chat's text frame rate: at most one commit per display frame.
 _EVENT_FLUSH_SECONDS = 1 / 60
-# Past this many events read behind a running commit, reading stops until it lands (a wedged database must not
-# buffer a whole generation).
+# Reading pauses past this many events behind a running commit, so a wedged database cannot buffer a generation.
 _MAX_PENDING_EVENTS = 4096
 _SHUTDOWN_GRACE_SECONDS = 10.0
 # Second budget, after task.cancel(). Shorter than the grace period: by this point the run is already being abandoned,

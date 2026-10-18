@@ -793,8 +793,6 @@ def _held_append(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_slow_commit_does_not_stop_the_stream_being_read(durable_run, monkeypatch):
-    # The GGUF tool loop only advances as fast as the producer pulls, so a commit awaited inline held the tool call
-    # and the next turn back behind the database while the GPU sat idle.
     chunks = _numbered_chunks(50)
     drained = asyncio.Event()
     release = asyncio.Event()
@@ -830,7 +828,6 @@ async def test_a_slow_commit_does_not_stop_the_stream_being_read(durable_run, mo
 
 @pytest.mark.asyncio
 async def test_slow_commits_batch_a_burst_instead_of_one_chunk_each(durable_run, monkeypatch):
-    # A commit slower than a frame used to leave every later chunk due at once, one transaction each (~1/latency).
     chunks = _numbered_chunks(400)
     calls = []
     original = runs_db.append_events
@@ -883,7 +880,6 @@ async def test_a_failed_commit_keeps_its_events_and_fails_the_run(durable_run, m
         "error",
         "database is locked",
     )
-    # The failed batch is settled with the run, ahead of anything read after it.
     stored = [e["payload"] for e in runs_db.list_events("run-1") if e["type"] == "chunk"]
     assert stored and stored == chunks[: len(stored)]
 
