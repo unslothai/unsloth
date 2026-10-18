@@ -1363,20 +1363,27 @@ def _is_importable(import_name: str) -> bool:
 _IMPORT_PROBE_TIMEOUT = 300
 
 
-def _is_importable_isolated(import_name: str, after_torch: bool = False) -> bool:
+def _is_importable_isolated(import_name: str) -> bool:
     """Probe the import in a child process. A wrong-arch wheel can abort or segfault in its
     initialiser instead of raising, which would kill this worker rather than fall back. A child
-    turns that into a return code (negative = fatal signal). *after_torch* imports torch first, as
-    a bare torch extension (selective_scan_cuda) needs its libraries loaded."""
+    turns that into a return code (negative = fatal signal)."""
+    return _import_probe_isolated(
+        import_name, "import importlib, sys; importlib.import_module(sys.argv[1])"
+    )
+
+
+def _extension_importable_isolated(extension: str) -> bool:
+    """_is_importable_isolated for a bare torch extension (selective_scan_cuda), which needs
+    torch's libraries loaded first."""
+    return _import_probe_isolated(
+        extension, "import torch, importlib, sys; importlib.import_module(sys.argv[1])"
+    )
+
+
+def _import_probe_isolated(import_name: str, code: str) -> bool:
     try:
         result = _sp.run(
-            [
-                sys.executable,
-                "-c",
-                ("import torch; " if after_torch else "")
-                + "import importlib, sys; importlib.import_module(sys.argv[1])",
-                import_name,
-            ],
+            [sys.executable, "-c", code, import_name],
             stdout = _sp.DEVNULL,
             stderr = _sp.DEVNULL,
             timeout = _IMPORT_PROBE_TIMEOUT,
@@ -1466,8 +1473,24 @@ def _install_package_wheel_first(
         logger.info("%s already installed", display_name)
         return True
 
+    def drop_extension_free_copy() -> None:
+        # The CUDA route cannot use an extension-free copy: left in place, transformers takes
+        # mamba_ssm's fast path and fails in selective_scan_fn. Removing it is local (allowed
+        # offline) and runs under the same per-env lock as an install.
+        if extension is None or not _is_importable(import_name):
+            return
+        from utils.kernel_install import OPTIONAL_KERNEL_LOCK_WAIT, kernel_install_lock
+        with kernel_install_lock(import_name, wait_seconds = OPTIONAL_KERNEL_LOCK_WAIT) as held:
+            if held and _is_importable(import_name) and not _is_importable(extension):
+                logger.info(
+                    "Removing the extension-free %s: this run needs its CUDA kernels", display_name
+                )
+                _uninstall_package(pypi_name, display_name)
+                forget_imported_modules(import_name, extension)
+
     if _model_offline_mode_enabled() or _package_installs_offline():
         logger.info("Skipping %s installation while offline", display_name)
+        drop_extension_free_copy()
         return False
 
     # The runtime's failed-attempt memo (same key): the eager install and the fast-path hook, or a
@@ -1477,6 +1500,7 @@ def _install_package_wheel_first(
     failure_key = _failure_key(import_name, kwargs.get("wheel_url_builder"))
     if failure_key in _FAILED_INSTALLS:
         logger.info("%s already failed to install in this process; not retrying", display_name)
+        drop_extension_free_copy()
         return False
 
     from utils.kernel_install import (
@@ -1558,7 +1582,7 @@ def _attempt_package_install(
         # Out of process: a bad wheel can take the worker down with it.
         if not _is_importable_isolated(import_name):
             return False
-        return extension is None or _is_importable_isolated(extension, after_torch = True)
+        return extension is None or _extension_importable_isolated(extension)
 
     # Set when a wheel installed but would not import; see the uninstall before the fallback.
     wheel_rejected = False
@@ -1663,8 +1687,9 @@ def _attempt_package_install(
         else:
             pypi_status_message = f"Installing {display_name} from PyPI for faster training..."
 
-    if wheel_rejected:
-        # Remove it rather than install over it: pip/uv would report the broken distribution as already satisfying the
+    if wheel_rejected or replacing:
+        # Remove it rather than install over it (a broken wheel, or the extension-free copy being
+        # replaced): pip/uv would report the broken distribution as already satisfying the
         # spec and do nothing. --force-reinstall is not the answer either, since both scope it to the whole resolved
         # transaction, which for flash-attn means torch and the running CUDA stack. A failure here is caught by the
         # _reject_install in the finally below, which is reached from every exit.
@@ -1742,7 +1767,7 @@ def _attempt_package_install(
 
     # rc=0 is not proof again here: pip/uv exit 0 on "Requirement already satisfied" without installing anything.
     # Returning False is enough; the caller's finally discards it.
-    if not _is_importable_isolated(import_name):
+    if not _verify():
         logger.warning("%s installed from PyPI but will not import", display_name)
         return False
 

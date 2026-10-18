@@ -374,15 +374,31 @@ def _hub_cached_text(repo: str, filename: str) -> str | None:
     return None
 
 
-def _remote_model_sources(checkpoint: str, model_config: dict) -> list[tuple[str, str]]:
-    """(repo, file) of the model classes the config's ``auto_map`` names."""
-    auto_map = model_config.get("auto_map") if isinstance(model_config, dict) else None
-    if not isinstance(auto_map, dict):
+def _auto_maps(model_config) -> list[dict]:
+    """Every ``auto_map`` in a config, top level and sub-configs: the loader runs a composite
+    model's ``text_config.auto_map`` too (the remote-code consent gate reads the same set)."""
+    if not isinstance(model_config, dict):
         return []
+    try:
+        from utils.security.remote_code_scan import iter_auto_maps
+    except Exception:
+        auto_map = model_config.get("auto_map")
+        return [auto_map] if isinstance(auto_map, dict) else []
+    return list(iter_auto_maps(model_config))
+
+
+def _auto_model_entries(model_config):
+    """(key, value) of every ``AutoModel*`` entry across the config's auto_maps."""
+    for auto_map in _auto_maps(model_config):
+        for key, value in auto_map.items():
+            if str(key).startswith("AutoModel"):
+                yield key, value
+
+
+def _remote_model_sources(checkpoint: str, model_config: dict) -> list[tuple[str, str]]:
+    """(repo, file) of the model classes the config's ``auto_map`` names, at any nesting level."""
     sources = []
-    for key, value in auto_map.items():
-        if not str(key).startswith("AutoModel"):
-            continue
+    for _key, value in _auto_model_entries(model_config):
         for reference in value if isinstance(value, (list, tuple)) else (value,):
             if not isinstance(reference, str) or "." not in reference:
                 continue
@@ -591,7 +607,7 @@ def resolved_model_is_ssm(
     ).mamba_ssm
 
 
-def refresh_transformers_kernel_gates() -> None:
+def refresh_transformers_kernel_gates(removed: bool = False) -> None:
     """After an in-process install, let an already-imported transformers see the new kernels: its
     availability gates are lru_cached and the hub-kernel map can hold a cached None. Never raises.
     This cannot rebind functions a modeling module already captured; see
@@ -614,7 +630,8 @@ def refresh_transformers_kernel_gates() -> None:
         hub_kernels = sys.modules.get("transformers.integrations.hub_kernels")
         mapping = getattr(hub_kernels, "_KERNEL_MODULE_MAPPING", None)
         if isinstance(mapping, dict):
-            for key in [key for key, value in mapping.items() if value is None]:
+            # A removal also invalidates a cached module, not only a cached None.
+            for key in [key for key, value in mapping.items() if removed or value is None]:
                 if any(
                     kernel in str(key) for kernel in ("causal-conv1d", "causal_conv1d", "mamba")
                 ):
@@ -649,14 +666,10 @@ def remote_code_modules(checkpoint: str, model_config: dict) -> frozenset:
     """The (namespace, module) pairs of the model classes a config's ``auto_map`` points at: an
     entry ``"model.CustomForCausalLM"`` is module ``model`` of *checkpoint*, and
     ``"org/repo--model.Custom"`` module ``model`` of ``org/repo``. Any module name counts, not just
-    ``modeling_*``; AutoConfig / AutoTokenizer / processor entries capture no kernels."""
-    auto_map = model_config.get("auto_map") if isinstance(model_config, dict) else None
-    if not isinstance(auto_map, dict):
-        return frozenset()
+    ``modeling_*``; AutoConfig / AutoTokenizer / processor entries capture no kernels. Sub-configs
+    count: the loader runs a composite model's ``text_config.auto_map`` as well."""
     pairs = set()
-    for key, value in auto_map.items():
-        if not str(key).startswith("AutoModel"):
-            continue
+    for _key, value in _auto_model_entries(model_config):
         for reference in value if isinstance(value, (list, tuple)) else (value,):
             if not isinstance(reference, str) or "." not in reference:
                 continue
@@ -846,7 +859,11 @@ def mamba2_runs_on_triton(kernels: "SsmKernels") -> bool:
         return False
     if _kernel_backend(_torch_env()) != "cuda":
         return False  # zoo's drop-ins are CUDA only; ROCm keeps its source builds
-    return _transformers_resolves_kernels_per_function() and _zoo_has_mamba2_triton_drop_ins()
+    if not (_transformers_resolves_kernels_per_function() and _zoo_has_mamba2_triton_drop_ins()):
+        return False
+    # mamba_ssm's own Triton kernels (scan, state update) follow setup's GPU floor: none below
+    # sm75, Triton >= 3.4 on sm75. Below it this load keeps today's route.
+    return _mamba_ssm_floor_reason() is None
 
 
 # The compiled Mamba-1 scan. The extension-free mamba_ssm wheel imports fine without it, so a load on
@@ -953,6 +970,10 @@ def _install_kernel(
     if package_installs_offline():
         # No URL probe, no source build, and no uv-to-pip fallback that would reach the network.
         logger.info("Skipping %s installation while offline", display_name)
+        if extension is not None and _is_importable(import_name):
+            # Removing is local, so offline still drops an extension-free copy this load cannot use.
+            if _drop_extension_free_copy(import_name, display_name, pypi_name, extension, run):
+                _note_removed(newly_installed, import_name)
         return False
 
     failure_key = _failure_key(import_name, wheel_url_builder)
@@ -961,7 +982,8 @@ def _install_kernel(
         if extension is not None and _is_importable(import_name):
             # A later load reinstalled the extension-free copy after this route failed: drop it, or
             # this load takes mamba_ssm's fast path and fails in selective_scan_fn.
-            _drop_extension_free_copy(import_name, display_name, pypi_name, extension, run)
+            if _drop_extension_free_copy(import_name, display_name, pypi_name, extension, run):
+                _note_removed(newly_installed, import_name)
         return False
 
     from utils.kernel_install import (
@@ -1027,6 +1049,8 @@ def _install_kernel(
                 _remove_broken(pypi_name, display_name, run)
                 if replacing:
                     forget_imported_modules(import_name, extension)
+                    if not _is_importable(import_name):
+                        _note_removed(newly_installed, import_name)
                 _FAILED_INSTALLS.add(failure_key)
         if installed is None:
             return False  # nothing attempted (unsupported torch backend)
@@ -1035,19 +1059,32 @@ def _install_kernel(
         return bool(installed)
 
 
+# A runtime removal is reported in the list of newly installed kernels under this prefix: it changes
+# what transformers' cached availability gates and already-imported modeling modules saw, so the
+# caller refreshes the gates and runs its stale-module / restart check exactly as for an install.
+REMOVED_PREFIX = "removed "
+
+
+def _note_removed(newly_installed: list[str] | None, import_name: str) -> None:
+    if newly_installed is not None:
+        newly_installed.append(f"{REMOVED_PREFIX}{import_name}")
+
+
 def _drop_extension_free_copy(
     import_name: str, display_name: str, pypi_name: str, extension: str, run: Callable[..., Any]
-) -> None:
-    """Uninstall an installed copy that lacks *extension*, under the per-env install lock."""
+) -> bool:
+    """Uninstall an installed copy that lacks *extension*, under the per-env install lock. True
+    when it was removed."""
     from utils.kernel_install import OPTIONAL_KERNEL_LOCK_WAIT, kernel_install_lock
     with kernel_install_lock(import_name, wait_seconds = OPTIONAL_KERNEL_LOCK_WAIT) as held:
         if not held or kernel_usable(import_name, extension) or not _is_importable(import_name):
-            return
+            return False
         logger.info(
             "Removing the extension-free %s: this load needs its CUDA kernels", display_name
         )
         _remove_broken(pypi_name, display_name, run)
         forget_imported_modules(import_name, extension)
+        return not _is_importable(import_name)
 
 
 def _install_kernel_locked(
@@ -1374,5 +1411,7 @@ def provision_ssm_kernels(
         mamba2_triton = mamba2_runs_on_triton(kernels),
     )
     if installed:
-        refresh_transformers_kernel_gates()
+        refresh_transformers_kernel_gates(
+            removed = any(name.startswith(REMOVED_PREFIX) for name in installed)
+        )
     return kernels, installed
