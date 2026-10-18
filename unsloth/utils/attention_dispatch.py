@@ -281,16 +281,19 @@ def _sdpa_gqa_choices(
     needs_grad,
     dropout_p,
     backends,
+    single_query = False,
 ):
     """(SDPBackend with enable_gqa, SDPBackend with K/V expanded) for these shapes, -1 if unknown.
-    The probe tensors carry the real call's requires_grad and dropout: backends differ on both."""
+    The probe tensors carry the real call's requires_grad, dropout and single-query (decode) shape:
+    backends differ on all three (cuDNN rejects single-query dropout, for one)."""
+    q_len = 1 if single_query else 128
     try:
-        q = torch.empty(1, n_heads, 128, head_dim, device = device, dtype = dtype)
+        q = torch.empty(1, n_heads, q_len, head_dim, device = device, dtype = dtype)
         k = torch.empty(1, n_kv_heads, 128, head_dim, device = device, dtype = dtype)
         k_full = torch.empty(1, n_heads, 128, head_dim, device = device, dtype = dtype)
         if needs_grad:
             q, k, k_full = (t.requires_grad_() for t in (q, k, k_full))
-        mask = torch.ones(1, 1, 128, 128, device = device, dtype = torch.bool) if has_mask else None
+        mask = torch.ones(1, 1, q_len, 128, device = device, dtype = torch.bool) if has_mask else None
     except Exception:
         return -1, -1
     causal = is_causal and not has_mask
@@ -330,6 +333,7 @@ def _sdpa_gqa_state(
     has_mask,
     needs_grad = False,
     dropout_p = 0.0,
+    single_query = False,
 ) -> bool:
     """False when enable_gqa would leave SDPA only its math kernel while expanded K/V would not.
     Flash and cuDNN take GQA, the memory-efficient kernel does not (before torch 2.14), so fp32,
@@ -342,6 +346,9 @@ def _sdpa_gqa_state(
         cuda.mem_efficient_sdp_enabled(),
         cuda.math_sdp_enabled(),
         tuple(getattr(torch._C, "_get_sdp_priority_order", tuple)()),
+        # Strict deterministic mode makes cuDNN SDPA ineligible.
+        torch.are_deterministic_algorithms_enabled(),
+        torch.is_deterministic_algorithms_warn_only_enabled(),
     )
     gqa, mha = _sdpa_gqa_choices(
         device,
@@ -354,6 +361,7 @@ def _sdpa_gqa_state(
         needs_grad,
         dropout_p,
         backends,
+        single_query,
     )
     from torch.nn.attention import SDPBackend
 
@@ -393,6 +401,7 @@ def _sdpa_takes_gqa(
         bool(has_mask),
         bool(needs_grad),
         float(dropout_p or 0.0),
+        Q.shape[-2] == 1,
     )
 
 

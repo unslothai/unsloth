@@ -308,7 +308,7 @@ def test_gqa_probe_carries_grad_and_dropout(monkeypatch, needs_grad, dropout_p, 
 
 def test_takes_gqa_reads_requires_grad_and_dropout(monkeypatch):
     calls = []
-    monkeypatch.setattr(ad, "_sdpa_gqa_state", lambda *args: calls.append(args[-2:]) or True)
+    monkeypatch.setattr(ad, "_sdpa_gqa_state", lambda *args: calls.append(args[-3:-1]) or True)
     Q = torch.empty(1, 8, 4, 64)
     K = torch.empty(1, 2, 4, 64)
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
@@ -317,3 +317,76 @@ def test_takes_gqa_reads_requires_grad_and_dropout(monkeypatch):
     with torch.no_grad():
         ad._sdpa_takes_gqa(Q, K, True, False)
     assert calls == [(False, 0.0), (True, 0.25), (False, 0.0)]
+
+
+def test_probe_matches_single_query_decode(monkeypatch):
+    """A decode call (q_len 1) is probed with q_len 1: cuDNN rejects single-query dropout."""
+    from torch.nn.attention import SDPBackend
+
+    MATH, EFFICIENT, CUDNN = (
+        int(SDPBackend.MATH),
+        int(SDPBackend.EFFICIENT_ATTENTION),
+        int(SDPBackend.CUDNN_ATTENTION),
+    )
+    lengths = []
+
+    def choice(
+        q,
+        k,
+        v,
+        attn_mask = None,
+        dropout_p = 0.0,
+        is_causal = False,
+        enable_gqa = False,
+        **kwargs,
+    ):
+        lengths.append(q.shape[-2])
+        if q.shape[-2] == 1 and dropout_p:
+            return MATH if enable_gqa else EFFICIENT
+        return CUDNN if enable_gqa else EFFICIENT
+
+    monkeypatch.setattr(torch, "_fused_sdp_choice", choice)
+    ad._sdpa_gqa_choices.cache_clear()
+    try:
+        state = ad._sdpa_gqa_state
+        assert state("cpu", torch.float32, 64, 8, 2, False, False, False, 0.1, False) is True
+        assert state("cpu", torch.float32, 64, 8, 2, False, False, False, 0.1, True) is False
+        assert set(lengths) == {128, 1}
+    finally:
+        ad._sdpa_gqa_choices.cache_clear()
+
+
+def test_probe_cache_follows_deterministic_mode(monkeypatch):
+    """cuDNN SDPA is ineligible under strict deterministic mode, so a cached answer must not carry over."""
+    from torch.nn.attention import SDPBackend
+
+    MATH, EFFICIENT, CUDNN = (
+        int(SDPBackend.MATH),
+        int(SDPBackend.EFFICIENT_ATTENTION),
+        int(SDPBackend.CUDNN_ATTENTION),
+    )
+
+    def choice(
+        q,
+        k,
+        v,
+        attn_mask = None,
+        dropout_p = 0.0,
+        is_causal = False,
+        enable_gqa = False,
+        **kwargs,
+    ):
+        if torch.are_deterministic_algorithms_enabled():
+            return MATH if enable_gqa else EFFICIENT
+        return CUDNN if enable_gqa else EFFICIENT
+
+    monkeypatch.setattr(torch, "_fused_sdp_choice", choice)
+    ad._sdpa_gqa_choices.cache_clear()
+    was = torch.are_deterministic_algorithms_enabled()
+    try:
+        assert ad._sdpa_gqa_state("cpu", torch.float32, 64, 8, 2, False, False) is True
+        torch.use_deterministic_algorithms(True)
+        assert ad._sdpa_gqa_state("cpu", torch.float32, 64, 8, 2, False, False) is False
+    finally:
+        torch.use_deterministic_algorithms(was)
+        ad._sdpa_gqa_choices.cache_clear()
