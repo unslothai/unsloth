@@ -680,6 +680,55 @@ test("a file a page sends the tab to is asked about for that page, not the file'
   store.closeTab(tabId);
 });
 
+test("a program sent with no extension asks under the name it saves as, whatever the site's answer", async () => {
+  const { saveBrowserDownload, saveLinkAs } = await import("../src/features/browser/downloads.ts");
+  const { answerDownload, useApprovalStore } = await import("../src/features/browser/download-approval-queue.ts");
+  const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");
+  const nextAsked = async () => {
+    for (let i = 0; i < 50 && useApprovalStore.getState().queue.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    return useApprovalStore.getState().queue[0];
+  };
+  const save = async (name: string, contentType: string) => {
+    const saving = saveBrowserDownload({ blob: new Blob(["MZ"], { type: contentType }), name, contentType, url: `https://a.example/${name}` });
+    const asked = await nextAsked();
+    if (asked) answerDownload(asked, false, false);
+    await saving;
+    return asked && [asked.name, asked.dangerous];
+  };
+  const prefs = useBrowserPrefsStore.getState();
+  const g = globalThis as { showSaveFilePicker?: unknown; __authFetch?: unknown };
+  try {
+    assert.deepEqual(await save("report", "application/pdf"), ["report", false]);
+    assert.deepEqual(await save("notes.txt", "application/x-msdownload"), ["notes.txt", false]);
+
+    useDownloadSitesStore.getState().setSite("https://a.example", "allow");
+    assert.deepEqual(await save("update", "application/x-msdownload"), ["update.exe", true]);
+    assert.deepEqual(await save("Installer", "application/x-apple-diskimage"), ["Installer.dmg", true]);
+
+    prefs.setAskWhereToSave(true);
+    g.showSaveFilePicker = async () => {
+      throw new DOMException("no picker here", "NotAllowedError");
+    };
+    g.__authFetch = async () =>
+      new Response(new Blob(["MZ"]), {
+        headers: { "Content-Type": "application/x-msdownload; charset=binary", "X-Unsloth-Browser-Filename": "setup" },
+      });
+    const linked = saveLinkAs("https://a.example/download");
+    const asked = await nextAsked();
+    assert.deepEqual(asked && [asked.name, asked.dangerous], ["setup.exe", true]);
+    answerDownload(asked, false, false);
+    await linked;
+  } finally {
+    delete g.showSaveFilePicker;
+    delete g.__authFetch;
+    prefs.setAskWhereToSave(false);
+    useApprovalStore.setState({ queue: [] });
+    useDownloadSitesStore.getState().setSite("https://a.example", null);
+  }
+});
+
 test("Save link as asks again when the file it named by the address turns out to run code", async () => {
   const { saveLinkAs } = await import("../src/features/browser/downloads.ts");
   const { answerDownload, useApprovalStore } = await import("../src/features/browser/download-approval-queue.ts");

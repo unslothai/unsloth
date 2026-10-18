@@ -42,6 +42,31 @@ function runsCode(name: string): boolean {
   return DANGEROUS.has(extension.toLowerCase()) || DANGEROUS.has(extension.toUpperCase().toLowerCase());
 }
 
+// Saving adds these to a name with no extension, so a program sent as `update` lands as `update.exe`.
+const PROGRAM_TYPES: Record<string, string> = {
+  "application/x-msdownload": "exe",
+  "application/x-msdos-program": "exe",
+  "application/x-ms-dos-executable": "exe",
+  "application/vnd.microsoft.portable-executable": "exe",
+  "application/x-dosexec": "exe",
+  "application/x-msi": "msi",
+  "application/x-ms-installer": "msi",
+  "application/x-apple-diskimage": "dmg",
+  "application/x-sh": "sh",
+  "application/x-shellscript": "sh",
+  "application/java-archive": "jar",
+  "application/x-java-archive": "jar",
+  "application/vnd.debian.binary-package": "deb",
+  "application/x-debian-package": "deb",
+  "application/x-rpm": "rpm",
+  "application/hta": "hta",
+};
+
+export function withTypeExtension(name: string, contentType: string): string {
+  const extension = PROGRAM_TYPES[contentType.split(";")[0].trim().toLowerCase()];
+  return extension && !/\.[^./\\]+$/.test(name) ? `${name}.${extension}` : name;
+}
+
 /** As the desktop app cleans a name before the cut: controls, bidi controls and reserved characters become
  *  one-byte "_", trailing dots and spaces go. */
 function cleaned(name: string): string {
