@@ -142,6 +142,15 @@ def test_device_maps_to_the_load_fields(monkeypatch, model, kind, device, expect
     assert body == {**base, **expected}
 
 
+@pytest.mark.parametrize("model,kind", [("/models/qwen3", "llm"), ("someone/outetts", "tts")])
+def test_cpu_fields_follow_the_listing_not_the_name(monkeypatch, model, kind):
+    routes = {**PAYLOADS, ("GET", "/api/hub/gguf-variants"): GGUF_FILES}
+    _result, _studio, (body,) = _load(
+        monkeypatch, {"model": model, "kind": kind, "device": "cpu"}, routes
+    )
+    assert {key: body.get(key) for key in CPU} == CPU
+
+
 def test_kv_cache_and_gpu_layers(monkeypatch):
     args = {"model": QWEN, "kv_cache_type": "q8_0", "gpu_layers": 20, "alongside": False}
     _result, _studio, (body,) = _load(monkeypatch, args)
@@ -156,6 +165,8 @@ def test_kv_cache_and_gpu_layers(monkeypatch):
         ({"audio_device_fallback": "cpu"}, "gpu", "cpu"),
         ({"offloaded_layers": 0}, None, "cpu"),
         ({"offloaded_layers": 28}, None, "gpu"),
+        # A load that kept its layers on the GPU is not reported as on the CPU because cpu was asked.
+        ({"offloaded_layers": 28}, "cpu", "gpu"),
         ({}, None, None),
     ],
 )
@@ -322,3 +333,43 @@ def test_unload_all_also_frees_models_held_behind_the_active_one(monkeypatch):
         {"model_path": QWEN},
     ]
     assert [row["model"] for row in result["structuredContent"]["unloaded"]] == [LLM, QWEN]
+
+
+def test_unload_all_keeps_going_past_a_failed_unload(monkeypatch):
+    serving = {
+        "loaded": [LLM, QWEN],
+        "serving": [LLM, QWEN],
+        "serving_checkpoints": ["/m/llm.gguf", "/m/qwen.gguf"],
+    }
+    busy = JSONResponse({"detail": "a generation is running"}, status_code = 409)
+
+    def unload(request, body):
+        return busy if b"qwen" in body else {"status": "unloaded"}
+
+    routes = {
+        STATUS_ROUTE: sequence(
+            serving, {"loaded": [QWEN], "serving": [QWEN], "serving_checkpoints": ["/m/qwen.gguf"]}
+        ),
+        ("POST", "/api/inference/unload"): unload,
+        ("GET", "/api/inference/images/status"): {"loaded": True, "repo_id": FLUX_GGUF},
+        ("POST", "/api/inference/images/unload"): {"loaded": False},
+    }
+    result, studio = run_tool(monkeypatch, routes, "unload_model", {"kind": "all"}, fallback = {})
+    assert result["isError"] is True
+    text = str(result["content"])
+    assert f"llm {LLM}" in text and f"image {FLUX_GGUF}" in text and QWEN in text
+    # The failed kept model did not stop the primary or the image model from unloading.
+    assert bodies(studio, "/api/inference/unload")[-1] == {"model_path": "/m/llm.gguf"}
+    assert ("POST", "/api/inference/images/unload") in [call[:2] for call in studio.state.calls]
+
+
+def test_the_cpu_check_reads_a_gated_listing_with_the_calls_hub_token(monkeypatch):
+    def listing(request, body):
+        token = request.headers.get("X-Unsloth-HF-Token")
+        return GGUF_FILES if token == "hf_arg" else {"variants": []}
+
+    routes = {**PAYLOADS, ("GET", "/api/hub/gguf-variants"): listing}
+    args = {"model": "someone/gated-qwen", "device": "cpu", "hf_token": "hf_arg"}
+    result, _studio, (body,) = _load(monkeypatch, args, routes)
+    assert result.get("isError") is not True
+    assert {key: body.get(key) for key in CPU} == CPU

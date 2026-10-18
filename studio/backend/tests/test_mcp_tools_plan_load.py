@@ -4,8 +4,9 @@
 """plan_load: what a load would download and unload, checked against what the same load then does."""
 
 import pytest
+from fastapi.responses import JSONResponse
 
-from .mcp_harness import fast_polls, run_tool, stt_state  # noqa: F401
+from .mcp_harness import bodies, fast_polls, run_tool, stt_state  # noqa: F401
 from .test_mcp_tools_loading import FLUX_GGUF, LOADED, LTX, READY, _media_studio
 
 QWEN = "unsloth/Qwen3-0.6B-GGUF"
@@ -100,16 +101,24 @@ def test_off_is_exact_and_matches_the_load(monkeypatch, args, after_serving, aft
 
     def load_route(request, body):
         loaded.append(body)
-        return {**LOADED, "model": OUTETTS, "evicted": []}
+        # No evicted list: load_model reports what the load unloaded from the slots before and after.
+        return {key: value for key, value in LOADED.items() if key != "evicted"} | {
+            "model": OUTETTS
+        }
+
+    def switch(route):
+        return lambda request, body: (after if loaded else before)[route]
 
     # Status reads give the world before the load until the load POST lands, then the world after.
     load = {
         **before,
-        STATUS: lambda request, body: after[STATUS] if loaded else before[STATUS],
+        **{route: switch(route) for route in (STATUS, ("GET", IMAGE), ("GET", VIDEO))},
         ("POST", "/api/inference/load"): load_route,
     }
     result, _studio = run_tool(monkeypatch, load, "load_model", args, fallback = {})
-    assert result["structuredContent"]["model"] == OUTETTS
+    reported = result["structuredContent"]
+    assert reported["model"] == OUTETTS
+    assert _names(plan["would_evict"]) == _names(reported["evicted_slots"])
     assert _names(plan["would_evict"]) == _unloaded(monkeypatch, plan, after, args)
 
 
@@ -215,3 +224,46 @@ def test_a_load_that_load_model_refuses_gets_no_plan(monkeypatch, routes, args):
     world = {**_world("off", [QWEN]), **routes}
     result, _studio = run_tool(monkeypatch, world, "plan_load", args, fallback = {})
     assert result["isError"] is True
+
+
+def test_the_plan_of_a_gated_media_repo_carries_the_hub_token(monkeypatch):
+    result, studio = run_tool(
+        monkeypatch,
+        _world("off", []),
+        "plan_load",
+        {"model": FLUX_GGUF, "kind": "image"},
+        headers = {"X-Unsloth-HF-Token": "hf_header"},
+        fallback = {},
+    )
+    assert result["structuredContent"]["download_bytes"] == 9000
+    (body,) = bodies(studio, "/api/inference/images/download-plan")
+    assert body["hf_token"] == "hf_header"
+
+
+def test_the_media_options_reach_the_download_plan(monkeypatch):
+    world = {
+        **_world("off", []),
+        ("POST", "/api/inference/video/download-plan"): {"total_bytes": 7},
+    }
+    args = {"model": LTX, "kind": "video", "h3_task": "ref2va"}
+    result, studio = run_tool(monkeypatch, world, "plan_load", args, fallback = {})
+    assert result["structuredContent"]["download_bytes"] == 7
+    assert bodies(studio, "/api/inference/video/download-plan") == [
+        {"model_path": LTX, "h3_task": "ref2va"}
+    ]
+
+
+def test_a_download_plan_refusal_is_the_plans_error(monkeypatch):
+    refused = JSONResponse({"detail": "no such precision"}, status_code = 400)
+    world = {**_world("off", []), ("POST", "/api/inference/images/download-plan"): refused}
+    args = {"model": FLUX_GGUF, "kind": "image", "transformer_quant": "int8"}
+    result, _studio = run_tool(monkeypatch, world, "plan_load", args, fallback = {})
+    assert result["isError"] is True and "no such precision" in str(result["content"])
+
+
+def test_a_model_held_behind_the_primary_is_a_resident_off_unloads(monkeypatch):
+    world = _world("off", [QWEN])
+    world[STATUS] = {**world[STATUS], "loaded": [QWEN, KEPT]}
+    plan = _plan(monkeypatch, world, {"model": OUTETTS, "kind": "tts", "device": "cpu"})
+    assert ("llm", KEPT) in _names(plan["residents"])
+    assert _names(plan["would_evict"]) == {("llm", QWEN), ("llm", KEPT)}
