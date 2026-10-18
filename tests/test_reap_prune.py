@@ -270,6 +270,10 @@ def test_rejects_bad_requests():
     with pytest.raises(RuntimeError, match = "MTP head"):
         reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
     del model.__dict__["_unsloth_mtp_head"]
+    model.config.distributed_config = {"enable_expert_parallel": True}
+    with pytest.raises(RuntimeError, match = "expert parallel"):
+        reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
+    del model.config.distributed_config
     model.config.use_bidirectional_attention = "all"
     with pytest.raises(ValueError, match = "causal"):
         reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")

@@ -346,6 +346,19 @@ def test_unforced_4bit_rejection_does_not_create_hub_resources(saving, options):
     assert records["repos"] == records["branches"] == records["merges"] == records["uploads"] == []
 
 
+@pytest.mark.parametrize("options", [{"revision": "candidate"}, {"create_pr": True}, {}])
+def test_in_memory_reap_rejection_does_not_create_hub_resources(saving, options):
+    # A raw-PEFT wrap of a model REAP pruned without save_directory: the base on disk is unpruned.
+    env, records, _ = saving
+    model = PeftModel()
+    model._unsloth_reap_report = {"model.layers.0.mlp": [0, 2]}
+    with pytest.raises(RuntimeError, match = "pruned in memory only"):
+        env["unsloth_generic_push_to_hub_merged"](
+            model, "owner/new-model", save_method = "merged_16bit", **options
+        )
+    assert records["repos"] == records["branches"] == records["merges"] == records["uploads"] == []
+
+
 def test_forced_4bit_mode_still_reaches_staged_save(saving):
     env, records, _ = saving
     env["unsloth_generic_push_to_hub_merged"](

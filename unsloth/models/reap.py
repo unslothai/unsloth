@@ -568,6 +568,18 @@ def reap_prune(
             "Unsloth: REAP does not prune the attached MTP head, so a save would write it with the "
             "old expert count. Run `reap_prune` before `get_mtp_head`."
         )
+    distributed = getattr(getattr(model, "config", None), "distributed_config", None)
+    if (
+        distributed.get("enable_expert_parallel")
+        if isinstance(distributed, dict)
+        else getattr(distributed, "enable_expert_parallel", False)
+    ):
+        # Each rank holds a slice of the experts and sees other ranks' routes as out of range ids,
+        # so scores would be rank local and the pruning decision would differ per rank.
+        raise RuntimeError(
+            "Unsloth: REAP does not support expert parallel models. Load the model on one device "
+            "(or with `device_map`) to prune it."
+        )
     if dataset is None or isinstance(dataset, str) or not _is_token_rows(dataset):
         if tokenizer is None:
             raise ValueError("Unsloth: REAP needs a tokenizer unless the dataset has `input_ids`.")
