@@ -314,6 +314,13 @@ class TestCanLoadAlongside(_ArbiterResetMixin, unittest.TestCase):
         _, info = self._check(_need({0: 1000}, kind = "other"), owner = arb.DIFFUSION)
         self.assertEqual(info["free_mib"], {0: FREE_80_20 - 2000})
 
+    def test_a_resident_still_loading_counts_in_full(self):
+        # Its weights aren't in live free VRAM yet, so a second media load can't be admitted into that gap.
+        self._resident(arb.VIDEO, {0}, _need({0: 5000}, weights = 3000, headroom = 2000))
+        with patch.object(gr, "_media_busy", lambda owner: (owner == arb.VIDEO, False)):
+            _, info = self._check(_need({0: 1000}, kind = "other"), owner = arb.DIFFUSION)
+        self.assertEqual(info["free_mib"], {0: FREE_80_20 - 5000})
+
     def test_own_record_adds_back_its_weights(self):
         self._resident(arb.VIDEO, {0}, _need({0: 5000}, weights = 3000, headroom = 2000))
         _, info = self._check(_need({0: 1000}), owner = arb.VIDEO)

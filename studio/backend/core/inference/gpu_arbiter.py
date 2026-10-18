@@ -522,9 +522,19 @@ def acquire_for(
             else:
                 _owner_account, _prior_account = None, None
         _owner = owner
-        _residents.pop(owner, None)
+        held_before = _residents.pop(owner, ...)
         known = physical_gpu_ids(gpu_ids)
-        _residents[owner] = known if known is not None or not need_mib else frozenset(need_mib)
+        gpus_now = known if known is not None or not need_mib else frozenset(need_mib)
+        if owner == CHAT and held_before is not ...:
+            if register is None and not replacing and gpus_now is None:
+                # A re-assert places nothing new.
+                gpus_now = held_before
+            else:
+                # Every chat model kept loaded counts, not just the newest; unknown (None) means every GPU.
+                gpus_now = (
+                    None if held_before is None or gpus_now is None else held_before | gpus_now
+                )
+        _residents[owner] = gpus_now
         _owner_epoch += 1
         result = register() if register is not None else None
         if owner in (DIFFUSION, VIDEO) and register is not None:

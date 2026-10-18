@@ -896,8 +896,8 @@ def test_gguf_chat_joins_an_idle_image_and_its_launch_prices_the_image(vram):
     v.load_image(20, policy = "fit")
     placement = _placement((0,))
     kwargs = _chat_kwargs(SimpleNamespace(is_gguf = True), placement, primary_can_retry = True)
-    assert kwargs == {"policy": "fit"}
-    assert v.load_chat(10, gpu_ids = placement.resolved_gpu_ids, **kwargs) == []
+    assert kwargs == {"policy": "fit", "gpu_ids": [0]}
+    assert v.load_chat(10, **kwargs) == []
     assert v.evictions == [] and set(arb.residents()) == {arb.CHAT, arb.DIFFUSION}
 
     backend = llama_cpp.LlamaCppBackend(manages_processes = False)
@@ -922,6 +922,7 @@ def test_gguf_chat_with_no_fit_retry_evicts_first_under_fit(vram):
     v.policy = "fit"
     assert _chat_kwargs(SimpleNamespace(is_gguf = True), _placement()) == {
         "policy": "fit",
+        "gpu_ids": [0],
         "evict_first": True,
     }
 
@@ -929,8 +930,8 @@ def test_gguf_chat_with_no_fit_retry_evicts_first_under_fit(vram):
 @pytest.mark.parametrize(
     ("policy", "expected", "evicted"),
     [
-        ("fit", {"policy": "fit", "evict_first": True}, [IMAGE_SLOT]),
-        ("always", {"policy": "always"}, []),
+        ("fit", {"policy": "fit", "gpu_ids": [0], "evict_first": True}, [IMAGE_SLOT]),
+        ("always", {"policy": "always", "gpu_ids": [0]}, []),
     ],
 )
 def test_non_gguf_chat_beside_an_image(vram, policy, expected, evicted):
@@ -940,7 +941,7 @@ def test_non_gguf_chat_beside_an_image(vram, policy, expected, evicted):
     placement = _placement((0,))
     kwargs = _chat_kwargs(SimpleNamespace(is_gguf = False), placement, primary_can_retry = True)
     assert kwargs == expected
-    assert v.load_chat(10, gpu_ids = placement.resolved_gpu_ids, **kwargs) == evicted
+    assert v.load_chat(10, **kwargs) == evicted
     assert v.evictions == [arb.DIFFUSION for _ in evicted]
     assert arb.CHAT in arb.residents() and (arb.DIFFUSION in arb.residents()) == (not evicted)
 
@@ -949,7 +950,7 @@ def _audio_cpp_chat(v, native_gb, **placement_kw):
     placement = _placement(native_gb = native_gb, **placement_kw)
     kwargs = _chat_kwargs(SimpleNamespace(is_gguf = False), placement)
     gpus = None if placement.gpu_ids_are_vulkan_ordinals else placement.resolved_gpu_ids
-    return kwargs, v.load(arb.CHAT, {0: int(native_gb * GIB)}, gpu_ids = gpus, **kwargs)
+    return kwargs, v.load(arb.CHAT, {0: int(native_gb * GIB)}, **{"gpu_ids": gpus, **kwargs})
 
 
 @pytest.mark.parametrize("policy", ["fit", "always"])
@@ -958,7 +959,7 @@ def test_audio_cpp_chat_joins_a_resident_image_when_native_estimate_fits(vram, p
     v.policy = policy
     v.load_image(20, policy = policy)
     kwargs, evicted = _audio_cpp_chat(v, 6.0)
-    assert kwargs == {"policy": policy, "need_mib": {0: 6144}}
+    assert kwargs == {"policy": policy, "gpu_ids": [0], "need_mib": {0: 6144}}
     assert evicted == [] and v.evictions == [] and set(arb.residents()) == {arb.CHAT, arb.DIFFUSION}
 
 

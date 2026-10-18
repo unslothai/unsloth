@@ -12449,6 +12449,20 @@ def _media_on_target_gpus(placement) -> bool:
     return bool(held) and (not gpus or bool(set(held) & set(gpus)))
 
 
+def _visible_ordinals(physical_ids) -> Optional[list[int]]:
+    """Visible device ordinals for physical GPU ids, or None when one isn't visible (then every GPU counts)."""
+    try:
+        from utils.hardware.hardware import get_parent_visible_gpu_ids
+        parent = list(get_parent_visible_gpu_ids() or ())
+    except Exception:  # noqa: BLE001
+        return None
+    if not parent:
+        return [int(g) for g in physical_ids]
+    if any(int(g) not in parent for g in physical_ids):
+        return None
+    return [parent.index(int(g)) for g in physical_ids]
+
+
 def _chat_fit_kwargs(
     config,
     placement,
@@ -12467,6 +12481,12 @@ def _chat_fit_kwargs(
         return {}
     kwargs: dict = {"policy": policy}
     gpus = placement.resolved_gpu_ids
+    ordinals = (
+        _visible_ordinals(gpus) if gpus and not placement.gpu_ids_are_vulkan_ordinals else None
+    )
+    if ordinals is not None:
+        # Only residents on these GPUs are weighed or unloaded; the arbiter maps them back to physical ids.
+        kwargs["gpu_ids"] = ordinals
     if placement.native_required_gb and gpus and not placement.gpu_ids_are_vulkan_ordinals:
         kwargs["need_mib"] = {
             int(g): int(placement.native_required_gb * 1024 / len(gpus)) for g in gpus
@@ -18778,10 +18798,13 @@ def _refuse_oom_beside_media_under_always() -> None:
     """Under Always a chat load that ran out of memory beside an image or video model is refused, not retried."""
     from core.inference import gpu_arbiter, gpu_residency
 
+    held = gpu_arbiter.residents()
+    chat_gpus = held.get(gpu_arbiter.CHAT)
+    # Only a model sharing a GPU with chat could have caused it; None (unknown) shares every GPU.
     slots = [
         s
         for o in gpu_residency.MEDIA_OWNERS
-        if gpu_arbiter.holds(o)
+        if o in held and (chat_gpus is None or held[o] is None or held[o] & chat_gpus)
         for s in gpu_arbiter.resident_slots(o)
     ]
     if slots and gpu_residency.current_policy() == "always":

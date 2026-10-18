@@ -191,6 +191,27 @@ def test_image_load_on_another_gpu_never_evicts_chat_unless_off(cores, policy):
         assert arb.residents() == {arb.CHAT: frozenset({0}), arb.DIFFUSION: frozenset({1})}
 
 
+@pytest.mark.parametrize("policy", ["fit", "always"])
+def test_chat_load_on_another_gpu_keeps_an_unpriced_image_model(cores, policy):
+    # Unpriced media on GPU 1 can't be counted, but a chat load pinned to GPU 0 never touches it.
+    arb.acquire_for(arb.DIFFUSION, lambda: None, gpu_ids = [1])
+    arb.acquire_for(arb.CHAT, lambda: None, gpu_ids = [0], policy = policy, evict_first = True)
+    assert cores.calls == []
+    assert arb.residents() == {arb.DIFFUSION: frozenset({1}), arb.CHAT: frozenset({0})}
+
+
+def test_chat_gpus_add_up_across_loads_and_survive_a_reassert(cores):
+    arb.acquire_for(arb.CHAT, lambda: None, gpu_ids = [0], policy = "fit")
+    arb.acquire_for(arb.CHAT, lambda: None, gpu_ids = [1], policy = "fit", alongside = True)
+    assert arb.residents() == {arb.CHAT: frozenset({0, 1})}
+    arb.acquire_for(arb.CHAT, policy = "fit")  # a re-assert places nothing new
+    assert arb.residents() == {arb.CHAT: frozenset({0, 1})}
+    arb.acquire_for(
+        arb.CHAT, lambda: None, policy = "fit"
+    )  # a load on unknown GPUs counts as every GPU
+    assert arb.residents() == {arb.CHAT: None}
+
+
 @pytest.mark.parametrize(
     "policy, priced, kwargs, short, outcome",
     [

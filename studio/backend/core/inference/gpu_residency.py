@@ -366,6 +366,8 @@ def can_load_alongside(owner: str, need_mib: Optional[dict]) -> tuple[bool, dict
         return False, {"reason": reason}
     records = _media_records()
     own = records.get(owner)
+    # A resident still loading has not allocated its weights yet either, so live free VRAM misses all of it.
+    loading = {name for name in records if name != owner and _media_busy(name)[0]}
     info: dict[str, Any] = {"need_mib": {}, "free_mib": {}, "short_mib": {}, "reason": "fits"}
     for gpu, mib in need_mib.items():
         row = rows.get(gpu)
@@ -376,7 +378,7 @@ def can_load_alongside(owner: str, need_mib: Optional[dict]) -> tuple[bool, dict
         free = row["free_mib"]
         # An idle resident's generation headroom is not allocated yet; it will be when it generates.
         free -= sum(
-            getattr(need, "headroom_mib", 0)
+            int(need[gpu]) if name in loading else getattr(need, "headroom_mib", 0)
             for name, need in records.items()
             if name != owner and gpu in need
         )
