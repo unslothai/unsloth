@@ -481,7 +481,7 @@ async def plan_load(
     slot_kind = "llm" if kind in CHAT_KINDS else kind
     unpinned = device not in ("cpu", "gpu") and any(s.kind != slot_kind for s in would_evict)
     unlisted = kind in CHAT_KINDS and listing is None
-    reads = (image, video, stt) if kind == "stt" else (image, video)
+    reads = (image, video, stt) if kind == "stt" else (status, image, video)
     if unlisted or unpinned or not all(isinstance(read, dict) for read in reads):
         # A slot whose status could not be read may hold a model the load would unload.
         exact = False

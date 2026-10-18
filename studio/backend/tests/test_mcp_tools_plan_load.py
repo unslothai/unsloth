@@ -404,3 +404,10 @@ def test_always_does_not_protect_a_chat_model_holding_no_vram(monkeypatch):
     world = _world("always", [QWEN], gpu_memory_mode = "manual", gpu_layers = 0)
     plan = _plan(monkeypatch, world, {"model": FLUX_GGUF, "kind": "image"})
     assert plan["would_refuse"] is False
+
+
+def test_an_unreadable_chat_status_makes_the_plan_an_upper_bound(monkeypatch):
+    world = _world("off", [QWEN], image = FLUX_GGUF)
+    world[STATUS] = JSONResponse({}, status_code = 503)
+    plan = _plan(monkeypatch, world, {"model": QWEN, "variant": "Q4_K_M", "device": "gpu"})
+    assert plan["would_evict_exact"] is False
