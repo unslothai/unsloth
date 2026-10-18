@@ -6,8 +6,6 @@
 import pytest
 from fastapi.responses import JSONResponse
 
-from studio_mcp import forward
-
 from .mcp_harness import bodies, fast_polls, run_tool, stt_state  # noqa: F401
 from .test_mcp_tools_loading import FLUX_GGUF, LOADED, LTX, READY, _media_studio
 
@@ -30,14 +28,6 @@ VARIANTS = {
         },
     ],
 }
-
-
-@pytest.fixture(autouse = True)
-def download_status_reachable(monkeypatch):
-    # The download routes join the MCP allowlist in the PR stacked on this one.
-    monkeypatch.setattr(
-        forward, "ALLOWED_PREFIXES", (*forward.ALLOWED_PREFIXES, "/api/hub/download")
-    )
 
 
 def _chat(mode, serving, **fields):

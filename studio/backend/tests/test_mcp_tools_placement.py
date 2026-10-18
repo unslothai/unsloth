@@ -247,10 +247,7 @@ def test_a_partial_variant_is_refused(monkeypatch):
 
 
 def test_a_variant_unsloth_studio_is_downloading_is_not_refused(monkeypatch):
-    # Reachable once the download routes are on the MCP allowlist; until then the refusal applies.
-    monkeypatch.setattr(
-        forward, "ALLOWED_PREFIXES", (*forward.ALLOWED_PREFIXES, "/api/hub/download")
-    )
+    # The real allowlist: download-status is forwarded, so a managed download in flight is seen.
     result, _studio, sent = _load(monkeypatch, {"model": QWEN}, _partial_routes("running"))
     assert result.get("isError") is not True
     assert len(sent) == 1
@@ -392,3 +389,9 @@ def test_unload_all_still_frees_media_when_chat_status_cannot_be_read(monkeypatc
     assert result["isError"] is True
     assert f"image {FLUX_GGUF}" in str(result["content"]) and "llm:" in str(result["content"])
     assert ("POST", "/api/inference/images/unload") in [call[:2] for call in studio.state.calls]
+
+
+def test_only_the_download_status_read_joins_the_allowlist():
+    assert "/api/hub/download-status" in forward.ALLOWED_PREFIXES
+    for path in ("/api/hub/download", "/api/hub/download/cancel", "/api/hub/download-progress"):
+        assert not path.startswith(forward.ALLOWED_PREFIXES)

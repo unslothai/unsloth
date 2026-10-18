@@ -30,6 +30,8 @@ ALLOWED_PREFIXES = (
     "/api/data-recipe/",
     "/api/hub/datasets/",
     "/api/hub/gguf-variants",
+    # Read only: load_model and plan_load check whether Unsloth Studio is still downloading a variant.
+    "/api/hub/download-status",
     "/api/settings/embedding-model",
 )
 
