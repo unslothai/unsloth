@@ -632,3 +632,28 @@ def test_the_dense_hybrid_still_stands_mtp_down(tmp_path):
     cmd = result["cmd"]
     assert cmd[cmd.index("--spec-type") + 1] == "none"
     assert backend.spec_fallback_reason == "mtp_partial_offload"
+
+
+@pytest.mark.parametrize("n_cpu_moe", [0, 1, 20])
+def test_manual_partial_layers_on_a_moe_warn(tmp_path, monkeypatch, n_cpu_moe):
+    """Whole layers stay on the CPU whatever --n-cpu-moe does to the experts of the
+    layers that are on the GPU, so the warning fires with expert offload too."""
+    import core.inference.llama_cpp as llama_cpp
+
+    warnings = []
+    real_warning = llama_cpp.logger.warning
+    monkeypatch.setattr(
+        llama_cpp.logger,
+        "warning",
+        lambda msg, *a, **k: (warnings.append(str(msg)), real_warning(msg, *a, **k))[1],
+    )
+    backend, gguf = _hybrid_mtp_moe_backend(tmp_path, partial_offload = False)
+    _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = 42,
+        n_cpu_moe = n_cpu_moe,
+        n_ctx = 4096,
+    )
+    assert any("Manual GPU layers on a MoE model" in w for w in warnings)
