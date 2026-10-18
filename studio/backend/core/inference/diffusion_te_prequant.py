@@ -1156,7 +1156,12 @@ def load_prequant_text_encoder(
         }
         if subfolder:
             config_kwargs["subfolder"] = subfolder
-        config = transformers.AutoConfig.from_pretrained(config_source or base, **config_kwargs)
+        from .diffusion_families import pinned_revision_kwargs
+
+        config_from = config_source or base
+        config = transformers.AutoConfig.from_pretrained(
+            config_from, **config_kwargs, **pinned_revision_kwargs(config_from)
+        )
         # Krea-2 ships transformers-5.x configs whose rope lives under rope_parameters; the runtime component loader
         # remaps it for a 4.x runtime, and the meta-init here must match or the rebuilt encoder forwards with a broken
         # rope.
