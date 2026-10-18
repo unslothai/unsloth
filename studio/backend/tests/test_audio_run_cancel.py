@@ -155,7 +155,9 @@ def test_a_cancel_while_the_clip_saves_removes_it(use_backend, monkeypatch):
             run = asyncio.create_task(client.post("/api/inference/audio/run", json = body))
             try:
                 assert await asyncio.to_thread(saving.wait, 10)
-                stopped = await client.post("/api/inference/audio/cancel", json = {"cancel_id": RUN_A})
+                stopped = await client.post(
+                    "/api/inference/audio/cancel", json = {"cancel_id": RUN_A}
+                )
             finally:
                 go_on.set()
             return stopped.json(), await asyncio.wait_for(run, 10)

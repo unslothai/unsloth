@@ -24530,7 +24530,6 @@ async def _dispatch_audio_run(
 
 def _discard_audio_clips(clip_ids: list[str]) -> None:
     from core.inference import audio_gallery
-
     for clip_id in clip_ids:
         try:
             audio_gallery.delete(clip_id)
