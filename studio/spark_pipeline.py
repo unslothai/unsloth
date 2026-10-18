@@ -308,6 +308,24 @@ TORCH_PP_SCHEDULES = {
 }
 
 
+def gloo_same_rank_problem(schedule: str, torch_version: str) -> Optional[str]:
+    """Why a V layout cannot run over gloo (SPARK_PP_CPU=1) on this torch, or None."""
+    spec = TORCH_PP_SCHEDULES.get(schedule)
+    if spec is None or spec[2] != "v":
+        return None
+    from packaging.version import Version
+
+    if Version(torch_version).release >= (2, 12):
+        return None
+    # Measured: torch 2.10 / 2.11 fail in gloo pair.cc ("Pair is not connected"), 2.12 runs.
+    return (
+        f"--schedule {schedule} keeps two adjacent stages on one rank, and before torch 2.12 "
+        f"they hand over through a send to that same rank, which gloo (SPARK_PP_CPU=1) cannot "
+        f"do (torch {torch_version}). Use --schedule 1f1b or gpipe for the CPU run, or "
+        f"torch >= 2.12"
+    )
+
+
 def torch_pp_plan(
     schedule: str, world: int, microbatches: int, virtual_stages: int, n_layers: int
 ) -> dict:
@@ -2114,6 +2132,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # NCCL cannot do point-to-point between two processes on the SAME device, so a one-box
     # functional test is impossible on CUDA; this gloo path exists for that.
     use_cpu = os.environ.get("SPARK_PP_CPU", "0") == "1"
+    if use_cpu and use_torch_pp:
+        problem = gloo_same_rank_problem(args.schedule, torch.__version__)
+        if problem:
+            raise SystemExit(problem)
     if use_cpu:
         dist.init_process_group("gloo")
         device = torch.device("cpu")
