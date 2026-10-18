@@ -47,6 +47,8 @@ from .export import (
     LlmCompressorExportProbeResponse,
     DecisionExportInfo,
     ExportDecisionInfoResponse,
+    MoeInfoResponse,
+    ReapOptions,
 )
 from .users import Token
 from .inference import (
@@ -110,6 +112,8 @@ __all__ = [
     "LlmCompressorExportProbeResponse",
     "DecisionExportInfo",
     "ExportDecisionInfoResponse",
+    "MoeInfoResponse",
+    "ReapOptions",
     "Token",
     "LoadRequest",
     "UnloadRequest",

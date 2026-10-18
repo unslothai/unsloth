@@ -68,7 +68,9 @@ import {
   type DecisionExportInfo,
   type DiffusionLmExportInfo,
   type ModelCheckpoints,
+  type MoeInfo,
   fetchCheckpointExportProbe,
+  fetchMoeInfo,
 } from "./api/export-api";
 import { adapterCompatibilityTip, type AdapterFormat } from "./constants";
 import { ExportRunPanel } from "./components/export-run-panel";
@@ -76,6 +78,7 @@ import { ImageLoraExportCard } from "./components/image-lora-export-card";
 import { MethodPicker } from "./components/method-picker";
 import { Q4nxConvertCard } from "./components/q4nx-convert-card";
 import { QuantPicker } from "./components/quant-picker";
+import { ReapCard } from "./components/reap-card";
 import {
   EXPORT_METHODS,
   type ExportMethod,
@@ -96,6 +99,13 @@ import {
 } from "./export-navigation-cache";
 import { confirmLlmCompressorInstallIfNeeded } from "./hooks/use-llm-compressor-consent";
 import { useExportSizeEstimate } from "./hooks/use-export-size-estimate";
+import {
+  DEFAULT_REAP_SETTINGS,
+  type ReapSettings,
+  reapAllowedSparsities,
+  reapRequest,
+  reapSummaryLabel,
+} from "./lib/reap";
 import { saveDirectoryField } from "./lib/save-directory";
 import {
   isExportPanelActive,
@@ -227,6 +237,9 @@ export function ExportPage() {
   // GGUF importance matrix (required for the IQ quants) and merged-export precision.
   const [useImatrix, setUseImatrix] = useState(false);
   const [npuQ4nx, setNpuQ4nx] = useState(false);
+  const [reapSettings, setReapSettings] = useState<ReapSettings>(
+    DEFAULT_REAP_SETTINGS,
+  );
   const [customImatrix, setCustomImatrix] = useState({ sourceKey: "", path: "" });
   // Merged precision: one or more MERGED_FORMATS values exported in one run; seeded like exportMethod.
   const [selectedFormats, setSelectedFormats] = useState<string[]>(() => {
@@ -584,6 +597,33 @@ export function ExportPage() {
   );
   const decisionExistingQuants =
     decisionInfo?.existing_export?.quantizations ?? [];
+  // REAP is offered only for routed-MoE models: a local checkpoint / model folder, or a Hub id.
+  const moeProbeTarget =
+    decisionProbePath ??
+    (sourceMode !== "checkpoint" && modelSource === "hf"
+      ? selectedSourceModel || null
+      : null);
+  const moeProbeToken = debouncedHfToken?.trim() || "";
+  const moeProbeKey = moeProbeTarget ? `${moeProbeTarget}|${moeProbeToken}` : "";
+  const [moeState, setMoeState] = useState<{
+    key: string;
+    info: MoeInfo | null;
+  } | null>(null);
+  useEffect(() => {
+    if (!moeProbeTarget) return;
+    const controller = new AbortController();
+    fetchMoeInfo(moeProbeTarget, moeProbeToken || null, controller.signal)
+      .then((info) => {
+        if (!controller.signal.aborted) setMoeState({ key: moeProbeKey, info });
+      })
+      .catch(() => {
+        if (!controller.signal.aborted)
+          setMoeState({ key: moeProbeKey, info: null });
+      });
+    return () => controller.abort();
+  }, [moeProbeKey, moeProbeTarget, moeProbeToken]);
+  const moeInfo =
+    moeProbeKey && moeState?.key === moeProbeKey ? moeState.info : null;
 
   const localResultIds = useMemo(() => {
     const ids = exportableLocalModels.map((model) => model.id);
@@ -771,6 +811,21 @@ export function ExportPage() {
     ggufTarget === "lora" &&
     effectiveIsAdapter &&
     !isMacHost;
+
+  // REAP prunes the full model before a merged or full-model GGUF export (torch backends only).
+  const showReap =
+    !!moeInfo &&
+    reapAllowedSparsities(moeInfo).length > 0 &&
+    !isMacHost &&
+    !isDecision &&
+    !exportUnsupported &&
+    !!exportMethod &&
+    !diffusionDisabledMethods.includes(exportMethod) &&
+    (exportMethod === "merged" || (exportMethod === "gguf" && !ggufAsLora));
+  const reapOptions =
+    showReap && moeInfo ? reapRequest(reapSettings, moeInfo) : null;
+  const reapLabel =
+    showReap && moeInfo ? reapSummaryLabel(reapSettings, moeInfo) : null;
 
   // Restrict a Hub merged export to a single format; multi-format stays available for local export.
   const hubMultiFormat =
@@ -965,6 +1020,7 @@ export function ExportPage() {
       privateRepo,
       installMissingDependencies,
       baseModelId: selectedModelData?.base_model ?? undefined,
+      reap: reapOptions,
       summary: {
         baseModelName: sourceBaseModelName,
         checkpointLabel: selectedExportSource,
@@ -973,9 +1029,12 @@ export function ExportPage() {
         quantLevels,
         mergedFormats: exportMethod === "merged" ? selectedFormats : [],
         destination,
+        reapLabel,
       },
     });
   }, [
+    reapOptions,
+    reapLabel,
     checkpoint,
     checkpointsForModel,
     sourceMode,
@@ -2013,6 +2072,14 @@ export function ExportPage() {
                   )}
                 </div>
               )}
+              {showReap && moeInfo && (
+                <ReapCard
+                  moe={moeInfo}
+                  settings={reapSettings}
+                  onChange={setReapSettings}
+                  disabled={isExporting}
+                />
+              )}
               {estimatedSize && (
                 <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                   <HugeiconsIcon
@@ -2055,6 +2122,7 @@ export function ExportPage() {
                         })
                       : undefined
                   }
+                  reapLabel={reapLabel}
                 />
               )}
               {showPanel && (

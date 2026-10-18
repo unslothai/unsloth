@@ -182,6 +182,37 @@ class ExportOperationResponse(BaseModel):
     )
 
 
+class ReapOptions(BaseModel):
+    """Opt-in REAP expert pruning (arXiv:2510.13999) applied to an MoE model before it is exported."""
+
+    sparsity: float = Field(
+        0.25,
+        gt = 0,
+        lt = 1,
+        description = "Fraction of the routed experts to remove in every MoE layer.",
+    )
+    num_calibration_samples: int = Field(
+        512,
+        ge = 8,
+        le = 4096,
+        description = "Calibration conversations used to score the experts.",
+    )
+    dataset: Optional[str] = Field(
+        None,
+        max_length = 200,
+        pattern = r"^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?$",
+        description = "Hugging Face dataset id for calibration (default mlabonne/open-perfectblend).",
+    )
+
+
+class MoeInfoResponse(BaseModel):
+    """Routed-expert counts for a model, or None when it is not a routed MoE."""
+
+    model: str
+    num_experts: Optional[int] = None
+    top_k: Optional[int] = None
+
+
 class ExportCommonOptions(BaseModel):
     """Common options for export operations that save locally and/or push to Hub."""
 
@@ -255,10 +286,17 @@ class ExportMergedModelRequest(ExportCommonOptions):
         description = "User consent to install llm-compressor (or its shadow runtime) for "
         "compressed-tensors export.",
     )
+    reap: Optional[ReapOptions] = Field(
+        None, description = "Prune MoE experts with REAP before exporting (off when omitted)."
+    )
 
 
 class ExportBaseModelRequest(ExportCommonOptions):
     """Request for exporting a non-PEFT (base) model."""
+
+    reap: Optional[ReapOptions] = Field(
+        None, description = "Prune MoE experts with REAP before exporting (off when omitted)."
+    )
 
 
 class ExportGGUFRequest(BaseModel):
@@ -320,6 +358,9 @@ class ExportGGUFRequest(BaseModel):
         False,
         description = "Also convert one Q4_0 / Q4_1 / Q4_K_M GGUF to FastFlowLM's Q4NX for the "
         "AMD Ryzen AI NPU, written to <save_directory>/npu-q4nx.",
+    )
+    reap: Optional[ReapOptions] = Field(
+        None, description = "Prune MoE experts with REAP before converting (off when omitted)."
     )
 
 

@@ -661,6 +661,7 @@ class ExportOrchestrator:
         install_missing_dependencies: bool = False,
         expected_checkpoint: Optional[str] = None,
         op_id: Optional[str] = None,
+        reap: Optional[dict] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         return self._run_export(
             "merged",
@@ -675,6 +676,7 @@ class ExportOrchestrator:
                 "install_missing_dependencies": install_missing_dependencies,
                 "expected_checkpoint": expected_checkpoint,
                 "op_id": op_id,
+                "reap": reap,
             },
         )
 
@@ -688,6 +690,7 @@ class ExportOrchestrator:
         base_model_id: Optional[str] = None,
         expected_checkpoint: Optional[str] = None,
         op_id: Optional[str] = None,
+        reap: Optional[dict] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         return self._run_export(
             "base",
@@ -700,6 +703,7 @@ class ExportOrchestrator:
                 "base_model_id": base_model_id,
                 "expected_checkpoint": expected_checkpoint,
                 "op_id": op_id,
+                "reap": reap,
             },
         )
 
@@ -715,6 +719,7 @@ class ExportOrchestrator:
         npu_q4nx: bool = False,
         expected_checkpoint: Optional[str] = None,
         op_id: Optional[str] = None,
+        reap: Optional[dict] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export model in GGUF format. `quantization_method` may be a single method or a list."""
         return self._run_export(
@@ -730,6 +735,7 @@ class ExportOrchestrator:
                 "npu_q4nx": npu_q4nx,
                 "expected_checkpoint": expected_checkpoint,
                 "op_id": op_id,
+                "reap": reap,
             },
         )
 

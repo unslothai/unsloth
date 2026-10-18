@@ -761,6 +761,9 @@ class ExportBackend:
             self._checkpoint_token = None
             self._audio_type = None
             self.decision = None
+            from core.export.reap import discard_reap_staging
+
+            discard_reap_staging(self)
 
             clear_gpu_cache()
 

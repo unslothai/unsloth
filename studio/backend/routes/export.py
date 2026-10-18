@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 import structlog
 from loggers import get_logger
@@ -55,6 +55,7 @@ from models import (
     ExportDiffusionLoRARequest,
     LlmCompressorExportProbeResponse,
     ExportDecisionInfoResponse,
+    MoeInfoResponse,
 )
 
 router = APIRouter()
@@ -433,6 +434,37 @@ async def get_decision_export_info(
     )
 
 
+@router.get("/moe-info", response_model = MoeInfoResponse)
+async def get_moe_info(
+    model: str = Query(
+        ..., max_length = 4096, description = "Local checkpoint / model folder or Hub id"
+    ),
+    hf_token: Optional[str] = Header(None, alias = "X-HF-Token"),
+    current_subject: str = Depends(get_current_subject),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
+):
+    """Routed-expert counts for the REAP option on the export page; null counts for a dense model.
+    The token (gated repos) comes in the X-HF-Token header, as for /api/models/export-size."""
+    from core.export.reap import moe_export_info
+    from routes.models import _normalize_hf_token, _require_model_access_or_caller_token
+    from utils.paths import is_local_path
+
+    local = is_local_path(model)
+    token = _normalize_hf_token(hf_token)
+    if local:
+        validate_job_paths({"checkpoint_path": model})
+    else:
+        await _require_model_access_or_caller_token(model, token)
+    # A local folder never reaches the network; a Hub id reads only its config.json.
+    info = await asyncio.to_thread(
+        moe_export_info,
+        model,
+        token or hf_token_arg(None, allow_ambient_token = allow_ambient),
+        local,
+    )
+    return MoeInfoResponse(model = model, **(info or {}))
+
+
 @router.post("/export/merged", response_model = ExportOperationResponse)
 async def export_merged_model(
     request: ExportMergedModelRequest,
@@ -444,6 +476,8 @@ async def export_merged_model(
     Wraps ExportBackend.export_merged_model.
     """
     validate_job_paths(request.model_dump())
+    if request.reap and request.reap.dataset:
+        validate_job_paths({"hf_dataset": request.reap.dataset})
     try:
         await _ensure_export_supported()
         backend = get_export_backend()
@@ -463,6 +497,7 @@ async def export_merged_model(
             install_missing_dependencies = request.install_missing_dependencies,
             expected_checkpoint = request.expected_checkpoint,
             op_id = request.op_id,
+            reap = request.reap.model_dump() if request.reap else None,
         )
 
         if not success:
@@ -510,6 +545,8 @@ async def export_base_model(
     Wraps ExportBackend.export_base_model.
     """
     validate_job_paths(request.model_dump())
+    if request.reap and request.reap.dataset:
+        validate_job_paths({"hf_dataset": request.reap.dataset})
     try:
         await _ensure_export_supported()
         backend = get_export_backend()
@@ -527,6 +564,7 @@ async def export_base_model(
             base_model_id = request.base_model_id,
             expected_checkpoint = request.expected_checkpoint,
             op_id = request.op_id,
+            reap = request.reap.model_dump() if request.reap else None,
         )
 
         if not success:
@@ -565,6 +603,8 @@ async def export_gguf(
     Wraps ExportBackend.export_gguf.
     """
     validate_job_paths(request.model_dump())
+    if request.reap and request.reap.dataset:
+        validate_job_paths({"hf_dataset": request.reap.dataset})
     try:
         await _ensure_export_supported()
         backend = get_export_backend()
@@ -586,6 +626,7 @@ async def export_gguf(
             npu_q4nx = request.npu_q4nx,
             expected_checkpoint = request.expected_checkpoint,
             op_id = request.op_id,
+            reap = request.reap.model_dump() if request.reap else None,
         )
 
         if not success:

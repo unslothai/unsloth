@@ -434,6 +434,30 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
 
     output_path: Any = None
     try:
+        reap = cmd.get("reap") if export_type in ("merged", "base", "gguf") else None
+        if reap:
+            from core.export.reap import apply_reap
+            from utils.paths.storage_roots import resolve_export_dir
+
+            _send_response(
+                resp_queue,
+                {"type": "status", "message": "Pruning experts with REAP...", "ts": time.time()},
+            )
+            ok, reap_message = apply_reap(backend, reap, resolve_export_dir())
+            if not ok:
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": response_type,
+                        "success": False,
+                        "message": reap_message,
+                        "output_path": None,
+                        "ts": time.time(),
+                    },
+                )
+                return
+            if reap_message:
+                logger.info(reap_message)
         if export_type == "merged":
             success, message, output_path = backend.export_merged_model(
                 save_directory = cmd.get("save_directory", ""),
@@ -478,6 +502,9 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
             )
         else:
             success, message = False, f"Unknown export type: {export_type}"
+        if reap and success:
+            from core.export.reap import write_reap_report
+            write_reap_report(backend, output_path)
 
         _send_response(
             resp_queue,
