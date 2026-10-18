@@ -1375,7 +1375,7 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
         left, right = 0, len(cuts)
         while left < right:
             mid = (left + right) // 2
-            if live[:cuts[mid]] in stored:
+            if live[: cuts[mid]] in stored:
                 left = mid + 1
             else:
                 right = mid
@@ -1388,7 +1388,7 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
         left, right = 0, prefix_stop
         while left < right:
             mid = (left + right) // 2
-            if live[cuts[mid] + 1:] in stored:
+            if live[cuts[mid] + 1 :] in stored:
                 right = mid
             else:
                 left = mid + 1
@@ -1396,7 +1396,7 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
         for index in range(left, prefix_stop):
             cut = cuts[index]
             head_at = stored.find(live[:cut])
-            tail_at = stored.rfind(live[cut + 1:])
+            tail_at = stored.rfind(live[cut + 1 :])
 
             if tail_at >= head_at + cut:
                 return True
