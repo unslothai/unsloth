@@ -687,8 +687,12 @@ def would_evict(
     if not (holds(CHAT) if callable(holds) else _owner == CHAT):
         return False
     if policy == "always":
-        # Always refuses the load rather than evicting.
-        return False
+        # Always refuses the load rather than evicting, except a claim whose load failed and holds nothing.
+        try:
+            from core.inference.gpu_residency import _claim_holds_anything
+            return not _claim_holds_anything(CHAT)
+        except Exception:  # noqa: BLE001
+            return False
     if policy == "fit" and need_mib:
         # An unpriced load evicts first, as Off does; a priced one joins when it fits.
         try:

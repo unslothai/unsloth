@@ -9,7 +9,6 @@ The llama backend, the evictors and the settings are fakes: no llama-server, no 
 from __future__ import annotations
 
 import asyncio
-import inspect
 import os
 import sys
 import threading
@@ -132,18 +131,12 @@ def _no_files(llama) -> bool:
     return not any(f.exists() for f in llama.files)
 
 
-_TAKES_POLICY = "policy" in inspect.signature(arb.acquire_for).parameters
-_TAKES_NEED = "need_mib" in inspect.signature(arb.acquire_for).parameters
-
-
 @pytest.mark.parametrize(
     "policy, fits", [("off", None), ("fit", True), ("fit", False), ("always", None)]
 )
 @pytest.mark.parametrize("current", [None, arb.CHAT, arb.DIFFUSION, arb.VIDEO])
 @pytest.mark.parametrize("target", [arb.DIFFUSION, arb.VIDEO, arb.CHAT])
 def test_would_evict_matches_acquire_for(monkeypatch, policy, fits, current, target):
-    if policy != "off" and not _TAKES_POLICY:
-        pytest.skip("acquire_for has no policy before R1")
     calls: list[str] = []
     monkeypatch.setattr(arb, "_owner", current)
     for owner in (arb.CHAT, arb.DIFFUSION, arb.VIDEO):
@@ -155,9 +148,9 @@ def test_would_evict_matches_acquire_for(monkeypatch, policy, fits, current, tar
             gpu_residency = None
         if hasattr(gpu_residency, "can_load_alongside"):
             monkeypatch.setattr(gpu_residency, "can_load_alongside", lambda *a, **k: (fits, {}))
-    need = {0: 1024} if fits is not None and _TAKES_NEED else None
+    need = {0: 1024} if fits is not None else None
     predicted = arb.would_evict(target, policy = policy, need_mib = need)
-    kwargs = {"policy": policy} if _TAKES_POLICY else {}
+    kwargs = {"policy": policy}
     if need:
         kwargs["need_mib"] = need
     try:
