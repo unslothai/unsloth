@@ -226,8 +226,8 @@ _CONTROL = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07")
 
 
 def _raw_frame(raw: str) -> str:
-    """The frame as drawn, sizes and units included, without terminal escapes or spacing."""
-    return " ".join(_CONTROL.sub("", raw).split())
+    """The frame as drawn, sizes and units included, without terminal escapes, redraw controls or spacing."""
+    return " ".join(re.sub(r"[\r\x08]", "", _CONTROL.sub("", raw)).split())
 
 
 def normalise_transcript(text: str) -> list[str]:

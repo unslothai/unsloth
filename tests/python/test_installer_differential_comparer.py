@@ -252,6 +252,16 @@ def test_a_redraw_that_only_adds_a_colour_escape_is_still_a_redraw(tmp_path: Pat
     assert _run(base, head).returncode == 0
 
 
+def test_a_redraw_drawn_with_backspaces_is_still_a_redraw(tmp_path: Path) -> None:
+    """Backspaces the terminal used to redraw the finished bar do not make it a second download."""
+    full = "  ██████████████████████████████  17.2 MB / 17.2 MB"
+    redrawn = "\x08" * 4 + full
+    lines = BASELINE.split("\n")
+    base = _write(tmp_path / "base", transcript = "\n".join(lines[:1] + [full, redrawn] + lines[1:]))
+    head = _write(tmp_path / "head", transcript = "\n".join(lines[:1] + [full] + lines[1:]))
+    assert _run(base, head).returncode == 0
+
+
 def test_two_finished_downloads_of_different_sizes_still_compare(tmp_path: Path) -> None:
     """Both bars normalise to <size> / <size>, but different raw sizes are two downloads."""
     first = "  ██████████████████████████████  17.2 MB / 17.2 MB"
