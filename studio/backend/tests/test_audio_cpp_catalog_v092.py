@@ -68,6 +68,11 @@ def v092_asr(fake, hub, monkeypatch):
     )
     _put(
         snap,
+        "OWSM-CTC-GGUF/owsm-ctc-v4-1b-q8_0.gguf",
+        _gguf_bytes(family = "owsm_ctc", spec = _asr_spec("language", "max_tokens")),
+    )
+    _put(
+        snap,
         "Hviske-v6-GGUF/hviske-v6-q8_0.gguf",
         _gguf_bytes(family = "hviske_asr_v6", spec = _asr_spec("max_tokens", "num_beams")),
     )
@@ -84,6 +89,17 @@ def test_owsm_detects_the_language_rather_than_a_two_letter_code(v092_asr, side,
     assert body["language"] == "auto"
     # The language the model reports hearing (the fake server answers English), not the ignored choice.
     assert result["language"] == "English"
+
+
+@pytest.mark.parametrize("language, reported", [("fr", "fr"), (None, None)])
+def test_owsm_ctc_reports_the_choice_rather_than_an_echoed_auto(
+    v092_asr, side, source, language, reported
+):
+    result = side.transcribe_path(source, f"{AUDIO_CPP_REPO}/OWSM-CTC-GGUF", language)
+    (body,) = v092_asr.bodies
+    assert body["language"] == "auto"
+    # OWSM-CTC detects nothing and echoes "auto"; that is never reported as a language.
+    assert result["language"] == reported
 
 
 @pytest.mark.parametrize("family", ["owsm", "owsm_ctc"])

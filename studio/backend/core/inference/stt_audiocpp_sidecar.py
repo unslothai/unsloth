@@ -1066,12 +1066,13 @@ class AudioCppSttSidecar:
             finally:
                 self._schedule_idle_unload_locked()
         details = stt_details.normalize(payload, entry.family, rate)
+        detected = details["language"]
+        if sent == "auto":
+            # OWSM reports what it heard, not the ignored choice; OWSM-CTC only echoes "auto" back.
+            detected = None if str(detected or "").lower() == "auto" else detected
         result = {
             "text": details["text"],
-            # A model told to detect (OWSM) reports what it heard, not the ignored choice.
-            "language": (details["language"] or lang)
-            if sent == "auto"
-            else (lang or details["language"]),
+            "language": (detected or lang) if sent == "auto" else (lang or detected),
             "duration": duration,
             "model": _reported_name(model, entry),
         }
