@@ -9967,7 +9967,7 @@ def bundle_lists_vulkan_device(server_path: Path, install_dir: Path, host: HostI
             text = True,
             encoding = "utf-8",
             errors = "replace",
-            # Device init builds every shader pipeline: 50-90 s for one B200 on a loaded host.
+            # Device init compiles every shader pipeline, over a minute on a loaded host.
             timeout = 180,
             env = binary_env(server_path, install_dir, host),
             **windows_hidden_subprocess_kwargs(),
