@@ -60,14 +60,25 @@ const derivation = [
   ),
   lift(
     tabSrc,
-    /const gpuMismatchMessage = [\s\S]*?;/,
+    /const gpuPermissionHint = [\s\S]*?;/,
+    "gpuPermissionHint",
+    "resources-tab.tsx",
+  ),
+  lift(
+    tabSrc,
+    /const gpuMismatchMessage =\s*[\s\S]*?;/,
     "gpuMismatchMessage",
     "resources-tab.tsx",
   ),
 ].join("\n");
 
 interface Inventory {
-  mismatch?: { reason?: string; torch_version?: string | null } | null;
+  mismatch?: {
+    reason?: string;
+    torch_version?: string | null;
+    permission_hint?: string | null;
+    permission_hint_only?: boolean;
+  } | null;
   physical_devices?: { name?: string }[];
 }
 
@@ -77,14 +88,59 @@ function mismatchFor(gpuInventory: Inventory | null) {
     "t",
     "unknownLabel",
     `${derivation}
-     return { gpuMismatch, physicalDevices, gpuMismatchMessage };`,
+     return { gpuMismatch, physicalDevices, gpuMismatchMessage, gpuPermissionHint };`,
   );
   return run(gpuInventory, t, UNKNOWN) as {
     gpuMismatch: { reason?: string } | null;
     physicalDevices: { name?: string }[];
     gpuMismatchMessage: string | null;
+    gpuPermissionHint: string | null;
   };
 }
+
+// #14067: an account outside the render group. Repair installation cannot add it to one.
+const HINT =
+  "This account cannot open /dev/kfd, so ROCm cannot use the AMD card even though the driver is loaded. Add the account to the render and video groups and then log out and back in: sudo usermod -a -G render,video ada";
+
+test("a closed AMD device node is named instead of the repair advice", () => {
+  const rocm = mismatchFor({
+    mismatch: {
+      reason: "torch_cuda_unavailable",
+      torch_version: "2.11.0+rocm7.0",
+      permission_hint: HINT,
+      permission_hint_only: true,
+    },
+    physical_devices: [{ name: "Radeon RX 7900 XTX" }],
+  });
+  assert.equal(rocm.gpuPermissionHint, HINT);
+  assert.equal(rocm.gpuMismatchMessage, null);
+
+  // A CPU wheel still needs the reinstall, so both lines show.
+  const cpu = mismatchFor({
+    mismatch: {
+      reason: "torch_cpu_build",
+      torch_version: "2.11.0+cpu",
+      permission_hint: HINT,
+      permission_hint_only: false,
+    },
+    physical_devices: [{ name: "Radeon RX 7900 XTX" }],
+  });
+  assert.equal(cpu.gpuPermissionHint, HINT);
+  assert.equal(cpu.gpuMismatchMessage, CPU_BUILD);
+
+  // permission_hint_only without a hint never blanks the banner.
+  const noHint = mismatchFor({
+    mismatch: {
+      reason: "torch_cuda_unavailable",
+      torch_version: "2.11.0+rocm7.0",
+      permission_hint: null,
+      permission_hint_only: true,
+    },
+    physical_devices: [{ name: "Radeon RX 7900 XTX" }],
+  });
+  assert.equal(noHint.gpuPermissionHint, null);
+  assert.equal(noHint.gpuMismatchMessage, UNAVAILABLE);
+});
 
 test("a CPU-only wheel and a dead accelerator wheel get different sentences", () => {
   const cpuBuild = mismatchFor({
@@ -211,13 +267,23 @@ test("the sidebar's Train hint stops doing the same", () => {
     "trainDisabledHint",
     "app-sidebar.tsx",
   );
-  const forReason = (chatOnlyReason: string, chatOnlyDetail: string | null) =>
+  const forReason = (
+    chatOnlyReason: string,
+    chatOnlyDetail: string | null,
+    chatOnlyHint: string | null = null,
+  ) =>
     new Function(
       "chatOnlyMeasured",
       "chatOnlyReason",
       "chatOnlyDetail",
+      "chatOnlyHint",
       `${hint.replace(": string | undefined", "")}\nreturn trainDisabledHint;`,
-    )(true, chatOnlyReason, chatOnlyDetail) as string | undefined;
+    )(true, chatOnlyReason, chatOnlyDetail, chatOnlyHint) as string | undefined;
+
+  // #14067: a closed AMD node replaces the reinstall advice.
+  const closed = forReason("torch_cuda_unavailable", "2.11.0+rocm7.0", HINT);
+  assert.ok(closed?.includes("sudo usermod -a -G render,video ada"));
+  assert.doesNotMatch(closed ?? "", /repair the installation/);
 
   for (const reason of ["torch_cpu_build", "torch_cuda_unavailable"]) {
     const withDetail = forReason(reason, "2.11.0+cpu");

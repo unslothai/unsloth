@@ -187,8 +187,25 @@ export const BUDGET = {
   // and Latest Unsloth Models ranking (#13969, +1,290 B raw / +445 B transfer); the composer alignment
   // (#13965), the resizable hub split view (#13966) and the fit filter (#13945, already raised for above) add the
   // rest. Set to the measured build plus the margin main had at 17901061d1 (160 B raw, 189 B transfer).
-  transferBytes: 2_044_391,
-  rawBytes: 6_796_959,
+  // Chat with files closing on its X, the app tooltips and the higher-contrast traces (#13989) add 1,339 B raw /
+  // 377 B transfer (6,796,799 -> 6,798,138 B raw, 2,044,202 -> 2,044,579 B transfer against 1574001bc1, one
+  // machine and build, Node 24, chunk count unchanged at 95). Raised by that growth so main's margin stays where
+  // it was.
+  // Three Studio merges since add 3,117 B raw / 1,058 B transfer (6,798,138 -> 6,801,255 B raw, 2,044,534 ->
+  // 2,045,592 B transfer from 4ebc263832~1 to d4e005e73e, one machine and build, Node 24, chunk count unchanged at
+  // 95). Nearly all of it is searching a model maker in the Model hub (#13998, +3,038 B raw / +1,000 B transfer):
+  // its owner-to-uploads search lives in use-hub-model-search, a hook the startup screen already loads, so there
+  // is no separate module to lazy-load. #13999 and #13993 add 79 B raw / 58 B transfer. Raised by that growth.
+  // Sliding the selected pill on every segmented toggle (#14030) adds 4,432 B raw / 1,696 B transfer
+  // (6,800,980 -> 6,805,412 B raw, 2,045,645 -> 2,047,341 B transfer against 15e4bc8fde, one machine and build,
+  // Node 24, chunk count unchanged at 95): the shared slide module and SegmentedPill, imported by toggles that
+  // already live in startup chunks, so there is no separate module to lazy-load. Raised by that growth.
+  // QwenCloud as a connection (#14033) adds 167 B raw / 43 B transfer (6,804,234 -> 6,804,401 B raw, 2,047,526 ->
+  // 2,047,569 B transfer against ca3d1d0ce4, one machine and build, Node 24, chunk count unchanged at 95): its
+  // connection row, logo mapping and capability entries live in tables the startup chunks already load. Raised
+  // by that growth.
+  transferBytes: 2_047_520,
+  rawBytes: 6_806_014,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

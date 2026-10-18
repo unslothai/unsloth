@@ -315,9 +315,14 @@ def _catalog_match(catalog: list[dict], model_id: str) -> Optional[tuple[str, di
         return row["id"], row, False
     from core.inference.openai_auto_download import looks_like_quant
 
+    from core.inference.local_model_resolver import local_gguf_pinned_variant
+
     base, sep, suffix = wanted.rpartition(":")
-    # Only a quant: the resolver maps any other suffix (":latest", ":") back to the bare repo.
-    row = rows.get(base.strip().lower()) if sep and looks_like_quant(suffix) else None
+    # only a quant or an indexed build key: any other suffix (":latest") means the bare repo
+    named = sep and (
+        looks_like_quant(suffix) or local_gguf_pinned_variant(wanted, allow_scan = False) is not None
+    )
+    row = rows.get(base.strip().lower()) if named else None
     return (wanted, row, True) if row is not None else None
 
 
@@ -329,7 +334,14 @@ async def _chat_catalog() -> list[dict]:
 
 async def _catalog_row(model_id: str) -> tuple[str, dict, bool]:
     # The caller's own catalog, so a managed account only reaches models listed to it.
-    matched = _catalog_match(await _chat_catalog(), model_id)
+    catalog = await _chat_catalog()
+    matched = _catalog_match(catalog, model_id)
+    if matched is None and ":" in model_id:
+        from core.inference.local_model_resolver import local_gguf_pinned_variant
+
+        # a cold index cannot vouch for a build key yet: scan once, off the loop, then retry
+        if await asyncio.to_thread(local_gguf_pinned_variant, model_id) is not None:
+            matched = _catalog_match(catalog, model_id)
     if matched is None:
         raise HTTPException(status_code = 404, detail = "Model not found")
     return matched
@@ -368,8 +380,14 @@ async def _unload_target(model_id: str, row: dict, pinned: bool) -> Optional[str
     base, suffix = split_model_ref(model_id)
     # Only a quant the caller named: a bare id resolves to the preferred quant, not the resident one.
     # The resolver's spelling of it, which maps a legacy label (BF16) onto the current quant.
-    wanted_variant = None
-    if suffix and looks_like_quant(suffix):
+    from core.inference.local_model_resolver import (
+        local_gguf_pinned_variant,
+        local_gguf_same_build,
+    )
+
+    # not gated on suffix: split_model_ref cannot parse a directory-qualified build key
+    wanted_variant = local_gguf_pinned_variant(model_id, allow_scan = False)
+    if wanted_variant is None and suffix and looks_like_quant(suffix):
         wanted_variant = (resolved[1] if resolved else None) or suffix
 
     llama = inf.get_llama_cpp_backend()
@@ -393,7 +411,9 @@ async def _unload_target(model_id: str, row: dict, pinned: bool) -> Optional[str
         if not named:
             continue
         # A pin names one quant: another one, or a backend with none, may sit in a kept slot instead.
-        if wanted_variant and (running_variant or "").lower() != wanted_variant.lower():
+        if wanted_variant and not local_gguf_same_build(
+            model_id.rpartition(":")[0], running_variant or "", wanted_variant
+        ):
             continue
         return running
     filling = inf.model_slots.visible_loading()

@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import { explicitFamily } from "../src/features/model-picker/components/model-selector/family-override.ts";
 import {
   componentFilesMatch,
