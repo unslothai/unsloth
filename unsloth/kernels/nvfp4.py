@@ -436,7 +436,12 @@ _FUSED_FORCE = ("1", "true", "on", "yes", "force")
 _IS_HIP = torch.version.hip is not None
 
 
-def _fused_max_rows(capability, n, k, dx = False):
+def _fused_max_rows(
+    capability,
+    n,
+    k,
+    dx = False,
+):
     # Rows of X (forward) or of the output gradient (dX) up to which fused beats dense; 0 = never (unmeasured GPU).
     gate = _FUSED_ROW_GATE.get(capability)
     if gate is None or not n or not k:
@@ -449,7 +454,14 @@ def _fused_max_rows(capability, n, k, dx = False):
     return max(floor, min(max_rows, max(n * k // div, k_rows)))
 
 
-def _fused_ok(A, packed, scale, global_scale, inner, dx = False):
+def _fused_ok(
+    A,
+    packed,
+    scale,
+    global_scale,
+    inner,
+    dx = False,
+):
     # Anything unusual keeps the dense path (and its errors).
     mode, rows = _fused_env()
     if mode in _FUSED_OFF or _IS_HIP or not A.is_cuda:
@@ -459,7 +471,9 @@ def _fused_ok(A, packed, scale, global_scale, inner, dx = False):
         if rows is None:
             if packed.dim() != 2:
                 return False
-            rows = _fused_max_rows(_device_capability(index), packed.shape[0], packed.shape[1] * 2, dx)
+            rows = _fused_max_rows(
+                _device_capability(index), packed.shape[0], packed.shape[1] * 2, dx
+            )
         if A.numel() > rows * inner:  # unmeasured GPUs (limit 0) leave here
             return False
     if A.dtype not in (torch.float16, torch.bfloat16) or A.numel() == 0 or A.shape[-1] != inner:

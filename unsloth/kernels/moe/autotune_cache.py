@@ -159,9 +159,7 @@ def get_or_autotune_moe_kernels(
         logger.info(
             f"UNSLOTH_MOE_DISABLE_AUTOTUNE=1: Using Heuristic (Safe) MoE kernel configs for SM{device_capability[0]}{device_capability[1]}"
         )
-        return _get_heuristic_configs(
-            n_dim = 2 * intermediate_dim, k_dim = hidden_dim
-        )
+        return _get_heuristic_configs(n_dim = 2 * intermediate_dim, k_dim = hidden_dim)
     if not force_autotune and cache_key in _kernel_config_cache:
         logger.info(f"Using in-memory cached MoE kernel configs: {cache_key}")
         return _kernel_config_cache[cache_key]
@@ -412,7 +410,6 @@ _HEURISTIC_SMEM_STEP_DOWN = {
 def _device_smem_per_block() -> Optional[int]:
     try:
         from .grouped_gemm.kernels.tuning import get_device_properties
-
         return int(get_device_properties().SIZE_SMEM)  # triton max_shared_mem (opt-in)
     except Exception:
         try:

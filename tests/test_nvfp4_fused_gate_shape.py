@@ -27,11 +27,26 @@ def _rows(rows, width):
     # A CPU tensor dressed as CUDA: the gate reads only shape, dtype, device and is_cuda.
     t = torch.zeros((rows, width), dtype = torch.bfloat16)
     return types.SimpleNamespace(
-        is_cuda = True, get_device = lambda: 0, numel = t.numel, dtype = t.dtype, shape = t.shape, device = t.device
+        is_cuda = True,
+        get_device = lambda: 0,
+        numel = t.numel,
+        dtype = t.dtype,
+        shape = t.shape,
+        device = t.device,
     )
 
 
-def _decide(N, monkeypatch, cap, rows, n, k, dx = False, mode = "auto", max_rows = None):
+def _decide(
+    N,
+    monkeypatch,
+    cap,
+    rows,
+    n,
+    k,
+    dx = False,
+    mode = "auto",
+    max_rows = None,
+):
     monkeypatch.setattr(N, "_fused_env", lambda: (mode, max_rows))
     monkeypatch.setattr(N, "_device_capability", lambda index: cap)
     packed, scale, gs = _weight(n, k)
@@ -105,7 +120,9 @@ def test_gate_is_monotone_in_weight_size(N):
 
 
 def test_degenerate_weights_stay_dense(N, monkeypatch):
-    assert N._fused_max_rows((12, 0), 0, 4096) == 0 and N._fused_max_rows((12, 0), 4096, 0, True) == 0
+    assert (
+        N._fused_max_rows((12, 0), 0, 4096) == 0 and N._fused_max_rows((12, 0), 4096, 0, True) == 0
+    )
     monkeypatch.setattr(N, "_fused_env", lambda: ("auto", None))
     monkeypatch.setattr(N, "_device_capability", lambda index: (12, 0))
     flat = torch.zeros(4096 * 2048, dtype = torch.uint8)

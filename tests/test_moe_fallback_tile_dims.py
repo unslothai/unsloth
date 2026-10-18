@@ -72,8 +72,7 @@ def _gemms(hidden, inter):
 
 def _tiles(configs):
     return tuple(
-        (c.BLOCK_SIZE_M, c.BLOCK_SIZE_N, c.BLOCK_SIZE_K, c.num_warps, c.num_stages)
-        for c in configs
+        (c.BLOCK_SIZE_M, c.BLOCK_SIZE_N, c.BLOCK_SIZE_K, c.num_warps, c.num_stages) for c in configs
     )
 
 
@@ -87,9 +86,7 @@ def test_fallback_tiles_divide_each_gemm(ac, hidden, inter, which):
     fn = ac._get_heuristic_configs if which == "heuristic" else ac._get_default_configs
     old = OLD_HEURISTIC if which == "heuristic" else OLD_DEFAULT
     for kwargs, (n, k) in _gemms(hidden, inter):
-        tiles = _tiles(
-            fn(n_dim = 2 * kwargs["intermediate_dim"], k_dim = kwargs["hidden_dim"])
-        )
+        tiles = _tiles(fn(n_dim = 2 * kwargs["intermediate_dim"], k_dim = kwargs["hidden_dim"]))
         for tile, old_tile in zip(tiles, old):
             m, bn, bk, warps, stages = tile
             assert n % bn == 0 and k % bk == 0, (which, hidden, inter, n, k, tile)
