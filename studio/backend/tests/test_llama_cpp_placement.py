@@ -6906,11 +6906,14 @@ def _two_gpu_pinned_to_first(tmp_path, monkeypatch, env):
     ],
 )
 def test_a_pinned_launch_keeps_every_parsed_device_name_resolvable(
-    tmp_path, monkeypatch, extra_args, env
+    tmp_path, monkeypatch, request, extra_args, env
 ):
     backend, gguf = _two_gpu_pinned_to_first(tmp_path, monkeypatch, env)
     result = _launch(backend, gguf, extra_args = list(extra_args))
-    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0,1"
+    # Only a FINAL companion on GPU 1 places there and widens the pin; an overridden
+    # value naming it places nothing and is cleared, so GPU 1 stays hidden.
+    widens = request.node.callspec.id.startswith("env_final_device-")
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == ("0,1" if widens else "0")
     assert _launch_unresolvable_names(result) == []
 
 

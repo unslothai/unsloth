@@ -2243,10 +2243,10 @@ def test_a_zero_offload_load_with_cpu_tensor_overrides_still_hides_the_gpus(
     ],
     ids = ["separate", "inline"],
 )
-def test_a_pinned_mask_widens_for_an_overridden_projector_device(tmp_path, extras):
+def test_a_pinned_mask_ignores_an_overridden_projector_device(tmp_path, extras):
     """The final none puts the projector on the host, so the planner fits the model on
     GPU 0 alone; arg.cpp still resolves the earlier CUDA1, which a mask of 0 hides
-    ("invalid device"). The widening covers every parsed occurrence."""
+    ("invalid device"). That value places nothing, so it is cleared, not widened onto."""
     backend, gguf = _backend(
         tmp_path,
         memory = [(0, 12_000, 24_000), (1, 12_000, 24_000)],
@@ -2256,7 +2256,12 @@ def test_a_pinned_mask_widens_for_an_overridden_projector_device(tmp_path, extra
     backend._resolve_visible_physical_ids = lambda *_a, **_kw: [0, 1]
     got = _launch(backend, gguf, n_ctx = 4096, extra_args = extras)
     cmd, env = got["cmd"], got["env"]
-    assert env.get("CUDA_VISIBLE_DEVICES") == "0,1", env.get("CUDA_VISIBLE_DEVICES")
-    # The main model stays on the card the planner chose; the projector stays on the host.
-    assert cmd[len(cmd) - 1 - cmd[::-1].index("--device") + 1] == "CUDA0"
-    assert "none" in cmd[cmd.index("--device") - 2 : cmd.index("--device")], cmd
+    assert env.get("CUDA_VISIBLE_DEVICES") == "0", env.get("CUDA_VISIBLE_DEVICES")
+    # The projector stays on the host and no parsed name needs the hidden card.
+    flags = [a.partition("=") for a in cmd]
+    values = [
+        tail if eq else cmd[i + 1]
+        for i, (head, eq, tail) in enumerate(flags)
+        if head in ("--mmproj-device", "-mmdev")
+    ]
+    assert values == ["none", "none"], cmd

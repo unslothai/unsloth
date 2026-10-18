@@ -7073,9 +7073,10 @@ def _widen_pin_ids_for_companion_devices(
             if match:
                 prefix_word = prefix_word or match.group(1)
                 n = int(match.group(2))
-                if site.group == "main" and n < len(main_ids):
+                if n < len(main_ids) and (site.group == "main" or not site.final):
                     # An overridden main value is parsed by the child like the final one,
-                    # so a position on the pin already resolves there.
+                    # and an overridden companion value only has to parse, so a position
+                    # on the pin already resolves there without exposing another card.
                     physical = main_ids[n]
                 elif inherited_ids is None:
                     physical = n
@@ -7085,7 +7086,12 @@ def _widen_pin_ids_for_companion_devices(
                     excluded = excluded or physical is not None
                     physical = None
             tokens.append((token, physical))
-        if excluded and not site.final:
+        # An overridden value places nothing: one needing a card off the pin is
+        # cleared, never widened onto (the extra card could be one the gate excludes).
+        if not site.final and (
+            excluded
+            or any(physical is not None and physical not in main_ids for _, physical in tokens)
+        ):
             excluded_sites.append(site)
         elif any(physical is not None for _, physical in tokens):
             sites.append((site, tokens))
@@ -7129,7 +7135,7 @@ def _widen_pin_ids_for_companion_devices(
         return list(main_ids), ""
     note = f"{main_ids} -> {widened}"
     if excluded_sites:
-        note += f" ({len(excluded_sites)} overridden device value(s) outside gpu_ids cleared)"
+        note += f" ({len(excluded_sites)} overridden device value(s) off the mask cleared)"
     return widened, note
 
 
@@ -32320,6 +32326,22 @@ class LlamaCppBackend:
                                 "APU the weights outgrow; set "
                                 "GGML_CUDA_ENABLE_UNIFIED_MEMORY=1."
                             )
+                        # The mask renumbers the survivors, so device names in the
+                        # unpinned numbering are fitted as on the pinned path. Limited to
+                        # the survivors: an excluded card is never exposed again.
+                        if not self._visibility_mask_is_unmappable():
+                            _survivors, _survivor_refit = _widen_pin_ids_for_companion_devices(
+                                cmd,
+                                list(_survivors),
+                                self._resolve_visible_physical_ids(),
+                                allowed_ids = _survivors,
+                                env = env,
+                            )
+                            if _survivor_refit:
+                                logger.info(
+                                    "Renumbered device flags for the arch-gate mask: %s",
+                                    _survivor_refit,
+                                )
                         self._emit_child_gpu_visibility(
                             env, ",".join(str(i) for i in _survivors), prefer_rocr = True
                         )

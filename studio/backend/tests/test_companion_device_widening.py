@@ -127,11 +127,12 @@ def test_value_forms_the_parser_reads(prefix):
 
 def test_every_parsed_device_flag_remains_resolvable():
     # arg.cpp resolves each device value as it reads it (parse_device_list), so an
-    # overridden one must still name a card the child can see.
+    # overridden one must still parse. It places nothing, so one off the pin is
+    # cleared instead of widening the mask onto its card.
     cmd, pin, _ = _widen([0], ["--mmproj-device", "CUDA7", "-mmdev", "CUDA2"])
-    assert pin == [0, 7, 2]
-    assert cmd[:2] == ["--mmproj-device", "CUDA1"]
-    assert _value(cmd, "-mmdev") == "CUDA2"
+    assert pin == [0, 2]
+    assert cmd[:2] == ["--mmproj-device", "none"]
+    assert _value(cmd, "-mmdev") == "CUDA1"
     assert cmd.count("--device") == 1
 
 
@@ -143,14 +144,47 @@ def test_every_parsed_device_flag_remains_resolvable():
         ["--spec-draft-device", "CUDA1", "-devd", "none"],
     ],
 )
-def test_a_device_overridden_by_none_still_widens_the_mask(flags):
-    # Pinned to GPU 0 because the final none keeps the companion off the cards, but
-    # the earlier CUDA1 is still parsed: a mask of 0 fails it with "invalid device".
+def test_a_device_overridden_by_none_is_cleared_not_widened(flags):
+    # Pinned to GPU 0 because the final none keeps the companion off the cards. The
+    # earlier CUDA1 is still parsed (a mask of 0 fails it with "invalid device"), but
+    # it places nothing, so it becomes none rather than exposing GPU 1.
     cmd, pin, note = _widen([0], flags, inherited = [0, 1])
-    assert pin == [0, 1]
-    assert note
-    assert _value(cmd, "--device") == "CUDA0"
-    assert cmd[-4:-2] == flags[-2:], "the winning none is left alone"
+    assert pin == [0]
+    assert "cleared" in note
+    assert "--device" not in cmd
+    head = flags[0].partition("=")
+    assert cmd[0] == (head[0] + "=none" if head[1] else flags[0])
+    if not head[1]:
+        assert cmd[1] == "none"
+    assert cmd[-2:] == flags[-2:], "the winning none is left alone"
+
+
+@pytest.mark.parametrize("prefix", ["CUDA", "ROCm"])
+def test_an_overridden_companion_on_the_pin_does_not_widen(prefix):
+    # Auto placement picked GPU 1 (GPU 0 is one the arch gate excludes). An overridden
+    # CUDA0 already resolves under mask [1]; widening to [1, 0] would expose GPU 0.
+    for flags in (
+        ["--mmproj-device", f"{prefix}0", "--mmproj-device", "none"],
+        ["--spec-draft-device", f"{prefix}0", "-devd", "none"],
+    ):
+        cmd, pin, note = _widen([1], flags, inherited = [0, 1])
+        assert (pin, note, cmd) == ([1], "", flags)
+
+
+def test_an_overridden_companion_off_the_pin_is_cleared_without_gpu_ids():
+    # No allowed_ids (auto placement): an overwritten ROCm0 must not widen [1] onto GPU 0.
+    flags = ["--no-mmproj-offload", "--mmproj-device", "ROCm0", "--mmproj-device", "ROCm1"]
+    cmd, pin, note = _widen([1], flags, inherited = [0, 1])
+    # The overridden ROCm0 already resolves under [1]; the final ROCm1 is renumbered.
+    assert pin == [1] and note
+    assert cmd == ["--no-mmproj-offload", "--mmproj-device", "ROCm0", "--mmproj-device", "ROCm0"]
+
+
+def test_an_overridden_companion_needing_an_unpinned_card_is_cleared_without_gpu_ids():
+    flags = ["--mmproj-device", "ROCm2", "--mmproj-device", "ROCm1"]
+    cmd, pin, note = _widen([1], flags, inherited = [0, 1, 2])
+    assert pin == [1] and "cleared" in note
+    assert cmd == ["--mmproj-device", "none", "--mmproj-device", "ROCm0"]
 
 
 def test_an_overridden_device_the_parent_cannot_see_is_left_alone():
@@ -322,9 +356,10 @@ _OVERRIDDEN_HIDDEN_CARD = [
 
 @pytest.mark.parametrize(("argv", "env"), _OVERRIDDEN_HIDDEN_CARD)
 def test_every_parsed_device_name_stays_resolvable_under_the_pin(argv, env):
+    # The overridden GPU 1 value places nothing, so it is cleared instead of exposing GPU 1.
     cmd, child_env, pin, note = _widen_env([0], argv, env, inherited = [0, 1])
-    assert pin == [0, 1], "GPU 1 is parsed, so the child must see it"
-    assert note
+    assert pin == [0], "an overridden value never widens the mask"
+    assert "cleared" in note
     assert _unresolvable(cmd, child_env, len(pin)) == []
     # The value that places the main model is untouched or, absent, added on the pinned card.
     assert llama_cpp._extra_args_main_device(cmd) in (None, "CUDA0", "none", "ROCm0") or (
@@ -333,19 +368,18 @@ def test_every_parsed_device_name_stays_resolvable_under_the_pin(argv, env):
     final_main = llama_cpp._extra_args_main_device(cmd)
     if final_main is None:
         final_main = child_env.get("LLAMA_ARG_DEVICE")
-    assert final_main in ("CUDA0", "ROCm0", "none")
+    assert final_main in (None, "CUDA0", "ROCm0", "none")
 
 
 @pytest.mark.parametrize(("argv", "env"), _OVERRIDDEN_HIDDEN_CARD)
 def test_the_arch_crash_retry_refits_every_parsed_device_name(argv, env):
-    # Widened [0] -> [0, 1]; GPU 0 crashes and the respawn runs on GPU 2. Each name is now
-    # in the crashed launch's numbering, env twins included, and must resolve again.
+    # First launch on [0] with the overridden GPU 1 value cleared; GPU 0 crashes and the
+    # respawn runs on GPU 2. Each name is now in the crashed launch's numbering, env
+    # twins included, and must resolve again without widening.
     cmd, child_env, first, _ = _widen_env([0], argv, env, inherited = [0, 1, 2])
-    assert first == [0, 1]
-    if cmd[-2:] == ["--device", "CUDA0"] and "--device" not in argv[-2:]:
-        del cmd[-2:]
+    assert first == [0]
     retry, _ = llama_cpp._widen_pin_ids_for_companion_devices(cmd, [2], first, env = child_env)
-    assert retry[0] == 2 and 1 in retry, "the respawn card leads; GPU 1 is still parsed"
+    assert retry[0] == 2 and 1 not in retry, "nothing still parsed needs GPU 1"
     assert _unresolvable(cmd, child_env, len(retry)) == []
 
 
@@ -493,13 +527,38 @@ def test_the_arch_crash_retry_does_not_widen_back_onto_the_crashed_card(argv, en
     assert cmd == argv and child_env == env
 
 
-def test_an_overridden_main_device_past_the_pin_still_widens():
-    # CUDA1 cannot resolve in a one-card child, so it keeps the parent numbering and widens.
+def test_an_overridden_main_device_past_the_pin_is_cleared():
+    # CUDA1 cannot resolve in a one-card child and keeps the parent numbering; on the pin
+    # it is renumbered, off it the overridden value places nothing and becomes none.
     cmd, env, pin, note = _widen_env(
         [1], ["--device", "CUDA0"], {"LLAMA_ARG_DEVICE": "CUDA1,CUDA0"}, inherited = [0, 1, 2]
     )
     assert pin == [1], "parent CUDA1 is physical 1, already pinned"
     assert env["LLAMA_ARG_DEVICE"] == "CUDA0,CUDA0"
     cmd, env, pin, note = _widen_env([0], ["--device", "CUDA2", "--device", "CUDA0"], {}, [0, 1, 2])
-    assert pin == [0, 2] and note
-    assert cmd == ["--device", "CUDA1", "--device", "CUDA0"]
+    assert pin == [0] and "cleared" in note
+    assert cmd == ["--device", "none", "--device", "CUDA0"]
+
+
+def test_the_arch_gate_survivor_mask_renumbers_companion_names():
+    # GPU 0 has no kernels in the build, GPU 1 survives under `--fit on`: the survivor
+    # mask makes physical 1 the child's ROCm0, so a projector on parent ROCm1 follows it.
+    flags = ["--no-mmproj-offload", "--mmproj-device", "ROCm1"]
+    cmd, pin, note = _widen([1], flags, inherited = [0, 1], allowed_ids = [1])
+    assert pin == [1] and note
+    assert cmd == ["--no-mmproj-offload", "--mmproj-device", "ROCm0"]
+    # A name on the excluded card is never re-exposed.
+    flags = ["--mmproj-device", "ROCm0"]
+    cmd, pin, note = _widen([1], flags, inherited = [0, 1], allowed_ids = [1])
+    assert (pin, note, cmd) == ([1], "", flags)
+
+
+def test_load_model_fits_device_names_to_the_arch_gate_survivor_mask():
+    import inspect
+
+    src = inspect.getsource(llama_cpp.LlamaCppBackend.load_model)
+    emit = src.index('",".join(str(i) for i in _survivors), prefer_rocr = True')
+    window = src[emit - 900 : emit]
+    assert "_widen_pin_ids_for_companion_devices(" in window
+    assert "allowed_ids = _survivors" in window
+    assert "_visibility_mask_is_unmappable()" in window
