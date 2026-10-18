@@ -14,6 +14,7 @@ from .mcp_harness import (  # noqa: F401
     fast_polls,
     run_tool,
     sequence,
+    slow,
     stt_state,
 )
 from .test_mcp_tools_loading import (
@@ -395,3 +396,25 @@ def test_only_the_download_status_read_joins_the_allowlist():
     assert "/api/hub/download-status" in forward.ALLOWED_PREFIXES
     for path in ("/api/hub/download", "/api/hub/download/cancel", "/api/hub/download-progress"):
         assert not path.startswith(forward.ALLOWED_PREFIXES)
+
+
+def test_alongside_applied_is_unknown_when_status_cannot_be_read(monkeypatch):
+    posted = []
+
+    def load(request, body):
+        posted.append(body)
+        return {**LOADED, "model": OUTETTS, "evicted": []}
+
+    def status(request, body):
+        return JSONResponse({"detail": "restarting"}, status_code = 503) if posted else STATUS
+
+    routes = {**PAYLOADS, LOAD: load, STATUS_ROUTE: status}
+    result, _studio, _bodies = _load(monkeypatch, {"model": OUTETTS, "kind": "tts"}, routes)
+    assert result["structuredContent"]["alongside_applied"] is None
+
+
+def test_a_stalled_gguf_listing_never_holds_a_cpu_load_past_wait_s(monkeypatch):
+    routes = {**PAYLOADS, ("GET", "/api/hub/gguf-variants"): slow(GGUF_FILES, 5.0)}
+    args = {"model": QWEN, "device": "cpu", "wait_s": 0}
+    result, _studio, sent = _load(monkeypatch, args, routes)
+    assert result["structuredContent"]["status"] == "loading" and sent == []

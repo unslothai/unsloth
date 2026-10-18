@@ -114,6 +114,10 @@ def _enqueue(caller: Caller, body: dict, hints: Optional[dict]) -> QueuedVideo:
             f"{MAX_WAITING} videos are already queued for this account in Unsloth Studio; "
             "wait for one to start or cancel one."
         )
+    if sum(len(queue) for queue in _waiting.values()) >= CAPACITY:
+        raise ToolError(
+            f"{CAPACITY} videos are already queued in Unsloth Studio; try again once some have started."
+        )
     item = QueuedVideo(PREFIX + secrets.token_urlsafe(12), caller.account_id, caller, body, hints)
     waiting.append(item)
     _items[f"{item.account_id}:{item.id}"] = item

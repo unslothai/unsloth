@@ -351,7 +351,6 @@ async def load_llm(
     kv_cache_type: Optional[str] = None,
     gpu_layers: Optional[int] = None,
     is_lora: bool = False,
-    gguf: Optional[bool] = None,
 ) -> LoadResult:
     body: dict[str, Any] = {
         "model_path": model,
@@ -369,22 +368,21 @@ async def load_llm(
     if hf_token:
         # The variant lookups before the load read the Hub token from the header.
         caller = dataclasses.replace(caller, hf_token = hf_token)
-    if device == "cpu" and gguf is None:
-        gguf = await place.listed_gguf(caller, model, variant)
-        if gguf is None:
-            gguf = place.is_gguf(model, variant)
-    body.update(
-        place.llm_fields(
-            kind,
-            gguf = gguf,
-            device = device,
-            alongside = await place.auto_alongside(caller, device, alongside),
-            kv_cache_type = kv_cache_type,
-            gpu_layers = gpu_layers,
-        )
-    )
 
     async def run(job: LoadJob, before: dict[str, list[str]]) -> LoadResult:
+        # The GGUF listing and status reads run inside the job, so a slow one never holds the call
+        # past ``wait_s``; device='cpu' for a chat model that is not a GGUF is refused here.
+        gguf = await place.require_cpu_gguf(caller, kind, model, variant, device)
+        body.update(
+            place.llm_fields(
+                kind,
+                gguf = gguf,
+                device = device,
+                alongside = await place.auto_alongside(caller, device, alongside),
+                kv_cache_type = kv_cache_type,
+                gpu_layers = gpu_layers,
+            )
+        )
         payload = await with_progress(
             None,
             route_json("POST", "/api/inference/load", caller = caller, json_body = body),
@@ -397,7 +395,8 @@ async def load_llm(
         chat = before.get("llm") or []
         # Serving only: a model merely held in memory behind the new primary no longer serves.
         status = await try_json(caller, "/api/inference/status") if chat else None
-        after = strings(as_dict(status).get("serving"))
+        # A failed read leaves it unknown whether the previous model still serves.
+        after = strings(status.get("serving")) if isinstance(status, dict) else None
         return await finish_load(
             caller,
             kind,
@@ -421,17 +420,10 @@ async def load_llm(
         options = (
             max_seq_length or 0,
             load_in_4bit,
-            *(
-                body.get(key)
-                for key in (
-                    "audio_device",
-                    "gpu_memory_mode",
-                    "gpu_layers",
-                    "speculative_type",
-                    "alongside",
-                    "cache_type_kv",
-                )
-            ),
+            device,
+            alongside,
+            kv_cache_type,
+            gpu_layers,
         ),
         hub_token = token,
     )

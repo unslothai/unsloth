@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 from typing import Annotated, Any, Literal, Optional
 from urllib.parse import quote
 
@@ -232,9 +231,6 @@ async def load_model(
         "gpu_layers": gpu_layers,
     }
     placement.check_placement(kind, model, variant, **where)
-    # A gated repo's GGUF listing needs this call's Hub token.
-    lister = dataclasses.replace(caller, hf_token = hf_token) if hf_token else caller
-    gguf = await placement.require_cpu_gguf(lister, kind, model, variant, device)
     if kind == "stt":
 
         async def load_stt(job: loading.LoadJob, _before: Any) -> LoadResult:
@@ -273,7 +269,6 @@ async def load_model(
         hf_token = hf_token,
         kind = kind,
         deadline = deadline,
-        gguf = gguf,
         **where,
     )
 

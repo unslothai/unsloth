@@ -8,6 +8,7 @@ import time
 
 import httpx
 import pytest
+from fastmcp.exceptions import ToolError
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
@@ -318,3 +319,11 @@ def test_the_last_queued_video_is_followed_to_its_end(monkeypatch):
         # Nothing waits on the finished clip any more, so its record can be dropped at the cap.
         assert video_queue._running == {}
         assert video_queue._ended(video_queue.lookup(*next(iter(video_queue._items)).split(":", 1)))
+
+
+def test_the_queue_has_a_cap_across_accounts():
+    for n in range(video_queue.CAPACITY):
+        caller = make_caller(account_id = f"acct-{n}")
+        video_queue._enqueue(caller, {"prompt": "x"}, None)
+    with pytest.raises(ToolError, match = "already queued"):
+        video_queue._enqueue(make_caller(account_id = "late"), {"prompt": "x"}, None)

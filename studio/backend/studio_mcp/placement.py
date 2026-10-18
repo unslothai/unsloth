@@ -198,10 +198,10 @@ def media_placement(status: Any) -> Optional[Placement]:
     return placed if any(placed.model_dump().values()) else None
 
 
-def alongside_applied(before: list[str], after: list[str], loaded: str) -> Optional[bool]:
-    """Whether the chat model that served before the load still serves; None when none did."""
+def alongside_applied(before: list[str], after: Optional[list[str]], loaded: str) -> Optional[bool]:
+    """Whether the chat model that served before the load still serves; None when none did, or when status could not say."""
     previous = before[0] if before else None
-    if previous is None or previous.lower() == loaded.lower():
+    if previous is None or after is None or previous.lower() == loaded.lower():
         return None
     return previous in after
 
