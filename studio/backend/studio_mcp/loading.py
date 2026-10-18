@@ -102,8 +102,15 @@ def deadline_after(wait_s: Optional[float]) -> float:
     return time.monotonic() + wait
 
 
+def _is_path(name: str) -> bool:
+    return name.startswith(("/", "~", ".")) or "\\" in name or name[1:3] in (":/", ":\\")
+
+
 def _same(left: Optional[str], right: Optional[str]) -> bool:
-    return bool(left) and bool(right) and left.lower() == right.lower()
+    # Hub ids match in any case; a local path keeps the file system's case.
+    if not left or not right:
+        return False
+    return left == right if _is_path(left) or _is_path(right) else left.lower() == right.lower()
 
 
 def _repo(name: str) -> str:

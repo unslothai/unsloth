@@ -315,24 +315,27 @@ async def get_job(
     start = _moment(result.structured_content)
     # A listing has nothing to wait on.
     waits = id is not None or kind in ("recipe", "training", "diffusion_training")
-    moved = False
+    moved = polled = False
     while waits and start[0] in RUNNING:
         left = deadline - time.monotonic()
         if left <= 0:
             break
         await asyncio.sleep(min(loading.POLL_INTERVAL_S, left))
         try:
-            latest = await _read_once(caller, kind, id, rows, offset)
+            # Recipe rows are read once, for the answer, not on every poll.
+            latest = await _read_once(caller, kind, id, None, offset)
         except Exception:
             # Like a load's progress poll: a failed read during the wait is skipped.
             continue
-        result = latest
+        result, polled = latest, True
         now = _moment(result.structured_content)
         if now[:2] != start[:2]:
             moved = True
             break
         if ctx is not None and now[2] is not None:
             await ctx.report_progress(min(now[2] / 100.0, 1.0), 1.0, str(now[1] or now[0]))
+    if polled and rows:
+        result = await _read_once(caller, kind, id, rows, offset)
     # A wait that ended because the job moved on can be followed again at once.
     return _with_poll_after(kind, result, 0 if moved else POLL_AFTER_S[kind])
 
