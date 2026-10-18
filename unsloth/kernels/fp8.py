@@ -578,7 +578,7 @@ def can_use_fp8_rowwise_gemv(X, weight, weight_scale):
         or weight.shape[0] == 1
     ):
         return False
-    if torch.is_grad_enabled() and (X.requires_grad or weight.requires_grad):
+    if torch.is_grad_enabled() and (X.requires_grad or weight.requires_grad or weight_scale.requires_grad):
         return False
     if _fp8_kernel_unsupported(weight):
         return False

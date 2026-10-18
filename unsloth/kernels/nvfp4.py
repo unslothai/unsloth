@@ -458,7 +458,7 @@ def _fused_ok(A, packed, scale, global_scale, inner):
         and packed.dtype == torch.uint8
         and packed.dim() == 2
         and packed.shape[0] > 0
-        and (mode in _FUSED_FORCE or (inner % 64 == 0 and packed.shape[0] % 64 == 0))
+        and (mode in _FUSED_FORCE or (packed.shape[1] % 32 == 0 and packed.shape[0] % 64 == 0))
         and not _is_transposed_view(packed)
         and scale.dtype in (torch.float8_e4m3fn, torch.float32, torch.float16, torch.bfloat16)
         and scale.dim() == 2
