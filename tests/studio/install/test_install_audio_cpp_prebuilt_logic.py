@@ -75,7 +75,6 @@ def test_cuda_takes_the_newest_line_the_driver_runs():
     assert pick("Windows", "AMD64", "cuda", driver_cuda = (13, 4)).endswith("cuda13.3.zip")
     # A 12.x driver cannot load a 13.3 bundle.
     assert pick("Windows", "AMD64", "cuda", driver_cuda = (12, 8)).endswith("cuda12.4.zip")
-    # Nothing old enough for this driver: no CUDA bundle rather than one that fails to load.
     assert pick("Windows", "AMD64", "cuda", driver_cuda = (11, 8)) is None
 
 
@@ -89,7 +88,6 @@ def test_cuda_prefers_the_torch_line_so_its_runtime_can_be_reused():
 
 
 def test_linux_cuda_prefers_the_multi_arch_build_over_colab():
-    # The Unsloth fork adds a multi-arch cuda12.8 bundle next to upstream's sm_75-only Colab one.
     names = ASSETS + [f"audio-{TAG}-bin-ubuntu-x64-cuda12.8.tar.gz"]
     got = M.resolve_release_asset(names, system = "Linux", machine = "x86_64", accelerator = "cuda")
     assert got.endswith("bin-ubuntu-x64-cuda12.8.tar.gz")
@@ -341,7 +339,6 @@ def test_install_swaps_in_a_complete_tree_and_records_it(monkeypatch, tmp_path):
         record["detected_accelerator"],
     ) == ("cpu", "cpu", None)
     assert (root / M.OWNERSHIP_MARKER).is_file()
-    # No staging directory survives, and the install lock is prebuilt_core's.
     assert not [p for p in tmp_path.iterdir() if p.name.startswith(".audio.cpp-staging-")]
     assert M.core.install_lock_path(root) == tmp_path / ".audio.cpp.install.lock"
 
@@ -711,9 +708,6 @@ def test_offline_does_not_keep_an_install_for_another_explicit_accelerator(monke
     assert M.main(["--install-dir", str(root), "--force"]) == M.EXIT_FAILED
 
 
-# G1: main() leaves "auto" to install(), so the CPU fallback runs from the real CLI
-
-
 def _resolve_recording(release, covers = ("cpu",)):
     asked = []
 
@@ -770,7 +764,6 @@ def test_auto_cuda_without_a_cuda_runtime_installs_the_cpu_build_and_reruns_offl
         M, "resolve", lambda *a, **k: pytest.fail("a matching rerun must not look up")
     )
     assert M.main(["--install-dir", str(tmp_path / "audio.cpp")]) == M.EXIT_OK
-    # torch's CUDA runtime arrived: the CPU fallback is no longer a match, so the GPU build is looked up.
     monkeypatch.setattr(M, "_linux_cuda_runtime_available", lambda major: True)
     looked = []
     monkeypatch.setattr(
@@ -859,7 +852,6 @@ def test_print_asset_resolves_like_install(monkeypatch, tmp_path, capsys):
     asked, resolve = _resolve_recording(release)
     monkeypatch.setattr(M, "resolve", resolve)
     monkeypatch.setattr(M, "detect_accelerator", lambda: "cuda")
-    # A CUDA host with its CUDA runtime, whatever the runner has (one without resolves CPU only).
     monkeypatch.setattr(M, "_linux_cuda_runtime_available", lambda major: True)
     assert M.main(["--print-asset"]) == M.EXIT_OK
     assert asked == ["cuda", "cpu"]
@@ -1425,9 +1417,6 @@ def test_latest_tag_lookup_is_memoized_and_never_raises(monkeypatch):
     assert calls == [FORK]
 
 
-# G3(b): the staged server must start before it replaces anything
-
-
 class _Ran:
     def __init__(
         self,
@@ -1549,9 +1538,6 @@ def test_staged_server_check_runs_the_real_binary(tmp_path):
     assert SMOKE(server, backend = "cpu") == "audio.cpp fake"
 
 
-# G17: install lock and retried downloads
-
-
 def test_a_held_install_lock_reports_busy(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(M.core, "INSTALL_LOCK_TIMEOUT_SECONDS", 0.3)
     _stub_install_io(monkeypatch)
@@ -1663,7 +1649,6 @@ def test_record_notes_a_static_espeak_build(monkeypatch, tmp_path):
     target = tmp_path / "audio.cpp"
     record = json.loads((target / M.INSTALL_RECORD).read_text())
     assert M._intact_install(target, record) is not None
-    # Quarantined phonemizer data makes the install incomplete, so the next update repairs it.
     next(target.rglob("espeak-ng-data.bin")).unlink()
     assert M._intact_install(target, record) is None
 
@@ -1788,7 +1773,6 @@ def test_the_staged_server_never_sees_secrets(monkeypatch, tmp_path):
     )
 
 
-# The asset set unslothai/audio.cpp's prebuilt CI publishes (v0.8.2-audio8-perf-hotfix-unsloth.1).
 _FORK_T = "v0.8.2-audio8-perf-hotfix-unsloth.1"
 _FORK_ASSETS = [
     f"audio-{_FORK_T}-bin-{n}"
@@ -1839,7 +1823,6 @@ def test_the_fork_release_covers_every_host(system, machine, accel, driver, pref
         prefer_cuda_major = prefer,
     )
     if want is None:
-        # No bundle: resolve_for_request falls back to the CPU build for an auto request.
         assert got is None
         return
     assert got == f"audio-{_FORK_T}-bin-{want}"

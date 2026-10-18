@@ -35,7 +35,7 @@ def cluster():
 
 @pytest.fixture
 def doctor():
-    return _load("doctor_for_plumbing", "unsloth_cli/commands/doctor.py")
+    return _load("doctor_for_plumbing", "unsloth_cli/commands/spark_doctor.py")
 
 
 def test_grad_checkpoint_reaches_the_stage_process(cluster, monkeypatch) -> None:
@@ -453,6 +453,6 @@ def test_the_launch_records_the_pid_it_would_stop() -> None:
 def test_parity_only_does_not_run_the_runtime_imports() -> None:
     """`--parity-only` is documented as "No GPU work, no NCCL run", and the runtime half of the
     fast-path probe imports torch and the native kernel packages on both nodes."""
-    for relative in ("unsloth_cli/commands/doctor.py", "unsloth_cli/commands/spark.py"):
+    for relative in ("unsloth_cli/commands/spark_doctor.py", "unsloth_cli/commands/spark.py"):
         source = (REPO / relative).read_text(encoding = "utf-8")
         assert "check_fastpath(peer_ip, runtime = deep or not parity_only)" in source, relative

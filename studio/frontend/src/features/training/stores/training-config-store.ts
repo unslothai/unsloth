@@ -22,6 +22,7 @@ import {
 } from "../api/models-api";
 import type { BackendModelConfig, DecisionCheckpoint } from "../api/models-api";
 import { cacheReferenceMatchesSelection } from "../lib/cache-reference";
+import { drafterStateFrom } from "../lib/drafter-config";
 import {
   createDatasetCacheUsabilityIdentity,
   datasetCacheUsabilityIdentitiesEqual,
@@ -1610,6 +1611,20 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         setEarlyStoppingPatience: (earlyStoppingPatience) =>
           setUserEdit({ earlyStoppingPatience }),
+        setDrafterEnabled: (drafterEnabled) => setUserEdit({ drafterEnabled }),
+        setDrafterStrategy: (drafterStrategy) =>
+          setUserEdit({ drafterStrategy }),
+        setDrafterDataSource: (drafterDataSource) =>
+          setUserEdit({ drafterDataSource }),
+        setDrafterMaxExamples: (drafterMaxExamples) =>
+          setUserEdit({ drafterMaxExamples }),
+        setDrafterEpochs: (drafterEpochs) => setUserEdit({ drafterEpochs }),
+        setDrafterLearningRate: (drafterLearningRate) =>
+          setUserEdit({ drafterLearningRate }),
+        setDrafterDraftSteps: (drafterDraftSteps) =>
+          setUserEdit({ drafterDraftSteps }),
+        setDrafterCapability: (drafterCapability) =>
+          set({ drafterCapability }),
         setPacking: (packing) => setUserEdit({ packing }),
         setTrainOnCompletions: (trainOnCompletions) => {
           _trainOnCompletionsManuallySet = true;
@@ -1671,6 +1686,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             earlyStoppingPatience: earlyStoppingPatienceFrom(
               config.early_stopping_patience,
             ),
+            ...drafterStateFrom(config.drafter),
           });
           // Fetch capabilities without replacing the saved recipe.
           loadAndApplyModelDefaults(selections.selectedModel, {
@@ -1717,6 +1733,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             config.training ?? {},
             "early_stopping_patience",
           );
+          const importsDrafter = Object.hasOwn(config.training ?? {}, "drafter");
           setUserEdit((state) => {
             const importsCompletionsInCpt =
               state.trainingMethod === "cpt" &&
@@ -1729,6 +1746,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                       config.training?.early_stopping_patience,
                     ),
                   }
+                : {}),
+              ...(importsDrafter
+                ? drafterStateFrom(config.training?.drafter)
                 : {}),
               ...(patch.trainOnCompletions !== undefined
                 ? { trainOnCompletionsDefaultPendingFor: null }

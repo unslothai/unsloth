@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Batch-1 NF4 GEMV kernel (unsloth/kernels/nf4_gemv.py). It reduces each quantization block
-before scaling it, so it is held to an fp32 reference with a tolerance and must never be worse
-than bitsandbytes' own GEMV. Streams, CUDA graphs and torch.compile through fast_gemv are covered
-in test_bnb_integration_compile.py."""
+"""NF4 GEMV reduces before scaling, so it is checked against fp32 and must not lose to bitsandbytes."""
 
 import pytest
 import torch
@@ -66,8 +63,7 @@ TOL = {torch.float16: 2e-3, torch.bfloat16: 1.2e-2}
 
 @pytest.fixture(params = [None, "narrow", "bytes", "words"], ids = ["auto", "narrow", "bytes", "words"])
 def kernel(request, monkeypatch):
-    # Both kernel forms, whichever this Triton version and GPU would pick on its own, and the
-    # T4 / L4 large-weight config on this GPU.
+    # Auto pick, each forced kernel form, and "narrow": the T4 / L4 large-weight config on this GPU.
     if request.param == "narrow":
         capability = torch.cuda.get_device_capability()
         monkeypatch.setattr(nf4_gemv, "_NARROW_CAPS", (capability,))
@@ -94,7 +90,7 @@ def test_matches_fp32_reference_and_bitsandbytes(shape, dtype, nested, kernel):
 
 
 def test_unaligned_weight_view_uses_the_byte_kernel(monkeypatch):
-    # The words kernel reads int32; a weight view starting off a 4 byte boundary must not reach it.
+    # The words kernel reads int32; a view off a 4 byte boundary must not reach it.
     monkeypatch.setattr(nf4_gemv, "_FORCE_KERNEL", "words")
     q, s = _quant(1024, 4096, torch.float16)
     buf = torch.empty(q.numel() + 2, dtype = torch.uint8, device = "cuda")
@@ -381,3 +377,33 @@ def test_rocm_never_takes_the_rows_gemv_by_default(monkeypatch):
     W, W_quant = utils.get_lora_parameters_bias(proj)[:2]
     X = torch.randn(2, 1, 4096, dtype = torch.bfloat16, device = "cuda")
     assert utils._gemv_rows(X, W, W_quant, None) is None
+
+
+def test_small_tiles_keep_the_table_load():
+    gather = 2 if nf4_gemv._HAS_TL_GATHER else 0
+    assert nf4_gemv._lut_mode(64) == 0
+    assert nf4_gemv._lut_mode(256) == 0
+    assert nf4_gemv._lut_mode(512) == gather
+    assert nf4_gemv._lut_mode(2048) == gather
+
+
+@pytest.mark.parametrize("rows", [1, 2, 4])
+@pytest.mark.parametrize("dtype", DTYPES, ids = str)
+@pytest.mark.parametrize("shape", [(1000, 192), (2048, 256), (2048, 512), (1536, 8960)], ids = str)
+def test_small_and_odd_k_tiles_match_fp32(shape, dtype, rows, kernel):
+    """K <= 256 (table load), K = 512 (gather) and an odd K = 8960 (masked tail)."""
+    from unsloth.kernels.nf4_gemv import gemv_nf4_rows
+
+    if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
+        pytest.skip("no bf16")
+    n, k = shape
+    q, s = _quant(n, k, dtype)
+    a = _args(q, s)
+    X = torch.randn(rows, 1, k, dtype = dtype, device = "cuda")
+    ref = X.float().view(rows, k) @ F.dequantize_4bit(q, s).float().t()
+    if rows == 1:
+        out = gemv_nf4(X, *a).view(1, n)
+    else:
+        out = torch.empty(rows, 1, n, dtype = dtype, device = "cuda")
+        gemv_nf4_rows(X, *a[:-1], out)
+    assert _rel_err(out.view(rows, n), ref) < TOL[dtype]

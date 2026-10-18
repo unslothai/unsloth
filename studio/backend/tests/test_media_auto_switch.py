@@ -777,6 +777,47 @@ def test_the_download_plan_asks_the_engine_that_will_load_the_pick(cached_gguf, 
     assert "allow_device_probe" not in asked[0][1]
 
 
+def test_the_load_runs_on_the_card_the_locality_check_planned(
+    cached_gguf, enabled, backend, monkeypatch
+):
+    # Free VRAM moves between the check and the load; re-ranking there could pick a card whose
+    # automatic precision wants an artifact the check never confirmed was cached.
+    import itertools
+
+    from core.inference import diffusion_device as dd
+    from routes import inference as routes
+
+    monkeypatch.setattr(
+        dd, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cuda")
+    )
+    ranks = itertools.chain([1, 1], itertools.repeat(0))
+    monkeypatch.setattr(dd, "resolve_auto_cuda_ordinal", lambda: next(ranks))
+    monkeypatch.setattr(dd, "auto_cuda_ranking_possible", lambda: True)
+    planned: list = []
+    backend.download_plan = lambda model_path, **kw: planned.append(kw["gpu_ordinal"]) or {
+        "total_bytes": 0
+    }
+    loaded: list = []
+
+    async def _start(
+        owner,
+        pick,
+        current_subject,
+        hf_token = None,
+    ):
+        loaded.append(await routes._selected_gpu_ordinal(None))
+        backend.repo_id, backend.model_kind = pick.model_path, pick.model_kind
+        backend.gguf_variant = index.published_token(pick) or None
+        backend.phase = "ready"
+
+    monkeypatch.setattr(mas, "_start_load", _start)
+    _switch("city96/FLUX.1-dev-gguf")
+
+    assert loaded and loaded == planned[-1:]
+    # The pin does not outlive the switch.
+    assert locality.planned_gpu_ordinal() == (False, None)
+
+
 def test_two_bpw_builds_of_one_quant_are_not_confused(two_bpw, enabled, backend, loads):
     # The backend's published token collapses IQ4_XS-3.53bpw and -3.97bpw to IQ4_XS, so a
     # resident sibling can never be assumed to be ours and the skip stays refused. The load

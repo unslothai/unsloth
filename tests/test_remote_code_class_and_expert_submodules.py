@@ -29,7 +29,7 @@ def test_old_flag_alone_is_not_flash_support_on_new_transformers():
     class Neither:
         pass
 
-    # 5.0 to 5.3 define the new flag but their dispatch check still accepts the old one.
+    # transformers 5.0 to 5.3 define the new flag but dispatch still accepts the old one.
     legacy_ok = not hasattr(PreTrainedModel, "_supports_flash_attn") or (
         U._flash_dispatch_reads_legacy_flag(PreTrainedModel)
     )
@@ -41,7 +41,7 @@ def test_old_flag_alone_is_not_flash_support_on_new_transformers():
 
 def test_resolver_does_not_request_flash_for_old_flag_remote_class(monkeypatch):
     U = _utils()
-    # Without flash-attn installed the ladder never reaches flash, and this would pass either way.
+    # Without flash-attn installed the ladder never reaches flash, so this would pass anyway.
     monkeypatch.setattr(U, "HAS_FLASH_ATTENTION", True)
     from transformers.modeling_utils import PreTrainedModel
 
@@ -61,7 +61,6 @@ def test_resolver_does_not_request_flash_for_old_flag_remote_class(monkeypatch):
     config = SimpleNamespace(model_type = "nemotron_h", _attn_implementation = None)
     impl = U.resolve_attention_implementation(OldRemote, config, dtype = torch.bfloat16)
     assert "flash" not in str(impl)
-    # Control: the same config does reach flash for a class carrying the dispatched flag.
     config = SimpleNamespace(model_type = "nemotron_h", _attn_implementation = None)
     impl = U.resolve_attention_implementation(NewRemote, config, dtype = torch.bfloat16)
     assert impl == "flash_attention_2"
@@ -167,7 +166,6 @@ def test_cross_repository_auto_map_skips_the_local_sibling(monkeypatch):
     monkeypatch.setattr(dmu, "get_class_from_dynamic_module", fake_get)
     got = U.resolve_model_class(AutoModelForCausalLM, config, trust_remote_code = True)
     assert got is Remote and got is not local_cls
-    # Unsplit, with the model path, as from_pretrained calls it.
     assert seen == dict(
         class_ref = "other/repo--modeling_llama.LlamaForCausalLM", repo_id = "fake/repo"
     )
@@ -211,18 +209,17 @@ class _MoE(torch.nn.Module):
         self.gate = _Router(n)
 
 
-# Nemotron-Labs-Teacher's expert classes come from the checkpoint's own modeling file.
 _Expert.__module__ = "transformers_modules.fake_teacher.modeling_nemotron_h"
 sys.modules.setdefault(_Expert.__module__, sys.modules[__name__])
 
 
-class _Router(torch.nn.Module):  # a Parameter-backed router, as in Nemotron-H
+class _Router(torch.nn.Module):
     def __init__(self, n):
         super().__init__()
         self.weight = torch.nn.Parameter(torch.zeros(n, 8))
 
 
-class _Mamba(torch.nn.Module):  # a mixer with a Linear directly under it, like the Mamba layers
+class _Mamba(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.in_proj = torch.nn.Linear(8, 32, bias = False)
@@ -278,9 +275,9 @@ def test_expert_submodule_leaves_and_regex_reach_every_expert():
     linears = {n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)}
     experts = {n for n in linears if ".experts." in n or ".shared_experts." in n}
     assert experts <= matched
-    assert "model.layers.1.mixer.gate" not in matched  # the router is not a Linear
-    assert "model.layers.1.mixer.fc1_latent_proj" not in matched  # Identity, not a Linear
-    assert "model.layers.0.mixer.in_proj" in matched  # the block-level leaves stay
+    assert "model.layers.1.mixer.gate" not in matched
+    assert "model.layers.1.mixer.fc1_latent_proj" not in matched
+    assert "model.layers.0.mixer.in_proj" in matched
     assert all(isinstance(dict(model.named_modules())[n], torch.nn.Linear) for n in matched)
 
 
@@ -320,7 +317,6 @@ def test_only_a_generated_regex_is_widened_to_the_routed_experts():
     matched = {n for n, _ in model.named_modules() if re.fullmatch(widened, n)}
     assert any(".experts." in n for n in matched)
 
-    # A leaf list as the detection target keeps its own identity through the widening.
     widened, detect, leaves = U.widen_target_regex_to_expert_submodules(
         model, generated, ["down_proj"], auto_regex = True
     )
@@ -584,3 +580,231 @@ def test_sentence_transformer_probes_use_the_loads_options(monkeypatch):
     for call in calls:
         splats = [getattr(k.value, "id", "") for k in call.keywords if k.arg is None]
         assert "_remote_class_probe_kwargs" in splats, call.lineno
+
+
+def _native_qwen3_moe_4x_model(with_visual = False, dense_first = False):
+    """Qwen3-MoE / Mixtral on transformers 4.x: native per-expert Linears under mlp.experts.<i>."""
+
+    class _NativeExpert(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gate_proj = torch.nn.Linear(8, 16, bias = False)
+            self.up_proj = torch.nn.Linear(8, 16, bias = False)
+            self.down_proj = torch.nn.Linear(16, 8, bias = False)
+
+    _NativeExpert.__module__ = "transformers.models.qwen3_moe.modeling_qwen3_moe"
+
+    class _Attn(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_proj = torch.nn.Linear(8, 8, bias = False)
+            self.o_proj = torch.nn.Linear(8, 8, bias = False)
+
+    class _SparseMoe(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gate = torch.nn.Linear(8, 4, bias = False)
+            self.experts = torch.nn.ModuleList([_NativeExpert() for _ in range(4)])
+
+    class _DecoderLayer(torch.nn.Module):
+        def __init__(self, dense = False):
+            super().__init__()
+            self.self_attn = _Attn()
+            self.mlp = _NativeExpert() if dense else _SparseMoe()
+
+    class _Body(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layers = torch.nn.ModuleList(
+                [_DecoderLayer(dense_first and i == 0) for i in range(2)]
+            )
+
+    class _Qwen3Moe(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(num_experts = 4, model_type = "qwen3_moe")
+            self.model = _Body()
+            if with_visual:
+                self.visual = torch.nn.ModuleList([_SparseMoe(), _SparseMoe()])
+
+    return _Qwen3Moe()
+
+
+def _explicit_list_regex(model, leaves):
+    """FastLanguageModel's regex for an explicit list (skips mlp.experts.<i>)."""
+    import importlib
+
+    stub = sys.modules.get("unsloth_zoo.peft_utils")
+    if stub is not None and getattr(stub, "__file__", None) is None:
+        del sys.modules["unsloth_zoo.peft_utils"]
+    peft_utils = importlib.import_module("unsloth_zoo.peft_utils")
+    return peft_utils.get_peft_regex(
+        model,
+        finetune_vision_layers = False,
+        finetune_language_layers = True,
+        finetune_attention_modules = True,
+        finetune_mlp_modules = True,
+        target_modules = list(leaves),
+    )
+
+
+def test_explicit_leaf_list_reaches_native_per_expert_linears():
+    """An explicit gate/up/down list must LoRA native experts, as plain PEFT does."""
+    U = _utils()
+    model = _native_qwen3_moe_4x_model()
+    leaves = ["q_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    regex = _explicit_list_regex(model, leaves)
+    names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
+    assert not any(re.fullmatch(regex, n) for n in names if ".experts." in n)
+
+    widened, detect, found = U.widen_target_regex_to_expert_submodules(
+        model, regex, leaves, auto_regex = True, explicit_leaves = True
+    )
+    assert found == ["down_proj", "gate_proj", "up_proj"] and detect == leaves
+    matched = {n for n in names if re.fullmatch(widened, n)}
+    peft_leaf_match = {n for n in names if n.rpartition(".")[2] in leaves}
+    assert matched == peft_leaf_match
+    assert "model.layers.0.mlp.gate" not in matched
+
+    regex = _explicit_list_regex(model, ["q_proj", "down_proj"])
+    widened, _, found = U.widen_target_regex_to_expert_submodules(
+        model, regex, ["q_proj", "down_proj"], auto_regex = True, explicit_leaves = True
+    )
+    assert found == ["down_proj"]
+    assert not any(
+        re.fullmatch(widened, n) for n in names if n.endswith((".gate_proj", ".up_proj"))
+    )
+
+    for dense_first in (False, True):
+        model = _native_qwen3_moe_4x_model(dense_first = dense_first)
+        names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
+        for leaves in (["down_proj"], ["gate_proj", "up_proj", "down_proj"]):
+            regex = _explicit_list_regex(model, leaves)
+            widened, _, _ = U.widen_target_regex_to_expert_submodules(
+                model, regex, leaves, auto_regex = True, explicit_leaves = True
+            )
+            matched = {n for n in names if re.fullmatch(widened, n)}
+            assert matched == {n for n in names if n.rpartition(".")[2] in leaves}
+            assert any(".experts." in n for n in matched)
+
+
+def test_explicit_leaf_list_widening_respects_the_family_filters():
+    U = _utils()
+    leaves = ["q_proj", "gate_proj", "up_proj", "down_proj"]
+    model = _native_qwen3_moe_4x_model()
+    regex = _explicit_list_regex(model, ["q_proj", "o_proj"])
+    kept, _, found = U.widen_target_regex_to_expert_submodules(
+        model, regex, ["q_proj", "o_proj"], auto_regex = True, explicit_leaves = True
+    )
+    assert kept == regex and found == []
+    kept, _, found = U.widen_target_regex_to_expert_submodules(model, regex, regex, auto_regex = True)
+    assert kept == regex and found == []
+    model = _native_qwen3_moe_4x_model(with_visual = True)
+    regex = _explicit_list_regex(model, leaves)
+    widened, _, found = U.widen_target_regex_to_expert_submodules(
+        model, regex, leaves, auto_regex = True, explicit_leaves = True
+    )
+    matched = {n for n, _ in model.named_modules() if re.fullmatch(widened, n)}
+    assert any(n.startswith("model.layers.") and ".experts." in n for n in matched)
+    assert not any(n.startswith("visual.") for n in matched)
+
+
+def _native_mixtral_4x_model():
+    """Mixtral on transformers 4.x: block_sparse_moe.experts.<i>.w1 / w2 / w3."""
+
+    class _Expert(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.w1 = torch.nn.Linear(8, 16, bias = False)
+            self.w2 = torch.nn.Linear(16, 8, bias = False)
+            self.w3 = torch.nn.Linear(8, 16, bias = False)
+
+    class _Moe(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gate = torch.nn.Linear(8, 4, bias = False)
+            self.experts = torch.nn.ModuleList([_Expert() for _ in range(4)])
+
+    class _Attn(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_proj = torch.nn.Linear(8, 8, bias = False)
+
+    class _Layer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.self_attn = _Attn()
+            self.block_sparse_moe = _Moe()
+
+    class _Body(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layers = torch.nn.ModuleList([_Layer() for _ in range(2)])
+
+    class _Mixtral(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(num_local_experts = 4, model_type = "mixtral")
+            self.model = _Body()
+
+        def get_decoder(self):
+            return self.model
+
+    return _Mixtral()
+
+
+def test_explicit_leaf_list_keeps_mixtral_names_and_the_gate_up_shorthand():
+    U = _utils()
+    model = _native_mixtral_4x_model()
+    names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
+    leaves = ["q_proj", "w1", "w2", "w3"]
+    regex = _explicit_list_regex(model, leaves)
+    widened, _, found = U.widen_target_regex_to_expert_submodules(
+        model, regex, leaves, auto_regex = True, explicit_leaves = True
+    )
+    assert found == ["w1", "w2", "w3"]
+    assert {n for n in names if re.fullmatch(widened, n)} == {
+        n for n in names if n.rpartition(".")[2] in leaves
+    }
+
+    model = _native_qwen3_moe_4x_model()
+    names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
+    regex = _explicit_list_regex(model, ["q_proj", "gate_up_proj"])
+    widened, _, found = U.widen_target_regex_to_expert_submodules(
+        model, regex, ["q_proj", "gate_up_proj"], auto_regex = True, explicit_leaves = True
+    )
+    assert found == ["gate_proj", "up_proj"]
+    matched = {n for n in names if re.fullmatch(widened, n) and ".experts." in n}
+    assert matched == {
+        n for n in names if ".experts." in n and n.endswith((".gate_proj", ".up_proj"))
+    }
+
+
+def test_expert_only_mixtral_list_falls_back_to_the_decoders_experts():
+    """[w1, w2, w3] alone: Zoo's regex matches nothing (no MLP tag), plain PEFT reaches every expert."""
+    U = _utils()
+    model = _native_mixtral_4x_model()
+    names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
+    with pytest.raises(RuntimeError):
+        _explicit_list_regex(model, ["w1", "w2", "w3"])
+    regex = U.native_expert_only_regex(model, ["w1", "w2", "w3"])
+    assert {n for n in names if re.fullmatch(regex, n)} == {
+        n for n in names if n.endswith((".w1", ".w2", ".w3"))
+    }
+    assert U.native_expert_only_regex(model, ["q_proj"]) is None
+    regex = U.native_expert_only_regex(model, ["w1", "w2", "w3", "gate"])
+    want = {n for n in names if n.endswith((".w1", ".w2", ".w3", ".gate"))}
+    assert any(n.endswith(".block_sparse_moe.gate") for n in want)
+    assert {n for n in names if re.fullmatch(regex, n)} == want
+    # Zoo already dropped the other families (finetune_attention_modules=False).
+    regex = U.native_expert_only_regex(model, ["q_proj", "w1", "w2", "w3"])
+    assert {n for n in names if re.fullmatch(regex, n)} == {
+        n for n in names if n.endswith((".w1", ".w2", ".w3"))
+    }
+    model = _native_qwen3_moe_4x_model()
+    model.get_decoder = lambda: model.model
+    names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
+    regex = U.native_expert_only_regex(model, ["gate_up_proj"])
+    assert {n for n in names if re.fullmatch(regex, n)} == {
+        n for n in names if ".experts." in n and n.endswith((".gate_proj", ".up_proj"))
+    }

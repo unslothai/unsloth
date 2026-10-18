@@ -51,6 +51,8 @@ from core.inference.chat_template_helpers import (
     neutralize_tts_prompt_text,
     prompt_opens_reasoning_channel,
     trailing_assistant_text,
+    tts_prompt_with_voice,
+    tts_voice_options,
 )
 from core.inference.presence_penalty import _make_presence_penalty_processor
 from core.inference.generation_timing import (
@@ -1097,6 +1099,9 @@ class InferenceBackend:
                     FastLanguageModel.for_inference(model)
                     self.models[model_name]["model"] = model
                     self.models[model_name]["tokenizer"] = tokenizer
+                    voice_options = tts_voice_options(audio_type)
+                    if voice_options:
+                        self.models[model_name]["audio_options"] = voice_options
 
                 # Load external codec for TTS audio types
                 # (Whisper is ASR, audio_vlm is audio input — neither needs one)
@@ -3027,6 +3032,7 @@ class InferenceBackend:
         instructions: Optional[str] = None,
         language: Optional[str] = None,
         seed: Optional[int] = None,
+        audio_options: Optional[dict] = None,
     ) -> Tuple[bytes, int]:
         """Generate audio from text for TTS models. Returns (wav_bytes, sample_rate). Blocking."""
         # Reserved for native audio architectures; codec-backed TTS models do
@@ -3046,7 +3052,9 @@ class InferenceBackend:
         top_k = self._normalize_top_k(top_k)
         # Every codec below concatenates its prompt instead of templating it, so this
         # is the one choke point for all four (#7066).
-        text = neutralize_tts_prompt_text(text, audio_type)
+        text = tts_prompt_with_voice(
+            neutralize_tts_prompt_text(text, audio_type), audio_type, audio_options
+        )
 
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("Audio generation cancelled")

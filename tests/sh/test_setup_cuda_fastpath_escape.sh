@@ -1,7 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Test setup.sh wiring for the CUDA escape: exit 0 forces the pass, every other status keeps it.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -9,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SETUP_SH="$SCRIPT_DIR/../../studio/setup.sh"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-# The CUDA escape block only: several blocks share this guard, so keep the one holding the flag.
+# Several blocks share this guard, so keep the one holding the flag.
 awk '/^if \[ "\$_SKIP_PYTHON_DEPS" = true \] && \[ -x "\$VENV_DIR\/bin\/python" \]; then/ {
          block = $0; on = 1; next
      }
@@ -23,7 +22,6 @@ VENV_DIR="$WORK/venv"
 mkdir -p "$VENV_DIR/bin"
 : > "$WORK/install_python_stack.py"
 
-# A stand-in interpreter that records its arguments and exits with $PROBE_RC.
 cat > "$VENV_DIR/bin/python" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$*" >> "$PROBE_LOG"
@@ -31,7 +29,6 @@ exit "$PROBE_RC"
 STUB
 chmod +x "$VENV_DIR/bin/python"
 
-# The real offline predicate, extracted the way the other setup.sh harnesses do.
 sed -n '/^_uv_offline_requested()/,/^}/p' "$SETUP_SH" > "$WORK/offline.sh"
 
 run_escape() {

@@ -4757,13 +4757,17 @@ async def get_gguf_variants(
     # it is the only name an API-key caller has for a local GGUF (see the /hub twin).
     repo_id = resolve_host_path_reference(repo_id) or repo_id
     local_path = resolve_host_path_reference(local_path) or local_path
+    from hub.services.models import gguf_variants as hub_gguf_variants
+
     if account_access.managed_account():
-        await asyncio.to_thread(
-            account_access.require_model_access, repo_id, **({"offline": True} if offline else {})
+        await hub_gguf_variants.listing_thread(
+            offline,
+            account_access.require_model_access,
+            repo_id,
+            **({"offline": True} if offline else {}),
         )
     try:
         hf_token = _resolve_hub_token(hf_token_header, hf_token)
-        from hub.services.models import gguf_variants as hub_gguf_variants
 
         answer = await hub_gguf_variants.get_gguf_variants_answer(
             repo_id,
@@ -5046,23 +5050,19 @@ def _one_shard_family_of(entries: list) -> list:
 
 
 def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
-    """How well *want* names this file's variant: 0 for its own key, 1 for the legacy quant-label spelling, None
-    for neither.
-
-    *want* is the request VERBATIM: the bare-quant folding is applied per comparison, because doing it once
-    up front strips a qualified key's own path punctuation and folds ``exp-a/`` into ``expa/``.
-    Directory-qualified keys keep their legacy bare spelling, since stored pins predate them. Root-level H3
-    stems do not: a bare quant names both FL2VA and Ref2VA, and picking the first file would load a
-    different task.
-    """
-    from hub.utils.gguf import is_qualified_gguf_variant_key
+    """rank an exact variant as 0, its legacy quant alias as 1, or no match as None without normalizing paths."""
+    from hub.utils.gguf import gguf_variant_family, is_qualified_gguf_variant_key
     from utils.models.model_config import _gguf_variant_key
 
     label = _main_variant_gguf_label(rel_path)
     if label is None:
         return None
     key = _gguf_variant_key(rel_path)
-    if _variant_keys_match(key, want):
+    # a second same-quant build in a custom folder is keyed by its family (#13926)
+    want_family = gguf_variant_family(want) if want.lower().endswith(".gguf") else want
+    if _variant_keys_match(key, want) or (
+        gguf_variant_family(rel_path).casefold() == want_family.strip().casefold()
+    ):
         return 0
     if is_qualified_gguf_variant_key(key) and "/" not in key.replace("\\", "/"):
         return None
@@ -5070,10 +5070,7 @@ def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
 
 
 def _variant_keys_match(key: str, want: str) -> bool:
-    """Whether *want* is *key*, for the exact-key test. ``_normalized_quant_label`` strips hyphens and
-    underscores, which is right for a bare quant (``UD-Q4_K_XL`` and ``udq4kxl`` are the same ask) and wrong
-    for a path: it folds ``exp-a/`` and ``expa/`` into one, so two advertised checkpoints both answered to
-    the other's key."""
+    """match exact variant keys without folding punctuation in qualified paths."""
     from hub.utils.gguf import is_qualified_gguf_variant_key
 
     if is_qualified_gguf_variant_key(key) or is_qualified_gguf_variant_key(want):

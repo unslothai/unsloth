@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from unsloth_cli.commands import doctor as D
+from unsloth_cli.commands import spark_doctor as D
 
 
 def _node(host: str, **overrides) -> dict:

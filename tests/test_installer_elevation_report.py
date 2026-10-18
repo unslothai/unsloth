@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression tests for what a Windows install records about itself.
-
-Two things a support report could not answer, both from the same install:
-
-1. Whether the run was elevated. An install started with "Run as administrator"
-   writes %USERPROFILE%\\.unsloth as Administrators, the normal account cannot
-   read it back, and the folder outlives an uninstall, so the next install fails
-   on a folder nobody remembers creating. The reporter spent the debugging
-   session on it; "ran as admin: yes/no" would have ended it immediately.
-
-2. Whether llama.cpp actually landed. In Tauri mode a degraded llama.cpp is
-   deliberately not fatal (see tests/sh/test_llama_degraded_tauri_mode.sh), but
-   it was announced only through install-progress-detail, which the next
-   install-step clears and the install screen discards on close. The install
-   then looked clean and the first sign of trouble was a GGUF failing to load.
-
-Both now also go out as [TAURI:DIAG], which install.rs hands to
-record_diag_marker and the support report prints under installer_diag_markers.
-"""
+"""Windows installs record elevation and llama.cpp status as [TAURI:DIAG] markers for support."""
 
 from __future__ import annotations
 
@@ -85,17 +67,14 @@ def test_install_ps1_elevation_state_covers_unreadable_tokens():
 
 
 def test_install_ps1_warns_before_anything_is_created():
-    """Telling the user to stop is only honest while stopping leaves nothing
-    behind. The override resolver creates the custom root and writes a probe
-    into it, so an elevated run that warned afterwards had already made the
-    admin-owned folder the warning is about."""
+    """The elevation warning must come before the override resolver creates the custom root."""
     src = _read(INSTALL_PS1)
     notice_idx = src.index("Write-ElevationNotice -State (Get-ElevationState)")
     for marker in (
         "[System.IO.Directory]::CreateDirectory($envOverride)",
         '$probe = Join-Path $StudioHome (".unsloth-write-probe-',
         'step "winget" "available"',
-        # `& $script:UvExe`, not a bare `uv`, since #8161 resolved the binary up front.
+        # `& $script:UvExe`, not a bare `uv`: the binary is resolved up front.
         "venv $VenvDir --python",
         'step "setup" "running unsloth studio setup..."',
     ):
@@ -105,11 +84,7 @@ def test_install_ps1_warns_before_anything_is_created():
 
 
 def test_install_ps1_marker_uses_the_parsed_tauri_flag():
-    """install.rs launches this with --tauri and never sets UNSLOTH_TAURI_MODE;
-    install.ps1 assigns that variable itself, far below, right before invoking
-    setup.ps1. Gating on the env var here would emit nothing for the desktop
-    install, and setup.ps1 then skips its own marker under SKIP_STUDIO_BASE=1,
-    so the flow this exists for would produce no elevated= line at all."""
+    """Gate the marker on the parsed --tauri flag: UNSLOTH_TAURI_MODE is not set yet at that point."""
     src = _read(INSTALL_PS1)
     notice = _code_only(
         src[src.index("function Write-ElevationNotice") : src.index("$ElevationRoot = if")]
@@ -121,7 +96,7 @@ def test_install_ps1_marker_uses_the_parsed_tauri_flag():
     assert "-Tauri:$TauriMode" in src, "the parsed --tauri flag must be what drives the marker"
     # The flag has to be parsed before the call, or it is always false.
     assert src.index('"--tauri"    { $TauriMode = $true }') < src.index("-Tauri:$TauriMode")
-    # And the env var must still be unassigned there, or this test proves nothing.
+    # The env var must still be unassigned there, or this test proves nothing.
     assert src.index("-Tauri:$TauriMode") < src.index("$env:UNSLOTH_TAURI_MODE = if ($TauriMode)")
 
 
@@ -132,11 +107,9 @@ def test_install_ps1_warning_names_the_root_actually_written():
     notice = src[src.index("function Write-ElevationNotice") : src.index("-Tauri:$TauriMode")]
     assert "$Root" in notice, "the warning must name the resolved root, not a fixed path"
     assert "outlives an uninstall" in notice, "the warning must say reinstalling does not clear it"
-    # Anchored on the assignment: the right-hand side must stay free to change.
     root = src[src.index("$UnslothRoot =") : src.index("-Tauri:$TauriMode")]
     assert '".unsloth"' in root, "a default install must name the parent that also holds llama.cpp"
-    # The notice runs before the resolver, so $StudioHome does not exist yet and
-    # naming it would render empty; mirror the override precedence instead.
+    # The notice runs before the resolver, so $StudioHome is unset; mirror the override precedence.
     assert "$StudioHome" not in root, "$StudioHome is not assigned until the resolver below"
     assert (
         "UNSLOTH_STUDIO_HOME" in root and "$env:STUDIO_HOME" in root
@@ -147,10 +120,7 @@ def test_install_ps1_warning_names_the_root_actually_written():
 
 
 def test_a_legacy_equal_override_names_its_parent():
-    """An override that resolves to %USERPROFILE%\\.unsloth\\studio is not a custom
-    root downstream: the canonical comparison in setup.ps1 treats it as a default
-    install and keeps llama.cpp and node as siblings under ~/.unsloth. Naming only
-    the studio directory would send the user past the admin-owned assets."""
+    """Override resolving to ~/.unsloth/studio is a default install: name the parent, not studio."""
     for path, var in ((INSTALL_PS1, "$ElevationRoot"), (SETUP_PS1, "$_elevRoot")):
         src = _read(path)
         idx = src.index(f"{var} = if") - 400
@@ -163,10 +133,7 @@ def test_a_legacy_equal_override_names_its_parent():
 
 
 def test_the_legacy_root_comparison_is_canonical():
-    """A raw string compare misses the spellings a user actually types. The env
-    override reaches this unresolved: `~/.unsloth/studio`, a trailing separator,
-    forward slashes, or a `..` segment all name the legacy root but compare
-    unequal, and the notice then sends the user past the admin-owned llama.cpp."""
+    """Compare the legacy root canonically: an unresolved override with ~, slashes or .. names it too."""
     for path in (INSTALL_PS1, SETUP_PS1):
         src = _code_only(_read(path))
         idx = src.index("function Get-CanonicalRootPath")
@@ -177,8 +144,7 @@ def test_the_legacy_root_comparison_is_canonical():
         assert (
             "[System.IO.Path]::GetFullPath" in body
         ), f"{path.name} must normalize separators and .. segments"
-        # ...but not FIRST: GetFullPath uses [Environment]::CurrentDirectory, which
-        # Set-Location does not move, so it disagreed with the Resolve-Path resolver.
+        # Not first: GetFullPath uses [Environment]::CurrentDirectory, which Set-Location does not move.
         assert (
             "GetUnresolvedProviderPathFromPSPath" in body
         ), f"{path.name} must resolve a relative override against the PowerShell location"
@@ -191,7 +157,6 @@ def test_the_legacy_root_comparison_is_canonical():
         )
         # A bare "~" leaves an empty child path, which Join-Path rejects on PS 5.1.
         assert "Substring(1)" in body, f"{path.name} must handle a bare ~"
-        # An unresolvable path must not take the install down.
         assert "catch { }" in body, f"{path.name} must survive an unresolvable path"
 
 
@@ -214,11 +179,7 @@ def test_installer_restores_skip_studio_base():
 
 
 def test_every_handoff_variable_is_restored_not_just_skip_studio_base():
-    """The same argument covers the whole handoff table, not one variable of it. Under
-    `irm ... | iex` all of these are the caller's own session variables, and
-    SKIP_STUDIO_FRONTEND is the one that bites: a leaked "1" from a desktop install makes
-    the next direct `unsloth studio setup` in that console report "bundled (Tauri)" and skip
-    the frontend build, which on a local/source install leaves Studio with no web UI."""
+    """Restore every handoff variable: a leaked SKIP_STUDIO_FRONTEND=1 later skips the web UI build."""
     src = _read(INSTALL_PS1)
     restore = src[src.index("} finally {") :]
     # The handoff try specifically; install.ps1 opens several.
@@ -231,8 +192,7 @@ def test_every_handoff_variable_is_restored_not_just_skip_studio_base():
         ("SKIP_STUDIO_FRONTEND", "$previousSkipStudioFrontend"),
         ("STUDIO_LOCAL_INSTALL", "$previousStudioLocalInstall"),
         ("STUDIO_LOCAL_REPO", "$previousStudioLocalRepo"),
-        # Cleared unconditionally before, which the --with-llama-cpp-dir bail now reaches
-        # without having set them. UNSLOTH_LOCAL_LLAMA_CPP_DIR is a user-facing input.
+        # The --with-llama-cpp-dir bail reaches the clear without having set them.
         ("UNSLOTH_LOCAL_LLAMA_CPP_DIR", "$previousLocalLlamaCppDir"),
         ("UNSLOTH_INSTALL_ROLLBACK_MANAGED", "$previousInstallRollbackManaged"),
         ("UNSLOTH_SETUP_PYTHON", "$previousSetupPython"),
@@ -250,10 +210,7 @@ def test_every_handoff_variable_is_restored_not_just_skip_studio_base():
 
 
 def test_the_early_bail_restores_the_environment_too():
-    """--with-llama-cpp-dir with a missing path returns before `& $UnslothExe`.
-    That return used to sit between the env mutations and the `try`, so the bail
-    leaked SKIP_STUDIO_BASE, UNSLOTH_STUDIO_HOME and UNSLOTH_TAURI_MODE into the
-    caller's shell. The try has to open before the first mutation."""
+    """Early return on a missing path must still restore env: the try opens before the first mutation."""
     src = _code_only(_read(INSTALL_PS1))
     try_idx = src.index("    try {\n        $env:SKIP_STUDIO_BASE")
     finally_idx = src.index("    } finally {", try_idx)
@@ -290,8 +247,7 @@ def test_both_scripts_resolve_the_warning_root_the_same_way():
         "IsNullOrWhiteSpace($env:STUDIO_HOME)",
         "$env:STUDIO_HOME.Trim()",
         'Join-Path $env:USERPROFILE ".unsloth"',
-        # Both copies run above the resolver's own USERPROFILE fallback, so both must guard
-        # it; dropping it in one file aborts the install rather than misnaming a folder.
+        # Both copies run above the USERPROFILE fallback; missing the guard aborts the install.
         "IsNullOrWhiteSpace($env:USERPROFILE)",
     ):
         assert fragment in install_root, f"install.ps1 root resolution lost {fragment!r}"
@@ -334,7 +290,6 @@ def test_setup_ps1_warning_names_the_root_actually_written():
     ), "UNSLOTH_STUDIO_HOME wins when both are set"
     for phrase in ("Close this window", "normal PowerShell"):
         assert phrase not in block, f"{phrase!r} is wrong for the desktop repair flow"
-    # Naming $StudioHome directly here would render empty.
     assert idx < src.index(
         "$StudioHome = Join-Path $env:USERPROFILE"
     ), "this test is only meaningful while the notice precedes the resolver"

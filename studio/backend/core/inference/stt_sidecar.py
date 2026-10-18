@@ -266,6 +266,41 @@ def normalize_whisper_language(language: Optional[str]) -> Optional[str]:
     return _WHISPER_LANGUAGE_ALIASES.get(primary, primary)
 
 
+# Whisper code -> Qwen3-ASR prompt name (config.support_languages; audio.cpp qwen3_asr/assets.cpp).
+QWEN3_ASR_LANGUAGE_NAMES = {
+    "ar": "Arabic",
+    "cs": "Czech",
+    "da": "Danish",
+    "de": "German",
+    "el": "Greek",
+    "en": "English",
+    "es": "Spanish",
+    "fa": "Persian",
+    "fi": "Finnish",
+    "fr": "French",
+    "hi": "Hindi",
+    "hu": "Hungarian",
+    "id": "Indonesian",
+    "it": "Italian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "mk": "Macedonian",
+    "ms": "Malay",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "pt": "Portuguese",
+    "ro": "Romanian",
+    "ru": "Russian",
+    "sv": "Swedish",
+    "th": "Thai",
+    "tl": "Filipino",
+    "tr": "Turkish",
+    "vi": "Vietnamese",
+    "yue": "Cantonese",
+    "zh": "Chinese",
+}
+
+
 def _stt_quiet_window_end(decoded_audio, start: int, window: int) -> Optional[int]:
     """Return a nearby quiet window boundary, or None when speech fills it."""
     import numpy as np
@@ -1198,21 +1233,26 @@ def _decode_audio_bounded(audio: bytes, cancel_event = None):
         with _av_open(av, io.BytesIO(audio)) as container:
             if not container.streams.audio:
                 raise SttAudioDecodeError("Could not decode the audio.")
-            frames = iter(container.decode(audio = 0))
-            while True:
-                try:
-                    frame = next(frames)
-                except StopIteration:
-                    break
-                except InvalidDataError:
-                    continue
-                if cancel_event is not None and cancel_event.is_set():
-                    raise SttTranscriptionCancelledError("Transcription cancelled.")
-                frame.pts = None
-                fifo.write(frame)
-                if fifo.samples >= 500000:
-                    for resampled in resampler.resample(fifo.read()):
-                        write_frame(resampled)
+            try:
+                for packet in container.demux(audio = 0):
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise SttTranscriptionCancelledError("Transcription cancelled.")
+                    try:
+                        frames = packet.decode()
+                    except InvalidDataError:
+                        continue
+                    for frame in frames:
+                        frame.pts = None
+                        fifo.write(frame)
+                        if fifo.samples >= 500000:
+                            for resampled in resampler.resample(fifo.read()):
+                                write_frame(resampled)
+            except (SttAudioTooLongError, SttTranscriptionCancelledError):
+                raise
+            except (FFmpegError, ValueError, RuntimeError) as exc:
+                if not (sample_count or fifo.samples):
+                    raise
+                logger.info("STT decode stopped early: %s", exc)
             if fifo.samples > 0:
                 for resampled in resampler.resample(fifo.read()):
                     write_frame(resampled)

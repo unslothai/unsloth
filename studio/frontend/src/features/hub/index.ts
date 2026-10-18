@@ -30,6 +30,10 @@ export {
 } from "./hooks/use-hub-model-search";
 export { useHubInfiniteScroll } from "./hooks/use-hub-infinite-scroll";
 export type { CapabilityKey } from "./lib/model-capabilities";
+export {
+  HUB_CAPABILITY_FILTERS,
+  type HubCapabilityFilter,
+} from "./lib/model-capabilities";
 export { useLatestRef } from "./hooks/use-latest-ref";
 export { useHubAvailability, useOnlineStatus } from "./hooks/use-online-status";
 export { isHuggingFaceOffline } from "./lib/network";
