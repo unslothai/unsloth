@@ -697,9 +697,7 @@ def coordinate_models_for_training(
     return freed + _coordinate_resident_models(can_keep)
 
 
-def _coordinate_resident_models(
-    can_keep: Callable[[], Tuple[bool, Dict[str, Any]]],
-) -> List[str]:
+def _coordinate_resident_models(can_keep: Callable[[], Tuple[bool, Dict[str, Any]]]) -> List[str]:
     resident_chat = summarize_resident_chat()
     resident_stt = summarize_resident_stt()
     if not resident_chat["any"] and not resident_stt["any"]:

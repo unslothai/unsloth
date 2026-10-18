@@ -5274,7 +5274,8 @@ class DiffusionGenerateProgressResponse(BaseModel):
     )
     preview_seq: int = Field(0, description = "Moves each time a new preview is published")
     message: Optional[str] = Field(
-        None, description = "Status text for a phase with no steps (phase 'enhance': 'Enhancing prompt...')"
+        None,
+        description = "Status text for a phase with no steps (phase 'enhance': 'Enhancing prompt...')",
     )
     target: Optional[Literal["connection"]] = Field(
         None,

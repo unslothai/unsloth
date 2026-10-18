@@ -50552,7 +50552,6 @@ async def _enhance_generate_prompts(backend, request: DiffusionGenerateRequest):
     if outcome.status not in (None, pup.STATUS_OFF):
         # Every attempted enhancement, a fallback too: a model swapped in meanwhile retries with its own default.
         from core.inference.diffusion_families import load_identity
-
         outcome.load = load_identity(status.get("repo_id"), status.get("base_repo"), family)
     return outcome
 
@@ -51585,7 +51584,6 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
     log_media_generation_progress("image", progress)
     if not progress["active"]:
         from core.inference.flux3_prompt_upsampler import progress as upsampler_progress
-
         enhancing = upsampler_progress()
         if enhancing is not None:
             progress = {
@@ -51657,7 +51655,6 @@ async def prompt_upsampler_status(current_subject: str = Depends(get_current_sub
     """Whether the FLUX.3 prompt upsampler can run (llama-server present), is downloaded, is loaded, and the
     download progress (the dictation download's shape)."""
     from core.inference import flux3_prompt_upsampler
-
     return JSONResponse(content = await asyncio.to_thread(flux3_prompt_upsampler.status))
 
 
@@ -51706,8 +51703,7 @@ async def prompt_upsampler_cancel(current_subject: str = Depends(get_current_sub
 )
 @account_access.gpu_busy_route
 async def prompt_upsampler_preview(
-    request: PromptUpsamplerPreviewRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: PromptUpsamplerPreviewRequest, current_subject: str = Depends(get_current_subject)
 ):
     """The caption the upsampler writes for ``prompt`` (and references), so the page can show or edit it before
     generating. 409 when not downloaded, 501 without llama-server."""
@@ -51717,7 +51713,6 @@ async def prompt_upsampler_preview(
     if variant is None:
         try:
             from core.inference.diffusion_engine_router import get_active_diffusion_engine
-
             status = await asyncio.to_thread(get_active_diffusion_engine().status)
             variant = pup.variant_for_family(status.get("family") if status.get("loaded") else None)
         except Exception:  # noqa: BLE001 -- nothing loaded reads as distilled

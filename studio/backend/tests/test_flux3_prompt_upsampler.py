@@ -63,9 +63,10 @@ def test_edit_payload_images_then_scaffold(variant, repeat):
     assert system == {"role": "system", "content": pup.SYSTEM_PROMPTS["i2i"]}
     parts = user["content"]
     assert [p["type"] for p in parts] == ["image_url", "image_url", "text"]
-    assert parts[0]["image_url"]["url"] == "data:image/jpeg;base64," + base64.b64encode(
-        b"jpeg-one"
-    ).decode()
+    assert (
+        parts[0]["image_url"]["url"]
+        == "data:image/jpeg;base64," + base64.b64encode(b"jpeg-one").decode()
+    )
     assert parts[2]["text"] == (
         "Reference images follow in order (the first image, the second image, ...).\n"
         "User request: make it red\n"
@@ -218,12 +219,24 @@ def test_env_override_paths(monkeypatch, tmp_path):
 
 
 class _FakeSidecar:
-    def __init__(self, reply = "A long caption.", error = None):
+    def __init__(
+        self,
+        reply = "A long caption.",
+        error = None,
+    ):
         self.reply = reply
         self.error = error
         self.calls: list[dict] = []
 
-    def generate(self, payload, *, binary, model, mmproj, cancel_event = None):
+    def generate(
+        self,
+        payload,
+        *,
+        binary,
+        model,
+        mmproj,
+        cancel_event = None,
+    ):
         self.calls.append({"payload": payload, "model": model, "mmproj": mmproj})
         if self.error is not None:
             raise self.error
@@ -263,7 +276,10 @@ def test_one_upsample_per_distinct_prompt_and_cache(runnable):
 
 
 def test_off_and_other_families_never_call(runnable):
-    assert pup.enhance_for_generation(["a"], family_name = "flux.3-klein", enhance_prompt = False).status == "off"
+    assert (
+        pup.enhance_for_generation(["a"], family_name = "flux.3-klein", enhance_prompt = False).status
+        == "off"
+    )
     other = pup.enhance_for_generation(["a"], family_name = "flux.2-klein", enhance_prompt = True)
     assert other.status is None and other.encoded("a") == "a"
     assert runnable.calls == []
@@ -374,11 +390,22 @@ def test_post_chat_parses_the_reply(monkeypatch):
             return False
 
     class _Connection:
-        def __init__(self, host, port, timeout = None):
+        def __init__(
+            self,
+            host,
+            port,
+            timeout = None,
+        ):
             sent["target"] = (host, port)
             self.sock = None
 
-        def request(self, method, path, body = None, headers = None):
+        def request(
+            self,
+            method,
+            path,
+            body = None,
+            headers = None,
+        ):
             sent.update(method = method, path = path, body = json.loads(body), headers = headers)
 
         def getresponse(self):
@@ -417,10 +444,20 @@ def test_penalize_prompt_probe(monkeypatch, status, props, expected):
             return b"not json" if props is None else json.dumps(props).encode()
 
     class _Connection:
-        def __init__(self, host, port, timeout = None):
+        def __init__(
+            self,
+            host,
+            port,
+            timeout = None,
+        ):
             pass
 
-        def request(self, method, path, headers = None):
+        def request(
+            self,
+            method,
+            path,
+            headers = None,
+        ):
             assert (method, path) == ("GET", "/props")
 
         def getresponse(self):
@@ -445,7 +482,9 @@ def test_generated_only_penalties_follow_the_server(monkeypatch, supported):
 
     monkeypatch.setattr(sidecar, "_launch", _fake_launch)
     monkeypatch.setattr(sidecar, "_schedule_idle_locked", lambda: None)
-    monkeypatch.setattr(pup, "_post_chat", lambda port, payload, **kw: sent.update(payload) or "caption")
+    monkeypatch.setattr(
+        pup, "_post_chat", lambda port, payload, **kw: sent.update(payload) or "caption"
+    )
     payload = pup.build_chat_payload("a", "base")
     assert sidecar.generate(payload, binary = "b", model = "m", mmproj = None) == "caption"
     if supported:
@@ -464,7 +503,9 @@ def test_download_state_targets_the_unsloth_repo(monkeypatch):
     with pytest.raises(ValueError):
         state._resolve("black-forest-labs/flux-3-image-klein-pup")
     snapshot = state.status()
-    assert {"downloading", "download_id", "error", "cancelled", "bytes_total", "bytes_done"} <= set(snapshot)
+    assert {"downloading", "download_id", "error", "cancelled", "bytes_total", "bytes_done"} <= set(
+        snapshot
+    )
 
 
 def test_status_shape(monkeypatch):
@@ -519,7 +560,14 @@ class _FluxBackend:
     def status(self):
         return {"loaded": True, "repo_id": "unsloth/flux", "family": self.family}
 
-    def generate(self, *, seed = None, prompts = None, batch_size = 1, **kwargs):
+    def generate(
+        self,
+        *,
+        seed = None,
+        prompts = None,
+        batch_size = 1,
+        **kwargs,
+    ):
         self.calls.append({"prompts": prompts, "seed": seed, **kwargs})
         count = len(prompts) if prompts else batch_size
         return {"images": [object()] * count, "seed": 5, "seeds": [5 + i for i in range(count)]}
@@ -602,7 +650,8 @@ def test_generate_other_family_passes_through(routes, runnable):
     client, backend, saved = routes
     backend.family = "flux.2-klein"
     r = client.post(
-        "/api/inference/images/generate", json = {"prompt": "a cat", "enhance_prompt": True, "steps": 4}
+        "/api/inference/images/generate",
+        json = {"prompt": "a cat", "enhance_prompt": True, "steps": 4},
     )
     assert r.status_code == 200, r.text
     assert backend.calls[-1]["prompt"] == "a cat" and runnable.calls == []
@@ -610,14 +659,23 @@ def test_generate_other_family_passes_through(routes, runnable):
     assert image["enhanced_prompt"] is None and image["prompt_enhancement"] is None
 
 
-def test_generate_skips_the_upsampler_for_a_workflow_the_family_refuses(routes, runnable, monkeypatch):
+def test_generate_skips_the_upsampler_for_a_workflow_the_family_refuses(
+    routes, runnable, monkeypatch
+):
     client, backend, saved = routes
     monkeypatch.setattr(
-        backend, "status", lambda: {**_FluxBackend.status(backend), "workflows": ["txt2img", "reference"]}
+        backend,
+        "status",
+        lambda: {**_FluxBackend.status(backend), "workflows": ["txt2img", "reference"]},
     )
     client.post(
         "/api/inference/images/generate",
-        json = {"prompt": "make it night time", "workflow": "edit", "init_image": "data:,", "steps": 4},
+        json = {
+            "prompt": "make it night time",
+            "workflow": "edit",
+            "init_image": "data:,",
+            "steps": 4,
+        },
     )
     assert runnable.calls == []
     client.post("/api/inference/images/generate", json = {"prompt": "a cat", "steps": 4})
@@ -669,9 +727,7 @@ def test_upsampler_routes(routes, runnable, monkeypatch):
         "supported": True,
         "downloaded": True,
     }
-    r = client.post(
-        "/api/inference/images/prompt-upsampler/preview", json = {"prompt": "a gymnast"}
-    )
+    r = client.post("/api/inference/images/prompt-upsampler/preview", json = {"prompt": "a gymnast"})
     assert r.status_code == 200, r.text
     assert r.json() == {"enhanced_prompt": "Caption for a gymnast"}
     backend.family = "flux.3-klein-base"
@@ -684,7 +740,9 @@ def test_upsampler_routes(routes, runnable, monkeypatch):
     assert runnable.calls[-1]["payload"]["repeat_penalty"] == 1.05
 
     started = {}
-    monkeypatch.setattr(pup, "start_download", lambda token: started.setdefault("token", token) and "dl-1")
+    monkeypatch.setattr(
+        pup, "start_download", lambda token: started.setdefault("token", token) and "dl-1"
+    )
     monkeypatch.setattr(pup, "download_status", lambda: {"downloading": True})
     r = client.post("/api/inference/images/prompt-upsampler/download", json = {"hf_token": "hf_x"})
     assert r.status_code == 200 and r.json()["download_id"] == "dl-1" and started["token"] == "hf_x"
@@ -882,6 +940,7 @@ def test_generate_skips_the_upsampler_while_another_account_runs(routes, runnabl
     from hub.services.models import account_access
 
     client, backend, saved = routes
+
     def busy(path = None):
         # The combined guard: another account's image or video job, not only chat.
         raise account_access.GpuBusyForAnotherAccountError("other", 1)
@@ -1096,7 +1155,9 @@ def test_no_repo_download_beside_an_override(routes, monkeypatch):
 
 def test_a_systemic_failure_runs_the_rest_of_the_batch_as_typed(runnable):
     runnable.error = RuntimeError("llama-server did not become ready for the prompt upsampler.")
-    out = pup.enhance_for_generation(["a", "b", "c"], family_name = "flux.3-klein", enhance_prompt = None)
+    out = pup.enhance_for_generation(
+        ["a", "b", "c"], family_name = "flux.3-klein", enhance_prompt = None
+    )
     # One start attempt, not one per prompt; every prompt falls back.
     assert len(runnable.calls) == 1
     assert out.statuses == {"a": "failed", "b": "failed", "c": "failed"} and out.captions == {}

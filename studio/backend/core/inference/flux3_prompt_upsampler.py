@@ -75,7 +75,7 @@ SYSTEM_PROMPTS = {
         "self-contained caption: the exact text the image model receives. Output only the caption, with no greetings, "
         "explanations, refusals, questions, Markdown, headings, JSON, coordinates, ids or angle-bracket tokens, and no "
         "quotes around it. If the input is not clearly an image request, caption a visualization of its concept. The "
-        "request may begin with a \"TARGET CANVAS: W:H\" line: compose for that canvas (wide spreads content sideways, "
+        'request may begin with a "TARGET CANVAS: W:H" line: compose for that canvas (wide spreads content sideways, '
         "tall stacks it) and never mention the ratio or the canvas.\n"
         "\n"
         "Fidelity and planning: keep every explicit subject, attribute, count, spatial constraint, style cue and piece "
@@ -83,20 +83,20 @@ SYSTEM_PROMPTS = {
         "Decide everything left open as ONE concrete, consistent plan; never offer alternatives or hedge. Never "
         "re-express a stated constraint through another mechanism; add camera optics (depth of field, bokeh, blur) only "
         "when asked for or implied. Without a stated style, plan an actual photograph and open with the medium "
-        "convention (\"Full-color outdoor photograph, ...\", \"Full-color indoor photograph, ...\", \"Studio "
-        "photograph, ...\", \"Close-up photograph, ...\"); keep \"Photorealistic\" for renders, and turn "
-        "\"photorealistic\" or \"realistic\" requests for photos into the photograph convention. Give a photograph a "
+        'convention ("Full-color outdoor photograph, ...", "Full-color indoor photograph, ...", "Studio '
+        'photograph, ...", "Close-up photograph, ..."); keep "Photorealistic" for renders, and turn '
+        '"photorealistic" or "realistic" requests for photos into the photograph convention. Give a photograph a '
         "few ordinary, non-ideal specifics drawn from the scene's own objects instead of the stock-photo ideal. Do not "
         "invent names, brands, logos or celebrities; keep user-named ones. A long request keeps its content but not "
         "its wording: drop appraisal and sales vocabulary, turn moods into observable physical facts, and add only new "
         "concrete content with positions. Time of day is lighting, not rendered text.\n"
         "\n"
-        "Caption format: one continuous prose block in the generative voice, never \"this image shows\", \"we can "
-        "see\" or \"is visible\". Lead with medium and style, then scene, lighting and camera, then the subjects with "
+        'Caption format: one continuous prose block in the generative voice, never "this image shows", "we can '
+        'see" or "is visible". Lead with medium and style, then scene, lighting and camera, then the subjects with '
         "concrete colors, materials and state. Every person in focus gets an observable profile: ethnicity, gender, "
-        "age range, skin tone (\"fair skin\", \"brown skin\"), hair and clothing. Make the layout reconstructable from "
+        'age range, skin tone ("fair skin", "brown skin"), hair and clothing. Make the layout reconstructable from '
         "words: frame-relative positions (frame-left, frame-right, upper, lower, foreground, midground, background), "
-        "sentence-initial anchors (\"On the left, ...\", \"In the background, ...\"), relations (holds, faces, "
+        'sentence-initial anchors ("On the left, ...", "In the background, ..."), relations (holds, faces, '
         "behind) and a consistent order; describe up to about ten instances one by one, beyond that give the exact "
         "count and arrangement. Out-of-focus or distant planes are shapes, colors and silhouettes, never identities or "
         "readable text, and the background takes about a sixth of the caption. Be definite: no hedging adverbs, no "
@@ -118,12 +118,12 @@ SYSTEM_PROMPTS = {
         "of the supplied images.\n"
         "\n"
         "Pick the voice by task shape. When one reference stays and gets bounded changes, write an imperative editing "
-        "instruction on it (\"Remove the ...\", \"Change the ... to ...\", \"Zoom in on ...\"); a whole-image "
-        "transformation opens with its scope (\"Convert the entire image into ...\", \"Apply a ... filter over the "
-        "entire scene\", \"Horizontally flip the entire image so that ...\", \"Shift the camera viewpoint to ...\", "
+        'instruction on it ("Remove the ...", "Change the ... to ...", "Zoom in on ..."); a whole-image '
+        'transformation opens with its scope ("Convert the entire image into ...", "Apply a ... filter over the '
+        'entire scene", "Horizontally flip the entire image so that ...", "Shift the camera viewpoint to ...", '
         "then where the major elements should now be). When the references are drawn into a newly composed frame "
-        "(combining subjects, a new scene, a garment, object or style donor), write a generation request (\"Create a "
-        "photograph of ...\", \"Create an anime-style illustration of ...\", \"Generate a new image featuring ...\") "
+        '(combining subjects, a new scene, a garment, object or style donor), write a generation request ("Create a '
+        'photograph of ...", "Create an anime-style illustration of ...", "Generate a new image featuring ...") '
         "that says what to take from each image, by ordinal, and what is newly generated.\n"
         "\n"
         "Keep every explicit edit, constraint, count, position, style cue and piece of wording, and decide what is left "
@@ -225,7 +225,7 @@ def supports_family(family_name: Optional[str]) -> bool:
 
 
 def variant_for_family(family_name: Optional[str]) -> str:
-    """"base" for a base family, else "distilled" (the frontend applies the same rule)."""
+    """ "base" for a base family, else "distilled" (the frontend applies the same rule)."""
     return "base" if "base" in (family_name or "") else "distilled"
 
 
@@ -276,9 +276,7 @@ def prepare_reference(image: Any, num_references: int) -> bytes:
     from PIL import Image, ImageOps
 
     image = ImageOps.exif_transpose(image)
-    if image.mode in ("RGBA", "LA", "PA") or (
-        image.mode == "P" and "transparency" in image.info
-    ):
+    if image.mode in ("RGBA", "LA", "PA") or (image.mode == "P" and "transparency" in image.info):
         rgba = image.convert("RGBA")
         image = Image.alpha_composite(Image.new("RGBA", rgba.size, (255, 255, 255, 255)), rgba)
     image = image.convert("RGB")
@@ -356,7 +354,6 @@ def build_chat_payload(
     mode = "i2i" if edit else "t2i"
     if edit:
         import base64
-
         content: list[dict] = [
             {
                 "type": "image_url",
@@ -421,7 +418,10 @@ def _env_path(name: str) -> Optional[str]:
 
 
 def _cached_file(
-    filename: str, *, hub_cache: Optional[Path] = None, revision: Optional[str] = None
+    filename: str,
+    *,
+    hub_cache: Optional[Path] = None,
+    revision: Optional[str] = None,
 ) -> Optional[str]:
     try:
         from huggingface_hub import hf_hub_download
@@ -442,7 +442,6 @@ def _cached_file(
 
 def _candidate_revisions(hub_cache: Optional[Path] = None) -> list:
     from core.inference.stt_sidecar import _fallback_revisions, _read_revision_record
-
     recorded = _read_revision_record(UPSAMPLER_REPO)
     return ([recorded] if recorded else []) + [
         rev for rev in _fallback_revisions(UPSAMPLER_REPO, hub_cache = hub_cache) if rev != recorded
@@ -473,7 +472,10 @@ def _cached_pair(hub_cache: Optional[Path] = None) -> tuple[Optional[str], Optio
 
 
 def _cached_download_paths(
-    model_id: str, *, hub_cache: Optional[Path] = None, revision: Optional[str] = None
+    model_id: str,
+    *,
+    hub_cache: Optional[Path] = None,
+    revision: Optional[str] = None,
 ) -> Optional[tuple[str, str]]:
     """Both repo files at one revision, or None (the download state's completion check)."""
     if revision is None:
@@ -504,7 +506,9 @@ def mmproj_path() -> Optional[str]:
 
 
 def _overridden() -> bool:
-    return any((os.environ.get(name) or "").strip() for name in (ENV_MODEL_OVERRIDE, ENV_MMPROJ_OVERRIDE))
+    return any(
+        (os.environ.get(name) or "").strip() for name in (ENV_MODEL_OVERRIDE, ENV_MMPROJ_OVERRIDE)
+    )
 
 
 def find_llama_server_binary() -> Optional[str]:
@@ -530,7 +534,6 @@ def _get_download_state():
     with _download_state_lock:
         if _download_state is None:
             from core.inference.stt_mtmd_sidecar import _MtmdDownloadState
-
             _download_state = _MtmdDownloadState(
                 specs = {UPSAMPLER_ID: UPSAMPLER_SPEC},
                 cached_paths = _cached_download_paths,
@@ -556,7 +559,9 @@ def status() -> dict:
     """The prompt-upsampler status route body."""
     model = model_path()
     mmproj = mmproj_path()
-    model_name = Path(model).name if model and os.environ.get(ENV_MODEL_OVERRIDE) else UPSAMPLER_MODEL_FILE
+    model_name = (
+        Path(model).name if model and os.environ.get(ENV_MODEL_OVERRIDE) else UPSAMPLER_MODEL_FILE
+    )
     size = None
     if model:
         with suppress(OSError):
@@ -582,8 +587,9 @@ def _resident_cuda_ordinal() -> Optional[int]:
     """The CUDA card the resident image model sits on, else None."""
     try:
         from core.inference.diffusion_engine_router import get_active_diffusion_engine
-
-        ordinal = getattr(getattr(get_active_diffusion_engine(), "_state", None), "placed_ordinal", None)
+        ordinal = getattr(
+            getattr(get_active_diffusion_engine(), "_state", None), "placed_ordinal", None
+        )
         return None if ordinal is None else int(ordinal)
     except Exception:  # noqa: BLE001
         return None
@@ -612,7 +618,9 @@ def _child_device_mask(ordinal: Optional[int]) -> dict:
         return {}
 
 
-def _accelerator_memory_mib(ordinal: Optional[int] = None) -> tuple[Optional[int], Optional[int], str]:
+def _accelerator_memory_mib(
+    ordinal: Optional[int] = None,
+) -> tuple[Optional[int], Optional[int], str]:
     """(free, total, device) of the accelerator llama.cpp would offload to (CUDA card ``ordinal`` when given), through
     the diffusion backend's helper. ``device`` is cuda / mps / cpu; free is None when unknown."""
     try:
@@ -623,7 +631,10 @@ def _accelerator_memory_mib(ordinal: Optional[int] = None) -> tuple[Optional[int
 
         if torch.cuda.is_available():
             device = "cuda"
-        elif getattr(getattr(torch, "backends", None), "mps", None) is not None and torch.backends.mps.is_available():
+        elif (
+            getattr(getattr(torch, "backends", None), "mps", None) is not None
+            and torch.backends.mps.is_available()
+        ):
             device = "mps"
         else:
             return None, None, "cpu"
@@ -960,7 +971,9 @@ class PromptUpsamplerSidecar:
                 if self._stopping or epoch != self._stop_epoch:
                     # Queued behind a request a training start or GPU handover drained: starting now would sit beside
                     # the new owner.
-                    raise UpsamplerUnavailableError("The prompt upsampler was stopped for another GPU user.")
+                    raise UpsamplerUnavailableError(
+                        "The prompt upsampler was stopped for another GPU user."
+                    )
                 # Claimed under the same lock: an idle callback already waiting on it then sees the request.
                 self._active_requests += 1
             try:
@@ -991,7 +1004,9 @@ class PromptUpsamplerSidecar:
         if not vram_is_tight(free_mib, total_mib):
             return False
         logger.info(
-            "flux3.prompt_upsampler: unloading after the call (free %s of %s MiB)", free_mib, total_mib
+            "flux3.prompt_upsampler: unloading after the call (free %s of %s MiB)",
+            free_mib,
+            total_mib,
         )
         self.unload(wait = False)
         return True
@@ -1000,7 +1015,6 @@ class PromptUpsamplerSidecar:
 def _gpu_unowned() -> bool:
     try:
         from core.inference import gpu_arbiter
-
         return gpu_arbiter.current_owner() is None
     except Exception:  # noqa: BLE001
         return False
@@ -1010,7 +1024,6 @@ def _image_model_owns_gpu() -> bool:
     """The GPU arbiter's owner is the image model (or nobody yet, as on a fresh start). Fail-open."""
     try:
         from core.inference import gpu_arbiter
-
         return gpu_arbiter.current_owner() in (None, gpu_arbiter.DIFFUSION)
     except Exception:  # noqa: BLE001
         return True
@@ -1041,7 +1054,6 @@ def _forward_cancel(cancel_event: Optional[threading.Event], cancel: Any) -> Ite
 
 def _wait_for_server(process, port: int, cancel_event: threading.Event) -> bool:
     from core.inference.stt_mtmd_sidecar import MtmdSttSidecar
-
     return MtmdSttSidecar._wait_for_server(process, port, cancel_event)
 
 
@@ -1050,7 +1062,9 @@ def _server_has_penalize_prompt(port: int, api_key: Optional[str] = None) -> boo
     default generation settings in /props. Any failure reads as an older server."""
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout = 10)
     try:
-        connection.request("GET", "/props", headers = {"Authorization": f"Bearer {api_key}"} if api_key else {})
+        connection.request(
+            "GET", "/props", headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        )
         response = connection.getresponse()
         if response.status != 200:
             return False
@@ -1280,7 +1294,9 @@ def enhance_for_generation(
     if find_llama_server_binary() is None or model_path() is None:
         logger.warning(
             "flux3.prompt_upsampler: unavailable (%s); generating with the prompt as typed",
-            "llama-server not found" if find_llama_server_binary() is None else "GGUF not downloaded",
+            "llama-server not found"
+            if find_llama_server_binary() is None
+            else "GGUF not downloaded",
         )
         return EnhanceOutcome(status = STATUS_UNAVAILABLE)
     variant = variant_for_family(family_name)
