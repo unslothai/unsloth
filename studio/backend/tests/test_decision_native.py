@@ -1166,6 +1166,7 @@ def test_gguf_entries_are_listed_as_llama_cpp_only(home, client, stub):
         "lev",
         "bespoke-nimble-9b-v3",
         "openjev",
+        "d1-3b",
         "laya-gguf",
         "julia-1",
     }
@@ -1183,6 +1184,9 @@ def test_gguf_entries_are_listed_as_llama_cpp_only(home, client, stub):
         m["id"]: m["architecture"]["input_modalities"] for m in systemone.decision_model_objects()
     }
     assert listed["openjev"] == ["text", "image"] and listed["kev-0.8b"] == ["text"]
+    assert listed["d1-3b"] == ["text", "image"]
+    assert options["d1-3b"]["llama_cpp_only"] and options["d1-3b"]["label"] == "d1 3B"
+    assert options["d1-3b"]["download_bytes"] == 2_874_781_280 + 853_993_696
     stub.set_mode("nodecisions")
     laya_runtime._incapable.add(laya_runtime._binary_key(str(stub.binary)))
     option = {m["name"]: m for m in client.get("/api/settings/systemone").json()["models"]}["lev"]
