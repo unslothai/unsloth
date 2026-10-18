@@ -3806,6 +3806,13 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     "magick compare -metric AE /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png /usr/share/pixmaps/d.png",
     "mogrify -resize 50% /usr/share/pixmaps/a.png",
     "magick mogrify -path /usr/share/pixmaps -resize 50% a.png",
+    "cd /usr/share/sounds && ffmpeg -f lavfi -i anullsrc -t 1 out.wav",
+    "cd /usr/share/doc && pandoc notes.md -o report.docx",
+    "ffmpeg -i in.mp4 -f hls -hls_segment_filename /usr/share/chunk%03d.ts playlist.m3u8",
+    "ffmpeg -i in.mp4 -f segment -segment_list /usr/share/doc/list.csv out%03d.ts",
+    "ffmpeg -i /recording.wav out.wav",
+    "compare a.png b.png /usr/share/pixmaps/diff.png",
+    "composite over.png base.png /usr/share/pixmaps/out.png",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
@@ -4165,6 +4172,9 @@ _INDIRECT_BENIGN_TERMINAL = (
     "magick compare -dissimilarity-threshold 0.1 /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png",
     "magick compare -metric AE /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png null:",
     "mogrify -resize 50% a.png",
+    "compare /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png",
+    "compare -metric AE /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png null:",
+    "cd /usr/share/sounds && ffprobe alert.wav",
 )
 
 _INDIRECT_BENIGN_PYTHON = (

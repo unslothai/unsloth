@@ -1215,8 +1215,9 @@ _REDIR_HEREDOC_RE = re.compile(r"^\d*<<<?-?$")
 _SHELL_ASSIGN_TOKEN_RE = re.compile(r"^[A-Za-z_]\w*=")
 
 
-# `cmd /c`, `robocopy a b /E` and find's `\;`: a lone rooted word is a switch, not a path.
-_BARE_SWITCH_RE = re.compile(r"^[/\\][^/\\]*$")
+# `cmd /c`, `robocopy a b /E` and find's `\;`: a lone rooted word is a switch, not a path. A dot
+# keeps it a file, since `/recording.wav` at the POSIX root is one.
+_BARE_SWITCH_RE = re.compile(r"^[/\\][^/\\.]*$")
 
 
 # `pandoc --help`: "-o FILE, --output=FILE  Write output to FILE"; the same spelling names the output file
@@ -1225,13 +1226,21 @@ _OUTPUT_FILE_FLAGS = frozenset({"-o", "--output"})
 
 # Flags that name a file or directory the command writes, beyond `-o`/`--output`: ImageMagick's
 # `-write`/`+write`, pandoc's `--extract-media`/`--log`, and ffmpeg's log, SDP, stats, progress and
-# attachment-dump files.
+# attachment-dump files, plus the HLS segment template and the segment muxer's list file.
 _COMMAND_OUTPUT_FLAGS = {
     "magick": frozenset({"-write", "+write"}),
     "convert": frozenset({"-write", "+write"}),
     "pandoc": frozenset({"--extract-media", "--log"}),
     "ffmpeg": frozenset(
-        {"-passlogfile", "-sdp_file", "-vstats_file", "-progress", "-dump_attachment"}
+        {
+            "-passlogfile",
+            "-sdp_file",
+            "-vstats_file",
+            "-progress",
+            "-dump_attachment",
+            "-hls_segment_filename",
+            "-segment_list",
+        }
     ),
 }
 
@@ -1239,12 +1248,16 @@ _COMMAND_OUTPUT_FLAGS = {
 # an operand that is no option's value, or the last one, is an output; option values are read.
 # `magick input-file ... output-file` writes the last one; `compare image image [difference]` only
 # when the difference image is given. `display` and `animate` only show their files; `mogrify`
-# overwrites every image it is given, or writes them into its `-path` directory.
+# overwrites every image it is given, or writes them into its `-path` directory. ImageMagick 6
+# ships the verbs as their own binaries.
 _POSITIONAL_OUTPUT_COMMANDS = {
     "ffmpeg": "not_option_value",
     "magick": "last",
     "convert": "last",
+    "composite": "last",
+    "montage": "last",
     "mogrify": "all",
+    "compare": "third_image",
 }
 _MAGICK_VERB_OUTPUTS = {
     "identify": None,
@@ -1271,9 +1284,10 @@ def _unlisted_command_operands(command, args) -> "list[tuple[str, bool]]":
     if command == "magick" and args and args[0] in _MAGICK_VERB_OUTPUTS:
         outputs = _MAGICK_VERB_OUTPUTS[args[0]]
     # `-metric AE` or `-fuzz 5%`: a flag's value is not one of the images.
+    image_args = args[1:] if command == "magick" else args
     images = [
         arg
-        for previous, arg in zip(args, args[1:])
+        for previous, arg in zip(["compare"] + image_args, image_args)
         if arg[:1] not in "-+"
         and (previous[:1] not in "-+" or previous in _MAGICK_COMPARE_VALUELESS_FLAGS)
     ]
@@ -1956,6 +1970,8 @@ def _command_base_writes(base: str) -> bool:
         or base in _PATH_DEST_LAST_COMMANDS
         or base in _PATH_ARCHIVE_COMMANDS
         or base in _EXTRA_WRITE_COMMANDS
+        or base in _POSITIONAL_OUTPUT_COMMANDS
+        or base in _COMMAND_OUTPUT_FLAGS
     )
 
 
