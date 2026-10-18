@@ -380,3 +380,15 @@ def test_cpu_tts_falls_back_to_the_name_when_the_listing_cannot_be_read(monkeypa
         "audio_device": "cpu",
         **CPU,
     }
+
+
+def test_unload_all_still_frees_media_when_chat_status_cannot_be_read(monkeypatch):
+    routes = {
+        STATUS_ROUTE: JSONResponse({"detail": "restarting"}, status_code = 503),
+        ("GET", "/api/inference/images/status"): {"loaded": True, "repo_id": FLUX_GGUF},
+        ("POST", "/api/inference/images/unload"): {"loaded": False},
+    }
+    result, studio = run_tool(monkeypatch, routes, "unload_model", {"kind": "all"}, fallback = {})
+    assert result["isError"] is True
+    assert f"image {FLUX_GGUF}" in str(result["content"]) and "llm:" in str(result["content"])
+    assert ("POST", "/api/inference/images/unload") in [call[:2] for call in studio.state.calls]

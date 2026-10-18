@@ -832,22 +832,29 @@ async def unload_all(caller: Caller) -> UnloadAllResult:
         except ToolError as exc:
             failed.append(f"{name}: {exc}")
 
-    serving, checkpoints, _before = await _llm_resident(caller)
-    pairs = list(zip(serving, checkpoints))
-    # Kept models first, so unloading the primary never promotes one of them in between.
-    for name, target in reversed(pairs):
-        await unload(name, target)
-    _serving, _checkpoints, after = await _llm_resident(caller)
-    # Models held in memory behind the active one are listed only under loaded.
-    held = [name for name in after if name not in checkpoints and name not in serving]
-    for name in held:
-        await unload(name, name)
-    if held:
+    unloaded: list[SlotModel] = []
+    try:
+        serving, checkpoints, _before = await _llm_resident(caller)
+        pairs = list(zip(serving, checkpoints))
+        # Kept models first, so unloading the primary never promotes one of them in between.
+        for name, target in reversed(pairs):
+            await unload(name, target)
         _serving, _checkpoints, after = await _llm_resident(caller)
-    pairs += [(name, name) for name in held]
-    unloaded = [
-        SlotModel(kind = "llm", model = name) for name, target in pairs if not {name, target} & after
-    ]
+        # Models held in memory behind the active one are listed only under loaded.
+        held = [name for name in after if name not in checkpoints and name not in serving]
+        for name in held:
+            await unload(name, name)
+        if held:
+            _serving, _checkpoints, after = await _llm_resident(caller)
+        pairs += [(name, name) for name in held]
+        unloaded += [
+            SlotModel(kind = "llm", model = name)
+            for name, target in pairs
+            if not {name, target} & after
+        ]
+    except ToolError as exc:
+        # Unsloth Studio could not say which chat models are loaded; the other slots still go.
+        failed.append(f"llm: {exc}")
     for kind in MEDIA_ROUTES:
         try:
             result = await unload_media(caller, kind)

@@ -6,6 +6,7 @@ import contextlib
 import json
 import time
 
+import httpx
 import pytest
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -268,3 +269,36 @@ def test_the_queue_id_of_a_video_still_running_outlives_the_record_cap(monkeypat
     video_queue._evict()
     assert video_queue.lookup("a", "vq_run") is running
     assert len(video_queue._items) == video_queue.CAPACITY
+
+
+def test_a_second_video_never_overtakes_one_entering_the_queue(monkeypatch):
+    busy = httpx.Response(409, json = {"error": {"code": None, "message": video_queue.BUSY_MESSAGE}})
+    started = httpx.Response(200, json = {"id": "video-2", "status": "queued"})
+    posted = []
+
+    async def forward(caller, method, path, **kwargs):
+        posted.append(kwargs["json_body"]["prompt"])
+        if len(posted) == 1:
+            # The running video ends while the first, refused, is still on its way into the queue.
+            await asyncio.sleep(0.05)
+            return busy
+        return started
+
+    async def no_eta(item):
+        return 1, None
+
+    monkeypatch.setattr(video_queue, "forward", forward)
+    monkeypatch.setattr(video_queue, "_ensure_pump", lambda account_id: None)
+    monkeypatch.setattr(video_queue, "_position_eta", no_eta)
+    caller = make_caller(account_id = "a")
+
+    async def both():
+        first = asyncio.create_task(video_queue.post_or_queue(caller, {"prompt": "A"}))
+        await asyncio.sleep(0)
+        second = asyncio.create_task(video_queue.post_or_queue(caller, {"prompt": "B"}))
+        return await first, await second
+
+    first, second = asyncio.run(both())
+    assert (first.status, second.status) == ("queued", "queued")
+    assert posted == ["A"]
+    assert [item.body["prompt"] for item in video_queue._waiting["a"]] == ["A", "B"]

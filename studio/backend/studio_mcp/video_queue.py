@@ -57,6 +57,7 @@ _items: "OrderedDict[str, QueuedVideo]" = OrderedDict()
 _waiting: dict[str, deque] = {}
 # account -> (video id, monotonic submission time) of the video this account's queue waits on.
 _running: dict[str, tuple[str, float]] = {}
+_admission: dict[str, asyncio.Lock] = {}
 # account -> seconds the last video in this queue took.
 _clip_s: dict[str, float] = {}
 # Held here so each pump outlives the tool call that started it.
@@ -230,6 +231,13 @@ async def post_or_queue(
     hints: Optional[dict] = None,
 ) -> Union[dict, VideoJobRef]:
     """POST the video, or queue it when Unsloth Studio is busy with another video (or this account already has videos waiting, to keep their order). Returns the route's job, or the queued video's reference."""
+    # One admission at a time per account: a second call must not start while the first, refused as
+    # busy, is still on its way into the queue, or it would overtake it.
+    async with _admission.setdefault(caller.account_id, asyncio.Lock()):
+        return await _admit(caller, body, hints)
+
+
+async def _admit(caller: Caller, body: dict, hints: Optional[dict]) -> Union[dict, VideoJobRef]:
     if not _waiting.get(caller.account_id):
         response = await forward(caller, "POST", "/v1/videos", json_body = body, hub_header = True)
         if not _is_busy(response):
@@ -319,5 +327,5 @@ def _reset() -> None:
     for task in _pumps.values():
         with contextlib.suppress(RuntimeError):  # its event loop may be closed already
             task.cancel()
-    for state in (_items, _waiting, _running, _clip_s, _pumps):
+    for state in (_items, _waiting, _running, _clip_s, _pumps, _admission):
         state.clear()
