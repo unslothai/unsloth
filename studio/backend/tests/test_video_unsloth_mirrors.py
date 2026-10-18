@@ -516,7 +516,11 @@ def test_h3_components_open_from_a_snapshot_staged_under_another_cache_root(tmp_
     )
     staged = str(tmp_path / "other_root" / "snapshots" / "abc")
     got = video_mod._h3_mirrored_component_sources(
-        pipe, "MiniMaxAI/MiniMax-H3", "unsloth/MiniMax-H3", local_files_only = False, staged_dir = staged
+        pipe,
+        "MiniMaxAI/MiniMax-H3",
+        "unsloth/MiniMax-H3",
+        local_files_only = False,
+        staged_dir = staged,
     )
     # Either side of the mirror pair reads the reused snapshot; a derivative's own encoder keeps its source.
     assert got == {"transformer": staged, "scheduler": staged}
