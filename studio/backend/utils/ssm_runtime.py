@@ -1122,8 +1122,16 @@ def _drop_extension_free_copy(
     when it was removed."""
     from utils.kernel_install import OPTIONAL_KERNEL_LOCK_WAIT, kernel_install_lock
     with kernel_install_lock(import_name, wait_seconds = OPTIONAL_KERNEL_LOCK_WAIT) as held:
-        if not held or kernel_usable(import_name, extension) or not _is_importable(import_name):
+        if kernel_usable(import_name, extension) or not _is_importable(import_name):
             return False
+        if not held:
+            # Cannot uninstall without the lock: hide it from this process instead.
+            logger.info(
+                "Hiding the extension-free %s from this load: its install lock is busy",
+                display_name,
+            )
+            block_import(import_name, extension)
+            return True
         logger.info(
             "Removing the extension-free %s: this load needs its CUDA kernels", display_name
         )

@@ -1483,12 +1483,24 @@ def _install_package_wheel_first(
             return
         from utils.kernel_install import OPTIONAL_KERNEL_LOCK_WAIT, kernel_install_lock
         with kernel_install_lock(import_name, wait_seconds = OPTIONAL_KERNEL_LOCK_WAIT) as held:
-            if held and _is_importable(import_name) and not _is_importable(extension):
+            if not _is_importable(import_name) or _is_importable(extension):
+                return
+            if not held:
+                # Cannot uninstall without the lock: hide it from this process instead.
+                from utils.ssm_runtime import block_import, refresh_transformers_kernel_gates
+
                 logger.info(
-                    "Removing the extension-free %s: this run needs its CUDA kernels", display_name
+                    "Hiding the extension-free %s from this run: its install lock is busy",
+                    display_name,
                 )
-                _uninstall_package(pypi_name, display_name)
-                forget_imported_modules(import_name, extension)
+                block_import(import_name, extension)
+                refresh_transformers_kernel_gates(removed = True)
+                return
+            logger.info(
+                "Removing the extension-free %s: this run needs its CUDA kernels", display_name
+            )
+            _uninstall_package(pypi_name, display_name)
+            forget_imported_modules(import_name, extension)
 
     if _model_offline_mode_enabled() or _package_installs_offline():
         logger.info("Skipping %s installation while offline", display_name)
