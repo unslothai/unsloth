@@ -50185,6 +50185,9 @@ async def _enhance_generate_prompts(backend, request: DiffusionGenerateRequest):
         return pup.EnhanceOutcome(status = None)
     if not pup.resolve_enhance(family, request.enhance_prompt):
         return pup.EnhanceOutcome(status = pup.STATUS_OFF)
+    if account_access.managed_account():
+        # The run below refuses a resident model this account may not use; refuse before the sidecar works for it.
+        await asyncio.to_thread(account_access.require_media_generation_access, status, "diffusion")
     references = ([request.init_image] if request.init_image else []) + list(
         request.reference_images or []
     )

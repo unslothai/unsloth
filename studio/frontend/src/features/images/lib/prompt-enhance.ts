@@ -249,3 +249,14 @@ export function enhancementNotice(
   }
   return null;
 }
+
+/** The one-off Enhance override after the loaded FLUX.3 family becomes ``familyKey`` (non-empty): one set before any
+ *  model loaded ("") binds to it, one set under another family is dropped. */
+export function overrideAfterFamilyChange(
+  prev: { family: string; on: boolean } | null,
+  familyKey: string,
+): { family: string; on: boolean } | null {
+  if (!prev || !familyKey || prev.family === familyKey) return prev;
+  return prev.family === "" ? { ...prev, family: familyKey } : null;
+}
+

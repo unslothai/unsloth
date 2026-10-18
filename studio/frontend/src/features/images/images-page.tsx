@@ -319,6 +319,7 @@ import {
   enhanceRestoreFor,
   enhancementNotice,
   hasEnhancedPrompt,
+  overrideAfterFamilyChange,
   promptUpsamplerCapability,
   readEnhanceChoices,
   resolveEnhancePrompt,
@@ -2106,7 +2107,11 @@ export function ImagesPage({
   // restore or "Use as prompt" sets a one-off override that the next toggle or family change drops.
   const upsamplerCapability = promptUpsamplerCapability(status, Boolean(external));
   const enhanceFamilyKey = upsamplerCapability.supported ? (status?.family ?? "") : "";
-  // Derived rather than cleared in an effect: a switch to another loaded family simply stops matching.
+  // A family change consumes the override: one set before any model loaded binds to the first FLUX.3 family that
+  // loads, and a switch to another family drops it, so it cannot come back on a later switch.
+  useEffect(() => {
+    if (enhanceFamilyKey) setEnhanceOverrideState((prev) => overrideAfterFamilyChange(prev, enhanceFamilyKey));
+  }, [enhanceFamilyKey]);
   const enhanceOverride =
     enhanceOverrideState &&
     (enhanceOverrideState.family === "" || enhanceOverrideState.family === enhanceFamilyKey)

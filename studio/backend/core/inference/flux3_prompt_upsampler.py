@@ -895,6 +895,10 @@ class PromptUpsamplerSidecar:
                 ):
                     self._release_locked()
             if not self.loaded:
+                if not _image_model_owns_gpu():
+                    # Chat or video took the GPU after this request read the FLUX.3 status: starting now would sit
+                    # beside the new owner for the keep-alive.
+                    raise UpsamplerUnavailableError("The image model no longer holds the GPU.")
                 with _forward_cancel(cancel_event, self.cancel_pending_load):
                     self._launch(binary, model, mmproj)
             with self._lock:
@@ -922,6 +926,16 @@ class PromptUpsamplerSidecar:
             "flux3.prompt_upsampler: unloading after the call (free %s of %s MiB)", free_mib, total_mib
         )
         self.unload(wait = False)
+        return True
+
+
+def _image_model_owns_gpu() -> bool:
+    """The GPU arbiter's owner is the image model (or nobody yet, as on a fresh start). Fail-open."""
+    try:
+        from core.inference import gpu_arbiter
+
+        return gpu_arbiter.current_owner() in (None, gpu_arbiter.DIFFUSION)
+    except Exception:  # noqa: BLE001
         return True
 
 
@@ -1186,9 +1200,10 @@ def enhance_for_generation(
     outcome = EnhanceOutcome(status = STATUS_APPLIED)
     sidecar = get_sidecar()
     with _tracking(len(distinct), cancel_event) as tracked:
-        for prompt in distinct:
+        for index, prompt in enumerate(distinct):
             if cancel_event.is_set():
                 raise UpsamplerCancelledError("Cancelled.")
+            systemic = None
             try:
                 caption = upsample(
                     prompt,
@@ -1201,18 +1216,24 @@ def enhance_for_generation(
                 raise
             except UpsamplerUnavailableError as exc:
                 logger.warning("flux3.prompt_upsampler: unavailable (%s); prompt as typed", exc)
-                outcome.statuses[prompt] = STATUS_UNAVAILABLE
+                systemic = STATUS_UNAVAILABLE
             except Exception as exc:  # noqa: BLE001 -- an upsampler failure never fails the image
                 if cancel_event.is_set():
                     raise UpsamplerCancelledError("Cancelled.") from exc
                 logger.warning("flux3.prompt_upsampler: failed (%s); prompt as typed", exc)
-                outcome.statuses[prompt] = STATUS_FAILED
+                systemic = STATUS_FAILED
             else:
                 if caption == prompt:
                     outcome.statuses[prompt] = STATUS_FAILED
                 else:
                     outcome.captions[prompt] = caption
                     outcome.statuses[prompt] = STATUS_APPLIED
+            if systemic is not None:
+                # The runtime itself failed (a start that timed out, a dead server): the rest of the batch would wait
+                # out the same timeout each, so they run as typed now.
+                for rest in distinct[index:]:
+                    outcome.statuses[rest] = systemic
+                break
             _advance(tracked)
     with suppress(Exception):
         sidecar.release_if_tight()

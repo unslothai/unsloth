@@ -909,3 +909,50 @@ def test_no_repo_download_beside_an_override(routes, monkeypatch):
     monkeypatch.setattr(pup, "start_download", lambda token: started.append(token) or "dl")
     r = client.post("/api/inference/images/prompt-upsampler/download")
     assert r.status_code == 409 and "UNSLOTH_FLUX3_UPSAMPLER_GGUF" in r.text and started == []
+
+
+def test_a_systemic_failure_runs_the_rest_of_the_batch_as_typed(runnable):
+    runnable.error = RuntimeError("llama-server did not become ready for the prompt upsampler.")
+    out = pup.enhance_for_generation(["a", "b", "c"], family_name = "flux.3-klein", enhance_prompt = None)
+    # One start attempt, not one per prompt; every prompt falls back.
+    assert len(runnable.calls) == 1
+    assert out.statuses == {"a": "failed", "b": "failed", "c": "failed"} and out.captions == {}
+
+
+def test_no_sidecar_start_after_the_gpu_moved_to_another_owner(monkeypatch):
+    from core.inference import gpu_arbiter
+
+    sidecar = pup.PromptUpsamplerSidecar()
+    launched = []
+    monkeypatch.setattr(sidecar, "_launch", lambda *a: launched.append(a))
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    with pytest.raises(pup.UpsamplerUnavailableError, match = "no longer holds the GPU"):
+        sidecar.generate({}, binary = "b", model = "m", mmproj = None)
+    assert launched == []
+
+
+def test_the_preview_caps_the_aggregate_image_payload():
+    from pydantic import ValidationError
+
+    from models.inference import PromptUpsamplerPreviewRequest
+
+    big = "x" * (30 * 1024 * 1024)
+    PromptUpsamplerPreviewRequest(prompt = "p", reference_images = [big] * 4)
+    with pytest.raises(ValidationError, match = "at most 128 MiB"):
+        PromptUpsamplerPreviewRequest(prompt = "p", reference_images = [big] * 5)
+
+
+def test_a_managed_account_is_authorized_before_the_upsampler_runs(routes, runnable, monkeypatch):
+    from fastapi import HTTPException
+
+    from hub.services.models import account_access
+
+    client, backend, saved = routes
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+
+    def deny(status, modality = None):
+        raise HTTPException(status_code = 404, detail = "Model not found")
+
+    monkeypatch.setattr(account_access, "require_media_generation_access", deny)
+    r = client.post("/api/inference/images/generate", json = {"prompt": "a cat", "steps": 4})
+    assert r.status_code == 404 and runnable.calls == []

@@ -10,6 +10,7 @@ import {
   enhancePromptRequestField,
   enhanceRestoreFor,
   enhancementNotice,
+  overrideAfterFamilyChange,
   previewSignature,
   hasEnhancedPrompt,
   parsePromptUpsamplerStatus,
@@ -217,5 +218,16 @@ test("an unavailable outcome does not claim the weights are missing, and overrid
   const status = parsePromptUpsamplerStatus({ supported: true, downloaded: true, mmproj_downloaded: false, override: true });
   assert.equal(status.override, true);
   assert.equal(upsamplerNeedsDownload(status), false);
+});
+
+test("a family change consumes the one-off override instead of leaving it dormant", () => {
+  const unloaded = { family: "", on: false };
+  // Set before any model loaded: binds to the first FLUX.3 family that loads.
+  const bound = overrideAfterFamilyChange(unloaded, "flux.3-klein");
+  assert.deepEqual(bound, { family: "flux.3-klein", on: false });
+  assert.equal(overrideAfterFamilyChange(bound, "flux.3-klein"), bound);
+  // A switch to the other variant drops it, so switching back does not revive it.
+  assert.equal(overrideAfterFamilyChange(bound, "flux.3-klein-base"), null);
+  assert.equal(overrideAfterFamilyChange(null, "flux.3-klein"), null);
 });
 

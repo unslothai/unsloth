@@ -5244,6 +5244,10 @@ class PromptUpsamplerPreviewRequest(BaseModel):
             for item in value:
                 if len(item) > 32 * 1024 * 1024:
                     raise ValueError("each reference image must be at most 32 MiB (base64)")
+            if sum(len(item) for item in value) > _MAX_CONDITION_PAYLOAD:
+                raise ValueError(
+                    "the input images together must be at most 128 MiB (base64); use smaller images"
+                )
         return value
 
 

@@ -11,6 +11,7 @@ import { InfoHint } from "@/components/ui/info-hint";
 import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { useIsAccountOwner } from "@/features/auth/account-session";
 import { formatBytes, getHfToken, hfApiToken } from "@/features/hub";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
@@ -83,6 +84,8 @@ function UpsamplerDownloadNotice({
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  // The download and cancel routes are owner-only; a managed account is told who can fetch it instead.
+  const owner = useIsAccountOwner();
   const { download } = status;
   const fraction = upsamplerDownloadFraction(download);
   const downloadBytes = upsamplerDownloadBytes(status);
@@ -126,7 +129,7 @@ function UpsamplerDownloadNotice({
               type="button"
               size="sm"
               variant="ghost"
-              className="h-6 gap-1 px-1.5 text-xs"
+              className={cn("h-6 gap-1 px-1.5 text-xs", !owner && "hidden")}
               onClick={() => void cancel()}
             >
               <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
@@ -149,17 +152,21 @@ function UpsamplerDownloadNotice({
           {download.error && !download.cancelled ? (
             <span className="text-destructive">{download.error}</span>
           ) : null}
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            className="h-7 gap-1.5 self-start text-xs"
-            disabled={busy}
-            onClick={() => void start()}
-          >
-            {busy ? <Spinner className="size-3.5" /> : <HugeiconsIcon icon={Download04Icon} className="size-3.5" />}
-            {size ? `Download (${size})` : "Download"}
-          </Button>
+          {owner ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              className="h-7 gap-1.5 self-start text-xs"
+              disabled={busy}
+              onClick={() => void start()}
+            >
+              {busy ? <Spinner className="size-3.5" /> : <HugeiconsIcon icon={Download04Icon} className="size-3.5" />}
+              {size ? `Download (${size})` : "Download"}
+            </Button>
+          ) : (
+            <span className="text-muted-foreground">Ask the owner of this Unsloth install to download it.</span>
+          )}
         </>
       )}
     </div>
