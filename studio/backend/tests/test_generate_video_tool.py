@@ -216,7 +216,9 @@ def test_a_slow_create_is_never_cancelled_so_its_job_stays_tracked(
     assert video_routes._lookup_video(_only_job()).status in ("queued", "in_progress")
 
 
-def test_stop_during_a_slow_create_stops_the_job_it_starts(tmp_path, backend, keepwarm, monkeypatch):
+def test_stop_during_a_slow_create_stops_the_job_it_starts(
+    tmp_path, backend, keepwarm, monkeypatch
+):
     backend.gate.clear()
     _slow_create(monkeypatch, keepwarm, 0.6)
     monkeypatch.setattr(tool, "_STOP_WAIT_S", 0.05)

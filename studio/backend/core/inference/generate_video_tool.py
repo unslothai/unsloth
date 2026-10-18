@@ -207,7 +207,6 @@ def _cancel_created_job(acct, future) -> None:
     def _cancel(video_id: str) -> None:
         from core.inference.video import get_video_backend
         from utils.account_context import run_as
-
         try:
             run_as(
                 acct,
