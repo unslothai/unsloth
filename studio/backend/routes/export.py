@@ -457,17 +457,30 @@ async def get_moe_info(
         # The probe follows a LoRA folder to its base, so that base is authorized as a load is.
         adapter_base = await asyncio.to_thread(_authorized_adapter_base, model)
         if adapter_base:
-            validate_job_paths({"base_model": adapter_base})
+            validate_job_paths({"base_model": adapter_base, "hf_token": token})
     else:
         await _require_model_access_or_caller_token(model, token)
+    probe_token = token or hf_token_arg(None, allow_ambient_token = allow_ambient)
     # A local folder never reaches the network; a Hub id reads only its config.json.
     info = await asyncio.to_thread(
         moe_export_info,
         model,
-        token or hf_token_arg(None, allow_ambient_token = allow_ambient),
+        probe_token,
         local,
         adapter_base = adapter_base,
     )
+    if info is None and not local:
+        # A Hub LoRA repo publishes adapter_config.json, not config.json: probe its base, which is
+        # authorized first like the adapter.
+        from utils.models.model_config import get_base_model_from_lora_identifier
+        base = await asyncio.to_thread(get_base_model_from_lora_identifier, model, probe_token)
+        if base and base != model:
+            base_local = is_local_path(base)
+            if base_local:
+                validate_job_paths({"base_model": base, "hf_token": token})
+            else:
+                await _require_model_access_or_caller_token(base, token)
+            info = await asyncio.to_thread(moe_export_info, base, probe_token, base_local)
     return MoeInfoResponse(model = model, **(info or {}))
 
 

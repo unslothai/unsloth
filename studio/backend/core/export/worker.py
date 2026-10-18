@@ -443,7 +443,11 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 {"type": "status", "message": "Pruning experts with REAP...", "ts": time.time()},
             )
             ok, reap_message = apply_reap(
-                backend, reap, reap_staging_parent(cmd.get("save_directory"))
+                backend,
+                reap,
+                reap_staging_parent(cmd.get("save_directory")),
+                # The export's token, else the one the checkpoint was loaded with.
+                hf_token = cmd.get("hf_token") or getattr(backend, "_checkpoint_token", None),
             )
             if not ok:
                 _send_response(

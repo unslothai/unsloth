@@ -13,9 +13,10 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Same keys Core's reap.py reads; checked on text_config first, then the top-level config.
+# Exactly the keys Core's unsloth/models/reap.py reads (a model Core cannot size is not offered);
+# checked on text_config first, then the top-level config.
 _NUM_EXPERTS_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts")
-_TOP_K_KEYS = ("num_experts_per_tok", "top_k", "moe_top_k", "top_k_experts", "moe_topk", "moe_k")
+_TOP_K_KEYS = ("num_experts_per_tok", "top_k", "moe_top_k", "top_k_experts")
 _N_GROUP_KEYS = ("n_group", "num_expert_group")
 _TOPK_GROUP_KEYS = ("topk_group", "top_k_group")
 REPORT_NAME = "reap_report.json"
@@ -112,8 +113,26 @@ def _loaded_in_4bit(model: Any) -> bool:
     return False
 
 
-def apply_reap(backend: Any, options: Optional[dict], staging_parent) -> Tuple[bool, str]:
-    """Prune the loaded model once per load; a multi-format export reuses the pruned model."""
+def _calibration_dataset(dataset: Optional[str], hf_token):
+    """A custom dataset opened with the request's token (export workers keep tokens out of their
+    environment, so Core's own load would be anonymous); the default stays Core's."""
+    if not dataset:
+        return None
+    from datasets import load_dataset
+
+    kwargs = {} if hf_token is None else {"token": hf_token}
+    # Streaming reads only the rows Core uses.
+    return load_dataset(dataset, split = "train", streaming = True, **kwargs)
+
+
+def apply_reap(
+    backend: Any,
+    options: Optional[dict],
+    staging_parent,
+    hf_token = None,
+) -> Tuple[bool, str]:
+    """Prune the loaded model once per load; a multi-format export reuses the pruned model.
+    ``hf_token`` opens a private or gated calibration dataset."""
     if not options:
         return True, ""
     key = _options_key(options)
@@ -154,7 +173,7 @@ def apply_reap(backend: Any, options: Optional[dict], staging_parent) -> Tuple[b
         model,
         tokenizer,
         sparsity = sparsity,
-        dataset = dataset,
+        dataset = _calibration_dataset(dataset, hf_token),
         num_calibration_samples = samples,
         save_directory = str(Path(staging.name) / f"{name or 'model'}-REAP"),
     )

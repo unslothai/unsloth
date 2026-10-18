@@ -46,7 +46,7 @@ def test_moe_info_from_config_layouts():
     assert reap_mod.moe_info_from_config(
         {"model_type": "x_vl", "text_config": {"num_experts": 16, "top_k": 2}}
     ) == {"num_experts": 16, "top_k": 2}
-    assert reap_mod.moe_info_from_config({"moe_num_experts": 32, "moe_k": [4, 8]})["top_k"] == 8
+    assert reap_mod.moe_info_from_config({"moe_num_experts": 32, "top_k": [4, 8]})["top_k"] == 8
 
 
 @pytest.mark.parametrize(
@@ -202,7 +202,9 @@ def test_worker_runs_reap_before_export(monkeypatch):
     from core.export.worker import _handle_export
 
     seen = []
-    monkeypatch.setattr(reap_mod, "apply_reap", lambda b, o, p: (seen.append(o) or (True, "kept")))
+    monkeypatch.setattr(
+        reap_mod, "apply_reap", lambda b, o, p, **k: (seen.append(o) or (True, "kept"))
+    )
     monkeypatch.setattr(
         reap_mod, "write_reap_report", lambda b, path: seen.append(("report", path))
     )
@@ -224,7 +226,7 @@ def test_worker_runs_reap_before_export(monkeypatch):
 def test_worker_reap_failure_skips_export(monkeypatch):
     from core.export.worker import _handle_export
 
-    monkeypatch.setattr(reap_mod, "apply_reap", lambda b, o, p: (False, "needs 16-bit"))
+    monkeypatch.setattr(reap_mod, "apply_reap", lambda b, o, p, **k: (False, "needs 16-bit"))
     backend, q = _ExportBackend(), queue.Queue()
     _handle_export(
         backend,
@@ -358,4 +360,108 @@ def test_moe_info_route_uses_the_authorized_adapter_base(monkeypatch, tmp_path):
         )
     )
     assert (res.num_experts, res.top_k) == (8, 2)
-    assert {"base_model": str(base)} in checked
+    assert {"base_model": str(base), "hf_token": None} in checked
+
+
+def test_probe_keys_match_core():
+    # A key Core cannot read would advertise REAP for a model the export then refuses.
+    import ast
+    from pathlib import Path
+
+    core = Path(__file__).resolve().parents[3] / "unsloth" / "models" / "reap.py"
+    if not core.is_file():
+        pytest.skip("Core reap.py is not in this tree")
+    tree = ast.parse(core.read_text(encoding = "utf-8"))
+    consts = {
+        t.id: ast.literal_eval(node.value)
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        for t in node.targets
+        if isinstance(t, ast.Name) and t.id in ("_NUM_EXPERTS_KEYS", "_TOP_K_KEYS")
+    }
+    assert consts["_NUM_EXPERTS_KEYS"] == reap_mod._NUM_EXPERTS_KEYS
+    assert consts["_TOP_K_KEYS"] == reap_mod._TOP_K_KEYS
+    assert reap_mod.moe_info_from_config({"num_experts": 8, "moe_k": 2}) is None
+
+
+def test_custom_calibration_dataset_uses_the_request_token(fake_reap, tmp_path, monkeypatch):
+    import datasets
+
+    opened = []
+    monkeypatch.setattr(datasets, "load_dataset", lambda *a, **k: opened.append((a, k)) or ["rows"])
+    backend = _Backend(_Model())
+    reap_mod.apply_reap(
+        backend, {"sparsity": 0.25, "dataset": "org/private"}, str(tmp_path), hf_token = "hf_x"
+    )
+    assert opened == [(("org/private",), {"split": "train", "streaming": True, "token": "hf_x"})]
+    assert fake_reap[0]["dataset"] == ["rows"]
+    reap_mod.discard_reap_staging(backend)
+    # The default dataset is left to Core.
+    backend = _Backend(_Model())
+    reap_mod.apply_reap(backend, {"sparsity": 0.25}, str(tmp_path), hf_token = "hf_x")
+    assert fake_reap[1]["dataset"] is None and len(opened) == 1
+    reap_mod.discard_reap_staging(backend)
+
+
+def test_worker_forwards_the_export_token_to_reap(monkeypatch):
+    from core.export.worker import _handle_export
+
+    seen = {}
+    monkeypatch.setattr(
+        reap_mod,
+        "apply_reap",
+        lambda b, o, p, hf_token = None: (seen.update(token = hf_token) or (True, "")),
+    )
+    monkeypatch.setattr(reap_mod, "write_reap_report", lambda b, path: None)
+    backend, q = _ExportBackend(), queue.Queue()
+    backend._checkpoint_token = "hf_load"
+    _handle_export(
+        backend, {"export_type": "merged", "save_directory": "/tmp/o", "reap": {"sparsity": 0.5}}, q
+    )
+    assert seen["token"] == "hf_load"
+    _handle_export(
+        backend,
+        {
+            "export_type": "merged",
+            "save_directory": "/tmp/o",
+            "hf_token": "hf_push",
+            "reap": {"sparsity": 0.5},
+        },
+        q,
+    )
+    assert seen["token"] == "hf_push"
+
+
+def test_moe_info_route_follows_a_hub_lora_to_its_authorized_base(monkeypatch):
+    from routes import export as export_route
+    from utils.models import model_config
+
+    checked, probed = [], []
+
+    async def require(model, token):
+        checked.append((model, token))
+
+    monkeypatch.setattr(
+        export_route, "_require_model_access_or_caller_token", require, raising = False
+    )
+    import routes.models as models_route
+
+    monkeypatch.setattr(models_route, "_require_model_access_or_caller_token", require)
+    monkeypatch.setattr(
+        model_config, "get_base_model_from_lora_identifier", lambda m, t = None: "org/moe-base"
+    )
+
+    def probe(model, token, local, **kwargs):
+        probed.append(model)
+        return None if model == "me/lora" else {"num_experts": 8, "top_k": 2}
+
+    monkeypatch.setattr(reap_mod, "moe_export_info", probe)
+    res = asyncio.run(
+        export_route.get_moe_info(
+            model = "me/lora", hf_token = "hf_x", current_subject = "t", allow_ambient = False
+        )
+    )
+    assert (res.num_experts, res.top_k) == (8, 2)
+    assert probed == ["me/lora", "org/moe-base"]
+    # The base is authorized with the caller's token before its config is read.
+    assert checked == [("me/lora", "hf_x"), ("org/moe-base", "hf_x")]
