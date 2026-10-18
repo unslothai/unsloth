@@ -57,6 +57,8 @@ def _invokes_its_function(text: str) -> bool:
             if depth == 0:
                 return blanked[i + 1 :].lstrip().startswith(("(", ")("))
     return False
+
+
 _SAFE_INIT_RE = re.compile(
     r"^(?:/|[\"'`]|\d|\[|\{|!|new\s+(?:Set|Map|RegExp|Date)\b"
     r"|async\s+function\b|function\b|async\s*\(|\(|[A-Za-z_$][\w$]*\s*(?:=>|;))"
