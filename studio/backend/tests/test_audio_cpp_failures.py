@@ -176,6 +176,8 @@ def test_oom_lists_smaller_variants_and_offload_options(monkeypatch):
     capacity = af.classify_audio_cpp_failure(text, backend = "cuda", runtime_status = 400)
     assert (capacity.code, capacity.status, capacity.extras) == ("out_of_memory", 400, {})
     assert af.AudioCppFailure.from_payload(capacity.payload()) == capacity
+    cpu = af.classify_audio_cpp_failure(text, backend = "cpu", runtime_status = 400)
+    assert cpu.extras == {"device": "cpu"} and "CPU" not in cpu.message
     # Shipped tags declare no expert offload (v0.9.2 fish_drama3 is absent; others lack it).
     session = [{"name": "context_length", "type": "int"}]
     monkeypatch.setattr(models, "runtime_spec", lambda family: {"options": {"session": session}})
