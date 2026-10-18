@@ -197,6 +197,7 @@ def test_prepare_page_is_linear_on_unclosed_tags():
     start = time.monotonic()
     # 23 s quadratic, a few ms linear: room for a loaded CI box without losing the regression.
     browser_mod._prepare_page("<meta<base" * 80_000, "https://example.com/")
+    browser_mod._prepare_page("<base href=/>" + "<meta<base" * 80_000, "https://example.com/")
     assert time.monotonic() - start < 5
 
 
@@ -217,6 +218,40 @@ def test_an_unquoted_refresh_is_followed():
         "<meta http-equiv=refresh content=0;url=/next><p>x</p>", "https://example.com/a"
     )
     assert refresh == {"delay": 0.0, "url": "https://example.com/next"}
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        "<!-- {} -->",
+        "<noscript>{}</noscript>",
+        "<noscript><style>div{{display:none}}</style>{}<div>Turn on JavaScript</div></noscript>",
+        "<script>var tag = '{}';</script>",
+        "<template>{}</template>",
+        "<textarea>{}</textarea>",
+        "<div title='{}'>x</div>",
+    ],
+)
+def test_tags_written_as_text_are_neither_obeyed_nor_removed(wrap):
+    for tag in (
+        '<meta http-equiv="refresh" content="0;url=/httpservice/retry/enablejs">',
+        '<base href="https://example.org/elsewhere/">',
+        '<meta http-equiv="Content-Security-Policy" content="default-src https:">',
+    ):
+        page = "<head>" + wrap.format(tag) + "</head><body>x</body>"
+        assert browser_mod._prepare_page(page, "https://example.com/a") == (page, None, None)
+
+
+def test_live_tags_after_ones_written_as_text_still_count():
+    page = (
+        '<!-- <base href="https://example.org/"> -->'
+        '<noscript><meta http-equiv="refresh" content="0;url=/enablejs"></noscript>'
+        '<base href="/docs/"><meta http-equiv="refresh" content="1;url=next">'
+    )
+    html, base, refresh = browser_mod._prepare_page(page, "https://example.com/a")
+    assert html == page[: page.index('<base href="/docs/">')]
+    assert base == "https://example.com/docs/"
+    assert refresh == {"delay": 1.0, "url": "https://example.com/docs/next"}
 
 
 def _fetch(
