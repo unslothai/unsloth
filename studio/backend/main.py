@@ -2232,6 +2232,15 @@ async def health_check(request: Request):
         # because it is all-or-nothing: without it the greyed-out Train row can only say "run `unsloth studio
         # update`". From the snapshot, so it cannot come from a different detection pass than the reason beside it.
         authed["chat_only_detail"] = snapshot[2]
+        # A closed AMD device node (#14067): Repair installation cannot fix group membership.
+        try:
+            authed["chat_only_hint"] = (
+                _hw_module.chat_only_permission_hint(snapshot[1], snapshot[2])
+                if snapshot[0]
+                else None
+            )
+        except Exception:
+            authed["chat_only_hint"] = None
         authed["device_type"] = device_type
         authed["apple_silicon"] = is_apple_silicon()
         from utils.paths.file_manager import file_manager_kind

@@ -697,6 +697,27 @@ def test_the_system_tab_mismatch_names_a_closed_node(monkeypatch, linux, case):
 
 
 @pytest.mark.parametrize("case", [
+    pytest.param((_KFD_SHUT, "torch_cuda_unavailable", "2.11.0+rocm7.0", True), id = "rocm_wheel_gets_the_hint"),
+    pytest.param((_KFD_SHUT, "torch_cpu_build", "2.11.0+cpu", False), id = "cpu_wheel_keeps_the_repair"),
+    pytest.param((_BOTH_OPEN, "torch_cuda_unavailable", "2.11.0+rocm7.0", False), id = "open_nodes_add_nothing"),
+])
+def test_the_health_hint_for_the_train_tooltip(monkeypatch, linux, case):
+    """/api/health's ``chat_only_hint`` replaces the sidebar's reinstall advice only for a ROCm wheel."""
+    layout, verdict, label, has_hint = case
+    _nodes(monkeypatch, **layout)
+    _mismatch_vendors(monkeypatch, {"amd"})
+    for _probe, _answer in _pins(rocm_intent = False, hip_runtime = False).items():
+        monkeypatch.setattr(hardware, _probe, lambda _a = _answer: _a)
+    hardware._cached_chat_only_permission_hint.cache_clear()
+    hint = hardware.chat_only_permission_hint(verdict, label)
+    hardware._cached_chat_only_permission_hint.cache_clear()
+    if has_hint:
+        assert _USERMOD in hint
+    else:
+        assert hint is None
+
+
+@pytest.mark.parametrize("case", [
     # The load-time line. It runs ahead of the Vulkan branch on purpose: a closed render
     # node is the reason UNDERNEATH "the Vulkan probe reported no device", and that
     # phrasing sends the user after a driver that is already working.

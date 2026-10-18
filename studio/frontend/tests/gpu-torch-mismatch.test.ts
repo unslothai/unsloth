@@ -267,13 +267,23 @@ test("the sidebar's Train hint stops doing the same", () => {
     "trainDisabledHint",
     "app-sidebar.tsx",
   );
-  const forReason = (chatOnlyReason: string, chatOnlyDetail: string | null) =>
+  const forReason = (
+    chatOnlyReason: string,
+    chatOnlyDetail: string | null,
+    chatOnlyHint: string | null = null,
+  ) =>
     new Function(
       "chatOnlyMeasured",
       "chatOnlyReason",
       "chatOnlyDetail",
+      "chatOnlyHint",
       `${hint.replace(": string | undefined", "")}\nreturn trainDisabledHint;`,
-    )(true, chatOnlyReason, chatOnlyDetail) as string | undefined;
+    )(true, chatOnlyReason, chatOnlyDetail, chatOnlyHint) as string | undefined;
+
+  // #14067: a closed AMD node replaces the reinstall advice.
+  const closed = forReason("torch_cuda_unavailable", "2.11.0+rocm7.0", HINT);
+  assert.ok(closed?.includes("sudo usermod -a -G render,video ada"));
+  assert.doesNotMatch(closed ?? "", /repair the installation/);
 
   for (const reason of ["torch_cpu_build", "torch_cuda_unavailable"]) {
     const withDetail = forReason(reason, "2.11.0+cpu");

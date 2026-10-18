@@ -5,6 +5,7 @@
 
 import ast
 import copy
+import functools
 import gc
 import glob
 import importlib.util
@@ -1814,6 +1815,25 @@ def _amd_permission_hint_for_mismatch(detail: Optional[str]) -> tuple[Optional[s
         except Exception:
             node_hint = None
     return node_hint, wheel_targets_amd
+
+
+def chat_only_permission_hint(reason: Optional[str], detail: Optional[str]) -> Optional[str]:
+    """The closed-node sentence when it fully explains the chat-only verdict (a ROCm wheel), else None."""
+    if reason != "torch_cuda_unavailable":
+        return None
+    return _cached_chat_only_permission_hint(reason, detail, frozenset(CHAT_ONLY_MISMATCH_VENDORS))
+
+
+# Polled by /api/health. os.access answers for this process's groups, which only a restart changes.
+@functools.lru_cache(maxsize = 8)
+def _cached_chat_only_permission_hint(
+    reason: str, detail: Optional[str], _vendors: frozenset
+) -> Optional[str]:
+    try:
+        node_hint, wheel_targets_amd = _amd_permission_hint_for_mismatch(detail)
+    except Exception:
+        return None
+    return node_hint if wheel_targets_amd else None
 
 
 def _gpu_present_but_unusable_message(
