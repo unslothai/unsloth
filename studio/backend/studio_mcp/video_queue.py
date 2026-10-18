@@ -283,7 +283,8 @@ async def _position_eta(item: QueuedVideo) -> tuple[Optional[int], Optional[floa
         return None, None
     position = waiting.index(item) + 1
     try:
-        return position, await _eta(item.caller, position)
+        # Bounded, like every status read here: a stalled one leaves the ETA unknown.
+        return position, await asyncio.wait_for(_eta(item.caller, position), READ_S)
     except Exception:
         return position, None
 

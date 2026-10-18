@@ -345,3 +345,13 @@ def test_a_failed_status_read_does_not_end_the_wait_on_a_running_video(monkeypat
     asyncio.run(video_queue._wait_for_running(make_caller(account_id = "a")))
     # It waited through a failed read and a stalled one to the video's real end.
     assert next(reads, "drained") == "drained" and "a" not in video_queue._running
+
+
+def test_a_stalled_eta_read_leaves_the_eta_unknown(monkeypatch):
+    async def stalled(caller, position):
+        await asyncio.sleep(10)
+
+    monkeypatch.setattr(video_queue, "_eta", stalled)
+    monkeypatch.setattr(video_queue, "READ_S", 0.05)
+    item = video_queue._enqueue(make_caller(account_id = "a"), {"prompt": "x"}, None)
+    assert asyncio.run(video_queue._position_eta(item)) == (1, None)
