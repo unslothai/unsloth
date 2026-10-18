@@ -10,6 +10,13 @@ import {
   MEMORY_REFUSAL_HEADER,
   MemoryEstimateRefusalError,
 } from "./lib/memory-refusal";
+import {
+  parsePromptUpsamplerStatus,
+  PROMPT_UPSAMPLER_ROUTES,
+  type PromptEnhancement,
+  type PromptUpsamplerPreviewRequest,
+  type PromptUpsamplerStatus,
+} from "./lib/prompt-enhance";
 
 // One Advanced control's resolved value and provenance, for the Advanced-panel badges. `value` is the engaged
 // value (null when off), `requested` is what the caller asked for (null = left to the backend), `source` is "auto"
@@ -35,6 +42,8 @@ export interface DiffusionStatus {
   display_repo_id?: string | null;
   family: string | null;
   supported_families?: string[];
+  // Of those, the families shipped as Modular Diffusers pipelines (the family override classes an opaque folder).
+  modular_families?: string[];
   base_repo: string | null;
   device: string | null;
   dtype: string | null;
@@ -82,6 +91,10 @@ export interface DiffusionStatus {
   resolved?: Record<string, DiffusionResolvedControl> | null;
   // Default steps / guidance the backend renders the loaded model with (file header before base repo).
   generation_defaults?: { steps?: number; guidance?: number } | null;
+  // Whether the loaded family can run the prompt upsampler (FLUX.3), and whether it is on by default. Absent on
+  // an older backend: no Enhance prompt toggle.
+  supports_prompt_upsampler?: boolean;
+  prompt_upsampler_default?: boolean;
 }
 
 export interface DiffusionSamplerOption {
@@ -112,8 +125,10 @@ export interface DiffusionGenerateProgress {
   total_steps: number;
   fraction: number;
   eta_seconds: number | null;
-  // Absent (sd.cpp engine) means "denoise". "encode" runs before the denoise loop starts.
-  phase?: "encode" | "denoise" | "decode" | null;
+  // Absent (sd.cpp engine) means "denoise". "encode" runs before the denoise loop starts; "enhance" is the FLUX.3
+  // prompt upsampler writing the caption before the run (with `message`).
+  phase?: "enhance" | "encode" | "denoise" | "decode" | null;
+  message?: string | null;
   // Live latent preview of the image being denoised (small JPEG data URL), and a counter that moves with each one.
   preview?: string | null;
   preview_seq?: number;
@@ -220,6 +235,9 @@ export interface DiffusionGenerateRequest {
   controlnet?: ControlNetSpecInput;
   sampler?: string;
   schedule_type?: string;
+  // Rewrite the prompt with the family's prompt upsampler first. null/absent = the family default. Sent only for a
+  // family that supports it.
+  enhance_prompt?: boolean | null;
 }
 
 // One LoRA selection sent with a generation.
@@ -308,6 +326,9 @@ export interface GalleryImage {
   // null = the model's shipped scheduler; schedule_type is the resolved schedule.
   sampler?: string | null;
   schedule_type?: string | null;
+  // The caption the prompt upsampler wrote and the model actually ran; `prompt` stays the user's text.
+  enhanced_prompt?: string | null;
+  prompt_enhancement?: PromptEnhancement | null;
   created_at: number;
   // Library state, not recipe: stored beside the PNG, absent on records written before this existed.
   pinned?: boolean;
@@ -497,6 +518,43 @@ export async function cancelDiffusionGeneration(
 
 export async function unloadDiffusionModel(): Promise<DiffusionStatus> {
   return parseJson(await authFetch("/api/inference/images/unload", { method: "POST" }));
+}
+
+export async function getPromptUpsamplerStatus(signal?: AbortSignal): Promise<PromptUpsamplerStatus> {
+  return parsePromptUpsamplerStatus(
+    await parseJson<unknown>(await authFetch(PROMPT_UPSAMPLER_ROUTES.status, { signal })),
+  );
+}
+
+/** Start the background download of the prompt upsampler. Progress is read back from the status route. */
+export async function startPromptUpsamplerDownload(hfToken?: string): Promise<void> {
+  await parseJson<unknown>(
+    await authFetch(PROMPT_UPSAMPLER_ROUTES.download, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(hfToken ? { hf_token: hfToken } : {}),
+    }),
+  );
+}
+
+/** Stop the download. Partial files stay cached, so a later download resumes. */
+export async function cancelPromptUpsamplerDownload(): Promise<void> {
+  await parseJson<unknown>(
+    await authFetch(PROMPT_UPSAMPLER_ROUTES.cancel, { method: "POST" }),
+  );
+}
+
+/** Rewrite a prompt without generating, so the caption can be read or edited first. */
+export async function previewEnhancedPrompt(
+  body: PromptUpsamplerPreviewRequest,
+): Promise<{ enhanced_prompt: string }> {
+  return parseJson(
+    await authFetch(PROMPT_UPSAMPLER_ROUTES.preview, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
 }
 
 /** List diffusion LoRA adapters, optionally filtered to a model family. */

@@ -17,6 +17,7 @@ disagrees with ``_residents``, ``_owner`` wins.
 
 from __future__ import annotations
 
+import sys
 import threading
 from contextvars import ContextVar
 from typing import Any, Callable, Iterable, Optional
@@ -186,6 +187,19 @@ def _evict_diffusion() -> None:
     # Unload whichever engine the router has active (diffusers or native sd.cpp).
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
     get_active_diffusion_engine().unload()
+    _stop_prompt_upsampler()
+
+
+def _stop_prompt_upsampler() -> None:
+    """The FLUX.3 prompt upsampler serves the image model, so it leaves with every DIFFUSION claim: an evicted, a
+    released or a replaced one. Only if Images ever started it."""
+    module = sys.modules.get("core.inference.flux3_prompt_upsampler")
+    if module is None:
+        return
+    try:
+        module.stop_for_handover()
+    except Exception as exc:  # noqa: BLE001 - never block an acquire on this
+        logger.warning("gpu_arbiter: could not stop the FLUX.3 prompt upsampler: %s", exc)
 
 
 def _release_idle_video_servers(reason: str) -> None:
@@ -789,6 +803,8 @@ def restore_owner_account(owner: str, account_id: Optional[str] = None) -> bool:
 def release(owner: str) -> None:
     """Drop ``owner``'s residency (no-op if it isn't resident)."""
     with _lock:
+        if owner == DIFFUSION and owner in _view():
+            _stop_prompt_upsampler()
         _drop_resident(owner)
 
 
@@ -802,6 +818,8 @@ def release_if(owner: str, predicate: Callable[[], bool]) -> bool:
     with _lock:
         if owner not in _view() or not predicate():
             return False
+        if owner == DIFFUSION:
+            _stop_prompt_upsampler()
         _drop_resident(owner)
         return True
 
