@@ -200,12 +200,22 @@ export const BUDGET = {
   // (6,800,980 -> 6,805,412 B raw, 2,045,645 -> 2,047,341 B transfer against 15e4bc8fde, one machine and build,
   // Node 24, chunk count unchanged at 95): the shared slide module and SegmentedPill, imported by toggles that
   // already live in startup chunks, so there is no separate module to lazy-load. Raised by that growth.
-  // Matching letter shortcuts by the letter the layout types (#14113) adds 328 B raw / 99 B transfer
-  // (6,804,246 -> 6,804,574 B raw, 2,047,509 -> 2,047,608 B transfer against 7f63df9ac's main parent, one
-  // machine and build, Node 24, chunk count unchanged at 95): the matcher runs on every keydown from the first
-  // screen, so there is no separate module to lazy-load. Raised by that growth.
-  transferBytes: 2_047_576,
-  rawBytes: 6_806_175,
+  // QwenCloud as a connection (#14033) adds 167 B raw / 43 B transfer (6,804,234 -> 6,804,401 B raw, 2,047,526 ->
+  // 2,047,569 B transfer against ca3d1d0ce4, one machine and build, Node 24, chunk count unchanged at 95): its
+  // connection row, logo mapping and capability entries live in tables the startup chunks already load. Raised
+  // by that growth.
+  // Z.ai as a connection (#14034) adds 73 B raw / 29 B transfer (6,804,389 -> 6,804,462 B raw, 2,047,551 ->
+  // 2,047,580 B transfer against f172c8d7c4, one machine and build, Node 24, chunk count unchanged at 95): its
+  // logo mapping, capability row and vision gate entries live in tables the startup chunks already load. Raised
+  // by that growth.
+  // The audio.cpp v0.9.2 picker rows (#14073) add 253 B raw / 59 B transfer to the eager audio catalog
+  // table (one machine and build, chunk count unchanged at 95). Raised by that.
+  // Matching letter shortcuts by the letter the layout types (#14113) adds 328 B raw / 126 B transfer
+  // (6,805,192 -> 6,805,520 B raw, 2,047,700 -> 2,047,826 B transfer against 475a02ac1, one machine and build,
+  // Node 24, chunk count unchanged at 95): the matcher runs on every keydown from the first screen, so there is
+  // no separate module to lazy-load. Raised by that growth.
+  transferBytes: 2_047_734,
+  rawBytes: 6_806_415,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

@@ -74,6 +74,8 @@ FAKE_SERVER = textwrap.dedent(
             if entry["family"] == "moss_transcribe_diarize":
                 return self.reply(200, MOSS)
             payload = {"text": "Concord returned.", "language": "English"}
+            if entry["family"] == "owsm_ctc":
+                payload["language"] = language  # it echoes the language it was sent, "auto" included
             if (req.get("options") or {}).get("return_timestamps") == "true":
                 payload["words"] = [
                     {"word": "Concord", "start_sample": 9088, "end_sample": 19328},

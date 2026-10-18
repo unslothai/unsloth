@@ -2627,6 +2627,8 @@ class ChatCompletionRequest(BaseModel):
     model_config = {"extra": "allow"}
     # "off" with the client's own confirm_tool_calls=false: no prompt at all, even without OS isolation.
     _off_confirm_opt_out: bool = PrivateAttr(default = False)
+    # Anthropic web_search allowed/blocked domains; server-side only, never a request field.
+    _website_policy: Optional[dict] = PrivateAttr(default = None)
 
     model: str = Field(
         "default",
@@ -5347,6 +5349,9 @@ class DiffusionStatusResponse(BaseModel):
     display_repo_id: Optional[str] = Field(None, description = "Logical Hub id of a local snapshot")
     family: Optional[str] = Field(None, description = "Detected diffusion family")
     supported_families: List[str] = Field(default_factory = list, description = "Loadable families")
+    modular_families: List[str] = Field(
+        default_factory = list, description = "Loadable families shipped as Modular Diffusers pipelines"
+    )
     base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
     device: Optional[str] = Field(None, description = "Device the pipeline is on")
     dtype: Optional[str] = Field(None, description = "Compute dtype")
