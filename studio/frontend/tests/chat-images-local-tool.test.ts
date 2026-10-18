@@ -149,7 +149,7 @@ test("chat-page refreshes readiness from both status routes and the lifecycle ev
     "getDiffusionStatus(current.signal)",
     "getVideoStatus(current.signal)",
     "Promise.allSettled(",
-    'imageStatus.workflows.includes("txt2img")',
+    "localMediaReadyFromStatus(",
     "subscribeModelLifecycle(",
     'subscribeModelEjected("image", refresh)',
     'subscribeModelEjected("video", refresh)',
@@ -169,4 +169,33 @@ test("every adapter tool gate opens for, and every tool list carries, the local 
     adapter,
     /\.\.\.\(imageGenerationEnabledForThisTurn\s*\?\s*\["image_generation"\]\s*:\s*\[\]\)/,
   );
+});
+
+test("a hidden or edit-only resident is not ready; one this account may use is", () => {
+  const { localMediaReadyFromStatus } = store as unknown as {
+    localMediaReadyFromStatus: (
+      image: Record<string, unknown> | null,
+      video: Record<string, unknown> | null,
+    ) => { image: boolean; video: boolean };
+  };
+  // Another account's resident, as the status routes answer a managed caller.
+  assert.deepEqual(
+    localMediaReadyFromStatus({ loaded: true, yours: false }, { loaded: true, yours: false }),
+    { image: false, video: false },
+  );
+  assert.deepEqual(
+    localMediaReadyFromStatus(
+      { loaded: true, workflows: ["txt2img", "img2img"] },
+      { loaded: true },
+    ),
+    { image: true, video: true },
+  );
+  assert.deepEqual(
+    localMediaReadyFromStatus({ loaded: true, workflows: ["edit"] }, null),
+    { image: false, video: false },
+  );
+  assert.deepEqual(localMediaReadyFromStatus(null, { loaded: false }), {
+    image: false,
+    video: false,
+  });
 });

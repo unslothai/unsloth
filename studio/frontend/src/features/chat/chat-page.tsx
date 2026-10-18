@@ -263,6 +263,7 @@ import {
   CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
   PENDING_CHAT_ATTACHMENT_KEY,
   loadOptionalBool,
+  localMediaReadyFromStatus,
   noteEffortDisplacedByPin,
   pinHoldsLiveEffort,
   readPendingAttachmentTargetClaim,
@@ -3238,15 +3239,14 @@ export function ChatPage({
         getVideoStatus(current.signal),
       ]).then(([image, video]) => {
         if (disposed || current.signal.aborted) return;
-        const imageStatus = image.status === "fulfilled" ? image.value : null;
-        useChatRuntimeStore.getState().setLocalMediaModelsReady({
-          image: Boolean(
-            imageStatus?.loaded &&
-              (!imageStatus.workflows ||
-                imageStatus.workflows.includes("txt2img")),
-          ),
-          video: video.status === "fulfilled" && video.value.loaded,
-        });
+        useChatRuntimeStore
+          .getState()
+          .setLocalMediaModelsReady(
+            localMediaReadyFromStatus(
+              image.status === "fulfilled" ? image.value : null,
+              video.status === "fulfilled" ? video.value : null,
+            ),
+          );
       });
     };
     refresh();

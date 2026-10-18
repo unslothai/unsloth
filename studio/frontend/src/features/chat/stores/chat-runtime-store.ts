@@ -1134,6 +1134,32 @@ export function localMediaToolsForTurn(
   ];
 }
 
+type MediaStatusSnapshot = {
+  loaded?: boolean;
+  /** False when the resident model belongs to another account this one may not use. */
+  yours?: boolean;
+  workflows?: string[] | null;
+} | null;
+
+/**
+ * Whether the image and video status responses leave a model this account can render on.
+ * A hidden resident answers `{loaded: true, yours: false}`; the backend never offers the
+ * tool for it, so it is not ready here either. An edit-only image model is not ready.
+ */
+export function localMediaReadyFromStatus(
+  image: MediaStatusSnapshot,
+  video: MediaStatusSnapshot,
+): { image: boolean; video: boolean } {
+  return {
+    image: Boolean(
+      image?.loaded &&
+        image.yours !== false &&
+        (!image.workflows || image.workflows.includes("txt2img")),
+    ),
+    video: Boolean(video?.loaded && video.yours !== false),
+  };
+}
+
 /** Sampling keys share `params` with the model's recommendation, so a load in this window
  *  would pin the model's value onto the chat. Captured at the edit; last entry wins. */
 function heldThreadScopedParamValue(key: string): unknown {
