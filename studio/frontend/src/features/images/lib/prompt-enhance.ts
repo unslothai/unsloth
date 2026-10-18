@@ -223,10 +223,33 @@ export function hasEnhancedPrompt(image: {
   return Boolean(caption) && caption !== image.prompt.trim();
 }
 
-/** What a preview caption was written for: the prompt, the variant and the reference images (by length and ends,
- *  so a swapped image changes it without hashing megabytes per render). */
+const referenceDigests = new Map<string, string>();
+const REFERENCE_DIGEST_CACHE = 8;
+
+/** Two 32-bit hashes (FNV-1a, djb2) over the whole data URL, computed once per image: the same-format headers and
+ *  trailers of two different images often match, so the ends alone do not tell them apart. */
+export function referenceDigest(src: string): string {
+  const hit = referenceDigests.get(src);
+  if (hit !== undefined) return hit;
+  let fnv = 0x811c9dc5;
+  let djb = 5381;
+  for (let i = 0; i < src.length; i++) {
+    const code = src.charCodeAt(i);
+    fnv = Math.imul(fnv ^ code, 0x01000193);
+    djb = (Math.imul(djb, 33) + code) | 0;
+  }
+  const digest = `${src.length}:${(fnv >>> 0).toString(16)}:${(djb >>> 0).toString(16)}`;
+  if (referenceDigests.size >= REFERENCE_DIGEST_CACHE) {
+    const oldest = referenceDigests.keys().next().value;
+    if (oldest !== undefined) referenceDigests.delete(oldest);
+  }
+  referenceDigests.set(src, digest);
+  return digest;
+}
+
+/** What a preview caption was written for: the prompt, the variant and the reference images. */
 export function previewSignature(body: PromptUpsamplerPreviewRequest): string {
-  const refs = (body.reference_images ?? []).map((src) => `${src.length}:${src.slice(0, 48)}:${src.slice(-48)}`);
+  const refs = (body.reference_images ?? []).map(referenceDigest);
   return JSON.stringify([body.prompt.trim(), body.variant ?? null, refs]);
 }
 

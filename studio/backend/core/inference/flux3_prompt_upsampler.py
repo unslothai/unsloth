@@ -181,8 +181,8 @@ MAX_PIXELS_BY_REFS = {
     **dict.fromkeys(range(3, MAX_REFERENCES + 1), 512 * 512),
 }
 JPEG_QUALITY = 92
-# Header guard on decoded uploads, as diffusion.decode_b64_image's default.
-_MAX_UPLOAD_SIDE = 8192
+# Header guard on decoded uploads, diffusion.decode_b64_image's default: a larger reference fails the generate anyway.
+_MAX_UPLOAD_SIDE = 4096
 
 # ── server ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 # Holds the system prompt (~1k tokens), up to ten references (256-1024 image tokens each) and the 3584-token caption.
@@ -578,9 +578,43 @@ def status() -> dict:
 
 
 # ── accelerator memory ──────────────────────────────────────────────────────────────────────────────────────────────
-def _accelerator_memory_mib() -> tuple[Optional[int], Optional[int], str]:
-    """(free, total, device) of the accelerator llama.cpp would offload to, through the diffusion backend's helper.
-    ``device`` is cuda / mps / cpu; free is None when unknown."""
+def _resident_cuda_ordinal() -> Optional[int]:
+    """The CUDA card the resident image model sits on, else None."""
+    try:
+        from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
+        ordinal = getattr(getattr(get_active_diffusion_engine(), "_state", None), "placed_ordinal", None)
+        return None if ordinal is None else int(ordinal)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _child_device_mask(ordinal: Optional[int]) -> dict:
+    """Pin llama-server to the image model's card: left alone it splits layers over every visible GPU, onto a card the
+    memory probe never read."""
+    if ordinal is None:
+        return {}
+    try:
+        import torch
+
+        if torch.cuda.device_count() <= 1:
+            return {}
+        var = "CUDA_VISIBLE_DEVICES"
+        if getattr(torch.version, "hip", None) and os.environ.get(var) is None:
+            var = "HIP_VISIBLE_DEVICES"
+        parent = os.environ.get(var)
+        if parent is None:
+            return {var: str(ordinal)}
+        # Torch indexes inside the parent's mask, so the child keeps that entry (an index or a UUID).
+        entries = [entry.strip() for entry in parent.split(",") if entry.strip()]
+        return {var: entries[ordinal]} if ordinal < len(entries) else {}
+    except Exception:  # noqa: BLE001 -- no mask: llama.cpp's own device choice
+        return {}
+
+
+def _accelerator_memory_mib(ordinal: Optional[int] = None) -> tuple[Optional[int], Optional[int], str]:
+    """(free, total, device) of the accelerator llama.cpp would offload to (CUDA card ``ordinal`` when given), through
+    the diffusion backend's helper. ``device`` is cuda / mps / cpu; free is None when unknown."""
     try:
         import torch
         from types import SimpleNamespace
@@ -593,7 +627,10 @@ def _accelerator_memory_mib() -> tuple[Optional[int], Optional[int], str]:
             device = "mps"
         else:
             return None, None, "cpu"
-        snap = snapshot_device_memory(SimpleNamespace(device = device, backend = device))
+        from core.inference.diffusion_device import diffusion_device_scope
+
+        with diffusion_device_scope(ordinal if device == "cuda" else None):
+            snap = snapshot_device_memory(SimpleNamespace(device = device, backend = device))
         return snap.free_mib, snap.total_mib, device
     except Exception:  # noqa: BLE001 -- unknown memory leaves the choice to the defaults
         return None, None, "unknown"
@@ -654,6 +691,10 @@ class PromptUpsamplerSidecar:
         self._idle_timer: Optional[threading.Timer] = None
         self._generation = 0
         self._active_requests = 0
+        # A blocking unload bumps the epoch and holds ``_stopping``: requests queued before it never start a server.
+        self._stop_epoch = 0
+        self._stopping = 0
+        self._gpu_ordinal: Optional[int] = None
 
     @property
     def loaded(self) -> bool:
@@ -716,15 +757,24 @@ class PromptUpsamplerSidecar:
         """Stop the server. ``wait=False`` leaves a busy one alone."""
         if not wait and (self._loading or self._active_requests):
             return
-        self.cancel_pending_load()
         if wait:
-            deadline = time.monotonic() + 30.0
-            while self._active_requests and time.monotonic() < deadline:
-                time.sleep(0.1)
-        with self._lock:
-            if not wait and self._active_requests:
-                return
-            self._release_locked()
+            with self._lock:
+                self._stop_epoch += 1
+                self._stopping += 1
+        try:
+            self.cancel_pending_load()
+            if wait:
+                deadline = time.monotonic() + 30.0
+                while self._active_requests and time.monotonic() < deadline:
+                    time.sleep(0.1)
+            with self._lock:
+                if not wait and self._active_requests:
+                    return
+                self._release_locked()
+        finally:
+            if wait:
+                with self._lock:
+                    self._stopping -= 1
 
     def cancel_pending_load(self) -> bool:
         if not self._loading:
@@ -778,9 +828,12 @@ class PromptUpsamplerSidecar:
 
         model_bytes = os.path.getsize(model)
         mmproj_bytes = os.path.getsize(mmproj) if mmproj else 0
-        free_mib, _total, device = _accelerator_memory_mib()
+        ordinal = _resident_cuda_ordinal()
+        free_mib, _total, device = _accelerator_memory_mib(ordinal)
         training = _training_active()
-        layers = plan_gpu_layers(free_mib, model_bytes, mmproj_bytes, device, training)
+        # Nobody holds the GPU (a CPU image load, no model): offloaded layers would sit outside every eviction.
+        cpu_only = training or _gpu_unowned()
+        layers = plan_gpu_layers(free_mib, model_bytes, mmproj_bytes, device, cpu_only)
         sock, port = MtmdSttSidecar._reserve_free_port()
         cmd = [
             binary,
@@ -834,7 +887,7 @@ class PromptUpsamplerSidecar:
         log_path = (os.environ.get(ENV_SERVER_LOG) or "").strip()
         log_file = open(log_path, "ab") if log_path else None
         try:
-            env = {**_llama_server_child_env(binary), **key_env}
+            env = {**_llama_server_child_env(binary), **key_env, **_child_device_mask(ordinal)}
             # Forked from the process-lifetime thread: PDEATHSIG fires when the forking THREAD exits, and requests
             # run on executor workers, so a server spawned there died with its worker and the keep-alive never held.
             process = spawn_on_lifetime_thread(
@@ -872,6 +925,7 @@ class PromptUpsamplerSidecar:
                 self._penalize_prompt_supported = penalize_prompt_supported
                 self._key = (binary, model, mmproj)
                 self._gpu_layers = layers
+                self._gpu_ordinal = ordinal
                 self._generation += 1
         finally:
             if log_file is not None:
@@ -890,6 +944,7 @@ class PromptUpsamplerSidecar:
         """Run one chat completion and return the raw text, (re)starting the server for these files."""
         if self._update_in_progress:
             raise UpsamplerUnavailableError("llama.cpp is being updated.")
+        epoch = self._stop_epoch
         with self._request_lock:
             if cancel_event is not None and cancel_event.is_set():
                 raise UpsamplerCancelledError("Cancelled.")
@@ -902,6 +957,10 @@ class PromptUpsamplerSidecar:
                     current[:2] == (binary, model) and (mmproj is None or current[2] == mmproj)
                 ):
                     self._release_locked()
+                if self._stopping or epoch != self._stop_epoch:
+                    # Queued behind a request a training start or GPU handover drained: starting now would sit beside
+                    # the new owner.
+                    raise UpsamplerUnavailableError("The prompt upsampler was stopped for another GPU user.")
                 # Claimed under the same lock: an idle callback already waiting on it then sees the request.
                 self._active_requests += 1
             try:
@@ -928,7 +987,7 @@ class PromptUpsamplerSidecar:
         denoise next to it. True when it unloaded."""
         if not self.holds_vram():
             return False
-        free_mib, total_mib, _device = _accelerator_memory_mib()
+        free_mib, total_mib, _device = _accelerator_memory_mib(self._gpu_ordinal)
         if not vram_is_tight(free_mib, total_mib):
             return False
         logger.info(
@@ -936,6 +995,15 @@ class PromptUpsamplerSidecar:
         )
         self.unload(wait = False)
         return True
+
+
+def _gpu_unowned() -> bool:
+    try:
+        from core.inference import gpu_arbiter
+
+        return gpu_arbiter.current_owner() is None
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _image_model_owns_gpu() -> bool:

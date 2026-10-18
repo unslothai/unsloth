@@ -211,6 +211,13 @@ test("a preview caption goes stale when the prompt, the variant or a reference i
   assert.notEqual(previewSignature({ ...base, variant: "base" }), sig);
   assert.notEqual(previewSignature({ ...base, reference_images: ["data:image/png;base64,BBBB"] }), sig);
   assert.notEqual(previewSignature({ prompt: base.prompt, variant: base.variant }), sig);
+  // Same length and the same 48 characters at each end: only the body differs.
+  const head = "data:image/png;base64," + "A".repeat(60);
+  const tail = "Z".repeat(60);
+  assert.notEqual(
+    previewSignature({ ...base, reference_images: [head + "QQQQ" + tail] }),
+    previewSignature({ ...base, reference_images: [head + "RRRR" + tail] }),
+  );
 });
 
 test("an unavailable outcome does not claim the weights are missing, and overrides offer no download", () => {

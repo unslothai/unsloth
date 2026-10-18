@@ -10,6 +10,7 @@ import base64
 import hashlib
 import io
 import threading
+import time
 
 import pytest
 
@@ -806,6 +807,62 @@ def test_unload_route_stops_the_upsampler_blocking(routes, monkeypatch):
     assert waits == [True] and cancels == [True]
 
 
+def test_a_request_queued_before_a_blocking_unload_never_starts(monkeypatch):
+    sidecar = pup.PromptUpsamplerSidecar()
+    launched = []
+    monkeypatch.setattr(pup, "_image_model_owns_gpu", lambda: True)
+    monkeypatch.setattr(sidecar, "_launch", lambda *a: launched.append(a))
+    monkeypatch.setattr(pup, "_post_chat", lambda *a, **k: "caption")
+    sidecar._request_lock.acquire()
+    errors = []
+
+    def queued():
+        try:
+            sidecar.generate({}, binary = "b", model = "m", mmproj = None)
+        except pup.UpsamplerUnavailableError as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target = queued)
+    worker.start()
+    time.sleep(0.2)
+    # Training starts while that request waits on the lock: the drain finds nothing active and returns.
+    sidecar.unload(wait = True)
+    sidecar._request_lock.release()
+    worker.join(5)
+    assert errors and launched == []
+    # A request after the handover is a new one.
+    assert sidecar.generate({}, binary = "b", model = "m", mmproj = None) == "caption"
+
+
+def test_an_unowned_gpu_starts_the_upsampler_on_the_cpu(monkeypatch):
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: None)
+    assert pup._gpu_unowned()
+    monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: gpu_arbiter.DIFFUSION)
+    assert not pup._gpu_unowned()
+
+
+def test_the_child_is_pinned_to_the_image_models_card(monkeypatch):
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 4)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3,5,GPU-abc")
+    assert pup._child_device_mask(2) == {"CUDA_VISIBLE_DEVICES": "GPU-abc"}
+    assert pup._child_device_mask(1) == {"CUDA_VISIBLE_DEVICES": "5"}
+    assert pup._child_device_mask(None) == {}
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
+    assert pup._child_device_mask(1) == {"CUDA_VISIBLE_DEVICES": "1"}
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    assert pup._child_device_mask(0) == {}
+
+
+def test_references_follow_the_generate_decoders_side_limit():
+    with pytest.raises(ValueError):
+        pup.prepare_references([_png_url((4100, 64))])
+
+
 def test_generate_skips_the_upsampler_while_another_account_runs(routes, runnable, monkeypatch):
     from hub.services.models import account_access
 
@@ -879,6 +936,8 @@ def test_stop_during_server_start_cancels_the_start(monkeypatch):
 
 
 class _ResidentUpsampler:
+    loaded = True
+
     def __init__(self):
         self.unloaded = []
 

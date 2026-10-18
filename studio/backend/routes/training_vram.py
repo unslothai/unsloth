@@ -676,7 +676,8 @@ def free_prompt_upsampler_for_training(reason: str) -> List[str]:
         return []
     try:
         upsampler = upsampler_module.get_sidecar()
-        if upsampler.holds_vram() or upsampler.is_loading():
+        # Loaded, not only on the GPU: a -ngl 0 server still holds ~6 GB of host RAM and the CPU through training.
+        if upsampler.loaded or upsampler.is_loading():
             logger.info("Unloading the FLUX.3 prompt upsampler for training (%s)", reason)
             upsampler.unload()
             return ["image:prompt-upsampler"]
