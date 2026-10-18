@@ -657,3 +657,17 @@ def test_a_media_load_registered_meanwhile_is_not_replaced_under_always(arb_log,
     with pytest.raises(arb.MultiModelAlwaysRefusal):
         arb.refuse_replacing_media(arb.DIFFUSION, "always", ("org/First",))
     assert arb.refuse_replacing_media(arb.DIFFUSION, "off", ("org/First",)) == []
+
+
+def test_always_evicts_a_chat_claim_that_holds_nothing_unless_a_chat_load_is_in_flight(
+    arb_log, monkeypatch
+):
+    busy = {"now": True}
+    monkeypatch.setattr(arb, "_chat_occupied", lambda: busy["now"])
+    arb.acquire_for(arb.CHAT)
+    with pytest.raises(arb.MultiModelAlwaysRefusal):
+        arb.acquire_for(arb.DIFFUSION, policy = "always")
+    busy["now"] = False
+    arb_log.clear()
+    arb.acquire_for(arb.DIFFUSION, policy = "always")
+    assert "evict-chat" in arb_log and arb.residents() == {arb.DIFFUSION: None}
