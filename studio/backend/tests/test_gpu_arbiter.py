@@ -9,6 +9,8 @@ these verify only the ownership/eviction sequencing — no torch, GPU, or subpro
 
 from __future__ import annotations
 
+import types
+
 import pytest
 
 import core.inference.gpu_arbiter as arb
@@ -897,3 +899,100 @@ def test_owner_account_and_restore_are_tracked_per_owner(arb_log):
     arb._accounts[arb.CHAT] = (BOB.account_id, ALICE.account_id)
     assert run_as(BOB, arb.restore_owner_account, arb.CHAT) is True
     assert arb.owner_account(arb.CHAT) == ALICE.account_id
+
+
+def test_always_evicts_a_media_claim_that_holds_nothing_unless_it_is_loading(arb_log, monkeypatch):
+    # An image load that failed in the background keeps its claim yet holds no model.
+    probe = {"loading": False, "broken": False}
+
+    def loading(owner):
+        if probe["broken"]:
+            raise RuntimeError("status unreadable")
+        return probe["loading"]
+
+    monkeypatch.setattr(arb, "_media_status", lambda owner: None)
+    monkeypatch.setattr(arb, "_media_loading", loading)
+    arb.acquire_for(arb.DIFFUSION)
+    # Loading, or unreadable: Always keeps it.
+    for key in ("loading", "broken"):
+        probe[key] = True
+        with pytest.raises(arb.MultiModelAlwaysRefusal):
+            arb.acquire_for(arb.CHAT, policy = "always")
+        probe[key] = False
+    arb_log.clear()
+    arb.acquire_for(arb.CHAT, policy = "always")
+    assert "evict-diffusion" in arb_log and arb.residents() == {arb.CHAT: None}
+
+
+@pytest.mark.parametrize(
+    "policy, requested, refused",
+    [
+        ("always", ("org/Other",), True),
+        ("always", ("org/Flux",), False),
+        ("always", ("/models/flux", "org/Flux"), False),
+        ("fit", ("org/Other",), False),
+    ],
+)
+def test_always_refuses_replacing_a_loaded_media_model_with_another_repo(
+    arb_log, monkeypatch, policy, requested, refused
+):
+    monkeypatch.setattr(arb, "_media_status", lambda owner: {"loaded": True, "repo_id": "org/Flux"})
+    _report(monkeypatch, arb_log, arb.DIFFUSION, {"kind": "image", "model": "org/Flux"})
+    if refused:
+        with pytest.raises(arb.MultiModelAlwaysRefusal) as excinfo:
+            arb.refuse_replacing_media(arb.DIFFUSION, policy, requested)
+        assert (excinfo.value.kind, excinfo.value.model) == ("image", "org/Flux")
+    else:
+        # Off and fit replace it, and the load reports it.
+        replaced = arb.refuse_replacing_media(arb.DIFFUSION, policy, requested)
+        assert replaced == ([{"kind": "image", "model": "org/Flux"}] if policy == "fit" else [])
+    monkeypatch.setattr(arb, "_media_status", lambda owner: None)
+    monkeypatch.setattr(arb, "_media_loading", lambda owner: False)
+    assert arb.refuse_replacing_media(arb.VIDEO, "always", ("org/Other",)) == []
+
+
+def test_a_media_load_registered_meanwhile_is_not_replaced_under_always(arb_log, monkeypatch):
+    # Two loads checked before either registered: the second re-checks under the arbiter lock.
+    monkeypatch.setattr(arb, "_media_status", lambda owner: None)
+    monkeypatch.setattr(arb, "_media_loading", lambda owner: True)
+    monkeypatch.setattr(
+        arb,
+        "_media_backend",
+        lambda owner: types.SimpleNamespace(loading_repo_ids = lambda: ("org/First",)),
+    )
+    begun = []
+
+    def begin():
+        begun.append(True)
+        return "started"
+
+    second = arb.guarded_media_begin(arb.DIFFUSION, "always", ("org/Second",), begin)
+    with pytest.raises(arb.MultiModelAlwaysRefusal):
+        arb.acquire_for(arb.DIFFUSION, second, policy = "always")
+    with pytest.raises(arb.MultiModelAlwaysRefusal):
+        arb.begin_media_load(arb.DIFFUSION, "always", ("org/Second",), begin)
+    assert begun == []
+    assert arb.begin_media_load(arb.DIFFUSION, "always", ("org/First",), begin) == "started"
+    assert arb.guarded_media_begin(arb.DIFFUSION, "fit", ("org/Second",), begin) is begin
+
+    def unreadable(owner):
+        raise RuntimeError("status unreadable")
+
+    monkeypatch.setattr(arb, "_media_status", unreadable)
+    with pytest.raises(arb.MultiModelAlwaysRefusal):
+        arb.refuse_replacing_media(arb.DIFFUSION, "always", ("org/First",))
+    assert arb.refuse_replacing_media(arb.DIFFUSION, "off", ("org/First",)) == []
+
+
+def test_always_evicts_a_chat_claim_that_holds_nothing_unless_a_chat_load_is_in_flight(
+    arb_log, monkeypatch
+):
+    busy = {"now": True}
+    monkeypatch.setattr(arb, "_chat_occupied", lambda: busy["now"])
+    arb.acquire_for(arb.CHAT)
+    with pytest.raises(arb.MultiModelAlwaysRefusal):
+        arb.acquire_for(arb.DIFFUSION, policy = "always")
+    busy["now"] = False
+    arb_log.clear()
+    arb.acquire_for(arb.DIFFUSION, policy = "always")
+    assert "evict-chat" in arb_log and arb.residents() == {arb.DIFFUSION: None}
