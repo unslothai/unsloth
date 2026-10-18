@@ -83,7 +83,12 @@ def _softcap_logits(config, logits):
         logits = logits * scale
     scaling = getattr(config, "logits_scaling", None)
     if scaling is not None and scaling != 1:
-        logits = logits / scaling
+        # Granite divides the logits (MiniCPM3 divides the hidden state, the same thing for a
+        # bias-free head); HyperCLOVA X multiplies them.
+        if getattr(config, "model_type", None) == "hyperclovax":
+            logits = logits * scaling
+        else:
+            logits = logits / scaling
     cap = getattr(config, "final_logit_softcapping", None)
     if not cap:
         return logits
@@ -1706,7 +1711,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--model", required = True)
     p.add_argument("--steps", type = _positive_int, default = 20)
-    p.add_argument("--batch", type = int, default = 8, help = "global batch per step")
+    p.add_argument("--batch", type = _positive_int, default = 8, help = "global batch per step")
     p.add_argument("--microbatches", type = int, default = 4)
     p.add_argument("--seq", type = int, default = 512)
     p.add_argument("--lr", type = float, default = 1e-4)

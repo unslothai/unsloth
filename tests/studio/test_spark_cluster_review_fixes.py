@@ -250,3 +250,44 @@ def test_switched_setup_labels_each_block_with_its_own_node(cluster, capsys) -> 
     out = capsys.readouterr().out
     assert out.index("Spark node 0") < out.index("192.168.100.12") < out.index("Spark node 2")
     assert out.index("Spark node 2") < out.index("192.168.100.14")
+
+
+def test_hyperclovax_multiplies_by_logits_scaling_and_granite_divides(pipeline) -> None:
+    torch = pytest.importorskip("torch")
+    from types import SimpleNamespace
+
+    logits = torch.full((1, 2, 3), 4.0)
+    granite = SimpleNamespace(model_type = "granite", logits_scaling = 8.0)
+    clova = SimpleNamespace(model_type = "hyperclovax", logits_scaling = 0.5)
+    assert torch.allclose(pipeline._softcap_logits(granite, logits), logits / 8.0)
+    assert torch.allclose(pipeline._softcap_logits(clova, logits), logits * 0.5)
+
+
+def test_a_nonpositive_batch_is_refused_before_any_setup(pipeline) -> None:
+    parser = pipeline.build_parser()
+    for bad in ("0", "-4"):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--model", "m", "--batch", bad])
+
+
+def test_a_gguf_without_head_count_kv_prices_kv_with_the_attention_heads(cluster) -> None:
+    meta = {
+        "general.architecture": "llama",
+        "llama.block_count": 2,
+        "llama.attention.head_count": 4,
+        "llama.embedding_length": 64,
+    }
+    assert cluster.gguf_kv_bytes_per_token(meta) == 2 * 4 * (16 + 16) * 2.0
+
+
+def test_an_incomplete_split_gguf_has_no_size(cluster, tmp_path) -> None:
+    files = []
+    for i in (1, 2):
+        f = tmp_path / f"m-0000{i}-of-00003.gguf"
+        f.write_bytes(b"x" * 10)
+        files.append((f.name, str(f)))
+    report = cluster._size_one_group(files)
+    assert report["bytes"] is None and "only 2" in report["why"]
+    f = tmp_path / "m-00003-of-00003.gguf"
+    f.write_bytes(b"x" * 10)
+    assert cluster._size_one_group(files + [(f.name, str(f))])["bytes"] == 30
