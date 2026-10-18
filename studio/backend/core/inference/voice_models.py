@@ -56,7 +56,13 @@ def models_hub() -> str:
 # What each loader reads, relative to its model dir: the hub download is limited to these.
 HUB_FILES = {
     "judge": [f"models/{JUDGE_ONNX}/*", f"models/{JUDGE_ONNX}/onnx/*"],
-    "filler": [f"models/{FILLER_ONNX}/*", f"models/{FILLER_ONNX}/onnx*/*", f"models/{ECHO_ONNX}/*", f"models/{ECHO_ONNX}/onnx*/*", "phrases.json"],
+    "filler": [
+        f"models/{FILLER_ONNX}/*",
+        f"models/{FILLER_ONNX}/onnx*/*",
+        f"models/{ECHO_ONNX}/*",
+        f"models/{ECHO_ONNX}/onnx*/*",
+        "phrases.json",
+    ],
     "interject": ["models/tfidf_lr/*"],
 }
 # The one file that says the local folder really holds the model (a stray empty dir does not).
@@ -81,20 +87,164 @@ def resolve_model_dir(name: str, root: Path, hub: Optional[str]) -> Path:
 
 # ---------------------------------------------------------------- filler: featurize + echo slot
 
+
 def featurize(text: str, prev_q: bool = False) -> str:
     return ("<prevq> " if prev_q else "") + text.lower().strip() + " <end>"
 
 
-_DISFL = {"um", "uh", "like", "you know", "i mean", "basically", "actually", "hmm", "ok", "okay", "please", "sorry", "wait"}
+_DISFL = {
+    "um",
+    "uh",
+    "like",
+    "you know",
+    "i mean",
+    "basically",
+    "actually",
+    "hmm",
+    "ok",
+    "okay",
+    "please",
+    "sorry",
+    "wait",
+}
 _PREFIX = r"^((hey|hi|hello|yo|so|ok|okay|alright|right|well|now|also|and|quick one|one more thing|please|just|real quick|i was wondering if you could|i was wondering if you can|do you think you could|would you mind|is there any way you could|i need you to|i want you to|i'd like you to|i would like you to|i need help with|i need help|can you|could you|would you|will you|can u|could u|you could|maybe|if you can|if possible|for me)[ ,]+)+"
-_STOP = {"that's", "thats", "it's", "its", "who", "whose", "in", "for", "with", "that", "which", "about", "to", "on", "from", "so", "because", "and", "but", "using", "called", "where", "when", "if", "please", "thanks", "real", "quick", "by", "at", "of", "as", "into", "or", "than", "then", "like", "while", "after", "before", "under", "over", "without", "via", "per", "whenever", "once", "every", "until", "unless", "though", "although", "is", "are", "was", "were", "should", "would", "could", "can", "will", "do", "does", "did", "has", "have", "had", "today", "tonight", "tomorrow", "now", "later", "again", "too", "also", "instead", "here", "there", "me", "us", "it", "them", "him", "her", "right", "really", "actually", "basically", "exactly", "maybe", "probably"}
-_BAD_SLOT = {"it", "that", "this", "these", "those", "something", "anything", "everything", "one", "some", "more", "stuff", "things", "thing", "you", "me", "us", "them", "the one", "a bit", "a lot", "the same", "the following", "the rest", "the other"}
+_STOP = {
+    "that's",
+    "thats",
+    "it's",
+    "its",
+    "who",
+    "whose",
+    "in",
+    "for",
+    "with",
+    "that",
+    "which",
+    "about",
+    "to",
+    "on",
+    "from",
+    "so",
+    "because",
+    "and",
+    "but",
+    "using",
+    "called",
+    "where",
+    "when",
+    "if",
+    "please",
+    "thanks",
+    "real",
+    "quick",
+    "by",
+    "at",
+    "of",
+    "as",
+    "into",
+    "or",
+    "than",
+    "then",
+    "like",
+    "while",
+    "after",
+    "before",
+    "under",
+    "over",
+    "without",
+    "via",
+    "per",
+    "whenever",
+    "once",
+    "every",
+    "until",
+    "unless",
+    "though",
+    "although",
+    "is",
+    "are",
+    "was",
+    "were",
+    "should",
+    "would",
+    "could",
+    "can",
+    "will",
+    "do",
+    "does",
+    "did",
+    "has",
+    "have",
+    "had",
+    "today",
+    "tonight",
+    "tomorrow",
+    "now",
+    "later",
+    "again",
+    "too",
+    "also",
+    "instead",
+    "here",
+    "there",
+    "me",
+    "us",
+    "it",
+    "them",
+    "him",
+    "her",
+    "right",
+    "really",
+    "actually",
+    "basically",
+    "exactly",
+    "maybe",
+    "probably",
+}
+_BAD_SLOT = {
+    "it",
+    "that",
+    "this",
+    "these",
+    "those",
+    "something",
+    "anything",
+    "everything",
+    "one",
+    "some",
+    "more",
+    "stuff",
+    "things",
+    "thing",
+    "you",
+    "me",
+    "us",
+    "them",
+    "the one",
+    "a bit",
+    "a lot",
+    "the same",
+    "the following",
+    "the rest",
+    "the other",
+}
 _DET = r"(?:a|an|the|some|my|your|our|his|her|their|this|that|these|those|one|two|three|four|five|ten|a few|a couple of|a couple|a bunch of|a list of)"
 _VERBS_RAW = "any ideas for|ideas for|what should i do about|what should i do with|what can i do about|what's the deal with|whats the deal with|what about|how about|what do you think about|what do you think of|your thoughts on|your take on|how do i deal with|how to deal with|write|writing|make|making|build|building|create|creating|draft|drafting|generate|generating|compose|plan|planning|design|designing|put together|come up with|fix|fixing|debug|debugging|summarize|summarise|rewrite|rephrase|translate|proofread|explain|describe|compare|analyze|analyse|review|check|look at|look into|look up|find|find me|get me|give me|show me|tell me about|tell me|tell|teach me|teach me about|help me with|help me|help with|organize|organise|outline|brainstorm|suggest|recommend|list|name|pick|choose|improve|edit|clean up|optimize|optimise|refactor|set up|install|configure|run|test|calculate|compute|convert|draw|sketch|code|code up|script|implement|add|remove|delete|update|change|turn|schedule|book|prepare|prep|research|dig into|think about|work out|figure out|sort out|do"
 _VERBS = "(?:" + "|".join(sorted(_VERBS_RAW.split("|"), key = len, reverse = True)) + ")"
 _PROBLEM = r"(?:failing|fails|failed|crashing|crashes|crashed|broken|breaking|erroring|throwing|not working|isn't working|doesn't work|won't work|not loading|won't load|won't start|not starting|won't open|hanging|freezing|frozen|so slow|slow|timing out|dying|not responding|wrong|acting up|messed up|stuck|throws? (?:an )?errors?|throwing (?:an )?errors?|errors out|gives (?:me )?(?:an )?error|keeps? erroring|returns? (?:an )?error|(?:is|keeps) (?:giving|showing) (?:me )?(?:an )?error)"
 _LIGHT_PREP = {"to", "for", "on", "about", "of"}
-_FLIP = {"my": "your", "our": "your", "mine": "yours", "i": "you", "me": "you", "myself": "yourself", "i'm": "you're", "i've": "you've", "we": "you", "us": "you"}
+_FLIP = {
+    "my": "your",
+    "our": "your",
+    "mine": "yours",
+    "i": "you",
+    "me": "you",
+    "myself": "yourself",
+    "i'm": "you're",
+    "i've": "you've",
+    "we": "you",
+    "us": "you",
+}
 
 
 def _clean(t: str) -> str:
@@ -163,51 +313,81 @@ def extract_slot(text: str) -> tuple[Optional[str], float]:
     if not t or len(t.split()) <= 2:
         return None, 0.0
 
-    def take(det, rest, maxw = 5, conf_det = 0.9, conf_nodet = 0.7, problem = False):
+    def take(
+        det,
+        rest,
+        maxw = 5,
+        conf_det = 0.9,
+        conf_nodet = 0.7,
+        problem = False,
+    ):
         core = _np(rest.split(), maxw)
         if not core:
             return None
         s = _finish(((det + " ") if det else "") + core, problem = problem)
         return (s, conf_det if det else conf_nodet) if s else None
 
-    m = re.match(rf"^(?:why|how come)(?: is| does| did| are| won't| isn't| doesn't| do| has| keeps| keep)? (?P<det>{D})? ?(?P<np>(?:\w+ ){{1,3}}?)(?:keeps? |still |always |suddenly |now |just )*{P}", t)
+    m = re.match(
+        rf"^(?:why|how come)(?: is| does| did| are| won't| isn't| doesn't| do| has| keeps| keep)? (?P<det>{D})? ?(?P<np>(?:\w+ ){{1,3}}?)(?:keeps? |still |always |suddenly |now |just )*{P}",
+        t,
+    )
     if m:
         s = _finish(m.group("np"), problem = True)
         if s:
             return s, 0.85
-    m = re.match(rf"^(?P<det>{D}) (?P<np>(?:\w+ ){{1,3}}?)(?=is |are |keeps |keep |won't |doesn't |has |just |suddenly |still |isn't |wont |doesnt |crash|fail|throw|break|broke).*?{P}", t)
+    m = re.match(
+        rf"^(?P<det>{D}) (?P<np>(?:\w+ ){{1,3}}?)(?=is |are |keeps |keep |won't |doesn't |has |just |suddenly |still |isn't |wont |doesnt |crash|fail|throw|break|broke).*?{P}",
+        t,
+    )
     if m:
         s = _finish(m.group("np"), problem = True)
         if s:
             return s, 0.7
-    m = re.match(rf"^(?:{V}) (?:to me |for me |me |us |up |out |to )?(?:(?P<det>{D}) )?(?P<rest>.+)$", t)
+    m = re.match(
+        rf"^(?:{V}) (?:to me |for me |me |us |up |out |to )?(?:(?P<det>{D}) )?(?P<rest>.+)$", t
+    )
     if m:
         if not m.group("det") and re.match(rf"^(?:{V}) ", m.group("rest")):
             return extract_slot(m.group("rest"))
         r = take(m.group("det"), m.group("rest"))
         if r:
             return r
-    m = re.match(rf"^how (?:do|can|should|would|could|to) (?:i|you|we|one) (?:{V}|\w+) (?:(?P<det>{D}) )?(?P<rest>.+)$", t)
+    m = re.match(
+        rf"^how (?:do|can|should|would|could|to) (?:i|you|we|one) (?:{V}|\w+) (?:(?P<det>{D}) )?(?P<rest>.+)$",
+        t,
+    )
     if m:
         r = take(m.group("det"), m.group("rest"), conf_det = 0.7, conf_nodet = 0.6)
         if r:
             return r
-    m = re.match(rf"^(?:what|what's|whats|who|who's) (?:is |are |was |were |exactly is |does |do )?(?:(?P<det>{D}) )?(?P<rest>.+)$", t)
+    m = re.match(
+        rf"^(?:what|what's|whats|who|who's) (?:is |are |was |were |exactly is |does |do )?(?:(?P<det>{D}) )?(?P<rest>.+)$",
+        t,
+    )
     if m:
         r = take(m.group("det"), m.group("rest"), maxw = 4, conf_det = 0.55, conf_nodet = 0.5)
         if r and len(r[0].split()) >= 2:
             return r
-    m = re.match(rf"^how (?:does|do|did) (?:(?P<det>{D}) )?(?P<rest>.+?) (?:work|works|function|happen|happens)\b", t)
+    m = re.match(
+        rf"^how (?:does|do|did) (?:(?P<det>{D}) )?(?P<rest>.+?) (?:work|works|function|happen|happens)\b",
+        t,
+    )
     if m:
         r = take(m.group("det"), m.group("rest"), conf_det = 0.7, conf_nodet = 0.6)
         if r:
             return r
-    m = re.match(r"^(?:my|our) (?P<np>(?:\w+ ){1,3}?)(?:is|are|keeps|keep|won't|doesn't|has|have|just|was|were) ", t)
+    m = re.match(
+        r"^(?:my|our) (?P<np>(?:\w+ ){1,3}?)(?:is|are|keeps|keep|won't|doesn't|has|have|just|was|were) ",
+        t,
+    )
     if m:
         s = _finish("your " + m.group("np"))
         if s:
             return s, 0.6
-    m = re.match(rf"^(?:i need help with|i need a hand with|i need|i want|i'd like|i would like|i'm looking for|im looking for|looking for|i have a question about|question about|i'm trying to (?:\w+ ){{0,2}}) ?(?:you to (?:\w+ ))?(?:(?P<det>{D}) )?(?P<rest>.+)$", t)
+    m = re.match(
+        rf"^(?:i need help with|i need a hand with|i need|i want|i'd like|i would like|i'm looking for|im looking for|looking for|i have a question about|question about|i'm trying to (?:\w+ ){{0,2}}) ?(?:you to (?:\w+ ))?(?:(?P<det>{D}) )?(?P<rest>.+)$",
+        t,
+    )
     if m:
         r = take(m.group("det"), m.group("rest"), conf_det = 0.6, conf_nodet = 0.5)
         if r:
@@ -225,7 +405,6 @@ def _ort_session(path: Path):
 
 def _softmax(x):
     import numpy as np
-
     e = np.exp(x - x.max(-1, keepdims = True))
     return e / e.sum(-1, keepdims = True)
 
@@ -244,8 +423,13 @@ class _OnnxClassifier:
         import numpy as np
 
         e = self.tok.encode(featurize(text, prev_q))
-        feed = {"input_ids": np.array([e.ids], dtype = np.int64), "attention_mask": np.array([e.attention_mask], dtype = np.int64)}
-        p = _softmax(self.session.run(None, {k: v for k, v in feed.items() if k in self.inputs})[0][0])
+        feed = {
+            "input_ids": np.array([e.ids], dtype = np.int64),
+            "attention_mask": np.array([e.attention_mask], dtype = np.int64),
+        }
+        p = _softmax(
+            self.session.run(None, {k: v for k, v in feed.items() if k in self.inputs})[0][0]
+        )
         i = int(p.argmax())
         return self.classes[i], float(p[i])
 
@@ -279,7 +463,13 @@ class _OnnxEchoTagger:
         import numpy as np
 
         e = self.tok.encode(text)
-        logits = self.session.run(None, {"input_ids": np.array([e.ids], dtype = np.int64), "attention_mask": np.array([e.attention_mask], dtype = np.int64)})[0][0]
+        logits = self.session.run(
+            None,
+            {
+                "input_ids": np.array([e.ids], dtype = np.int64),
+                "attention_mask": np.array([e.attention_mask], dtype = np.int64),
+            },
+        )[0][0]
         p = _softmax(logits)
         pred = p.argmax(-1)
         spans: list[tuple[list[int], list[float]]] = []
@@ -303,7 +493,9 @@ class _OnnxEchoTagger:
         if not spans:
             return None, 0.0
         (a, b), confs = max(spans, key = lambda s: s[0][1] - s[0][0])
-        problem = bool(re.search(_PROBLEM, text[b:])) or bool(re.match(r"^(why|how come)", text.strip()))
+        problem = bool(re.search(_PROBLEM, text[b:])) or bool(
+            re.match(r"^(why|how come)", text.strip())
+        )
         s = _finish(text[a:b], problem = problem)
         return (s, round(sum(confs) / len(confs), 3)) if s else (None, 0.0)
 
@@ -313,7 +505,11 @@ class _RulesEchoTagger:
 
 
 class _Filler:
-    def __init__(self, root: Path, seed: Optional[int] = None):
+    def __init__(
+        self,
+        root: Path,
+        seed: Optional[int] = None,
+    ):
         models = root / "models"
         if (models / FILLER_ONNX).is_dir():
             self.clf, self.backend = _OnnxClassifier(models / FILLER_ONNX), "onnx"
@@ -329,17 +525,32 @@ class _Filler:
     def _pick(self, items: list[dict]) -> str:
         return self.rng.choices([p["text"] for p in items], weights = [p["weight"] for p in items])[0]
 
-    def predict(self, text: str, prev_q: bool = False) -> dict:
+    def predict(
+        self,
+        text: str,
+        prev_q: bool = False,
+    ) -> dict:
         t0 = time.perf_counter()
         cls, conf = self.clf.classify(text, prev_q)
-        out: dict[str, Any] = {"say": cls != "none", "class": cls, "confidence": round(conf, 3), "phrase": "", "slot": None, "echo": False}
+        out: dict[str, Any] = {
+            "say": cls != "none",
+            "class": cls,
+            "confidence": round(conf, 3),
+            "phrase": "",
+            "slot": None,
+            "echo": False,
+        }
         if cls != "none":
             out["phrase"] = self._pick(self.bank["classes"][cls]["phrases"])
             if cls != "minimal":  # a one-word tier stays one word
                 slot, sconf = self.echo.extract(text)
                 out["slot"] = slot
                 echo = self.bank["echo_templates"]
-                if slot and sconf >= ECHO_MIN_CONF and self.rng.random() < echo["mix"]["echo_when_slot"]:
+                if (
+                    slot
+                    and sconf >= ECHO_MIN_CONF
+                    and self.rng.random() < echo["mix"]["echo_when_slot"]
+                ):
                     s = self._pick(echo["templates"]).replace("{slot}", slot)
                     out["phrase"] = s[0].upper() + s[1:]
                     out["echo"] = True
@@ -349,17 +560,58 @@ class _Filler:
 
 # ---------------------------------------------------------------- interject: hand features + bias
 
-_IJ_STOP = set("a an the to of in on for and or but so um uh like you know i me my we our it its this that these those is are was were be been do does did can could would should will please just really very some any with at by from as about what which who how why when where into onto up down out over if then than there here yeah yes no ok okay oh hmm well right".split())
+_IJ_STOP = set(
+    "a an the to of in on for and or but so um uh like you know i me my we our it its this that these those is are was were be been do does did can could would should will please just really very some any with at by from as about what which who how why when where into onto up down out over if then than there here yeah yes no ok okay oh hmm well right".split()
+)
 _RESTART_CUE = r"^(um |uh |so |oh )?(no|wait|actually|instead|scratch|hold on|sorry|i meant|make it|and |also |plus |oh and|with |can it|could it|could you|can you|what about|how about|is there a way)\b"
 _QUEUE_CUE = r"\b(remind|timer|alarm|weather|unrelated|separate|different question|another thing|one more thing|when you're done|after (that|this)|what time|turn (the|it)|play |order |text |call |email |calendar|meeting)\b"
 _IGNORE_CUE = r"^(um |uh |so |oh )?(ok|okay|mm|uh huh|yeah|yep|right|sure|alright|cool|hmm|take your time|no rush|go ahead|go on|sorry go|one sec|hang on|i see|got it|nice|great|perfect|awesome|never mind|where|ugh|oh|ah|ha|honey|sweetie|dude|mom|dad|guys|hey|coming|yeah i)\b"
-_CUE_WORDS = ["no", "wait", "actually", "instead", "and", "also", "plus", "oh", "can", "could", "what", "how", "ok", "okay", "yeah", "hmm", "sorry", "remind", "set", "after", "when", "then", "um", "uh", "the", "take", "where", "not", "make", "in", "with", "for", "add", "it"]
-_CORRECTION_CUE = re.compile(r"^(um |uh |so |oh |hmm )*(no|wait|actually|instead|scratch that|hold on|sorry|i meant|not that|wrong)\b")
+_CUE_WORDS = [
+    "no",
+    "wait",
+    "actually",
+    "instead",
+    "and",
+    "also",
+    "plus",
+    "oh",
+    "can",
+    "could",
+    "what",
+    "how",
+    "ok",
+    "okay",
+    "yeah",
+    "hmm",
+    "sorry",
+    "remind",
+    "set",
+    "after",
+    "when",
+    "then",
+    "um",
+    "uh",
+    "the",
+    "take",
+    "where",
+    "not",
+    "make",
+    "in",
+    "with",
+    "for",
+    "add",
+    "it",
+]
+_CORRECTION_CUE = re.compile(
+    r"^(um |uh |so |oh |hmm )*(no|wait|actually|instead|scratch that|hold on|sorry|i meant|not that|wrong)\b"
+)
 _ADD_LEAD = re.compile(r"^(um |uh |so |oh )*(and also|oh and|and|also|plus|with|oh also)\s+")
 
 
 def _content(t: str) -> set[str]:
-    return {x for x in re.sub(r"[^\w\s']", " ", t.lower()).split() if x not in _IJ_STOP and len(x) > 2}
+    return {
+        x for x in re.sub(r"[^\w\s']", " ", t.lower()).split() if x not in _IJ_STOP and len(x) > 2
+    }
 
 
 def hand_features(prompt: str, utt: str, elapsed: float) -> list[float]:
@@ -372,14 +624,32 @@ def hand_features(prompt: str, utt: str, elapsed: float) -> list[float]:
     f = [
         inter / max(1, len(cu)),
         inter / max(1, len(cp | cu)),
-        float(inter > 0), float(inter >= 2),
-        min(len(uw), 30) / 30, min(len(cu), 15) / 15, float(len(uw) <= 2), float(len(uw) <= 4),
-        min(elapsed, 30) / 30, float(elapsed < 1.5), float(elapsed < 4), float(elapsed > 10), math.log1p(elapsed) / 4,
-        float(bool(re.search(_RESTART_CUE, utt))), float(bool(re.search(_QUEUE_CUE, utt))), float(bool(re.search(_IGNORE_CUE, utt))),
-        float(utt.rstrip().endswith("?")), float(first in ("no", "wait", "actually", "instead")),
+        float(inter > 0),
+        float(inter >= 2),
+        min(len(uw), 30) / 30,
+        min(len(cu), 15) / 15,
+        float(len(uw) <= 2),
+        float(len(uw) <= 4),
+        min(elapsed, 30) / 30,
+        float(elapsed < 1.5),
+        float(elapsed < 4),
+        float(elapsed > 10),
+        math.log1p(elapsed) / 4,
+        float(bool(re.search(_RESTART_CUE, utt))),
+        float(bool(re.search(_QUEUE_CUE, utt))),
+        float(bool(re.search(_IGNORE_CUE, utt))),
+        float(utt.rstrip().endswith("?")),
+        float(first in ("no", "wait", "actually", "instead")),
         float(first2 in ("oh and", "and also", "and add", "and make", "and keep")),
         float(bool(re.search(r"\b(it|that|this|them|the (first|second|last|other) one)\b", utt))),
-        float(bool(re.search(r"\b(not you|honey|sweetie|dude|guys|be right there|coming|one sec|on a call)\b", utt))),
+        float(
+            bool(
+                re.search(
+                    r"\b(not you|honey|sweetie|dude|guys|be right there|coming|one sec|on a call)\b",
+                    utt,
+                )
+            )
+        ),
     ]
     f += [float(first == w) for w in _CUE_WORDS]
     return f
@@ -392,7 +662,9 @@ def merge_prompt(prompt: str, utterance: str) -> str:
     return f"{prompt.rstrip('. ')}. Also: {_ADD_LEAD.sub('', u)}"
 
 
-def apply_runtime_bias(probs: dict[str, float], utterance: str, elapsed_s: float) -> dict[str, float]:
+def apply_runtime_bias(
+    probs: dict[str, float], utterance: str, elapsed_s: float
+) -> dict[str, float]:
     pr = dict(probs)
     if elapsed_s < 1.5:
         pr["ignore"] *= 1.5
@@ -417,7 +689,12 @@ class _InterjectTfidf:
         u = [r["utterance"] for r in rows]
         p = [r["prompt"] for r in rows]
         h = np.array([hand_features(r["prompt"], r["utterance"], r["elapsed_s"]) for r in rows])
-        parts = [self.vu_w.transform(u), self.vu_c.transform(u), 0.4 * self.vp_w.transform(p), sp.csr_matrix(self.sc.transform(h))]
+        parts = [
+            self.vu_w.transform(u),
+            self.vu_c.transform(u),
+            0.4 * self.vp_w.transform(p),
+            sp.csr_matrix(self.sc.transform(h)),
+        ]
         return sp.hstack(parts).tocsr()
 
     def proba(self, rows: list[dict]):
@@ -442,7 +719,12 @@ class _Interject:
         P = self.m.proba([{"prompt": prompt, "utterance": utterance, "elapsed_s": elapsed_s}])[0]
         return {str(c): float(p) for c, p in zip(self.m.clf.classes_, P)}
 
-    def predict(self, prompt: str, utterance: str, elapsed_s: float = 2.0) -> dict:
+    def predict(
+        self,
+        prompt: str,
+        utterance: str,
+        elapsed_s: float = 2.0,
+    ) -> dict:
         pr = apply_runtime_bias(self.proba(prompt, utterance, elapsed_s), utterance, elapsed_s)
         action = max(pr, key = pr.get)
         return {
@@ -454,6 +736,7 @@ class _Interject:
 
 
 # ---------------------------------------------------------------- judge
+
 
 class _OnnxJudge:
     backend = "onnx"
@@ -471,8 +754,13 @@ class _OnnxJudge:
         import numpy as np
 
         e = self.tok.encode(text)
-        feed = {"input_ids": np.array([e.ids], dtype = np.int64), "attention_mask": np.array([e.attention_mask], dtype = np.int64)}
-        p = _softmax(self.session.run(None, {k: v for k, v in feed.items() if k in self.inputs})[0][0])
+        feed = {
+            "input_ids": np.array([e.ids], dtype = np.int64),
+            "attention_mask": np.array([e.attention_mask], dtype = np.int64),
+        }
+        p = _softmax(
+            self.session.run(None, {k: v for k, v in feed.items() if k in self.inputs})[0][0]
+        )
         return float(p[1])
 
 
@@ -486,12 +774,16 @@ class _TorchJudge:
         torch.set_num_threads(JUDGE_THREADS)
         self.torch = torch
         self.tok = AutoTokenizer.from_pretrained(d)
-        self.model = AutoModelForSequenceClassification.from_pretrained(d, attn_implementation = "sdpa").eval()
+        self.model = AutoModelForSequenceClassification.from_pretrained(
+            d, attn_implementation = "sdpa"
+        ).eval()
         self("warm up")
 
     def __call__(self, text: str) -> float:
         with self.torch.no_grad():
-            enc = self.tok([text], truncation = True, max_length = JUDGE_MAX_LENGTH, return_tensors = "pt")
+            enc = self.tok(
+                [text], truncation = True, max_length = JUDGE_MAX_LENGTH, return_tensors = "pt"
+            )
             return self.torch.softmax(self.model(**enc).logits.float(), -1)[0, 1].item()
 
 
@@ -505,8 +797,13 @@ def _Judge(root: Path):
 
 # ---------------------------------------------------------------- singleton
 
+
 class VoiceModels:
-    def __init__(self, root: Optional[Path] = None, hub: Optional[str] = None):
+    def __init__(
+        self,
+        root: Optional[Path] = None,
+        hub: Optional[str] = None,
+    ):
         # An explicit root is local-only (tests, a pinned checkout); the default also fetches from the hub.
         self.root = Path(root) if root else models_dir()
         self.hub = hub if root else (hub or models_hub())
@@ -558,10 +855,19 @@ class VoiceModels:
     def judge(self, text: str) -> float:
         return self._get("judge")(text)
 
-    def filler(self, text: str, prev_q: bool = False) -> dict:
+    def filler(
+        self,
+        text: str,
+        prev_q: bool = False,
+    ) -> dict:
         return self._get("filler").predict(text, prev_q)
 
-    def interject(self, prompt: str, utterance: str, elapsed_s: float = 2.0) -> dict:
+    def interject(
+        self,
+        prompt: str,
+        utterance: str,
+        elapsed_s: float = 2.0,
+    ) -> dict:
         return self._get("interject").predict(prompt, utterance, elapsed_s)
 
 

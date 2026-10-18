@@ -15,7 +15,12 @@ def _log_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _judge(text, p, outcome = None, thread_id = "t1"):
+def _judge(
+    text,
+    p,
+    outcome = None,
+    thread_id = "t1",
+):
     row_id = vl.append("judge", {"text": text}, vl.judge_verdict(p), p, 12.0, thread_id = thread_id)
     if outcome:
         vl.set_outcome(row_id, outcome)
@@ -23,10 +28,23 @@ def _judge(text, p, outcome = None, thread_id = "t1"):
 
 
 def test_append_writes_only_training_fields(tmp_path):
-    row_id = vl.append("judge", {"text": "what's the"}, "hold", 0.2, 9.5, thread_id = "abc", source = "api")
+    row_id = vl.append(
+        "judge", {"text": "what's the"}, "hold", 0.2, 9.5, thread_id = "abc", source = "api"
+    )
     line = json.loads((tmp_path / "laya-log.jsonl").read_text().strip())
     assert line["id"] == row_id
-    assert set(line) == {"id", "t", "model", "thread_id", "source", "input", "verdict", "confidence", "latency_ms", "outcome"}
+    assert set(line) == {
+        "id",
+        "t",
+        "model",
+        "thread_id",
+        "source",
+        "input",
+        "verdict",
+        "confidence",
+        "latency_ms",
+        "outcome",
+    }
     assert line["source"] == "api" and line["outcome"] is None and line["thread_id"] == "abc"
 
 
@@ -41,10 +59,19 @@ def test_outcome_merges_on_read_and_latest_wins():
 
 
 def test_agreement_rules():
-    assert vl.error_kind({"model": "judge", "verdict": "hold", "outcome": "flushed"}) == "held_but_flushed"
+    assert (
+        vl.error_kind({"model": "judge", "verdict": "hold", "outcome": "flushed"})
+        == "held_but_flushed"
+    )
     assert vl.error_kind({"model": "judge", "verdict": "hold", "outcome": "continued"}) is None
-    assert vl.error_kind({"model": "interject", "verdict": "ignore", "outcome": "repeated"}) == "ignored_but_repeated"
-    assert vl.error_kind({"model": "interject", "verdict": "queue", "outcome": "reasked"}) == "queued_but_reasked"
+    assert (
+        vl.error_kind({"model": "interject", "verdict": "ignore", "outcome": "repeated"})
+        == "ignored_but_repeated"
+    )
+    assert (
+        vl.error_kind({"model": "interject", "verdict": "queue", "outcome": "reasked"})
+        == "queued_but_reasked"
+    )
     assert vl.error_kind({"model": "interject", "verdict": "restart", "outcome": "ok"}) is None
     assert vl.error_kind({"model": "filler", "verdict": "say", "outcome": "echoed"}) == "echoed"
     assert vl.error_kind({"model": "filler", "verdict": "say", "outcome": "too_late"}) == "too_late"
@@ -76,8 +103,15 @@ def test_export_defaults_to_disagreements_in_training_shape():
     _judge("tell me a joke", 0.9, "sent")
     _judge("can you", 0.2, "flushed", thread_id = "t2")
     rows = vl.export_rows()
-    assert [(r["text"], r["label"]) for r in rows] == [("so what I wanted", "incomplete"), ("can you", "complete")]
-    assert rows[0]["model"] == "judge" and rows[0]["verdict"] == "finished" and rows[0]["outcome"] == "continued_quickly"
+    assert [(r["text"], r["label"]) for r in rows] == [
+        ("so what I wanted", "incomplete"),
+        ("can you", "complete"),
+    ]
+    assert (
+        rows[0]["model"] == "judge"
+        and rows[0]["verdict"] == "finished"
+        and rows[0]["outcome"] == "continued_quickly"
+    )
     assert rows[0]["thread_id"] == "t1" and "t" in rows[0] and rows[0]["confidence"] == 0.9
     assert [r["text"] for r in vl.export_rows(thread_id = "t2")] == ["can you"]
     assert len(vl.export_rows(only = "all")) == 3
@@ -94,15 +128,24 @@ def test_export_mix_adds_one_agreeing_row_per_disagreement():
 
 
 def test_export_since_and_interject_and_filler_labels():
-    iid = vl.append("interject", {"prompt": "write a poem", "utterance": "make it short"}, "ignore", 0.7, 5.0)
+    iid = vl.append(
+        "interject", {"prompt": "write a poem", "utterance": "make it short"}, "ignore", 0.7, 5.0
+    )
     vl.set_outcome(iid, "repeated")
     fid = vl.append("filler", {"text": "fix my code", "class": "fix"}, "say", 0.8, 3.0)
     vl.set_outcome(fid, "spoken")
     rows = vl.export_rows(only = "all")
-    assert rows[0]["text"] == "make it short" and rows[0]["label"] == "restart" and rows[0]["prompt"] == "write a poem"
+    assert (
+        rows[0]["text"] == "make it short"
+        and rows[0]["label"] == "restart"
+        and rows[0]["prompt"] == "write a poem"
+    )
     assert rows[1]["label"] == "fix"
     assert vl.export_rows(only = "all", since = "2999-01-01") == []
-    assert "\n" in vl.to_jsonl(rows) and json.loads(vl.to_jsonl(rows).splitlines()[0])["model"] == "interject"
+    assert (
+        "\n" in vl.to_jsonl(rows)
+        and json.loads(vl.to_jsonl(rows).splitlines()[0])["model"] == "interject"
+    )
 
 
 def test_clear_and_thread_delete(tmp_path):
