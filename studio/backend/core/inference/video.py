@@ -1835,7 +1835,9 @@ def _video_fetch_repo(
 
 
 def _video_offline_base_choice(
-    base: str, folders: Optional[Sequence[str]] = None, skip: Sequence[str] = ()
+    base: str,
+    folders: Optional[Sequence[str]] = None,
+    skip: Sequence[str] = (),
 ) -> Optional[str]:
     """Offline (no plan to read the choice from): the side of ``base``'s mirror pair whose cached snapshot holds more of
     the ``folders`` this load reads (every index component but ``skip`` when None), upstream on a tie; None when
@@ -1926,7 +1928,9 @@ def _is_under_dir(path: str, root: Optional[str]) -> bool:
 
 
 def _video_cached_completeness(
-    repo_id: str, folders: Optional[Sequence[str]] = None, skip: Sequence[str] = ()
+    repo_id: str,
+    folders: Optional[Sequence[str]] = None,
+    skip: Sequence[str] = (),
 ) -> int:
     """How complete ``repo_id``'s cached diffusers snapshot is in the live root (the one ``from_pretrained`` reads):
     the number of ``model_index.json`` (or H3's ``modular_model_index.json``) components whose folder holds a file and
@@ -4383,7 +4387,9 @@ class VideoBackend:
                 # holding what the load reads.
                 kwargs["_base_fetch_repo"] = _video_offline_base_choice(
                     base,
-                    tuple(p.rstrip("/") for p in VideoBackend._LTX23_BASE_PREFIXES) if ltx23 else None,
+                    tuple(p.rstrip("/") for p in VideoBackend._LTX23_BASE_PREFIXES)
+                    if ltx23
+                    else None,
                     skip = ("transformer",),
                 )
             kwargs["_base_fetch_revision"] = (

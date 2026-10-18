@@ -486,7 +486,9 @@ def test_offline_ltx23_base_choice_counts_only_the_folders_it_reads(empty_cache,
     assert video_mod._video_offline_base_choice("someone/no-mirror", folders) is None
 
 
-def test_offline_single_file_base_choice_ignores_the_transformer_it_replaces(empty_cache, monkeypatch):
+def test_offline_single_file_base_choice_ignores_the_transformer_it_replaces(
+    empty_cache, monkeypatch
+):
     upstream, mirror = "Lightricks/LTX-2", "unsloth/LTX-2-FP8"
     monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
     # The upstream holds the transformer a GGUF pick replaces and nothing else; the mirror holds the rest.
