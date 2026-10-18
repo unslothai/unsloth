@@ -883,3 +883,13 @@ def test_hub_ids_match_in_any_case_and_local_paths_keep_theirs(
     (tmp_path / "models" / "Foo.gguf").write_text("")
     monkeypatch.chdir(tmp_path)
     assert loading._same(left, right) is same
+
+
+def test_a_status_route_that_stalls_never_holds_up_a_load(monkeypatch, fast_polls):
+    # The snapshot only feeds the eviction report, so a slot that does not answer is left out.
+    monkeypatch.setattr(loading, "READ_S", 0.2)
+    routes = {**PAYLOADS, STATUS_ROUTE: EMPTY_STATUS, IMAGE_STATUS: slow(UNLOADED, 10)}
+    started = time.monotonic()
+    result, _studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM, "wait_s": 30})
+    assert time.monotonic() - started < 5
+    assert result["structuredContent"]["loaded"] is True

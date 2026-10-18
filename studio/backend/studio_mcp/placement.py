@@ -249,7 +249,9 @@ async def refuse_partial_variant(
     if kind == "stt" or is_local(model) or model.lower().startswith(AUDIO_CPP_PREFIX):
         return
     repo, variant = _split(model, variant)
-    if not is_gguf(repo, variant):
+    # A chat model is a GGUF when the listing has rows, whatever it is called; an image or video
+    # load uses a GGUF file only for a named variant or a GGUF repo, as load_media does.
+    if kind in MEDIA_PROGRESS and not is_gguf(repo, variant):
         return
     row = pick_variant(await _variants(caller, repo), variant)
     if row is None or row.get("partial") is not True or row.get("downloaded") is True:
@@ -485,7 +487,7 @@ async def plan_load(
     slot_kind = "llm" if kind in CHAT_KINDS else kind
     unpinned = device not in ("cpu", "gpu") and any(s.kind != slot_kind for s in would_evict)
     unlisted = kind in CHAT_KINDS and listing is None
-    reads = (image, video, stt) if kind == "stt" else (image, video)
+    reads = (image, video, stt) if kind == "stt" else (status, image, video)
     if unlisted or unpinned or not all(isinstance(read, dict) for read in reads):
         # A slot whose status could not be read may hold a model the load would unload.
         exact = False
