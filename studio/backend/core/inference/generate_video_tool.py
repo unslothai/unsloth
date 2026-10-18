@@ -250,7 +250,10 @@ def _await_job(acct, video_id: str, workdir: str, prompt: str, seed, cancel_even
                 if view is None or view.status in ("completed", "failed"):
                     break
                 time.sleep(min(_POLL_S, 0.25))
-            return STOPPED_MSG
+            # A clip that finished inside the stop window is still a saved clip: hand it over.
+            if view is None or view.status != "completed":
+                return STOPPED_MSG
+            break
         if time.monotonic() >= deadline:
             return STILL_RENDERING_MSG
         if cancel_event is not None:

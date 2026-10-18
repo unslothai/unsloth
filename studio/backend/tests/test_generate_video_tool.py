@@ -181,6 +181,19 @@ def test_the_cancel_event_stops_the_job(tmp_path, backend, keepwarm):
     assert not (tmp_path / "work").exists()
 
 
+def test_a_clip_that_completes_inside_the_stop_window_is_still_returned(
+    tmp_path, backend, keepwarm, monkeypatch
+):
+    # Stop lands at the last step: the backend finishes the clip instead of cancelling.
+    backend.gate.clear()
+    monkeypatch.setattr(backend, "cancel_generate", lambda **kw: backend.gate.set())
+    stop = threading.Event()
+    threading.Timer(0.2, stop.set).start()
+    result = _run(tmp_path, {"prompt": "last step"}, cancel_event = stop)
+    assert result.startswith("Generated a video"), result
+    assert [p.name for p in (tmp_path / "work").iterdir() if p.suffix == ".mp4"]
+
+
 def _slow_create(monkeypatch, keepwarm, delay):
     async def _begin(owner):
         keepwarm.append(("begin", owner))
