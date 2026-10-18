@@ -323,6 +323,50 @@ def test_trusted_terminal_path_dirs_are_granted_read_only(monkeypatch, tmp_path)
     assert str(untrusted) not in readonly
 
 
+def test_reparse_point_on_terminal_path_is_skipped_not_fatal(monkeypatch, tmp_path):
+    # #13656: Java 8 puts a directory symlink (Common Files\Oracle\Java\java8path) on PATH; one
+    # such entry failed every Terminal launch and the live probe, so Sandbox High never enabled.
+    from core.inference import tools
+
+    trusted = tmp_path / "Program Files" / "Git" / "usr" / "bin"
+    target = tmp_path / "Program Files" / "Oracle" / "Java" / "javapath_target"
+    link = tmp_path / "Program Files" / "Oracle" / "Java" / "java8path"
+    trusted.mkdir(parents = True)
+    target.mkdir(parents = True)
+    if os.name == "nt":
+        import subprocess
+
+        # A junction needs no symlink privilege; both are reparse points.
+        subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+            check = True,
+            capture_output = True,
+        )
+    else:
+        link.symlink_to(target, target_is_directory = True)
+    monkeypatch.setattr(
+        tools, "_is_trusted_windows_program_dir", lambda path: "Program Files" in path
+    )
+    plan = _policy_plan(tmp_path)
+    plan = os_sandbox.ToolLaunchPlan(
+        argv = plan.argv,
+        workdir = plan.workdir,
+        env = {"PATH": os.pathsep.join([str(link), str(trusted)])},
+        execution_kind = "terminal",
+    )
+    monkeypatch.setattr(mxc_policy.sys, "platform", "win32")
+    monkeypatch.setattr(os_sandbox, "model_library_roots", lambda: ())
+    monkeypatch.setattr(mxc_policy.sys, "prefix", str(tmp_path / "runtime"))
+    monkeypatch.setattr(mxc_policy.sys, "base_prefix", str(tmp_path / "runtime"))
+    monkeypatch.setattr(mxc_policy.site, "getsitepackages", lambda: [])
+    readonly = mxc_policy.build_launch_request(plan, run_id = "fixed")["config"]["filesystem"][
+        "readonlyPaths"
+    ]
+    assert str(trusted) in readonly
+    assert str(link) not in readonly
+    assert str(target) not in readonly
+
+
 @pytest.mark.skipif(
     not shutil.which("bash") or sys.platform == "win32",
     reason = "needs a POSIX bash whose cat comes only from PATH (Git bash finds its own)",

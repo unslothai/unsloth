@@ -2337,21 +2337,13 @@ def _detect_windows_gfx_arch() -> str | None:
                     # Torch ends here, llama.cpp does not: Vulkan drives these cards
                     # (#8458 ran an RX 580 through it). PowerShell syntax because this
                     # branch is Windows-only: a pasted VAR=value parses there as a
-                    # command name and sets nothing. Not on ARM64: setup.ps1 THROWS on
-                    # that variable there, so this would abort the next update.
-                    if _is_windows_arm64():
-                        _safe_print(
-                            "   [INFO] GGUF chat would need Vulkan on this GPU, and no "
-                            "Windows ARM64 Vulkan bundle is published: build llama.cpp "
-                            "from source, or run this on x64."
-                        )
-                    else:
-                        _safe_print(
-                            "   [INFO] GGUF chat can still run on this GPU through Vulkan: set "
-                            '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. '
-                            "It selects the llama.cpp bundle at install time, so setting it "
-                            "afterwards has no effect until you install or update again."
-                        )
+                    # command name and sets nothing.
+                    _safe_print(
+                        "   [INFO] GGUF chat can still run on this GPU through Vulkan: set "
+                        '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. '
+                        "It selects the llama.cpp bundle at install time, so setting it "
+                        "afterwards has no effect until you install or update again."
+                    )
                 else:
                     _safe_print(
                         f"   [WARN] could not map '{_names[_sel]}' to a gfx arch, so torch "
@@ -10352,6 +10344,73 @@ def _mirror_retry(args: "tuple[str, ...]", output: bytes, rerun) -> "bool | None
     return ok
 
 
+FEED_CEILING_MARKER = "unsloth_feed_ceiling.json"
+
+
+def _desktop_unsloth_spec(package_name: str) -> str:
+    """Desktop's backend floor, lowered to a lagging index's newest release (#14031).
+
+    Twin of install.sh's _relax_unsloth_floors_to_index.
+    """
+    desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
+    if not (desktop_min_ver and package_name == "unsloth"):
+        return package_name
+    spec = f"unsloth>={desktop_min_ver}"
+    marker = Path(sys.prefix) / FEED_CEILING_MARKER
+    try:
+        marker.unlink()
+    except OSError:
+        pass
+    if not USE_UV:
+        return spec
+
+    def newest(requirement: str, name: str = "unsloth") -> "str | None":
+        # --output-file: a uv.toml output-file would otherwise be overwritten by every probe.
+        with tempfile.TemporaryDirectory() as scratch:
+            out = Path(scratch) / "probe.txt"
+            argv = ["uv", "pip", "compile", "--python", sys.executable, "--no-deps"]
+            argv += ["--resolution", "highest", "--no-header", "--no-annotate", "--quiet"]
+            argv += ["--output-file", str(out), "-"]
+            try:
+                result = subprocess.run(
+                    argv,
+                    input = requirement + "\n",
+                    stdout = subprocess.DEVNULL,
+                    stderr = subprocess.DEVNULL,
+                    text = True,
+                    timeout = 120,
+                    **_windows_hidden_subprocess_kwargs(),
+                )
+                text = out.read_text(encoding = "utf-8") if result.returncode == 0 else None
+            except (OSError, subprocess.SubprocessError):
+                return None
+        if text is None:
+            return None
+        match = re.search(rf"^{name}==([0-9][0-9A-Za-z.+!-]*)", text, re.MULTILINE)
+        return match.group(1) if match else None
+
+    if newest(spec) is not None:
+        return spec
+    # The newest zoo, then the newest unsloth not above it (an unsloth never needs a newer zoo).
+    zoo = newest("unsloth-zoo", "unsloth-zoo")
+    available = newest(f"unsloth<={zoo}") if zoo else None
+    if available is None:
+        return spec
+    _note(
+        f"[WARN] your package index does not have {spec} yet; "
+        f"installing unsloth {available}, the newest it has",
+        _warn,
+    )
+    try:
+        marker.write_text(
+            json.dumps({"requested": desktop_min_ver, "available": available}) + "\n",
+            encoding = "utf-8",
+        )
+    except OSError:
+        pass
+    return f"unsloth=={available}"
+
+
 def pip_install(
     label: str,
     *args: str,
@@ -11690,9 +11749,10 @@ def _triton_kernels_step() -> None:
 
 DIFFUSERS_MAIN_ENV = "UNSLOTH_DIFFUSERS_MAIN"
 
-# Diffusers main declares requires-python >= 3.10 while the release pin file still names 0.36.0
-# for anything older, so 3.9 is a supported install this step can never satisfy.
-DIFFUSERS_MAIN_MIN_PYTHON = (3, 10)
+# Diffusers main declares requires-python >= 3.11 (huggingface/diffusers#15030) while the release
+# pin covers 3.10 (0.41.0) and 3.9 (0.36.0), so both are supported installs this step can never
+# satisfy. They keep the release and only a model that needs the main build is unavailable.
+DIFFUSERS_MAIN_MIN_PYTHON = (3, 11)
 
 
 def _diffusers_main_requested() -> bool:
@@ -12035,11 +12095,11 @@ def _diffusers_main_step() -> None:
         _progress("diffusers main (opted out, skipped)")
         return
     if sys.version_info < DIFFUSERS_MAIN_MIN_PYTHON:
-        # Diffusers main needs 3.10, and the release pin file still carries a 0.36.0 line for
-        # older interpreters, so 3.9 is a supported path this can never satisfy. Unmarked, pip would
-        # clone the repository and only then reject its requires-python, and since the build can
-        # never become resident that clone repeats on every install and update forever.
-        _progress("diffusers main (skipped, needs python 3.10)")
+        # Diffusers main needs 3.11, and the release pin covers 3.10 and 3.9, so those are supported
+        # paths this can never satisfy. Unmarked, pip would clone the repository and only then reject
+        # its requires-python, and since the build can never become resident that clone repeats on
+        # every install and update forever.
+        _progress("diffusers main (skipped, needs python 3.11)")
         return
     req = REQ_ROOT / "diffusers-main.txt"
     if not req.is_file():
@@ -12601,12 +12661,7 @@ def install_python_stack() -> int:
     elif NO_TORCH:
         # No-torch update path: --no-deps throughout (PyPI metadata makes torch a hard dep).
         _progress("base packages (no torch)")
-        desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
-        unsloth_spec = (
-            f"{package_name}>={desktop_min_ver}"
-            if (desktop_min_ver and package_name == "unsloth")
-            else package_name
-        )
+        unsloth_spec = _desktop_unsloth_spec(package_name)
         pip_install(
             f"Updating {package_name} + unsloth-zoo (no-torch mode)",
             "--no-cache-dir",
@@ -12659,12 +12714,7 @@ def install_python_stack() -> int:
         )
     else:
         _progress("base packages")
-        desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
-        unsloth_spec = (
-            f"{package_name}>={desktop_min_ver}"
-            if (desktop_min_ver and package_name == "unsloth")
-            else package_name
-        )
+        unsloth_spec = _desktop_unsloth_spec(package_name)
         with _FreezeNewTorchForCoreUpdate():
             pip_install(
                 "Updating core packages",
