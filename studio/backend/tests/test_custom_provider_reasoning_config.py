@@ -47,7 +47,11 @@ PROVIDER = {"provider_type": "custom", "display_name": "Gateway"}
 CHAT = {"messages": [{"role": "user", "content": "hi"}], "model": "test-model"}
 
 
-def config(style = "reasoning_effort", enabled = True, levels = None):
+def config(
+    style = "reasoning_effort",
+    enabled = True,
+    levels = None,
+):
     value = {"enabled": enabled, "style": style}
     return value if levels is None else {**value, "effort_levels": levels}
 
@@ -331,7 +335,9 @@ def test_effort_levels_schema_and_persistence(harness, style):
     created = h.api("POST", status = 201, **PROVIDER, base_url = h.url, reasoning_config = ladder)
     assert created["reasoning_config"] == config(style, levels = ["high", "xhigh"])
     providers_db.reset_schema_state_for_tests()
-    assert providers_db.get_provider(created["id"])["reasoning_config"] == created["reasoning_config"]
+    assert (
+        providers_db.get_provider(created["id"])["reasoning_config"] == created["reasoning_config"]
+    )
     updated = h.api("PUT", f"/{created['id']}", reasoning_config = config(style))
     assert updated["reasoning_config"] == config(style)
     assert providers_db.get_provider(created["id"])["reasoning_config"] == config(style)
