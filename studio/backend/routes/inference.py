@@ -7273,6 +7273,89 @@ def _strip_tool_xml_for_display(
     return restored if restored is not None else strip_outside_think(text, _strip_segment)
 
 
+# Every literal an arm of ``_strip_tool_xml_for_display`` needs before it can edit a segment:
+# the ``_TOOL_XML_RE`` / ``_TOOL_XML_CLOSED_RE`` arms, the Mistral / bracket / rehearsal scans
+# (``[TOOL_CALLS]``, ``[ARGS]``), GLM and function-XML (``<tool_call``, ``<function``), DeepSeek
+# (``<｜``) and Kimi (``<|tool_call``). Markerless Gemma has no literal and is caught by
+# ``_DISPLAY_GEMMA_CALL_RE`` instead, a superset of ``_GEMMA_BARE_TC_RE``.
+_DISPLAY_STRIP_SENTINELS = (
+    "<tool_call",
+    "</tool_call",
+    "<|tool_call",
+    "<function",
+    "</function",
+    "[TOOL_CALLS]",
+    "[/TOOL_CALLS]",
+    "[ARGS]",
+    "<|python_tag|>",
+    "<｜",
+    "</param",
+)
+_DISPLAY_SENTINEL_OVERLAP = max(len(sentinel) for sentinel in _DISPLAY_STRIP_SENTINELS) - 1
+_DISPLAY_GEMMA_CALL_RE = _re.compile(r"(?<!\w)call\s*:")
+# A trailing ``call`` (or a prefix of one) that later text could still turn into ``call:``.
+_DISPLAY_GEMMA_TAIL_RE = _re.compile(r"(?<!\w)c(?:a(?:l(?:l\s*)?)?)?\Z")
+
+
+class _StreamingDisplayStrip:
+    """``_strip_tool_xml_for_display`` for a cumulative buffer that grows one token at a time.
+
+    The full strip rescans the whole buffer with a dozen regex passes, so calling it per token is
+    quadratic in the turn length: about 5 ms a token at 30k characters, run on the event loop. No
+    arm can edit text that holds none of ``_DISPLAY_STRIP_SENTINELS`` and no ``call:``, and think
+    blocks are kept verbatim, so such a buffer is returned as is. The sentinel scan resumes where
+    the previous call stopped, which makes prose-only turns constant per token. Once a sentinel
+    shows up the buffer is handed to the full strip on every call, exactly as before. A buffer
+    that does not extend the previous one (a new tool iteration) starts over.
+    """
+
+    __slots__ = ("_auto_heal", "_names", "_prev", "_scanned", "_gemma_from", "_marked")
+
+    def __init__(
+        self,
+        *,
+        auto_heal_tool_calls: bool,
+        enabled_tool_names: Optional[set] = None,
+    ):
+        self._auto_heal = auto_heal_tool_calls
+        self._names = enabled_tool_names
+        self._reset()
+
+    def _reset(self) -> None:
+        self._prev = ""
+        self._scanned = 0
+        self._gemma_from = 0
+        self._marked = False
+
+    def _has_sentinel(self, text: str) -> bool:
+        start = max(0, self._scanned - _DISPLAY_SENTINEL_OVERLAP)
+        if any(text.find(sentinel, start) >= 0 for sentinel in _DISPLAY_STRIP_SENTINELS):
+            return True
+        # Searched on the whole string from an offset, so ``(?<!\w)`` still reads the character before it.
+        if _DISPLAY_GEMMA_CALL_RE.search(text, self._gemma_from) is not None:
+            return True
+        tail = _DISPLAY_GEMMA_TAIL_RE.search(text, max(self._gemma_from, len(text) - 64))
+        self._gemma_from = tail.start() if tail is not None else len(text)
+        self._scanned = len(text)
+        return False
+
+    def strip(self, text: str) -> str:
+        if not self._auto_heal:
+            return text
+        if not text.startswith(self._prev):
+            self._reset()
+        self._prev = text
+        if not self._marked and self._has_sentinel(text):
+            self._marked = True
+        if not self._marked:
+            return text
+        return _strip_tool_xml_for_display(
+            text,
+            auto_heal_tool_calls = True,
+            enabled_tool_names = self._names,
+        )
+
+
 class _ReasoningSpanGuard:
     """Display strip that never edits a provenance-recorded reasoning trace.
 
@@ -32992,6 +33075,10 @@ async def produce_openai_chat_completions(
                     # stays free for disconnect detection.
                     gen = gguf_generate_with_tools()
                     prev_text = ""
+                    _gguf_display_strip = _StreamingDisplayStrip(
+                        auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
+                        enabled_tool_names = _gguf_display_tool_names,
+                    )
                     reasoning_extractor = _new_chat_reasoning_extractor()
                     _stream_usage = None
                     _stream_timings = None
@@ -33182,11 +33269,7 @@ async def produce_openai_chat_completions(
                         # cumulative then diff against the last sanitized
                         # snapshot so cross-chunk XML tags are handled correctly.
                         raw_cumulative = event.get("text", "")
-                        clean_cumulative = _strip_tool_xml_for_display(
-                            raw_cumulative,
-                            auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
-                            enabled_tool_names = _gguf_display_tool_names,
-                        )
+                        clean_cumulative = _gguf_display_strip.strip(raw_cumulative)
                         new_text = clean_cumulative[len(prev_text) :]
                         prev_text = clean_cumulative
                         if not new_text:
@@ -34997,6 +35080,10 @@ async def produce_openai_chat_completions(
 
                 gen = sf_generate_with_tools()
                 prev_text = ""
+                _sf_display_strip = _StreamingDisplayStrip(
+                    auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                    enabled_tool_names = _sf_display_tool_names,
+                )
                 reasoning_extractor = _new_sf_reasoning_extractor()
                 approval_flush_pending = False
 
@@ -35131,11 +35218,7 @@ async def produce_openai_chat_completions(
 
                     # Diff cumulative cleaned text against last snapshot.
                     raw_cumulative = event.get("text", "")
-                    clean_cumulative = _strip_tool_xml_for_display(
-                        raw_cumulative,
-                        auto_heal_tool_calls = _sf_auto_heal_tool_calls,
-                        enabled_tool_names = _sf_display_tool_names,
-                    )
+                    clean_cumulative = _sf_display_strip.strip(raw_cumulative)
                     new_text = clean_cumulative[len(prev_text) :]
                     prev_text = clean_cumulative
                     if not new_text:
