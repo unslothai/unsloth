@@ -708,13 +708,32 @@ def test_the_health_hint_for_the_train_tooltip(monkeypatch, linux, case):
     _mismatch_vendors(monkeypatch, {"amd"})
     for _probe, _answer in _pins(rocm_intent = False, hip_runtime = False).items():
         monkeypatch.setattr(hardware, _probe, lambda _a = _answer: _a)
-    hardware._cached_chat_only_permission_hint.cache_clear()
+    monkeypatch.setattr(hardware, "_CHAT_ONLY_HINT", None)
+    # Computed by detection (off the async health path), then only looked up.
+    hardware._record_chat_only_hint(verdict, label)
     hint = hardware.chat_only_permission_hint(verdict, label)
-    hardware._cached_chat_only_permission_hint.cache_clear()
     if has_hint:
         assert _USERMOD in hint
     else:
         assert hint is None
+    # A verdict detection did not record gets nothing.
+    assert hardware.chat_only_permission_hint("no_gpu", None) is None
+
+
+def test_the_system_tab_reads_vendors_from_the_cards_it_reports(monkeypatch, linux):
+    """An AMD card the inventory found after detection still gets the hint (stale global vendors)."""
+    _nodes(monkeypatch, **_KFD_SHUT)
+    _mismatch_vendors(monkeypatch, set())
+    for _probe, _answer in _pins(rocm_intent = False, hip_runtime = False).items():
+        monkeypatch.setattr(hardware, _probe, lambda _a = _answer: _a)
+    monkeypatch.setattr(hardware, "torch_build_snapshot", lambda **_k: {"reason": "torch_cuda_unavailable"})
+    monkeypatch.setattr(
+        hardware, "get_physical_gpu_inventory", lambda **_k: {"devices": [_AMD_CARD], "sources": ["sysfs"]}
+    )
+    monkeypatch.setattr(hardware, "_devices_that_can_establish_a_mismatch", lambda devices: devices)
+    monkeypatch.setattr(hardware, "_reported_torch_label", lambda *_a: "2.11.0+rocm7.0")
+    mismatch = hardware._torch_gpu_mismatch_report()["mismatch"]
+    assert _USERMOD in mismatch["permission_hint"]
 
 
 @pytest.mark.parametrize("case", [
