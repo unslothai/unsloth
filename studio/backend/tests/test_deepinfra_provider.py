@@ -133,9 +133,7 @@ async def _check_and_list_models(base_url: str):
 
 
 def test_deepinfra_is_offered_on_the_connections_api():
-    deepinfra = next(
-        e for e in list_available_providers() if e["provider_type"] == "deepinfra"
-    )
+    deepinfra = next(e for e in list_available_providers() if e["provider_type"] == "deepinfra")
     assert deepinfra["base_url"] == "https://api.deepinfra.com/v1/openai"
     assert not deepinfra["hidden"]
     assert deepinfra["model_list_mode"] == "remote"
@@ -144,9 +142,7 @@ def test_deepinfra_is_offered_on_the_connections_api():
 
 
 def test_deepinfra_forwards_service_tier_flex_on_the_wire():
-    streamed, seen = _against_the_server(
-        lambda base_url: _chat_through_the_route(base_url, "flex")
-    )
+    streamed, seen = _against_the_server(lambda base_url: _chat_through_the_route(base_url, "flex"))
     [(path, body)] = seen
     assert path == "/v1/openai/chat/completions"
     assert body["model"] == "meta-llama/Llama-3.3-70B-Instruct"
@@ -155,24 +151,19 @@ def test_deepinfra_forwards_service_tier_flex_on_the_wire():
 
 
 def test_deepinfra_forwards_service_tier_priority_on_the_wire():
-    _, seen = _against_the_server(
-        lambda base_url: _chat_through_the_route(base_url, "priority")
-    )
+    _, seen = _against_the_server(lambda base_url: _chat_through_the_route(base_url, "priority"))
     [(_, body)] = seen
     assert body["service_tier"] == "priority"
 
 
 def test_deepinfra_default_tier_is_omitted_from_the_wire():
-    _, seen = _against_the_server(
-        lambda base_url: _chat_through_the_route(base_url, "default")
-    )
+    _, seen = _against_the_server(lambda base_url: _chat_through_the_route(base_url, "default"))
     [(_, body)] = seen
     assert "service_tier" not in body
 
 
 def test_service_tier_is_not_forwarded_to_other_providers():
     from core.inference.providers import get_provider_info
-
     for provider_type in ("openai", "anthropic", "custom", "qwen", "zai"):
         info = get_provider_info(provider_type)
         assert not info.get("supports_service_tier"), provider_type
@@ -191,7 +182,6 @@ def test_deepinfra_normalizes_legacy_tier_spellings():
         assert req.service_tier == "default", spelling
     # An unknown tier is rejected.
     import pytest
-
     with pytest.raises(Exception):
         ChatCompletionRequest(
             provider_type = "deepinfra",
@@ -205,11 +195,5 @@ def test_deepinfra_normalizes_legacy_tier_spellings():
 def test_deepinfra_check_and_model_list_read_the_live_models_route():
     (check, model_ids), seen = _against_the_server(_check_and_list_models)
     assert check.success is True, check.message
-    assert model_ids == [
-        "meta-llama/Llama-3.3-70B-Instruct",
-        "Qwen/Qwen2.5-72B-Instruct",
-    ]
-    assert [path for path, _ in seen] == [
-        "/v1/openai/models",
-        "/v1/openai/models",
-    ]
+    assert model_ids == ["meta-llama/Llama-3.3-70B-Instruct", "Qwen/Qwen2.5-72B-Instruct"]
+    assert [path for path, _ in seen] == ["/v1/openai/models", "/v1/openai/models"]

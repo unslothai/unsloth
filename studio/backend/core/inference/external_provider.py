@@ -1873,7 +1873,7 @@ class ExternalProviderClient:
             _apply_deepseek_reasoning_controls(body, enable_thinking, reasoning_effort)
         elif self.provider_type in ("qwen", "qwencloud"):
             _apply_qwen_reasoning_controls(body, enable_thinking)
-        elif self.provider_type == "huggingface":
+        elif self.provider_type in ("huggingface", "deepinfra"):
             _apply_passthrough_reasoning_effort(body, enable_thinking, reasoning_effort)
         elif provider_info.get("supports_chat_template_kwargs"):
             # chat_template_kwargs is the only route to a template's enable_thinking variable, and a strict gateway

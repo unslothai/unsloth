@@ -474,7 +474,11 @@ async def update_provider_config(
             if field == "id":
                 continue
             # Explicit null clears nullable overrides; elsewhere it means "not sent".
-            if written is None and field not in {"max_output_tokens", "reasoning_config", "service_tier"}:
+            if written is None and field not in {
+                "max_output_tokens",
+                "reasoning_config",
+                "service_tier",
+            }:
                 continue
             if not _current_matches(current, field, written):
                 continue
