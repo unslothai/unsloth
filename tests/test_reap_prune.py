@@ -513,3 +513,48 @@ def test_chunked_scoring_matches_one_pass(monkeypatch):
             rtol = 1e-9,
             atol = 1e-12,
         )
+
+
+def _saliency_rank(rank, init_file, shards, out):
+    import torch.distributed as dist
+    dist.init_process_group("gloo", init_method = f"file://{init_file}", rank = rank, world_size = 2)
+    try:
+        saliency = reap._Saliency(4)
+        ids, weights, norms = shards[rank]
+        if ids is not None:
+            saliency.add(ids, weights, norms)
+        saliency.all_reduce()
+        out.put((rank, saliency.total.tolist(), saliency.count.tolist()))
+    finally:
+        dist.destroy_process_group()
+
+
+def test_saliency_is_summed_across_ranks(tmp_path):
+    # Two gloo ranks with different calibration shards (rank 1 routed nothing) must both end with
+    # the one-process sums, so every rank of a DDP job prunes the same experts.
+    import multiprocessing
+
+    ids = torch.tensor([0, 1, 1, 3])
+    weights = torch.tensor([0.5, 1.0, 0.25, 2.0])
+    norms = torch.tensor([2.0, 1.0, 4.0, 0.5])
+    one = reap._Saliency(4)
+    one.add(ids, weights, norms)
+    shards = [(ids, weights, norms), (None, None, None)]
+    ctx = multiprocessing.get_context("spawn")
+    out = ctx.Queue()
+    procs = [
+        ctx.Process(target = _saliency_rank, args = (r, str(tmp_path / "pg"), shards, out))
+        for r in range(2)
+    ]
+    for p in procs:
+        p.start()
+    results = sorted(out.get(timeout = 120) for _ in procs)
+    for p in procs:
+        p.join(timeout = 60)
+        assert p.exitcode == 0
+    for _, total, count in results:
+        assert total == one.total.tolist() and count == one.count.tolist()
+    # Single process (no process group): unchanged.
+    before = one.total.clone()
+    one.all_reduce()
+    assert torch.equal(one.total, before)

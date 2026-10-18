@@ -351,6 +351,24 @@ class _Saliency:
         self.total.index_add_(0, expert_ids, weights.to(acc) * norms.to(acc) * ones)
         self.count.index_add_(0, expert_ids, ones)
 
+    def all_reduce(self):
+        """Sum over the ranks of a distributed job, so every rank keeps the same experts (a DDP
+        job with sharded calibration data would otherwise pair unrelated experts across ranks)."""
+        dist = torch.distributed
+        if not (dist.is_available() and dist.is_initialized()) or dist.get_world_size() < 2:
+            return
+        # Every rank joins, including one whose shard routed no token here.
+        if dist.get_backend() == "nccl":
+            device = torch.device("cuda", torch.cuda.current_device())
+        else:
+            device = torch.device("cpu")
+        both = torch.zeros(2, self.num_experts, dtype = torch.float64, device = device)
+        if self.total is not None:
+            both[0] = self.total.to(device, torch.float64)
+            both[1] = self.count.to(device, torch.float64)
+        dist.all_reduce(both)
+        self.total, self.count = both[0], both[1]
+
     def mean(self):
         if self.total is None:
             return torch.zeros(self.num_experts, dtype = torch.float64)
@@ -821,6 +839,7 @@ def reap_prune(
                         if hook is not None:
                             hook.remove()
 
+                    saliency.all_reduce()
                     if saliency.total is None or not saliency.count.sum().item():
                         raise RuntimeError(
                             f"Unsloth: REAP saw no tokens reach {block_name}'s experts module; its MoE "
