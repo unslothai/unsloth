@@ -41,7 +41,11 @@ import { galleryCache } from "./use-audio-gallery";
 import { useAudioCloneStore } from "../stores/audio-clone-store";
 import { useAudioVoicesStore } from "../stores/audio-voices-store";
 import { useAudioWorkspaceStore } from "../stores/audio-workspace-store";
-import { voiceOptionName } from "../tools/panel-logic";
+import {
+  speakVoiceLogic,
+  speakVoiceStored,
+  voiceOptionName,
+} from "../tools/panel-logic";
 import { audioToolPanelsFor, isInstructionPanel } from "../tools/registry";
 import {
   audioModelContextFor,
@@ -261,13 +265,19 @@ export function useSpeechGeneration({
   const toolValues = useMemo(() => {
     const values: Record<string, unknown> = {};
     for (const panel of toolPanels) {
+      const stored =
+        storedToolValues[toolValueKey(audioOptionsModel, workflow, panel.id)];
       values[panel.id] = isInstructionPanel(panel.id)
         ? { instructions: audioInstructions, language: audioLanguage }
-        : storedToolValues[toolValueKey(audioOptionsModel, workflow, panel.id)];
+        : panel.id === speakVoiceLogic.id
+          ? speakVoiceStored(stored, audioOptionValues, toolContext.voiceOption)
+          : stored;
     }
     return values;
   }, [
     toolPanels,
+    audioOptionValues,
+    toolContext.voiceOption,
     audioInstructions,
     audioLanguage,
     storedToolValues,

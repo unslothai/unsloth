@@ -270,6 +270,21 @@ export function voiceOptionName(
   );
 }
 
+/** The kept picker value; one saved before the picker held built-in voices takes the voice
+ *  chosen in Advanced, which the picker now claims. */
+export function speakVoiceStored(
+  stored: unknown,
+  optionValues: Readonly<Record<string, unknown>>,
+  voiceOption: string | null | undefined,
+): unknown {
+  const saved = voiceOption ? optionValues[voiceOption] : undefined;
+  if (saved === undefined || saved === null) return stored;
+  if (stored === undefined) return { builtin: saved };
+  if (typeof stored === "object" && stored !== null && !("builtin" in stored))
+    return { ...stored, builtin: saved };
+  return stored;
+}
+
 export const speakVoiceLogic: AudioToolPanelLogic<SpeakVoiceValue> = {
   id: "speak-voice",
   families: [],
