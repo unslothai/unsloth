@@ -59,14 +59,18 @@ import { isMissingDeviceError } from "./studio-web-speech-dictation-adapter";
 // transcript per utterance, mirroring how the Web Speech adapter ends a session
 // on silence and lets the voice loop re-arm.
 
-const SILENCE_RMS = 0.012; // RMS below this counts as silence (ends the utterance)
+// Loudness floors, scaled from the room: both thresholds sit a fixed ratio above the
+// ambient RMS measured while nothing is being said, never below these minimums.
 // A frame only counts as real SPEECH toward the transcribe gate (voicedMs /
-// heardSpeech) at or above this, comfortably over the ambient-noise floor. Frames
-// between SILENCE_RMS and SPEECH_RMS keep the utterance alive but don't count, so
-// room noise or a mic click can't quietly accumulate the 350ms of "speech" that
-// would get fed to STT (which then hallucinates "Thank you." etc. from noise).
-// Lower it if genuinely soft speech is being dropped.
-const SPEECH_RMS = 0.02;
+// heardSpeech) at or above the speech bar; frames between the two keep the
+// utterance alive but don't count, so room noise or a mic click can't quietly
+// accumulate the 350ms of "speech" that would get fed to STT. The fixed 0.02 bar
+// this replaced needed a loud first word on a quiet mic; the detector checks every
+// clip for a real voice anyway, so the bar can follow the room.
+const SILENCE_RMS_MIN = 0.006;
+const SPEECH_RMS_MIN = 0.011;
+const SILENCE_OVER_FLOOR = 1.6;
+const SPEECH_OVER_FLOOR = 2.6;
 const SILENCE_HANG_MS = 1000; // silence after speech ends the utterance
 // A transcript that reads cut off ("Could you tell me just like") is held, not
 // sent, and the next window gets a longer hang so the rest of the thought can
@@ -265,7 +269,13 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     // Parallel to chunks: whether each frame was above the silence floor, used to
     // measure voiced duration and to trim silence before transcription.
     const chunkVoiced: boolean[] = [];
+    // Parallel too: above the silence floor. The clip sent to STT starts at the first
+    // of these before the first loud frame, so a soft opening word is not trimmed off.
+    const chunkNotSilent: boolean[] = [];
     let voicedMs = 0;
+    // Ambient RMS, a slow average of the quiet frames before speech is heard.
+    let noiseFloor = 0;
+    let noiseFrames = 0;
     const bargeGate = createBargeGate(
       vadDisabled ? BARGE_UNCONFIRMED_MS : BARGE_CONFIRMED_MS,
     );
@@ -445,8 +455,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       // leading/trailing silence, which it tends to hallucinate words from.
       const frameMs = chunks[0] ? (chunks[0].length / sampleRate) * 1000 : 0;
       const padFrames = frameMs > 0 ? Math.ceil(SILENCE_PAD_MS / frameMs) : 0;
-      const firstVoiced = chunkVoiced.indexOf(true);
+      let firstVoiced = chunkVoiced.indexOf(true);
       const lastVoiced = chunkVoiced.lastIndexOf(true);
+      while (firstVoiced > 0 && chunkNotSilent[firstVoiced - 1]) firstVoiced--;
       const start = Math.max(0, firstVoiced - padFrames);
       const end = Math.min(chunks.length - 1, lastVoiced + padFrames);
       const span = chunks.slice(start, end + 1);
@@ -770,9 +781,18 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           // notSilent keeps the utterance alive (resets the silence-hang timer);
           // speech is the stricter bar that actually counts toward transcription,
           // so noise/clicks between the two thresholds never reach STT.
-          const notSilent = rms >= SILENCE_RMS;
-          const speech = rms >= SPEECH_RMS;
+          const speechBar = Math.max(SPEECH_RMS_MIN, noiseFloor * SPEECH_OVER_FLOOR);
+          const notSilent = rms >= Math.max(SILENCE_RMS_MIN, noiseFloor * SILENCE_OVER_FLOOR);
+          const speech = rms >= speechBar;
+          if (!heardSpeech && !speech) {
+            // The first quiet frames set the floor; after that it drifts slowly, so a
+            // soft word does not lift it under itself.
+            noiseFrames++;
+            const w = noiseFrames <= 4 ? 1 / noiseFrames : 0.05;
+            noiseFloor += (rms - noiseFloor) * w;
+          }
           chunkVoiced.push(speech);
+          chunkNotSilent.push(notSilent);
           if (notSilent) lastVoiceAt = now;
           if (speech) {
             voicedMs += frameMs;
