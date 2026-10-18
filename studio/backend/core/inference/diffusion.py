@@ -10920,6 +10920,9 @@ class DiffusionBackend:
 
         # Per-generation cancel Event that unload()/a superseding load set (under _lock) to abort just this denoise.
         cancel = threading.Event()
+        from core.inference.generation_ticket import bind_generation_cancel
+
+        bind_generation_cancel(cancel)
         with self._generation_slot(cancel):
             # Never render beside a background compile; wait outside the state lock so status polls keep answering.
             pending_bg = getattr(self._state, "bg_compile", None)

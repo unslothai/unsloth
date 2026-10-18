@@ -24,6 +24,7 @@ from core.inference import (
     tools,
 )
 from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+from core.inference.generation_ticket import bind_generation_cancel
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     status_for_tool,
@@ -60,10 +61,13 @@ class FakeEngine:
         return True
 
     def generate(self, **kwargs):
+        # Like the real engines: the per-generation event goes to the caller's ticket.
+        cancel = threading.Event()
+        bind_generation_cancel(cancel)
         self.calls.append(kwargs)
         self.started.set()
         if self.block:
-            self.release.wait(20)
+            cancel.wait(20)
             raise RuntimeError(DIFFUSION_CANCELLED_MSG)
         size = (kwargs.get("width") or 1024, kwargs.get("height") or 1024)
         return {
@@ -391,13 +395,6 @@ def test_stop_and_timeout_stop_the_engine_too(
 ):
     _alice_loaded(monkeypatch)
     engine.block = True
-    stopped = []
-
-    def cancel_for(account_id):
-        stopped.append(account_id)
-        return engine.cancel_generate(expected_account = account_id)
-
-    monkeypatch.setattr(diffusion_engine_router, "cancel_generation_for_account", cancel_for)
     cancel = threading.Event()
     if how == "cancel":
         threading.Thread(target = lambda: engine.started.wait(20) and cancel.set()).start()
@@ -410,7 +407,6 @@ def test_stop_and_timeout_stop_the_engine_too(
         timeout = 2 if how == "timeout" else 60,
     )
     assert result == (tool.ERR_STOPPED if how == "cancel" else tool.ERR_TIMEOUT)
-    assert stopped and set(stopped) == {ALICE.account_id}
     # The run unwound before the tool returned: the keep-warm count is already closed.
     assert keepwarm == {"begin": 1, "end": 1}
     assert not os.listdir(tmp_path)
@@ -424,16 +420,13 @@ def test_a_render_that_finishes_inside_the_stop_window_is_still_returned(
     finish = engine.generate
 
     def generate(**kwargs):
+        cancel = threading.Event()
+        bind_generation_cancel(cancel)
         engine.started.set()
-        engine.release.wait(20)
+        cancel.wait(20)
         return finish(**kwargs)
 
     monkeypatch.setattr(engine, "generate", generate)
-    monkeypatch.setattr(
-        diffusion_engine_router,
-        "cancel_generation_for_account",
-        lambda account_id: engine.cancel_generate(expected_account = account_id),
-    )
     result = _in_thread(
         ALICE, tool.run_generate_image, {"prompt": "x"}, workdir = str(tmp_path), timeout = 1
     )
@@ -485,3 +478,106 @@ def test_the_same_prompt_twice_is_two_renders():
     first = controller.prepare_call(call)
     controller.record_result(first, "Generated a 1024x1024 image.")
     assert controller.prepare_call(call).action == "execute"
+
+
+def test_stopping_a_queued_call_never_cancels_the_render_ahead_of_it(
+    engine, server_loop, keepwarm, monkeypatch, tmp_path
+):
+    # Same account, two surfaces: a render already holds the engine (still before step 0, so
+    # progress reads idle) when the chat call arrives and queues behind it. Stop on the chat must
+    # leave that render alone and drop only its own queued run.
+    _alice_loaded(monkeypatch)
+    lock = threading.Lock()
+    other_cancel = threading.Event()
+    other_done = threading.Event()
+    account_wide = []
+    ran = []
+
+    def cancel_generate(expected_account = None):
+        account_wide.append(expected_account)
+        other_cancel.set()
+        return True
+
+    def generate(**kwargs):
+        cancel = threading.Event()
+        bind_generation_cancel(cancel)
+        engine.started.set()
+        while not lock.acquire(timeout = 0.05):
+            if cancel.is_set():
+                raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+        try:
+            ran.append(kwargs)
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+        finally:
+            lock.release()
+
+    holding = threading.Event()
+
+    def other_render():
+        with lock:
+            holding.set()
+            other_cancel.wait(3)
+        other_done.set()
+
+    monkeypatch.setattr(engine, "cancel_generate", cancel_generate)
+    monkeypatch.setattr(engine, "generate", generate)
+    # What the router does for a real engine: cancel whatever render the account has active.
+    monkeypatch.setattr(
+        diffusion_engine_router,
+        "cancel_generation_for_account",
+        lambda account_id: engine.cancel_generate(expected_account = account_id),
+    )
+    holder = threading.Thread(target = other_render)
+    holder.start()
+    assert holding.wait(10)
+    stop = threading.Event()
+    threading.Thread(target = lambda: engine.started.wait(20) and stop.set()).start()
+    result = _in_thread(
+        ALICE,
+        tool.run_generate_image,
+        {"prompt": "x"},
+        workdir = str(tmp_path),
+        cancel_event = stop,
+        timeout = 60,
+    )
+    holder.join(10)
+    assert result == tool.ERR_STOPPED
+    assert not other_cancel.is_set() and not account_wide
+    assert other_done.is_set() and not ran
+
+
+def test_sizes_follow_the_loaded_family_grid_and_bounds(engine, server_loop, monkeypatch, tmp_path):
+    response = _response(tmp_path, monkeypatch)
+
+    async def ok(request):
+        return response
+
+    seen = _fake_core(monkeypatch, ok)
+    engine.status_dict["conditioning"] = {
+        "dimension_multiple": 32,
+        "max_output_side": 2752,
+        "max_output_pixels": 2400 * 1792,
+    }
+    schema = tool.generate_image_schema(engine.status_dict)
+    width_doc = schema["function"]["parameters"]["properties"]["width"]["description"]
+    assert "multiple of 32" in width_doc and "2752" in width_doc
+    work = str(tmp_path / "w")
+    tool.run_generate_image({"prompt": "x", "width": 1280, "height": 720}, workdir = work)
+    tool.run_generate_image({"prompt": "x", "width": 2752, "height": 2752}, workdir = work)
+    engine.status_dict["conditioning"] = {
+        "dimension_multiple": 16,
+        "max_output_side": 2048,
+        "max_output_pixels": 2048 * 2048,
+    }
+    tool.run_generate_image({"prompt": "x", "width": 2752}, workdir = work)
+    from core.inference.diffusion_conditioning import check_output_size
+
+    fams = [
+        SimpleNamespace(dimension_multiple = 32, max_output_side = 2752, max_output_pixels = 2400 * 1792),
+    ] * 2 + [
+        SimpleNamespace(dimension_multiple = 16, max_output_side = 2048, max_output_pixels = 2048 * 2048)
+    ]
+    for fam, request in zip(fams, seen):
+        check_output_size(fam, request.width, request.height)  # the route's own check accepts it
+    assert (seen[0].width, seen[0].height) == (1280, 704)
+    assert (seen[2].width, seen[2].height) == (2048, 1024)

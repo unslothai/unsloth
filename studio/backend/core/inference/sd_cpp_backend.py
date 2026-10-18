@@ -4078,6 +4078,9 @@ class SdCppDiffusionBackend:
             )
 
         cancel = threading.Event()
+        from core.inference.generation_ticket import bind_generation_cancel
+
+        bind_generation_cancel(cancel)
         from hub.services.models.account_access import media_generation_slot
 
         with self._generate_lock, media_generation_slot("diffusion"):

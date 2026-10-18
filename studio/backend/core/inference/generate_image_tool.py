@@ -49,19 +49,37 @@ _MAX_WAIT_S = 900.0
 _STOP_WAIT_S = 30.0
 _POLL_S = 0.25
 _PROMPT_ECHO_CHARS = 300
+_MIN_SIDE = 256
+# DiffusionGenerateRequest's own ceiling.
+_TRANSPORT_MAX_SIDE = 2752
+
+
+def _size_limits(status: dict) -> tuple[int, int, int, int]:
+    """(multiple, min side, max side, max pixels) of the loaded family, as the route enforces them."""
+    cond = status.get("conditioning") or {}
+    multiple = max(1, int(cond.get("dimension_multiple") or 16))
+    max_side = min(_TRANSPORT_MAX_SIDE, int(cond.get("max_output_side") or 2048))
+    max_side = max_side // multiple * multiple
+    max_pixels = int(cond.get("max_output_pixels") or 2048 * 2048)
+    min_side = -(-_MIN_SIDE // multiple) * multiple
+    return multiple, min_side, max_side, max_pixels
 
 
 def generate_image_schema(status: dict) -> dict:
     """The OpenAI function tool for the loaded image model; negative_prompt only when it has one."""
+    multiple, min_side, max_side, max_pixels = _size_limits(status)
+    bounds = f"{min_side} to {max_side}, a multiple of {multiple}"
+    if max_pixels < max_side * max_side:
+        bounds += f", at most {max_pixels:,} pixels in total"
     properties: dict[str, Any] = {
         "prompt": {"type": "string", "description": "The full image prompt."},
         "width": {
             "type": "integer",
-            "description": "Width in pixels, 256 to 2752, a multiple of 16. Default 1024.",
+            "description": f"Width in pixels, {bounds}. Default 1024.",
         },
         "height": {
             "type": "integer",
-            "description": "Height in pixels, 256 to 2752, a multiple of 16. Default 1024.",
+            "description": f"Height in pixels, {bounds}. Default 1024.",
         },
         "seed": {
             "type": "integer",
@@ -93,8 +111,21 @@ def offers_txt2img(status: dict) -> bool:
     return not workflows or "txt2img" in workflows
 
 
-def _snap_size(value: Any) -> int:
-    return min(2752, max(256, int(round(int(value) / 16)) * 16))
+def _snap_size(arguments: dict, status: dict) -> tuple[int, int]:
+    """Width and height on the loaded family's grid and inside its bounds (the route refuses, never snaps)."""
+    multiple, min_side, max_side, max_pixels = _size_limits(status)
+
+    def snap(value: Any) -> int:
+        return min(max_side, max(min_side, int(round(int(value) / multiple)) * multiple))
+
+    w = snap(arguments.get("width") if arguments.get("width") is not None else 1024)
+    h = snap(arguments.get("height") if arguments.get("height") is not None else 1024)
+    while w * h > max_pixels and max(w, h) > min_side:
+        if w >= h:
+            w -= multiple
+        else:
+            h -= multiple
+    return w, h
 
 
 def _build_request(arguments: dict, prompt: str, status: dict):
@@ -103,9 +134,8 @@ def _build_request(arguments: dict, prompt: str, status: dict):
     # Only what the model supplied: an omitted steps/guidance must stay unset so the core
     # resolves the loaded model's own defaults.
     fields: dict[str, Any] = {"prompt": prompt}
-    for key in ("width", "height"):
-        if arguments.get(key) is not None:
-            fields[key] = _snap_size(arguments[key])
+    if arguments.get("width") is not None or arguments.get("height") is not None:
+        fields["width"], fields["height"] = _snap_size(arguments, status)
     if arguments.get("seed") is not None:
         fields["seed"] = int(arguments["seed"])
     negative = arguments.get("negative_prompt")
@@ -114,30 +144,26 @@ def _build_request(arguments: dict, prompt: str, status: dict):
     return DiffusionGenerateRequest(**fields)
 
 
-async def _generate(request):
+async def _generate(request, ticket):
     from core.inference import media_keepwarm
+    from core.inference.generation_ticket import generation_ticket
     from core.inference.gpu_arbiter import DIFFUSION
     from routes.inference import _generate_diffusion_image_core
 
     # The HTTP route is counted by the keep-warm middleware; this path never goes through it.
     await media_keepwarm.begin_request(DIFFUSION)
     try:
-        return await _generate_diffusion_image_core(request)
+        with generation_ticket(ticket):
+            return await _generate_diffusion_image_core(request)
     finally:
         media_keepwarm.end_request(DIFFUSION)
 
 
-def _stop(future, account_id: str) -> None:
-    """Stop the render on the GPU too: cancelling the task alone leaves the engine thread running."""
-    from core.inference.diffusion_engine_router import cancel_generation_for_account
-
-    deadline = time.monotonic() + _STOP_WAIT_S
-    while not future.done() and time.monotonic() < deadline:
-        try:
-            cancel_generation_for_account(account_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("generate_image: engine cancel failed: %s", exc)
-        concurrent.futures.wait([future], timeout = _POLL_S)
+def _stop(future, ticket) -> None:
+    """Stop this call's render on the GPU too, queued or running. Never the account-wide cancel:
+    that reaches whichever render is active, possibly another chat's or the Images page's."""
+    ticket.stop()
+    concurrent.futures.wait([future], timeout = _STOP_WAIT_S)
     future.cancel()
 
 
@@ -179,6 +205,7 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
 
     from fastapi import HTTPException
 
+    from core.inference.generation_ticket import GenerationTicket
     from core.inference.gpu_arbiter import DIFFUSION, GpuBusyForAnotherAccountError
     from core.inference.media_chat_tools import media_chat_status, server_loop
     from core.inference.media_keepwarm import engine_if_imported
@@ -208,7 +235,8 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
         message = errors()[0].get("msg") if callable(errors) and errors() else str(exc)
         return f"Error: invalid generate_image arguments: {message}"
 
-    future = asyncio.run_coroutine_threadsafe(arun_as(account, _generate(request)), loop)
+    ticket = GenerationTicket()
+    future = asyncio.run_coroutine_threadsafe(arun_as(account, _generate(request, ticket)), loop)
     limit = _MAX_WAIT_S if timeout is None or timeout >= 9999 else max(1.0, float(timeout))
     deadline = time.monotonic() + limit
     stopped = None
@@ -218,7 +246,7 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
         elif time.monotonic() >= deadline:
             stopped = ERR_TIMEOUT
         if stopped:
-            _stop(future, account.account_id)
+            _stop(future, ticket)
             break
         concurrent.futures.wait([future], timeout = _POLL_S)
     # A render that finished inside the stop window is still a saved image: hand it over.
