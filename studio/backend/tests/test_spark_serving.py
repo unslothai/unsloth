@@ -4905,3 +4905,33 @@ def test_inherited_extras_handed_to_the_planner_are_shadow_stripped(monkeypatch)
     assert ri._spark_inherited_extra_args(applied) == ["--seed", "1"]
     untouched = LoadRequest(model_path = "unsloth/some-GGUF")
     assert ri._spark_inherited_extra_args(untouched) == ["--ctx-size", "4096", "--seed", "1"]
+
+
+def test_idle_slot_erase_is_declined_behind_the_replica_router(monkeypatch):
+    """/slots/N is answered by the primary, while the round may have decoded in slot N of the
+    peer: erasing through the router clears another chat's cache and frees a reservation the
+    peer still holds."""
+    import httpx
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = LlamaCppBackend()
+    backend._port = 41234
+    backend._slot_save_dir = "/nonexistent/slots"
+    posted = []
+
+    class _Ok:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"id_slot": 0, "n_erased": 10}
+
+    monkeypatch.setattr(httpx, "post", lambda url, **kw: posted.append(url) or _Ok())
+    # Off a Spark pair the erase goes out exactly as before.
+    assert backend.release_idle_chat_slot(backend.base_url, 0) is True
+    assert posted == ["http://127.0.0.1:41234/slots/0"]
+    posted.clear()
+    monkeypatch.setattr(ss, "route_base_url", lambda b: "http://127.0.0.1:50000")
+    assert backend.base_url == "http://127.0.0.1:50000"
+    assert backend.release_idle_chat_slot(backend.base_url, 0) is False
+    assert posted == []

@@ -38258,6 +38258,12 @@ class LlamaCppBackend:
             or slot < 0
         ):
             return False
+        from core.inference.spark_serving import route_base_url
+
+        if route_base_url(self) is not None:
+            # Behind the two-Spark router a slot id is local to whichever replica decoded the round,
+            # and /slots is answered by the primary: an erase would clear another chat's cache.
+            return False
         try:
             response = httpx.post(
                 f"{base_url}/slots/{slot}",
