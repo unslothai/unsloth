@@ -3465,7 +3465,6 @@ def _unsloth_trl_masks_unscorable():
     try:
         import trl
         from packaging.version import Version
-
         return Version(trl.__version__) >= Version("1.6.0")
     except Exception:
         return True
