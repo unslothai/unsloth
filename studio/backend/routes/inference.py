@@ -10069,8 +10069,8 @@ _TEXT_ONLY_PROVIDER_TYPES = frozenset({"cohere", "deepseek", "mistral"})
 # registry default: no model catalog exists to check the configured endpoint.
 _MIXED_CATALOG_PROVIDER_TYPES = frozenset({"huggingface", "openrouter", "qwen", "qwencloud"})
 
-# Mixed catalogs whose models.dev namespace answers vision per model. Mirrors
-# CATALOG_VISION_PROVIDER_TYPES in studio/frontend/src/features/chat/external-providers.ts.
+# Mixed catalogs whose models.dev namespace answers vision per model.
+# Mirrors CATALOG_VISION_PROVIDER_TYPES in external-providers.ts.
 _CATALOG_VISION_NAMESPACES = {"qwencloud": "qwen"}
 
 
