@@ -480,10 +480,11 @@ def doctor(
         "--gpus/--no-gpus",
         help = "Check GPUs, interconnect and a multi-GPU all_reduce (the default check).",
     ),
-    timeout: float = typer.Option(
-        60.0,
+    timeout: Optional[float] = typer.Option(
+        None,
         "--timeout",
-        help = "Seconds before the all_reduce smoke test is declared hung.",
+        help = "Seconds before the all_reduce smoke test (on a DGX Spark, also the NCCL link probe) "
+        "is declared hung. Default 60, and 90 for the Spark link probe.",
     ),
     parity_only: bool = typer.Option(
         False,
@@ -510,17 +511,32 @@ def doctor(
         on_spark = spark_cluster.is_dgx_spark()
     except Exception:
         on_spark = False
-    if on_spark:
-        # A DGX Spark's checks are about its peer and link; its one GPU has no all_reduce to run.
-        from unsloth_cli.commands.spark_doctor import spark_doctor
-        raise typer.Exit(
-            code = spark_doctor(
-                parity_only = parity_only,
-                deep = deep,
-                skip_parity = skip_parity,
-                skip_fastpath = skip_fastpath,
-            )
-        )
+    local_timeout = 60.0 if timeout is None else timeout
+    if not on_spark:
+        _gpu_doctor(gpus, local_timeout)
+    # A Spark gets the same local GPU check as any machine, then the peer and link checks.
+    # --no-gpus and --parity-only both promise no GPU work, on this node or the peer.
+    local_rc = 0
+    if gpus and not parity_only:
+        try:
+            _gpu_doctor(True, local_timeout)
+        except typer.Exit as e:
+            local_rc = e.exit_code
+        typer.echo("")
+    from unsloth_cli.commands.spark_doctor import spark_doctor
+
+    spark_rc = spark_doctor(
+        parity_only = parity_only or not gpus,
+        deep = deep and gpus,
+        skip_parity = skip_parity,
+        skip_fastpath = skip_fastpath,
+        timeout = timeout,
+    )
+    raise typer.Exit(code = 1 if (local_rc or spark_rc) else 0)
+
+
+def _gpu_doctor(gpus: bool, timeout: float) -> None:
+    """The local GPU, interconnect and all_reduce check. Always ends in typer.Exit."""
     if not gpus:
         typer.echo("Nothing to check.")
         raise typer.Exit()
