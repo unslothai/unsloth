@@ -23,7 +23,10 @@ GROUP = 256
 HIDDEN, VOCAB = 256, 64
 CUDA_BF16 = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
 MPS_BF16 = types.SimpleNamespace(device = "mps", dtype = torch.bfloat16)
-DISTILLED, BASE = "black-forest-labs/flux-3-image-klein", "black-forest-labs/flux-3-image-klein-base"
+DISTILLED, BASE = (
+    "black-forest-labs/flux-3-image-klein",
+    "black-forest-labs/flux-3-image-klein-base",
+)
 VARIANTS = {
     "flux.3-klein": (DISTILLED, "unsloth/flux-3-image-klein-FP8", "flux-3-image-klein"),
     "flux.3-klein-base": (BASE, "unsloth/flux-3-image-klein-base-FP8", "flux-3-image-klein-base"),
@@ -88,7 +91,13 @@ def _hidden(encoder, ids):
     return out.hidden_states
 
 
-def _write(path, state, fmt, scheme, base = DISTILLED):
+def _write(
+    path,
+    state,
+    fmt,
+    scheme,
+    base = DISTILLED,
+):
     from safetensors.torch import save_file
 
     meta = {
@@ -105,7 +114,9 @@ def _write(path, state, fmt, scheme, base = DISTILLED):
         **{n: json.dumps({"_type": "Tensor"}) for n in state},
     }
     path.parent.mkdir(parents = True, exist_ok = True)
-    save_file({k: v.detach().clone().contiguous() for k, v in state.items()}, str(path), metadata = meta)
+    save_file(
+        {k: v.detach().clone().contiguous() for k, v in state.items()}, str(path), metadata = meta
+    )
     return path
 
 
@@ -117,7 +128,11 @@ def _int8_state(encoder):
         r"^model\.language_model\.layers\.\d+\.(self_attn\.[qkvo]_proj|mlp\.(gate|up|down)_proj)\.weight$"
     )
     blob = torch.tensor(
-        list(json.dumps({"format": "int8_tensorwise", "convrot": True, "convrot_groupsize": GROUP}).encode()),
+        list(
+            json.dumps(
+                {"format": "int8_tensorwise", "convrot": True, "convrot_groupsize": GROUP}
+            ).encode()
+        ),
         dtype = torch.uint8,
     )
     state = {}
@@ -126,13 +141,19 @@ def _int8_state(encoder):
             continue
         if lin.match(k):
             q, s = tpq.quantize_int8_convrot_weight(v, GROUP)
-            state[k], state[k[:-7] + ".weight_scale"], state[k[:-7] + ".comfy_quant"] = q, s, blob.clone()
+            state[k], state[k[:-7] + ".weight_scale"], state[k[:-7] + ".comfy_quant"] = (
+                q,
+                s,
+                blob.clone(),
+            )
         else:
             state[k] = v
     return state
 
 
 def _fp8_state(encoder):
+    # _cast_fp8 is diffusers' layerwise casting; the fp8 file it writes is what the loader is checked against.
+    pytest.importorskip("diffusers.hooks")
     from core.inference.diffusion_precision import _cast_fp8
 
     _cast_fp8(encoder, types.SimpleNamespace(dtype = torch.float32))
@@ -170,7 +191,12 @@ class _Log:
         return lambda msg, *a, **_k: self.lines.append(str(msg) % a if a else str(msg))
 
 
-def _pipe_kwargs(family, mode, target = CUDA_BF16, logger = None):
+def _pipe_kwargs(
+    family,
+    mode,
+    target = CUDA_BF16,
+    logger = None,
+):
     fam = detect_family("", override = family)
     return tpq.te_prequant_pipe_kwargs(
         fam,
@@ -204,9 +230,10 @@ def test_filenames_follow_the_qwen_image_2_1_pattern_per_variant(family):
     assert tpq.te_candidate_filenames(fp8["text_encoder"]) == _names(stem)[1:]
     # The ungated unsloth mirror of the base resolves the same artifact.
     mirror_id = base.replace("black-forest-labs/", "unsloth/")
-    assert tpq.te_prequant_sources_for_base(
-        fam, mirror_id, te_quant_mode = "int8", target = CUDA_BF16
-    ) == int8
+    assert (
+        tpq.te_prequant_sources_for_base(fam, mirror_id, te_quant_mode = "int8", target = CUDA_BF16)
+        == int8
+    )
     # MPS takes the int8 file alone and budgets it at its own measured share.
     mps = tpq.te_prequant_sources_for_base(fam, base, te_quant_mode = "int8", target = MPS_BF16)
     assert tpq.te_candidate_filenames(mps["text_encoder"]) == _names(stem)[:1]
@@ -292,7 +319,9 @@ def test_an_invisible_repo_falls_back_to_the_dense_encoder(tmp_path, monkeypatch
             raise RepositoryNotFoundError("404")
 
     fam = detect_family("", override = family)
-    sources = tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16)
+    sources = tpq.te_prequant_sources_for_base(
+        fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16
+    )
     assert sources
     # Nothing resolves on the Hub, so the plan keeps the dense text_encoder/ shards.
     assert tpq.te_prequant_hub_files(sources, Invisible()) == {}
@@ -303,7 +332,6 @@ def test_both_flux3_families_default_to_the_hosted_int8_convrot_encoder():
     # still reaches the released bf16 encoder.
     from core.inference.diffusion_families import _FAMILIES as FAMILIES
     from core.inference.diffusion_precision import resolve_te_quant_request
-
     for name in ("flux.3-klein", "flux.3-klein-base"):
         fam = next(f for f in FAMILIES if f.name == name)
         assert fam.te_quant_auto == "int8", name
@@ -332,10 +360,14 @@ def _staged_only_config(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("family", sorted(VARIANTS))
-def test_the_prequant_encoder_reads_its_config_from_the_staged_base(mirror, tmp_path, monkeypatch, family):
+def test_the_prequant_encoder_reads_its_config_from_the_staged_base(
+    mirror, tmp_path, monkeypatch, family
+):
     staged, asked = _staged_only_config(tmp_path, monkeypatch)
     fam = detect_family("", override = family)
-    kwargs = dict(te_quant_mode = "int8", target = CUDA_BF16, dtype = torch.float32, local_files_only = True)
+    kwargs = dict(
+        te_quant_mode = "int8", target = CUDA_BF16, dtype = torch.float32, local_files_only = True
+    )
     # without a config source the canonical id misses the config, and the dense fallback is refused
     with pytest.raises(RuntimeError, match = "could not be loaded"):
         tpq.te_prequant_pipe_kwargs(fam, fam.base_repo, dense_source = str(staged), **kwargs)
@@ -361,12 +393,30 @@ def test_flux3_assembly_hands_the_staged_dir_to_the_prequant_encoder(tmp_path, m
             return self
 
     monkeypatch.setattr(d, "te_prequant_pipe_kwargs", te_kwargs)
-    monkeypatch.setattr(d, "load_flux3_pipeline", lambda root, *a, **k: seen.update(root = root, te = k["text_encoder"]) or _Pipe())
+    monkeypatch.setattr(
+        d,
+        "load_flux3_pipeline",
+        lambda root, *a, **k: seen.update(root = root, te = k["text_encoder"]) or _Pipe(),
+    )
     staged = str(tmp_path / "staged")
     d.DiffusionBackend._assemble_pipe(
-        None, DISTILLED, object(), torch.float32, None, "cpu",
-        base_local_dir = staged, fam = detect_family("", override = "flux.3-klein"), te_quant_mode = "int8",
-        target = CUDA_BF16, fetch_base = "unsloth/flux-3-image-klein-FP8", local_files_only = True,
+        None,
+        DISTILLED,
+        object(),
+        torch.float32,
+        None,
+        "cpu",
+        base_local_dir = staged,
+        fam = detect_family("", override = "flux.3-klein"),
+        te_quant_mode = "int8",
+        target = CUDA_BF16,
+        fetch_base = "unsloth/flux-3-image-klein-FP8",
+        local_files_only = True,
     )
     # the canonical fetch id for checkpoint compatibility, the staged dir for the config, as the pipeline itself
-    assert seen == {"base": "unsloth/flux-3-image-klein-FP8", "config_source": staged, "root": staged, "te": "enc"}
+    assert seen == {
+        "base": "unsloth/flux-3-image-klein-FP8",
+        "config_source": staged,
+        "root": staged,
+        "te": "enc",
+    }

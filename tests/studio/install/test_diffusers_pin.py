@@ -141,7 +141,7 @@ def test_the_main_build_pins_a_commit_and_runs_after_the_release():
 
 
 def test_the_shipped_main_build_is_active_with_a_digest():
-    """FLUX.3 Klein is in no release (huggingface/diffusers#15046), so the pinned build ships active."""
+    """FLUX.3 Klein (huggingface/diffusers#15046, merged 2026-10-15) is in no release, so the pinned build ships active."""
     lines = _requirements(MAIN_FILE)
     assert len(lines) == 1 and re.fullmatch(
         r"diffusers @ git\+https://\S+@[0-9a-f]{40}", lines[0]
@@ -150,6 +150,20 @@ def test_the_shipped_main_build_is_active_with_a_digest():
     assert len(re.findall(r"^# archive-sha256: [0-9a-f]{64}$", text, re.M)) == 1
     module = _probe_module("install_python_stack_probe_shipped", shipped = True)
     assert module._diffusers_main_active() is True
+
+
+def test_the_flux3_pin_is_main_with_the_merged_flux3_support():
+    """huggingface/diffusers#15046 merged on 2026-10-15 (7ecb1e1b4); the pin is main at d42ebf9c (2026-10-16, the
+    prompt upsampler block #15058), which carries it, with that commit's archive digest, not the PR branch head."""
+    text = MAIN_FILE.read_text(encoding = "utf-8")
+    (line,) = _requirements(MAIN_FILE)
+    assert line.endswith("@d42ebf9c6e0b46103b74283f5324357a67acaa04"), line
+    assert "ec288418a5efa32e9fd49eb7b193babce920a106" not in line
+    assert re.search(
+        r"^# archive-sha256: c46925a12c1b64340272dbd4c5d72a4298ecd4c96cad2c9d549b85a99ffb491f$",
+        text,
+        re.M,
+    )
 
 
 def test_the_release_mode_copy_is_commented_out_but_keeps_its_commit():

@@ -1,8 +1,9 @@
 # INSTALLED BY DEFAULT, on top of diffusers-pin.txt. Set UNSLOTH_DIFFUSERS_MAIN=0 to opt out.
-# Today that is FLUX.3 Image Klein: Diffusers support is open as huggingface/diffusers#15046 (branch
-# flux3-image in huggingface/diffusers itself, main plus additive FLUX.3 files only), so no release and no
-# main build can run it yet. The commit below is that branch's head. Bump it to the merge commit when the PR
-# merges, and comment it out again (and empty _UNRELEASED_MIN_DIFFUSERS) once a release carries it.
+# Today that is FLUX.3 Image Klein: Diffusers support merged as huggingface/diffusers#15046 on 2026-10-15 and is
+# in no release yet. The commit below is main as of 2026-10-16 (d42ebf9c, the FLUX.3 prompt upsampler block,
+# huggingface/diffusers#15058), which carries that merge; past it only FLUX.3 files changed. Studio drops the
+# upsampler step from the blocks (diffusion_flux3.flux3_blocks). Comment the line out again (and empty
+# _UNRELEASED_MIN_DIFFUSERS) once a release carries it.
 #
 # A pinned commit of Diffusers main, for models whose support has merged upstream but has not
 # reached a release yet. The last one was Qwen-Image-2.1: it merged on 2026-09-18, four weeks after
@@ -38,7 +39,7 @@
 # Unlike a clone, an archive's bytes are not checked against the commit, so pip and uv verify this
 # SHA-256 before building; no digest line means no zip route. Bump it with the commit:
 #   curl -sL https://github.com/huggingface/diffusers/archive/<commit>.zip | sha256sum
-# archive-sha256: 15825b0bcd673132c9ddb5a775ac50259e675881f24384df1145d7020e4f97e1
+# archive-sha256: c46925a12c1b64340272dbd4c5d72a4298ecd4c96cad2c9d549b85a99ffb491f
 #
 # Retiring a pin: bump diffusers-pin.txt to the release and comment the line out (done for 0.41.0).
-diffusers @ git+https://github.com/huggingface/diffusers.git@ec288418a5efa32e9fd49eb7b193babce920a106
+diffusers @ git+https://github.com/huggingface/diffusers.git@d42ebf9c6e0b46103b74283f5324357a67acaa04

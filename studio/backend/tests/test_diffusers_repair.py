@@ -458,7 +458,7 @@ def _release_mode(monkeypatch, installed):
 
 
 def test_the_shipped_main_pin_is_active():
-    # FLUX.3 Klein needs the pinned build (huggingface/diffusers#15046 is unreleased).
+    # FLUX.3 Klein needs the pinned build (huggingface/diffusers#15046 merged but is unreleased).
     assert _REAL_MAIN_PIN_ACTIVE() is True
 
 

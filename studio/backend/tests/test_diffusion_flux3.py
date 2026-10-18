@@ -123,10 +123,10 @@ def test_official_repos_are_trusted():
 
 
 def test_generation_defaults():
-    # ComfyUI (comfy/supported_models.py Flux3) and the BFL reference: distilled 16 steps CFG 1 (edit template, BFL), base 25 at 3.5 (CFG template).
+    # ComfyUI's templates and the BFL reference: distilled 16 steps CFG 1, base 50 at 3.5.
     assert default_generation_params(DISTILLED) == (16, 1.0)
-    assert default_generation_params(BASE) == (25, 3.5)
-    assert default_generation_params("flux3_klein_base_bf16.safetensors") == (25, 3.5)
+    assert default_generation_params(BASE) == (50, 3.5)
+    assert default_generation_params("flux3_klein_base_bf16.safetensors") == (50, 3.5)
     assert default_generation_params("black-forest-labs/FLUX.2-klein-4B") == (4, 1.0)
 
 
@@ -929,6 +929,27 @@ def test_the_face_carries_the_flux3_lora_loader(monkeypatch):
 
 
 # ── local validation and variant refusal ─────────────────────────────────────
+def test_local_flux3_base_needs_the_modular_index(tmp_path, monkeypatch):
+    # load_flux3_pipeline reads only modular_model_index.json, so a base holding just model_index.json must be refused
+    # before the resident model is evicted, not after.
+    from core.inference.diffusion import DiffusionBackend
+
+    _flux3_installed(monkeypatch)
+    base = _modular_base(tmp_path)
+    (base / "modular_model_index.json").rename(base / "model_index.json")
+    ggufs = tmp_path / "ggufs"
+    ggufs.mkdir()
+    (ggufs / "flux-3-image-klein-Q4_K_M.gguf").write_bytes(b"GGUF")
+    with pytest.raises(ValueError, match = "no valid modular_model_index.json"):
+        DiffusionBackend().validate_load_request(
+            str(ggufs),
+            gguf_filename = "flux-3-image-klein-Q4_K_M.gguf",
+            family_override = FLUX3_KLEIN_FAMILY_NAME,
+            model_kind = "gguf",
+            base_repo = str(base),
+        )
+
+
 def test_local_validation_checks_the_folders_the_flux3_loader_reads(tmp_path, monkeypatch):
     # A spec naming another source (repo / folder) is ignored by load_flux3_pipeline, which reads
     # <root>/text_encoder, /transformer and /vae; validation must check those folders, not the named source.
@@ -1095,11 +1116,11 @@ def test_canonical_family_names_get_the_flux3_recipe():
     from core.inference.diffusion import _generation_defaults_for
 
     assert default_generation_params("flux.3-klein") == (16, 1.0)
-    assert default_generation_params("flux.3-klein-base") == (25, 3.5)
+    assert default_generation_params("flux.3-klein-base") == (50, 3.5)
     # An opaque local pipeline names no variant; the resident recipe falls back to the family.
     for name, want in (
         (FLUX3_KLEIN_FAMILY_NAME, (16, 1.0)),
-        (FLUX3_KLEIN_BASE_FAMILY_NAME, (25, 3.5)),
+        (FLUX3_KLEIN_BASE_FAMILY_NAME, (50, 3.5)),
     ):
         got = _generation_defaults_for(
             "/models/my-model", None, "/models/my-model", family = _family(name)
@@ -1406,7 +1427,11 @@ def _fake_hub(monkeypatch, repo_files):
     from core.inference.diffusion_families import mirror_repo
 
     # A gated BFL base is fetched from its byte-identical unsloth mirror, which the Hub lists the same way.
-    repo_files = {**{mirror_repo(r): f for r, f in repo_files.items() if mirror_repo(r)}, **repo_files}
+    repo_files = {
+        **{mirror_repo(r): f for r, f in repo_files.items() if mirror_repo(r)},
+        **repo_files,
+    }
+
     class _Api:
         def __init__(self, *a, **k):
             pass
@@ -1457,11 +1482,15 @@ def test_companion_staging_is_scoped_to_the_folders_flux3_loads(tmp_path, monkey
         discover_text_encoders = False,
     )
     # Staged from the ungated unsloth mirror of the gated BFL repo, never from BFL itself.
-    assert {e["repo_id"] for e in plan["entries"]} & {DISTILLED, "unsloth/flux-3-image-klein-FP8"} == {
-        "unsloth/flux-3-image-klein-FP8"
-    }
+    assert {e["repo_id"] for e in plan["entries"]} & {
+        DISTILLED,
+        "unsloth/flux-3-image-klein-FP8",
+    } == {"unsloth/flux-3-image-klein-FP8"}
     files = sorted(
-        f for e in plan["entries"] if e["repo_id"] == "unsloth/flux-3-image-klein-FP8" for f in e["files"]
+        f
+        for e in plan["entries"]
+        if e["repo_id"] == "unsloth/flux-3-image-klein-FP8"
+        for f in e["files"]
     )
     assert files == [
         "modular_model_index.json",
@@ -1796,11 +1825,11 @@ def test_flux3_family_decides_generation_defaults_over_file_names():
     for name in ("bf16", "int8_convrot", "nvfp4"):
         f = f"diffusion_models/flux3_image_klein_{name}.safetensors"
         assert _generation_defaults_for(comfy, f, BASE, None, base) == {
-            "steps": 25,
+            "steps": 50,
             "guidance": 3.5,
         }
         assert _generation_defaults_for("/local/dir", f, DISTILLED, None, base) == {
-            "steps": 25,
+            "steps": 50,
             "guidance": 3.5,
         }
     sd = "diffusion_models/flux3_image_klein_sd_bf16.safetensors"
@@ -1818,12 +1847,16 @@ def test_flux3_family_decides_generation_defaults_over_file_names():
     )
 
 
-def _seeded_snapshot(tmp_path, repo = "black-forest-labs/flux-3-image-klein"):
+def _seeded_snapshot(
+    tmp_path,
+    repo = "black-forest-labs/flux-3-image-klein",
+    variant = "distilled",
+):
     """What a download planned around a hosted pre-quantized seed leaves in the HF cache: the official layout with
     only the transformer config, no dense transformer shards."""
     snapshot = tmp_path / "hub" / f"models--{repo.replace('/', '--')}" / "snapshots" / "abc123"
     snapshot.parent.mkdir(parents = True)
-    _official_layout(tmp_path, "distilled", True).rename(snapshot)
+    _official_layout(tmp_path, variant, True).rename(snapshot)
     (snapshot / "transformer" / "model.safetensors").unlink()
     (snapshot.parent.parent / "refs").mkdir()
     (snapshot.parent.parent / "refs" / "main").write_text("abc123")
@@ -1895,7 +1928,9 @@ def test_only_a_seeded_flux3_snapshot_is_mapped_to_its_repo(tmp_path):
     assert flux3_seeded_cache_repo(manifest) is None
 
 
-def test_a_snapshot_staged_for_the_int8_encoder_seed_is_still_a_seeded_snapshot(tmp_path, monkeypatch):
+def test_a_snapshot_staged_for_the_int8_encoder_seed_is_still_a_seeded_snapshot(
+    tmp_path, monkeypatch
+):
     # te_quant_auto is int8 ConvRot on both families, so a normally staged snapshot holds neither the dense
     # transformer shards nor the dense text-encoder shards. Rejecting it read as UNSIZED_MISSING and blocked the
     # media auto-switch; the planner, asked of the repo, decides whether the encoder seed is cached.
@@ -1954,6 +1989,69 @@ def test_the_auto_switch_loads_a_seeded_flux3_snapshot_by_repo(tmp_path, monkeyp
     assert seen == [(repo, repo, False), (str(full), "local/full", False)]
 
 
+@pytest.mark.parametrize(
+    "variant, family",
+    [("distilled", FLUX3_KLEIN_FAMILY_NAME), ("base", FLUX3_KLEIN_BASE_FAMILY_NAME)],
+)
+def test_the_auto_switch_keeps_the_manifest_family_of_an_opaque_seeded_repo(
+    tmp_path, monkeypatch, variant, family
+):
+    # The scanner names an opaquely named snapshot's family from its modular_model_index.json; the repo id the switch
+    # loads by carries no such evidence, so the load must be told the family the manifest declared.
+    import asyncio
+
+    import routes.inference as route
+    from core.inference import gpu_arbiter as arb
+    from core.inference import media_auto_switch as mas
+    from core.inference.diffusion_families import detect_family_for_pick
+    from core.inference.media_model_index import MediaModelPick
+
+    seen = []
+
+    async def _load(
+        request,
+        subject,
+        user_initiated = True,
+    ):
+        seen.append(request)
+
+    monkeypatch.setattr(route, "load_diffusion_model_gated", _load)
+    repo = "someone/opaque-image-model"
+    snapshot = _seeded_snapshot(tmp_path, repo = repo, variant = variant)
+    assert detect_family_for_pick(str(snapshot)).name == family
+    assert detect_family_for_pick(repo) is None
+    asyncio.run(mas._start_load(arb.DIFFUSION, MediaModelPick(repo, str(snapshot)), "s"))
+    (request,) = seen
+    assert request.model_path == repo
+    assert request.family_override == family
+    assert detect_family_for_pick(request.model_path, None, request.family_override).name == family
+
+
+def test_the_auto_switch_adds_no_family_to_a_named_seeded_repo(tmp_path, monkeypatch):
+    # A repo id that already names the family the manifest declares loads exactly as before (detected, not requested).
+    import asyncio
+
+    import routes.inference as route
+    from core.inference import gpu_arbiter as arb
+    from core.inference import media_auto_switch as mas
+    from core.inference.media_model_index import MediaModelPick
+
+    seen = []
+
+    async def _load(
+        request,
+        subject,
+        user_initiated = True,
+    ):
+        seen.append(request)
+
+    monkeypatch.setattr(route, "load_diffusion_model_gated", _load)
+    repo = "black-forest-labs/flux-3-image-klein"
+    snapshot = _seeded_snapshot(tmp_path, repo = repo)
+    asyncio.run(mas._start_load(arb.DIFFUSION, MediaModelPick(repo, str(snapshot)), "s"))
+    assert [(r.model_path, r.family_override) for r in seen] == [(repo, None)]
+
+
 def test_flux3_reference_edits_use_the_measured_activations(monkeypatch):
     import torch
 
@@ -1967,3 +2065,89 @@ def test_flux3_reference_edits_use_the_measured_activations(monkeypatch):
     assert act is not None and act == d.calibrated_image_activation("flux.3-klein", max_speed = True)
     # the base runs CFG (two denoiser batches) and has no measured row: it keeps the flat estimate
     assert d._calibrated_activation(_family("flux.3-klein-base"), nvidia) is None
+
+
+@pytest.mark.parametrize("with_upsampler", [False, True])
+def test_the_block_graph_drops_the_prompt_upsampler_step(monkeypatch, with_upsampler):
+    # diffusers#15058 puts a prompt upsampler step first in both auto block graphs; its text-to-image branch has no
+    # trigger input, so it would run on every call and need the ~19 GB upsampler Studio never loads.
+    # flux3_blocks only looks the class up on the diffusers module, so a stub module stands in for it and the
+    # check runs on installs without diffusers too.
+    from core.inference.diffusion_flux3 import FLUX3_DISTILLED_BLOCKS, flux3_blocks
+
+    diffusers = types.ModuleType("diffusers")
+    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
+
+    class _Blocks:
+        def __init__(self):
+            steps = ["text_encoder", "vae_encoder", "denoise", "decode"]
+            self.sub_blocks = dict.fromkeys(
+                (["prompt_upsampler"] if with_upsampler else []) + steps
+            )
+
+    setattr(diffusers, FLUX3_DISTILLED_BLOCKS, _Blocks)
+    assert list(flux3_blocks(FLUX3_DISTILLED_BLOCKS).sub_blocks) == [
+        "text_encoder",
+        "vae_encoder",
+        "denoise",
+        "decode",
+    ]
+
+
+def test_a_modular_flux3_dir_with_one_root_checkpoint_stays_a_pipeline(tmp_path):
+    # FLUX.3 ships modular_model_index.json, not model_index.json: a lone root .safetensors must not turn
+    # the directory into a single-file load before the modular validation sees it.
+    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion_flux3 import FLUX3_INDEX
+
+    d = tmp_path / "flux3-klein"
+    d.mkdir()
+    (d / "model.safetensors").write_bytes(b"w")
+    assert resolve_local_single_file(str(d)) == "model.safetensors"
+    (d / FLUX3_INDEX).write_text("{}")
+    assert resolve_local_single_file(str(d)) is None
+
+
+def test_the_pipeline_estimate_probes_the_flux3_index_for_a_cached_upstream(monkeypatch):
+    # The mirror probe must ask for the index the family ships; asking for model_index.json never finds the
+    # cached upstream FLUX.3 snapshot and stages the same pipeline again under the mirror.
+    import types
+
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.diffusion_flux3 import FLUX3_INDEX
+
+    upstream, mirror = "black-forest-labs/FLUX.3-klein", "unsloth/FLUX.3-klein"
+    names = (FLUX3_INDEX, "vae/config.json", "transformer/diffusion_pytorch_model.safetensors")
+    siblings = [types.SimpleNamespace(rfilename = name, size = 1) for name in names]
+
+    class _Api:
+        def model_info(self, repo_id, **kw):
+            return types.SimpleNamespace(siblings = siblings, sha = "abc")
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    probes: list = []
+
+    def _prefer(
+        repo_id,
+        hf_token = None,
+        files = None,
+        **kw,
+    ):
+        probes.append(tuple(files or ()))
+        # The upstream snapshot is cached: keep it when every probed file is there, else the mirror.
+        return repo_id if files and set(files) <= set(names) else mirror
+
+    monkeypatch.setattr(dmod, "prefer_ungated_mirror", _prefer)
+    fetch_repos: dict = {}
+    DiffusionBackend._estimate_download_bytes(
+        upstream,
+        None,
+        upstream,
+        None,
+        kind = "pipeline",
+        base_manifest = FLUX3_INDEX,
+        fetch_repos_out = fetch_repos,
+    )
+    assert probes[0] == (FLUX3_INDEX,)
+    assert fetch_repos[upstream] == upstream
