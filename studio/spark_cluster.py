@@ -4207,6 +4207,10 @@ def _cmd_serve(
     slots: int = 16,
 ) -> int:
     """Serve a GGUF across BOTH Sparks, using the layout that actually wins."""
+    if ctx < 1 or slots < 1:
+        # The sizing clamps these to 1, but the printed llama-server command would not.
+        print(f"  --ctx ({ctx}) and --slots ({slots}) must both be at least 1")
+        return 2
     if not is_dgx_spark():
         print(NOT_A_SPARK)
         return 0

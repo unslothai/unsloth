@@ -850,6 +850,9 @@ def train(
         if batch < 1:
             typer.echo(f"--batch ({batch}) must be at least 1.")
             raise typer.Exit(2)
+        if seq < 2:
+            typer.echo(f"--seq ({seq}) must be at least 2: one token has nothing to predict.")
+            raise typer.Exit(2)
         if batch % microbatches:
             typer.echo(
                 f"--batch ({batch}) must be a multiple of --microbatches ({microbatches}); "

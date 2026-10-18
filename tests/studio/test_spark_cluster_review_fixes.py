@@ -291,3 +291,25 @@ def test_an_incomplete_split_gguf_has_no_size(cluster, tmp_path) -> None:
     f = tmp_path / "m-00003-of-00003.gguf"
     f.write_bytes(b"x" * 10)
     assert cluster._size_one_group(files + [(f.name, str(f))])["bytes"] == 30
+
+
+def test_a_sequence_needs_a_next_token_to_predict(pipeline) -> None:
+    parser = pipeline.build_parser()
+    for bad in ("1", "0", "-2"):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--model", "m", "--seq", bad])
+    assert parser.parse_args(["--model", "m", "--seq", "2"]).seq == 2
+
+
+def test_serve_refuses_a_nonpositive_context_or_slot_count(cluster, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cluster, "is_dgx_spark", lambda: True)
+    for ctx, slots in ((0, 16), (8192, 0), (-1, 4)):
+        assert cluster._cmd_serve("m.gguf", ctx = ctx, slots = slots) == 2
+    assert "must both be at least 1" in capsys.readouterr().out
+
+
+def test_an_update_of_a_paired_install_says_the_peer_needs_provisioning() -> None:
+    text = (REPO / "install.sh").read_text(encoding = "utf-8")
+    start = text.index('if [ "$_sp_state" = "configured" ]; then')
+    block = text[start : text.index("return 0", start)]
+    assert "studio.spark_cluster provision" in block and "unsloth spark provision" in block
