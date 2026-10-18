@@ -638,7 +638,11 @@ def _prune_rank(
                 model,
                 None,
                 sparsity = 0.25,
-                dataset = [] if bad_shard and rank == 1 else _samples(n = 5, seed = 20 + rank),
+                dataset = (
+                    ([[10**6] * 6] if bad_shard == "out_of_range" else [])
+                    if bad_shard and rank == 1
+                    else _samples(n = 5, seed = 20 + rank)
+                ),
                 device = "cpu",
                 save_directory = save_dir,
             )
@@ -726,3 +730,60 @@ def test_group_metadata_must_be_complete():
     model.config.n_group = 1
     reap.reap_prune(model, None, sparsity = 0.25, dataset = _samples(), device = "cpu")
     assert model._unsloth_reap_report
+
+
+def test_one_rank_failing_at_capture_stops_every_rank(tmp_path):
+    # Rank 1's shard has an out-of-range token id: its embedding lookup fails while capturing.
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")
+    out = ctx.Queue()
+    args = (str(tmp_path / "pg"), str(tmp_path / "pruned"), out, False, "out_of_range")
+    procs = [ctx.Process(target = _prune_rank, args = (r, *args)) for r in range(2)]
+    for p in procs:
+        p.start()
+    results = sorted(out.get(timeout = 300) for _ in procs)
+    for p in procs:
+        p.join(timeout = 60)
+        assert p.exitcode == 0
+    assert results[0][1] == "error" and "another rank failed to capture" in results[0][2]
+    assert results[1][1] == "error"
+
+
+def test_metadata_free_streaming_token_rows_need_no_tokenizer():
+    datasets = pytest.importorskip("datasets")
+    samples = _samples(n = 6, seed = 13)
+
+    def rows():
+        for ids in samples:
+            yield {"input_ids": ids}
+
+    stream = datasets.IterableDataset.from_generator(rows)
+    model = _qwen3_moe()
+    a, b = copy.deepcopy(model), copy.deepcopy(model)
+    reap.reap_prune(a, None, sparsity = 0.25, dataset = samples, device = "cpu")
+    reap.reap_prune(b, None, sparsity = 0.25, dataset = stream, device = "cpu")
+    assert a._unsloth_reap_report == b._unsloth_reap_report
+    # Text rows still need one, now reported when the first text row is read.
+    with pytest.raises(ValueError, match = "needs a tokenizer"):
+        reap.reap_prune(
+            copy.deepcopy(model), None, sparsity = 0.25, dataset = [{"text": "hi"}], device = "cpu"
+        )
+
+
+def test_failure_after_pruning_a_layer_marks_the_model_unsaved(monkeypatch):
+    model = _qwen3_moe()
+    model._unsloth_reap_saved = "/stale/earlier/save"
+    original = reap._prune_block
+    calls = []
+
+    def flaky(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("out of memory")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(reap, "_prune_block", flaky)
+    with pytest.raises(RuntimeError, match = "out of memory"):
+        reap.reap_prune(model, None, sparsity = 0.25, dataset = _samples(), device = "cpu")
+    assert len(model._unsloth_reap_report) == 1 and model._unsloth_reap_saved is None

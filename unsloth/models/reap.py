@@ -206,6 +206,10 @@ def _calibration_ids(dataset, tokenizer, num_samples, max_seq_length):
                 sample = [t for t, m in zip(sample, list(mask)) if m]
             sample = sample[:max_seq_length]
         else:
+            if tokenizer is None:
+                raise ValueError(
+                    "Unsloth: REAP needs a tokenizer unless the dataset has `input_ids`."
+                )
             sample = text_tokenizer(
                 _row_text(row, tokenizer, chat), truncation = True, max_length = max_seq_length
             )["input_ids"]
@@ -570,9 +574,10 @@ def _resolve_dataset(dataset, tokenizer):
                 f"Unsloth: REAP got a dataset with the splits {sorted(dataset)}; pass one of them, "
                 "e.g. `dataset['validation']`."
             )
-    if dataset is None or isinstance(dataset, str) or not _is_token_rows(dataset):
-        if tokenizer is None:
-            raise ValueError("Unsloth: REAP needs a tokenizer unless the dataset has `input_ids`.")
+    # A dataset name (or the default) is text; other rows are checked as they are read, since a
+    # streaming dataset built from a generator declares no columns.
+    if (dataset is None or isinstance(dataset, str)) and tokenizer is None:
+        raise ValueError("Unsloth: REAP needs a tokenizer unless the dataset has `input_ids`.")
     return dataset
 
 
@@ -804,23 +809,28 @@ def reap_prune(
         hidden, kwargs_per_batch, valid_per_batch = [], [], []
         embed_device = _layer_device(owner, device)
         store = None
-        for input_ids, valid in batches:
-            h, kwargs = _capture_inputs(owner, layers, input_ids.to(embed_device))
-            if not hidden:
-                # Decided from the first batch, so activations never pile up on the GPU first.
-                if offload_hidden_states is None and device.type == "cuda":
-                    padded = sum(x.numel() for x, _ in batches) * h.shape[-1] * h.element_size()
-                    # Eager attention keeps a [batch, 1, seq, seq] mask per batch in the kwargs.
-                    padded += _tensor_bytes(kwargs) * len(batches)
-                    offload_hidden_states = padded > torch.cuda.mem_get_info(device)[0] // 4
-                store = torch.device("cpu") if offload_hidden_states else None
-            if store is not None:
-                h = h.to(store).pin_memory() if torch.cuda.is_available() else h.to(store)
-                # Rotary tables and any materialized masks go too, or they pile up per batch.
-                kwargs = _to(kwargs, store, {})
-            hidden.append(h)
-            kwargs_per_batch.append(kwargs)
-            valid_per_batch.append(valid.reshape(-1))
+        capture_error = None
+        try:
+            for input_ids, valid in batches:
+                h, kwargs = _capture_inputs(owner, layers, input_ids.to(embed_device))
+                if not hidden:
+                    # Decided from the first batch, so activations never pile up on the GPU first.
+                    if offload_hidden_states is None and device.type == "cuda":
+                        padded = sum(x.numel() for x, _ in batches) * h.shape[-1] * h.element_size()
+                        # Eager attention keeps a [batch, 1, seq, seq] mask per batch in the kwargs.
+                        padded += _tensor_bytes(kwargs) * len(batches)
+                        offload_hidden_states = padded > torch.cuda.mem_get_info(device)[0] // 4
+                    store = torch.device("cpu") if offload_hidden_states else None
+                if store is not None:
+                    h = h.to(store).pin_memory() if torch.cuda.is_available() else h.to(store)
+                    # Rotary tables and any materialized masks go too, or they pile up per batch.
+                    kwargs = _to(kwargs, store, {})
+                hidden.append(h)
+                kwargs_per_batch.append(kwargs)
+                valid_per_batch.append(valid.reshape(-1))
+        except Exception as e:
+            capture_error = e
+        _ranks_agree(capture_error, "capture its calibration activations")
         width = hidden[0].shape[-1]
 
         print(
@@ -869,59 +879,70 @@ def reap_prune(
                 if moe is not None:
                     _, block, experts, router = moe
                     block_name = layer_names[id(block)]
-                    norm = _residual_split(layer, block)
-                    residuals = []
-                    if norm is not None:
-                        hook = norm.register_forward_pre_hook(
-                            lambda module, args: residuals.append(args[0])
-                        )
-                        try:
-                            h0 = hidden[0].to(layer_device, non_blocking = True)
-                            reference = run(0, h0)
-                            try:
-                                same = len(residuals) == 1 and torch.equal(
-                                    reference,
-                                    residuals[0]
-                                    + _hidden(block(norm(residuals[0]))).reshape(
-                                        residuals[0].shape
-                                    ),
-                                )
-                            except Exception:  # block needs more than hidden states (DeepSeek-V4)
-                                same = False
-                            if not same:
-                                norm = None
-                        finally:
-                            residuals.clear()
-                            hook.remove()
-
-                    saliency = _Saliency(num_experts)
-                    post = getattr(block, "fc2_latent_proj", None)
-                    tap = _ExpertsTap(
-                        experts, saliency, post if isinstance(post, nn.Linear) else None
-                    )
-                    # Pass 2 recomputes the layer output, so pass 1 stops right after the experts
-                    # (not under accelerate hooks, whose post-forward offload must run).
-                    tap.stop = not any(hasattr(m, "_hf_hook") for m in layer.modules())
-                    hook = None
-                    if norm is not None:
-                        hook = norm.register_forward_pre_hook(
-                            lambda module, args: residuals.append(args[0])
-                        )
+                    # A rank-specific failure here (a bad token id, OOM) is shared before the
+                    # saliency collective, so no rank waits in it for one that has stopped.
+                    stage_error = None
                     try:
-                        for b in range(len(batches)):
-                            tap.valid = valid_per_batch[b]
+                        norm = _residual_split(layer, block)
+                        residuals = []
+                        if norm is not None:
+                            hook = norm.register_forward_pre_hook(
+                                lambda module, args: residuals.append(args[0])
+                            )
                             try:
-                                run(b, hidden[b].to(layer_device, non_blocking = True))
-                            except _StopForward:
-                                pass
-                            if norm is not None:
-                                # The residual is all a verified layer needs later, so it replaces the input.
-                                r = residuals.pop()
-                                hidden[b] = r if store is None else r.to(store, non_blocking = True)
-                    finally:
-                        tap.remove()
-                        if hook is not None:
-                            hook.remove()
+                                h0 = hidden[0].to(layer_device, non_blocking = True)
+                                reference = run(0, h0)
+                                try:
+                                    same = len(residuals) == 1 and torch.equal(
+                                        reference,
+                                        residuals[0]
+                                        + _hidden(block(norm(residuals[0]))).reshape(
+                                            residuals[0].shape
+                                        ),
+                                    )
+                                except (
+                                    Exception
+                                ):  # block needs more than hidden states (DeepSeek-V4)
+                                    same = False
+                                if not same:
+                                    norm = None
+                            finally:
+                                residuals.clear()
+                                hook.remove()
+
+                        saliency = _Saliency(num_experts)
+                        post = getattr(block, "fc2_latent_proj", None)
+                        tap = _ExpertsTap(
+                            experts, saliency, post if isinstance(post, nn.Linear) else None
+                        )
+                        # Pass 2 recomputes the layer output, so pass 1 stops right after the experts
+                        # (not under accelerate hooks, whose post-forward offload must run).
+                        tap.stop = not any(hasattr(m, "_hf_hook") for m in layer.modules())
+                        hook = None
+                        if norm is not None:
+                            hook = norm.register_forward_pre_hook(
+                                lambda module, args: residuals.append(args[0])
+                            )
+                        try:
+                            for b in range(len(batches)):
+                                tap.valid = valid_per_batch[b]
+                                try:
+                                    run(b, hidden[b].to(layer_device, non_blocking = True))
+                                except _StopForward:
+                                    pass
+                                if norm is not None:
+                                    # The residual is all a verified layer needs later, so it replaces the input.
+                                    r = residuals.pop()
+                                    hidden[b] = (
+                                        r if store is None else r.to(store, non_blocking = True)
+                                    )
+                        finally:
+                            tap.remove()
+                            if hook is not None:
+                                hook.remove()
+                    except Exception as e:
+                        stage_error = e
+                    _ranks_agree(stage_error, f"score {block_name}")
 
                     saliency.all_reduce()
                     if saliency.total is None or not saliency.count.sum().item():
@@ -952,6 +973,10 @@ def reap_prune(
             )
     except BaseException:
         if report:
+            # Mixed pruned / unpruned layers: mark it REAP modified and unsaved, so get_peft_model and
+            # the merge / adapter save guards refuse it instead of using the unpruned checkpoint.
+            model._unsloth_reap_report = dict(report)
+            model._unsloth_reap_saved = None
             print(
                 f"Unsloth: REAP stopped after pruning {len(report)} MoE layers, so the model now mixes "
                 "pruned and unpruned layers. Reload it before running REAP again."
