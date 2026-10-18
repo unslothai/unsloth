@@ -269,11 +269,16 @@ def _main_transformers(args) -> int:
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     quant = {"format": "int8_tensorwise", "convrot": True, "convrot_groupsize": args.group}
     blob = torch.tensor(list(json.dumps(quant).encode("utf-8")), dtype = torch.uint8)
+    keep_dense = tuple(t for t in (x.strip() for x in args.keep_dense.split(",")) if t)
     linears = {
         name
         for name, module in encoder.named_modules()
-        if isinstance(module, torch.nn.Linear) and TE_INT8_CONVROT_LINEAR.search(name)
+        if isinstance(module, torch.nn.Linear)
+        and TE_INT8_CONVROT_LINEAR.search(name)
+        and name.rsplit(".", 1)[-1] not in keep_dense
     }
+    # The encoder's own fp32-kept modules (T5's ``wo``) are stored float32 when left dense, as the shard path does.
+    keep_fp32 = tuple(str(m) for m in (getattr(encoder, "_keep_in_fp32_modules", None) or ()))
     tensors: dict = {}
     for name, tensor in encoder.state_dict().items():
         if name == "lm_head.weight":
@@ -285,9 +290,13 @@ def _main_transformers(args) -> int:
             tensors[prefix + ".weight_scale"] = scale.cpu().contiguous()
             tensors[prefix + ".comfy_quant"] = blob.clone()
         else:
-            tensors[name] = tensor.detach().to(
-                "cpu", torch.bfloat16 if tensor.is_floating_point() else tensor.dtype
-            )
+            if not tensor.is_floating_point():
+                dtype = tensor.dtype
+            elif any(t in name.split(".") for t in keep_fp32):
+                dtype = torch.float32
+            else:
+                dtype = torch.bfloat16
+            tensors[name] = tensor.detach().to("cpu", dtype)
             tensors[name] = tensors[name].contiguous().clone()
     if not linears:
         raise SystemExit(f"no Linear in {te_class} matched TE_INT8_CONVROT_LINEAR")
