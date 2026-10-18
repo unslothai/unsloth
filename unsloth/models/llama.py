@@ -1754,12 +1754,15 @@ def apply_logit_transforms(logits, logit_softcapping, logit_scaling):
 
 
 def _run_backbone(self, **kwargs):
-    # The CausalLM forward feeds the final norm's output to lm_head, the fused CE loss, or (with
-    # UNSLOTH_RETURN_HIDDEN_STATES, set only by Unsloth's GRPO / DPO / GKD trainers) their chunked
-    # lm_head loss; all return a fresh grad, so the norm may write dX over it. Returned
-    # hidden_states would let a caller own that grad, so they keep the norm's own buffer.
+    # The CausalLM forward feeds the final norm's output to lm_head or the fused CE loss, which
+    # return a fresh grad, so the norm may write dX over it. Hidden states handed back to the
+    # caller (output_hidden_states, or as .logits under UNSLOTH_RETURN_HIDDEN_STATES) let the
+    # caller own or share that grad, so they keep the norm's own buffer.
     model = self.model
-    model._unsloth_head_reads_final_norm = not kwargs.get("output_hidden_states")
+    model._unsloth_head_reads_final_norm = (
+        not kwargs.get("output_hidden_states")
+        and os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") != "1"
+    )
     try:
         return model(**kwargs)
     finally:

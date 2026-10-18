@@ -168,15 +168,48 @@ def test_final_norm_reuses_grad_only_under_the_causal_lm_head(monkeypatch):
     calls.clear()
     backbone(input_ids = ids, use_cache = False)
     assert calls and not calls[-1]
-    # GRPO / DPO style: hidden states come back as logits and feed a chunked lm_head loss.
+    # GRPO / DPO style: hidden states come back as logits, so the caller owns their grad.
     calls.clear()
     monkeypatch.setenv("UNSLOTH_RETURN_HIDDEN_STATES", "1")
     embeds = backbone.embed_tokens(ids).detach().requires_grad_()
     hidden = model(inputs_embeds = embeds, use_cache = False).logits
-    assert calls and calls[-1], "GRPO-style hidden states should let the final norm reuse its grad"
+    assert calls and not calls[-1], "hidden states returned as logits need the final norm's own buffer"
     assert hidden.shape[-1] == model.config.hidden_size
     logits = hidden.float() @ model.lm_head.weight.float().t()
     (grad,) = torch.autograd.grad(logits.logsumexp(-1).mean(), embeds)
     assert torch.isfinite(grad).all()
     monkeypatch.delenv("UNSLOTH_RETURN_HIDDEN_STATES")
     assert not getattr(backbone, "_unsloth_head_reads_final_norm", False)
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
+def test_returned_hidden_states_leave_caller_and_shared_grads_alone(monkeypatch):
+    # Under UNSLOTH_RETURN_HIDDEN_STATES the final norm's output reaches the caller as .logits; a
+    # caller grad_outputs or a second branch reading the same grad (h + x) must stay intact.
+    from unsloth import FastLanguageModel
+
+    model, _ = FastLanguageModel.from_pretrained(
+        "trl-internal-testing/tiny-Qwen3ForCausalLM",
+        max_seq_length = 64,
+        load_in_4bit = False,
+        dtype = torch.bfloat16,
+    )
+    model.train()
+    torch.manual_seed(19)
+    ids = torch.randint(10, model.config.vocab_size, (2, 16), device = "cuda")
+    x0 = model.model.embed_tokens(ids).detach()
+    incoming = torch.randn_like(x0)
+    monkeypatch.setenv("UNSLOTH_RETURN_HIDDEN_STATES", "1")
+    grads = []
+    for output_hidden_states in (False, True):
+        x = x0.clone().requires_grad_()
+        h = model(
+            inputs_embeds = x, use_cache = False, output_hidden_states = output_hidden_states
+        ).logits
+        go = incoming.clone()
+        (dx,) = torch.autograd.grad(h + x, x, go)
+        assert torch.equal(go, incoming), "caller's grad_outputs were overwritten"
+        grads.append(dx)
+    # output_hidden_states = True always kept the norm's own buffer: the reference.
+    assert torch.equal(grads[0], grads[1])
