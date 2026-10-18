@@ -2773,32 +2773,49 @@ def refuse_stale_download(
     # Only an old runtime needs the lookup, so other GGUF downloads never pay for it.
     if release is None or release >= SPEC_FIRST_RUNTIME or not identifier:
         return
-    rows = [identifier]
+    # Row -> the files the job fetches there; None means the row's own variant.
+    rows: dict[str, Optional[list[str]]] = {identifier: None}
     if files:
         from huggingface_hub import try_to_load_from_cache
 
         def cached(name: str) -> bool:
             try:
-                return isinstance(try_to_load_from_cache(identifier, name), str)
+                from utils.hf_cache_settings import active_hf_hub_cache
+                hit = try_to_load_from_cache(identifier, name, cache_dir = active_hf_hub_cache())
+                return isinstance(hit, str)
             except Exception:  # noqa: BLE001 - an unreadable cache entry is one to fetch
                 return False
 
         # A scoped job fetches exactly these files: only the GGUFs it would download count.
         wanted = [f for f in files if f.lower().endswith(".gguf") and not cached(f)]
-        if identifier.lower() + "/" == _UMBRELLA_PREFIX:
-            rows = sorted({f"{AUDIO_CPP_REPO}/{f.split('/')[0]}" for f in wanted if "/" in f})
-        elif not wanted:
-            rows = []
-        variant = None
+        umbrella = identifier.lower() + "/" == _UMBRELLA_PREFIX
+        rows = {}
+        for name in wanted:
+            if umbrella and "/" not in name:
+                continue
+            row = f"{AUDIO_CPP_REPO}/{name.split('/')[0]}" if umbrella else identifier
+            rows.setdefault(row, []).append(name)
     elif is_umbrella_id(identifier):
         return
-    for row in rows:
+    network = not hub_offline()
+    for row, names in sorted(rows.items()):
         try:
-            model = resolve(row, variant, hf_token, network = not hub_offline())
+            model = resolve(row, None if names else variant, hf_token, network = network)
+            checked = [model] if model is not None else []
+            if model is not None and names:
+                # The quant each file belongs to, not the row's default one.
+                keys = {v.key for v in model.variants if any(f.path in names for f in v.files)}
+                checked = [
+                    model
+                    if key == model.variant.key
+                    else resolve(row, key, hf_token, network = network)
+                    for key in sorted(keys)
+                ] or checked
         except Exception:  # noqa: BLE001 - a repo that cannot be resolved is the downloader's to report
             continue
-        if model is not None:
-            _refuse_stale_download(model, hf_token)
+        for found in checked:
+            if found is not None:
+                _refuse_stale_download(found, hf_token)
 
 
 def download_target(

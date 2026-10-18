@@ -300,6 +300,39 @@ def test_a_scoped_download_job_is_gated_on_the_files_it_fetches(monkeypatch, tmp
     assert looked_up == [aligner.id]
 
 
+def test_a_scoped_job_is_checked_at_the_quant_of_its_file(monkeypatch, tmp_path):
+    import huggingface_hub
+
+    from utils import hf_cache_settings
+
+    folder = "Canary-180M-Flash-GGUF"
+    q8, q4 = (RepoFile(f"{folder}/canary-{q}.gguf", 4) for q in ("q8_0", "q4_k_m"))
+    variants = (AudioCppVariant("Q8_0", (q8,), q8.path), AudioCppVariant("Q4_K_M", (q4,), q4.path))
+    base = replace(_model(), variants = variants)
+    pick = lambda key: next(v for v in variants if v.key == (key or "Q8_0"))  # noqa: E731
+    monkeypatch.setattr(
+        acm, "resolve", lambda ident, variant = None, *a, **kw: replace(base, variant = pick(variant))
+    )
+    # The default Q8_0 is cached; only the Q4_K_M the job asks for is missing.
+    monkeypatch.setattr(
+        audio_cpp_files,
+        "missing_files",
+        lambda m, *, hub_cache = None: [(q4.path, 4)] if m.variant.key == "Q4_K_M" else [],
+    )
+    caches = []
+    monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: "/active/hub")
+    monkeypatch.setattr(
+        huggingface_hub,
+        "try_to_load_from_cache",
+        lambda repo, name, cache_dir = None: caches.append(cache_dir),
+    )
+    _runtime(monkeypatch, tmp_path / "old", record = {"release_tag": "v0.9.1-unsloth.1"})
+    with pytest.raises(audio_cpp_server.AudioCppRuntimeTooOldError):
+        acm.refuse_stale_download(acm.AUDIO_CPP_REPO, None, files = [q4.path])
+    assert caches == ["/active/hub"]
+    acm.refuse_stale_download(acm.AUDIO_CPP_REPO, None, files = [q8.path])
+
+
 def test_the_timestamp_aligner_is_not_fetched_for_an_old_runtime(monkeypatch, tmp_path):
     from core.inference import stt_audiocpp_sidecar
 
