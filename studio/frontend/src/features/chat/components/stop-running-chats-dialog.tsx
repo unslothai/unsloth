@@ -38,8 +38,7 @@ export function StopRunningChatsDialog() {
   // Ejecting leaves no model loaded. Saying it "reloads the model" and offering "Stop and reload"
   // promised the opposite of what confirming does, for the destructive one.
   const unloads = effect !== "reload";
-  // Other models can stay loaded, and a cached standard-backend unload also stops the active
-  // model's chats, so this must not claim which model's conversations stop.
+  // Model-neutral: a cached standard-backend unload also stops the active model's chats.
   const lead =
     effect === "unloadOne"
       ? `${action || "Unloading this model"} cannot wait for running ${sharer}s, `
