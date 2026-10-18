@@ -329,8 +329,14 @@ async def get_job(
             break
         await asyncio.sleep(min(loading.POLL_INTERVAL_S, left))
         try:
-            # Recipe rows are read once, for the answer, not on every poll.
-            latest = await _read_once(caller, kind, id, None, offset)
+            # Recipe rows are read once, for the answer, not on every poll; a read that stalls past
+            # the deadline ends the wait with the last answer.
+            latest = await asyncio.wait_for(
+                _read_once(caller, kind, id, None, offset),
+                timeout = max(deadline - time.monotonic(), 0.01),
+            )
+        except asyncio.TimeoutError:
+            break
         except Exception:
             # Like a load's progress poll: a failed read during the wait is skipped.
             continue

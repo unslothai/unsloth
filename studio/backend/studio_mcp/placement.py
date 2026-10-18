@@ -296,6 +296,15 @@ def _cpu_primary(status: Any) -> bool:
     return manual or status.get("audio_device_fallback") == "cpu"
 
 
+def _ident(name: str) -> str:
+    # Local paths keep their case, as the loaders do; Hub ids do not.
+    return name if is_local(name) else name.lower()
+
+
+def _repo(name: str) -> str:
+    return name if is_local(name) else name.split(":", 1)[0].lower()
+
+
 def predict(
     *,
     kind: str,
@@ -307,25 +316,27 @@ def predict(
     slots: list[SlotModel],
     has_vision: bool = False,
     variant: Optional[str] = None,
-    rebuild: bool = False,
 ) -> tuple[list[SlotModel], bool, bool]:
     """(would_evict, would_evict_exact, would_refuse) for one load. Exact under Off; under When they fit and Always, or when the mode is unknown, an upper bound."""
     slot_kind = "llm" if kind in CHAT_KINDS else kind
-    wanted = f"{model}:{variant}".lower() if variant else model.lower()
-    same_repo = [
-        s
-        for s in slots
-        if s.kind == slot_kind and s.model.split(":", 1)[0].lower() == model.lower()
-    ]
     if kind == "stt":
+        # A speech-to-text load releases the other engines' models, unless one is transcribing.
+        others = [s for s in slots if s.kind == "stt" and _ident(s.model) != _ident(model)]
+        return others, not others, False
+    same_repo = [s for s in slots if s.kind == slot_kind and _repo(s.model) == _repo(model)]
+    # Only a chat GGUF named by its exact repo:variant, with no placement asked, is surely already
+    # loaded as asked. Any other load of a resident repo (a default variant, another device or build)
+    # may load it again, so it is predicted as a new load and reported as an upper bound.
+    asked = f"{model}:{variant}" if variant else None
+    if (
+        slot_kind == "llm"
+        and asked
+        and device is None
+        and alongside is None
+        and any(_ident(s.model) == _ident(asked) for s in same_repo)
+    ):
         return [], True, False
-    # rebuild: the same repo is resident but may be built differently, so it may load again.
-    if not rebuild and any(s.model.lower() == wanted for s in slots if s.kind == slot_kind):
-        return [], True, False
-    # Status may name a GGUF by its bare repo: whether that resident is this variant is unknown.
-    exact = not (variant and any(":" not in s.model for s in same_repo))
-    if not variant and same_repo and not rebuild:
-        return [], True, False
+    exact = not same_repo
     chat = [s for s in slots if s.kind == "llm"]
     media = [s for s in slots if s.kind in ("image", "video")]
     if kind in CHAT_KINDS:
@@ -343,10 +354,11 @@ def predict(
             exact = False
         off_set = chat + (media if gpu else [])
         upper = [] if joins and not gpu else off_set
-        same = []
+        # Always lets a load replace its own repo, as another file or setting of it.
+        same = same_repo
     else:
         # Only another build of the same repo may replace the resident under Always; another model is refused.
-        same = [s for s in media if s.kind == kind and s.model.lower() == model.lower()]
+        same = same_repo
         held = chat
         if chat and _cpu_primary(status):
             held, exact = chat[1:], False
@@ -363,18 +375,6 @@ def predict(
         return [], False, any(s not in same for s in upper)
     # Unknown mode (an Unsloth Studio that does not report it): whatever either rule could unload.
     return upper + [s for s in off_set if s not in upper], False, False
-
-
-def _rebuild(kind: str, repo: str, knobs: dict[str, str], payload: Any) -> bool:
-    """Whether the image or video model of this repo already resident may load again for these settings (another quantization, memory mode or MiniMax-H3 task), so it is not a no-op."""
-    if kind not in MEDIA_STATUS or (_named(payload) or "").lower() != repo.lower():
-        return False
-    status = as_dict(payload)
-    asked = dict(knobs)
-    if kind == "video" and "h3_task" not in asked and opt_text(status.get("h3_task")):
-        # An omitted task loads H3's default partition (keyframes), unless the GGUF file names another.
-        asked["h3_task"] = "fl2va"
-    return any(value != opt_text(status.get(name)) for name, value in asked.items())
 
 
 async def _post_json(caller: Caller, path: str, body: dict) -> Any:
@@ -462,7 +462,6 @@ async def plan_load(
         est = integer(estimate.get("gpu_bytes")) if estimate.get("available") is True else None
     slots = residents(status, image, video, stt)
     mode = multi_model_mode(status)
-    rebuild = _rebuild(kind, repo, knobs or {}, image if kind == "image" else video)
     would_evict, exact, refuse = predict(
         kind = kind,
         model = repo,
@@ -474,21 +473,14 @@ async def plan_load(
         # A local GGUF file is not listed, so whether a projector keeps it on the GPU is unknown.
         has_vision = listing is None or as_dict(listing).get("has_vision") is True,
         variant = variant,
-        rebuild = rebuild,
     )
     # Unloading another kind's model depends on the load reaching the GPU, which only a pinned
     # device says: Unsloth Studio may run an image, video or audio load (or anything, without a GPU)
     # on the CPU, where it leaves the other slots alone.
     slot_kind = "llm" if kind in CHAT_KINDS else kind
     unpinned = device not in ("cpu", "gpu") and any(s.kind != slot_kind for s in would_evict)
-    # A rebuild is a guess from the settings status reports, so the prediction is an upper bound.
     unlisted = kind in CHAT_KINDS and listing is None
-    if (
-        rebuild
-        or unlisted
-        or unpinned
-        or not all(isinstance(read, dict) for read in (image, video))
-    ):
+    if unlisted or unpinned or not all(isinstance(read, dict) for read in (image, video)):
         # A slot whose status could not be read may hold a model the load would unload.
         exact = False
     return PlanLoadResult(

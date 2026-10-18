@@ -172,7 +172,7 @@ def test_fit_and_an_unknown_mode_give_an_upper_bound(monkeypatch, mode):
         # Under Always a CPU load joins the serving chat model, so nothing needs unloading.
         ({"model": OUTETTS, "kind": "tts", "device": "cpu"}, False),
         ({"model": LTX, "kind": "video"}, True),
-        ({"model": "openai/whisper-large-v3", "kind": "stt"}, False),
+        ({"model": "openai/whisper-small", "kind": "stt"}, False),
     ],
 )
 def test_always_never_evicts_and_bounds_the_refusal(monkeypatch, args, refuse):
@@ -290,15 +290,6 @@ def test_a_pick_the_plan_calls_incompatible_gets_no_plan(monkeypatch):
     assert result["isError"] is True and "sizes differ" in str(result["content"])
 
 
-def test_another_h3_task_of_the_resident_video_model_is_a_new_load(monkeypatch):
-    world = _world("off", [QWEN], video = LTX)
-    world[("GET", VIDEO)] = {**world[("GET", VIDEO)], "h3_task": "fl2va"}
-    same = _plan(monkeypatch, world, {"model": LTX, "kind": "video", "h3_task": "fl2va"})
-    assert same["would_evict"] == []
-    other = _plan(monkeypatch, world, {"model": LTX, "kind": "video", "h3_task": "ref2va"})
-    assert _names(other["would_evict"]) == {("llm", QWEN), ("video", LTX)}
-
-
 def test_a_partial_variant_load_model_refuses_gets_no_plan(monkeypatch):
     partial = {"variants": [{"quant": "Q8_0", "filename": "b.gguf", "partial": True}]}
     world = {
@@ -353,25 +344,12 @@ def test_a_native_tts_primary_makes_a_media_plan_an_upper_bound(monkeypatch):
         ({"h3_task": "fl2va"}, {"model": LTX, "kind": "video", "h3_task": "ref2va"}),
     ],
 )
-def test_another_build_of_the_resident_video_model_may_load_again(monkeypatch, resident, args):
+def test_a_load_of_the_resident_media_repo_may_load_it_again(monkeypatch, resident, args):
     world = _world("off", [QWEN], video = LTX)
     world[("GET", VIDEO)] = {**world[("GET", VIDEO)], **resident}
     plan = _plan(monkeypatch, world, args)
     assert _names(plan["would_evict"]) == {("llm", QWEN), ("video", LTX)}
     assert plan["would_evict_exact"] is False
-
-
-def test_another_quantization_of_the_resident_image_model_may_load_again(monkeypatch):
-    world = _world("off", [QWEN], image = FLUX_GGUF)
-    world[("GET", IMAGE)] = {**world[("GET", IMAGE)], "transformer_quant": "fp8"}
-    same = _plan(
-        monkeypatch, world, {"model": FLUX_GGUF, "kind": "image", "transformer_quant": "fp8"}
-    )
-    assert same["would_evict"] == [] and same["would_evict_exact"] is True
-    other = _plan(
-        monkeypatch, world, {"model": FLUX_GGUF, "kind": "image", "transformer_quant": "int8"}
-    )
-    assert ("llm", QWEN) in _names(other["would_evict"]) and other["would_evict_exact"] is False
 
 
 def test_a_local_gguf_file_may_be_a_vision_model_on_the_gpu(monkeypatch):
@@ -391,3 +369,31 @@ def test_unloading_another_kind_is_exact_only_with_a_pinned_device(monkeypatch):
     pinned = _plan(monkeypatch, world, {"model": OUTETTS, "kind": "tts", "device": "gpu"})
     assert _names(unpinned["would_evict"]) == _names(pinned["would_evict"])
     assert (unpinned["would_evict_exact"], pinned["would_evict_exact"]) == (False, True)
+
+
+def test_a_speech_to_text_load_may_release_the_other_engines_model(monkeypatch):
+    plan = _plan(
+        monkeypatch, _world("off", []), {"model": "openai/whisper-large-v3", "kind": "stt"}
+    )
+    assert _names(plan["would_evict"]) == {("stt", "openai/whisper-small")}
+    assert plan["would_evict_exact"] is False
+
+
+@pytest.mark.parametrize(
+    "args,exact",
+    [
+        ({"model": QWEN, "variant": "Q4_K_M"}, True),
+        # Another device, a default variant or another spelling of a local path may load it again.
+        ({"model": QWEN, "variant": "Q4_K_M", "device": "gpu"}, False),
+        ({"model": QWEN}, False),
+    ],
+)
+def test_only_an_exact_resident_chat_variant_is_a_sure_no_op(monkeypatch, args, exact):
+    plan = _plan(monkeypatch, _world("off", [f"{QWEN}:Q4_K_M"]), args)
+    assert plan["would_evict_exact"] is exact
+    assert (plan["would_evict"] == []) is exact
+
+
+def test_local_paths_keep_their_case(monkeypatch):
+    plan = _plan(monkeypatch, _world("always", ["/models/Foo.gguf"]), {"model": "/models/foo.gguf"})
+    assert plan["would_refuse"] is True
