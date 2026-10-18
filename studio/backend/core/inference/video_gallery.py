@@ -297,6 +297,8 @@ def frame_png(
             duration = (src.duration or 0) / 1_000_000
             if not duration and stream.duration is not None and stream.time_base:
                 duration = float(stream.duration * stream.time_base)
+            # Frame times and seeks are absolute; ``at`` counts from the stream's first timestamp.
+            origin = float(stream.start_time * stream.time_base) if stream.start_time else 0.0
             frame = None
             if text == "first":
                 frame = next(src.decode(stream), None)
@@ -305,15 +307,15 @@ def frame_png(
                     raise ValueError(
                         f"at={seconds:g} is past the end of the clip ({duration:.2f} s)."
                     )
-                src.seek(int(seconds / stream.time_base), stream = stream, backward = True)
+                src.seek(int((origin + seconds) / stream.time_base), stream = stream, backward = True)
                 for candidate in src.decode(stream):
-                    if frame is not None and _frame_time(candidate) > seconds + 1e-6:
+                    if frame is not None and _frame_time(candidate) > origin + seconds + 1e-6:
                         break
                     frame = candidate
             else:
                 # Seek close to the end and keep the final frame; a failed seek falls back to a full decode.
                 for start in (max(0.0, duration - 2.0), 0.0):
-                    src.seek(int(start / stream.time_base), stream = stream, backward = True)
+                    src.seek(int((origin + start) / stream.time_base), stream = stream, backward = True)
                     for candidate in src.decode(stream):
                         frame = candidate
                     if frame is not None or start == 0.0:

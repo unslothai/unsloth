@@ -64,6 +64,29 @@ def test_frames_pick_first_last_and_a_time():
         assert client.get(url).status_code == 404
 
 
+def test_frame_times_count_from_a_stream_that_does_not_start_at_zero(tmp_path):
+    # Frame i is grey (i * 30) at 8 fps, with timestamps starting at 1 s: 0.5 s is still frame 4.
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+    path = tmp_path / "offset.mp4"
+    with av.open(str(path), "w", format = "mp4") as out:
+        stream = out.add_stream("mpeg4", rate = 8)
+        stream.width, stream.height, stream.pix_fmt = 64, 48, "yuv420p"
+        for i in range(8):
+            frame = av.VideoFrame.from_ndarray(
+                np.full((48, 64, 3), i * 30, dtype = np.uint8), format = "rgb24"
+            )
+            frame.pts = i + 8
+            for packet in stream.encode(frame):
+                out.mux(packet)
+        for packet in stream.encode():
+            out.mux(packet)
+    with av.open(str(path)) as src:
+        assert src.streams.video[0].start_time  # the fixture really is offset
+    for at, grey in (("first", 0), ("0.5", 120), ("0", 0), ("last", 210)):
+        assert abs(_grey(video_gallery.frame_png(path, at)) - grey) <= 12, at
+
+
 def test_a_clip_that_cannot_be_read_gets_a_plain_error_without_server_paths(monkeypatch, tmp_path):
     video_id = _clip(b"not an mp4 at all, only bytes")
     url = f"/api/inference/video/gallery/{video_id}/frame"
