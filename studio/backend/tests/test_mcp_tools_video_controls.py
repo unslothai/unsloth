@@ -136,3 +136,24 @@ def test_a_body_over_the_route_cap_is_refused_before_the_call(monkeypatch):
     result, studio = run_tool(monkeypatch, _studio(), "generate_video", args)
     assert result["isError"] is True
     assert studio.state.calls == []
+
+
+def test_reference_audio_over_the_video_cap_is_refused_before_any_upload(monkeypatch, tmp_path):
+    import studio_mcp.tools.video as video_tool
+    from fastmcp.exceptions import ToolError
+    from studio_mcp.inputs import AudioInput
+
+    from .mcp_harness import make_caller
+
+    monkeypatch.setattr(video_tool, "MAX_REFERENCE_AUDIO_BYTES", len(_WAV) - 1)
+    audio = {"data_base64": b64(_WAV), "filename": "v.wav"}
+    args = {"prompt": "x", "reference_images": [PNG_URL], "reference_audios": [audio]}
+    result, studio = run_tool(monkeypatch, _studio(), "generate_video", args)
+    assert result["isError"] is True
+    assert "larger than the 24 MB a video takes" in result["content"][0]["text"]
+    assert studio.state.calls == []
+    # A local file is sized from disk, before audio_ref reads or uploads it.
+    clip = tmp_path / "voice.wav"
+    clip.write_bytes(_WAV)
+    with pytest.raises(ToolError, match = "24 MB"):
+        video_tool._refuse_large_audio(make_caller(), AudioInput(path = str(clip)))
