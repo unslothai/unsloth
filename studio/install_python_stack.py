@@ -10376,7 +10376,7 @@ def _desktop_unsloth_spec(package_name: str) -> str:
 
     def newest(requirement: str) -> "str | None":
         argv = ["uv", "pip", "compile", "--python", sys.executable, "--no-deps"]
-        argv += ["--no-header", "--no-annotate", "--quiet", "-"]
+        argv += ["--resolution", "highest", "--no-header", "--no-annotate", "--quiet", "-"]
         try:
             result = subprocess.run(
                 argv,

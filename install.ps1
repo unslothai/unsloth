@@ -10739,9 +10739,9 @@ main()
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
-            $null = @($ReleaseSpec, $ZooSpec) | & $script:UvExe pip compile --python $VenvPython --no-deps --no-header --no-annotate --quiet - 2>$null
+            $null = @($ReleaseSpec, $ZooSpec) | & $script:UvExe pip compile --python $VenvPython --no-deps --resolution highest --no-header --no-annotate --quiet - 2>$null
             if ($LASTEXITCODE -eq 0) { return $result }
-            $have = @(@("unsloth", "unsloth-zoo") | & $script:UvExe pip compile --python $VenvPython --no-deps --no-header --no-annotate --quiet - 2>$null)
+            $have = @(@("unsloth", "unsloth-zoo") | & $script:UvExe pip compile --python $VenvPython --no-deps --resolution highest --no-header --no-annotate --quiet - 2>$null)
             if ($LASTEXITCODE -ne 0) { return $result }
             $unsloth = $null; $zoo = $null
             foreach ($line in $have) {

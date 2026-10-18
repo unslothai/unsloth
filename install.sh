@@ -8203,9 +8203,9 @@ _UNSLOTH_FEED_CEILING_MARKER="$VENV_DIR/unsloth_feed_ceiling.json"
 _relax_unsloth_floors_to_index() {
     rm -f "$_UNSLOTH_FEED_CEILING_MARKER"
     printf '%s\n%s\n' "$_unsloth_release_install_spec" "$_unsloth_zoo_install_spec" \
-        | uv pip compile --python "$_VENV_PY" --no-deps --no-header --no-annotate --quiet - > /dev/null 2>&1 && return 0
+        | uv pip compile --python "$_VENV_PY" --no-deps --resolution highest --no-header --no-annotate --quiet - > /dev/null 2>&1 && return 0
     _rfi_have=$(printf 'unsloth\nunsloth-zoo\n' \
-        | uv pip compile --python "$_VENV_PY" --no-deps --no-header --no-annotate --quiet - 2>/dev/null) || return 0
+        | uv pip compile --python "$_VENV_PY" --no-deps --resolution highest --no-header --no-annotate --quiet - 2>/dev/null) || return 0
     _rfi_unsloth=$(printf '%s\n' "$_rfi_have" | sed -n 's/^unsloth==\([0-9][0-9A-Za-z.+!-]*\)$/\1/p')
     _rfi_zoo=$(printf '%s\n' "$_rfi_have" | sed -n 's/^unsloth-zoo==\([0-9][0-9A-Za-z.+!-]*\)$/\1/p')
     [ -n "$_rfi_unsloth" ] && [ -n "$_rfi_zoo" ] || return 0
