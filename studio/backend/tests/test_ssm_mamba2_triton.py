@@ -442,6 +442,20 @@ def test_a_failed_replacement_removes_the_extension_free_wheel(real_install, mon
     assert "mamba_ssm" not in real_install["importable"]
 
 
+def test_a_remembered_cuda_failure_still_drops_a_reinstalled_extension_free_wheel(
+    real_install, monkeypatch
+):
+    # The CUDA route failed earlier in this process, then a Mamba-2 load put the extension-free
+    # wheel back: a Mamba-1 load must not keep it, even without retrying the CUDA install.
+    real_install["importable"].add("mamba_ssm")
+    ssm_runtime._FAILED_INSTALLS.add(ssm_runtime._failure_key("mamba_ssm", None))
+    installed = _cuda_route(real_install, monkeypatch, required = False)
+    assert installed == []
+    assert real_install["installed"] == []  # not retried
+    assert real_install["removed"] == ["mamba-ssm"]
+    assert "mamba_ssm" not in real_install["importable"]
+
+
 def test_the_pure_route_keeps_an_installed_cuda_mamba_ssm(real_install, monkeypatch):
     real_install["importable"].update({"mamba_ssm", ssm_runtime.MAMBA_SSM_EXTENSION})
     monkeypatch.setattr(

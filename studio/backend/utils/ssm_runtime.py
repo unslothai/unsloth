@@ -958,6 +958,10 @@ def _install_kernel(
     failure_key = _failure_key(import_name, wheel_url_builder)
     if failure_key in _FAILED_INSTALLS:
         logger.info("%s already failed to install in this process; not retrying", display_name)
+        if extension is not None and _is_importable(import_name):
+            # A later load reinstalled the extension-free copy after this route failed: drop it, or
+            # this load takes mamba_ssm's fast path and fails in selective_scan_fn.
+            _drop_extension_free_copy(import_name, display_name, pypi_name, extension, run)
         return False
 
     from utils.kernel_install import (
@@ -1029,6 +1033,21 @@ def _install_kernel(
         if installed and newly_installed is not None:
             newly_installed.append(import_name)
         return bool(installed)
+
+
+def _drop_extension_free_copy(
+    import_name: str, display_name: str, pypi_name: str, extension: str, run: Callable[..., Any]
+) -> None:
+    """Uninstall an installed copy that lacks *extension*, under the per-env install lock."""
+    from utils.kernel_install import OPTIONAL_KERNEL_LOCK_WAIT, kernel_install_lock
+    with kernel_install_lock(import_name, wait_seconds = OPTIONAL_KERNEL_LOCK_WAIT) as held:
+        if not held or kernel_usable(import_name, extension) or not _is_importable(import_name):
+            return
+        logger.info(
+            "Removing the extension-free %s: this load needs its CUDA kernels", display_name
+        )
+        _remove_broken(pypi_name, display_name, run)
+        forget_imported_modules(import_name, extension)
 
 
 def _install_kernel_locked(
