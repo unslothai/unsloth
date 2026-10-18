@@ -22968,8 +22968,7 @@ class LlamaCppBackend:
 
         # A type this build lacks (prism-ml PQ2_0 / PTQ1_0 = 142 / 143) or packs differently (group-128 Q2_0, #11259).
         # A truncated download fails later instead, as "data is not within the file bounds".
-        # The bundled IQ1_XS..IQ1_XXXS sit at 64-66, so ids 43-63 pass the range check and fail as
-        # an empty slot with block size 0 (KittenML TQ2_1 = 43, #13908).
+        # Bundled IQ1_XS..IQ1_XXXS = 64-66, so ids 43-63 fail later as an empty block-size-0 slot (#13908).
         bad_type = re.search(
             r"tensor '([^']*)' (?:has invalid ggml type (\d+)|of type (\d+) .*?not a multiple of block size \(0\))",
             scan_tail,
