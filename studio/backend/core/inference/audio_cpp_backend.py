@@ -186,6 +186,11 @@ def _reread_after_download(model: AudioCppModel, hf_token: Optional[str]) -> Aud
     return fresh
 
 
+# Strict specs that list no language option yet read the request's top-level language
+# (audio.cpp extract_request_language: VoxCPM1 keeps Cantonese text Traditional with zh-HK).
+_READS_TOP_LEVEL_LANGUAGE = frozenset({"voxcpm1", "audio8_tts"})
+
+
 def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
     """What status reports for a loaded audio.cpp model, beyond the common audio fields."""
     primary = _primary_workflow(model)
@@ -203,7 +208,12 @@ def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
         # Null when the spec takes any option; else the request fields it declares.
         "audio_request_inputs": None
         if model.request_keys is None
-        else sorted(n for n in ("instruct", "instruction", "language") if n in model.request_keys),
+        else sorted(
+            n
+            for n in ("instruct", "instruction", "language")
+            if n in model.request_keys
+            or (n == "language" and model.family in _READS_TOP_LEVEL_LANGUAGE)
+        ),
         "audio_workflow_tasks": audio_cpp_convert.workflow_tasks(model),
         "audio_convert": audio_cpp_convert.convert_caps(model),
         "audio_convert_rules": model.convert

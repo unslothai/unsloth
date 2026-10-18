@@ -3184,6 +3184,9 @@ def test_audio_request_inputs_and_seed_row_follow_the_declared_keys():
         "instruction",
         "language",
     ]
+    # VoxCPM1 lists no language option but reads the top-level one, so Clone keeps the selector.
+    voxcpm1 = _speech_model("voxcpm1", request_keys = frozenset({"seed", "max_tokens"}))
+    assert audio_cpp_backend.model_info_fields(voxcpm1)["audio_request_inputs"] == ["language"]
     loose = _speech_model("kokoro_tts")
     strict = _speech_model("kokoro_tts", request_keys = frozenset({"speed"}))
     seeded = _speech_model("kokoro_tts", request_keys = frozenset({"speed", "seed"}))
