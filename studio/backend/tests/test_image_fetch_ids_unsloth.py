@@ -65,6 +65,8 @@ _CARD_BASES: dict[str, str] = {
     "unsloth/FLUX.2-klein-9B-GGUF": "black-forest-labs/FLUX.2-klein-9B",
     "unsloth/FLUX.2-klein-base-4B-GGUF": "black-forest-labs/FLUX.2-klein-base-4B",
     "unsloth/FLUX.2-klein-base-9B-GGUF": "black-forest-labs/FLUX.2-klein-base-9B",
+    "unsloth/flux-3-image-klein-GGUF": "black-forest-labs/flux-3-image-klein",
+    "unsloth/flux-3-image-klein-base-GGUF": "black-forest-labs/flux-3-image-klein-base",
 }
 
 # These five have no separate mirror repo: the official diffusers folders live inside the model's existing unsloth
