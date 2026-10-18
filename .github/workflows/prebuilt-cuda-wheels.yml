@@ -455,6 +455,15 @@ jobs:
         if: runner.os == 'Windows' && matrix.package == 'mamba-ssm'
         run: python unsloth/.github/scripts/patch_mamba_msvc.py src
 
+      # Drop causal-conv1d's and mamba-ssm's -lineinfo (same SASS, half the size), their SASS for
+      # the integrated Arm GPUs on x86 wheels (sm_87 / 110 / 121), and flash-attn's PTX copy of its
+      # newest arch. Asserts on the text it edits, like the mamba patches above.
+      - name: Trim the CUDA targets
+        env:
+          PACKAGE: ${{ matrix.package }}
+          CUDA_ARCHS: ${{ matrix.cuda_archs }}
+        run: python unsloth/.github/scripts/patch_cuda_targets.py --package "$PACKAGE" --archs "$CUDA_ARCHS" src/setup.py
+
       - name: Restore this slice's ccache from earlier runs
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -838,6 +847,15 @@ jobs:
         if: runner.os == 'Windows' && matrix.package == 'mamba-ssm'
         run: python unsloth/.github/scripts/patch_mamba_msvc.py src
 
+      # Drop causal-conv1d's and mamba-ssm's -lineinfo (same SASS, half the size), their SASS for
+      # the integrated Arm GPUs on x86 wheels (sm_87 / 110 / 121), and flash-attn's PTX copy of its
+      # newest arch. Asserts on the text it edits, like the mamba patches above.
+      - name: Trim the CUDA targets
+        env:
+          PACKAGE: ${{ matrix.package }}
+          CUDA_ARCHS: ${{ matrix.cuda_archs }}
+        run: python unsloth/.github/scripts/patch_cuda_targets.py --package "$PACKAGE" --archs "$CUDA_ARCHS" src/setup.py
+
       - name: Download the warm slices
         if: matrix.shards > 0
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
@@ -937,6 +955,16 @@ jobs:
           PACKAGE: ${{ matrix.package }}
           WHEEL_NAME: ${{ matrix.wheel_name }}
         run: python ../unsloth/.github/scripts/prebuilt_wheels.py size-gate --package "$PACKAGE" "dist/${WHEEL_NAME}"
+
+      # The trim above only edits text; this proves the binary. Every target sm_XX has SASS, none
+      # other does, and there is no PTX: a missing cubin would fail at the first kernel launch on
+      # that GPU, which neither a CPU runner nor the single-GPU gpu-smoke job would notice.
+      - name: Check the device code targets
+        working-directory: src
+        env:
+          CUDA_ARCHS: ${{ matrix.cuda_archs }}
+          WHEEL_NAME: ${{ matrix.wheel_name }}
+        run: python ../unsloth/.github/scripts/prebuilt_wheels.py targets-gate --archs "$CUDA_ARCHS" "dist/${WHEEL_NAME}"
 
       # The whole reason this release exists, so it is a gate and not a report. A fresh venv with
       # the matching torch, the wheel installed from the file, and the compiled extension

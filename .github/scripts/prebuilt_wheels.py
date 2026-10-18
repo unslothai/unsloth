@@ -38,7 +38,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import zipfile
 
 # The CUDA major that every wheel here is built against, and the only one. It is the local
@@ -73,7 +77,26 @@ NVCC_APPEND_FLAGS = "-Xfatbin -compress-all --compress-mode=size"
 # ccache hashes the nvcc command line, not NVCC_APPEND_FLAGS, and the Linux runners' ccache (4.5)
 # has no namespaces, so the flags' identity goes into the actions/cache key instead: a cache
 # saved before them would otherwise hand back uncompressed objects.
-CCACHE_TAG = "fatbin-size"
+CCACHE_TAG = "fatbin-size-sass"
+
+# SASS targets per package (patch_cuda_targets.py trims each setup.py to these). causal-conv1d's
+# and mamba-ssm's own list also builds sm_87 (Jetson Orin), sm_110 (Jetson Thor) and sm_121 (GB10 /
+# DGX Spark, N1X), which are integrated Arm GPUs: no x86 host can have one, so the x86 wheels drop
+# them and the Arm wheels keep the full list. Every GPU a platform can reach keeps SASS compiled
+# for its own arch (ptxas schedules 87 / 103 / 121 differently from 80 / 100 / 120), so nothing
+# falls back to a sibling's cubin. flash-attn keeps its list in its SPECS env
+# (FLASH_ATTN_CUDA_ARCHS); the patch only drops the PTX its setup.py adds for the newest arch.
+SSM_SASS = "75;80;90;100;103;120"
+SSM_SASS_ARM = "75;80;87;90;100;103;110;120;121"
+SSM_SASS_BY_PLATFORM = {"linux_aarch64": SSM_SASS_ARM, "win_arm64": SSM_SASS_ARM}
+
+
+def cuda_archs(package: str, platform: str) -> str:
+    """The SASS targets one cell must contain, ';'-separated, as the gate checks them."""
+    if package == "flash-attn":
+        return SPECS[package]["env"]["FLASH_ATTN_CUDA_ARCHS"]
+    return SSM_SASS_BY_PLATFORM.get(platform, SSM_SASS)
+
 
 # The Linux tag. The wheel is tagged linux_x86_64 rather than manylinux_*, exactly as upstream
 # tags its own, so pip installs it on any glibc without a floor check; the practical floor is the
@@ -198,9 +221,9 @@ SPECS = {
         # Leave time to upload partial caches after a build timeout.
         "build_timeout": "300m",
         "import_names": ["flash_attn", "flash_attn_2_cuda"],
-        # Largest CUDA extension the size gate lets through, in MB. Compressed it is ~280; the
-        # uncompressed build that prompted the gate was 1,488.
-        "max_extension_mb": 450,
+        # Largest CUDA extension the size gate lets through, in MB. SASS only and compressed it is
+        # ~176 (PTX was 23% of each measured TU); with the PTX ~229, uncompressed 1,488.
+        "max_extension_mb": 230,
     },
     "causal-conv1d": {
         "dist": "causal_conv1d",
@@ -215,8 +238,8 @@ SPECS = {
         },
         "build_timeout": "120m",
         "import_names": ["causal_conv1d", "causal_conv1d_cuda"],
-        # ~105 with these flags, 263 in default mode.
-        "max_extension_mb": 160,
+        # x86 ~31 trimmed without -lineinfo (Arm ~53), 117 before, 263 in default mode.
+        "max_extension_mb": 80,
     },
     "mamba-ssm": {
         "dist": "mamba_ssm",
@@ -238,9 +261,9 @@ SPECS = {
         "patch": "cxx20",
         "build_timeout": "180m",
         "import_names": ["mamba_ssm", "selective_scan_cuda"],
-        # ~230 with these flags, 358 in default mode: the gate only catches flags that never
-        # reached nvcc.
-        "max_extension_mb": 300,
+        # x86 ~62 trimmed without -lineinfo (Arm ~88), 241 before, 358 in default mode: the gate
+        # catches flags or a trim that never reached nvcc.
+        "max_extension_mb": 130,
     },
 }
 
@@ -412,6 +435,7 @@ def build_matrix(
                             "build_env": _build_env(spec, platform),
                             "nvcc_append_flags": NVCC_APPEND_FLAGS,
                             "ccache_tag": CCACHE_TAG,
+                            "cuda_archs": cuda_archs(package, platform),
                             "max_extension_mb": spec["max_extension_mb"],
                             "import_names": " ".join(spec["import_names"]),
                             "wheel_name": wheel_name(
@@ -684,6 +708,76 @@ def _cmd_size_gate(args: argparse.Namespace) -> int:
     return 0
 
 
+_CUBIN = re.compile(r"\.sm_(\d+)[a-z]?\.cubin\s*$")
+_PTX = re.compile(r"\.compute_(\d+)[a-z]?\.ptx\s*$")
+
+
+def device_targets(listing: str) -> tuple[set[str], set[str]]:
+    """(SASS archs, PTX archs) from `cuobjdump --list-elf --list-ptx` output."""
+    sass, ptx = set(), set()
+    for line in listing.splitlines():
+        if match := _CUBIN.search(line):
+            sass.add(match.group(1))
+        elif match := _PTX.search(line):
+            ptx.add(match.group(1))
+    return sass, ptx
+
+
+def _archs(prefix: str, archs: set[str]) -> str:
+    return ", ".join(f"{prefix}_{arch}" for arch in sorted(archs, key = int))
+
+
+def check_targets(name: str, sass: set[str], ptx: set[str], want: set[str]) -> list[str]:
+    """Problems with one extension's device code: every wanted SASS present, nothing else."""
+    problems = []
+    if missing := want - sass:
+        problems.append(f"{name}: no SASS for {_archs('sm', missing)}")
+    if extra := sass - want:
+        problems.append(f"{name}: SASS for {_archs('sm', extra)} was not asked for")
+    if ptx:
+        problems.append(f"{name}: carries PTX for {_archs('compute', ptx)}")
+    return problems
+
+
+def _cmd_targets_gate(args: argparse.Namespace) -> int:
+    want = {arch for arch in args.archs.split(";") if arch}
+    if not want:
+        raise SystemExit("--archs is empty")
+    cuobjdump = shutil.which("cuobjdump")
+    if cuobjdump is None:
+        raise SystemExit("cuobjdump is not on PATH")
+    problems, checked = [], 0
+    with zipfile.ZipFile(args.wheel) as archive, tempfile.TemporaryDirectory() as scratch:
+        members = [n for n in archive.namelist() if n.endswith((".so", ".pyd"))]
+        if not members:
+            raise SystemExit(f"{args.wheel}: no compiled extension in the wheel")
+        for member in members:
+            path = archive.extract(member, scratch)
+            listing = subprocess.run(
+                [cuobjdump, "--list-elf", "--list-ptx", path],
+                capture_output = True,
+                text = True,
+            )
+            sass, ptx = device_targets(listing.stdout + listing.stderr)
+            # A host-only helper module has no device code at all; only a CUDA one is checked.
+            if not sass and not ptx:
+                print(f"{member}: no device code")
+                continue
+            checked += 1
+            print(
+                f"{member}: SASS sm_{';'.join(sorted(sass, key = int))}"
+                + (f", PTX compute_{';'.join(sorted(ptx, key = int))}" if ptx else ", no PTX")
+            )
+            problems += check_targets(member, sass, ptx, want)
+    if not checked:
+        # Every package here is a CUDA extension; none with device code means cuobjdump read
+        # nothing, not that there was nothing to check.
+        problems.append(f"{args.wheel}: no extension with device code")
+    for problem in problems:
+        print(f"::error::{problem}")
+    return 1 if problems else 0
+
+
 def _cmd_notes(args: argparse.Namespace) -> int:
     sys.stdout.write(render_notes(_read_digest_lines(), tag = args.tag, repo = args.repo))
     return 0
@@ -726,6 +820,13 @@ def main(argv: list[str] | None = None) -> int:
     gate_parser.add_argument("--package", required = True)
     gate_parser.add_argument("wheel")
     gate_parser.set_defaults(func = _cmd_size_gate)
+
+    targets_parser = sub.add_parser(
+        "targets-gate", help = "fail unless the wheel's device code is exactly --archs SASS"
+    )
+    targets_parser.add_argument("--archs", required = True)
+    targets_parser.add_argument("wheel")
+    targets_parser.set_defaults(func = _cmd_targets_gate)
 
     args = parser.parse_args(argv)
     return args.func(args)
