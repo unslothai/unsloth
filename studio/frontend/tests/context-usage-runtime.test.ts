@@ -57,7 +57,8 @@ function reply(count: savedUsage.BranchContextUsage): ThreadMessage {
 function harness(name = "ThreadContextUsageRecount") {
   const state = {
     activeThreadId: "thread-a" as string | null,
-    params: { checkpoint: "local-model" },
+    params: { checkpoint: "local-model", systemPrompt: "Original instructions" },
+    loadedChatTemplateOverride: "original-template",
     loadedContextLength: 4096,
     loadedIsGguf: true,
     modelLoading: false,
@@ -176,6 +177,32 @@ test("changing reasoning after opening a legacy chat estimates and recounts its 
   assert.equal(h.state.contextUsage?.estimated, true);
   assert.equal(h.world.recounts.length, 1);
 });
+
+for (const setting of ["systemPrompt", "chatTemplate"] as const) {
+  test(`returning to a saved reasoning mode recounts after ${setting} changes`, () => {
+    const h = harness();
+    const enabled = contextUsageReasoningKey({ enable_thinking: true });
+    const disabled = contextUsageReasoningKey({ enable_thinking: false });
+    h.state.reasoningKey = enabled;
+    h.state.contextUsage = usage(84, enabled);
+    h.world.thread.messages = [reply(h.state.contextUsage)];
+    h.render();
+    h.state.reasoningKey = disabled;
+    h.render();
+    if (setting === "systemPrompt") {
+      h.state.params.systemPrompt = "Updated instructions";
+    } else {
+      h.state.loadedChatTemplateOverride = "updated-template";
+    }
+    h.state.contextUsage = usage(1990, disabled);
+    h.render();
+    const recounts = h.world.recounts.length;
+    h.state.reasoningKey = enabled;
+    h.render();
+    assert.equal(h.state.contextUsage?.estimated, true);
+    assert.equal(h.world.recounts.length, recounts + 1);
+  });
+}
 
 test("hydrating the saved reasoning settings keeps legacy usage exact", () => {
   const h = harness();

@@ -43272,7 +43272,12 @@ def _count_chat_context_tokens(backend, payload, messages, tools, template_kwarg
 
     context_length = getattr(backend, "_effective_context_length", None)
     thread_id = getattr(payload, "thread_id", None)
-    if _rolling_context_policy(payload) is not None and context_length and thread_id:
+    if (
+        _rolling_context_policy(payload) is not None
+        and context_length
+        and thread_id
+        and not _takes_tool_passthrough(payload, backend)
+    ):
         policy = _request_context_policy(payload)
         ratio = _request_compaction_headroom_ratio(payload)
         can_reset = _can_reset_epoch(

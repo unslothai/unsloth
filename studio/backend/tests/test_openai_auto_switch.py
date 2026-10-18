@@ -5300,6 +5300,64 @@ def test_chat_count_tokens_keeps_uncompacted_branches_intact(monkeypatch, contex
     assert seen == [messages]
 
 
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"tools": [{"type": "function", "function": {"name": "client_tool"}}]},
+        {"response_format": {"type": "json_object"}},
+    ],
+    ids = ["client_tools", "guided_json"],
+)
+def test_chat_count_tokens_does_not_replay_studio_compaction_on_passthrough(monkeypatch, fields):
+    _count_tokens_backend(monkeypatch, supports_tools = True)
+    backend = inference_route.get_llama_cpp_backend()
+    backend._effective_context_length = 2048
+    messages = []
+    for index in range(3):
+        messages.extend(
+            [
+                {"role": "user", "content": f"Passage {index}: " + "x" * 3200},
+                {"role": "assistant", "content": "Read."},
+            ]
+        )
+    stored = [
+        {**message, "id": f"m-{index}", "parentId": f"m-{index - 1}" if index else None}
+        for index, message in enumerate(messages)
+    ]
+    stored[-1]["metadata"] = {
+        "contextTruncation": {
+            "fits": True,
+            "checkpoint": True,
+            "manual": True,
+            "boundary_messages": 2,
+            "boundary_anchor": messages[2]["content"],
+        }
+    }
+    seen = []
+
+    def count(candidate, *_args, **_kwargs):
+        seen.append(candidate)
+        return sum(len(message["content"]) // 4 for message in candidate)
+
+    backend.count_chat_tokens = count
+    monkeypatch.setattr(_tp, "get_tool_policy", lambda: None)
+    monkeypatch.setattr(studio_db, "list_chat_messages", lambda _thread: stored)
+    payload = _count_request(
+        messages,
+        thread_id = "compacted-thread",
+        context_overflow = "truncate_oldest",
+        context_policy = "checkpoint",
+        max_tokens = 256,
+        enable_tools = False,
+        **fields,
+    )
+
+    body = _counted_body(payload)
+
+    assert seen == [messages]
+    assert body["input_tokens"] == sum(len(message["content"]) // 4 for message in messages)
+
+
 @pytest.mark.parametrize("checkpoint_boundary", [True, False])
 @pytest.mark.parametrize("context_length", [2048, 16384])
 def test_chat_count_tokens_prices_saved_boundary_without_enforcing_reply_budget(

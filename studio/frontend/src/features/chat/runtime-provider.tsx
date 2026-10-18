@@ -3942,7 +3942,6 @@ function ThreadContextUsageRecount({
       if (
         usage != null &&
         !usage.estimated &&
-        usage.reasoningKey === undefined &&
         !previous.pending &&
         previous.settings !== reasoningSettings
       ) usage = null;

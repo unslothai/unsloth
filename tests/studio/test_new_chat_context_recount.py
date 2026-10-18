@@ -3637,7 +3637,7 @@ def test_finishing_settings_pairing_recounts_a_thinking_change_already_shown_whi
     assert out == {"before": 0, "counts": 1, "total": 341}
 
 
-def test_returning_to_the_saved_thinking_mode_restores_its_exact_completion_count():
+def test_returning_to_the_saved_thinking_mode_revalidates_its_completion_count():
     out = _run(
         _script(
             """
@@ -3656,11 +3656,17 @@ def test_returning_to_the_saved_thinking_mode_restores_its_exact_completion_coun
               contextUsage: { ...saved, reasoningKey: "[false,null,null]", totalTokens: 618 },
             });
             renderThreadContextUsageRecount();
+            world.countedTokensOverride = { value: 1990 };
             seed({ reasoningEnabled: true });
             renderThreadContextUsageRecount();
             await new Promise((resolve) => setTimeout(resolve, 30));
-            console.log(JSON.stringify({ counts: world.countedMessages.length, preserved: snapshot().contextUsage === saved }));
+            console.log(JSON.stringify({
+              counts: world.countedMessages.length,
+              preserved: snapshot().contextUsage === saved,
+              total: snapshot().contextUsage?.totalTokens,
+              estimated: snapshot().contextUsage?.estimated ?? false,
+            }));
             """
         )
     )
-    assert out == {"counts": 0, "preserved": True}
+    assert out == {"counts": 1, "preserved": False, "total": 1990, "estimated": False}

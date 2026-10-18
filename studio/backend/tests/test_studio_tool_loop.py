@@ -1114,6 +1114,29 @@ def test_a_turn_reporting_its_own_context_keeps_it_while_billing_sums(executed):
     assert usages[0]["context_tokens"] == 24_000
 
 
+@pytest.mark.parametrize("last_usage", [None, {}, {"total_tokens": 0}])
+def test_a_final_turn_without_context_usage_clears_the_previous_context(executed, last_usage):
+    final_turn = [_sse({"content": "done"}), _sse(finish = "stop")]
+    if last_usage is not None:
+        final_turn.append("data: " + json.dumps({"choices": [], "usage": last_usage}))
+    final_turn.append(_DONE)
+    transport = FakeTransport(
+        [
+            [_WEB_SEARCH_CALL, _sse(finish = "tool_calls"), _usage_line(100, 5), _DONE],
+            final_turn,
+        ]
+    )
+
+    usages = _usage_payloads(_run(transport))
+
+    assert len(transport.requests) == 2
+    assert len(usages) == 1
+    assert usages[0]["prompt_tokens"] == 100
+    assert usages[0]["completion_tokens"] == 5
+    assert usages[0]["total_tokens"] == 105
+    assert "context_tokens" not in usages[0]
+
+
 def test_a_partial_report_after_a_full_one_keeps_the_fields_it_omits(executed):
     transport = FakeTransport(
         [
