@@ -724,7 +724,13 @@ def test_progress_reports_the_enhance_phase(routes, monkeypatch):
     assert body["active"] is True and body["phase"] == "enhance"
     assert body["message"] == "Enhancing prompt..."
     monkeypatch.setattr(pup, "cancel_active", lambda: True)
+    stopped = []
+    monkeypatch.setattr(
+        backend, "cancel_generate", lambda **_: stopped.append(True) or False, raising = False
+    )
     assert client.post("/api/inference/images/generate/cancel").json() == {"cancelled": True}
+    # Another tab's denoise is stopped too, not only the enhancement.
+    assert stopped == [True]
 
 
 def test_generate_retry_recomputes_the_caption_for_the_new_model(routes, runnable, monkeypatch):
@@ -933,6 +939,19 @@ def test_stop_during_server_start_cancels_the_start(monkeypatch):
     with pytest.raises(pup.UpsamplerCancelledError):
         sidecar.generate({}, binary = "b", model = "m", mmproj = None, cancel_event = event)
     assert cancelled.is_set()
+
+
+def test_training_stops_an_enhancement_that_has_not_reached_the_sidecar(monkeypatch):
+    import sys
+
+    from routes import training_vram
+
+    stopped = []
+    monkeypatch.setitem(sys.modules, "core.inference.flux3_prompt_upsampler", pup)
+    monkeypatch.setattr(pup, "cancel_active", lambda: stopped.append(True) or True)
+    monkeypatch.setattr(pup, "get_sidecar", lambda: pup.PromptUpsamplerSidecar())
+    assert training_vram.free_prompt_upsampler_for_training("test") == []
+    assert stopped == [True]
 
 
 class _ResidentUpsampler:

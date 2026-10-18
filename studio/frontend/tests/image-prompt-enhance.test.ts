@@ -10,6 +10,7 @@ import {
   enhancePromptRequestField,
   enhanceRestoreFor,
   enhancementNotice,
+  ENHANCE_UNSUPPORTED_FAMILY,
   overrideAfterFamilyChange,
   previewSignature,
   hasEnhancedPrompt,
@@ -236,5 +237,8 @@ test("a family change consumes the one-off override instead of leaving it dorman
   // A switch to the other variant drops it, so switching back does not revive it.
   assert.equal(overrideAfterFamilyChange(bound, "flux.3-klein-base"), null);
   assert.equal(overrideAfterFamilyChange(null, "flux.3-klein"), null);
+  // A model without an upsampler consumes a bound override but keeps one set before any model loaded.
+  assert.equal(overrideAfterFamilyChange(bound, ENHANCE_UNSUPPORTED_FAMILY), null);
+  assert.equal(overrideAfterFamilyChange(unloaded, ENHANCE_UNSUPPORTED_FAMILY), unloaded);
 });
 

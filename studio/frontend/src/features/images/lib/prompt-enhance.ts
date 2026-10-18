@@ -223,14 +223,9 @@ export function hasEnhancedPrompt(image: {
   return Boolean(caption) && caption !== image.prompt.trim();
 }
 
-const referenceDigests = new Map<string, string>();
-const REFERENCE_DIGEST_CACHE = 8;
-
-/** Two 32-bit hashes (FNV-1a, djb2) over the whole data URL, computed once per image: the same-format headers and
- *  trailers of two different images often match, so the ends alone do not tell them apart. */
+/** Two 32-bit hashes (FNV-1a, djb2) over the whole data URL: the same-format headers and trailers of two different
+ *  images often match, so the ends alone do not tell them apart. */
 export function referenceDigest(src: string): string {
-  const hit = referenceDigests.get(src);
-  if (hit !== undefined) return hit;
   let fnv = 0x811c9dc5;
   let djb = 5381;
   for (let i = 0; i < src.length; i++) {
@@ -238,18 +233,22 @@ export function referenceDigest(src: string): string {
     fnv = Math.imul(fnv ^ code, 0x01000193);
     djb = (Math.imul(djb, 33) + code) | 0;
   }
-  const digest = `${src.length}:${(fnv >>> 0).toString(16)}:${(djb >>> 0).toString(16)}`;
-  if (referenceDigests.size >= REFERENCE_DIGEST_CACHE) {
-    const oldest = referenceDigests.keys().next().value;
-    if (oldest !== undefined) referenceDigests.delete(oldest);
-  }
-  referenceDigests.set(src, digest);
-  return digest;
+  return `${src.length}:${(fnv >>> 0).toString(16)}:${(djb >>> 0).toString(16)}`;
 }
+
+// The stale check runs on every render: digests of the images the last call named, and only those, so a removed
+// image is not kept alive by the cache.
+let referenceDigests = new Map<string, string>();
 
 /** What a preview caption was written for: the prompt, the variant and the reference images. */
 export function previewSignature(body: PromptUpsamplerPreviewRequest): string {
-  const refs = (body.reference_images ?? []).map(referenceDigest);
+  const next = new Map<string, string>();
+  const refs = (body.reference_images ?? []).map((src) => {
+    const digest = next.get(src) ?? referenceDigests.get(src) ?? referenceDigest(src);
+    next.set(src, digest);
+    return digest;
+  });
+  referenceDigests = next;
   return JSON.stringify([body.prompt.trim(), body.variant ?? null, refs]);
 }
 
@@ -273,13 +272,18 @@ export function enhancementNotice(
   return null;
 }
 
-/** The one-off Enhance override after the loaded FLUX.3 family becomes ``familyKey`` (non-empty): one set before any
- *  model loaded ("") binds to it, one set under another family is dropped. */
+/** The family key of a loaded model or connection with no upsampler. */
+export const ENHANCE_UNSUPPORTED_FAMILY = "\u0000unsupported";
+
+/** The one-off Enhance override after the loaded family becomes ``familyKey`` (non-empty): one set before any model
+ *  loaded ("") binds to the first FLUX.3 family and survives an unsupported model, one set under another family is
+ *  dropped, so it cannot come back on a later switch. */
 export function overrideAfterFamilyChange(
   prev: { family: string; on: boolean } | null,
   familyKey: string,
 ): { family: string; on: boolean } | null {
   if (!prev || !familyKey || prev.family === familyKey) return prev;
-  return prev.family === "" ? { ...prev, family: familyKey } : null;
+  if (prev.family === "") return familyKey === ENHANCE_UNSUPPORTED_FAMILY ? prev : { ...prev, family: familyKey };
+  return null;
 }
 

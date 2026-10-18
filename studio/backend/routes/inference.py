@@ -51634,15 +51634,15 @@ async def cancel_diffusion_generation(
     # A run still upsampling its prompt has not reached the engine yet.
     from core.inference.flux3_prompt_upsampler import cancel_active as cancel_upsampling
 
-    if cancel_upsampling():
-        return {"cancelled": True}
+    # Both: another tab's request may be enhancing while this one denoises.
+    upsampling = cancel_upsampling()
     # The slot can change hands before the executor callback, so the engine rechecks under the lock.
     expected = account_access.tracked_generation_account()
     cancel = get_active_diffusion_engine().cancel_generate
     if expected is not None:
         cancel = functools.partial(cancel, expected_account = expected)
     cancelled = await asyncio.get_running_loop().run_in_executor(_CANCEL_EXECUTOR, cancel)
-    return {"cancelled": cancelled}
+    return {"cancelled": bool(cancelled or upsampling)}
 
 
 # ── FLUX.3 prompt upsampler (llama.cpp sidecar) ──────────────────────────────────────────────────────────

@@ -675,6 +675,8 @@ def free_prompt_upsampler_for_training(reason: str) -> List[str]:
     if upsampler_module is None:
         return []
     try:
+        # A run still decoding its references has not reached the sidecar: stopped here, it never starts one.
+        upsampler_module.cancel_active()
         upsampler = upsampler_module.get_sidecar()
         # Loaded, not only on the GPU: a -ngl 0 server still holds ~6 GB of host RAM and the CPU through training.
         if upsampler.loaded or upsampler.is_loading():

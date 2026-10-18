@@ -325,6 +325,7 @@ import {
   enhanceRestoreFor,
   enhancementNotice,
   hasEnhancedPrompt,
+  ENHANCE_UNSUPPORTED_FAMILY,
   overrideAfterFamilyChange,
   promptUpsamplerCapability,
   readEnhanceChoices,
@@ -2009,11 +2010,13 @@ export function ImagesPage({
   // restore or "Use as prompt" sets a one-off override that the next toggle or family change drops.
   const upsamplerCapability = promptUpsamplerCapability(status, Boolean(external));
   const enhanceFamilyKey = upsamplerCapability.supported ? (status?.family ?? "") : "";
-  // A family change consumes the override: one set before any model loaded binds to the first FLUX.3 family that
-  // loads, and a switch to another family drops it, so it cannot come back on a later switch.
+  // A family change consumes the override (overrideAfterFamilyChange), a switch to a model or connection without an
+  // upsampler included.
+  const enhanceTrackKey =
+    enhanceFamilyKey || (external || status?.loaded ? ENHANCE_UNSUPPORTED_FAMILY : "");
   useEffect(() => {
-    if (enhanceFamilyKey) setEnhanceOverrideState((prev) => overrideAfterFamilyChange(prev, enhanceFamilyKey));
-  }, [enhanceFamilyKey]);
+    if (enhanceTrackKey) setEnhanceOverrideState((prev) => overrideAfterFamilyChange(prev, enhanceTrackKey));
+  }, [enhanceTrackKey]);
   const enhanceOverride =
     enhanceOverrideState &&
     (enhanceOverrideState.family === "" || enhanceOverrideState.family === enhanceFamilyKey)
