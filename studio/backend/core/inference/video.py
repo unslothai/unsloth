@@ -1766,6 +1766,22 @@ def _video_fetch_repo(
     return prefer_ungated_mirror(repo_id, hf_token, files = files)
 
 
+def _video_offline_base_choice(base: str, folders: Sequence[str]) -> Optional[str]:
+    """Offline (no plan to read the choice from): the side of ``base``'s mirror pair whose cached snapshot holds more of
+    the ``folders`` this load reads, upstream on a tie; None when neither is cached or there is no mirror."""
+    from .diffusion_families import _is_local_path, mirror_repo
+
+    if os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip() or _is_local_path(base):
+        return None
+    mirror = mirror_repo(base)
+    if not mirror:
+        return None
+    up, mir = _video_cached_completeness(base, folders), _video_cached_completeness(mirror, folders)
+    if up < 0 and mir < 0:
+        return None
+    return base if up >= mir else mirror
+
+
 def _upstream_whole_in_one_root(repo_id: str, files: tuple) -> bool:
     """Whether ONE cache root (the live one, or the import-time root the fetches fall back to) holds every name in one
     revision: the only upstream cache assembly can open as a single snapshot. Names split across the two roots are not
@@ -1837,7 +1853,7 @@ def _is_under_dir(path: str, root: Optional[str]) -> bool:
         return False
 
 
-def _video_cached_completeness(repo_id: str) -> int:
+def _video_cached_completeness(repo_id: str, folders: Optional[Sequence[str]] = None) -> int:
     """How complete ``repo_id``'s cached diffusers snapshot is in the live root (the one ``from_pretrained`` reads):
     the number of ``model_index.json`` (or H3's ``modular_model_index.json``) components whose folder holds a file and
     whose shard indexes are fully present, best revision. -1 without a cached index. Local stat only, never raises."""
@@ -1866,6 +1882,9 @@ def _video_cached_completeness(repo_id: str) -> int:
                     continue
                 spec = value[2] if len(value) == 3 and isinstance(value[2], dict) else {}
                 components.append(spec.get("subfolder") or key)
+            if folders is not None:
+                # Only what this load reads from the base (LTX-2.3: its scheduler, tokenizer and encoder).
+                components = [c for c in components if c in folders]
             score = 0
             for key in components:
                 folder = rev / key
@@ -4268,6 +4287,12 @@ class VideoBackend:
             kwargs["_base_fetch_repo"] = base_fetch_choice.get("repo") or (
                 base_plan.repo if base_plan is not None else None
             )
+            if kwargs["_base_fetch_repo"] is None and ltx23:
+                # No plan (a cache-only load): assembly's nameless choice counts every index component, and an upstream
+                # holding unused VAE / transformer folders would outscore a mirror holding what 2.3 reads.
+                kwargs["_base_fetch_repo"] = _video_offline_base_choice(
+                    base, tuple(p.rstrip("/") for p in VideoBackend._LTX23_BASE_PREFIXES)
+                )
             kwargs["_base_fetch_revision"] = (
                 base_fetch_choice.get("revision")
                 if base_fetch_choice
@@ -6423,10 +6448,18 @@ class VideoBackend:
                 fetch_base = (
                     _video_fetch_repo(base, hf_token, files = [n for n, _ in base_files]) or base
                 )
+                base_revision = getattr(info, "sha", None) if fetch_base == listing else None
+                if fetch_base.lower() != (listing or "").lower():
+                    # An upstream kept for its complete cache: probe THAT snapshot (its commit, its sizes), as
+                    # _plan_fetch does for the load, not the mirror head, whose sizes may be a newer revision.
+                    cached = _cached_snapshot_plan(fetch_base, [n for n, _ in base_files])
+                    if cached is not None:
+                        base_revision = cached[0]
+                        base_files = [(name, size) for name, _key, size in cached[1]]
                 total += add(
                     fetch_base,
                     base_files,
-                    revision = getattr(info, "sha", None) if fetch_base == listing else None,
+                    revision = base_revision,
                     # A pipeline pick has no single file: the base IS the selected model (base = repo_id above). Under a
                     # GGUF pick the base is a companion, so it stays unflagged.
                     checkpoint = kind == "pipeline",

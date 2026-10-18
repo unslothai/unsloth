@@ -451,6 +451,48 @@ def test_nameless_choice_prefers_the_complete_mirror_over_a_partial_upstream(
     assert video_mod._video_fetch_repo(upstream) == upstream
 
 
+def test_offline_ltx23_base_choice_counts_only_the_folders_it_reads(empty_cache, monkeypatch):
+    upstream, mirror = "Lightricks/LTX-2", "unsloth/LTX-2-FP8"
+    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
+    index = (
+        b'{"_class_name": "LTX2Pipeline", "vae": ["diffusers", "AutoencoderKL"],'
+        b' "transformer": ["diffusers", "LTX2Transformer"], "scheduler": ["diffusers", "S"],'
+        b' "text_encoder": ["transformers", "T"], "tokenizer": ["transformers", "Tok"]}'
+    )
+    # The upstream holds folders 2.3 never reads from the base; the mirror holds the ones it does.
+    _snapshot(
+        empty_cache,
+        upstream,
+        {
+            "model_index.json": index,
+            "vae/diffusion_pytorch_model.safetensors": b"v",
+            "transformer/diffusion_pytorch_model.safetensors": b"t",
+            "scheduler/scheduler_config.json": b"{}",
+        },
+    )
+    _snapshot(
+        empty_cache,
+        mirror,
+        {
+            "model_index.json": index,
+            "scheduler/scheduler_config.json": b"{}",
+            "tokenizer/tokenizer.json": b"{}",
+            "text_encoder/model.safetensors": b"e",
+        },
+    )
+    folders = ("scheduler", "text_encoder", "tokenizer")
+    assert video_mod._video_fetch_repo(upstream) == upstream  # the aggregate count
+    assert video_mod._video_offline_base_choice(upstream, folders) == mirror
+    assert video_mod._video_offline_base_choice("someone/no-mirror", folders) is None
+
+
+def test_the_download_plan_probes_a_cached_upstream_base_at_its_own_snapshot():
+    import inspect
+
+    # The base entry reads the kept upstream snapshot's commit and sizes, as _plan_fetch does for the load.
+    assert "_cached_snapshot_plan(fetch_base, [n for n, _ in base_files])" in inspect.getsource(video_mod)
+
+
 def test_named_choice_reuses_an_upstream_complete_in_the_fallback_root(empty_cache):
     upstream = "Lightricks/LTX-2"
     _snapshot(empty_cache / "other", upstream, _COMPLETE)
