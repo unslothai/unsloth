@@ -1036,10 +1036,8 @@ def _complete_with_servable(snapshot: str, complete, variants):
 # running, and 23 retries filled all 20 default-executor workers.
 _VARIANTS_INFLIGHT: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
-# Listings run on their own pools, not the default executor: a stalled Hub holds a remote listing's
-# thread until it answers, and enough of them blocked every asyncio.to_thread caller (model load,
-# chat) and the On Device disk-only listing behind them (#14038). Disk-only listings get a separate
-# pool so they never queue behind Hub-bound ones.
+# Not the default executor: a stalled Hub holds a remote listing's thread until it answers, and enough
+# of them blocked every asyncio.to_thread caller (load, chat) and the On Device disk-only listing (#14038).
 _HUB_LISTING_POOL = ThreadPoolExecutor(thread_name_prefix = "gguf-hub-listing")
 _DISK_LISTING_POOL = ThreadPoolExecutor(thread_name_prefix = "gguf-disk-listing")
 
