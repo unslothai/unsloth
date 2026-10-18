@@ -207,7 +207,6 @@ def test_packed_ple_matches_separate_documents(reference_gdn_kernels, eos):
     alone = torch.cat([run(d[None])[1] for d in docs], dim = 1)
     torch.testing.assert_close(packed, alone, rtol = 1e-5, atol = 1e-5)
 
-    # A loss on the third document sends no gradient into any other document.
     start = sum(LENGTHS[:2])
     packed[0, start : start + LENGTHS[2]].sum().backward()
     grad = x.grad[0].abs().sum(-1)
