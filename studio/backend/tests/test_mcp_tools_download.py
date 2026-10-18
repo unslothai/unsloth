@@ -234,6 +234,54 @@ def test_cancel_posts_every_part_and_only_cancelling_counts_as_stopped():
     assert bodies(studio, CANCEL) == [{"repo_id": "a/x"}]
 
 
+def test_the_id_keeps_each_start_generation_and_cancel_sends_it():
+    studio = fake_studio({("POST", START): {**STARTED, "generation": 7}})
+    ref = start(studio, model = "org/repo", kind = "llm", variant = "Q8_0")
+    assert ref.id == "org/repo::Q8_0#7"
+    assert model_downloads.parse_id(ref.id) == [("org/repo", "Q8_0")]
+    studio = fake_studio({("POST", CANCEL): {"state": "cancelling"}})
+    run(studio, model_downloads.cancel_parts, f"{ref.id},{VAE}::@diffusion")
+    assert bodies(studio, CANCEL) == [
+        {"repo_id": "org/repo", "gguf_variant": "Q8_0", "generation": 7},
+        {"repo_id": VAE, "gguf_variant": "@diffusion"},
+    ]
+
+
+def test_a_failed_part_stops_the_parts_this_call_started():
+    refused = JSONResponse({"detail": "scope_file_mismatch"}, status_code = 409)
+    studio = fake_studio(
+        {
+            ("POST", "/api/inference/images/download-plan"): PLAN,
+            ("POST", START): sequence({**STARTED, "generation": 3}, refused),
+            ("POST", CANCEL): {"state": "cancelling"},
+        }
+    )
+    with pytest.raises(ToolError):
+        start(studio, model = "org/FLUX", kind = "image")
+    assert bodies(studio, CANCEL) == [
+        {"repo_id": FLUX, "gguf_variant": "@diffusion", "generation": 3}
+    ]
+    assert model_downloads._remembered == {}
+
+
+def test_cancel_stops_every_part_before_raising_a_refusal():
+    owned = JSONResponse({"detail": "A load owns this download"}, status_code = 409)
+    studio = fake_studio({("POST", CANCEL): sequence(owned, {"state": "cancelling"})})
+    with pytest.raises(ToolError, match = "A load owns"):
+        run(studio, model_downloads.cancel_parts, FLUX_ID)
+    assert len(bodies(studio, CANCEL)) == 2
+
+
+def test_repo_variant_shorthand_downloads_and_waits_on_the_variant():
+    studio = fake_studio({("POST", START): STARTED})
+    assert start(studio, model = f"{GGUF}:Q8_0", kind = "llm").id == f"{GGUF}::Q8_0"
+    assert bodies(studio, START)[0]["repo_id"] == GGUF
+    caller = make_caller()
+    assert model_downloads.keys_for(caller, "llm", f"{GGUF}:Q8_0", None) == [(GGUF, "Q8_0")]
+    # A plain load reads the default variant, not the one download_model staged last.
+    assert model_downloads.keys_for(caller, "llm", GGUF, None) == [(GGUF, None)]
+
+
 def wait(studio, **kwargs):
     ctx = Ctx()
     args = {"kind": "llm", "variant": None, "budget_s": 5.0, **kwargs}

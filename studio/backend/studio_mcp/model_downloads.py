@@ -49,21 +49,33 @@ def _remember(caller: Caller, kind: str, model: str, parts: list[Part]) -> None:
         _remembered.popitem(last = False)
 
 
-def format_id(parts: list[Part]) -> str:
-    return ",".join(repo if variant is None else f"{repo}::{variant}" for repo, variant in parts)
+def format_id(parts: list[Part], generations: Optional[list[Optional[int]]] = None) -> str:
+    """``repo[::variant][#generation]`` per part; the generation scopes a cancel to the run download_model started."""
+    pieces = []
+    for index, (repo, variant) in enumerate(parts):
+        piece = repo if variant is None else f"{repo}::{variant}"
+        generation = generations[index] if generations else None
+        pieces.append(piece if generation is None else f"{piece}#{generation}")
+    return ",".join(pieces)
 
 
-def parse_id(download_id: str) -> list[Part]:
+def _parse(download_id: str) -> list[tuple[Part, Optional[int]]]:
     pieces = [p.strip() for p in str(download_id or "").split(",")]
     if len(pieces) > MAX_PARTS:
         raise ToolError(f"A download id names at most {MAX_PARTS} downloads")
-    parts: list[Part] = []
+    parsed: list[tuple[Part, Optional[int]]] = []
     for piece in pieces:
-        repo, _sep, variant = piece.partition("::")
+        head, _hash, tail = piece.rpartition("#")
+        generation = int(tail) if head and tail.strip().isdigit() else None
+        repo, _sep, variant = (head if generation is not None else piece).partition("::")
         if not repo.strip():
             raise ToolError("Pass the id download_model returned")
-        parts.append((repo.strip(), variant.strip() or None))
-    return parts
+        parsed.append(((repo.strip(), variant.strip() or None), generation))
+    return parsed
+
+
+def parse_id(download_id: str) -> list[Part]:
+    return [part for part, _generation in _parse(download_id)]
 
 
 def _state(answer: Any) -> str:
@@ -79,6 +91,13 @@ def _worst(states: list[str]) -> str:
 def _looks_local(model: str) -> bool:
     # A host path, or the ref: handle a checkpoint or export load sends.
     return model.startswith(("/", "\\", ".", "ref:")) or ":" in model[:3]
+
+
+def _split(model: str, variant: Optional[str]) -> tuple[str, Optional[str]]:
+    """``repo:variant`` shorthand, as load_model reads it, into the repo and the variant."""
+    if variant is None and ":" in model and not _looks_local(model):
+        model, _sep, variant = model.partition(":")
+    return model, variant or None
 
 
 async def _default_variant(caller: Caller, model: str) -> str:
@@ -154,6 +173,7 @@ async def start(
             )
         return DownloadRef(model = model, kind = kind, variant = variant, status = "completed")
 
+    model, variant = _split(model, variant)
     if kind in loading.MEDIA_ROUTES:
         staged = await _diffusion_parts(caller, kind, model, variant, caller.hf_token)
         bodies = [
@@ -172,21 +192,32 @@ async def start(
         # The plan lists nothing left to fetch.
         return DownloadRef(model = model, kind = kind, variant = variant, status = "completed")
 
-    states, attached = [], False
-    for body in bodies:
-        answer = as_dict(
-            await route_json("POST", START, caller = caller, json_body = body, hub_header = True)
-        )
-        if answer.get("accepted") is False and answer.get("attached") is not True:
-            raise ToolError(
-                f"Unsloth Studio did not start downloading {body['repo_id']}: "
-                f"another download of it is {opt_text(answer.get('state')) or 'in progress'}."
+    states, attached, generations = [], False, []
+    started: list[tuple[Part, Optional[int]]] = []
+    try:
+        for part, body in zip(parts, bodies):
+            answer = as_dict(
+                await route_json("POST", START, caller = caller, json_body = body, hub_header = True)
             )
-        attached = attached or answer.get("attached") is True
-        states.append(_state(answer))
+            if answer.get("accepted") is False and answer.get("attached") is not True:
+                raise ToolError(
+                    f"Unsloth Studio did not start downloading {body['repo_id']}: "
+                    f"another download of it is {opt_text(answer.get('state')) or 'in progress'}."
+                )
+            generation = answer.get("generation")
+            generation = generation if isinstance(generation, int) else None
+            if answer.get("attached") is not True:
+                started.append((part, generation))
+            attached = attached or answer.get("attached") is True
+            states.append(_state(answer))
+            generations.append(generation)
+    except BaseException:
+        # Stop the parts this call started, so a failed plan leaves nothing running without an id.
+        await _stop(caller, started)
+        raise
     _remember(caller, kind, model, parts)
     return DownloadRef(
-        id = format_id(parts),
+        id = format_id(parts, generations),
         model = model,
         kind = kind,
         variant = variant,
@@ -236,15 +267,40 @@ async def status(caller: Caller, download_id: str) -> JobStatus:
     )
 
 
+def _cancel_body(part: Part, generation: Optional[int]) -> dict[str, Any]:
+    repo, variant = part
+    body: dict[str, Any] = {"repo_id": repo}
+    if variant:
+        body["gguf_variant"] = variant
+    if generation is not None:
+        body["generation"] = generation
+    return body
+
+
+async def _stop(caller: Caller, started: list[tuple[Part, Optional[int]]]) -> None:
+    for part, generation in started:
+        try:
+            await forward(caller, "POST", CANCEL, json_body = _cancel_body(part, generation))
+        except Exception:
+            pass
+
+
 async def cancel_parts(caller: Caller, download_id: str) -> tuple[bool, Optional[str]]:
-    """Stop every part; returns whether any was stopped and the overall state the answers report."""
-    states = []
-    for repo, variant in parse_id(download_id):
-        body = {"repo_id": repo, **({"gguf_variant": variant} if variant else {})}
-        response = await forward(caller, "POST", CANCEL, json_body = body)
+    """Stop every part; returns whether any was stopped and the overall state the answers report.
+    A part that refuses (a load owns it) doesn't keep the others running: its error is raised after them."""
+    states, refused = [], None
+    for part, generation in _parse(download_id):
+        response = await forward(caller, "POST", CANCEL, json_body = _cancel_body(part, generation))
         if response.status_code == 404:
             continue
-        states.append(opt_text(as_dict(raise_for_route(response)).get("state")) or "idle")
+        try:
+            answer = raise_for_route(response)
+        except ToolError as exc:
+            refused = refused or exc
+            continue
+        states.append(opt_text(as_dict(answer).get("state")) or "idle")
+    if refused is not None:
+        raise refused
     return "cancelling" in states, (_worst([STATES.get(s, s) for s in states]) if states else None)
 
 
@@ -252,12 +308,12 @@ def keys_for(caller: Caller, kind: str, model: str, variant: Optional[str]) -> l
     """The manager jobs a load of ``model`` would read. A GGUF part with variant None still needs the repo's default."""
     if kind == "stt" or not model or _looks_local(model):
         return []
-    remembered = _remembered.get((caller.account_id, kind, model.lower()))
     if kind in loading.MEDIA_ROUTES:
+        model = _split(model, variant)[0]
+        remembered = _remembered.get((caller.account_id, kind, model.lower()))
         return list(remembered or [(model, SCOPED)])
-    if variant:
-        return [(model, variant)]
-    return list(remembered or [(model, None)])
+    # A load without a variant reads the repo's default, not the variant download_model last staged.
+    return [_split(model, variant)]
 
 
 async def wait_for_managed(

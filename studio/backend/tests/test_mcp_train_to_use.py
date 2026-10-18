@@ -95,7 +95,8 @@ def test_an_evicted_checkpoint_is_named(monkeypatch):
     [
         ({"export": "qwen-lora/adapter"}, f"{EXPORTS}/qwen-lora/adapter", None),
         ({"export": "QWEN-LORA/merged"}, f"{EXPORTS}/qwen-lora/merged", None),
-        ({"export": "qwen-GGUF"}, f"{EXPORTS}/qwen-GGUF/qwen-Q8_0.gguf", None),
+        # The file name gives the quantization, so the folder loads with it as the variant.
+        ({"export": "qwen-GGUF"}, f"{EXPORTS}/qwen-GGUF", "Q8_0"),
         ({"export": "qwen-GGUF", "variant": "Q4_K_M"}, f"{EXPORTS}/qwen-GGUF", "Q4_K_M"),
     ],
 )
@@ -179,3 +180,24 @@ def test_a_plain_model_load_lists_nothing(monkeypatch):
     output, body, studio = _load(monkeypatch, {"model": "unsloth/Qwen3-0.6B"})
     assert body["model_path"] == "unsloth/Qwen3-0.6B" and output["model"] == "unsloth/Qwen3-0.6B"
     assert not {"/api/models/checkpoints", "/api/models/loras"} & {c[1] for c in studio.state.calls}
+
+
+def test_a_gguf_export_loads_on_the_cpu_as_gguf(monkeypatch):
+    _output, body, _studio = _load(monkeypatch, {"export": "qwen-GGUF", "device": "cpu"})
+    assert body["gguf_variant"] == "Q8_0"
+    assert (body["gpu_layers"], body["speculative_type"]) == (0, "off")
+
+
+def test_a_gguf_export_with_no_quant_in_its_name_needs_a_variant_to_place(monkeypatch):
+    unnamed = {
+        "display_name": "assistant",
+        "adapter_path": f"{EXPORTS}/assistant/model.gguf",
+        "source": "exported",
+        "export_type": "gguf",
+    }
+    routes = {**_routes(), ("GET", "/api/models/loras"): {**LORAS, "loras": [unnamed]}}
+    args = {"export": "assistant", "device": "cpu"}
+    result, studio = run_tool(monkeypatch, routes, "load_model", args)
+    assert result["isError"] is True
+    assert "Pass variant" in result["content"][0]["text"]
+    assert bodies(studio, "/api/inference/load") == []

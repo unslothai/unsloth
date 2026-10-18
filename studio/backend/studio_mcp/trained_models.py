@@ -24,6 +24,8 @@ class TrainedModel:
     ref: str = field(repr = False)
     is_lora: bool
     gguf_variant: Optional[str] = None
+    # A GGUF export whose quantization its file name doesn't give; the load can't place it by device.
+    unplaced_gguf: bool = False
     # Every listed path or ref -> its name, to name models the load evicted.
     known: dict[str, str] = field(default_factory = dict, repr = False)
 
@@ -88,14 +90,20 @@ async def resolve_export(caller: Caller, name: str, variant: Optional[str]) -> T
         )
     _label, path, export_type = match[0]
     gguf_variant = None
-    if export_type == "gguf" and variant:
-        # The scan picks one .gguf file; the folder plus the variant picks the quantization asked for.
-        path, gguf_variant = _parent(path), variant
+    if export_type == "gguf":
+        from hub.utils.gguf import extract_quant_token
+
+        # The scan picks one .gguf file; the folder plus a variant picks the quantization, and a
+        # variant is what makes the load (and device="cpu") treat it as GGUF.
+        gguf_variant = variant or extract_quant_token(leaf_name(path))
+        if gguf_variant:
+            path = _parent(path)
     return TrainedModel(
         name = name,
         ref = cache_reference(path),
         is_lora = export_type == "lora",
         gguf_variant = gguf_variant,
+        unplaced_gguf = export_type == "gguf" and not gguf_variant,
         known = _known([(r[1], r[0]) for r in rows]),
     )
 

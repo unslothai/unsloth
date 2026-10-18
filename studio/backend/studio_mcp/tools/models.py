@@ -252,6 +252,12 @@ async def load_model(
         "kv_cache_type": kv_cache_type,
         "gpu_layers": gpu_layers,
     }
+    if trained:
+        variant = trained.gguf_variant or variant
+        if trained.unplaced_gguf and (device is not None or gpu_layers is not None):
+            raise ToolError(
+                f"Pass variant (the export's quantization, such as Q4_K_M) to load {trained.name} with device or gpu_layers."
+            )
     placement.check_placement(kind, trained.name if trained else model, variant, **where)
     if kind == "stt":
 

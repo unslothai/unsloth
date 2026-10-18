@@ -24,7 +24,7 @@ from studio_mcp.outputs import (
     TrainingRuns,
     TrainingStarted,
 )
-from studio_mcp.tools import READ_ONLY, WRITES, as_dict, integer, opt_text, route_json
+from studio_mcp.tools import READ_ONLY, WRITES, as_dict, integer, leaf_name, opt_text, route_json
 
 
 TRAINING_ROUTES = {"llm": "/api/train/start", "diffusion": "/api/train/diffusion/start"}
@@ -116,18 +116,31 @@ def _shown_config(validated: Any, kind: str) -> dict[str, Any]:
     return shown
 
 
-async def _checked_trainable(validated: Any, caller: Caller) -> tuple[Any, Optional[str]]:
+def _asked_name(asked: Any, name: str) -> str:
+    """The model as the caller named it: the validator turns a ref: handle into a host path, which must not come back."""
+    asked = str(asked or "").strip()
+    if asked and not asked.startswith(("/", "\\", "~")) and ":" not in asked[1:3]:
+        return asked
+    return leaf_name(name.rstrip("/\\")) or "This model"
+
+
+async def _checked_trainable(
+    validated: Any,
+    caller: Caller,
+    asked: Any = None,
+) -> tuple[Any, Optional[str]]:
     """Refuse a model the trainer can't train; a codec text-to-speech model gets is_dataset_audio."""
     from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES, looks_like_audio_cpp
     from core.inference.native_audio import NATIVE_AUDIO_MODEL_IDS
     from utils.audio_tokens import NATIVE_OUTPUT_AUDIO_TYPES, TTS_AUDIO_TYPES
 
     name = str(validated.model_name or "").strip()
+    shown = _asked_name(asked, name)
     leaf = re.split(r"[\\/]", name.rstrip("/\\"))[-1].lower()
     # audio.cpp rows are GGUF folders too; their refusal says more.
     if looks_like_audio_cpp(name):
         raise ToolError(
-            f"{name} runs on audio.cpp, which Unsloth Studio can run but not train. {TRAINABLE_TTS}"
+            f"{shown} runs on audio.cpp, which Unsloth Studio can run but not train. {TRAINABLE_TTS}"
         )
     if validated.model_format == "gguf" or leaf.endswith(("-gguf", ".gguf")):
         raise ToolError(f"GGUF models are inference-only and cannot be trained. {TRAINABLE_TTS}")
@@ -145,15 +158,15 @@ async def _checked_trainable(validated: Any, caller: Caller) -> tuple[Any, Optio
             audio_type = None
     if audio_type in AUDIO_CPP_AUDIO_TYPES:
         raise ToolError(
-            f"{name} runs on audio.cpp, which Unsloth Studio can run but not train. {TRAINABLE_TTS}"
+            f"{shown} runs on audio.cpp, which Unsloth Studio can run but not train. {TRAINABLE_TTS}"
         )
     if audio_type in NATIVE_OUTPUT_AUDIO_TYPES:
         raise ToolError(
-            f"{name} is a text-to-speech model Unsloth Studio can run but not train. {TRAINABLE_TTS}"
+            f"{shown} is a text-to-speech model Unsloth Studio can run but not train. {TRAINABLE_TTS}"
         )
     if audio_type in TTS_AUDIO_TYPES and not validated.is_dataset_audio:
         return validated.model_copy(update = {"is_dataset_audio": True}), (
-            f"{name} is a text-to-speech model, so is_dataset_audio is set to true in the returned "
+            f"{shown} is a text-to-speech model, so is_dataset_audio is set to true in the returned "
             "config; start training with that config."
         )
     return validated, None
@@ -196,7 +209,9 @@ async def start_training(
     if validate_only:
         note = None
         if kind == "llm":
-            validated, note = await _checked_trainable(validated, current_caller())
+            validated, note = await _checked_trainable(
+                validated, current_caller(), config.get("model_name")
+            )
         return TrainingStarted(
             status = "valid",
             message = " ".join(filter(None, ("The config is valid; nothing was started.", note))),

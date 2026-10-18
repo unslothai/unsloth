@@ -163,3 +163,17 @@ def test_diffusion_echo_drops_folders(monkeypatch):
     shown = out["config"]
     assert shown["base_model"] == DIFFUSION["base_model"] and shown["train_steps"] == 500
     assert not {"data_dir", "output_dir", "hf_token"} & set(shown)
+
+
+@pytest.mark.parametrize("answer", [("higgs_tts2", True), ("snac", True)])
+def test_a_ref_model_name_never_comes_back_as_its_path(monkeypatch, answer):
+    from hub.utils.host_paths import cache_reference
+
+    seen = _detect(monkeypatch, answer)
+    ref = cache_reference(f"{SENTINEL_ROOTS[0]}/models/my-tts")
+    result = _validate(monkeypatch, {**CONFIG, "model_name": ref})
+    # The validator resolved the ref for detection, but the text names the ref.
+    assert seen and seen[0][0] == f"{SENTINEL_ROOTS[0]}/models/my-tts"
+    text = json.dumps(result)
+    assert SENTINEL_ROOTS[0] not in text and "my-tts" not in text
+    assert ref in text
