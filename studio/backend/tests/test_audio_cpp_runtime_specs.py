@@ -88,6 +88,9 @@ MESSAGE = (
         ("v0.9.0-unsloth.1", [("x.gguf", 4)], MESSAGE),
         # A complete cache still loads on an old runtime.
         ("v0.9.1-unsloth.1", [], None),
+        # A cached GGUF whose companion asset is missing is repaired as before.
+        ("v0.9.1-unsloth.1", [("embeddings.safetensors", 4), ("config.json", 1)], None),
+        ("v0.9.1-unsloth.1", [("embeddings.safetensors", 4), ("X.GGUF", 4)], MESSAGE),
         ("v0.9.2-unsloth.1", [("x.gguf", 4)], None),
         ("v0.10.0-unsloth.1", [("x.gguf", 4)], None),
         ("garbage", [("x.gguf", 4)], None),

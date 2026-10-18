@@ -234,7 +234,9 @@ def stale_runtime_download_problem(
     from core.inference.audio_cpp_files import missing_files
 
     try:
-        if not missing_files(model, hub_cache = hub_cache):
+        # Only a GGUF carries the spec an old runtime may misread; a missing config or embedding is fetched as before.
+        missing = missing_files(model, hub_cache = hub_cache)
+        if not any(path.lower().endswith(".gguf") for path, _size in missing):
             return None
     except Exception:  # noqa: BLE001 - an unreadable cache is the download's to report
         return None
