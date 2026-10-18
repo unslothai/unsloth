@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import hashlib
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -482,11 +483,33 @@ def _media_fraction(progress: dict) -> Optional[float]:
     return number(progress.get("fraction"))
 
 
-def _resident_matches(status: Any, model: str) -> bool:
+def _resident_matches(
+    status: Any,
+    model: str,
+    body: Optional[dict] = None,
+) -> bool:
     if not isinstance(status, dict) or status.get("loaded") is not True:
         return False
     names = {opt_text(status.get("repo_id")), opt_text(status.get("display_repo_id"))}
-    return model.lower() in {name.lower() for name in names if name}
+    if model.lower() not in {name.lower() for name in names if name}:
+        return False
+    # Another file of the same repo is another model: a missing field reads as not loaded yet.
+    wanted = opt_text((body or {}).get("gguf_filename"))
+    if not wanted:
+        return True
+    kind = opt_text((body or {}).get("model_kind"))
+    if kind and opt_text(status.get("model_kind")) not in (None, kind):
+        return False
+    resident = opt_text(status.get("gguf_filename"))
+    if resident:
+        return os.path.normcase(resident) == os.path.normcase(wanted)
+    from hub.utils.gguf import extract_quant_token
+
+    # Video status names only the quant; a plain checkpoint has none to compare.
+    quant = extract_quant_token(wanted)
+    if not quant:
+        return True
+    return (opt_text(status.get("gguf_variant")) or "").lower() == quant.lower()
 
 
 async def _gguf_filename(caller: Caller, model: str, variant: Optional[str]) -> Optional[str]:
@@ -555,7 +578,7 @@ async def load_media(
             _media_poll(caller, routes),
             job,
         )
-        status = await _media_ready(caller, kind, model, routes, job)
+        status = await _media_ready(caller, kind, model, routes, job, body)
         name = _media_name(status) or model
         return await finish_load(caller, kind, name, before, answer)
 
@@ -583,7 +606,12 @@ def _media_poll(caller: Caller, routes: dict[str, str]) -> Callable[[], Awaitabl
 
 
 async def _media_ready(
-    caller: Caller, kind: str, model: str, routes: dict[str, str], job: LoadJob
+    caller: Caller,
+    kind: str,
+    model: str,
+    routes: dict[str, str],
+    job: LoadJob,
+    body: Optional[dict] = None,
 ) -> dict:
     idle = 0
     while True:
@@ -595,7 +623,7 @@ async def _media_ready(
             break
         if phase is None:
             status = await route_json("GET", routes["status"], caller = caller)
-            if _resident_matches(status, model):
+            if _resident_matches(status, model, body):
                 break
             idle += 1
             if idle >= _IDLE_POLLS:
@@ -610,7 +638,7 @@ async def _media_ready(
             )
         await asyncio.sleep(POLL_INTERVAL_S)
     status = await route_json("GET", routes["status"], caller = caller)
-    if not _resident_matches(status, model):
+    if not _resident_matches(status, model, body):
         raise ToolError(f"Unsloth Studio did not finish loading {model} as the {kind} model")
     return status
 
