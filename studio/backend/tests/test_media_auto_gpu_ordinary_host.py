@@ -500,6 +500,8 @@ def test_mig_listing_parses_slices():
         nvidia.gpu_query,
         "run_nvidia_smi",
         lambda argv, **_k: types.SimpleNamespace(returncode = 0, stdout = out),
+    ), _patch.object(nvidia.gpu_query, "enabled", lambda: False), _patch.object(
+        nvidia, "_mig_entry", None
     ):
         assert hw._nvidia_mig_gpu_indices_or_none() == {0}
 

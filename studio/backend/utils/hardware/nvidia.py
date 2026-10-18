@@ -613,10 +613,11 @@ def get_card_identities() -> dict[int, tuple[str, ...]]:
         return {}
     identities: dict[int, tuple[str, ...]] = {}
     for line in result.stdout.strip().splitlines():
-        index, *fields = (part.strip() for part in line.split(","))
-        if not index.isdigit() or len(fields) != 4:
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 5 or not parts[0].isdigit():
             return {}
-        identities[int(index)] = tuple(fields)
+        # nvidia-smi csv does not quote: a name holding commas spans several parts, so rejoin it.
+        identities[int(parts[0])] = (", ".join(parts[1:-3]), *parts[-3:])
     return identities
 
 
