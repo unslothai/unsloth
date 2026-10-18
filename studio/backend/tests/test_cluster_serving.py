@@ -3524,3 +3524,16 @@ def test_speculation_already_off_plans_without_the_mtp_head(monkeypatch):
     request = _request()
     assert run(ss.before_load(request, 4)) is request
     assert ss.status()["topology"] == "single"
+
+
+def test_a_unified_accelerator_after_a_discrete_one_still_shares_host_memory(monkeypatch):
+    listing = LISTING + "  Vulkan0: AMD Radeon 8060S (98304 MiB, 90000 MiB free)\n"
+    _cluster_env(monkeypatch, listing = listing)
+    monkeypatch.setattr(cs, "_shares_host_memory", lambda device: device.name == "Vulkan0")
+    monkeypatch.setattr(cs, "_effective_checkpoints", lambda *a: 32)
+    monkeypatch.setattr(
+        cs, "_ctx_compute_bytes", lambda *a, **k: MIB if a[7:] == ("checkpoint",) else 0
+    )
+    run(ss.before_load(_request(max_seq_length = 8192), 4))
+    # The host RAM checkpoints come out of the pool the APU's share is carved from.
+    assert cs.state().plan.extra_bytes == 32 * 4 * MIB

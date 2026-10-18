@@ -1670,7 +1670,9 @@ class ClusterServing:
         # Context checkpoints live in host RAM, which a local accelerator may share (unified
         # memory); with none there they take nothing a plan places.
         local = [d for d in devices if not d.remote]
-        unified = bool(local) and _shares_host_memory(local[0])
+        # Any of them: a discrete card listed before an APU's (an eGPU on a Strix Halo) still
+        # leaves the APU's share in the host pool these buffers draw from.
+        unified = any(_shares_host_memory(d) for d in local)
         if unified and _keeps_resident():
             # The loader page-locks the mapping up to the last host-mapped tensor (llama.cpp
             # grow_to), and this machine's layers come last: about a whole locked copy.
