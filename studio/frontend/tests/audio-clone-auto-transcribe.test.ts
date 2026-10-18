@@ -61,3 +61,14 @@ test("the reference length hint", () => {
     /idealSeconds=\{\[5, 15\]\}/,
   );
 });
+
+test("auto-transcribe runs only while Audio is visible on the Clone page", () => {
+  assert.match(
+    readSrc("features/audio/hooks/use-clone-generation.ts"),
+    /if \(\s*!onClonePage \|\|\s*!reference \|\|/,
+  );
+  assert.match(
+    readSrc("features/audio/audio-page.tsx"),
+    /onClonePage: active && pageWorkflow === "clone",/,
+  );
+});

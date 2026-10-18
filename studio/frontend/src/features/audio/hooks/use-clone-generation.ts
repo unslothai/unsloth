@@ -143,6 +143,7 @@ export function useCloneGeneration({
   audioOptionValues,
   sttRepo,
   sttReady,
+  onClonePage,
 }: Pick<
   AudioHostState,
   | "status"
@@ -166,6 +167,8 @@ export function useCloneGeneration({
     sttRepo: string | null;
     /** The STT model is on disk, so transcribing never starts a download. */
     sttReady: boolean;
+    /** Audio is the visible tab and Clone its page: auto-transcribe runs only then. */
+    onClonePage: boolean;
   }) {
   const reference = useAudioCloneStore((state) => state.reference);
   const referenceText = useAudioCloneStore((state) => state.referenceText);
@@ -291,6 +294,7 @@ export function useCloneGeneration({
   const transcribeOnce = transcriber.transcribe;
   useEffect(() => {
     if (
+      !onClonePage ||
       !reference ||
       // A busy page would refuse the run; try again once it settles.
       busy !== null ||
@@ -308,6 +312,7 @@ export function useCloneGeneration({
     autoTranscribed.current = reference.id;
     void transcribeOnce(reference);
   }, [
+    onClonePage,
     reference,
     busy,
     transcriptField,
