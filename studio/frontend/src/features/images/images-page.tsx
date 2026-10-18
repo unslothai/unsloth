@@ -3352,8 +3352,7 @@ export function ImagesPage({
     setMaskImage(null);
     setMaskResetKey((k) => k + 1);
   }, []);
-  // Gallery menu "Edit image": the image becomes the Edit source, or Transform's when the loaded
-  // model cannot edit. Only the newest click may land, since the fetch can outlive a second one.
+  // Only the newest click applies: the gallery fetch can outlive a second one.
   const editRequest = useRef(0);
   const editGalleryImage = useCallback(
     async (image: GalleryImage) => {
