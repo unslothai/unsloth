@@ -2265,3 +2265,34 @@ def test_a_pinned_mask_ignores_an_overridden_projector_device(tmp_path, extras):
         if head in ("--mmproj-device", "-mmdev")
     ]
     assert values == ["none", "none"], cmd
+
+
+@pytest.mark.parametrize(
+    ("extras", "env_twin"),
+    [
+        (["--mmproj-offload", "--mmproj-device", "none", "-ot", ".*=CUDA1"], None),
+        (["--mmproj-offload", "--mmproj-device", "none", "--override-tensor=.*=CUDA1"], None),
+        (["--mmproj-offload", "--mmproj-device", "none"], ".*=CUDA1"),
+    ],
+    ids = ["ot", "ot_inline", "env"],
+)
+def test_a_pinned_mask_keeps_a_tensor_override_buffer_resolvable(
+    tmp_path, monkeypatch, extras, env_twin
+):
+    """The host projector lets the planner fit the model on GPU 0 alone, but a tensor
+    override still names CUDA1, which a mask of 0 fails with "unknown buffer type"."""
+    if env_twin is not None:
+        monkeypatch.setenv("LLAMA_ARG_OVERRIDE_TENSOR", env_twin)
+    backend, gguf = _backend(
+        tmp_path,
+        memory = [(0, 12_000, 24_000), (1, 12_000, 24_000)],
+        model_bytes = 8 * GIB,
+        mmproj_bytes = 6 * GIB,
+    )
+    backend._resolve_visible_physical_ids = lambda *_a, **_kw: [0, 1]
+    got = _launch(backend, gguf, n_ctx = 4096, extra_args = extras)
+    cmd, env = got["cmd"], got["env"]
+    visible = env.get("CUDA_VISIBLE_DEVICES")
+    assert visible in (None, "0,1"), visible
+    names = [env.get("LLAMA_ARG_OVERRIDE_TENSOR") or ""] + [str(a) for a in cmd]
+    assert any(n.endswith("=CUDA1") for n in names), cmd

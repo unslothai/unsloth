@@ -562,3 +562,52 @@ def test_load_model_fits_device_names_to_the_arch_gate_survivor_mask():
     assert "_widen_pin_ids_for_companion_devices(" in window
     assert "allowed_ids = _survivors" in window
     assert "_visibility_mask_is_unmappable()" in window
+
+
+@pytest.mark.parametrize(
+    ("argv", "env"),
+    [
+        pytest.param(["-ot", r"blk\.1\..*=CUDA1"], {}, id = "ot"),
+        pytest.param(["--override-tensor=exps=CUDA1,norm=CPU"], {}, id = "ot_inline_list"),
+        pytest.param(["-otd", ".*=CUDA1"], {}, id = "otd"),
+        pytest.param([], {"LLAMA_ARG_OVERRIDE_TENSOR": ".*=CUDA1"}, id = "env"),
+    ],
+)
+def test_a_tensor_override_buffer_off_the_pin_widens_the_mask(argv, env):
+    # parse_tensor_buffer_overrides throws "unknown buffer type" on a hidden CUDA1, and
+    # overrides accumulate, so each one is a placing site in the unpinned numbering.
+    cmd, child_env, pin, note = _widen_env([0], argv, env, inherited = [0, 1])
+    assert pin == [0, 1] and note
+    assert _value(cmd, "--device") == "CUDA0", "the main model stays on the pinned card"
+    values = [child_env.get("LLAMA_ARG_OVERRIDE_TENSOR", "")] + [
+        a.partition("=")[2] if a.startswith("--override-tensor=") else a for a in cmd
+    ]
+    assert any("=CUDA1" in v for v in values)
+    assert not any("=CUDA2" in v for v in values)
+
+
+def test_a_tensor_override_buffer_is_renumbered_to_the_pin():
+    cmd, pin, note = _widen([1], ["-ot", "exps=CUDA1,attn=CPU"], inherited = [0, 1])
+    assert pin == [1] and note
+    assert cmd == ["-ot", "exps=CUDA0,attn=CPU"]
+
+
+def test_tensor_override_buffers_that_are_not_cards_are_left_alone():
+    flags = ["-ot", "exps=CPU,x=CUDA_Host,y=CUDA0_Split"]
+    cmd, pin, note = _widen([1], flags, inherited = [0, 1])
+    assert (pin, note, cmd) == ([1], "", flags)
+
+
+def test_load_model_records_the_fit_mask_even_when_nothing_changed():
+    import inspect
+
+    src = inspect.getsource(llama_cpp.LlamaCppBackend.load_model)
+    at = src.index("_pin_ids, _companion_widen = _widen_pin_ids_for_companion_devices(")
+    window = src[at : at + 900]
+    rec = window.index("_companion_fit_mask = list(_pin_ids)")
+    assert rec < window.index("if _companion_widen:"), "recorded before the changed-only branch"
+
+
+@pytest.mark.parametrize(("value", "want"), [("3", 3), ("2 tokens", 2), ("32.0", 32), ("x", None)])
+def test_the_argv_draft_depth_is_read_like_stoi(value, want):
+    assert llama_cpp._extra_args_spec_draft_n_max(["--spec-draft-n-max", value]) == want
