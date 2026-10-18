@@ -635,8 +635,7 @@ def _window_trainer(model, world = 1):
 
 
 def test_nemotron_accumulation_window_matches_one_batch():
-    # Nemotron returns (sum_loss, num_mask_tokens) for the trainer to divide by the window's count, so
-    # micro-batches of 1 must give the summed loss and grads of the full batch under the same masks.
+    # Nemotron's forward returns (sum_loss, num_mask_tokens): one shared count per accumulation window.
     inputs, _ = _batch()
     rows = [{k: v[i : i + 1] for k, v in inputs.items()} for i in range(len(inputs["input_ids"]))]
     model, reference = _Bidirectional(), _Bidirectional()
