@@ -608,6 +608,15 @@ def reap_prune(
             "Unsloth: REAP does not support expert parallel models. Load the model on one device "
             "(or with `device_map`) to prune it."
         )
+    if isinstance(dataset, dict):
+        # load_dataset(...) without split= gives a DatasetDict, which iterates its split names.
+        if "train" in dataset or len(dataset) == 1:
+            dataset = dataset["train"] if "train" in dataset else next(iter(dataset.values()))
+        else:
+            raise ValueError(
+                f"Unsloth: REAP got a dataset with the splits {sorted(dataset)}; pass one of them, "
+                "e.g. `dataset['validation']`."
+            )
     if dataset is None or isinstance(dataset, str) or not _is_token_rows(dataset):
         if tokenizer is None:
             raise ValueError("Unsloth: REAP needs a tokenizer unless the dataset has `input_ids`.")
