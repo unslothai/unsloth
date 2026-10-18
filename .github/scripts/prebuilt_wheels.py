@@ -466,6 +466,78 @@ def gpu_matrix(include: list[dict]) -> list[dict]:
     return [cell for cell in include if cell["platform"] == "linux_x86_64"]
 
 
+# mamba-ssm without its CUDA extension. Since 2.3.2.post1 its setup.py builds selective_scan_cuda
+# only with MAMBA_KEEP_CUDA_BUILD=TRUE, and the Mamba-2 hybrids (Nemotron-H, Falcon-H1, Granite-4.0-H,
+# Bamba, Zamba2, Mamba2) never call it on transformers 5: they need mamba_ssm's Triton ops plus a
+# causal conv, which unsloth-zoo supplies in Triton. One py3-none-any wheel (about 224 KB) then serves
+# every torch, Python and OS, instead of a 230 to 594 MB CUDA wheel per cell. Built from the same pin
+# as the CUDA wheel and published beside it whenever a run builds mamba-ssm.
+PURE_PACKAGE = "mamba-ssm"
+PURE_SMOKE_TORCH = "2.13.0"
+# Import smoke only (no GPU on these runners). triton / triton-windows match that torch's Triton.
+PURE_SMOKE_TRITON = {"linux": "triton==3.7.1", "windows": "triton-windows==3.7.1.post27"}
+# What `import mamba_ssm` pulls in besides torch and Triton: mixer_seq_simple imports
+# huggingface_hub and transformers.generation. tilelang / quack-kernels (Mamba-3) are optional.
+PURE_SMOKE_DEPS = ("einops", "packaging", "huggingface_hub", "transformers")
+PURE_IMPORTS = (
+    "import mamba_ssm",
+    "from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined",
+    "from mamba_ssm.ops.triton.selective_state_update import selective_state_update",
+)
+
+
+def pure_wheel_name() -> str:
+    return f"{SPECS[PURE_PACKAGE]['dist']}-{SPECS[PURE_PACKAGE]['version']}-py3-none-any.whl"
+
+
+def pure_matrix(packages: str = "") -> list[dict]:
+    """The extension-free mamba-ssm build: one cell when the run builds mamba-ssm, else none."""
+    chosen = _resolve(packages, DEFAULT_PACKAGES, DEFAULT_PACKAGES, "package")
+    if PURE_PACKAGE not in chosen:
+        return []
+    spec = SPECS[PURE_PACKAGE]
+    return [
+        {
+            "package": PURE_PACKAGE,
+            "dist": spec["dist"],
+            "version": spec["version"],
+            "repo": spec["repo"],
+            "ref": spec["ref"],
+            "wheel_name": pure_wheel_name(),
+            "smoke_torch": PURE_SMOKE_TORCH,
+            "smoke_triton_linux": PURE_SMOKE_TRITON["linux"],
+            "smoke_triton_windows": PURE_SMOKE_TRITON["windows"],
+            "smoke_deps": " ".join(PURE_SMOKE_DEPS),
+            "smoke_imports": "; ".join(PURE_IMPORTS),
+        }
+    ]
+
+
+def check_pure_wheel(wheel: str) -> list[str]:
+    """Problems with the extension-free wheel: its exact name, no compiled code, a pure tag."""
+    problems = []
+    name = os.path.basename(wheel)
+    if name != pure_wheel_name():
+        problems.append(f"{name}: expected {pure_wheel_name()}")
+    with zipfile.ZipFile(wheel) as archive:
+        names = archive.namelist()
+        compiled = [n for n in names if n.endswith((".so", ".pyd", ".dll", ".dylib"))]
+        if compiled:
+            problems.append(f"{name}: carries compiled code: {', '.join(compiled)}")
+        dist = SPECS[PURE_PACKAGE]["dist"]
+        for required in (f"{dist}/__init__.py", f"{dist}/ops/triton/ssd_combined.py"):
+            if required not in names:
+                problems.append(f"{name}: {required} is missing")
+        wheel_meta = [n for n in names if n.endswith(".dist-info/WHEEL")]
+        if len(wheel_meta) != 1:
+            problems.append(f"{name}: expected one .dist-info/WHEEL, found {len(wheel_meta)}")
+        else:
+            meta = archive.read(wheel_meta[0]).decode("utf-8", "replace").splitlines()
+            if "Root-Is-Purelib: true" not in meta or "Tag: py3-none-any" not in meta:
+                problems.append(f"{name}: WHEEL metadata is not pure py3-none-any")
+    return problems
+
+
 def warm_matrix(include: list[dict]) -> list[dict]:
     """One warm job per (cell, shard), for the cells whose package is sharded."""
     return [
@@ -570,13 +642,20 @@ def render_notes(entries: list[tuple[str, str]], tag: str, repo: str) -> str:
     torch minor or one platform still describes everything attached.
     """
     parsed = [row for row in (parse_wheel_name(name) for _, name in entries) if row is not None]
+    pure = any(name == pure_wheel_name() for _, name in entries)
+    tail = (
+        f" Also {PURE_PACKAGE} {SPECS[PURE_PACKAGE]['version']} without its CUDA extension "
+        f"({pure_wheel_name()}), for Mamba-2 models whose causal conv runs on Triton.\n"
+        if pure
+        else "\n"
+    )
     if not parsed:
-        return "No wheels are attached to this release yet.\n"
+        return tail.lstrip() if pure else "No wheels are attached to this release yet.\n"
     platforms = [tag for tag in PLATFORMS if any(row["platform"] == tag for row in parsed)]
     if len(platforms) == 1:
         return (
             f"Prebuilt {PLATFORM_NAMES[platforms[0]]} CUDA {CUDA_TAG} wheels for "
-            f"{_packages(parsed)}, built for {_coverage(parsed)}.\n"
+            f"{_packages(parsed)}, built for {_coverage(parsed)}.{tail}"
         )
     # Per platform: separate runs need not cover the same packages or torch minors.
     per_platform = " ".join(
@@ -584,7 +663,7 @@ def render_notes(entries: list[tuple[str, str]], tag: str, repo: str) -> str:
         for platform in platforms
         for rows in [[row for row in parsed if row["platform"] == platform]]
     )
-    return f"Prebuilt CUDA {CUDA_TAG} wheels. {per_platform}\n"
+    return f"Prebuilt CUDA {CUDA_TAG} wheels. {per_platform}{tail}"
 
 
 def render_sums(entries: list[tuple[str, str]]) -> str:
@@ -619,6 +698,7 @@ def _cmd_matrix(args: argparse.Namespace) -> int:
     matrix = json.dumps({"include": include}, separators = (",", ":"))
     warm = warm_matrix(include)
     gpu = gpu_matrix(include)
+    pure = pure_matrix(os.environ.get("UW_PACKAGES", ""))
     print(matrix)
 
     # Writing the step output here rather than echoing it in YAML keeps the JSON -- which is
@@ -635,11 +715,14 @@ def _cmd_matrix(args: argparse.Namespace) -> int:
                 gpu_json = json.dumps({"include": gpu}, separators = (",", ":"))
                 handle.write(f"gpu_matrix={gpu_json}\n")
                 handle.write(f"gpu_count={len(gpu)}\n")
+                pure_json = json.dumps({"include": pure}, separators = (",", ":"))
+                handle.write(f"pure_matrix={pure_json}\n")
+                handle.write(f"pure_count={len(pure)}\n")
         summary = os.environ.get("GITHUB_STEP_SUMMARY")
         if summary:
-            listing = "\n".join(f"- `{cell['wheel_name']}`" for cell in include)
+            listing = "\n".join(f"- `{cell['wheel_name']}`" for cell in include + pure)
             with open(summary, "a", encoding = "utf-8") as handle:
-                handle.write(f"### Build plan\n\n{len(include)} cells:\n\n{listing}\n")
+                handle.write(f"### Build plan\n\n{len(include) + len(pure)} cells:\n\n{listing}\n")
     return 0
 
 
@@ -787,6 +870,15 @@ def _cmd_targets_gate(args: argparse.Namespace) -> int:
     return 1 if problems else 0
 
 
+def _cmd_pure_gate(args: argparse.Namespace) -> int:
+    problems = check_pure_wheel(args.wheel)
+    for problem in problems:
+        print(f"::error::{problem}")
+    if not problems:
+        print(f"{os.path.basename(args.wheel)}: pure py3-none-any, no compiled code")
+    return 1 if problems else 0
+
+
 def _cmd_notes(args: argparse.Namespace) -> int:
     sys.stdout.write(render_notes(_read_digest_lines(), tag = args.tag, repo = args.repo))
     return 0
@@ -805,8 +897,8 @@ def main(argv: list[str] | None = None) -> int:
     matrix_parser.add_argument(
         "--github",
         action = "store_true",
-        help = "also append matrix/count, warm_matrix/warm_count and gpu_matrix/gpu_count to "
-        "$GITHUB_OUTPUT and a listing to $GITHUB_STEP_SUMMARY",
+        help = "also append matrix/count, warm_matrix/warm_count, gpu_matrix/gpu_count and "
+        "pure_matrix/pure_count to $GITHUB_OUTPUT and a listing to $GITHUB_STEP_SUMMARY",
     )
     matrix_parser.set_defaults(func = _cmd_matrix)
 
@@ -836,6 +928,12 @@ def main(argv: list[str] | None = None) -> int:
     targets_parser.add_argument("--archs", required = True)
     targets_parser.add_argument("wheel")
     targets_parser.set_defaults(func = _cmd_targets_gate)
+
+    pure_parser = sub.add_parser(
+        "pure-gate", help = "fail unless the wheel is the extension-free mamba-ssm build"
+    )
+    pure_parser.add_argument("wheel")
+    pure_parser.set_defaults(func = _cmd_pure_gate)
 
     args = parser.parse_args(argv)
     return args.func(args)
