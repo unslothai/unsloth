@@ -96,7 +96,10 @@ def _unloaded(monkeypatch, before, after_routes, args):
 def test_off_is_exact_and_matches_the_load(monkeypatch, args, after_serving, after_image):
     before = _world("off", [QWEN, KEPT], image = FLUX_GGUF)
     plan = _plan(monkeypatch, before, args)
-    assert plan["multi_model_mode"] == "off" and plan["would_evict_exact"] is True
+    # Unloading the image model is a bound: the load reaches the GPU only on a GPU host.
+    assert plan["multi_model_mode"] == "off" and plan["would_evict_exact"] is (
+        after_image is not None
+    )
     assert plan["would_refuse"] is False
     after = _world("off", after_serving, image = after_image)
     loaded = []
@@ -355,13 +358,16 @@ def test_a_local_gguf_file_may_be_a_vision_model_on_the_gpu(monkeypatch):
     assert plan["would_evict_exact"] is False
 
 
-def test_unloading_another_kind_is_exact_only_with_a_pinned_device(monkeypatch):
-    # Without device, a TTS may run on the CPU (UNSLOTH_AUDIO_DEVICE=cpu) and leave the image model.
+def test_unloading_another_kind_is_always_an_upper_bound(monkeypatch):
+    # A TTS may run on the CPU (UNSLOTH_AUDIO_DEVICE=cpu, or no GPU at all) and leave the image model.
     world = _world("off", [QWEN], image = FLUX_GGUF)
-    unpinned = _plan(monkeypatch, world, {"model": OUTETTS, "kind": "tts"})
-    pinned = _plan(monkeypatch, world, {"model": OUTETTS, "kind": "tts", "device": "gpu"})
-    assert _names(unpinned["would_evict"]) == _names(pinned["would_evict"])
-    assert (unpinned["would_evict_exact"], pinned["would_evict_exact"]) == (False, True)
+    for args in (
+        {"model": OUTETTS, "kind": "tts"},
+        {"model": OUTETTS, "kind": "tts", "device": "gpu"},
+    ):
+        plan = _plan(monkeypatch, world, args)
+        assert _names(plan["would_evict"]) == {("llm", QWEN), ("image", FLUX_GGUF)}
+        assert plan["would_evict_exact"] is False
 
 
 def test_a_speech_to_text_load_may_release_the_other_engines_model(monkeypatch):
@@ -427,7 +433,7 @@ def test_gpu_layers_places_a_gguf_plan_like_device(monkeypatch):
     assert off_gpu["est_gpu_bytes"] is None and on_gpu_estimate(monkeypatch, world) == 1234
     assert (
         _names(on_gpu["would_evict"]) == {("image", FLUX_GGUF)}
-        and on_gpu["would_evict_exact"] is True
+        and on_gpu["would_evict_exact"] is False
     )
 
 

@@ -490,11 +490,11 @@ async def plan_load(
         has_vision = listing is None or as_dict(listing).get("has_vision") is True,
         variant = variant,
     )
-    # Unloading another kind's model depends on the load reaching the GPU, which only a pinned
-    # device says: Unsloth Studio may run an image, video or audio load (or anything, without a GPU)
-    # on the CPU, where it leaves the other slots alone.
+    # Unloading another kind's model depends on the load reaching the GPU, which no setting
+    # guarantees: Unsloth Studio may run a load on the CPU (always, without a GPU) and leave the
+    # other slots alone, so such a prediction is an upper bound.
     slot_kind = "llm" if kind in CHAT_KINDS else kind
-    unpinned = device not in ("cpu", "gpu") and any(s.kind != slot_kind for s in would_evict)
+    unpinned = any(s.kind != slot_kind for s in would_evict)
     unlisted = kind in CHAT_KINDS and listing is None
     reads = (image, video, stt) if kind == "stt" else (status, image, video)
     # A chat model still loading is not a resident yet, but may be one by the time this load runs.
