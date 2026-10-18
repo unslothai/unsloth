@@ -578,13 +578,22 @@ def test_owner_account_and_restore_are_tracked_per_owner(arb_log):
 
 def test_always_evicts_a_media_claim_that_holds_nothing_unless_it_is_loading(arb_log, monkeypatch):
     # An image load that failed in the background keeps its claim yet holds no model.
-    loading = {"now": False}
-    monkeypatch.setattr(arb, "_media_loading", lambda owner: loading["now"])
+    probe = {"loading": False, "broken": False}
+
+    def loading(owner):
+        if probe["broken"]:
+            raise RuntimeError("status unreadable")
+        return probe["loading"]
+
+    monkeypatch.setattr(arb, "_media_status", lambda owner: None)
+    monkeypatch.setattr(arb, "_media_loading", loading)
     arb.acquire_for(arb.DIFFUSION)
-    loading["now"] = True
-    with pytest.raises(arb.MultiModelAlwaysRefusal):
-        arb.acquire_for(arb.CHAT, policy = "always")
-    loading["now"] = False
+    # Loading, or unreadable: Always keeps it.
+    for key in ("loading", "broken"):
+        probe[key] = True
+        with pytest.raises(arb.MultiModelAlwaysRefusal):
+            arb.acquire_for(arb.CHAT, policy = "always")
+        probe[key] = False
     arb_log.clear()
     arb.acquire_for(arb.CHAT, policy = "always")
     assert "evict-diffusion" in arb_log and arb.residents() == {arb.CHAT: None}
@@ -640,3 +649,11 @@ def test_a_media_load_registered_meanwhile_is_not_replaced_under_always(arb_log,
     assert begun == []
     assert arb.begin_media_load(arb.DIFFUSION, "always", ("org/First",), begin) == "started"
     assert arb.guarded_media_begin(arb.DIFFUSION, "fit", ("org/Second",), begin) is begin
+
+    def unreadable(owner):
+        raise RuntimeError("status unreadable")
+
+    monkeypatch.setattr(arb, "_media_status", unreadable)
+    with pytest.raises(arb.MultiModelAlwaysRefusal):
+        arb.refuse_replacing_media(arb.DIFFUSION, "always", ("org/First",))
+    assert arb.refuse_replacing_media(arb.DIFFUSION, "off", ("org/First",)) == []
