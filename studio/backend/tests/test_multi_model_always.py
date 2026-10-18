@@ -354,6 +354,42 @@ def test_an_ordinary_switch_is_listed_in_evicted_slots_but_not_in_the_toast_list
     assert same.evicted_slots == []
 
 
+def test_a_vllm_load_under_always_refuses_while_a_kept_slot_is_stuck(backends, monkeypatch):
+    _mode(monkeypatch, "always")
+    stuck = object()
+    monkeypatch.setattr(model_slots, "slots", [])
+    monkeypatch.setattr(model_slots, "stuck", [stuck])
+    monkeypatch.setattr(
+        inf,
+        "_kept_slot_reports",
+        lambda slot: [{"kind": "chat", "model": "org/Stuck", "account": None}],
+    )
+    with pytest.raises(MultiModelAlwaysRefusal) as excinfo:
+        asyncio.run(
+            inf._guard_primary_replacement(LoadRequest(model_path = "org/C", engine = "vllm"), ())
+        )
+    assert excinfo.value.model == "org/Stuck"
+
+
+def test_an_engine_switch_under_always_rechecks_before_it_unloads(monkeypatch):
+    import core.inference.diffusion_engine_router as router
+
+    unloaded = []
+    old = types.SimpleNamespace(unload = lambda: unloaded.append("old"))
+    monkeypatch.setattr(router, "_active_engine_name", router.ENGINE_DIFFUSERS)
+    monkeypatch.setattr(router, "get_active_diffusion_engine", lambda: old)
+
+    def landed_meanwhile():
+        raise gpu_arbiter.refusal_for([{"kind": "image", "model": "org/Flux"}], "image")
+
+    with pytest.raises(MultiModelAlwaysRefusal):
+        inf._activate_checked(
+            landed_meanwhile, lambda: router._activate(router.ENGINE_SD_CPP, None)
+        )
+    assert unloaded == [] and router._active_engine_name == router.ENGINE_DIFFUSERS
+    assert router.before_engine_switch.get() is None
+
+
 def _loaded_media(monkeypatch, owner, kind, repo):
     monkeypatch.setattr(
         gpu_arbiter,

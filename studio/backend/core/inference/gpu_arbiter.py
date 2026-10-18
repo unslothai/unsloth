@@ -212,6 +212,16 @@ def _media_loading(owner: str) -> bool:
     return bool(_media_backend(owner).loading_repo_ids())
 
 
+def _chat_occupied() -> bool:
+    """Whether a chat load is in flight or a kept slot failed to stop; unreadable counts as yes."""
+    try:
+        from core.inference import model_slots
+        from core.inference.llama_cpp import chat_load_active
+        return chat_load_active() or model_slots.any_loading() or bool(model_slots.stuck)
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def _media_occupied(owner: str) -> bool:
     """Whether an image or video model is loaded or loading. One that cannot be read counts as
     loaded, so Always never evicts it blind."""
@@ -546,8 +556,10 @@ def acquire_for(
             if policy == "always" and owner in _KEPT_UNDER_ALWAYS:
                 kept = [name for name in others if name in _KEPT_UNDER_ALWAYS]
                 slots = [slot for name in kept for slot in resident_slots(name)]
-                # A media claim whose load failed holds nothing: evicting it unloads nothing.
-                if slots or any(name == CHAT or _media_occupied(name) for name in kept):
+                # A claim whose load failed holds nothing: evicting it unloads nothing.
+                if slots or any(
+                    _chat_occupied() if name == CHAT else _media_occupied(name) for name in kept
+                ):
                     raise refusal_for(slots, KIND_LABELS[kept[0]])
             # Never evict an account mid-generation; the caller retries after its stream ends.
             busy = other_accounts_active(acting)
