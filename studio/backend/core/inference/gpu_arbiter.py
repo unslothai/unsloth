@@ -213,11 +213,17 @@ def _media_loading(owner: str) -> bool:
 
 
 def _chat_occupied() -> bool:
-    """Whether a chat load is in flight or a kept slot failed to stop; unreadable counts as yes."""
+    """Whether a chat load is in flight, a kept slot failed to stop, or the primary cannot be read;
+    unreadable counts as yes, so Always never evicts it blind."""
     try:
         from core.inference import model_slots
         from core.inference.llama_cpp import chat_load_active
-        return chat_load_active() or model_slots.any_loading() or bool(model_slots.stuck)
+        from routes.inference import _primary_chat_reports
+
+        if chat_load_active() or model_slots.any_loading() or model_slots.stuck:
+            return True
+        model_slots.in_slot(None, _primary_chat_reports)
+        return False
     except Exception:  # noqa: BLE001
         return True
 
