@@ -669,6 +669,8 @@ def test_probe_hides_stateful_decoders_core_refuses():
 def test_stateful_model_types_match_transformers():
     # Each listed type really has decoder layers taking prev_* state, and no other type does.
     pytest.importorskip("transformers")
+    # The modeling modules import torch (absent on the CPU-only CI runners).
+    pytest.importorskip("torch")
     import importlib
     import inspect
 
