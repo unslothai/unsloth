@@ -210,7 +210,11 @@ export const BUDGET = {
   // by that growth.
   // DeepInfra as a connection adds ~75 B raw / ~30 B transfer (capability row, logo mapping, vision gate and
   // service-tier helper, all in startup-loaded tables). Raised by that growth.
-  transferBytes: 2_047_579,
+  // The audio.cpp v0.9.2 picker rows (#14073) add 253 B raw / 59 B transfer to the eager audio catalog
+  // table (one machine and build, chunk count unchanged at 95). Raised by that.
+  // Both raises land on the same table, so each limit keeps the LARGER of the two measurements rather than
+  // either PR's own: transfer from #14073 (2,047,608 B), raw from the DeepInfra raise (6,806,162 B).
+  transferBytes: 2_047_608,
   rawBytes: 6_806_162,
 };
 
