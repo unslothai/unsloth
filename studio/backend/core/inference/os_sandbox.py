@@ -232,6 +232,9 @@ WORKDIR_SCAN_SECONDS = 5.0
 CACHE_SCAN_ENTRIES = 50_000
 CACHE_SCAN_SECONDS = 3.0
 _SCAN_JOIN_GRACE_SECONDS = 0.5
+_overran_workdirs: set[str] = set()
+_overrun_recheck_after: dict[str, float] = {}
+OVERRUN_RECHECK_SECONDS = 60.0
 
 TOOL_TEMP_DIRNAME = "unsloth-tmp"
 TOOL_TEMP_MODE = 0o700
@@ -499,6 +502,7 @@ def clear_stale_tool_ipc(workdir: str, deadline: "float | None" = None) -> tuple
 
 def scan_workdir_for_host_channels(workdir: str) -> tuple[str, ...]:
     """Scan the writable workdir: a hazard fails the call, an overrun budget is recorded, not refused."""
+    key = os.path.realpath(workdir)
     try:
         hazard = _hazard_within_wall_clock(
             workdir,
@@ -508,10 +512,38 @@ def scan_workdir_for_host_channels(workdir: str) -> tuple[str, ...]:
         )
     except _ScanBudgetExceeded as exc:
         logger.warning("The session workdir %s: %s", workdir, exc)
+        _overran_workdirs.add(key)
         return (WORKDIR_SCAN_INCOMPLETE,)
+    _overran_workdirs.discard(key)
     if hazard is not None:
         raise WorkdirUnsafeError(f"the session workdir {hazard}")
     return ()
+
+
+def workdir_scan_overran(workdir: str) -> bool:
+    return bool(_overran_workdirs) and os.path.realpath(workdir) in _overran_workdirs
+
+
+def recheck_overran_workdir(workdir: str) -> None:
+    """For a folder launched without a scan: forget the overrun once it scans clean, at most once a minute."""
+    if not workdir_scan_overran(workdir):
+        return
+    key = os.path.realpath(workdir)
+    now = time.monotonic()
+    if now < _overrun_recheck_after.get(key, 0.0):
+        return
+    _overrun_recheck_after[key] = now + OVERRUN_RECHECK_SECONDS
+    try:
+        hazard = _hazard_within_wall_clock(
+            workdir,
+            WORKDIR_SCAN_ENTRIES,
+            WORKDIR_SCAN_SECONDS,
+            prepare = lambda deadline: clear_stale_tool_ipc(workdir, deadline),
+        )
+    except _ScanBudgetExceeded:
+        return
+    if hazard is None:
+        _overran_workdirs.discard(key)
 
 
 def cache_share_hazard(path: str, witness: "list[tuple] | None" = None) -> str | None:
@@ -1236,8 +1268,7 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             prepared.cleanup()
             raise WorkdirUnsafeError(
                 "the session workdir is too large to check for host channels, "
-                "and `required` cannot promise a boundary it did not verify. "
-                "Start a new chat, or use `auto` to run with software safeguards."
+                "so this call needs the user's approval. Call the tool again to ask for it."
             )
     except (WorkdirUnsafeError, SandboxBuildError):
         raise  # can be tool-induced; says nothing about the backend itself
