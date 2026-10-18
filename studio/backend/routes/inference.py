@@ -4087,6 +4087,7 @@ from core.inference.providers import (
 )
 from core.inference.external_provider import (
     ExternalProviderClient,
+    llama_cpp_template_controls,
     _is_kimi_k3,
     _is_openai_family_cloud,
     compacts_server_side,
@@ -7063,8 +7064,8 @@ def _audio_input_system_prompt(system_prompt: str, request: Any) -> str:
 
 # Ollama applies the Modelfile SYSTEM only when `req.Messages[0].Role != "system"` (its
 # server/routes.go ChatHandler, which /v1/chat/completions also routes into), so only a turn at
-# index 0 displaces it.
-_MODELFILE_SYSTEM_PROVIDERS = frozenset({"ollama"})
+# index 0 displaces it. llama-server, vLLM and Lemonade drop the template's default the same way.
+_SERVER_SYSTEM_PROMPT_PROVIDERS = frozenset({"ollama", "llama_cpp", "vllm", "lemonade"})
 
 
 def _prepend_current_date_to_messages(
@@ -7073,13 +7074,18 @@ def _prepend_current_date_to_messages(
     *,
     include_api_key: bool = False,
     provider_type: str | None = None,
+    served_template: str | None = None,
+    tools: bool = False,
+    controls: tuple = (),
 ) -> list[dict]:
     """Apply the date to an already-built message list for a provider Studio proxies to.
 
     The local path prefixes ``system_prompt`` before the messages exist; an external payload is
     assembled first, so the date goes onto its leading system turn instead. When there is no
-    such turn one is synthesized, except for ``_MODELFILE_SYSTEM_PROVIDERS``, where it is
-    dropped: the caller's silence is what lets the server's own prompt apply.
+    such turn one is synthesized, except for ``_SERVER_SYSTEM_PROMPT_PROVIDERS``, where it is
+    dropped: the caller's silence is what lets the server's own prompt apply. When the server's
+    template is known (``served_template``), the turn is synthesized as the local path does,
+    carrying the template's default along.
     """
     if _date_gate_blocks(request, include_api_key):
         return messages
@@ -7118,11 +7124,29 @@ def _prepend_current_date_to_messages(
                 return copied
             msg["content"] = [{"type": "text", "text": date_line}, *copied_parts]
             return copied
-    if provider_type in _MODELFILE_SYSTEM_PROVIDERS:
-        # Synthesizing here is what costs an Ollama caller the Modelfile SYSTEM (#10436). Do not
-        # claim this exemption when something later will synthesize a system turn regardless.
-        return messages
+    if provider_type in _SERVER_SYSTEM_PROMPT_PROVIDERS:
+        if served_template is None:
+            # Synthesizing here is what costs the caller the server's own system prompt (#10436). Do
+            # not claim this exemption when something later will synthesize a system turn regardless.
+            return messages
+        from datetime import date
+
+        today = date.fromisoformat(date_line[len(CURRENT_DATE_PROMPT_PREFIX) : -1])
+        takes_turn, default = template_system_turn(served_template, today, tools, controls)
+        if not takes_turn or default is None:
+            return messages
+        if default:
+            date_line = f"{date_line}\n\n{default}"
     return [{"role": "system", "content": date_line}, *copied]
+
+
+def _date_a_fitted_system_turn(
+    messages: list[dict], request: Any, include_api_key: bool
+) -> list[dict]:
+    # a checkpoint block the fit prepended displaces the server's prompt anyway, so it takes the date.
+    if not any(m.get("role") in ("system", "developer") for m in messages):
+        return messages
+    return _prepend_current_date_to_messages(messages, request, include_api_key = include_api_key)
 
 
 # Strip leaked tool-call markup: every shared-parser format plus the leak shapes
@@ -29724,7 +29748,7 @@ async def _proxy_to_external_provider(
         _reject_confirm_gate_without_channel(
             payload, _ui_events, monitor_id, _catalog_names(external_studio_tools)
         )
-    # Built before the date, because whether a nudge exists decides whether the Modelfile
+    # Built before the date, because whether a nudge exists decides whether the server prompt
     # exemption is worth claiming: _append_to_system_message below displaces that prompt anyway.
     # Full access disables the sandbox, so the schemas say so; the general nudge stays off this path.
     _external_nudge = ""
@@ -29735,11 +29759,25 @@ async def _proxy_to_external_provider(
             full_access = bool(payload.bypass_permissions),
             full_access_only = True,
         )
+    _served_template = None
+    if (
+        provider_type == "llama_cpp"
+        and not _external_nudge
+        and not _date_gate_blocks(request, run_studio_tool_loop)
+        and current_date_prompt_line(request = request)
+        and not any(m.get("role") in ("system", "developer") for m in chat_messages)
+    ):
+        _served_template = await client.served_chat_template(model)
     chat_messages = _prepend_current_date_to_messages(
         chat_messages,
         request,
         include_api_key = run_studio_tool_loop,
         provider_type = None if _external_nudge else provider_type,
+        served_template = _served_template,
+        tools = bool(external_studio_tools or payload.tools),
+        controls = llama_cpp_template_controls(
+            payload.enable_thinking, payload.reasoning_effort, payload.preserve_thinking
+        ),
     )
     if _external_nudge:
         chat_messages = _append_to_system_message(chat_messages, _external_nudge)
@@ -29777,6 +29815,7 @@ async def _proxy_to_external_provider(
                 payload,
                 tools = _external_fit_tools,
             )
+            fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
             if truncation and truncation.get("dropped_messages"):
                 _external_truncation = truncation
             truncation_line = None
@@ -29805,6 +29844,7 @@ async def _proxy_to_external_provider(
             payload,
             tools = _external_fit_tools,
         )
+        chat_messages = _date_a_fitted_system_turn(chat_messages, request, run_studio_tool_loop)
 
     cancel_event = threading.Event()
     cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
