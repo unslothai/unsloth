@@ -210,3 +210,32 @@ def test_a_checkpoint_is_not_placed_on_the_cpu(monkeypatch):
     assert result["isError"] is True
     assert "device='cpu' needs a GGUF model" in result["content"][0]["text"]
     assert bodies(studio, "/api/inference/load") == []
+
+
+def test_a_load_that_outlasts_wait_s_is_named_in_its_job_result():
+    from studio_mcp import loading
+    from studio_mcp.outputs import LoadResult
+
+    ref = cache_reference(f"{OUT}/qwen-lora")
+    trained = trained_models.TrainedModel(
+        name = "qwen-lora", ref = ref, is_lora = True, known = {ref: "qwen-lora"}
+    )
+    caller = make_caller()
+
+    async def go():
+        gate = asyncio.Event()
+
+        async def run(_job):
+            await gate.wait()
+            return LoadResult(kind = "llm", model = ref, evicted = [ref])
+
+        job = loading.LOADS.start(
+            loading.LoadJob(job_id = "j-rename", account_id = caller.account_id), run
+        )
+        trained_models.rename_job(caller, "j-rename", trained)
+        gate.set()
+        await asyncio.wait({job.task})
+        return job.result
+
+    result = asyncio.run(go())
+    assert (result.model, result.evicted) == ("qwen-lora", ["qwen-lora"])

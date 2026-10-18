@@ -202,10 +202,19 @@ async def _upload_images(
         raise ToolError(f"captions has {len(captions)} entries for {len(images)} images.")
     if any(len(caption) > MAX_CAPTION_CHARS for caption in captions or []):
         raise ToolError(f"A caption is longer than {MAX_CAPTION_CHARS} characters.")
+    from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
+
     # Fresh stems each call: a same-named file in a later upload would replace the earlier one.
-    batch, files = secrets.token_hex(4), []
+    batch, files, total = secrets.token_hex(4), [], 0
     for i, image in enumerate(images):
         data, mime = await resolve_image(caller, image)
+        # The route caps the whole upload; stop before holding more than it takes.
+        total += len(data)
+        if total > get_upload_limit_bytes():
+            raise ToolError(
+                f"These images pass Unsloth Studio's {get_upload_limit_label()} upload limit by image {i + 1}. "
+                "Send them in several upload_images calls with the same name; each one adds to the dataset."
+            )
         stem = f"mcp-{batch}-{i:03d}"
         files.append(("files", (stem + IMAGE_EXTS[mime], data, mime)))
         if captions and captions[i].strip():

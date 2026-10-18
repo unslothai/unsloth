@@ -92,3 +92,11 @@ def test_a_refused_image_upload_never_reaches_a_route(monkeypatch, args, message
     assert result["isError"] is True
     assert message is None or message in result["content"][0]["text"]
     assert studio.state.calls == []
+
+
+def test_images_past_the_upload_limit_are_refused_before_any_upload(monkeypatch):
+    monkeypatch.setattr("utils.upload_limits.get_upload_limit_bytes", lambda: len(PNG) + 1)
+    result, studio = _upload(monkeypatch, images = [PNG_URL, PNG_URL])
+    assert result["isError"] is True
+    assert "upload limit by image 2" in result["content"][0]["text"]
+    assert studio.state.calls == []

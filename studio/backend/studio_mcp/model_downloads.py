@@ -15,6 +15,7 @@ from fastmcp import Context
 from fastmcp.exceptions import ToolError
 
 from studio_mcp import loading
+from studio_mcp import placement as place
 from studio_mcp.caller import Caller
 from studio_mcp.errors import raise_for_route, tool_error
 from studio_mcp.forward import forward
@@ -123,7 +124,12 @@ async def _default_variant(caller: Caller, model: str) -> str:
 
 
 async def _diffusion_parts(
-    caller: Caller, kind: str, model: str, variant: Optional[str], token: Optional[str]
+    caller: Caller,
+    kind: str,
+    model: str,
+    variant: Optional[str],
+    token: Optional[str],
+    knobs: dict[str, str],
 ) -> list[tuple[str, list[str]]]:
     # The same plan body load_media sends, so the files are the ones the load reads.
     body: dict[str, Any] = {"model_path": model}
@@ -134,9 +140,7 @@ async def _diffusion_parts(
         if entry:
             body["gguf_filename"] = entry["filename"]
             body["model_kind"] = "gguf"
-    plan = as_dict(
-        await route_json("POST", loading.MEDIA_ROUTES[kind]["plan"], caller = caller, json_body = body)
-    )
+    plan = as_dict(await place.post_plan(caller, loading.MEDIA_ROUTES[kind]["plan"], body, knobs))
     if opt_text(plan.get("incompatible_reason")):
         raise tool_error(plan["incompatible_reason"])
     if plan.get("plan_failed"):
@@ -160,6 +164,7 @@ async def start(
     kind: str,
     variant: Optional[str],
     hf_token: Optional[str],
+    knobs: Optional[dict[str, str]] = None,
 ) -> DownloadRef:
     if hf_token:
         caller = dataclasses.replace(caller, hf_token = hf_token)
@@ -175,7 +180,7 @@ async def start(
 
     model, variant = _split(model, variant)
     if kind in loading.MEDIA_ROUTES:
-        staged = await _diffusion_parts(caller, kind, model, variant, caller.hf_token)
+        staged = await _diffusion_parts(caller, kind, model, variant, caller.hf_token, knobs or {})
         bodies = [
             {"repo_id": repo, "scope_id": "diffusion", "files": files, "transport_mode": "auto"}
             for repo, files in staged

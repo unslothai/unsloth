@@ -40,6 +40,24 @@ class TrainedModel:
         )
 
 
+def rename_job(caller: Caller, job_id: Optional[str], trained: TrainedModel) -> None:
+    """Name a load that outlasted wait_s in its job result too. The callback is added before any get_job waiter, so it runs first."""
+    from studio_mcp import loading
+
+    job = loading.LOADS.jobs.get(f"{caller.account_id}:{job_id}") if job_id else None
+    if job is None:
+        return
+
+    def rename(_task: object = None) -> None:
+        if isinstance(job.result, LoadResult):
+            job.result = trained.renamed(job.result)
+
+    if job.task is None or job.task.done():
+        rename()
+    else:
+        job.task.add_done_callback(rename)
+
+
 def _known(rows: list[tuple[str, str]]) -> dict[str, str]:
     known = {}
     for path, name in rows:

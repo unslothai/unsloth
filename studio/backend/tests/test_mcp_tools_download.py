@@ -255,6 +255,13 @@ def test_status_of_a_replaced_run_names_the_newer_one():
     assert run(studio, model_downloads.status, "org/repo::Q8_0#8").status == "running"
 
 
+def test_image_options_go_into_the_staged_plan():
+    plan = "/api/inference/images/download-plan"
+    studio = fake_studio({("POST", plan): PLAN, ("POST", START): STARTED})
+    start(studio, model = "org/FLUX", kind = "image", knobs = {"text_encoder_quant": "fp8"})
+    assert bodies(studio, plan)[0]["text_encoder_quant"] == "fp8"
+
+
 def test_a_failed_part_stops_the_parts_this_call_started():
     refused = JSONResponse({"detail": "scope_file_mismatch"}, status_code = 409)
     studio = fake_studio(

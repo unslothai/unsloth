@@ -311,7 +311,10 @@ async def load_model(
         **where,
     )
     # The route echoes the minted ref; the agent gets the name it asked for.
-    return trained.renamed(result) if trained else result
+    if not trained:
+        return result
+    trained_models.rename_job(caller, result.job_id, trained)
+    return trained.renamed(result)
 
 
 async def unload_model(kind: UnloadKind = "llm", model: Optional[str] = None) -> ToolResult:
@@ -383,6 +386,11 @@ async def download_model(
     kind: ModelKind = "llm",
     variant: Optional[str] = None,
     hf_token: Optional[str] = None,
+    memory_mode: MemoryMode = None,
+    speed_mode: SpeedMode = None,
+    transformer_quant: TransformerQuant = None,
+    text_encoder_quant: TextEncoderQuant = None,
+    h3_task: H3Task = None,
     ctx: Optional[Context] = None,
 ) -> DownloadRef:
     """Download a model ahead of time without loading it, so a later load_model starts sooner.
@@ -391,9 +399,23 @@ async def download_model(
     Follow it with get_job(kind="download", id=<the returned id>) and stop it with cancel(kind="model_download", id=<the same id>).
     A speech-to-text download finishes before this returns, so it has no id.
     load_model waits for a running download of the same model.
-    ``hf_token`` is for gated repos."""
+    ``hf_token`` is for gated repos. For image and video, pass the options the later load_model will take: they pick the files it reads, such as a pre-cast text encoder."""
+    knobs = placement.media_knobs(
+        kind,
+        memory_mode = memory_mode,
+        speed_mode = speed_mode,
+        transformer_quant = transformer_quant,
+        text_encoder_quant = text_encoder_quant,
+        h3_task = h3_task,
+    )
     return await model_downloads.start(
-        current_caller(), ctx, model = model, kind = kind, variant = variant, hf_token = hf_token
+        current_caller(),
+        ctx,
+        model = model,
+        kind = kind,
+        variant = variant,
+        hf_token = hf_token,
+        knobs = knobs,
     )
 
 
