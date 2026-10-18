@@ -194,6 +194,26 @@ def test_always_refuses_a_managed_account_with_the_plain_copy(env):
     _nothing_unloaded(env)
 
 
+def test_always_names_only_media_on_the_short_gpu(env, monkeypatch):
+    # The image on GPU 1 isn't in the way of a chat load short on GPU 0; the video model there is.
+    vid = {"kind": "video", "model": "org/Vid"}
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
+    monkeypatch.setattr(
+        gpu_arbiter,
+        "_residents",
+        {gpu_arbiter.DIFFUSION: frozenset({1}), gpu_arbiter.VIDEO: frozenset({0})},
+    )
+    monkeypatch.setattr(
+        gpu_arbiter,
+        "resident_slots",
+        lambda o: {gpu_arbiter.DIFFUSION: [dict(IMG)], gpu_arbiter.VIDEO: [dict(vid)]}.get(o, []),
+    )
+    env.policy, env.errors = "always", [_short()]
+    message = _refused(BOB)
+    assert "org/Vid" in message and "org/Img" not in message
+    _nothing_unloaded(env)
+
+
 def _image_resident(monkeypatch):
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.DIFFUSION)
     monkeypatch.setattr(gpu_arbiter, "_residents", {gpu_arbiter.DIFFUSION: frozenset({0})})

@@ -200,6 +200,32 @@ def test_chat_load_on_another_gpu_keeps_an_unpriced_image_model(cores, policy):
     assert arb.residents() == {arb.DIFFUSION: frozenset({1}), arb.CHAT: frozenset({0})}
 
 
+@pytest.mark.parametrize("policy", ["fit", "always"])
+def test_unpriced_image_load_on_another_gpu_keeps_chat(cores, policy):
+    # sd.cpp or H3 can't be priced, but a load pinned to GPU 1 still leaves chat on GPU 0 alone.
+    arb.acquire_for(arb.CHAT, lambda: None, gpu_ids = [0], policy = policy)
+    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = policy, gpu_ids = [1])
+    assert cores.calls == []
+    assert arb.residents() == {arb.CHAT: frozenset({0}), arb.DIFFUSION: frozenset({1})}
+
+
+def test_media_fit_kwargs_keep_the_gpu_without_a_price(monkeypatch):
+    import core.inference.gpu_residency as res
+
+    priced = res.MediaNeed({1: 4096}, weights_mib = 3000, headroom_mib = 1096, kind = "image")
+    need = {"value": None}
+    monkeypatch.setattr(res, "media_load_need_mib", lambda *a: need["value"])
+    assert res.media_fit_kwargs(arb.DIFFUSION, None, 1, "off") == {}
+    assert res.media_fit_kwargs(arb.DIFFUSION, None, 1, "fit") == {"policy": "fit", "gpu_ids": [1]}
+    assert res.media_fit_kwargs(arb.VIDEO, None, None, "always") == {"policy": "always"}
+    need["value"] = priced
+    assert res.media_fit_kwargs(arb.DIFFUSION, None, 1, "fit") == {
+        "policy": "fit",
+        "gpu_ids": [1],
+        "need_mib": priced,
+    }
+
+
 def test_chat_gpus_add_up_across_loads_and_survive_a_reassert(cores):
     arb.acquire_for(arb.CHAT, lambda: None, gpu_ids = [0], policy = "fit")
     arb.acquire_for(arb.CHAT, lambda: None, gpu_ids = [1], policy = "fit", alongside = True)

@@ -12515,7 +12515,14 @@ async def _make_room_for_primary(request: LoadRequest, exc, evicted: list) -> Lo
             "free_mib": {0: free},
             "short_mib": {0: exc.short_mib},
         }
-        slots = [s for o in gpu_residency.MEDIA_OWNERS for s in gpu_arbiter.resident_slots(o)]
+        held, short = gpu_arbiter.residents(), set(exc.gpu_indices or ())
+        # Name only models that could be in the way: skip one known to sit on other GPUs.
+        slots = [
+            s
+            for o in gpu_residency.MEDIA_OWNERS
+            if not (short and held.get(o) and not held[o] & short)
+            for s in gpu_arbiter.resident_slots(o)
+        ]
         raise gpu_residency.need_free_refusal(info if gpus else {}, slots)
     # The route's eviction sink when it keeps one (it reports the slots itself), else the plain list.
     sink = gpu_arbiter.eviction_sink.get()

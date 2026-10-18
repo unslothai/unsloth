@@ -634,7 +634,13 @@ def media_fit_kwargs(
     if policy == "off":
         return {}
     need = media_load_need_mib(owner, request, gpu_ordinal)
-    return {"policy": policy, **({"need_mib": need} if need else {})}
+    kwargs: dict = {"policy": policy}
+    if gpu_ordinal is not None:
+        # Known even when the load can't be priced, so residents on other GPUs stay out of it.
+        kwargs["gpu_ids"] = [gpu_ordinal]
+    if need:
+        kwargs["need_mib"] = need
+    return kwargs
 
 
 def free_for(
