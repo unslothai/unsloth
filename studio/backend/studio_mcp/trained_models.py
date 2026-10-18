@@ -18,8 +18,8 @@ from studio_mcp.outputs import LoadResult
 from studio_mcp.tools import as_dict, leaf_name, opt_text, route_json
 
 NOT_LLM_KINDS = ("image", "video", "stt")
-# The listing reads before a load job exists; past this (or wait_s, if longer) the call gives up.
-RESOLVE_TIMEOUT_S = 30.0
+# The name must resolve before a load job can exist, so even wait_s=0 gives the listing reads this long.
+RESOLVE_TIMEOUT_S = 5.0
 
 
 @dataclass(frozen = True)

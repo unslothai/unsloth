@@ -272,8 +272,8 @@ async def status(caller: Caller, download_id: str) -> JobStatus:
     for part, generation in parsed:
         answer = await _read(caller, part)
         current = answer.get("generation") if answer is not None else None
-        # Only a higher generation is a newer run; a pruned or restarted registry reads 0.
-        if generation is not None and isinstance(current, int) and current > generation:
+        # Another run, newer or after a restart; a registry that pruned the run reads 0.
+        if generation is not None and isinstance(current, int) and current not in (0, generation):
             # A newer run of the same repo replaced the one this id names: report that, not its state.
             stale = stale or (
                 f"Unsloth Studio started a newer download of {part[0]} after this one; "

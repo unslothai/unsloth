@@ -253,7 +253,10 @@ def test_status_of_a_replaced_run_names_the_newer_one():
     assert job.status == "idle"
     assert 'id="org/repo::Q8_0#8"' in job.error
     assert run(studio, model_downloads.status, "org/repo::Q8_0#8").status == "running"
-    # A registry that pruned or lost the run reads generation 0: that is not a newer run.
+    # After a restart the numbers start again: a lower generation is another run too.
+    studio = fake_studio({("GET", STATUS): {"state": "running", "generation": 1}})
+    assert run(studio, model_downloads.status, "org/repo::Q8_0#7").status == "idle"
+    # A registry that pruned the run reads generation 0: that is not another run.
     studio = fake_studio({("GET", STATUS): {"state": "idle", "generation": 0}})
     job = run(studio, model_downloads.status, "org/repo::Q8_0#7")
     assert (job.status, job.error) == ("idle", None)
