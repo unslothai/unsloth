@@ -256,11 +256,13 @@ def refuse_replacing_media(
     ``_lock``."""
     if owner not in (DIFFUSION, VIDEO):
         return []
-    from core.inference.model_ids import public_model_id
+    from core.inference.model_ids import hf_cache_repo_id
 
-    names = {
-        alias for name in requested if name for alias in (name, public_model_id(name)) if alias
-    }
+    # Only an HF cache snapshot path names its repo; any other local path is its own identity.
+    def aliases(name: Optional[str]) -> set:
+        return {alias for alias in (name, hf_cache_repo_id(name) if name else None) if alias}
+
+    names = {alias for name in requested for alias in aliases(name)}
     try:
         status = _media_status(owner)
         loading = () if status is not None else _media_backend(owner).loading_repo_ids()
@@ -270,7 +272,7 @@ def refuse_replacing_media(
         return []
     if status is not None:
         repo = status.get("repo_id")
-        loaded = {repo, public_model_id(repo) if repo else None}
+        loaded = aliases(repo)
         if not loaded.isdisjoint(names):
             return []
         slots = resident_slots(owner)

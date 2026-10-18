@@ -18833,7 +18833,9 @@ async def _guard_primary_replacement(request: LoadRequest, names) -> None:
             raise refusal_for(await asyncio.to_thread(_kept_slot_reports, stuck[0]), "chat")
     try:
         reports = await asyncio.to_thread(model_slots.in_slot, None, _primary_chat_reports)
-    except Exception:  # noqa: BLE001 - nothing to name, so nothing to protect
+    except Exception:  # noqa: BLE001 - unreadable: Always keeps it, as for media
+        if always:
+            raise refusal_for([], "chat")
         reports = []
     if not reports:
         return

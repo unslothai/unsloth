@@ -695,3 +695,13 @@ def test_always_evicts_a_chat_claim_that_holds_nothing_unless_a_chat_load_is_in_
     arb_log.clear()
     arb.acquire_for(arb.DIFFUSION, policy = "always")
     assert "evict-chat" in arb_log and arb.residents() == {arb.DIFFUSION: None}
+
+
+def test_always_keeps_distinct_local_folders_with_one_name_apart(arb_log, monkeypatch):
+    monkeypatch.setattr(
+        arb, "_media_status", lambda owner: {"loaded": True, "repo_id": "/mnt/a/Flux"}
+    )
+    _report(monkeypatch, arb_log, arb.DIFFUSION, {"kind": "image", "model": "Flux"})
+    with pytest.raises(arb.MultiModelAlwaysRefusal):
+        arb.refuse_replacing_media(arb.DIFFUSION, "always", ("/mnt/b/Flux",))
+    assert arb.refuse_replacing_media(arb.DIFFUSION, "always", ("/mnt/a/Flux",)) == []
