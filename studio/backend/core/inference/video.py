@@ -100,6 +100,7 @@ from .diffusion_device import (
     install_rocm_vae_bf16_decode,
     pin_cuda_ordinal,
     placed_cuda_ordinal,
+    auto_cuda_ordinal_for_load,
     resolve_diffusion_device_target,
     resolve_selected_cuda_ordinal,
 )
@@ -124,6 +125,7 @@ from .diffusion_memory import (
     reclaim_host_memory,
     reclaim_offload_host_memory,
     refine_memory_plan_for_components,
+    applied_plan,
     finish_background_pins,
     release_pinned_host_memory,
     request_background_pins,
@@ -145,6 +147,7 @@ from .diffusion_speed import (
     SPEED_OFF,
     apply_speed_optims,
     arm_graphs_after_placement,
+    rocm_probe_load_scoped,
     resolve_speed_mode,
     restore_backend_flags,
     settle_compile_fallback,
@@ -218,6 +221,7 @@ from .video_families import (
     validate_video_keyframe_conditioning,
     validate_video_reference_conditioning,
     validate_video_request_shape,
+    video_custom_size_bounds,
     video_family_prequant_available,
     video_family_prequant_repo,
     video_family_prequant_resident_gb,
@@ -2674,19 +2678,16 @@ def _calibration_revision(state: Any) -> Optional[str]:
     cached = getattr(pipe, "_unsloth_calibration_revision", None)
     if cached is not None:
         return cached or None
-    from .diffusion_component_sizes import checkpoint_fingerprint
+    from .diffusion import _peak_model_identity
 
-    revision = checkpoint_fingerprint(
-        getattr(state, "repo_id", None), getattr(state, "gguf_filename", None)
+    # the image peak identity's rule: snapshot commit, or a local folder's manifests plus its weight files' size and
+    # mtime, plus the companion base for a GGUF / single-file load; "unknown" persists nothing
+    revision = _peak_model_identity(
+        getattr(state, "repo_id", None),
+        getattr(state, "gguf_filename", None),
+        getattr(state, "kind", None),
+        getattr(state, "base_repo", None),
     )
-    if getattr(state, "kind", "pipeline") != "pipeline":
-        # a GGUF / single-file load takes its companions from a base repo: its id and exact weights are part of it
-        base = getattr(state, "base_repo", None)
-        revision = (
-            f"{revision or ''}|base={base or ''}@{checkpoint_fingerprint(base) or ''}"
-            if base
-            else revision
-        )
     try:
         pipe._unsloth_calibration_revision = revision or ""
     except Exception:  # noqa: BLE001
@@ -3056,8 +3057,9 @@ class VideoBackend:
         target = self._device_target(state.gpu_ordinal)
         # And an automatic load back onto its own card, in case this thread is a shared one a previous pinned load left
         # elsewhere. The image path reaches this through a pooled executor; here it costs one no-op call to keep the two
-        # engines identical.
-        pin_cuda_ordinal(state.placed_ordinal)
+        # engines identical. Skipped when the pin above already set that card.
+        if state.gpu_ordinal is None or state.placed_ordinal != state.gpu_ordinal:
+            pin_cuda_ordinal(state.placed_ordinal)
         return target
 
     # ── validation ───────────────────────────────────────────────────────────
@@ -3378,10 +3380,11 @@ class VideoBackend:
         # on the resolved backend, since XPU / MPS / CPU ignore physical ids and would otherwise 400 a selection the
         # contract drops. Re-ranked only when the caller did not already do it: free VRAM moves between the route's
         # preflight and here, so resolving twice can approve a scheme against one card and place the weights on another.
-        if gpu_ordinal is None:
+        auto_ordinal = gpu_ordinal is None and not gpu_ids
+        if gpu_ordinal is None and gpu_ids:
             gpu_ordinal = (
                 resolve_selected_cuda_ordinal(gpu_ids)
-                if gpu_ids and resolve_diffusion_device_target().device == "cuda"
+                if resolve_diffusion_device_target().device == "cuda"
                 else None
             )
         fam = self.validate_load_request(
@@ -3395,6 +3398,9 @@ class VideoBackend:
             text_encoder_quant = text_encoder_quant,
             h3_task = h3_task,
         )
+        if auto_ordinal:
+            # Automatic, after validation: one GPU, Apple, CPU and ROCm skip every probe here.
+            gpu_ordinal = auto_cuda_ordinal_for_load()
         # Refuse an EXPLICIT precision this host can never honor BEFORE the load starts, so the route answers 409 with
         # the reason instead of evicting the resident model and pulling tens of GB first. Footprint-dependent declines
         # still surface via load-progress. The ROUTE makes the same call earlier still (see
@@ -6457,6 +6463,7 @@ class VideoBackend:
     # ── the load itself ──────────────────────────────────────────────────────
 
     @_invalidates_gpu_memory("video load")
+    @rocm_probe_load_scoped
     @scoped_local_files_only
     def load_pipeline(
         self,
@@ -7716,6 +7723,8 @@ class VideoBackend:
             from .video_ltx25 import ltx25_te_outcome
             text_encoder_outcome = ltx25_te_outcome(ltx25_client)
         else:
+            from .diffusion_te_truncate import truncate_text_encoders
+            truncate_text_encoders(pipe, logger = logger)
             text_encoder_outcome = quantize_text_encoders(
                 pipe,
                 target,
@@ -7991,6 +8000,8 @@ class VideoBackend:
                 placement_device = target.torch_device,
                 logger = logger,
             )
+            # a transient OOM during setup may have re-planned to lower residency
+            plan = applied_plan(pipe, plan)
             ltx25_upsampler = getattr(pipe, "_unsloth_ltx25_upsampler", None)
             if ltx25_upsampler is not None and offload_policy == OFFLOAD_NONE:
                 # ~1 GB; resident with the rest, else render() moves it in for the upsample only.
@@ -10832,7 +10843,11 @@ class VideoBackend:
                 _log_failed_generation(request_shape, exc)
                 raise
             finally:
-                i2v_swap.close()
+                try:
+                    from . import video_stream_residency
+                    video_stream_residency.discard_request(getattr(state, "pipe", None))
+                finally:
+                    i2v_swap.close()
                 if bg_token is not None:
                     bg_compile._FORCE_EAGER.reset(bg_token)
                 with self._lock:
@@ -11757,6 +11772,7 @@ class VideoBackend:
                 "duration_presets": list(fam.duration_presets),
                 "resolution_multiple": fam.resolution_multiple,
                 "resolution_presets": [list(p) for p in fam.resolution_presets],
+                **_custom_size_defaults(fam),
                 # Let the frontend preview the backend-owned "match source" rule.
                 "canvas_short_edge": _keyframe_canvas(fam)[0],
                 "canvas_max_pixels": _keyframe_canvas(fam)[1],
@@ -11769,6 +11785,17 @@ class VideoBackend:
             },
             "resolved": resolved,
         }
+
+
+def _custom_size_defaults(fam: Any) -> dict[str, Any]:
+    bounds = video_custom_size_bounds(fam)
+    if bounds is None:
+        return {}
+    return {
+        "custom_size_min_pixels": bounds[0],
+        "custom_size_max_pixels": bounds[1],
+        "custom_size_max_aspect": bounds[2],
+    }
 
 
 def _keyframe_canvas(fam: Any) -> tuple[Optional[int], Optional[int]]:

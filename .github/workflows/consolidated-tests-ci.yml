@@ -336,6 +336,7 @@ jobs:
             tests/saving/test_offline_gguf_vlm_tokenizer_7481.py \
             tests/saving/test_is_vlm_detection.py \
             tests/saving/test_save_method_lora_routing.py \
+            tests/saving/test_push_to_hub_lora_gguf_revision.py \
             tests/utils/test_attention_masks.py \
             tests/utils/test_packing.py \
             tests/utils/test_trunc_normal_patch.py \
@@ -465,7 +466,8 @@ jobs:
         run: |
           python -m pytest -v --tb=short \
             tests/utils/test_dataset_num_proc.py \
-            tests/utils/test_train_on_responses_only_num_proc.py
+            tests/utils/test_train_on_responses_only_num_proc.py \
+            tests/utils/test_packing_overflow_guard.py
           PYTHONPATH=studio/backend python -m pytest -v --tb=short \
             studio/backend/tests/test_dataset_map_num_proc.py \
             studio/backend/tests/test_compressed_tensors_signature_drift.py
@@ -489,6 +491,7 @@ jobs:
             tests/saving/test_offline_gguf_vlm_tokenizer_7481.py \
             tests/saving/test_is_vlm_detection.py \
             tests/saving/test_save_method_lora_routing.py \
+            tests/saving/test_push_to_hub_lora_gguf_revision.py \
             tests/utils/test_attention_masks.py \
             tests/utils/test_packing.py \
             tests/utils/test_trunc_normal_patch.py \

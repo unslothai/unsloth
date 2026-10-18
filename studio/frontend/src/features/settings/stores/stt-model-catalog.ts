@@ -66,8 +66,8 @@ export const STT_PICKER_MODELS: readonly SttModel[] = [
   ...AUDIO_CPP_STT_FOLDER_IDS,
 ];
 /** Models that transcribe only these primary languages; every other model is
- * multilingual. Moonshine and Nemotron are English-only, Canary covers
- * en/de/es/fr, and Hviske is Danish. */
+ * multilingual. Moonshine is English-only, Nemotron covers its spec's locales,
+ * Canary covers en/de/es/fr, and Hviske is Danish. */
 export const STT_MODEL_LANGUAGES: ReadonlyMap<SttModel, readonly string[]> =
   new Map(
     [

@@ -229,6 +229,13 @@ class TestOllamaAndFallback:
                 "gguf_init_from_reader: failed to read tensor info\n",
                 "quantization type 142",
             ),
+            # #13908, KittenML/kitten-tts-2 TQ2_1 on b11696-mix: an id below the bundled count.
+            (
+                "gguf_init_from_reader: tensor 'blk.0.ffn_down.weight' of type 43 ((null)) has "
+                "6144 elements per row, not a multiple of block size (0)\n"
+                "gguf_init_from_reader: failed to read tensor info\n",
+                "quantization type 43",
+            ),
             # #11259 report: a group-128 Q2_0 tensor where the build defines group-64 Q2_0.
             (
                 "gguf_init_from_reader: tensor 'dspark.fc.weight' has offset 337718592, "
@@ -260,6 +267,17 @@ class TestOllamaAndFallback:
             "llama_model_load: error loading model: tensor 'output.weight' data is not "
             "within the file bounds, model is corrupted or incomplete\n"
             "llama_model_load_from_file_impl: failed to load model\n"
+        )
+        msg = _classify(out, "/models/m.gguf", "local/m", 1)
+        assert "GGUF file is valid" in msg
+        assert "cannot read this GGUF" not in msg
+
+    def test_known_type_with_ragged_rows_keeps_the_generic_message(self):
+        # A type this build has, with a row length its blocks do not divide: a damaged file.
+        out = (
+            "gguf_init_from_reader: tensor 'blk.0.ffn_down.weight' of type 12 (q4_K) has "
+            "6100 elements per row, not a multiple of block size (256)\n"
+            "gguf_init_from_reader: failed to read tensor info\n"
         )
         msg = _classify(out, "/models/m.gguf", "local/m", 1)
         assert "GGUF file is valid" in msg

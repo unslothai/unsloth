@@ -751,8 +751,7 @@ export const InventoryRow = memo(function InventoryRow({
     deletableRepoId ? (
       <ModelRowMenu
         ariaLabel={`More options for ${deletableRepoId ?? rowModelId}`}
-        buttonClassName="pointer-events-auto hub-modal-pe-guard size-8 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
-        iconClassName="size-4"
+        buttonClassName="pointer-events-auto hub-modal-pe-guard size-6 rounded-full opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
         pin={
           isDataset || !deletableRepoId
             ? undefined
@@ -816,8 +815,7 @@ export const InventoryRow = memo(function InventoryRow({
     ) : localActionPath && row.kind === "local" ? (
       <ModelRowMenu
         ariaLabel={`More options for ${rowModelId}`}
-        buttonClassName="pointer-events-auto hub-modal-pe-guard size-8 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
-        iconClassName="size-4"
+        buttonClassName="pointer-events-auto hub-modal-pe-guard size-6 rounded-full opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
         onReveal={() => revealLocalModel(localActionPath, row.loadId)}
         del={
           DELETABLE_LOCAL_SOURCES.has(row.source)

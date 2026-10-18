@@ -702,12 +702,14 @@ def _scan_hf_cache(
         )
         # Denoiser-less pipeline (a GGUF's borrowed VAE / encoder): partial so no picker loads it, flagged so the Hub offers no Continue.
         if not snapshot_partial and hf_cache_scan.snapshot_pipeline_missing_denoiser(
-            hf_cache_scan.latest_snapshot_dir(repo_dir)
+            latest_snapshot := hf_cache_scan.latest_snapshot_dir(repo_dir)
         ):
+            # Some denoiser shards on disk is a torn download, not a prefetch: partial, but not flagged.
+            companion_prefetch = not hf_cache_scan.snapshot_denoiser_has_weights(latest_snapshot)
             rows = [
                 row
                 if row.model_format == "gguf"
-                else row.model_copy(update = {"companion_prefetch": True})
+                else row.model_copy(update = {"companion_prefetch": companion_prefetch})
                 for row in _apply_format_aware_partial(
                     rows, snapshot_partial = True, gguf_partial = gguf_partial
                 )
@@ -1455,6 +1457,53 @@ async def _scan_local_models_response(
             status_code = 500,
             detail = f"Failed to list local models: {str(e)}",
         )
+
+
+def _scan_unsloth_models() -> List[LocalModelInfo]:
+    """Studio's own fine-tunes (outputs/) and exports (exports/), found the way the Library finds them."""
+    from utils.models.model_config import scan_exported_models, scan_trained_models
+    from utils.paths.storage_roots import exports_root, outputs_root
+
+    found = [(name, path) for name, path, _ in scan_trained_models(str(outputs_root()))]
+    found += [(name, path) for name, path, _, _ in scan_exported_models(str(exports_root()))]
+    rows: List[LocalModelInfo] = []
+    for name, raw_path in found:
+        path = Path(raw_path)
+        # A GGUF export is named by its largest quant; its folder lists every quant it holds.
+        if path.suffix.lower() == ".gguf":
+            path = path.parent
+        try:
+            updated_at = path.stat().st_mtime
+        except OSError:
+            continue
+        classified = _classify_local_path(path, "unsloth", display_name = name, updated_at = updated_at)
+        rows.extend(_apply_payload_partial(path, classified))
+    return _classify_unsloth_models(rows)
+
+
+def _classify_unsloth_models(models: List[LocalModelInfo]) -> List[LocalModelInfo]:
+    try:
+        from hub.services.models import catalog_classification
+
+        classified = []
+        for model in models:
+            task, audio_type = catalog_classification._local_model_classification(model)
+            classified.append(model.model_copy(update = {"task": task, "audio_type": audio_type}))
+        return classified
+    except Exception as e:  # noqa: BLE001 -- classification never breaks the listing
+        logger.warning("Could not classify Unsloth model tasks: %s", scrub_paths(e))
+        return models
+
+
+async def list_unsloth_models_response() -> LocalModelListResponse:
+    # Off the loop with the scan: classifying a GGUF reads its header.
+    try:
+        models = await asyncio.to_thread(_scan_unsloth_models)
+    except Exception as e:
+        logger.error("Error listing Unsloth models: %s", scrub_paths(e), exc_info = True)
+        raise _http_error(status_code = 500, detail = f"Failed to list Unsloth models: {str(e)}")
+    response = LocalModelListResponse(models_dir = str(outputs_root()), models = models)
+    return await _account_local_response(response)
 
 
 async def _account_local_response(response):

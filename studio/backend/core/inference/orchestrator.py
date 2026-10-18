@@ -244,6 +244,25 @@ def _audio_generation_timeout(
     return base * token_scale
 
 
+def _music_generation_timeout(
+    timeout: float, audio_type: Optional[str], model_info: dict, music: Optional[dict]
+) -> float:
+    """Outlast the worker's music wait so its error, not the watchdog, reaches the caller."""
+    if music is not None:
+        try:
+            wait = float(music.get("timeout_s") or 0.0)
+        except (TypeError, ValueError):
+            wait = 0.0
+    elif audio_type == "audiocpp_music":
+        # Legacy calls carry no wait; a self-ending model (YuE2) runs past any token count.
+        from core.inference.audio_cpp_music import self_ending_timeout
+        backend = model_info.get("audio_cpp_backend")
+        wait = self_ending_timeout(model_info.get("audio_family"), backend) or 0.0
+    else:
+        return timeout
+    return max(timeout, wait + 60.0)
+
+
 _MLX_RUNTIME_MIRROR_FIELDS = (
     "mlx_kv_bits",
     "mlx_kv_bits_requested",
@@ -328,15 +347,21 @@ def _summed_tool_loop_stats(total, turn):
         return turn
     prior_usage = total.get("usage") or {}
     usage = dict(turn.get("usage") or {})
+    # Earlier turns' completions are inside this prompt, so the context adds this turn's only.
+    if usage.get("prompt_tokens"):
+        usage["context_tokens"] = usage["prompt_tokens"] + (usage.get("completion_tokens") or 0)
     completion = (usage.get("completion_tokens") or 0) + (prior_usage.get("completion_tokens") or 0)
     usage["completion_tokens"] = completion
     # The prompt is the loop's, not one turn's, so a turn that ended before reporting keeps the last count that
-    # arrived. Its details describe that same count and move with it, or cached tokens could outnumber prompt tokens.
+    # arrived. Its details describe that same count and move with it, or cached tokens could outnumber prompt tokens;
+    # so does the context priced from it.
     if not usage.get("prompt_tokens"):
         usage["prompt_tokens"] = prior_usage.get("prompt_tokens") or 0
         usage.pop("prompt_tokens_details", None)
         if prior_usage.get("prompt_tokens_details") is not None:
             usage["prompt_tokens_details"] = prior_usage["prompt_tokens_details"]
+        if prior_usage.get("context_tokens") is not None:
+            usage["context_tokens"] = prior_usage["context_tokens"]
     usage["total_tokens"] = usage["prompt_tokens"] + completion
     # Details describe the completion, so they sum with it rather than describing one turn against every turn's tokens
     details = dict(prior_usage.get("completion_tokens_details") or {})
@@ -1429,6 +1454,9 @@ class InferenceOrchestrator:
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
+        prompt_ids: Optional[list] = None,
+        penalty_window: Optional[int] = None,
+        grammar: Optional[str] = None,
     ) -> dict:
         """Build the 'generate' command shared by the locked and dispatched paths."""
         cmd = {
@@ -1477,6 +1505,12 @@ class InferenceOrchestrator:
             cmd["tool_protocol_active"] = tool_protocol_active
         if diffusion_frames and not rows:
             cmd["diffusion_frames"] = True
+        if prompt_ids is not None:
+            cmd["prompt_ids"] = list(prompt_ids)
+        if penalty_window is not None:
+            cmd["penalty_window"] = penalty_window
+        if grammar is not None:
+            cmd["grammar"] = grammar
         return cmd
 
     def _consume_token_stream(
@@ -1725,6 +1759,9 @@ class InferenceOrchestrator:
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
+        prompt_ids: Optional[list] = None,
+        penalty_window: Optional[int] = None,
+        grammar: Optional[str] = None,
     ) -> Generator[Any, None, None]:
         """Dispatched generation, sending the command without holding _gen_lock. Uses a per-request
         mailbox for tokens so two compare-mode requests can be queued at once. The subprocess
@@ -1782,6 +1819,9 @@ class InferenceOrchestrator:
             rows = rows,
             video_b64 = video,
             diffusion_frames = diffusion_frames,
+            prompt_ids = prompt_ids,
+            penalty_window = penalty_window,
+            grammar = grammar,
         )
 
         mailbox = _WorkerMailbox(self._proc)
@@ -2750,26 +2790,9 @@ class InferenceOrchestrator:
                     "preserve_thinking": preserve_thinking,
                 }
             )
-            deadline = time.monotonic() + timeout
-            resp = None
-            while time.monotonic() < deadline:
-                candidate = read_one(timeout = min(1.0, deadline - time.monotonic()))
-                if candidate is None:
-                    if not self._ensure_subprocess_alive():
-                        # A count takes no part in the claim bookkeeping.
-                        raise RuntimeError(
-                            self._subprocess_crash_message(
-                                "count", with_worker_output = self._owns_worker(None)
-                            )
-                        )
-                    continue
-                # _direct_reader already drops a reply whose mailbox is gone; this is the backstop.
-                if (
-                    candidate.get("type") == "count_tokens_response"
-                    and candidate.get("request_id") == request_id
-                ):
-                    resp = candidate
-                    break
+            resp = self._await_reply(
+                read_one, request_id, "count_tokens_response", "count", timeout
+            )
             if resp is None:
                 raise RuntimeError("Timed out counting tokens")
         finally:
@@ -2968,6 +2991,117 @@ class InferenceOrchestrator:
             logger.warning("Could not preflight the context window: %s", exc)
             return unchanged
 
+    def _await_reply(
+        self,
+        read_one,
+        request_id,
+        reply_type,
+        crash_context,
+        timeout,
+        cancelled = None,
+    ):
+        """The worker's *reply_type* answer to *request_id*, or None once *timeout* passes
+        or *cancelled* returns true."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if cancelled is not None and cancelled():
+                return None
+            candidate = read_one(timeout = min(1.0, deadline - time.monotonic()))
+            if candidate is None:
+                if not self._ensure_subprocess_alive():
+                    # A query takes no part in the claim bookkeeping.
+                    raise RuntimeError(
+                        self._subprocess_crash_message(
+                            crash_context, with_worker_output = self._owns_worker(None)
+                        )
+                    )
+                continue
+            # _direct_reader already drops a reply whose mailbox is gone; this is the backstop.
+            if candidate.get("type") == reply_type and candidate.get("request_id") == request_id:
+                return candidate
+        return None
+
+    def resolve_completion_prompt(
+        self,
+        prompt,
+        timeout: float = 30.0,
+        cancel_event = None,
+    ) -> dict:
+        """``ids`` and echo ``text`` for one raw completion prompt; ValueError if invalid,
+        InterruptedError once *cancel_event* is set while it waits."""
+
+        def cancelled():
+            return cancel_event is not None and cancel_event.is_set()
+
+        # Polled, so a Stop or disconnect while queued behind a generation ends the wait.
+        while not self._gen_lock.acquire(timeout = 0.1):
+            if cancelled():
+                raise InterruptedError("Request cancelled.")
+        try:
+            if self._unload_pending or not self.active_model_name:
+                raise RuntimeError("No active model")
+            request_id = str(uuid.uuid4())
+            read_one, _drain, release_mailbox = self._direct_reader(request_id)
+            try:
+                self._send_cmd(
+                    {"type": "resolve_prompt", "request_id": request_id, "prompt": prompt}
+                )
+                resp = None
+                while resp is None:
+                    resp = self._await_reply(
+                        read_one,
+                        request_id,
+                        "resolve_prompt_response",
+                        "prompt resolution",
+                        timeout,
+                        cancelled,
+                    )
+                    # A dispatched generation the worker runs alone answers first, however long.
+                    if self._replies_in_flight() <= 1 or cancelled():
+                        break
+            finally:
+                release_mailbox()
+        finally:
+            self._gen_lock.release()
+        if resp is None and cancelled():
+            raise InterruptedError("Request cancelled.")
+        if resp is None:
+            raise RuntimeError("Timed out resolving the prompt")
+        if resp.get("error"):
+            raise (ValueError if resp.get("invalid") else RuntimeError)(resp["error"])
+        return {"ids": list(resp["ids"]), "text": resp["text"], "n_vocab": resp.get("n_vocab")}
+
+    def generate_completion(
+        self,
+        prompt_ids: list,
+        cancel_event = None,
+        stats_holder: Optional[dict] = None,
+        **sampling,
+    ) -> Generator[str, None, None]:
+        """Cumulative text sampled after ``prompt_ids`` with no chat template."""
+        yield from self._generate_inner(
+            prompt_ids = prompt_ids,
+            cancel_event = cancel_event,
+            stats_holder = stats_holder,
+            **sampling,
+        )
+
+    def generate_completion_batch(
+        self,
+        rows: list,
+        cancel_event = None,
+        stats_holder: Optional[dict] = None,
+        **sampling,
+    ) -> Generator[Any, None, None]:
+        """Several raw-prompt rows in one command, reported as :meth:`generate_chat_batch`."""
+        yield from self._generate_inner(
+            messages = [],
+            rows = rows,
+            cancel_event = cancel_event,
+            stats_holder = stats_holder,
+            **sampling,
+        )
+
     def generate_chat_response(
         self,
         messages: list,
@@ -3144,6 +3278,8 @@ class InferenceOrchestrator:
         context_policy: Optional[str] = None,
         compaction_headroom_ratio: Optional[float] = None,
         compact_context: bool = False,
+        tool_choice = None,
+        disable_parallel_tool_use: bool = False,
         **_unused,
     ):
         """Run the safetensors agentic tool loop in the parent process, calling the worker for each
@@ -3348,6 +3484,8 @@ class InferenceOrchestrator:
             # then no sink to protect anything in.
             caller_image_indexes = tuple(caller_image_indexes) if loop_images else (),
             context_fitter = _fit_iteration,
+            tool_choice = tool_choice,
+            disable_parallel_tool_use = disable_parallel_tool_use,
         )
 
     def generate_with_adapter_control(
@@ -3413,6 +3551,9 @@ class InferenceOrchestrator:
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
+        prompt_ids: Optional[list] = None,
+        penalty_window: Optional[int] = None,
+        grammar: Optional[str] = None,
     ) -> Generator[Any, None, None]:
         """Inner generation logic: sends the command to the subprocess and yields tokens. Serialized
         by _gen_lock (one generation at a time) so concurrent readers don't consume each other's
@@ -3476,6 +3617,9 @@ class InferenceOrchestrator:
                 response_format = response_format,
                 reasoning_is_extracted = reasoning_is_extracted,
                 diffusion_frames = diffusion_frames,
+                prompt_ids = prompt_ids,
+                penalty_window = penalty_window,
+                grammar = grammar,
             )
             return
 
@@ -3518,6 +3662,9 @@ class InferenceOrchestrator:
                 rows = rows,
                 video_b64 = video,
                 diffusion_frames = diffusion_frames,
+                prompt_ids = prompt_ids,
+                penalty_window = penalty_window,
+                grammar = grammar,
             )
 
             read_one, drain, release_mailbox = self._direct_reader(request_id, cancel_event)
@@ -3782,12 +3929,9 @@ class InferenceOrchestrator:
                     cmd["edit"] = dict(edit)
                 if music is not None:
                     cmd["music"] = dict(music)
-                    try:
-                        music_wait = float(music.get("timeout_s") or 0.0)
-                    except (TypeError, ValueError):
-                        music_wait = 0.0
-                    # Outlast the worker's wait so its error, not the watchdog, reaches the caller.
-                    generation_timeout = max(generation_timeout, music_wait + 60.0)
+                generation_timeout = _music_generation_timeout(
+                    generation_timeout, audio_type, model_info, music
+                )
                 if output_dir is not None:
                     cmd["output_dir"] = str(output_dir)
 

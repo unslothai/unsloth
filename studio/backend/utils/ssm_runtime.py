@@ -7,7 +7,9 @@ the inference-path counterpart of the training worker's install.
 
 from __future__ import annotations
 
+import functools
 import importlib
+import importlib.metadata
 import importlib.util
 import os
 import shutil
@@ -50,14 +52,29 @@ SSM_MODEL_SUBSTRINGS = (
     "falcon-h1",
     "granite-4.0-h",
     "granitemoehybrid",
+    "mamba",
+    "jamba",
+    "zamba",
+    "bamba",
+)
+# config.json model types whose modeling files run mamba_ssm (and so causal_conv1d): Mamba-2
+# hybrids and the Mamba-1 family. Matched on the resolved config, so a renamed checkpoint or an
+# id without the substrings above (NVIDIA-Nemotron-Nano-9B-v2, granite-4.0-tiny) still counts.
+SSM_MODEL_TYPES = frozenset(
+    {
+        "nemotron_h",
+        "falcon_h1",
+        "granitemoehybrid",
+        "bamba",
+        "jamba",
+        "zamba",
+        "zamba2",
+        "mamba",
+        "mamba2",
+        "falcon_mamba",
+    }
 )
 CAUSAL_CONV1D_MODEL_SUBSTRINGS = (
-    "qwen3.5",
-    "qwen3_5",
-    "qwen3.6",
-    "qwen3_6",
-    "qwen3-next",
-    "qwen3_next",
     "nemotron_h",
     "nemotron-h",
     "nemotron-3-nano",
@@ -71,7 +88,69 @@ CAUSAL_CONV1D_MODEL_SUBSTRINGS = (
     "zamba",
     "bamba",
 )
+# GatedDeltaNet models unsloth-zoo runs without causal_conv1d: its Triton causal conv
+# (temporary_patches/gdn_causal_conv1d.py, `_GDN_MODELING`) plus the vendored FLA kernels. Qwen3.6
+# reuses the qwen3_5 model types. A usable causal_conv1d still wins inside zoo; this only stops
+# Studio from downloading it. Zoo's own kill switch brings the request back.
+ZOO_GDN_MODEL_TYPES = frozenset({"qwen3_5", "qwen3_5_moe", "qwen3_next"})
+ZOO_GDN_MODEL_SUBSTRINGS = (
+    "qwen3.5",
+    "qwen3_5",
+    "qwen3.6",
+    "qwen3_6",
+    "qwen3-next",
+    "qwen3_next",
+)
+ZOO_TRITON_CAUSAL_CONV1D_KILL_SWITCH = "UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D"
 _TRANSFORMERS_CAUSAL_CONV1D_MODEL_TYPE_CACHE: dict[str, bool | None] = {}
+
+
+def zoo_triton_causal_conv1d_enabled() -> bool:
+    return os.environ.get(ZOO_TRITON_CAUSAL_CONV1D_KILL_SWITCH, "0") != "1"
+
+
+@functools.lru_cache(maxsize = 1)
+def _zoo_triton_platform_usable() -> bool:
+    """Whether zoo's Triton conv can engage here: a CUDA torch (not ROCm) with Triton importable.
+    macOS, ROCm and a Windows install without triton-windows keep the prebuilt causal-conv1d.
+    Read from torch's distribution version, so no model load pays for importing torch: ROCm and
+    CPU builds carry `+rocm` / `+cpu`, a Windows CUDA build `+cu`, and a Linux PyPI torch with no
+    local version is the CUDA build."""
+    if sys.platform == "darwin" or importlib.util.find_spec("triton") is None:
+        return False
+    torch = sys.modules.get("torch")
+    if torch is not None:
+        version = getattr(torch, "version", None)
+        return bool(getattr(version, "cuda", None)) and not getattr(version, "hip", None)
+    try:
+        local = importlib.metadata.version("torch").partition("+")[2].lower()
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    if local.startswith(("rocm", "cpu")):
+        return False
+    return local.startswith("cu") or (not local and sys.platform.startswith("linux"))
+
+
+def zoo_triton_causal_conv1d_usable() -> bool:
+    """zoo runs Qwen3.5 / 3.6 / Qwen3-Next without causal_conv1d on this host."""
+    return zoo_triton_causal_conv1d_enabled() and _zoo_triton_platform_usable()
+
+
+def _base_model_type(model_type: str) -> str:
+    """A config's model type with its `_text` / `_vision` sub-config suffix removed."""
+    candidate = model_type.strip().lower().replace("-", "_")
+    for suffix in ("_text", "_vision"):
+        candidate = candidate.removesuffix(suffix)
+    return candidate
+
+
+def _is_zoo_gdn_model_type(model_type: str) -> bool:
+    """The model type or one of its `_text` / `_vision` sub-configs belongs to a zoo-covered model."""
+    return _base_model_type(model_type) in ZOO_GDN_MODEL_TYPES
+
+
+def _names_zoo_gdn_model(name: str) -> bool:
+    return any(sub in name for sub in ZOO_GDN_MODEL_SUBSTRINGS)
 
 
 def model_is_ssm(model_name: str) -> bool:
@@ -81,9 +160,11 @@ def model_is_ssm(model_name: str) -> bool:
 
 
 def model_wants_causal_conv1d(model_name: str) -> bool:
-    """Whether *model_name* needs ``causal_conv1d`` (the SSM set plus linear-attention hybrids like Qwen3-Next / LFM2 whose modeling files lazy-import it)."""
+    """Whether *model_name* needs ``causal_conv1d`` (the SSM set plus linear-attention hybrids like LFM2 whose modeling files lazy-import it; Qwen3.5 / 3.6 / Qwen3-Next only where zoo's Triton conv cannot run)."""
     name = (model_name or "").lower()
-    return any(sub in name for sub in CAUSAL_CONV1D_MODEL_SUBSTRINGS)
+    if any(sub in name for sub in CAUSAL_CONV1D_MODEL_SUBSTRINGS):
+        return True
+    return _names_zoo_gdn_model(name) and not zoo_triton_causal_conv1d_usable()
 
 
 def _normalized_model_identifier(value: str) -> str:
@@ -123,7 +204,8 @@ def _transformers_model_type_uses_causal_conv1d(model_type: str) -> bool | None:
     return result
 
 
-def model_config_wants_causal_conv1d(model_config: dict) -> bool | None:
+def _config_identifiers(model_config: dict) -> tuple[set[str], set[str]]:
+    """Every model_type and architecture in *model_config*, nested sub-configs included."""
     model_types: set[str] = set()
     architectures: set[str] = set()
     pending: list[Any] = [model_config]
@@ -143,39 +225,72 @@ def model_config_wants_causal_conv1d(model_config: dict) -> bool | None:
             pending.extend(value.values())
         elif isinstance(value, (list, tuple)):
             pending.extend(value)
+    return model_types, architectures
 
-    source_requirements = {
-        _transformers_model_type_uses_causal_conv1d(model_type) for model_type in model_types
-    }
+
+def model_config_is_ssm(model_config: dict) -> bool | None:
+    """True for a Mamba-family model type, False for another known type, None without one."""
+    model_types, _ = _config_identifiers(model_config)
+    if not model_types:
+        return None
+    return any(_base_model_type(model_type) in SSM_MODEL_TYPES for model_type in model_types)
+
+
+def model_config_wants_causal_conv1d(
+    model_config: dict, *, scan_modeling_source: bool = True
+) -> bool | None:
+    """``scan_modeling_source=False`` keeps the answer transformers-free (the inference worker asks
+    before its transformers import, which snapshots the kernel gates)."""
+    model_types, architectures = _config_identifiers(model_config)
+    if model_config_is_ssm(model_config):
+        return True
+    if model_types and all(_is_zoo_gdn_model_type(model_type) for model_type in model_types):
+        return not zoo_triton_causal_conv1d_usable()
+    source_requirements = (
+        {_transformers_model_type_uses_causal_conv1d(model_type) for model_type in model_types}
+        if scan_modeling_source
+        else set()
+    )
     if True in source_requirements:
         return True
     config_identifiers = model_types | architectures
-    normalized_needles = {
-        _normalized_model_identifier(value) for value in CAUSAL_CONV1D_MODEL_SUBSTRINGS
-    }
-    if any(
-        needle in _normalized_model_identifier(identifier)
-        for identifier in config_identifiers
-        for needle in normalized_needles
-    ):
+    normalized = {_normalized_model_identifier(identifier) for identifier in config_identifiers}
+
+    def _matches(substrings: tuple[str, ...]) -> bool:
+        needles = {_normalized_model_identifier(value) for value in substrings}
+        return any(needle in identifier for identifier in normalized for needle in needles)
+
+    if _matches(CAUSAL_CONV1D_MODEL_SUBSTRINGS):
+        return True
+    if _matches(ZOO_GDN_MODEL_SUBSTRINGS) and not zoo_triton_causal_conv1d_usable():
         return True
     if False in source_requirements:
         return False
     return None
 
 
-def resolved_model_wants_causal_conv1d(
-    model_name: str, model_load_target: str, hf_token: str | None
-) -> bool:
+def _resolved_model_config(model_load_target: str, hf_token: str | None) -> dict | None:
     try:
         from utils.transformers_version import _load_config_json
         model_config = _load_config_json(model_load_target, hf_token)
     except Exception as exc:
-        logger.debug("Could not inspect model config for causal-conv1d: %s", exc)
-        model_config = None
+        logger.debug("Could not inspect model config for SSM kernels: %s", exc)
+        return None
+    return model_config if isinstance(model_config, dict) else None
 
-    if isinstance(model_config, dict):
-        requirement = model_config_wants_causal_conv1d(model_config)
+
+def resolved_model_wants_causal_conv1d(
+    model_name: str,
+    model_load_target: str,
+    hf_token: str | None,
+    *,
+    scan_modeling_source: bool = True,
+) -> bool:
+    model_config = _resolved_model_config(model_load_target, hf_token)
+    if model_config is not None:
+        requirement = model_config_wants_causal_conv1d(
+            model_config, scan_modeling_source = scan_modeling_source
+        )
         if requirement is not None:
             logger.info(
                 "causal-conv1d requirement resolved from model architecture: %s",
@@ -183,6 +298,48 @@ def resolved_model_wants_causal_conv1d(
             )
             return requirement
     return model_wants_causal_conv1d(model_name)
+
+
+def resolved_model_is_ssm(model_name: str, model_load_target: str, hf_token: str | None) -> bool:
+    """Whether the model at *model_load_target* needs ``mamba_ssm``, from its config; the name list
+    only when there is no config to read."""
+    model_config = _resolved_model_config(model_load_target, hf_token)
+    if model_config is not None:
+        requirement = model_config_is_ssm(model_config)
+        if requirement is not None:
+            logger.info("mamba-ssm requirement resolved from model architecture: %s", requirement)
+            return requirement
+    return model_is_ssm(model_name)
+
+
+def refresh_transformers_kernel_gates() -> None:
+    """After an in-process install, let an already-imported transformers see the new kernels: its
+    availability gates are lru_cached and the hub-kernel map can hold a cached None. Never raises."""
+    if "transformers" not in sys.modules:
+        return
+    try:
+        import_utils = sys.modules.get("transformers.utils.import_utils")
+        for gate_name in (
+            "is_causal_conv1d_available",
+            "is_mamba_ssm_available",
+            "is_mamba_2_ssm_available",
+        ):
+            cache_clear = getattr(getattr(import_utils, gate_name, None), "cache_clear", None)
+            if callable(cache_clear):
+                cache_clear()
+    except Exception as exc:
+        logger.debug("Could not clear transformers' kernel gates: %s", exc)
+    try:
+        hub_kernels = sys.modules.get("transformers.integrations.hub_kernels")
+        mapping = getattr(hub_kernels, "_KERNEL_MODULE_MAPPING", None)
+        if isinstance(mapping, dict):
+            for key in [key for key, value in mapping.items() if value is None]:
+                if any(
+                    kernel in str(key) for kernel in ("causal-conv1d", "causal_conv1d", "mamba")
+                ):
+                    mapping.pop(key, None)
+    except Exception as exc:
+        logger.debug("Could not refresh transformers' hub kernel map: %s", exc)
 
 
 def ssm_probe_identifier(model_name: str, base: str | None = None) -> str:
@@ -393,10 +550,17 @@ def ensure_ssm_runtime(
     *,
     status_cb: StatusCb = None,
     run: Callable[..., Any] = subprocess.run,
+    wants_causal_conv1d: bool | None = None,
+    is_ssm: bool | None = None,
 ) -> None:
-    """Install the SSM kernels *model_name* needs before load, wheel-first; a no-op for non-SSM models and idempotent. Only a true SSM hybrid's ``mamba_ssm`` is fatal (raises ``RuntimeError`` instead of a cryptic mid-load failure); ``causal_conv1d`` is best-effort, with Qwen3-Next/LFM2 falling back to torch."""
-    wants_causal_conv1d = model_wants_causal_conv1d(model_name)
-    is_ssm = model_is_ssm(model_name)
+    """Install the SSM kernels *model_name* needs before load, wheel-first; a no-op for non-SSM models and idempotent. Only a true SSM hybrid's ``mamba_ssm`` is fatal (raises ``RuntimeError`` instead of a cryptic mid-load failure); ``causal_conv1d`` is best-effort, with LFM2 falling back to torch and Qwen3.5 / 3.6 / Qwen3-Next on zoo's Triton conv wherever it can run."""
+    # The caller's config-resolved answers win; the name match is the default.
+    if is_ssm is None:
+        is_ssm = model_is_ssm(model_name)
+    if wants_causal_conv1d is None:
+        wants_causal_conv1d = model_wants_causal_conv1d(model_name)
+    # Every mamba-ssm model also runs causal-conv1d.
+    wants_causal_conv1d = wants_causal_conv1d or is_ssm
     if not (wants_causal_conv1d or is_ssm):
         return
 
@@ -413,4 +577,7 @@ def ensure_ssm_runtime(
             "(the triton-windows package); install it and reload the model."
         )
     if is_ssm and not _install_kernel(**_pinned_kwargs(MAMBA_SSM), status_cb = status_cb, run = run):
-        raise RuntimeError("Could not install mamba-ssm, required by this Mamba model.")
+        raise RuntimeError(
+            "Could not install mamba-ssm, required by this Mamba model. If this machine is offline, "
+            "run `unsloth install-kernels` once while online, then reload the model."
+        )

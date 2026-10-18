@@ -128,7 +128,7 @@ def test_prefill_global_layers_see_past_the_window():
 
 
 def test_decode_masks_follow_each_layer_device(monkeypatch):
-    # Pipeline-parallel device maps: a mask left on the first device fails on the next GPU's layer.
+    # Pipeline-parallel device maps: a mask left on the first device fails on the next GPU.
     seen = _masks_reaching_attention(monkeypatch, flash = False, second_device = "meta")
     assert [mask.device.type for _, mask in seen] == ["cpu", "meta"]
 
@@ -140,7 +140,6 @@ def test_prefill_masks_short_batches_and_4d(monkeypatch):
     import unsloth.models.llama as llama_module
     from unsloth import FastLanguageModel
 
-    # The masks under test feed the softcapping kernels, not flash-attn.
     monkeypatch.setattr(llama_module, "HAS_FLASH_ATTENTION_SOFTCAPPING", False)
     monkeypatch.setattr(g2, "HAS_FLASH_ATTENTION_SOFTCAPPING", False)
 
@@ -153,7 +152,7 @@ def test_prefill_masks_short_batches_and_4d(monkeypatch):
     FastLanguageModel.for_inference(model)
     torch.manual_seed(0)
     with torch.no_grad():
-        # More rows than tokens: a 4D mask sliced as mask[:q_len, :q_len] used to cut the batch axis.
+        # More rows than tokens: a 4D mask sliced as mask[:q_len, :q_len] cut the batch axis.
         ids = torch.randint(5, 100, (8, 2), device = "cuda")
         batched = model(input_ids = ids, attention_mask = torch.ones_like(ids)).logits
         single = model(input_ids = ids[3:4], attention_mask = torch.ones_like(ids[3:4])).logits

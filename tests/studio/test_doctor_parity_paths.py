@@ -13,7 +13,7 @@ REPO = Path(__file__).resolve().parents[2]
 
 def _doctor():
     spec = importlib.util.spec_from_file_location(
-        "unsloth_doctor_for_parity", REPO / "unsloth_cli" / "commands" / "doctor.py"
+        "unsloth_doctor_for_parity", REPO / "unsloth_cli" / "commands" / "spark_doctor.py"
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

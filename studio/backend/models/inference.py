@@ -2938,8 +2938,9 @@ class ChatCompletionRequest(BaseModel):
         description = (
             "[x-unsloth] Extra share of the prompt budget to drop when a rolling "
             "compaction fires, so the boundary can stay put for a stretch of turns. "
-            "0.25 is the process default (ROLLING_COMPACTION_HEADROOM_RATIO). Ignored "
-            "for checkpoint compaction. Unset keeps the process default."
+            "A checkpoint reset leaves the same share free when it keeps the tool calls "
+            "of the turn in progress. 0.25 is the process default "
+            "(ROLLING_COMPACTION_HEADROOM_RATIO). Unset keeps the process default."
         ),
     )
     compact_context: Optional[bool] = Field(
@@ -4977,6 +4978,14 @@ class DiffusionGenerateRequest(BaseModel):
         description = "Noise schedule for the sampler. Omitted or 'automatic' uses the sampler's "
         "usual schedule (Karras for DPM++ 2M, Exponential for DPM++ 2M SDE, else the model's).",
     )
+    provider_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Saved connection ID. When set, the prompt goes to that "
+        "connection's /images/generations as `model` and the results are saved to the gallery.",
+    )
+    model: Optional[str] = Field(
+        None, description = "Model name on the connection named by `provider_id`."
+    )
 
     @field_validator("loras")
     @classmethod
@@ -5218,6 +5227,11 @@ class DiffusionGenerateProgressResponse(BaseModel):
         None, description = "Live latent preview of the image being denoised, as a JPEG data URL"
     )
     preview_seq: int = Field(0, description = "Moves each time a new preview is published")
+    target: Optional[Literal["connection"]] = Field(
+        None,
+        description = "'connection' when the run is on a saved image connection, so a page that "
+        "resumed it sends Stop to POST /images/generate/cancel?target=connection",
+    )
 
 
 class DiffusionLoadProgressResponse(BaseModel):
@@ -6283,19 +6297,19 @@ class VideoGenerateRequest(BaseModel):
     )
     # Width/height/num_frames/fps default per loaded family, so they are optional here. These bounds
     # stay a COARSE family-agnostic outer guard: the enforced rule is the LOADED family's own
-    # (resolution presets and the k * frame_step + frame_offset lattice), which the route checks with
+    # (sizes near its presets and the k * frame_step + frame_offset lattice), which the route checks with
     # validate_video_request_shape. With no model loaded there is no family to judge against.
     width: Optional[int] = Field(
         None,
         ge = 32,
         le = 2048,
-        description = "Frame width in pixels (a resolution preset of the loaded family)",
+        description = "Frame width in pixels (a multiple of the loaded family's resolution_multiple near its presets)",
     )
     height: Optional[int] = Field(
         None,
         ge = 32,
         le = 2048,
-        description = "Frame height in pixels (a resolution preset of the loaded family)",
+        description = "Frame height in pixels (see width)",
     )
     num_frames: Optional[int] = Field(
         None,
@@ -6583,6 +6597,18 @@ class VideoGenerationDefaults(BaseModel):
     resolution_multiple: int = Field(..., description = "Width/height must be divisible by this")
     resolution_presets: list[list[int]] = Field(
         default_factory = list, description = "(width, height) presets the UI offers, default first"
+    )
+    custom_size_min_pixels: Optional[int] = Field(
+        None,
+        description = "Smallest width * height accepted off the presets, or null when only the snap applies",
+    )
+    custom_size_max_pixels: Optional[int] = Field(
+        None,
+        description = "Largest width * height accepted off the presets (see custom_size_min_pixels)",
+    )
+    custom_size_max_aspect: Optional[float] = Field(
+        None,
+        description = "Widest long:short ratio accepted off the presets (see custom_size_min_pixels)",
     )
     canvas_short_edge: Optional[int] = Field(
         None,

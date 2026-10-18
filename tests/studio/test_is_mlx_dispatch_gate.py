@@ -1,15 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Regression tests for the CUDA-vs-MLX dispatch gates Unsloth relies on.
-
-Two gates: (1) ``unsloth._IS_MLX`` (import-time, delegates to the zoo MLX
-runtime gate behind a local precheck barrier); (2)
-``utils.hardware.detect_hardware()`` (runtime, CUDA->XPU->MLX->CPU). These
-are the canaries against "MLX support accidentally hijacks CUDA/AMD/Intel
-users": we check the _IS_MLX helper structure, flip both gates True under a
-spoofed Darwin+arm64 with a fake mlx module, and confirm both stay CUDA-side
-on the real host. No real MLX install needed.
-"""
+"""Canaries that MLX support never hijacks CUDA, AMD or Intel users via _IS_MLX or detect_hardware."""
 
 import ast
 import importlib
@@ -67,7 +58,6 @@ def test_is_mlx_gate_uses_three_required_predicates():
     ), "_IS_MLX helper must run the local MLX precheck before importing zoo"
 
 
-# Runtime gate behavior with platform spoofed to Apple Silicon + fake mlx.
 def _evaluate_is_mlx_precheck(platform_module, importlib_util, os_module):
     """Re-evaluate the local _is_mlx_available precheck with injected deps."""
     return (
@@ -82,7 +72,6 @@ def test_is_mlx_gate_true_on_apple_silicon_with_mlx_present(monkeypatch):
     import platform
     import importlib.util
 
-    # Fake mlx so find_spec returns a non-None ModuleSpec.
     fake_mlx = types.ModuleType("mlx")
     fake_mlx.__spec__ = importlib.machinery.ModuleSpec("mlx", loader = None)
     fake_mlx.__path__ = []
@@ -100,7 +89,6 @@ def test_is_mlx_gate_false_when_mlx_missing(monkeypatch):
     import platform
     import importlib.util
 
-    # Apple Silicon but no mlx -> gate must be False.
     monkeypatch.delitem(sys.modules, "mlx", raising = False)
     monkeypatch.setattr(platform, "system", lambda: "Darwin")
     monkeypatch.setattr(platform, "machine", lambda: "arm64")
@@ -133,12 +121,6 @@ def test_is_mlx_gate_false_on_non_apple_silicon():
     assert _evaluate_is_mlx_precheck(platform, importlib.util, os) is False
 
 
-# ---------------------------------------------------------------------------
-# 3. detect_hardware() picks MLX only when CUDA+XPU are both unavailable AND
-#    the host is Apple Silicon AND mlx is importable.
-# ---------------------------------------------------------------------------
-
-
 def _import_studio_hardware():
     """Lazy import of the Unsloth hardware module (studio/backend on sys.path)."""
     studio_backend = REPO_ROOT / "studio" / "backend"
@@ -152,14 +134,12 @@ def _import_studio_hardware():
 def test_detect_hardware_picks_mlx_when_only_apple_silicon_available(monkeypatch):
     hw = _import_studio_hardware()
 
-    # Force CUDA + XPU off so detect_hardware falls through to MLX.
     import torch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     if hasattr(torch, "xpu"):
         monkeypatch.setattr(torch.xpu, "is_available", lambda: False)
 
-    # Spoof Apple Silicon + importable mlx.core for _has_mlx().
     import platform
 
     monkeypatch.setattr(platform, "system", lambda: "Darwin")
@@ -171,9 +151,7 @@ def test_detect_hardware_picks_mlx_when_only_apple_silicon_available(monkeypatch
     monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
     monkeypatch.setitem(sys.modules, "mlx.core", fake_mlx_core)
 
-    # detect_hardware now gates MLX on the full stack via _has_usable_mlx_stack() (utils.mlx_repair.mlx_stack_available
-    # imports mlx_lm/mlx_vlm and checks versions); faking mlx.core alone no longer satisfies it. This test asserts the
-    # dispatch decision when the stack IS usable, so model that directly.
+    # detect_hardware gates on the full MLX stack, so faking mlx.core alone is not enough.
     monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: True)
 
     detected = hw.detect_hardware()

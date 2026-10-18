@@ -570,7 +570,9 @@ export function useTauriBackend() {
     setBackendStatus("stopped");
   }
 
-  async function startInstall() {
+  // Strict check: onClick passes a click event here.
+  async function startInstall(options?: { skipLongPaths?: boolean }) {
+    const skipLongPaths = options?.skipLongPaths === true;
     elevationResumeRef.current = null;
     setCurrentStepIndex(-1);
     setProgressDetail(null);
@@ -580,7 +582,7 @@ export function useTauriBackend() {
     clearBackendError();
     const { invoke } = await import("@tauri-apps/api/core");
     try {
-      await invoke("start_install");
+      await invoke("start_install", { skipLongPaths });
       // Install done: start the managed backend we just installed. Don't run the general preflight
       // here, it can attach to an unrelated running CLI/backend before launching ours. The
       // install-complete listener does NOT call startServer() to avoid a double-start race.
