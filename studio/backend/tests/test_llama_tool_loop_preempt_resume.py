@@ -258,7 +258,6 @@ class TestAPauseBeforeTheFirstToken:
         assert policy.checkpoints[0].has_resume_point() is False
 
 
-
 def _final_pass(
     monkeypatch,
     streams,

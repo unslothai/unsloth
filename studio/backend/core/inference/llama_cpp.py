@@ -9624,7 +9624,6 @@ class LlamaCppBackend:
         notices, so on any parking build it is the only signal."""
         try:
             from core.inference.llama_stats import scrape_llama_metrics
-
             metrics = scrape_llama_metrics(self.base_url, timeout_s = 3.0, headers = self._auth_headers)
         except Exception:
             return False

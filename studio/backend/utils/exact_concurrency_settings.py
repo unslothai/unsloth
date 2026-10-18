@@ -39,7 +39,6 @@ def _cached_setting(key: str) -> Any:
             generation = _generation.get(key, 0)
         try:
             from storage.studio_db import get_app_setting
-
             stored = run_as(OWNER, get_app_setting, key, None)
         except Exception:
             # An unreadable database must never fail a load; the caller falls back.

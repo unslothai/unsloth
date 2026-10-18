@@ -169,7 +169,6 @@ def _results(events):
     return [end.get("result") or "" for end in events]
 
 
-
 def _order_tool(seen):
     """Records each call's start and end. `alpha` waits a while for `beta` to start: in single file
     it never does, so `beta` starts after `alpha` ended; overlapped it starts meanwhile."""
@@ -264,7 +263,6 @@ class TestUnsetTheRoundRunsAsBeforePreemption:
         from .preempt_fakes import RecordingPolicy
         monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", "0")
         assert self._gguf(monkeypatch, preempt_policy = RecordingPolicy()) == _IN_ORDER
-
 
 
 class TestTheProviderLoopOverlaps:
