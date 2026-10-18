@@ -4949,8 +4949,11 @@ def test_the_resident_expert_share():
     "resident_share, admitted",
     [
         # L4, gemma-4-26B-A4B UD-Q4_K_XL under the --fit split at 8 / 12 / 16 GB.
-        (0.197, False),
-        (0.23, False),
+        (0.197, True),
+        (0.23, True),
+        # Qwen3.8-Flash-Next UD-IQ4_XS on a 32 GB card: the split computes 34 of 49 expert
+        # layers on the CPU (decode 72 vs 106 t/s on 48 cores, 41 vs 107 on 8 threads).
+        (0.32, True),
         (0.35, True),
         (0.494, True),
         (0.527, True),
@@ -5030,9 +5033,9 @@ def test_the_moe_switches(raw, switch):
 @pytest.mark.parametrize(
     "free_mib, cached",
     # 20 GiB model, 15 GiB of experts, 32 GiB card: the share of experts the --fit split
-    # would keep resident is ~14% / ~53% / ~79%.
-    [(14_000, False), (20_000, True), (24_000, False)],
-    ids = ["below_band_split", "in_band_cache", "above_band_split"],
+    # would keep resident is ~14% / ~53% / ~79%. No lower bound: a low share caches too.
+    [(14_000, True), (20_000, True), (24_000, False)],
+    ids = ["low_share_cache", "in_band_cache", "above_band_split"],
 )
 def test_the_resident_share_picks_cache_or_split(tmp_path, _moe_cache_host, free_mib, cached):
     backend, cmd = _cache_launch(tmp_path, memory = [(0, free_mib, 32_000)])

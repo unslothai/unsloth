@@ -7343,7 +7343,10 @@ _MOE_CACHE_AUTO_TOKENS = ("--moe-cache-mib", "auto")
 # (unknown r keeps the split). Cache vs split decode / prompt t/s, L4 gemma-4-26B-A4B:
 # r 0.23 23.5/384 vs 24.5/448, r 0.53 44.9/556 vs 31.2/593, r 0.82 48.5/592 vs 42.0/897.
 # RTX PRO 6000 Qwen3.8-Flash-Next: r <= 0.745 decode +24-42%, r 0.846 prompt -6-40%.
-_MOE_CACHE_MIN_RESIDENT_SHARE = 0.35
+# No lower bound: below it the split computes most experts on the CPU. Flash-Next UD-IQ4_XS on a
+# 32 GB card (r 0.32): cache/split decode 1.47x (48 cores) and 2.6-3.3x (8 threads), prompt 0.86x.
+# llama.cpp's own auto still refuses a cache too small to hold the experts of two tokens.
+_MOE_CACHE_MIN_RESIDENT_SHARE = 0.0
 _MOE_CACHE_MAX_RESIDENT_SHARE = 0.75
 # Drafted launches may get the cache. L4 gemma-4 decode cache/split at r 0.53/0.82/0.23:
 # MTP 1.76x/1.25x/0.96x, ngram-mod 1.19x/0.87x/1.11x (the band covers the losses).
