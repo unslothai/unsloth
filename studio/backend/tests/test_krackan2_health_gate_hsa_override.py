@@ -98,5 +98,4 @@ def test_override_to_a_generic_only_arch_keeps_mismatch_eligible(generic_only):
 def test_uncovered_set_matches_the_installer():
     sys.path.insert(0, str(ROOT / "studio"))
     import install_python_stack as ips
-
     assert hw._LINUX_UNCOVERED_AMD_GFX == ips._LINUX_UNCOVERED_AMD_GFX
