@@ -73,3 +73,13 @@ def test_a_bad_body_is_a_422(client, content):  # noqa: F811
     resp = client.post(CANCEL, content = content, headers = {"Content-Type": "application/json"})
     assert resp.status_code == 422
     assert "no body" in resp.json()["detail"]
+
+
+@pytest.mark.parametrize("video_id", ["", "  "])
+def test_an_empty_id_is_a_422_and_the_render_keeps_going(client, rendering, video_id):  # noqa: F811
+    resp = client.post(CANCEL, json = {"video_id": video_id})
+    assert resp.status_code == 422
+    assert "leave it out" in resp.json()["detail"]
+    assert client.get("/api/inference/video/generate-progress").json()["active"] is True
+    assert client.post(CANCEL).json() == {"cancelled": True}
+    assert _wait_terminal(client)["error"] == VIDEO_CANCELLED_MSG

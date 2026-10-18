@@ -790,7 +790,12 @@ async def _cancel_video_id(request: Request) -> Optional[str]:
     video_id = body.get("video_id")
     if video_id is not None and not isinstance(video_id, str):
         raise HTTPException(status_code = 422, detail = _CANCEL_BODY_MSG)
-    return video_id or None
+    if video_id is not None and not video_id.strip():
+        # An empty id must not widen into a cancel of whatever is rendering.
+        raise HTTPException(
+            status_code = 422, detail = "video_id is empty; leave it out to stop the running render."
+        )
+    return video_id
 
 
 @router.post("/video/generate/cancel")
