@@ -8,7 +8,8 @@ import { useSyncExternalStore } from "react";
 export interface VoiceDecisions {
   /** P(the turn is over) for the last transcript, and what the loop did with it. */
   turn: { p: number; sent: boolean; at: number } | null;
-  filler: { phrase: string; at: number } | null;
+  /** The filler class the model picked, how sure it was, and the phrase (empty when it stayed quiet). */
+  filler: { phrase: string; p: number; at: number } | null;
   interject: { action: "restart" | "ignore" | "queue"; confidence: number; at: number } | null;
   /** Whether the speech detector kept the last clip. */
   vad: { kept: boolean; at: number } | null;
@@ -26,8 +27,8 @@ function emit(next: Partial<VoiceDecisions>): void {
 
 export const publishTurnDecision = (p: number, sent: boolean): void =>
   emit({ turn: { p, sent, at: Date.now() } });
-export const publishFillerDecision = (phrase: string): void =>
-  emit({ filler: { phrase, at: Date.now() } });
+export const publishFillerDecision = (phrase: string, p: number = phrase ? 1 : 0): void =>
+  emit({ filler: { phrase, p, at: Date.now() } });
 export const publishInterjectDecision = (
   action: "restart" | "ignore" | "queue",
   confidence: number,

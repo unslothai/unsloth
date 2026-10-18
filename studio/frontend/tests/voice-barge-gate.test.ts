@@ -33,8 +33,8 @@ test("a held burst cuts in, a short one does not", () => {
 test("a loud leak raises the bar above the fixed minimum", () => {
   const gate = createBargeGate();
   feed(gate, 0.04, 100);
-  // Over the 0.045 floor, but not three times the measured leak.
-  assert.equal(feed(gate, 0.08, 10), false);
+  // Over the 0.045 floor, but not twice the measured leak.
+  assert.equal(feed(gate, 0.07, 10), false);
   assert.equal(feed(gate, 0.2, 6), true);
 });
 

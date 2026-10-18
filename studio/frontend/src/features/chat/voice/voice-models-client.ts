@@ -94,12 +94,15 @@ export async function fillerFromModel(
   prevAssistantAskedQuestion: boolean,
 ): Promise<FillerDecision | null> {
   const fields = logFields();
-  const r = await post<{ say: boolean; class: string; phrase: string; id?: string | null }>(
-    "filler",
-    { text, prev_q: prevAssistantAskedQuestion, ...fields },
-  );
+  const r = await post<{
+    say: boolean;
+    class: string;
+    confidence?: number;
+    phrase: string;
+    id?: string | null;
+  }>("filler", { text, prev_q: prevAssistantAskedQuestion, ...fields });
   if (!r) return null;
-  publishFillerDecision(r.say ? r.phrase : "");
+  publishFillerDecision(r.say ? r.phrase : "", r.confidence ?? (r.say ? 1 : 0));
   if (fields.log) voiceTrace("laya.filler", { id: r.id ?? null, say: r.say, cls: r.class });
   const logId = r.id ?? null;
   return r.say

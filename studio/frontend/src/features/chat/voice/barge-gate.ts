@@ -6,7 +6,8 @@
 // measured during this reply as well as above a fixed minimum.
 
 const BARGE_IN_RMS = 0.045;
-const BARGE_OVER_BLEED = 3;
+// Over the reply's bleed into the mic. 3x needed a raised voice on speakers; the detector rejects bleed anyway.
+const BARGE_OVER_BLEED = 2;
 // Long enough that a cough or a dropped object (one impulsive burst that decays
 // inside ~300 ms) does not cut the reply; "wait, stop" still clears it.
 const BARGE_IN_MS = 450;

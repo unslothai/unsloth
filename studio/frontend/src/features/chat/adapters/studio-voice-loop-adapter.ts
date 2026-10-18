@@ -93,6 +93,10 @@ const BARGE_UNCONFIRMED_MS = 450;
 const BARGE_CONFIRMED_MS = 250;
 // What the detector must hear in a clip for it to count as speech at all.
 const VAD_MIN_SPEECH_MS = 300;
+// The barge-in probe is asked after BARGE_CONFIRMED_MS of loudness, so the clip can only hold
+// about that much voice yet; the full bar made the first check fail every time and the reply
+// only stopped on the second or third burst.
+const BARGE_VAD_MIN_SPEECH_MS = 200;
 
 // The backend said it cannot detect speech here (no runtime, model refused): stop asking for
 // the rest of the app session and fall back to the loudness gate alone.
@@ -389,14 +393,17 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     };
 
     // Whether the clip holds a voice. null: no detector, decide on loudness as before.
-    const clipHasSpeech = async (blob: Blob): Promise<boolean | null> => {
+    const clipHasSpeech = async (
+      blob: Blob,
+      minSpeechMs: number = VAD_MIN_SPEECH_MS,
+    ): Promise<boolean | null> => {
       if (!vadReady || vadDisabled) return null;
       try {
         const result = await detectSpeech(
           blob,
           useChatRuntimeStore.getState().selectedVadModelId,
         );
-        const kept = result.speech_ms >= VAD_MIN_SPEECH_MS;
+        const kept = result.speech_ms >= minSpeechMs;
         publishVadDecision(kept);
         voiceTrace("vad", { kept, speech_ms: result.speech_ms, bargedIn, bargeConfirming });
         return kept;
@@ -746,7 +753,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               probe.set(c, at);
               at += c.length;
             }
-            void clipHasSpeech(encodeWav(probe, sampleRate)).then((voiced) => {
+            void clipHasSpeech(encodeWav(probe, sampleRate), BARGE_VAD_MIN_SPEECH_MS).then((voiced) => {
               bargeConfirming = false;
               if (ended || bargedIn) return;
               if (voiced === false) {
