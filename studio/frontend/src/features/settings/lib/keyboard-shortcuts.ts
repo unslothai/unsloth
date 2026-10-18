@@ -541,13 +541,24 @@ function keyToCode(key: string): string {
   return punctuation[key] ?? key;
 }
 
+/** The punctuation a key types, when keyToCode knows it; "" for anything else. */
+function typedPunctuation(
+  event: { code: string; key?: string; altKey: boolean },
+  mac: boolean,
+): string {
+  const key = event.key ?? "";
+  if ((mac && event.altKey) || key.length !== 1) return "";
+  if (event.code.startsWith("Numpad")) return "";
+  const typed = keyToCode(key);
+  return typed === key || /^(Key|Digit)/.test(typed) ? "" : typed;
+}
+
 /**
- * The code a keydown answers to. A key that types a Latin letter is that letter, as the
+ * The code a keydown records as. A key that types a Latin letter is that letter, as the
  * browser's own Ctrl+C is: on Dvorak the key typing x is Cut, not the B position, and the label
  * shown is the letter pressed. A letter position typing punctuation (Dvorak's ",") is that
- * punctuation, so Mod+Comma stays reachable. Everything else keeps its position: digits, other
- * punctuation (German types "/" with Shift, so its position is the only way to reach Mod+Slash),
- * the keypad, layouts typing no Latin letter, and Option on macOS, which rewrites the letter.
+ * punctuation. Everything else keeps its position: digits, the keypad, layouts typing no Latin
+ * letter, and Option on macOS, which rewrites the letter.
  */
 function eventCode(
   event: { code: string; key?: string; altKey: boolean },
@@ -559,10 +570,7 @@ function eventCode(
     return code;
   }
   if (/^[a-z]$/i.test(key)) return `Key${key.toUpperCase()}`;
-  if (/^Key[A-Z]$/.test(code)) {
-    const typed = keyToCode(key);
-    if (typed !== key) return typed;
-  }
+  if (/^Key[A-Z]$/.test(code)) return typedPunctuation(event, mac) || code;
   return code;
 }
 
@@ -579,7 +587,15 @@ export function matchesBinding(
   },
   mac = isMacPlatform(),
 ): boolean {
-  if (eventCode(event, mac) !== binding.code) return false;
+  // A punctuation position also answers to the punctuation it types: Dvorak puts "/" on the
+  // [ position and z on the / one, so that is its only Mod+Slash, while German types "/" with
+  // Shift and keeps Mod+Slash on the position.
+  if (
+    eventCode(event, mac) !== binding.code &&
+    typedPunctuation(event, mac) !== binding.code
+  ) {
+    return false;
+  }
   // Off macOS a Ctrl chord is unreachable, and without this a value stored on
   // a Mac would fall through the checks below and fire on the bare key.
   if (!mac && binding.ctrl) return false;

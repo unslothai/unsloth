@@ -714,6 +714,22 @@ test("a letter position typing punctuation answers as that punctuation", () => {
   );
 });
 
+test("a punctuation position also answers to the punctuation it types", () => {
+  const slash = parseBinding("Mod+Slash");
+  assert.ok(slash);
+  // Dvorak types "/" on the [ position, its only way to Ctrl+/ once the / position types z.
+  const dvorakSlash = keyEvent("BracketLeft", { ctrlKey: true, key: "/" });
+  assert.equal(matchesBinding(slash, dvorakSlash, false), true);
+  assert.equal(matchesBinding(slash, keyEvent("BracketLeft", { metaKey: true, key: "/" }), true), true);
+  // Recording keeps the position, as main does, so the zoom chords still yield to a binding.
+  assert.equal(formatBindingValue(bindingFromEvent(dvorakSlash, false)!), "Mod+BracketLeft");
+  // Option on macOS rewrites the key, so it reads the position alone.
+  assert.equal(
+    matchesBinding(slash, keyEvent("BracketLeft", { metaKey: true, altKey: true, key: "/" }), true),
+    false,
+  );
+});
+
 test("keys that type no letter keep their position", () => {
   // German types "-" on the Slash position and "/" only with Shift: the position is the reach.
   const slash = parseBinding("Mod+Slash");
