@@ -499,10 +499,21 @@ async fn connect_within(host: &str, port: u16) -> Result<TcpStream, Refusal> {
             .map_err(|_| Refusal::Unreachable)?
             .collect(),
     };
-    if addresses.iter().any(|address| ip_is_private(address.ip())) {
+    if addresses
+        .iter()
+        .any(|address| answer_is_private(address.ip()))
+    {
         return Err(Refusal::Private);
     }
     dial(addresses).await
+}
+
+/// Whether a public name's DNS answer is private. Fake-IP DNS (Clash/mihomo, sing-box, Surge in TUN
+/// mode) answers every name from RFC 2544 benchmarking space and maps the address back to the name in
+/// the tunnel, so no real host sits there; literals never get here, `public_host` refuses them.
+fn answer_is_private(ip: IpAddr) -> bool {
+    let fake_ip = matches!(ip, IpAddr::V4(v4) if u32::from(v4) >> 17 == 0xc612_0000 >> 17);
+    ip_is_private(ip) && !fake_ip
 }
 
 async fn dial(addresses: impl IntoIterator<Item = SocketAddr>) -> Result<TcpStream, Refusal> {
@@ -590,7 +601,7 @@ async fn refuse_private_answers(host: &Host<String>, port: u16) -> Result<(), Re
         tokio::net::lookup_host((name.as_str(), port)),
     );
     let private = answers.await.is_ok_and(|answers| {
-        answers.is_ok_and(|mut answers| answers.any(|answer| ip_is_private(answer.ip())))
+        answers.is_ok_and(|mut answers| answers.any(|answer| answer_is_private(answer.ip())))
     });
     if private {
         return Err(Refusal::Private);
@@ -1426,12 +1437,30 @@ mod tests {
             "printer.local",
             "wiki.corp",
             "router.home",
+            "198.18.0.1",
+            "3323068417",
+            "[::ffff:c612:1]",
         ] {
             assert_eq!(
                 connect(host, 80).await.err(),
                 Some(Refusal::Private),
                 "{host}"
             );
+        }
+    }
+
+    #[test]
+    fn fake_ip_answers_are_public_only_as_ipv4() {
+        for ip in [
+            "198.18.0.24",
+            "198.19.255.254",
+            "198.17.255.255",
+            "198.20.0.1",
+        ] {
+            assert!(!answer_is_private(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in ["10.0.0.1", "192.168.1.1", "127.0.0.1", "::ffff:198.18.0.1"] {
+            assert!(answer_is_private(ip.parse().unwrap()), "{ip}");
         }
     }
 

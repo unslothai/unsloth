@@ -16,6 +16,7 @@ from html.parser import HTMLParser
 import json
 import math
 import http.client
+import ipaddress
 import ntpath
 import os
 from functools import partial
@@ -16072,6 +16073,20 @@ def _explicit_proxy_applies(scheme: str, host: str) -> bool:
         return False
 
 
+# Fake-IP DNS (Clash/mihomo, sing-box, Surge in TUN mode) answers every name from RFC 2544 benchmarking space and maps
+# the address back to the name in the tunnel, so no real host sits there. Only a public name's answer may use it:
+# a literal is refused as before.
+_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+
+
+def _is_public_name(hostname: str) -> bool:
+    """A dotted DNS name with a non-local suffix, never an address however spelled (TLDs start with a letter)."""
+    from .browser_agent import _host_problem
+
+    label = hostname.rstrip(".").rsplit(".", 1)[-1]
+    return ":" not in hostname and label[:1].isalpha() and _host_problem(hostname) is None
+
+
 def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, list[str]]:
     """Resolve *hostname*, reject non-public IPs, return the pinned IP strings.
 
@@ -16094,6 +16109,10 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, lis
     resolved = []
     for *_, sockaddr in infos:
         ip = ipaddress.ip_address(sockaddr[0])
+        if ip in _FAKE_IP_NETWORK and _is_public_name(hostname):
+            if sockaddr[0] not in resolved:
+                resolved.append(sockaddr[0])
+            continue
         # `not ip.is_global` is the source of truth (also rejects CGNAT and benchmarking/doc ranges); the explicit
         # predicates only label the error.
         if (
