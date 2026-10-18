@@ -931,3 +931,25 @@ def test_calibration_dataset_with_several_splits_and_no_train_is_refused(monkeyp
     )
     with pytest.raises(ValueError, match = r"no train split .*\(test, validation\)"):
         reap_mod._calibration_dataset("org/calib", None)
+
+
+def test_probe_follows_an_adapter_even_beside_a_dense_config(tmp_path):
+    # A LoRA folder may also hold a config.json (dense, stale or the base's); the export loader
+    # follows adapter_config.json, so the probe reads the base it names.
+    base = tmp_path / "moe_base"
+    base.mkdir()
+    (base / "config.json").write_text(json.dumps({"num_experts": 8, "num_experts_per_tok": 2}))
+    lora = tmp_path / "lora"
+    lora.mkdir()
+    (lora / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": str(base)}))
+    (lora / "config.json").write_text(json.dumps({"model_type": "llama", "hidden_size": 64}))
+    info = reap_mod.moe_export_info(str(lora))
+    assert (info["num_experts"], info["top_k"]) == (8, 2)
+
+
+def test_probe_reads_a_folders_own_config_when_its_adapter_names_no_base(tmp_path):
+    folder = tmp_path / "model"
+    folder.mkdir()
+    (folder / "adapter_config.json").write_text("{}")
+    (folder / "config.json").write_text(json.dumps({"num_experts": 8, "num_experts_per_tok": 2}))
+    assert reap_mod.moe_export_info(str(folder))["num_experts"] == 8

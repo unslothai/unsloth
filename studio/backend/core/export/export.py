@@ -1209,6 +1209,15 @@ class ExportBackend:
     def _decision_only_gguf(self) -> Tuple[bool, str, Optional[str]]:
         return False, "Decision models export to GGUF only.", None
 
+    def _sync_reap_report(self, folder) -> None:
+        """reap_report.json in ``folder`` describes the weights it holds (written for a REAP pruned
+        model, a stale one removed otherwise); run before a folder is uploaded."""
+        try:
+            from core.export.reap import sync_reap_report
+            sync_reap_report(self, folder)
+        except Exception as exc:  # noqa: BLE001 - the report never blocks an export
+            logger.warning(f"Could not update reap_report.json in {folder}: {exc}")
+
     def _write_export_metadata(self, save_directory: str):
         """Write export_metadata.json with base model info for Chat page discovery."""
         try:
@@ -1453,6 +1462,8 @@ class ExportBackend:
                 output_path = str(Path(final_dir).resolve())
                 # Complete on disk even if the Hub upload below fails (the worker syncs REAP's report).
                 self._local_export_path = output_path
+                # Before any upload: the folder's REAP report must describe the weights it now holds.
+                self._sync_reap_report(output_path)
 
             if push_to_hub:
                 if not repo_id or not hf_token:
@@ -1495,6 +1506,7 @@ class ExportBackend:
                                     **merged_token_kw,
                                 )
                                 self._package_drafter_merged(upload_dir, repo_id)
+                                self._sync_reap_report(upload_dir)
                             # Whatever was built, only weights are worth a repo; without them the
                             # merging push below runs instead, as it did before this was uploaded.
                             if _holds_checkpoint_weights(upload_dir):
@@ -1608,6 +1620,7 @@ class ExportBackend:
                 logger.info(f"Model saved successfully to {save_directory}")
                 output_path = str(Path(save_directory).resolve())
                 self._local_export_path = output_path
+                self._sync_reap_report(output_path)
 
             if push_to_hub:
                 if not repo_id or not hf_token:
@@ -1644,6 +1657,7 @@ class ExportBackend:
                             self.current_model.save_pretrained(upload_dir)
                             self.current_tokenizer.save_pretrained(upload_dir)
                             self._package_drafter_merged(upload_dir, repo_id)
+                            self._sync_reap_report(upload_dir)
                         hf_api = HfApi(token = hf_token)
                         repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
                         repo_id = getattr(repo_url, "repo_id", repo_id)

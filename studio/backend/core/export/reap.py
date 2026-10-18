@@ -157,12 +157,16 @@ def moe_export_info(
 
         if is_local_path(model):
             local = Path(normalize_path(model)).expanduser()
-            if not (local / "config.json").is_file():
+            has_config = (local / "config.json").is_file()
+            # An adapter folder may carry a config.json too; the export loader follows
+            # adapter_config.json, so the probe does as well.
+            if not has_config or (local / "adapter_config.json").is_file():
                 base = adapter_base or _local_adapter_base(str(local))
-                if not base or _depth >= 2 or base == model:
+                if base and _depth < 2 and base != model:
+                    # A Hub base of a local adapter may not be cached yet: read it online.
+                    return moe_export_info(base, hf_token, is_local_path(base), _depth + 1)
+                if not has_config:
                     return None
-                # A Hub base of a local adapter may not be cached yet: read it online.
-                return moe_export_info(base, hf_token, is_local_path(base), _depth + 1)
         return moe_info_from_config(_read_raw_config_json(model, hf_token, local_files_only, None))
     except Exception as exc:
         logger.debug("MoE detection skipped for '%s': %s", model, exc)
