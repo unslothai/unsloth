@@ -1966,6 +1966,8 @@ class ExportBackend:
                         with q4nx.staged_output(Path(abs_save_dir) / "npu-q4nx") as staging:
                             q4nx.convert_gguf_to_q4nx(source, staging)
                             self._write_q4nx_companions(staging, exported_config)
+                            # The NPU folder is deployed on its own, so it carries its own report.
+                            self._sync_reap_report(staging)
                     except Exception as exception:
                         logger.error(f"Q4NX conversion failed: {exception}")
                         return (

@@ -103,7 +103,7 @@ def _maps_to_16_bit(model: str) -> bool:
         return False
 
 
-def _hub_file_exists(
+def hub_file_exists(
     repo: str,
     filename: str,
     hf_token = None,
@@ -118,7 +118,7 @@ def _hub_file_exists(
 
 def hub_adapter_has_mtp_head(repo: str, hf_token = None) -> bool:
     """Unsloth's loader re-attaches a Hub LoRA repo's trained MTP head, which REAP refuses."""
-    return _hub_file_exists(repo, "mtp_head.safetensors", hf_token)
+    return hub_file_exists(repo, "mtp_head.safetensors", hf_token)
 
 
 def _quantization_allows_reap(holders, bnb_maps_to_16_bit: bool) -> bool:
@@ -227,7 +227,7 @@ def moe_export_info(
             info is not None
             and not local
             and not (isinstance(config, dict) and config.get("quantization_config"))
-            and _hub_file_exists(model, _HF_QUANT_CONFIG, hf_token)
+            and hub_file_exists(model, _HF_QUANT_CONFIG, hf_token)
         ):
             return None
         return info

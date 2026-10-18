@@ -892,9 +892,9 @@ def test_probe_hides_reap_for_an_older_modelopt_export(tmp_path, monkeypatch):
         "_read_raw_config_json",
         lambda *a, **k: {"num_experts": 8, "num_experts_per_tok": 2},
     )
-    monkeypatch.setattr(reap_mod, "_hub_file_exists", lambda repo, name, token = None: True)
+    monkeypatch.setattr(reap_mod, "hub_file_exists", lambda repo, name, token = None: True)
     assert reap_mod.moe_export_info("org/moe-modelopt", local_files_only = False) is None
-    monkeypatch.setattr(reap_mod, "_hub_file_exists", lambda repo, name, token = None: False)
+    monkeypatch.setattr(reap_mod, "hub_file_exists", lambda repo, name, token = None: False)
     assert reap_mod.moe_export_info("org/moe-modelopt", local_files_only = False)["num_experts"] == 8
 
 
@@ -1120,6 +1120,8 @@ def test_moe_info_route_skips_a_hub_lora_with_an_mtp_head(monkeypatch):
         lambda model, *a, **k: None if model == "org/lora" else {"num_experts": 8, "top_k": 2},
     )
     monkeypatch.setattr(reap_mod, "hub_adapter_has_mtp_head", lambda repo, token = None: True)
+    # No network: the repo is not seen as an adapter up front, so the fallback path runs.
+    monkeypatch.setattr(reap_mod, "hub_file_exists", lambda repo, name, token = None: False)
     import utils.models.model_config as model_config
 
     monkeypatch.setattr(
@@ -1142,3 +1144,39 @@ def test_moe_info_route_skips_a_hub_lora_with_an_mtp_head(monkeypatch):
 
 async def _async_none(*args, **kwargs):
     return None
+
+
+@pytest.mark.parametrize("mtp_head", [True, False])
+def test_moe_info_route_probes_a_hub_adapter_through_its_base_even_with_a_config(
+    monkeypatch, mtp_head
+):
+    # A Hub LoRA repo can ship a config.json too; the loader follows adapter_config.json.
+    from routes import export as export_route
+    import routes.models as models_route
+    import utils.models.model_config as model_config
+
+    monkeypatch.setattr(models_route, "_require_model_access_or_caller_token", _async_none)
+    probed = []
+
+    def info(model, *a, **k):
+        probed.append(model)
+        return {"num_experts": 4 if model == "org/lora" else 8, "top_k": 2}
+
+    monkeypatch.setattr(reap_mod, "moe_export_info", info)
+    monkeypatch.setattr(
+        reap_mod,
+        "hub_file_exists",
+        lambda repo, name, token = None: name == "adapter_config.json"
+        or (mtp_head and name == "mtp_head.safetensors"),
+    )
+    monkeypatch.setattr(reap_mod, "hub_adapter_has_mtp_head", lambda repo, token = None: mtp_head)
+    monkeypatch.setattr(
+        model_config, "get_base_model_from_lora_identifier", lambda m, t = None: "org/base"
+    )
+    res = asyncio.run(
+        export_route.get_moe_info(
+            model = "org/lora", hf_token = None, current_subject = "t", allow_ambient = False
+        )
+    )
+    assert "org/lora" not in probed
+    assert res.num_experts == (None if mtp_head else 8)
