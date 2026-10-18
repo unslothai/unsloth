@@ -25,13 +25,17 @@ _IR_SECONDS = 1.0
 # Every measure walks the audio this many frames at a time, so a 10-minute take never needs
 # full-length float64 copies.
 _CHUNK = 1 << 18
-# Clipping: at least 3 identical samples in a row at full scale, reached or left by a jump of more
-# than _CLIP_EDGE quantization steps. A clean peak, even a low tone that PCM rounds to a flat top,
-# eases onto and off its top one step at a time; a clipped waveform hits the rail at speed. 0.99 lets
-# the 8-bit positive rail (127/128) count.
+# Clipping: at least 3 identical samples in a row at full scale, reached or left by a jump a smooth
+# peak could not make. PCM rounds a clean peak, even a low tone's, to a flat top of L samples, and the
+# curve drops off it by at most about ((L + 1) / (L - 1))**2 quantization steps (3 steps at L = 3,
+# 1 from L = 5 in a sweep of clean tones); a clipped waveform hits the rail at speed. The step used is
+# at most _CLIP_STEP_MAX, so coarse 8-bit steps (1/128) cannot hide an overdriven tone; 8-bit is too
+# coarse to tell a clean low tone's flat top from clipping. 0.99 lets the 8-bit positive rail
+# (127/128) count.
 _CLIP_LEVEL = 0.99
 _CLIP_RUN = 3
 _CLIP_EDGE = 2
+_CLIP_STEP_MAX = 2.0**-13
 # Sound span: 20 ms frames louder than 40 dB under the loudest frame, never below -60 dBFS.
 _FRAME_S = 0.02
 _SPAN_RANGE_DB = 40.0
@@ -208,8 +212,8 @@ def true_peak(data: np.ndarray) -> float:
 
 def clipped_samples(data: np.ndarray, step: float = 0.0) -> int:
     """Samples in runs of at least ``_CLIP_RUN`` identical full-scale samples, per channel, that the
-    waveform reaches or leaves by more than ``_CLIP_EDGE`` quantization steps (``step``; 0 for
-    float audio)."""
+    waveform reaches or leaves more steeply than a smooth peak could; ``step`` is the quantization
+    step (0 for float audio)."""
     total = 0
     for channel in range(data.shape[1]):
         x = data[:, channel]
@@ -254,7 +258,8 @@ def clipped_samples(data: np.ndarray, step: float = 0.0) -> int:
         into = np.where(first > 0, np.abs(top - x[np.maximum(first - 1, 0)]), -1.0)
         out = np.where(last < n - 1, np.abs(top - x[np.minimum(last + 1, n - 1)]), -1.0)
         edge = np.maximum(into, out)
-        steep = (edge > _CLIP_EDGE * step) | (edge < 0)
+        limit = _CLIP_EDGE * min(step, _CLIP_STEP_MAX) * ((length + 1) / (length - 1)) ** 2
+        steep = (edge > limit) | (edge < 0)
         total += int(length[steep].sum())
     return total
 

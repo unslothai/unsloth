@@ -207,10 +207,14 @@ def wav_seconds(path: Path) -> Optional[float]:
 
 
 def save_source_clip(
-    source, prepared_path: Path, reference_text: Optional[str]
+    source,
+    prepared_path: Path,
+    reference_text: Optional[str],
+    created: Optional[list[str]] = None,
 ) -> Optional[dict[str, Any]]:
     """Keep an uploaded recording in history beside its edit, so A/B outlives the upload. Reuses a
-    source clip of the same audio; None for a history clip or an upload with no record."""
+    source clip of the same audio; None for a history clip or an upload with no record. The id of
+    a clip it had to save is appended to ``created``."""
     import wave
 
     from core.inference import audio_gallery, audio_inputs
@@ -250,4 +254,7 @@ def save_source_clip(
         "duration_s": duration_s,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    return audio_gallery.save(Path(prepared_path).read_bytes(), meta)
+    record = audio_gallery.save(Path(prepared_path).read_bytes(), meta)
+    if record is not None and created is not None:
+        created.append(record["id"])
+    return record

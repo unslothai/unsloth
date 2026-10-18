@@ -23966,7 +23966,11 @@ async def _run_audio_edit(
     source_record = None
     try:
         source_record = await asyncio.to_thread(
-            audio_edit.save_source_clip, source, source_path, reference_text
+            audio_edit.save_source_clip,
+            source,
+            source_path,
+            reference_text,
+            _AUDIO_RUN_CREATED.get(),
         )
     except Exception as exc:  # noqa: BLE001 - the edit is served even when its source is not kept
         logger.warning("audio_edit.source_save_failed: %s", exc)
@@ -24494,6 +24498,12 @@ _AUDIO_RUN_CANCEL: "contextvars.ContextVar[Optional[threading.Event]]" = context
 )
 
 
+# Clips a run saved that its response lists as reused sources, so a cancel can remove them too.
+_AUDIO_RUN_CREATED: "contextvars.ContextVar[Optional[list[str]]]" = contextvars.ContextVar(
+    "audio_run_created", default = None
+)
+
+
 def _audio_run_cancel_key() -> Optional[tuple[str, str]]:
     # Namespaced, so a chat cancel_id can never stop an audio run.
     cancel_id = _AUDIO_RUN_CANCEL_ID.get()
@@ -24511,6 +24521,8 @@ async def _dispatch_audio_run(
     token = _AUDIO_RUN_CANCEL_ID.set(body.cancel_id)
     cancel = threading.Event()
     event_token = _AUDIO_RUN_CANCEL.set(cancel)
+    created: list[str] = []
+    created_token = _AUDIO_RUN_CREATED.set(created)
     try:
         # Registry only: each stage records itself as a generation once a model is loaded.
         with _TrackedCancel(cancel, _audio_run_cancel_key(), track_run = False):
@@ -24520,10 +24532,11 @@ async def _dispatch_audio_run(
         # it reused stays) and the run answers 499, as a cancel during generation would.
         if cancel.is_set():
             made = [clip.id for clip in response.clips if clip.role != "source"]
-            await asyncio.to_thread(_discard_audio_clips, made)
+            await asyncio.to_thread(_discard_audio_clips, made + created)
             raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
         return response
     finally:
+        _AUDIO_RUN_CREATED.reset(created_token)
         _AUDIO_RUN_CANCEL.reset(event_token)
         _AUDIO_RUN_CANCEL_ID.reset(token)
 

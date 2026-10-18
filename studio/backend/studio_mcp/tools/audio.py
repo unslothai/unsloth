@@ -514,7 +514,7 @@ async def transcribe(
     Audio over 25 MB, given by id, or sent with ``speakers`` is stored with Unsloth Studio first and its transcript is saved to Audio history (``saved_to_history``); translation needs a smaller file.
     ``timestamps`` adds segments and needs a model that times them, such as Qwen3-ASR (audio.cpp) or Parakeet-TDT; others refuse it, and translation has none.
     ``speakers`` labels who speaks each segment and needs a model that tells speakers apart.
-    ``expected_text`` adds match_score: 1 minus the word error rate against it, so 1.0 when every word matches; it is null when the texts are too long to align (over 50 million word pairs; each Chinese or Japanese character counts as a word).
+    ``expected_text`` adds match_score: 1 minus the word error rate against it, so 1.0 when every word matches; it is null when the texts are too long to align (over 50 million word pairs; in scripts written without spaces, such as Chinese, Japanese or Thai, each character counts as a word).
     A missing model is downloaded first.
     Without ``model`` the loaded speech-to-text model or Unsloth Studio's default is used."""
     if translate and (timestamps or speakers):

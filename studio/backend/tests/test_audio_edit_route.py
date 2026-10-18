@@ -259,3 +259,35 @@ def test_the_worker_carries_the_edit():
         )
     assert seen[0]["edit"] == edit and seen[0]["audio_inputs"] == source
     assert "edit" not in seen[1]
+
+
+def _cancel_during_save(monkeypatch):
+    """The output save sets the run's cancel event, as a POST /audio/cancel landing then would."""
+    persist = inference._persist_tts_clip
+
+    def save_then_cancel(*args, **kwargs):
+        record = persist(*args, **kwargs)
+        inference._AUDIO_RUN_CANCEL.get().set()
+        return record
+
+    monkeypatch.setattr(inference, "_persist_tts_clip", save_then_cancel)
+
+
+def test_a_cancel_during_the_save_removes_the_source_the_run_kept(stub, monkeypatch):
+    _load(stub)
+    input_id = _input(ALICE)
+    _cancel_during_save(monkeypatch)
+    with _client(ALICE) as client:
+        assert _edit(client, input_id).status_code == 499
+    assert run_as(ALICE, audio_gallery.list_audio) == []
+
+
+def test_a_cancel_during_the_save_keeps_a_source_an_earlier_run_kept(stub, monkeypatch):
+    _load(stub)
+    input_id = _input(ALICE)
+    with _client(ALICE) as client:
+        first = _edit(client, input_id).json()["clips"]
+        _cancel_during_save(monkeypatch)
+        assert _edit(client, input_id).status_code == 499
+    kept = {clip["id"] for clip in run_as(ALICE, audio_gallery.list_audio)}
+    assert kept == {clip["id"] for clip in first}

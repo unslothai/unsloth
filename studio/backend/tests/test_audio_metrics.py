@@ -68,9 +68,9 @@ def test_hard_clipping_counts_and_a_clean_full_scale_sine_does_not(tmp_path):
         assert am.measure(_sine(1.0, 1.0, freq), RATE)["clipped_samples"] == 0
     # 16-bit PCM rounds a low full-scale sine to a flat top, which it eases onto one step at a
     # time; an overdriven one lands on the rail with a jump.
-    for freq in (10.0, 40.0):
-        clean = am.measure_file(_write(tmp_path / f"clean{freq}.wav", _sine(1.0, 1.0, freq)))
-        assert clean["clipped_samples"] == 0
+    for freq, amplitude in ((10.0, 1.0), (40.0, 1.0), (50.0, 0.999)):
+        clean = _write(tmp_path / f"clean{freq}.wav", _sine(1.0, amplitude, freq))
+        assert am.measure_file(clean)["clipped_samples"] == 0
     loud = np.clip(1.1 * _sine(1.0, 1.0, 10.0), -1.0, 1.0)
     assert am.measure_file(_write(tmp_path / "loud.wav", loud))["clipping_ratio"] > 0.2
     # Two samples at the rail are a peak, three in a row are clipping.
@@ -131,15 +131,22 @@ def test_match_score_is_one_minus_wer_after_normalising():
     assert am.match_score(ref, hyp) == pytest.approx(1 - jiwer.wer(ref, hyp), abs = 1e-4)
 
 
-def test_8_bit_clipping_counts_on_both_rails(tmp_path):
-    pcm = np.full(100, 128, dtype = np.uint8)
-    pcm[10:15], pcm[50:55] = 255, 0
-    with wave.open(str(tmp_path / "s8.wav"), "wb") as w:
+def _write_8_bit(path, pcm):
+    with wave.open(str(path), "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(1)
         w.setframerate(RATE)
-        w.writeframes(pcm.tobytes())
-    assert am.measure_file(tmp_path / "s8.wav")["clipped_samples"] == 10
+        w.writeframes(pcm.astype(np.uint8).tobytes())
+    return path
+
+
+def test_8_bit_clipping_counts_on_both_rails(tmp_path):
+    pcm = np.full(100, 128)
+    pcm[10:15], pcm[50:55] = 255, 0
+    assert am.measure_file(_write_8_bit(tmp_path / "s8.wav", pcm))["clipped_samples"] == 10
+    # 8-bit steps are coarse, but an overdriven low tone still lands on the rail with a jump.
+    loud = np.clip(np.round(np.clip(1.1 * _sine(1.0, 1.0, 100.0)[:, 0], -1, 1) * 127) + 128, 0, 255)
+    assert am.measure_file(_write_8_bit(tmp_path / "loud8.wav", loud))["clipping_ratio"] > 0.2
 
 
 def test_chunked_measures_match_one_pass(monkeypatch):
