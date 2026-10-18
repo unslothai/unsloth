@@ -122,7 +122,7 @@ test("the setup snippet shows only while on, targets the usage examples' address
   );
   assert.equal(
     en.settings.apiKeys.mcp.exportKeyHint,
-    "Set {name} to an access token from this page before you start the agent.",
+    "Set {name} to an Unsloth Studio API key from this page before you start the agent.",
   );
 });
 
