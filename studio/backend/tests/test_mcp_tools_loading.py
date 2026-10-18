@@ -814,3 +814,31 @@ def test_an_stt_load_that_outlasts_the_unload_is_unloaded_once_it_finishes(monke
     assert queries(studio, f"{STT}/unload") == [
         {"engine": "transformers", "model": WHISPER, "wait": "true"}
     ]
+
+
+# The resident-model snapshot and the media Hub and plan reads all run inside the job.
+@pytest.mark.parametrize("slow_route", ["plan", "status"])
+def test_a_slow_read_before_the_load_does_not_hold_the_call_past_wait_s(
+    monkeypatch, fast_polls, slow_route
+):
+    studio = fake_studio(
+        {
+            ("POST", "/api/inference/video/download-plan"): (
+                slow({"entries": []}, 1.0) if slow_route == "plan" else {"entries": []}
+            ),
+            ("POST", "/api/inference/video/load"): LTX_LOADED,
+            ("GET", "/api/inference/video/load-progress"): READY,
+            VIDEO_STATUS: sequence(UNLOADED, LTX_LOADED),
+            IMAGE_STATUS: slow(UNLOADED, 1.0) if slow_route == "status" else UNLOADED,
+        }
+    )
+    with session(monkeypatch, studio) as call:
+        started = time.monotonic()
+        early = call("load_model", {"model": LTX, "kind": "video", "wait_s": 0})
+        assert time.monotonic() - started < 0.9
+        assert early["structuredContent"]["status"] == "loading"
+        job = call(
+            "get_job", {"kind": "load", "id": early["structuredContent"]["job_id"], "wait_s": 30}
+        )
+    assert job["structuredContent"]["status"] == "completed"
+    assert job["structuredContent"]["load"]["model"] == LTX

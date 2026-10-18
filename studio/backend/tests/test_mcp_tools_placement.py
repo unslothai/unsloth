@@ -247,10 +247,7 @@ def test_a_partial_variant_is_refused(monkeypatch):
 
 
 def test_a_variant_unsloth_studio_is_downloading_is_not_refused(monkeypatch):
-    # Reachable once the download routes are on the MCP allowlist; until then the refusal applies.
-    monkeypatch.setattr(
-        forward, "ALLOWED_PREFIXES", (*forward.ALLOWED_PREFIXES, "/api/hub/download")
-    )
+    # The real allowlist: download-status is forwarded, so a managed download in flight is seen.
     # load_model waits for that download first (K16 guard 2), so let it finish.
     monkeypatch.setattr(model_downloads, "WAIT_INTERVAL_S", 0.01)
     monkeypatch.setattr(model_downloads, "_remembered", model_downloads.OrderedDict())
@@ -394,3 +391,28 @@ def test_cpu_tts_falls_back_to_the_name_when_the_listing_cannot_be_read(monkeypa
         "audio_device": "cpu",
         **CPU,
     }
+
+
+def test_unload_all_still_frees_media_when_chat_status_cannot_be_read(monkeypatch):
+    routes = {
+        STATUS_ROUTE: JSONResponse({"detail": "restarting"}, status_code = 503),
+        ("GET", "/api/inference/images/status"): {"loaded": True, "repo_id": FLUX_GGUF},
+        ("POST", "/api/inference/images/unload"): {"loaded": False},
+    }
+    result, studio = run_tool(monkeypatch, routes, "unload_model", {"kind": "all"}, fallback = {})
+    assert result["isError"] is True
+    assert f"image {FLUX_GGUF}" in str(result["content"]) and "llm:" in str(result["content"])
+    assert ("POST", "/api/inference/images/unload") in [call[:2] for call in studio.state.calls]
+
+
+def test_only_the_download_manager_joins_the_allowlist():
+    # download_model (#14107) forwards the whole download manager; nothing else under /api/hub.
+    for path in (
+        "/api/hub/download",
+        "/api/hub/download-status",
+        "/api/hub/download/cancel",
+        "/api/hub/download-progress",
+    ):
+        assert path.startswith(forward.ALLOWED_PREFIXES)
+    for path in ("/api/hub/cache", "/api/hub/models", "/api/hub/token"):
+        assert not path.startswith(forward.ALLOWED_PREFIXES)

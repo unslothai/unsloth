@@ -368,5 +368,6 @@ async def wait_for_managed(
                 f'Follow it with get_job(kind="download", id="{format_id(keys)}"), then call load_model again.'
             )
         if ctx is not None:
-            await ctx.report_progress(0.0, None, WAITING)
+            follow = f'get_job(kind="download", id="{format_id(keys)}")'
+            await ctx.report_progress(0.0, None, f"{WAITING}; follow it with {follow}")
         await asyncio.sleep(WAIT_INTERVAL_S if left is None else min(WAIT_INTERVAL_S, left))

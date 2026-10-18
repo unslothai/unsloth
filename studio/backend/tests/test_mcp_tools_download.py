@@ -309,7 +309,8 @@ def test_wait_returns_once_the_download_finishes():
     studio = fake_studio({("GET", STATUS): states})
     ctx = wait(studio, model = "org/repo", variant = "Q4_K_M")
     assert queries(studio, STATUS) == [{"repo_id": "org/repo", "gguf_variant": "Q4_K_M"}] * 3
-    assert ctx.messages == ["Waiting for Unsloth Studio's download"] * 2
+    follow = 'get_job(kind="download", id="org/repo::Q4_K_M")'
+    assert ctx.messages == [f"Waiting for Unsloth Studio's download; follow it with {follow}"] * 2
 
 
 def test_wait_with_no_budget_left_tells_the_agent_to_follow_the_download():

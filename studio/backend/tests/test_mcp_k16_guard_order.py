@@ -5,9 +5,9 @@
 
 import pytest
 
-from studio_mcp import model_downloads
+from studio_mcp import loading, model_downloads
 
-from .mcp_harness import bodies, fast_polls, queries, run_tool, sequence  # noqa: F401
+from .mcp_harness import bodies, fast_polls, make_caller, queries, run_tool, sequence  # noqa: F401
 from .test_mcp_tools_loading import PAYLOADS, STATUS_ROUTE
 from .test_mcp_train_to_use import _routes as trained_routes
 
@@ -84,10 +84,15 @@ def test_an_unmanaged_partial_variant_is_still_refused(monkeypatch):
 
 
 def test_a_download_that_outlasts_the_wait_is_reported_with_its_id(monkeypatch):
-    result, _studio, sent = _load(monkeypatch, [PARTIAL], ["running"], {"wait_s": 0})
-    text = result["content"][0]["text"]
-    assert result["isError"] is True and sent == []
-    assert "still downloading" in text and f'id="{QWEN}::Q4_K_M"' in text
+    # The wait runs inside the load job: wait_s ends the call, not the wait, and the job names the download.
+    result, _studio, sent = _load(monkeypatch, [PARTIAL], ["running"], {"wait_s": 1})
+    out = result["structuredContent"]
+    assert result.get("isError") is not True and sent == []
+    assert out["status"] == "loading" and out["job_id"]
+    job = loading.LOADS.lookup(make_caller().account_id, out["job_id"])
+    # The loop the test ran in has closed and cancelled the job; its progress marks remain.
+    follow = f'get_job(kind="download", id="{QWEN}::Q4_K_M")'
+    assert any(follow in phase for _fraction, phase in job.marks)
 
 
 @pytest.mark.parametrize("name,lora", [("qwen-lora", True), ("qwen-lora-2/checkpoint-30", False)])

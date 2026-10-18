@@ -319,7 +319,7 @@ def predict(
     ]
     if kind == "stt":
         return [], True, False
-    # rebuild: the same repo is resident but built differently (another MiniMax-H3 task), so it reloads.
+    # rebuild: the same repo is resident but may be built differently, so it may load again.
     if not rebuild and any(s.model.lower() == wanted for s in slots if s.kind == slot_kind):
         return [], True, False
     # Status may name a GGUF by its bare repo: whether that resident is this variant is unknown.
@@ -363,6 +363,18 @@ def predict(
         return [], False, any(s not in same for s in upper)
     # Unknown mode (an Unsloth Studio that does not report it): whatever either rule could unload.
     return upper + [s for s in off_set if s not in upper], False, False
+
+
+def _rebuild(kind: str, repo: str, knobs: dict[str, str], payload: Any) -> bool:
+    """Whether the image or video model of this repo already resident may load again for these settings (another quantization, memory mode or MiniMax-H3 task), so it is not a no-op."""
+    if kind not in MEDIA_STATUS or (_named(payload) or "").lower() != repo.lower():
+        return False
+    status = as_dict(payload)
+    asked = dict(knobs)
+    if kind == "video" and "h3_task" not in asked and opt_text(status.get("h3_task")):
+        # An omitted task loads H3's default partition (keyframes), unless the GGUF file names another.
+        asked["h3_task"] = "fl2va"
+    return any(value != opt_text(status.get(name)) for name, value in asked.items())
 
 
 async def _post_json(caller: Caller, path: str, body: dict) -> Any:
@@ -450,9 +462,7 @@ async def plan_load(
         est = integer(estimate.get("gpu_bytes")) if estimate.get("available") is True else None
     slots = residents(status, image, video, stt)
     mode = multi_model_mode(status)
-    h3_task = (knobs or {}).get("h3_task")
-    resident_task = opt_text(as_dict(video).get("h3_task"))
-    rebuild = kind == "video" and bool(h3_task and resident_task) and h3_task != resident_task
+    rebuild = _rebuild(kind, repo, knobs or {}, image if kind == "image" else video)
     would_evict, exact, refuse = predict(
         kind = kind,
         model = repo,
@@ -461,11 +471,14 @@ async def plan_load(
         mode = mode,
         status = status,
         slots = slots,
-        has_vision = as_dict(listing).get("has_vision") is True,
+        # A local GGUF file is not listed, so whether a projector keeps it on the GPU is unknown.
+        has_vision = listing is None or as_dict(listing).get("has_vision") is True,
         variant = variant,
         rebuild = rebuild,
     )
-    if not all(isinstance(read, dict) for read in (image, video)):
+    # A rebuild is a guess from the settings status reports, so the prediction is an upper bound.
+    unlisted = kind in CHAT_KINDS and listing is None
+    if rebuild or unlisted or not all(isinstance(read, dict) for read in (image, video)):
         # A slot whose status could not be read may hold a model the load would unload.
         exact = False
     return PlanLoadResult(

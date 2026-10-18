@@ -6,8 +6,6 @@
 import pytest
 from fastapi.responses import JSONResponse
 
-from studio_mcp import forward
-
 from .mcp_harness import bodies, fast_polls, run_tool, stt_state  # noqa: F401
 from .test_mcp_tools_loading import FLUX_GGUF, LOADED, LTX, READY, _media_studio
 
@@ -30,14 +28,6 @@ VARIANTS = {
         },
     ],
 }
-
-
-@pytest.fixture(autouse = True)
-def download_status_reachable(monkeypatch):
-    # The download routes join the MCP allowlist in the PR stacked on this one.
-    monkeypatch.setattr(
-        forward, "ALLOWED_PREFIXES", (*forward.ALLOWED_PREFIXES, "/api/hub/download")
-    )
 
 
 def _chat(mode, serving, **fields):
@@ -349,4 +339,43 @@ def test_a_native_tts_primary_makes_a_media_plan_an_upper_bound(monkeypatch):
     world = _world("off", [OUTETTS], is_audio = True)
     plan = _plan(monkeypatch, world, {"model": FLUX_GGUF, "kind": "image"})
     assert _names(plan["would_evict"]) == {("llm", OUTETTS)}
+    assert plan["would_evict_exact"] is False
+
+
+@pytest.mark.parametrize(
+    "resident,args",
+    [
+        # An omitted task loads H3's keyframe partition, not the resident reference one.
+        ({"h3_task": "ref2va"}, {"model": LTX, "kind": "video"}),
+        ({"h3_task": "fl2va"}, {"model": LTX, "kind": "video", "h3_task": "ref2va"}),
+    ],
+)
+def test_another_build_of_the_resident_video_model_may_load_again(monkeypatch, resident, args):
+    world = _world("off", [QWEN], video = LTX)
+    world[("GET", VIDEO)] = {**world[("GET", VIDEO)], **resident}
+    plan = _plan(monkeypatch, world, args)
+    assert _names(plan["would_evict"]) == {("llm", QWEN), ("video", LTX)}
+    assert plan["would_evict_exact"] is False
+
+
+def test_another_quantization_of_the_resident_image_model_may_load_again(monkeypatch):
+    world = _world("off", [QWEN], image = FLUX_GGUF)
+    world[("GET", IMAGE)] = {**world[("GET", IMAGE)], "transformer_quant": "fp8"}
+    same = _plan(
+        monkeypatch, world, {"model": FLUX_GGUF, "kind": "image", "transformer_quant": "fp8"}
+    )
+    assert same["would_evict"] == [] and same["would_evict_exact"] is True
+    other = _plan(
+        monkeypatch, world, {"model": FLUX_GGUF, "kind": "image", "transformer_quant": "int8"}
+    )
+    assert ("llm", QWEN) in _names(other["would_evict"]) and other["would_evict_exact"] is False
+
+
+def test_a_local_gguf_file_may_be_a_vision_model_on_the_gpu(monkeypatch):
+    plan = _plan(
+        monkeypatch,
+        _world("off", [QWEN], image = FLUX_GGUF),
+        {"model": "/models/vision.gguf", "device": "cpu"},
+    )
+    assert ("image", FLUX_GGUF) in _names(plan["would_evict"])
     assert plan["would_evict_exact"] is False

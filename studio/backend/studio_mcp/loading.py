@@ -194,30 +194,26 @@ async def start_load(
         variant = variant,
         options = options,
     )
-    job = _in_flight(caller, asked)
-    if job is None:
+
+    async def drive(job: LoadJob) -> LoadResult:
+        # Every route read runs inside the job, so a slow one never holds the call past its deadline.
         before, chat = await _resident(caller)
         # A chat load Unsloth Studio is already running (started elsewhere) is followed, not started
         # again. The status names only the repo, so a load asking for a variant always posts.
         loading_now = strings(chat.get("loading"))
         if slot in CHAT_ROUTE_KINDS and not variant and any(_same(n, model) for n in loading_now):
-            job = _in_flight(caller, asked) or LOADS.start(
-                asked, lambda job: _watch_llm(caller, slot, model, before, job)
-            )
+            return await _watch_llm(caller, slot, model, before, job)
         # K16, after the attach: M5 waits on a download of the same model here, then M7 refuses a partial one.
-    if job is None:
         from studio_mcp import model_downloads
 
+        # Inside the job, so the wait outlives wait_s: the load starts once the download ends.
         await model_downloads.wait_for_managed(
-            caller,
-            ctx,
-            model = model,
-            kind = slot,
-            variant = variant,
-            budget_s = deadline - time.monotonic(),
+            caller, job, model = model, kind = slot, variant = variant, budget_s = None
         )
         await place.refuse_partial_variant(caller, model, slot, variant)
-        job = _in_flight(caller, asked) or LOADS.start(asked, lambda job: run(job, before))
+        return await run(job, before)
+
+    job = _in_flight(caller, asked) or LOADS.start(asked, drive)
     return await wait_load(ctx, job, deadline)
 
 
@@ -547,27 +543,31 @@ async def load_media(
     token = hf_token or caller.hf_token
     if token:
         body["hf_token"] = token
-    if variant or "gguf" in model.lower():
-        entry = await _gguf_filename(caller, model, variant)
-        if entry:
-            body["gguf_filename"] = entry["filename"]
-            body["model_kind"] = "gguf"
-    # The plan validates the pick the way the load does, before any download.
-    plan = await place.post_plan(caller, routes["plan"], body, knobs)
-    if isinstance(plan, dict):
-        if opt_text(plan.get("incompatible_reason")):
-            raise tool_error(plan["incompatible_reason"])
-        if "gguf_filename" not in body:
-            for entry in plan.get("entries") or []:
-                if (
-                    isinstance(entry, dict)
-                    and entry.get("checkpoint")
-                    and opt_text(entry.get("gguf_filename"))
-                ):
-                    body["gguf_filename"] = entry["gguf_filename"]
-                    break
+
+    async def prepare() -> None:
+        # Hub and plan reads run inside the job, so a slow one never holds the call past ``wait_s``.
+        if variant or "gguf" in model.lower():
+            entry = await _gguf_filename(caller, model, variant)
+            if entry:
+                body["gguf_filename"] = entry["filename"]
+                body["model_kind"] = "gguf"
+        # The plan validates the pick the way the load does, before any download.
+        plan = await place.post_plan(caller, routes["plan"], body, knobs)
+        if isinstance(plan, dict):
+            if opt_text(plan.get("incompatible_reason")):
+                raise tool_error(plan["incompatible_reason"])
+            if "gguf_filename" not in body:
+                for entry in plan.get("entries") or []:
+                    if (
+                        isinstance(entry, dict)
+                        and entry.get("checkpoint")
+                        and opt_text(entry.get("gguf_filename"))
+                    ):
+                        body["gguf_filename"] = entry["gguf_filename"]
+                        break
 
     async def run(job: LoadJob, before: dict[str, list[str]]) -> LoadResult:
+        await prepare()
         # The answer names what the arbiter unloaded to make room; the load itself goes on in the background.
         answer = await with_progress(
             None,
@@ -842,22 +842,29 @@ async def unload_all(caller: Caller) -> UnloadAllResult:
         except ToolError as exc:
             failed.append(f"{name}: {exc}")
 
-    serving, checkpoints, _before = await _llm_resident(caller)
-    pairs = list(zip(serving, checkpoints))
-    # Kept models first, so unloading the primary never promotes one of them in between.
-    for name, target in reversed(pairs):
-        await unload(name, target)
-    _serving, _checkpoints, after = await _llm_resident(caller)
-    # Models held in memory behind the active one are listed only under loaded.
-    held = [name for name in after if name not in checkpoints and name not in serving]
-    for name in held:
-        await unload(name, name)
-    if held:
+    unloaded: list[SlotModel] = []
+    try:
+        serving, checkpoints, _before = await _llm_resident(caller)
+        pairs = list(zip(serving, checkpoints))
+        # Kept models first, so unloading the primary never promotes one of them in between.
+        for name, target in reversed(pairs):
+            await unload(name, target)
         _serving, _checkpoints, after = await _llm_resident(caller)
-    pairs += [(name, name) for name in held]
-    unloaded = [
-        SlotModel(kind = "llm", model = name) for name, target in pairs if not {name, target} & after
-    ]
+        # Models held in memory behind the active one are listed only under loaded.
+        held = [name for name in after if name not in checkpoints and name not in serving]
+        for name in held:
+            await unload(name, name)
+        if held:
+            _serving, _checkpoints, after = await _llm_resident(caller)
+        pairs += [(name, name) for name in held]
+        unloaded += [
+            SlotModel(kind = "llm", model = name)
+            for name, target in pairs
+            if not {name, target} & after
+        ]
+    except ToolError as exc:
+        # Unsloth Studio could not say which chat models are loaded; the other slots still go.
+        failed.append(f"llm: {exc}")
     for kind in MEDIA_ROUTES:
         try:
             result = await unload_media(caller, kind)
