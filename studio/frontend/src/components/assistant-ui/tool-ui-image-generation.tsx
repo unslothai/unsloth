@@ -215,6 +215,7 @@ function SandboxMediaFigure({
           </p>
         ) : !loaded ? (
           <div
+            role="status"
             aria-busy="true"
             aria-label={kind === "image" ? "Loading image…" : "Loading video…"}
             className="aspect-square w-full rounded-2xl bg-muted/20"
@@ -397,7 +398,9 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     !promptExpanded;
 
   const runningLabel = "Generating image…";
-  const completedLabel = formatGeneratedImageLabel(prompt);
+  const completedLabel = errorText
+    ? "Image generation failed"
+    : formatGeneratedImageLabel(prompt);
 
   const showPreview = () => {
     if (!imagePart) {
