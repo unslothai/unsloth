@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Stands in for the chat, images and video barrels loaded-models-api.ts imports. One chat
-// runtime holding `state.loaded`, with `state.active` the model /status names. /unload
-// answers like the backend: a 409 while a chat is generating unless forced.
+// Stubs the chat, images and video barrels; /unload 409s like the backend while a chat
+// is generating unless forced.
 
 type UnloadPayload = { model_path: string; force_cancel_active?: boolean };
 

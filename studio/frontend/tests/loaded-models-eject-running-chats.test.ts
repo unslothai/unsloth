@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A model with a chat still generating could not be ejected from the Loaded models card: its
-// unload went out unforced, so the backend's 409 ended up in a toast with no way to retry.
+// Ejecting a model with a running chat must send a forced unload, not surface the 409.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
