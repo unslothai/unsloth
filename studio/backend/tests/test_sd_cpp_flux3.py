@@ -60,7 +60,9 @@ def test_the_gguf_repo_maps_to_its_native_assets(repo, gguf, name, fp8_repo):
 
 @pytest.mark.parametrize("repo, gguf, name, fp8_repo", _CASES)
 def test_the_load_plans_the_vae_and_the_encoder(repo, gguf, name, fp8_repo):
-    specs = SdCppDiffusionBackend(engine = _FakeEngine())._asset_specs(repo, gguf, detect_family(repo))
+    specs = SdCppDiffusionBackend(engine = _FakeEngine())._asset_specs(
+        repo, gguf, detect_family(repo)
+    )
     assert (fp8_repo, _VAE_FILE, "vae") in specs
     assert _TE in specs
 
@@ -75,7 +77,9 @@ def test_the_encoder_repo_is_a_companion_and_the_fp8_repos_stay_loadable():
 
 def _binary(tmp_path, name, *, marker):
     path = tmp_path / name
-    body = b"ELF-ish padding " * 64 + (b"Flux.3 Image Klein" if marker else b"Flux.2 Klein") + b" tail"
+    body = (
+        b"ELF-ish padding " * 64 + (b"Flux.3 Image Klein" if marker else b"Flux.2 Klein") + b" tail"
+    )
     path.write_bytes(body)
     return str(path)
 
@@ -122,14 +126,20 @@ def _router(monkeypatch):
 
 
 @pytest.mark.parametrize("name", ["flux.3-klein", "flux.3-klein-base"])
-def test_no_gpu_host_routes_flux3_gguf_to_sd_cpp_only_on_a_capable_build(_router, monkeypatch, tmp_path, name):
+def test_no_gpu_host_routes_flux3_gguf_to_sd_cpp_only_on_a_capable_build(
+    _router, monkeypatch, tmp_path, name
+):
     fam = detect_family(name)
-    monkeypatch.setattr(r, "ensure_sd_cpp_binary", lambda **_: _binary(tmp_path, "sd-cli-old", marker = False))
+    monkeypatch.setattr(
+        r, "ensure_sd_cpp_binary", lambda **_: _binary(tmp_path, "sd-cli-old", marker = False)
+    )
     r.select_and_activate_engine(fam)
     assert r.active_engine_name() == ENGINE_DIFFUSERS
     assert "predates" in (r._fallback_reason or "")
 
-    monkeypatch.setattr(r, "ensure_sd_cpp_binary", lambda **_: _binary(tmp_path, "sd-cli-new", marker = True))
+    monkeypatch.setattr(
+        r, "ensure_sd_cpp_binary", lambda **_: _binary(tmp_path, "sd-cli-new", marker = True)
+    )
     r.select_and_activate_engine(fam)
     assert r.active_engine_name() == ENGINE_SD_CPP
 
@@ -139,7 +149,9 @@ def _flux3_native_state(name):
     from core.inference.sd_cpp_engine import SdCppModelFiles
 
     fam = detect_family("", override = name)
-    files = SdCppModelFiles(diffusion_model = "/m/flux3.gguf", vae = "/m/vae.safetensors", llm = "/m/te.gguf")
+    files = SdCppModelFiles(
+        diffusion_model = "/m/flux3.gguf", vae = "/m/vae.safetensors", llm = "/m/te.gguf"
+    )
     return bk._SdState(
         repo_id = "unsloth/flux-3-image-klein-GGUF",
         base_repo = fam.base_repo,
@@ -192,7 +204,9 @@ def test_flux3_references_run_natively_without_a_projector(monkeypatch, name):
     assert seen["refs"] == 2 and out["workflow"] == "reference"
     # An instruction edit is still not something these families do natively.
     with pytest.raises(ValueError, match = "Image editing is not available"):
-        b.generate(prompt = "p", workflow = "edit", init_image = _ref_png((1, 1, 1)), width = 512, height = 512)
+        b.generate(
+            prompt = "p", workflow = "edit", init_image = _ref_png((1, 1, 1)), width = 512, height = 512
+        )
 
 
 def test_the_native_load_refuses_the_other_flux3_variant():

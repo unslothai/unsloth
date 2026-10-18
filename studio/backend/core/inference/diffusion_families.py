@@ -495,7 +495,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # figure.
         condition_pixel_weight = 0.11,
         # Native (sd.cpp) assets, the same set as the distilled entry: see there.
-        sd_cpp_vae = ("unsloth/flux-3-image-klein-base-FP8", "vae/diffusion_pytorch_model.safetensors"),
+        sd_cpp_vae = (
+            "unsloth/flux-3-image-klein-base-FP8",
+            "vae/diffusion_pytorch_model.safetensors",
+        ),
         sd_cpp_text_encoders = _FLUX3_SD_CPP_TEXT_ENCODERS,
         sd_cpp_sampling_method = "euler",
         sd_cpp_arch_marker = _FLUX3_SD_CPP_ARCH_MARKER,
