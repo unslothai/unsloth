@@ -93,7 +93,6 @@ async def _lease(
     return lease
 
 
-
 class TestTheSignal:
     def test_a_request_is_visible_carries_its_reason_and_can_be_forgotten(self):
         signal = PreemptSignal()
@@ -180,7 +179,6 @@ class TestTheSignal:
         assert policy.should_preempt() is True
 
 
-
 class TestTheCheckpoint:
     """The measured livelock: ten pauses, `kept_chars=0` on every one."""
 
@@ -244,7 +242,6 @@ class TestTheCheckpoint:
         assert trailing_assistant_resume_kind(thought_only) == "reasoning_content"
 
 
-
 class _FakeResponse:
     """Enough of httpx.Response for _iter_text_cancellable."""
 
@@ -306,7 +303,6 @@ class TestWhichExceptionComesOutOfTheStream:
                 preempt_event = pause,
             )
         assert "d" not in seen, "the stream kept reading after the pause"
-
 
 
 class TestTheBufferArithmetic:
@@ -401,7 +397,6 @@ class TestTheBatchReserveIsOnlyHeldWhileSomethingPrefills:
         assert higher.committed_tokens() == 7604 > self.BUDGET - self.IDLE
         fired += higher.plan_preemptions(needed = 0)
         assert fired, "7604 is past the 7416 dynamic ceiling"
-
 
 
 class TestWhoStops:
@@ -561,7 +556,6 @@ class TestTheSwitchesThatTurnItOff:
         ], "the point of the handback: pressure later in the turn can ask again"
 
 
-
 class TestTheLedger:
     def test_live_growth_is_added_and_a_round_boundary_rebaselines(self):
         controller = _controller(key = "sweep")
@@ -681,7 +675,6 @@ class TestAParkedHolderGivesItsCellsBack:
         assert c.note_cells_reclaimed() == 1 and lease.yielded == 1
         assert c.note_cells_reclaimed() == 0, "once per park, not once per sweep"
         assert lease.yielded == 1
-
 
 
 class TestReadingWhatTheCacheActuallyHolds:
@@ -882,7 +875,6 @@ class TestTheSlotProbesAreAuthenticated:
         finally:
             server.shutdown()
         assert seen == ["Bearer k"]
-
 
 
 class TestTheResumeGrantChecksRoom:
