@@ -178,3 +178,11 @@ def test_combinations_the_route_refuses_never_upload_audio(monkeypatch, args, te
     assert result["isError"] is True
     assert text in result["content"][0]["text"]
     assert studio.state.calls == []
+
+
+def test_fractional_seconds_reach_the_route(monkeypatch):
+    result, studio = run_tool(
+        monkeypatch, _studio(), "generate_video", {"prompt": "x", "seconds": 2.5}
+    )
+    assert result["isError"] is False, result
+    assert bodies(studio, "/v1/videos") == [{"prompt": "x", "seconds": 2.5}]

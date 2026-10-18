@@ -1670,6 +1670,27 @@ def _audio_ref_data_url(ref) -> str:
     )
 
 
+def _refuse_unreadable_audio(audios: Optional[list[str]]) -> None:
+    """Decode each reference audio the engine would, refusing one it could not read."""
+    if not audios:
+        return
+    from core.inference.video import _decode_b64_media
+
+    try:
+        from core.inference.video_minimax_h3 import decode_h3_reference_audio
+    except ImportError:  # no media decoder here; begin_generate reports it
+        return
+    for index, item in enumerate(audios):
+        try:
+            decode_h3_reference_audio(_decode_b64_media(item))
+        except ImportError:
+            return
+        except Exception:  # noqa: BLE001 -- any decode failure is client input feedback
+            raise _openai_video_error(
+                400, f"reference_audios[{index}] is not readable audio.", param = "reference_audios"
+            )
+
+
 def _conditioning_param(
     body: VideoJobCreateRequest,
     reference: Optional[str],
@@ -1906,6 +1927,8 @@ async def _create_openai_video(
             has_references = (reference is not None and ref2va)
             or bool(body.reference_images or reference_audios),
         )
+        # Decoded here, like the images above, so unreadable audio never costs a switch.
+        _refuse_unreadable_audio(reference_audios)
 
     pin_requested_model = bool(
         isinstance(body.model, str) and body.model.strip() and get_media_auto_switch_enabled()

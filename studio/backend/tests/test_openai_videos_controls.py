@@ -620,3 +620,53 @@ def test_a_24_mb_audio_data_url_fits_reference_audios():
         VideoJobCreateRequest(
             prompt = "x", reference_images = [image], reference_audios = [audio + "A" * 65536]
         )
+
+
+@pytest.mark.parametrize(
+    "audio", ["data:audio/wav;base64,", "data:audio/wav;base64,AAAA"], ids = ["empty", "undecodable"]
+)
+def test_unreadable_reference_audio_is_refused_before_the_switch(
+    client, backend, monkeypatch, audio
+):
+    from core.inference import video_minimax_h3
+
+    def _decode(blob, **_kwargs):
+        raise ValueError("That reference file carries no audio track.")
+
+    monkeypatch.setattr(video_minimax_h3, "decode_h3_reference_audio", _decode)
+    calls = _capture(monkeypatch, backend)
+    switched = _switch_to(monkeypatch, "MiniMaxAI/MiniMax-H3", "minimax_h3_ref2va-Q4_K_M.gguf")
+    body = {
+        "prompt": "x",
+        "model": "H3",
+        "reference_images": [_reference_data_url("PNG", "image/png")],
+        "reference_audios": [audio],
+    }
+    resp = client.post("/v1/videos", json = body)
+    assert resp.status_code == 400, resp.json()
+    error = resp.json()["error"]
+    assert error["param"] == "reference_audios"
+    assert "reference_audios[0] is not readable audio" in error["message"]
+    assert switched["completed"] is False and calls == []
+
+
+def test_readable_reference_audio_goes_on_to_the_switch(client, backend, monkeypatch):
+    from core.inference import video_minimax_h3
+
+    seen = []
+    monkeypatch.setattr(
+        video_minimax_h3,
+        "decode_h3_reference_audio",
+        lambda blob, **_kwargs: seen.append(blob) or (None, 48000),
+    )
+    _capture(monkeypatch, backend)
+    switched = _switch_to(monkeypatch, "MiniMaxAI/MiniMax-H3", "minimax_h3_ref2va-Q4_K_M.gguf")
+    wav_url = "data:audio/wav;base64," + base64.b64encode(_WAV).decode()
+    body = {
+        "prompt": "x",
+        "model": "H3",
+        "reference_images": [_reference_data_url("PNG", "image/png")],
+        "reference_audios": [wav_url],
+    }
+    client.post("/v1/videos", json = body)
+    assert seen == [_WAV] and switched["completed"] is True

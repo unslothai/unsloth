@@ -61,7 +61,7 @@ def job_ref(job: Any) -> VideoJobRef:
 async def generate_video(
     prompt: str,
     seconds: Annotated[
-        Optional[Union[int, str]],
+        Optional[Union[int, float, str]],
         Field(
             description = "Clip length in seconds, a number or a string; left out, the model's default."
         ),
