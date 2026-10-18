@@ -110,7 +110,7 @@ def _forced_float32_trainer(use_vllm):
     )
 
 
-def test_efficient_call_without_vllm_leaves_forced_float32_unlatched(monkeypatch):
+def test_efficient_call_without_vllm_records_no_autocast_for_forced_float32(monkeypatch):
     # Without vLLM and with nothing scored, nothing latched before the efficient call did, and zoo then
     # trained a forced float32 model with no loss autocast. A latch here turns on float16 autocast.
     monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "no")
@@ -120,8 +120,13 @@ def test_efficient_call_without_vllm_leaves_forced_float32_unlatched(monkeypatch
     assert ns["_get_per_token_logps_and_entropies"](
         trainer, None, None, None, 4, compute_efficient = True
     ) == (None, None)
-    assert not hasattr(trainer, "_autocast_enabled")
-    assert not hasattr(trainer, "_autocast_dtype")
+    assert trainer._autocast_enabled is False
+
+    # Recorded on the trainer: a later model or trainer resetting the process-wide flags changes nothing.
+    monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "fp16")
+    monkeypatch.setenv("UNSLOTH_FORCE_FLOAT32", "0")
+    ns["_get_per_token_logps_and_entropies"](trainer, None, None, None, 4, compute_efficient = True)
+    assert trainer._autocast_enabled is False
 
     legacy = {"torch": torch, "os": os}
     exec(_function("_unsloth_grpo_autocast_forced_float32"), legacy)
@@ -130,7 +135,7 @@ def test_efficient_call_without_vllm_leaves_forced_float32_unlatched(monkeypatch
     exec(_function("_get_per_token_logps", "grpo_trainer__get_per_token_logps"), legacy)
     trainer = _forced_float32_trainer(use_vllm = False)
     assert legacy["_get_per_token_logps"](trainer, None, None, None, 4) is None
-    assert not hasattr(trainer, "_autocast_dtype")
+    assert trainer._autocast_enabled is False
 
 
 def test_efficient_call_with_vllm_latches_forced_float32_as_the_old_forward_did(monkeypatch):
