@@ -509,6 +509,7 @@ async def load_video_model_gated(
                     eviction_sink.reset(token)
 
             from core.inference.chat_swap_kv import save_chat_kv_before_swap
+
             swap = await save_chat_kv_before_swap(VIDEO, "video", **fit_kwargs)
             try:
                 status_dict = await asyncio.to_thread(_acquire_and_begin)
@@ -556,6 +557,7 @@ async def video_load_progress(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     from core.inference.chat_swap_kv import saving_progress
+
     saving = saving_progress("video")
     if saving is not None:
         return VideoLoadProgressResponse(**saving)

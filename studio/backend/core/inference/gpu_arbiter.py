@@ -559,7 +559,12 @@ def acquire_for(
         return result
 
 
-def would_evict(owner: str, *, policy: str = "off", need_mib: Optional[dict] = None) -> bool:
+def would_evict(
+    owner: str,
+    *,
+    policy: str = "off",
+    need_mib: Optional[dict] = None,
+) -> bool:
     """Lock-free peek: will ``acquire_for(owner, policy = ..., need_mib = ...)`` unload the chat model?
     Never call it under ``_lock``."""
     if owner == CHAT or owner not in _EVICTORS:

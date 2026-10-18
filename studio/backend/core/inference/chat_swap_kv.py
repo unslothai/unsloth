@@ -79,8 +79,10 @@ def commit_after_chat_unload(unloaded_identity) -> bool:
     global _pending, _committed
     with _lock:
         pending, _pending = _pending, None
-        matched = pending is not None and unloaded_identity is not None and (
-            pending.get("identity") == unloaded_identity
+        matched = (
+            pending is not None
+            and unloaded_identity is not None
+            and (pending.get("identity") == unloaded_identity)
         )
         if matched:
             _committed = pending
@@ -91,6 +93,7 @@ def commit_after_chat_unload(unloaded_identity) -> bool:
         _delete(pending)
         return False
     from core.inference import llama_keepwarm
+
     llama_keepwarm._set_kv_resume(pending)
     logger.info("Media swap: kept the chat slot KV for restore on reload")
     return True
@@ -99,7 +102,12 @@ def commit_after_chat_unload(unloaded_identity) -> bool:
 class SwapSave:
     """Handle the load route closes in a finally around its acquire."""
 
-    def __init__(self, manifest: Optional[dict] = None, *, log_swap: bool = True):
+    def __init__(
+        self,
+        manifest: Optional[dict] = None,
+        *,
+        log_swap: bool = True,
+    ):
         self._manifest = manifest
         # Off logs the eviction here; When they fit's residency code already logs it as "evicted".
         self._log_swap = log_swap
@@ -137,7 +145,6 @@ def _policy() -> str:
 def _chat_busy() -> bool:
     from core.inference import llama_keepwarm
     from state import active_generations
-
     return (
         active_generations.count() > 0
         or llama_keepwarm.other_inference_request_count(current_request_counted = False) > 0
@@ -146,7 +153,6 @@ def _chat_busy() -> bool:
 
 def _chat_account() -> Optional[str]:
     from core.inference import gpu_arbiter
-
     try:
         return gpu_arbiter.owner_account(gpu_arbiter.CHAT)
     except TypeError:
@@ -179,7 +185,12 @@ def _save_in_thread(llama, should_abort, abort: threading.Event, loop, future) -
 
 
 async def save_chat_kv_before_swap(
-    owner: str, media: str, *, policy: Optional[str] = None, need_mib: Optional[dict] = None, **_ignored
+    owner: str,
+    media: str,
+    *,
+    policy: Optional[str] = None,
+    need_mib: Optional[dict] = None,
+    **_ignored,
 ) -> SwapSave:
     """Save the chat KV if acquiring ``owner`` will evict the chat model; never raises.
 
@@ -239,7 +250,9 @@ async def save_chat_kv_before_swap(
             if isinstance(exc, asyncio.CancelledError):
                 cancelled = exc
             elif isinstance(exc, asyncio.TimeoutError):
-                logger.info("Media swap: the chat KV save passed %ss; continuing without it", budget)
+                logger.info(
+                    "Media swap: the chat KV save passed %ss; continuing without it", budget
+                )
             else:
                 logger.debug("chat KV swap save failed: %s", exc)
     if cancelled is not None:

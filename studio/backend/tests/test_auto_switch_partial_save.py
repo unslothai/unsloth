@@ -66,7 +66,11 @@ def test_the_purge_rule_follows_the_stash_origin(
 ):
     saved = tmp_path / "resume-x-slot0.bin"
     saved.write_bytes(b"kv")
-    stash = {"identity": ("m", None, "m"), "dir": str(tmp_path), "slots": [{"filename": saved.name}]}
+    stash = {
+        "identity": ("m", None, "m"),
+        "dir": str(tmp_path),
+        "slots": [{"filename": saved.name}],
+    }
     if origin:
         stash["origin"] = origin
     kw._kv_resume = stash

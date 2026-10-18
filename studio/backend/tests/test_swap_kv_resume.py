@@ -115,7 +115,12 @@ def env(monkeypatch, tmp_path):
     return llama
 
 
-def _load(owner = arb.DIFFUSION, media = "image", acquire = None, **fit):
+def _load(
+    owner = arb.DIFFUSION,
+    media = "image",
+    acquire = None,
+    **fit,
+):
     async def _go():
         swap = await cs.save_chat_kv_before_swap(owner, media, **fit)
         try:
@@ -134,7 +139,9 @@ _TAKES_POLICY = "policy" in inspect.signature(arb.acquire_for).parameters
 _TAKES_NEED = "need_mib" in inspect.signature(arb.acquire_for).parameters
 
 
-@pytest.mark.parametrize("policy, fits", [("off", None), ("fit", True), ("fit", False), ("always", None)])
+@pytest.mark.parametrize(
+    "policy, fits", [("off", None), ("fit", True), ("fit", False), ("always", None)]
+)
 @pytest.mark.parametrize("current", [None, arb.CHAT, arb.DIFFUSION, arb.VIDEO])
 @pytest.mark.parametrize("target", [arb.DIFFUSION, arb.VIDEO, arb.CHAT])
 def test_would_evict_matches_acquire_for(monkeypatch, policy, fits, current, target):
@@ -206,13 +213,13 @@ def test_the_real_evict_chat_promotes_the_identity_read_before_unload(env, monke
 
 
 @pytest.mark.parametrize(
-    "case", ["generating", "keep_kv_off", "chat_not_resident", "not_gguf", "other_account", "chat_target"]
+    "case",
+    ["generating", "keep_kv_off", "chat_not_resident", "not_gguf", "other_account", "chat_target"],
 )
 def test_no_save_without_a_chat_eviction_to_survive(env, monkeypatch, case):
     owner = arb.DIFFUSION
     if case == "generating":
         from state import active_generations
-
         monkeypatch.setattr(active_generations, "count", lambda *a, **k: 1)
     elif case == "keep_kv_off":
         monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: False)
@@ -308,7 +315,6 @@ def _cuda(monkeypatch, device = "cuda"):
     import types
 
     import core.inference.diffusion_device as devmod
-
     monkeypatch.setattr(
         devmod, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = device)
     )
@@ -325,7 +331,11 @@ _LOADS = {
 
 @pytest.mark.parametrize("media", ["image", "video"])
 def test_a_slow_save_is_bounded_and_its_late_files_are_deleted(
-    client, env, monkeypatch, healthy_diffusers, media  # noqa: F811
+    client,
+    env,
+    monkeypatch,
+    healthy_diffusers,
+    media,  # noqa: F811
 ):
     _cuda(monkeypatch)
     if media == "video":
