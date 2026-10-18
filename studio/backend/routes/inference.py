@@ -33505,6 +33505,7 @@ async def produce_openai_chat_completions(
                 timings = None
                 context_truncation = None
                 gen = gguf_generate_with_tools()
+                raw_text = None
                 try:
                     for event in gen:
                         if cancel_event.is_set():
@@ -33523,11 +33524,14 @@ async def produce_openai_chat_completions(
                             # turn's text. As in the safetensors drain, a visible
                             # preamble emitted before a tool call (its own earlier
                             # turn) isn't carried -- only the final turn is.
-                            full_text = _strip_tool_xml_for_display(
-                                event.get("text", ""),
-                                auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
-                                enabled_tool_names = _gguf_display_tool_names,
-                            )
+                            raw_text = event.get("text", "")
+                    if raw_text is not None:
+                        # Stripped once: stripping every cumulative event is quadratic in the turn.
+                        full_text = _strip_tool_xml_for_display(
+                            raw_text,
+                            auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
+                            enabled_tool_names = _gguf_display_tool_names,
+                        )
                     return full_text, usage, finish, timings, context_truncation
                 finally:
                     # Close the generator on early break/cancel so the underlying
@@ -35327,6 +35331,7 @@ async def produce_openai_chat_completions(
                 continued = _sf_continue
                 prefilled = _sf_resumes_thought if continued else _sf_reasoning_prefilled
                 gen = sf_generate_with_tools()
+                raw_text = None
                 for event in gen:
                     if cancel_event.is_set():
                         break
@@ -35341,11 +35346,7 @@ async def produce_openai_chat_completions(
                         )
                     _event_type = event.get("type")
                     if _event_type == "content":
-                        full_text = _strip_tool_xml_for_display(
-                            event.get("text", ""),
-                            auto_heal_tool_calls = _sf_auto_heal_tool_calls,
-                            enabled_tool_names = _sf_display_tool_names,
-                        )
+                        raw_text = event.get("text", "")
                         prefilled = _sf_resumes_thought if continued else _sf_reasoning_prefilled
                     elif _event_type == "tool_start" or (
                         _event_type == "status" and not event.get("text")
@@ -35355,6 +35356,12 @@ async def produce_openai_chat_completions(
                         _sf_context_truncation = _accumulate_context_truncation(
                             _sf_context_truncation, event
                         )
+                if raw_text is not None:
+                    full_text = _strip_tool_xml_for_display(
+                        raw_text,
+                        auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                        enabled_tool_names = _sf_display_tool_names,
+                    )
                 return full_text, prefilled
 
             content_text, _sf_drain_prefilled = await asyncio.to_thread(_drain_to_text)
