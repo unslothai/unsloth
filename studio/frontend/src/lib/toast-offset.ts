@@ -117,7 +117,6 @@ export function cornerInsetScope(
   };
 }
 
-// Lifts the corner rail over a docked chat composer that runs under it (narrow windows, phones; #14146).
 export const COMPOSER_CLEARANCE_VAR = "--studio-composer-clearance";
 // The collapsed download button's column: 16px inset, 44px button, 16px of air.
 const CORNER_RAIL_COLUMN = 76;
@@ -128,7 +127,7 @@ function applyComposerClearance(): void {
   cornerInsets.style.setProperty(COMPOSER_CLEARANCE_VAR, lift > 0 ? `${lift}px` : "");
 }
 
-/** Keeps the rail above `composer` while it reaches into the rail's column; compare panes each register. */
+/** Lifts the corner rail above `composer` while it reaches into the rail's column (#14146); compare panes each register. */
 export function watchComposerClearance(
   composer: HTMLElement,
   uiSpaceScale = 1,
