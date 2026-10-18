@@ -26,6 +26,14 @@ def _no_host_default_hf_cache(monkeypatch, tmp_path):
 
     monkeypatch.delitem(hf_cache_settings._EXPLICIT_CACHE_ENV, "HF_HOME", raising = False)
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    # Default HF cache (Path.home()/.cache, which ignores XDG), the LM Studio / Hermes / Ollama / oMLX
+    # model folders and ./models are scanned too; point all of them away from the host.
+    import utils.paths
+
+    monkeypatch.setattr(utils.paths, "hf_default_cache_dir", lambda: tmp_path / "default_hub")
+    for name in ("lmstudio_model_dirs", "hermes_model_dirs", "ollama_model_dirs", "omlx_model_dirs"):
+        monkeypatch.setattr(utils.paths, name, lambda: [])
+    monkeypatch.chdir(tmp_path)
 
 
 class _Info:
