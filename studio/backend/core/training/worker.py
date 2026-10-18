@@ -1464,7 +1464,9 @@ def _install_package_wheel_first(
     than at each return because four separate exits have now been found that forgot to clean up.
     With *extension*, a copy without that compiled module (the extension-free mamba_ssm wheel) is
     replaced rather than accepted."""
-    from utils.ssm_runtime import forget_imported_modules
+    from utils.ssm_runtime import _unblock_import, forget_imported_modules
+
+    _unblock_import(import_name)  # an earlier in-process block; this call probes afresh
 
     def kernel_usable() -> bool:
         return _is_importable(import_name) and (extension is None or _is_importable(extension))
@@ -1525,6 +1527,16 @@ def _install_package_wheel_first(
                 f"Could not take the {display_name} install lock (another process is installing "
                 "it, or the lock is unavailable); continuing without it",
             )
+            if (
+                extension is not None
+                and _is_importable(import_name)
+                and not _is_importable(extension)
+            ):
+                # Not ours to uninstall without the lock, but this run must not use it: hidden from
+                # this process, transformers takes its torch path instead of selective_scan_fn.
+                from utils.ssm_runtime import block_import, refresh_transformers_kernel_gates
+                block_import(import_name, extension)
+                refresh_transformers_kernel_gates(removed = True)
             return False
         if kernel_usable():
             logger.info("%s installed by another process", display_name)

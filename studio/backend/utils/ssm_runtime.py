@@ -843,6 +843,18 @@ def _transformers_resolves_kernels_per_function() -> bool:
         return False
 
 
+def _model_type_uses_causal_conv1d(model_type: str) -> bool:
+    """Whether one model type runs a causal conv: an SSM family, a modeling file that uses
+    causal_conv1d, or a name on the causal-conv1d list."""
+    if model_type in SSM_MODEL_TYPES or _transformers_model_type_uses_causal_conv1d(model_type):
+        return True
+    identifier = _normalized_model_identifier(model_type)
+    return any(
+        _normalized_model_identifier(needle) in identifier
+        for needle in CAUSAL_CONV1D_MODEL_SUBSTRINGS
+    )
+
+
 def mamba2_runs_on_triton(kernels: "SsmKernels") -> bool:
     """True when this load can take the extension-free mamba_ssm wheel and skip causal-conv1d: a
     config-resolved Mamba-2 family on a CUDA torch with Triton, transformers >= 5.15 and a zoo with
@@ -853,8 +865,16 @@ def mamba2_runs_on_triton(kernels: "SsmKernels") -> bool:
     ssm_types = {t for t in kernels.model_types if t in SSM_MODEL_TYPES}
     if not ssm_types or not ssm_types <= MAMBA2_TRITON_MODEL_TYPES:
         return False
+    # The zoo drop-ins cover only these families' causal conv: any other consumer in the config
+    # (an LFM2 or other conv sub-model in a composite) still needs causal-conv1d.
+    if any(
+        _model_type_uses_causal_conv1d(t) for t in kernels.model_types - MAMBA2_TRITON_MODEL_TYPES
+    ):
+        return False
     if os.environ.get("UNSLOTH_MAMBA_CUDA_KERNELS", "0") == "1":
         return False  # opt back into the CUDA wheels
+    if os.environ.get("UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D", "0") == "1":
+        return False  # zoo's own kill switch: no Triton conv, so the CUDA wheels
     if importlib.util.find_spec("triton") is None:
         return False
     if _kernel_backend(_torch_env()) != "cuda":
@@ -875,6 +895,21 @@ MAMBA_SSM_EXTENSION = "selective_scan_cuda"
 def kernel_usable(import_name: str, extension: str | None = None) -> bool:
     """The package imports and, when *extension* is named, so does its compiled module."""
     return _is_importable(import_name) and (extension is None or _is_importable(extension))
+
+
+def block_import(import_name: str, extension: str | None = None) -> None:
+    """Make *import_name* unavailable to this process (``sys.modules[name] = None``: ``import``
+    raises ImportError and ``importlib.util.find_spec`` returns None, so transformers' availability
+    gates read it as missing). For an extension-free mamba_ssm that could not be removed without
+    the install lock: this load then takes the torch path instead of selective_scan_fn."""
+    forget_imported_modules(import_name, extension)
+    sys.modules[import_name] = None
+
+
+def _unblock_import(import_name: str) -> None:
+    if import_name in sys.modules and sys.modules[import_name] is None:
+        del sys.modules[import_name]
+        importlib.invalidate_caches()
 
 
 def forget_imported_modules(import_name: str, extension: str | None = None) -> None:
@@ -961,6 +996,7 @@ def _install_kernel(
     runs at a time across processes; a failed one is not retried in this process. With
     *extension*, an installed copy without that compiled module (the extension-free mamba_ssm
     wheel) is replaced rather than accepted."""
+    _unblock_import(import_name)  # a previous load's in-process block; this one probes afresh
     if kernel_usable(import_name, extension):
         logger.info("%s already installed", display_name)
         return True
@@ -1006,6 +1042,15 @@ def _install_kernel(
                 f"Could not take the {display_name} install lock (another process is installing "
                 "it, or the lock is unavailable); continuing without it.",
             )
+            if (
+                extension is not None
+                and _is_importable(import_name)
+                and not _is_importable(extension)
+            ):
+                # Not ours to uninstall without the lock, but this load must not use it: hidden
+                # from this process, transformers takes its torch path.
+                block_import(import_name, extension)
+                _note_removed(newly_installed, import_name)
             return False
         # Another process may have installed it while this one waited: new to this worker all the
         # same, so its already-imported modeling modules are refreshed or restarted.

@@ -717,3 +717,81 @@ def test_training_source_build_replaces_the_extension_free_copy(monkeypatch, tmp
     assert events == [("build", ["mamba-ssm"])]
     # ... and the build is only accepted with the compiled scan importable.
     assert ssm_runtime.MAMBA_SSM_EXTENSION in probes
+
+
+# ── Round 4: lock not held, zoo kill switch, other conv consumers ─────────────
+
+
+def test_zoo_kill_switch_keeps_the_cuda_wheels(capable, monkeypatch):
+    k = _kernels({"nemotron_h"})
+    assert ssm_runtime.mamba2_runs_on_triton(k)
+    monkeypatch.setenv("UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D", "1")
+    assert not ssm_runtime.mamba2_runs_on_triton(k)
+
+
+def test_another_conv_consumer_keeps_the_cuda_wheels(capable, monkeypatch):
+    monkeypatch.setattr(
+        ssm_runtime, "_transformers_model_type_uses_causal_conv1d", lambda t: t == "lfm2"
+    )
+    assert not ssm_runtime.mamba2_runs_on_triton(_kernels({"nemotron_h", "lfm2"}))
+    # A sub-model with no causal conv (a vision tower) does not stop the Triton route.
+    assert ssm_runtime.mamba2_runs_on_triton(_kernels({"nemotron_h", "siglip_vision_model"}))
+
+
+@pytest.fixture
+def unheld_lock(monkeypatch):
+    import contextlib
+
+    import utils.kernel_install as kernel_install
+
+    @contextlib.contextmanager
+    def lock(*a, **k):
+        yield False
+
+    monkeypatch.setattr(kernel_install, "kernel_install_lock", lock)
+    yield
+    if "mamba_ssm" in sys.modules and sys.modules["mamba_ssm"] is None:
+        del sys.modules["mamba_ssm"]
+
+
+def test_an_unheld_lock_hides_the_extension_free_copy(real_install, monkeypatch, unheld_lock):
+    import importlib.util
+
+    real_install["importable"].update({"mamba_ssm", "causal_conv1d"})
+    monkeypatch.setattr(ssm_runtime, "install_prebuilt", lambda *a, **k: pytest.fail("no lock"))
+    installed = ssm_runtime.ensure_ssm_runtime(
+        "tiiuae/falcon-mamba-7b",
+        wants_causal_conv1d = False,
+        is_ssm = True,
+        mamba_ssm_required = False,
+        mamba_ssm_fatal = False,
+    )
+    # transformers' gates (find_spec) and imports now see no mamba_ssm: the torch path, not
+    # selective_scan_fn.
+    assert sys.modules["mamba_ssm"] is None
+    assert importlib.util.find_spec("mamba_ssm") is None
+    with pytest.raises(ImportError):
+        import mamba_ssm  # noqa: F401
+    assert installed == [f"{ssm_runtime.REMOVED_PREFIX}mamba_ssm"]
+    # A later install in this process probes afresh instead of trusting the block.
+    ssm_runtime._unblock_import("mamba_ssm")
+    assert "mamba_ssm" not in sys.modules
+
+
+def test_training_unheld_lock_hides_the_extension_free_copy(monkeypatch, tmp_path, unheld_lock):
+    from unittest import mock
+
+    importable = {"mamba_ssm"}
+    worker, uninstalled = _training_env(monkeypatch, tmp_path, importable)
+    refreshed = []
+    monkeypatch.setattr(
+        ssm_runtime, "refresh_transformers_kernel_gates", lambda **k: refreshed.append(k)
+    )
+    assert not worker._install_package_wheel_first(
+        event_queue = mock.Mock(),
+        **worker._pinned_kernel_kwargs(worker.MAMBA_SSM),
+        extension = ssm_runtime.MAMBA_SSM_EXTENSION,
+    )
+    assert uninstalled == []  # not ours to remove without the lock
+    assert sys.modules["mamba_ssm"] is None
+    assert refreshed == [{"removed": True}]
