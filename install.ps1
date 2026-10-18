@@ -10726,6 +10726,49 @@ main()
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
     $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.10.6" }
+    $_unslothZooInstallSpec = "unsloth-zoo>=2026.10.6"
+
+    # A package index that lags PyPI (a delayed corporate feed, a mirror, an upload cutoff) can lack the release
+    # these floors name, making every install below unsatisfiable (#14031). Only then, lower them to the newest
+    # release that index serves. The marker tells Desktop that this older backend is the newest it can get, so it
+    # stops repairing it. As install.sh's _relax_unsloth_floors_to_index.
+    function Resolve-UnslothFloorsForIndex {
+        param([string]$ReleaseSpec, [string]$ZooSpec, [string]$DesktopVersion, [string]$Marker)
+        $result = @{ Release = $ReleaseSpec; Zoo = $ZooSpec; Available = $null }
+        Remove-Item -LiteralPath $Marker -Force -ErrorAction SilentlyContinue
+        if (-not ($env:UV_EXCLUDE_NEWER -or $env:UV_EXCLUDE_NEWER_PACKAGE -or (Test-MirrorConfigured -Tool uv))) { return $result }
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $null = @($ReleaseSpec, $ZooSpec) | & $script:UvExe pip compile --python $VenvPython --no-deps --no-header --no-annotate --quiet - 2>$null
+            if ($LASTEXITCODE -eq 0) { return $result }
+            $have = @(@("unsloth", "unsloth-zoo") | & $script:UvExe pip compile --python $VenvPython --no-deps --no-header --no-annotate --quiet - 2>$null)
+            if ($LASTEXITCODE -ne 0) { return $result }
+            $unsloth = $null; $zoo = $null
+            foreach ($line in $have) {
+                if ("$line".Trim() -match '^unsloth==([0-9][0-9A-Za-z.+!-]*)$') { $unsloth = $Matches[1] }
+                elseif ("$line".Trim() -match '^unsloth-zoo==([0-9][0-9A-Za-z.+!-]*)$') { $zoo = $Matches[1] }
+            }
+            if (-not ($unsloth -and $zoo)) { return $result }
+            substep "[WARN] your package index does not have $ReleaseSpec yet; installing unsloth $unsloth, the newest it has" "Yellow"
+            $result.Release = "unsloth>=$unsloth"
+            $result.Zoo = "unsloth-zoo>=$zoo"
+            $result.Available = $unsloth
+            if ($DesktopVersion) {
+                $json = '{"requested": "' + $DesktopVersion + '", "available": "' + $unsloth + '"}'
+                try { [System.IO.File]::WriteAllText($Marker, $json + "`n", (New-Object System.Text.UTF8Encoding($false))) } catch { }
+            }
+        } catch {
+        } finally {
+            $ErrorActionPreference = $prevEap
+        }
+        return $result
+    }
+    $_floors = Resolve-UnslothFloorsForIndex -ReleaseSpec $_unslothReleaseInstallSpec -ZooSpec $_unslothZooInstallSpec `
+        -DesktopVersion $_desktopMinVer -Marker (Join-Path $VenvDir "unsloth_feed_ceiling.json")
+    $_unslothReleaseInstallSpec = $_floors.Release
+    $_unslothZooInstallSpec = $_floors.Zoo
+    if ($_floors.Available -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec = $_unslothReleaseInstallSpec }
 
     if ($_Migrated) {
         Write-TauriLog "STEP" "Installing unsloth"
@@ -10736,7 +10779,7 @@ main()
             # --no-deps means unsloth's own metadata is never read, so this spec IS the zoo
             # floor for this path. Keep it equal to the unsloth_zoo floor in pyproject.toml
             # (tests/test_installer_zoo_floor_parity.py enforces that).
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "$_unslothZooInstallSpec" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -10760,7 +10803,7 @@ main()
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             $_migOverrides = @()
             if ($script:TorchOverridesFile) { $_migOverrides = @("--overrides", $script:TorchOverridesFile) }
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython @_migOverrides --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython @_migOverrides --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "$_unslothZooInstallSpec" }
             if ($script:TorchOverridesFile) {
                 Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
@@ -11041,7 +11084,7 @@ main()
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
             # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "$_unslothZooInstallSpec" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
@@ -11061,11 +11104,11 @@ main()
             # Freeze the trio so this with-deps resolve cannot downgrade the pinned build.
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.6" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "$_unslothZooInstallSpec" }
                 Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.6" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "$_unslothZooInstallSpec" }
             }
         } else {
             $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
@@ -11102,7 +11145,7 @@ main()
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.10.6" "$_unslothReleaseInstallSpec" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "$_unslothZooInstallSpec" "$_unslothReleaseInstallSpec" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)

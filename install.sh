@@ -8193,6 +8193,34 @@ if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
 _unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.10.6}"
+_unsloth_zoo_install_spec="unsloth-zoo>=2026.10.6"
+
+# A package index that lags PyPI (a delayed corporate feed, a mirror, an upload cutoff) can lack the release these
+# floors name, making every install below unsatisfiable (#14031). Only then, lower them to the newest release that
+# index serves. The marker tells Desktop that this older backend is the newest it can get, so it stops repairing it.
+_UNSLOTH_FEED_CEILING_MARKER="$VENV_DIR/unsloth_feed_ceiling.json"
+_relax_unsloth_floors_to_index() {
+    rm -f "$_UNSLOTH_FEED_CEILING_MARKER"
+    if [ -z "${UV_EXCLUDE_NEWER:-}${UV_EXCLUDE_NEWER_PACKAGE:-}" ] && ! _mirror_configured uv; then
+        return 0
+    fi
+    printf '%s\n%s\n' "$_unsloth_release_install_spec" "$_unsloth_zoo_install_spec" \
+        | uv pip compile --python "$_VENV_PY" --no-deps --no-header --no-annotate --quiet - > /dev/null 2>&1 && return 0
+    _rfi_have=$(printf 'unsloth\nunsloth-zoo\n' \
+        | uv pip compile --python "$_VENV_PY" --no-deps --no-header --no-annotate --quiet - 2>/dev/null) || return 0
+    _rfi_unsloth=$(printf '%s\n' "$_rfi_have" | sed -n 's/^unsloth==\([0-9][0-9A-Za-z.+!-]*\)$/\1/p')
+    _rfi_zoo=$(printf '%s\n' "$_rfi_have" | sed -n 's/^unsloth-zoo==\([0-9][0-9A-Za-z.+!-]*\)$/\1/p')
+    [ -n "$_rfi_unsloth" ] && [ -n "$_rfi_zoo" ] || return 0
+    substep "[WARN] your package index does not have $_unsloth_release_install_spec yet; installing unsloth $_rfi_unsloth, the newest it has" "$C_WARN"
+    _unsloth_release_install_spec="unsloth>=$_rfi_unsloth"
+    _unsloth_zoo_install_spec="unsloth-zoo>=$_rfi_zoo"
+    if [ -n "$_unsloth_desktop_install_spec" ]; then
+        _unsloth_desktop_install_spec=$_unsloth_release_install_spec
+        printf '{"requested": "%s", "available": "%s"}\n' "$UNSLOTH_DESKTOP_BACKEND_VERSION" "$_rfi_unsloth" \
+            > "$_UNSLOTH_FEED_CEILING_MARKER" 2>/dev/null || true
+    fi
+}
+_relax_unsloth_floors_to_index
 
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo, keeping torch unless the ROCm repair fires.
@@ -8205,7 +8233,7 @@ if [ "$_MIGRATED" = true ]; then
         # (tests/test_installer_zoo_floor_parity.py enforces that).
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.6"
+            "$_unsloth_release_install_spec" "$_unsloth_zoo_install_spec"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -8220,7 +8248,7 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.6"
+            "$_unsloth_release_install_spec" "$_unsloth_zoo_install_spec"
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -8449,7 +8477,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.6"
+            "$_unsloth_release_install_spec" "$_unsloth_zoo_install_spec"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -8468,7 +8496,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.6"
+            --upgrade-package unsloth "$_unsloth_release_install_spec" "$_unsloth_zoo_install_spec"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
@@ -8499,7 +8527,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.10.6" "$_unsloth_release_install_spec" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "$_unsloth_zoo_install_spec" "$_unsloth_release_install_spec" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
