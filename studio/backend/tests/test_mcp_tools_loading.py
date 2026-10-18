@@ -861,3 +861,15 @@ def test_a_retry_with_another_hub_token_starts_its_own_load(monkeypatch, fast_po
         retry = call("load_model", {"model": LLM, "wait_s": 0, "hf_token": "hf_new"})
     ids = [r["structuredContent"]["job_id"] for r in (first, same, retry)]
     assert ids[0] == ids[1] != ids[2]
+
+
+@pytest.mark.parametrize(
+    "left,right,same",
+    [
+        ("unsloth/Qwen3-0.6B", "Unsloth/qwen3-0.6b", True),
+        ("/models/Foo.gguf", "/models/foo.gguf", False),
+        ("C:\\models\\Foo.gguf", "c:\\models\\foo.gguf", False),
+    ],
+)
+def test_hub_ids_match_in_any_case_and_local_paths_keep_theirs(left, right, same):
+    assert loading._same(left, right) is same
