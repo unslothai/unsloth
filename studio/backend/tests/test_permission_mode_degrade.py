@@ -753,8 +753,10 @@ def test_an_oversized_chat_folder_refuses_once_then_asks_and_runs_isolated(monke
     for i in range(8):
         with open(os.path.join(workdir, f"f{i}"), "w"):
             pass
-    call = '<tool_call>{"name": "python", "arguments": {"code": "import shutil; shutil.rmtree(\\"dist\\", ignore_errors=True); print(\\"RAN\\" + \\"_OK\\")"}}</tool_call>'
-    turns = iter([call, call, "done"])
+    capability = os_sandbox.capability_snapshot()
+    os_sandbox.note_tool_isolation("python", True, backend = capability.backend)
+    call = '<tool_call>{"name": "python", "arguments": {"code": "import shutil; shutil.rmtree(\\"dist%d\\", ignore_errors=True); print(\\"RAN\\" + \\"_OK\\")"}}</tool_call>'
+    turns = iter([call % 1, call % 2, "done"])
 
     def single_turn(_messages):
         try:
