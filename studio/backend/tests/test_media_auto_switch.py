@@ -1817,16 +1817,17 @@ def test_fit_keeps_todays_wait_behind_a_chat_load(
     assert loads == []
 
 
-def test_always_waits_behind_a_cpu_chat_load(
-    flux, enabled, takes_the_gpu, backend, loads, monkeypatch
+@pytest.mark.parametrize("claim", [{}, {arb.CHAT: frozenset({0})}])
+def test_always_waits_behind_a_cpu_or_placed_chat_load(
+    flux, enabled, takes_the_gpu, backend, loads, monkeypatch, claim
 ):
-    # A CPU chat load never claims the GPU, so the switch queues on chat's gate as under fit
-    # instead of answering the retryable 409.
+    # A CPU chat load never claims the GPU, and one on known GPUs is checked for overlap by the
+    # arbiter, so the switch queues on chat's gate as under fit instead of answering the 409.
     import core.inference.gpu_residency as residency
 
     monkeypatch.setattr(residency, "current_policy", lambda: "always")
-    monkeypatch.setattr(arb, "_owner", None)
-    monkeypatch.setattr(arb, "_residents", {})
+    monkeypatch.setattr(arb, "_owner", arb.CHAT if claim else None)
+    monkeypatch.setattr(arb, "_residents", dict(claim))
     monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.4)
     assert chat._lifecycle_lock.acquire(blocking = False)
     try:

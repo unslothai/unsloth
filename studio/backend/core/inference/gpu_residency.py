@@ -588,8 +588,9 @@ def _free_steps(
             _evict_resident(name, acting, evicted, freed)
     if freed and done():
         return freed
-    # 2. Idle H3 video servers sit outside every owner's teardown.
-    if owner != arb.VIDEO:
+    # 2. Idle H3 video servers sit outside every owner's teardown; one beside a video model on other GPUs stays.
+    video_gpus = arb._view().get(arb.VIDEO, ...)
+    if owner != arb.VIDEO and (video_gpus is ... or _overlaps(video_gpus, target)):
         try:
             from core.inference.video_minimax_h3 import release_h3_native_servers
             if release_h3_native_servers(reason):

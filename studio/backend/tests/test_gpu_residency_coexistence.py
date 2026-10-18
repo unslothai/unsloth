@@ -474,6 +474,12 @@ class TestFreeForOrder(_ArbiterResetMixin, unittest.TestCase):
             owner, gpus, "test", self.evicted, need_mib = _need({0: 1000}, kind = "image")
         )
 
+    def test_an_h3_server_beside_video_on_another_gpu_stays(self):
+        self._resident(arb.VIDEO, {1})
+        self._resident(arb.CHAT, {0})
+        self._free()
+        self.assertNotIn("h3", self.log)
+
     def test_a_kept_slot_a_request_reached_is_not_reported(self):
         self._resident(arb.CHAT, {0})
         self.dropped = lambda victims: []

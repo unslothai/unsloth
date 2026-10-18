@@ -318,11 +318,11 @@ async def _gated_start_load(
     try:
         # Under Always a chat load's GPUs aren't known yet, so it overlaps every card: refuse now
         # (retryable) instead of queueing on chat's gate behind it. Off and fit keep the wait, and
-        # so does a CPU chat load, which never claims the GPU.
+        # so does a CPU chat load (no GPU claim) or one on known GPUs (the arbiter checks overlap).
         if (
             takes_the_gpu
             and gpu_residency.chat_load_in_flight()
-            and gpu_arbiter.holds(gpu_arbiter.CHAT)
+            and gpu_arbiter.residents().get(gpu_arbiter.CHAT, ...) is None
             and await asyncio.to_thread(gpu_residency.current_policy) == "always"
         ):
             raise gpu_residency.chat_loading_http_exception(openai_errors = openai_errors)
