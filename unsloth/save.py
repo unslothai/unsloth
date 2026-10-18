@@ -5149,32 +5149,30 @@ def _apply_token_to_child_env(env, token, *, explicit):
     env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0"
 
 
-def _cached_complete_snapshot(repo_id, token = None):
-    """The local snapshot of `repo_id` when its config and every safetensors shard are cached, else None. Never downloads."""
+def _base_config_dir(repo_id, token = None):
+    """A temporary directory holding only `repo_id`'s config.json, which is all convert_lora_to_gguf.py --base reads; None if it cannot be fetched."""
+    import tempfile
+
     try:
-        from huggingface_hub import snapshot_download
-        path = snapshot_download(
+        from huggingface_hub import hf_hub_download
+
+        # The live cache, not huggingface_hub's frozen constant: a runtime redirect would else miss (#6890).
+        try:
+            from unsloth_zoo.hf_cache import _active_caches
+            cache_dir = _active_caches()[1]
+        except Exception:
+            cache_dir = None
+        config = hf_hub_download(
             repo_id,
-            allow_patterns = ["config.json", "*.safetensors", "*.safetensors.index.json"],
-            local_files_only = True,
+            "config.json",
+            cache_dir = str(cache_dir) if cache_dir is not None else None,
             token = token if isinstance(token, str) else None,
         )
     except Exception:
         return None
-    if not os.path.isfile(os.path.join(path, "config.json")):
-        return None
-    index = os.path.join(path, "model.safetensors.index.json")
-    if os.path.isfile(index):
-        try:
-            with open(index, "r", encoding = "utf-8") as f:
-                shards = set(json.load(f)["weight_map"].values())
-        except Exception:
-            return None
-    else:
-        shards = {"model.safetensors"}
-    if not shards or not all(os.path.isfile(os.path.join(path, shard)) for shard in shards):
-        return None
-    return path
+    directory = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-base-")
+    shutil.copyfile(config, os.path.join(directory, "config.json"))
+    return directory
 
 
 def _lora_base_model_id(model):
@@ -5327,6 +5325,7 @@ def _unsloth_save_lora_gguf(
         pass
     model_name = _model_basename(base_model_id)
 
+    base_config_dir = None
     # Save the adapter: an isolated temp dir for a hub push, else save_directory itself, wrapped so it is always cleaned up.
     if push_to_hub:
         lora_dir = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-")
@@ -5357,13 +5356,12 @@ def _unsloth_save_lora_gguf(
         cmd = [sys.executable, converter, lora_dir, "--outfile", out_gguf, "--outtype", outtype]
         # Pass --trust-remote-code only when the model really came from custom code (the approved load decision), not merely because its config carries an auto_map entry.
         loaded_via_remote_code = _loaded_via_remote_code(model)
-        # A built-in class reads the base from its cached snapshot: --base-model-id builds the config with a strict AutoConfig, which rejects values an older transformers wrote (Ling-3.0-tiny's integer kda_lower_bound, #13948), and --base falls back to config.json.
+        # A built-in class hands --base a directory with just the base config.json: --base-model-id builds the config with a strict AutoConfig, which rejects values an older transformers wrote (Ling-3.0-tiny's integer kda_lower_bound, #13948), while --base falls back to reading config.json and needs no weights.
+        local_base = None
         if os.path.isdir(base_model_id):
             local_base = base_model_id
-        elif loaded_via_remote_code:
-            local_base = None
-        else:
-            local_base = _cached_complete_snapshot(base_model_id, token)
+        elif not loaded_via_remote_code:
+            local_base = base_config_dir = _base_config_dir(base_model_id, token)
         if local_base is not None:
             cmd += ["--base", local_base]
         else:
@@ -5427,6 +5425,8 @@ def _unsloth_save_lora_gguf(
     finally:
         if push_to_hub:
             shutil.rmtree(lora_dir, ignore_errors = True)
+        if base_config_dir is not None:
+            shutil.rmtree(base_config_dir, ignore_errors = True)
 
 
 def unsloth_convert_lora_to_ggml_and_push_to_hub(

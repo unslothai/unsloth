@@ -4,13 +4,15 @@
 """Ling 3.x checkpoints with `q_lora_rank` load their low-rank query on transformers' bailing_hybrid (#13948)."""
 
 import json
+import os
+import shutil
 
 import pytest
 import torch
 
 import unsloth  # noqa: F401
 from unsloth.import_fixes import fix_transformers_bailing_hybrid_low_rank_query
-from unsloth.save import _cached_complete_snapshot
+from unsloth.save import _base_config_dir
 
 modeling = pytest.importorskip("transformers.models.bailing_hybrid.modeling_bailing_hybrid")
 from transformers import BailingHybridConfig, BailingHybridForCausalLM
@@ -91,34 +93,26 @@ def test_patch_is_idempotent():
     assert modeling.BailingHybridAttention.__init__ is init
 
 
-def _fake_snapshot(monkeypatch, path):
+def test_base_config_dir_holds_only_the_config(tmp_path, monkeypatch):
     import huggingface_hub
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda *a, **k: str(path))
+
+    cached = tmp_path / "config.json"
+    cached.write_text('{"kda_lower_bound": -5}')
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda *a, **k: str(cached))
+    directory = _base_config_dir("org/model")
+    try:
+        assert os.listdir(directory) == ["config.json"]
+        with open(os.path.join(directory, "config.json")) as f:
+            assert json.load(f) == {"kda_lower_bound": -5}
+    finally:
+        shutil.rmtree(directory)
 
 
-def test_cached_snapshot_needs_config_and_every_shard(tmp_path, monkeypatch):
-    _fake_snapshot(monkeypatch, tmp_path)
-    assert _cached_complete_snapshot("org/model") is None  # no config
-    (tmp_path / "config.json").write_text("{}")
-    index = {"weight_map": {"a": "model-1.safetensors", "b": "model-2.safetensors"}}
-    (tmp_path / "model.safetensors.index.json").write_text(json.dumps(index))
-    (tmp_path / "model-1.safetensors").write_bytes(b"")
-    assert _cached_complete_snapshot("org/model") is None  # a shard is missing
-    (tmp_path / "model-2.safetensors").write_bytes(b"")
-    assert _cached_complete_snapshot("org/model") == str(tmp_path)
-
-
-def test_cached_snapshot_single_file_and_offline_miss(tmp_path, monkeypatch):
-    _fake_snapshot(monkeypatch, tmp_path)
-    (tmp_path / "config.json").write_text("{}")
-    assert _cached_complete_snapshot("org/model") is None
-    (tmp_path / "model.safetensors").write_bytes(b"")
-    assert _cached_complete_snapshot("org/model") == str(tmp_path)
-
+def test_base_config_dir_unavailable(monkeypatch):
     import huggingface_hub
 
     def missing(*args, **kwargs):
-        raise huggingface_hub.errors.LocalEntryNotFoundError("not cached")
+        raise huggingface_hub.errors.LocalEntryNotFoundError("offline")
 
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", missing)
-    assert _cached_complete_snapshot("org/model") is None
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", missing)
+    assert _base_config_dir("org/model") is None
