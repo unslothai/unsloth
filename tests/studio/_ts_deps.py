@@ -32,6 +32,8 @@ _FUNCTION_DECL_RE = re.compile(
     r"^(?:export\s+)?(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*"
     r"(?:async\s+function\b|function\b|(?:async\s*)?(?:\([^()]*\)|[A-Za-z_$][\w$]*)\s*=>)"
 )
+# `const v = function () { ... }();` runs on load: an immediately invoked function stays eager.
+_IIFE_TAIL_RE = re.compile(r"\}\s*\)?\s*\([^()]*\)\s*$")
 _SAFE_INIT_RE = re.compile(
     r"^(?:/|[\"'`]|\d|\[|\{|!|new\s+(?:Set|Map|RegExp|Date)\b"
     r"|async\s+function\b|function\b|async\s*\(|\(|[A-Za-z_$][\w$]*\s*(?:=>|;))"
@@ -450,7 +452,9 @@ def resolve_dependencies(
                 wanted.add(reference)
             pull(reference, origin)
         kind = home.kind(name) or "const"
-        if _FUNCTION_DECL_RE.match(text.lstrip()):
+        if _FUNCTION_DECL_RE.match(text.lstrip()) and not _IIFE_TAIL_RE.search(
+            _blank_noise(text).rstrip().rstrip(";")
+        ):
             kind = "function"
         pulled[name] = (
             kind,
@@ -472,10 +476,29 @@ def resolve_dependencies(
     # one from here is a TDZ error rather than a resolution.
     eager = {"const", "let", "var", "class"}
     while True:
+        # A lazy declaration is only as complete as what it reads: `const T = { v: f() }` runs `f` on load, so an `f`
+        # left with an unresolved reference (directly or through another such function) dooms `T` too.
+        partial: set[str] = set()
+        while True:
+            grown = {
+                name
+                for name, (kind, _, wanted) in pulled.items()
+                if kind not in eager and not wanted <= set(pulled) - partial
+            }
+            if grown == partial:
+                break
+            partial = grown
         doomed = {
             name
-            for name, (kind, _, wanted) in pulled.items()
-            if kind in eager and not wanted <= set(pulled)
+            for name, (kind, text, wanted) in pulled.items()
+            if kind in eager
+            and (
+                not wanted <= set(pulled)
+                or any(
+                    re.search(rf"(?<![\w$.]){re.escape(dep)}\s*\(|\bnew\s+{re.escape(dep)}\b", _blank_noise(text))
+                    for dep in wanted & partial
+                )
+            )
         }
         if not doomed:
             break

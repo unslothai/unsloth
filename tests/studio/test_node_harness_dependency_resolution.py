@@ -141,6 +141,37 @@ def test_a_pulled_arrow_const_is_kept_like_a_function(tmp_path):
     assert "create(" not in resolved
 
 
+def test_a_const_calling_a_half_resolved_arrow_on_load_is_dropped(tmp_path):
+    """`TABLE = { v: f() }` runs `f` on load, so an `f` missing a reference dooms `TABLE`; one that only names it is kept."""
+    module = tmp_path / "src" / "m.ts"
+    module.parent.mkdir(parents = True)
+    module.write_text(
+        'import { missing } from "./nowhere";\n'
+        "const f = () => missing();\n"
+        "const g = () => f();\n"
+        "const TABLE = { v: g() };\n"
+        "const NAMES = [g];\n"
+        "export function useIt() {\n  return [TABLE, NAMES];\n}\n"
+    )
+    resolved = resolve_dependencies("const used = useIt();\n", (module,), root = tmp_path / "src")
+    assert "const TABLE" not in resolved
+    assert "const NAMES = [g];" in resolved
+
+
+def test_an_immediately_invoked_function_stays_eager(tmp_path):
+    """`const v = function () { ... }();` runs on load, so it is dropped when its body cannot be resolved."""
+    module = tmp_path / "src" / "m.ts"
+    module.parent.mkdir(parents = True)
+    module.write_text(
+        'import { store } from "./store";\n'
+        "const value = function () {\n  return store.getState();\n}();\n"
+        "export function read() {\n  return value;\n}\n"
+    )
+    (module.parent / "store.ts").write_text("export const store = create(() => ({ on: null }));\n")
+    resolved = resolve_dependencies("const used = read();\n", (module,), root = tmp_path / "src")
+    assert "const value" not in resolved
+
+
 def test_a_destructured_fixture_is_not_declared_twice(tmp_path):
     """``const { only, ...rest } = ...`` is a binding a declaration regex does not see."""
     module = tmp_path / "src" / "m.ts"
