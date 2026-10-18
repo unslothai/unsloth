@@ -5929,19 +5929,18 @@ def unsloth_generic_save(
             'written. Call `reap_prune(..., save_directory = "pruned_model")` (or save the pruned '
             "model and load it again) before `get_peft_model`."
         )
-    # The pruned base REAP saved lives only on this machine: an adapter pushed against it would name
-    # a local path no one else can load.
+    # The pruned base REAP saved is a local folder (moved or deleted since, the adapter config still
+    # names it): an adapter pushed against it names a path no one else can load.
     if (
         push_to_hub
         and isinstance(model, PeftModel)
         and _is_adapter_save_method(save_method)
         and getattr(model, "_unsloth_reap_saved", None)
-        and os.path.isdir(getattr(model, "_unsloth_reap_saved", None))
     ):
         raise RuntimeError(
-            "Unsloth: this adapter's base is the REAP pruned model saved at "
-            f"`{getattr(model, '_unsloth_reap_saved', None)}`, which exists only on this machine, so a "
-            "pushed adapter could not be loaded elsewhere. Nothing was uploaded. Push the pruned base "
+            "Unsloth: this adapter's base is the REAP pruned model saved to the local folder "
+            f"`{getattr(model, '_unsloth_reap_saved', None)}`, so a pushed adapter could not be "
+            "loaded anywhere else. Nothing was uploaded. Push the pruned base "
             "to the Hub first and load it from there before finetuning, or push a merged model "
             '(`save_method = "merged_16bit"`).'
         )
