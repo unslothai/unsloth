@@ -117,6 +117,46 @@ export function cornerInsetScope(
   };
 }
 
+// Lifts the corner rail over a docked chat composer that runs under it (narrow windows, phones; #14146).
+export const COMPOSER_CLEARANCE_VAR = "--studio-composer-clearance";
+// The collapsed download button's column: 16px inset, 44px button, 16px of air.
+const CORNER_RAIL_COLUMN = 76;
+const composerClearances = new Map<object, number>();
+
+function applyComposerClearance(): void {
+  const lift = Math.max(0, ...composerClearances.values());
+  cornerInsets.style.setProperty(COMPOSER_CLEARANCE_VAR, lift > 0 ? `${lift}px` : "");
+}
+
+/** Keeps the rail above `composer` while it reaches into the rail's column; compare panes each register. */
+export function watchComposerClearance(
+  composer: HTMLElement,
+  uiSpaceScale = 1,
+): () => void {
+  const key = {};
+  const apply = () => {
+    const rect = composer.getBoundingClientRect();
+    const intrudes =
+      rect.height > 0 &&
+      window.innerWidth - rect.right < CORNER_RAIL_COLUMN * uiSpaceScale;
+    // The rail already keeps a 16px gutter; this leaves 8px between it and the composer.
+    const lift = intrudes ? Math.round(window.innerHeight - rect.top - 8) : 0;
+    if (lift > 0) composerClearances.set(key, lift);
+    else composerClearances.delete(key);
+    applyComposerClearance();
+  };
+  apply();
+  const observer = new ResizeObserver(apply);
+  observer.observe(composer);
+  window.addEventListener("resize", apply);
+  return () => {
+    observer.disconnect();
+    window.removeEventListener("resize", apply);
+    composerClearances.delete(key);
+    applyComposerClearance();
+  };
+}
+
 type InsetPanel = {
   offsetWidth: number;
   parentElement: { clientWidth: number } | null;
