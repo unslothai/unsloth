@@ -5478,7 +5478,12 @@ export function HubModelPicker({
             !fitOnDeviceOnly ||
             cachedIdFor(id) !== null ||
             runsCheckpointQuant({ id }) ||
-            searchRowFits({ id }),
+            // A More row's catalog size, as browse judged it: its id alone may be unsizable.
+            searchRowFits({
+              id,
+              estimatedSizeBytes:
+                moreById.get(id.toLowerCase())?.sizeBytes ?? undefined,
+            }),
         )
     );
   }, [
