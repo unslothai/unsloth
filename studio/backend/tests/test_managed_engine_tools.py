@@ -324,6 +324,33 @@ def test_deduplicate_tool_calls_reaches_the_managed_loop(native, monkeypatch, de
 
 
 @pytest.mark.parametrize(
+    "policy", [None, {"allowedDomains": ["docs.python.org"], "blockedDomains": []}]
+)
+def test_web_search_domain_limits_reach_the_managed_loop(native, monkeypatch, policy):
+    from core.inference import studio_tool_loop
+    from routes import managed_engine_chat
+
+    seen = []
+    original = managed_engine_chat.stream_with_studio_tools
+
+    def capture(*args, **kwargs):
+        seen.append(kwargs["policy"].website_policy)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(managed_engine_chat, "stream_with_studio_tools", capture)
+    monkeypatch.setattr(studio_tool_loop, "execute_tool", lambda *a, **k: "ok")
+    payload = route_test._request(
+        enable_tools = True,
+        enabled_tools = ["web_search"],
+        permission_mode = "off",
+        max_tool_calls_per_message = 1,
+    )
+    payload._website_policy = policy
+    run(payload)
+    assert seen == [policy]
+
+
+@pytest.mark.parametrize(
     "choice", ["auto", "required", "none", {"type": "function", "function": {"name": "lookup"}}]
 )
 def test_client_tool_choice_is_forwarded(native, choice):
