@@ -1152,6 +1152,14 @@ def sft_trainer_assistant_mask_fallback(function_name, function):
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_assistant_mask_fallback)
 
 
+def _unsloth_grpo_autocast_forced_float32(self):
+    # Stamped by from_pretrained: UNSLOTH_FORCE_FLOAT32 is process wide, so a model loaded after this trainer was built would answer for it here.
+    forced = getattr(getattr(self, "model", None), "_unsloth_forced_float32", None)
+    if forced is None:
+        forced = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+    return forced
+
+
 def _unsloth_grpo_autocast(self):
     """Decide the GRPO autocast once and latch it on the trainer. ACCELERATE_MIXED_PRECISION is process wide, so a trainer built later but run first would hand this trainer its precision; args belongs to this trainer."""
     if not hasattr(self, "_autocast_enabled"):
@@ -1169,10 +1177,7 @@ def _unsloth_grpo_autocast(self):
         # "no" is a real value: full finetuning and an explicit float32 load both set it, and reading it as bfloat16 raises on a T4 or V100.
         self._autocast_enabled = precision != "no"
         self._autocast_force_float32 = False
-        # Stamped by from_pretrained: UNSLOTH_FORCE_FLOAT32 is process wide, so a model loaded after this trainer was built would answer for it here.
-        forced = getattr(getattr(self, "model", None), "_unsloth_forced_float32", None)
-        if forced is None:
-            forced = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+        forced = _unsloth_grpo_autocast_forced_float32(self)
         if forced and precision != "bf16":
             # Gemma3 / gpt-oss set "no" but still want float16 autocast; a trainer already on bf16 keeps it, since float16 is what the forced list avoids.
             self._autocast_dtype = torch.float16
@@ -1180,6 +1185,20 @@ def _unsloth_grpo_autocast(self):
             self._autocast_force_float32 = True
 
     return self._autocast_enabled, self._autocast_dtype
+
+
+def _unsloth_grpo_autocast_unscored(self):
+    """Latch for a step that ran no scoring forward. A forced float32 model (Gemma3 on a T4) without vLLM is
+    left unlatched: nothing latched there before the TRL old-logprob gate came back, so zoo trained it with no
+    loss autocast, and the latch would turn on float16 autocast. Under vLLM the old-policy forward always ran
+    and latched, so it still latches."""
+    if (
+        not hasattr(self, "_autocast_enabled")
+        and not getattr(self, "use_vllm", False)
+        and _unsloth_grpo_autocast_forced_float32(self)
+    ):
+        return None
+    return _unsloth_grpo_autocast(self)
 
 
 def _unsloth_grpo_autocast_kwargs(self, device_type = DEVICE_TYPE_TORCH):
@@ -2426,9 +2445,8 @@ def grpo_trainer__get_per_token_logps(function_name, function):
         compute_efficient = False,
     ):
         if True:  # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
-            # Older TRL calls this instead of _get_per_token_logps_and_entropies: latch here too, under vLLM only (see below).
-            if getattr(self, "use_vllm", False):
-                _unsloth_grpo_autocast(self)
+            # Older TRL calls this instead of _get_per_token_logps_and_entropies: latch here too (see below).
+            _unsloth_grpo_autocast_unscored(self)
             return None  # Unsloth efficient GRPO
         _unsloth_grpo_autocast(self)
 
@@ -2473,12 +2491,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
         # All Unsloth code in this function is licensed under AGPL3.
         if compute_efficient:
             # No scoring forward may run (vLLM, beta = 0): latch precision here, not from the shared env.
-            # vLLM only: before the TRL gate came back, vLLM always ran the old-policy forward and latched there.
-            # Without vLLM nothing latched when nothing was scored, so a forced float32 model (Gemma3 on a T4)
-            # trained with no loss autocast; latching here would wrap it in float16 autocast and run its
-            # float32 attention in float16.
-            if getattr(self, "use_vllm", False):
-                _unsloth_grpo_autocast(self)
+            _unsloth_grpo_autocast_unscored(self)
             return None, None
         else:
             _unsloth_grpo_autocast(self)
@@ -3559,7 +3572,9 @@ grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
 grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
 UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
 grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_forced_float32))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_unscored))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_kwargs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_model_config))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_text_configs))

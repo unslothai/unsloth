@@ -43,7 +43,9 @@ def _function(name, parent = None):
 
 def _namespace():
     ns = {"torch": torch, "os": os}
+    exec(_function("_unsloth_grpo_autocast_forced_float32"), ns)
     exec(_function("_unsloth_grpo_autocast"), ns)
+    exec(_function("_unsloth_grpo_autocast_unscored"), ns)
     exec(
         _function(
             "_get_per_token_logps_and_entropies", "grpo_trainer__get_per_token_logps_and_entropies"
@@ -85,7 +87,9 @@ def test_efficient_call_keeps_an_existing_latch(monkeypatch):
 
 def test_legacy_logprob_replacement_latches_too(monkeypatch):
     ns = {"torch": torch, "os": os}
+    exec(_function("_unsloth_grpo_autocast_forced_float32"), ns)
     exec(_function("_unsloth_grpo_autocast"), ns)
+    exec(_function("_unsloth_grpo_autocast_unscored"), ns)
     exec(_function("_get_per_token_logps", "grpo_trainer__get_per_token_logps"), ns)
     monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "fp16")
     trainer = types.SimpleNamespace(
@@ -120,7 +124,9 @@ def test_efficient_call_without_vllm_leaves_forced_float32_unlatched(monkeypatch
     assert not hasattr(trainer, "_autocast_dtype")
 
     legacy = {"torch": torch, "os": os}
+    exec(_function("_unsloth_grpo_autocast_forced_float32"), legacy)
     exec(_function("_unsloth_grpo_autocast"), legacy)
+    exec(_function("_unsloth_grpo_autocast_unscored"), legacy)
     exec(_function("_get_per_token_logps", "grpo_trainer__get_per_token_logps"), legacy)
     trainer = _forced_float32_trainer(use_vllm = False)
     assert legacy["_get_per_token_logps"](trainer, None, None, None, 4) is None
@@ -136,3 +142,32 @@ def test_efficient_call_with_vllm_latches_forced_float32_as_the_old_forward_did(
     assert trainer._autocast_enabled is True
     assert trainer._autocast_dtype is torch.float16
     assert trainer._autocast_force_float32 is True
+
+
+def test_efficient_call_without_vllm_still_latches_an_ordinary_trainer(monkeypatch):
+    # Only forced float32 models stay unlatched: an ordinary trainer keeps its own precision even when the
+    # process-wide env (another trainer, or an explicit setting) says otherwise.
+    monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "fp16")
+    monkeypatch.delenv("UNSLOTH_FORCE_FLOAT32", raising = False)
+    ns = _namespace()
+    trainer = types.SimpleNamespace(
+        args = types.SimpleNamespace(mixed_precision = "bf16", bf16 = True, fp16 = False),
+        model = types.SimpleNamespace(_unsloth_forced_float32 = False),
+        use_vllm = False,
+    )
+    ns["_get_per_token_logps_and_entropies"](trainer, None, None, None, 4, compute_efficient = True)
+    assert trainer._autocast_enabled is True
+    assert trainer._autocast_dtype is torch.bfloat16
+
+    legacy = {"torch": torch, "os": os}
+    exec(_function("_unsloth_grpo_autocast_forced_float32"), legacy)
+    exec(_function("_unsloth_grpo_autocast"), legacy)
+    exec(_function("_unsloth_grpo_autocast_unscored"), legacy)
+    exec(_function("_get_per_token_logps", "grpo_trainer__get_per_token_logps"), legacy)
+    trainer = types.SimpleNamespace(
+        args = types.SimpleNamespace(mixed_precision = "bf16", bf16 = True, fp16 = False),
+        model = None,
+        use_vllm = False,
+    )
+    assert legacy["_get_per_token_logps"](trainer, None, None, None, 4) is None
+    assert trainer._autocast_dtype is torch.bfloat16
