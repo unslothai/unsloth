@@ -2725,7 +2725,7 @@ class TestDesktopBackendVersionConstraint:
     """UNSLOTH_DESKTOP_BACKEND_VERSION floors the unsloth upgrade, lowered only for a lagging index (#14031)."""
 
     @staticmethod
-    def _fake_uv(have):
+    def _fake_uv(have, zoo = None):
         def run(
             argv,
             input = None,
@@ -2735,7 +2735,13 @@ class TestDesktopBackendVersionConstraint:
             floor = re.search(r">=(\S+)", input)
             if floor and Version(floor.group(1)) > Version(have):
                 return subprocess.CompletedProcess(argv, 1, stdout = "")
-            return subprocess.CompletedProcess(argv, 0, stdout = f"unsloth=={have}\n")
+            if input.strip() == "unsloth-zoo":
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout = f"unsloth-zoo=={zoo or have} \\\n"
+                )
+            cap = re.search(r"<=(\S+)", input)
+            pick = min(have, cap.group(1), key = Version) if cap else have
+            return subprocess.CompletedProcess(argv, 0, stdout = f"unsloth=={pick}\n")
 
         return run
 
@@ -2745,6 +2751,7 @@ class TestDesktopBackendVersionConstraint:
         env,
         have = "2026.10.3",
         package = "unsloth",
+        zoo = None,
     ):
         with (
             mock.patch.dict(os.environ, env, clear = True),
@@ -2760,7 +2767,7 @@ class TestDesktopBackendVersionConstraint:
                     "default_index": None,
                 },
             ),
-            mock.patch.object(ips.subprocess, "run", side_effect = self._fake_uv(have)) as run,
+            mock.patch.object(ips.subprocess, "run", side_effect = self._fake_uv(have, zoo)) as run,
         ):
             return ips._desktop_unsloth_spec(package), run.call_count
 
@@ -2803,6 +2810,13 @@ class TestDesktopBackendVersionConstraint:
             "UV_EXCLUDE_NEWER_PACKAGE": "unsloth=2026-10-09",
         }
         assert self._spec(tmp_path, env)[0] == "unsloth>=2026.10.3"
+
+    def test_zoo_lagging_unsloth_caps_the_backend(self, tmp_path):
+        env = {
+            "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
+            "UV_INDEX": "https://feed.example/simple",
+        }
+        assert self._spec(tmp_path, env, zoo = "2026.10.2")[0] == "unsloth>=2026.10.2"
 
     def test_upload_cutoff_alone_counts(self, tmp_path):
         env = {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6", "UV_EXCLUDE_NEWER": "2026-10-09"}

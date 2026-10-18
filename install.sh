@@ -8202,11 +8202,15 @@ _relax_unsloth_floors_to_index() {
     rm -f "$_UNSLOTH_FEED_CEILING_MARKER"
     printf '%s\n%s\n' "$_unsloth_release_install_spec" "$_unsloth_zoo_install_spec" \
         | uv pip compile --python "$_VENV_PY" --no-deps --resolution highest --no-header --no-annotate --quiet - > /dev/null 2>&1 && return 0
-    _rfi_have=$(printf 'unsloth\nunsloth-zoo\n' \
-        | uv pip compile --python "$_VENV_PY" --no-deps --resolution highest --no-header --no-annotate --quiet - 2>/dev/null) || return 0
-    _rfi_unsloth=$(printf '%s\n' "$_rfi_have" | sed -n 's/^unsloth==\([0-9][0-9A-Za-z.+!-]*\)$/\1/p')
-    _rfi_zoo=$(printf '%s\n' "$_rfi_have" | sed -n 's/^unsloth-zoo==\([0-9][0-9A-Za-z.+!-]*\)$/\1/p')
-    [ -n "$_rfi_unsloth" ] && [ -n "$_rfi_zoo" ] || return 0
+    # The newest zoo, then the newest unsloth not above it: an unsloth never needs a zoo newer than itself.
+    _rfi_zoo=$(printf 'unsloth-zoo\n' \
+        | uv pip compile --python "$_VENV_PY" --no-deps --resolution highest --no-header --no-annotate --quiet - 2>/dev/null \
+        | sed -n 's/^unsloth-zoo==\([0-9][0-9A-Za-z.+!-]*\).*/\1/p') || return 0
+    [ -n "$_rfi_zoo" ] || return 0
+    _rfi_unsloth=$(printf 'unsloth<=%s\n' "$_rfi_zoo" \
+        | uv pip compile --python "$_VENV_PY" --no-deps --resolution highest --no-header --no-annotate --quiet - 2>/dev/null \
+        | sed -n 's/^unsloth==\([0-9][0-9A-Za-z.+!-]*\).*/\1/p') || return 0
+    [ -n "$_rfi_unsloth" ] || return 0
     substep "[WARN] your package index does not have $_unsloth_release_install_spec yet; installing unsloth $_rfi_unsloth, the newest it has" "$C_WARN"
     _unsloth_release_install_spec="unsloth>=$_rfi_unsloth"
     _unsloth_zoo_install_spec="unsloth-zoo>=$_rfi_zoo"

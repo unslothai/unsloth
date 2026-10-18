@@ -10738,14 +10738,18 @@ main()
         try {
             $null = @($ReleaseSpec, $ZooSpec) | & $script:UvExe pip compile --python $VenvPython --no-deps --resolution highest --no-header --no-annotate --quiet - 2>$null
             if ($LASTEXITCODE -eq 0) { return $result }
-            $have = @(@("unsloth", "unsloth-zoo") | & $script:UvExe pip compile --python $VenvPython --no-deps --resolution highest --no-header --no-annotate --quiet - 2>$null)
-            if ($LASTEXITCODE -ne 0) { return $result }
-            $unsloth = $null; $zoo = $null
-            foreach ($line in $have) {
-                if ("$line".Trim() -match '^unsloth==([0-9][0-9A-Za-z.+!-]*)$') { $unsloth = $Matches[1] }
-                elseif ("$line".Trim() -match '^unsloth-zoo==([0-9][0-9A-Za-z.+!-]*)$') { $zoo = $Matches[1] }
+            # The newest zoo, then the newest unsloth not above it: an unsloth never needs a zoo newer than itself.
+            $newest = {
+                param([string]$Requirement, [string]$Name)
+                $lines = @(@($Requirement) | & $script:UvExe pip compile --python $VenvPython --no-deps --resolution highest --no-header --no-annotate --quiet - 2>$null)
+                if ($LASTEXITCODE -ne 0) { return $null }
+                foreach ($line in $lines) { if ("$line".Trim() -match "^$Name==([0-9][0-9A-Za-z.+!-]*)") { return $Matches[1] } }
+                return $null
             }
-            if (-not ($unsloth -and $zoo)) { return $result }
+            $zoo = & $newest "unsloth-zoo" "unsloth-zoo"
+            if (-not $zoo) { return $result }
+            $unsloth = & $newest "unsloth<=$zoo" "unsloth"
+            if (-not $unsloth) { return $result }
             substep "[WARN] your package index does not have $ReleaseSpec yet; installing unsloth $unsloth, the newest it has" "Yellow"
             $result.Release = "unsloth>=$unsloth"
             $result.Zoo = "unsloth-zoo>=$zoo"

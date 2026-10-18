@@ -26,16 +26,26 @@ export XDG_CONFIG_HOME="$VENV_DIR/xdg" UV_CONFIG_FILE="" XDG_CONFIG_DIRS=""
 unset UV_DEFAULT_INDEX UV_INDEX_URL UV_INDEX UV_EXTRA_INDEX_URL UV_EXCLUDE_NEWER UV_EXCLUDE_NEWER_PACKAGE
 cd "$VENV_DIR"
 
-# The index serves unsloth $FEED_UNSLOTH and unsloth-zoo $FEED_ZOO; a floor above either is unsatisfiable,
-# and FEED_DOWN=1 fails every resolve (an unreachable index).
+# The index serves unsloth releases $FEED_UNSLOTH_ALL (newest $FEED_UNSLOTH by default) and unsloth-zoo $FEED_ZOO;
+# a floor above what it has is unsatisfiable, FEED_DOWN=1 fails every resolve (an unreachable index), and zoo lines
+# carry --hash continuations as with uv.toml's generate-hashes.
 uv() {
     echo "$*" >> "$CALLS"
     _req=$(cat)
     [ "${FEED_DOWN:-0}" = 1 ] && return 2
-    case "$_req" in *"unsloth>=$NEED_UNSLOTH"*|*"unsloth-zoo>=$NEED_ZOO"*)
-        [ "$FEED_UNSLOTH" = "$NEED_UNSLOTH" ] && [ "$FEED_ZOO" = "$NEED_ZOO" ] || return 1 ;;
+    case "$_req" in
+        *">="*)
+            [ "$FEED_UNSLOTH" = "$NEED_UNSLOTH" ] && [ "$FEED_ZOO" = "$NEED_ZOO" ] || return 1
+            printf 'unsloth==%s\nunsloth-zoo==%s\n' "$FEED_UNSLOTH" "$FEED_ZOO" ;;
+        unsloth-zoo) printf 'unsloth-zoo==%s \\\n    --hash=sha256:00\n' "$FEED_ZOO" ;;
+        "unsloth<="*)
+            _best=""
+            for _v in ${FEED_UNSLOTH_ALL:-$FEED_UNSLOTH}; do
+                [ "$(printf '%s\n%s\n' "$_v" "${_req#unsloth<=}" | sort -V | tail -n 1)" = "${_req#unsloth<=}" ] && _best=$_v
+            done
+            [ -n "$_best" ] || return 1
+            printf 'unsloth==%s\n' "$_best" ;;
     esac
-    printf 'unsloth==%s\nunsloth-zoo==%s\n' "$FEED_UNSLOTH" "$FEED_ZOO"
 }
 NEED_UNSLOTH=2026.10.6; NEED_ZOO=2026.10.6
 
@@ -60,12 +70,19 @@ assert_eq "a leftover marker is dropped" "no" "$([ -f "$_UNSLOTH_FEED_CEILING_MA
 
 echo "=== index a week behind: floors lowered to what it has ==="
 export UV_DEFAULT_INDEX=https://feed.example/simple
-FEED_UNSLOTH=2026.10.3; FEED_ZOO=2026.10.2
+FEED_UNSLOTH=2026.10.3; FEED_ZOO=2026.10.4
 _run
 assert_eq "release floor lowered" "unsloth>=2026.10.3" "$_unsloth_release_install_spec"
-assert_eq "zoo floor lowered" "unsloth-zoo>=2026.10.2" "$_unsloth_zoo_install_spec"
+assert_eq "zoo floor lowered, hash lines and all" "unsloth-zoo>=2026.10.4" "$_unsloth_zoo_install_spec"
 assert_contains "says why" "$(cat "$SUBSTEPS")" "does not have unsloth>=2026.10.6 yet; installing unsloth 2026.10.3"
 assert_eq "no marker without Desktop" "no" "$([ -f "$_UNSLOTH_FEED_CEILING_MARKER" ] && echo yes || echo no)"
+
+echo "=== zoo lagging unsloth on the index: the newest unsloth that zoo can serve ==="
+FEED_UNSLOTH_ALL="2026.10.1 2026.10.2 2026.10.3"; FEED_UNSLOTH=2026.10.3; FEED_ZOO=2026.10.2
+_run
+assert_eq "unsloth capped at the zoo" "unsloth>=2026.10.2" "$_unsloth_release_install_spec"
+assert_eq "zoo floor" "unsloth-zoo>=2026.10.2" "$_unsloth_zoo_install_spec"
+unset FEED_UNSLOTH_ALL; FEED_ZOO=2026.10.3
 
 echo "=== Desktop on that index: its floor too, and the marker it reads ==="
 UNSLOTH_DESKTOP_BACKEND_VERSION=2026.10.6

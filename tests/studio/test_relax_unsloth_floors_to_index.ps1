@@ -45,19 +45,26 @@ $env:UV_CONFIG_FILE = ""; $env:APPDATA = $scratch; $env:ProgramData = $scratch
 Push-Location $scratch
 
 # The index serves unsloth $Feed.Unsloth and unsloth-zoo $Feed.Zoo; a floor above either is unsatisfiable.
-$script:Feed = @{ Unsloth = "2026.10.3"; Zoo = "2026.10.3"; Down = $false }
+$script:Feed = @{ Unsloth = "2026.10.3"; Zoo = "2026.10.3"; Down = $false; All = $null }
 $script:Calls = @()
 $script:UvExe = {
     $script:Calls += ($args -join " ")
     $req = @($input) -join "`n"
     if ($script:Feed.Down) { $global:LASTEXITCODE = 2; return }
-    if (($req -match 'unsloth>=2026\.10\.6' -or $req -match 'unsloth-zoo>=2026\.10\.6') -and
-        -not ($script:Feed.Unsloth -eq "2026.10.6" -and $script:Feed.Zoo -eq "2026.10.6")) {
-        $global:LASTEXITCODE = 1; return
-    }
     $global:LASTEXITCODE = 0
-    "unsloth==$($script:Feed.Unsloth)"
-    "unsloth-zoo==$($script:Feed.Zoo)"
+    if ($req -match '>=') {
+        if (-not ($script:Feed.Unsloth -eq "2026.10.6" -and $script:Feed.Zoo -eq "2026.10.6")) { $global:LASTEXITCODE = 1; return }
+        "unsloth==$($script:Feed.Unsloth)"; "unsloth-zoo==$($script:Feed.Zoo)"
+    } elseif ($req -eq "unsloth-zoo") {
+        # As uv.toml's generate-hashes prints it.
+        "unsloth-zoo==$($script:Feed.Zoo) \"; "    --hash=sha256:00"
+    } elseif ($req -match '^unsloth<=(.+)$') {
+        $cap = [version]$Matches[1]
+        $all = if ($script:Feed.All) { $script:Feed.All } else { @($script:Feed.Unsloth) }
+        $best = @($all | Where-Object { [version]$_ -le $cap } | Sort-Object { [version]$_ }) | Select-Object -Last 1
+        if (-not $best) { $global:LASTEXITCODE = 1; return }
+        "unsloth==$best"
+    }
 }
 function Invoke-Resolve([string]$Desktop = "") {
     $script:Calls = @(); $script:Substeps = @()
@@ -77,12 +84,19 @@ Assert-Eq "a leftover marker is dropped" $false (Test-Path -LiteralPath $marker)
 
 Write-Host "=== index a week behind: floors lowered to what it has ==="
 $env:UV_DEFAULT_INDEX = "https://feed.example/simple"
-$script:Feed.Unsloth = "2026.10.3"; $script:Feed.Zoo = "2026.10.2"
+$script:Feed.Unsloth = "2026.10.3"; $script:Feed.Zoo = "2026.10.4"
 $r = Invoke-Resolve
 Assert-Eq "release floor lowered" "unsloth>=2026.10.3" $r.Release
-Assert-Eq "zoo floor lowered" "unsloth-zoo>=2026.10.2" $r.Zoo
+Assert-Eq "zoo floor lowered, hash lines and all" "unsloth-zoo>=2026.10.4" $r.Zoo
 Assert-Eq "says why" $true ($script:Substeps[0] -like "*does not have unsloth>=2026.10.6 yet; installing unsloth 2026.10.3*")
 Assert-Eq "no marker without Desktop" $false (Test-Path -LiteralPath $marker)
+
+Write-Host "=== zoo lagging unsloth on the index: the newest unsloth that zoo can serve ==="
+$script:Feed.All = @("2026.10.1", "2026.10.2", "2026.10.3"); $script:Feed.Zoo = "2026.10.2"
+$r = Invoke-Resolve
+Assert-Eq "unsloth capped at the zoo" "unsloth>=2026.10.2" $r.Release
+Assert-Eq "zoo floor" "unsloth-zoo>=2026.10.2" $r.Zoo
+$script:Feed.All = $null; $script:Feed.Zoo = "2026.10.3"
 
 Write-Host "=== Desktop on that index: the marker it reads ==="
 $r = Invoke-Resolve -Desktop "2026.10.6"

@@ -10372,7 +10372,7 @@ def _desktop_unsloth_spec(package_name: str) -> str:
     if not USE_UV:
         return spec
 
-    def newest(requirement: str) -> "str | None":
+    def newest(requirement: str, name: str = "unsloth") -> "str | None":
         argv = ["uv", "pip", "compile", "--python", sys.executable, "--no-deps"]
         argv += ["--resolution", "highest", "--no-header", "--no-annotate", "--quiet", "-"]
         try:
@@ -10389,12 +10389,14 @@ def _desktop_unsloth_spec(package_name: str) -> str:
             return None
         if result.returncode != 0:
             return None
-        match = re.search(r"^unsloth==([0-9][0-9A-Za-z.+!-]*)$", result.stdout, re.MULTILINE)
+        match = re.search(rf"^{name}==([0-9][0-9A-Za-z.+!-]*)", result.stdout, re.MULTILINE)
         return match.group(1) if match else None
 
     if newest(spec) is not None:
         return spec
-    available = newest("unsloth")
+    # The newest zoo, then the newest unsloth not above it: an unsloth never needs a newer zoo.
+    zoo = newest("unsloth-zoo", "unsloth-zoo")
+    available = newest(f"unsloth<={zoo}") if zoo else None
     if available is None:
         return spec
     _note(
