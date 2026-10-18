@@ -651,5 +651,38 @@ class TestChatLoadingRefusal(unittest.TestCase):
             self.assertNotIn("is set to keep loaded", message)
 
 
+class TestKeptSlotReport(unittest.TestCase):
+    """An evicted kept slot reports the public id the status code shows, never a host path."""
+
+    def test_loaded_gguf_slot_reports_public_id(self):
+        llama = SimpleNamespace(
+            is_loaded = True,
+            model_identifier = "/srv/models/Qwen3-4B-Q4_K_M.gguf",
+            _openai_advertised_id = None,
+        )
+        orchestrator = SimpleNamespace(active_model_name = None)
+        slot = SimpleNamespace(
+            llama = llama,
+            orchestrator = orchestrator,
+            account = "me",
+            request = SimpleNamespace(model_path = "/srv/models/Qwen3-4B-Q4_K_M.gguf"),
+        )
+        report = gr._kept_slot_report(slot)
+        self.assertEqual(report["model"], "Qwen3-4B-Q4_K_M")
+        self.assertEqual(report["kind"], "chat")
+        self.assertEqual(report["account"], "me")
+
+    def test_fallback_never_reports_a_path(self):
+        slot = SimpleNamespace(
+            llama = None,
+            orchestrator = None,
+            account = None,
+            request = SimpleNamespace(model_path = "/srv/models/Qwen3-4B-Q4_K_M.gguf"),
+        )
+        with patch("routes.inference._kept_slot_reports", side_effect = RuntimeError("x")):
+            report = gr._kept_slot_report(slot)
+        self.assertEqual(report["model"], "Qwen3-4B-Q4_K_M")
+
+
 if __name__ == "__main__":
     unittest.main()

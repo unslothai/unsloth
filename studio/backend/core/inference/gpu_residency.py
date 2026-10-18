@@ -657,14 +657,17 @@ def _free_steps(
 
 def _kept_slot_report(slot: Any) -> dict:
     try:
-        from core.inference import model_slots
-        report = getattr(model_slots, "slot_report", None)
-        if report is not None:
-            return report(slot)
+        from routes.inference import _kept_slot_reports
+        reports = _kept_slot_reports(slot)
+        if reports:
+            return reports[0]
     except Exception:  # noqa: BLE001
         pass
+    from core.inference.model_ids import public_model_id
+
     request = getattr(slot, "request", None)
-    model = str(getattr(request, "model_path", "") or "")
+    raw = str(getattr(request, "model_path", "") or "")
+    model = public_model_id(raw) or raw
     return {"kind": "chat", "model": model, "account": getattr(slot, "account", None)}
 
 
