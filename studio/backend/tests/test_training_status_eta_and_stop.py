@@ -66,3 +66,12 @@ def test_a_run_with_no_stop_stays_completed(monkeypatch):
     assert st.phase == "completed"
     assert st.message.startswith("Training completed!")
     assert b._progress.is_completed is True
+
+
+def test_a_stop_during_the_embedding_save_reads_stopped(monkeypatch):
+    b = _running(monkeypatch)
+    b._should_stop = True
+    b._handle_event({**_DONE, "status_message": "Embedding training completed"})
+    st = _status()
+    assert st.phase == "stopped"
+    assert st.message == "Training stopped."

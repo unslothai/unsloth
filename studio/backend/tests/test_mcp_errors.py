@@ -108,6 +108,16 @@ CASES = DETAIL_CASES + [
         id = "v1-validation-400",
     ),
     pytest.param(
+        _v1(
+            400,
+            "response_format is not supported.",
+            param = "response_format",
+            code = "unsupported_parameter",
+        ),
+        ["[unsupported_parameter] Invalid arguments: response_format is not supported."],
+        id = "v1-validation-400-keeps-its-code",
+    ),
+    pytest.param(
         _response(422, VALIDATION_422),
         ["Invalid arguments: max_tokens: Input should be a valid integer; query.name: bad"],
         id = "api-validation-422",

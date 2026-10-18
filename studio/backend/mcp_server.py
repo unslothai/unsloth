@@ -35,7 +35,7 @@ INSTRUCTIONS = " ".join(
         "chat, generate_audio and transcribe wait for their result and report progress every 2 s.",
         # Polling line: later PRs add waiting on long jobs after it.
         "Video, recipe, export and training jobs return at once: poll get_job (video, recipe, export) or studio_status (training) every 15 to 30 s.",
-        "Stop work with cancel: a chat by the cancel_id it returned, a video by its id.",
+        "Stop work with cancel: a chat by the cancel_id you passed when starting it, a video by its id.",
         # Training line: later PRs add model prefetch after it.
         "To fine-tune, find a dataset with datasets, check the config with start_training(validate_only=true), start it, then export_model the finished run.",
         "Errors start with a tag such as [gpu_busy retry_after=12] or [not_loaded kind=image]; the hint after the message says what to do.",

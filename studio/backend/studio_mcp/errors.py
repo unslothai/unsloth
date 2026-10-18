@@ -214,9 +214,9 @@ def _describe(
     elif isinstance(envelope, dict):
         message = _text(envelope.get("message"))
         # /v1 validation is a 400 whose envelope names the offending field.
-        if status == 400 and envelope.get("param"):
-            return None, f"Invalid arguments: {_scrub(message)}", None
         code = envelope.get("code")
+        if status == 400 and envelope.get("param"):
+            return _tag(code), f"Invalid arguments: {_scrub(message)}", None
     elif isinstance(body, dict) and isinstance(body.get("message"), str):
         message = body["message"]
     else:

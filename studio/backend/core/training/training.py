@@ -3331,8 +3331,9 @@ class TrainingBackend:
                     "training stopped",
                 }
                 # A stop that lands during the final save or the drafter phase still gets "completed".
-                if stopped and msg.lower().startswith("training completed"):
-                    rest = re.sub(r"^training completed!?\s*", "", msg, flags = re.IGNORECASE)
+                completed = re.match(r"(?:\w+ )?training completed!?\s*", msg, flags = re.IGNORECASE)
+                if stopped and completed:
+                    rest = msg[completed.end() :]
                     msg = (
                         "Training cancelled."
                         if self._cancel_requested
