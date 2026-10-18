@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Serving one GGUF across N machines over llama.cpp RPC: any number of nodes, any mix of NVIDIA,
-AMD and Apple Silicon, any OS that runs ``ggml-rpc-server``.
-
-Opt-in only. With no cluster configured nothing here runs and ``spark_serving`` keeps its two-Spark
-path exactly as it was. Configure with ``UNSLOTH_CLUSTER_NODES`` (comma list of
-``[user@]host[:port]``) or ``<studio home>/cluster.json``::
-
-    {"nodes": [{"host": "10.0.0.2", "rpc_port": 50052, "ssh_user": "me", "managed": true}]}
-
-``managed`` nodes get their ``ggml-rpc-server`` started over ssh; the others are expected to run
-``ggml-rpc-server -H <ip> -p <port>`` themselves (the way a Mac or a Windows box joins).
-
-Placement reads free memory per remote device from ``llama-server --rpc ... --list-devices``.
-"""
+"""Serving one GGUF across N machines over llama.cpp RPC (opt-in: UNSLOTH_CLUSTER_NODES or cluster.json)."""
 
 from __future__ import annotations
 
@@ -32,8 +19,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 logger = logging.getLogger(__name__)
 
 ENV_NODES = "UNSLOTH_CLUSTER_NODES"
-ENV_MANAGED = "UNSLOTH_CLUSTER_MANAGED"  # "1": start every node's rpc-server over ssh
-ENV_TOPOLOGY = "UNSLOTH_CLUSTER_TOPOLOGY"  # single | layer_split
+ENV_MANAGED = "UNSLOTH_CLUSTER_MANAGED"
+ENV_TOPOLOGY = "UNSLOTH_CLUSTER_TOPOLOGY"
 # auto (default) | 0 / off | a positive group count; layer splits only (llama.cpp PR #187).
 ENV_PIPELINE_GROUPS = "UNSLOTH_CLUSTER_PIPELINE_GROUPS"
 # Measured on CUDA (2xT4, gemma-4-12B / LFM2-8B-A1B): below about 16 sequences per group the
@@ -43,18 +30,14 @@ CONFIG_NAME = "cluster.json"
 RPC_PORT_DEFAULT = 50052
 _GIB = 1024**3
 _MIB = 1024**2
-# Compute buffers, the KV padding and the context llama.cpp keeps per device.
 DEVICE_RESERVE_MIN_BYTES = 1 * _GIB
 DEVICE_RESERVE_FRACTION = 0.08
-# Whole layers: a device can be handed up to a layer more than its share of the weights.
 LAYER_ROUNDING_MARGIN = 0.05
 LIST_DEVICES_TIMEOUT_S = 60.0
 WORKER_START_TIMEOUT_S = 60.0
 REACH_TIMEOUT_S = 3.0
-# ggml-rpc-server serves one client at a time, so a worker the live llama-server holds never answers
-# a probe: give up on it this fast and plan with what it reported before that load.
+# ggml-rpc-server serves one client at a time: a worker the live llama-server holds never answers a probe.
 BUSY_PROBE_TIMEOUT_S = 8.0
-# KV share of the weights reserved for a Hub GGUF whose header is not downloaded yet.
 _MMPROJ_VRAM_SAFETY = 1.4  # LlamaCppBackend._MMPROJ_VRAM_SAFETY
 
 _MMPROJ_DEVICE_FLAGS = frozenset({"--mmproj-device", "-mmdev"})
@@ -82,7 +65,7 @@ _PLACEMENT_FLAGS = frozenset(
         "-ncmoe",
         "--n-cpu-ffn",
         "-ncffn",
-        "--moe-cache-mib",  # an expert cache on the GPUs, beside the planned weights
+        "--moe-cache-mib",
         "-otd",
         "--override-tensor-draft",
         "--spec-draft-override-tensor",
@@ -116,8 +99,6 @@ def _gguf_block_count(path: Optional[str], ss: Any) -> Optional[int]:
 
 
 def _remote_projector_bytes(model_path: str, hf_token: Optional[str]) -> Optional[int]:
-    """The largest projector a not-yet-downloaded Hub repo ships: 0 when none, None when the
-    listing could not be read."""
     if not model_path or "/" not in model_path or os.path.isabs(model_path):
         return 0
     try:
@@ -135,8 +116,6 @@ def _remote_projector_bytes(model_path: str, hf_token: Optional[str]) -> Optiona
 
 
 def _quant_dir_projector(model_file: Optional[str], disable_vision: bool, ss: Any) -> Optional[str]:
-    """The projector one level up from a weight in a quant subdirectory (snapshot/UD-Q4_K_XL/),
-    which the loader finds and the adjacent-file scan does not."""
     if not model_file:
         return None
     try:
@@ -194,10 +173,6 @@ def _read_gguf_header(
     kv_end: Optional[List[int]] = None,
     read_all: Optional[List[bool]] = None,
 ) -> Tuple[Dict[str, Any], Dict[int, int]]:
-    """From a GGUF header stream: general.architecture and the integer keys estimate_kv_bytes
-    reads (a per-layer array keeps its largest value), and with ``tensors`` the weight bytes of
-    each block in this file."""
-
     def read(n: int) -> bytes:
         data = f.read(n)
         if len(data) < n:
@@ -229,7 +204,7 @@ def _read_gguf_header(
                 values = [int(struct.unpack(fmt, read(width))[0]) for _ in range(n)]
                 out[key] = max(values, default = 0)
                 if key.endswith((".head_count_kv", ".feed_forward_length")):
-                    out[f"{key}.values"] = values  # per layer: which blocks are which kind
+                    out[f"{key}.values"] = values
                 if key.endswith(".head_count_kv") and 0 in values:
                     out[f"{key}.zeros"] = values.count(0)
             elif atype in _GGUF_FIXED_SIZES:
@@ -259,10 +234,9 @@ def _read_gguf_header(
         for _ in range(n_dims):
             elements *= struct.unpack("<Q", read(8))[0]
         ttype = struct.unpack("<I", read(4))[0]
-        read(8)  # data offset
+        read(8)
         match = re.match(r"blk\.(\d+)\.", name)
-        # The output matrix (or the token embedding tied embeddings copy there) is one more
-        # indivisible allocation, kept on the last device; -2 / -1 below.
+        # The output matrix (or a tied embedding's copy) is one indivisible lump on the last device.
         index = int(match.group(1)) if match else _OUTPUT_KEYS.get(name.split(".", 1)[0])
         if index is None:
             continue
@@ -294,10 +268,6 @@ def _ctx_compute_bytes(
     kv_unified: bool = True,
     swa_full: bool = False,
 ) -> Optional[int]:
-    """The loader's per-device context-dependent compute scratch on a layer split (with
-    ``what="checkpoint"`` one slot's context checkpoint, with ``"recurrent"`` the per-slot recurrent
-    state of every slot), from its own estimator over this GGUF's
-    header; None when the header cannot be read."""
     if ctx <= 0 and what != "recurrent":
         return 0
     import tempfile
@@ -325,7 +295,6 @@ def _ctx_compute_bytes(
         if what == "recurrent":
             return int(est._rollback_state_bytes(n_parallel))
         if what == "kv_peak_ppm":
-            # The largest layer's share of the KV, in millionths; 0 when the layers are uniform.
             weights = est._kv_layer_weights(
                 ctx,
                 swa_full = swa_full,
@@ -338,8 +307,6 @@ def _ctx_compute_bytes(
             total = sum(weights)
             return int(1_000_000 * max(weights) / total) if total else 0
         if what == "kv":
-            # Architecture-aware: compact sliding-window layers, one MLA latent, attention-only
-            # hybrids. 0 when the metadata does not allow it.
             return int(
                 est._estimate_kv_cache_bytes(
                     ctx,
@@ -372,9 +339,7 @@ def _ctx_compute_bytes(
 
 
 def _shares_host_memory(device: Device) -> bool:
-    """Whether a local accelerator's memory is the host RAM pool (Apple Silicon, APUs, DGX
-    Spark): Metal always; otherwise a device holding at least half the host's RAM, which leans
-    to charging host buffers on a large discrete card in a small host, the safe side."""
+    """Whether a local accelerator's memory is the host RAM pool: Metal, or a device holding >= half the host RAM."""
     if device.name.upper().startswith("MTL"):
         return True
     try:
@@ -386,7 +351,6 @@ def _shares_host_memory(device: Device) -> bool:
 
 
 def _kv_unified_supported(binary: Optional[str]) -> bool:
-    """The loader's probe for --kv-unified; a failed probe reads as absent there too."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend
         return bool(LlamaCppBackend.probe_server_capabilities(binary).get("supports_kv_unified"))
@@ -401,8 +365,6 @@ def _effective_checkpoints(
     per_checkpoint: int,
     n_parallel: int,
 ) -> int:
-    """effective_ctx_checkpoints_for_caps, as the loader resolves it; llama.cpp's default of 32
-    per slot when that cannot be asked."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend, effective_ctx_checkpoints_for_caps
 
@@ -437,8 +399,6 @@ def _effective_checkpoints(
 
 
 def _ssm_state_bytes(vals: Dict[str, Any], n_parallel: int) -> int:
-    """f32 recurrent state per slot, as llama.cpp allocates for Mamba / gated-delta layers, over
-    the recurrent layers _mamba_recurrent_state_bytes counts (every block without a layout)."""
     arch = vals.get("general.architecture")
     inner = vals.get(f"{arch}.ssm.inner_size") or 0
     state = vals.get(f"{arch}.ssm.state_size") or 0
@@ -451,9 +411,6 @@ def _ssm_state_bytes(vals: Dict[str, Any], n_parallel: int) -> int:
 
 
 def _layer_kinds(vals: Dict[str, Any]) -> Tuple[int, int]:
-    """(attention, recurrent) target blocks as the loader counts them (embedded NextN blocks
-    excluded): every interval-th block attends, else the per-layer KV heads decide, where a
-    Nemotron-H zero-head block with an FFN is neither. 0 attention: not a hybrid layout."""
     from core.inference.llama_cpp import _SSM_EVERY_LAYER_ARCHS, _SSM_FFN_FREE_LAYER_ARCHS
 
     arch = vals.get("general.architecture")
@@ -491,7 +448,6 @@ def _gguf_kv_scalars(f: Any) -> Dict[str, Any]:
 def _kv_from_scalars(
     vals: Dict[str, Any], ctx: int, cache_type: Optional[str], cache_type_v: Optional[str], ss: Any
 ) -> Optional[int]:
-    """estimate_kv_bytes's formula over header values read by _read_gguf_header."""
     arch = vals.get("general.architecture")
     if not arch or ctx <= 0:
         return None
@@ -512,7 +468,6 @@ def _kv_from_scalars(
 
 
 def _local_gguf_header(path: str, ss: Any) -> Tuple[Dict[str, Any], Dict[int, int]]:
-    """_read_gguf_header over every shard of a local GGUF, blocks summed across shards."""
     vals: Dict[str, Any] = {}
     blocks: Dict[int, int] = {}
     try:
@@ -534,8 +489,6 @@ def _local_gguf_header(path: str, ss: Any) -> Tuple[Dict[str, Any], Dict[int, in
 def _remote_gguf_header(
     model_path: str, variant: Optional[str], hf_token: Optional[str], ss: Any
 ) -> Tuple[Dict[str, Any], Dict[int, int]]:
-    """_read_gguf_header for a Hub GGUF not downloaded yet, from its first shard over HTTP
-    ranges; empty when it cannot be read."""
     try:
         from huggingface_hub import HfFileSystem
         from utils.models.model_config import list_gguf_variants
@@ -567,7 +520,7 @@ def _remote_gguf_header(
             if index == 0:
                 vals = shard_vals
             if not done:
-                return vals, {}  # a shard without a readable tensor table leaves the max unknown
+                return vals, {}
             for block, size in shard_blocks.items():
                 blocks[block] = blocks.get(block, 0) + size
         return vals, blocks
@@ -582,8 +535,6 @@ _HF_DRAFT_ENV = ("LLAMA_ARG_SPEC_DRAFT_HF_REPO", "LLAMA_ARG_HFD_REPO")
 
 
 def _caller_speculation(args: Sequence[str]) -> Optional[str]:
-    """The caller's drafter or MTP setting, if any: its weights, KV and rollback state are not
-    in a plan, so such a load stays on this machine."""
     for a in args:
         name = str(a).split("=", 1)[0]
         if name in _DRAFTER_FLAGS or name in _HF_DRAFT_FLAGS:
@@ -600,7 +551,6 @@ def _caller_speculation(args: Sequence[str]) -> Optional[str]:
 
 
 def _normalized(args: Sequence[str]) -> List[str]:
-    """Long option names with underscores spelled with hyphens, values untouched."""
     out = []
     for token in (str(a) for a in args):
         if token.startswith("--"):
@@ -621,16 +571,12 @@ def _flag_args(args: Sequence[str], flags: frozenset) -> List[str]:
 
 
 def _keeps_resident() -> bool:
-    """The global "Keep model in GPU memory" setting as the loader resolves it (no RAM-reserve
-    veto), which page-locks the weights on a device that maps them from host memory."""
     from core.inference.llama_cpp import _model_memory_settings_or_none
-
     settings = _model_memory_settings_or_none()
     return bool(settings and settings[0] and not settings[1])
 
 
 def _locks_host_copy(request: Any, args: Sequence[str]) -> bool:
-    """mlock in any spelling: a pinned full host copy, on unified memory the pool the layers use."""
     if "mlock" in str(getattr(request, "load_mode", None) or "").lower():
         return True
     from core.inference.llama_server_args import _LOAD_MODE_FLAGS, _MLOCK_FLAGS
@@ -652,7 +598,6 @@ def _locks_host_copy(request: Any, args: Sequence[str]) -> bool:
 
 
 def _placement_owner(request: Any, flags: Sequence[str]) -> Optional[str]:
-    """Why the request places the model itself, or None."""
     from core.inference import spark_serving as ss
 
     if getattr(request, "gpu_ids", None):
@@ -671,7 +616,6 @@ def _placement_owner(request: Any, flags: Sequence[str]) -> Optional[str]:
 
 
 def _caller_placement(args: Sequence[str]) -> Optional[str]:
-    """The first device / split setting the caller made, which a cluster block would override."""
     tokens = [str(a) for a in args]
     for i, token in enumerate(tokens):
         name, sep, inline = token.partition("=")
@@ -679,7 +623,7 @@ def _caller_placement(args: Sequence[str]) -> Optional[str]:
             continue
         value = inline if sep else (tokens[i + 1] if i + 1 < len(tokens) else "")
         if name in _GPU_LAYER_FLAGS and value.strip().lower() in ("auto", "-1"):
-            continue  # llama.cpp's own default, which leaves the fitter to place layers
+            continue
         if name == "--moe-cache-mib" and value.strip() in ("", "0"):
             continue
         return name
@@ -702,9 +646,7 @@ def _caller_placement(args: Sequence[str]) -> Optional[str]:
 _GPU_LAYER_FLAGS = frozenset({"--gpu-layers", "--n-gpu-layers", "-ngl"})
 
 
-# The Linux CUDA bundles link libcudart / libcublas from the Studio venv's nvidia wheels, which the
-# backend adds for its own llama-server; a worker started over ssh gets the same dirs, found from
-# the binary's place in a Studio install (<root>/llama.cpp/build/bin), else it serves CPU only.
+# Linux CUDA bundles link libcudart / libcublas from the venv's nvidia wheels; ssh workers need the same dirs.
 _CUDA_RUNTIME = (
     'd=$(dirname "$0"); r="$d/../../.."; p="$d"; '
     'for x in "$r"/studio/unsloth_studio/lib/python3*/site-packages/nvidia/*/lib '
@@ -721,8 +663,7 @@ def _with_cuda_runtime(argv: List[str]) -> List[str]:
 
 
 def _bind_address(host: str) -> str:
-    """ggml-rpc-server -H takes only a dotted IPv4 address (inet_addr): a node named by host name
-    binds the address this machine reaches it at."""
+    """ggml-rpc-server -H takes only a dotted IPv4 address (inet_addr)."""
     import socket
 
     if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host):
@@ -763,7 +704,7 @@ class Device:
     description: str
     total_bytes: int
     free_bytes: int
-    endpoint: Optional[str] = None  # None: on this machine
+    endpoint: Optional[str] = None
     index: int = 0  # among the devices behind one endpoint; RPC<k> renumbers with the --rpc list
 
     @property
@@ -784,22 +725,17 @@ class ClusterPlan:
     need_bytes: Optional[float] = None
     usable_bytes: Optional[float] = None
     extra_bytes: float = 0.0
-    # Charged but possibly never loaded (a Hub projector the vision switch may drop): not freed.
     uncertain_extra_bytes: float = 0.0
     sidecar_device: Optional[Device] = None
-    # Host RAM buffers within extra_bytes charged to a later shared-memory local device.
     host_extra_device: Optional[Device] = None
     host_extra_bytes: float = 0.0
     # Never counted as freed by a replacement: the KV estimate is not the cache's real layout.
     kv_bytes: float = 0.0
     layer_bytes: float = 0.0
-    # The input embedding, counted in the model size but kept in host RAM: never freed VRAM.
     host_bytes: float = 0.0
-    # Contexts the KV and compute scratch were charged for (--pipeline-groups); 0 or 1 is one.
     pipeline_groups: int = 0
 
     def resident(self) -> Dict[Tuple[str, str], float]:
-        """What this plan puts on each device, so a replacement load can count it as freed."""
         held = max(0.0, float(self.need_bytes or 0) - self.kv_bytes - self.host_bytes)
         out = {
             d.key: max(0.0, w * held - self.layer_bytes) for d, w in zip(self.devices, self.weights)
@@ -811,7 +747,6 @@ class ClusterPlan:
                 0.0, self.extra_bytes - host - self.uncertain_extra_bytes
             )
         if host:
-            # Either side may hold the uncertain part: neither counts it as freed.
             key = self.host_extra_device.key
             out[key] = out.get(key, 0.0) + max(0.0, host - self.uncertain_extra_bytes)
         return out
@@ -852,7 +787,7 @@ def _parse_node(text: str, *, managed: bool = False) -> Node:
     if raw.startswith("["):
         raise ClusterConfigError(f"IPv6 node addresses are not supported yet: {text!r}")
     host, sep, port_text = raw.partition(":")
-    host = host.lower().rstrip(".")  # DNS is case-insensitive; "a.local." is "a.local"
+    host = host.lower().rstrip(".")
     if not host or not _HOST_RE.match(host):
         raise ClusterConfigError(f"not a host name or IPv4 address: {text!r}")
     port = RPC_PORT_DEFAULT
@@ -913,7 +848,6 @@ def _config_path() -> Optional[Path]:
 
 
 def configured() -> bool:
-    """Whether the operator asked for a cluster at all; cheap, no file parsing beyond existence."""
     if (os.environ.get(ENV_NODES) or "").strip():
         return True
     path = _config_path()
@@ -949,8 +883,7 @@ def _one_managed_worker_per_host(nodes: List[Node]) -> List[Node]:
 
 
 def parse_device_list(text: str, endpoints: Sequence[str]) -> List[Device]:
-    """``llama-server --list-devices``. In the unslothai fork an RPC device's description is its
-    endpoint; upstream builds may say more, so a whole endpoint token inside it also counts."""
+    """llama-server --list-devices; in the unslothai fork an RPC device's description is its endpoint."""
     devices = []
     seen: Dict[str, int] = {}
     for line in (text or "").splitlines():
@@ -962,7 +895,7 @@ def parse_device_list(text: str, endpoints: Sequence[str]) -> List[Device]:
         if name.startswith("RPC"):
             endpoint = desc if desc in endpoints else _endpoint_in(desc, endpoints)
         elif name.startswith("BLAS"):
-            continue  # a host-memory accelerator, not somewhere to put layers
+            continue
         index = seen.get(endpoint or "", 0)
         seen[endpoint or ""] = index + 1
         devices.append(Device(name, desc, total * _MIB, free * _MIB, endpoint, index))
@@ -982,9 +915,7 @@ def list_devices(
     endpoints: Sequence[str],
     timeout: float = LIST_DEVICES_TIMEOUT_S,
 ) -> Tuple[List[Device], str]:
-    """The devices the coordinator would see with these RPC servers, and any error text."""
     try:
-        # The child's own environment: the managed CUDA / ROCm runtime and the bundle's libraries.
         from core.inference.llama_cpp import LlamaCppBackend
         env = LlamaCppBackend._llama_server_env_for_binary(binary)
     except Exception:
@@ -1032,12 +963,6 @@ def plan_cluster(
     scratch_bytes: float = 0.0,
     host_extra: Optional[Tuple[int, float]] = None,
 ) -> ClusterPlan:
-    """single when this machine holds the load, else a layer split weighted by usable memory.
-
-    Projector and drafter are charged to the coordinator; callers add adapters to ``model_bytes``.
-    ``host_extra`` = (index among the local devices, bytes): host RAM buffers charged to the
-    shared-memory accelerator they draw from, on top of ``local_extra_bytes`` on the first one.
-    """
     if model_bytes is None:
         return ClusterPlan("single", "model size unknown; not guessing, serving on this machine")
     local = [d for d in devices if not d.remote]
@@ -1052,7 +977,6 @@ def plan_cluster(
     shared = {}
     if local and host_extra and 0 < host_extra[0] < len(local) and host_extra[1] > 0:
         shared = dict(host_extra_device = local[host_extra[0]], host_extra_bytes = float(host_extra[1]))
-    # The projector / drafter is pinned to the first local GPU, so it has to fit there itself.
     if local and charges[0] > local_budgets[0]:
         return ClusterPlan(
             "refuse",
@@ -1085,8 +1009,7 @@ def plan_cluster(
         return ClusterPlan("single", f"forced by {ENV_TOPOLOGY}=single", need_bytes = need)
     if not remote:
         return ClusterPlan("single", "no remote device answered; serving on this machine")
-    # Remote first, this machine last: llama.cpp puts the output layer on the last device, so the
-    # logits stay local and the wire carries only the hidden state.
+    # Remote first: llama.cpp puts the output layer on the last device, so the logits stay local.
     ordered = remote + local
     budgets = [usable_bytes(d, margin_bytes, scratch_bytes) for d in remote] + local_budgets
     for i, charge in enumerate(charges):
@@ -1136,7 +1059,6 @@ def plan_cluster(
 
 
 def _groups_env() -> Tuple[Optional[int], str]:
-    """``(forced count or None for auto, raw)``; a forced 0 or 1 means no groups."""
     raw = (os.environ.get(ENV_PIPELINE_GROUPS) or "").strip().lower()
     if raw in ("", "auto"):
         return None, raw
@@ -1155,11 +1077,7 @@ def pipeline_groups_candidates(
     refusal: Optional[str] = None,
     binary: Optional[str] = None,
 ) -> Tuple[List[int], str]:
-    """The ``--pipeline-groups`` counts worth trying for a layer split over ``stages`` devices, best
-    first, and why there are none. One context keeps a single batch in flight, so an S-stage split
-    runs at about one device; G groups keep G batches moving (measured over RPC on 2xT4 at 16
-    sequences per group: G=2 76-81% of S x one device, G=3 81-86%, G=4 80-84%), so S + 1 groups,
-    else S, each with at least GROUPS_MIN_SEQS sequences."""
+    """--pipeline-groups counts to try, best first (2xT4 over RPC, 16 seqs/group: G=2..4 give 76-86% of S x one device)."""
     from core.inference import spark_serving as ss
 
     forced, raw = _groups_env()
@@ -1207,8 +1125,7 @@ def split_extra_args(endpoints: Sequence[str], plan: ClusterPlan) -> List[str]:
     ]
 
 
-# Blocks this module appended to a launch, so a reload that inherits the stored extras drops them
-# instead of reading them as the caller's own --rpc.
+# Blocks this module appended, so an inherited reload drops them instead of reading them as the caller's --rpc.
 _MANAGED_BLOCKS: List[List[str]] = []
 
 
@@ -1236,26 +1153,20 @@ class ClusterServing:
         self.reason: str = "no load yet"
         self.plan: Optional[ClusterPlan] = None
         self.block: List[str] = []
-        self.workers: Dict[str, Any] = {}  # endpoint -> spark_serving.PeerProcess
+        self.workers: Dict[str, Any] = {}
         self.last_error: str = ""
         self._passthrough: bool = False
         self._alongside: bool = False
-        # A load this planned and has not completed: its after_load / load_failed come here even
-        # if the config changed meanwhile.
         self.in_flight: bool = False
         self._has_projector: bool = False
         self._n_layers: Optional[int] = None
-        # Set when the config went away while workers run: the next committed load stops them.
         self.retire_on_commit: bool = False
         self._pre_load: Optional[Tuple[str, str, Optional[ClusterPlan], List[str]]] = None
         self._cancel_event: Any = None
-        # The backend serving the last committed plan; while it is loaded its buffers are still in
-        # the probe's "used", and the load being planned replaces it.
+        # The backend serving the last committed plan; its buffers are still in the probe's "used".
         self._backend: Any = None
         self._resident: Dict[Tuple[str, str], float] = {}
-        # Each worker's devices as last probed while no llama-server held it.
         self._seen: Dict[str, List[Device]] = {}
-        # Workers the current load's probe found unusable; a commit without them stops them.
         self._down: set = set()
         self._native_ctx: bool = False
         self._projector_url: bool = False
@@ -1266,7 +1177,6 @@ class ClusterServing:
         self._untied = False
         self._diffusion = False
         self._ctx_compute: float = 0.0
-        # (estimator args, slots) _ctx_compute was sized with, and its per-group re-estimates.
         self._ctx_compute_inputs: Optional[Tuple[tuple, int]] = None
         self._group_scratch: Dict[int, float] = {}
         self._checkpoints: float = 0.0
@@ -1281,10 +1191,8 @@ class ClusterServing:
         self._projector_file: Optional[str] = None
         self._uncertain_extra: float = 0.0
         self._started: set = set()
-        # Whether the launch carries a positive -c (argv, request or LLAMA_ARG_CTX_SIZE): the
-        # groups refuse to start without one.
+        # The groups refuse to start without a positive -c.
         self._explicit_ctx: bool = False
-        # Why the last planned split runs without --pipeline-groups (or whose count it runs).
         self.pipeline_groups_reason: Optional[str] = None
 
     def _cancelled(self) -> bool:
@@ -1299,16 +1207,11 @@ class ClusterServing:
             self.nodes = load_nodes()
             self.config_error = ""
         except ClusterConfigError as exc:
-            # The nodes a served split runs on stay known, so a commit does not stop its workers.
             self.config_error = str(exc)
         return self.nodes
 
     async def _ensure_workers(self) -> Dict[str, str]:
-        """Start the managed nodes' rpc-servers that are not running: ``{endpoint: why}`` for the
-        ones that could not be.
-
-        Live workers are never restarted, even on forced reloads: that drops the served model's buffers.
-        """
+        """Start the managed rpc-servers not running; live workers are never restarted (drops the served buffers)."""
         from core.inference import spark_serving as ss
 
         local_rpc = ss.rpc_server_binary()
@@ -1352,7 +1255,7 @@ class ClusterServing:
             )
             try:
                 await process.start()
-            except (OSError, ValueError) as exc:  # ssh missing, process limit, Windows: this node
+            except (OSError, ValueError) as exc:
                 failed[node.endpoint] = f"could not start ssh to {node.host}: {exc}"
                 continue
             if not await ss.wait_for_own_port(
@@ -1373,8 +1276,6 @@ class ClusterServing:
         return failed
 
     async def _held_workers(self, binary: str, endpoints: Sequence[str]) -> Dict[str, List[Device]]:
-        """Workers the live split holds, mapped to their devices as probed before that load. One
-        that answers a probe of its own is no longer held (it restarted) and is probed as usual."""
         served = self._pre_load[2] if self._pre_load else None
         if (
             served is None
@@ -1412,9 +1313,7 @@ class ClusterServing:
             cancel_event = cancel_event,
         )
         if not self._passthrough and self.topology != "layer_split" and self._serving_split():
-            # Every path that drops a served split (forced single, caller placement, a plan that
-            # now fits here): the route strips the old block, so equal arguments would keep the
-            # primary on remote buffers this load no longer plans.
+            # The route strips the old block, so equal arguments would keep the primary on remote buffers.
             out = ss.SparkServing._request_with(out, {"force_reload": True})
         return out
 
@@ -1449,20 +1348,17 @@ class ClusterServing:
         )
         self._pre_load = (self.topology, self.reason, self.plan, list(self.block))
         self.plan, self.block = None, []
-        self._down = set()  # _started stays until a load commits: a refusal keeps those workers
+        self._down = set()
         if not self.refresh_nodes() or self.config_error:
             if self.config_error and self._pre_load[3]:
-                # The served split keeps its record, so a later retirement still sees it, and its
-                # block (the route strips it from inherited args) so a forced reload keeps it.
                 self.topology, _reason, self.plan, self.block = self._pre_load
                 self.reason = f"cluster config: {self.config_error}; still serving the last split"
                 if self._requested_model != self._served_model:
-                    return request  # another model: no plan, so no stale block either
+                    return request
                 explicit = getattr(request, "llama_extra_args", None)
                 effective = list(explicit if explicit is not None else (inherited_extra_args or []))
                 owner = _placement_owner(request, _normalized(effective))
                 if owner:
-                    # The block would override it (last wins); before_load forces the reload.
                     self.topology = "single"
                     self.reason = f"cluster config: {self.config_error}; {owner}"
                     return request
@@ -1473,20 +1369,17 @@ class ClusterServing:
             return request
         explicit = getattr(request, "llama_extra_args", None)
         effective = list(explicit if explicit is not None else (inherited_extra_args or []))
-        # llama.cpp reads --ctx_size as --ctx-size; every check below reads the normalised form.
         flags = _normalized(effective)
         owner = _placement_owner(request, flags)
         if owner:
             self.topology, self.reason = "single", owner
             return request
         if any(str(a).split("=", 1)[0] in ("-mv", "--model-vocoder") for a in flags):
-            # A second model llama.cpp loads beside this one, on devices this does not plan.
             self.topology, self.reason = "single", "a vocoder model loads beside it"
             return request
         from core.inference.llama_server_args import fit_is_effectively_on
 
         if not fit_is_effectively_on(flags, os.environ):
-            # Nothing then shrinks the context or its compute buffers, which this does not price.
             self.topology, self.reason = "single", "the fitter is off; placement is the caller's"
             return request
         drafter = _caller_speculation(flags)
@@ -1499,7 +1392,6 @@ class ClusterServing:
         from core.inference.llama_cpp import _kv_offload_from_args, _named_batch_sizes
 
         if not _kv_offload_from_args(flags):
-            # Host KV shares the pool with the weights on unified-memory machines.
             self.topology, self.reason = (
                 "single",
                 "the caller keeps the KV cache in host memory; placement is theirs",
@@ -1521,7 +1413,6 @@ class ClusterServing:
             getattr(request, "n_ubatch", None),
         )
         if min(batch, ubatch) > 512:
-            # Every device's compute buffer grows with it; the plan prices llama.cpp's default.
             self.topology, self.reason = (
                 "single",
                 f"a micro-batch of {min(batch, ubatch)} is placed by the caller",
@@ -1529,7 +1420,6 @@ class ClusterServing:
             return request
         model_bytes, kv_bytes, local_extra = await self._size(request, n_parallel, flags, ss)
         if self._diffusion:
-            # The diffusion runner takes none of llama-server's arguments, so no split reaches it.
             self.topology, self.reason = "single", "a diffusion GGUF runs on this machine"
             return request
         if self._unsized_kv:
@@ -1596,7 +1486,6 @@ class ClusterServing:
                 endpoints.remove(bad)
                 down.append(bad)
             elif len(endpoints) > 1:
-                # A hung handshake times out without naming anyone: ask each worker alone.
                 alone = await asyncio.gather(
                     *(asyncio.to_thread(list_devices, binary, [e]) for e in endpoints)
                 )
@@ -1617,7 +1506,6 @@ class ClusterServing:
             if mine:
                 self._seen[e] = [replace(d) for d in mine]
         if busy:
-            # The held workers keep their place in the --rpc list, and RPC<k> counts over it.
             endpoints = [e for e in order if e in endpoints or e in busy]
             remote = [
                 replace(d)
@@ -1632,8 +1520,6 @@ class ClusterServing:
             return request
         if self._backend is not None and getattr(self._backend, "is_loaded", False):
             served = self._pre_load[2] if self._pre_load else None
-            # The served share itself (weights and KV), not the residency credit, which keeps a
-            # layer back and can round a small share down to nothing.
             placed = (
                 {
                     d.key: w * max(0.0, float(served.need_bytes or 0) - served.host_bytes)
@@ -1644,16 +1530,14 @@ class ClusterServing:
             )
             for d in devices:
                 if d.endpoint in busy:
-                    continue  # still attached to the live server, so it did not restart
+                    continue
                 held = max(self._resident.get(d.key, 0.0), placed.get(d.key, 0.0))
                 if d.remote and held > 512 * 2**20 and d.free_bytes > d.total_bytes - held / 2:
-                    # Its memory is free again: the worker restarted (or was replaced by hand)
-                    # and lost the served layers, so equal arguments must relaunch.
+                    # The worker restarted and lost the served layers, so equal arguments must relaunch.
                     self._started.add(d.endpoint)
-            # This load tears the current one down first, so what it holds counts as free.
             for d in devices:
                 if d.endpoint in self._started or d.endpoint in busy:
-                    continue  # busy: reported before the served model loaded, so already free
+                    continue
                 d.free_bytes = int(min(d.total_bytes, d.free_bytes + self._resident.get(d.key, 0)))
         stray = [d.description for d in devices if d.remote and d.endpoint not in endpoints]
         if stray:
@@ -1674,11 +1558,8 @@ class ClusterServing:
         one_kv = float(kv_bytes or 0)
 
         def group_kv(groups: int) -> float:
-            # --pipeline-groups G gives EVERY group its own context with the FULL -c (PR #187:
-            # "n_ctx is deliberately NOT divided"), and Studio's cluster launch is --kv-unified with
-            # -c = the per-request context it promises, so dividing -c by G would cap every request
-            # at -c/G. The attention KV is therefore G times one context's; the recurrent state is
-            # per sequence, and the G groups hold slots/G sequences each, so it stays as it is.
+            # --pipeline-groups G gives every group the FULL -c (PR #187: "n_ctx is deliberately NOT divided"),
+            # so attention KV is G x one context's; recurrent state is per sequence and stays as is.
             if groups <= 1:
                 return one_kv
             return max(0.0, one_kv - self._recurrent) * groups + self._recurrent
@@ -1686,10 +1567,8 @@ class ClusterServing:
         def layer_for(kv: float) -> Optional[float]:
             if not (self._n_layers and model_bytes and self._max_block):
                 return None
-            # The largest block a tensor split can round onto a device, not the average one.
             layer_weights = self._max_block
             attention = max(0.0, kv - self._recurrent)
-            # Spread over the attention layers only: a hybrid's recurrent blocks hold none.
             per_attention = attention / max(1, min(self._n_layers, self._attention_layers or 10**9))
             layer_kv = attention * self._kv_layer_frac or per_attention
             return layer_weights + max(layer_kv, per_attention) + self._recurrent_layer
@@ -1698,15 +1577,10 @@ class ClusterServing:
 
         # llama.cpp's fitter keeps an explicit --fit-target free on every device.
         margin = (fit_target_margin_in(flags, os.environ) or 0.0) * 1024 * 1024
-        # Context checkpoints live in host RAM, which a local accelerator may share (unified
-        # memory); with none there they take nothing a plan places.
         local = [d for d in devices if not d.remote]
-        # Any of them: a discrete card listed before an APU's (an eGPU on a Strix Halo) still
-        # leaves the APU's share in the host pool these buffers draw from.
         unified = any(_shares_host_memory(d) for d in local)
         if unified and _keeps_resident():
-            # The loader page-locks the mapping up to the last host-mapped tensor (llama.cpp
-            # grow_to), and this machine's layers come last: about a whole locked copy.
+            # The loader page-locks up to the last host-mapped tensor (llama.cpp grow_to): about a whole copy.
             self.topology, self.reason = (
                 "single",
                 "Keep model in GPU memory locks a host copy of the model in shared memory",
@@ -1714,12 +1588,9 @@ class ClusterServing:
             return request
         checkpoints = self._checkpoints if unified else 0.0
         if not unified and self._host_projector:
-            # A --no-mmproj-offload projector stays in host RAM, which a discrete GPU does not share.
             local_extra = max(0.0, local_extra - self._host_projector)
             self._uncertain_extra = max(0.0, self._uncertain_extra - self._host_projector)
 
-        # A discrete card listed first with a shared-memory accelerator after it: the host RAM
-        # buffers come out of that accelerator's pool, not the first card's.
         shared_at = (
             next((i for i, d in enumerate(local) if _shares_host_memory(d)), 0) if unified else 0
         )
@@ -1740,13 +1611,10 @@ class ClusterServing:
                 forced = forced,
                 layer_bytes = layer_for(kv),
                 margin_bytes = margin,
-                # Every device of a layer split holds its own context-dependent compute scratch,
-                # one per pipeline group.
                 scratch_bytes = self._group_scratch_bytes(groups),
             )
 
-        # The input embedding stays whole in this machine's host RAM: off every device's share
-        # (untied; a tied model's output copy is still a lump), and all of it on a unified device.
+        # The input embedding stays whole in host RAM: off every device's share, all of it on a unified device.
         off_device = (self._host_embd if self._untied else 0.0) + self._host_input
         if unified:
             local_extra += self._host_embd + self._host_input
@@ -1754,8 +1622,6 @@ class ClusterServing:
         from core.inference.llama_cpp import _canonicalize_spec_mode, _extra_args_set_spec_type
 
         mode = _canonicalize_spec_mode(getattr(request, "speculative_type", None)) or "auto"
-        # Whether Studio may still turn on MTP (or a drafter it picks), which loads the trailing
-        # NextN / MTP blocks; with it off llama.cpp skips them in any topology.
         auto_spec = mode not in ("off", "ngram", "ngram-simple") and not _extra_args_set_spec_type(
             flags
         )
@@ -1766,12 +1632,11 @@ class ClusterServing:
             if self._nextn_bytes and not auto_spec:
                 return plan_for(trimmed_bytes, groups), 0.0, False
             plan = plan_for(model_bytes - off_device, groups)
-            skipped = self._nextn_bytes  # in the plan's weights, never loaded on a split
+            skipped = self._nextn_bytes
             if plan.topology != "single" and self._nextn_bytes:
                 # A split runs without speculation, so trailing NextN / MTP blocks never load.
                 trimmed = plan_for(trimmed_bytes, groups)
                 if trimmed.topology == "single":
-                    # Without them it fits here: one machine with speculation off beats a split.
                     return trimmed, 0.0, True
                 if plan.topology == "refuse" and trimmed.topology == "layer_split":
                     plan, skipped = trimmed, 0.0
@@ -1779,8 +1644,6 @@ class ClusterServing:
 
         from core.inference.llama_cpp import _pipeline_groups_slot_step
 
-        # The caller's own --pipeline-groups (argv or LLAMA_ARG_PIPELINE_GROUPS) is kept as theirs:
-        # never a second flag, but the plan prices the contexts it opens.
         caller_groups = _pipeline_groups_slot_step(flags, os.environ)
         groups = caller_groups if caller_groups > 1 else 0
         await self._size_group_scratch(groups)
@@ -1817,14 +1680,12 @@ class ClusterServing:
         plan.kv_bytes = group_kv(groups)
         plan.uncertain_extra_bytes = self._uncertain_extra + checkpoints
         plan.layer_bytes = float(layer_bytes or 0.0)
-        # On unified memory the embedding is in extra_bytes, freed with the process like the rest.
         plan.host_bytes = (0.0 if unified else self._host_embd + self._host_input - off_device) + (
             skipped if plan.topology == "layer_split" else 0.0
         )
         self.plan = plan
         if plan.topology == "refuse":
             self.topology, self.reason, self.plan, self.block = self._pre_load
-            # The route refuses before any load starts, so no after_load / load_failed follows.
             self._pre_load, self.in_flight = None, False
             self.last_error = plan.reason
             raise ss.SparkLoadDoesNotFit(plan.reason)
@@ -1835,8 +1696,7 @@ class ClusterServing:
                 self.reason += "; speculative decoding off so its NextN / MTP layers stay unloaded"
                 return ss.SparkServing._request_with(request, {"speculative_type": "off"})
             return request
-        # RPC<k> counts devices over the probed --rpc list, so every endpoint that exposed one stays
-        # in it even at zero weight; one that exposed none takes no number and is left out.
+        # RPC<k> counts over the probed --rpc list, so every endpoint that exposed a device stays in it.
         used = [e for e in endpoints if any(d.endpoint == e for d in devices)]
         self.block = split_extra_args(used, plan)
         if emit_groups > 1:
@@ -1850,12 +1710,10 @@ class ClusterServing:
         caller_pinned = (
             any(str(a).split("=", 1)[0] in _MMPROJ_DEVICE_FLAGS for a in flags)
             or bool(os.environ.get("MTMD_BACKEND_DEVICE"))
-            # --no-mmproj-offload keeps it in host RAM; a device pin would undo that.
             or _resolved_mmproj_offload(flags, os.environ) is False
         )
         if local is not None and not caller_pinned:
             if ss.llama_server_supports("--mmproj-device", binary):
-                # The projector otherwise follows the first --device, a worker; it was charged here.
                 self.block += ["--mmproj-device", local.name]
             elif self._has_projector:
                 self.plan, self.block = None, []
@@ -1866,7 +1724,6 @@ class ClusterServing:
         logger.info("cluster serving: layer split %s", " ".join(self.block))
         updates: Dict[str, Any] = {"llama_extra_args": effective + self.block}
         if auto_spec:
-            # MTP state and a drafter Studio picks are resolved after this plan, outside its budget.
             updates["speculative_type"] = "off"
             self.reason += "; speculative decoding off for the split"
         served = list(self._pre_load[3]) if self._pre_load else []
@@ -1876,14 +1733,11 @@ class ClusterServing:
             and getattr(self._backend, "is_loaded", False)
             and self._started & set(served_rpc)
         ):
-            # A restarted worker holds none of the served model: equal arguments must relaunch.
             updates["force_reload"] = True
         return ss.SparkServing._request_with(request, updates)
 
     async def _size_group_scratch(self, groups: int) -> None:
-        """Each --pipeline-groups context runs n_parallel / G slots (server-context.cpp sets
-        params_ctx.n_parallel = n_seq_per_group), so its sliding-window masks are sized for those,
-        not for every slot: re-estimate one group's scratch at that slot count."""
+        """Each group runs n_parallel / G slots (server-context.cpp), so re-estimate one group's scratch."""
         if groups <= 1 or groups in self._group_scratch or self._ctx_compute_inputs is None:
             return
         args, slots = self._ctx_compute_inputs
@@ -1892,7 +1746,6 @@ class ClusterServing:
             return
         one = await asyncio.to_thread(_ctx_compute_bytes, *args, per_group)
         if one:
-            # Never above the all-slot estimate: fewer slots never need more scratch.
             self._group_scratch[groups] = min(float(one), self._ctx_compute)
 
     def _group_scratch_bytes(self, groups: int) -> float:
@@ -1925,14 +1778,10 @@ class ClusterServing:
         nextn = int(header.get(f"{arch}.nextn_predict_layers") or 0)
         n_blocks = int(header.get(f"{arch}.block_count") or 0)
         trailing = {k for k in blocks if nextn and n_blocks and k >= n_blocks - nextn}
-        # Trailing NextN / MTP blocks are skipped with speculation off, as a split runs, so they
-        # neither round onto a device nor stay resident.
         self._nextn_bytes = float(sum(blocks[k] for k in trailing))
         layers = {k: v for k, v in blocks.items() if k >= 0 and k not in trailing}
-        # The input embedding stays on the host; the output matrix (or a tied model's copy of the
-        # embedding) is one more lump on the last device.
         self._host_embd = float(blocks.get(-2, 0))
-        self._host_input = float(blocks.get(-3, 0))  # never on a device, tied or not
+        self._host_input = float(blocks.get(-3, 0))
         self._untied = -1 in blocks
         output = blocks.get(-1, blocks.get(-2, 0))
         unread_adapters = 0
@@ -1946,9 +1795,9 @@ class ClusterServing:
                 lora = {k: v for k, v in extra_blocks.items() if k >= 0}
                 if lora or -1 in extra_blocks or -2 in extra_blocks:
                     for k, v in lora.items():
-                        layers[k] = layers.get(k, 0) + v  # beside the layer it modifies
-                    output += extra_blocks.get(-1, 0)  # beside the output matrix
-                    self._host_embd += extra_blocks.get(-2, 0)  # beside the host embedding
+                        layers[k] = layers.get(k, 0) + v
+                    output += extra_blocks.get(-1, 0)
+                    self._host_embd += extra_blocks.get(-2, 0)
                 else:
                     unread_adapters += int(ss.gguf_size_bytes(path) or 0)
         self._max_block = (
@@ -1958,14 +1807,12 @@ class ClusterServing:
             arch = header.get("general.architecture")
             self._n_layers = header.get(f"{arch}.block_count") or None
         sidecars, _unknown = ss.sidecar_bytes(extras)
-        # Adapters and control vectors sit beside the layers they modify, on every device.
         adapters, _unknown = ss.sidecar_bytes(_flag_args(extras, _ADAPTER_FLAGS))
         sidecars -= adapters
         from core.inference.llama_server_args import extra_args_disable_mmproj
 
         named = {"--mmproj", "-mm", "--mmproj-url", "-mmu"}
         disable_vision = bool(getattr(request, "disable_vision", False))
-        # Inherited projectors survive --no-mmproj (not the vision switch), as the loader reads them.
         inherited = any(
             (os.environ.get(k) or "").strip() for k in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL")
         )
@@ -1993,8 +1840,6 @@ class ClusterServing:
         )
         dropped: List[str] = []
         if self._has_projector and disable_vision:
-            # The vision switch drops a named image projector (and an unread URL); an audio-only
-            # one stays, as the backend does.
             files = ss.sidecar_files(_flag_args(extras, frozenset({"--mmproj", "-mm"})))
             env_file = env_projector
             if env_file:
@@ -2017,13 +1862,10 @@ class ClusterServing:
                 sidecars += auto_bytes
             self._has_projector = bool(projector)
             if not local_file:
-                # A first load of a Hub repo fetches its projector during the load; with vision off
-                # it may still be audio-only, which the backend keeps.
                 remote = await asyncio.to_thread(
                     _remote_projector_bytes, model_path, getattr(request, "hf_token", None)
                 )
                 if remote is None:
-                    # The loader retries its own lookup and may still fetch one: unsized.
                     self._projector_url = True
                     remote = 0
                 sidecars += remote
@@ -2031,8 +1873,6 @@ class ClusterServing:
                 if disable_vision:
                     self._uncertain_extra = float(remote) * _MMPROJ_VRAM_SAFETY
                 self._has_projector = self._has_projector or remote > 0
-        # Files named through the environment (LLAMA_ARG_MMPROJ) load all the same; a drafter there
-        # either kept the load local or is scrubbed by the launch.
         named_files = ss.launch_files_from(extras)
         env_files = ss.env_launch_files(
             {k: v for k, v in os.environ.items() if k not in _DRAFTER_ENV + _HF_DRAFT_ENV}
@@ -2066,7 +1906,6 @@ class ClusterServing:
         # llama.cpp keeps the last --mmproj given.
         self._projector_file = loaded[-1] if loaded else auto_projector if auto_bytes else None
         named_bytes = int(ss.gguf_size_bytes(loaded[-1]) or 0) if loaded else 0
-        # Only that one loads: the earlier argv ones were charged in full with the other sidecars.
         argv_projectors = [
             p
             for p in (
@@ -2082,10 +1921,8 @@ class ClusterServing:
                 shadowed.remove(loaded[-1])
             sidecars -= ss.sidecar_bytes([a for p in shadowed for a in ("--mmproj", p)])[0]
         sidecars += (_MMPROJ_VRAM_SAFETY - 1) * (named_bytes + auto_bytes)
-        # The headroom above the file is an estimate, never proven freed by a replacement.
         self._uncertain_extra += (_MMPROJ_VRAM_SAFETY - 1) * (named_bytes + auto_bytes)
         if host_projector:
-            # Charged for unified memory, but a discrete GPU never held it: never freed.
             self._uncertain_extra = _MMPROJ_VRAM_SAFETY * (named_bytes + auto_bytes)
             self._host_projector = _MMPROJ_VRAM_SAFETY * (named_bytes + auto_bytes)
         if size is None:
@@ -2097,9 +1934,8 @@ class ClusterServing:
 
         requested = str(getattr(request, "cache_type_kv", None) or "").strip()
         if requested.lower() not in _VALID_CACHE_TYPES:
-            requested = ""  # the loader drops a type it cannot emit and keeps the inherited one
+            requested = ""
         if requested:
-            # The loader emits the request's type over an inherited env one; only extras beat it.
             if not ss._last_operand(extras, ss._CACHE_TYPE_K_FLAGS):
                 cache_type = requested
             if not ss._last_operand(extras, ss._CACHE_TYPE_V_FLAGS):
@@ -2112,8 +1948,6 @@ class ClusterServing:
             not argv_ctx and not getattr(request, "max_seq_length", None) and env_ctx == "0"
         )
         if not ctx:
-            # llama-server takes the context from its environment when neither argv nor the
-            # request sets one.
             try:
                 ctx = max(0, int((os.environ.get("LLAMA_ARG_CTX_SIZE") or "0").strip()))
             except ValueError:
@@ -2123,10 +1957,8 @@ class ClusterServing:
         if not ctx and floor is not None and floor < 0:
             self._native_ctx = True  # llama.cpp reads a negative floor as the whole context
         if not ctx and floor and floor > 0:
-            ctx = floor  # the fitter never goes below --fit-ctx
+            ctx = floor
         if not ctx and not self._native_ctx:
-            # Auto context: the loader opens the native context and llama.cpp's fitter shrinks it
-            # no further than its default --fit-ctx.
             native = header.get(f"{header.get('general.architecture')}.context_length") or 0
             ctx = min(4096, native) if native else 4096
         kv = None
@@ -2138,8 +1970,6 @@ class ClusterServing:
             _planned_flash_attn_state,
         )
 
-        # Studio passes --kv-unified for several slots; --no-kv-unified gives each its own
-        # padded stream.
         unified = _kv_unified_from_args(extras, default = n_parallel > 1)
         _slots, streams, per_stream = _kv_cache_cell_layout(ctx, n_parallel, unified)
         cells = streams * per_stream if ctx else 0
@@ -2152,7 +1982,6 @@ class ClusterServing:
 
         n_batch, n_ubatch = getattr(request, "n_batch", None), getattr(request, "n_ubatch", None)
         if self._has_projector and not disable_vision:
-            # The loader raises an unset micro-batch to what the projector's images need.
             arch = header.get("general.architecture")
             required = (
                 _mmproj_required_ubatch(
@@ -2168,7 +1997,6 @@ class ClusterServing:
         batch, ubatch, _nb, _nu = _named_batch_sizes(extras, os.environ, n_batch, n_ubatch)
         header_kv = _REMOTE_HEADER_KV.pop((model_path, str(variant)), None)
         k_type, v_type = cache_type or "f16", cache_type_v or cache_type or "f16"
-        # Either quantized axis allocates dequantization scratch: price the lighter one.
         lighter = min((k_type, v_type), key = ss.kv_bytes_per_elem)
         binary = ss.llama_server_binary()
         try:
@@ -2191,7 +2019,6 @@ class ClusterServing:
 
         swa_full = bool(_swa_full_from_args_or_env(extras))
         if cells and size:
-            # The loader's own estimator first; one cache type, so the heavier axis.
             loader_kv = await asyncio.to_thread(
                 _ctx_compute_bytes,
                 local_file,
@@ -2207,8 +2034,6 @@ class ClusterServing:
             )
             kv = loader_kv or _kv_from_scalars(header, cells, cache_type, kv_v, ss)
             if loader_kv:
-                # Whole layers land on a device: a full-context layer among sliding-window ones
-                # carries far more than the average.
                 peak = await asyncio.to_thread(
                     _ctx_compute_bytes,
                     local_file,
@@ -2232,8 +2057,6 @@ class ClusterServing:
         self._ctx_compute = float(compute or 0)
         if compute:
             self._ctx_compute_inputs = (compute_args, int(n_parallel))
-        # Context checkpoints are host RAM, the same pool on unified memory: charged to this
-        # machine, never counted as freed.
         per_checkpoint = 0
         if ctx:
             per_checkpoint = await asyncio.to_thread(
@@ -2259,7 +2082,6 @@ class ClusterServing:
             n_parallel,
         )
         self._checkpoints = float(per_checkpoint * count * max(1, n_parallel))
-        # The loader's probe covers Mamba and KDA layouts; the header formula, gated-delta ones.
         loader_recurrent = await asyncio.to_thread(
             _ctx_compute_bytes,
             local_file,
@@ -2274,15 +2096,13 @@ class ClusterServing:
         recurrent = max(loader_recurrent or 0, _ssm_state_bytes(header, n_parallel))
         arch = header.get("general.architecture")
         n_rec = _recurrent_layers(header)
-        # A whole recurrent layer carries its share of the state, not the model-wide average.
         self._recurrent_layer = float(recurrent) / n_rec if recurrent and n_rec else 0.0
         self._recurrent = float(recurrent)
         attention_layers, _ = _layer_kinds(header)
         self._attention_layers = attention_layers if n_rec else 0
 
         if kv is None and ctx and size and not recurrent:
-            self._unsized_kv = True  # a pure state-space model has no attention KV
-        # The loader's KV already holds the recurrent state it can see; add only what it missed.
+            self._unsized_kv = True
         missed = max(0, recurrent - (loader_recurrent or 0)) if loader_kv else recurrent
         kv = float(kv or 0.0) + missed
         return (None if size is None else float(size) + adapters), kv, float(sidecars)
@@ -2292,7 +2112,7 @@ class ClusterServing:
         if self._passthrough:
             self._passthrough = False
             if not self._alongside:
-                self.forget_served()  # an engine load replaced the primary; that was not ours
+                self.forget_served()
             return
         self._pre_load = None
         self._cancel_event = None
@@ -2301,7 +2121,6 @@ class ClusterServing:
         self._started = set()
         plan = self.plan
         local_count = sum(1 for d in plan.devices if not d.remote) if plan is not None else 0
-        # A local fit on several GPUs sends no device list, so which of them hold it is unknown.
         enforced = plan is not None and (plan.topology == "layer_split" or local_count <= 1)
         self._resident = plan.resident() if enforced else {}
         argv = [
@@ -2321,8 +2140,6 @@ class ClusterServing:
         for endpoint in [
             e for e in self.workers if (e not in managed or e in down) and e not in in_use
         ]:
-            # Dropped from the config (or made unmanaged), or hung while its ssh lives on; the load
-            # that just committed does not use it, so it can go now and a later load restarts it.
             process = self.workers.pop(endpoint)
             try:
                 await process.stop()
@@ -2337,7 +2154,7 @@ class ClusterServing:
                 self._backend, "is_loaded", False
             )
             if not self._alongside and not backend_loaded:
-                self.forget_served()  # the engine load unloaded our split before failing
+                self.forget_served()
             return
         self._cancel_event = None
         pre, self._pre_load = self._pre_load, None
@@ -2345,7 +2162,7 @@ class ClusterServing:
             if pre is not None:
                 self.topology, self.reason, self.plan, self.block = pre
                 if self.block:
-                    _remember_block(self.block)  # failed replacements may have pushed it out
+                    _remember_block(self.block)
         else:
             self.forget_served()
 
@@ -2358,21 +2175,16 @@ class ClusterServing:
         )
 
     def serving(self) -> bool:
-        """Whether a split this planned is still what the primary serves, config or not."""
         return bool(self.workers) or (
             self._backend is not None and bool(getattr(self._backend, "is_loaded", False))
         )
 
     async def failed_while_retiring(self) -> None:
-        """A replacement after the cluster was turned off failed; stop the workers if the split
-        was already unloaded, keep it (and them) if it still serves."""
         if not (self._backend is not None and getattr(self._backend, "is_loaded", False)):
             self.forget_served()
             await self.shutdown()
 
     def note_internal_load(self) -> None:
-        """A load that bypasses planning is about to start: forget the split, but keep what is
-        needed to put the record back if that load is refused before it replaces the primary."""
         backend = self._backend
         if backend is not None and getattr(backend, "is_loaded", False) and self.block:
             self._internal_pre = (
@@ -2387,7 +2199,6 @@ class ClusterServing:
         self.forget_served()
 
     def settle_internal_load(self) -> None:
-        """Put the split record back when the bypassing load never replaced the primary."""
         pre, self._internal_pre = self._internal_pre, None
         if pre is None or self._backend is not None:
             return
@@ -2398,7 +2209,6 @@ class ClusterServing:
             _remember_block(block)
 
     def forget_served(self) -> None:
-        """A load that bypassed planning replaced the served split; its workers can stay."""
         self.topology, self.reason = "single", "a load that bypassed the planner replaced the split"
         self.plan, self.block = None, []
         self._backend, self._resident = None, {}

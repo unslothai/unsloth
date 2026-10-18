@@ -26,7 +26,6 @@ from core.inference import spark_serving as ss
 GIB = 2**30
 MIB = 2**20
 
-# Hosts the fake reachability probe reports down.
 DOWN: set = set()
 
 LISTING = """Available devices:
@@ -99,7 +98,6 @@ def test_device_listing_maps_every_rpc_device_to_its_endpoint():
         ("CUDA0", None),
     ]
     assert devices[1].free_bytes == 60000 * MIB
-    # Two devices behind one endpoint (a multi-GPU worker) both belong to it.
     two = cs.parse_device_list(
         "  RPC0: 10.0.0.2:50052 (10 MiB, 9 MiB free)\n  RPC1: 10.0.0.2:50052 (10 MiB, 9 MiB free)\n",
         ["10.0.0.2:50052"],
@@ -145,7 +143,6 @@ def test_an_endpoint_is_matched_whole_not_as_a_prefix_of_another():
         "  RPC0: 10.0.0.2:5005 (10 MiB, 9 MiB free)\n  RPC1: 10.0.0.2:50052 (10 MiB, 9 MiB free)\n"
     )
     assert [d.endpoint for d in cs.parse_device_list(listing, endpoints)] == endpoints
-    # A build whose description says more still maps by the whole endpoint.
     listing = "  RPC0: RPC backend at 10.0.0.2:50052 (10 MiB, 9 MiB free)\n"
     assert cs.parse_device_list(listing, endpoints)[0].endpoint == "10.0.0.2:50052"
 
@@ -156,7 +153,7 @@ def test_a_large_model_is_split_by_usable_memory_with_this_machine_last():
     assert [d.name for d in plan.devices] == ["RPC0", "RPC1", "RPC2", "CUDA0"]
     assert abs(sum(plan.weights) - 1.0) < 1e-9
     usable = [cs.usable_bytes(d) for d in _devices()]
-    usable[-1] -= 2 * GIB  # the coordinator also holds the sidecars
+    usable[-1] -= 2 * GIB
     for w, u in zip(plan.weights, usable):
         assert w == pytest.approx(u / sum(usable))
     # Every device's share of weights + KV fits its own usable memory, the sidecars included.
@@ -203,7 +200,6 @@ def test_only_the_recorded_block_is_stripped_on_inheritance():
     block = cs.split_extra_args(["10.0.0.2:50052", "10.0.0.3:50052", "10.0.0.4:50052"], plan)
     cs._remember_block(block)
     assert cs.strip_managed_block(["--seed", "1"] + block) == ["--seed", "1"]
-    # Through the helper the reload path calls, next to the two-Spark block.
     assert ss.strip_layer_split_extra_args(["--seed", "1"] + block) == ["--seed", "1"]
     users = ["--rpc", "10.9.9.9:1", "--device", "RPC0,CUDA0"]
     assert ss.strip_layer_split_extra_args(users) == users
@@ -246,21 +242,18 @@ def _cluster_env(
     monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: ({}, {}))
     monkeypatch.setattr(cs, "_ctx_compute_bytes", lambda *a, **k: 0)
     monkeypatch.setattr(cs, "_remote_projector_bytes", lambda path, token: 0)
-    # The fake coordinator is a DGX Spark: its GPU memory is the host RAM pool.
     monkeypatch.setattr(cs, "_shares_host_memory", lambda device: True)
     monkeypatch.setattr(cs, "_kv_unified_supported", lambda binary: True)
     monkeypatch.setattr(cs, "_keeps_resident", lambda: False)
     seen = []
 
     def fake_list(binary, endpoints, *a, **kw):
-        # llama.cpp lists only the endpoints it was given.
         seen.append((binary, list(endpoints)))
         devices = cs.parse_device_list(listing, endpoints)
         st = cs._STATE
         if listing is LISTING and st is not None and getattr(st._backend, "is_loaded", False):
-            # A live worker reports the served layers it holds as used.
             for d in devices:
-                if d.remote and d.endpoint not in st._started:  # a restarted one holds nothing
+                if d.remote and d.endpoint not in st._started:
                     d.free_bytes = max(0, d.free_bytes - int(st._resident.get(d.key, 0)))
         return [d for d in devices if not d.remote or d.endpoint in endpoints], ""
 
@@ -302,7 +295,6 @@ def test_a_cluster_load_gets_the_split_and_status_describes_it(monkeypatch):
     )
     assert run(ss.after_load(backend, 4)) is False
     assert ss.current_topology() == "layer_split"
-    # The two-Spark state was never created.
     assert ss._STATE is None or ss._STATE.peer_process is None
 
 
@@ -363,13 +355,12 @@ def test_a_failed_load_puts_the_previous_topology_back(monkeypatch):
     _cluster_env(monkeypatch, model_bytes = 10 * GIB)
     run(ss.before_load(_request(), 4))
     assert ss.status()["topology"] == "single"
-    run(ss.load_failed())  # the split it would have replaced is still loaded
+    run(ss.load_failed())
     assert ss.status()["topology"] == "layer_split"
 
 
 def test_a_reload_while_serving_plans_with_the_workers_the_live_server_holds(monkeypatch):
-    # ggml-rpc-server serves one client at a time: while the split is loaded, any probe that names
-    # one of its workers hangs until the timeout. The reload must still plan the same split.
+    # rpc-server serves one client at a time: a probe naming a held worker hangs; the reload must still plan the split.
     _cluster_env(monkeypatch)
     first = run(ss.before_load(_request(), 4))
     backend = SimpleNamespace(
@@ -460,7 +451,7 @@ def test_an_environment_projector_is_charged_to_this_machine(monkeypatch, tmp_pa
     mmproj = tmp_path / "mmproj.gguf"
     mmproj.write_bytes(b"x")
     request = _request()
-    assert run(ss.before_load(request, 4)) is request  # 90 GiB fits here alone
+    assert run(ss.before_load(request, 4)) is request
     sizes = {str(mmproj): 10 * GIB}
     monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 90 * GIB))
     monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(mmproj))
@@ -486,7 +477,6 @@ def test_the_model_being_replaced_counts_as_freed(monkeypatch):
         is_loaded = True,
     )
     run(ss.after_load(backend, 4))
-    # The probe now sees the served model's buffers as used.
     held = plan.resident()
     lines = []
     for d in _devices():
@@ -497,7 +487,6 @@ def test_the_model_being_replaced_counts_as_freed(monkeypatch):
     _cluster_env(monkeypatch, listing = "\n".join(lines) + "\n")
     run(ss.before_load(_request(model_path = "/models/other.gguf"), 4))
     assert ss.status()["topology"] == "layer_split"
-    # Once it is unloaded, nothing is added back.
     backend.is_loaded = False
     with pytest.raises(ss.SparkLoadDoesNotFit):
         run(ss.before_load(_request(model_path = "/models/other.gguf"), 4))
@@ -696,7 +685,7 @@ def test_turning_serving_off_retires_the_cluster_at_commit(monkeypatch):
         is_loaded = True,
     )
     run(ss.after_load(backend, 4))
-    assert cs.state()._backend is backend and not cs.state().workers  # unmanaged nodes
+    assert cs.state()._backend is backend and not cs.state().workers
     monkeypatch.setenv(ss.ENV_TOGGLE, "0")
     run(ss.before_load(_request(), 4))
     run(ss.after_load(SimpleNamespace(is_loaded = True), 4))
@@ -780,7 +769,7 @@ def test_dropping_the_cluster_on_a_spark_frees_its_workers_before_the_spark_spli
 
     async def legacy_before_load(self, request, n_parallel, **kw):
         seen.append(list(stopped))
-        await self._on_plan_accepted()  # the two-Spark planner accepted the load
+        await self._on_plan_accepted()
         seen.append(list(stopped))
         return request
 
@@ -870,7 +859,7 @@ def test_a_failed_replacement_forgets_a_split_it_already_tore_down(monkeypatch):
     )
     run(ss.after_load(backend, 4))
     run(ss.before_load(_request(model_path = "/models/other.gguf"), 4))
-    backend.is_loaded = False  # the replacement unloaded it, then failed to start
+    backend.is_loaded = False
     run(ss.load_failed())
     assert ss.status()["topology"] == "single" and ss.status()["split_args"] is None
 
@@ -948,7 +937,7 @@ def test_the_main_gpu_environment_pin_is_caller_placement(monkeypatch):
 def test_a_load_completes_through_the_cluster_even_if_the_config_went_away(monkeypatch):
     _cluster_env(monkeypatch)
     out = run(ss.before_load(_request(), 4))
-    monkeypatch.delenv(cs.ENV_NODES)  # removed while the load was running
+    monkeypatch.delenv(cs.ENV_NODES)
     backend = SimpleNamespace(
         _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
         is_loaded = True,
@@ -1073,8 +1062,7 @@ def test_completion_goes_to_the_planner_that_took_the_load(monkeypatch):
     _cluster_env(monkeypatch)
     run(ss.before_load(_request(), 4))
     run(ss.after_load(SimpleNamespace(_process = SimpleNamespace(args = [])), 4))
-    # A later load planned while the cluster is off is the two-Spark path's, even if the cluster
-    # config comes back before it completes.
+    # A load planned while the cluster is off is the two-Spark path's, even if the config comes back.
     assert cs.state().in_flight is False
     legacy_after = []
 
@@ -1184,7 +1172,6 @@ def test_a_first_hub_load_reserves_its_projector(monkeypatch):
     monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
     monkeypatch.setattr(ss, "cached_repo_file", lambda path, variant: None)
     monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda *a, **k: 90 * GIB)
-    # An Auto context is priced at the fitter's floor, from the Hub header.
     monkeypatch.setattr(cs, "_remote_gguf_header", lambda *a, **k: (_hub_header, {}))
     monkeypatch.setattr(cs, "_remote_projector_bytes", lambda path, token: 10 * GIB)
     run(ss.before_load(_request(model_path = "org/vision-GGUF", max_seq_length = 0), 4))
@@ -1218,7 +1205,7 @@ def test_the_sidecar_stays_pinned_to_the_gpu_it_was_charged_to(monkeypatch):
     devices = cs.parse_device_list(listing, ["10.0.0.2:50052"])
     plan = cs.plan_cluster(150 * GIB, 0, 19 * GIB, devices, layer_bytes = 2 * GIB)
     assert plan.topology == "layer_split"
-    assert "CUDA0" not in [d.name for d in plan.devices]  # no room for layers beside the sidecar
+    assert "CUDA0" not in [d.name for d in plan.devices]
     assert plan.sidecar_device.name == "CUDA0"
 
 
@@ -1272,7 +1259,7 @@ def test_a_failed_load_while_retiring_forgets_an_unloaded_split(monkeypatch):
     cs.state().workers["10.0.0.2:50052"] = SimpleNamespace(alive = True, snapshot = lambda: {})
     monkeypatch.delenv(cs.ENV_NODES)
     monkeypatch.setattr(ss, "is_spark", lambda: False)
-    run(ss.before_load(_request(), 4))  # through the non-cluster path, retirement pending
+    run(ss.before_load(_request(), 4))
     backend.is_loaded = False
     run(ss.load_failed())
     assert ss.current_topology() != "layer_split"
@@ -1430,7 +1417,7 @@ def test_a_hung_managed_worker_is_stopped_once_a_load_without_it_commits(monkeyp
 
     for e in ("10.0.0.2:50052", "10.0.0.3:50052", "10.0.0.4:50052"):
         cs.state().workers[e] = Worker(e)
-    DOWN.add("10.0.0.3")  # its ssh lives on, its rpc-server no longer answers
+    DOWN.add("10.0.0.3")
     out = run(ss.before_load(_request(), 4))
     rpc = out.llama_extra_args[out.llama_extra_args.index("--rpc") + 1]
     assert rpc == "10.0.0.2:50052,10.0.0.4:50052"
@@ -1461,7 +1448,7 @@ def test_a_rejected_replacement_unloads_a_model_whose_cluster_workers_went(monke
             pass
 
     cs.state().workers["10.0.0.2:50052"] = Worker()
-    monkeypatch.delenv(cs.ENV_NODES)  # the cluster config goes; this is a paired Spark
+    monkeypatch.delenv(cs.ENV_NODES)
     monkeypatch.setattr(ss, "enabled", lambda: True)
 
     async def legacy_before_load(self, request, n_parallel, **kw):
@@ -1471,7 +1458,7 @@ def test_a_rejected_replacement_unloads_a_model_whose_cluster_workers_went(monke
     monkeypatch.setattr(ss.SparkServing, "before_load", legacy_before_load)
     run(ss.before_load(_request(), 4))
     assert not cs.state().workers
-    run(ss.load_failed())  # the route rejected the replacement after the plan
+    run(ss.load_failed())
     assert unloaded == [1], "its remote layers are gone, so it cannot answer"
 
 
@@ -1480,12 +1467,11 @@ def test_a_first_hub_load_with_vision_off_still_reserves_its_projector(monkeypat
     monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
     monkeypatch.setattr(ss, "cached_repo_file", lambda path, variant: None)
     monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda *a, **k: 90 * GIB)
-    # An Auto context is priced at the fitter's floor, from the Hub header.
     monkeypatch.setattr(cs, "_remote_gguf_header", lambda *a, **k: (_hub_header, {}))
     monkeypatch.setattr(cs, "_remote_projector_bytes", lambda path, token: 10 * GIB)
     request = _request(model_path = "org/audio-GGUF", max_seq_length = 0, disable_vision = True)
     out = run(ss.before_load(request, 4))
-    assert ss.status()["topology"] == "layer_split"  # an audio-only projector survives the switch
+    assert ss.status()["topology"] == "layer_split"
     assert "--mmproj-device" in out.llama_extra_args
 
 
@@ -1493,7 +1479,6 @@ def test_a_guessed_kv_reserve_is_not_counted_as_freed(monkeypatch):
     _cluster_env(monkeypatch, model_bytes = 90 * GIB)
     monkeypatch.setattr(ss, "cached_repo_file", lambda path, variant: None)
     monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda *a, **k: 90 * GIB)
-    # An Auto context is priced at the fitter's floor, from the Hub header.
     monkeypatch.setattr(cs, "_remote_gguf_header", lambda *a, **k: (_hub_header, {}))
     monkeypatch.setattr(cs, "_remote_gguf_header", lambda *a, **k: (_llama_header(64), {0: GIB}))
     out = run(ss.before_load(_request(model_path = "org/big-GGUF", max_seq_length = 8192), 4))
@@ -1559,7 +1544,7 @@ def test_a_worker_restarted_by_this_load_gets_no_residency_credit(monkeypatch):
     run(ss.before_load(_request(), 4))
     free = dict(credited)
     listed = {d.endpoint: d.free_bytes for d in cs.parse_device_list(LISTING, list(free))}
-    assert free["10.0.0.3:50052"] == listed["10.0.0.3:50052"]  # its buffers died with it
+    assert free["10.0.0.3:50052"] == listed["10.0.0.3:50052"]
     # The others report their held layers as used and get them credited back.
     assert free["10.0.0.2:50052"] == listed["10.0.0.2:50052"]
 
@@ -1728,9 +1713,7 @@ def test_a_managed_worker_finds_the_studio_venvs_cuda_runtime(tmp_path, venv):
         env = {"PATH": os.environ["PATH"], "LD_LIBRARY_PATH": "/keep"},
     ).stdout
     started = re.search(r"started=(\d+)", out).group(1)
-    assert (
-        f"pid={started} args=-H 10.0.0.2 -p 50052" in out
-    )  # exec keeps the pid the reaper watches
+    assert f"pid={started} args=-H 10.0.0.2 -p 50052" in out
     ld = re.search(r"LD=(.*)", out).group(1).split(":")
     assert ld[0] == str(bindir) and ld[-1] == "/keep"
     for sub in ("nvidia/cuda_runtime/lib", "nvidia/cublas/lib", "torch/lib"):
@@ -1815,10 +1798,10 @@ def test_an_argv_projector_replaces_the_environment_one(monkeypatch, tmp_path):
     monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 85 * GIB))
     monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(env_mm))
     run(ss.before_load(_request(), 4))
-    assert ss.status()["topology"] == "layer_split"  # the 15 GiB environment projector loads
+    assert ss.status()["topology"] == "layer_split"
     request = _request(llama_extra_args = ["--mmproj", str(argv_mm)])
     assert run(ss.before_load(request, 4)) is request
-    assert ss.status()["topology"] == "single"  # only the 1 GiB argv one does
+    assert ss.status()["topology"] == "single"
 
 
 def test_the_device_probe_runs_with_the_llama_server_environment(monkeypatch):
@@ -1878,7 +1861,7 @@ def test_a_failed_cluster_replacement_unloads_the_two_spark_primary_it_orphaned(
 
     monkeypatch.setattr(legacy, "detach", fake_detach)
     run(ss.before_load(_request(), 4))
-    run(ss.load_failed())  # the route rejected the replacement after the split was torn down
+    run(ss.load_failed())
     assert unloaded == [1], "its remote layers are gone, so it cannot answer"
 
 
@@ -1900,7 +1883,7 @@ def test_a_restart_mark_survives_a_refused_load(monkeypatch):
     monkeypatch.setattr(cs.ClusterServing, "_ensure_workers", ensure)
     _cluster_env(monkeypatch, model_bytes = 2000 * GIB)
     with pytest.raises(ss.SparkLoadDoesNotFit):
-        run(ss.before_load(_request(), 4))  # restarts 10.0.0.3, then refuses
+        run(ss.before_load(_request(), 4))
     credited = []
     real_plan = cs.plan_cluster
 
@@ -1921,7 +1904,6 @@ def test_an_unverified_hub_projector_is_not_counted_as_freed(monkeypatch):
     monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
     monkeypatch.setattr(ss, "cached_repo_file", lambda path, variant: None)
     monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda *a, **k: 90 * GIB)
-    # An Auto context is priced at the fitter's floor, from the Hub header.
     monkeypatch.setattr(cs, "_remote_gguf_header", lambda *a, **k: (_hub_header, {}))
     monkeypatch.setattr(cs, "_remote_projector_bytes", lambda path, token: 10 * GIB)
     request = _request(model_path = "org/vision-GGUF", max_seq_length = 0, disable_vision = True)
@@ -2044,7 +2026,7 @@ def test_an_inherited_projector_url_survives_no_mmproj(monkeypatch, flag):
     monkeypatch.delenv("LLAMA_ARG_MMPROJ_URL")
     request = _request(llama_extra_args = [flag, "--mmproj-url", "https://example.com/m.gguf"])
     run(ss.before_load(request, 4))
-    assert ss.status()["topology"] == "layer_split"  # an argv URL is suppressed with it
+    assert ss.status()["topology"] == "layer_split"
 
 
 def test_an_uncached_model_whose_kv_cannot_be_read_stays_local(monkeypatch):
@@ -2213,7 +2195,7 @@ def test_a_cached_model_whose_kv_cannot_be_read_stays_local(monkeypatch):
     assert "could not be sized" in ss.status()["reason"]
     monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: (_llama_header(8), {}))
     run(ss.before_load(request, 4))
-    assert ss.status()["topology"] == "layer_split"  # the header reader sized it
+    assert ss.status()["topology"] == "layer_split"
 
 
 def test_a_projector_beside_a_quant_subdirectory_is_charged(monkeypatch, tmp_path):
@@ -2315,7 +2297,7 @@ def test_detaching_a_two_spark_split_forces_a_relaunch(monkeypatch):
     out = run(ss.before_load(_request(), 4))
     assert out.force_reload is True
     out = run(ss.before_load(_request(), 4))
-    assert not getattr(out, "force_reload", False)  # nothing was detached this time
+    assert not getattr(out, "force_reload", False)
 
 
 def test_a_restarted_served_worker_forces_a_relaunch(monkeypatch):
@@ -2556,7 +2538,7 @@ def test_an_invalid_config_keeps_a_served_splits_workers(monkeypatch, tmp_path):
     request = _request()
     assert run(ss.before_load(request, 4)) is request
     assert "cluster config" in ss.status()["reason"]
-    run(ss.after_load(backend, 4))  # the route reused the loaded primary
+    run(ss.after_load(backend, 4))
     assert stopped == [] and "10.0.0.2:50052" in cs.state().workers
 
 
@@ -2573,7 +2555,7 @@ def test_context_checkpoints_are_charged_to_this_machine(monkeypatch, kw, extra,
     plan = cs.state().plan
     charged = count * 4 * 10 * 2**20
     assert plan.extra_bytes == pytest.approx(charged)
-    assert plan.uncertain_extra_bytes == pytest.approx(charged)  # never counted as freed
+    assert plan.uncertain_extra_bytes == pytest.approx(charged)
     assert out is not None
 
 
@@ -2643,7 +2625,7 @@ def test_an_invalid_config_keeps_the_served_split_record(monkeypatch):
     block = list(cs.state().block)
     monkeypatch.setenv(cs.ENV_NODES, "bad host!")
     run(ss.before_load(_request(), 4))
-    run(ss.after_load(backend, 4))  # the route reused the loaded primary
+    run(ss.after_load(backend, 4))
     assert cs.state().block == block and cs.state().topology == "layer_split"
     assert "still serving" in ss.status()["reason"]
 
@@ -2847,11 +2829,11 @@ def test_a_worker_whose_memory_came_back_forces_a_relaunch(monkeypatch):
     )
     run(ss.after_load(backend, 4))
     out = run(ss.before_load(_request(), 4))
-    assert not getattr(out, "force_reload", False)  # every worker still holds its layers
+    assert not getattr(out, "force_reload", False)
     backend._process.args = ["/b/llama-server"] + out.llama_extra_args
     run(ss.after_load(backend, 4))
     # An operator restarted 10.0.0.2 by hand: the probe shows its memory free again.
-    _cluster_env(monkeypatch, listing = LISTING + "\n")  # every worker reports no layers held
+    _cluster_env(monkeypatch, listing = LISTING + "\n")
     out = run(ss.before_load(_request(), 4))
     assert out.force_reload is True
 
@@ -2932,7 +2914,7 @@ def test_skipped_nextn_blocks_do_not_refuse_a_split(monkeypatch):
     monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: (header, {78: GIB, 79: 40 * GIB}))
     run(ss.before_load(_request(), 4))  # 300 GiB does not fit; 260 without the MTP head does
     assert ss.status()["topology"] == "layer_split"
-    assert cs.state().plan.host_bytes == 0  # already left out of the planned weights
+    assert cs.state().plan.host_bytes == 0
 
 
 def test_a_refused_internal_load_keeps_the_split_record(monkeypatch):
@@ -3029,7 +3011,7 @@ def test_a_config_error_reload_honours_the_callers_placement(monkeypatch):
     _serve(monkeypatch)
     monkeypatch.setenv(cs.ENV_NODES, "bad host!")
     out = run(ss.before_load(_request(llama_extra_args = ["--device", "CUDA0"]), 4))
-    assert out.llama_extra_args == ["--device", "CUDA0"]  # no stale block after it
+    assert out.llama_extra_args == ["--device", "CUDA0"]
     assert out.force_reload is True
 
 
@@ -3173,7 +3155,7 @@ def test_a_small_share_worker_that_restarted_forces_a_relaunch(monkeypatch):
     run(ss.after_load(backend, 4))
     # The residency credit rounds every worker's share to nothing (a whole layer kept back).
     cs.state()._resident = {k: 0.0 for k in cs.state()._resident}
-    _cluster_env(monkeypatch, listing = LISTING + "\n")  # every worker reports its memory free
+    _cluster_env(monkeypatch, listing = LISTING + "\n")
     out = run(ss.before_load(_request(), 4))
     assert out.force_reload is True
 
@@ -3188,7 +3170,7 @@ def test_keep_in_gpu_memory_keeps_a_unified_coordinator_local(monkeypatch, unifi
     if unified:
         assert out is request and "locks a host copy" in ss.status()["reason"]
     else:
-        assert ss.status()["topology"] == "layer_split"  # a discrete GPU is not page-locked
+        assert ss.status()["topology"] == "layer_split"
 
 
 def test_keeps_resident_reads_the_saved_settings(monkeypatch):
@@ -3377,7 +3359,7 @@ def test_the_environment_overrides_the_group_count(monkeypatch, value, slots, gr
 )
 def test_flags_the_server_refuses_with_groups_keep_one_context(monkeypatch, extra):
     _groups_env(monkeypatch)
-    monkeypatch.setenv(cs.ENV_PIPELINE_GROUPS, "2")  # even forced
+    monkeypatch.setenv(cs.ENV_PIPELINE_GROUPS, "2")
     _, block, plan = _groups_load(48, extra = extra)
     assert plan.topology == "layer_split" and _groups_of(block) == 0
     assert "refuses" in cs.state().pipeline_groups_reason
@@ -3428,7 +3410,7 @@ def test_a_callers_pipeline_groups_is_theirs_but_priced(monkeypatch):
     extra = ["--pipeline-groups", "2"]
     out, block, plan = _groups_load(48, extra = extra)
     assert plan.topology == "layer_split"
-    assert "--pipeline-groups" not in block  # never a second flag
+    assert "--pipeline-groups" not in block
     assert out.llama_extra_args[:2] == extra
     assert plan.pipeline_groups == 2 and plan.kv_bytes == pytest.approx(2 * 4096 * KV_PER_CELL)
     monkeypatch.setenv("LLAMA_ARG_PIPELINE_GROUPS", "4")
@@ -3455,8 +3437,7 @@ def test_the_groups_flag_is_stripped_with_the_block_on_reload(monkeypatch):
 
 
 def test_a_projector_an_argv_one_replaces_is_not_charged(monkeypatch, tmp_path):
-    # llama.cpp keeps the last --mmproj: the earlier file never loads, so neither its file nor
-    # its runtime headroom is charged, and residency does not credit it as freed.
+    # llama.cpp keeps the last --mmproj: the earlier file is never charged nor credited as freed.
     _cluster_env(monkeypatch, model_bytes = 85 * GIB)
     monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
     first, last = tmp_path / "big-mmproj.gguf", tmp_path / "small-mmproj.gguf"
@@ -3495,8 +3476,7 @@ def _nextn_env(
 
 
 def test_a_model_that_fits_here_without_its_mtp_head_is_not_split(monkeypatch):
-    # 115 GiB does not fit this machine; 90 GiB without the MTP head does, so one machine with
-    # speculation off is planned rather than a split, which runs it off anyway.
+    # 115 GiB does not fit; 90 GiB without the MTP head does, so one machine with speculation off beats a split.
     _nextn_env(monkeypatch, 115 * GIB, 25 * GIB)
     out = run(ss.before_load(_request(), 4))
     assert ss.status()["topology"] == "single"
@@ -3596,7 +3576,7 @@ def test_a_two_spark_worker_on_another_port_is_left_to_the_plan(monkeypatch):
     legacy, unloaded = _legacy_worker_on(monkeypatch, port = 50053)
     with pytest.raises(ss.SparkLoadDoesNotFit):
         run(ss.before_load(_request(), 4))
-    assert legacy.peer_process is not None and unloaded == []  # a refusal keeps it serving
+    assert legacy.peer_process is not None and unloaded == []
 
 
 def test_a_two_spark_worker_recorded_by_address_matches_a_node_named_by_host_name(monkeypatch):

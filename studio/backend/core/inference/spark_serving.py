@@ -2000,7 +2000,6 @@ def strip_layer_split_extra_args(extra: Sequence[str]) -> List[str]:
     inherits a split's extras is planned afresh instead of reading our own --rpc as the caller's."""
     from core.inference import cluster_serving
 
-    # An N-node cluster's block is recognised by what that module recorded; empty off a cluster.
     tokens = cluster_serving.strip_managed_block([str(t) for t in extra])
     fixed = ["--device", "RPC0,CUDA0", "-sm", "layer", "--tensor-split", SPLIT_TENSOR_SPLIT_EVEN]
     fixed += ["--cache-ram", "0"]
@@ -2352,7 +2351,6 @@ class SparkServing:
         self._passthrough: bool = False
         # The route's refusal checks for replacing the served model, run before the split goes.
         self._confirm_teardown: Any = None
-        # Awaited once a load passes the fit check, before anything is started or replaced.
         self._on_plan_accepted: Any = None
         self.relaunch_attempts: int = 0
         self.relaunch_gave_up: bool = False
@@ -3482,7 +3480,6 @@ def tag_conversation(payload: Dict[str, Any], thread_id: Optional[str]) -> None:
     _STATE.tag_conversation(payload, thread_id)
 
 
-# A two-Spark split an explicit-engine load replaces, detached once that load commits.
 _DETACH_LEGACY_ON_COMMIT = False
 
 
@@ -3492,7 +3489,6 @@ def _cluster_active() -> bool:
 
 
 def _legacy_worker_holds_a_cluster_port() -> bool:
-    """Whether the two-Spark split's live rpc-server sits on a managed cluster node's endpoint."""
     from core.inference import cluster_serving
 
     process = _STATE.peer_process if _STATE is not None else None
@@ -3518,8 +3514,7 @@ def _legacy_worker_holds_a_cluster_port() -> bool:
         return True
     if not candidates:
         return False
-    # A node named by host name and a worker recorded by address (or the reverse) are the same
-    # endpoint when they resolve to a common IPv4 address.
+    # A host name and an address are the same endpoint when they resolve to a common IPv4.
     legacy = set().union(*(_ipv4_addresses(h) for h in hosts)) if hosts else set()
     return any(legacy & _ipv4_addresses(node.host) for node in candidates)
 
@@ -3537,7 +3532,6 @@ def _ipv4_addresses(host: str) -> set:
 
 
 async def _legacy_worker_holds_a_cluster_port_bounded(timeout: float = 5.0) -> bool:
-    """_legacy_worker_holds_a_cluster_port off the event loop, with name resolution bounded."""
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(_legacy_worker_holds_a_cluster_port), timeout
@@ -3547,8 +3541,6 @@ async def _legacy_worker_holds_a_cluster_port_bounded(timeout: float = 5.0) -> b
 
 
 def _legacy_kept() -> bool:
-    """A two-Spark split still serves because the cluster config does not parse (before_load
-    keeps it in charge then)."""
     from core.inference import cluster_serving
 
     if _STATE is None or (_STATE.peer_process is None and _STATE.router is None):
@@ -3599,13 +3591,11 @@ async def before_load(
     if _cluster_active() and legacy_serving:
         cluster_serving.state().refresh_nodes()
         cluster_broken = bool(cluster_serving.state().config_error)
-    # A malformed cluster config never tears down a two-Spark split that still serves: the
-    # two-Spark path keeps planning until the config parses.
+    # A malformed cluster config never tears down a two-Spark split that still serves.
     if _cluster_active() and not cluster_broken:
         retired_first = False
         if replacing and await _legacy_worker_holds_a_cluster_port_bounded():
-            # The two-Spark rpc-server holds the port a managed node's worker must bind, so the
-            # cluster could not start it and would plan without that machine: retire it first.
+            # The two-Spark rpc-server holds the port a managed worker must bind: retire it first.
             if confirm_teardown is not None:
                 confirm_teardown()
             _STATE._note_retired_split(_STATE.peer_process)
@@ -3630,8 +3620,7 @@ async def before_load(
         )
         _DETACH_LEGACY_ON_COMMIT = legacy and not alongside and not replacing
         if replacing and legacy and not cluster_serving.state()._cancelled():
-            # A two-Spark split or replica set from before the cluster was configured; only once
-            # the cluster has a plan, so a refused or cancelled one leaves it serving.
+            # Only once the cluster has a plan, so a refused or cancelled load leaves it serving.
             try:
                 if confirm_teardown is not None:
                     confirm_teardown()
@@ -3641,27 +3630,21 @@ async def before_load(
             if _STATE.peer_process is not None:
                 _STATE._note_retired_split(_STATE.peer_process)  # load_failed unloads the orphan
             await _STATE.detach()
-            # Arguments equal to the retired split's would read as already loaded, peer gone.
             out = SparkServing._request_with(out, {"force_reload": True})
         return out
     if cluster_serving._STATE is not None and (
         cluster_serving._STATE.workers or cluster_serving._STATE._backend is not None
     ):
-        # The cluster is off now; its workers and its record of the served split go once a load
-        # that replaces the model commits.
         cluster_serving._STATE.retire_on_commit = not (
             getattr(request, "alongside", False) or getattr(request, "force_alongside", False)
         )
         if replacing and cluster_serving._STATE.retire_on_commit and enabled():
-            # The two-Spark path may start its own rpc-server on a port a cluster worker holds, so
-            # the workers go once its planner accepts the load; a refused one keeps them serving.
+            # The workers go once the two-Spark planner accepts; a refused load keeps them serving.
             async def retire_cluster() -> None:
                 if confirm_teardown is not None:
                     confirm_teardown()
                 cluster = cluster_serving._STATE
                 if cluster._backend is not None and cluster.block and cluster.workers:
-                    # Its remote layers go with the workers: a replacement the route then rejects
-                    # unloads it, as for a torn-down two-Spark split.
                     state()._retired_split = (
                         cluster._backend,
                         getattr(cluster._backend, "_process", None),
@@ -3774,7 +3757,6 @@ async def reconcile_internal_load() -> None:
     from core.inference import cluster_serving
 
     if cluster_serving._STATE is not None:
-        # Restored if this load is refused before it replaces the primary.
         cluster_serving._STATE.note_internal_load()
     if _STATE is None or _STATE.attached_backend is None and _STATE.peer_process is None:
         return
@@ -3800,7 +3782,6 @@ def status() -> Dict[str, Any]:
     if _cluster_active():
         return cluster_serving.state().status()
     if cluster_serving._STATE is not None and cluster_serving._STATE.serving():
-        # Off for new loads, but the loaded split still runs on its workers until replaced.
         return dict(cluster_serving._STATE.status(), retiring = True)
     if not enabled():
         return {"enabled": False, "topology": None, "reason": "not a paired DGX Spark"}

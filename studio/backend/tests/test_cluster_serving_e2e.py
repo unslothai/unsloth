@@ -114,8 +114,7 @@ def test_a_three_worker_split_loads_on_every_worker_and_answers(monkeypatch, tmp
         text = log.read_text(encoding = "utf-8")
         for endpoint in endpoints:
             assert f"[{endpoint}] model buffer size" in text, endpoint
-        # A reload while this server holds every worker: ggml-rpc-server takes one client at a
-        # time, so the workers cannot answer a probe; the plan must still be the same split.
+        # rpc-server takes one client at a time: held workers cannot answer a probe; the plan must hold.
         backend = SimpleNamespace(
             _process = SimpleNamespace(args = [str(bin_dir / "llama-server")] + out.llama_extra_args),
             is_loaded = True,

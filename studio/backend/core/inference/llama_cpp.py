@@ -29895,8 +29895,7 @@ class LlamaCppBackend:
                         f"present. Available Vulkan devices: {_vulkan_available_ordinals}."
                     )
 
-                # A pass-through --rpc split (cluster serving) names local devices as an
-                # unmasked --list-devices saw them: a fit-chosen mask would renumber them.
+                # A pass-through --rpc split names local devices unmasked: a fit-chosen mask would renumber them.
                 if (
                     not gpu_ids
                     and gpu_indices is not None

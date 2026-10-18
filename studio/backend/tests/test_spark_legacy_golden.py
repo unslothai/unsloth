@@ -41,7 +41,6 @@ def _norm(
 ) -> Any:
     text = json.dumps(value, sort_keys = True, default = str)
     text = text.replace(str(tmp), "<TMP>")
-    # The Studio home comes from a session fixture under pytest's numbered basetemp.
     text = re.sub(r'[^"]*/studio_homes\d+/home-\d+', "<HOME>", text)
     if port:
         text = text.replace(str(port), "<PORT>")
