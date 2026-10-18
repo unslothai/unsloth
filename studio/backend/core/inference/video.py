@@ -1766,9 +1766,12 @@ def _video_fetch_repo(
     return prefer_ungated_mirror(repo_id, hf_token, files = files)
 
 
-def _video_offline_base_choice(base: str, folders: Sequence[str]) -> Optional[str]:
+def _video_offline_base_choice(
+    base: str, folders: Optional[Sequence[str]] = None, skip: Sequence[str] = ()
+) -> Optional[str]:
     """Offline (no plan to read the choice from): the side of ``base``'s mirror pair whose cached snapshot holds more of
-    the ``folders`` this load reads, upstream on a tie; None when neither is cached or there is no mirror."""
+    the ``folders`` this load reads (every index component but ``skip`` when None), upstream on a tie; None when
+    neither is cached or there is no mirror."""
     from .diffusion_families import _is_local_path, mirror_repo
 
     if os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip() or _is_local_path(base):
@@ -1776,7 +1779,8 @@ def _video_offline_base_choice(base: str, folders: Sequence[str]) -> Optional[st
     mirror = mirror_repo(base)
     if not mirror:
         return None
-    up, mir = _video_cached_completeness(base, folders), _video_cached_completeness(mirror, folders)
+    up = _video_cached_completeness(base, folders, skip)
+    mir = _video_cached_completeness(mirror, folders, skip)
     if up < 0 and mir < 0:
         return None
     return base if up >= mir else mirror
@@ -1853,7 +1857,9 @@ def _is_under_dir(path: str, root: Optional[str]) -> bool:
         return False
 
 
-def _video_cached_completeness(repo_id: str, folders: Optional[Sequence[str]] = None) -> int:
+def _video_cached_completeness(
+    repo_id: str, folders: Optional[Sequence[str]] = None, skip: Sequence[str] = ()
+) -> int:
     """How complete ``repo_id``'s cached diffusers snapshot is in the live root (the one ``from_pretrained`` reads):
     the number of ``model_index.json`` (or H3's ``modular_model_index.json``) components whose folder holds a file and
     whose shard indexes are fully present, best revision. -1 without a cached index. Local stat only, never raises."""
@@ -1885,6 +1891,8 @@ def _video_cached_completeness(repo_id: str, folders: Optional[Sequence[str]] = 
             if folders is not None:
                 # Only what this load reads from the base (LTX-2.3: its scheduler, tokenizer and encoder).
                 components = [c for c in components if c in folders]
+            # A single-file / GGUF pick brings its own denoiser: the base's transformer folders are not read.
+            components = [c for c in components if not any(c.startswith(p) for p in skip)]
             score = 0
             for key in components:
                 folder = rev / key
@@ -4287,11 +4295,14 @@ class VideoBackend:
             kwargs["_base_fetch_repo"] = base_fetch_choice.get("repo") or (
                 base_plan.repo if base_plan is not None else None
             )
-            if kwargs["_base_fetch_repo"] is None and ltx23:
+            if kwargs["_base_fetch_repo"] is None and kind != "pipeline":
                 # No plan (a cache-only load): assembly's nameless choice counts every index component, and an upstream
-                # holding unused VAE / transformer folders would outscore a mirror holding what 2.3 reads.
+                # holding the transformer folders this pick replaces (or 2.3's unused VAEs) would outscore a mirror
+                # holding what the load reads.
                 kwargs["_base_fetch_repo"] = _video_offline_base_choice(
-                    base, tuple(p.rstrip("/") for p in VideoBackend._LTX23_BASE_PREFIXES)
+                    base,
+                    tuple(p.rstrip("/") for p in VideoBackend._LTX23_BASE_PREFIXES) if ltx23 else None,
+                    skip = ("transformer",),
                 )
             kwargs["_base_fetch_revision"] = (
                 base_fetch_choice.get("revision")

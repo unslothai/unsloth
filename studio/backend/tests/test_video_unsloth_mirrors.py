@@ -486,6 +486,32 @@ def test_offline_ltx23_base_choice_counts_only_the_folders_it_reads(empty_cache,
     assert video_mod._video_offline_base_choice("someone/no-mirror", folders) is None
 
 
+def test_offline_single_file_base_choice_ignores_the_transformer_it_replaces(empty_cache, monkeypatch):
+    upstream, mirror = "Lightricks/LTX-2", "unsloth/LTX-2-FP8"
+    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
+    # The upstream holds the transformer a GGUF pick replaces and nothing else; the mirror holds the rest.
+    _snapshot(
+        empty_cache,
+        upstream,
+        {
+            "model_index.json": _INDEX,
+            "transformer/diffusion_pytorch_model.safetensors": b"t",
+            "scheduler/scheduler_config.json": b"{}",
+        },
+    )
+    _snapshot(
+        empty_cache,
+        mirror,
+        {
+            "model_index.json": _INDEX,
+            "vae/diffusion_pytorch_model.safetensors": b"v",
+            "scheduler/scheduler_config.json": b"{}",
+        },
+    )
+    assert video_mod._video_fetch_repo(upstream) == upstream  # the aggregate count ties
+    assert video_mod._video_offline_base_choice(upstream, skip = ("transformer",)) == mirror
+
+
 def test_the_download_plan_probes_a_cached_upstream_base_at_its_own_snapshot():
     import inspect
 
