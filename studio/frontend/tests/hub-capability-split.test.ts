@@ -62,7 +62,7 @@ test("capabilities are picked in the filter popover, which sits right after the 
   const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
   assert.match(popover, /CAPABILITY_FILTER_OPTIONS\.map\(\(option\) => \{/);
   assert.match(popover, /role="checkbox"\s+aria-checked=\{checked\}/);
-  assert.match(popover, /\{showModelFilters && \(/);
+  assert.match(popover, /\{showModelFilters &&\s+RANGES\.map\(/);
 });
 
 test("Text only lists the models no other box covers, so every box ticked lists every model", () => {
@@ -81,7 +81,8 @@ test("every capability starts ticked, and the last tick can't be removed", () =>
 
 test("the first pick from the default keeps just that capability", () => {
   const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
-  assert.match(popover, /capabilities\.length === 0 && isolateFirstCapability\s*\? \[option\.value\]/);
+  assert.match(popover, /capabilities\.length === 0 && isolateFirst\s*\? \[option\.value\]/);
+  assert.match(popover, /isolateFirst=\{isolateFirstCapability\}/);
   // Armed once, until the first change from the defaults; the resets arm it again.
   const page = readSrc("features/hub/hub-page.tsx");
   assert.match(page, /setFirstPickArmed\(false\);\s*setCapabilityFilters\(next\);/);

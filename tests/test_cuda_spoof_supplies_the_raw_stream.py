@@ -84,3 +84,37 @@ def test_the_spoof_leaves_a_real_raw_stream_alone():
     assert (
         "VALUE 4242" in out.stdout
     ), f"the spoof overwrote a raw-stream handle that was already there: {out.stdout}\n{out.stderr}"
+
+
+def test_the_spoof_replaces_a_raw_stream_that_has_no_driver_behind_it():
+    """A CUDA wheel on a GPU-less runner carries the symbol, but calling it raises.
+
+    The notebooks smoke leg for Llama3.1 GRPO installs vLLM, which brings in torch 2.13.0+cu130,
+    and importing unsloth then died in kernels/utils.py with "CUDA driver version is insufficient
+    for CUDA runtime version". The spoof has to cover that wheel the same way it covers a CPU one.
+    """
+    script = textwrap.dedent(
+        f"""
+        import ctypes, sys
+        sys.path.insert(0, {str(_TESTS)!r})
+        import torch
+
+        def driverless(index = 0):
+            raise RuntimeError("CUDA error: CUDA driver version is insufficient for CUDA runtime version")
+
+        torch._C._cuda_getCurrentRawStream = driverless
+        import _zoo_aggressive_cuda_spoof as spoof
+        spoof.apply()
+        try:
+            handle = ctypes.c_void_p(torch._C._cuda_getCurrentRawStream(0))
+        except Exception as e:
+            print("POST raised", type(e).__name__)
+        else:
+            print("POST ok", handle.value)
+        """
+    )
+    out = subprocess.run([sys.executable, "-c", script], capture_output = True, text = True)
+    assert "POST ok None" in out.stdout, (
+        "the spoof kept a raw-stream handle that raises without a driver, so importing unsloth "
+        f"under a CUDA wheel on a GPU-less runner still fails: {out.stdout}\n{out.stderr}"
+    )

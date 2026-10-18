@@ -1137,6 +1137,12 @@ def _hybrid_varlen_metadata(kwargs):
         return None
     if kwargs.get("past_key_values") is not None or kwargs.get("cache_params") is not None:
         return None
+    from ..context_parallel import get_cp_manager
+
+    # Under context parallelism the model sees one sequence shard, so shard-local boundaries are wrong;
+    # the Ulysses mixer forward builds global ones from packed_seq_lengths itself.
+    if get_cp_manager() is not None:
+        return None
     total, device = None, None
     for key in ("input_ids", "inputs_embeds", "position_ids"):
         tensor = kwargs.get(key)

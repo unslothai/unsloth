@@ -21,6 +21,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Optional
 
+# The auto-switch pin lives in diffusion_device, so every resolve_auto_cuda_ordinal caller sees it.
+from core.inference.diffusion_device import _PLANNED_ORDINAL, _UNPLANNED
 from core.inference.gpu_arbiter import DIFFUSION, VIDEO
 from core.inference.media_model_index import MediaModelPick
 from core.inference.media_switch_backends import backend_for
@@ -253,20 +255,54 @@ def planners_for(owner: str, pick: MediaModelPick) -> list:
     return [engine_for(name) for name in names]
 
 
+def pin_planned_gpu_ordinal(ordinal: Optional[int]) -> Any:
+    """Carry ``ordinal`` into this context's plan and load; returns the reset token."""
+    return _PLANNED_ORDINAL.set(ordinal)
+
+
+def planned_gpu_ordinal() -> tuple[bool, Optional[int]]:
+    """(True, ordinal) when this context carries a pinned automatic ordinal, else (False, None)."""
+    ordinal = _PLANNED_ORDINAL.get()
+    return (False, None) if ordinal is _UNPLANNED else (True, ordinal)
+
+
 def plan_gpu_ordinal() -> Optional[int]:
     """The card the load route will rank for itself, so the plan sizes the same file set.
 
     Automatic precision is chosen per card, and a different card can select a different hosted
     pre-quantized artifact, which a plan plotted against the default device would omit.
     """
-    from core.inference.diffusion_device import (
-        resolve_diffusion_device_target,
-        resolve_selected_cuda_ordinal,
-    )
+    pinned, ordinal = planned_gpu_ordinal()
+    if pinned:
+        return ordinal
+    from core.inference.diffusion_device import auto_cuda_ordinal_for_load
 
-    if resolve_diffusion_device_target().device != "cuda":
+    return auto_cuda_ordinal_for_load()
+
+
+def catalog_gpu_ordinal() -> Optional[int]:
+    """The one ordinal a catalog refresh plans every pick against, ranked once unless the cards are identical.
+
+    Identical visible cards pick the same precision and so the same artifacts on any of them, so the
+    refresh plans against the current device as it always did instead of re-ranking per pick.
+    """
+    pinned, ordinal = planned_gpu_ordinal()
+    if pinned:
+        return ordinal
+    from core.inference.diffusion_device import auto_cuda_ranking_possible
+
+    if not auto_cuda_ranking_possible():
         return None
-    return resolve_selected_cuda_ordinal(None)
+    try:
+        from utils.hardware import hardware as hw
+
+        # Under a CUDA order nvidia-smi does not share, mask ids are not its rows: compare every card.
+        ids = hw.get_parent_visible_gpu_ids() if hw._cuda_order_matches_smi() else None
+        if hw._cuda_cards_identical(ids) is True:
+            return None
+    except Exception:  # noqa: BLE001 -- unknown identity ranks once, like mixed cards
+        pass
+    return plan_gpu_ordinal()
 
 
 def _pipeline_components_present(root: Path) -> bool:
@@ -539,6 +575,9 @@ __all__ = [
     "is_edit_only",
     "missing_download_bytes",
     "normalized_pick",
+    "pin_planned_gpu_ordinal",
     "plan_gpu_ordinal",
+    "planned_gpu_ordinal",
     "planners_for",
+    "catalog_gpu_ordinal",
 ]

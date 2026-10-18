@@ -183,6 +183,7 @@ def test_mlx_install_respects_platform_mode_and_pins(
 ):
     # The repo's declared spec, not the installed zoo's narrowing (tested below).
     monkeypatch.setattr(stack, "_mlx_vlm_spec_for_installed_zoo", lambda: stack._MLX_VLM_SPEC)
+    monkeypatch.setattr(stack, "_mlx_lm_spec_for_installed_zoo", lambda: stack._MLX_LM_SPEC)
     calls = _run_to_extras(
         monkeypatch,
         platform = platform,
@@ -292,7 +293,7 @@ def test_mlx_command_preserves_pins_and_interpreter_on_fallback(monkeypatch, ret
     "python_version, macos_major, installable",
     [
         ((3, 9, 6), 15, False),  # macOS ships 3.9; no release in the pinned set has a cp39 wheel
-        ((3, 10, 0), 15, True),
+        ((3, 10, 0), 15, True),  # mlx-lm 0.32 requires Python 3.11; 3.10 resolves 0.31.3
         ((3, 12, 0), 13, False),  # Apple Silicon on Ventura: the pins are macosx_14_0 only
         ((3, 12, 0), 14, True),
         ((3, 12, 0), 26, True),
@@ -304,7 +305,7 @@ def test_mlx_command_preserves_pins_and_interpreter_on_fallback(monkeypatch, ret
 def test_mlx_pin_floor_matches_the_published_wheels(
     monkeypatch, python_version, macos_major, installable
 ):
-    """0.32.3 ships macosx_14_0_arm64 wheels, no sdist, and the pinned set starts at cp310."""
+    """mlx 0.32.4 ships macosx_14_0_arm64 wheels, no sdist, and the pinned set starts at cp310."""
     monkeypatch.setattr(stack.sys, "version_info", python_version)
     monkeypatch.setattr(stack, "_macos_release_major", Mock(return_value = macos_major))
     assert stack._mlx_pins_are_installable() is installable
@@ -313,8 +314,8 @@ def test_mlx_pin_floor_matches_the_published_wheels(
 def test_pin_floor_is_revisited_whenever_the_pins_move():
     """A pin bumped without its floor silently starts failing installs, so tie them here."""
     assert _repair_specs() == {
-        "mlx": "==0.32.3",
-        "mlx-lm": "==0.31.3",
+        "mlx": "==0.32.4",
+        "mlx-lm": ">=0.31.3,<=0.32.2",
         "mlx-vlm": ">=0.4.4,<=0.7.8",
     }
     assert (stack._MLX_MIN_PYTHON, stack._MLX_MIN_MACOS_MAJOR) == ((3, 10), 14)
@@ -376,11 +377,13 @@ def test_mlx_vlm_spec_is_intersected_with_the_installed_zoo(monkeypatch):
         lambda _name: [
             'mlx==0.32.1; sys_platform == "darwin" and platform_machine == "arm64"',
             'mlx-vlm<0.7.0,>=0.4.4; sys_platform == "darwin" and platform_machine == "arm64"',
+            'mlx-lm==0.31.3; sys_platform == "darwin" and platform_machine == "arm64"',
         ],
     )
     spec = stack._mlx_vlm_spec_for_installed_zoo()
     assert spec.startswith(stack._MLX_VLM_SPEC)
-    assert "<0.7.0" in spec
+    assert "<0.7.0" in spec and "0.31.3" not in spec
+    assert stack._mlx_lm_spec_for_installed_zoo() == f"{stack._MLX_LM_SPEC},==0.31.3"
 
 
 def test_mlx_vlm_spec_is_unchanged_without_an_installed_zoo(monkeypatch):
@@ -393,14 +396,36 @@ def test_mlx_vlm_spec_is_unchanged_without_an_installed_zoo(monkeypatch):
     assert stack._mlx_vlm_spec_for_installed_zoo() == stack._MLX_VLM_SPEC
 
 
+def test_an_mlx_lm_outside_the_installed_zoos_range_is_not_current(monkeypatch):
+    monkeypatch.setattr(stack, "_exact_distribution_spec_is_installed", lambda _spec: True)
+    monkeypatch.setattr(stack, "_mlx_closure_unmet", lambda: [])
+    monkeypatch.setattr(stack, "_mlx_vlm_spec_for_installed_zoo", lambda: stack._MLX_VLM_SPEC)
+    monkeypatch.setattr(stack, "_mlx_lm_spec_for_installed_zoo", lambda: stack._MLX_LM_SPEC)
+    monkeypatch.setattr(
+        stack,
+        "_installed_distribution_version",
+        lambda name: "0.32.2" if name == "mlx-lm" else "0.7.8",
+    )
+    assert stack._mlx_stack_is_current() is True
+    monkeypatch.setattr(
+        stack, "_mlx_lm_spec_for_installed_zoo", lambda: f"{stack._MLX_LM_SPEC},==0.31.3"
+    )
+    assert stack._mlx_stack_is_current() is False
+
+
 def test_the_skip_predicate_uses_the_narrowed_range(monkeypatch):
     """0.7.1 already installed beside a zoo declaring <0.7.0 must NOT read as current, or the
     step skips the install that would put mlx-vlm back where the zoo can drive it."""
     monkeypatch.setattr(stack, "_exact_distribution_spec_is_installed", lambda _spec: True)
-    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _name: "0.7.1")
+    monkeypatch.setattr(
+        stack,
+        "_installed_distribution_version",
+        lambda name: "0.32.2" if name == "mlx-lm" else "0.7.1",
+    )
     monkeypatch.setattr(stack, "_mlx_closure_unmet", lambda: [])
 
     monkeypatch.setattr(stack, "_mlx_vlm_spec_for_installed_zoo", lambda: stack._MLX_VLM_SPEC)
+    monkeypatch.setattr(stack, "_mlx_lm_spec_for_installed_zoo", lambda: stack._MLX_LM_SPEC)
     assert stack._mlx_stack_is_current() is True
 
     monkeypatch.setattr(
@@ -417,6 +442,7 @@ def _zoo_spec_sequence(monkeypatch, specs):
         return remaining.pop(0) if len(remaining) > 1 else remaining[0]
 
     monkeypatch.setattr(stack, "_mlx_vlm_spec_for_installed_zoo", spec)
+    monkeypatch.setattr(stack, "_mlx_lm_spec_for_installed_zoo", lambda: stack._MLX_LM_SPEC)
 
 
 def test_the_core_phase_upgrading_the_zoo_re_resolves_mlx(monkeypatch):
@@ -430,7 +456,22 @@ def test_the_core_phase_upgrading_the_zoo_re_resolves_mlx(monkeypatch):
     assert len(calls) == 2
     assert "MLX stack (re-resolved for the new zoo)" in _run_to_extras.steps
     assert narrow in list(calls[0].args[1:])
-    assert stack._MLX_VLM_SPEC in list(calls[1].args[1:])
+    assert {stack._mlx_lm_spec_for_installed_zoo(), stack._MLX_VLM_SPEC} <= set(calls[1].args[1:])
+
+
+def test_a_zoo_moving_only_its_mlx_lm_range_re_resolves_mlx(monkeypatch):
+    _zoo_spec_sequence(monkeypatch, [stack._MLX_VLM_SPEC])
+    narrow = f"{stack._MLX_LM_SPEC},==0.31.3"
+    answers = [narrow, narrow, stack._MLX_LM_SPEC]
+    monkeypatch.setattr(
+        stack,
+        "_mlx_lm_spec_for_installed_zoo",
+        lambda: answers.pop(0) if len(answers) > 1 else answers[0],
+    )
+    calls = _run_to_extras(monkeypatch, platform = "macos_arm", skip_base = False, no_torch = False)
+    assert len(calls) == 2
+    assert narrow in list(calls[0].args[1:])
+    assert stack._MLX_LM_SPEC in list(calls[1].args[1:])
 
 
 def test_an_unchanged_zoo_does_not_re_resolve_mlx(monkeypatch):
@@ -444,7 +485,7 @@ def test_an_unchanged_zoo_does_not_re_resolve_mlx(monkeypatch):
 
 
 def test_mlx_image_engine_pins_leave_the_mlx_stack_alone():
-    assert stack._MLX_PINS == ("mlx==0.32.3", "mlx-metal==0.32.3", "mlx-lm==0.31.3")
+    assert stack._MLX_PINS == ("mlx==0.32.4", "mlx-metal==0.32.4")
     names = {Requirement(spec).name.lower() for spec in stack._MLX_DIFFUSION_PINS}
     names |= {Requirement(spec).name.lower() for spec in stack._MLX_DIFFUSION_DEPS}
     assert names == {"mflux", "piexif", "platformdirs", "toml"}
@@ -469,6 +510,7 @@ def test_mlx_image_engine_installs_no_deps_only_where_the_mlx_stack_does(
     monkeypatch, platform, no_torch
 ):
     monkeypatch.setattr(stack, "_mlx_vlm_spec_for_installed_zoo", lambda: stack._MLX_VLM_SPEC)
+    monkeypatch.setattr(stack, "_mlx_lm_spec_for_installed_zoo", lambda: stack._MLX_LM_SPEC)
     monkeypatch.setattr(stack, "_mlx_diffusion_engine_is_current", lambda: False)
     _run_to_extras(monkeypatch, platform = platform, skip_base = True, no_torch = no_torch)
     calls = _run_to_extras.engine_calls

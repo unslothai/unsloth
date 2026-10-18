@@ -347,11 +347,17 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
         if sysfs_devices:
             if any(device.get("vendor") == "amd" for device in sysfs_devices):
                 # The installers only ship a ROCm wheel for _ROCM_SUPPORTED_GFX, so an older card left on CPU torch on purpose must not read as broken. Attached to every AMD record, not matched one-to-one: setup.sh says the orderings need not agree.
-                _gfx = _linux_amd_gfx_candidates()
-                if _gfx:
-                    for device in sysfs_devices:
-                        if device.get("vendor") == "amd":
-                            device["gfx_candidates"] = _gfx
+                _gfx = _linux_amd_gfx_candidates() or _linux_kfd_gfx1153_candidates()
+                for device in sysfs_devices:
+                    if device.get("vendor") != "amd":
+                        continue
+                    if _gfx:
+                        device["gfx_candidates"] = _gfx
+                    elif re.search(
+                        _LINUX_KRACKAN2_NAME_RE, device.get("name") or "", re.IGNORECASE
+                    ):
+                        # Classified here, once per refresh, not on every health poll.
+                        device["gfx_candidates"] = ["gfx1153"]
             devices.extend(sysfs_devices)
             sources.append("sysfs-drm")
 
@@ -364,6 +370,18 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
         # Which vendors, not just that one exists: the cache carries the previous answer forward per vendor, and only a vendor named here may be carried.
         "unanswered": _unanswered,
     }
+
+
+def _linux_kfd_gfx1153_candidates() -> list[str]:
+    """KFD gfx targets when they include a gfx1153, else []. Without rocminfo or amd-smi this is the only reading that names a Krackan Point 2, which the Linux installers leave on CPU torch on purpose; any other arch keeps the conservative no-candidates answer. Never raises."""
+    try:
+        from utils.hardware.amd import amd_kfd_gpu_gfx_targets
+        targets = amd_kfd_gpu_gfx_targets() or []
+    except Exception as e:
+        logger.debug("KFD gfx target probe failed: %s", e)
+        return []
+    found = sorted({gfx for gfx in targets if gfx})
+    return found if "gfx1153" in found else []
 
 
 def _linux_amd_gfx_candidates() -> list[str]:
@@ -1041,6 +1059,10 @@ _GPU_NAME_GFX_TABLE: "list[tuple[str, str]]" = [
 
 # Only the Windows multi-arch route ships these (#11755, #11815); Linux installers decline them.
 _ROCM_SUPPORTED_GFX_WINDOWS_ONLY = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx1153"})
+
+# Krackan Point 2 (gfx1153) names overlap the table's gfx1152 row; the Linux installers read them
+# first and leave CPU torch on purpose (install_python_stack._LINUX_KRACKAN2_NAME_RE).
+_LINUX_KRACKAN2_NAME_RE = r"820M|Krackan ?(?:Point ?)?2|AI 5 (?:PRO )?330"
 
 
 def _rocm_supported_gfx_here() -> "frozenset[str]":
@@ -2021,6 +2043,136 @@ def _cuda_order_matches_smi() -> bool:
         return False
     logger.debug("Skipping SMI VRAM query: CUDA_DEVICE_ORDER is not PCI_BUS_ID")
     return False
+
+
+def _mask_names_cuda_ordinals(parent_visible_spec: Dict[str, Any]) -> bool:
+    """Whether a numeric CUDA_VISIBLE_DEVICES under an explicit non-PCI CUDA_DEVICE_ORDER names CUDA ordinals rather than nvidia-smi rows, so the SMI rows it filters are other cards and only torch can rank the ones the ids select. Unmasked ids stay SMI rows: apply_gpu_ids pins PCI_BUS_ID for them."""
+    if IS_ROCM or not parent_visible_spec.get("numeric_ids"):
+        return False
+    if parent_visible_spec.get("raw") is None or "CUDA_DEVICE_ORDER" not in os.environ:
+        return False
+    return not _cuda_order_matches_smi()
+
+
+_cuda_card_identities: Dict[int, tuple] = {}
+_cuda_card_identities_gen: Optional[int] = None
+
+
+def _cuda_cards_identical(gpu_ids: Optional[list[int]] = None) -> Optional[bool]:
+    """Whether the NVIDIA cards ``gpu_ids`` (default: every physical card) share one identity per nvidia-smi (name, total memory, compute cap, max SM clock) and none is MIG, out of process. None when unknown. Read once and cached: a card's identity does not change, and a grown card count re-reads."""
+    global _cuda_card_identities, _cuda_card_identities_gen
+    if IS_ROCM:
+        return None
+    from . import gpu_query
+
+    count = get_physical_gpu_count()
+    wanted = list(range(count)) if gpu_ids is None else list(gpu_ids)
+    # Hardware re-detection (a swapped card) bumps the static generation.
+    if (
+        _cuda_card_identities_gen != gpu_query._static_gen
+        or not set(wanted) <= set(_cuda_card_identities)
+        or len(_cuda_card_identities) < count
+    ):
+        gen = gpu_query._static_gen
+        try:
+            from . import nvidia
+            identities = nvidia.get_card_identities()
+        except Exception:
+            return None
+        if not identities:
+            return None
+        _cuda_card_identities, _cuda_card_identities_gen = identities, gen
+    if gpu_ids is None:
+        # Every row nvidia-smi lists, not just the count: a torch-fallback count can miss cards.
+        wanted = sorted(_cuda_card_identities)
+    rows = [_cuda_card_identities.get(gpu_id) for gpu_id in wanted]
+    if not rows or any(row is None for row in rows):
+        return None
+    if len(set(rows)) != 1:
+        return False
+    # A MIG card is seen through a slice whose size the physical row does not show.
+    mig = _nvidia_mig_gpu_indices_or_none()
+    if mig is None:
+        return None
+    return not (set(wanted) & mig)
+
+
+def _nvidia_mig_gpu_indices_or_none() -> Optional[set[int]]:
+    """Physical indices of NVIDIA cards with MIG instances or MIG mode on (an instance-less one has no
+    CUDA device, so its row is no ordinal either), or None when discovery is unknown (a listing failed or
+    came back empty, unlike a confirmed set with no MIG card). Shares nvidia's caches, so a failed
+    listing backs off instead of re-running nvidia-smi per call."""
+    try:
+        from . import nvidia
+
+        instances = nvidia.get_mig_gpu_indices_or_none()
+        if instances is None:
+            return None
+        mode = nvidia.get_mig_mode_gpu_indices_or_none()
+        return None if mode is None else instances | mode
+    except Exception:
+        return None
+
+
+_cuda_ordinal_rows_cache: Dict[tuple, tuple[Optional[list[int]], float]] = {}
+_CUDA_ORDINAL_ROWS_RETRY_S = 300.0
+
+
+def _smi_rows_for_cuda_ordinals(parent_ids: list[int]) -> Optional[Dict[str, Any]]:
+    """nvidia-smi utilization keyed by the mask's ids, read from the rows the CUDA ordinals really are.
+
+    For a numeric mask under a non-PCI CUDA_DEVICE_ORDER, where mask entries are CUDA ordinals and not
+    nvidia-smi rows. The ordinal -> row join is by PCI bus id, found once per environment out of process
+    (no CUDA context here). None when it cannot be established, so the caller keeps the torch path.
+    """
+    from . import gpu_query
+
+    # The static generation moves on hardware re-detection (eGPU, driver change), retiring old mappings.
+    key = (
+        os.environ.get("CUDA_VISIBLE_DEVICES"),
+        os.environ.get("CUDA_DEVICE_ORDER"),
+        gpu_query._static_gen,
+    )
+    hit = _cuda_ordinal_rows_cache.get(key)
+    if hit is None or (hit[0] is None and time.monotonic() - hit[1] >= _CUDA_ORDINAL_ROWS_RETRY_S):
+        try:
+            from . import nvidia
+            rows = nvidia.get_cuda_ordinal_smi_rows()
+        except Exception:
+            rows = None
+        # A failed join is remembered too (briefly): each attempt spawns a driver-API child with a 15 s timeout.
+        _cuda_ordinal_rows_cache.clear()
+        _cuda_ordinal_rows_cache[key] = (rows, time.monotonic())
+    else:
+        rows = hit[0]
+    if rows is None:
+        return None
+    if not rows:  # an integrated card: keep the pool-aware torch telemetry
+        return None
+    if len(rows) != len(parent_ids) or len(set(rows)) != len(rows):
+        return None
+    result = _smi_query(
+        "get_visible_gpu_utilization", sorted(rows), parent_cuda_visible_devices = None
+    )
+    # nvidia-smi rows show a MIG card's whole memory, not its slice: with a MIG card among the rows,
+    # or MIG discovery failing, keep the slice-aware torch telemetry instead.
+    mig = _nvidia_mig_gpu_indices_or_none()
+    if mig is None or mig & set(rows):
+        return None
+    by_row = {d.get("index"): d for d in (result or {}).get("devices", [])}
+    if not all(row in by_row for row in rows):
+        return None
+    return {
+        "mig_corrected": True,
+        "devices": [
+            {
+                "index": parent_ids[ordinal],
+                "vram_total_gb": by_row[row].get("vram_total_gb"),
+                "vram_used_gb": by_row[row].get("vram_used_gb"),
+            }
+            for ordinal, row in enumerate(rows)
+        ],
+    }
 
 
 def _amd_smi_ids_for_hip_ids(hip_ids: Optional[list[int]]) -> Optional[list[int]]:
@@ -6087,8 +6239,34 @@ def auto_select_gpu_ids(
         metadata["selected_gpu_ids"] = parent_ids
         return parent_ids, metadata
 
-    utilization = get_visible_gpu_utilization()
+    smi_by_ordinal = (
+        _smi_rows_for_cuda_ordinals(get_parent_visible_gpu_ids())
+        if _mask_names_cuda_ordinals(parent_visible_spec)
+        else None
+    )
+    if smi_by_ordinal is not None:
+        # nvidia-smi telemetry for the cards the ids select, joined by PCI bus id out of process.
+        utilization = smi_by_ordinal
+    elif _mask_names_cuda_ordinals(parent_visible_spec):
+        # The display keeps the CLI rows; ranking needs the cards the worker will get. Torch already
+        # reports a MIG slice's own memory, and these rows carry mask ids, not the physical rows the
+        # MIG correction keys on, so it must not run on them.
+        utilization = {
+            "mig_corrected": True,
+            "devices": [
+                {
+                    "index": td["index"],
+                    "vram_total_gb": td["total_gb"],
+                    "vram_used_gb": td["used_gb"],
+                }
+                for td in _torch_get_per_device_info(get_parent_visible_gpu_ids())
+            ],
+        }
+    else:
+        utilization = get_visible_gpu_utilization()
     devices = [d for d in utilization.get("devices", []) if d.get("index") not in _uncovered]
+    if not utilization.get("mig_corrected"):
+        devices = _with_mig_instance_memory(devices)
     parent_ids = _covered(get_parent_visible_gpu_ids())
 
     if not devices:
@@ -6245,6 +6423,48 @@ def prepare_gpu_selection(
     return selected_gpu_ids, metadata
 
 
+def _with_mig_instance_memory(devices: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    """Replace a MIG card's whole-card nvidia-smi memory with the slice CUDA exposes
+    for it (NVML), or drop the reading when no slice reading exists so the ranking
+    skips it. Devices on cards without MIG instances are returned unchanged."""
+    if IS_ROCM or not devices or get_device() != DeviceType.CUDA:
+        return devices
+    try:
+        from . import nvidia
+        mig_known = nvidia.get_mig_gpu_indices_or_none()
+    except Exception:
+        return devices
+    indices = {d.get("index") for d in devices}
+    mig = None if mig_known is None else mig_known & indices
+    if mig is not None and not mig:
+        return devices
+    slices: Dict[int, tuple[int, int]] = {}
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        slices = {idx: (free, total) for idx, free, total in LlamaCppBackend._get_gpu_memory_nvml()}
+    except Exception as e:
+        logger.debug("NVML MIG slice probe failed: %s", e)
+    if mig is None:
+        # MIG discovery failed: NVML reads slices and whole cards alike, so its readings
+        # replace the CLI's; without any the devices stand as before MIG support.
+        if not slices:
+            return devices
+        mig = set(slices) & indices
+    out = []
+    for device in devices:
+        idx = device.get("index")
+        if idx in mig:
+            free_mib, total_mib = slices.get(idx, (0, 0))
+            known = total_mib > 0
+            device = {
+                **device,
+                "vram_total_gb": round(total_mib / 1024, 2) if known else None,
+                "vram_used_gb": round(max(0, total_mib - free_mib) / 1024, 2) if known else None,
+            }
+        out.append(device)
+    return out
+
+
 def _nvidia_physical_gpu_row_count() -> Optional[int]:
     # Physical rows only: MIG instances created after startup add indented `nvidia-smi -L` rows, not GPUs.
     try:
@@ -6255,15 +6475,17 @@ def _nvidia_physical_gpu_row_count() -> Optional[int]:
 
 
 def _run_physical_gpu_count_probe() -> None:
-    """Keep a re-read NVIDIA count only if it grew: a failed probe or a lower count keeps the old one, so detection never narrows."""
+    """Keep a re-read NVIDIA count only if it grew: a failed probe or a lower count keeps the old one, so detection never narrows. The first SMI answer replaces a torch fallback count even when lower: torch counts CUDA devices, and R570+ enumerates each MIG slice as one."""
     global _physical_gpu_count, _physical_gpu_count_from_smi, _physical_gpu_count_checked_at
     count = _nvidia_physical_gpu_row_count()
     # Stamped after the probe, so the next expiry also outlives gpu_query's own cache entry for it.
     _physical_gpu_count_checked_at = time.monotonic()
     previous = _physical_gpu_count
-    if count is None or previous is None or count <= previous:
+    if count is None or previous is None:
         return
-    logger.info("Physical GPU count grew from %d to %d; using the new GPUs", previous, count)
+    if count <= previous and (_physical_gpu_count_from_smi or count < 1):
+        return
+    logger.info("Physical GPU count changed from %d to %d (nvidia-smi)", previous, count)
     _physical_gpu_count = count
     _physical_gpu_count_from_smi = True
 
@@ -6296,10 +6518,11 @@ def get_physical_gpu_count() -> int:
         count = None
         try:
             if IS_ROCM:
-                from . import amd as _smi_mod
+                from . import amd
+                count = amd.get_physical_gpu_count()
             else:
-                from . import nvidia as _smi_mod
-            count = _smi_mod.get_physical_gpu_count()
+                # MIG slices are indented `-L` rows under their card, not GPUs to offer.
+                count = _nvidia_physical_gpu_row_count()
         except Exception:
             pass
         if not IS_ROCM:
@@ -6874,6 +7097,14 @@ def _rocr_relative_visibility(value: str) -> Optional[str]:
     return ",".join(str(agents.index(gpu_id)) for gpu_id in wanted)
 
 
+def _unmasked_ids_are_smi_rows() -> bool:
+    """Whether unmasked GPU ids came from nvidia-smi rows (PCI order) rather than the torch fallback, which lists ordinals in CUDA's own order. Out of process, no CUDA context; False on any failure."""
+    try:
+        return _smi_visible_utilization({"numeric_ids": None, "raw": None}) is not None
+    except Exception:
+        return False
+
+
 def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
     if gpu_ids is None:
         return
@@ -6948,6 +7179,17 @@ def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
         if _relative is not None:
             value = _relative
 
+    # No inherited mask: the ids are nvidia-smi rows (PCI order), so pin the order the
+    # way every other Studio child is pinned; an explicit FASTEST_FIRST would hand the
+    # worker another card. An inherited mask keeps its order, the ids being its entries.
+    # Without nvidia-smi the picker listed torch ordinals in the explicit order: keep it.
+    if (
+        not _rocm_build
+        and os.environ.get("CUDA_VISIBLE_DEVICES") is None
+        and os.environ.get("CUDA_DEVICE_ORDER", "PCI_BUS_ID") != "PCI_BUS_ID"
+        and _unmasked_ids_are_smi_rows()
+    ):
+        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ["CUDA_VISIBLE_DEVICES"] = value
     # Wider than the build check: writing HIP on NVIDIA is inert, a missed mirror is not.
     _inherits_rocm_visibility = (
