@@ -145,6 +145,34 @@ def test_the_shells_base_follows_the_router_only_without_a_page_base():
     )
 
 
+def test_paths_resolved_against_the_shells_location_land_on_the_page():
+    # Checked in Chromium, Firefox and WebKit, as this suite has no browser to run the shell in.
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    assert "window.URL = new Proxy(NativeURL, {" in boot
+    assert 'if (base === "null") args = [args[0], new NativeURL(pageUrl).origin];' in boot
+    assert "else if (/^about:srcdoc(?=[?#]|$)/.test(base)) args = [args[0], pageUrl];" in boot
+    assert "return Reflect.construct(target, args, newTarget);" in boot
+    assert boot.index("window.URL = ") < boot.index("const nativeFetch")
+
+
+def test_a_clicked_link_the_page_loads_in_full_is_followed():
+    shell = browser_mod._FRAME_HTML
+    assert 'if (!raw.startsWith("#")) post({ type: "linkClick", url: resolve(raw) });' in shell
+    assert (
+        'if (event.data.type === "linkClick") clicked = { url: event.data.url, at: Date.now() };'
+        in shell
+    )
+    assert "const FOLLOW_CLICK_MS = 3000;" in shell
+    assert (
+        "Date.now() - clicked.at < FOLLOW_CLICK_MS && sameOrigin(clicked.url, event.blockedURI)"
+        in shell
+    )
+    assert shell.index('type: "navigate", url: clicked.url') < shell.index(
+        'type: "scriptNavigation"'
+    )
+
+
 def test_annotate_code_is_sent_only_when_annotating():
     shell, code = browser_mod._FRAME_HTML, browser_mod._ANNOTATE_JS
     # Not in the shell (so not in every page), installed once and only from the shell's own message.
