@@ -351,8 +351,15 @@ export const VoiceEngine: FC = () => {
 
   // Send an utterance: cut whatever is playing, cancel the run it supersedes, and
   // fold it into one coalesced prompt with any other bubbles still unanswered.
-  const commitUtterance = useCallback((text: string) => {
+  const commitUtterance = useCallback((said: string) => {
     const composer = auiRef.current.composer();
+    // Utterances the interrupt model held for after the reply go with this one:
+    // a barge-in cuts playback without its end ever firing, so they were turning
+    // up minutes later as a stale prompt of their own. Repeats collapse.
+    const held = queuedUtteranceRef.current.filter((q) => q !== said);
+    queuedUtteranceRef.current = [];
+    const text = held.length ? [...held, said].join(" ") : said;
+    if (held.length) voiceTrace("engine.foldHeld", { held, text });
     // Barge-in: the instant the user speaks, cut the audio and the in-flight run.
     // This utterance supersedes whatever the model was saying. Cover the tail
     // clip (isPlaying) too, not just an active streaming session (isSpeaking).
@@ -601,7 +608,10 @@ export const VoiceEngine: FC = () => {
         // sentence said over the model's thinking is the user cutting in, and
         // dropping it read as the interrupt not working.
         const words = text.split(/\s+/).filter(Boolean).length;
-        const action = verdict === "ignore" && words > 3 ? "restart" : verdict;
+        // Saying the held thing again is insisting on it, not a second hold.
+        const repeated = queuedUtteranceRef.current.includes(text);
+        const action =
+          (verdict === "ignore" && words > 3) || (verdict !== "restart" && repeated) ? "restart" : verdict;
         voiceTrace("engine.interject", { action, verdict, words, text });
         if (answer?.id) {
           if (action === "ignore" || action === "queue") {
@@ -622,7 +632,9 @@ export const VoiceEngine: FC = () => {
         }
         if (voiceModeRef.current !== "active") return;
         if (action === "ignore" || action === "queue") {
-          if (action === "queue") queuedUtteranceRef.current.push(text);
+          if (action === "queue" && !queuedUtteranceRef.current.includes(text)) {
+            queuedUtteranceRef.current.push(text);
+          }
           composer.setText("");
           // The barge-in held the reply; nothing cut it, so let it carry on. Without
           // this the playback context stayed suspended and the loop looked stuck.
