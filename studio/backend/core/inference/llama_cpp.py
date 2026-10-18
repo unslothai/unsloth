@@ -31581,12 +31581,23 @@ class LlamaCppBackend:
                     # card and not the plan's row 0. The same rule the probe applies
                     # (_cuda_compute_caps). It holds for ONE device too: the plan's VRAM and its
                     # PCIe link rate (_nvidia_link_gib_s) were read off that row.
+                    # Unmasked, a split across every card pins PCI_BUS_ID on the child
+                    # (_pin_visible_gpu_order_for_split), which matches the rows only when they
+                    # ARE PCI indices: the torch fallback's ordinals follow the parent's
+                    # FASTEST_FIRST order instead, so the shares would land on other cards.
                     _cuda_order_unverified = bool(
                         not is_vulkan_backend
                         and not gpu_ids
                         and not self._host_torch_is_rocm()
-                        and os.environ.get("CUDA_VISIBLE_DEVICES") is not None
                         and os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID"
+                        and (
+                            os.environ.get("CUDA_VISIBLE_DEVICES") is not None
+                            or (
+                                gpu_indices is None
+                                and len(getattr(_spill, "device_layer_counts", ()) or ()) > 1
+                                and LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is False
+                            )
+                        )
                     )
                     if _spill is not None and (
                         _cuda_order_unverified

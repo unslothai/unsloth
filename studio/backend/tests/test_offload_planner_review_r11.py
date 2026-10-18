@@ -382,3 +382,97 @@ def test_the_order_clause_is_not_gated_on_a_split():
     src = _load_model_source()
     guard = src[src.index("_cuda_order_unverified = bool(") : src.index("_user_split_in_force")]
     assert re.search(r"_spill is not None\s+and \(\s+_cuda_order_unverified\s+or", guard), guard
+
+
+# ------------------------------------- an unmasked split budgeted on torch ordinals (r23)
+
+
+def _two_card_split_launch(
+    tmp_path,
+    monkeypatch,
+    *,
+    order,
+    ids_are_pci,
+    rocm = False,
+):
+    """Two visible cards, no mask, no pick: a plan-emitted --tensor-split reaches
+    _pin_visible_gpu_order_for_split, which switches the child to PCI_BUS_ID."""
+    from core.inference import llama_cpp as llama_mod
+    from test_llama_cpp_placement import _backend, _launch
+    from test_offload_planner_launch import DENSE
+
+    cls = llama_mod.LlamaCppBackend
+    monkeypatch.setenv("UNSLOTH_SMART_OFFLOAD", "1")
+    if order is None:
+        monkeypatch.delenv("CUDA_DEVICE_ORDER", raising = False)
+    else:
+        monkeypatch.setenv("CUDA_DEVICE_ORDER", order)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setattr(cls, "_host_torch_is_rocm", staticmethod(lambda: rocm))
+    monkeypatch.setattr(cls, "_GPU_IDS_ARE_PCI_INDICES", ids_are_pci)
+    pins = []
+    monkeypatch.setattr(
+        cls,
+        "_pin_visible_gpu_order_for_split",
+        staticmethod(lambda env: pins.append(dict(env)) or None),
+    )
+    big, small = 48 * 1024, 24 * 1024
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, big, big), (1, small, small)])
+
+    def read(_path):
+        for key, value in DENSE.items():
+            setattr(backend, key, value)
+
+    backend._read_gguf_metadata = read
+    backend._get_gguf_size_bytes = lambda _path: 90 * GIB
+    del backend._can_estimate_kv
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "supports_kv_unified": True,
+        "supports_fit_ctx": True,
+        "supports_cache_ram": True,
+    }
+    backend._available_system_memory_mib = lambda: 256 * 1024
+    plan = Plan(
+        changed = True,
+        priced = True,
+        n_ctx = 8192,
+        ot_patterns = ("x",),
+        spilled_blocks = (1,),
+        device_layer_counts = (40, 20),
+    )
+    asked = []
+    backend._planned_tensor_spill = lambda inputs, **_kw: asked.append(inputs) or plan
+    launched = _launch(backend, gguf, speculative_type = "off", n_ctx = 8192, n_parallel = 1)
+    assert asked, "the planner was never consulted"
+    return launched["cmd"], backend, pins
+
+
+@pytest.mark.parametrize(
+    "order, ids_are_pci, rocm, keeps_plan",
+    [
+        # torch ordinals are FASTEST_FIRST indices; the pin re-reads the rows in PCI order.
+        ("FASTEST_FIRST", False, False, False),
+        # A user's own unset order is CUDA's default, FASTEST_FIRST, all the same.
+        (None, False, False, False),
+        # nvidia-smi rows ARE PCI indices, which the pin makes true.
+        ("FASTEST_FIRST", True, False, True),
+        # torch ordinals under PCI_BUS_ID already are PCI indices.
+        ("PCI_BUS_ID", False, False, True),
+        # HIP enumeration does not follow CUDA_DEVICE_ORDER.
+        ("FASTEST_FIRST", False, True, True),
+    ],
+)
+def test_an_unmasked_split_on_torch_ordinals_is_declined_unless_the_order_is_pci(
+    tmp_path, monkeypatch, order, ids_are_pci, rocm, keeps_plan
+):
+    cmd, backend, pins = _two_card_split_launch(
+        tmp_path, monkeypatch, order = order, ids_are_pci = ids_are_pci, rocm = rocm
+    )
+    if keeps_plan:
+        assert "-ot" in cmd and cmd[cmd.index("--fit") + 1] == "off", cmd
+        assert cmd[cmd.index("--tensor-split") + 1] == "40,20", cmd
+        assert len(pins) == 1, "the plan's split pins the child's enumeration"
+    else:
+        assert "-ot" not in cmd and cmd[cmd.index("--fit") + 1] == "on", cmd
+        assert "--tensor-split" not in cmd, cmd
+        assert not backend._spill_plan_flags
