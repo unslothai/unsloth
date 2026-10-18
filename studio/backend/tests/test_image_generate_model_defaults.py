@@ -101,7 +101,8 @@ def test_explicit_values_equal_to_the_schema_defaults_stay_and_skip_the_status_r
     )
     assert _recipe(response) == (9, 0.0)
     assert (backend.calls[0]["steps"], backend.calls[0]["guidance"]) == (9, 0.0)
-    assert backend.status_calls == 0
+    # The one read is FLUX.3 prompt upsampling's family probe (#14137); the defaults add none.
+    assert backend.status_calls == 1
     assert backend.calls[0]["expected_load"] is None
 
 
