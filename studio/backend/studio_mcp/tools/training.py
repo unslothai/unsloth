@@ -212,7 +212,7 @@ async def start_training(
         validated, note = await _checked_trainable(
             validated, current_caller(), config.get("model_name")
         )
-        if validated.is_dataset_audio and not config.get("is_dataset_audio"):
+        if validated.is_dataset_audio:
             config["is_dataset_audio"] = True
     if validate_only:
         return TrainingStarted(

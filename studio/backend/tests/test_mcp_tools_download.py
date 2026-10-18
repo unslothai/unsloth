@@ -262,6 +262,29 @@ def test_image_options_go_into_the_staged_plan():
     assert bodies(studio, plan)[0]["text_encoder_quant"] == "fp8"
 
 
+def test_native_tts_stages_its_audio_plan_with_the_codec_repos():
+    higgs, codec = "bosonai/higgs-audio-v2", "bosonai/higgs-audio-v2-tokenizer"
+    plan = {
+        "entries": [
+            {"repo_id": higgs, "files": ["model.safetensors"], "checkpoint": True},
+            {"repo_id": codec, "files": ["model.pth"]},
+        ]
+    }
+    audio_plan = "/api/inference/audio/download-plan"
+    studio = fake_studio({("POST", audio_plan): plan, ("POST", START): STARTED})
+    ref = start(studio, model = higgs, kind = "tts")
+    assert bodies(studio, audio_plan) == [{"model_path": higgs}]
+    assert [(b["repo_id"], b["scope_id"]) for b in bodies(studio, START)] == [
+        (higgs, "audio"),
+        (codec, "audio"),
+    ]
+    assert ref.id == f"{higgs}::@audio,{codec}::@audio"
+    assert model_downloads.keys_for(make_caller(), "tts", higgs, None) == [
+        (higgs, "@audio"),
+        (codec, "@audio"),
+    ]
+
+
 def test_a_failed_part_stops_the_parts_this_call_started():
     refused = JSONResponse({"detail": "scope_file_mismatch"}, status_code = 409)
     studio = fake_studio(

@@ -27,6 +27,9 @@ STATUS = "/api/hub/download-status"
 PROGRESS = "/api/hub/download-progress"
 CANCEL = "/api/hub/download/cancel"
 SCOPED = "@diffusion"
+AUDIO_SCOPED = "@audio"
+# Native text-to-speech plans add the companion codec repos the load reads; the Audio page stages them the same way.
+AUDIO_PLAN = "/api/inference/audio/download-plan"
 MAX_PARTS = 16
 WAIT_INTERVAL_S = 2.0
 ACTIVE = ("running", "cancelling")
@@ -123,7 +126,12 @@ async def _default_variant(caller: Caller, model: str) -> str:
     return chosen
 
 
-async def _diffusion_parts(
+def _native_audio(kind: str, model: str, variant: Optional[str]) -> bool:
+    # GGUF and audio.cpp speech models download as a GGUF variant instead.
+    return kind in ("tts", "audio") and variant is None and "gguf" not in model.lower()
+
+
+async def _plan_parts(
     caller: Caller,
     kind: str,
     model: str,
@@ -131,16 +139,20 @@ async def _diffusion_parts(
     token: Optional[str],
     knobs: dict[str, str],
 ) -> list[tuple[str, list[str]]]:
-    # The same plan body load_media sends, so the files are the ones the load reads.
+    # The same plan body the load sends, so the files are the ones the load reads.
     body: dict[str, Any] = {"model_path": model}
     if token:
         body["hf_token"] = token
-    if variant or "gguf" in model.lower():
-        entry = await loading._gguf_filename(caller, model, variant)
-        if entry:
-            body["gguf_filename"] = entry["filename"]
-            body["model_kind"] = "gguf"
-    plan = as_dict(await place.post_plan(caller, loading.MEDIA_ROUTES[kind]["plan"], body, knobs))
+    if kind not in loading.MEDIA_ROUTES:
+        route = AUDIO_PLAN
+    else:
+        route = loading.MEDIA_ROUTES[kind]["plan"]
+        if variant or "gguf" in model.lower():
+            entry = await loading._gguf_filename(caller, model, variant)
+            if entry:
+                body["gguf_filename"] = entry["filename"]
+                body["model_kind"] = "gguf"
+    plan = as_dict(await place.post_plan(caller, route, body, knobs))
     if opt_text(plan.get("incompatible_reason")):
         raise tool_error(plan["incompatible_reason"])
     if plan.get("plan_failed"):
@@ -179,13 +191,14 @@ async def start(
         return DownloadRef(model = model, kind = kind, variant = variant, status = "completed")
 
     model, variant = _split(model, variant)
-    if kind in loading.MEDIA_ROUTES:
-        staged = await _diffusion_parts(caller, kind, model, variant, caller.hf_token, knobs or {})
+    if kind in loading.MEDIA_ROUTES or _native_audio(kind, model, variant):
+        scope = SCOPED if kind in loading.MEDIA_ROUTES else AUDIO_SCOPED
+        staged = await _plan_parts(caller, kind, model, variant, caller.hf_token, knobs or {})
         bodies = [
-            {"repo_id": repo, "scope_id": "diffusion", "files": files, "transport_mode": "auto"}
+            {"repo_id": repo, "scope_id": scope[1:], "files": files, "transport_mode": "auto"}
             for repo, files in staged
         ]
-        parts: list[Part] = [(repo, SCOPED) for repo, _files in staged]
+        parts: list[Part] = [(repo, scope) for repo, _files in staged]
     else:
         if variant is None and "gguf" in model.lower():
             variant = await _default_variant(caller, model)
@@ -270,7 +283,7 @@ async def status(caller: Caller, download_id: str) -> JobStatus:
         )
         fraction = number(as_dict(progress).get("progress"))
         percent = round(min(fraction, 1.0) * 100, 1) if fraction is not None else None
-    single = parts[0][1] if len(parts) == 1 and parts[0][1] != SCOPED else None
+    single = parts[0][1] if len(parts) == 1 and not str(parts[0][1]).startswith("@") else None
     ref = DownloadRef(
         id = download_id, model = parts[0][0], variant = single, status = aggregate, error = error
     )
@@ -329,6 +342,10 @@ def keys_for(caller: Caller, kind: str, model: str, variant: Optional[str]) -> l
         model = _split(model, variant)[0]
         remembered = _remembered.get((caller.account_id, kind, model.lower()))
         return list(remembered or [(model, SCOPED)])
+    if _native_audio(kind, model, variant):
+        # The plan's parts, codecs included; without a prefetch, the repo itself.
+        remembered = _remembered.get((caller.account_id, kind, model.lower()))
+        return list(remembered or [(model, None)])
     # A load without a variant reads the repo's default, not the variant download_model last staged.
     return [_split(model, variant)]
 

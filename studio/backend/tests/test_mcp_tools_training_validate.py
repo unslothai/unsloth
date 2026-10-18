@@ -182,7 +182,8 @@ def test_a_ref_model_name_never_comes_back_as_its_path(monkeypatch, answer):
 def test_a_real_start_sets_is_dataset_audio_for_codec_tts(monkeypatch):
     _detect(monkeypatch, ("snac", True))
     started = {"job_id": "job_1", "status": "queued"}
-    config = {**CONFIG, "model_name": "unsloth/orpheus-3b-0.1-ft"}
+    # "false" validates to False, so the raw value can't decide whether to send the flag.
+    config = {**CONFIG, "model_name": "unsloth/orpheus-3b-0.1-ft", "is_dataset_audio": "false"}
     result, studio = run_tool(
         monkeypatch, {("POST", "/api/train/start"): started}, "start_training", {"config": config}
     )
