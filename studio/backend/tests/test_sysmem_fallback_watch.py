@@ -101,16 +101,50 @@ def test_streak_resets_on_a_healthy_tick():
     assert w.observe(running = 1, gen_tok_s = 0.8) is True
 
 
-def test_streak_resets_when_the_engine_goes_idle():
-    """An idle tick is not a slow tick: two slow samples either side of it are not a run."""
+def test_an_empty_bucket_neither_counts_nor_breaks_the_run():
+    """A tick with no generation measured nothing: it is not a slow sample and not a healthy one,
+    so the run of slow measurements either side of it carries on. Only a healthy rate resets."""
     cap = _Capture()
     w = _watch([_PEGGED] * 8, cap)
-    w.observe(running = 1, gen_tok_s = 0.8)
-    w.observe(running = 1, gen_tok_s = 0.8)
-    w.observe(running = 0, gen_tok_s = 0.0)
-    w.observe(running = 1, gen_tok_s = 0.8)
-    w.observe(running = 1, gen_tok_s = 0.8)
-    assert cap.events == []
+    assert w.observe(running = 1, gen_tok_s = 0.8) is False
+    assert w.observe(running = 1, gen_tok_s = 0.8) is False
+    assert w.observe(running = 0, gen_tok_s = 0.0) is False
+    assert w.observe(running = 1, gen_tok_s = None) is False
+    assert w.observe(running = 0, gen_tok_s = 0.8) is True
+
+
+def test_sequential_requests_reach_the_warning():
+    """llama-server adds a request's generation to the rate bucket when its slot is released, and
+    every /metrics read empties the bucket. A lone chat therefore reads 0 while it generates and
+    its rate arrives on the next tick with requests_processing already 0. Three slow requests in a
+    row are the fingerprint; gating on running or resetting on the empty ticks never warned."""
+    cap = _Capture()
+    w = _watch([_PEGGED] * 8, cap)
+    lg = LlamaServerStatsLogger("http://127.0.0.1:0", cap, sysmem_watch = w)
+    lg._interval = 0.001
+    one_request = [
+        {"predicted_tokens_seconds": 0.0, "requests_processing": 1.0},
+        {"predicted_tokens_seconds": 0.0, "requests_processing": 1.0},
+        {"predicted_tokens_seconds": 0.8, "requests_processing": 0.0},
+        {"predicted_tokens_seconds": 0.0, "requests_processing": 0.0},
+    ]
+    snaps = one_request * 4
+    state = {"i": 0}
+
+    def fake_scrape():
+        i = state["i"]
+        state["i"] += 1
+        if i >= len(snaps):
+            lg.stop()
+            return None
+        return snaps[i]
+
+    lg._scrape = fake_scrape
+    lg._run()
+    warned = [i for i, (e, _) in enumerate(cap.events) if e == "cuda_sysmem_fallback_suspected"]
+    assert len(warned) == 1, cap.events
+    # On the third completed request, not before.
+    assert [e for e, _ in cap.events[: warned[0]]].count("engine_stats") == 8
 
 
 def test_unreadable_probe_never_manufactures_the_fingerprint():
@@ -229,6 +263,39 @@ def test_factory_builds_a_watch_on_windows_cuda(monkeypatch):
     assert w is not None
     # 25 GiB/s over an 8 GiB read per token: nothing paging can beat 3.125 tok/s.
     assert w._floor == pytest.approx(25.0 / 8.0)
+
+
+def test_the_floor_reads_only_the_links_of_the_cards_the_sample_watches(monkeypatch):
+    """With no pick (a plan that kept every layer on the cards) the VRAM sample honours the parent
+    mask, and the link probe has to read the same cards: a masked-off card on a gen3 x1 slot set
+    the floor to 0.1 tok/s, so paging at 0.8 tok/s on the gen4 x16 card stayed silent."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    smi = "0, 160, 16303\n1, 20000, 24564\n"
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    monkeypatch.setattr(LlamaCppBackend, "_host_torch_is_rocm", staticmethod(lambda: False))
+    real = LlamaCppBackend._nvidia_smi_free_total_mib
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_nvidia_smi_free_total_mib",
+        staticmethod(lambda gpu_indices = None, **_k: real(gpu_indices, runner = lambda: smi)),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_nvidia_link_query", staticmethod(lambda: "0, 4, 16\n1, 3, 1\n")
+    )
+    w = _backend_stub()._windows_sysmem_fallback_watch(
+        gpu_indices = None,
+        model_bytes = 8 * 1024**3,
+        is_vulkan_backend = False,
+        fully_gpu_offloaded = True,
+    )
+    gen4_x16 = 16 * 1.969 * 0.85 * 1e9 / 1024**3
+    assert w._floor == pytest.approx(gen4_x16 / 8.0)
+    assert w._probe() == [(0, 160, 16303)]
+    assert w.observe(running = 1, gen_tok_s = 0.8) is False  # first of three, but counted
+    assert w._streak == 1
 
 
 def test_nvidia_smi_probe_gives_no_sample_when_the_mask_is_in_cuda_ordinals(monkeypatch):

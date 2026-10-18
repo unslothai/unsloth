@@ -14192,18 +14192,23 @@ class LlamaCppBackend:
             return None
         if int(model_bytes or 0) <= 0:
             return None
-        if not self._nvidia_smi_free_total_mib(gpu_indices):
+        rows = self._nvidia_smi_free_total_mib(gpu_indices)
+        if not rows:
             return None
+        # The cards that sample answered for, already through the visibility mask: the link probe
+        # reads every card nvidia-smi lists, so passing None there lets a masked-off card on a
+        # slower slot set the floor, as the planner's own probe (_link_indices) does not.
+        watched = [idx for idx, _free, _total in rows]
         from core.inference.offload_cost_model import PREFILL_STREAM_GIB_S
 
-        link_gib_s = self._nvidia_link_gib_s(gpu_indices) or PREFILL_STREAM_GIB_S
+        link_gib_s = self._nvidia_link_gib_s(watched) or PREFILL_STREAM_GIB_S
         floor_tok_s = float(link_gib_s) / (int(model_bytes) / float(1024**3))
         if not (floor_tok_s > 0.0):
             return None
         from core.inference.llama_stats import SysmemFallbackWatch
 
         return SysmemFallbackWatch(
-            lambda: LlamaCppBackend._nvidia_smi_free_total_mib(gpu_indices),
+            lambda: LlamaCppBackend._nvidia_smi_free_total_mib(watched),
             floor_tok_s,
             logger,
         )

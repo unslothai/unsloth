@@ -198,7 +198,7 @@ def test_the_paging_watch_stands_down_on_a_rocm_host(monkeypatch):
     monkeypatch.setattr(
         LlamaCppBackend,
         "_nvidia_smi_free_total_mib",
-        staticmethod(lambda gpu_indices = None: sampled.append(gpu_indices) or (1000, 24000)),
+        staticmethod(lambda gpu_indices = None: sampled.append(gpu_indices) or [(0, 1000, 24000)]),
     )
     monkeypatch.setattr(LlamaCppBackend, "_nvidia_link_gib_s", staticmethod(lambda *a, **k: 25.0))
     b = LlamaCppBackend()

@@ -53,7 +53,7 @@ class SysmemFallbackWatch:
         self._floor = float(floor_gen_tok_s)
         self._log = logger
         self._free_fraction_max = float(free_fraction_max)
-        # One slow tick is a cold prompt or a scrape boundary; the fingerprint is sustained.
+        # One slow measurement is a cold prompt or a scrape boundary; the fingerprint is sustained.
         self._consecutive = max(1, int(consecutive))
         self._streak = 0
         self._reported = False
@@ -62,8 +62,12 @@ class SysmemFallbackWatch:
         """Feed one /metrics tick. True on the tick the warning was emitted, else False."""
         if self._reported:
             return False
-        if not running or not gen_tok_s or float(gen_tok_s) <= 0.0:
-            self._streak = 0
+        # An empty bucket is no measurement, so it neither counts nor breaks the run. llama-server
+        # adds a request's generation to the bucket when its slot is released and every /metrics
+        # read empties it, so a lone chat reads 0 for the whole generation and its rate arrives on
+        # the next tick, with running already 0. Gating on running, or resetting here, meant
+        # sequential requests never reached the VRAM probe.
+        if not gen_tok_s or float(gen_tok_s) <= 0.0:
             return False
         if float(gen_tok_s) > self._floor:
             self._streak = 0
