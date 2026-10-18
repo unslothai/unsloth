@@ -1023,3 +1023,40 @@ def test_gguf_hub_export_carries_a_current_reap_report_only(tmp_path, monkeypatc
     # The other file's report is never touched, and a stale remote one for this file is deleted.
     assert Path(output_path, "older.Q8_0.reap_report.json").is_file()
     assert seen["delete_patterns"] == ["model.Q4_K_M.reap_report.json"]
+
+
+def test_a_packaged_eagle3_drafter_gguf_gets_no_reap_report(tmp_path, monkeypatch):
+    # The drafter is converted on its own, not pruned: only the model's GGUFs carry a report.
+    _install_export_backend_stubs(monkeypatch)
+    _real_reap_module(monkeypatch)
+    export_module = _load_module(
+        "test_export_gguf_hub_upload_reap_drafter", "core/export/export.py", monkeypatch
+    )
+    calls: list[str] = []
+    seen: dict = {}
+
+    class Model:
+        _unsloth_reap_report = {"model.layers.0.mlp": [0, 2]}
+
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            output = Path(f"{model_save_path}_gguf")
+            output.mkdir(parents = True, exist_ok = True)
+            (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
+
+    _patch_hub(monkeypatch, export_module, calls, seen)
+    backend = _export_backend(export_module, Model)
+    backend._reap_key = (0.5, 512, None)
+
+    def package(merged_dir, gguf_dir, ggufs):
+        drafter = Path(gguf_dir) / "drafter-eagle3.F16.gguf"
+        drafter.write_bytes(b"GGUF")
+        (Path(gguf_dir) / "drafter.json").write_text("{}")
+        return [str(drafter), str(Path(gguf_dir) / "drafter.json")]
+
+    backend._package_drafter_gguf = package
+    success, message, output_path = _push_gguf(backend, str(tmp_path / "export"))
+    assert success is True, message
+    assert Path(output_path, "model.Q4_K_M.reap_report.json").is_file()
+    assert not Path(output_path, "drafter-eagle3.F16.reap_report.json").exists()
+    assert "drafter-eagle3.F16.gguf" in seen["uploaded"]
+    assert "drafter-eagle3.F16.reap_report.json" not in seen["uploaded"]

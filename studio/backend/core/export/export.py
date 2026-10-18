@@ -1951,7 +1951,12 @@ class ExportBackend:
                 self._write_export_metadata(abs_save_dir)
                 output_path = str(Path(abs_save_dir).resolve())
                 # Before the upload below, which allow-lists each file's report when there is one.
-                gguf_reports = self._sync_gguf_reap_reports(output_path, exported_ggufs)
+                # The model's own GGUFs only: an EAGLE-3 drafter is converted separately, not pruned.
+                drafter_names = {os.path.basename(f) for f in drafter_gguf_files}
+                gguf_reports = self._sync_gguf_reap_reports(
+                    output_path,
+                    [f for f in exported_ggufs if os.path.basename(f) not in drafter_names],
+                )
 
                 if npu_q4nx:
                     source = q4nx.source_gguf(exported_ggufs, quant_methods)

@@ -1040,3 +1040,17 @@ def test_probe_hides_reap_for_a_full_checkpoint_carrying_a_trained_mtp_head(
         (folder / "eagle3").mkdir()
         (folder / "eagle3" / "config.json").write_text("{}")
     assert (reap_mod.moe_export_info(str(folder)) is not None) is offered
+
+
+@pytest.mark.parametrize("with_head", [True, False])
+def test_probe_hides_reap_for_a_lora_folder_with_a_trained_mtp_head(tmp_path, with_head):
+    # Unsloth's adapter loader re-attaches mtp_head.safetensors, and REAP refuses an attached head.
+    base = tmp_path / "moe_base"
+    base.mkdir()
+    (base / "config.json").write_text(json.dumps({"num_experts": 8, "num_experts_per_tok": 2}))
+    lora = tmp_path / "lora"
+    lora.mkdir()
+    (lora / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": str(base)}))
+    if with_head:
+        (lora / "mtp_head.safetensors").write_bytes(b"head")
+    assert (reap_mod.moe_export_info(str(lora)) is None) is with_head
