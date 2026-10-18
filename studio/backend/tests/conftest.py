@@ -120,6 +120,19 @@ _skills_home_counter = itertools.count()
 
 
 @pytest.fixture(autouse = True)
+def _zoo_without_gdn_decode_kernel(monkeypatch):
+    # Whether Qwen3.5 / Qwen3-Next ask for causal-conv1d depends on the installed unsloth_zoo; pin the
+    # older-zoo answer so results do not follow the host. Tests of the newer zoo patch it back.
+    ssm_runtime = sys.modules.get("utils.ssm_runtime")
+    if ssm_runtime is None:
+        try:
+            from utils import ssm_runtime
+        except Exception:
+            return
+    monkeypatch.setattr(ssm_runtime, "_zoo_gdn_decode_kernel_present", lambda: False, raising = False)
+
+
+@pytest.fixture(autouse = True)
 def _no_real_mxc_drive_aliases(monkeypatch):
     # A Windows test host would otherwise map real drive letters; test_mxc_drive_alias.py and the native
     # MXC tests opt back in.

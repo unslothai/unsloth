@@ -7,7 +7,10 @@ the inference-path counterpart of the training worker's install.
 
 from __future__ import annotations
 
+import functools
 import importlib
+import importlib.machinery
+import importlib.metadata
 import importlib.util
 import os
 import shutil
@@ -68,12 +71,6 @@ SSM_MODEL_TYPES = REQUIRED_SSM_MODEL_TYPES | frozenset(
     {"bamba", "jamba", "zamba", "zamba2", "mamba", "mamba2", "falcon_mamba"}
 )
 CAUSAL_CONV1D_MODEL_SUBSTRINGS = (
-    "qwen3.5",
-    "qwen3_5",
-    "qwen3.6",
-    "qwen3_6",
-    "qwen3-next",
-    "qwen3_next",
     "nemotron_h",
     "nemotron-h",
     "nemotron-3-nano",
@@ -87,7 +84,83 @@ CAUSAL_CONV1D_MODEL_SUBSTRINGS = (
     "zamba",
     "bamba",
 )
+# GatedDeltaNet models unsloth-zoo runs without causal_conv1d: its Triton causal conv for prefill /
+# training and Triton causal_conv1d_update for cached decode (temporary_patches/gdn_causal_conv1d.py,
+# `_GDN_MODELING`), plus the vendored FLA kernels. Qwen3.6 reuses the qwen3_5 model types. A usable
+# causal_conv1d still wins inside zoo; this only stops Studio from downloading it. Zoo's kill switch,
+# a zoo without the decode kernel (decode was slower on a T4 without it), ROCm, macOS or no Triton
+# bring the request back.
+ZOO_GDN_MODEL_TYPES = frozenset({"qwen3_5", "qwen3_5_moe", "qwen3_next"})
+ZOO_GDN_MODEL_SUBSTRINGS = (
+    "qwen3.5",
+    "qwen3_5",
+    "qwen3.6",
+    "qwen3_6",
+    "qwen3-next",
+    "qwen3_next",
+)
+ZOO_TRITON_CAUSAL_CONV1D_KILL_SWITCH = "UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D"
+# Present in the zoo source from the release that added the decode kernel.
+_ZOO_GDN_DECODE_KERNEL_MARKER = "def triton_causal_conv1d_update("
 _TRANSFORMERS_CAUSAL_CONV1D_MODEL_TYPE_CACHE: dict[tuple[str, str], bool | None] = {}
+
+
+def zoo_triton_causal_conv1d_enabled() -> bool:
+    return os.environ.get(ZOO_TRITON_CAUSAL_CONV1D_KILL_SWITCH, "0") != "1"
+
+
+@functools.lru_cache(maxsize = 1)
+def _zoo_triton_platform_usable() -> bool:
+    """Whether zoo's Triton conv can engage here: a CUDA torch (not ROCm) with Triton importable.
+    macOS, ROCm and a Windows install without triton-windows keep the prebuilt causal-conv1d.
+    Read from torch's distribution version, so no model load pays for importing torch: ROCm and
+    CPU builds carry `+rocm` / `+cpu`, a Windows CUDA build `+cu`, and a Linux PyPI torch with no
+    local version is the CUDA build."""
+    if sys.platform == "darwin" or importlib.util.find_spec("triton") is None:
+        return False
+    torch = sys.modules.get("torch")
+    if torch is not None:
+        version = getattr(torch, "version", None)
+        return bool(getattr(version, "cuda", None)) and not getattr(version, "hip", None)
+    try:
+        local = importlib.metadata.version("torch").partition("+")[2].lower()
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    if local.startswith(("rocm", "cpu")):
+        return False
+    return local.startswith("cu") or (not local and sys.platform.startswith("linux"))
+
+
+@functools.lru_cache(maxsize = 1)
+def _zoo_gdn_decode_kernel_present() -> bool:
+    """Whether the installed unsloth_zoo ships the Triton decode update. Read from its source on
+    sys.path, so nothing is imported and an import-guard stub in sys.modules cannot answer."""
+    try:
+        spec = importlib.machinery.PathFinder.find_spec("unsloth_zoo")
+    except (ImportError, ValueError):
+        return False
+    for location in (spec.submodule_search_locations or ()) if spec is not None else ():
+        source = Path(location) / "temporary_patches" / "gdn_causal_conv1d.py"
+        try:
+            if _ZOO_GDN_DECODE_KERNEL_MARKER in source.read_text(encoding = "utf-8", errors = "ignore"):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def zoo_triton_causal_conv1d_usable() -> bool:
+    """zoo runs Qwen3.5 / 3.6 / Qwen3-Next prefill, training and decode without causal_conv1d here."""
+    return (
+        zoo_triton_causal_conv1d_enabled()
+        and _zoo_triton_platform_usable()
+        and _zoo_gdn_decode_kernel_present()
+    )
+
+
+def _is_zoo_gdn_model_type(model_type: str) -> bool:
+    """The model type or one of its `_text` / `_vision` sub-configs belongs to a zoo-covered model."""
+    return _base_model_type(model_type) in ZOO_GDN_MODEL_TYPES
 
 
 class SsmKernels(NamedTuple):
@@ -132,9 +205,14 @@ def model_requires_mamba_ssm(model_name: str) -> bool:
 
 
 def model_wants_causal_conv1d(model_name: str) -> bool:
-    """Whether *model_name* needs ``causal_conv1d`` (the SSM set plus linear-attention hybrids like Qwen3.5 / 3.6 / Qwen3-Next / LFM2 whose modeling files lazy-import it)."""
+    """Whether *model_name* needs ``causal_conv1d`` (the SSM set plus linear-attention hybrids like LFM2 whose modeling files lazy-import it; Qwen3.5 / 3.6 / Qwen3-Next only where zoo's Triton conv cannot run)."""
     name = (model_name or "").lower()
-    return any(sub in name for sub in CAUSAL_CONV1D_MODEL_SUBSTRINGS)
+    if any(sub in name for sub in CAUSAL_CONV1D_MODEL_SUBSTRINGS):
+        return True
+    return (
+        any(sub in name for sub in ZOO_GDN_MODEL_SUBSTRINGS)
+        and not zoo_triton_causal_conv1d_usable()
+    )
 
 
 def _normalized_model_identifier(value: str) -> str:
@@ -414,20 +492,23 @@ def model_config_wants_causal_conv1d(model_config: dict) -> bool | None:
     model_types, architectures = _config_identifiers(model_config)
     if model_config_is_ssm(model_config):
         return True
+    # Before the source scan: their modeling files name causal_conv1d, which zoo covers.
+    if model_types and all(_is_zoo_gdn_model_type(model_type) for model_type in model_types):
+        return not zoo_triton_causal_conv1d_usable()
     source_requirements = {
         _transformers_model_type_uses_causal_conv1d(model_type) for model_type in model_types
     }
     if True in source_requirements:
         return True
-    config_identifiers = model_types | architectures
-    normalized_needles = {
-        _normalized_model_identifier(value) for value in CAUSAL_CONV1D_MODEL_SUBSTRINGS
-    }
-    if any(
-        needle in _normalized_model_identifier(identifier)
-        for identifier in config_identifiers
-        for needle in normalized_needles
-    ):
+    normalized = {_normalized_model_identifier(i) for i in model_types | architectures}
+
+    def _matches(substrings: tuple[str, ...]) -> bool:
+        needles = {_normalized_model_identifier(value) for value in substrings}
+        return any(needle in identifier for identifier in normalized for needle in needles)
+
+    if _matches(CAUSAL_CONV1D_MODEL_SUBSTRINGS):
+        return True
+    if _matches(ZOO_GDN_MODEL_SUBSTRINGS) and not zoo_triton_causal_conv1d_usable():
         return True
     if False in source_requirements:
         return False

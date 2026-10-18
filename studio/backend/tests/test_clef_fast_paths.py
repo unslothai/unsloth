@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Clef (a Qwen3.5 backbone) installs the prebuilt causal-conv1d and its availability hook, whose
-setup also applies the FLA TileLang guard."""
+setup also applies the FLA TileLang guard, unless unsloth_zoo's Triton conv covers it."""
 
 import sys
 from pathlib import Path
@@ -13,6 +13,7 @@ if str(_BACKEND) not in sys.path:
 
 from core.systemone import clef_runtime  # noqa: E402
 from core.training import worker  # noqa: E402
+from utils import ssm_runtime  # noqa: E402
 
 
 def test_clef_installs_causal_conv1d_and_its_hooks(monkeypatch):
@@ -37,3 +38,15 @@ def test_the_fast_path_hooks_apply_the_tilelang_guard(monkeypatch):
     monkeypatch.setenv(worker._FAST_PATH_HOOKS_SKIP_ENV, "1")
     worker._install_fast_path_hooks(event_queue = [], model_name = "/models/clef")
     assert guarded == [True]
+
+
+def test_clef_installs_nothing_when_zoo_covers_prefill_and_decode(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(ssm_runtime, "zoo_triton_causal_conv1d_usable", lambda: True)
+    monkeypatch.setattr(worker, "_guard_fla_tilelang", lambda: calls.append("guard"))
+    monkeypatch.setattr(
+        worker, "_ensure_causal_conv1d_fast_path", lambda *a, **k: calls.append("install")
+    )
+    monkeypatch.setattr(worker, "_install_fast_path_hooks", lambda *a, **k: calls.append("hooks"))
+    clef_runtime._fast_paths("/models/clef")
+    assert calls == ["guard"]
