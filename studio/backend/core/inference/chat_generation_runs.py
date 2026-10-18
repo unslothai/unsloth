@@ -28,8 +28,8 @@ from storage import chat_generation_runs_db as db
 logger = get_logger(__name__)
 # Followers only see appended chunks, so this is the chat's text frame rate: at most one commit per display frame.
 _EVENT_FLUSH_SECONDS = 1 / 60
-# Events read while one commit is still running. Past this the producer stops reading until the commit lands, so a
-# wedged database cannot buffer an entire generation in memory.
+# Past this many events read behind a running commit, reading stops until it lands (a wedged database must not
+# buffer a whole generation).
 _MAX_PENDING_EVENTS = 4096
 _SHUTDOWN_GRACE_SECONDS = 10.0
 # Second budget, after task.cancel(). Shorter than the grace period: by this point the run is already being abandoned,
@@ -714,14 +714,11 @@ class ChatGenerationSupervisor:
             activity.reserve()
         pending: list[tuple[str, dict[str, Any], int]] = []
         iterator: AsyncIterator[Any] | None = None
-        # The batch the in-flight commit is writing. The stream keeps being read while it runs: the GGUF tool loop
-        # only advances as fast as this producer pulls, so awaiting each commit inline held tool calls and the next
-        # turn back behind the database, with the GPU idle.
+        # Never await a commit inline: the GGUF tool loop only advances as fast as this producer pulls.
         writing: list[tuple[str, dict[str, Any], int]] = []
         write_task: asyncio.Task | None = None
         held_cancel: asyncio.CancelledError | None = None
-        # When the last commit STARTED, so a commit slower than a frame is followed at once by one carrying everything
-        # read meanwhile, instead of every later chunk getting a transaction of its own.
+        # When the last commit STARTED: a commit slower than a frame must not leave each later chunk its own commit.
         last_flush = -math.inf
         finish_reason: str | None = None
         error: str | None = None
@@ -740,10 +737,8 @@ class ChatGenerationSupervisor:
             )
 
         async def settle_write() -> BaseException | None:
-            """Wait out the in-flight commit, returning its failure. Never cancels it: the thread runs on regardless,
-            and finish_run must not overtake an append, so a cancel arriving meanwhile is held in held_cancel and
-            raised once the run is settled. A failed batch goes back in front of pending, as an inline append that
-            raised used to leave it."""
+            """Wait out the in-flight commit and return its failure; a failed batch goes back in front of pending.
+            Never cancelled: finish_run must not overtake the thread, so a cancel is held until the run settles."""
             nonlocal writing, pending, write_task, held_cancel
             if write_task is None:
                 return None
