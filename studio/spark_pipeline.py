@@ -1692,12 +1692,20 @@ def check_fast_path(
     return message
 
 
+def _positive_int(value: str) -> int:
+    # Checked by argparse on both ranks, before either joins the process group or loads a model.
+    n = int(value)
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1, got {n}")
+    return n
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog = "spark_pipeline", description = "Layer-split finetuning across DGX Sparks."
     )
     p.add_argument("--model", required = True)
-    p.add_argument("--steps", type = int, default = 20)
+    p.add_argument("--steps", type = _positive_int, default = 20)
     p.add_argument("--batch", type = int, default = 8, help = "global batch per step")
     p.add_argument("--microbatches", type = int, default = 4)
     p.add_argument("--seq", type = int, default = 512)

@@ -189,3 +189,64 @@ def test_the_pipeline_expands_a_tilde_save(pipeline) -> None:
     source = (REPO / "studio" / "spark_pipeline.py").read_text(encoding = "utf-8")
     main = source.split("\ndef main(")[1].split("\ndef ")[0]
     assert "args.save = osp.expanduser(args.save)" in main
+
+
+def test_a_nonpositive_step_count_is_refused_before_any_setup(pipeline) -> None:
+    parser = pipeline.build_parser()
+    for bad in ("0", "-3"):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--model", "m", "--steps", bad])
+    assert parser.parse_args(["--model", "m", "--steps", "1"]).steps == 1
+
+
+def test_the_venv_and_its_runtime_are_mirrored_and_caches_stay_additive(
+    cluster, monkeypatch, tmp_path
+) -> None:
+    dirs = {}
+    for label in (cluster._VENV_LABEL, cluster._PYTHON_RUNTIME_LABEL, "HF cache"):
+        d = tmp_path / label.replace(" ", "_")
+        d.mkdir()
+        dirs[label] = str(d)
+    calls = []
+
+    def fake_run(cmd, *a, **k):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, stdout = "", stderr = "")
+
+    monkeypatch.setattr(cluster.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(cluster, "provision_paths", lambda: [(p, l) for l, p in dirs.items()])
+    monkeypatch.setattr(cluster, "_ssh_user", lambda: "me")
+    monkeypatch.setattr(
+        cluster, "peer_gpu_busy", lambda ip: {"busy": False, "reason": "", "processes": []}
+    )
+    monkeypatch.setattr(cluster, "_relocate_peer_venv", lambda *a: "")
+    monkeypatch.setattr(cluster.subprocess, "run", fake_run)
+
+    def deleting(force):
+        calls.clear()
+        cluster.provision_peer("192.0.2.7", no_fast = True, force = force)
+        return {
+            label: "--delete" in next(c for c in calls if c[0] == "rsync" and c[-2] == p + "/")
+            for label, p in dirs.items()
+        }
+
+    assert deleting(force = False) == {
+        cluster._VENV_LABEL: True,
+        cluster._PYTHON_RUNTIME_LABEL: True,
+        "HF cache": False,
+    }
+    # --force skipped the idle check, so nothing is deleted unless asked for.
+    assert not any(deleting(force = True).values())
+
+
+def test_switched_setup_labels_each_block_with_its_own_node(cluster, capsys) -> None:
+    def plan(octet):
+        return [
+            {"netdev": "enp1", "address": f"192.168.100.{octet}", "prefix": "24", "mtu": "9000"}
+        ]
+
+    # Rerun from node 1: the peer block is node 0, the extra one node 2.
+    cluster._print_manual_steps(plan(13), plan(12), extra_plans = [plan(14)], node_indices = [0, 2])
+    out = capsys.readouterr().out
+    assert out.index("Spark node 0") < out.index("192.168.100.12") < out.index("Spark node 2")
+    assert out.index("Spark node 2") < out.index("192.168.100.14")

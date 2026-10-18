@@ -1347,7 +1347,11 @@ def _print_manual_steps(
     peer_plan: List[Dict[str, str]],
     *,
     extra_plans: Optional[List[List[Dict[str, str]]]] = None,
+    node_indices: Optional[List[int]] = None,
 ) -> None:
+    """`node_indices`: the node number of `peer_plan` then each of `extra_plans`, so a rerun from
+    node 1 labels node 0's block as node 0 rather than renumbering by position."""
+
     def emit(where: str, entries: List[Dict[str, str]]) -> None:
         print(f"\n  Run these on {where}:")
         print("    sudo tee /etc/netplan/40-unsloth-cx7.yaml >/dev/null <<'EOF'")
@@ -1359,7 +1363,8 @@ def _print_manual_steps(
 
     emit("THIS Spark", plan)
     others = [peer_plan] + list(extra_plans or [])
-    for index, entries in enumerate(others, start = 1):
+    indices = list(node_indices) if node_indices else list(range(1, len(others) + 1))
+    for index, entries in zip(indices, others):
         label = "the PEER Spark" if len(others) == 1 else f"Spark node {index}"
         emit(label, entries)
 
@@ -1891,7 +1896,7 @@ def provision_paths() -> Tuple[Tuple[str, str], ...]:
     # The llama.cpp bundle is NOT inside the venv (see llama_bundle_dir): skip it and the peer keeps
     # an older bundle, which llama-server rejects at load as a version mismatch.
     return (
-        (str(_studio_root() / "unsloth_studio"), "Unsloth venv"),
+        (str(_studio_root() / "unsloth_studio"), _VENV_LABEL),
         (str(llama_bundle_dir()), "llama.cpp prebuilt"),
         ("~/.cache/flashinfer", "FlashInfer JIT cache"),
         ("~/.cache/vllm/flashinfer_autotune_cache", "vLLM FlashInfer autotune cache"),
@@ -1900,6 +1905,7 @@ def provision_paths() -> Tuple[Tuple[str, str], ...]:
 
 
 _PYTHON_RUNTIME_LABEL = "Python runtime"
+_VENV_LABEL = "Unsloth venv"
 
 
 def _python_runtime_paths() -> Tuple[Tuple[str, str], ...]:
@@ -2645,7 +2651,10 @@ def provision_peer(
                 local + "/",
                 f"{user}@{peer_ip}:{remote}/",
             ]
-            if delete:
+            # The venv and its interpreter are mirrored exactly once the idle check passed: a
+            # package removed here would otherwise linger there (two dist-info for one package,
+            # stale modules), and the two ranks could import different code. Caches stay additive.
+            if delete or (not force and label in (_VENV_LABEL, _PYTHON_RUNTIME_LABEL)):
                 cmd.insert(2, "--delete")
             if dry_run:
                 cmd.insert(1, "--dry-run")
@@ -2656,7 +2665,7 @@ def provision_peer(
                     # A venv that landed at a different absolute path carries the first Spark's
                     # `VIRTUAL_ENV` and console-script shebangs, so `torchrun` there runs -- or
                     # fails to run -- out of a path that does not exist on the peer.
-                    if not dry_run and label == "Unsloth venv":
+                    if not dry_run and label == _VENV_LABEL:
                         error = _relocate_peer_venv(peer_ip, user, local, remote)
                         if error:
                             results["failed"].append((f"{label} (relocation)", error))
@@ -4080,10 +4089,9 @@ def _cmd_setup(
         return 1
     plan = report["plan"]
     peer_plan = rail_plan(rails, node_index = peer_index, n_nodes = n_nodes, switched = switched)
+    extra_indices = [i for i in range(n_nodes) if i not in (local, peer_index)]
     extra_plans = [
-        rail_plan(rails, node_index = i, n_nodes = n_nodes, switched = switched)
-        for i in range(n_nodes)
-        if i not in (local, peer_index)
+        rail_plan(rails, node_index = i, n_nodes = n_nodes, switched = switched) for i in extra_indices
     ]
     for note in report["notes"]:
         print(f"  NOTE: {note}")
@@ -4095,7 +4103,9 @@ def _cmd_setup(
             f"  {entry['ib_device']:<14} {entry['netdev']:<16} -> {entry['address']}/24 mtu {entry['mtu']}"
         )
 
-    _print_manual_steps(plan, peer_plan, extra_plans = extra_plans)
+    _print_manual_steps(
+        plan, peer_plan, extra_plans = extra_plans, node_indices = [peer_index] + extra_indices
+    )
     print("\n  NOTE: " + HOTPLUG_NOTE)
 
     print("\n  Then verify with:")
