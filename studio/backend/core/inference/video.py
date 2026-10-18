@@ -307,18 +307,50 @@ def resolve_video_model_kind(gguf_filename: Optional[str], model_kind: Optional[
 
 
 def video_te_quant_request(
-    fam: Any, text_encoder_quant: Optional[str]
+    fam: Any,
+    text_encoder_quant: Optional[str],
+    *,
+    base: Optional[str] = None,
+    speed_mode: Optional[str] = None,
 ) -> tuple[Optional[str], bool]:
     """``(request, auto_selected)``: an unset / "auto" encoder request on a family with ``te_quant_auto`` becomes that
     scheme; anything else comes back as given, raw, because MiniMax-H3 and LTX-2.5 read the raw tri-state themselves.
 
     ``auto_selected`` keeps the pick from being treated as a request the caller made: nobody asked for it, so a host
-    that cannot run it (fp8 below cc 8.9, a hosted file that is not there) gets the dense encoder, never a refusal."""
+    that cannot run it (fp8 below cc 8.9, a hosted file that is not there) gets the dense encoder, never a refusal.
+
+    Two limits on the automatic pick, never on an explicit scheme: Speed="off" is bit-exact, so it keeps the released
+    encoder (LTX-2.5's raw unset included, which would otherwise take int8); and only an exactly identified official
+    ``base`` takes the hosted file, so a custom pack that merely shares the folder name keeps its own weights."""
+    unset = text_encoder_quant is None or str(text_encoder_quant).strip().lower() in ("", "auto")
     auto_scheme = getattr(fam, "te_quant_auto", None)
+    speed_off = speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
+    if unset and speed_off and (auto_scheme or getattr(fam, "name", None) == "ltx-2.5"):
+        return "none", False
     if not auto_scheme:
         return text_encoder_quant, False
     mode, auto = resolve_te_quant_request(text_encoder_quant, auto_scheme)
-    return (mode, True) if auto else (text_encoder_quant, False)
+    if not auto:
+        return text_encoder_quant, False
+    if base is not None and not _te_base_is_official(fam, base):
+        return None, False
+    return mode, True
+
+
+def _te_base_is_official(fam: Any, base: str) -> bool:
+    """The load's base is the family's registered base (or a verified equivalent), by exact id after mirror and HF
+    cache canonicalization: no final-folder-name match."""
+    from .diffusion_families import canonical_base
+    from .diffusion_te_prequant import _TE_EQUIVALENT_BASES
+    from .model_ids import hf_cache_repo_id
+
+    registered = canonical_base(str(getattr(fam, "base_repo", "") or "")).lower()
+    loading = canonical_base(hf_cache_repo_id(str(base)) or str(base)).lower()
+    if not registered or not loading:
+        return False
+    return loading == registered or any(
+        loading in group and registered in group for group in _TE_EQUIVALENT_BASES
+    )
 
 
 def assert_video_precision_available(
@@ -3585,7 +3617,9 @@ class VideoBackend:
             # An fp8 encoder request loads a hosted pre-cast checkpoint, so neither the estimate nor the pull includes
             # those dense shards. Resolved through the family default the loader applies, so an unset request on a
             # family whose default is a hosted encoder does not stage the dense one. kwargs keep the RAW request.
-            te_planned, _ = video_te_quant_request(fam, kwargs.get("text_encoder_quant"))
+            te_planned, _ = video_te_quant_request(
+                fam, kwargs.get("text_encoder_quant"), base = base, speed_mode = kwargs.get("speed_mode")
+            )
             te_sources = self._te_prequant_sources(
                 fam,
                 te_planned,
@@ -5759,7 +5793,9 @@ class VideoBackend:
         ltx25_dev = _ltx25_dev_load(fam, kind, gguf_filename, repo_id, display_repo_id)
         # The family default the loader applies to an unset encoder request, so the plan stages the hosted encoder
         # instead of the dense shards the load would not open. H3 keeps reading the raw request below.
-        te_planned, _ = video_te_quant_request(fam, text_encoder_quant)
+        te_planned, _ = video_te_quant_request(
+            fam, text_encoder_quant, base = base, speed_mode = load_kwargs.get("speed_mode")
+        )
         # The same resolution the load makes, so an H3 auto pick the loader will serve from a hosted checkpoint is not
         # staged dense here first: that is 66.3 GB the panel downloads and the load never opens, and the replacement
         # would then arrive outside this plan.
@@ -6623,7 +6659,10 @@ class VideoBackend:
         # cannot run is dropped rather than refused.
         text_encoder_quant_requested = text_encoder_quant
         text_encoder_quant, text_encoder_quant_auto = video_te_quant_request(
-            fam, text_encoder_quant
+            fam,
+            text_encoder_quant,
+            base = repo_id if kind == "pipeline" else base,
+            speed_mode = speed_mode,
         )
         if text_encoder_quant_auto:
             from . import diffusion_precision as _precision

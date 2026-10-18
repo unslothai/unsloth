@@ -447,3 +447,30 @@ def test_a_wan_load_claims_the_hosted_encoder_repo_while_it_fetches():
     claim = src[src.index("te_repos = tuple(") :][:400]
     assert "te_sources" in claim and 'kind", None) == "repo"' in claim
     assert "self._loading.asset_repos = tuple(" in src[src.index("te_repos = tuple(") :][:700]
+
+
+@pytest.mark.parametrize(
+    "base, hosted",
+    [
+        ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", True),
+        ("/hf/hub/models--Wan-AI--Wan2.2-TI2V-5B-Diffusers/snapshots/abc123", True),
+        ("/packs/custom/Wan2.2-TI2V-5B-Diffusers", False),
+        ("someone/Wan2.2-TI2V-5B-Diffusers", False),
+    ],
+)
+def test_the_automatic_encoder_needs_the_exact_official_base(base, hosted):
+    # A custom pack that only shares the folder name keeps its own encoder weights.
+    mode, auto = video_te_quant_request(_family("wan2.2-ti2v-5b"), None, base = base)
+    assert (mode, auto) == (("fp8", True) if hosted else (None, False))
+    # An explicit scheme is never second-guessed.
+    assert video_te_quant_request(_family("wan2.2-ti2v-5b"), "fp8", base = base) == ("fp8", False)
+
+
+@pytest.mark.parametrize("name", ["wan2.2-ti2v-5b", "ltx-2", "ltx-2.5"])
+def test_speed_off_keeps_the_released_encoder_unless_a_scheme_is_named(name):
+    fam = _family(name)
+    assert video_te_quant_request(fam, None, speed_mode = "off") == ("none", False)
+    assert video_te_quant_request(fam, "auto", speed_mode = "off") == ("none", False)
+    assert video_te_quant_request(fam, "int8", speed_mode = "off") == ("int8", False)
+    if name != "ltx-2.5":
+        assert video_te_quant_request(fam, None, speed_mode = "default")[1] is True
