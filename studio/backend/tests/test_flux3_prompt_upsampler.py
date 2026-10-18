@@ -750,6 +750,62 @@ def test_generate_retry_recomputes_the_caption_for_the_new_model(routes, runnabl
     assert r.json()["images"][0]["prompt_enhancement"] is None
 
 
+def test_single_user_generate_binds_the_caption_to_its_model(routes, runnable):
+    from core.inference.diffusion_families import load_identity
+
+    client, backend, saved = routes
+    status = backend.status()
+    r = client.post("/api/inference/images/generate", json = {"prompt": "a cat", "steps": 4})
+    assert r.status_code == 200, r.text
+    # Bound on single-user installs too: a model swapped in after the caption raises and retries.
+    assert backend.calls[-1]["expected_load"] == load_identity(
+        status.get("repo_id"), status.get("base_repo"), "flux.3-klein"
+    )
+
+
+def test_a_cached_caption_still_honors_a_stop(runnable):
+    assert pup.upsample("a cat", variant = "distilled") == "Caption for a cat"
+    event = threading.Event()
+    event.set()
+    with pytest.raises(pup.UpsamplerCancelledError):
+        pup.upsample("a cat", variant = "distilled", cancel_event = event)
+
+
+def test_launch_publishes_loading_before_the_training_probe(monkeypatch):
+    sidecar = pup.PromptUpsamplerSidecar()
+    seen = []
+    monkeypatch.setattr(sidecar, "_spawn_server", lambda *a: seen.append(sidecar.is_loading()))
+    sidecar._launch("b", "m", None)
+    assert seen == [True] and not sidecar.is_loading()
+
+
+def test_an_idle_callback_waiting_on_the_lock_sees_the_request(monkeypatch):
+    sidecar = pup.PromptUpsamplerSidecar()
+    reaped = []
+    monkeypatch.setattr(pup, "_image_model_owns_gpu", lambda: True)
+    monkeypatch.setattr(sidecar, "_release_locked", lambda: reaped.append(True))
+
+    def launch(binary, model, mmproj):
+        # The keep-alive timer fired just before this request: its callback runs while the server starts.
+        sidecar._idle_unload(sidecar._generation)
+
+    monkeypatch.setattr(sidecar, "_launch", launch)
+    monkeypatch.setattr(pup, "_post_chat", lambda *a, **k: "caption")
+    assert sidecar.generate({}, binary = "b", model = "m", mmproj = None) == "caption"
+    assert reaped == [] and sidecar._active_requests == 0
+
+
+def test_unload_route_stops_the_upsampler_blocking(routes, monkeypatch):
+    client, backend, saved = routes
+    waits, cancels = [], []
+    monkeypatch.setattr(pup, "unload_sidecar", lambda wait = False: waits.append(wait))
+    monkeypatch.setattr(pup, "cancel_active", lambda: cancels.append(True))
+    monkeypatch.setattr(backend, "unload", lambda **_: {"loaded": False}, raising = False)
+    r = client.post("/api/inference/images/unload", json = {})
+    assert r.status_code == 200, r.text
+    assert waits == [True] and cancels == [True]
+
+
 def test_generate_skips_the_upsampler_while_another_account_runs(routes, runnable, monkeypatch):
     from hub.services.models import account_access
 

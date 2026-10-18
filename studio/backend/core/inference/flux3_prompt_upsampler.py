@@ -751,6 +751,18 @@ class PromptUpsamplerSidecar:
 
     def _launch(self, binary: str, model: str, mmproj: Optional[str]) -> None:
         """Start llama-server for (model, mmproj). Called under ``_request_lock``."""
+        # Published before the training probe: training that starts after it finds a load to cancel.
+        self._load_cancel.clear()
+        with self._lock:
+            self._loading = True
+        try:
+            self._spawn_server(binary, model, mmproj)
+        finally:
+            with self._lock:
+                self._loading = False
+                self._starting_process = None
+
+    def _spawn_server(self, binary: str, model: str, mmproj: Optional[str]) -> None:
         from core.inference.stt_mtmd_sidecar import (
             MtmdSttSidecar,
             _llama_server_child_env,
@@ -815,9 +827,8 @@ class PromptUpsamplerSidecar:
             device,
             ", vision" if mmproj else "",
         )
-        self._load_cancel.clear()
-        with self._lock:
-            self._loading = True
+        if self._load_cancel.is_set():
+            raise UpsamplerCancelledError("The prompt upsampler load was cancelled.")
         # Undrained pipes would block llama-server once its log fills them, so its output goes nowhere unless a log
         # file is asked for.
         log_path = (os.environ.get(ENV_SERVER_LOG) or "").strip()
@@ -866,9 +877,6 @@ class PromptUpsamplerSidecar:
             if log_file is not None:
                 with suppress(OSError):
                     log_file.close()
-            with self._lock:
-                self._loading = False
-                self._starting_process = None
 
     def generate(
         self,
@@ -894,20 +902,21 @@ class PromptUpsamplerSidecar:
                     current[:2] == (binary, model) and (mmproj is None or current[2] == mmproj)
                 ):
                     self._release_locked()
-            if not self.loaded:
-                if not _image_model_owns_gpu():
-                    # Chat or video took the GPU after this request read the FLUX.3 status: starting now would sit
-                    # beside the new owner for the keep-alive.
-                    raise UpsamplerUnavailableError("The image model no longer holds the GPU.")
-                with _forward_cancel(cancel_event, self.cancel_pending_load):
-                    self._launch(binary, model, mmproj)
-            with self._lock:
-                port, api_key = self._port, self._api_key
-                generated_only = self._penalize_prompt_supported
+                # Claimed under the same lock: an idle callback already waiting on it then sees the request.
                 self._active_requests += 1
-            if generated_only:
-                payload = {**payload, **GENERATED_ONLY_PENALTIES}
             try:
+                if not self.loaded:
+                    if not _image_model_owns_gpu():
+                        # Chat or video took the GPU after this request read the FLUX.3 status: starting now would
+                        # sit beside the new owner for the keep-alive.
+                        raise UpsamplerUnavailableError("The image model no longer holds the GPU.")
+                    with _forward_cancel(cancel_event, self.cancel_pending_load):
+                        self._launch(binary, model, mmproj)
+                with self._lock:
+                    port, api_key = self._port, self._api_key
+                    generated_only = self._penalize_prompt_supported
+                if generated_only:
+                    payload = {**payload, **GENERATED_ONLY_PENALTIES}
                 return _post_chat(port, payload, api_key = api_key, cancel_event = cancel_event)
             finally:
                 with self._lock:
@@ -1142,6 +1151,9 @@ def upsample(
     key = (prompt, variant, edit, references_hash(references), model)
     cached = _cache_get(key)
     if cached is not None:
+        # A Stop while the references decoded never reaches the sidecar, which is where it is normally enforced.
+        if cancel_event is not None and cancel_event.is_set():
+            raise UpsamplerCancelledError("Cancelled.")
         return cached
     sidecar = sidecar or get_sidecar()
     text = clean_caption(
@@ -1163,6 +1175,8 @@ class EnhanceOutcome:
     status: Optional[str]
     captions: dict = field(default_factory = dict)
     statuses: dict = field(default_factory = dict)
+    # The resident model the captions were written for, set by the generate route.
+    load: Any = None
 
     def caption_for(self, prompt: str) -> Optional[str]:
         return self.captions.get(prompt)

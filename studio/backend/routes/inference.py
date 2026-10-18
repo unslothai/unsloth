@@ -50536,7 +50536,7 @@ async def _enhance_generate_prompts(backend, request: DiffusionGenerateRequest):
         return pup.EnhanceOutcome(status = pup.STATUS_UNAVAILABLE)
     try:
         with account_access.media_generation("diffusion"):
-            return await asyncio.to_thread(
+            outcome = await asyncio.to_thread(
                 pup.enhance_for_generation,
                 list(request.prompts or [request.prompt]),
                 family_name = family,
@@ -50545,6 +50545,11 @@ async def _enhance_generate_prompts(backend, request: DiffusionGenerateRequest):
             )
     except pup.UpsamplerCancelledError:
         raise HTTPException(status_code = 409, detail = DIFFUSION_CANCELLED_MSG)
+    if outcome.captions:
+        from core.inference.diffusion_families import load_identity
+
+        outcome.load = load_identity(status.get("repo_id"), status.get("base_repo"), family)
+    return outcome
 
 
 @studio_router.post("/images/generate", response_model = DiffusionGenerateResponse)
@@ -50599,6 +50604,9 @@ async def generate_diffusion_image(
                 expected_load = load_identity(
                     status.get("repo_id"), status.get("base_repo"), status.get("family")
                 )
+        if enhancement.load is not None:
+            # Captions are written for one family: a model swapped in since then retries with fresh ones.
+            expected_load = enhancement.load
         # Ahead of the run: milestones key off the previous poll, so a resumed range logs nothing.
         reset_media_generation_progress("image")
         try:
@@ -51460,9 +51468,12 @@ async def unload_diffusion_model(
         unload = functools.partial(unload, expected_account = current_account_id())
     status_dict = await asyncio.to_thread(unload)
     # The FLUX.3 prompt upsampler serves the image model: it leaves with it instead of holding VRAM to its keep-alive.
-    from core.inference.flux3_prompt_upsampler import unload_sidecar as unload_prompt_upsampler
+    from core.inference import flux3_prompt_upsampler as pup
 
-    await asyncio.to_thread(unload_prompt_upsampler)
+    # Blocking: DIFFUSION ownership is dropped below, so a sidecar still starting or answering would sit beside the
+    # next owner without an eviction to stop it.
+    pup.cancel_active()
+    await asyncio.to_thread(pup.unload_sidecar, True)
     # Drop DIFFUSION ownership only if nothing is resident AND no load is in flight, or a later chat load skips eviction and
     # OOMs the new pipeline. An in-flight load reads is_loaded False, so gate on loading_repo_ids() and use release_if.
     engine = get_active_diffusion_engine()
