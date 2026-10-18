@@ -827,3 +827,44 @@ def test_the_mirror_is_chosen_again_once_the_plan_widens_to_transformer_shards(m
     assert "transformer/diffusion_pytorch_model.safetensors" in files
     assert fetch_repos[base] == "unsloth/FLUX.1-dev"
     assert asked[-1] == "unsloth/FLUX.1-dev"
+
+
+def test_artifact_folder_bytes_counts_physical_blobs(tmp_path):
+    from hub.services.models.cache_inventory import artifact_folder_bytes
+
+    repo_dir = tmp_path / "models--unsloth--Z-Image-GGUF"
+    blobs = repo_dir / "blobs"
+    blobs.mkdir(parents = True)
+    old, new, shared = blobs / "old", blobs / "new", blobs / "shared"
+    old.write_bytes(b"\0" * 300)
+    new.write_bytes(b"\0" * 500)
+    shared.write_bytes(b"\0" * 70)
+    for rev, blob in (("rev1", old), ("rev2", new)):
+        vae = repo_dir / "snapshots" / rev / "vae"
+        vae.mkdir(parents = True)
+        try:
+            # The same name, changed between revisions: a whole-repo delete frees both blobs.
+            (vae / "diffusion_pytorch_model.safetensors").symlink_to(blob)
+            # One blob behind two paths is freed once.
+            (vae / "config.json").symlink_to(shared)
+        except OSError:
+            pytest.skip("symlinks need privileges on this host")
+    assert artifact_folder_bytes(repo_dir) == 300 + 500 + 70
+
+
+def test_folders_left_by_a_deleted_gguf_are_offered_even_with_transformer_shards(monkeypatch, tmp_path):
+    """No GGUF of the artifact mirror left in any root: its transformer/ shards (a GGUF speed load's dense fetch) are
+    no installed checkpoint, since a pipeline load of the mirror id is refused, so Free up space offers the folders."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from hub.services.models import cache_inventory, companion_cleanup
+
+    repo = "unsloth/Z-Image-GGUF"
+    leftover = _cache_repo(tmp_path / "live", repo, {**_FOLDERS, **_DENOISER})
+    scans = [SimpleNamespace(repos = [leftover])]
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "app-cache")
+    monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: scans)
+    monkeypatch.setattr(companion_cleanup.cache_inventory, "all_hf_cache_scans", lambda: scans)
+    offered = asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+    assert [c["repo_id"] for c in offered if c["repo_id"] == repo] == [repo]

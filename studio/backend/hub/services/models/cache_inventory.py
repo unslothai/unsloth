@@ -1428,19 +1428,19 @@ async def list_cached_models_response(hf_token: Optional[str] = None):
 
 def artifact_folder_bytes(*repo_paths: Path) -> int:
     """Bytes of every non-GGUF file under the repo's snapshots, in every cache root given: the diffusers folders an
-    artifact mirror (``mirror_hosts_artifacts``) holds beside its quants, which only its GGUF row lists. One logical
-    file (its path inside a snapshot) counts once, at its largest copy, however many revisions or roots hold it.
-    Never raises."""
-    seen: dict[str, int] = {}
+    artifact mirror (``mirror_hosts_artifacts``) holds beside its quants, which only its GGUF row lists. Counted by
+    the physical blob each snapshot entry resolves to, as ``repo_unique_size_bytes`` does: a whole-repo delete frees
+    every revision's blob once, so a file changed under the same name counts twice and one blob behind several paths
+    once. Never raises."""
+    seen: dict[tuple[int, int], int] = {}
     for repo_path in repo_paths:
         snapshots = Path(repo_path) / "snapshots"
         try:
             for path in snapshots.rglob("*"):
                 if path.name.lower().endswith(".gguf") or not path.is_file():
                     continue
-                rel = path.relative_to(snapshots).parts[1:]
-                key = "/".join(rel)
-                seen[key] = max(seen.get(key, 0), path.stat().st_size)
+                st = path.stat()
+                seen[(st.st_dev, st.st_ino)] = st.st_size
         except (OSError, ValueError):
             continue
     return sum(seen.values())
