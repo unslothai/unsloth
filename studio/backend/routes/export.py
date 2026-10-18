@@ -496,7 +496,7 @@ async def export_merged_model(
     """
     validate_job_paths(request.model_dump())
     if request.reap and request.reap.dataset:
-        validate_job_paths({"hf_dataset": request.reap.dataset})
+        validate_job_paths({"hf_dataset": request.reap.dataset, "hf_token": request.hf_token})
     try:
         await _ensure_export_supported()
         backend = get_export_backend()
@@ -565,7 +565,7 @@ async def export_base_model(
     """
     validate_job_paths(request.model_dump())
     if request.reap and request.reap.dataset:
-        validate_job_paths({"hf_dataset": request.reap.dataset})
+        validate_job_paths({"hf_dataset": request.reap.dataset, "hf_token": request.hf_token})
     try:
         await _ensure_export_supported()
         backend = get_export_backend()
@@ -623,7 +623,7 @@ async def export_gguf(
     """
     validate_job_paths(request.model_dump())
     if request.reap and request.reap.dataset:
-        validate_job_paths({"hf_dataset": request.reap.dataset})
+        validate_job_paths({"hf_dataset": request.reap.dataset, "hf_token": request.hf_token})
     try:
         await _ensure_export_supported()
         backend = get_export_backend()

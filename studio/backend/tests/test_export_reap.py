@@ -863,3 +863,45 @@ def test_packed_methods_are_real_transformers_quant_methods():
     q = pytest.importorskip("transformers.utils.quantization_config")
     known = {m.value for m in q.QuantizationMethod}
     assert reap_mod._PACKED_QUANT_METHODS - {"compressed_tensors"} <= known
+
+
+@pytest.mark.parametrize(
+    "route, request_cls",
+    [
+        ("export_merged_model", ExportMergedModelRequest),
+        ("export_base_model", ExportBaseModelRequest),
+        ("export_gguf", ExportGGUFRequest),
+    ],
+)
+def test_custom_reap_dataset_is_validated_with_the_callers_token(route, request_cls):
+    # Managed accounts refuse a remote dataset without the caller's own token (403), so the
+    # dataset check must carry the token the request supplied.
+    from routes import export as export_route
+
+    class Stop(Exception):
+        pass
+
+    checked = []
+
+    def validate(values, **kwargs):
+        checked.append(values)
+        if "hf_dataset" in values:
+            raise Stop
+
+    request = request_cls(
+        save_directory = "out",
+        hf_token = "hf_caller",
+        reap = {"sparsity": 0.25, "dataset": "org/calib"},
+    )
+    original = export_route.validate_job_paths
+    export_route.validate_job_paths = validate
+    try:
+        with pytest.raises(Stop):
+            asyncio.run(
+                getattr(export_route, route)(
+                    request = request, current_subject = "t", allow_ambient = False
+                )
+            )
+    finally:
+        export_route.validate_job_paths = original
+    assert {"hf_dataset": "org/calib", "hf_token": "hf_caller"} in checked
