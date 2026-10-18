@@ -221,9 +221,10 @@ export const BUDGET = {
   // Re-measured on main at cb7a04736: +7,303 B raw / +2,367 B transfer (6,800,624 -> 6,807,927 B raw,
   // 2,045,484 -> 2,047,851 B transfer, one machine and build). Set to main's limits plus that growth, with
   // 0.9 KB raw / 0.4 KB transfer above it for the CI runner.
-  // Re-measured on main at f172c8d7c: PENDING. Set to main's limits plus that growth, with 0.9 KB raw / 0.4 KB
-  // transfer above it for the CI runner.
-  transferBytes: 2_050_100,
+  // Re-measured on main at f172c8d7c: +7,290 B raw / +2,204 B transfer (6,804,401 -> 6,811,691 B raw,
+  // 2,047,544 -> 2,049,748 B transfer, one machine and build). Set to main's limits plus that growth, with
+  // 0.9 KB raw / 0.4 KB transfer above it for the CI runner.
+  transferBytes: 2_050_124,
   rawBytes: 6_814_204,
 };
 
