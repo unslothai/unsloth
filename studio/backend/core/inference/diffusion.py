@@ -282,6 +282,7 @@ from .diffusion_step_skip import (
 from .diffusion_nvfp4_protect import protect_generation
 from .diffusion_precision import (
     effective_te_quant,
+    preflight_te_quant,
     normalize_te_quant,
     quantize_text_encoders,
     resolve_te_quant_request,
@@ -1218,9 +1219,14 @@ def _with_supplied_components(load: Callable[..., dict]) -> Callable[..., dict]:
             kwargs["text_encoder_quant"] = _te_quant_for_supplied_encoders(
                 kwargs.get("text_encoder_quant")
             )
+        from .diffusion_precision import te_quant_is_auto
+        from .diffusion_te_prequant import auto_te_request
+
         token = set_active_component_overrides(overrides)
         try:
-            return load(self, repo_id, **kwargs)
+            # An unset / "auto" encoder scheme never fails the load: a hosted file that cannot load falls back to dense.
+            with auto_te_request(te_quant_is_auto(kwargs.get("text_encoder_quant"))):
+                return load(self, repo_id, **kwargs)
         finally:
             reset_active_component_overrides(token)
 
@@ -2904,6 +2910,9 @@ class DiffusionBackend:
         gpu_ordinal: Optional[int] = None,
         repo_id: Optional[str] = None,
         base_repo: Optional[str] = None,
+        local_files_only: bool = False,
+        text_encoder_files: Optional[Sequence[str]] = None,
+        gguf_filename: Optional[str] = None,
     ) -> None:
         """Raise ``RuntimeError`` (the route's 409) when an EXPLICIT precision cannot run here.
 
@@ -2934,6 +2943,10 @@ class DiffusionBackend:
         # different generation, which would refuse a scheme the selected card supports, or pass one it does not and
         # fail only after eviction. Scoped, because the route calls this on a pooled thread and the probes below use
         # argument-less CUDA calls.
+        if model_kind != "pipeline" and not (base_repo or "").strip() and fam is not None:
+            # The variant base the loader derives from the pick's name (a FLUX.2 Klein 9B checkpoint), network-free:
+            # judged on the family default, the int8 gate would check another variant's encoder file.
+            base_repo = named_variant_base(fam, repo_id, gguf_filename) or base_repo
         with diffusion_device_scope(gpu_ordinal):
             target = self._target_for_ordinal(fam, gpu_ordinal)
             return self._assert_precision_for_target(
@@ -2946,7 +2959,53 @@ class DiffusionBackend:
                 cpu_offload = cpu_offload,
                 speed_mode = speed_mode,
                 base_repo = repo_id if model_kind == "pipeline" else base_repo,
+                local_files_only = local_files_only,
+                supplied_text_encoders = self._planned_supplied_text_encoders(
+                    fam,
+                    repo_id,
+                    repo_id if model_kind == "pipeline" else base_repo,
+                    text_encoder_files,
+                    te_mode,
+                ),
             )
+
+    def _planned_supplied_text_encoders(
+        self,
+        fam: Optional[DiffusionFamily],
+        repo_id: Optional[str],
+        base_repo: Optional[str],
+        text_encoder_files: Optional[Sequence[str]],
+        te_mode: Optional[str],
+    ) -> tuple[str, ...]:
+        """The encoder slots the supplied files fill, for the preflight: it runs before the load installs the
+        component overrides. Network-free (local files, a cached model index); () when that cannot tell, and the
+        load's own check then refuses a mixed build."""
+        if not text_encoder_files or fam is None or te_mode != "int8":
+            return ()
+        try:
+            from .diffusion_comfy_components import parse_component_file
+
+            refs = [
+                parse_component_file(
+                    spec, model_path = repo_id, trusted_repo = _is_trusted_diffusion_repo
+                )
+                for spec in text_encoder_files
+            ]
+            if any(not ref.local_path for ref in refs):
+                return ()
+            overrides = self._plan_component_overrides(
+                fam,
+                repo_id or "",
+                base_repo or getattr(fam, "base_repo", None) or repo_id or "",
+                list(text_encoder_files),
+                None,
+                None,
+                local_files_only = True,
+                download = False,
+            )
+            return tuple(overrides.text_encoder_components) if overrides is not None else ()
+        except Exception:  # noqa: BLE001 -- unplannable here: the load refuses it
+            return ()
 
     def _assert_precision_for_target(
         self,
@@ -2960,6 +3019,8 @@ class DiffusionBackend:
         cpu_offload: bool,
         speed_mode: Optional[str] = None,
         base_repo: Optional[str] = None,
+        local_files_only: bool = False,
+        supplied_text_encoders: tuple[str, ...] = (),
     ) -> None:
         """The body of ``assert_precision_available``, run with the selected card current."""
         if pinned is not None and pinned != TQ_AUTO:
@@ -3056,13 +3117,19 @@ class DiffusionBackend:
         # keep-bf16 schedule is rewritten to layerwise fp8 before support is consulted, and that path needs no
         # torchao. Refusing on the raw int8 rejected loads the runtime would run and report as fell_back.
         te_effective = effective_te_quant(te_mode, getattr(fam, "name", None))
+        if te_effective is not None and normalize_te_quant(te_mode) == "int8":
+            # int8 depends on whether the hosted int8 ConvRot file will really load for this base and device.
+            te_effective = preflight_te_quant(
+                te_mode,
+                fam,
+                base_repo,
+                target,
+                supplied = supplied_text_encoders or _active_supplied_text_encoders(),
+                local_files_only = local_files_only,
+            )
+        # preflight_te_quant judges the hosted int8 file itself (None when it will load, on Apple Silicon too), so a
+        # file that is not held under a cache-only load stays refused.
         te_reason = None
-        if te_mode == "int8" and te_effective != te_mode:
-            from .diffusion_te_prequant import hosted_int8_convrot_te_runs_on
-            if hosted_int8_convrot_te_runs_on(fam, target):
-                # The family's hosted int8 ConvRot encoder (FLUX.3, Qwen-Image-2.1) is plain tensors and runs where the
-                # runtime-cast rewrite to fp8 does not (Apple Silicon): judge the file, not the downgrade.
-                te_effective = None
         if te_quant_needs_resident_weights(te_effective) and not torchao_quantize_importable():
             # The casters import torchao only after the pipeline is downloaded and built, so a broken or absent
             # install failed through load-progress instead of this 409.
@@ -3734,6 +3801,23 @@ class DiffusionBackend:
             planned_quant, auto = resolve_te_quant_request(
                 text_encoder_quant, getattr(fam, "te_quant_auto", None)
             )
+            auto_scheme = planned_quant if auto else None
+            if auto_scheme is not None:
+                from .diffusion_te_prequant import (
+                    te_prequant_sources_confirmed,
+                    te_prequant_sources_for_base,
+                )
+                hosted = te_prequant_sources_for_base(
+                    fam,
+                    base,
+                    te_quant_mode = planned_quant,
+                    target = self._target_for_ordinal(fam, None),
+                )
+                if not hosted or not te_prequant_sources_confirmed(
+                    hosted, local_files_only = local_files_only
+                ):
+                    # Without its hosted file the default loads dense, and the ComfyUI copy is that encoder.
+                    auto_scheme = None
 
             def _fits(overrides: Any) -> None:
                 verify_override_fit(
@@ -3751,7 +3835,7 @@ class DiffusionBackend:
                 model_index = index,
                 family = fam.name,
                 fits = _fits,
-                auto_scheme = planned_quant if auto else None,
+                auto_scheme = auto_scheme,
             )
         except Exception as exc:  # noqa: BLE001 - the base repo's encoder is always the fallback
             logger.info(
@@ -4051,6 +4135,9 @@ class DiffusionBackend:
             gpu_ordinal = gpu_ordinal,
             repo_id = repo_id,
             base_repo = base_repo,
+            local_files_only = local_files_only,
+            text_encoder_files = text_encoder_files,
+            gguf_filename = gguf_filename,
         )
 
         with self._lock, self._load_cancel_lock:
@@ -6551,6 +6638,14 @@ class DiffusionBackend:
             sources = {c: v for c, v in (sources or {}).items() if c not in skip_components}
             if not sources:
                 return None
+            from .diffusion_precision import te_quant_picked_automatically
+            from .diffusion_te_prequant import te_prequant_sources_confirmed
+
+            if te_quant_picked_automatically(
+                text_encoder_quant
+            ) and not te_prequant_sources_confirmed(sources):
+                # An automatic pick without a confirmed file loads the dense encoder: no pre-cast saving to price.
+                return None
             total = 0
             uncached = 0
             table_priced = 0
@@ -6615,14 +6710,27 @@ class DiffusionBackend:
                 table = family_bf16_components_gb(fam, base)
                 if table is None:
                     return None
-                share = table_priced / max(1, len(sources))
+                # The table's encoder term holds HiDream's TE4 too, which is priced on its own above (cached or from
+                # its dense size): out of both the share and the hosted bytes.
+                te4_in_table = "text_encoder_4" in sources
+                share = table_priced / max(1, len(sources) - (1 if te4_in_table else 0))
                 # MPS only takes the int8 ConvRot file, smaller than the fp8 one.
                 scale = (
                     te_int8_convrot_budget_scale(fam)
                     if int8_convrot_te_runs_on(target)
                     else TE_PREQUANT_BUDGET_SCALE
                 )
-                total += int(table[1] * (1000.0**3) * scale * share)
+                from .diffusion_te_prequant import _TE_DENSE_SIBLING_GB
+
+                # Only the hosted encoders: a sibling no file replaces (CLIP-L, ByT5) is priced by its own dense
+                # shards, not as part of the pre-cast file.
+                hosted_gb = max(
+                    0.0,
+                    float(table[1])
+                    - _TE_DENSE_SIBLING_GB.get(str(getattr(fam, "name", "") or ""), 0.0)
+                    - (HIDREAM_LLAMA_BF16_BYTES / 1000.0**3 if te4_in_table else 0.0),
+                )
+                total += int(hosted_gb * (1000.0**3) * scale * share)
             if total <= 0:
                 return None
             return max(1, total // (1024 * 1024)), tuple(sources), uncached == 0
@@ -7860,7 +7968,21 @@ class DiffusionBackend:
                         if kind == "pipeline":
                             if fam.name == IDEOGRAM4_FAMILY_NAME:
                                 # ideogram ships the same transformers-5.x Qwen stack as krea; assemble per-component too,
-                                # from the mirror for the same reason.
+                                # from the mirror for the same reason. A hosted pre-cast fp8 encoder replaces the dense
+                                # vendor-fp8 one (whose shards the download plan then leaves out), as on krea.
+                                ideogram_te = te_prequant_pipe_kwargs(
+                                    fam,
+                                    fetch_base,
+                                    te_quant_mode = text_encoder_quant,
+                                    target = target,
+                                    dtype = dtype,
+                                    hf_token = hf_token,
+                                    logger = logger,
+                                    local_files_only = local_files_only,
+                                    # assembly reads fetch_base (never the staged dir), like krea
+                                    dense_source = fetch_base if local_files_only else None,
+                                ).get("text_encoder")
+                                self._raise_if_load_cancelled(_load_token)
                                 pipe = load_ideogram4_pipeline(
                                     fetch_base,
                                     dtype,
@@ -7868,6 +7990,7 @@ class DiffusionBackend:
                                     check_cancelled = lambda: self._raise_if_load_cancelled(
                                         _load_token
                                     ),
+                                    text_encoder = ideogram_te,
                                 )
                             else:
                                 pipe_kwargs = {
@@ -10709,7 +10832,8 @@ class DiffusionBackend:
                 from .diffusion_te_prequant import int8_convrot_te_runs_on
 
                 # Never below scanned dense shards: a bad checkpoint falls back to opening them. Not on MPS, where
-                # that failure raises instead (_te_prequant_pipe_kwargs, #11792).
+                # that failure raises instead (_te_prequant_pipe_kwargs, #11792). An automatic pick whose file is not
+                # confirmed never gets here: _precast_text_encoder_mib prices nothing for it, so the dense terms stand.
                 if not int8_convrot_te_runs_on(target):
                     precast_mib = max(int(precast_mib), scanned_te)
                 text_encoder_mib = max(0, int(text_encoder_mib or 0) - scanned_te) + int(
