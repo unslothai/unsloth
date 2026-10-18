@@ -602,6 +602,15 @@ _HUB_UPLOAD_IGNORE = ["export_metadata.json", "._*"]
 _STAGING_PREFIX = "unsloth-hub-upload-"
 
 
+def _card_base_model(model) -> str:
+    """The base a Hub card names: after REAP the config points at a staging copy, so the id the
+    pruned model came from is used instead."""
+    source = getattr(model, "_unsloth_reap_source", None)
+    if source:
+        return source
+    return getattr(getattr(model, "config", None), "_name_or_path", "unknown") or "unknown"
+
+
 def _staging_dir(export_parent):
     """Stage a copy of an export where it fits: merge_and_overwrite_lora refuses a save its
     destination cannot hold, and neither the temporary directory nor the export's own filesystem is
@@ -706,7 +715,7 @@ def _publish_unsloth_model_card(hf_api, repo_id, model, hf_token):
         config = getattr(model, "config", None)
         if config is None:
             return
-        base_model = getattr(config, "_name_or_path", "unknown") or "unknown"
+        base_model = _card_base_model(model)
         # method/extra reproduce what upload_to_huggingface passed for this path
         # ("finetuned", "trl"): the template already carries the unsloth tag, so `extra`
         # is where trl goes, and the heading already reads "Uploaded finetuned ... model".
@@ -1506,9 +1515,7 @@ class ExportBackend:
                         # push_to_hub_merged does.
                         try:
                             if not hf_api.file_exists(repo_id, "README.md", repo_type = "model"):
-                                base_model = getattr(
-                                    self.current_model.config, "_name_or_path", "unknown"
-                                )
+                                base_model = _card_base_model(self.current_model)
                                 content = MODEL_CARD.format(
                                     username = repo_id.split("/")[0],
                                     base_model = repo_id if os.path.isdir(base_model) else base_model,
@@ -1621,9 +1628,7 @@ class ExportBackend:
                         private = private,
                     )
                 else:
-                    base_model = (
-                        base_model_id or self.current_model.config._name_or_path or "unknown"
-                    )
+                    base_model = base_model_id or _card_base_model(self.current_model)
 
                     with contextlib.ExitStack() as stack:
                         upload_dir = save_directory

@@ -13,10 +13,11 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Exactly the keys Core's unsloth/models/reap.py reads (a model Core cannot size is not offered);
-# checked on text_config first, then the top-level config.
+# Core's unsloth/models/reap.py keys, plus the raw config.json names transformers maps onto them
+# through attribute_map (HunYuan moe_topk, Ernie moe_k), which Core reads as num_experts_per_tok
+# but a raw config dict does not; checked on text_config first, then the top-level config.
 _NUM_EXPERTS_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts")
-_TOP_K_KEYS = ("num_experts_per_tok", "top_k", "moe_top_k", "top_k_experts")
+_TOP_K_KEYS = ("num_experts_per_tok", "top_k", "moe_top_k", "top_k_experts", "moe_topk", "moe_k")
 _N_GROUP_KEYS = ("n_group", "num_expert_group")
 _TOPK_GROUP_KEYS = ("topk_group", "top_k_group")
 REPORT_NAME = "reap_report.json"
@@ -86,7 +87,8 @@ def moe_export_info(
                 base = adapter_base or _local_adapter_base(str(local))
                 if not base or _depth >= 2 or base == model:
                     return None
-                return moe_export_info(base, hf_token, local_files_only, _depth + 1)
+                # A Hub base of a local adapter may not be cached yet: read it online.
+                return moe_export_info(base, hf_token, is_local_path(base), _depth + 1)
         return moe_info_from_config(_read_raw_config_json(model, hf_token, local_files_only, None))
     except Exception as exc:
         logger.debug("MoE detection skipped for '%s': %s", model, exc)
@@ -152,6 +154,12 @@ def apply_reap(
             "REAP expert pruning needs the model loaded in 16-bit, but it was loaded in 4-bit. "
             "Turn off 4-bit loading and export again."
         )
+    if getattr(model, "__dict__", {}).get("_unsloth_mtp_head") is not None:
+        # Core refuses this: the attached MTP head would keep the old expert count.
+        return False, (
+            "REAP cannot prune a checkpoint with an attached MTP head. Export it without expert "
+            "pruning."
+        )
     from core.export.export import _staging_dir
     from unsloth import FastLanguageModel
 
@@ -168,7 +176,8 @@ def apply_reap(
     # save_directory repoints the model at the pruned copy, so every later save, merge or GGUF
     # conversion reads the pruned weights and never the original checkpoint. GGUF files are named
     # after that folder, so it carries the model's own name.
-    name = Path(str(getattr(model.config, "_name_or_path", "") or "model").rstrip("/\\")).name
+    source = str(getattr(model.config, "_name_or_path", "") or "")
+    name = Path(source.rstrip("/\\") or "model").name
     FastLanguageModel.reap_prune(
         model,
         tokenizer,
@@ -177,6 +186,8 @@ def apply_reap(
         num_calibration_samples = samples,
         save_directory = str(Path(staging.name) / f"{name or 'model'}-REAP"),
     )
+    # The model now points at the staging copy; Hub cards should name the model it came from.
+    model._unsloth_reap_source = source or None
     backend._reap_key = key
     backend._reap_staging = staging
     report = getattr(model, "_unsloth_reap_report", None) or {}

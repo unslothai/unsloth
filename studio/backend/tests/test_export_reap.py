@@ -364,9 +364,12 @@ def test_moe_info_route_uses_the_authorized_adapter_base(monkeypatch, tmp_path):
 
 
 def test_probe_keys_match_core():
-    # A key Core cannot read would advertise REAP for a model the export then refuses.
+    # A key Core cannot read would advertise REAP for a model the export then refuses. Studio may
+    # only add raw config.json names that a transformers config maps onto one of Core's keys.
     import ast
     from pathlib import Path
+
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 
     core = Path(__file__).resolve().parents[3] / "unsloth" / "models" / "reap.py"
     if not core.is_file():
@@ -379,9 +382,18 @@ def test_probe_keys_match_core():
         for t in node.targets
         if isinstance(t, ast.Name) and t.id in ("_NUM_EXPERTS_KEYS", "_TOP_K_KEYS")
     }
-    assert consts["_NUM_EXPERTS_KEYS"] == reap_mod._NUM_EXPERTS_KEYS
-    assert consts["_TOP_K_KEYS"] == reap_mod._TOP_K_KEYS
-    assert reap_mod.moe_info_from_config({"num_experts": 8, "moe_k": 2}) is None
+    mapped = {}
+    for config_class in CONFIG_MAPPING.values():
+        for alias, raw in (getattr(config_class, "attribute_map", None) or {}).items():
+            mapped.setdefault(raw, set()).add(alias)
+    for name in ("_NUM_EXPERTS_KEYS", "_TOP_K_KEYS"):
+        core_keys, studio_keys = consts[name], getattr(reap_mod, name)
+        assert set(core_keys) <= set(studio_keys)
+        for extra in set(studio_keys) - set(core_keys):
+            assert mapped.get(extra, set()) & set(core_keys), f"{extra} is not read by Core"
+    # HunYuan-A13B and Ernie 4.5 as their config.json files spell them.
+    assert reap_mod.moe_info_from_config({"num_experts": 64, "moe_topk": [8] * 32})["top_k"] == 8
+    assert reap_mod.moe_info_from_config({"moe_num_experts": 64, "moe_k": 6})["top_k"] == 6
 
 
 def test_custom_calibration_dataset_uses_the_request_token(fake_reap, tmp_path, monkeypatch):
@@ -465,3 +477,65 @@ def test_moe_info_route_follows_a_hub_lora_to_its_authorized_base(monkeypatch):
     assert probed == ["me/lora", "org/moe-base"]
     # The base is authorized with the caller's token before its config is read.
     assert checked == [("me/lora", "hf_x"), ("org/moe-base", "hf_x")]
+
+
+def test_local_adapter_with_a_hub_base_reads_the_base_online(tmp_path, monkeypatch):
+    from utils.models import model_config
+
+    lora = tmp_path / "lora"
+    lora.mkdir()
+    (lora / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": "org/moe"}))
+    calls = []
+
+    def read(model, token, local_files_only, revision):
+        calls.append((model, local_files_only))
+        return {"num_experts": 8, "num_experts_per_tok": 2}
+
+    monkeypatch.setattr(model_config, "_read_raw_config_json", read)
+    assert reap_mod.moe_export_info(str(lora)) == {"num_experts": 8, "top_k": 2}
+    # The adapter is local, its Hub base is not: an uncached base must still be fetched.
+    assert calls == [("org/moe", False)]
+
+
+def test_attached_mtp_head_is_refused_before_merging(fake_reap, tmp_path):
+    model = _Model()
+    model._unsloth_mtp_head = object()
+    backend = _Backend(model, is_peft = True)
+    ok, message = reap_mod.apply_reap(backend, {"sparsity": 0.25}, str(tmp_path))
+    assert not ok and "MTP head" in message
+    assert not fake_reap and backend.is_peft is True and not model.merged
+
+
+def test_hub_cards_name_the_model_reap_started_from(fake_reap, tmp_path):
+    from core.export.export import _card_base_model
+
+    backend = _Backend(_Model())
+    reap_mod.apply_reap(backend, {"sparsity": 0.25}, str(tmp_path))
+    model = backend.current_model
+    # Core repoints the config at the staging copy; the card keeps the original id.
+    model.config._name_or_path = str(tmp_path / "staging" / "base-model-REAP")
+    assert _card_base_model(model) == "org/base-model"
+    plain = _Model()
+    assert _card_base_model(plain) == "org/base-model"
+    reap_mod.discard_reap_staging(backend)
+
+
+def test_base_export_of_a_lora_keeps_its_refusal(monkeypatch):
+    from core.export.worker import _handle_export
+
+    seen = []
+    monkeypatch.setattr(reap_mod, "apply_reap", lambda *a, **k: seen.append(a) or (True, ""))
+
+    class _PeftBackend(_ExportBackend):
+        is_peft = True
+
+        def export_base_model(self, **kwargs):
+            return False, "This is a LoRA checkpoint; use the merged export.", None
+
+    backend, q = _PeftBackend(), queue.Queue()
+    _handle_export(
+        backend, {"export_type": "base", "save_directory": "/tmp/o", "reap": {"sparsity": 0.5}}, q
+    )
+    assert seen == []
+    final = _drain(q)[-1]
+    assert final["success"] is False and "LoRA" in final["message"]

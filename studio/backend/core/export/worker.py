@@ -435,6 +435,9 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
     output_path: Any = None
     try:
         reap = cmd.get("reap") if export_type in ("merged", "base", "gguf") else None
+        if reap and export_type == "base" and getattr(backend, "is_peft", False):
+            # Merging for REAP would get a LoRA past export_base_model's PEFT refusal.
+            reap = None
         if reap:
             from core.export.reap import apply_reap, reap_staging_parent
 
