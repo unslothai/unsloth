@@ -200,7 +200,6 @@ def test_another_variant_of_a_resident_repo_is_a_new_load(monkeypatch):
     world = _world("off", [f"{QWEN}:Q4_K_M"], image = FLUX_GGUF)
     plan = _plan(monkeypatch, world, {"model": QWEN, "variant": "Q8_0"})
     assert _names(plan["would_evict"]) == {("llm", f"{QWEN}:Q4_K_M"), ("image", FLUX_GGUF)}
-    assert _plan(monkeypatch, world, {"model": QWEN, "variant": "Q4_K_M"})["would_evict"] == []
     # Status naming only the bare repo cannot tell which variant serves.
     plan = _plan(monkeypatch, _world("off", [QWEN]), {"model": QWEN, "variant": "Q8_0"})
     assert plan["would_evict_exact"] is False
@@ -380,19 +379,18 @@ def test_a_speech_to_text_load_may_release_the_other_engines_model(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "args,exact",
+    "args",
     [
-        ({"model": QWEN, "variant": "Q4_K_M"}, True),
-        # Another device, a default variant or another spelling of a local path may load it again.
-        ({"model": QWEN, "variant": "Q4_K_M", "device": "gpu"}, False),
-        ({"model": QWEN, "variant": "Q4_K_M", "kv_cache_type": "q8_0"}, False),
-        ({"model": QWEN}, False),
+        # The same variant may still load again (another context, device or cache type).
+        {"model": QWEN, "variant": "Q4_K_M"},
+        {"model": QWEN, "variant": "Q4_K_M", "kv_cache_type": "q8_0"},
+        {"model": QWEN},
     ],
 )
-def test_only_an_exact_resident_chat_variant_is_a_sure_no_op(monkeypatch, args, exact):
+def test_a_load_of_a_resident_chat_repo_is_a_possible_reload(monkeypatch, args):
     plan = _plan(monkeypatch, _world("off", [f"{QWEN}:Q4_K_M"]), args)
-    assert plan["would_evict_exact"] is exact
-    assert (plan["would_evict"] == []) is exact
+    assert _names(plan["would_evict"]) == {("llm", f"{QWEN}:Q4_K_M")}
+    assert plan["would_evict_exact"] is False
 
 
 def test_local_paths_keep_their_case(monkeypatch):
@@ -431,3 +429,16 @@ def test_gpu_layers_places_a_gguf_plan_like_device(monkeypatch):
         _names(on_gpu["would_evict"]) == {("image", FLUX_GGUF)}
         and on_gpu["would_evict_exact"] is True
     )
+
+
+def test_a_failed_listing_leaves_vision_unknown(monkeypatch):
+    calls = []
+
+    def listing(request, body):
+        # The CPU check reads it; the plan's own read then fails.
+        calls.append(1)
+        return VARIANTS if len(calls) == 1 else JSONResponse({}, status_code = 503)
+
+    world = {**_world("off", [], image = FLUX_GGUF), ("GET", "/api/hub/gguf-variants"): listing}
+    plan = _plan(monkeypatch, world, {"model": QWEN, "device": "cpu"})
+    assert plan["would_evict_exact"] is False

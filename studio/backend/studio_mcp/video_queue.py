@@ -31,6 +31,7 @@ PREFIX = "vq_"
 POLL_S = 2.0
 RETRY_S = 5.0
 MAX_MISSES = 15
+READ_S = 15.0
 MAX_RETRY_AFTER_S = 120.0
 CAPACITY = 64
 MAX_WAITING = 32
@@ -149,7 +150,11 @@ async def _wait_for_running(caller: Caller) -> None:
     seen, misses = False, 0
     while (running := _running.get(caller.account_id)) is not None:
         video_id, submitted_at = running
-        read = await try_json(caller, _video_path(video_id))
+        try:
+            # Bounded: a stalled read counts as a failed one rather than holding the queue forever.
+            read = await asyncio.wait_for(try_json(caller, _video_path(video_id)), READ_S)
+        except asyncio.TimeoutError:
+            read = None
         job = as_dict(read)
         # A failed read is no proof the video ended: only a run of them (it is gone) ends the wait.
         misses = 0 if isinstance(read, dict) else misses + 1
