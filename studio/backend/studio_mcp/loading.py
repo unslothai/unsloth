@@ -540,6 +540,8 @@ def _resident_matches(
     status: Any,
     model: str,
     body: Optional[dict] = None,
+    *,
+    settled: bool = True,
 ) -> bool:
     if not isinstance(status, dict) or status.get("loaded") is not True:
         return False
@@ -556,13 +558,16 @@ def _resident_matches(
     resident = opt_text(status.get("gguf_filename"))
     if resident:
         return os.path.normcase(resident) == os.path.normcase(wanted)
-    from hub.utils.gguf import extract_quant_token
+    from hub.utils.gguf import extract_quant_token, quant_token_with_bpw
 
     # Video status names only a GGUF's quant; a plain checkpoint has none to compare.
     quant = extract_quant_token(wanted) if wanted.lower().endswith(".gguf") else None
     if not quant:
         return True
     if (opt_text(status.get("gguf_variant")) or "").lower() != quant.lower():
+        return False
+    # Status drops a -3.97bpw style suffix, so until the load reports ready a sibling build matches too.
+    if not settled and quant_token_with_bpw(wanted) != quant:
         return False
     # MiniMax-H3 ships its fl2va and ref2va partitions at the same quant; status names the one loaded.
     h3_task = opt_text(status.get("h3_task"))
@@ -688,7 +693,7 @@ async def _media_ready(
             break
         if phase is None:
             status = await route_json("GET", routes["status"], caller = caller)
-            if _resident_matches(status, model, body):
+            if _resident_matches(status, model, body, settled = False):
                 break
             idle += 1
             if idle >= _IDLE_POLLS:

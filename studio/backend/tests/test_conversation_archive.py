@@ -123,6 +123,20 @@ def _tool_part(
     }
 
 
+def test_the_embedding_limit_is_read_once_per_pass_and_never_for_archived_turns(conn, monkeypatch):
+    from core.rag import embeddings
+
+    calls = []
+    monkeypatch.setattr(embeddings, "max_tokens", lambda model_name = None: calls.append(model_name))
+    turns = _turn("q1", "a1") + _turn("q2", "a2") + _turn("q3", "a3")
+    assert _archive(turns) == 3
+    assert len(calls) == 1
+
+    calls.clear()
+    assert conversation_archive.archive_turns(THREAD, [dict(m) for m in turns]) == 0
+    assert calls == []
+
+
 def test_evicted_turns_are_archived_under_the_conversation_scope(conn):
     written = _archive(_turn("what is a duck", "a waterfowl"))
 

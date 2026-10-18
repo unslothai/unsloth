@@ -2098,36 +2098,24 @@ def _cuda_cards_identical(gpu_ids: Optional[list[int]] = None) -> Optional[bool]
 
 
 def _nvidia_mig_gpu_indices_or_none() -> Optional[set[int]]:
-    """Physical indices of NVIDIA cards with MIG instances, from ``nvidia-smi -L``, or None when the
-    listing failed or came back empty (unknown, unlike a confirmed set with no MIG card)."""
+    """Physical indices of NVIDIA cards with MIG instances or MIG mode on (an instance-less one has no
+    CUDA device, so its row is no ordinal either), or None when discovery is unknown (a listing failed or
+    came back empty, unlike a confirmed set with no MIG card). Shares nvidia's caches, so a failed
+    listing backs off instead of re-running nvidia-smi per call."""
     try:
         from . import nvidia
-        result = nvidia.gpu_query.run_nvidia_smi(
-            [nvidia._nvidia_smi_executable(), "-L"],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 5,
-            env = nvidia.child_env_without_native_path_secret(),
-            **nvidia._windows_hidden_subprocess_kwargs(),
-        )
+
+        instances = nvidia.get_mig_gpu_indices_or_none()
+        if instances is None:
+            return None
+        mode = nvidia.get_mig_mode_gpu_indices_or_none()
+        return None if mode is None else instances | mode
     except Exception:
         return None
-    if result.returncode != 0 or not isinstance(result.stdout, str) or not result.stdout.strip():
-        return None
-    indices: set[int] = set()
-    current: Optional[int] = None
-    for line in result.stdout.splitlines():
-        if line.startswith("GPU "):
-            head = line[4:].split(":", 1)[0].strip()
-            current = int(head) if head.isdecimal() else None
-        elif current is not None and line.strip().startswith("MIG "):
-            indices.add(current)
-    return indices
 
 
-_cuda_ordinal_rows_cache: Dict[tuple, list[int]] = {}
+_cuda_ordinal_rows_cache: Dict[tuple, tuple[Optional[list[int]], float]] = {}
+_CUDA_ORDINAL_ROWS_RETRY_S = 300.0
 
 
 def _smi_rows_for_cuda_ordinals(parent_ids: list[int]) -> Optional[Dict[str, Any]]:
@@ -2145,17 +2133,20 @@ def _smi_rows_for_cuda_ordinals(parent_ids: list[int]) -> Optional[Dict[str, Any
         os.environ.get("CUDA_DEVICE_ORDER"),
         gpu_query._static_gen,
     )
-    rows = _cuda_ordinal_rows_cache.get(key)
-    if rows is None:
+    hit = _cuda_ordinal_rows_cache.get(key)
+    if hit is None or (hit[0] is None and time.monotonic() - hit[1] >= _CUDA_ORDINAL_ROWS_RETRY_S):
         try:
             from . import nvidia
             rows = nvidia.get_cuda_ordinal_smi_rows()
         except Exception:
             rows = None
-        if rows is None:
-            return None
+        # A failed join is remembered too (briefly): each attempt spawns a driver-API child with a 15 s timeout.
         _cuda_ordinal_rows_cache.clear()
-        _cuda_ordinal_rows_cache[key] = rows
+        _cuda_ordinal_rows_cache[key] = (rows, time.monotonic())
+    else:
+        rows = hit[0]
+    if rows is None:
+        return None
     if not rows:  # an integrated card: keep the pool-aware torch telemetry
         return None
     if len(rows) != len(parent_ids) or len(set(rows)) != len(rows):
