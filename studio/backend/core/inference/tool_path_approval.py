@@ -1225,27 +1225,17 @@ _BARE_SWITCH_RE = re.compile(r"^[/\\][^/\\.]*$")
 _OUTPUT_FILE_FLAGS = frozenset({"-o", "--output"})
 
 # Flags that name a file or directory the command writes, beyond `-o`/`--output`: ImageMagick's
-# `-write`/`+write`, pandoc's `--extract-media`/`--log`, and ffmpeg's log, SDP, stats, progress and
-# attachment-dump files, plus the HLS segment template and the segment muxer's list file.
+# `-write`/`+write` and pandoc's `--extract-media`/`--log`.
 _COMMAND_OUTPUT_FLAGS = {
     "magick": frozenset({"-write", "+write"}),
     "convert": frozenset({"-write", "+write"}),
     "pandoc": frozenset({"--extract-media", "--log"}),
-    "ffmpeg": frozenset(
-        {
-            "-passlogfile",
-            "-sdp_file",
-            "-vstats_file",
-            "-progress",
-            "-dump_attachment",
-            "-hls_segment_filename",
-            "-segment_list",
-        }
-    ),
 }
 
 # Tools that name their output positionally. `ffmpeg ... {[input_options] -i input} ... output`:
-# an operand that is no option's value, or the last one, is an output; option values are read.
+# an absolute operand is an output unless it is the value of an option that reads a file. ffmpeg's
+# options that write a file (`-passlogfile`, `-progress`, `-stats_enc_pre`, `-hls_segment_filename`,
+# ...) are too many to list, so an option nobody listed fails toward asking.
 # `magick input-file ... output-file` writes the last one; `compare image image [difference]` only
 # when the difference image is given. `display` and `animate` only show their files; `mogrify`
 # overwrites every image it is given, or writes them into its `-path` directory. ImageMagick 6
@@ -1267,30 +1257,47 @@ _MAGICK_VERB_OUTPUTS = {
     "mogrify": "all",
 }
 
-# `compare` flags that take no value, so the operand after one is still an image.
-_MAGICK_COMPARE_VALUELESS_FLAGS = frozenset(
-    "-verbose -quiet -subimage-search -identify -monitor -regard-warnings -separate -synchronize "
-    "-taint -version".split()
+# `compare` flags that consume the next word(s). Any other flag is taken as valueless, so an
+# unlisted valued flag counts its value as an image and can only add a prompt.
+_MAGICK_COMPARE_VALUE_FLAGS = dict.fromkeys(
+    "-alpha -authenticate -background -channel -colorspace -compose -compress -debug -decipher "
+    "-define -density -depth -dissimilarity-threshold -encipher -extract -format -fuzz -gravity "
+    "-highlight-color -interlace -log -lowlight-color -metric -precision -quality -read-mask "
+    "-sampling-factor -seed -similarity-threshold -size -type -virtual-pixel -write-mask".split(),
+    1,
+) | {"-limit": 2, "-set": 2}
+
+# ffmpeg options whose value is a file it reads: inputs, filter scripts, presets, attachments, and
+# `-/opt FILE`, which loads an option's value from FILE.
+_FFMPEG_READ_VALUE_FLAGS = frozenset(
+    "-i -filter_script -filter_complex_script -attach -fpre -vpre -apre -spre -pre "
+    "-hls_key_info_file".split()
 )
 
-# ffmpeg flags that take no value, so the operand after one is still positional.
-_FFMPEG_VALUELESS_FLAGS = frozenset(
-    "-y -n -an -vn -sn -dn -shortest -nostdin -hide_banner -stats -nostats -copyts".split()
+_MAGICK_COMMANDS = frozenset(
+    "magick convert composite montage mogrify compare display animate identify".split()
 )
+# `png:/out.png`: ImageMagick's explicit-format prefix, ahead of the file it names.
+_MAGICK_CODER_PREFIX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]+:(?=[/\\~]|[A-Za-z]:)")
+
+
+def _magick_images(args) -> "list[str]":
+    images, skip = [], 0
+    for arg in args:
+        if skip:
+            skip -= 1
+        elif len(arg) > 1 and arg[0] in "-+":
+            skip = _MAGICK_COMPARE_VALUE_FLAGS.get(arg, 0) if arg[0] == "-" else 0
+        else:
+            images.append(arg)
+    return images
 
 
 def _unlisted_command_operands(command, args) -> "list[tuple[str, bool]]":
     outputs = _POSITIONAL_OUTPUT_COMMANDS.get(command)
     if command == "magick" and args and args[0] in _MAGICK_VERB_OUTPUTS:
         outputs = _MAGICK_VERB_OUTPUTS[args[0]]
-    # `-metric AE` or `-fuzz 5%`: a flag's value is not one of the images.
-    image_args = args[1:] if command == "magick" else args
-    images = [
-        arg
-        for previous, arg in zip(["compare"] + image_args, image_args)
-        if arg[:1] not in "-+"
-        and (previous[:1] not in "-+" or previous in _MAGICK_COMPARE_VALUELESS_FLAGS)
-    ]
+    images = _magick_images(args[1:] if command == "magick" else args)
     output_flags = _OUTPUT_FILE_FLAGS | _COMMAND_OUTPUT_FLAGS.get(command, frozenset())
     operands = []
     writes_next = False
@@ -1313,8 +1320,10 @@ def _unlisted_command_operands(command, args) -> "list[tuple[str, bool]]":
             writing = writing or (len(images) >= 3 and index == len(args) - 1)
         elif outputs == "not_option_value":
             previous = args[index - 1] if index else ""
-            writing = writing or index == len(args) - 1 or not previous.startswith("-")
-            writing = writing or previous in _FFMPEG_VALUELESS_FLAGS
+            reads = previous.split(":")[0] in _FFMPEG_READ_VALUE_FLAGS or previous.startswith("-/")
+            writing = writing or not reads
+        if command in _MAGICK_COMMANDS and value.lower()[:5] != "file:":
+            value = _MAGICK_CODER_PREFIX_RE.sub("", value, count = 1)
         # A lone rooted word is a Windows switch (`/E`), unless it is the file the command writes.
         if _looks_absolute(value) and (writing or not _BARE_SWITCH_RE.match(value)):
             operands.append((value, writing))

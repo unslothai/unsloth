@@ -3813,6 +3813,11 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     "ffmpeg -i /recording.wav out.wav",
     "compare a.png b.png /usr/share/pixmaps/diff.png",
     "composite over.png base.png /usr/share/pixmaps/out.png",
+    "ffmpeg -i in.mp4 -stats_enc_pre /usr/share/doc/encode.log out.mp4",
+    "ffmpeg -i in.mp4 -benchmark /usr/share/sounds/out.mp4 -f null -",
+    "compare -respect-parentheses a.png b.png /usr/share/pixmaps/diff.png",
+    "magick in.png png:/usr/share/pixmaps/out.png",
+    "magick in.png PNG32:/home/alice/out.png",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
@@ -4175,6 +4180,8 @@ _INDIRECT_BENIGN_TERMINAL = (
     "compare /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png",
     "compare -metric AE /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png null:",
     "cd /usr/share/sounds && ffprobe alert.wav",
+    "magick compare -fuzz 5% -metric AE /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png",
+    "magick png:/usr/share/pixmaps/a.png out.jpg",
 )
 
 _INDIRECT_BENIGN_PYTHON = (
