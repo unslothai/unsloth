@@ -729,3 +729,14 @@ def test_merged_dtype_refuses_an_older_zoo(saving):
         )
     # Refused before the base model is downloaded into the Hub cache.
     assert records["merges"] == [] and prewarmed == []
+
+
+def test_adapter_push_against_a_local_reap_base_uploads_nothing(saving, tmp_path):
+    # reap_prune(..., save_directory) then LoRA: the adapter's base is a folder only this machine has.
+    env, records, _ = saving
+    model = PeftModel()
+    model._unsloth_reap_report = {"model.layers.0.mlp": [0, 2]}
+    model._unsloth_reap_saved = str(tmp_path)
+    with pytest.raises(RuntimeError, match = "exists only on this machine"):
+        env["unsloth_generic_push_to_hub_merged"](model, "owner/adapter", save_method = "lora")
+    assert records["repos"] == records["branches"] == records["merges"] == records["uploads"] == []
