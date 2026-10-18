@@ -85,9 +85,11 @@ jobs:
 
       - name: Confirm the Arrow tag is the pinned commit
         shell: pwsh
+        env:
+          PINNED_COMMIT: ${{ inputs.arrow_commit }}
         run: |
           $ErrorActionPreference = "Stop"
-          $pin = "${{ inputs.arrow_commit }}"
+          $pin = $env:PINNED_COMMIT
           if ($pin -notmatch '^[0-9a-f]{40}$') {
             Write-Output "::error::arrow_commit must be a full commit SHA, got '$pin'."
             exit 1
@@ -323,9 +325,11 @@ jobs:
 
       - name: Confirm the sqlite-vec tag is the pinned commit
         shell: pwsh
+        env:
+          PINNED_COMMIT: ${{ inputs.sqlite_vec_commit }}
         run: |
           $ErrorActionPreference = "Stop"
-          $pin = "${{ inputs.sqlite_vec_commit }}"
+          $pin = $env:PINNED_COMMIT
           if ($pin -notmatch '^[0-9a-f]{40}$') {
             Write-Output "::error::sqlite_vec_commit must be a full commit SHA, got '$pin'."
             exit 1

@@ -118,4 +118,7 @@ def test_upstream_tags_are_checked_against_a_pinned_commit(
     guard = names.index(step)
     assert guard == checkout + 1, "the pin must be confirmed straight after the checkout"
     body = steps[guard]["run"]
-    assert f"inputs.{commit_input}" in body and "rev-parse HEAD" in body and "[0-9a-f]{40}" in body
+    # Through the environment, never interpolated into the script.
+    assert steps[guard]["env"]["PINNED_COMMIT"] == f"${{{{ inputs.{commit_input} }}}}"
+    assert "${{" not in body
+    assert "$env:PINNED_COMMIT" in body and "rev-parse HEAD" in body and "[0-9a-f]{40}" in body
