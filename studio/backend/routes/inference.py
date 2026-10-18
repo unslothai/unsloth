@@ -5733,12 +5733,7 @@ def _prune_pending(now: float) -> None:
 
 
 class _TrackedCancel:
-    """Register cancel_event in _CANCEL_REGISTRY for the block's duration.
-
-    Also records the run in state.active_generations so /load and /unload can
-    see which chats a reload would interrupt. Both registries share this event,
-    so either one cancels down the same per-request path.
-    """
+    """track one event in both cancellation and active-generation registries."""
 
     def __init__(
         self,
@@ -5749,15 +5744,20 @@ class _TrackedCancel:
         model = None,
         kind = "chat",
         track_run = True,
+        external = False,
     ):
         self.event = event
         self.keys = tuple(_account_cancel_key(k) for k in keys if k)
-        # kind reaches the swap prompt: embeddings and raw completions have no conversation, so
-        # naming them chats would offer to stop something the user never started from a thread.
-        # track_run=False only adds cancel keys to a run another tracker already records.
+        # kind avoids calling embeddings and raw completions chats in the swap prompt.
+        # track_run=False adds cancel keys to a run recorded by another tracker.
         self._active = (
             active_generations.ActiveGeneration(
-                event, thread_id = thread_id, run_id = run_id, model = model, kind = kind
+                event,
+                thread_id = thread_id,
+                run_id = run_id,
+                model = model,
+                kind = kind,
+                external = external,
             )
             if track_run
             else None
@@ -5765,19 +5765,24 @@ class _TrackedCancel:
         self._slot = None
 
     @classmethod
-    def for_payload(cls, event: threading.Event, payload, *keys):
-        """Track the run against the conversation its request names."""
+    def for_payload(
+        cls,
+        event: threading.Event,
+        payload,
+        *keys,
+        external = False,
+    ):
         return cls(
             event,
             *keys,
             thread_id = getattr(payload, "thread_id", None),
             run_id = getattr(payload, "generation_run_id", None),
             model = getattr(payload, "model", None),
+            external = external,
         )
 
     def __enter__(self):
-        # Register + consume-pending in one critical section to close the
-        # TOCTOU race against a concurrent cancel POST.
+        # keep registration and pending-cancel consumption atomic with concurrent cancellation.
         should_cancel = False
         with _CANCEL_LOCK:
             for k in self.keys:
@@ -9349,7 +9354,7 @@ async def _wait_for_model_switch_idle(
         elsewhere = model_slots.all_generations()
         active_others -= min(active_others, len(elsewhere))
         if cancel_pending:
-            cancellable = active_generations.count(account_id, elsewhere)
+            cancellable = active_generations.count(account_id, elsewhere, include_external = False)
             active_others -= min(active_others, cancellable)
         if active_others <= queued_switches:
             return
@@ -17612,41 +17617,26 @@ def _raise_or_cancel_active_generations(
     action: str,
     cancel: bool = True,
 ) -> int:
-    """Gate a model swap on the chats currently generating.
-
-    Every open conversation decodes on the single llama-server this route is
-    about to replace, so refuse with 409 and name them. force_cancel_active
-    instead stops them through the same events an explicit Stop uses. Returns
-    how many were cancelled. The frontend guard is bypassable from a second tab
-    or curl; this one is not.
-
-    ``cancel = False`` runs the refusal half only. /load calls it that way once
-    up front, so a non-forced swap still fails fast, and again with cancel just
-    before teardown: cancelling is destructive and unrecoverable, so it must not
-    run ahead of preflight checks that can still reject the load (see
-    _load_model_impl).
-    """
+    """refuse model swaps that would stop managed chats, or cancel them only after preflight."""
     from core.inference.gpu_arbiter import require_no_foreign_generations
 
     scope = account_access.account_scope()
     if scope is not None:
-        # Before the count and the cancel: a foreign generation refuses the swap, so cancelling
-        # first would end the caller's chats for nothing. Keyed on account_scope(), whose count
-        # drops while a deactivated account's generation still holds the GPU.
+        # account_scope() catches deactivated GPU use; check it before any destructive cancellation.
         require_no_foreign_generations(scope)
     elsewhere = model_slots.all_generations()
-    if not active_generations.count(scope, elsewhere):
+    if not active_generations.count(scope, elsewhere, include_external = False):
         return 0
     if not force:
         raise _active_generations_conflict(
             action,
-            active_generations.count(scope, elsewhere),
-            active_generations.active_thread_ids(scope, elsewhere),
+            active_generations.count(scope, elsewhere, include_external = False),
+            active_generations.active_thread_ids(scope, elsewhere, include_external = False),
         )
     if not cancel:
-        # Refusal-only pass: the caller cancels later, once nothing can still reject the load.
+        # the caller cancels only after preflight can no longer reject the load.
         return 0
-    cancelled = active_generations.cancel_all(scope, elsewhere)
+    cancelled = active_generations.cancel_all(scope, elsewhere, include_external = False)
     if cancelled:
         logger.info(
             "model_swap_cancelled_active_generations",
@@ -17659,23 +17649,7 @@ _POST_CANCEL_DRAIN_TIMEOUT_S = 5.0
 
 
 async def _cancel_and_drain_for_sidecar_swap(timeout_s: Optional[float] = None) -> None:
-    """Clear the way for a confirmed sidecar swap, then stop the chats it interrupts.
-
-    The installer gates on the middleware's in-flight count, not on
-    active_generations, so it also sees requests the cancel cannot stop. Drain
-    those FIRST, discounting the registered chats (they are what the cancel is
-    for, so waiting on them would wait out the point of the force). Only then
-    cancel, and let the survivors unwind. Cancelling first meant an unrelated
-    counted request -- a /v1/messages/count_tokens, say -- was still there for
-    the caller's recheck, which then refused an install that had already stopped
-    every chat for nothing.
-
-    Bounded on both halves: the requests being waited on may never observe a
-    cancel, and this holds the lifecycle gate and the sidecar reservation inside
-    ``asyncio.shield``, so an unbounded wait would wedge the process. Expiring in
-    the first half returns without cancelling, so the caller's recheck refuses
-    with the chats untouched.
-    """
+    """drain unrelated requests before cancellation so a rejected install cannot stop chats for nothing."""
     from core.inference.llama_keepwarm import other_inference_request_count
 
     budget = _POST_CANCEL_DRAIN_TIMEOUT_S if timeout_s is None else timeout_s
@@ -17686,16 +17660,14 @@ async def _cancel_and_drain_for_sidecar_swap(timeout_s: Optional[float] = None) 
                 current_request_counted = False, include_pending = False
             )
             if discount_registered:
-                counted -= min(counted, active_generations.count())
+                counted -= min(counted, active_generations.count(None, include_external = False))
             if counted <= 0:
                 return True
             if time.monotonic() >= deadline:
                 return False
             await asyncio.sleep(0.02)
 
-    # Weighted, not halved, so the total wait under the gate is unchanged. The first drain only
-    # asks whether unrelated inference is in flight; cutting the second short refused installs
-    # whose chats had already been stopped for nothing.
+    # reserve most of the unchanged budget for chats that have been cancelled and are unwinding.
     if not await _drain(time.monotonic() + budget / 5, discount_registered = True):
         return
     _raise_or_cancel_active_generations(force = True, action = "Installing a new transformers version")
@@ -17892,16 +17864,9 @@ async def get_active_generations(
     current_subject: str = Depends(get_current_subject),
     model: Optional[str] = None,
 ):
-    """Conversations currently generating, plus how many can decode at once.
-
-    Lets a model swap name the chats it would interrupt, including runs this tab
-    cannot see (another tab, or a reload behind a proxy). parallel_slots is the
-    slot count actually in use, which the VRAM fit may have cut below the
-    requested --parallel; chats beyond it queue rather than fail.
-    """
+    """return interruptible local generations and the effective decode capacity."""
     scope = account_access.account_scope()
-    # ``model``: only the chats an unload of that model stops, the same split its scoped 409 uses.
-    exclude, only, llama = (), None, None
+    exclude, only, llama = set(), None, None
     if model and model_slots.slots:
         slot = await asyncio.to_thread(
             model_slots.serving_slot, model, model_slots.visible(), _loaded_satisfies
@@ -17909,12 +17874,11 @@ async def get_active_generations(
         if slot is not None:
             only, llama = set(slot.generations), slot.llama
         elif await asyncio.to_thread(model_slots.in_slot, None, lambda: _loaded_satisfies(model)):
-            exclude = model_slots.all_generations()
+            exclude |= model_slots.all_generations()
         else:
-            only = set()  # no loaded model by that name: its unload stops nothing
-    entries = active_generations.snapshot(scope, exclude, only)
-    # A tracker's model can be a native local path (the legacy stream records active_model_name
-    # verbatim); redact here, the one place that serialises it.
+            only = set()  # an absent model cannot interrupt any generation
+    entries = active_generations.snapshot(scope, exclude, only, include_external = False)
+    # legacy streams record native model paths, so redact them at the serialization boundary.
     for _entry in entries:
         if isinstance(_entry.get("model"), str):
             _entry["model"] = redact_native_paths(_entry["model"])
@@ -17926,19 +17890,15 @@ async def get_active_generations(
     return {
         "active": entries,
         "count": len(entries),
-        "thread_ids": active_generations.active_thread_ids(scope, exclude, only),
+        "thread_ids": active_generations.active_thread_ids(
+            scope, exclude, only, include_external = False
+        ),
         "parallel_slots": max(1, int(slots)),
     }
 
 
 def _mlx_runtime_settings_match(backend, request) -> bool:
-    """Whether a loaded model already runs the request's MLX runtime settings.
-
-    Only the MLX backend records these, so a backend that never stored them
-    (GGUF, CUDA safetensors) always matches and reuse is unaffected. Both sides
-    are normalized, otherwise an out-of-domain value would differ from the
-    stored None on every request and reload forever.
-    """
+    """match normalized MLX settings without forcing reloads for backends that do not record them."""
     entry = backend.models.get(backend.active_model_name, {}) or {}
     if "mlx_kv_quant_requested" not in entry:
         return True
@@ -30116,14 +30076,13 @@ async def _proxy_to_external_provider(
         finally:
             cancel_event.set()
             if disconnect_task is not None:
-                # Joined so its outcome is retrieved. No bounded stop needed: cancel_event is
-                # set above, so the loop exits even if is_disconnected() eats the cancel (#7617).
+                # cancel_event ends the loop if is_disconnected() swallows cancellation (#7617).
                 disconnect_task.cancel()
                 await asyncio.gather(disconnect_task, return_exceptions = True)
             try:
                 await gen.aclose()
             except RuntimeError:
-                pass  # suppress httpcore asyncgen cleanup error (Python 3.13 + httpcore 1.0.x)
+                pass  # httpcore cleanup may raise on Python 3.13 with httpcore 1.0.x
             await client.close()
 
     def _tracked_stream():
@@ -30132,12 +30091,14 @@ async def _proxy_to_external_provider(
 
         async def _wrapped():
             inner = _stream()
-            with _TrackedCancel.for_payload(cancel_event, payload, *cancel_keys):
+            with _TrackedCancel.for_payload(
+                cancel_event, payload, *cancel_keys, external = managed is None
+            ):
                 try:
                     async for chunk in inner:
                         yield chunk
                 finally:
-                    # Close it now, not at garbage collection: that releases the upstream request.
+                    # explicit close releases the upstream request before garbage collection.
                     await inner.aclose()
 
         return _wrapped()
