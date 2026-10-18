@@ -26,6 +26,7 @@ import {
 import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text";
 import { refreshContextUsage } from "@/features/chat/utils/refresh-context-usage";
 import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
+import { useKeyboardLayoutMap } from "../lib/keyboard-layout-map";
 import { useIsAccountOwner } from "@/features/auth";
 import { useUserProfileStore } from "@/features/profile";
 import { type TranslationKey, useT } from "@/i18n";
@@ -404,9 +405,11 @@ export function ChatTab() {
   // as "put it in the box" whatever this threshold says. macOS carries it on
   // Option, that being the chord its Edit menu binds.
   const macPlatform = isMacPlatform();
+  const layoutMap = useKeyboardLayoutMap();
   const plainPasteLabel = formatBindingLabel(
     { code: "KeyV", mod: true, ctrl: false, shift: true, alt: macPlatform },
     macPlatform,
+    layoutMap ?? null,
   );
 
   useEffect(() => {

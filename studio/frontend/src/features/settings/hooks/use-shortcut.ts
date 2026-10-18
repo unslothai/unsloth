@@ -8,9 +8,11 @@ import {
   type ShortcutId,
   activationBelongsToFocus,
   formatBindingLabel,
+  isMacPlatform,
   matchesBinding,
   parseBinding,
 } from "../lib/keyboard-shortcuts";
+import { useKeyboardLayoutMap } from "../lib/keyboard-layout-map";
 import {
   resolveBinding,
   shortcutOwningBinding,
@@ -281,17 +283,21 @@ export function useShortcut(
  * would name a chord that stopped working the moment the user rebound it.
  */
 export function useShortcutLabel(id: ShortcutId): string | null {
+  const layoutMap = useKeyboardLayoutMap();
   const value = useKeyboardShortcutsStore((s) =>
     resolveBinding(s.overrides, id),
   );
   return useMemo(() => {
     const binding = parseBinding(value);
-    return binding ? formatBindingLabel(binding) : null;
-  }, [value]);
+    return binding
+      ? formatBindingLabel(binding, isMacPlatform(), layoutMap ?? null)
+      : null;
+  }, [value, layoutMap]);
 }
 
 /** Both chords, for surfaces that want to show the alternate too. */
 export function useShortcutLabels(id: ShortcutId): string[] {
+  const layoutMap = useKeyboardLayoutMap();
   const values = useBindingValues(id);
   return useMemo(
     () =>
@@ -299,7 +305,9 @@ export function useShortcutLabels(id: ShortcutId): string[] {
         .split("\0")
         .map((value) => parseBinding(value))
         .filter((binding): binding is ShortcutBinding => binding !== null)
-        .map((binding) => formatBindingLabel(binding)),
-    [values],
+        .map((binding) =>
+          formatBindingLabel(binding, isMacPlatform(), layoutMap ?? null),
+        ),
+    [values, layoutMap],
   );
 }

@@ -11,6 +11,7 @@ import {
   defaultBindingFor,
   formatBindingLabel,
   formatBindingValue,
+  formatCode,
   activationBelongsToFocus,
   isAcceptableBinding,
   isBrowserReservedBinding,
@@ -666,6 +667,21 @@ test("labels use each platform's own modifier notation", () => {
   const comma = parseBinding("Mod+Comma");
   assert.ok(comma);
   assert.equal(formatBindingLabel(comma, true), "⌘,");
+});
+
+test("labels follow the active keyboard layout when a layout map is provided", () => {
+  const dvorak = new Map<string, string>([
+    ["KeyB", "x"],
+    ["KeyN", "b"],
+  ]);
+  const sidebar = parseBinding("Mod+KeyB");
+  assert.ok(sidebar);
+  assert.equal(formatBindingLabel(sidebar, false, dvorak), "Ctrl+X");
+  const recorded = parseBinding("Mod+KeyN");
+  assert.ok(recorded);
+  assert.equal(formatBindingLabel(recorded, false, dvorak), "Ctrl+B");
+  assert.equal(formatCode("KeyB", dvorak), "X");
+  assert.equal(formatCode("KeyB"), "B");
 });
 
 test("an override wins, and null means unassigned", () => {

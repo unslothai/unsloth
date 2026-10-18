@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TranslationKey } from "@/i18n";
+import type { KeyboardLayoutMapLike } from "./keyboard-layout-map";
 
 /**
  * Every rebindable action. To add one: an entry in SHORTCUT_DEFS, its two i18n keys in all
@@ -591,8 +592,8 @@ export function keystrokeMatchesBinding(
   return true;
 }
 
-/** Human label for a code: "KeyO" -> "O", "Comma" -> ",", "ArrowUp" -> "↑". */
-export function formatCode(code: string): string {
+/** QWERTY cap label when the Keyboard Layout API is unavailable. */
+function formatCodeQwertyCap(code: string): string {
   if (code.startsWith("Key") && code.length === 4) return code.slice(3);
   if (code.startsWith("Digit") && code.length === 6) return code.slice(5);
   const named: Record<string, string> = {
@@ -621,13 +622,40 @@ export function formatCode(code: string): string {
   return named[code] ?? code;
 }
 
+function formatLayoutKeyLabel(key: string, code: string): string {
+  if (key.length === 1) {
+    if (/^[a-z]$/.test(key)) return key.toUpperCase();
+    return key;
+  }
+  if (/^F\d{1,2}$/.test(key)) return key;
+  return formatCodeQwertyCap(code);
+}
+
+/**
+ * Human label for a code. With a layout map, names the key the user sees on their
+ * keyboard; otherwise falls back to the QWERTY cap ("KeyO" → "O").
+ */
+export function formatCode(
+  code: string,
+  layoutMap?: KeyboardLayoutMapLike | null,
+): string {
+  if (layoutMap) {
+    const key = layoutMap.get(code);
+    if (key !== undefined && key !== "") {
+      return formatLayoutKeyLabel(key, code);
+    }
+  }
+  return formatCodeQwertyCap(code);
+}
+
 /** Display string, in the platform's own modifier order: macOS renders ⌃⌥⇧⌘ then the key,
  *  everything else spells the modifiers out. */
 export function formatBindingLabel(
   binding: ShortcutBinding,
   mac = isMacPlatform(),
+  layoutMap?: KeyboardLayoutMapLike | null,
 ): string {
-  const key = formatCode(binding.code);
+  const key = formatCode(binding.code, layoutMap);
   if (mac) {
     let out = "";
     if (binding.ctrl) out += "⌃";
@@ -647,9 +675,10 @@ export function formatBindingLabel(
 export function formatBindingValueLabel(
   value: string | null,
   mac = isMacPlatform(),
+  layoutMap?: KeyboardLayoutMapLike | null,
 ): string | null {
   const parsed = parseBinding(value);
-  return parsed ? formatBindingLabel(parsed, mac) : null;
+  return parsed ? formatBindingLabel(parsed, mac, layoutMap) : null;
 }
 
 /**
