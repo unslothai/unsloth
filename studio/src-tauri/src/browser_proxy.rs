@@ -7,9 +7,11 @@
 
 use crate::browser_webview::{host_is_private, ip_is_private};
 use hyper_util::client::proxy::matcher::Matcher;
+use std::collections::hash_map::RandomState;
+use std::hash::{BuildHasher, Hasher};
 use std::net::{IpAddr, SocketAddr};
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use url::{Host, Position, Url};
@@ -499,10 +501,54 @@ async fn connect_within(host: &str, port: u16) -> Result<TcpStream, Refusal> {
             .map_err(|_| Refusal::Unreachable)?
             .collect(),
     };
-    if addresses.iter().any(|address| ip_is_private(address.ip())) {
+    let answers: Vec<IpAddr> = addresses.iter().map(SocketAddr::ip).collect();
+    if answers_are_private(&answers).await {
         return Err(Refusal::Private);
     }
     dial(addresses).await
+}
+
+/// Whether any DNS answer is private. Fake-IP answers (198.18.0.0/15) pass only once the resolver
+/// probe confirms fake-IP DNS; literals are refused earlier by `public_host`.
+async fn answers_are_private(answers: &[IpAddr]) -> bool {
+    if answers
+        .iter()
+        .any(|&ip| ip_is_private(ip) && !is_fake_ip(ip))
+    {
+        return true;
+    }
+    answers.iter().any(|&ip| is_fake_ip(ip)) && !resolver_is_fake_ip().await
+}
+
+fn is_fake_ip(ip: IpAddr) -> bool {
+    matches!(ip, IpAddr::V4(v4) if u32::from(v4) >> 17 == 0xc612_0000 >> 17)
+}
+
+const FAKE_IP_PROBE_TTL: Duration = Duration::from_secs(60);
+static FAKE_IP_RESOLVER: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+
+/// Whether an unregistered name resolves into the fake-IP range. Without this, any public domain could point into it.
+async fn resolver_is_fake_ip() -> bool {
+    let cached = *FAKE_IP_RESOLVER.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((checked, answer)) = cached {
+        if checked.elapsed() < FAKE_IP_PROBE_TTL {
+            return answer;
+        }
+    }
+    let label = RandomState::new().build_hasher().finish();
+    let probe = tokio::time::timeout(
+        ADDRESS_TIMEOUT,
+        tokio::net::lookup_host((format!("unsloth-{label:016x}.com"), 443)),
+    );
+    let answer = match probe.await {
+        Ok(Ok(addresses)) => {
+            let answers: Vec<IpAddr> = addresses.map(|address| address.ip()).collect();
+            !answers.is_empty() && answers.into_iter().all(is_fake_ip)
+        }
+        _ => false,
+    };
+    *FAKE_IP_RESOLVER.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), answer));
+    answer
 }
 
 async fn dial(addresses: impl IntoIterator<Item = SocketAddr>) -> Result<TcpStream, Refusal> {
@@ -589,10 +635,11 @@ async fn refuse_private_answers(host: &Host<String>, port: u16) -> Result<(), Re
         ADDRESS_TIMEOUT,
         tokio::net::lookup_host((name.as_str(), port)),
     );
-    let private = answers.await.is_ok_and(|answers| {
-        answers.is_ok_and(|mut answers| answers.any(|answer| ip_is_private(answer.ip())))
-    });
-    if private {
+    let Ok(Ok(answers)) = answers.await else {
+        return Ok(());
+    };
+    let answers: Vec<IpAddr> = answers.map(|answer| answer.ip()).collect();
+    if answers_are_private(&answers).await {
         return Err(Refusal::Private);
     }
     Ok(())
@@ -1426,6 +1473,9 @@ mod tests {
             "printer.local",
             "wiki.corp",
             "router.home",
+            "198.18.0.1",
+            "3323068417",
+            "[::ffff:c612:1]",
         ] {
             assert_eq!(
                 connect(host, 80).await.err(),
@@ -1433,6 +1483,30 @@ mod tests {
                 "{host}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn fake_ip_answers_pass_only_behind_a_fake_ip_resolver() {
+        let ips =
+            |list: &[&str]| -> Vec<IpAddr> { list.iter().map(|ip| ip.parse().unwrap()).collect() };
+        let fake = ips(&["198.18.0.24"]);
+        let edges = ips(&["198.19.255.254", "198.17.255.255", "198.20.0.1"]);
+        for (resolver, fake_refused) in [(true, false), (false, true)] {
+            *FAKE_IP_RESOLVER.lock().unwrap() = Some((Instant::now(), resolver));
+            assert_eq!(answers_are_private(&fake).await, fake_refused, "{resolver}");
+            assert_eq!(
+                answers_are_private(&edges).await,
+                fake_refused,
+                "{resolver}"
+            );
+            for private in ["10.0.0.1", "192.168.1.1", "127.0.0.1", "::ffff:198.18.0.1"] {
+                assert!(
+                    answers_are_private(&ips(&["198.18.0.7", private])).await,
+                    "{private}"
+                );
+            }
+        }
+        *FAKE_IP_RESOLVER.lock().unwrap() = None;
     }
 
     #[tokio::test]
