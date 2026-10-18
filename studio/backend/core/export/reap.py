@@ -103,17 +103,24 @@ def _maps_to_16_bit(model: str) -> bool:
         return False
 
 
+class MoeProbeError(RuntimeError):
+    """The config could not be read (network, Hub, I/O): unknown, not a dense answer, so an export
+    with REAP on must wait or have REAP turned off rather than go out unpruned."""
+
+
 def hub_file_exists(
     repo: str,
     filename: str,
     hf_token = None,
 ) -> bool:
+    """Whether a Hub repo has ``filename``. file_exists answers False only for a definite absence
+    (repo, file or revision not found); anything else (timeout, auth, gated) is unknown and raises
+    ``MoeProbeError``, so a file that would make REAP fail after the load is never assumed away."""
     try:
         from huggingface_hub import HfApi
         return bool(HfApi(token = hf_token).file_exists(repo, filename))
     except Exception as exc:
-        logger.debug("Could not check '%s' for %s: %s", repo, filename, exc)
-        return False
+        raise MoeProbeError(f"Could not check '{repo}' for {filename}: {exc}") from exc
 
 
 def hub_adapter_has_mtp_head(repo: str, hf_token = None) -> bool:
@@ -179,11 +186,6 @@ def moe_info_from_config(
         # Core prunes per group, so the UI must count the same way.
         info.update(n_group = n_group, topk_group = topk_group)
     return info
-
-
-class MoeProbeError(RuntimeError):
-    """The config could not be read (network, Hub, I/O): unknown, not a dense answer, so an export
-    with REAP on must wait or have REAP turned off rather than go out unpruned."""
 
 
 def moe_export_info(

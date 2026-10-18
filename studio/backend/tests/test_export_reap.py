@@ -480,6 +480,8 @@ def test_moe_info_route_follows_a_hub_lora_to_its_authorized_base(monkeypatch):
         return None if model == "me/lora" else {"num_experts": 8, "top_k": 2}
 
     monkeypatch.setattr(reap_mod, "moe_export_info", probe)
+    # No network: the up-front adapter check finds nothing, so the config-less fallback runs.
+    monkeypatch.setattr(reap_mod, "hub_file_exists", lambda repo, name, token = None: False)
     res = asyncio.run(
         export_route.get_moe_info(
             model = "me/lora", hf_token = "hf_x", current_subject = "t", allow_ambient = False
@@ -504,6 +506,8 @@ def test_local_adapter_with_a_hub_base_reads_the_base_online(tmp_path, monkeypat
         return {"num_experts": 8, "num_experts_per_tok": 2}
 
     monkeypatch.setattr(model_config, "_read_raw_config_json", read)
+    # The Hub base has no hf_quant_config.json (checked without network here).
+    monkeypatch.setattr(reap_mod, "hub_file_exists", lambda repo, name, token = None: False)
     assert reap_mod.moe_export_info(str(lora)) == {"num_experts": 8, "top_k": 2}
     # The adapter is local, its Hub base is not: an uncached base must still be fetched.
     assert calls == [("org/moe", False)]
@@ -1221,6 +1225,56 @@ def test_moe_info_route_answers_503_when_the_config_cannot_be_read(monkeypatch):
         asyncio.run(
             export_route.get_moe_info(
                 model = "org/moe", hf_token = None, current_subject = "t", allow_ambient = False
+            )
+        )
+    assert err.value.status_code == 503
+
+
+def test_hub_file_checks_tell_a_missing_file_from_an_unknown_one(monkeypatch):
+    import huggingface_hub
+
+    class Api:
+        answer = False
+
+        def __init__(self, token = None):
+            pass
+
+        def file_exists(self, repo, filename):
+            if isinstance(Api.answer, Exception):
+                raise Api.answer
+            return Api.answer
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", Api)
+    # file_exists answers False only for a definite absence.
+    assert reap_mod.hub_file_exists("org/lora", "mtp_head.safetensors") is False
+    Api.answer = True
+    assert reap_mod.hub_adapter_has_mtp_head("org/lora") is True
+    # A timeout or gated repo is unknown: never assumed absent.
+    Api.answer = TimeoutError("read timed out")
+    with pytest.raises(reap_mod.MoeProbeError, match = "timed out"):
+        reap_mod.hub_adapter_has_mtp_head("org/lora")
+
+
+def test_moe_info_route_answers_503_when_the_adapter_check_fails(monkeypatch):
+    from fastapi import HTTPException
+
+    from routes import export as export_route
+    import routes.models as models_route
+
+    monkeypatch.setattr(models_route, "_require_model_access_or_caller_token", _async_none)
+
+    def unknown(
+        repo,
+        name,
+        token = None,
+    ):
+        raise reap_mod.MoeProbeError(f"Could not check '{repo}' for {name}: timeout")
+
+    monkeypatch.setattr(reap_mod, "hub_file_exists", unknown)
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(
+            export_route.get_moe_info(
+                model = "org/lora", hf_token = None, current_subject = "t", allow_ambient = False
             )
         )
     assert err.value.status_code == 503

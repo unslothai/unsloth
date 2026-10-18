@@ -468,10 +468,10 @@ async def get_moe_info(
     probe_token = token or hf_token_arg(None, allow_ambient_token = allow_ambient)
     # The export loader follows a Hub repo's adapter_config.json even when it also ships a
     # config.json, so an adapter repo is probed through its base (and its MTP head) like a local one.
-    hub_adapter = not local and await asyncio.to_thread(
-        hub_file_exists, model, "adapter_config.json", probe_token
-    )
     try:
+        hub_adapter = not local and await asyncio.to_thread(
+            hub_file_exists, model, "adapter_config.json", probe_token
+        )
         # A local folder never reaches the network; a Hub id reads only its config.json.
         info = (
             None
