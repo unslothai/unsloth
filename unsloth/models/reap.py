@@ -344,6 +344,23 @@ def _collective_device():
     return device, torch.float64 if device.type in ("cuda", "cpu") else torch.float32
 
 
+def _ranks_agree(error, what):
+    """Every rank learns whether any rank failed ``what``, so all stop together instead of some
+    waiting in a later collective. Re-raises this rank's own error. No-op without a process group."""
+    dist = torch.distributed
+    if not (dist.is_available() and dist.is_initialized()) or dist.get_world_size() < 2:
+        if error is not None:
+            raise error
+        return
+    device, acc = _collective_device()
+    failed = torch.tensor([1.0 if error is not None else 0.0], dtype = acc, device = device)
+    dist.all_reduce(failed)
+    if error is not None:
+        raise error
+    if failed.item():
+        raise RuntimeError(f"Unsloth: REAP stopped because another rank failed to {what}.")
+
+
 class _Saliency:
     """Running sum of ``gate * ||expert output||`` and routed-token count per expert (float64)."""
 
@@ -541,6 +558,24 @@ def _residual_split(layer, block):
     return None
 
 
+def _resolve_dataset(dataset, tokenizer):
+    """The calibration rows to read: a DatasetDict's train (or only) split. Raises when text rows
+    come without a tokenizer. Data dependent, so it runs where every rank agrees on failures."""
+    if isinstance(dataset, dict):
+        # load_dataset(...) without split= gives a DatasetDict, which iterates its split names.
+        if "train" in dataset or len(dataset) == 1:
+            dataset = dataset["train"] if "train" in dataset else next(iter(dataset.values()))
+        else:
+            raise ValueError(
+                f"Unsloth: REAP got a dataset with the splits {sorted(dataset)}; pass one of them, "
+                "e.g. `dataset['validation']`."
+            )
+    if dataset is None or isinstance(dataset, str) or not _is_token_rows(dataset):
+        if tokenizer is None:
+            raise ValueError("Unsloth: REAP needs a tokenizer unless the dataset has `input_ids`.")
+    return dataset
+
+
 def _model_parallel_layout(model):
     """Name of a model-parallel layout (expert / tensor / pipeline / FSDP / sequence), else None."""
     distributed = getattr(getattr(model, "config", None), "distributed_config", None)
@@ -636,18 +671,6 @@ def reap_prune(
             f"Unsloth: REAP does not support {layout} models. Load the model on one device (or with "
             "`device_map`, or plain data parallel) to prune it."
         )
-    if isinstance(dataset, dict):
-        # load_dataset(...) without split= gives a DatasetDict, which iterates its split names.
-        if "train" in dataset or len(dataset) == 1:
-            dataset = dataset["train"] if "train" in dataset else next(iter(dataset.values()))
-        else:
-            raise ValueError(
-                f"Unsloth: REAP got a dataset with the splits {sorted(dataset)}; pass one of them, "
-                "e.g. `dataset['validation']`."
-            )
-    if dataset is None or isinstance(dataset, str) or not _is_token_rows(dataset):
-        if tokenizer is None:
-            raise ValueError("Unsloth: REAP needs a tokenizer unless the dataset has `input_ids`.")
     configs = _configs(model)
     num_experts = _first_attr(configs, _NUM_EXPERTS_KEYS)
     top_k = _first_attr(configs, _TOP_K_KEYS, per_layer = True)
@@ -657,7 +680,14 @@ def reap_prune(
         )
     n_group = _first_attr(configs, ("n_group", "num_expert_group"))
     topk_group = _first_attr(configs, ("topk_group", "top_k_group"))
-    if (n_group is None) != (topk_group is None):
+    if n_group is not None and n_group > 1 and topk_group is None:
+        # The router still splits experts into groups; pruning them globally would shift the
+        # group boundaries. A lone topk_group (or n_group 1) routes ungrouped.
+        raise ValueError(
+            f"Unsloth: REAP found n_group = {n_group} but no topk_group in the config, so it cannot "
+            "prune per router group."
+        )
+    if n_group is None or n_group <= 1 or topk_group is None:
         n_group = topk_group = None
 
     # Calibration runs each decoder stack alone on right padded text, which needs causal attention.
@@ -755,8 +785,15 @@ def reap_prune(
         pad_id = text_tokenizer.pad_token_id
         if pad_id is None:
             pad_id = text_tokenizer.eos_token_id or 0
-    ids = _calibration_ids(dataset, tokenizer, num_calibration_samples, max_seq_length)
-    batches = _batches(ids, max(max_batch_tokens, max(len(x) for x in ids)), pad_id)
+    error = None
+    try:
+        dataset = _resolve_dataset(dataset, tokenizer)
+        ids = _calibration_ids(dataset, tokenizer, num_calibration_samples, max_seq_length)
+        batches = _batches(ids, max(max_batch_tokens, max(len(x) for x in ids)), pad_id)
+    except Exception as e:
+        error = e
+    # One rank's empty or malformed shard must stop every rank before the per-layer collectives.
+    _ranks_agree(error, "prepare its calibration data")
     n_tokens = sum(len(x) for x in ids)
 
     report, saliencies = {}, {}
@@ -963,21 +1000,9 @@ def reap_prune(
                 if tokenizer is not None:
                     tokenizer.save_pretrained(save_directory)
             except Exception as e:
-                if not multi_rank:
-                    raise
                 error = e
-        if multi_rank:
-            # Rank 0 shares whether its write worked, so a failed save stops every rank instead of
-            # leaving the others waiting.
-            device, acc = _collective_device()
-            failed = torch.tensor([1.0 if error is not None else 0.0], dtype = acc, device = device)
-            dist.all_reduce(failed)
-            if error is not None:
-                raise error
-            if failed.item():
-                raise RuntimeError(
-                    f"Unsloth: REAP could not save the pruned model to {save_directory} on rank 0."
-                )
+        # Rank 0 shares whether its write worked (this also syncs the ranks before going on).
+        _ranks_agree(error, f"save the pruned model to {save_directory}")
         # Merged / GGUF saves read config._name_or_path; PEFT's adapter config reads model.name_or_path.
         for config in configs:
             config._name_or_path = save_directory

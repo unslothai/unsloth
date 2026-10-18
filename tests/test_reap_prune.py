@@ -612,6 +612,7 @@ def _prune_rank(
     save_dir,
     out,
     fail_save = False,
+    bad_shard = False,
 ):
     import os
     import torch.distributed as dist
@@ -637,7 +638,7 @@ def _prune_rank(
                 model,
                 None,
                 sparsity = 0.25,
-                dataset = _samples(n = 5, seed = 20 + rank),
+                dataset = [] if bad_shard and rank == 1 else _samples(n = 5, seed = 20 + rank),
                 device = "cpu",
                 save_directory = save_dir,
             )
@@ -695,4 +696,33 @@ def test_a_failed_rank_zero_save_stops_every_rank(tmp_path):
         p.join(timeout = 60)
         assert p.exitcode == 0
     assert results[0][1] == "error" and "No space left" in results[0][2]
-    assert results[1][1] == "error" and "rank 0" in results[1][2]
+    assert results[1][1] == "error" and "another rank failed to save" in results[1][2]
+
+
+def test_one_bad_calibration_shard_stops_every_rank(tmp_path):
+    # Rank 1's shard is empty: it must not leave rank 0 waiting in the first per-layer collective.
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")
+    out = ctx.Queue()
+    args = (str(tmp_path / "pg"), str(tmp_path / "pruned"), out, False, True)
+    procs = [ctx.Process(target = _prune_rank, args = (r, *args)) for r in range(2)]
+    for p in procs:
+        p.start()
+    results = sorted(out.get(timeout = 300) for _ in procs)
+    for p in procs:
+        p.join(timeout = 60)
+        assert p.exitcode == 0
+    assert results[0][1] == "error" and "another rank failed to prepare" in results[0][2]
+    assert results[1][1] == "error"
+
+
+def test_group_metadata_must_be_complete():
+    model = _qwen3_moe()
+    model.config.n_group = 2
+    with pytest.raises(ValueError, match = "no topk_group"):
+        reap.reap_prune(model, None, sparsity = 0.25, dataset = _samples(), device = "cpu")
+    # n_group 1 (or a lone topk_group) routes ungrouped and prunes globally.
+    model.config.n_group = 1
+    reap.reap_prune(model, None, sparsity = 0.25, dataset = _samples(), device = "cpu")
+    assert model._unsloth_reap_report
