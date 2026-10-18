@@ -289,7 +289,8 @@ def refuse_replacing_media(
         if policy == "always":
             raise refusal_for(slots, KIND_LABELS[owner])
         return slots
-    if policy == "always" and loading and names.isdisjoint(loading):
+    # The in-flight load's own repo comes first; the rest are companions it reads, not its identity.
+    if policy == "always" and loading and names.isdisjoint(aliases(loading[0])):
         raise refusal_for([], KIND_LABELS[owner])
     return []
 
