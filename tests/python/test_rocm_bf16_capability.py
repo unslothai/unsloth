@@ -117,7 +117,7 @@ def _fake_torch(
             get_device_properties = get_device_properties,
             is_bf16_supported = is_bf16_supported,
             is_available = lambda: True,
-            get_device_capability = lambda: (9, 0),
+            get_device_capability = lambda *a, **k: (9, 0),
         ),
         xpu = types.SimpleNamespace(is_bf16_supported = lambda: True),
     )

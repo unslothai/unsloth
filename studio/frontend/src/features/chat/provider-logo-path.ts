@@ -12,6 +12,7 @@ const HUB_PROVIDER_IDS = new Map([
   ["huggingface", "huggingface"],
   ["kimi", "moonshotai"],
   ["qwen", "qwen"],
+  ["qwencloud", "qwen"],
 ]);
 
 const HUB_LOGO_PATHS = new Map(
@@ -22,7 +23,7 @@ const HUB_LOGO_PATHS = new Map(
 const CONNECTION_LOGO_PATHS = new Map([
   ["gemini", "/provider-logos/gemini.svg"],
   ["anthropic", "/provider-logos/anthropic.svg"],
-  ["openrouter", "/provider-logos/openrouter.svg"],
+  ["openrouter", "/provider-logos/openrouter-mark.svg"],
   ["vllm", "/provider-logos/vllm.svg"],
   ["ollama", "/provider-logos/ollama.svg"],
   ["llama_cpp", "/provider-logos/llama_cpp.svg"],
