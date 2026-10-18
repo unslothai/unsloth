@@ -38,6 +38,10 @@ export interface VideoGenerationDefaults {
   resolution_multiple: number;
   // (width, height) presets the UI offers, default first.
   resolution_presets: Array<[number, number]>;
+  // Bounds a size off the presets must fit; absent on backends that accept only the presets.
+  custom_size_min_pixels?: number | null;
+  custom_size_max_pixels?: number | null;
+  custom_size_max_aspect?: number | null;
   // Backend-owned keyframe canvas rule, or null when unsupported.
   canvas_short_edge?: number | null;
   canvas_max_pixels?: number | null;
@@ -194,9 +198,9 @@ export interface VideoGenerateRequest {
   live_preview?: boolean;
   negative_prompt?: string;
   // Width/height/num_frames/fps default per loaded family, so they are optional. When sent they
-  // must match that family's rules -- a resolution preset, and num_frames on the
+  // must match that family's rules -- a size near its presets, and num_frames on the
   // k*frame_step+1 lattice -- or the backend answers 422 with the supported shapes.
-  // Width/height must be one of status.defaults.resolution_presets.
+  // Width/height sit on resolution_multiple inside the custom_size_* bounds, or are a preset.
   width?: number;
   height?: number;
   num_frames?: number;

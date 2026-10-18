@@ -5472,6 +5472,15 @@ def _create_embedding_progress_callback(
     return _EmbeddingProgressCallback()
 
 
+def _csv_number(cell):
+    from utils.datasets.cells import _NA_CELLS
+
+    text = (cell or "").strip()
+    if text.lower() in ("true", "false"):
+        return float(text.lower() == "true")
+    return None if text in _NA_CELLS else float(text)
+
+
 def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Self-contained embedding model training pipeline. Uses FastSentenceTransformer +
     SentenceTransformerTrainer + MultipleNegativesRankingLoss, separate from UnslothTrainer's
@@ -5662,6 +5671,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         config["_dataset_loaded_from_exact_snapshot"] = False
         hf_dataset = str(config.get("hf_dataset") or "").strip()
         local_datasets = config.get("local_datasets") or []
+        csv_text_columns: list[str] = []
 
         def _load_local_embedding_dataset(dataset_paths: list[str]):
             from utils.paths import dataset_files_in_dir
@@ -5694,7 +5704,29 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 loader = "parquet"
             else:
                 raise ValueError(f"Unsupported local dataset format: {all_files[0]}")
-            return load_dataset(loader, data_files = all_files, split = "train")
+            from datasets import Features, Value
+            from utils.datasets.cells import csv_as_text_kwargs, typed_csv_columns
+
+            dataset = load_dataset(
+                loader,
+                data_files = all_files,
+                split = "train",
+                **csv_as_text_kwargs(all_files),
+            )
+            if loader != "csv":
+                return dataset
+            labels = typed_csv_columns(dataset) & {"label", "labels", "score", "scores"}
+            for column in labels:
+                dataset = dataset.map(
+                    lambda cells: {column: [_csv_number(cell) for cell in cells]},
+                    input_columns = column,
+                    batched = True,
+                    features = Features({**dataset.features, column: Value("float64")}),
+                )
+            csv_text_columns[:] = [
+                column for column in dataset.column_names if column not in labels
+            ]
+            return dataset
 
         if hf_dataset:
             dataset = _load_embedding_hf_dataset(
@@ -5748,6 +5780,25 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             start = slice_start if slice_start is not None else 0
             end = slice_end if slice_end is not None else len(dataset)
             dataset = dataset.select(range(start, min(end + 1, len(dataset))))
+
+        if csv_text_columns:
+            kept = dataset.filter(
+                lambda *columns: [None not in cells for cells in zip(*columns)],
+                input_columns = csv_text_columns,
+                batched = True,
+            )
+            if len(dataset) and not len(kept):
+                raise ValueError(f"All {len(dataset):,} rows have an empty text cell.")
+            if len(kept) < len(dataset):
+                event_queue.put(
+                    {
+                        "type": "warning",
+                        "message": f"Dropped {len(dataset) - len(kept):,} of {len(dataset):,} "
+                        "rows because a text cell was empty.",
+                        "ts": time.time(),
+                    }
+                )
+            dataset = kept
 
         logger.info(f"Embedding dataset loaded: {len(dataset)} samples")
     except Exception as e:

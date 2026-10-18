@@ -31,7 +31,6 @@ _SPEC.loader.exec_module(prebuilt)
 _INSTALL_PS1 = PACKAGE_ROOT / "install.ps1"
 _SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
 _INSTALL_SH = PACKAGE_ROOT / "install.sh"
-_AMD_PY = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "amd.py"
 _PYSTACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
 
 
@@ -334,7 +333,7 @@ def test_external_hipinfo_on_path_skips_venv_only(tmp_path):
 
 
 def test_python_hipinfo_gates_scan_all_path_entries():
-    for src in (_PREBUILT_PATH, _AMD_PY, _PYSTACK_PY):
+    for src in (_PREBUILT_PATH, _PYSTACK_PY):
         text = src.read_text(encoding = "utf-8")
         assert (
             "_external_hipinfo_on_path" in text
@@ -543,14 +542,14 @@ def test_external_hipinfo_strips_quoted_path_entries(tmp_path):
 
 
 def test_python_hipinfo_strips_quotes_in_all_copies():
-    for src in (_PREBUILT_PATH, _AMD_PY, _PYSTACK_PY):
+    for src in (_PREBUILT_PATH, _PYSTACK_PY):
         text = src.read_text(encoding = "utf-8")
         assert "strip('\"')" in text, f"{src.name} must strip quotes from PATH entries"
 
 
 def test_python_path_inside_venv_guards_root_prefix_in_all_copies():
     # A bare-root sys.prefix makes commonpath match every path, disabling amd-smi.
-    for src in (_PREBUILT_PATH, _AMD_PY, _PYSTACK_PY):
+    for src in (_PREBUILT_PATH, _PYSTACK_PY):
         text = src.read_text(encoding = "utf-8")
         assert (
             "os.path.dirname(" in text and ") == " in text and "return False" in text

@@ -2078,7 +2078,10 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             "                completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)\n"
             "            rewards_per_func = self._calculate_rewards(inputs, prompts_text, completions_text, completion_ids_list)\n"
             "        else:\n"
-            "            rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)"
+            "            rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)\n"
+            # On CPython <= 3.12 a later locals() call would store this frame dict in itself, a
+            # cycle that keeps every rollout tensor alive until the cyclic GC runs.
+            "        del _unsloth_reward_locals"
         )
         function = function.replace(string_to_find, replacement_string)
 
@@ -2514,7 +2517,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
             unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
 
-            from unsloth_zoo.rl_replacements import chunked_hidden_states_selective_log_softmax
+            from unsloth_zoo.rl_replacements import (
+                chunked_hidden_states_selective_log_softmax,
+                chunked_selective_log_softmax,
+            )
 
             output_embeddings = unwrapped_model.get_output_embeddings()
             lm_head = output_embeddings.weight
@@ -2533,6 +2539,26 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     chunked_hidden_states_selective_log_softmax,
                     lm_head_bias = lm_head_bias,
                 )
+            # Opt-in (UNSLOTH_GRPO_TRUNCATED_SUPPORT=1): score over the rollout's top_k / top_p /
+            # min_p kept set, matching vLLM's processed_logprobs. The zoo loss refuses to mix
+            # normalisations unless this marker says the old / ref logps were scored the same way.
+            try:
+                from unsloth_zoo.rl_replacements import grpo_truncated_support_kwargs
+                _support_kwargs = grpo_truncated_support_kwargs(self)
+            except Exception:
+                _support_kwargs = {}
+            if _support_kwargs:
+                from functools import partial
+
+                chunked_hidden_states_selective_log_softmax = partial(
+                    chunked_hidden_states_selective_log_softmax,
+                    **_support_kwargs,
+                )
+                chunked_selective_log_softmax = partial(
+                    chunked_selective_log_softmax,
+                    **_support_kwargs,
+                )
+                self._unsloth_truncated_support_scored = True
 
             # Size on the dtype the forward actually runs in: with autocast off that is the model's own dtype.
             forward_dtype = (

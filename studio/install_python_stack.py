@@ -903,7 +903,7 @@ def _macos_release_major() -> "int | None":
 
 # The pinned MLX versions publish macosx_14_0_arm64 wheels, no sdist and no cp39, so
 # macOS 13 and Python 3.9 have nothing to resolve to (`uv pip install --python-platform
-# aarch64-apple-darwin mlx==0.32.3`). Asked before the install, like
+# aarch64-apple-darwin mlx==0.32.4`). Asked before the install, like
 # _torchcodec_spec_is_installable: pip_install exits on failure, so trying would end an
 # install that today just comes up chat-only.
 _MLX_MIN_PYTHON = (3, 10)
@@ -2337,21 +2337,13 @@ def _detect_windows_gfx_arch() -> str | None:
                     # Torch ends here, llama.cpp does not: Vulkan drives these cards
                     # (#8458 ran an RX 580 through it). PowerShell syntax because this
                     # branch is Windows-only: a pasted VAR=value parses there as a
-                    # command name and sets nothing. Not on ARM64: setup.ps1 THROWS on
-                    # that variable there, so this would abort the next update.
-                    if _is_windows_arm64():
-                        _safe_print(
-                            "   [INFO] GGUF chat would need Vulkan on this GPU, and no "
-                            "Windows ARM64 Vulkan bundle is published: build llama.cpp "
-                            "from source, or run this on x64."
-                        )
-                    else:
-                        _safe_print(
-                            "   [INFO] GGUF chat can still run on this GPU through Vulkan: set "
-                            '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. '
-                            "It selects the llama.cpp bundle at install time, so setting it "
-                            "afterwards has no effect until you install or update again."
-                        )
+                    # command name and sets nothing.
+                    _safe_print(
+                        "   [INFO] GGUF chat can still run on this GPU through Vulkan: set "
+                        '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. '
+                        "It selects the llama.cpp bundle at install time, so setting it "
+                        "afterwards has no effect until you install or update again."
+                    )
                 else:
                     _safe_print(
                         f"   [WARN] could not map '{_names[_sel]}' to a gfx arch, so torch "
@@ -3645,12 +3637,15 @@ def _runtime_gfx_target(
         if gfx_devices
         else None
     )
-    # Strix defers only where the discrete card's wheel can be installed and will run: a readable
-    # ROCm version (the versionless path has no generic tag for it) and no HSA override (which
-    # spoofs every agent, the dGPU included). Otherwise it keeps its own per-arch index, as before.
+    # Strix defers only where the discrete card's wheel can be installed and will run: a ROCm
+    # version with a generic tag (unreadable or pre-6.0 has none, so nothing would install) and
+    # no HSA override (which spoofs every agent, the dGPU included). Otherwise it keeps its own
+    # per-arch index, as before.
+    _strix_rocm = _detect_rocm_version() if runtime_gfx in _STRIX_APU_GFX else None
     _strix_first = (
         runtime_gfx in _STRIX_APU_GFX
-        and _detect_rocm_version() is not None
+        and _strix_rocm is not None
+        and _generic_pytorch_rocm_tag(_strix_rocm) is not None
         and _hsa_override_gfx_arch(os.environ.get("HSA_OVERRIDE_GFX_VERSION")) is None
     )
     if (runtime_gfx in _SHADOWING_INTEGRATED_GFX or _strix_first) and not _visible_devices_pinned():
@@ -10605,11 +10600,16 @@ def _has_working_git() -> bool:
 
 # The MLX stack, one place; test_mlx_install.py compares it with utils/mlx_repair.py's
 # _MLX_INSTALL_SPECS.
-_MLX_PINS: tuple[str, ...] = ("mlx==0.32.3", "mlx-metal==0.32.3", "mlx-lm==0.31.3")
+_MLX_PINS: tuple[str, ...] = ("mlx==0.32.4", "mlx-metal==0.32.4")
+# A range, like mlx-vlm: 0.32 requires Python 3.11, so Python 3.10 resolves 0.31.3.
+_MLX_LM_SPEC = "mlx-lm>=0.31.3,<=0.32.2"
 _MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.8"
 # Exact: llguidance.mlx / llguidance.hf are the API grammar_constraint.py binds to.
 _LLGUIDANCE_PIN = "llguidance==1.8.0"
-_MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + ("mlx-vlm",)
+_MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + (
+    "mlx-lm",
+    "mlx-vlm",
+)
 # mflux goes in --no-deps: its declared torch / transformers floors would move the MLX pins, and Z-Image
 # needs only the deps below. Best-effort: a failure must never mark the MLX stack broken.
 _MLX_DIFFUSION_PINS: tuple[str, ...] = ("mflux==0.22.0",)
@@ -10656,7 +10656,15 @@ def _install_mlx_diffusion_engine() -> None:
 
 
 def _mlx_vlm_spec_for_installed_zoo() -> str:
-    """_MLX_VLM_SPEC, intersected with the range the INSTALLED unsloth-zoo declares.
+    return _mlx_spec_for_installed_zoo(_MLX_VLM_SPEC)
+
+
+def _mlx_lm_spec_for_installed_zoo() -> str:
+    return _mlx_spec_for_installed_zoo(_MLX_LM_SPEC)
+
+
+def _mlx_spec_for_installed_zoo(spec: str) -> str:
+    """`spec`, intersected with the range the INSTALLED unsloth-zoo declares for its package.
 
     This step runs before the core phase, and on a fresh install (SKIP_STUDIO_BASE=1) the core
     phase is skipped entirely, so the zoo install.sh already put down is the one that stays.
@@ -10664,31 +10672,33 @@ def _mlx_vlm_spec_for_installed_zoo() -> str:
     accept it, so admitting 0.7.1 beside such a zoo raises TypeError at the first Qwen3.5 VLM
     training step, after mlx_stack_available() has cleared the chat-only gate. Reading what the
     installed zoo itself declares keeps the two in step without naming a zoo version here, and it
-    widens on its own once a zoo declaring 0.7.1 is installed. Mirrors utils/mlx_repair.py's
-    _install_packages, which does the same for the unattended self-heal.
+    widens on its own once a zoo declaring 0.7.1 is installed. Likewise a zoo pinning mlx-lm 0.31.3
+    keeps 0.31.3. Mirrors utils/mlx_repair.py's _install_packages, which does the same for the
+    unattended self-heal.
     """
     try:
         from importlib.metadata import requires
         from packaging.requirements import Requirement
         from packaging.utils import canonicalize_name
     except ImportError:
-        return _MLX_VLM_SPEC
+        return spec
     try:
         declared = requires("unsloth_zoo") or ()
+        wanted = canonicalize_name(Requirement(spec).name)
     except Exception:  # noqa: BLE001 - not installed, or unreadable metadata
-        return _MLX_VLM_SPEC
+        return spec
     for raw in declared:
         try:
             requirement = Requirement(raw)
         except Exception:  # noqa: BLE001 - a requirement string packaging cannot parse
             continue
-        if canonicalize_name(requirement.name) == "mlx-vlm" and str(requirement.specifier):
-            return f"{_MLX_VLM_SPEC},{requirement.specifier}"
-    return _MLX_VLM_SPEC
+        if canonicalize_name(requirement.name) == wanted and str(requirement.specifier):
+            return f"{spec},{requirement.specifier}"
+    return spec
 
 
 def _mlx_stack_is_current() -> bool:
-    """Whether the three exact pins and mlx-vlm's range are all already satisfied.
+    """Whether the exact pins and the mlx-lm and mlx-vlm ranges are all already satisfied.
 
     Without this the step ran `--upgrade` on every update and fetched ~60 MB of wheels
     it then discarded, because the pins were already exact and the upgrade only moved
@@ -10696,12 +10706,18 @@ def _mlx_stack_is_current() -> bool:
     """
     if not all(_exact_distribution_spec_is_installed(spec) for spec in _MLX_PINS):
         return False
-    installed = _installed_distribution_version("mlx-vlm")
-    if not installed:
+    installed, installed_lm = (
+        _installed_distribution_version(name) for name in ("mlx-vlm", "mlx-lm")
+    )
+    if not installed or not installed_lm:
         return False
     try:
         from packaging.requirements import Requirement
-
+        if not Requirement(_mlx_lm_spec_for_installed_zoo()).specifier.contains(
+            installed_lm,
+            prereleases = True,
+        ):
+            return False
         # The narrowed spec, not the static one: with an older zoo beside an already-installed
         # 0.7.1 the static range reads as satisfied and the step skips the very install that
         # would put mlx-vlm back where the zoo can drive it.
@@ -10747,7 +10763,10 @@ def _mlx_closure_unmet() -> bool:
         os.close(_fd)
         handle = Path(_name)
         handle.write_text(
-            "\n".join([*_MLX_PINS, _mlx_vlm_spec_for_installed_zoo()]) + "\n",
+            "\n".join(
+                [*_MLX_PINS, _mlx_lm_spec_for_installed_zoo(), _mlx_vlm_spec_for_installed_zoo()]
+            )
+            + "\n",
             encoding = "utf-8",
         )
         unmet = install_manifest.closure_unmet_requirements(handle, _installed_index())
@@ -10802,8 +10821,10 @@ def _mlx_health_fingerprint() -> dict:
     """What a recorded MLX verdict is only valid for."""
     return {
         # The narrowed spec, so installing a different zoo invalidates a recorded verdict.
-        "pins": list(_MLX_PINS) + [_mlx_vlm_spec_for_installed_zoo()],
+        "pins": list(_MLX_PINS)
+        + [_mlx_lm_spec_for_installed_zoo(), _mlx_vlm_spec_for_installed_zoo()],
         "python": _installer_python_tag(),
+        "mlx_lm": _installed_distribution_version("mlx-lm") or "",
         "mlx_vlm": _installed_distribution_version("mlx-vlm") or "",
         # Versions as installed; an older record without this key is probed once and rewritten.
         "imports": {
@@ -12517,6 +12538,7 @@ def install_python_stack() -> int:
     # None when the MLX step did not run at all, so the re-resolve after the core phase has
     # nothing to compare against.
     _mlx_vlm_spec_used: Optional[str] = None
+    _mlx_lm_spec_used: Optional[str] = None
     if IS_MAC_ARM and not NO_TORCH:
         # Both branches spend the slot, so the denominator does not depend on the host.
         if _mlx_pins_are_installable():
@@ -12539,12 +12561,14 @@ def install_python_stack() -> int:
                     # transitive dependency; _build_pip_cmd translates back for pip.
                     *[arg for name in _MLX_NAMES for arg in ("--upgrade-package", name)],
                     *_MLX_PINS,
+                    _mlx_lm_spec_for_installed_zoo(),
                     _mlx_vlm_spec_for_installed_zoo(),
                 )
             # Inside the MLX slot, after the pins it runs on; its own check, so a satisfied
             # stack still gets a missing engine.
             _install_mlx_diffusion_engine()
             _mlx_vlm_spec_used = _mlx_vlm_spec_for_installed_zoo()
+            _mlx_lm_spec_used = _mlx_lm_spec_for_installed_zoo()
         else:
             _progress("MLX stack (skipped, no wheel for this macOS or Python)")
             _note(
@@ -12657,7 +12681,11 @@ def install_python_stack() -> int:
     # moved, so the common update pays a metadata read and nothing else.
     if IS_MAC_ARM and not NO_TORCH:
         _mlx_vlm_spec_now = _mlx_vlm_spec_for_installed_zoo()
-        if _mlx_vlm_spec_used is None or _mlx_vlm_spec_now == _mlx_vlm_spec_used:
+        _mlx_lm_spec_now = _mlx_lm_spec_for_installed_zoo()
+        if _mlx_vlm_spec_used is None or (_mlx_vlm_spec_now, _mlx_lm_spec_now) == (
+            _mlx_vlm_spec_used,
+            _mlx_lm_spec_used,
+        ):
             _progress("MLX stack (zoo unchanged, skipped)")
         else:
             _progress("MLX stack (re-resolved for the new zoo)")
@@ -12667,6 +12695,7 @@ def install_python_stack() -> int:
                 "--no-cache-dir",
                 *[arg for name in _MLX_NAMES for arg in ("--upgrade-package", name)],
                 *_MLX_PINS,
+                _mlx_lm_spec_now,
                 _mlx_vlm_spec_now,
             )
 
