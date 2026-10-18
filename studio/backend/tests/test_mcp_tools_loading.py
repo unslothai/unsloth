@@ -869,7 +869,14 @@ def test_a_retry_with_another_hub_token_starts_its_own_load(monkeypatch, fast_po
         ("unsloth/Qwen3-0.6B", "Unsloth/qwen3-0.6b", True),
         ("/models/Foo.gguf", "/models/foo.gguf", False),
         ("C:\\models\\Foo.gguf", "c:\\models\\foo.gguf", False),
+        ("models/Foo.gguf", "models/foo.gguf", False),
     ],
 )
-def test_hub_ids_match_in_any_case_and_local_paths_keep_theirs(left, right, same):
+def test_hub_ids_match_in_any_case_and_local_paths_keep_theirs(
+    tmp_path, monkeypatch, left, right, same
+):
+    # A relative path that exists on disk is a path, though it reads like a Hub id.
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "Foo.gguf").write_text("")
+    monkeypatch.chdir(tmp_path)
     assert loading._same(left, right) is same
