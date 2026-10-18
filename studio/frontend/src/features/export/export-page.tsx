@@ -629,8 +629,6 @@ export function ExportPage() {
   }, [moeProbeKey, moeProbeTarget, moeProbeToken, moeRetry]);
   const moeInfo =
     moeProbeKey && moeState?.key === moeProbeKey ? moeState.info : null;
-  // With REAP on, an export started before the new source's probe answers would go out unpruned.
-  const reapPending = reapProbePending(reapSettings, moeProbeKey, moeState?.key);
 
   const localResultIds = useMemo(() => {
     const ids = exportableLocalModels.map((model) => model.id);
@@ -829,6 +827,11 @@ export function ExportPage() {
     (exportMethod === "merged" || (exportMethod === "gguf" && !ggufAsLora));
   const showReap =
     !!moeInfo && reapAllowedSparsities(moeInfo).length > 0 && reapMethodApplies;
+  // With REAP on, a merged / full-model GGUF export started before the new source's probe
+  // answers would go out unpruned. Other methods never send REAP, so they never wait.
+  const reapPending =
+    reapMethodApplies &&
+    reapProbePending(reapSettings, moeProbeKey, moeState?.key);
   const reapFailed =
     reapMethodApplies &&
     reapProbeFailed(

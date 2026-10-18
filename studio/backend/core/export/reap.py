@@ -259,6 +259,8 @@ def apply_reap(
             model = model.merge_and_unload()
             backend.current_model = model
             backend.is_peft = False
+            # Kept until the next load: the base export must still refuse this LoRA checkpoint.
+            backend._reap_merged_peft = True
         sweep_reap_staging()
         staging = _staging_dir(staging_parent)
         _register_staging(staging.name)
@@ -281,10 +283,18 @@ def apply_reap(
     except Exception as exc:
         # A failure part way leaves the loaded model merged and partly pruned; never export it.
         logger.warning("REAP failed, unloading the partly pruned model: %s", exc)
+        unloaded = False
         try:
-            backend.cleanup_memory()
+            unloaded = backend.cleanup_memory() is not False
         except Exception as cleanup_exc:
             logger.warning("Could not unload after a failed REAP run: %s", cleanup_exc)
+        if not unloaded:
+            # cleanup_memory reports its own failures as False; the model must still never be
+            # exported again from this worker, so drop it here.
+            backend.current_model = None
+            backend.current_tokenizer = None
+            backend.current_checkpoint = None
+            discard_reap_staging(backend)
         raise RuntimeError(
             f"REAP expert pruning failed: {exc}. The model was unloaded since it may be partly "
             "pruned; load it again to export."
@@ -337,6 +347,7 @@ def discard_reap_staging(backend: Any) -> None:
     staging = getattr(backend, "_reap_staging", None)
     backend._reap_staging = None
     backend._reap_key = None
+    backend._reap_merged_peft = False
     if staging is not None:
         try:
             staging.cleanup()

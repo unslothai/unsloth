@@ -1587,7 +1587,8 @@ class ExportBackend:
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
 
-        if self.is_peft:
+        # A LoRA load stays one after REAP merged its adapters in memory for a pruned export.
+        if self.is_peft or getattr(self, "_reap_merged_peft", False):
             return (
                 False,
                 "This is a PEFT model. Use 'Merged Model' export type instead.",
@@ -1925,6 +1926,8 @@ class ExportBackend:
                 # Only write metadata once an artifact is actually present.
                 self._write_export_metadata(abs_save_dir)
                 output_path = str(Path(abs_save_dir).resolve())
+                # Before the upload below, which allow-lists the report when there is one.
+                self._sync_reap_report(output_path)
 
                 if npu_q4nx:
                     source = q4nx.source_gguf(exported_ggufs, quant_methods)
@@ -1969,6 +1972,11 @@ class ExportBackend:
                             *(glob.escape(os.path.basename(f)) for f in exported_ggufs),
                             *(["Modelfile"] if exported_modelfile else []),
                             *(["drafter.json"] if drafter_gguf_files else []),
+                            *(
+                                ["reap_report.json"]
+                                if (Path(output_path) / "reap_report.json").is_file()
+                                else []
+                            ),
                         ],
                     )
                     if exported_config is not None:
@@ -2387,6 +2395,13 @@ class ExportBackend:
         if refusal:
             return False, refusal, None
 
+        if getattr(self, "_reap_merged_peft", False):
+            return (
+                False,
+                "The LoRA adapters were merged into the model for a REAP export. Load the "
+                "checkpoint again to export the adapter.",
+                None,
+            )
         if not self.is_peft:
             return False, "This is not a PEFT model. No adapter to export.", None
 

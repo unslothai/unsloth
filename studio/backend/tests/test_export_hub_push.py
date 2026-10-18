@@ -1003,3 +1003,16 @@ def test_base_push_of_a_reap_pruned_model_uploads_its_report(tmp_path, monkeypat
     )
     assert success is True, message
     assert "reap_report.json" in seen["uploaded"]
+
+
+def test_base_and_adapter_exports_after_a_reap_merge_of_a_lora_load(tmp_path, monkeypatch):
+    # REAP merged the adapters in memory (is_peft is False now); the load is still a LoRA one.
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_reap_merged_peft", calls, seen)
+    backend._reap_merged_peft = True
+    success, message, _ = backend.export_base_model(str(tmp_path / "base"))
+    assert success is False and "PEFT model" in message
+    assert not (tmp_path / "base").exists()
+    success, message, _ = backend.export_lora_adapter(str(tmp_path / "lora"))
+    assert success is False and "merged into the model for a REAP export" in message

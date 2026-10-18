@@ -964,3 +964,47 @@ def test_gguf_hub_export_publishes_a_modelfile_blocked_by_a_directory(tmp_path, 
     assert seen["uploaded"] == ["model.Q4_K_M.gguf"]
     assert seen["Modelfile"] == b"FROM ./model.Q4_K_M.gguf\n"
     assert list((Path(output_path) / "Modelfile").iterdir()) == []
+
+
+def _real_reap_module(monkeypatch):
+    # The export imports core.export.reap, which this harness's stub package lacks.
+    import sys
+
+    spec = importlib.util.spec_from_file_location(
+        "core.export.reap", Path(__file__).resolve().parents[1] / "core/export/reap.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setitem(sys.modules, "core.export.reap", module)
+
+
+@pytest.mark.parametrize("pruned", [True, False])
+def test_gguf_hub_export_carries_a_current_reap_report_only(tmp_path, monkeypatch, pruned):
+    _install_export_backend_stubs(monkeypatch)
+    _real_reap_module(monkeypatch)
+    export_module = _load_module(
+        "test_export_gguf_hub_upload_reap", "core/export/export.py", monkeypatch
+    )
+    calls: list[str] = []
+    seen: dict = {}
+
+    class Model:
+        _unsloth_reap_report = {"model.layers.0.mlp": [0, 2]}
+
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            output = Path(f"{model_save_path}_gguf")
+            output.mkdir(parents = True, exist_ok = True)
+            (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
+            # A report a previous REAP export left in this reused folder.
+            (output / "reap_report.json").write_text('{"kept_experts": {"old": [1]}}')
+
+    _patch_hub(monkeypatch, export_module, calls, seen)
+    backend = _export_backend(export_module, Model)
+    backend._reap_key = (0.5, 512, None) if pruned else None
+    success, message, output_path = _push_gguf(backend, str(tmp_path / "export"))
+    assert success is True, message
+    # Synced before the upload: the pruned export's own report goes up, a stale one never does.
+    assert ("reap_report.json" in seen["uploaded"]) is pruned
+    assert Path(output_path, "reap_report.json").is_file() is pruned
+    if pruned:
+        assert '"old"' not in Path(output_path, "reap_report.json").read_text()

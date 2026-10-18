@@ -953,3 +953,52 @@ def test_probe_reads_a_folders_own_config_when_its_adapter_names_no_base(tmp_pat
     (folder / "adapter_config.json").write_text("{}")
     (folder / "config.json").write_text(json.dumps({"num_experts": 8, "num_experts_per_tok": 2}))
     assert reap_mod.moe_export_info(str(folder))["num_experts"] == 8
+
+
+def test_failed_pruning_drops_the_model_even_when_cleanup_reports_failure(tmp_path, monkeypatch):
+    # cleanup_memory catches its own errors and returns False (e.g. an inference unload failing
+    # first): the merged, partly pruned model must still never be exported again.
+    def reap_prune(model, tokenizer, **kwargs):
+        raise RuntimeError("out of memory in layer 7")
+
+    fake = types.ModuleType("unsloth")
+    fake.FastLanguageModel = types.SimpleNamespace(reap_prune = reap_prune)
+    monkeypatch.setitem(sys.modules, "unsloth", fake)
+    monkeypatch.setattr(reap_mod, "_registry", lambda: tmp_path / "reap_staging.json")
+
+    class _Stuck(_Backend):
+        current_checkpoint = "/ckpt"
+
+        def cleanup_memory(self):
+            return False
+
+    backend = _Stuck(_Model(), is_peft = True)
+    with pytest.raises(RuntimeError, match = "unloaded"):
+        reap_mod.apply_reap(backend, {"sparsity": 0.25}, str(tmp_path))
+    assert backend.current_model is None and backend.current_tokenizer is None
+    assert backend.current_checkpoint is None
+    assert backend._reap_key is None and backend._reap_staging is None
+
+
+def test_reap_merge_marks_the_lora_load_until_the_next_load(fake_reap, tmp_path):
+    backend = _Backend(_Model(), is_peft = True)
+    reap_mod.apply_reap(backend, {"sparsity": 0.25}, str(tmp_path))
+    assert backend.is_peft is False and backend._reap_merged_peft is True
+    # An unload / new load clears it with the staging copy.
+    reap_mod.discard_reap_staging(backend)
+    assert backend._reap_merged_peft is False
+
+
+def test_worker_skips_reap_for_a_base_export_after_a_reap_merge(monkeypatch):
+    from core.export.worker import _handle_export
+
+    applied = []
+    monkeypatch.setattr(reap_mod, "apply_reap", lambda *a, **k: applied.append(a) or (True, ""))
+    monkeypatch.setattr(reap_mod, "sync_reap_report", lambda b, path: None)
+    backend, q = _ExportBackend(), queue.Queue()
+    backend.is_peft, backend._reap_merged_peft = False, True
+    backend.export_base_model = lambda **kwargs: (False, "This is a PEFT model.", None)
+    _handle_export(
+        backend, {"export_type": "base", "save_directory": "/tmp/o", "reap": {"sparsity": 0.5}}, q
+    )
+    assert applied == []
