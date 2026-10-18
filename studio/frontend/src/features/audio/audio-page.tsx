@@ -1531,11 +1531,14 @@ export function AudioPage({
             label: "More models",
             models: pageModels(
               pageWorkflow,
-              catalogMoreRows(audioCatalog.rows).map(catalogModelOption),
+              catalogMoreRows(
+                audioCatalog.rows,
+                audioCatalog.runtimeSpecs,
+              ).map(catalogModelOption),
               pagePrefs,
             ),
           },
-    [audioCatalog.rows, pageWorkflow, pagePrefs],
+    [audioCatalog.rows, audioCatalog.runtimeSpecs, pageWorkflow, pagePrefs],
   );
   const selectorRowFilter = useCallback(
     (row: PageModelRow) => rowOnPage(pageWorkflow, row, pagePrefs),
