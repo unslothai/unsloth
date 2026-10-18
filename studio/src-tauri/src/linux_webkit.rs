@@ -34,6 +34,8 @@ const NVIDIA_DRIVER_VERSION_PATH: &str = "/proc/driver/nvidia/version";
 const NVIDIA_REASON: &str = "NVIDIA driver loaded (no Wayland session)";
 const NVIDIA_APPIMAGE_X11_REASON: &str = "NVIDIA driver loaded (AppImage on X11)";
 const NVIDIA_WAYLAND_REASON: &str = "NVIDIA driver loaded (Wayland session)";
+const NVIDIA_WAYLAND_OPERATOR_COMPOSITING_REASON: &str =
+    "NVIDIA driver loaded (Wayland session, compositing turned off by the environment)";
 const NVIDIA_APPIMAGE_GLES_REASON: &str =
     "NVIDIA driver loaded; AppImage without a usable GLES library";
 const WAYLAND_REASON: &str = "Wayland session";
@@ -157,9 +159,7 @@ fn rendering_plan(
     if env(FORCE_SHARED_MEMORY).is_some() && !ours(FORCE_SHARED_MEMORY) {
         return RenderingPlan::PreserveEnvironment;
     }
-    if env(DISABLE_COMPOSITING).is_some() && !ours(DISABLE_COMPOSITING) {
-        return RenderingPlan::PreserveEnvironment;
-    }
+    let operator_compositing_off = env(DISABLE_COMPOSITING).is_some() && !ours(DISABLE_COMPOSITING);
 
     // Stands the NVIDIA branch down and nothing else: it answers that patch's question,
     // not the missing-GLES one below, and that launch cannot render without its fallback.
@@ -183,6 +183,18 @@ fn rendering_plan(
         && !wayland_session
         && gles_usable
         && supports_force_shared_memory(webkit_version);
+
+    // Keep the operator's compositing setting, but on NVIDIA Wayland add the transport: since
+    // WebKitGTK 2.53 compositing off alone still commits DMA-BUF buffers and hits Error 71 (#12845).
+    if operator_compositing_off {
+        if nvidia_driver_loaded && !force_dmabuf && wayland_session {
+            return RenderingPlan::Apply(
+                RenderingWorkaround::DisableDmabuf,
+                NVIDIA_WAYLAND_OPERATOR_COMPOSITING_REASON,
+            );
+        }
+        return RenderingPlan::PreserveEnvironment;
+    }
 
     // Opt-in only. Do not auto-apply it on Wayland NVIDIA mixed-GPU open-module hosts (#9734):
     // #13875 has that shape and crashes with Error 71 under it, while DISABLE_DMABUF works.
@@ -1318,8 +1330,53 @@ mod tests {
     fn an_operator_who_set_the_variable_keeps_their_environment() {
         let theirs: &[(&str, &str)] = &[(WAYLAND_DISPLAY, "wayland-0"), (DISABLE_COMPOSITING, "1")];
         assert_eq!(
-            plan_on_graphics(theirs, true),
+            plan_on_graphics(theirs, false),
             RenderingPlan::PreserveEnvironment
         );
+        // NVIDIA X11: DISABLE_DMABUF there is the empty transport set, so add nothing.
+        let theirs_x11: &[(&str, &str)] = &[(X11_DISPLAY, ":0"), (DISABLE_COMPOSITING, "1")];
+        assert_eq!(
+            plan_on_graphics(theirs_x11, true),
+            RenderingPlan::PreserveEnvironment
+        );
+    }
+
+    #[test]
+    fn operator_compositing_off_on_nvidia_wayland_still_gets_dmabuf_off() {
+        // #12845: WEBKIT_DISABLE_COMPOSITING_MODE=1 alone crashed with Error 71 on KWin, and with
+        // DISABLE_DMABUF added it ran clean. Their variable stays theirs; only the transport is added.
+        let theirs: &[(&str, &str)] = &[(WAYLAND_DISPLAY, "wayland-0"), (DISABLE_COMPOSITING, "1")];
+        let expected = RenderingPlan::Apply(
+            RenderingWorkaround::DisableDmabuf,
+            NVIDIA_WAYLAND_OPERATOR_COMPOSITING_REASON,
+        );
+        assert_eq!(plan_on_graphics(theirs, true), expected);
+
+        // A relaunch reads its own DISABLE_DMABUF back as ours and decides the same way.
+        let relaunch: &[(&str, &str)] = &[
+            (WAYLAND_DISPLAY, "wayland-0"),
+            (DISABLE_COMPOSITING, "1"),
+            (DISABLE_DMABUF, "1"),
+            (APPLIED_WORKAROUND, DISABLE_DMABUF),
+        ];
+        assert_eq!(plan_on_graphics(relaunch, true), expected);
+
+        // An explicit transport choice, or FORCE_DMABUF, is still the operator's call.
+        for (name, value) in [
+            (DISABLE_DMABUF, "0"),
+            (FORCE_SHARED_MEMORY, "1"),
+            (FORCE_DMABUF, "1"),
+        ] {
+            let vars: &[(&str, &str)] = &[
+                (WAYLAND_DISPLAY, "wayland-0"),
+                (DISABLE_COMPOSITING, "1"),
+                (name, value),
+            ];
+            assert_eq!(
+                plan_on_graphics(vars, true),
+                RenderingPlan::PreserveEnvironment,
+                "{name}={value}"
+            );
+        }
     }
 }
