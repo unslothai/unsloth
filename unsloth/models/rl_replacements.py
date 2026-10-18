@@ -3926,7 +3926,8 @@ def grpo_trainer_compute_loss(function_name, function):
                     **_grpo_accumulated_loss_kwargs,
                 )
         if "train" in self._metrics:
-            mode = "eval" if self.control.should_evaluate else "train"
+            # model.training like TRL; should_evaluate is False under eval_on_start and evaluate().
+            mode = "train" if self.model.training else "eval"
             self._metrics[mode]["completion_length"].append(completion_length.item())
             self._metrics[mode]["kl"].append(mean_kl.item())
         else:
