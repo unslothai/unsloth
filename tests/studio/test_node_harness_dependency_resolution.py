@@ -172,6 +172,22 @@ def test_a_callback_that_calls_a_half_resolved_helper_is_not_a_load_time_call(tm
     assert "const TABLE" in resolved
 
 
+def test_an_immediately_invoked_function_calling_a_half_resolved_helper_is_dropped(tmp_path):
+    """An IIFE runs its body on load, so the `f()` inside it is a load-time call."""
+    module = tmp_path / "src" / "m.ts"
+    module.parent.mkdir(parents = True)
+    module.write_text(
+        'import { missing } from "./nowhere";\n'
+        "const f = () => missing();\n"
+        "const value = function () {\n  return f();\n}();\n"
+        "const other = (() => f())();\n"
+        "export function read() {\n  return [value, other];\n}\n"
+    )
+    resolved = resolve_dependencies("const used = read();\n", (module,), root = tmp_path / "src")
+    assert "const value" not in resolved
+    assert "const other" not in resolved
+
+
 def test_a_type_only_reference_does_not_make_a_helper_half_resolved(tmp_path):
     """A type Node erases (here from a .tsx file, which is never lifted) is not a missing runtime value."""
     module = tmp_path / "src" / "m.ts"

@@ -393,6 +393,9 @@ def _frontend_root(sources: tuple[Path, ...]) -> Path | None:
     return None
 
 
+_INVOKED_AFTER_BODY_RE = re.compile(r"\s*\)?\s*\(")
+
+
 def _load_time_text(blanked: str) -> str:
     """``blanked`` without the bodies of the functions it defines: only the rest runs on load."""
     out: list[str] = []
@@ -404,6 +407,7 @@ def _load_time_text(blanked: str) -> str:
             out.append(blanked[i])
             i += 1
             continue
+        start = i
         j = i + 2 if arrow else blanked.find("{", i)
         if j == -1:
             break
@@ -433,7 +437,11 @@ def _load_time_text(blanked: str) -> str:
                     break
                 k += 1
             i = k
-        out.append(" ")
+        if _INVOKED_AFTER_BODY_RE.match(blanked, i):
+            # `function () { ... }()` and `(() => ...)()` run the body on load: keep it.
+            out.append(blanked[start:i])
+        else:
+            out.append(" ")
     return "".join(out)
 
 
