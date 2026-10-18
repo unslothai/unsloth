@@ -223,6 +223,12 @@ _PARTIAL_PROGRESS_FRAME = re.compile(r"[█▒]*▒[█▒]*\s+(?:<percent>|<siz
 # second download (its own "Downloading" line sits between the bars), still compares.
 _FULL_PROGRESS_FRAME = re.compile(r"█+\s+(?:<percent>|<size> / <size>)")
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
+_CONTROL = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07")
+
+
+def _raw_numbers(raw: str) -> list[str]:
+    """The transfer figures a frame shows, without the digits inside its terminal escapes."""
+    return _NUMBER.findall(_CONTROL.sub("", raw))
 
 
 def normalise_transcript(text: str) -> list[str]:
@@ -243,7 +249,7 @@ def normalise_transcript(text: str) -> list[str]:
                 lines
                 and line == lines[-1]
                 and not frame_since_kept
-                and _NUMBER.findall(raw) == last_numbers
+                and _raw_numbers(raw) == last_numbers
                 and _FULL_PROGRESS_FRAME.fullmatch(line.strip())
             )
         ):
@@ -266,7 +272,7 @@ def normalise_transcript(text: str) -> list[str]:
         if line.startswith(("##[group]", "##[endgroup]", "::group::", "::endgroup::", "##[debug]")):
             continue
         lines.append(line)
-        last_numbers = _NUMBER.findall(raw)
+        last_numbers = _raw_numbers(raw)
         frame_since_kept = False
     return lines
 
