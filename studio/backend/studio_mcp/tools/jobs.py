@@ -171,7 +171,8 @@ TRAINING_STATUS = {
 async def _training_job(caller: Caller, kind: str, job_id: Optional[str]) -> ToolResult:
     payload = as_dict(await route_json("GET", SLOT_ROUTES[kind], caller = caller))
     slot = (_training if kind == "training" else _diffusion_training)(payload)
-    if job_id and slot.job_id and job_id != slot.job_id:
+    # An id that is not the current job (or one with nothing running) is never echoed back as idle.
+    if job_id and job_id != slot.job_id:
         # list_training_runs reads LLM runs only.
         where = (
             f'; list_training_runs(run_id="{job_id}") has its result' if kind == "training" else ""

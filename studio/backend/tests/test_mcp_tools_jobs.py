@@ -156,11 +156,15 @@ def test_a_diffusion_training_run_has_no_llm_history_pointer(monkeypatch):
     assert job["training"]["loss_history"] is None
 
 
+@pytest.mark.parametrize("idle", [False, True])
 @pytest.mark.parametrize("kind,route", [("training", TRAIN), ("diffusion_training", DIFFUSION)])
-def test_a_training_job_that_is_not_current_points_at_its_history(monkeypatch, kind, route):
-    current = (
-        TRAINING if kind == "training" else {"active": True, "job_id": "d-2", "status": "running"}
-    )
+def test_a_training_job_that_is_not_current_points_at_its_history(monkeypatch, kind, route, idle):
+    if idle:
+        current = {"phase": "idle", "is_training_running": False} if kind == "training" else {}
+    elif kind == "training":
+        current = TRAINING
+    else:
+        current = {"active": True, "job_id": "d-2", "status": "running"}
     result, _studio = run_tool(
         monkeypatch, {route: current}, "get_job", {"kind": kind, "id": "job-1"}
     )
