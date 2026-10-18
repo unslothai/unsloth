@@ -66,7 +66,13 @@ def _world(
         },
         ("GET", "/api/hub/gguf-variants"): VARIANTS,
         # The partial Q8_0 is one Unsloth Studio is still downloading, so a load waits on it.
-        ("GET", "/api/hub/download-status"): {"state": "running"},
+        # Only that one: load_model waits on any other running download of what it loads.
+        ("GET", "/api/hub/download-status"): lambda request, body: {
+            "state": "running"
+            if (request.query_params.get("repo_id"), request.query_params.get("gguf_variant"))
+            == (QWEN, "Q8_0")
+            else "idle"
+        },
         ("POST", "/api/inference/estimate-memory"): {"available": True, "gpu_bytes": 1234},
         ("POST", "/api/inference/images/download-plan"): {"entries": [], "total_bytes": 9000},
     }
