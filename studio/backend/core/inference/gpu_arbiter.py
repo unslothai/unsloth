@@ -583,20 +583,23 @@ def would_evict(
         except ImportError:
             gpu_residency, fits = None, None
         if callable(fits):
+            chat_gpus = _view().get(CHAT)
+            if chat_gpus is not None and not set(chat_gpus) & set(need_mib):
+                return False  # chat on other GPUs is never touched
+            in_flight = getattr(gpu_residency, "chat_load_in_flight", None)
+            if callable(in_flight) and in_flight():
+                return True  # coreside_locked evicts a chat that is still loading
             answer = fits(owner, need_mib)
             ok, info = answer if isinstance(answer, tuple) else (answer, {})
-            return not (ok or _fits_before_chat(gpu_residency, owner, need_mib, info))
+            return not (ok or _idle_media_frees_room(gpu_residency, owner, info))
     return True
 
 
-def _fits_before_chat(gpu_residency, owner: str, need_mib: dict, info: dict) -> bool:
-    """When they fit frees in gpu_residency._free_steps order and stops once the load fits. Predict
-    the two steps that spare the active chat model: chat on other GPUs is never touched, and the
-    idle image or video model on these GPUs goes first. Anything else counts as evicting chat."""
+def _idle_media_frees_room(gpu_residency, owner: str, info: dict) -> bool:
+    """When they fit frees in gpu_residency._free_steps order and stops once the load fits: the
+    idle image or video model on these GPUs goes before the active chat model. Predict that step
+    with a margin, since the live re-check may find less freed than was priced; when unsure, save."""
     try:
-        chat_gpus = _view().get(CHAT)
-        if chat_gpus is not None and not set(chat_gpus) & set(need_mib):
-            return True
         short = dict((info or {}).get("short_mib") or {})
         if not short or info.get("reason") != "short":
             return False
@@ -610,8 +613,9 @@ def _fits_before_chat(gpu_residency, owner: str, need_mib: dict, info: dict) -> 
                 continue
             for gpu in short:
                 short[gpu] -= int(need.get(gpu, 0))
-        return all(left <= 0 for left in short.values())
-    except Exception:  # noqa: BLE001 - when unsure, save the chat KV
+        margin = int(getattr(gpu_residency, "FIT_MARGIN_MIB", 1024))
+        return all(left <= -margin for left in short.values())
+    except Exception:  # noqa: BLE001
         return False
 
 

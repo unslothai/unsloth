@@ -77,24 +77,17 @@ def _delete(manifest) -> None:
 def commit_after_chat_unload(unloaded_identity) -> bool:
     """Called by _evict_chat after the unload: the pending save becomes the reload stash."""
     global _pending, _committed
-    # "Keep chat context across unloads" may have been turned off while the save ran.
-    keep = _pending is not None and _keep_kv()
     with _lock:
         pending, _pending = _pending, None
-        matched = (
-            keep
-            and pending is not None
-            and unloaded_identity is not None
-            and (pending.get("identity") == unloaded_identity)
-        )
-        if matched:
-            _committed = pending
     if pending is None:
         return False
-    if not matched:
+    # "Keep chat context across unloads" may have been turned off while the save ran.
+    if unloaded_identity is None or pending.get("identity") != unloaded_identity or not _keep_kv():
         # Chat swapped during the save (its KV is useless) or keep KV is off now.
         _delete(pending)
         return False
+    with _lock:
+        _committed = pending
     from core.inference import llama_keepwarm
 
     llama_keepwarm._set_kv_resume(pending)

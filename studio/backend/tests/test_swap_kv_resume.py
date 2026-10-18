@@ -170,35 +170,23 @@ def test_would_evict_matches_acquire_for(monkeypatch, policy, fits, current, tar
     assert predicted == ("evict-chat" in calls)
 
 
+_ELSEWHERE = {arb.CHAT: frozenset({1})}
+_SHARED = {arb.CHAT: frozenset({0}), arb.VIDEO: frozenset({0})}
+
+
 @pytest.mark.parametrize(
-    "case, residents, held, busy, evicts",
+    "residents, held, busy, loading, evicts",
     [
-        ("chat elsewhere", {arb.CHAT: frozenset({1})}, {}, False, False),
-        (
-            "idle video frees room",
-            {arb.CHAT: frozenset({0}), arb.VIDEO: frozenset({0})},
-            600,
-            False,
-            False,
-        ),
-        (
-            "video too small",
-            {arb.CHAT: frozenset({0}), arb.VIDEO: frozenset({0})},
-            100,
-            False,
-            True,
-        ),
-        (
-            "video generating",
-            {arb.CHAT: frozenset({0}), arb.VIDEO: frozenset({0})},
-            600,
-            True,
-            True,
-        ),
+        (_ELSEWHERE, 0, False, True, False),  # chat on other GPUs is never touched
+        (_SHARED, 1600, False, False, False),  # the idle video model frees room, with margin
+        (_SHARED, 600, False, False, True),  # freed exactly, no margin: save anyway
+        (_SHARED, 100, False, False, True),
+        (_SHARED, 1600, True, False, True),  # a generating video model stays
+        (_SHARED, 1600, False, True, True),  # coreside_locked evicts a chat still loading
     ],
 )
 def test_would_evict_under_fit_follows_the_free_order(
-    monkeypatch, case, residents, held, busy, evicts
+    monkeypatch, residents, held, busy, loading, evicts
 ):
     from core.inference import gpu_residency as gr
 
@@ -209,6 +197,7 @@ def test_would_evict_under_fit_follows_the_free_order(
     monkeypatch.setattr(gr, "_media_records", lambda: {arb.VIDEO: {0: held}} if held else {})
     monkeypatch.setattr(gr, "_media_busy", lambda name: (False, busy))
     monkeypatch.setattr(gr, "foreign_on", lambda *a: 0)
+    monkeypatch.setattr(gr, "chat_load_in_flight", lambda: loading)
     assert arb.would_evict(arb.DIFFUSION, policy = "fit", need_mib = {0: 4000}) is evicts
 
 
