@@ -584,6 +584,8 @@ def acquire_for(
                 raise GpuBusyForAnotherAccountError(owner, busy)
         _sync_from_view()
         prev_owner, prev_pair = _owner, (_owner_account, _prior_account)
+        # Read before evicting: dropping the current owner promotes a parked resident and pops its accounts.
+        parked = owner in _accounts
         others = [name for name in _residents if name != owner]
         if others and coreside:
             from core.inference.gpu_residency import coreside_locked
@@ -625,7 +627,7 @@ def acquire_for(
             _release_idle_video_servers(f"GPU acquired for {owner}")
         # Records who LOADED the model; a plain re-assert must not hand it to whoever asked last.
         # A resident parked behind a later claimant is a re-assert, not a new load.
-        rejoins = prev_owner != owner and owner in _residents and owner in _accounts
+        rejoins = prev_owner != owner and owner in _residents and parked
         claims = (prev_owner != owner and not rejoins) or (
             (register is not None or replacing) and not alongside
         )

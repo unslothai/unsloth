@@ -1276,3 +1276,42 @@ def test_native_load_replacing_the_primary_is_credited_with_its_memory(vram, mon
     assert v.evictions == [] and arb.DIFFUSION in arb.residents()
     # Loaded alongside, nothing is torn down, so nothing is credited.
     assert inf._outgoing_chat_credit_gb(placement, policy, False, None) == (None, None)
+
+
+def test_extra_chat_load_that_evicts_the_image_keeps_the_chat_loader(vram):
+    """Alice's chat model sits behind her image; Bob's extra (unpriced) chat model evicts the image under When they
+    fit, but the primary chat model is still Alice's."""
+    v = vram(24)
+    run_as(ALICE, v.load_chat, 10, policy = "fit")
+    assert run_as(ALICE, v.load_image, 8, policy = "fit") == []
+    assert arb.owner_snapshot()[0] == arb.DIFFUSION
+    run_as(
+        BOB,
+        v.load,
+        arb.CHAT,
+        {0: 20 * GIB},
+        alongside = True,
+        policy = "fit",
+        gpu_ids = [0],
+        evict_first = True,
+    )
+    assert v.evictions == [arb.DIFFUSION]
+    assert arb.owner_account(arb.CHAT) == ALICE.account_id
+
+
+@pytest.mark.parametrize("policy", ["fit", "always"])
+def test_smaller_native_load_replacing_the_primary_fits_beside_a_tightly_packed_image(
+    vram, monkeypatch, policy
+):
+    """24 GB: a 14 GB chat model and an image admitted with no slack (6.5 GB weights + 2.5 GB headroom). A 2 GB
+    native model replacing the chat model frees 12 GB, so the image stays loaded."""
+    from routes import inference as inf
+
+    v = vram(24)
+    v.policy = policy
+    v.load_chat(14)
+    assert v.load_image(9, headroom_gb = 2.5, policy = policy) == []
+    placement = _placement((0,), native_gb = 2.0)
+    kwargs = inf._chat_fit_kwargs(SimpleNamespace(is_gguf = False), placement, policy, {0: 14.0})
+    assert v.load(arb.CHAT, {0: 2 * GIB}, replacing = True, **kwargs) == []
+    assert v.evictions == [] and arb.DIFFUSION in arb.residents()

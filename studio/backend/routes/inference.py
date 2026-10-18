@@ -12537,10 +12537,9 @@ def _chat_fit_kwargs(
         kwargs["gpu_ids"] = ordinals
     if placement.native_required_gb and gpus and not placement.gpu_ids_are_vulkan_ordinals:
         credit = credit_gb or {}
+        # Net of the outgoing primary, so it may be negative: a smaller replacement needs no extra room.
         kwargs["need_mib"] = {
-            int(g): max(
-                int((placement.native_required_gb / len(gpus) - credit.get(int(g), 0.0)) * 1024), 1
-            )
+            int(g): int((placement.native_required_gb / len(gpus) - credit.get(int(g), 0.0)) * 1024)
             for g in gpus
         }
     elif policy == "fit" and not (config.is_gguf and _primary_can_retry_fit.get()):
