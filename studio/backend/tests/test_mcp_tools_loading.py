@@ -343,7 +343,12 @@ def test_media_unload_takes_no_body(monkeypatch, kind, statuses, model):
     assert unloads == ([b""] if model else [])
 
 
-def _stt_studio(statuses, *, download = None):
+def _stt_studio(
+    statuses,
+    *,
+    download = None,
+    extra = None,
+):
     return fake_studio(
         {
             ("GET", f"{STT}/status"): sequence(*statuses),
@@ -351,6 +356,7 @@ def _stt_studio(statuses, *, download = None):
             or {"downloading": True, "model": WHISPER, "download_id": "d1"},
             ("POST", f"{STT}/load"): {"loaded_model": WHISPER, "device": "cuda"},
             ("POST", f"{STT}/unload"): {"loaded_model": None, "device": None},
+            **(extra or {}),
         }
     )
 
@@ -412,6 +418,29 @@ def test_a_requested_variant_is_downloaded_even_when_another_is_cached(monkeypat
     result, _studio = run_tool(monkeypatch, studio, "load_model", args)
     assert result["isError"] is False
     expected = [{"model": moon, "engine": "audiocpp", "gguf_variant": "small/Q8_0"}]
+    assert bodies(studio, f"{STT}/download") == expected
+    assert bodies(studio, f"{STT}/load") == expected
+
+
+def test_a_catalog_asr_row_downloads_and_loads_on_audiocpp(monkeypatch, fast_polls):
+    # list_models(source="catalog") offers it; no status list names it before the download.
+    citrinet = "audio-cpp/audio.cpp-gguf/Citrinet-ASR-GGUF"
+    idle = {**stt_state(), "models": []}
+    done = {"downloading": False, "completed_download_ids": ["d1"]}
+    studio = _stt_studio(
+        [
+            {"transformers": stt_state(), "audiocpp": idle},
+            {"transformers": stt_state(), "audiocpp": {**idle, "download": done}},
+        ],
+        extra = {
+            ("GET", "/api/inference/audio/catalog"): {"models": [{"id": citrinet, "task": "asr"}]}
+        },
+    )
+    result, _studio = run_tool(
+        monkeypatch, studio, "load_model", {"model": citrinet, "kind": "stt"}
+    )
+    assert result["isError"] is False
+    expected = [{"model": citrinet, "engine": "audiocpp"}]
     assert bodies(studio, f"{STT}/download") == expected
     assert bodies(studio, f"{STT}/load") == expected
 
