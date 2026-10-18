@@ -159,7 +159,9 @@ def get_or_autotune_moe_kernels(
         logger.info(
             f"UNSLOTH_MOE_DISABLE_AUTOTUNE=1: Using Heuristic (Safe) MoE kernel configs for SM{device_capability[0]}{device_capability[1]}"
         )
-        return _get_heuristic_configs()
+        return _get_heuristic_configs(
+            n_dim = 2 * intermediate_dim, k_dim = hidden_dim
+        )
     if not force_autotune and cache_key in _kernel_config_cache:
         logger.info(f"Using in-memory cached MoE kernel configs: {cache_key}")
         return _kernel_config_cache[cache_key]
@@ -224,7 +226,7 @@ def get_or_autotune_moe_kernels(
                 "Unsloth: Your Triton version might be incompatible with TMA features. Falling back to default configs."
             )
         logger.info("Falling back to default kernel configurations")
-        return _get_default_configs()
+        return _get_default_configs(n_dim = 2 * intermediate_dim, k_dim = hidden_dim)
 
 
 def _run_moe_autotuning(
@@ -355,13 +357,55 @@ def _run_moe_autotuning(
 
     return config_fwd, config_bwd_dx, config_bwd_dw
 
-    return config_fwd, config_bwd_dx, config_bwd_dw
+
+_MIN_FALLBACK_BLOCK_SIZE = 16
 
 
-def _get_heuristic_configs() -> Tuple[Any, Any, Any]:
+def _fit_block_size(block_size: int, dim: Optional[int]) -> int:
+    """
+    Largest power of two <= block_size (and >= 16) that divides dim.
+
+    Returns block_size unchanged when dim is unknown, when block_size already divides dim,
+    or when no power of two >= 16 divides dim (that case keeps today's behaviour: the
+    forward kernel masks N, while the K asserts and the backward N asserts still fire).
+    """
+    if dim is None or dim <= 0 or dim % block_size == 0:
+        return block_size
+    candidate = 1 << (block_size.bit_length() - 1)
+    while candidate >= _MIN_FALLBACK_BLOCK_SIZE:
+        if dim % candidate == 0:
+            return candidate
+        candidate >>= 1
+    return block_size
+
+
+def _fit_configs_to_dims(
+    configs: Tuple[Any, Any, Any], n_dim: Optional[int], k_dim: Optional[int]
+) -> Tuple[Any, Any, Any]:
+    """
+    Shrink the fixed fallback tiles so BLOCK_SIZE_N / BLOCK_SIZE_K divide this GEMM's N / K.
+
+    The grouped GEMM kernels static_assert K % BLOCK_SIZE_K == 0 (forward, dX) and
+    N % BLOCK_SIZE_N == 0 (dX; dW with TMA store). All three kernels use the same W layout
+    [E, N, K], so one (N, K) pair covers the forward, dX and dW configs of a GEMM.
+    BLOCK_SIZE_M tiles the per-expert token count, which is dynamic and masked, so it is
+    left alone. Tiles only shrink, so shared memory use never grows past the fixed config.
+    """
+    for config in configs:
+        config.BLOCK_SIZE_N = _fit_block_size(config.BLOCK_SIZE_N, n_dim)
+        config.BLOCK_SIZE_K = _fit_block_size(config.BLOCK_SIZE_K, k_dim)
+    return configs
+
+
+def _get_heuristic_configs(
+    n_dim: Optional[int] = None, k_dim: Optional[int] = None
+) -> Tuple[Any, Any, Any]:
     """
     Get 'Safe Heuristic' kernel configurations.
     These are verified to be safe on A100 (SM80) and provide ~9x speedup on H100/B200.
+
+    n_dim / k_dim are this GEMM's N (output features) and K (input features); when given,
+    BLOCK_SIZE_N / BLOCK_SIZE_K shrink to divide them (see _fit_configs_to_dims).
     """
     from .grouped_gemm.kernels.tuning import (
         KernelConfigForward,
@@ -409,11 +453,18 @@ def _get_heuristic_configs() -> Tuple[Any, Any, Any]:
         use_tma_store = False,
     )
 
-    return config_fwd, config_bwd_dx, config_bwd_dw
+    return _fit_configs_to_dims((config_fwd, config_bwd_dx, config_bwd_dw), n_dim, k_dim)
 
 
-def _get_default_configs() -> Tuple[Any, Any, Any]:
-    """Get default kernel configurations as fallback."""
+def _get_default_configs(
+    n_dim: Optional[int] = None, k_dim: Optional[int] = None
+) -> Tuple[Any, Any, Any]:
+    """
+    Get default kernel configurations as fallback.
+
+    n_dim / k_dim are this GEMM's N and K; when given, BLOCK_SIZE_N / BLOCK_SIZE_K shrink to
+    divide them (see _fit_configs_to_dims).
+    """
     from .grouped_gemm.kernels.tuning import (
         KernelConfigForward,
         KernelConfigBackward_dX,
@@ -455,7 +506,7 @@ def _get_default_configs() -> Tuple[Any, Any, Any]:
         use_tma_store = False,
     )
 
-    return config_fwd, config_bwd_dx, config_bwd_dw
+    return _fit_configs_to_dims((config_fwd, config_bwd_dx, config_bwd_dw), n_dim, k_dim)
 
 
 def clear_cache() -> None:
