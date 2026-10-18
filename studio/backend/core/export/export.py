@@ -1451,6 +1451,8 @@ class ExportBackend:
                     )
                 logger.info(f"Model saved successfully to {final_dir}")
                 output_path = str(Path(final_dir).resolve())
+                # Complete on disk even if the Hub upload below fails (the worker syncs REAP's report).
+                self._local_export_path = output_path
 
             if push_to_hub:
                 if not repo_id or not hf_token:
@@ -1605,6 +1607,7 @@ class ExportBackend:
                 self._write_export_metadata(save_directory)
                 logger.info(f"Model saved successfully to {save_directory}")
                 output_path = str(Path(save_directory).resolve())
+                self._local_export_path = output_path
 
             if push_to_hub:
                 if not repo_id or not hf_token:

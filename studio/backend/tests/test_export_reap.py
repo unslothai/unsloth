@@ -805,3 +805,29 @@ def test_cleanup_after_a_worker_crash_sweeps_its_staging(monkeypatch):
     finally:
         orch._proc = None
     assert swept == [777]
+
+
+@pytest.mark.parametrize("export_type", ["merged", "base"])
+@pytest.mark.parametrize("saved_locally", [True, False])
+def test_a_failed_upload_after_a_complete_local_save_still_syncs_the_report(
+    monkeypatch, export_type, saved_locally
+):
+    # merged / base return no path when the Hub upload raises; the local save is complete by then.
+    from core.export.worker import _handle_export
+
+    seen = []
+    monkeypatch.setattr(reap_mod, "sync_reap_report", lambda b, path: seen.append(path))
+    backend, q = _ExportBackend(), queue.Queue()
+    backend._local_export_path = "/stale"  # from an earlier export: never reused
+
+    def export(**kwargs):
+        if saved_locally:
+            backend._local_export_path = "/out"
+        return False, "Export failed: 503 from the Hub", None
+
+    setattr(
+        backend, "export_merged_model" if export_type == "merged" else "export_base_model", export
+    )
+    _handle_export(backend, {"export_type": export_type, "save_directory": "/tmp/o"}, q)
+    assert seen == (["/out"] if saved_locally else [])
+    assert _drain(q)[-1]["success"] is False
