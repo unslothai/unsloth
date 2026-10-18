@@ -23963,37 +23963,33 @@ async def _run_audio_edit(
         },
         requested_model = body.model or _RELOAD_ONLY_MODEL,
     )
-    source_record = None
-    try:
-        source_record = await asyncio.to_thread(
-            audio_edit.save_source_clip,
-            source,
-            source_path,
-            reference_text,
-            _AUDIO_RUN_CREATED.get(),
-        )
-    except Exception as exc:  # noqa: BLE001 - the edit is served even when its source is not kept
-        logger.warning("audio_edit.source_save_failed: %s", exc)
-    if source_record is not None:
-        source_clip_id = source_record["id"]
-    else:
-        source_clip_id = source.id if source.kind == "clip" else None
-    extra_meta: dict[str, Any] = {
-        "role": "output",
-        "source_clip_id": source_clip_id,
-        "reference_name": source.name,
-        "settings": _audio_edit_settings(body),
-    }
-    record = await asyncio.to_thread(
-        _persist_tts_clip,
-        wav_bytes,
-        sample_rate,
-        body.text,
-        model_name,
-        audio_type,
-        extra_meta,
-        "edit",
-    )
+
+    def keep() -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
+        # Under the cancel cleanup's lock, so a cancelled Edit of the same recording cannot remove
+        # the source between this run picking it and saving the output that plays it.
+        with _EDIT_SOURCE_LOCK:
+            kept = None
+            try:
+                created = _AUDIO_RUN_CREATED.get()
+                kept = audio_edit.save_source_clip(source, source_path, reference_text, created)
+            except Exception as exc:  # noqa: BLE001 - the edit is served even when its source is not kept
+                logger.warning("audio_edit.source_save_failed: %s", exc)
+            if kept is not None:
+                source_clip_id = kept["id"]
+            else:
+                source_clip_id = source.id if source.kind == "clip" else None
+            extra_meta: dict[str, Any] = {
+                "role": "output",
+                "source_clip_id": source_clip_id,
+                "reference_name": source.name,
+                "settings": _audio_edit_settings(body),
+            }
+            output = _persist_tts_clip(
+                wav_bytes, sample_rate, body.text, model_name, audio_type, extra_meta, "edit"
+            )
+            return kept, output
+
+    source_record, record = await asyncio.to_thread(keep)
     sources = [_audio_run_clip(source_record, "source")] if source_record is not None else []
     return _audio_run_response(record, wav_bytes, sample_rate, model_name, sources)
 
@@ -24550,6 +24546,10 @@ async def _dispatch_audio_run(
         _AUDIO_RUN_CANCEL_ID.reset(token)
 
 
+# Held while an Edit picks or saves its source and saves its output, and while a cancel removes clips.
+_EDIT_SOURCE_LOCK = threading.Lock()
+
+
 def _discard_audio_clips(outputs: list[str], sources: list[str]) -> None:
     """Remove a cancelled run's outputs, then the sources it saved unless another clip, such as a
     concurrent Edit of the same recording, now plays them."""
@@ -24561,10 +24561,12 @@ def _discard_audio_clips(outputs: list[str], sources: list[str]) -> None:
         except Exception as exc:  # noqa: BLE001 - remove the rest even if one delete fails
             logger.warning("audio_run.cancel_cleanup_failed: %s", exc)
 
-    for clip_id in outputs:
-        remove(clip_id)
-    if sources:
-        in_use = audio_gallery._sources_in_use(audio_gallery.gallery_dir(), set())
+    with _EDIT_SOURCE_LOCK:
+        for clip_id in outputs:
+            remove(clip_id)
+        in_use = (
+            audio_gallery._sources_in_use(audio_gallery.gallery_dir(), set()) if sources else ()
+        )
         for clip_id in sources:
             if clip_id not in in_use:
                 remove(clip_id)

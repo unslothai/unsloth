@@ -72,7 +72,8 @@ def _read_pcm(path: Path) -> tuple[np.ndarray, int, float]:
         data = np.frombuffer(raw, dtype = "<i4").astype(np.float32) / float(1 << 31)
     else:
         raise ValueError(f"Unsupported WAV sample width: {width * 8} bits")
-    return data.reshape(-1, max(channels, 1)), rate, 2.0 ** (1 - 8 * width)
+    # float32 holds samples near full scale 2**-24 apart, coarser than 32-bit PCM's own step.
+    return data.reshape(-1, max(channels, 1)), rate, max(2.0 ** (1 - 8 * width), 2.0**-24)
 
 
 def _biquad_coefficients(rate: int) -> list[tuple[np.ndarray, np.ndarray]]:
@@ -210,18 +211,33 @@ def true_peak(data: np.ndarray) -> float:
     return peak
 
 
+def _steep_samples(x: np.ndarray, first: np.ndarray, length: np.ndarray, step: float) -> int:
+    """Samples in the runs (start ``first``, ``length`` samples) of ``x`` that are long enough and
+    that the waveform reaches or leaves more steeply than a smooth peak could."""
+    keep = length >= _CLIP_RUN
+    first, length = first[keep], length[keep]
+    if not first.size:
+        return 0
+    last = first + length - 1
+    top = x[first].astype(np.float64)
+    # The larger jump onto or off the run; -1 at an end of the audio, where there is none, and
+    # a run that fills the whole channel counts.
+    into = np.where(first > 0, np.abs(top - x[np.maximum(first - 1, 0)]), -1.0)
+    out = np.where(last < len(x) - 1, np.abs(top - x[np.minimum(last + 1, len(x) - 1)]), -1.0)
+    edge = np.maximum(into, out)
+    limit = _CLIP_EDGE * min(step, _CLIP_STEP_MAX) * ((length + 1) / (length - 1)) ** 2
+    return int(length[(edge > limit) | (edge < 0)].sum())
+
+
 def clipped_samples(data: np.ndarray, step: float = 0.0) -> int:
     """Samples in runs of at least ``_CLIP_RUN`` identical full-scale samples, per channel, that the
     waveform reaches or leaves more steeply than a smooth peak could; ``step`` is the quantization
-    step (0 for float audio)."""
+    step (0 for float audio). Runs are judged a chunk at a time, so memory stays bounded."""
     total = 0
     for channel in range(data.shape[1]):
         x = data[:, channel]
-        n = len(x)
-        starts: list[np.ndarray] = []
-        lengths: list[np.ndarray] = []
         open_start, open_length = 0, 0  # the run still open at the end of the last chunk
-        for start in range(0, n, _CHUNK):
+        for start in range(0, len(x), _CHUNK):
             # One sample of overlap, so a run that crosses chunks stays one run.
             lead = 1 if start else 0
             seg = x[start - lead : start + _CHUNK]
@@ -234,33 +250,15 @@ def clipped_samples(data: np.ndarray, step: float = 0.0) -> int:
             opens = rail & ~same
             ids = np.cumsum(opens)
             counts = np.bincount(ids[rail], minlength = int(ids[-1]) + 1)
-            run_starts = np.concatenate(([open_start], np.flatnonzero(opens) + start))
             counts[0] += open_length
+            firsts = np.concatenate(([open_start], np.flatnonzero(opens) + start))
             if rail[-1]:
-                open_start, open_length = int(run_starts[-1]), int(counts[-1])
-                run_starts, counts = run_starts[:-1], counts[:-1]
+                open_start, open_length = int(firsts[-1]), int(counts[-1])
+                firsts, counts = firsts[:-1], counts[:-1]
             else:
                 open_start, open_length = 0, 0
-            starts.append(run_starts)
-            lengths.append(counts)
-        starts.append(np.array([open_start]))
-        lengths.append(np.array([open_length]))
-        first = np.concatenate(starts)
-        length = np.concatenate(lengths)
-        long_runs = length >= _CLIP_RUN
-        first, length = first[long_runs], length[long_runs]
-        if not first.size:
-            continue
-        last = first + length - 1
-        top = x[first].astype(np.float64)
-        # The larger jump onto or off the run; -1 at an end of the audio, where there is none, and
-        # a run that fills the whole channel counts.
-        into = np.where(first > 0, np.abs(top - x[np.maximum(first - 1, 0)]), -1.0)
-        out = np.where(last < n - 1, np.abs(top - x[np.minimum(last + 1, n - 1)]), -1.0)
-        edge = np.maximum(into, out)
-        limit = _CLIP_EDGE * min(step, _CLIP_STEP_MAX) * ((length + 1) / (length - 1)) ** 2
-        steep = (edge > limit) | (edge < 0)
-        total += int(length[steep].sum())
+            total += _steep_samples(x, firsts, counts, step)
+        total += _steep_samples(x, np.array([open_start]), np.array([open_length]), step)
     return total
 
 

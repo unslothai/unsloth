@@ -71,6 +71,14 @@ def test_hard_clipping_counts_and_a_clean_full_scale_sine_does_not(tmp_path):
     for freq, amplitude in ((10.0, 1.0), (40.0, 1.0), (50.0, 0.999)):
         clean = _write(tmp_path / f"clean{freq}.wav", _sine(1.0, amplitude, freq))
         assert am.measure_file(clean)["clipped_samples"] == 0
+    # float32 decoding spaces 32-bit samples near full scale 2**-24 apart, so that is the step.
+    pcm = np.round(_sine(2.0, 1.0, 1.0)[:, 0] * (2**31 - 1)).astype("<i4")
+    with wave.open(str(tmp_path / "s32.wav"), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(4)
+        w.setframerate(RATE)
+        w.writeframes(pcm.tobytes())
+    assert am.measure_file(tmp_path / "s32.wav")["clipped_samples"] == 0
     loud = np.clip(1.1 * _sine(1.0, 1.0, 10.0), -1.0, 1.0)
     assert am.measure_file(_write(tmp_path / "loud.wav", loud))["clipping_ratio"] > 0.2
     # Two samples at the rail are a peak, three in a row are clipping.
