@@ -228,7 +228,8 @@ def fake_quantize_lm_head_inputs(lm_head_module, hidden_states, weight):
     # Fused CE bypasses lm_head.forward(), where TorchAO QAT fake-quantizes both the input and the weight.
     activation_fake_quantizer = getattr(lm_head_module, "activation_fake_quantizer", None)
     if activation_fake_quantizer is not None:
-        hidden_states = activation_fake_quantizer(hidden_states)
+        # The unfused path feeds lm_head hidden_states.to(weight dtype): a trained fp32 head on fp16 differs.
+        hidden_states = activation_fake_quantizer(hidden_states.to(weight.dtype))
     weight_fake_quantizer = getattr(lm_head_module, "weight_fake_quantizer", None)
     if weight_fake_quantizer is not None:
         weight = weight_fake_quantizer(weight)

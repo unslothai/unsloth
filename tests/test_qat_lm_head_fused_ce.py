@@ -75,6 +75,17 @@ def test_fused_inputs_match_lm_head_forward(scheme):
     assert not llama.lm_head_needs_forward(lm_head)
 
 
+def test_activation_fake_quant_sees_head_dtype():
+    # A trained lm_head is upcast to fp32 while fp16 hidden states arrive; forward() sees them cast.
+    lm_head = _qat_head("int8-int4")
+    x = torch.randn(2, 5, DIM).half()
+    hidden_states, weight = llama.fake_quantize_lm_head_inputs(lm_head, x, lm_head.weight)
+    assert hidden_states.dtype == torch.float32
+    torch.testing.assert_close(
+        torch.nn.functional.linear(hidden_states, weight), lm_head(x.float()), rtol = 0, atol = 0
+    )
+
+
 def test_plain_lm_head_is_untouched():
     lm_head = torch.nn.Linear(DIM, VOCAB, bias = False)
     x = torch.randn(2, 5, DIM)
