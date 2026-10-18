@@ -2734,14 +2734,48 @@ def companion_files(path: str, names: Iterable[str]) -> tuple[str, ...]:
     return tuple(found)
 
 
-def _refuse_stale_download(model: AudioCppModel, hf_token: Optional[str]) -> None:
+def _fetches_gguf(repo_id: str, path: str, hf_token: Optional[str]) -> bool:
+    """Whether a download job would fetch the GGUF ``path`` of ``repo_id``. The downloader links a blob
+    already stored under the Hub's current etag and fetches anything else, so a cached older copy of the
+    same size still counts as fetched. Offline, or with the Hub unreachable, any cached copy counts."""
+    if not path.lower().endswith(".gguf"):
+        return False
+    try:
+        snapshots = snapshot_dirs(repo_id)
+    except Exception:  # noqa: BLE001 - an unreadable cache is one to fetch into
+        snapshots = []
+    on_disk = any((snapshot / path).is_file() for snapshot in snapshots)
+    if hub_offline():
+        return not on_disk
+    try:
+        from huggingface_hub import get_hf_file_metadata, hf_hub_url
+        etag = get_hf_file_metadata(
+            hf_hub_url(repo_id, path), token = hf_token or None, timeout = 10
+        ).etag
+    except Exception:  # noqa: BLE001 - unreachable Hub: judge by the cache alone
+        return not on_disk
+    if not etag or not snapshots:
+        return not on_disk
+    return not (snapshots[0].parent.parent / "blobs" / etag).is_file()
+
+
+def _refuse_stale_download(
+    model: AudioCppModel,
+    hf_token: Optional[str],
+    fetched: Sequence[str] = (),
+) -> None:
     """Raise ``AudioCppRuntimeTooOldError`` when a download job for ``model`` would fetch GGUFs
-    the installed runtime is too old to load."""
+    the installed runtime is too old to load; ``fetched`` are files already known to be fetched."""
     from core.inference.audio_cpp_server import (
+        SPEC_FIRST_RUNTIME,
         AudioCppRuntimeTooOldError,
+        runtime_release_key,
         stale_runtime_download_problem,
     )
 
+    release = runtime_release_key()
+    if release is None or release >= SPEC_FIRST_RUNTIME:
+        return
     # The planner adds the companions' files (MioTTS's MioCodec) to the same job.
     checked = [model]
     for companion in model.companions:
@@ -2752,9 +2786,15 @@ def _refuse_stale_download(model: AudioCppModel, hf_token: Optional[str]) -> Non
         if found is not None:
             checked.append(found)
     for item in checked:
-        problem = stale_runtime_download_problem(item)
-        if problem:
-            raise AudioCppRuntimeTooOldError(problem)
+        if item.local_path or not item.repo_id:
+            continue
+        if any(
+            f.path in fetched or _fetches_gguf(item.repo_id, f.path, hf_token)
+            for f in item.variant.files
+        ):
+            raise AudioCppRuntimeTooOldError(
+                stale_runtime_download_problem(item, assume_fetched = True)
+            )
 
 
 def refuse_stale_download(
@@ -2775,31 +2815,8 @@ def refuse_stale_download(
     # Row -> the files the job fetches there; None means the row's own variant.
     rows: dict[str, Optional[list[str]]] = {identifier: None}
     if files:
-        from huggingface_hub import try_to_load_from_cache
-
-        def cached(name: str) -> bool:
-            try:
-                from utils.hf_cache_settings import active_hf_hub_cache
-                hit = try_to_load_from_cache(identifier, name, cache_dir = active_hf_hub_cache())
-            except Exception:  # noqa: BLE001 - an unreadable cache entry is one to fetch
-                return False
-            if not isinstance(hit, str):
-                return False
-            if hub_offline():
-                return True
-            # refs/main may still name an older copy while the job fetches the Hub's current one;
-            # blobs are stored under their etag, so only a matching blob means nothing is fetched.
-            try:
-                from huggingface_hub import get_hf_file_metadata, hf_hub_url
-                meta = get_hf_file_metadata(
-                    hf_hub_url(identifier, name), token = hf_token or None, timeout = 10
-                )
-            except Exception:  # noqa: BLE001 - unreachable Hub: the job cannot fetch it either
-                return True
-            return not meta.etag or Path(hit).resolve().name == meta.etag
-
         # A scoped job fetches exactly these files: only the GGUFs it would download count.
-        wanted = [f for f in files if f.lower().endswith(".gguf") and not cached(f)]
+        wanted = [f for f in files if _fetches_gguf(identifier, f, hf_token)]
         umbrella = identifier.lower() + "/" == _UMBRELLA_PREFIX
         rows = {}
         for name in wanted:
@@ -2826,7 +2843,7 @@ def refuse_stale_download(
             continue
         for found in checked:
             if found is not None:
-                _refuse_stale_download(found, hf_token)
+                _refuse_stale_download(found, hf_token, fetched = names or ())
 
 
 def download_target(

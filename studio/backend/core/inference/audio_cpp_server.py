@@ -222,8 +222,10 @@ def stale_runtime_download_problem(
     binary: Optional[str] = None,
     *,
     hub_cache: Optional[Path] = None,
+    assume_fetched: bool = False,
 ) -> Optional[str]:
     """Why ``model``'s files must not be downloaded for a runtime older than v0.9.2, or None.
+    ``assume_fetched``: the caller already knows a GGUF would be fetched, so the cache is not read.
 
     The audio GGUFs on the Hub track the newest runtime, so an older one could load a fresh
     download wrongly. A complete cache, a local file or an unknown runtime is never refused.
@@ -235,8 +237,8 @@ def stale_runtime_download_problem(
 
     try:
         # Only a GGUF carries the spec an old runtime may misread; a missing config or embedding is fetched as before.
-        missing = missing_files(model, hub_cache = hub_cache)
-        if not any(path.lower().endswith(".gguf") for path, _size in missing):
+        missing = [] if assume_fetched else missing_files(model, hub_cache = hub_cache)
+        if not assume_fetched and not any(path.lower().endswith(".gguf") for path, _ in missing):
             return None
     except Exception:  # noqa: BLE001 - an unreadable cache is the download's to report
         return None

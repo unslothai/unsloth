@@ -75,6 +75,36 @@ def _missing(monkeypatch, result):
     monkeypatch.setattr(audio_cpp_files, "missing_files", fake)
 
 
+def _hub(monkeypatch, tmp_path, remote: dict) -> Path:
+    """An empty active Hub cache; the Hub answers ``remote[file name]``, else ``remote["etag"]``."""
+    import huggingface_hub
+
+    from utils import hf_cache_settings
+
+    root = tmp_path / "hub"
+    root.mkdir()
+    monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: str(root))
+    monkeypatch.setattr(acm, "hub_offline", lambda: False)
+    monkeypatch.setattr(
+        huggingface_hub,
+        "get_hf_file_metadata",
+        lambda url, **kw: type(
+            "M", (), {"etag": remote.get(url.rsplit("/", 1)[-1], remote.get("etag"))}
+        )(),
+    )
+    return root
+
+
+def _cache(root: Path, repo_id: str, path: str, blob: str) -> None:
+    """Cache ``path`` the way huggingface_hub does: a snapshot symlink to ``blobs/<etag>``."""
+    repo = root / ("models--" + repo_id.replace("/", "--"))
+    (repo / "blobs").mkdir(parents = True, exist_ok = True)
+    (repo / "blobs" / blob).write_bytes(b"GGUF")
+    link = repo / "snapshots" / "c0ffee" / path
+    link.parent.mkdir(parents = True, exist_ok = True)
+    link.symlink_to(repo / "blobs" / blob)
+
+
 MESSAGE = (
     "Canary-180M-Flash-GGUF needs a newer audio runtime before its files can be downloaded. "
     "Update the audio runtime from the update banner, or run `unsloth studio update`."
@@ -272,7 +302,6 @@ def test_a_download_job_outside_the_umbrella_is_gated_too(monkeypatch, tmp_path)
 def test_a_scoped_download_job_is_gated_on_the_files_it_fetches(monkeypatch, tmp_path):
     import asyncio
 
-    import huggingface_hub
     from fastapi import HTTPException
 
     from hub.services.models import downloads
@@ -280,18 +309,8 @@ def test_a_scoped_download_job_is_gated_on_the_files_it_fetches(monkeypatch, tmp
     aligner = _model("Qwen3-ForcedAligner-0.6B-GGUF", "qwen3_forced_aligner", "aligner")
     looked_up = []
     monkeypatch.setattr(acm, "resolve", lambda ident, *a, **kw: looked_up.append(ident) or aligner)
-    cached = set()
-    monkeypatch.setattr(
-        huggingface_hub,
-        "try_to_load_from_cache",
-        lambda repo, name, **kw: "/cache/blob" if name in cached else None,
-    )
     remote = {"etag": "blob"}
-    monkeypatch.setattr(
-        huggingface_hub,
-        "get_hf_file_metadata",
-        lambda url, **kw: type("M", (), {"etag": remote["etag"]})(),
-    )
+    root = _hub(monkeypatch, tmp_path, remote)
     _missing(monkeypatch, [("x.gguf", 4)])
     files = ["Qwen3-ForcedAligner-0.6B-GGUF/aligner-q8_0.gguf", "README.md"]
     scoped = lambda repo, names: asyncio.run(  # noqa: E731
@@ -309,7 +328,7 @@ def test_a_scoped_download_job_is_gated_on_the_files_it_fetches(monkeypatch, tmp
     # The umbrella's files resolve as their folder rows.
     assert looked_up == [aligner.id]
     # Files already cached, or no GGUF at all, fetch nothing the runtime loads.
-    cached.add(files[0])
+    _cache(root, acm.AUDIO_CPP_REPO, files[0], "blob")
     scoped(acm.AUDIO_CPP_REPO, files)
     scoped("org/some-model", ["README.md", "config.json"])
     assert looked_up == [aligner.id]
@@ -320,10 +339,6 @@ def test_a_scoped_download_job_is_gated_on_the_files_it_fetches(monkeypatch, tmp
 
 
 def test_a_scoped_job_is_checked_at_the_quant_of_its_file(monkeypatch, tmp_path):
-    import huggingface_hub
-
-    from utils import hf_cache_settings
-
     folder = "Canary-180M-Flash-GGUF"
     q8, q4 = (RepoFile(f"{folder}/canary-{q}.gguf", 4) for q in ("q8_0", "q4_k_m"))
     variants = (AudioCppVariant("Q8_0", (q8,), q8.path), AudioCppVariant("Q4_K_M", (q4,), q4.path))
@@ -338,18 +353,34 @@ def test_a_scoped_job_is_checked_at_the_quant_of_its_file(monkeypatch, tmp_path)
         "missing_files",
         lambda m, *, hub_cache = None: [(q4.path, 4)] if m.variant.key == "Q4_K_M" else [],
     )
-    caches = []
-    monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: "/active/hub")
-    monkeypatch.setattr(
-        huggingface_hub,
-        "try_to_load_from_cache",
-        lambda repo, name, cache_dir = None: caches.append(cache_dir),
-    )
+    root = _hub(monkeypatch, tmp_path, {"canary-q8_0.gguf": "q8sha", "canary-q4_k_m.gguf": "q4sha"})
+    _cache(root, acm.AUDIO_CPP_REPO, q8.path, "q8sha")
     _runtime(monkeypatch, tmp_path / "old", record = {"release_tag": "v0.9.1-unsloth.1"})
     with pytest.raises(audio_cpp_server.AudioCppRuntimeTooOldError):
         acm.refuse_stale_download(acm.AUDIO_CPP_REPO, None, files = [q4.path])
-    assert caches == ["/active/hub"]
     acm.refuse_stale_download(acm.AUDIO_CPP_REPO, None, files = [q8.path])
+
+
+def test_a_download_job_compares_blob_identity_not_size(monkeypatch, tmp_path):
+    # OWSM's refreshed q8_0 has the same byte size as the original, so only the etag tells them apart;
+    # Studio's pinned downloads leave no refs/main, so the cache is read by snapshot, not by ref.
+    model = _model()
+    path = model.variant.files[0].path
+    monkeypatch.setattr(acm, "resolve", lambda *a, **kw: model)
+    remote = {"etag": "oldsha"}
+    root = _hub(monkeypatch, tmp_path, remote)
+    _cache(root, model.repo_id, path, "oldsha")
+    _missing(monkeypatch, AssertionError("a download job never trusts a same-sized cached copy"))
+    _runtime(monkeypatch, tmp_path / "old", record = {"release_tag": "v0.9.1-unsloth.1"})
+    acm.refuse_stale_download(model.repo_id, None, files = [path])
+    acm._refuse_stale_download(model, None)
+    remote["etag"] = "newsha"
+    for call in (
+        lambda: acm.refuse_stale_download(model.repo_id, None, files = [path]),
+        lambda: acm._refuse_stale_download(model, None),
+    ):
+        with pytest.raises(audio_cpp_server.AudioCppRuntimeTooOldError):
+            call()
 
 
 def test_the_timestamp_aligner_is_not_fetched_for_an_old_runtime(monkeypatch, tmp_path):
