@@ -65,35 +65,15 @@ def _model_parallel(distributed) -> bool:
     )
 
 
-# Serialized weight formats that stay packed when Studio loads the model for REAP (16-bit request:
-# an FP8 checkpoint is kept as FP8), so Core's 16 / 32-bit weight check would refuse them after a
-# full load. bitsandbytes is packed too, except for the Hub ids Unsloth swaps for their 16-bit
-# original on a 16-bit load (`_maps_to_16_bit`). Not here: mxfp4 (gpt-oss dequantizes to bf16
-# without native kernels; Core refuses it clearly otherwise).
-_PACKED_QUANT_METHODS = {
-    "fp8",
-    "fbgemm_fp8",
-    "compressed-tensors",
-    "compressed_tensors",
-    "gptq",
-    "awq",
-    "hqq",
-    "eetq",
-    "aqlm",
-    "quanto",
-    "torchao",
-    "bitnet",
-    "fp_quant",
-    "higgs",
-    "vptq",
-    "spqr",
-    "auto-round",
-    "mxfp8",
-    "nvfp4",
-    "quark",
-    "sinq",
-    "fouroversix",
-}
+# Serialized quantization REAP can still prune once Studio loads the model in 16-bit; any other
+# quant_method (FP8, compressed-tensors / SparseML, ModelOpt, GPTQ, AWQ, ...) stays packed or is
+# rewritten to FP8 by the loader, and Core's 16 / 32-bit weight check refuses it only after a full
+# load. mxfp4: gpt-oss dequantizes to bf16 without native kernels (Core refuses it clearly
+# otherwise). bitsandbytes only for the Hub ids Unsloth swaps for their 16-bit original.
+_UNPACKED_QUANT_METHODS = {"mxfp4"}
+# Older ModelOpt exports declare their quantization here instead of in config.json; the loader
+# reads it the same way (attach_hf_quant_config).
+_HF_QUANT_CONFIG = "hf_quant_config.json"
 
 
 @functools.lru_cache(maxsize = 1)
@@ -123,14 +103,38 @@ def _maps_to_16_bit(model: str) -> bool:
         return False
 
 
-def hub_adapter_has_mtp_head(repo: str, hf_token = None) -> bool:
-    """Unsloth's loader re-attaches a Hub LoRA repo's trained MTP head, which REAP refuses."""
+def _hub_file_exists(
+    repo: str,
+    filename: str,
+    hf_token = None,
+) -> bool:
     try:
         from huggingface_hub import HfApi
-        return bool(HfApi(token = hf_token).file_exists(repo, "mtp_head.safetensors"))
+        return bool(HfApi(token = hf_token).file_exists(repo, filename))
     except Exception as exc:
-        logger.debug("Could not check '%s' for an MTP head: %s", repo, exc)
+        logger.debug("Could not check '%s' for %s: %s", repo, filename, exc)
         return False
+
+
+def hub_adapter_has_mtp_head(repo: str, hf_token = None) -> bool:
+    """Unsloth's loader re-attaches a Hub LoRA repo's trained MTP head, which REAP refuses."""
+    return _hub_file_exists(repo, "mtp_head.safetensors", hf_token)
+
+
+def _quantization_allows_reap(holders, bnb_maps_to_16_bit: bool) -> bool:
+    for holder in holders:
+        quant = holder.get("quantization_config")
+        if not quant:
+            continue
+        if not isinstance(quant, dict):
+            return False
+        method = str(quant.get("quant_method") or "").lower()
+        if not method and (quant.get("load_in_4bit") or quant.get("load_in_8bit")):
+            method = "bitsandbytes"  # configs saved before quant_method existed
+        if method in _UNPACKED_QUANT_METHODS or (method == "bitsandbytes" and bnb_maps_to_16_bit):
+            continue
+        return False
+    return True
 
 
 def moe_info_from_config(
@@ -155,12 +159,7 @@ def moe_info_from_config(
         return None
     if any(_model_parallel(h.get("distributed_config")) for h in holders):
         return None
-    packed = _PACKED_QUANT_METHODS | (set() if bnb_maps_to_16_bit else {"bitsandbytes"})
-    if any(
-        isinstance(h.get("quantization_config"), dict)
-        and str(h["quantization_config"].get("quant_method", "")).lower() in packed
-        for h in holders
-    ):
+    if not _quantization_allows_reap(holders, bnb_maps_to_16_bit):
         return None
     if any(
         str(h.get("model_type", "")) in _STATEFUL_MODEL_TYPES | _HASH_ROUTED_MODEL_TYPES
@@ -219,10 +218,19 @@ def moe_export_info(
                 manifest = training_manifest(str(local))
                 if manifest and manifest.get("strategy") == "mtp":
                     return None
-        return moe_info_from_config(
-            _read_raw_config_json(model, hf_token, local_files_only, None),
-            bnb_maps_to_16_bit = not is_local_path(model) and _maps_to_16_bit(model),
-        )
+        local = is_local_path(model)
+        if local and (Path(normalize_path(model)).expanduser() / _HF_QUANT_CONFIG).is_file():
+            return None
+        config = _read_raw_config_json(model, hf_token, local_files_only, None)
+        info = moe_info_from_config(config, bnb_maps_to_16_bit = not local and _maps_to_16_bit(model))
+        if (
+            info is not None
+            and not local
+            and not (isinstance(config, dict) and config.get("quantization_config"))
+            and _hub_file_exists(model, _HF_QUANT_CONFIG, hf_token)
+        ):
+            return None
+        return info
     except Exception as exc:
         logger.debug("MoE detection skipped for '%s': %s", model, exc)
         return None

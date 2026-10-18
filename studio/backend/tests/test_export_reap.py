@@ -849,16 +849,19 @@ def test_a_failed_upload_after_a_complete_local_save_still_syncs_the_report(
     [
         ("fp8", False),
         ("compressed-tensors", False),
+        ("sparseml", False),
+        ("modelopt", False),
         ("gptq", False),
         ("awq", False),
         ("nvfp4", False),
-        # Packed unless the Hub id maps back to 16-bit (next test); gpt-oss MXFP4 dequantizes to
+        ("some-future-format", False),
+        # Packed unless the Hub id maps back to 16-bit (below); gpt-oss MXFP4 dequantizes to
         # bf16 without native kernels.
         ("bitsandbytes", False),
         ("mxfp4", True),
     ],
 )
-def test_probe_hides_reap_for_weights_a_16_bit_load_keeps_packed(method, offered):
+def test_probe_offers_reap_only_for_quantization_a_16_bit_load_unpacks(method, offered):
     config = {"model_type": "qwen3_moe", "num_experts": 128, "num_experts_per_tok": 8}
     for holder in ("top", "text_config"):
         quant = {"quant_method": method}
@@ -868,12 +871,31 @@ def test_probe_hides_reap_for_weights_a_16_bit_load_keeps_packed(method, offered
             else dict(config, text_config = {"quantization_config": quant})
         )
         assert (reap_mod.moe_info_from_config(cfg) is not None) is offered, (method, holder)
+    # A bitsandbytes config from before quant_method existed reads the same.
+    old_bnb = dict(config, quantization_config = {"load_in_4bit": True})
+    assert reap_mod.moe_info_from_config(old_bnb) is None
 
 
-def test_packed_methods_are_real_transformers_quant_methods():
-    q = pytest.importorskip("transformers.utils.quantization_config")
-    known = {m.value for m in q.QuantizationMethod}
-    assert reap_mod._PACKED_QUANT_METHODS - {"compressed_tensors"} <= known
+def test_probe_hides_reap_for_an_older_modelopt_export(tmp_path, monkeypatch):
+    # Declared in hf_quant_config.json, not config.json, as the loader reads it.
+    folder = tmp_path / "moe-modelopt"
+    folder.mkdir()
+    (folder / "config.json").write_text(json.dumps({"num_experts": 8, "num_experts_per_tok": 2}))
+    assert reap_mod.moe_export_info(str(folder))["num_experts"] == 8
+    (folder / "hf_quant_config.json").write_text('{"quantization": {"quant_algo": "FP8"}}')
+    assert reap_mod.moe_export_info(str(folder)) is None
+    # A Hub id is checked for the same file.
+    import utils.models.model_config as model_config
+
+    monkeypatch.setattr(
+        model_config,
+        "_read_raw_config_json",
+        lambda *a, **k: {"num_experts": 8, "num_experts_per_tok": 2},
+    )
+    monkeypatch.setattr(reap_mod, "_hub_file_exists", lambda repo, name, token = None: True)
+    assert reap_mod.moe_export_info("org/moe-modelopt", local_files_only = False) is None
+    monkeypatch.setattr(reap_mod, "_hub_file_exists", lambda repo, name, token = None: False)
+    assert reap_mod.moe_export_info("org/moe-modelopt", local_files_only = False)["num_experts"] == 8
 
 
 @pytest.mark.parametrize(
