@@ -464,7 +464,7 @@ def _backfill_model_specs() -> bool:
             if audio_cpp_server.read_install_record(binary).get("release_tag") != tag:
                 return False
             for leftover in bin_dir.glob(".model_specs-*"):
-                # From a fetch killed mid-way; only the exact name model_specs is ever read.
+                # Left by a killed fetch; only the exact name model_specs is ever read.
                 shutil.rmtree(leftover, ignore_errors = True)
             if not installer._fetch_model_specs(repo, commit, bin_dir):
                 logger.info("audio.cpp spec backfill: fetch failed", tag = tag)

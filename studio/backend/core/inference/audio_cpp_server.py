@@ -165,8 +165,7 @@ def read_install_record(binary: str) -> dict:
     return {}
 
 
-# audio.cpp v0.9.2 validates requests against its own model_specs/ before a GGUF's embedded
-# spec, renamed several options, and reads the refreshed GGUFs' new option names.
+# First release that checks model_specs/ before a GGUF's embedded spec and reads the renamed options.
 SPEC_FIRST_RUNTIME = (0, 9, 2)
 
 

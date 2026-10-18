@@ -2770,7 +2770,6 @@ def refuse_stale_download(
     from core.inference.audio_cpp_server import SPEC_FIRST_RUNTIME, runtime_release_key
 
     release = runtime_release_key()
-    # Only an old runtime needs the lookup, so other GGUF downloads never pay for it.
     if release is None or release >= SPEC_FIRST_RUNTIME or not identifier:
         return
     # Row -> the files the job fetches there; None means the row's own variant.
@@ -2803,7 +2802,6 @@ def refuse_stale_download(
             model = resolve(row, None if names else variant, hf_token, network = network)
             checked = [model] if model is not None else []
             if model is not None and names:
-                # The quant each file belongs to, not the row's default one.
                 keys = {v.key for v in model.variants if any(f.path in names for f in v.files)}
                 checked = [
                     model
@@ -2836,7 +2834,6 @@ def download_target(
     if model is None or not model.repo_id or not model.variant.primary:
         return None
     if persist:
-        # A Hub download job starts here; an old runtime must not fetch GGUFs it cannot load.
         _refuse_stale_download(model, hf_token)
     from hub.utils.gguf import gguf_variant_key
 

@@ -495,8 +495,7 @@ class AudioCppBackend:
             if AudioCppBackend._rebuild_header_only(model, path, hf_token, cache_dir, cancel_event)
         ]
         if rebuilt:
-            # refs/main now names the rebuilt files' commit; the variant's unchanged files are linked
-            # into it from blobs already on disk.
+            # refs/main now names the rebuilt commit; unchanged files link in from blobs on disk.
             missing = audio_cpp_files.missing_files(model)
         for path, _size in missing:
             if cancel_event is not None and cancel_event.is_set():

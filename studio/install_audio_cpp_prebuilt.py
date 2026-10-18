@@ -690,7 +690,6 @@ _SPEC_TIMEOUT = 10
 
 
 def _spec_tree(repo: str, commit: str) -> object:
-    """The GitHub trees listing of ``model_specs/`` at ``commit`` (one API call)."""
     url = f"https://api.github.com/repos/{repo}/git/trees/{commit}:{MODEL_SPECS_DIR}"
     data = core.download_bytes(
         _OPS, url, timeout = _SPEC_TIMEOUT, attempts = 1, headers = _OPS.github_api_headers(url)
@@ -1256,8 +1255,7 @@ def _install_locked(
             extra_dirs = _cuda_runtime_dirs(backend),
             require_vulkan_device = requested == "auto" and backend == "vulkan",
         )
-        # Next to the server (bin/ in Windows bundles), where Unsloth Studio looks for it. A failed
-        # fetch only leaves the families unknown, so it never fails the install.
+        # Beside the server (bin/ on Windows), where Studio reads it; a failed fetch never fails the install.
         source_commit = release.get("source_commit")
         if _fetch_model_specs(repo, source_commit, server.parent):
             specs = len(list((server.parent / MODEL_SPECS_DIR).glob("*.json")))
