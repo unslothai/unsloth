@@ -4184,6 +4184,18 @@ def _local_snapshot(repo):
     return os.path.dirname(hits[0])
 
 
+@_NEEDS_MLX
+@pytest.mark.parametrize("module", ["mlx_lm.models.cache", "mlx_vlm.models.cache"])
+def test_a_linear_attention_cache_reports_its_convolution_width(module):
+    import importlib
+
+    import mlx.core as mx
+
+    cache = importlib.import_module(module).ArraysCache(2)
+    cache[0], cache[1] = mx.zeros((1, 3, 8192)), mx.zeros((1, 32, 128, 128))
+    assert mm._conv_width(cache) == 8192
+
+
 def _on_bfloat16_chip():
     import mlx.core as mx
     if mm._runtime_dtype() is not mx.bfloat16:

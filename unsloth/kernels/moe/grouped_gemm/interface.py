@@ -109,7 +109,6 @@ def _grouped_gemm_forward_impl(
     permute_x: bool = False,
     permute_y: bool = False,
     fuse_mul_post: bool = False,
-    # Autotuning -- overrides manual kernel params when True
     autotune: bool = False,
     # Kernel tuning params: must be tuned, else poor performance.
     BLOCK_SIZE_M: int = 32,
@@ -264,7 +263,9 @@ def _grouped_gemm_forward_impl(
 
     is_fake = _is_tracing(X, W)
     if not is_fake:
-        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args)
+        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
+            **kernel_args, enable_fp_fusion = True
+        )
         if autotune:
             log_kernel_info(compiled_kernel, kernel.best_config)
         else:
@@ -404,7 +405,9 @@ def _grouped_gemm_dX_impl(
 
     is_fake = _is_tracing(dY, W)
     if not is_fake:
-        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args)
+        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
+            **kernel_args, enable_fp_fusion = True
+        )
 
         if autotune:
             log_kernel_info(compiled_kernel, kernel.best_config)
@@ -529,7 +532,6 @@ def _grouped_gemm_dW_impl(
         "NUM_SMS": NUM_SMS,
         "PERMUTE_X": permute_x,
         "PERMUTE_Y": permute_y,
-        "FLATTEN": flatten,
     }
 
     if not autotune:
@@ -550,7 +552,9 @@ def _grouped_gemm_dW_impl(
 
     is_fake = _is_tracing(X, dY)
     if not is_fake:
-        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args)
+        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
+            **kernel_args, enable_fp_fusion = True
+        )
 
         if autotune:
             log_kernel_info(compiled_kernel, kernel.best_config)
@@ -720,12 +724,17 @@ class GroupedGemm(torch.autograd.Function):
         topk = ctx.topk
         permute_x = ctx.permute_x
         permute_y = ctx.permute_y
-        fuse_mul_post = ctx.fuse_mul_post
         kernel_config_bwd_dX = ctx.kernel_config_bwd_dX
         kernel_config_bwd_dW = ctx.kernel_config_bwd_dW
         autotune = ctx.autotune
-        dX_only = ctx.dX_only
-        dW_only = ctx.dW_only
+        assert (
+            not ctx.fuse_mul_post
+        ), "fused_mul should only be used for inference, not for training"
+        # Frozen W (LoRA, dequantized experts) or X: skip its kernel and buffer, as autograd does for _grouped_mm.
+        dX_only = ctx.dX_only or not ctx.needs_input_grad[1]
+        dW_only = ctx.dW_only or not ctx.needs_input_grad[0]
+        if dX_only and dW_only:
+            return (None,) * 15
 
         if not autotune:
             if not dW_only:
@@ -736,8 +745,6 @@ class GroupedGemm(torch.autograd.Function):
                 assert (
                     kernel_config_bwd_dW is not None
                 ), "kernel_config_bwd_dW must be provided if autotune is False"
-
-        assert not fuse_mul_post, "fused_mul should only be used for inference, not for training"
 
         if not dX_only:
             bwd_dW_config = {}

@@ -1048,6 +1048,8 @@ class ModelOverridePayload(BaseModel):
     tensor_parallel: bool = False
     disable_vision: bool = False
     mlx_int8_prefill: bool = False
+    # Default-engine 16-bit load; only False is stored.
+    load_in_4bit: bool = True
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
     chat_template_override: Optional[str] = None
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
@@ -2377,6 +2379,54 @@ def update_openai_auto_switch(
     )
 
 
+class ModelAliasEntry(BaseModel):
+    name: str
+    model: str
+
+
+class ModelAliasesPayload(BaseModel):
+    aliases: list[ModelAliasEntry] = Field(default_factory = list)
+
+
+class ModelAliasesResponse(BaseModel):
+    aliases: list[ModelAliasEntry]
+
+
+@_owner_settings_router.get("/model-aliases", response_model = ModelAliasesResponse)
+def get_model_aliases_setting(
+    current_subject: str = Depends(get_current_subject),
+) -> ModelAliasesResponse:
+    from utils.model_aliases import get_model_aliases
+    return ModelAliasesResponse(aliases = get_model_aliases())
+
+
+@_owner_settings_router.put("/model-aliases", response_model = ModelAliasesResponse)
+async def update_model_aliases_setting(
+    payload: ModelAliasesPayload, current_subject: str = Depends(get_current_subject)
+) -> ModelAliasesResponse:
+    from core.systemone import catalog as decision_catalog
+    from routes.inference import _openai_catalog_objects
+    from utils.model_aliases import set_model_aliases
+
+    # Decision ids (clef, laya-multilingual) are reserved even while that API is off.
+    objects = await _openai_catalog_objects()
+    model_ids = [o["id"] for o in objects if isinstance(o.get("id"), str)]
+    model_ids += list(decision_catalog.CHECKPOINTS)
+    try:
+        aliases = await asyncio.to_thread(
+            set_model_aliases, [entry.model_dump() for entry in payload.aliases], model_ids
+        )
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc, fallback = "Invalid model alias."),
+            event = "settings.update_model_aliases_failed",
+            log = logger,
+        ) from exc
+    return ModelAliasesResponse(aliases = aliases)
+
+
 @_account_settings_router.get(
     "/openai-auto-switch/overrides", response_model = ModelOverridesResponse
 )
@@ -2596,10 +2646,12 @@ def update_openai_auto_switch_override(
                 not payload.tensor_parallel
                 and not payload.disable_vision
                 and not payload.mlx_int8_prefill
+                and payload.load_in_4bit
                 and not {
                     key: value
                     for key, value in saved_fields.items()
-                    if key not in ("tensor_parallel", "disable_vision", "mlx_int8_prefill")
+                    if key
+                    not in ("tensor_parallel", "disable_vision", "mlx_int8_prefill", "load_in_4bit")
                 }
             )
         if requested_extra_args is None and not is_removal:
@@ -2832,6 +2884,7 @@ def update_openai_auto_switch_override(
                 tensor_parallel = payload.tensor_parallel,
                 disable_vision = payload.disable_vision,
                 mlx_int8_prefill = payload.mlx_int8_prefill,
+                load_in_4bit = payload.load_in_4bit,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,
                 gpu_layers = payload.gpu_layers,
@@ -5018,6 +5071,9 @@ class SandboxWindowsStatus(BaseModel):
     prepare_repeats_after_restart: bool = True
     # True: MXC runs in Windows' built-in container (BaseContainer); False: this Windows has none; None: unknown.
     builtin_container: Optional[bool] = None
+    # Set only when a Windows update adds the built-in container: this PC's build and the first one with it.
+    windows_build: Optional[str] = None
+    builtin_container_build: Optional[str] = None
 
 
 class SandboxSetupStatus(BaseModel):
@@ -5153,6 +5209,7 @@ def _sandbox_windows_status() -> SandboxWindowsStatus:
     if installed:
         steps = mxc_runtime.probe_host_prep_steps(env = mxc_adapter._control_environment())
         missing = None if steps is None else list(steps)
+    update = sandbox_setup_plan.windows_builtin_container_update()
     return SandboxWindowsStatus(
         runtime_installed = installed,
         runtime_unsupported = sandbox_setup_plan.windows_runtime_unsupported(),
@@ -5165,6 +5222,8 @@ def _sandbox_windows_status() -> SandboxWindowsStatus:
             mxc_read_grants.PERSISTENT_GRANTS_ENV
         ),
         host_prep_missing = missing,
+        windows_build = update[0] if update else None,
+        builtin_container_build = update[1] if update else None,
     )
 
 

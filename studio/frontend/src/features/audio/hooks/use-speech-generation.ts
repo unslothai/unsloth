@@ -8,11 +8,11 @@ import { generateAudio, runAudio } from "../api";
 import { TTS_MAX_TOKENS } from "../audio-workspace-constants";
 import {
   audioOptionLabel,
+  audioOptionSpecsFor,
   audioOptionsForRequest,
   type AudioOptionValue,
   type AudioOptionValues,
   missingRequiredAudioOptions,
-  parseAudioOptions,
   readAudioOptionValues,
   saveAudioOptionValues,
 } from "../audio-options";
@@ -188,8 +188,8 @@ export function useSpeechGeneration({
   );
   const samplingControls = audioSamplingControlsApply(status?.audio_type);
   const audioOptionSpecs = useMemo(
-    () => parseAudioOptions(status?.audio_options),
-    [status?.audio_options],
+    () => audioOptionSpecsFor(status, workflow),
+    [status, workflow],
   );
   const audioOptionsModel = status?.active_model ?? null;
   const [audioOptionValues, setAudioOptionValues] = useState<AudioOptionValues>(

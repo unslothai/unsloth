@@ -1,27 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A GGUF export that holds three copies of the model at once.
-
-`Nemotron-3-Nano-30B-A3B` merged to 16-bit and then died in llama-quantize at
-tensor 88 of 401 with `failed to quantize: basic_ios::clear: iostream error`.
-That message is not about the model: it is llama.cpp's own
-`fout.exceptions(std::ofstream::failbit)` firing on a write with nowhere to go.
-The arithmetic, measured on a 132GB Colab G4 disk: a 63GB intermediate 16-bit
-merge, a 60GB BF16 GGUF, and a Q4_K_M needing about 18GB. 141GB into 132GB.
-
-The filename was a red herring, worth writing down so it is not re-derived:
-unsloth passes `initial_files[0]`, here `...BF16-00001-of-00002.gguf`, but
-llama.cpp's `llama_model_quantize_impl` walks `ml.weights_map` across every
-input shard and, with `keep_split` false, collapses them into a single output.
-Handing it shard one is correct usage.
-
-The intermediate merge is what is actually wasted: written, converted, then
-never read again, since llama-quantize reads the GGUF. Two properties are
-tested here -- it frees when the room is not there, and it does NOT free when
-the room is there. The second is what keeps this from surprising anyone who
-wanted the merge kept.
-"""
+"""The 16-bit merge is reclaimed only when disk is tight, since llama-quantize never reads it."""
 
 from __future__ import annotations
 
@@ -36,8 +16,7 @@ import pytest
 
 GB = 1024**3
 
-# A weight shard of the merge, as opposed to anything else that ends in `.safetensors` (an adapter) or `.bin`
-# (`training_args.bin`).
+# A merge weight shard, not an adapter `.safetensors` or `training_args.bin`.
 _MERGE_SHARD = re.compile(r"^(model|pytorch_model|consolidated)\.|-\d+-of-\d+\.")
 
 
@@ -56,10 +35,7 @@ def _layout(tmp_path, merge_gb, base_gb):
     gguf = tmp_path / "model_gguf"
     merge.mkdir()
     gguf.mkdir()
-    # Sparse files: only the sizes are read, and writing 60GB of zeroes to prove a point about disk space would be its
-    # own joke.
-    # The names are the `-NNNNN-of-NNNNN` set `save_pretrained` really writes, which is what the reclamation matches on;
-    # `model-00001.safetensors` is not a shape it produces.
+    # Sparse files: only sizes are read. Names follow the `-NNNNN-of-NNNNN` set save_pretrained writes.
     merge_shards = list(_split(merge_gb))
     for i, gb in enumerate(merge_shards):
         name = f"model-{i + 1:05d}-of-{len(merge_shards):05d}.safetensors"
@@ -99,15 +75,7 @@ def _reclaim(
     quant_methods = ("q4_k_m",),
     **kwargs,
 ):
-    """Call the helper the way `save_to_gguf` does for a merge it wrote itself.
-
-    The helper defaults `merge_is_disposable` off so a caller pointing it at a
-    real checkpoint keeps it, so every test about the reclamation itself has to
-    opt in, exactly like the real call site. `preexisting_weights` defaults to
-    empty for the same reason the layouts do: the ordinary merge writes into a
-    directory of its own, so everything in it is the export's. The tests about a
-    reused directory pass their own.
-    """
+    """Defaults match the real merge call: merge_is_disposable True, preexisting_weights empty."""
     kwargs.setdefault("merge_is_disposable", True)
     kwargs.setdefault("preexisting_weights", frozenset())
     return save_mod._free_merge_if_disk_is_tight(
@@ -205,19 +173,8 @@ def test_the_helper_is_called_before_quantizing(save_mod):
     assert source.index("_free_merge_if_disk_is_tight(") < source.index("def _quantize_one")
 
 
-# ---- what reclamation must never do ---------------------------------------
-
-
 def test_a_complete_stale_shard_set_is_not_inherited(tmp_path, monkeypatch, save_mod):
-    """A finished earlier save in the same directory, index and every shard.
-
-    This is the case self-consistency cannot decide. An index left by a previous
-    sharded save lists `-00001-of-00002` and `-00002-of-00002` under one stem and
-    both are on disk, so it looks exactly like an index the current merge wrote.
-    transformers removes neither: its stale sweep does not match
-    `model.safetensors.index`, and it only prunes shards under the stem it is
-    writing. What separates them is not their shape but who wrote them.
-    """
+    """Ownership, not file shape, decides: an earlier complete save's shard set must not be reclaimed."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
     stale = ["archive-00001-of-00002.safetensors", "archive-00002-of-00002.safetensors"]
     for name in stale:
@@ -236,13 +193,7 @@ def test_a_complete_stale_shard_set_is_not_inherited(tmp_path, monkeypatch, save
 
 
 def test_a_consolidated_file_the_merge_did_not_write_is_kept(tmp_path, monkeypatch, save_mod):
-    """`consolidated.safetensors` is a name the merge uses and may not have written.
-
-    The shard selection drops it whenever ordinary shards coexist, so a caller
-    reusing an output directory can hold one this run never touched. The name
-    matcher cannot tell the difference, which is the whole reason ownership is
-    recorded rather than inferred.
-    """
+    """Keeps a consolidated.safetensors the merge did not write; ownership is recorded, not guessed."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
     with open(os.path.join(merge, "consolidated.safetensors"), "wb") as fh:
         fh.truncate(GB)
@@ -260,11 +211,7 @@ def test_a_consolidated_file_the_merge_did_not_write_is_kept(tmp_path, monkeypat
 
 
 def test_unknown_provenance_reclaims_nothing(tmp_path, monkeypatch, save_mod):
-    """No answer is not the same as an empty answer.
-
-    A caller that could not read the directory before the merge cannot say what
-    it owns, and the deletion is permanent, so the reclamation declines.
-    """
+    """Unreadable provenance (None) reclaims nothing; an empty answer is not the same as no answer."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
     _with_free(monkeypatch, save_mod, 20)
     freed = _reclaim(save_mod, merge, gguf, bases, preexisting_weights = None)
@@ -273,13 +220,7 @@ def test_unknown_provenance_reclaims_nothing(tmp_path, monkeypatch, save_mod):
 
 
 def test_a_small_output_with_modest_free_space_is_not_called_a_full_disk(save_mod):
-    """The rebuild advice is only wrong when the disk is the problem.
-
-    A fixed 2GB floor is a claim about the machine, not about the write. An
-    incompatible quantizer failing on a sub-gigabyte model with 1.5GB free has
-    all the room it needs, and calling that a full disk suppresses the version
-    advice that would actually have fixed it.
-    """
+    """Only call it a full disk when free space is short of the output, not against a fixed 2GB floor."""
     import types as _types
 
     free = _types.SimpleNamespace(total = 0, used = 0, free = int(1.5 * GB))
@@ -287,11 +228,8 @@ def test_a_small_output_with_modest_free_space_is_not_called_a_full_disk(save_mo
     save_mod.shutil.disk_usage = lambda *_a, **_k: free
     try:
         failure = RuntimeError("unknown model architecture")
-        # 400MB of output: 1.5GB free is ample, so this is not a disk problem.
         assert not save_mod._gguf_failure_looks_like_disk(failure, ".", needed_bytes = int(0.4 * GB))
-        # 4GB of output into 1.5GB free is.
         assert save_mod._gguf_failure_looks_like_disk(failure, ".", needed_bytes = 4 * GB)
-        # A caller that cannot say what it needed still gets the fixed floor.
         assert save_mod._gguf_failure_looks_like_disk(failure, ".")
     finally:
         save_mod.shutil.disk_usage = original
@@ -305,18 +243,7 @@ def test_an_explicit_enospc_is_a_full_disk_whatever_the_size(save_mod):
 
 
 def test_the_bytes_already_written_are_not_charged_twice(tmp_path, save_mod):
-    """A failed pass leaves its partial output behind, and those bytes are gone
-    from the free space this measures while `needed_bytes` still describes the
-    whole file.
-
-    llama-quantize streams into the output (`llama-quant.cpp` opens the
-    `ofstream` before the tensor loop and writes each tensor as it finishes
-    one), so an export that starts with 12GB free, writes 5GB of a 10GB output
-    and then dies on an unsupported tensor is measured at 7GB against 10GB and
-    called a full disk. It never was: the room was there, and the rebuild advice
-    that would have addressed the real failure is the thing suppressed. Credit
-    the partial file back before comparing.
-    """
+    """Credit a partial output file back to free space before comparing it with the bytes still needed."""
     import types as _types
 
     output = tmp_path / "model.Q4_K_M.gguf"
@@ -337,7 +264,7 @@ def test_the_bytes_already_written_are_not_charged_twice(tmp_path, save_mod):
             partial_output = str(output),
         )
 
-        # A disk that really is short is still short: 1GB left plus the 5GB written is 6GB, and the output wanted 10GB.
+        # 1GB left plus the 5GB written is 6GB, and the output wanted 10GB.
         save_mod.shutil.disk_usage = lambda *_a, **_k: _types.SimpleNamespace(
             total = 0, used = 0, free = 1 * GB
         )
@@ -348,7 +275,6 @@ def test_the_bytes_already_written_are_not_charged_twice(tmp_path, save_mod):
             partial_output = str(output),
         )
 
-        # A pass that wrote nothing at all is unchanged, and so is a caller that names an output which is not there.
         assert save_mod._gguf_failure_looks_like_disk(
             failure,
             str(tmp_path),
@@ -360,13 +286,7 @@ def test_the_bytes_already_written_are_not_charged_twice(tmp_path, save_mod):
 
 
 def test_a_reused_checkpoint_is_never_reclaimed(tmp_path, monkeypatch, save_mod):
-    """The one that would have been a data-loss bug.
-
-    A non-PEFT `save_pretrained_gguf` writes no intermediate at all: it points
-    the converter straight at the local directory the model was loaded from, so
-    reclaiming there on a tight disk would eat the user's own model. Only a merge
-    this export wrote is disposable, so the flag is off unless the caller says so.
-    """
+    """A user's own checkpoint is never reclaimed; only a merge this export wrote is disposable."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
     _with_free(monkeypatch, save_mod, 20)
     freed = save_mod._free_merge_if_disk_is_tight(
@@ -465,8 +385,7 @@ def test_a_caller_can_keep_a_directory_it_owns(tmp_path, monkeypatch, save_mod):
         generic.update(kw)
 
     monkeypatch.setattr(save_mod, "unsloth_generic_save", _generic_save)
-    # isinstance() against a stand-in class is what puts the export on its PEFT branch, which is the one that calls
-    # unsloth_generic_save.
+    # isinstance() against the stand-in puts the export on its PEFT branch, which calls unsloth_generic_save.
     monkeypatch.setattr(save_mod, "PeftModelForCausalLM", _FakeModel)
     model = _FakeModel("some-org/some-model")
     seen = _run_export(
@@ -577,7 +496,6 @@ def test_a_roomy_output_disk_is_not_called_full_by_a_tight_cwd(monkeypatch, save
     )
     exc = RuntimeError("llama-quantize: unknown model architecture")
     assert save_mod._gguf_failure_looks_like_disk(exc, "/output") is False
-    # No output directory to consult, so the working directory still answers.
     assert save_mod._gguf_failure_looks_like_disk(exc, None) is True
 
 
@@ -591,7 +509,6 @@ def test_unrelated_training_artifacts_are_never_deleted(tmp_path, monkeypatch, s
         "optimizer.pt": b"opt",
         "rng_state.pth": b"rng",
         "scheduler.pt": b"sched",
-        # An adapter beside the merge is the user's, and it is tiny anyway.
         "adapter_model.safetensors": b"adapter",
     }
     for name, blob in keep.items():
@@ -605,13 +522,7 @@ def test_unrelated_training_artifacts_are_never_deleted(tmp_path, monkeypatch, s
 
 
 def test_the_shards_the_index_names_are_the_ones_reclaimed(tmp_path, monkeypatch, save_mod):
-    """`save_pretrained` writes an index naming its shards, so when there is one
-    it decides rather than the naming convention.
-
-    The fixture is a whole shard set under a stem the convention misses, because
-    that is the only shape an index is ever written in: a save shards or it does
-    not, and an unsharded one writes no index at all.
-    """
+    """An index written by save_pretrained names the shards to reclaim, not the naming convention."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 30, base_gb = 60)
     odd = [Path(merge) / f"weights-part-0000{i}-of-00002.safetensors" for i in (1, 2)]
     for shard in odd:
@@ -628,14 +539,7 @@ def test_the_shards_the_index_names_are_the_ones_reclaimed(tmp_path, monkeypatch
 
 
 def test_a_stale_safetensors_index_does_not_widen_the_deletion(tmp_path, monkeypatch, save_mod):
-    """The hazard the index read creates, and the reason it is validated.
-
-    transformers writes an index only when a save shards, and its stale-shard
-    sweep never removes one. So an unsharded merge lands in a directory that
-    still holds an earlier save's index, and reading that index hands whatever it
-    names -- including files under a stem this helper otherwise protects -- to a
-    permanent delete.
-    """
+    """A stale index left by an earlier save must not widen the deletion to whatever it names."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
     theirs = Path(merge) / "users_own-00001-of-00002.safetensors"
     theirs.write_bytes(b"an earlier save under a stem the convention protects")
@@ -678,10 +582,7 @@ def test_an_index_missing_shards_it_names_is_not_trusted(tmp_path, monkeypatch, 
 
 
 def test_a_shard_set_under_another_stem_is_not_the_merge(tmp_path, monkeypatch, save_mod):
-    """`-NNNNN-of-NNNNN` under an unrelated stem is not something `save_pretrained`
-    writes, and transformers does not clear it either: its stale-shard sweep wants
-    the `model` / `pytorch_model` stem as well as the shard shape. So the user put
-    it here, and this helper deletes permanently."""
+    """A shard set under an unrelated stem is the user's, not the merge's, so it is never deleted."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
     theirs = Path(merge) / "backup-00001-of-00002.safetensors"
     theirs.write_bytes(b"not ours")
@@ -692,10 +593,7 @@ def test_a_shard_set_under_another_stem_is_not_the_merge(tmp_path, monkeypatch, 
 
 
 def test_a_checkpoint_in_the_other_serialization_is_not_the_merge(tmp_path, monkeypatch, save_mod):
-    """A disposable merge is always safetensors: the PEFT branch goes through
-    unsloth_zoo's safetensors rewrite and the non-PEFT fallback calls
-    `save_pretrained` with no arguments. So a `pytorch_model.bin` beside it came
-    from an earlier save, which transformers' stale sweep leaves alone too."""
+    """A merge is always safetensors, so a pytorch_model.bin beside it is an earlier save and kept."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
     theirs = Path(merge) / "pytorch_model.bin"
     theirs.write_bytes(b"an earlier save the export cannot put back")
@@ -747,23 +645,17 @@ def test_each_quant_is_priced_by_its_own_width(save_mod):
     # The published llama.cpp 7B sizes: Q4_K_M near 4.5 bits a weight, Q8_0 8.5.
     assert 4.5 / 16 < ratio("q4_k_m") < 8.0 / 16
     assert 8.5 / 16 < ratio("q8_0") < 1.0
-    # i-quants carry their width the same way.
     assert ratio("iq2_xxs") < ratio("iq4_xs") < ratio("q8_0")
     # An unrecognised method is still charged a whole copy of the base.
     assert ratio("something_new") == 1.0
 
 
 def test_a_q8_0_base_is_not_priced_as_sixteen_bit(save_mod):
-    """`first_conversion` is a public argument and `q8_0` is one of the types
-    convert_hf_to_gguf can emit directly, so the base GGUF is not always 16-bit.
-    Pricing an 8-bit base as 16-bit halves every estimate taken off it, and
-    under-counting is the direction that costs the export."""
+    """A q8_0 base must be priced as 8-bit; pricing it as 16-bit halves the estimate and undercounts."""
     off_16 = save_mod._gguf_output_size_ratio("q4_k_m", "bf16")
     off_8 = save_mod._gguf_output_size_ratio("q4_k_m", "q8_0")
     assert off_8 > off_16, "a quant off an 8-bit base is a bigger share of it"
-    # Still an upper bound: Q4_K_M is about 4.5 bits against Q8_0's real 8.5.
     assert off_8 > 4.5 / 8.5
-    # And an f32 output off that base is four bytes a weight against one.
     assert save_mod._gguf_output_size_ratio("f32", "q8_0") >= 32.0 / 8.5
 
 
@@ -781,23 +673,12 @@ def test_the_vlm_projector_is_not_charged_to_every_quant(tmp_path, monkeypatch, 
 
 
 def test_the_diagnosis_is_not_priced_off_the_reclamation_bound(save_mod):
-    """The two callers of the ratio are hurt by opposite errors.
-
-    Reclamation rounds up on purpose -- an estimate that comes out low keeps a
-    merge the quants then have no room for. Reusing that same number to decide
-    whether a *failure* was about disk inverts the cost: Q4_K_M is charged 5.5
-    bits a weight against a real 4.5, so a 60GB BF16 base is called 20.6GB when
-    the output is about 17GB, and an unrelated quantizer failure with 19GB free
-    is reported as a full disk while the rebuild advice that would have fixed it
-    is swallowed. Diagnosis therefore prices each type at its nominal width,
-    which no k-quant is ever under.
-    """
+    """Diagnosis uses nominal widths, not the upper bound, which overstates a quant's real size."""
     upper = save_mod._gguf_output_size_ratio("q4_k_m", "bf16")
     lower = save_mod._gguf_output_size_ratio("q4_k_m", "bf16", upper_bound = False)
-    # llama.cpp's own 7B table puts Q4_K_M near 4.8 bits a weight; the two bounds have to sit either side of it.
+    # llama.cpp's own 7B table puts Q4_K_M near 4.8 bits a weight; the bounds must straddle it.
     assert lower < 4.5 / 16 < upper
 
-    # Codex's case, run through the helper the way the call site does.
     base_bytes = 60 * GB
     failure = RuntimeError("unknown model architecture")
     free = types.SimpleNamespace(total = 0, used = 0, free = int(19 * GB))
@@ -807,7 +688,6 @@ def test_the_diagnosis_is_not_priced_off_the_reclamation_bound(save_mod):
         assert not save_mod._gguf_failure_looks_like_disk(
             failure, ".", needed_bytes = int(base_bytes * lower)
         ), "19GB free for a ~17GB output is not a full disk"
-        # A disk that genuinely cannot hold even the nominal output still is one.
         short = types.SimpleNamespace(total = 0, used = 0, free = int(8 * GB))
         save_mod.shutil.disk_usage = lambda *_a, **_k: short
         assert save_mod._gguf_failure_looks_like_disk(
@@ -821,27 +701,14 @@ def test_the_diagnosis_is_not_priced_off_the_reclamation_bound(save_mod):
         assert save_mod._gguf_output_size_ratio(dtype, "bf16") == (
             save_mod._gguf_output_size_ratio(dtype, "bf16", upper_bound = False)
         )
-    # A width the diagnosis cannot measure is not guessed at: None puts the caller back on the fixed floor rather than
-    # charging a whole base copy.
     assert save_mod._gguf_output_size_ratio("something_new", "bf16") == 1.0
     assert save_mod._gguf_output_size_ratio("something_new", "bf16", upper_bound = False) is None
 
-    # And the call site actually asks for the lower bound.
     assert "upper_bound = False" in _save_to_gguf_source(save_mod)
 
 
 def test_the_index_is_reclaimed_with_the_shards_it_named(tmp_path, monkeypatch, save_mod):
-    """An index this export wrote goes with the shards it named.
-
-    Reading the index is the one way a shard set under a stem
-    `_MERGE_WEIGHT_NAME` does not know still gets reclaimed. Deleting those
-    shards and leaving the index behind breaks that on the second export into
-    the same directory: the provenance snapshot now sees the leftover index and
-    classifies it as the caller's, so it is filtered out before the reading, the
-    non-canonical shards are invisible to the name matcher, and a tight-disk
-    rerun reclaims nothing. It also leaves an index pointing at files that no
-    longer exist.
-    """
+    """An index the export wrote goes with its shards, or the next run's provenance check hides them."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
     for name in os.listdir(merge):
         if _is_merge_shard(name):
@@ -857,7 +724,6 @@ def test_the_index_is_reclaimed_with_the_shards_it_named(tmp_path, monkeypatch, 
         with open(os.path.join(merge, "model.safetensors.index.json"), "w", encoding = "utf-8") as fh:
             json.dump(index, fh)
 
-    # First export: the directory is this export's own, so everything goes.
     _write_merge()
     _with_free(monkeypatch, save_mod, 20)
     assert _reclaim(save_mod, merge, gguf, bases) > 0
@@ -867,8 +733,7 @@ def test_the_index_is_reclaimed_with_the_shards_it_named(tmp_path, monkeypatch, 
         os.path.join(merge, "model.safetensors.index.json")
     ), "the index named the shards that were just deleted and cannot outlive them"
 
-    # Second export into the same directory, provenance snapshotted the way `unsloth_save_pretrained_gguf` does, before
-    # the merge writes.
+    # Provenance snapshotted before the merge writes, as `unsloth_save_pretrained_gguf` does.
     preexisting = frozenset(os.listdir(merge))
     _write_merge()
     freed = _reclaim(save_mod, merge, gguf, bases, preexisting_weights = preexisting)

@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/tooltip";
 import { isTouchClick } from "@/components/ui/touch-click";
 import { usePlatformStore } from "@/config/env";
+import { useIsAccountOwner } from "@/features/auth";
 import { ApiProviderLogo } from "@/features/chat";
 import {
   type ScanFolderInfo,
@@ -89,6 +90,7 @@ import {
 } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
+import { pickNativeModelFolder } from "@/features/native-intents";
 import {
   type NpuModel,
   type NpuPickerSource,
@@ -495,10 +497,24 @@ function ListLabel({
         divider ? "mt-3 border-t border-border pt-3" : "pt-3",
       )}
     >
-      <span className="flex items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
-        {icon}
-        {children}
-      </span>
+      {onToggle ? (
+        // The chevron stays the keyboard control, so the label is not a second tab stop.
+        <button
+          type="button"
+          tabIndex={-1}
+          onClick={onToggle}
+          aria-expanded={!collapsed}
+          className="flex cursor-pointer select-none items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground"
+        >
+          {icon}
+          {children}
+        </button>
+      ) : (
+        <span className="flex items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
+          {icon}
+          {children}
+        </span>
+      )}
       {(action || onToggle) && (
         <div className="flex items-center gap-0.5">
           {action}
@@ -2831,10 +2847,12 @@ function canDeleteLoraModel(model: LoraModelOption): boolean {
 }
 
 
-// Recommended section sort: plain HF sort keys.
-type RecommendedSortKey = "trendingScore" | "lastModified";
+// Recommended section sort. Latest is the Model hub's ranking (trending weighed against release age);
+// the others are plain HF sort keys.
+type RecommendedSortKey = "fresh" | "trendingScore" | "lastModified";
 
 const RECOMMENDED_SORT_OPTIONS: HubOption<RecommendedSortKey>[] = [
+  { value: "fresh", label: "Latest" },
   { value: "trendingScore", label: "Trending" },
   { value: "lastModified", label: "Recent" },
 ];
@@ -3191,7 +3209,7 @@ export function HubModelPicker({
   const accessToken = hfApiToken(hfToken);
   // Recommended section: a live unsloth listing sorted by the dropdown, the same sort that drives search results.
   const [recommendedSort, setRecommendedSort] =
-    useState<RecommendedSortKey>("trendingScore");
+    useState<RecommendedSortKey>("fresh");
   const {
     results,
     isLoading,
@@ -3209,8 +3227,9 @@ export function HubModelPicker({
     keepUnsupportedTags: true,
     accessToken,
     // Only Recommended renders Hub results, so keep the Hub hooks idle on other tabs and preserve
-    // offline-local behavior.
-    enabled: online && section === "recommended",
+    // offline-local behavior. Search rows render only with a query (showHfSection); browse reads
+    // recommendedSearch, so an empty query would only fetch Latest's pools a second time.
+    enabled: online && section === "recommended" && debouncedQuery.trim().length > 0,
   });
   const recommendedSearch = useHubModelSearch("", {
     // Audio keeps only task rows, so an untasked listing pages forever without finding one.
@@ -3583,6 +3602,18 @@ export function HubModelPicker({
       onFoldersChange,
     ],
   );
+
+  const isOwner = useIsAccountOwner();
+  const browseForFolder = useCallback(async () => {
+    const picked = await pickNativeModelFolder(isOwner);
+    if (picked === undefined) {
+      setShowFolderBrowser(true);
+    } else if (picked) {
+      setFolderInput(picked);
+      setFolderError(null);
+      void handleAddFolder(picked);
+    }
+  }, [handleAddFolder, isOwner]);
 
   const handleRemoveFolder = useCallback(
     async (id: number) => {
@@ -4017,22 +4048,26 @@ export function HubModelPicker({
     const rowGpu = loadScopedGpu(gpu, taskScoped);
     const rowInferenceGpu = loadScopedGpu(inferenceGpu, taskScoped);
     const pipelineBudget = artifactBudget(rowGpu);
-    const fits = (r: HfModelResult) =>
-      // Downloaded models show regardless of fit.
-      cachedIdFor(r.id) !== null ||
-      runsCheckpointQuant(r) ||
-      // The catalog's own verdict where it has one, so this list and the OOM badge cannot disagree:
-      // hfModelFitsDevice counts RAM toward a load that never leaves the card.
-      (catalogFit(r.id, pipelineBudget)?.fits ??
-        hfModelFitsDevice(r, diffusionLoad || !r.isGguf ? rowGpu : rowInferenceGpu, {
-          budgetFraction,
-          // Not `&& r.isGguf`: on a task page a safetensors row is placed by the same backend, and this
-          // rule IS the budget those rows had before the classifiers were merged.
-          mediaLoad: diffusionLoad,
-          hostPooledMemory: gpu.loadDeviceSharesHostMemory,
-          // The scoped inventory's own count, so it always describes rowInferenceGpu's capacity.
-          gpuCount: rowInferenceGpu.deviceCount,
-        }));
+    const fits = (r: HfModelResult) => {
+      const source = diffusionLoad || !r.isGguf ? rowGpu : rowInferenceGpu;
+      return (
+        // Downloaded models show regardless of fit.
+        cachedIdFor(r.id) !== null ||
+        runsCheckpointQuant(r) ||
+        // The catalog's own verdict where it has one, so this list and the OOM badge cannot disagree:
+        // hfModelFitsDevice counts RAM toward a load that never leaves the card.
+        (catalogFit(r.id, pipelineBudget)?.fits ??
+          hfModelFitsDevice(r, source, {
+            budgetFraction,
+            // Not `&& r.isGguf`: on a task page a safetensors row is placed by the same backend, and this
+            // rule IS the budget those rows had before the classifiers were merged.
+            mediaLoad: diffusionLoad,
+            hostPooledMemory: gpu.loadDeviceSharesHostMemory,
+            // The scoped inventory's own count, so it always describes the capacity beside it.
+            gpuCount: source.deviceCount,
+          }))
+      );
+    };
     const unslothRows = orderRecommendedRows({
       seeds: catalogSeedRows,
       results: recommendedSearch.results,
@@ -5309,6 +5344,7 @@ export function HubModelPicker({
       totalParams?: number;
       estimatedSizeBytes?: number;
       curatedSizeBytes?: number;
+      quantMethod?: string;
     }) =>
       catalogFit(row.id, artifactBudget(loadScopedGpu(gpu, Boolean(task))))?.fits ??
       searchRowFitsDevice(
@@ -6072,7 +6108,7 @@ export function HubModelPicker({
     "h-(--picker-control-h) w-(--picker-control-w) shrink-0 justify-between gap-1.5 pl-4 pr-3.5 !border-0 text-xs [&>span]:!text-clip";
   // Tighter menu matching the trigger; keep the option's right padding so the checkmark never overlaps the label.
   const sortMenuContentClassName =
-    "!p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[10px]";
+    "picker-option-menu !p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[10px]";
   // Device-fit toggle inside the sort menu. The whole row is the button: a Checkbox renders as a
   // <button> and label-click forwarding is unreliable, so the Checkbox is presentational.
   const fitOnDeviceFooter = (
@@ -6124,6 +6160,7 @@ export function HubModelPicker({
         align="end"
         className={sortTriggerClassName}
         contentClassName={sortMenuContentClassName}
+        composer={false}
         triggerContent={sortTriggerContent(
           RECOMMENDED_SORT_OPTIONS.find((o) => o.value === recommendedSort)
             ?.label ?? recommendedSort,
@@ -6139,6 +6176,7 @@ export function HubModelPicker({
         align="end"
         className={sortTriggerClassName}
         contentClassName={sortMenuContentClassName}
+        composer={false}
         triggerContent={sortTriggerContent(
           LOCAL_SORT_OPTIONS.find((o) => o.value === downloadedSort)?.label ??
             downloadedSort,
@@ -6153,6 +6191,7 @@ export function HubModelPicker({
         align="end"
         className={sortTriggerClassName}
         contentClassName={sortMenuContentClassName}
+        composer={false}
         triggerContent={sortTriggerContent(
           LOCAL_SORT_OPTIONS.find((o) => o.value === customSort)?.label ??
             customSort,
@@ -7274,6 +7313,7 @@ export function HubModelPicker({
                 align="end"
                 className={sortTriggerClassName}
                 contentClassName={sortMenuContentClassName}
+                composer={false}
               />
               <HubOptionMenu
                 value={connectedSort}
@@ -7283,6 +7323,7 @@ export function HubModelPicker({
                 align="end"
                 className={sortTriggerClassName}
                 contentClassName={sortMenuContentClassName}
+                composer={false}
                 triggerContent={sortTriggerContent(
                   CONNECTED_SORT_OPTIONS.find(
                     (option) => option.value === connectedSort,
@@ -7300,6 +7341,7 @@ export function HubModelPicker({
                 align="end"
                 className={sortTriggerClassName}
                 contentClassName={sortMenuContentClassName}
+                composer={false}
                 // Audio has no sort for its listing, so the fit toggle lives here.
                 footer={
                   audioTaskPicker && section === "recommended"
@@ -7688,7 +7730,7 @@ export function HubModelPicker({
                     >
                       <button
                         type="button"
-                        onClick={() => setShowFolderBrowser(true)}
+                        onClick={() => void browseForFolder()}
                         title="Browse folders on the server"
                         className="flex items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
                       >
@@ -7729,7 +7771,7 @@ export function HubModelPicker({
                           type="button"
                           aria-label="Browse for a folder on the server"
                           title="Browse folders on the server"
-                          onClick={() => setShowFolderBrowser(true)}
+                          onClick={() => void browseForFolder()}
                           className="shrink-0 rounded p-0.5 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           <HugeiconsIcon
@@ -7868,7 +7910,7 @@ export function HubModelPicker({
                           />
                           <button
                             type="button"
-                            onClick={() => setShowFolderBrowser(true)}
+                            onClick={() => void browseForFolder()}
                             disabled={folderLoading}
                             aria-label="Browse for folder"
                             title="Browse folders on the server"

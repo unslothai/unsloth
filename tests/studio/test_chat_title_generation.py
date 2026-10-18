@@ -76,8 +76,6 @@ def test_tool_call_only_first_assistant_still_uses_first_user_message():
         '.filter((p): p is Extract<typeof p, { type: "text" }> => p.type === "text")'
         in extract_block
     )
-    # titleTextOf wraps extractTextParts and appends an attachment sample for a user turn (#8472), so the first user
-    # message is still what titles the thread; only the spelling of "read that message's text" changed.
     assert (
         "const userText = titleTextOf(firstUser) || defaultTitle; const assistantText = extractTextParts(firstAssistant);"
         in generate_block
@@ -103,7 +101,6 @@ def test_auto_title_disabled_uses_deterministic_user_text_fallback():
 
 
 def test_reply_stamps_the_checkpoint_its_request_captured():
-    # The stamp must be the request's captured checkpoint, not the live selection.
     source = " ".join(CHAT_ADAPTER_TS.read_text(encoding = "utf-8").split())
 
     assert source.count("modelId: params.checkpoint,") == 2

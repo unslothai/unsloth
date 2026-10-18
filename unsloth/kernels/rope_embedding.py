@@ -215,6 +215,7 @@ def _rope_rows(Q, cos, sin, seq_len, n_heads, head_dim, backward, wrap):
         LONG_INDEXING = long_indexing(Q, block = BLOCK_SIZE),
         BLOCK_SIZE = BLOCK_SIZE,
         num_warps = num_warps,
+        enable_fp_fusion = True,
     )
 
 
@@ -297,6 +298,7 @@ def _rope_qk(Q, K, cos, sin, rope_ptr, has_indices, backward, wrap):
         BLOCK_SIZE = BLOCK_SIZE,
         EVICT_INDICES = _eviction_hints_ok(Q.device),
         num_warps = num_warps,
+        enable_fp_fusion = True,
     )
 
 

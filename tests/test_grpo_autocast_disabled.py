@@ -14,21 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""ACCELERATE_MIXED_PRECISION = 'no' is a value, not an absence.
-
-The GRPO replacements read it as a two-way switch, fp16 else bfloat16, so 'no'
-comes out as bfloat16 and autocast is entered anyway. On a T4 or V100 torch does
-not merely ignore that, it raises
-
-    RuntimeError: Current CUDA Device does not support bfloat16.
-                  Please switch dtype to float16.
-
-Two callers set 'no' and both land on exactly those GPUs: full finetuning
-already did, and rl.py now does for a model explicitly loaded in float32, so the
-branch meant to keep training in float32 could instead stop it. The fix is
-`enabled`, not a different dtype: torch only validates bfloat16 when autocast is
-on, and turning it off is what 'no' means.
-"""
+"""Value 'no' must disable autocast, not fall through to bfloat16, which T4 and V100 reject."""
 
 import ast
 import re
@@ -47,11 +33,7 @@ RL_PY = REPO_ROOT / "unsloth" / "models" / "rl.py"
 SRC = RL_REPLACEMENTS.read_text(encoding = "utf-8")
 
 
-# ---- the premise ---------------------------------------------------------
-#
-# Every check drives torch.amp.autocast(device_type = DEVICE_TYPE_TORCH), pinned to "cuda" in the namespaces below,
-# and on a CPU runner torch hands back a no-op instead.
-# Claiming the device is present is what lets these run anywhere; only torch's dispatch decisions are needed.
+# autocast is a no-op on CPU, so pretend CUDA is present; only torch's dispatch decisions matter.
 class _pretend_cuda:
     """torch.cuda answering as a card without bfloat16, or with it."""
 
@@ -82,9 +64,6 @@ def test_disabling_autocast_skips_that_check():
     with _pretend_cuda(has_bf16 = False):
         with torch.amp.autocast(device_type = "cuda", dtype = torch.bfloat16, enabled = False):
             pass
-
-
-# ---- _prepare_inputs, which is injected as source ------------------------
 
 
 def _prepare_inputs_snippet() -> str:
@@ -133,8 +112,7 @@ def test_the_injected_snippet_is_valid_python():
 @pytest.mark.parametrize(
     "precision,has_bf16,expect_enabled",
     [
-        # The T4/V100 case, where the bug bites. accelerate never asks for bf16 on this hardware, so that pairing is not
-        # a case.
+        # The T4/V100 case; accelerate never asks for bf16 on this hardware.
         ("no", False, False),
         ("fp16", False, True),
         (None, False, True),
@@ -166,18 +144,12 @@ def test_the_generated_trainer_imports_the_device_type_it_autocasts_with():
 
 
 def test_no_autocast_call_pins_the_device_type_to_cuda():
-    """A device_type that does not match the accelerator is inert, not loud
-    (pytorch#165730): a literal "cuda" drops autocast on every other one, so GRPO
-    ran its forward in float32 against the dtype _unsloth_grpo_autocast latched.
-    DEVICE_TYPE_TORCH is "npu" on Ascend, "xpu" on Intel, "cuda" on CUDA and ROCm."""
+    """Autocast must not pin device_type to 'cuda'; a mismatched device disables it silently."""
     calls = re.findall(r"torch\.amp\.autocast\((?:[^()]|\([^()]*\))*\)", SRC)
     pinning = [c for c in calls if re.search(r"device_type\s*=\s*[\"']cuda[\"']", c)]
     assert pinning == [], pinning
     typed = [c for c in calls if "device_type" in c]
     assert typed, "expected the autocast call sites to still choose a device_type"
-
-
-# ---- _get_per_token_logps and friends, which run as ordinary code --------
 
 
 def test_every_autocast_call_passes_enabled():
@@ -191,14 +163,7 @@ def test_every_autocast_call_passes_enabled():
 
 
 def test_the_flag_is_recorded_beside_the_dtype():
-    """Every `_autocast_dtype` assignment must record the flag beside it. Both
-    live in the one helper now, the default and the forced float32 override.
-
-    Paired by position rather than by counting a literal spelling: the repo's
-    ruff hook is free to collapse either assignment onto one line, and a test
-    that pins `= (` would fail on formatting alone while a genuinely missing
-    initialiser slipped through.
-    """
+    """Each _autocast_dtype assignment must have a matching _autocast_enabled flag set beside it."""
     lines = SRC.splitlines()
     dtype_at = [i for i, l in enumerate(lines) if "self._autocast_dtype = " in l]
     flag_at = [i for i, l in enumerate(lines) if "self._autocast_enabled = " in l]

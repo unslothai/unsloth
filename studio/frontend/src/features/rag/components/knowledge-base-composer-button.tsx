@@ -8,6 +8,7 @@ import {
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { FileDatabaseIcon } from "@hugeicons/core-free-icons";
+import { FileGlyph } from "@/lib/file-icon";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
@@ -34,14 +35,20 @@ import { KnowledgeBaseDialog } from "./knowledge-base-dialog";
 // on; dims but stays interactive (so it can be turned off) while the loaded model can't run it.
 export function KnowledgeBaseComposerButton({
   side = "bottom",
+  hasFilesPanel = true,
 }: {
   side?: "top" | "bottom";
+  /** False in Compare, which renders no files panel to show. */
+  hasFilesPanel?: boolean;
 } = {}) {
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
   const ragDisabled = useRagToolDisabled();
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
   const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
+  const ragPanelHidden = useChatRuntimeStore((s) => s.ragPanelHidden);
+  const setRagPanelHidden = useChatRuntimeStore((s) => s.setRagPanelHidden);
+  const ragPanelFileCount = useChatRuntimeStore((s) => s.ragPanelFileCount);
   // The embedding model is a server setting only the owner can change.
   const isOwner = useIsAccountOwner();
 
@@ -162,6 +169,21 @@ export function KnowledgeBaseComposerButton({
             <EmbeddingModelMenuList onBack={() => setView("source")} />
           ) : (
             <>
+            {/* The way back to a panel its X hid, while retrieval carries on. */}
+            {ragPanelHidden && hasFilesPanel ? (
+              <>
+                <DropdownMenuItem onSelect={() => setRagPanelHidden(false)} className="gap-2.5">
+                  <FileGlyph strokeWidth={1.75} />
+                  <span className="truncate">Show files</span>
+                  {ragPanelFileCount > 0 ? (
+                    <span className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-muted px-1.5 text-ui-12 font-medium tabular-nums text-muted-foreground">
+                      {ragPanelFileCount}
+                    </span>
+                  ) : null}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+              </>
+            ) : null}
             <DropdownMenuLabel className="flex items-center justify-between gap-3">
               <span className="shrink-0">Retrieve from</span>
               {isOwner ? <EmbeddingModelMenuChip onOpen={() => setView("embedding")} /> : null}

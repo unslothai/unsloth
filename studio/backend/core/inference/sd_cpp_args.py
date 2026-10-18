@@ -136,8 +136,7 @@ class SdCppUpscaleParams:
     tile_size: Optional[int] = None
 
 
-# Native (sd.cpp) speed profiles, the engine-side analogue of diffusion_speed. off: nothing. default: --diffusion-fa +
-# --diffusion-conv-direct (numerically exact), except Apple Metal keeps only --diffusion-fa. max keeps it (profiles chain).
+# Native speed profiles. default/max: --diffusion-fa + --diffusion-conv-direct (exact); Metal/Vulkan/ROCm get fa only.
 NATIVE_SPEED_OFF = "off"
 NATIVE_SPEED_DEFAULT = "default"
 NATIVE_SPEED_MAX = "max"
@@ -145,19 +144,43 @@ NATIVE_SPEED_MODES = (NATIVE_SPEED_OFF, NATIVE_SPEED_DEFAULT, NATIVE_SPEED_MAX)
 
 
 def native_speed_flags(
-    speed_mode: Optional[str], backend_args: Optional[Sequence[str]] = None
+    speed_mode: Optional[str],
+    backend_args: Optional[Sequence[str]] = None,
+    accelerator: Optional[str] = None,
 ) -> list[str]:
     """sd-cli speed flags for a native speed mode (empty for off / None). Separate from offload:
     ``--diffusion-fa`` is a win in its own right. De-duplicated against offload at the call site.
-    ``backend_args``: the other argv flags, whose ``--backend`` decides whether the graph runs on Metal."""
+    ``backend_args``: the other argv flags (``--backend`` picks the device); ``accelerator``: build class or None."""
     mode = (speed_mode or NATIVE_SPEED_OFF).strip().lower()
     if mode in ("", NATIVE_SPEED_OFF):
         return []
     if mode in (NATIVE_SPEED_DEFAULT, NATIVE_SPEED_MAX):
-        if _runs_on_apple_metal(backend_args or ()):
+        if not conv_direct_wanted(backend_args or (), accelerator):
             return ["--diffusion-fa"]
         return ["--diffusion-fa", "--diffusion-conv-direct"]
     raise ValueError(f"native speed_mode must be one of {NATIVE_SPEED_MODES}, got '{speed_mode}'")
+
+
+# Direct conv loses to im2col here: Vulkan (sd.cpp #2137, 10.9 -> 73.4 s) and HIP (#2085; gfx1151 never faster).
+_CONV_DIRECT_SLOW_BACKENDS = ("vulkan", "rocm", "hip")
+
+
+def conv_direct_wanted(backend_args: Sequence[str] = (), accelerator: Optional[str] = None) -> bool:
+    """``UNSLOTH_SD_CPP_CONV_DIRECT`` = 1/0 forces it (Metal too); else off on Metal, and a ``--backend diffusion=``
+    pin beats ``accelerator``."""
+    import os
+
+    forced = (os.environ.get("UNSLOTH_SD_CPP_CONV_DIRECT") or "").strip().lower()
+    if forced in ("1", "on", "true", "yes"):
+        return True
+    if forced in ("0", "off", "false", "no"):
+        return False
+    if _runs_on_apple_metal(backend_args):
+        return False
+    args = list(backend_args)
+    target = _diffusion_backend([args[i + 1] for i, f in enumerate(args[:-1]) if f == "--backend"])
+    name = (target or accelerator or "").strip().lower().rstrip("0123456789")
+    return name not in _CONV_DIRECT_SLOW_BACKENDS
 
 
 def _diffusion_backend(specs: Sequence[str]) -> Optional[str]:
@@ -270,6 +293,65 @@ def metal_placement_flags(offload: Sequence[str]) -> list[str]:
     if flags == list(CPU_BACKEND_FLAGS):
         return [] if "--backend" in offload else flags
     return [f for f in flags if f not in offload]
+
+
+# 1 / 0 forces sd.cpp's --mmap on / off on macOS; unset decides from the installed build (``mac_mmap_flags``).
+SD_CPP_MMAP_ENV = "UNSLOTH_DIFFUSION_SD_CPP_MMAP"
+# leejet/stable-diffusion.cpp#2037 (master-907) maps mmapped weights through Metal device buffers. Older builds accept
+# --mmap but hand Metal a CPU buffer it cannot address, so the flag is only safe from this build on.
+METAL_MMAP_MIN_BUILD = 907
+_INSTALL_RECORD = ".unsloth-sd-cpp-install.json"
+
+
+def sd_cpp_build_number(tag: Optional[str]) -> Optional[int]:
+    """``N`` of a ``master-N-<sha>[-u<sha>]`` release tag, else None."""
+    import re
+
+    m = re.match(r"^master-(\d+)(?:-|$)", str(tag or "").strip())
+    return int(m.group(1)) if m else None
+
+
+@functools.lru_cache(maxsize = 8)
+def _installed_sd_cpp_tag(binary: str) -> Optional[str]:
+    """The release tag Studio's installer recorded next to ``binary`` (the binary sits at or a few levels under the
+    install root). None for a binary the installer did not place (``SD_CLI_PATH``, PATH, a source build)."""
+    import json
+    from pathlib import Path
+
+    try:
+        path = Path(binary).resolve()
+    except Exception:  # noqa: BLE001
+        return None
+    for parent in list(path.parents)[:3]:
+        try:
+            with open(parent / _INSTALL_RECORD, "r", encoding = "utf-8") as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            continue
+        tag = rec.get("tag") if isinstance(rec, dict) else None
+        return tag if isinstance(tag, str) and tag else None
+    return None
+
+
+def mac_mmap_flags(binary: Optional[str], extra_args: Optional[Sequence[str]] = None) -> list[str]:
+    """``["--mmap"]`` on macOS when ``binary`` maps weights correctly on Metal, else nothing.
+
+    With it, GGUF / safetensors weights stay clean file-backed pages (Metal wraps them in place, the CPU backend reads
+    them in place) instead of a second anonymous copy, which on unified memory is the copy that swaps: upstream measured
+    a Qwen-Image 2.1 Q4_K_M peak footprint of 10.2 -> 1.4 GB on an M1 Pro, pixel-identical. Fails closed on a build it
+    cannot date; ``UNSLOTH_DIFFUSION_SD_CPP_MMAP`` = 1 / 0 forces it either way."""
+    import os
+    import sys
+
+    if sys.platform != "darwin" or "--mmap" in (extra_args or ()):
+        return []
+    forced = os.environ.get(SD_CPP_MMAP_ENV, "").strip().lower()
+    if forced in ("0", "false", "no", "off"):
+        return []
+    if forced in ("1", "true", "yes", "on"):
+        return ["--mmap"]
+    build = sd_cpp_build_number(_installed_sd_cpp_tag(str(binary))) if binary else None
+    return ["--mmap"] if build is not None and build >= METAL_MMAP_MIN_BUILD else []
 
 
 # Everything on the CPU backend. sd.cpp prefers GPU -> integrated GPU -> CPU and only `--backend` changes which
@@ -483,6 +565,7 @@ def build_sd_cpp_command(
     if offload:
         cmd += offload
     cmd += metal_placement_flags(offload)
+    cmd += mac_mmap_flags(binary, extra_args)
     if verbose:
         cmd += ["-v"]
     if extra_args:
@@ -575,6 +658,7 @@ def build_sd_cpp_video_command(
     if offload:
         cmd += offload
     cmd += metal_placement_flags(offload)
+    cmd += mac_mmap_flags(binary, extra_args)
     if verbose:
         cmd.append("-v")
     if extra_args:
@@ -636,6 +720,7 @@ def build_sd_cpp_server_command(
     scratch_dir: Optional[str] = None,
     verbose: bool = False,
     extra_args: Optional[list[str]] = None,
+    accelerator: Optional[str] = None,
 ) -> list[str]:
     """Build the ``sd-server`` argv: model + hardware/server flags only.
 
@@ -684,8 +769,11 @@ def build_sd_cpp_server_command(
     # De-dup speed flags against offload (may already include --diffusion-fa).
     placement = metal_placement_flags(offload)
     backend_args = [*offload, *placement, *(extra_args or ())]
-    cmd += [f for f in native_speed_flags(native_speed, backend_args) if f not in offload]
+    cmd += [
+        f for f in native_speed_flags(native_speed, backend_args, accelerator) if f not in offload
+    ]
     cmd += placement
+    cmd += mac_mmap_flags(binary, extra_args)
     if verbose:
         cmd += ["-v"]
     if extra_args:

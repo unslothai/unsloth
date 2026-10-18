@@ -655,7 +655,6 @@ export function AudioPage({
     setSelectedId,
     pendingTranscribeRelease,
     replayQueuedTtsPick,
-    audioOptionSpecs,
     audioOptionValues,
     sttRepo: cloneSttRepo,
   });
@@ -676,7 +675,6 @@ export function AudioPage({
     setSelectedId,
     pendingTranscribeRelease,
     replayQueuedTtsPick,
-    audioOptionSpecs,
     audioOptionValues,
     sttRepo: cloneSttRepo,
   });
@@ -697,7 +695,6 @@ export function AudioPage({
     setSelectedId,
     pendingTranscribeRelease,
     replayQueuedTtsPick,
-    audioOptionSpecs,
     audioOptionValues,
     sttRepo: cloneSttRepo,
   });
@@ -1782,7 +1779,7 @@ export function AudioPage({
                   void navigateSelf({ to: "/studio" });
                 }}
                 fit={true}
-                className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>span]:sr-only"
+                className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
                 tabs={[
                   {
                     value: "create",
@@ -1921,13 +1918,19 @@ export function AudioPage({
                     <AudioActiveProvider value={active}>
                       <CloneRail
                         {...railProps}
+                        audioOptionSpecs={clone.audioOptionSpecs}
                         clone={clone}
                         historyClips={clips}
                       />
                     </AudioActiveProvider>
                   ) : ttsWorkflow === "edit" ? (
                     <AudioActiveProvider value={active}>
-                      <EditRail {...railProps} edit={edit} historyClips={clips} />
+                      <EditRail
+                        {...railProps}
+                        audioOptionSpecs={edit.audioOptionSpecs}
+                        edit={edit}
+                        historyClips={clips}
+                      />
                     </AudioActiveProvider>
                   ) : ttsWorkflow === "convert" ? (
                     <AudioActiveProvider value={active}>

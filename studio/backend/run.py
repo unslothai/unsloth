@@ -1511,6 +1511,11 @@ def _install_windows_console_handler(shutdown) -> bool:
         return False
 
 
+def _note_quit_signal():
+    from utils.process_lifetime import mark_quit_signal_received
+    mark_quit_signal_received()
+
+
 def _graceful_shutdown(server = None):
     """Shut down all subprocess backends and the uvicorn server. Called from signal handlers to clean up
     children before exit; critical on Windows where atexit handlers are unreliable after Ctrl+C."""
@@ -3212,7 +3217,8 @@ def _build_arg_parser():
         action = "store_true",
         help = "Send the hostname (not the validated IP) in web fetches that go through an "
         "explicitly configured HTTP(S)_PROXY, so the proxy can apply hostname policy and "
-        "TLS interception. Direct fetches stay pinned to the validated IP.",
+        "TLS interception, and let them go on when the name doesn't resolve locally. The "
+        "browser panel's fetches always do. Direct fetches stay pinned to the validated IP.",
     )
     parser.add_argument(
         "--parallel",
@@ -3302,6 +3308,7 @@ if __name__ == "__main__":
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
         if hasattr(signal, "SIGBREAK"):
             signal.signal(signal.SIGBREAK, signal.SIG_DFL)
+        _note_quit_signal()
         _graceful_shutdown(_server)
         _shutdown_event.set()
 

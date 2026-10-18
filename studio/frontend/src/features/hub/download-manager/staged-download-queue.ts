@@ -56,7 +56,15 @@ export function queuedStagedEntries(
             (entry.files.length === job.scopedFiles?.length &&
               entry.files.every((file) => job.scopedFiles?.includes(file)))),
       );
-      return active ? [] : [{ ...entry, planId: `staged:${owner}:${index}` }];
+      return active
+        ? []
+        : [
+            {
+              ...entry,
+              planId: `staged:${owner}:${index}`,
+              variant: entry.ggufVariant ?? scopedVariant(scopeId),
+            },
+          ];
     }),
   );
 }

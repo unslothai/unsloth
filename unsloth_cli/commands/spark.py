@@ -970,7 +970,7 @@ def doctor(
     ),
 ) -> None:
     """Measure the link and diagnose the two DGX Spark hardware faults."""
-    from unsloth_cli.commands.doctor import _workload_guidance, check_fastpath, check_parity
+    from unsloth_cli.commands.spark_doctor import _workload_guidance, check_fastpath, check_parity
 
     sc = _cluster_or_none()
     if sc is None:
