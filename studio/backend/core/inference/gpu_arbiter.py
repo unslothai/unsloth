@@ -251,10 +251,16 @@ def refuse_replacing_media(
 ) -> list[dict[str, Any]]:
     """The image or video model of its own kind a load of ``requested`` would replace. Under Always
     that is refused instead, as is replacing a load of another repo still in flight. Another file or
-    setting of the same repo is allowed, as for chat. Safe under ``_lock``."""
+    setting of the same repo is allowed, as for chat. ``requested`` are the model paths the load
+    reads, never a caller's display label, which nothing checks against the path. Safe under
+    ``_lock``."""
     if owner not in (DIFFUSION, VIDEO):
         return []
-    names = {name for name in requested if name}
+    from core.inference.model_ids import public_model_id
+
+    names = {
+        alias for name in requested if name for alias in (name, public_model_id(name)) if alias
+    }
     try:
         status = _media_status(owner)
         loading = () if status is not None else _media_backend(owner).loading_repo_ids()
@@ -263,10 +269,8 @@ def refuse_replacing_media(
             raise refusal_for([], KIND_LABELS[owner])
         return []
     if status is not None:
-        from core.inference.model_ids import public_model_id
-
         repo = status.get("repo_id")
-        loaded = {repo, status.get("display_repo_id"), public_model_id(repo) if repo else None}
+        loaded = {repo, public_model_id(repo) if repo else None}
         if not loaded.isdisjoint(names):
             return []
         slots = resident_slots(owner)
