@@ -3255,6 +3255,11 @@ class SdCppDiffusionBackend:
                 local_files_only = local_files_only,
                 vision_optional = not getattr(fam, "edit", False),
             )
+            # A renamed or local FLUX.3 GGUF loaded under the other variant would run the wrong defaults (steps, CFG,
+            # negative prompt); the same refusal as the diffusers loader, before any native state is committed.
+            from core.inference.diffusion_families import assert_flux3_checkpoint_matches_family
+
+            assert_flux3_checkpoint_matches_family(fam, paths["diffusion_model"])
             sample_sigmas, grid_base = _base_sample_sigmas(
                 repo_id,
                 base,
@@ -4088,6 +4093,15 @@ class SdCppDiffusionBackend:
             return False
         return binary_carries_marker(binary, marker, unreadable = False)
 
+    def _native_reference_ready(self, state: Optional[_SdState], workflow: Optional[str]) -> bool:
+        """Projector-free references (FLUX.3): sd.cpp feeds them through the VAE, so the arch gate that admitted the
+        load is all a reference call needs. Not an instruction edit."""
+        return (
+            state is not None
+            and bool(getattr(state.family, "sd_cpp_reference", False))
+            and workflow in (None, "reference")
+        )
+
     def generate(
         self,
         *,
@@ -4230,7 +4244,10 @@ class SdCppDiffusionBackend:
                         controlnet = controlnet,
                         localized_edit = localized_edit,
                     )
-                    if not self._native_edit_ready(state):
+                    if not (
+                        self._native_edit_ready(state)
+                        or self._native_reference_ready(state, workflow)
+                    ):
                         raise ValueError(
                             f"Image editing is not available for '{state.family.name}' on the native "
                             "sd.cpp engine with this build and its assets."
@@ -4862,6 +4879,8 @@ class SdCppDiffusionBackend:
             workflows = ["txt2img"]
             if self._native_edit_ready(state):
                 workflows += ["reference", "edit"]
+            elif self._native_reference_ready(state, "reference"):
+                workflows.append("reference")
         conditioning = conditioning_capabilities(state.family, workflows)
         # No reference detail natively: sd.cpp sizes inputs to the output area.
         conditioning["reference_resolutions"] = []

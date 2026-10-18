@@ -208,7 +208,9 @@ export const BUDGET = {
   // 2,047,580 B transfer against f172c8d7c4, one machine and build, Node 24, chunk count unchanged at 95): its
   // logo mapping, capability row and vision gate entries live in tables the startup chunks already load. Raised
   // by that growth.
-  transferBytes: 2_047_549,
+  // The audio.cpp v0.9.2 picker rows (#14073) add 253 B raw / 59 B transfer to the eager audio catalog
+  // table (one machine and build, chunk count unchanged at 95). Raised by that.
+  transferBytes: 2_047_608,
   rawBytes: 6_806_087,
 };
 

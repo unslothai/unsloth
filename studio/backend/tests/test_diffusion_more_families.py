@@ -853,10 +853,12 @@ def test_the_pinned_prebuilt_is_one_that_can_load_qwen_image_21():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    assert module.DEFAULT_TAG == "master-951-f89d9b1-uafac7a7", (
-        "the pinned prebuilt must be one built from a tree carrying Qwen-Image-2.1; "
+    assert module.DEFAULT_TAG == "master-968-8cd731e-ubdb47d1", (
+        "the pinned prebuilt must be one built from a tree carrying Qwen-Image-2.1 and FLUX.3; "
         f"{module.DEFAULT_TAG} is not"
     )
+    # FLUX.3 Image Klein landed upstream in master-968; the upstream fallback installs the pin's base.
+    assert int(module.DEFAULT_TAG.split("-")[1]) >= 968
 
 
 def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade(
