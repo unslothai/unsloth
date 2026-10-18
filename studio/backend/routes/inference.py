@@ -51676,7 +51676,8 @@ def _verify_audio_link_token(token: str) -> Optional[str]:
     expected = _hmac.new(
         _AUDIO_LINK_SECRET, f"{target}.{exp_s}".encode(), _hashlib.sha256
     ).hexdigest()
-    if not _hmac.compare_digest(sig, expected):
+    # Bytes: compare_digest raises TypeError on a non-ASCII str, a 500 where a bad link owes a 401.
+    if not _hmac.compare_digest(sig.encode(), expected.encode()):
         return None
     try:
         if int(exp_s) < int(time.time()):

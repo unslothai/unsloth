@@ -150,3 +150,12 @@ def test_keyless_callers_cannot_mint_links(kind, monkeypatch):
     response = _mint(kind, media_id)
     assert response.status_code == 403
     assert "API key" in response.json()["detail"]
+
+
+def test_an_audio_link_with_a_non_ascii_signature_is_refused_not_a_crash():
+    audio_id = run_as(ALICE, _save, "audio")["id"]
+    token = run_as(ALICE, inference._sign_audio_id, audio_id)
+    url = f"/v1/audio/gallery/{audio_id}/file-signed"
+    with _app() as bare:
+        response = bare.get(url, params = {"token": token[:-1] + "é"})
+    assert response.status_code == 401, response.text
