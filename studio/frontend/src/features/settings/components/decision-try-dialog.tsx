@@ -102,6 +102,7 @@ const CRITERIA_HELP: Record<DecisionType, TranslationKey> = {
 const PRESET_LABELS: Record<PresetId, TranslationKey> = {
   toolApproval: "decisions.presetToolApproval",
   promptInjection: "decisions.presetPromptInjection",
+  screenshotTriage: "decisions.presetScreenshotTriage",
   ticketRouting: "decisions.presetTicketRouting",
   moderation: "decisions.presetModeration",
   intent: "decisions.presetIntent",
@@ -921,14 +922,22 @@ export function DecisionTryDialog({
     }
   };
 
-  const applyPreset = (id: PresetId) => {
+  const readsImages = settings.inputModalities.includes("image");
+  const offeredPresets = PRESETS.filter(
+    (preset) => readsImages || !preset.loadImages,
+  );
+
+  const applyPreset = async (id: PresetId) => {
     const preset = PRESETS.find((p) => p.id === id);
     if (!preset) return;
-    setDrafts((all) => ({ ...all, [preset.type]: preset.draft }));
+    const draft = preset.loadImages
+      ? { ...preset.draft, images: await preset.loadImages() }
+      : preset.draft;
+    setDrafts((all) => ({ ...all, [preset.type]: draft }));
     setType(preset.type);
     setOutcomes((all) => ({ ...all, [preset.type]: undefined }));
     if (inputView === "json") {
-      setJsonText(requestText(buildRequest(preset.type, preset.draft, model)));
+      setJsonText(requestText(buildRequest(preset.type, draft, model)));
     }
   };
 
@@ -1154,6 +1163,45 @@ export function DecisionTryDialog({
                       className="min-h-20"
                     />
                   </Field>
+                  {draft.images.length > 0 ? (
+                    <Field
+                      label={t("decisions.images")}
+                      help={t("decisions.imagesHelp")}
+                    >
+                      <div className="flex flex-wrap gap-2">
+                        {draft.images.map((image, index) => (
+                          <div
+                            key={image.slice(-24)}
+                            className="relative overflow-hidden rounded-md border border-border/70"
+                          >
+                            <img
+                              src={image}
+                              alt={t("decisions.images")}
+                              className="h-20 w-auto max-w-40 object-contain"
+                            />
+                            <button
+                              type="button"
+                              aria-label={t("decisions.imagesRemove")}
+                              className="absolute right-1 top-1 rounded-full bg-background/90 p-1 text-muted-foreground hover:text-foreground"
+                              onClick={() =>
+                                update({
+                                  images: draft.images.filter(
+                                    (_, at) => at !== index,
+                                  ),
+                                })
+                              }
+                            >
+                              <HugeiconsIcon
+                                icon={Cancel01Icon}
+                                strokeWidth={1.75}
+                                className="size-3.5"
+                              />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </Field>
+                  ) : null}
                   <Field
                     label={t("decisions.criteria")}
                     help={t(CRITERIA_HELP[type])}
@@ -1204,10 +1252,10 @@ export function DecisionTryDialog({
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent side="top" align="start" className="w-64">
-                  {PRESETS.map((preset) => (
+                  {offeredPresets.map((preset) => (
                     <DropdownMenuItem
                       key={preset.id}
-                      onSelect={() => applyPreset(preset.id)}
+                      onSelect={() => void applyPreset(preset.id)}
                       className="justify-between gap-3"
                     >
                       <span className="truncate">

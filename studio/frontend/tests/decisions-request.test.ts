@@ -25,6 +25,7 @@ const BLANK = {
   noWhen: "",
   options: [],
   levels: [],
+  images: [],
 };
 
 test("yes/no criteria are sent as true and false, and only when written", () => {
@@ -241,4 +242,40 @@ test("a loading wait never runs past the ten minute deadline", () => {
     /Math\.min\(retryAfter \* 1000, deadline - Date\.now\(\)\)/,
   );
   assert.match(api, /signal\.aborted \|\| Date\.now\(\) >= deadline/);
+});
+
+test("images ride along only when the draft has some, and survive a JSON round trip", () => {
+  const png = "data:image/png;base64,iVBORw0KGgo=";
+  assert.equal("images" in buildRequest("noul", BLANK, "default"), false);
+  const request = buildRequest("noul", { ...BLANK, images: [png] }, "d1-3b");
+  assert.deepEqual(request.images, [png]);
+  const restored = draftFromRequest(JSON.parse(requestText(request)));
+  assert.deepEqual(restored?.draft.images, [png]);
+  assert.deepEqual(draftFromRequest({ ...request, images: [png, 7] })?.draft.images, [png]);
+});
+
+test("one preset asks about an image, loaded off the startup bundle", async () => {
+  const withImages = PRESETS.filter((preset) => preset.loadImages);
+  assert.equal(withImages.length, 1);
+  const [preset] = withImages;
+  assert.equal(preset.id, "screenshotTriage");
+  assert.equal(preset.type, "noul");
+  // The preset itself carries no bytes: every draft in the module starts imageless.
+  assert.deepEqual(
+    PRESETS.map((p) => p.draft.images.length),
+    PRESETS.map(() => 0),
+  );
+  assert.deepEqual(initialDrafts().noul.images, []);
+  const images = await preset.loadImages?.();
+  assert.equal(images?.length, 1);
+  assert.match(images?.[0] ?? "", /^data:image\/png;base64,[A-Za-z0-9+/=]+$/);
+  const draft = { ...preset.draft, images: images ?? [] };
+  assert.equal(buildRequest(preset.type, draft, "d1-3b").images?.length, 1);
+});
+
+test("the example image stays out of the module that boots the dialog", () => {
+  assert.doesNotMatch(
+    readSrc("features/settings/lib/decision-request.ts"),
+    /data:image\/png;base64,/,
+  );
 });

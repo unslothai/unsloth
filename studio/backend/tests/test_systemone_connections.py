@@ -585,3 +585,208 @@ def test_chat_refuses_a_decision_connection(upstream, provider_type, api_type):
     assert refused.value.status_code == 400
     assert "Decision API" in refused.value.detail
     assert upstream.calls == []
+
+
+def _data_url(kind = "PNG", size = (2, 2)):
+    from base64 import b64encode
+    from io import BytesIO
+
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.new("RGB", size, (200, 30, 30)).save(buffer, kind)
+    mime = "image/png" if kind == "PNG" else "image/jpeg"
+    return f"data:{mime};base64,{b64encode(buffer.getvalue()).decode()}"
+
+
+IMAGE = _data_url()
+
+
+def _declare(client, name, modalities):
+    saved = client.put(
+        "/api/settings/systemone", json = {"model": name, "input_modalities": modalities}
+    )
+    assert saved.status_code == 200, saved.text
+    return saved
+
+
+def _post_images(
+    client,
+    images,
+    model = "jev-latest",
+):
+    return client.post(
+        "/v1/systemone",
+        json = {
+            "model": model,
+            "state": "The screenshot shows a 500.",
+            "questions": QUESTIONS,
+            "images": images,
+        },
+    )
+
+
+def test_a_text_only_connection_is_sent_only_model_state_and_questions(upstream):
+    client = _client()
+    client.put("/api/settings/systemone", json = {"model": _connection()})
+    assert _post(client).status_code == 200
+    body = json.loads(upstream.calls[-1].content)
+    assert set(body) == {"model", "state", "questions"}
+
+
+def test_a_connection_declared_to_read_images_is_sent_them(upstream):
+    client = _client()
+    name = _connection()
+    _declare(client, name, ["text", "image"])
+    assert client.get("/api/settings/systemone").json()["input_modalities"] == ["text", "image"]
+
+    response = _post_images(client, [IMAGE])
+    assert response.status_code == 200, response.text
+    assert response.json() == UPSTREAM
+    body = json.loads(upstream.calls[-1].content)
+    assert set(body) == {"model", "state", "questions", "images"}
+    assert body["images"] == [IMAGE]
+    assert body["model"] == "jev-latest"
+    assert body["questions"]["urgent"]["type"] == "noul"
+
+
+def test_a_connection_without_the_image_capability_refuses_images(upstream):
+    client = _client()
+    client.put("/api/settings/systemone", json = {"model": _connection()})
+    assert client.get("/api/settings/systemone").json()["input_modalities"] == ["text"]
+
+    response = _post_images(client, [IMAGE])
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["error_type"] == "api_usage_error"
+    assert "not declared to read images" in detail["message"]
+    assert '["text", "image"]' in detail["message"]
+    assert upstream.calls == []
+
+
+def test_switching_the_connection_drops_a_declaration_made_for_another_model(upstream):
+    client = _client()
+    _declare(client, _connection(), ["text", "image"])
+    providers_db.update_provider("deciders", models = ["jev-latest", "jev-1.13"])
+    other = client.put("/api/settings/systemone", json = {"model": "connection:deciders:jev-1.13"})
+    assert other.status_code == 200, other.text
+    assert client.get("/api/settings/systemone").json()["input_modalities"] == ["text"]
+    assert _post_images(client, [IMAGE], "jev-1.13").status_code == 400
+    assert upstream.calls == []
+
+
+@pytest.mark.parametrize(
+    "images,fragment",
+    [
+        ([IMAGE.replace("image/png", "image/webp")], "PNG or JPEG base64 data URL"),
+        (["https://example.com/cat.png"], "remote URLs are not fetched"),
+        (["data:image/png;base64,not base64!!"], "not valid base64"),
+        (["data:image/png;base64,bm90IGFuIGltYWdl"], "not a readable PNG or JPEG"),
+        ([IMAGE] * (systemone.MAX_IMAGES + 1), "At most 4 images"),
+        (
+            ["data:image/png;base64," + "A" * (4 * ((4 * 1024 * 1024 + 2) // 3) + 4)],
+            "larger than 4 MiB",
+        ),
+    ],
+)
+def test_a_bad_image_is_refused_before_the_provider_is_called(upstream, images, fragment):
+    client = _client()
+    _declare(client, _connection(), ["text", "image"])
+    response = _post_images(client, images)
+    assert response.status_code == 422, response.text
+    assert fragment in response.json()["detail"]["message"]
+    assert upstream.calls == []
+
+
+def test_an_oversized_image_set_is_refused_before_the_provider_is_called(upstream):
+    client = _client()
+    _declare(client, _connection(), ["text", "image"])
+    import os as _os
+    from base64 import b64encode
+    from io import BytesIO
+
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.frombytes("RGB", (1000, 1000), _os.urandom(1000 * 1000 * 3)).save(buffer, "PNG")
+    assert 1024**2 < buffer.tell() < systemone.MAX_IMAGE_BYTES
+    big = f"data:image/png;base64,{b64encode(buffer.getvalue()).decode()}"
+    response = _post_images(client, [big] * 3)
+    assert response.status_code == 422, response.text
+    assert "8 MiB" in response.json()["detail"]["message"]
+    assert upstream.calls == []
+
+
+def test_an_image_that_decodes_too_large_is_refused(upstream):
+    client = _client()
+    _declare(client, _connection(), ["text", "image"])
+    response = _post_images(client, [_data_url(size = (5000, 5000))])
+    assert response.status_code == 422, response.text
+    assert "4096 x 4096" in response.json()["detail"]["message"]
+    assert upstream.calls == []
+
+
+def test_images_never_reach_the_logs(upstream, caplog):
+    import logging
+
+    client = _client()
+    _declare(client, _connection(), ["text", "image"])
+    payload = IMAGE.partition(",")[2]
+    with caplog.at_level(logging.DEBUG):
+        assert _post_images(client, [IMAGE]).status_code == 200
+        upstream.replies[0] = httpx.Response(400, json = {"detail": "no vision tower"})
+        assert _post_images(client, [IMAGE]).status_code == 502
+    assert payload not in caplog.text
+    assert "data:image/png;base64" not in caplog.text
+    assert "ts-key" not in caplog.text
+
+
+def test_a_provider_that_cannot_read_images_fails_loudly(upstream):
+    client = _client()
+    _declare(client, _connection(), ["text", "image"])
+    upstream.replies[0] = httpx.Response(
+        400, json = {"detail": {"error_type": "api_usage_error", "message": "images unsupported"}}
+    )
+    response = _post_images(client, [IMAGE])
+    assert response.status_code == 502
+    assert response.json()["detail"]["message"] == "images unsupported"
+    assert len(upstream.calls) == 1
+    assert "images" in json.loads(upstream.calls[0].content)
+
+
+def test_image_modalities_are_declared_only_for_a_connection(upstream):
+    client = _client()
+    _connection()
+    native = client.put(
+        "/api/settings/systemone",
+        json = {"model": "laya-english", "input_modalities": ["text", "image"]},
+    )
+    assert native.status_code == 400
+    unknown = client.put(
+        "/api/settings/systemone",
+        json = {"model": "connection:deciders:jev-latest", "input_modalities": ["text", "video"]},
+    )
+    assert unknown.status_code == 400
+    assert "video" in unknown.json()["detail"]
+    textless = client.put(
+        "/api/settings/systemone",
+        json = {"model": "connection:deciders:jev-latest", "input_modalities": ["image"]},
+    )
+    assert textless.status_code == 400
+
+
+def test_audio_is_still_not_forwarded_to_a_connection(upstream):
+    client = _client()
+    _declare(client, _connection(), ["text", "image"])
+    response = client.post(
+        "/v1/systemone",
+        json = {
+            "model": "jev-latest",
+            "state": "x",
+            "questions": QUESTIONS,
+            "audio": ["data:audio/wav;base64,UklGRg=="],
+        },
+    )
+    assert response.status_code == 400
+    assert "Audio is not forwarded" in response.json()["detail"]["message"]
+    assert upstream.calls == []

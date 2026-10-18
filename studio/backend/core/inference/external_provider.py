@@ -7581,7 +7581,11 @@ class ExternalProviderClient:
         return response.content, media_type
 
     async def create_decision(
-        self, model: str, state: Any, questions: dict[str, dict[str, Any]]
+        self,
+        model: str,
+        state: Any,
+        questions: dict[str, dict[str, Any]],
+        images: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         def as_text(value: Any) -> Any:
             return (
@@ -7599,10 +7603,13 @@ class ExternalProviderClient:
             elif isinstance(criteria, list):
                 question["criteria"] = [as_text(value) for value in criteria]
             sent[name] = question
+        body: dict[str, Any] = {"model": model, "state": state, "questions": sent}
+        if images:
+            body["images"] = list(images)
         response = await _client().post(
             re.sub(r"/systemone$", "", self.base_url.rstrip("/")) + "/systemone",
             headers = self._auth_headers(),
-            json = {"model": model, "state": state, "questions": sent},
+            json = body,
             timeout = self._timeout,
         )
         response.raise_for_status()

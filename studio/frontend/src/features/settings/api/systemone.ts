@@ -73,6 +73,7 @@ export type SystemOneSettingsPatch = {
   device?: SystemOneDevice;
   backend?: SystemOneBackend;
   nativeCtx?: number;
+  inputModalities?: string[];
   expectedEnabled?: boolean;
   expectedModel?: string;
 };
@@ -167,10 +168,20 @@ function publishSystemOneSettings(settings: SystemOneSettings) {
 }
 
 function toApiPatch(patch: SystemOneSettingsPatch) {
-  const { expectedEnabled, expectedModel, nativeCtx, ...settings } = patch;
+  const {
+    expectedEnabled,
+    expectedModel,
+    nativeCtx,
+    inputModalities,
+    ...settings
+  } = patch;
   return {
     ...settings,
     ...(nativeCtx !== undefined && { native_ctx: nativeCtx }),
+    ...(inputModalities !== undefined && {
+      // biome-ignore lint/style/useNamingConvention: API schema
+      input_modalities: inputModalities,
+    }),
     ...(expectedEnabled !== undefined && {
       expected_enabled: expectedEnabled,
     }),

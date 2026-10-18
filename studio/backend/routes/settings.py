@@ -726,6 +726,7 @@ class SystemOneSettingsPayload(BaseModel):
     device: Optional[str] = None
     backend: Optional[str] = None
     native_ctx: Optional[int] = None
+    input_modalities: Optional[list[str]] = None
     expected_enabled: Optional[bool] = None
     expected_model: Optional[str] = None
 
@@ -1714,7 +1715,14 @@ def _systemone_values(payload: SystemOneSettingsPayload) -> dict[str, Any]:
     try:
         return systemone_settings.validate(
             **payload.model_dump(
-                include = {"enabled", "model", "device", "backend", "native_ctx"},
+                include = {
+                    "enabled",
+                    "model",
+                    "device",
+                    "backend",
+                    "native_ctx",
+                    "input_modalities",
+                },
                 exclude_none = True,
             )
         )
