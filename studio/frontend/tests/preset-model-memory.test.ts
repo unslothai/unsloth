@@ -265,6 +265,32 @@ test("a slider edit is still remembered per model over its recommendation", () =
   assert.equal(sampling().temperature, 0.5);
 });
 
+// The model was not on screen when the preset was picked, so the pick could not mark it.
+test("a model first loaded under a custom preset files later edits as themselves", () => {
+  pickPreset(CUSTOM);
+  loadOrPoll(QWEN);
+  const store = useChatRuntimeStore.getState();
+  store.setParams({ ...store.params, fastMode: true });
+  useChatRuntimeStore.getState().setActivePresetSource("modified");
+  useChatRuntimeStore.getState().setParams({ ...useChatRuntimeStore.getState().params, topK: 5 });
+  assert.deepEqual(presetOwnedKeys(useChatRuntimeStore.getState().paramsByModel[QWEN]), ["topK"]);
+  useChatRuntimeStore.getState().clearCheckpoint();
+  pickPreset(DEFAULT);
+  loadOrPoll(QWEN);
+  assert.deepEqual(sampling(), { ...AUTOMATIC, topK: 5 });
+});
+
+// Another tab may have set a key the pick does not own, so the pick names keys, not the row.
+test("a preset pick asks the server to drop only the preset's keys", async () => {
+  loadOrPoll(GEMMA);
+  settingsHttp.puts.length = 0;
+  pickPreset(DEFAULT);
+  await settled();
+  const forget = settingsHttp.puts.find((put) => put.forgetInferenceParamsByModel)
+    ?.forgetInferenceParamsByModel as Record<string, string[]>;
+  assert.deepEqual(new Set(forget[GEMMA]), PRESET_OWNED);
+});
+
 // Last: the open chat's pairing stays for the rest of the module.
 // With a saved chat open the preset's sampling belongs to that chat, so the model's own stays.
 test("a preset picked inside a chat leaves the model's remembered sampling alone", () => {

@@ -63,18 +63,20 @@ export function deepMerge(
   current: Record<string, unknown>,
   patch: Record<string, unknown>,
 ): Record<string, unknown> {
-  // The backend's forget command: drop those entries first, never store the key.
+  // The backend's forget command: drop those keys first, never store the command.
   const { forgetInferenceParamsByModel: forget, ...rest } = patch;
-  if (Array.isArray(forget)) {
-    const byModel = current.inferenceParamsByModel;
-    if (byModel && typeof byModel === "object") {
-      current = {
-        ...current,
-        inferenceParamsByModel: Object.fromEntries(
-          Object.entries(byModel).filter(([id]) => !forget.includes(id)),
-        ),
-      };
+  if (forget && typeof forget === "object") {
+    const byModel = { ...(current.inferenceParamsByModel as Record<string, Record<string, unknown>>) };
+    for (const [id, keys] of Object.entries(forget as Record<string, string[]>)) {
+      const entry = byModel[id];
+      if (!entry) continue;
+      const kept = Object.fromEntries(
+        Object.entries(entry).filter(([key]) => !keys.includes(key)),
+      );
+      if (Object.keys(kept).length > 0) byModel[id] = kept;
+      else delete byModel[id];
     }
+    current = { ...current, inferenceParamsByModel: byModel };
     patch = rest;
   }
   const merged = { ...current };

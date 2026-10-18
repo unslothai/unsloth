@@ -5569,20 +5569,28 @@ def _deep_merge_settings(current: dict[str, Any], updates: dict[str, Any]) -> di
     return merged
 
 
-# A command, not a setting: model ids whose remembered params are dropped before the rest of the
-# patch merges, since a deep merge can only add or overwrite (#14068).
+# A command, not a setting: per model id, the remembered keys dropped before the rest of the patch
+# merges, since a deep merge can only add or overwrite (#14068). Keys, not rows, so a concurrent edit
+# to a key the command does not name survives.
 _FORGET_PARAMS_KEY = "forgetInferenceParamsByModel"
 
 
 def _merge_settings_updates(current: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
     updates = dict(updates)
-    forget = updates.pop(_FORGET_PARAMS_KEY, None) or []
+    forget = updates.pop(_FORGET_PARAMS_KEY, None) or {}
     by_model = current.get("inferenceParamsByModel")
     if forget and isinstance(by_model, dict):
-        current = {
-            **current,
-            "inferenceParamsByModel": {k: v for k, v in by_model.items() if k not in forget},
-        }
+        pruned = dict(by_model)
+        for model_id, keys in forget.items():
+            entry = pruned.get(model_id)
+            if not isinstance(entry, dict):
+                continue
+            rest = {k: v for k, v in entry.items() if k not in keys}
+            if rest:
+                pruned[model_id] = rest
+            else:
+                del pruned[model_id]
+        current = {**current, "inferenceParamsByModel": pruned}
     return _deep_merge_settings(current, updates)
 
 

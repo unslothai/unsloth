@@ -640,32 +640,33 @@ def test_settings_merge_keeps_each_model_s_remembered_params(tmp_path, monkeypat
 
 
 def test_picking_a_preset_can_forget_one_model_s_params(tmp_path, monkeypatch):
-    """A preset pick drops the loaded model's memory (#14068); a merge alone cannot remove a key.
-    The forget runs first, so an edit in the same debounced patch starts a fresh entry."""
+    """A preset pick drops the loaded model's preset-owned keys (#14068); a merge alone cannot
+    remove a key. The forget runs first, so an edit in the same debounced patch starts fresh, and
+    a key it does not name (a Fast mode another tab just set) survives."""
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_settings_merge(
         {
             "inferenceParamsByModel": {
-                "qwen": {"temperature": 0.3, "systemPrompt": "Pirate"},
+                "qwen": {"temperature": 0.3, "systemPrompt": "Pirate", "fastMode": True},
                 "llama": {"temperature": 0.9},
             }
         }
     )
     studio_db.upsert_chat_settings_merge(
         {
-            "forgetInferenceParamsByModel": ["qwen"],
+            "forgetInferenceParamsByModel": {"qwen": ["temperature", "systemPrompt", "topP"]},
             "inferenceParamsByModel": {"qwen": {"topP": 0.5}},
         }
     )
     settings = studio_db.list_chat_settings()
     assert settings["inferenceParamsByModel"] == {
-        "qwen": {"topP": 0.5},
+        "qwen": {"fastMode": True, "topP": 0.5},
         "llama": {"temperature": 0.9},
     }
     assert "forgetInferenceParamsByModel" not in settings
 
     _, applied = studio_db.upsert_chat_settings_merge_if_current(
-        {}, {"forgetInferenceParamsByModel": ["qwen", "missing"]}
+        {}, {"forgetInferenceParamsByModel": {"qwen": ["fastMode", "topP"], "missing": ["x"]}}
     )
     assert applied is True
     settings = studio_db.list_chat_settings()
