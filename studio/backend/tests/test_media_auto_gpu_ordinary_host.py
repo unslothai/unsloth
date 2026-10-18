@@ -398,6 +398,11 @@ def test_catalog_refresh_ranks_once_on_mixed_or_unknown_cards(monkeypatch, ident
     ],
 )
 def test_cached_gate_defers_anything_that_could_probe(monkeypatch, device, count, mask, cached):
+    import threading
+
+    settled = threading.Event()
+    settled.set()
+    monkeypatch.setattr(hw, "DETECTION_COMPLETE", settled)
     monkeypatch.setattr(hw, "IS_ROCM", False)
     monkeypatch.setattr(hw, "DEVICE", device)
     monkeypatch.setattr(hw, "_physical_gpu_count", count)

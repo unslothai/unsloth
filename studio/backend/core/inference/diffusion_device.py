@@ -465,6 +465,12 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
     best = max(free_by_ordinal.values())
     winner = min(o for o, free in free_by_ordinal.items() if best - free <= _AUTO_FREE_TIE_BYTES)
     if winner:
+        # Physical rows hide MIG slices: a MIG card's row is the whole card, and its CUDA
+        # ordinals are slices (or absent before R570), so a row-ranked winner is not a card
+        # CUDA hands out. Unknown MIG status or a MIG card in the set keeps card 0 explicit.
+        mig = hw._nvidia_mig_gpu_indices_or_none()
+        if mig is None or set(visible) & mig:
+            return 0
         return winner
     # Card 0 won. Identical cards (same capability and size) keep None, the unpinned path they always had,
     # while no thread was ever pinned elsewhere. Mixed cards, or a process where a pooled thread may sit on
@@ -491,8 +497,12 @@ def auto_cuda_ranking_possible_cached() -> Optional[bool]:
 
         if hw.DEVICE is None:
             return None
+        # From memory only: get_device() waits on _DETECT_LOCK, which a detection pass in flight
+        # holds, and this runs on the event loop.
         if hw.IS_ROCM or hw.DEVICE != hw.DeviceType.CUDA:
-            return auto_cuda_ranking_possible()
+            return False
+        if not hw.DETECTION_COMPLETE.is_set():
+            return None
         mask = os.environ.get("CUDA_VISIBLE_DEVICES")
         if mask is None:
             if hw._physical_gpu_count is None:
