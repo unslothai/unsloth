@@ -7273,11 +7273,8 @@ def _strip_tool_xml_for_display(
     return restored if restored is not None else strip_outside_think(text, _strip_segment)
 
 
-# Every literal an arm of ``_strip_tool_xml_for_display`` needs before it can edit a segment:
-# the ``_TOOL_XML_RE`` / ``_TOOL_XML_CLOSED_RE`` arms, the Mistral / bracket / rehearsal scans
-# (``[TOOL_CALLS]``, ``[ARGS]``), GLM and function-XML (``<tool_call``, ``<function``), DeepSeek
-# (``<｜``) and Kimi (``<|tool_call``). Markerless Gemma has no literal and is caught by
-# ``_DISPLAY_GEMMA_CALL_RE`` instead, a superset of ``_GEMMA_BARE_TC_RE``.
+# Every literal some arm of ``_strip_tool_xml_for_display`` needs before it can edit text. Markerless Gemma has
+# none and is caught by ``_DISPLAY_GEMMA_CALL_RE``, a superset of ``_GEMMA_BARE_TC_RE``.
 _DISPLAY_STRIP_SENTINELS = (
     "<tool_call",
     "</tool_call",
@@ -7300,13 +7297,10 @@ _DISPLAY_GEMMA_TAIL_RE = _re.compile(r"(?<!\w)c(?:a(?:l(?:l\s*)?)?)?\Z")
 class _StreamingDisplayStrip:
     """``_strip_tool_xml_for_display`` for a cumulative buffer that grows one token at a time.
 
-    The full strip rescans the whole buffer with a dozen regex passes, so calling it per token is
-    quadratic in the turn length: about 5 ms a token at 30k characters, run on the event loop. No
-    arm can edit text that holds none of ``_DISPLAY_STRIP_SENTINELS`` and no ``call:``, and think
-    blocks are kept verbatim, so such a buffer is returned as is. The sentinel scan resumes where
-    the previous call stopped, which makes prose-only turns constant per token. Once a sentinel
-    shows up the buffer is handed to the full strip on every call, exactly as before. A buffer
-    that does not extend the previous one (a new tool iteration) starts over.
+    The full strip rescans the whole buffer per call, quadratic over a turn on the event loop. No arm can edit
+    text holding none of ``_DISPLAY_STRIP_SENTINELS`` and no ``call:``, so such a buffer is returned as is and the
+    scan resumes where it stopped. After a sentinel the full strip runs on every call, as before. A buffer that
+    does not extend the previous one (a new tool iteration) starts over.
     """
 
     __slots__ = ("_auto_heal", "_names", "_prev", "_scanned", "_gemma_from", "_marked")
