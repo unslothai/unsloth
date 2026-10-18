@@ -16073,9 +16073,8 @@ def _explicit_proxy_applies(scheme: str, host: str) -> bool:
         return False
 
 
-# Fake-IP DNS (Clash/mihomo, sing-box, Surge in TUN mode) answers every name from RFC 2544 benchmarking space and the
-# tunnel maps the address back to the name, so the proxy app's own resolver picks the real host, as for every other
-# app there. Allowed only for a public name, and only once the resolver is seen doing it; a literal is refused as before.
+# Fake-IP DNS (Clash/sing-box/Surge TUN) answers from 198.18.0.0/15; allowed only once the resolver probe sees it
+# (else any public domain could point into the range). Literals stay refused.
 _FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
 _FAKE_IP_PROBE_TTL = 60.0
 _fake_ip_probe: list = [None, False]  # (monotonic time checked, answer)

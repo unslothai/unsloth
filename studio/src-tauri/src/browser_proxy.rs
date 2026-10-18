@@ -508,10 +508,8 @@ async fn connect_within(host: &str, port: u16) -> Result<TcpStream, Refusal> {
     dial(addresses).await
 }
 
-/// Whether any of a public name's DNS answers is private. Fake-IP DNS (Clash/mihomo, sing-box, Surge
-/// in TUN mode) answers every name from RFC 2544 benchmarking space and the tunnel maps the address back
-/// to the name, so the proxy app's resolver picks the real host, as for every other app there. Allowed
-/// only once the resolver is seen doing it; literals never get here, `public_host` refuses them.
+/// Whether any DNS answer is private. Fake-IP answers (198.18.0.0/15) pass only once the resolver
+/// probe confirms fake-IP DNS; literals are refused earlier by `public_host`.
 async fn answers_are_private(answers: &[IpAddr]) -> bool {
     if answers
         .iter()
@@ -529,8 +527,7 @@ fn is_fake_ip(ip: IpAddr) -> bool {
 const FAKE_IP_PROBE_TTL: Duration = Duration::from_secs(60);
 static FAKE_IP_RESOLVER: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
 
-/// Whether the system resolver answers a name nobody registered from the fake-IP range, as fake-IP DNS
-/// answers every name and real DNS says NXDOMAIN. Without this, any public domain could point into it.
+/// Whether an unregistered name resolves into the fake-IP range. Without this, any public domain could point into it.
 async fn resolver_is_fake_ip() -> bool {
     let cached = *FAKE_IP_RESOLVER.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((checked, answer)) = cached {
