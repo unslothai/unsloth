@@ -912,14 +912,21 @@ async def unload_all(caller: Caller) -> UnloadAllResult:
         except ToolError as exc:
             failed.append(f"{name}: {exc}")
 
+    async def resident() -> tuple[list[str], list[str], set[str]]:
+        # Bounded: a stalled status read fails the chat step, and the other slots still go.
+        try:
+            return await asyncio.wait_for(_llm_resident(caller), READ_S)
+        except asyncio.TimeoutError:
+            raise ToolError("Unsloth Studio did not say which chat models are loaded") from None
+
     unloaded: list[SlotModel] = []
     try:
-        serving, checkpoints, _before = await _llm_resident(caller)
+        serving, checkpoints, _before = await resident()
         pairs = list(zip(serving, checkpoints))
         # Kept models first, so unloading the primary never promotes one of them in between.
         for name, target in reversed(pairs):
             await unload(name, target)
-        now_serving, now_checkpoints, after = await _llm_resident(caller)
+        now_serving, now_checkpoints, after = await resident()
         # A model the unloads promoted still serves (by name and by checkpoint): unload it too.
         promoted = [pair for pair in zip(now_serving, now_checkpoints) if pair not in pairs]
         for name, target in promoted:
@@ -930,7 +937,7 @@ async def unload_all(caller: Caller) -> UnloadAllResult:
         for name in held:
             await unload(name, name)
         if held or promoted:
-            _serving, _checkpoints, after = await _llm_resident(caller)
+            _serving, _checkpoints, after = await resident()
         pairs += promoted + [(name, name) for name in held]
         unloaded += [
             SlotModel(kind = "llm", model = name)

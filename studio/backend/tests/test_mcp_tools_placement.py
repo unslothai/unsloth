@@ -506,3 +506,21 @@ def test_unload_all_unloads_a_promoted_model_once_by_its_checkpoint(monkeypatch)
     result, studio = run_tool(monkeypatch, routes, "unload_model", {"kind": "all"}, fallback = {})
     assert bodies(studio, "/api/inference/unload")[-1] == {"model_path": "/m/qwen-2"}
     assert len(bodies(studio, "/api/inference/unload")) == 3
+
+
+def test_unload_all_still_frees_media_when_chat_status_stalls(monkeypatch):
+    from studio_mcp import loading
+
+    async def stalled(request, body):
+        await asyncio.sleep(10)
+        return STATUS
+
+    monkeypatch.setattr(loading, "READ_S", 0.05)
+    routes = {
+        STATUS_ROUTE: stalled,
+        ("GET", "/api/inference/images/status"): {"loaded": True, "repo_id": FLUX_GGUF},
+        ("POST", "/api/inference/images/unload"): {"loaded": False},
+    }
+    result, studio = run_tool(monkeypatch, routes, "unload_model", {"kind": "all"}, fallback = {})
+    assert result["isError"] is True and f"image {FLUX_GGUF}" in str(result["content"])
+    assert ("POST", "/api/inference/images/unload") in [call[:2] for call in studio.state.calls]
