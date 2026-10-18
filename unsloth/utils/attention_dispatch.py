@@ -551,13 +551,15 @@ def _sdpa_packed_segments(
                 is_causal = is_causal,
             )
         kwargs["is_causal"] = is_causal and not windowed
+        Q_run = split(Q)
+        # Probe the run's own tensors: a one-token run has different eligibility than the row.
         gqa = n_groups != 1 and _sdpa_takes_gqa(
-            Q, K, kwargs["is_causal"], windowed, V, kwargs.get("dropout_p", 0.0)
+            Q_run, split(K), kwargs["is_causal"], windowed, split(V), kwargs.get("dropout_p", 0.0)
         )
         if gqa:
             kwargs["enable_gqa"] = True
         K_run, V_run = kv(gqa)
-        out = scaled_dot_product_attention(split(Q), split(K_run), split(V_run), **kwargs)
+        out = scaled_dot_product_attention(Q_run, split(K_run), split(V_run), **kwargs)
         outs.append(out.transpose(1, 2).flatten(0, 1))
         start, i = end, j
     return torch.cat(outs, dim = 0).unsqueeze(0)
@@ -712,7 +714,7 @@ _NATIVE_BEATS_XFORMERS = _native_beats_xformers(
 )
 
 
-def select_attention_backend(use_varlen: bool = False) -> str:
+def select_attention_backend(use_varlen: bool = False, dropout_p: float = 0.0) -> str:
     """Return attention backend based on availability / priority order."""
 
     if _ring_attention_active():
@@ -730,8 +732,11 @@ def select_attention_backend(use_varlen: bool = False) -> str:
     # Only the packed route prefers torch's kernels (varlen / per-segment SDPA). Dense calls keep
     # xformers: it alone consumes a caller's block-diagonal causal_mask, and expanding a GQA KV cache
     # for SDPA on fp32 decode costs memory. With UNSLOTH_SDPA_PACKED_SEGMENTS off, packed SDPA would
-    # build a dense (T, T) mask, so xformers stays there too.
-    if HAS_XFORMERS and not (use_varlen and _NATIVE_BEATS_XFORMERS and _SDPA_PACKED_SEGMENTS):
+    # build a dense (T, T) mask, so xformers stays there too. Torch varlen takes no dropout, so a
+    # packed call with dropout would become one SDPA launch per run: xformers keeps those as well.
+    if HAS_XFORMERS and not (
+        use_varlen and not dropout_p and _NATIVE_BEATS_XFORMERS and _SDPA_PACKED_SEGMENTS
+    ):
         return XFORMERS
     return SDPA
 

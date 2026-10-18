@@ -427,3 +427,45 @@ def test_probe_matches_singleton_key_length(monkeypatch):
         assert set(kv_lengths) == {128, 1}
     finally:
         ad._sdpa_gqa_choices.cache_clear()
+
+
+def test_packed_dropout_keeps_xformers(monkeypatch):
+    """Torch varlen takes no dropout: a packed call with dropout keeps xformers' single launch."""
+    monkeypatch.setattr(ad, "_ring_attention_active", lambda: False)
+    monkeypatch.setattr(ad, "HAS_FLASH_ATTENTION", False)
+    monkeypatch.setattr(ad, "HAS_XFORMERS", True)
+    monkeypatch.setattr(ad, "_NATIVE_BEATS_XFORMERS", True)
+    monkeypatch.setattr(ad, "_SDPA_PACKED_SEGMENTS", True)
+    assert ad.select_attention_backend(True) == ad.SDPA
+    assert ad.select_attention_backend(True, 0.1) == ad.XFORMERS
+    assert ad.select_attention_backend(True, dropout_p = 0.0) == ad.SDPA
+
+
+def test_packed_runs_are_probed_with_their_own_lengths(monkeypatch):
+    """A one-token run is probed as one token, not with the whole row's length."""
+    seen = []
+
+    def takes_gqa(
+        Q,
+        K,
+        is_causal,
+        has_mask,
+        V = None,
+        dropout_p = 0.0,
+    ):
+        seen.append((Q.shape[-2], K.shape[-2]))
+        return True
+
+    monkeypatch.setattr(ad, "_sdpa_takes_gqa", takes_gqa)
+    monkeypatch.setattr(
+        ad, "scaled_dot_product_attention", lambda Q, K, V, **kw: torch.zeros_like(Q)
+    )
+    packing.clear_packed_caches()
+    lengths = (5, 1)
+    T = sum(lengths)
+    Q = torch.randn(1, 4, T, 16)
+    K = torch.randn(1, 2, T, 16)
+    ad._sdpa_packed_segments(
+        Q, K, K, lengths, n_groups = 2, is_causal = True, sliding_window = None, sdpa_kwargs = {}
+    )
+    assert (1, 1) in seen and all(q == k for q, k in seen)
