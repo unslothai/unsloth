@@ -381,7 +381,20 @@ def _linux_kfd_gfx1153_candidates() -> list[str]:
         logger.debug("KFD gfx target probe failed: %s", e)
         return []
     found = sorted({gfx for gfx in targets if gfx})
-    return found if "gfx1153" in found else []
+    if "gfx1153" not in found:
+        return []
+    # KFD reads the silicon, immune to HSA_OVERRIDE_GFX_VERSION; the installers judge a readable
+    # override instead (install_python_stack._linux_host_only_uncovered_amd) and give it a ROCm
+    # wheel, so keep the conservative no-candidates answer there rather than exempting the card.
+    _hsa = (os.environ.get("HSA_OVERRIDE_GFX_VERSION") or "").strip()
+    if (
+        not (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip()
+        and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", _hsa)
+    ):
+        _maj, _min, _step = (int(p) for p in _hsa.split("."))
+        if _maj > 0 and _min <= 9 and _step <= 15 and f"gfx{_maj}{_min}{_step:x}" != "gfx1153":
+            return []
+    return found
 
 
 def _linux_amd_gfx_candidates() -> list[str]:
