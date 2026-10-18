@@ -242,6 +242,12 @@ def _ranked(
     return variants[0] if variants else None
 
 
+# Licenses, notices, checksums and docs ship beside a GGUF but are never loaded by the runtime.
+_PACKAGING_FILE = re.compile(
+    r"(?i)(license|licence|notice|copying|readme|sha256sums|checksums)(\.[a-z0-9]+)?$|.*\.md$"
+)
+
+
 def _sidecars(spec: dict) -> list[str]:
     """Non-GGUF files of the spec's recommended (else default) GGUF package, ``embeddings/`` aside."""
     packages = [p for p in _list(spec.get("packages")) if isinstance(p, dict)]
@@ -251,7 +257,13 @@ def _sidecars(spec: dict) -> list[str]:
         (p for p in packages if p.get("default") is True), None
     )
     files = [f.replace("\\", "/") for f in _list(_dict(package).get("files")) if isinstance(f, str)]
-    return [f for f in files if not f.lower().endswith(".gguf") and "/embeddings/" not in f"/{f}"]
+    return [
+        f
+        for f in files
+        if not f.lower().endswith(".gguf")
+        and "/embeddings/" not in f"/{f}"
+        and not _PACKAGING_FILE.match(f.rsplit("/", 1)[-1])
+    ]
 
 
 def _list(value: Any) -> list:

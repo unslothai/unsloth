@@ -325,6 +325,12 @@ def test_a_community_repo_whose_package_needs_sidecars_is_withheld(env):
         ),
         ("sanotts", "ampixa/sanoTTS", ["gguf/heart-nano-f32.gguf", "gguf/config.json"]),
         ("voices_tts", "Voices/TTS", ["v-q8_0.gguf", "embeddings/alba.safetensors"]),
+        # Licenses and checksums ride along but are never loaded (Kitten TTS 2 is self-contained).
+        (
+            "kitten_tts2",
+            "dignome/kitten_tts2",
+            ["kitten.gguf", "LICENSE", "NOTICE", "native/LICENSE", "SHA256SUMS", "README.md"],
+        ),
     ):
         spec = {
             "family": family,
@@ -337,6 +343,7 @@ def test_a_community_repo_whose_package_needs_sidecars_is_withheld(env):
     for repo in ("trklou/audio.cpp", "ampixa/sanoTTS"):
         assert rows[repo].workflows == [] and rows[repo].unsupported_reason == catalog._SIDECARS
     assert rows["Voices/TTS"].unsupported_reason is None and rows["Voices/TTS"].workflows
+    assert rows["dignome/kitten_tts2"].unsupported_reason is None
     assert rows["Jmica/Drama-3-GGUF"].workflows == ["speak", "clone"]
 
 
