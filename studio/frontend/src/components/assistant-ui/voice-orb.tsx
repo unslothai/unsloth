@@ -322,32 +322,25 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
 // each in the colour of the orb state it belongs to: the turn judge on the left
 // in "hearing you" salmon (how sure the turn is over), the filler across the top
 // in "speaking" sky (lit while a line was chosen), the mid-think call on the
-// right in "thinking" indigo (how sure of its call), the addressed gate along
-// the bottom in teal (how sure the turn was for it). Faint tracks until a model
+// right in "thinking" indigo (how sure of its call). Faint tracks until a model
 // has spoken; a filled arc never moves on its own.
-const RING_R = 110;
-const RING_W = 6.5;
-const RING = Math.ceil(2 * (RING_R + RING_W));
-// Four quarters with rounded ends and a small gap at each seam: the judge owns the
-// left, the filler the top, the mid-think call the right, the addressed gate the bottom.
-const ARC_DEG = 90;
+const RING = 232;
+const RING_R = 106;
+// Three thirds with rounded ends and a small gap at each seam; the judge owns the
+// left third, the filler the top-right, the mid-think call the bottom-right.
+const ARC_DEG = 120;
+const RING_W = 5;
 const GAP_DEG = 7;
 const ARCS: Array<{ key: keyof VoiceDecisions; start: number; color: string; label: string }> = [
-  { key: "turn", start: 225, color: "#fb7185", label: "turn" },
-  { key: "filler", start: 315, color: "#38bdf8", label: "filler" },
-  { key: "interject", start: 45, color: "#818cf8", label: "interrupt" },
-  { key: "addressed", start: 135, color: "#2dd4bf", label: "for me" },
+  { key: "turn", start: 180, color: "#fb7185", label: "turn" },
+  { key: "filler", start: 300, color: "#38bdf8", label: "filler" },
+  { key: "interject", start: 60, color: "#818cf8", label: "interrupt" },
 ];
 
 /** Short value for the label beside each arc. */
 function arcValue(d: VoiceDecisions, key: keyof VoiceDecisions): string {
   if (key === "turn") return d.turn ? `${Math.round(d.turn.p * 100)}% ${d.turn.sent ? "sent" : "wait"}` : "";
   if (key === "filler") return d.filler ? (d.filler.phrase ? "spoke" : "quiet") : "";
-  if (key === "addressed") {
-    if (!d.addressed) return "";
-    const pct = `${Math.round(d.addressed.confidence * 100)}%`;
-    return d.addressed.label === "assistant" ? `for me ${pct}` : `${d.addressed.label} ${pct}`;
-  }
   return d.interject ? `${d.interject.action} ${Math.round(d.interject.confidence * 100)}%` : "";
 }
 
@@ -363,7 +356,6 @@ const VoiceDecisionRing: FC = () => {
   const fill = (key: keyof VoiceDecisions): number => {
     if (key === "turn") return d.turn ? d.turn.p : 0;
     if (key === "filler") return d.filler?.phrase ? 1 : 0;
-    if (key === "addressed") return d.addressed?.label === "assistant" ? d.addressed.confidence : 0;
     return d.interject ? d.interject.confidence : 0;
   };
   return (
@@ -490,13 +482,6 @@ const VoiceHelpButton: FC = () => (
             <span className="font-medium">Interrupt</span>: what it did with speech that landed while
             the model was thinking. Restart folds it into the request, queue holds it for after
             the reply, ignore drops it.
-          </span>
-        </li>
-        <li className="flex gap-2">
-          <span className="mt-1.5 size-2 shrink-0 rounded-full" style={{ background: "#2dd4bf" }} />
-          <span>
-            <span className="font-medium">For me</span>: whether the last thing you said was meant
-            for the assistant. Said to someone else or read aloud, it is kept but not answered.
           </span>
         </li>
         <li className="flex gap-2">
