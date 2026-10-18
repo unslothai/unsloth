@@ -3,6 +3,8 @@
 
 """load_model's media knobs and device/alongside placement, the placement echo, the partial-variant refusal and unload_model(kind="all")."""
 
+import asyncio
+
 import pytest
 from fastapi.responses import JSONResponse
 
@@ -449,3 +451,24 @@ def test_a_partial_default_variant_is_refused_whatever_the_repo_is_called(monkey
     )
     assert result["isError"] is True and "still downloading or incomplete" in str(result["content"])
     assert sent == []
+
+
+def test_a_stalled_status_read_after_the_load_leaves_alongside_unknown(monkeypatch):
+    from studio_mcp import loading
+
+    posted = []
+
+    def load(request, body):
+        posted.append(body)
+        return {**LOADED, "model": OUTETTS, "evicted": []}
+
+    async def status(request, body):
+        if posted:
+            await asyncio.sleep(10)
+        return STATUS
+
+    monkeypatch.setattr(loading, "READ_S", 0.05)
+    routes = {**PAYLOADS, LOAD: load, STATUS_ROUTE: status}
+    result, _studio, _bodies = _load(monkeypatch, {"model": OUTETTS, "kind": "tts"}, routes)
+    assert result["structuredContent"]["loaded"] is True
+    assert result["structuredContent"]["alongside_applied"] is None

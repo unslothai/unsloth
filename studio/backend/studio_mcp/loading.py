@@ -410,7 +410,8 @@ async def load_llm(
         loaded = opt_text(payload.get("model")) or model
         chat = before.get("llm") or []
         # Serving only: a model merely held in memory behind the new primary no longer serves.
-        status = await try_json(caller, "/api/inference/status") if chat else None
+        # Bounded: the model is loaded, and a stalled read must not keep the job open.
+        status = await _read_json(caller, "/api/inference/status") if chat else None
         # A failed read leaves it unknown whether the previous model still serves.
         after = strings(status.get("serving")) if isinstance(status, dict) else None
         return await finish_load(
