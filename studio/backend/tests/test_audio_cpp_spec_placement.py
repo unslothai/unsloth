@@ -213,6 +213,16 @@ def test_a_family_the_runtime_lacks_is_still_refused(hub, monkeypatch, family, s
     assert model.workflows == {} and "needs a newer audio runtime" in model.unsupported
 
 
+@pytest.mark.parametrize("family", ["mira_tts", "sopro_tts"])
+def test_a_reference_only_table_family_the_runtime_lacks_is_refused(hub, monkeypatch, family):
+    monkeypatch.setattr(acm, "runtime_knows_family", lambda name: False)
+    model = _resolve(hub, family, {"tasks": ["tts", "clone"]})
+    assert model.workflows == {} and "needs a newer audio runtime" in model.unsupported
+    monkeypatch.setattr(acm, "runtime_knows_family", lambda name: None)
+    acm.forget()
+    assert set(_resolve(hub, family, {"tasks": ["tts", "clone"]}).workflows) == {"clone"}
+
+
 def test_unsupported_messages_say_unsloth_studio():
     messages = [f.unsupported for f in acm.FAMILIES.values() if f.unsupported]
     for spec in ({"tasks": t} for t in (["vc"], ["svc"], ["s2s"], ["turn"], ["odd"], [])):

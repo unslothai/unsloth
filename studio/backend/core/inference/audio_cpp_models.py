@@ -718,6 +718,10 @@ _SEPARATION_FAMILIES: tuple[AudioCppFamily, ...] = (
 )
 
 
+# Table families newer than some runtimes, so the runtime check spec-derived families get still
+# applies to them.
+_RUNTIME_GATED_FAMILIES = frozenset(("mira_tts", "sopro_tts"))
+
 _MULTI_FILE_PACKAGE = "This model ships as a multi-file package Unsloth Studio cannot load yet."
 
 _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
@@ -1125,6 +1129,12 @@ def family_policy(
     ``names`` (repo, folder and file names) pick the Qwen3-TTS package kind, which the family
     alone does not say: CustomVoice needs a speaker, VoiceDesign designs one, Base only clones.
     """
+    if family in _RUNTIME_GATED_FAMILIES and runtime_knows_family(family) is False:
+        return AudioCppFamily(
+            family,
+            "",
+            unsupported = f"{label or family} needs a newer audio runtime than the one installed.",
+        )
     policy = FAMILIES.get(family) or _family_from_spec_tasks(family, spec, label)
     if family == "qwen3_tts":
         text = " ".join(names).lower()

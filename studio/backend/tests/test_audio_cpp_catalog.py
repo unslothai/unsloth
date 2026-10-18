@@ -265,6 +265,56 @@ def test_a_name_hint_whose_spec_places_other_folders_falls_back_to_the_header(en
     assert rows[f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF"].workflows == ["speak"]
 
 
+def test_a_header_family_a_spec_places_elsewhere_survives_offline(env, monkeypatch):
+    # Phonon-2-GGUF's header says parakeet_tdt, whose runtime spec places another folder only.
+    env["umbrella"].append(RepoFile("Phonon-GGUF/phonon-q8.gguf", 50))
+    probe = acm.read_remote_header
+    kokoro = AudioCppHeader("audiocpp", "kokoro_tts", {"family": "kokoro_tts", "tasks": ["tts"]})
+    monkeypatch.setattr(
+        acm,
+        "read_remote_header",
+        lambda repo_id, filename, hf_token = None, *, size = None: (
+            kokoro
+            if filename.startswith("Phonon-GGUF/")
+            else probe(repo_id, filename, hf_token, size = size)
+        ),
+    )
+    online = _rows(catalog.audio_catalog_payload())[f"{AUDIO_CPP_REPO}/Phonon-GGUF"]
+    assert online.family == "kokoro_tts" and online.workflows == ["speak"]
+    catalog.forget_audio_catalog()
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    env["calls"].update(hub = 0, header = 0)
+    payload = catalog.audio_catalog_payload()
+    assert payload.source == "saved" and env["calls"]["header"] == 0
+    offline = _rows(payload)[f"{AUDIO_CPP_REPO}/Phonon-GGUF"]
+    assert offline.family == "kokoro_tts" and offline.workflows == ["speak"]
+
+
+def test_a_community_repo_several_specs_download_from_is_not_listed(env):
+    # mirek190/audio.cpp holds GLM-TTS, Hviske and OuteTTS: its bare id resolves to one of them.
+    for family, files in (("glm_tts", ["GLM-TTS_Q8.gguf"]), ("hviske_asr", ["hviske_Q8.gguf"])):
+        spec = {
+            "family": family,
+            "tasks": ["tts" if family == "glm_tts" else "asr"],
+            "packages": [
+                {"format": "gguf", "files": files, "download": {"repo": "Mixed/audio.cpp"}}
+            ],
+        }
+        (env["specs"] / f"{family}.json").write_text(json.dumps(spec))
+    rows = _rows(catalog.audio_catalog_payload())
+    assert "Mixed/audio.cpp" not in rows
+    assert rows["Jmica/Drama-3-GGUF"].family == "fish_drama3"
+    targets = catalog._spec_targets(
+        {
+            "a": {"packages": [{"format": "gguf", "download": {"repo": "Same/Repo"}}]},
+            "b": {"packages": [{"format": "gguf", "download": {"repo": "same/repo"}}]},
+            "c": {"packages": [{"format": "gguf", "download": {"repo": "One/Repo"}}]},
+        },
+        [],
+    )
+    assert targets == ({}, {"One/Repo": "c"})
+
+
 def test_a_spec_dir_read_is_capped_and_ignores_bad_files(env, monkeypatch):
     (env["specs"] / "huge.json").write_bytes(b" " * (catalog._MAX_SPEC_BYTES + 1))
     (env["specs"] / "list.json").write_text("[]")
