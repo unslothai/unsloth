@@ -54,7 +54,23 @@ _PLAIN_RESPONSE = {
     "error",
     "remixed_from_video_id",
 }
-_WAV = b"RIFF\x24\x00\x00\x00WAVEfmt fake-wav-bytes"
+
+
+def _wav_bytes() -> bytes:
+    import io
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(16000)
+        out.writeframes(b"\x00\x01" * 1600)
+    return buf.getvalue()
+
+
+# Decodable, since /v1/videos reads each reference audio before rendering.
+_WAV = _wav_bytes()
 _OTHER = AccountContext("acct-other", "other", "user")
 
 
@@ -499,6 +515,8 @@ def test_create_openai_video_keeps_its_signature():
 
 @pytest.mark.parametrize("switch", [True, False], ids = ["before-switch", "resident"])
 def test_minimax_h3_refuses_a_custom_fps(client, backend, monkeypatch, switch):
+    from core.inference.video_families import detect_video_family
+
     # H3 always writes its clip at 24 fps, so 30 fps would only mislabel the clip's length.
     calls = _capture(monkeypatch, backend)
     if switch:
@@ -516,6 +534,13 @@ def test_minimax_h3_refuses_a_custom_fps(client, backend, monkeypatch, switch):
             }
 
         monkeypatch.setattr(backend, "status", _h3_status)
+        # An explicit fps pins the request to the resident state, so that is H3 too.
+        backend._state = types.SimpleNamespace(
+            family = detect_video_family("MiniMaxAI/MiniMax-H3"),
+            h3_task = None,
+            engine = "diffusers",
+            repo_id = "MiniMaxAI/MiniMax-H3",
+        )
     resp = client.post("/v1/videos", json = {"prompt": "x", "model": "H3", "fps": 30})
     assert resp.status_code == 400, resp.json()
     error = resp.json()["error"]
@@ -764,3 +789,57 @@ def test_seconds_auto_beside_num_frames_is_not_both(client, backend, monkeypatch
     resp = client.post("/v1/videos", json = {"prompt": "x", "seconds": "auto", "num_frames": 33})
     assert resp.status_code == 200, resp.json()
     assert calls[0]["num_frames"] == 33
+
+
+def test_a_custom_fps_is_judged_on_the_state_that_renders(client, backend, monkeypatch):
+    # status() still reads LTX-2, but MiniMax-H3 committed before the reservation: the fps check
+    # must judge the state begin_generate is pinned to, not the earlier read.
+    from core.inference.video_families import detect_video_family
+
+    calls = _capture(monkeypatch, backend)
+    resident = backend.status
+
+    def _ltx_status():
+        return {**resident(), "family": "ltx-2"}
+
+    monkeypatch.setattr(backend, "status", _ltx_status)
+    backend._state = types.SimpleNamespace(
+        family = detect_video_family("MiniMaxAI/MiniMax-H3"),
+        h3_task = None,
+        engine = "diffusers",
+        repo_id = "MiniMaxAI/MiniMax-H3",
+    )
+    resp = client.post("/v1/videos", json = {"prompt": "x", "fps": 30})
+    assert resp.status_code == 400, resp.json()
+    assert resp.json()["error"]["param"] == "fps"
+    assert calls == []
+
+
+def test_resident_audio_the_decoder_cannot_open_is_a_400(client, backend):
+    # A WAV naming a codec FFmpeg has no decoder for fails with AttributeError, not ValueError,
+    # inside begin_generate. No switch runs the preflight here, so the route must.
+    import struct
+
+    from core.inference.video_families import detect_video_family
+    from core.inference.video_minimax_h3 import H3_TASK_REFERENCES
+
+    pytest.importorskip("av")
+    fmt = struct.pack("<HHIIHH", 0x1234, 1, 16000, 32000, 2, 16)
+    data = b"\x00\x01" * 800
+    chunks = b"WAVEfmt " + struct.pack("<I", len(fmt)) + fmt + b"data"
+    chunks += struct.pack("<I", len(data)) + data
+    wav = b"RIFF" + struct.pack("<I", len(chunks)) + chunks
+    backend._state = types.SimpleNamespace(
+        family = detect_video_family("MiniMaxAI/MiniMax-H3"),
+        h3_task = H3_TASK_REFERENCES,
+        engine = "diffusers",
+        repo_id = "MiniMaxAI/MiniMax-H3",
+    )
+    body = {
+        "prompt": "x",
+        "reference_images": [_reference_data_url("PNG", "image/png")],
+        "reference_audios": ["data:audio/wav;base64," + base64.b64encode(wav).decode()],
+    }
+    resp = client.post("/v1/videos", json = body)
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"]["param"] == "reference_audios"

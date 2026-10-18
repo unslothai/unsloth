@@ -1914,6 +1914,8 @@ async def _create_openai_video(
         except Exception:  # noqa: BLE001 -- any decode failure is client input feedback
             raise _openai_video_error(400, f"{param} is not a readable image.", param = param)
 
+    audio_checked = [False]
+
     def _refuse_unservable_request(pick) -> None:
         from core.inference.media_model_index import expected_partition
         from core.inference.video import _detect_load_family, assert_first_frame_pipeline_available
@@ -1964,6 +1966,7 @@ async def _create_openai_video(
         )
         # Decoded here, like the images above, so unreadable audio never costs a switch.
         _refuse_unreadable_audio(reference_audios)
+        audio_checked[0] = True
 
     pin_requested_model = bool(
         isinstance(body.model, str) and body.model.strip() and get_media_auto_switch_enabled()
@@ -1983,6 +1986,9 @@ async def _create_openai_video(
         raise _openai_video_error(
             400, str(exc), param = _conditioning_param(body, reference, "input_reference")
         )
+    if not audio_checked[0]:
+        # No switch ran the check, and the engine's own decode can fail with more than ValueError.
+        await asyncio.to_thread(_refuse_unreadable_audio, reference_audios)
 
     backend = get_video_backend()
     video_id = _VIDEO_JOB_ID_PREFIX + uuid.uuid4().hex
@@ -1990,7 +1996,8 @@ async def _create_openai_video(
     seed = body.seed if body.seed is not None else _secrets.randbelow(2**53)
     # Managed callers are authorized against the exact resident state, pinned to the reservation;
     # on a mismatch, re-authorize once and retry, as /video/generate does.
-    pin_state = pin_requested_model or account_access.managed_account()
+    # An explicit fps is judged against the family, so it is pinned to the state it was judged on.
+    pin_state = pin_requested_model or account_access.managed_account() or body.fps is not None
     for attempt in range(2):
         expected_state = None
         if pin_state:
