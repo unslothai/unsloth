@@ -3653,3 +3653,40 @@ def test_each_pipeline_group_scratch_is_sized_for_its_own_slots(monkeypatch):
     # One context of 48 slots, then three contexts of 16 slots each (server-context.cpp).
     assert scratch[0] == pytest.approx(580 * MIB)
     assert scratch[-1] == pytest.approx(3 * 260 * MIB)
+
+
+def test_host_buffers_are_charged_to_the_shared_memory_device_not_a_discrete_first_card(
+    monkeypatch,
+):
+    listing = (
+        LISTING.replace(
+            "CUDA0: NVIDIA GB10 (122502 MiB, 110000 MiB free)",
+            "CUDA0: NVIDIA RTX 4090 (24564 MiB, 23000 MiB free)",
+        )
+        + "  Vulkan0: AMD Radeon 8060S (98304 MiB, 90000 MiB free)\n"
+    )
+    _cluster_env(monkeypatch, listing = listing, model_bytes = 200 * GIB)
+    monkeypatch.setattr(cs, "_shares_host_memory", lambda device: device.name == "Vulkan0")
+    monkeypatch.setattr(cs, "_effective_checkpoints", lambda *a: 32)
+    # 32 checkpoints x 4 slots x 256 MiB = 32 GiB of host RAM, more than the 4090 has.
+    monkeypatch.setattr(
+        cs, "_ctx_compute_bytes", lambda *a, **k: 256 * MIB if a[7:] == ("checkpoint",) else 0
+    )
+    run(ss.before_load(_request(max_seq_length = 8192), 4))
+    plan = cs.state().plan
+    assert plan.topology == "layer_split", plan.reason
+    assert plan.extra_bytes == 32 * GIB
+    by_name = dict(zip((d.name for d in plan.devices), plan.weights))
+    budget = {d.name: cs.usable_bytes(d) for d in plan.devices}
+    total = sum(budget.values()) - 32 * GIB
+    # The checkpoints come off the APU's share; the discrete card keeps its whole budget.
+    assert by_name["CUDA0"] * total == pytest.approx(budget["CUDA0"], rel = 0.01)
+    assert by_name["Vulkan0"] * total == pytest.approx(budget["Vulkan0"] - 32 * GIB, rel = 0.01)
+
+
+def test_plan_cluster_host_extra_on_the_first_device_is_the_old_charge():
+    devices = cs.parse_device_list(LISTING, ["10.0.0.2:50052"])
+    a = cs.plan_cluster(250 * GIB, 0, 2 * GIB, devices)
+    b = cs.plan_cluster(250 * GIB, 0, GIB, devices, host_extra = (0, GIB))
+    assert (a.topology, a.weights, a.extra_bytes) == (b.topology, b.weights, b.extra_bytes)
+    assert b.host_extra_device is None

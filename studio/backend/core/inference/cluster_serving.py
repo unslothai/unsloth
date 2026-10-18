@@ -787,6 +787,9 @@ class ClusterPlan:
     # Charged but possibly never loaded (a Hub projector the vision switch may drop): not freed.
     uncertain_extra_bytes: float = 0.0
     sidecar_device: Optional[Device] = None
+    # Host RAM buffers within extra_bytes charged to a later shared-memory local device.
+    host_extra_device: Optional[Device] = None
+    host_extra_bytes: float = 0.0
     # Never counted as freed by a replacement: the KV estimate is not the cache's real layout.
     kv_bytes: float = 0.0
     layer_bytes: float = 0.0
@@ -802,10 +805,15 @@ class ClusterPlan:
             d.key: max(0.0, w * held - self.layer_bytes) for d, w in zip(self.devices, self.weights)
         }
         local = self.sidecar_device or next((d for d in self.devices if not d.remote), None)
+        host = self.host_extra_bytes if self.host_extra_device is not None else 0.0
         if local is not None:
             out[local.key] = out.get(local.key, 0.0) + max(
-                0.0, self.extra_bytes - self.uncertain_extra_bytes
+                0.0, self.extra_bytes - host - self.uncertain_extra_bytes
             )
+        if host:
+            # Either side may hold the uncertain part: neither counts it as freed.
+            key = self.host_extra_device.key
+            out[key] = out.get(key, 0.0) + max(0.0, host - self.uncertain_extra_bytes)
         return out
 
     def snapshot(self) -> Dict[str, Any]:
@@ -1022,10 +1030,13 @@ def plan_cluster(
     layer_bytes: Optional[float] = None,
     margin_bytes: float = 0.0,
     scratch_bytes: float = 0.0,
+    host_extra: Optional[Tuple[int, float]] = None,
 ) -> ClusterPlan:
     """single when this machine holds the load, else a layer split weighted by usable memory.
 
     Projector and drafter are charged to the coordinator; callers add adapters to ``model_bytes``.
+    ``host_extra`` = (index among the local devices, bytes): host RAM buffers charged to the
+    shared-memory accelerator they draw from, on top of ``local_extra_bytes`` on the first one.
     """
     if model_bytes is None:
         return ClusterPlan("single", "model size unknown; not guessing, serving on this machine")
@@ -1034,25 +1045,41 @@ def plan_cluster(
     need = float(model_bytes) + float(kv_bytes or 0)
     local_budgets = [usable_bytes(d, margin_bytes, scratch_bytes) for d in local]
     local_usable = sum(local_budgets)
+    charges = [float(local_extra_bytes)] + [0.0] * (len(local) - 1) if local else []
+    if local and host_extra and 0 <= host_extra[0] < len(local):
+        charges[host_extra[0]] += float(host_extra[1])
+    total_extra = sum(charges) if local else float(local_extra_bytes)
+    shared = {}
+    if local and host_extra and 0 < host_extra[0] < len(local) and host_extra[1] > 0:
+        shared = dict(host_extra_device = local[host_extra[0]], host_extra_bytes = float(host_extra[1]))
     # The projector / drafter is pinned to the first local GPU, so it has to fit there itself.
-    if local and local_extra_bytes > local_budgets[0]:
+    if local and charges[0] > local_budgets[0]:
         return ClusterPlan(
             "refuse",
-            f"the projector / drafter ({local_extra_bytes / _GIB:.1f} GiB) does not fit "
+            f"the projector / drafter ({charges[0] / _GIB:.1f} GiB) does not fit "
             f"{local[0].name} ({local_budgets[0] / _GIB:.1f} GiB usable), where it loads",
             need_bytes = need,
         )
-    if forced != "layer_split" and local and need + local_extra_bytes <= local_usable:
-        model_budgets = [local_budgets[0] - local_extra_bytes] + local_budgets[1:]
+    for d, charge, budget in list(zip(local, charges, local_budgets))[1:]:
+        if charge > budget:
+            return ClusterPlan(
+                "refuse",
+                f"host buffers ({charge / _GIB:.1f} GiB) do not fit the memory {d.name} shares "
+                f"({budget / _GIB:.1f} GiB usable)",
+                need_bytes = need,
+            )
+    if forced != "layer_split" and local and need + total_extra <= local_usable:
+        model_budgets = [b - c for b, c in zip(local_budgets, charges)]
         return ClusterPlan(
             "single",
-            f"fits this machine ({(need + local_extra_bytes) / _GIB:.1f} GiB of "
+            f"fits this machine ({(need + total_extra) / _GIB:.1f} GiB of "
             f"{local_usable / _GIB:.1f} GiB usable)",
             list(local),
             [b / sum(model_budgets) for b in model_budgets],
             need_bytes = need,
             usable_bytes = local_usable,
-            extra_bytes = float(local_extra_bytes),
+            extra_bytes = total_extra,
+            **shared,
         )
     if forced == "single":
         return ClusterPlan("single", f"forced by {ENV_TOPOLOGY}=single", need_bytes = need)
@@ -1062,8 +1089,8 @@ def plan_cluster(
     # logits stay local and the wire carries only the hidden state.
     ordered = remote + local
     budgets = [usable_bytes(d, margin_bytes, scratch_bytes) for d in remote] + local_budgets
-    if local:
-        budgets[len(remote)] -= local_extra_bytes
+    for i, charge in enumerate(charges):
+        budgets[len(remote) + i] -= charge
     if layer_bytes:
         # Layers land whole: keep a layer's worth free on every device, not 5% of the total.
         budgets = [max(0.0, b - layer_bytes) for b in budgets]
@@ -1102,8 +1129,9 @@ def plan_cluster(
         [w for _, w in keep],
         need_bytes = need,
         usable_bytes = total,
-        extra_bytes = float(local_extra_bytes),
+        extra_bytes = total_extra,
         sidecar_device = local[0] if local else None,
+        **shared,
     )
 
 
@@ -1690,13 +1718,25 @@ class ClusterServing:
             local_extra = max(0.0, local_extra - self._host_projector)
             self._uncertain_extra = max(0.0, self._uncertain_extra - self._host_projector)
 
+        # A discrete card listed first with a shared-memory accelerator after it: the host RAM
+        # buffers come out of that accelerator's pool, not the first card's.
+        shared_at = (
+            next((i for i, d in enumerate(local) if _shares_host_memory(d)), 0) if unified else 0
+        )
+
         def plan_for(weights: float, groups: int) -> ClusterPlan:
             kv = group_kv(groups)
+            pinned, host_extra = local_extra + checkpoints, None
+            if shared_at > 0:
+                host = checkpoints + self._host_projector + self._host_embd + self._host_input
+                host = min(host, pinned)
+                pinned, host_extra = pinned - host, (shared_at, host)
             return plan_cluster(
                 weights,
                 kv,
-                local_extra + checkpoints,
+                pinned,
                 devices,
+                host_extra = host_extra,
                 forced = forced,
                 layer_bytes = layer_for(kv),
                 margin_bytes = margin,
