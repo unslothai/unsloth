@@ -254,22 +254,52 @@ class TestCudaArchs:
         assert prebuilt_wheels.CCACHE_TAG != "fatbin-size"
 
 
-LISTING = """\
-ELF file    1: causal_conv1d_cuda.1.sm_75.cubin
-ELF file    2: causal_conv1d_cuda.2.sm_80.cubin
-ELF file    3: causal_conv1d_cuda.3.sm_90.cubin
-ELF file    4: causal_conv1d_cuda.4.sm_100.cubin
-ELF file    5: causal_conv1d_cuda.5.sm_120.cubin
-"""
+def _fatbin(*entries: tuple[int, int]) -> bytes:
+    """A fatbin container holding (kind, arch) entries, kind 1 PTX / 2 ELF, laid out like nvcc's."""
+    body = b""
+    for kind, arch in entries:
+        payload = bytes(16)
+        header = bytearray(64)
+        header[0:2] = kind.to_bytes(2, "little")
+        header[4:8] = (64).to_bytes(4, "little")
+        header[8:16] = len(payload).to_bytes(8, "little")
+        header[28:32] = arch.to_bytes(4, "little")
+        body += bytes(header) + payload
+    return (
+        (0xBA55ED50).to_bytes(4, "little")
+        + (1).to_bytes(2, "little")
+        + (16).to_bytes(2, "little")
+        + len(body).to_bytes(8, "little")
+        + body
+    )
+
+
+ELF, PTX = 2, 1
+X86 = (75, 80, 90, 100, 120)
+
+
+def _so(*entries: tuple[int, int], containers: int = 2) -> bytes:
+    """Host bytes around the fatbin, split over several containers as a real extension is."""
+    pieces = [b"\x7fELF" + bytes(100)]
+    for i in range(containers):
+        pieces.append(_fatbin(*entries[i::containers]) + bytes(37))
+    return b"".join(pieces)
 
 
 class TestTargetsGate:
-    def test_parses_cuobjdump(self):
-        sass, ptx = prebuilt_wheels.device_targets(
-            LISTING + "PTX file    1: flash.1.compute_120.ptx\nELF file 6: x.sm_100a.cubin\n"
-        )
+    def test_reads_every_container(self):
+        data = _so(*((ELF, a) for a in X86), (PTX, 120))
+        sass, ptx = prebuilt_wheels.device_targets(data)
         assert sass == {"75", "80", "90", "100", "120"}
         assert ptx == {"120"}
+
+    def test_ignores_a_stray_magic(self):
+        stray = (0xBA55ED50).to_bytes(4, "little") + bytes(4) + (2**40).to_bytes(8, "little")
+        data = stray + _so((ELF, 80), (ELF, 90))
+        assert prebuilt_wheels.device_targets(data) == ({"80", "90"}, set())
+
+    def test_no_device_code(self):
+        assert prebuilt_wheels.device_targets(b"\x7fELF" + bytes(4096)) == (set(), set())
 
     def test_check_targets(self):
         want = {"75", "80", "90", "100", "120"}
@@ -279,47 +309,40 @@ class TestTargetsGate:
         assert any("sm_87 was not asked for" in p for p in problems)
         assert any("PTX for compute_120" in p for p in problems)
 
-    @pytest.fixture
-    def fake_cuobjdump(self, tmp_path, monkeypatch):
-        bindir = tmp_path / "bin"
-        bindir.mkdir()
-        listing = tmp_path / "listing.txt"
-        if os.name == "nt":
-            tool = bindir / "cuobjdump.bat"
-            tool.write_text(f'@type "{listing}"\n', encoding = "utf-8")
-        else:
-            tool = bindir / "cuobjdump"
-            tool.write_text(f'#!/bin/sh\ncat "{listing}"\n', encoding = "utf-8")
-            tool.chmod(tool.stat().st_mode | stat.S_IEXEC)
-        monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
-        return listing
-
-    def _wheel(self, tmp_path):
+    def _wheel(
+        self,
+        tmp_path,
+        data,
+        suffix = "cpython-313-x86_64-linux-gnu.so",
+    ):
         wheel = tmp_path / "causal_conv1d-1.7.0-cp313-cp313-linux_x86_64.whl"
         with zipfile.ZipFile(wheel, "w") as archive:
-            archive.writestr("causal_conv1d_cuda.cpython-313-x86_64-linux-gnu.so", b"\0")
+            archive.writestr(f"causal_conv1d_cuda.{suffix}", data)
             archive.writestr("causal_conv1d/__init__.py", b"")
         return wheel
 
     @pytest.mark.parametrize(
         "archs, extra, status",
         [
-            ("75;80;90;100;120", "", 0),
-            ("75;80;90;100;110;120", "", 1),
-            ("75;80;90;100;120", "ELF file    6: causal_conv1d_cuda.6.sm_121.cubin\n", 1),
-            ("75;80;90;100;120", "PTX file    1: causal_conv1d_cuda.1.compute_120.ptx\n", 1),
+            ("75;80;90;100;120", (), 0),
+            ("75;80;90;100;110;120", (), 1),
+            ("75;80;90;100;120", ((ELF, 121),), 1),
+            ("75;80;90;100;120", ((PTX, 120),), 1),
         ],
     )
-    def test_gate(self, tmp_path, fake_cuobjdump, archs, extra, status):
-        fake_cuobjdump.write_text(LISTING + extra, encoding = "utf-8")
-        wheel = self._wheel(tmp_path)
+    def test_gate(self, tmp_path, archs, extra, status):
+        wheel = self._wheel(tmp_path, _so(*((ELF, a) for a in X86), *extra))
         assert prebuilt_wheels.main(["targets-gate", "--archs", archs, str(wheel)]) == status
 
-    def test_a_listing_with_no_device_code_fails(self, tmp_path, fake_cuobjdump):
-        fake_cuobjdump.write_text(
-            "cuobjdump info    : File does not contain device code\n", encoding = "utf-8"
+    def test_reads_a_windows_pyd(self, tmp_path):
+        data = b"MZ" + bytes(200) + _fatbin(*((ELF, a) for a in X86)) + bytes(64)
+        wheel = self._wheel(tmp_path, data, suffix = "cp313-win_amd64.pyd")
+        assert (
+            prebuilt_wheels.main(["targets-gate", "--archs", "75;80;90;100;120", str(wheel)]) == 0
         )
-        wheel = self._wheel(tmp_path)
+
+    def test_an_extension_with_no_device_code_fails(self, tmp_path):
+        wheel = self._wheel(tmp_path, b"\x7fELF" + bytes(4096))
         assert prebuilt_wheels.main(["targets-gate", "--archs", "75;80", str(wheel)]) == 1
 
 

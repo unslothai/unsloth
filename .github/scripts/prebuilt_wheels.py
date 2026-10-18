@@ -38,11 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
-import shutil
-import subprocess
 import sys
-import tempfile
 import zipfile
 
 # The CUDA major that every wheel here is built against, and the only one. It is the local
@@ -708,18 +704,40 @@ def _cmd_size_gate(args: argparse.Namespace) -> int:
     return 0
 
 
-_CUBIN = re.compile(r"\.sm_(\d+)[a-z]?\.cubin\s*$")
-_PTX = re.compile(r"\.compute_(\d+)[a-z]?\.ptx\s*$")
+# A fatbin container: magic, version 1, a 16-byte header and the size of the entries after it.
+# Each entry's header starts with kind (1 PTX, 2 ELF), its own header size, the payload size,
+# and the target arch at byte 28. Read straight from the file rather than through cuobjdump,
+# which only reads its host's object format (a Linux cuobjdump says a Windows .pyd "does not
+# contain device code") and names PTX entries sm_XX.ptx, easy to miss with a pattern.
+_FATBIN_MAGIC = (0xBA55ED50).to_bytes(4, "little")
+_FATBIN_PTX, _FATBIN_ELF = 1, 2
 
 
-def device_targets(listing: str) -> tuple[set[str], set[str]]:
-    """(SASS archs, PTX archs) from `cuobjdump --list-elf --list-ptx` output."""
+def device_targets(data: bytes) -> tuple[set[str], set[str]]:
+    """(SASS archs, PTX archs) of every fatbin embedded in an ELF .so or PE .pyd."""
     sass, ptx = set(), set()
-    for line in listing.splitlines():
-        if match := _CUBIN.search(line):
-            sass.add(match.group(1))
-        elif match := _PTX.search(line):
-            ptx.add(match.group(1))
+    pos = data.find(_FATBIN_MAGIC)
+    while pos >= 0:
+        version = int.from_bytes(data[pos + 4 : pos + 6], "little")
+        header = int.from_bytes(data[pos + 6 : pos + 8], "little")
+        size = int.from_bytes(data[pos + 8 : pos + 16], "little")
+        end = pos + 16 + size
+        if version != 1 or header != 16 or size <= 0 or end > len(data):
+            pos = data.find(_FATBIN_MAGIC, pos + 4)
+            continue
+        entry = pos + 16
+        while entry + 32 <= end:
+            kind = int.from_bytes(data[entry : entry + 2], "little")
+            entry_header = int.from_bytes(data[entry + 4 : entry + 8], "little")
+            payload = int.from_bytes(data[entry + 8 : entry + 16], "little")
+            arch = str(int.from_bytes(data[entry + 28 : entry + 32], "little"))
+            if kind not in (_FATBIN_PTX, _FATBIN_ELF) or entry_header < 32:
+                break
+            if entry + entry_header + payload > end:
+                break
+            (ptx if kind == _FATBIN_PTX else sass).add(arch)
+            entry += entry_header + payload
+        pos = data.find(_FATBIN_MAGIC, end)
     return sass, ptx
 
 
@@ -743,22 +761,13 @@ def _cmd_targets_gate(args: argparse.Namespace) -> int:
     want = {arch for arch in args.archs.split(";") if arch}
     if not want:
         raise SystemExit("--archs is empty")
-    cuobjdump = shutil.which("cuobjdump")
-    if cuobjdump is None:
-        raise SystemExit("cuobjdump is not on PATH")
     problems, checked = [], 0
-    with zipfile.ZipFile(args.wheel) as archive, tempfile.TemporaryDirectory() as scratch:
+    with zipfile.ZipFile(args.wheel) as archive:
         members = [n for n in archive.namelist() if n.endswith((".so", ".pyd"))]
         if not members:
             raise SystemExit(f"{args.wheel}: no compiled extension in the wheel")
         for member in members:
-            path = archive.extract(member, scratch)
-            listing = subprocess.run(
-                [cuobjdump, "--list-elf", "--list-ptx", path],
-                capture_output = True,
-                text = True,
-            )
-            sass, ptx = device_targets(listing.stdout + listing.stderr)
+            sass, ptx = device_targets(archive.read(member))
             # A host-only helper module has no device code at all; only a CUDA one is checked.
             if not sass and not ptx:
                 print(f"{member}: no device code")
@@ -770,7 +779,7 @@ def _cmd_targets_gate(args: argparse.Namespace) -> int:
             )
             problems += check_targets(member, sass, ptx, want)
     if not checked:
-        # Every package here is a CUDA extension; none with device code means cuobjdump read
+        # Every package here is a CUDA extension; none with device code means the scan found
         # nothing, not that there was nothing to check.
         problems.append(f"{args.wheel}: no extension with device code")
     for problem in problems:
