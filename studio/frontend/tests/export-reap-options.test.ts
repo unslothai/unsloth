@@ -8,6 +8,7 @@ import {
   DEFAULT_REAP_SETTINGS,
   reapAllowedSparsities,
   reapKeptExperts,
+  reapProbePending,
   reapRequest,
   reapSummaryLabel,
 } from "../src/features/export/lib/reap.ts";
@@ -80,4 +81,14 @@ test("the summary reports what Core removes, not the requested fraction", () => 
     reapSummaryLabel(on, { num_experts: 128, top_k: 8 }),
     "25% of experts removed (96 of 128 kept)",
   );
+});
+
+test("an export waits while REAP is on and the new source has not been probed", () => {
+  const on = { ...DEFAULT_REAP_SETTINGS, enabled: true };
+  assert.equal(reapProbePending(on, "org/moe|", null), true);
+  assert.equal(reapProbePending(on, "org/moe|", "org/old|"), true);
+  assert.equal(reapProbePending(on, "org/moe|", "org/moe|"), false);
+  // REAP off, or no source selected: nothing to wait for.
+  assert.equal(reapProbePending(DEFAULT_REAP_SETTINGS, "org/moe|", null), false);
+  assert.equal(reapProbePending(on, "", null), false);
 });

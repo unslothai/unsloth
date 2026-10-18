@@ -642,3 +642,39 @@ def test_probe_hides_layouts_core_refuses():
     assert (
         reap_mod.moe_info_from_config({**base, "distributed_config": {"tp_size": 1}})["top_k"] == 2
     )
+
+
+def test_probe_hides_stateful_decoders_core_refuses():
+    moe = {"num_experts": 64, "num_experts_per_tok": 4}
+    for model_type in ("glm_moe_dsa", "hy_v4", "zaya"):
+        assert reap_mod.moe_info_from_config({**moe, "model_type": model_type}) is None
+    assert (
+        reap_mod.moe_info_from_config(
+            {"model_type": "glm5_next", "text_config": {**moe, "model_type": "glm5_next_text"}}
+        )
+        is None
+    )
+    assert reap_mod.moe_info_from_config({**moe, "model_type": "qwen3_moe"})["num_experts"] == 64
+
+
+def test_stateful_model_types_match_transformers():
+    # Each listed type really has decoder layers taking prev_* state, and no other type does.
+    pytest.importorskip("transformers")
+    import importlib
+    import inspect
+
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
+
+    for model_type in sorted(reap_mod._STATEFUL_MODEL_TYPES - {"glm5_next_text"}):
+        if model_type not in CONFIG_MAPPING_NAMES:
+            continue
+        module = importlib.import_module(f"transformers.models.{model_type}.modeling_{model_type}")
+        layers = [
+            c
+            for n, c in vars(module).items()
+            if inspect.isclass(c) and n.endswith("DecoderLayer") and hasattr(c, "forward")
+        ]
+        assert any(
+            any(p.startswith("prev_") for p in inspect.signature(c.forward).parameters)
+            for c in layers
+        ), model_type

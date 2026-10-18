@@ -108,3 +108,13 @@ export function reapSummaryLabel(
   const removed = Math.round(((moe.num_experts - kept) / moe.num_experts) * 100);
   return `${removed}% of experts removed (${kept} of ${moe.num_experts} kept)`;
 }
+
+/** REAP is on and the probe for the current source has not answered yet: an export started now
+ *  would go out unpruned, so the page blocks it until the answer arrives. */
+export function reapProbePending(
+  settings: ReapSettings,
+  probeKey: string,
+  answeredKey: string | null | undefined,
+): boolean {
+  return settings.enabled && !!probeKey && answeredKey !== probeKey;
+}

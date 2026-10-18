@@ -103,6 +103,7 @@ import {
   DEFAULT_REAP_SETTINGS,
   type ReapSettings,
   reapAllowedSparsities,
+  reapProbePending,
   reapRequest,
   reapSummaryLabel,
 } from "./lib/reap";
@@ -624,6 +625,8 @@ export function ExportPage() {
   }, [moeProbeKey, moeProbeTarget, moeProbeToken]);
   const moeInfo =
     moeProbeKey && moeState?.key === moeProbeKey ? moeState.info : null;
+  // With REAP on, an export started before the new source's probe answers would go out unpruned.
+  const reapPending = reapProbePending(reapSettings, moeProbeKey, moeState?.key);
 
   const localResultIds = useMemo(() => {
     const ids = exportableLocalModels.map((model) => model.id);
@@ -841,7 +844,8 @@ export function ExportPage() {
     !hubMultiFormat &&
     (exportMethod !== "gguf" || ggufAsLora || quantLevels.length > 0) &&
     (exportMethod !== "merged" || selectedFormats.length > 0) &&
-    (!isDecision || (exportMethod === "gguf" && !decisionIneligible))
+    (!isDecision || (exportMethod === "gguf" && !decisionIneligible)) &&
+    !reapPending
   );
 
   const applyHfSourceModel = useCallback((value: string) => {
@@ -916,6 +920,8 @@ export function ExportPage() {
     // No supported accelerator (or PyTorch/MLX missing): the backend would reject anyway; don't submit.
     if (exportUnsupported) return;
     if (diffusionDisabledMethods.includes(exportMethod)) return;
+    // REAP is on but the new source's MoE probe has not answered: never send it unpruned.
+    if (reapPending) return;
     // GGUF with no quant, or merged with no format, would run an empty export; require at least one.
     if (exportMethod === "gguf" && !ggufAsLora && quantLevels.length === 0)
       return;
@@ -1033,6 +1039,7 @@ export function ExportPage() {
       },
     });
   }, [
+    reapPending,
     reapOptions,
     reapLabel,
     checkpoint,

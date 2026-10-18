@@ -18,6 +18,9 @@ logger = get_logger(__name__)
 # but a raw config dict does not; checked on text_config first, then the top-level config.
 _NUM_EXPERTS_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts")
 _TOP_K_KEYS = ("num_experts_per_tok", "top_k", "moe_top_k", "top_k_experts", "moe_topk", "moe_k")
+# Decoder layers that hand state to the next layer (prev_* arguments), which Core refuses since it
+# calibrates one layer at a time: GLM-5 / HY-V4 sparse-attention top-k indices, ZAYA router states.
+_STATEFUL_MODEL_TYPES = frozenset({"glm_moe_dsa", "glm5_next", "glm5_next_text", "hy_v4", "zaya"})
 _N_GROUP_KEYS = ("n_group", "num_expert_group")
 _TOPK_GROUP_KEYS = ("topk_group", "top_k_group")
 REPORT_NAME = "reap_report.json"
@@ -76,6 +79,8 @@ def moe_info_from_config(config: Optional[dict]) -> Optional[dict]:
     ):
         return None
     if any(_model_parallel(h.get("distributed_config")) for h in holders):
+        return None
+    if any(str(h.get("model_type", "")) in _STATEFUL_MODEL_TYPES for h in holders):
         return None
     experts = first(_NUM_EXPERTS_KEYS)
     top_k = first(_TOP_K_KEYS, per_layer = True)
