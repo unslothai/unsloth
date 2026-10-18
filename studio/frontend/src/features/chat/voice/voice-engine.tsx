@@ -53,6 +53,7 @@ import { clearVoiceDecisions } from "@/features/chat/voice/voice-decisions";
 import { voiceTrace } from "@/features/chat/voice/voice-trace";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { deriveOrbState } from "@/features/chat/voice/orb-state";
+import { createOrbDwell, type OrbDwell } from "./orb-dwell";
 import {
   getVoiceMode,
   registerVoiceBargeAbort,
@@ -131,6 +132,8 @@ export const VoiceEngine: FC = () => {
   // Debounce timer for the speaking -> synthesizing (lilac) transition, so a brief
   // inter-sentence playback gap doesn't flicker the orb to lilac.
   const synthGapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Holds each displayed orb state for its minimum dwell before the next one lands.
+  const orbDwellRef = useRef<OrbDwell | null>(null);
   const auiRef = useRef(aui);
   auiRef.current = aui;
 
@@ -690,6 +693,7 @@ export const VoiceEngine: FC = () => {
   const voiceTranscribing = useChatRuntimeStore((s) => s.voiceTranscribing);
   const voiceHearing = useChatRuntimeStore((s) => s.voiceHearing);
   useEffect(() => {
+    const dwell = (orbDwellRef.current ??= createOrbDwell(setVoiceOrbState));
     const clearSynthGap = () => {
       if (synthGapTimerRef.current) {
         clearTimeout(synthGapTimerRef.current);
@@ -709,7 +713,7 @@ export const VoiceEngine: FC = () => {
     });
     if (decision.kind === "set") {
       clearSynthGap();
-      setVoiceOrbState(decision.state);
+      dwell.push(decision.state);
       return;
     }
     // A TTS session with nothing playing. Only show "Generating voice" if the gap
@@ -726,7 +730,7 @@ export const VoiceEngine: FC = () => {
         isSpeakingRef.current &&
         !isPlayingRef.current
       ) {
-        setVoiceOrbState("synthesizing");
+        dwell.push("synthesizing");
       }
     }, SYNTH_GAP_MS);
   }, [voiceMode, hasChatModel, voiceSlotLoading, voiceHearing, voiceTranscribing, isThreadRunning, isReasoning, isSpeaking, isPlaying, setVoiceOrbState]);
@@ -748,9 +752,10 @@ export const VoiceEngine: FC = () => {
     resumeListen();
   }, [voiceSlotLoading, resumeListen]);
 
-  // Clear any pending synth-gap timer on unmount so it can't fire after teardown.
+  // Clear any pending synth-gap or dwell timer on unmount so it can't fire after teardown.
   useEffect(() => () => {
     if (synthGapTimerRef.current) clearTimeout(synthGapTimerRef.current);
+    orbDwellRef.current?.dispose();
   }, []);
 
   // Helper: transition to "active" and start the mic.
