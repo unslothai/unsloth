@@ -184,8 +184,7 @@ fn rendering_plan(
         && gles_usable
         && supports_force_shared_memory(webkit_version);
 
-    // Keep the operator's compositing setting, but on NVIDIA Wayland add the transport: since
-    // WebKitGTK 2.53 compositing off alone still commits DMA-BUF buffers and hits Error 71 (#12845).
+    // Compositing off alone still commits DMA-BUF on WebKitGTK 2.53+, Error 71 on NVIDIA Wayland (#12845).
     if operator_compositing_off {
         if nvidia_driver_loaded && !force_dmabuf && wayland_session {
             return RenderingPlan::Apply(
@@ -1333,7 +1332,6 @@ mod tests {
             plan_on_graphics(theirs, false),
             RenderingPlan::PreserveEnvironment
         );
-        // NVIDIA X11: DISABLE_DMABUF there is the empty transport set, so add nothing.
         let theirs_x11: &[(&str, &str)] = &[(X11_DISPLAY, ":0"), (DISABLE_COMPOSITING, "1")];
         assert_eq!(
             plan_on_graphics(theirs_x11, true),
@@ -1343,7 +1341,6 @@ mod tests {
 
     #[test]
     fn operator_compositing_off_on_nvidia_wayland_still_gets_dmabuf_off() {
-        // #12845: compositing off alone crashed with Error 71 on KWin; adding DISABLE_DMABUF ran clean.
         let theirs: &[(&str, &str)] = &[(WAYLAND_DISPLAY, "wayland-0"), (DISABLE_COMPOSITING, "1")];
         let expected = RenderingPlan::Apply(
             RenderingWorkaround::DisableDmabuf,
@@ -1351,7 +1348,6 @@ mod tests {
         );
         assert_eq!(plan_on_graphics(theirs, true), expected);
 
-        // A relaunch reads its own DISABLE_DMABUF back as ours and decides the same way.
         let relaunch: &[(&str, &str)] = &[
             (WAYLAND_DISPLAY, "wayland-0"),
             (DISABLE_COMPOSITING, "1"),
@@ -1360,7 +1356,6 @@ mod tests {
         ];
         assert_eq!(plan_on_graphics(relaunch, true), expected);
 
-        // An explicit transport choice, or FORCE_DMABUF, is still the operator's call.
         for (name, value) in [
             (DISABLE_DMABUF, "0"),
             (FORCE_SHARED_MEMORY, "1"),
