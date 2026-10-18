@@ -402,7 +402,9 @@ def _load_time_text(blanked: str) -> str:
     i, n = 0, len(blanked)
     while i < n:
         arrow = blanked.startswith("=>", i)
-        func = re.match(r"function\b", blanked[i:]) and (i == 0 or not (blanked[i - 1].isalnum() or blanked[i - 1] in "_$"))
+        func = re.match(r"function\b", blanked[i:]) and (
+            i == 0 or not (blanked[i - 1].isalnum() or blanked[i - 1] in "_$")
+        )
         if not (arrow or func):
             out.append(blanked[i])
             i += 1
@@ -468,7 +470,11 @@ def resolve_dependencies(
     order: list[str] = []
     seen: set[tuple[Path, str]] = set()
 
-    def type_only(name: str, origin: Path, hops: int = 0) -> bool:
+    def type_only(
+        name: str,
+        origin: Path,
+        hops: int = 0,
+    ) -> bool:
         """``name`` as seen from ``origin`` is a type or interface, which Node erases."""
         home = module(origin)
         if name in home.declarations:
@@ -479,7 +485,11 @@ def resolve_dependencies(
         path = _resolve_module(target[0], origin, root)
         if path is None and target[0].startswith((".", _ALIAS)):
             # Lifting never follows into a component file, but a type declared there is still erased.
-            base = root / target[0][len(_ALIAS) :] if target[0].startswith(_ALIAS) else origin.parent / target[0]
+            base = (
+                root / target[0][len(_ALIAS) :]
+                if target[0].startswith(_ALIAS)
+                else origin.parent / target[0]
+            )
             path = next((c for c in (Path(f"{base}.tsx"), base / "index.tsx") if c.is_file()), None)
         return path is not None and type_only(target[1], path, hops + 1)
 
