@@ -37,6 +37,8 @@ ACTIVE = ("running", "cancelling")
 PRECEDENCE = ("failed", "cancelling", "running", "cancelled", "idle", "completed")
 STATES = {"complete": "completed", "error": "failed"}
 WAITING = "Waiting for Unsloth Studio's download"
+# How long a load job waits on a download before it fails and names the download to follow.
+MAX_LOAD_WAIT_S = 3600.0
 
 Part = tuple[str, Optional[str]]
 
@@ -45,8 +47,13 @@ _remembered: "OrderedDict[tuple[str, str, str], list[Part]]" = OrderedDict()
 _REMEMBER_MAX = 256
 
 
+def _key(caller: Caller, kind: str, model: str) -> tuple[str, str, str]:
+    # tts and audio load the same native speech repos, so a prefetch under either serves both.
+    return (caller.account_id, "tts" if kind == "audio" else kind, model.lower())
+
+
 def _remember(caller: Caller, kind: str, model: str, parts: list[Part]) -> None:
-    key = (caller.account_id, kind, model.lower())
+    key = _key(caller, kind, model)
     _remembered[key] = parts
     _remembered.move_to_end(key)
     while len(_remembered) > _REMEMBER_MAX:
@@ -262,7 +269,8 @@ async def status(caller: Caller, download_id: str) -> JobStatus:
     for part, generation in parsed:
         answer = await _read(caller, part)
         current = answer.get("generation") if answer is not None else None
-        if generation is not None and isinstance(current, int) and current != generation:
+        # Only a higher generation is a newer run; a pruned or restarted registry reads 0.
+        if generation is not None and isinstance(current, int) and current > generation:
             # A newer run of the same repo replaced the one this id names: report that, not its state.
             stale = stale or (
                 f"Unsloth Studio started a newer download of {part[0]} after this one; "
@@ -340,12 +348,13 @@ def keys_for(caller: Caller, kind: str, model: str, variant: Optional[str]) -> l
         return []
     if kind in loading.MEDIA_ROUTES:
         model = _split(model, variant)[0]
-        remembered = _remembered.get((caller.account_id, kind, model.lower()))
+        remembered = _remembered.get(_key(caller, kind, model))
         return list(remembered or [(model, SCOPED)])
     if _native_audio(kind, model, variant):
         # The plan's parts, codecs included; without a prefetch, the repo itself.
-        remembered = _remembered.get((caller.account_id, kind, model.lower()))
-        return list(remembered or [(model, None)])
+        remembered = _remembered.get(_key(caller, kind, model))
+        # Without a prefetch here, the repo itself or the Audio page's staged download of it.
+        return list(remembered or [(model, None), (model, AUDIO_SCOPED)])
     # A load without a variant reads the repo's default, not the variant download_model last staged.
     return [_split(model, variant)]
 

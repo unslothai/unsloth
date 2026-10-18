@@ -231,7 +231,12 @@ async def start_load(
 
         # Inside the job, so the wait outlives wait_s: the load starts once the download ends.
         await model_downloads.wait_for_managed(
-            caller, job, model = model, kind = slot, variant = variant, budget_s = None
+            caller,
+            job,
+            model = model,
+            kind = slot,
+            variant = variant,
+            budget_s = model_downloads.MAX_LOAD_WAIT_S,
         )
         await place.refuse_partial_variant(caller, model, slot, variant)
         return await run(job, before)

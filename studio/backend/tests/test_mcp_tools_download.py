@@ -253,6 +253,10 @@ def test_status_of_a_replaced_run_names_the_newer_one():
     assert job.status == "idle"
     assert 'id="org/repo::Q8_0#8"' in job.error
     assert run(studio, model_downloads.status, "org/repo::Q8_0#8").status == "running"
+    # A registry that pruned or lost the run reads generation 0: that is not a newer run.
+    studio = fake_studio({("GET", STATUS): {"state": "idle", "generation": 0}})
+    job = run(studio, model_downloads.status, "org/repo::Q8_0#7")
+    assert (job.status, job.error) == ("idle", None)
 
 
 def test_image_options_go_into_the_staged_plan():
@@ -279,9 +283,14 @@ def test_native_tts_stages_its_audio_plan_with_the_codec_repos():
         (codec, "audio"),
     ]
     assert ref.id == f"{higgs}::@audio,{codec}::@audio"
-    assert model_downloads.keys_for(make_caller(), "tts", higgs, None) == [
-        (higgs, "@audio"),
-        (codec, "@audio"),
+    staged = [(higgs, "@audio"), (codec, "@audio")]
+    # tts and audio load the same native repos, so either kind waits on the prefetch.
+    assert model_downloads.keys_for(make_caller(), "tts", higgs, None) == staged
+    assert model_downloads.keys_for(make_caller(), "audio", higgs, None) == staged
+    # Without one, the repo or the Audio page's staged download of it.
+    assert model_downloads.keys_for(make_caller(), "tts", "org/other-tts", None) == [
+        ("org/other-tts", None),
+        ("org/other-tts", "@audio"),
     ]
 
 
