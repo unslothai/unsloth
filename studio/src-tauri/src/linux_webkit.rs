@@ -1343,8 +1343,7 @@ mod tests {
 
     #[test]
     fn operator_compositing_off_on_nvidia_wayland_still_gets_dmabuf_off() {
-        // #12845: WEBKIT_DISABLE_COMPOSITING_MODE=1 alone crashed with Error 71 on KWin, and with
-        // DISABLE_DMABUF added it ran clean. Their variable stays theirs; only the transport is added.
+        // #12845: compositing off alone crashed with Error 71 on KWin; adding DISABLE_DMABUF ran clean.
         let theirs: &[(&str, &str)] = &[(WAYLAND_DISPLAY, "wayland-0"), (DISABLE_COMPOSITING, "1")];
         let expected = RenderingPlan::Apply(
             RenderingWorkaround::DisableDmabuf,
