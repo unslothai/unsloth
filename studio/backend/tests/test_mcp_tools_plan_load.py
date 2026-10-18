@@ -477,3 +477,23 @@ def test_the_memory_estimate_carries_the_hub_token(monkeypatch):
 def test_a_hub_repo_named_like_a_gguf_file_is_still_listed(monkeypatch):
     plan = _plan(monkeypatch, _world("off", []), {"model": "org/model.gguf"})
     assert [row["variant"] for row in plan["variants"]] == ["Q4_K_M", "Q8_0"]
+
+
+def test_the_memory_estimate_is_priced_with_the_cache_type_and_layers(monkeypatch):
+    args = {"model": QWEN, "kv_cache_type": "q8_0", "gpu_layers": 20}
+    _result, studio = run_tool(monkeypatch, _world("off", []), "plan_load", args, fallback = {})
+    (body,) = bodies(studio, "/api/inference/estimate-memory")
+    assert (body["cache_type_kv"], body["gpu_memory_mode"], body["gpu_layers"]) == (
+        "q8_0",
+        "manual",
+        20,
+    )
+
+
+def test_an_unreadable_listing_is_no_proof_a_variant_is_missing(monkeypatch):
+    world = {
+        **_world("off", []),
+        ("GET", "/api/hub/gguf-variants"): JSONResponse({}, status_code = 503),
+    }
+    plan = _plan(monkeypatch, world, {"model": QWEN, "variant": "Q4_K_M"})
+    assert plan["variants"] == [] and plan["would_evict_exact"] is False

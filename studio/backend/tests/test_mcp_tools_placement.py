@@ -179,6 +179,8 @@ def test_kv_cache_and_gpu_layers(monkeypatch):
         ({"offloaded_layers": 28}, None, "gpu"),
         # A load that kept its layers on the GPU is not reported as on the CPU because cpu was asked.
         ({"offloaded_layers": 28}, "cpu", "gpu"),
+        # An asked-for GPU the load does not confirm is not reported: it may have run on the CPU.
+        ({}, "gpu", None),
         ({}, None, None),
     ],
 )

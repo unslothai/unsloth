@@ -230,7 +230,7 @@ async def load_model(
         "kv_cache_type": kv_cache_type,
         "gpu_layers": gpu_layers,
     }
-    placement.check_placement(kind, model, variant, **where)
+    placement.check_placement(kind, **where)
     if kind == "stt":
 
         async def load_stt(job: loading.LoadJob, _before: Any) -> LoadResult:

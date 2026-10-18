@@ -65,8 +65,6 @@ def is_gguf(model: str, variant: Optional[str]) -> bool:
 
 def check_placement(
     kind: str,
-    model: str,
-    variant: Optional[str],
     *,
     device: Optional[str],
     alongside: Optional[bool],
@@ -132,7 +130,9 @@ async def require_cpu_gguf(
         raise ToolError("gpu_layers is only for GGUF models that run on llama-server.")
     repo, variant = _split(model, variant)
     if gguf and variant and not is_local(repo):
-        if pick_variant(await _variants(caller, repo), variant) is None:
+        listing = await _variants(caller, repo)
+        # Only a listing that was read can say the variant is missing.
+        if isinstance(listing, dict) and pick_variant(listing, variant) is None:
             raise ToolError(f"{repo} has no GGUF variant {variant}")
     return gguf
 
@@ -198,7 +198,8 @@ def llm_placement(answer: Any, device: Optional[str]) -> Optional[Placement]:
     elif offloaded is not None:
         placed = "gpu" if offloaded > 0 else "cpu"
     else:
-        placed = device if device in ("cpu", "gpu") else None
+        # An asked-for GPU is not proof: native audio runs on the CPU when there is no GPU.
+        placed = "cpu" if device == "cpu" else None
     return Placement(device = placed) if placed else None
 
 
@@ -333,7 +334,6 @@ def predict(
     status: Any,
     slots: list[SlotModel],
     has_vision: bool = False,
-    variant: Optional[str] = None,
 ) -> tuple[list[SlotModel], bool, bool]:
     """(would_evict, would_evict_exact, would_refuse) for one load. Exact under Off; under When they fit and Always, or when the mode is unknown, an upper bound."""
     slot_kind = "llm" if kind in CHAT_KINDS else kind
@@ -418,7 +418,7 @@ async def plan_load(
         "kv_cache_type": kv_cache_type,
         "gpu_layers": gpu_layers,
     }
-    check_placement(kind, model, variant, **where)
+    check_placement(kind, **where)
     await require_cpu_gguf(caller, kind, model, variant, device, gpu_layers)
     await refuse_partial_variant(caller, model, kind, variant)
     status, image, video, stt = await asyncio.gather(
@@ -436,7 +436,7 @@ async def plan_load(
         listing = await _variants(caller, repo)
         rows = [r for r in as_dict(listing).get("variants") or [] if isinstance(r, dict)]
         row = pick_variant(listing, variant)
-        if variant and row is None:
+        if variant and row is None and isinstance(listing, dict):
             raise ToolError(f"{repo} has no GGUF variant {variant}")
     if device in (None, "auto") and gpu_layers is not None and kind in CHAT_KINDS:
         # llama-server honours gpu_layers, so a GGUF load is placed by it: 0 keeps it off the GPU.
@@ -484,6 +484,12 @@ async def plan_load(
                     "gguf_variant": opt_text(row.get("quant")),
                     # Read from the body, like the plan routes.
                     **({"hf_token": caller.hf_token} if caller.hf_token else {}),
+                    **({"cache_type_kv": kv_cache_type} if kv_cache_type else {}),
+                    **(
+                        {"gpu_memory_mode": "manual", "gpu_layers": gpu_layers}
+                        if gpu_layers is not None
+                        else {}
+                    ),
                 },
             )
         )
@@ -500,7 +506,6 @@ async def plan_load(
         slots = slots,
         # A local GGUF file is not listed, so whether a projector keeps it on the GPU is unknown.
         has_vision = listing is None or as_dict(listing).get("has_vision") is True,
-        variant = variant,
     )
     # Unloading another kind's model depends on the load reaching the GPU, which no setting
     # guarantees: Unsloth Studio may run a load on the CPU (always, without a GPU) and leave the
