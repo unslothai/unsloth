@@ -24518,6 +24518,15 @@ def _audio_run_event() -> threading.Event:
 async def _dispatch_audio_run(
     body: AudioRunRequest, request: Request, current_subject: str
 ) -> AudioRunResponse:
+    if body.cancel_id:
+        # One cancel_id names one run: a second run under a live id would be stopped by the same
+        # cancel. Nothing awaits between this check and the registration below.
+        with _CANCEL_LOCK:
+            busy = bool(_CANCEL_REGISTRY.get(_account_cancel_key(("audio", body.cancel_id))))
+        if busy:
+            raise HTTPException(
+                status_code = 409, detail = "Another audio run is using this cancel_id."
+            )
     token = _AUDIO_RUN_CANCEL_ID.set(body.cancel_id)
     cancel = threading.Event()
     event_token = _AUDIO_RUN_CANCEL.set(cancel)
@@ -24532,7 +24541,7 @@ async def _dispatch_audio_run(
         # it reused stays) and the run answers 499, as a cancel during generation would.
         if cancel.is_set():
             made = [clip.id for clip in response.clips if clip.role != "source"]
-            await asyncio.to_thread(_discard_audio_clips, made + created)
+            await asyncio.to_thread(_discard_audio_clips, made, created)
             raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
         return response
     finally:
@@ -24541,13 +24550,24 @@ async def _dispatch_audio_run(
         _AUDIO_RUN_CANCEL_ID.reset(token)
 
 
-def _discard_audio_clips(clip_ids: list[str]) -> None:
+def _discard_audio_clips(outputs: list[str], sources: list[str]) -> None:
+    """Remove a cancelled run's outputs, then the sources it saved unless another clip, such as a
+    concurrent Edit of the same recording, now plays them."""
     from core.inference import audio_gallery
-    for clip_id in clip_ids:
+
+    def remove(clip_id: str) -> None:
         try:
             audio_gallery.delete(clip_id)
         except Exception as exc:  # noqa: BLE001 - remove the rest even if one delete fails
             logger.warning("audio_run.cancel_cleanup_failed: %s", exc)
+
+    for clip_id in outputs:
+        remove(clip_id)
+    if sources:
+        in_use = audio_gallery._sources_in_use(audio_gallery.gallery_dir(), set())
+        for clip_id in sources:
+            if clip_id not in in_use:
+                remove(clip_id)
 
 
 async def _dispatch_audio_workflow(

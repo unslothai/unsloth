@@ -261,25 +261,47 @@ def test_the_worker_carries_the_edit():
     assert "edit" not in seen[1]
 
 
-def _cancel_during_save(monkeypatch):
+def _cancel_during_save(monkeypatch, keep_output = True):
     """The output save sets the run's cancel event, as a POST /audio/cancel landing then would."""
     persist = inference._persist_tts_clip
 
     def save_then_cancel(*args, **kwargs):
-        record = persist(*args, **kwargs)
+        record = persist(*args, **kwargs) if keep_output else None
         inference._AUDIO_RUN_CANCEL.get().set()
         return record
 
     monkeypatch.setattr(inference, "_persist_tts_clip", save_then_cancel)
 
 
-def test_a_cancel_during_the_save_removes_the_source_the_run_kept(stub, monkeypatch):
+@pytest.mark.parametrize("keep_output", [True, False])
+def test_a_cancel_during_the_save_removes_the_source_the_run_kept(stub, monkeypatch, keep_output):
+    # Without a kept output nothing else would take the source with it.
     _load(stub)
     input_id = _input(ALICE)
-    _cancel_during_save(monkeypatch)
+    _cancel_during_save(monkeypatch, keep_output)
     with _client(ALICE) as client:
         assert _edit(client, input_id).status_code == 499
     assert run_as(ALICE, audio_gallery.list_audio) == []
+
+
+def test_a_cancel_keeps_a_source_another_run_now_plays(stub, monkeypatch):
+    _load(stub)
+    input_id = _input(ALICE)
+    persist = inference._persist_tts_clip
+    later = []
+
+    def save_then_cancel(*args):
+        record = persist(*args)
+        # Another Edit of the same recording saves its output, playing this run's new source.
+        later.append((persist(*args)["id"], args[5]["source_clip_id"]))
+        inference._AUDIO_RUN_CANCEL.get().set()
+        return record
+
+    monkeypatch.setattr(inference, "_persist_tts_clip", save_then_cancel)
+    with _client(ALICE) as client:
+        assert _edit(client, input_id).status_code == 499
+    (other_output, source), = later
+    assert {clip["id"] for clip in run_as(ALICE, audio_gallery.list_audio)} == {other_output, source}
 
 
 def test_a_cancel_during_the_save_keeps_a_source_an_earlier_run_kept(stub, monkeypatch):

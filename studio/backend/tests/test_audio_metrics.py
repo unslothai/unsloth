@@ -103,6 +103,11 @@ def test_silence_padding_gives_the_speech_span_and_silence_gives_none():
     assert quiet["clipping_ratio"] == 0.0
 
 
+def test_a_few_hertz_sample_rate_still_measures():
+    report = am.measure(np.full((40, 1), 0.5), 4)
+    assert report["duration_s"] == 10.0 and report["integrated_lufs"] is not None
+
+
 def test_24_bit_wav_reads_like_16_bit(tmp_path):
     data = _sine(0.5, 0.25)
     pcm = np.round(data[:, 0] * (1 << 23)).astype("<i4")

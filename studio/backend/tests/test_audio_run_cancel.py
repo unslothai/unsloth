@@ -168,6 +168,30 @@ def test_a_cancel_while_the_clip_saves_removes_it(use_backend, monkeypatch):
     assert saved_paths and saved_paths[0] is not None and not saved_paths[0].exists()
 
 
+def test_a_cancel_id_already_running_is_refused(use_backend):
+    backend, started, release = _blocking_backend()
+    use_backend(backend)
+
+    async def scenario():
+        transport = httpx.ASGITransport(app = app_for(ALICE))
+        async with httpx.AsyncClient(transport = transport, base_url = "http://t") as client:
+            body = {"workflow": "speak", "text": RUN_A, "cancel_id": RUN_A}
+            first = asyncio.create_task(client.post("/api/inference/audio/run", json = body))
+            try:
+                assert await asyncio.to_thread(started[RUN_A].wait, 10)
+                second = await client.post("/api/inference/audio/run", json = body)
+            finally:
+                release.set()
+            done = await asyncio.wait_for(first, 10)
+            # The id is free again once its run ends.
+            again = await client.post("/api/inference/audio/run", json = body)
+            return second, done, again
+
+    second, done, again = asyncio.run(scenario())
+    assert second.status_code == 409
+    assert done.status_code == 200 and again.status_code == 200
+
+
 def test_cancel_ids_are_checked():
     from fastapi.testclient import TestClient
     with TestClient(app_for(ALICE)) as client:

@@ -148,7 +148,7 @@ def _padded(x: np.ndarray, start: int, stop: int) -> np.ndarray:
 def integrated_loudness(data: np.ndarray, rate: int) -> Optional[float]:
     """Gated integrated loudness in LUFS, or None when every block sits under the absolute gate (silence, or shorter than one block)."""
     block = int(round(_BLOCK_S * rate))
-    hop = int(round(_HOP_S * rate))
+    hop = max(int(round(_HOP_S * rate)), 1)
     if data.shape[0] < block or block <= 0:
         return None
     kernel = _impulse_response(rate)
