@@ -50,20 +50,29 @@ def moe_info_from_config(config: Optional[dict]) -> Optional[dict]:
     routed-MoE config dict, else None."""
     if not isinstance(config, dict):
         return None
-    for holder in (config.get("text_config"), config):
-        if not isinstance(holder, dict):
-            continue
-        experts = _first_int(holder, _NUM_EXPERTS_KEYS)
-        top_k = _first_int(holder, _TOP_K_KEYS, per_layer = True)
-        if experts and top_k and experts > top_k:
-            info = {"num_experts": experts, "top_k": top_k}
-            # Core prunes per group only when both are set, so the UI must count the same way.
-            n_group = _first_int(holder, _N_GROUP_KEYS)
-            topk_group = _first_int(holder, _TOPK_GROUP_KEYS)
-            if n_group and topk_group:
-                info.update(n_group = n_group, topk_group = topk_group)
-            return info
-    return None
+    holders = [h for h in (config.get("text_config"), config) if isinstance(h, dict)]
+
+    # Like Core's _first_attr: each field from the first level that has it, text_config first.
+    def first(keys, per_layer = False):
+        return next((v for h in holders if (v := _first_int(h, keys, per_layer)) is not None), None)
+
+    # Core refuses routers with identity (zero) experts and bidirectional / diffusion models.
+    if any(h.get("zero_expert_num") for h in holders) or any(
+        h.get("use_bidirectional_attention") == "all"
+        or str(h.get("model_type", "")).startswith("diffusion")
+        for h in holders
+    ):
+        return None
+    experts = first(_NUM_EXPERTS_KEYS)
+    top_k = first(_TOP_K_KEYS, per_layer = True)
+    if not (experts and top_k and experts > top_k):
+        return None
+    info = {"num_experts": experts, "top_k": top_k}
+    # Core prunes per group only when both are set, so the UI must count the same way.
+    n_group, topk_group = first(_N_GROUP_KEYS), first(_TOPK_GROUP_KEYS)
+    if n_group and topk_group:
+        info.update(n_group = n_group, topk_group = topk_group)
+    return info
 
 
 def moe_export_info(
@@ -97,7 +106,7 @@ def moe_export_info(
 
 def _options_key(options: dict) -> Tuple[float, int, Optional[str]]:
     return (
-        round(float(options.get("sparsity", 0.25)), 4),
+        float(options.get("sparsity", 0.25)),
         int(options.get("num_calibration_samples", 512)),
         (options.get("dataset") or "").strip() or None,
     )
@@ -206,6 +215,20 @@ def apply_reap(
     report = getattr(model, "_unsloth_reap_report", None) or {}
     kept = len(next(iter(report.values()), []))
     return True, f"REAP kept {kept} experts per MoE layer in {len(report)} layers."
+
+
+def sync_reap_report(backend: Any, output_path: Optional[str]) -> None:
+    """After a successful export: the report when the exported model is pruned, else remove one a
+    previous REAP export left in a reused folder, so the folder never describes other weights."""
+    if getattr(backend, "_reap_key", None) is not None:
+        write_reap_report(backend, output_path)
+        return
+    if output_path and Path(output_path).is_dir():
+        stale = Path(output_path) / REPORT_NAME
+        try:
+            stale.unlink(missing_ok = True)
+        except OSError as exc:
+            logger.warning(f"Could not remove the stale {REPORT_NAME}: {exc}")
 
 
 def write_reap_report(backend: Any, output_path: Optional[str]) -> None:

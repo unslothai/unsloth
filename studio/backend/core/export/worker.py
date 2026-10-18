@@ -510,9 +510,9 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
             )
         else:
             success, message = False, f"Unknown export type: {export_type}"
-        if reap and success:
-            from core.export.reap import write_reap_report
-            write_reap_report(backend, output_path)
+        if success and export_type in ("merged", "base", "gguf"):
+            from core.export.reap import sync_reap_report
+            sync_reap_report(backend, output_path)
 
         _send_response(
             resp_queue,

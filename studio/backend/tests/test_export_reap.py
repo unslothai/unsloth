@@ -205,9 +205,7 @@ def test_worker_runs_reap_before_export(monkeypatch):
     monkeypatch.setattr(
         reap_mod, "apply_reap", lambda b, o, p, **k: (seen.append(o) or (True, "kept"))
     )
-    monkeypatch.setattr(
-        reap_mod, "write_reap_report", lambda b, path: seen.append(("report", path))
-    )
+    monkeypatch.setattr(reap_mod, "sync_reap_report", lambda b, path: seen.append(("report", path)))
     backend, q = _ExportBackend(), queue.Queue()
     _handle_export(
         backend, {"export_type": "gguf", "save_directory": "/tmp/o", "reap": {"sparsity": 0.5}}, q
@@ -217,10 +215,10 @@ def test_worker_runs_reap_before_export(monkeypatch):
     final = _drain(q)[-1]
     assert final["success"] is True
 
-    # Off by default: no REAP step at all.
+    # Off by default: no pruning; only the report sync, which clears a stale report.
     seen.clear()
     _handle_export(backend, {"export_type": "merged", "save_directory": "/tmp/o"}, q)
-    assert seen == []
+    assert seen == [("report", "/out")]
 
 
 def test_worker_reap_failure_skips_export(monkeypatch):
@@ -424,7 +422,7 @@ def test_worker_forwards_the_export_token_to_reap(monkeypatch):
         "apply_reap",
         lambda b, o, p, hf_token = None: (seen.update(token = hf_token) or (True, "")),
     )
-    monkeypatch.setattr(reap_mod, "write_reap_report", lambda b, path: None)
+    monkeypatch.setattr(reap_mod, "sync_reap_report", lambda b, path: None)
     backend, q = _ExportBackend(), queue.Queue()
     backend._checkpoint_token = "hf_load"
     _handle_export(
@@ -575,3 +573,44 @@ def test_failed_pruning_unloads_the_partly_pruned_model(tmp_path, monkeypatch):
     import glob
 
     assert not glob.glob(str(tmp_path / "unsloth-hub-upload-*"))
+
+
+def test_probe_matches_core_on_identity_experts_and_split_levels():
+    # LongCat style identity experts: Core refuses, so the card must not appear.
+    assert (
+        reap_mod.moe_info_from_config(
+            {"n_routed_experts": 8, "num_experts_per_tok": 2, "zero_expert_num": 2}
+        )
+        is None
+    )
+    assert (
+        reap_mod.moe_info_from_config(
+            {"num_experts": 8, "top_k": 2, "use_bidirectional_attention": "all"}
+        )
+        is None
+    )
+    # Each field from the first level that has it, as Core's _first_attr reads them.
+    split = {"num_experts": 8, "text_config": {"top_k": 2}}
+    assert reap_mod.moe_info_from_config(split) == {"num_experts": 8, "top_k": 2}
+
+
+def test_validated_sparsity_reaches_core_unrounded(fake_reap, tmp_path):
+    backend = _Backend(_Model())
+    reap_mod.apply_reap(
+        backend, {"sparsity": 0.33337, "num_calibration_samples": 64}, str(tmp_path)
+    )
+    assert fake_reap[0]["sparsity"] == 0.33337
+    reap_mod.discard_reap_staging(backend)
+
+
+def test_report_follows_the_exported_model(fake_reap, tmp_path):
+    out = tmp_path / "export"
+    out.mkdir()
+    backend = _Backend(_Model())
+    reap_mod.apply_reap(backend, {"sparsity": 0.25, "num_calibration_samples": 64}, str(tmp_path))
+    reap_mod.sync_reap_report(backend, str(out))
+    assert (out / reap_mod.REPORT_NAME).is_file()
+    reap_mod.discard_reap_staging(backend)
+    # The same folder reused for an export of an unpruned model: the old report goes.
+    reap_mod.sync_reap_report(_Backend(_Model()), str(out))
+    assert not (out / reap_mod.REPORT_NAME).exists()
