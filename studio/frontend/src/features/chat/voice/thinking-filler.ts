@@ -56,7 +56,6 @@ const QUIET_FALLBACK: Weighted = [
 const WRITING: Weighted = [
   ["Almost there.", 4],
   ["Here we go.", 2],
-  ["Okay, here it is.", 2],
 ];
 
 export function pickQuietFallback(rand: () => number = Math.random): string {
