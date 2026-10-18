@@ -1610,6 +1610,50 @@ export const es = {
         showMore: "Mostrar más ({count})",
         openChat: "Abrir el chat",
       },
+      voiceTyping: {
+        sectionTitle: "Voice typing",
+        sectionDescription:
+          "Dictate into any app with a global shortcut, powered by the local transcription model",
+        enableLabel: "System-wide voice typing",
+        enableDescription:
+          "Start dictation from anywhere while Unsloth runs. The microphone is only active while recording.",
+        engineNote:
+          "Always uses the local transcription model configured above, even when chat dictation uses the browser engine.",
+        shortcutLabel: "Shortcut",
+        shortcutHint: "Click the box, then press the key combination",
+        shortcutListening: "Press keys\u2026",
+        shortcutNeedsModifier:
+          "Include at least one modifier: Ctrl, Shift, Alt or Win",
+        modeLabel: "Activation",
+        modeHold: "Hold to talk",
+        modeToggle: "Tap to start / stop",
+        modeHybrid: "Hold or tap",
+        modeHoldDescription:
+          "Records while the shortcut is held down and stops on release",
+        modeToggleDescription: "Tap once to start, tap again to stop",
+        modeHybridDescription:
+          "Tap once to start and stop, or hold the shortcut to talk",
+        hudLabel: "On-screen indicator",
+        hudDescription:
+          "Show a small floating pill with the listening level while recording",
+        soundsLabel: "Feedback sounds",
+        soundsDescription: "A short tone when recording starts and stops",
+        trailingSpaceLabel: "Add a trailing space",
+        trailingSpaceDescription:
+          "Appends a space after each dictation so sentences flow together",
+        clipboardLabel: "Keep the transcript on the clipboard",
+        clipboardDescription:
+          "Off: your previous clipboard content is restored right after pasting",
+        configureFailed: "That shortcut could not be saved",
+        micDenied:
+          "Microphone access failed. Check the microphone permissions and try again.",
+        startFailed: "Voice typing could not start",
+        insertFailed: "The transcript could not be inserted",
+        copiedNotice: "Transcript copied. Press Ctrl+V to paste it.",
+        hudListening: "Listening",
+        hudTranscribing: "Transcribing",
+        hudInserted: "Inserted",
+      },
       readAloud: {
         sectionTitle: "Lectura en voz alta",
         buttonLabel: "Botón de lectura en voz alta",

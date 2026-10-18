@@ -90,6 +90,12 @@ export default defineConfig({
       include: [/node_modules/, /@dagrejs\/dagre/, /@dagrejs\/graphlib/],
     },
     rolldownOptions: {
+      // The overlay window loads its own tiny entry (voice-hud.html) instead of the
+      // whole shell, so both pages have to be part of the build.
+      input: {
+        main: path.resolve(__dirname, "index.html"),
+        "voice-hud": path.resolve(__dirname, "voice-hud.html"),
+      },
       // import() of a module the app already imports statically defers nothing, and it splits
       // that module's graph into extra startup chunks (#11588). Fail the build rather than warn.
       onLog(level, log, handler) {

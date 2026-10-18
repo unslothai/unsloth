@@ -41,6 +41,7 @@ import {
   useTheme,
 } from "@/features/settings";
 import { SttDownloadPrompt } from "@/features/settings/components/stt-download-prompt";
+import { useVoiceTyping } from "@/features/voice-typing";
 import { TauriRepairContext } from "@/hooks/tauri-repair-context";
 import { TauriUpdateContext } from "@/hooks/tauri-update-context";
 import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
@@ -691,6 +692,9 @@ function DesktopChromeVarsEffect({
 }
 
 function TauriWrapper({ children }: { children: ReactNode }) {
+  // System-wide voice typing stays armed for the whole desktop session, including
+  // while the window is hidden in the tray.
+  useVoiceTyping();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const {
     status,

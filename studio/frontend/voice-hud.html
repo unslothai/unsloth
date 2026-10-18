@@ -1,0 +1,47 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0 -->
+
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Unsloth voice typing</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- The overlay window is transparent and has no theme; this entry deliberately
+         skips the main shell's boot scripts and stylesheet. -->
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      html,
+      body,
+      #root {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+      }
+      .vt-pulse {
+        animation: vt-pulse 1.6s ease-in-out infinite;
+      }
+      @keyframes vt-pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.35;
+        }
+      }
+      .vt-bar {
+        border-radius: 999px;
+        background: currentColor;
+        transition: height 90ms linear;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/voice-hud-main.tsx"></script>
+  </body>
+</html>

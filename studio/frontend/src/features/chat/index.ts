@@ -578,6 +578,7 @@ export {
   dictationFailed,
   dictationProducedTranscript,
 } from "./adapters/dictation-outcome";
+export type { StudioDictationSession } from "./adapters/studio-web-speech-dictation-adapter";
 export {
   StudioDictationAdapter,
   cancelActiveStudioDictation,
