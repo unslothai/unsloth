@@ -364,6 +364,9 @@ def predict(
         upper = [] if joins and not gpu else off_set
         # Always lets a load replace its own repo, as another file or setting of it.
         same, holders = same_repo, upper
+        if joins:
+            # Joining keeps the chat models: only another owner (image, video) can refuse it.
+            holders = [s for s in upper if s.kind != "llm"]
     else:
         # Only another build of the same repo may replace the resident under Always; another model is refused.
         same = same_repo

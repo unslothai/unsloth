@@ -512,3 +512,10 @@ def test_a_stalled_status_read_gives_an_upper_bound_not_a_hang(monkeypatch):
     world = {**_world("off", [QWEN]), ("GET", "/api/inference/audio/stt/status"): stalled}
     plan = _plan(monkeypatch, world, {"model": "openai/whisper-large-v3", "kind": "stt"})
     assert plan["would_evict_exact"] is False
+
+
+def test_always_a_load_joining_the_chat_models_is_refused_only_over_media(monkeypatch):
+    args = {"model": OUTETTS, "kind": "tts", "alongside": True}
+    alone = _plan(monkeypatch, _world("always", [QWEN]), args)
+    beside_image = _plan(monkeypatch, _world("always", [QWEN], image = FLUX_GGUF), args)
+    assert (alone["would_refuse"], beside_image["would_refuse"]) == (False, True)
