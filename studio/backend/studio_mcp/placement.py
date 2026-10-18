@@ -56,7 +56,7 @@ def media_knobs(kind: str, **knobs: Optional[str]) -> dict[str, str]:
 
 
 def is_local(model: str) -> bool:
-    # A host path, or the ref: handle a checkpoint or export load sends.
+    # A host path, or the ref:<digest> handle of a local model (API-key callers, checkpoint and export loads): whole, never repo:variant.
     return model.startswith(("/", "\\", ".", "~", "ref:")) or ":" in model[:3]
 
 
@@ -110,7 +110,11 @@ async def listed_gguf(caller: Caller, model: str, variant: Optional[str]) -> Opt
     if listing is None:
         # Unsloth Studio could not list it (offline, say): the name is all there is to go on.
         return None
-    return any(isinstance(row, dict) for row in as_dict(listing).get("variants") or [])
+    listing = as_dict(listing)
+    # MLX precision folders come back from the same listing; they never run on llama-server.
+    if listing.get("variant_format") == "mlx":
+        return False
+    return any(isinstance(row, dict) for row in listing.get("variants") or [])
 
 
 async def require_cpu_gguf(

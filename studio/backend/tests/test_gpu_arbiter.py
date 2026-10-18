@@ -723,3 +723,27 @@ def test_an_unreadable_primary_counts_as_occupied(monkeypatch):
 
     monkeypatch.setattr(inf, "_primary_chat_reports", broken)
     assert arb._chat_occupied() is True
+
+
+def test_a_respawning_chat_server_counts_as_occupied(monkeypatch):
+    import core.inference.llama_cpp as llama_cpp
+    import routes.inference as inf
+    from core.inference import model_slots
+
+    monkeypatch.setattr(llama_cpp, "chat_load_active", lambda: False)
+    monkeypatch.setattr(model_slots, "any_loading", lambda: False)
+    monkeypatch.setattr(model_slots, "stuck", [])
+    monkeypatch.setattr(model_slots, "slots", [])
+    monkeypatch.setattr(inf, "_primary_chat_reports", lambda: [])
+    server = types.SimpleNamespace(is_active = False, is_loaded = False)
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: server)
+    assert arb._chat_occupied() is False
+
+    # Process up, health not yet back (auto-respawn after a crash): Always must keep it.
+    server.is_active = True
+    assert arb._chat_occupied() is True
+
+    server.is_active = False
+    kept = types.SimpleNamespace(llama = types.SimpleNamespace(is_active = True, is_loaded = False))
+    monkeypatch.setattr(model_slots, "slots", [kept])
+    assert arb._chat_occupied() is True

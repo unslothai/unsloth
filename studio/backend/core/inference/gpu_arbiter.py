@@ -218,12 +218,16 @@ def _chat_occupied() -> bool:
     try:
         from core.inference import model_slots
         from core.inference.llama_cpp import chat_load_active
-        from routes.inference import _primary_chat_reports
+        from routes.inference import _primary_chat_reports, get_llama_cpp_backend
 
         if chat_load_active() or model_slots.any_loading() or model_slots.stuck:
             return True
         model_slots.in_slot(None, _primary_chat_reports)
-        return False
+        # A llama-server mid-respawn is active but not loaded, so no report lists it.
+        return bool(
+            model_slots.in_slot(None, lambda: get_llama_cpp_backend().is_active)
+            or any(slot.llama.is_active for slot in list(model_slots.slots))
+        )
     except Exception:  # noqa: BLE001
         return True
 
