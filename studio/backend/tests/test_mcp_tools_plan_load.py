@@ -519,3 +519,37 @@ def test_always_a_load_joining_the_chat_models_is_refused_only_over_media(monkey
     alone = _plan(monkeypatch, _world("always", [QWEN]), args)
     beside_image = _plan(monkeypatch, _world("always", [QWEN], image = FLUX_GGUF), args)
     assert (alone["would_refuse"], beside_image["would_refuse"]) == (False, True)
+
+
+def _listed(monkeypatch, listing):
+    from studio_mcp import placement
+
+    asked = []
+
+    async def variants(_caller, repo):
+        asked.append(repo)
+        return listing
+
+    monkeypatch.setattr(placement, "_variants", variants)
+    return placement, asked
+
+
+def test_a_local_model_handle_is_never_split_into_repo_and_variant(monkeypatch):
+    # An API-key caller names a local model by its `ref:<digest>` handle.
+    placement, asked = _listed(monkeypatch, VARIANTS)
+    handle = "ref:0123456789abcdef0123456789abcdef"
+    gguf = asyncio.run(placement.require_cpu_gguf(None, "llm", handle, None, "cpu"))
+    assert gguf is True
+    assert asked == [handle]
+
+
+def test_an_mlx_precision_listing_is_no_gguf_for_cpu_placement(monkeypatch):
+    mlx = {
+        "variant_format": "mlx",
+        "variants": [{"quant": "4bit", "filename": "4bit/", "size_bytes": 10}],
+    }
+    placement, _asked = _listed(monkeypatch, mlx)
+    with pytest.raises(Exception, match = "needs a GGUF"):
+        asyncio.run(placement.require_cpu_gguf(None, "llm", "org/model-mlx", None, "cpu"))
+    with pytest.raises(Exception, match = "gpu_layers is only for GGUF"):
+        asyncio.run(placement.require_cpu_gguf(None, "llm", "org/model-mlx", None, None, 0))
