@@ -16,6 +16,7 @@ from html.parser import HTMLParser
 import json
 import math
 import http.client
+import ipaddress
 import ntpath
 import os
 from functools import partial
@@ -16072,6 +16073,44 @@ def _explicit_proxy_applies(scheme: str, host: str) -> bool:
         return False
 
 
+# Fake-IP DNS (Clash/sing-box/Surge TUN) answers from 198.18.0.0/15; allowed only once the resolver probe sees it
+# (else any public domain could point into the range). Literals stay refused.
+_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+_FAKE_IP_PROBE_TTL = 60.0
+_fake_ip_probe: list = [None, False]  # (monotonic time checked, answer)
+
+
+def _resolver_is_fake_ip() -> bool:
+    """Whether the system resolver answers a name nobody registered from the fake-IP range, as fake-IP DNS answers every
+    name and real DNS says NXDOMAIN. Without this, any public domain could point into the range."""
+    import secrets
+    import socket
+
+    checked, answer = _fake_ip_probe
+    now = time.monotonic()
+    if checked is not None and now - checked < _FAKE_IP_PROBE_TTL:
+        return answer
+    try:
+        infos = socket.getaddrinfo(
+            f"unsloth-{secrets.token_hex(12)}.com", 443, type = socket.SOCK_STREAM
+        )
+        answer = bool(infos) and all(
+            ipaddress.ip_address(info[4][0]) in _FAKE_IP_NETWORK for info in infos
+        )
+    except (OSError, UnicodeError, ValueError):
+        answer = False
+    _fake_ip_probe[:] = [now, answer]
+    return answer
+
+
+def _is_public_name(hostname: str) -> bool:
+    """A dotted DNS name with a non-local suffix, never an address however spelled (TLDs start with a letter)."""
+    from .browser_agent import _host_problem
+
+    label = hostname.rstrip(".").rsplit(".", 1)[-1]
+    return ":" not in hostname and label[:1].isalpha() and _host_problem(hostname) is None
+
+
 def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, list[str]]:
     """Resolve *hostname*, reject non-public IPs, return the pinned IP strings.
 
@@ -16094,6 +16133,10 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, lis
     resolved = []
     for *_, sockaddr in infos:
         ip = ipaddress.ip_address(sockaddr[0])
+        if ip in _FAKE_IP_NETWORK and _is_public_name(hostname) and _resolver_is_fake_ip():
+            if sockaddr[0] not in resolved:
+                resolved.append(sockaddr[0])
+            continue
         # `not ip.is_global` is the source of truth (also rejects CGNAT and benchmarking/doc ranges); the explicit
         # predicates only label the error.
         if (
