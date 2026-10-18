@@ -41,6 +41,7 @@ STT_STATUS = "/api/inference/audio/stt/status"
 # audio.cpp folder ids name a GGUF repo but run on audio.cpp, which honours audio_device itself.
 AUDIO_CPP_PREFIX = "audio-cpp/audio.cpp-gguf/"
 IN_FLIGHT = ("running", "cancelling")
+READ_S = 15.0
 PARTIAL_MESSAGE = "this variant is still downloading or incomplete; wait for it or redownload it"
 
 
@@ -111,17 +112,24 @@ async def listed_gguf(caller: Caller, model: str, variant: Optional[str]) -> Opt
 
 
 async def require_cpu_gguf(
-    caller: Caller, kind: str, model: str, variant: Optional[str], device: Optional[str]
+    caller: Caller,
+    kind: str,
+    model: str,
+    variant: Optional[str],
+    device: Optional[str],
+    gpu_layers: Optional[int] = None,
 ) -> Optional[bool]:
-    """For device='cpu', whether the model is a llama-server GGUF (None for any other device); a chat model that is not one is refused."""
-    if kind not in CHAT_KINDS or device != "cpu":
+    """For device='cpu' or gpu_layers, whether the model is a llama-server GGUF (None otherwise). A placement only llama-server honours is refused for any other model."""
+    if kind not in CHAT_KINDS or (device != "cpu" and gpu_layers is None):
         return None
     gguf = await listed_gguf(caller, model, variant)
-    if kind == "llm" and not gguf:
-        raise ToolError(CPU_NEEDS_GGUF)
-    if gguf is None:
+    if gguf is None and kind != "llm":
         # A TTS still goes to the CPU; only llama-server needs its layers kept off the GPU too.
         gguf = is_gguf(model, variant)
+    if not gguf and kind == "llm" and device == "cpu":
+        raise ToolError(CPU_NEEDS_GGUF)
+    if not gguf and gpu_layers is not None:
+        raise ToolError("gpu_layers is only for GGUF models that run on llama-server.")
     repo, variant = _split(model, variant)
     if gguf and variant and not is_local(repo):
         if pick_variant(await _variants(caller, repo), variant) is None:
@@ -170,7 +178,11 @@ async def auto_alongside(
     cpu = device == "cpu" or (device in (None, "auto") and gpu_layers == 0)
     if not cpu or alongside is not None:
         return alongside
-    status = await try_json(caller, STATUS)
+    try:
+        # Bounded: a stalled read decides nothing rather than holding the load.
+        status = await asyncio.wait_for(try_json(caller, STATUS), READ_S)
+    except asyncio.TimeoutError:
+        return None
     if multi_model_mode(status) == "always" and strings(as_dict(status).get("serving")):
         return True
     return None
@@ -407,7 +419,7 @@ async def plan_load(
         "gpu_layers": gpu_layers,
     }
     check_placement(kind, model, variant, **where)
-    await require_cpu_gguf(caller, kind, model, variant, device)
+    await require_cpu_gguf(caller, kind, model, variant, device, gpu_layers)
     await refuse_partial_variant(caller, model, kind, variant)
     status, image, video, stt = await asyncio.gather(
         try_json(caller, STATUS),

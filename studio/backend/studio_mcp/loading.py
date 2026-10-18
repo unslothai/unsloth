@@ -388,7 +388,7 @@ async def load_llm(
     async def run(job: LoadJob, before: dict[str, list[str]]) -> LoadResult:
         # The GGUF listing and status reads run inside the job, so a slow one never holds the call
         # past ``wait_s``; device='cpu' for a chat model that is not a GGUF is refused here.
-        gguf = await place.require_cpu_gguf(caller, kind, model, variant, device)
+        gguf = await place.require_cpu_gguf(caller, kind, model, variant, device, gpu_layers)
         body.update(
             place.llm_fields(
                 kind,

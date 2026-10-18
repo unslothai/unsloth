@@ -163,7 +163,8 @@ def test_cpu_fields_follow_the_listing_not_the_name(monkeypatch, model, kind):
 
 def test_kv_cache_and_gpu_layers(monkeypatch):
     args = {"model": QWEN, "kv_cache_type": "q8_0", "gpu_layers": 20, "alongside": False}
-    _result, _studio, (body,) = _load(monkeypatch, args)
+    routes = {**PAYLOADS, ("GET", "/api/hub/gguf-variants"): GGUF_FILES}
+    _result, _studio, (body,) = _load(monkeypatch, args, routes)
     assert body["cache_type_kv"] == "q8_0"
     assert (body["gpu_memory_mode"], body["gpu_layers"], body["alongside"]) == ("manual", 20, False)
 
@@ -210,16 +211,19 @@ def test_alongside_applied_reports_whether_the_chat_model_still_serves(
     assert result["structuredContent"]["alongside_applied"] is applied
 
 
-@pytest.mark.parametrize("placement", [{"device": "cpu"}, {"gpu_layers": 0}])
-def test_always_with_cpu_joins_the_serving_chat_model(monkeypatch, placement):
+@pytest.mark.parametrize(
+    "model,placement", [(KOKORO, {"device": "cpu"}), (OUTETTS, {"gpu_layers": 0})]
+)
+def test_always_with_cpu_joins_the_serving_chat_model(monkeypatch, model, placement):
     always = {**STATUS, "multi_model_mode": "always"}
     routes = {
         **PAYLOADS,
-        LOAD: {**LOADED, "model": KOKORO, "evicted": []},
-        STATUS_ROUTE: sequence(always, always, {**always, "serving": [LLM, KOKORO]}),
+        LOAD: {**LOADED, "model": model, "evicted": []},
+        STATUS_ROUTE: sequence(always, always, {**always, "serving": [LLM, model]}),
+        ("GET", "/api/hub/gguf-variants"): GGUF_FILES,
     }
     result, _studio, (body,) = _load(
-        monkeypatch, {"model": KOKORO, "kind": "tts", **placement}, routes
+        monkeypatch, {"model": model, "kind": "tts", **placement}, routes
     )
     assert body["alongside"] is True
     assert result["structuredContent"]["evicted"] == []
@@ -472,3 +476,13 @@ def test_a_stalled_status_read_after_the_load_leaves_alongside_unknown(monkeypat
     result, _studio, _bodies = _load(monkeypatch, {"model": OUTETTS, "kind": "tts"}, routes)
     assert result["structuredContent"]["loaded"] is True
     assert result["structuredContent"]["alongside_applied"] is None
+
+
+@pytest.mark.parametrize("model,kind", [(KOKORO, "tts"), ("unsloth/Qwen3-0.6B", "llm")])
+def test_gpu_layers_is_refused_for_a_model_llama_server_does_not_run(monkeypatch, model, kind):
+    routes = {**PAYLOADS, ("GET", "/api/hub/gguf-variants"): {"variants": []}}
+    result, _studio, sent = _load(
+        monkeypatch, {"model": model, "kind": kind, "gpu_layers": 0}, routes
+    )
+    assert result["isError"] is True and "only for GGUF models" in str(result["content"])
+    assert sent == []
