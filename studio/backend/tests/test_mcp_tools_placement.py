@@ -208,7 +208,8 @@ def test_alongside_applied_reports_whether_the_chat_model_still_serves(
     assert result["structuredContent"]["alongside_applied"] is applied
 
 
-def test_always_with_cpu_joins_the_serving_chat_model(monkeypatch):
+@pytest.mark.parametrize("placement", [{"device": "cpu"}, {"gpu_layers": 0}])
+def test_always_with_cpu_joins_the_serving_chat_model(monkeypatch, placement):
     always = {**STATUS, "multi_model_mode": "always"}
     routes = {
         **PAYLOADS,
@@ -216,7 +217,7 @@ def test_always_with_cpu_joins_the_serving_chat_model(monkeypatch):
         STATUS_ROUTE: sequence(always, always, {**always, "serving": [LLM, KOKORO]}),
     }
     result, _studio, (body,) = _load(
-        monkeypatch, {"model": KOKORO, "kind": "tts", "device": "cpu"}, routes
+        monkeypatch, {"model": KOKORO, "kind": "tts", **placement}, routes
     )
     assert body["alongside"] is True
     assert result["structuredContent"]["evicted"] == []

@@ -161,10 +161,14 @@ def multi_model_mode(status: Any) -> Optional[str]:
 
 
 async def auto_alongside(
-    caller: Caller, device: Optional[str], alongside: Optional[bool]
+    caller: Caller,
+    device: Optional[str],
+    alongside: Optional[bool],
+    gpu_layers: Optional[int] = None,
 ) -> Optional[bool]:
-    """Under Always, a CPU load joins the serving chat model rather than being refused for replacing it."""
-    if device != "cpu" or alongside is not None:
+    """Under Always, a CPU load (device='cpu', or no GPU layers) joins the serving chat model rather than being refused for replacing it."""
+    cpu = device == "cpu" or (device in (None, "auto") and gpu_layers == 0)
+    if not cpu or alongside is not None:
         return alongside
     status = await try_json(caller, STATUS)
     if multi_model_mode(status) == "always" and strings(as_dict(status).get("serving")):
@@ -317,6 +321,7 @@ def predict(
     slots: list[SlotModel],
     has_vision: bool = False,
     variant: Optional[str] = None,
+    placed: bool = False,
 ) -> tuple[list[SlotModel], bool, bool]:
     """(would_evict, would_evict_exact, would_refuse) for one load. Exact under Off; under When they fit and Always, or when the mode is unknown, an upper bound."""
     slot_kind = "llm" if kind in CHAT_KINDS else kind
@@ -332,8 +337,7 @@ def predict(
     if (
         slot_kind == "llm"
         and asked
-        and device is None
-        and alongside is None
+        and not placed
         and any(_ident(s.model) == _ident(asked) for s in same_repo)
     ):
         return [], True, False
@@ -399,6 +403,7 @@ async def plan_load(
     knobs: Optional[dict[str, str]] = None,
     hf_token: Optional[str] = None,
     gpu_layers: Optional[int] = None,
+    kv_cache_type: Optional[str] = None,
 ) -> PlanLoadResult:
     if hf_token:
         # As in load_model: the listing reads it from the header, the plan routes from the body.
@@ -407,9 +412,10 @@ async def plan_load(
     where = {
         "device": device,
         "alongside": alongside,
-        "kv_cache_type": None,
+        "kv_cache_type": kv_cache_type,
         "gpu_layers": gpu_layers,
     }
+    placed = any(value is not None for value in where.values())
     check_placement(kind, model, variant, **where)
     await require_cpu_gguf(caller, kind, model, variant, device)
     await refuse_partial_variant(caller, model, kind, variant)
@@ -429,7 +435,7 @@ async def plan_load(
         row = pick_variant(listing, variant)
         if variant and row is None:
             raise ToolError(f"{repo} has no GGUF variant {variant}")
-    if device is None and gpu_layers is not None and kind in CHAT_KINDS:
+    if device in (None, "auto") and gpu_layers is not None and kind in CHAT_KINDS:
         # llama-server honours gpu_layers, so a GGUF load is placed by it: 0 keeps it off the GPU.
         if rows or (is_local(repo) and repo.lower().endswith(".gguf")):
             device = "cpu" if gpu_layers == 0 else "gpu"
@@ -486,6 +492,7 @@ async def plan_load(
         # A local GGUF file is not listed, so whether a projector keeps it on the GPU is unknown.
         has_vision = listing is None or as_dict(listing).get("has_vision") is True,
         variant = variant,
+        placed = placed,
     )
     # Unloading another kind's model depends on the load reaching the GPU, which only a pinned
     # device says: Unsloth Studio may run an image, video or audio load (or anything, without a GPU)
