@@ -629,6 +629,13 @@ def _swa_floor_at(opts: PlanOptions, n_ctx: int, n_seq: int) -> int:
     return base * slots // at
 
 
+def _recurrent_rows(layout: ModelLayout, weights: Sequence[int]) -> set[int]:
+    """The rows ``weights`` gives no cache, less any the file says hold no recurrent state either
+    (nemotron_h's MLP-only rows, which would otherwise take a share of the Mamba state)."""
+    rows = {i for i, w in enumerate(weights) if w == 0}
+    return rows & set(layout.recurrent_rows) if layout.recurrent_rows else rows
+
+
 def _fit_fallback_placement(
     layout: ModelLayout,
     opts: PlanOptions,
@@ -717,7 +724,7 @@ def _fit_fallback_placement(
     # prefix, so an interleaved hybrid's prefix carries the share of those rows it spans, not
     # ``moved / n_layers`` of the state. Uniform only when no vector says which rows they are.
     state_total = 0 if kv_on_host else layout.recurrent_bytes * max(1, n_seq)
-    recurrent_rows = {b.index for b in blocks if weights and weights[b.index] == 0}
+    recurrent_rows = {b.index for b in blocks} & _recurrent_rows(layout, weights)
     if state_total > 0 and recurrent_rows:
         recurrent_prefix: list[int] = []
         seen_rows = 0
@@ -1597,7 +1604,7 @@ def _per_device_usage(
     # The recurrent state is one copy per slot on the rows that hold no cache, and the pooled fit
     # charges it in full.
     if layout.recurrent_bytes > 0 and not opts.kv_on_host:
-        recurrent_rows = [i for i, w in enumerate(weights) if w == 0]
+        recurrent_rows = sorted(_recurrent_rows(layout, weights))
         if not recurrent_rows:
             return "the recurrent state's per-layer split is not visible in the layout", [], []
         state = layout.recurrent_bytes * max(1, n_seq)

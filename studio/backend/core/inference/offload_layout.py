@@ -192,6 +192,9 @@ class ModelLayout:
     # not say. Only the fitter comparison reads it: a multi-device check still abstains without a
     # caller-supplied vector, since it says nothing about windows or a padded V.
     kv_heads_by_layer: tuple[int, ...] = ()
+    # The rows holding ``recurrent_bytes``: the cache-free rows above, less nemotron_h's MLP-only
+    # rows, which hold neither (hybrid_layer_split). Empty when no row map says.
+    recurrent_rows: tuple[int, ...] = ()
     # False when a needed quantity could not be read. The planner abstains.
     complete: bool = False
 
@@ -527,6 +530,14 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
     # Only a map that agrees with the row count the cache total was priced over.
     if sum(1 for h in kv_heads_by_layer if h > 0) != int(n_attention):
         kv_heads_by_layer = ()
+    recurrent_rows = tuple(i for i, h in enumerate(kv_heads_by_layer) if h <= 0)
+    ffn_lengths = _field(reader, f"{arch}.feed_forward_length")
+    if arch in _RECURRENT_NEEDS_ZERO_FFN and isinstance(ffn_lengths, (list, tuple)) and ffn_lengths:
+        ffs = [int(f) for f in ffn_lengths]
+        recurrent_rows = tuple(i for i in recurrent_rows if ffs[min(i, len(ffs) - 1)] <= 0)
+    # Likewise only the rows the state total was priced over.
+    if len(recurrent_rows) != int(n_recurrent):
+        recurrent_rows = ()
 
     # A per-layer list with zeros names the rows carrying NO attention cache (a KDA /
     # linear-attention hybrid); summing them away would let a multi-device check spread the cache
@@ -732,6 +743,7 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
         has_swa = has_swa,
         has_mla = has_mla,
         kv_heads_by_layer = kv_heads_by_layer,
+        recurrent_rows = recurrent_rows,
         blocks = blocks,
         lm_head_bytes = lm_head,
         token_embd_bytes = token_embd + per_layer_embd,
