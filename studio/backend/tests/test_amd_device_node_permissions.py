@@ -666,14 +666,11 @@ _AMD_CARD = {"vendor": "amd", "index": 0, "name": "Radeon RX 7900 XTX", "memory_
 
 
 @pytest.mark.parametrize("case", [
-    # #14067: the System tab said "Check the GPU driver, or repair the installation" to a
-    # Desktop user whose ROCm wheel was fine and whose account was outside the render group.
+    # #14067: render-group fix, not "repair the installation".
     pytest.param((_KFD_SHUT, "torch_cuda_unavailable", "2.11.0+rocm7.0", True, True),
                  id = "a_rocm_wheel_behind_a_closed_node_gets_only_the_hint"),
-    # A CPU wheel needs the reinstall as well, so the localized repair line stays.
     pytest.param((_KFD_SHUT, "torch_cpu_build", "2.11.0+cpu", True, False),
                  id = "a_cpu_wheel_behind_a_closed_node_keeps_the_repair_line"),
-    # The control: nodes that open leave the payload as it was.
     pytest.param((_BOTH_OPEN, "torch_cuda_unavailable", "2.11.0+rocm7.0", False, False),
                  id = "nodes_that_open_add_no_hint"),
 ])

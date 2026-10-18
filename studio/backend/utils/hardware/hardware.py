@@ -1276,8 +1276,7 @@ def _torch_gpu_mismatch_report() -> Dict[str, Any]:
     if not physical:
         return {}
     torch_version = _reported_torch_label(CHAT_ONLY_DETAIL)
-    # The System tab is where a user reads "detected but unusable" (#10466, #14067), and
-    # Repair installation cannot add an account to the render group.
+    # Repair installation cannot add an account to the render group (#14067).
     try:
         node_hint, wheel_targets_amd = _amd_permission_hint_for_mismatch(torch_version)
     except Exception as exc:
@@ -1291,8 +1290,7 @@ def _torch_gpu_mismatch_report() -> Dict[str, Any]:
             "physical_count": len(physical),
             "sources": inventory.get("sources") or [],
             "permission_hint": node_hint,
-            # Same rule as _gpu_present_but_unusable_message: only a ROCm wheel is fully
-            # explained by the closed node; any other wheel still needs the reinstall too.
+            # Only a ROCm wheel is fully explained by the closed node.
             "permission_hint_only": bool(
                 node_hint and reason == "torch_cuda_unavailable" and wheel_targets_amd
             ),
@@ -1777,7 +1775,7 @@ def _intel_xpu_pin_hint(vendors: "set[str]") -> str:
 
 
 def _amd_permission_hint_for_mismatch(detail: Optional[str]) -> tuple[Optional[str], bool]:
-    """``(node_hint, wheel_targets_amd)`` for a torch mismatch: the closed AMD device node sentence when it applies, and whether the wheel is a ROCm one it fully explains. Shared by the capability messages and the System tab, so both say the same thing."""
+    """``(node_hint, wheel_targets_amd)`` for a torch mismatch: the closed AMD device node sentence when it applies, and whether the wheel is a ROCm one it fully explains."""
     # No reinstall changes group membership (#10466), so a closed node is not a mismatch.
     # Recording AMD is necessary but not sufficient: a hybrid host on CUDA torch records
     # both vendors, and there the verdict is about the NVIDIA card.
