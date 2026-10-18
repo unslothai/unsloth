@@ -580,7 +580,8 @@ export const VoiceOrb: FC = () => {
   // overlay is hidden so the chat is visible underneath.
   const collapsed = useChatRuntimeStore((s) => s.voiceOrbCollapsed);
   const setVoiceOrbCollapsed = useChatRuntimeStore((s) => s.setVoiceOrbCollapsed);
-  const showOverlay = Boolean(orbState) && !collapsed;
+  const voiceOff = useChatRuntimeStore((s) => s.voiceMode === "off");
+  const showOverlay = Boolean(orbState) && !collapsed && !voiceOff;
 
   const muted = useChatRuntimeStore((s) => s.voiceMuted);
   const cfg = orbState ? orbConfig[orbState] : null;

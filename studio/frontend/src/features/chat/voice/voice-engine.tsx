@@ -693,7 +693,12 @@ export const VoiceEngine: FC = () => {
   const voiceTranscribing = useChatRuntimeStore((s) => s.voiceTranscribing);
   const voiceHearing = useChatRuntimeStore((s) => s.voiceHearing);
   useEffect(() => {
-    const dwell = (orbDwellRef.current ??= createOrbDwell(setVoiceOrbState));
+    const dwell = (orbDwellRef.current ??= createOrbDwell((state) => {
+      // Nothing may light the orb once the loop is off, whatever was queued before.
+      const shown = state !== null && voiceModeRef.current === "off" ? null : state;
+      voiceTrace("orb.state", { state: shown, raw: state });
+      setVoiceOrbState(shown);
+    }));
     const clearSynthGap = () => {
       if (synthGapTimerRef.current) {
         clearTimeout(synthGapTimerRef.current);
