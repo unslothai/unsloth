@@ -200,5 +200,4 @@ def test_zai_mcp_pictures_reach_only_its_vision_models():
     info = get_provider_info("zai")
     assert _external_takes_mcp_images("zai", info["supports_vision"], "glm-4.6v-flash", info)
     assert not _external_takes_mcp_images("zai", info["supports_vision"], "glm-5.3", info)
-    # The live list carries text GLMs the table does not name: no picture for those.
     assert not _external_takes_mcp_images("zai", info["supports_vision"], "glm-4.7-flashx", info)
