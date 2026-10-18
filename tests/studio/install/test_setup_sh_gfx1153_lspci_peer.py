@@ -20,6 +20,9 @@ from pathlib import Path
 
 import pytest
 
+# setup.sh is Linux/macOS only; Windows "bash" may be the WSL launcher with no distro.
+pytestmark = pytest.mark.skipif(os.name == "nt", reason = "runs setup.sh functions in bash")
+
 ROOT = Path(__file__).resolve().parents[3]
 SRC = (ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
 
