@@ -1238,9 +1238,27 @@ _COMMAND_OUTPUT_FLAGS = {
 # Tools that name their output positionally. `ffmpeg ... {[input_options] -i input} ... output`:
 # an operand that is no option's value, or the last one, is an output; option values are read.
 # `magick input-file ... output-file` writes the last one; `compare image image [difference]` only
-# when the difference image is given.
-_POSITIONAL_OUTPUT_COMMANDS = {"ffmpeg": "not_option_value", "magick": "last", "convert": "last"}
-_MAGICK_VERB_OUTPUTS = {"identify": None, "compare": "third_image"}
+# when the difference image is given. `display` and `animate` only show their files; `mogrify`
+# overwrites every image it is given, or writes them into its `-path` directory.
+_POSITIONAL_OUTPUT_COMMANDS = {
+    "ffmpeg": "not_option_value",
+    "magick": "last",
+    "convert": "last",
+    "mogrify": "all",
+}
+_MAGICK_VERB_OUTPUTS = {
+    "identify": None,
+    "display": None,
+    "animate": None,
+    "compare": "third_image",
+    "mogrify": "all",
+}
+
+# `compare` flags that take no value, so the operand after one is still an image.
+_MAGICK_COMPARE_VALUELESS_FLAGS = frozenset(
+    "-verbose -quiet -subimage-search -identify -monitor -regard-warnings -separate -synchronize "
+    "-taint -version".split()
+)
 
 # ffmpeg flags that take no value, so the operand after one is still positional.
 _FFMPEG_VALUELESS_FLAGS = frozenset(
@@ -1252,7 +1270,13 @@ def _unlisted_command_operands(command, args) -> "list[tuple[str, bool]]":
     outputs = _POSITIONAL_OUTPUT_COMMANDS.get(command)
     if command == "magick" and args and args[0] in _MAGICK_VERB_OUTPUTS:
         outputs = _MAGICK_VERB_OUTPUTS[args[0]]
-    images = [arg for arg in args[1:] if arg[:1] not in "-+" and re.search(r"[./\\]", arg)]
+    # `-metric AE` or `-fuzz 5%`: a flag's value is not one of the images.
+    images = [
+        arg
+        for previous, arg in zip(args, args[1:])
+        if arg[:1] not in "-+"
+        and (previous[:1] not in "-+" or previous in _MAGICK_COMPARE_VALUELESS_FLAGS)
+    ]
     output_flags = _OUTPUT_FILE_FLAGS | _COMMAND_OUTPUT_FLAGS.get(command, frozenset())
     operands = []
     writes_next = False
@@ -1267,6 +1291,8 @@ def _unlisted_command_operands(command, args) -> "list[tuple[str, bool]]":
             if not value and not arg.startswith("--"):
                 flag, value = arg[:2], arg[2:]
             writing = flag in output_flags
+        elif outputs == "all":
+            writing = True
         elif outputs == "last":
             writing = writing or index == len(args) - 1
         elif outputs == "third_image":

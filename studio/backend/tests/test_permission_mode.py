@@ -3803,6 +3803,9 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     "ffmpeg -i in.wav -y /out.wav",
     "ffmpeg -i in.wav -shortest /usr/share/sounds/out.wav",
     "magick compare a.png b.png /usr/share/pixmaps/diff.png",
+    "magick compare -metric AE /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png /usr/share/pixmaps/d.png",
+    "mogrify -resize 50% /usr/share/pixmaps/a.png",
+    "magick mogrify -path /usr/share/pixmaps -resize 50% a.png",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
@@ -4157,6 +4160,11 @@ _INDIRECT_BENIGN_TERMINAL = (
     "ffmpeg -fpre /usr/share/ffmpeg/libvpx-360p.ffpreset -i in.y4m out.webm",
     "ffmpeg -vpre /usr/share/ffmpeg/x.ffpreset -i in.y4m out.webm",
     "magick compare /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png",
+    "magick display /usr/share/pixmaps/logo.png",
+    "magick animate /usr/share/pixmaps/a.gif",
+    "magick compare -dissimilarity-threshold 0.1 /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png",
+    "magick compare -metric AE /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png null:",
+    "mogrify -resize 50% a.png",
 )
 
 _INDIRECT_BENIGN_PYTHON = (
