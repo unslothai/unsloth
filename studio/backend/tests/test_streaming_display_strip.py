@@ -65,6 +65,16 @@ def test_a_call_split_across_tokens_is_still_stripped():
         )
 
 
+@pytest.mark.parametrize("gap", ["", " " * 70, "\n" * 70], ids = ["no-gap", "spaces", "newlines"])
+def test_a_call_with_a_long_gap_before_its_colon_is_still_stripped(gap):
+    strip = _StreamingDisplayStrip(auto_heal_tool_calls = True, enabled_tool_names = _NAMES)
+    text = "call" + gap + ":web_search{query: x} tail"
+    for cut in range(1, len(text) + 1):
+        assert strip.strip(text[:cut]) == _strip_tool_xml_for_display(
+            text[:cut], auto_heal_tool_calls = True, enabled_tool_names = _NAMES
+        ), cut
+
+
 def test_prose_turns_skip_the_full_rescan(monkeypatch):
     calls = []
     original = inference._strip_tool_xml_for_display

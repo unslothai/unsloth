@@ -7334,7 +7334,7 @@ class _StreamingDisplayStrip:
         # Searched on the whole string from an offset, so ``(?<!\w)`` still reads the character before it.
         if _DISPLAY_GEMMA_CALL_RE.search(text, self._gemma_from) is not None:
             return True
-        tail = _DISPLAY_GEMMA_TAIL_RE.search(text, max(self._gemma_from, len(text) - 64))
+        tail = _DISPLAY_GEMMA_TAIL_RE.search(text, max(self._gemma_from, len(text.rstrip()) - 4))
         self._gemma_from = tail.start() if tail is not None else len(text)
         self._scanned = len(text)
         return False
