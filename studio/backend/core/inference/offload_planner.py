@@ -706,6 +706,13 @@ def _fit_fallback_placement(
     weights = [max(0, int(w)) for w in kv_layer_weights]
     if len(weights) != layout.n_layers or not any(weights):
         weights = []
+    if not weights and not (layout.has_swa or layout.has_mla):
+        # No caller vector (the seam supplies one for a windowed cache only), but the file says
+        # which rows hold the cache. Spread evenly, a hybrid's leading recurrent rows carried cache
+        # they do not hold, and host attention traffic the real fitter never pays.
+        weights = list(layout.kv_heads_by_layer)
+        if len(weights) != layout.n_layers or not any(weights):
+            weights = []
     # The recurrent state sits on the rows that hold no cache and the fitter moves a LEADING
     # prefix, so an interleaved hybrid's prefix carries the share of those rows it spans, not
     # ``moved / n_layers`` of the state. Uniform only when no vector says which rows they are.
@@ -1526,8 +1533,12 @@ def _per_device_usage(
         return None, [], []
     # These three shapes are only a problem when the cache has to be spread evenly for want of
     # anything better. A vector removes that guess; without one they abstain.
+    unequal_heads = len({h for h in layout.kv_heads_by_layer if h > 0}) > 1
     uneven_cache = (
-        layout.recurrent_bytes > 0 or layout.n_attention_layers != layout.n_layers or layout.has_swa
+        layout.recurrent_bytes > 0
+        or layout.n_attention_layers != layout.n_layers
+        or layout.has_swa
+        or unequal_heads
     )
     weights = [max(0, int(w)) for w in kv_layer_weights]
     if len(weights) != layout.n_layers or not any(weights):
@@ -1539,6 +1550,16 @@ def _per_device_usage(
             return (
                 f"only {layout.n_attention_layers} of {layout.n_layers} layers hold a cache "
                 "and the layout does not say which",
+                [],
+                [],
+            )
+        if not layout.has_swa:
+            # OpenELM: 3 to 6 KV heads a row, so an even spread under-books the card that takes
+            # the wide rows. Not used as the vector here: with flash attention off every V is
+            # padded to the widest row (_max_kv_value_width), which head counts alone do not say.
+            return (
+                "the per-layer KV head counts differ and no per-layer vector was supplied to "
+                "say which device holds the wider caches",
                 [],
                 [],
             )

@@ -187,6 +187,11 @@ class ModelLayout:
     # (unsloth/DeepSeek-R1-GGUF, unsloth/DeepSeek-V3-0324-GGUF) gets the full per-head K+V cache, so
     # claiming MLA there would trade an exact number for a floor that is 40% short.
     has_mla: bool = False
+    # Each target row's KV head count, 0 on a row that holds no attention cache (a hybrid's
+    # recurrent rows), as llama.cpp places them. Empty when every row is the same or the file does
+    # not say. Only the fitter comparison reads it: a multi-device check still abstains without a
+    # caller-supplied vector, since it says nothing about windows or a padded V.
+    kv_heads_by_layer: tuple[int, ...] = ()
     # False when a needed quantity could not be read. The planner abstains.
     complete: bool = False
 
@@ -422,6 +427,44 @@ def hybrid_layer_split(
     return n_attention, n_recurrent, known
 
 
+def layer_kv_heads(
+    arch: str,
+    n_layers: int,
+    *,
+    recurrent_layers = None,
+    n_kv_head = None,
+    full_attention_interval: int = 0,
+) -> tuple[int, ...]:
+    """Each row's KV head count, 0 where no attention cache lives, in hybrid_layer_split's order.
+
+    A per-layer list with zeros names the cache-free rows itself; otherwise the explicit recurrent
+    mask, then ``full_attention_interval`` (row il is attention iff (il + 1) % fai == 0,
+    models/qwen35.cpp), then the architecture's default. Empty when every row is the same.
+    """
+    if n_layers <= 0 or n_layers > LLAMA_MAX_LAYERS:
+        return ()
+    if isinstance(n_kv_head, (list, tuple)):
+        heads = [int(h) for h in n_kv_head]
+        if not heads:
+            return ()
+        rows = [max(0, heads[i] if i < len(heads) else heads[-1]) for i in range(n_layers)]
+    else:
+        try:
+            rows = [max(0, int(n_kv_head))] * n_layers
+        except (TypeError, ValueError):
+            return ()
+    if not 0 < sum(1 for h in rows if h > 0) < n_layers:
+        if isinstance(recurrent_layers, (list, tuple)) and len(recurrent_layers) >= n_layers:
+            rows = [0 if flag else h for flag, h in zip(list(recurrent_layers)[:n_layers], rows)]
+        else:
+            fai = int(full_attention_interval or 0)
+            if fai <= 0:
+                fai = _FULL_ATTENTION_INTERVAL_DEFAULT.get(arch, 0)
+            if fai > 0:
+                rows = [h if (i + 1) % fai == 0 else 0 for i, h in enumerate(rows)]
+    return tuple(rows) if len(set(rows)) > 1 else ()
+
+
 def _layout_from_reader(reader, *, build: Optional[int] = None) -> ModelLayout:
     return _layout_from_readers([reader], build = build)
 
@@ -474,6 +517,16 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
         full_attention_interval = int(_field(reader, f"{arch}.full_attention_interval") or 0),
         feed_forward_length = _field(reader, f"{arch}.feed_forward_length"),
     )
+    kv_heads_by_layer = layer_kv_heads(
+        arch,
+        n_layers,
+        recurrent_layers = _field(reader, f"{arch}.attention.recurrent_layers"),
+        n_kv_head = n_kv_head,
+        full_attention_interval = int(_field(reader, f"{arch}.full_attention_interval") or 0),
+    )
+    # Only a map that agrees with the row count the cache total was priced over.
+    if sum(1 for h in kv_heads_by_layer if h > 0) != int(n_attention):
+        kv_heads_by_layer = ()
 
     # A per-layer list with zeros names the rows carrying NO attention cache (a KDA /
     # linear-attention hybrid); summing them away would let a multi-device check spread the cache
@@ -678,6 +731,7 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
         n_attention_layers = int(n_attention),
         has_swa = has_swa,
         has_mla = has_mla,
+        kv_heads_by_layer = kv_heads_by_layer,
         blocks = blocks,
         lm_head_bytes = lm_head,
         token_embd_bytes = token_embd + per_layer_embd,
