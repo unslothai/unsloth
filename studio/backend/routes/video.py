@@ -1285,6 +1285,18 @@ def _frames_for_seconds(seconds: float, defaults: dict) -> int:
     return k * step + offset
 
 
+def _refuse_fixed_fps(
+    family: Optional[str], default_fps: Optional[int], fps: Optional[int]
+) -> None:
+    """MiniMax-H3 always writes its clip at the family rate, so another fps would only skew the frame count."""
+    if family == "minimax-h3" and fps is not None and default_fps and fps != int(default_fps):
+        raise _openai_video_error(
+            400,
+            f"MiniMax-H3 renders at a fixed {int(default_fps)} fps; leave fps out.",
+            param = "fps",
+        )
+
+
 def _format_seconds(value: float) -> str:
     return f"{round(float(value), 2):g}"
 
@@ -1578,7 +1590,8 @@ async def _read_video_create_body(request: Request) -> tuple[dict, Any]:
             raise _openai_video_error(400, "Could not parse the multipart form body.")
         fields = {key: form.get(key) for key in _VIDEO_CREATE_FIELDS if key in form}
         for key in _VIDEO_CREATE_LISTS:
-            items = form.getlist(key) + form.getlist(f"{key}[]")
+            # In wire order across both spellings: <Picture n> follows the order sent.
+            items = [value for name, value in form.multi_items() if name in (key, f"{key}[]")]
             if items:
                 fields[key] = items
         reference = form.get("input_reference")
@@ -1644,11 +1657,12 @@ def _audio_ref_data_url(ref) -> str:
     from core.inference import audio_inputs
 
     source = audio_inputs.resolve_source(ref.model_dump(exclude_none = True))
-    data = source.path.read_bytes()
-    if len(data) > _VIDEO_REFERENCE_AUDIO_MAX_BYTES:
+    # Stored audio can reach 200 MB, so size it before reading it into memory.
+    if source.path.stat().st_size > _VIDEO_REFERENCE_AUDIO_MAX_BYTES:
         raise audio_inputs.AudioInputError(
             400, "This audio is too large for a video reference; the limit is 24 MB."
         )
+    data = source.path.read_bytes()
     suffix = source.path.suffix.lower()
     mime = "audio/wav" if suffix == ".wav" else mimetypes.guess_type(source.path.name)[0]
     return (
@@ -1857,6 +1871,7 @@ async def _create_openai_video(
         fam = _detect_load_family(pick.model_path, pick.gguf_filename, None)
         if fam is None:
             return
+        _refuse_fixed_fps(fam.name, fam.default_fps, body.fps)
         # Judge the duration against the family being switched TO, using its own lattice. Passing None here accepted any
         # seconds and only refused it in begin_generate, after the resident pipeline had been evicted and the target
         # fully loaded.
@@ -1940,6 +1955,7 @@ async def _create_openai_video(
         if account_access.managed_account():
             await asyncio.to_thread(account_access.require_media_generation_access, status, "video")
         defaults = status.get("defaults") or {}
+        _refuse_fixed_fps(status.get("family"), defaults.get("fps"), body.fps)
         num_frames = (
             _frames_for_seconds(seconds, defaults) if seconds is not None else body.num_frames
         )

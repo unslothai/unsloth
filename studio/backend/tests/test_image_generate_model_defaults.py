@@ -43,6 +43,8 @@ class _ModelBackend(_FakeBackend):
 
     def generate(self, **kwargs):
         self.calls.append(kwargs)
+        if not self.loaded:
+            return super().generate(**kwargs)
         if len(self.models) > 1:
             self.models.pop(0)
         expected = kwargs.get("expected_load")
@@ -135,4 +137,21 @@ def test_an_unloaded_model_is_still_a_409_with_no_fill(client, monkeypatch):
     response = client.post("/api/inference/images/generate", json = {"prompt": "p"})
     assert response.status_code == 409
     assert (backend.calls[0]["steps"], backend.calls[0]["guidance"]) == (9, 0.0)
-    assert backend.calls[0]["expected_load"] is None
+    assert backend.calls[0]["expected_load"] == load_identity(None, None, None)
+
+
+class _LoadingBackend(_ModelBackend):
+    """Reads unloaded while another client's load runs; generate is admitted once it commits."""
+
+    def generate(self, **kwargs):
+        self.loaded = True
+        return super().generate(**kwargs)
+
+
+def test_a_load_in_flight_hands_the_retry_the_new_models_defaults(client, monkeypatch):
+    backend = _use(monkeypatch, _LoadingBackend(DEV, loaded = False))
+    response = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert [(c["steps"], c["guidance"]) for c in backend.calls] == [(9, 0.0), (28, 3.5)]
+    assert backend.calls[0]["expected_load"] == load_identity(None, None, None)
+    assert backend.calls[1]["expected_load"] == load_identity("unsloth/FLUX.1-dev", None, "z-image")
+    assert _recipe(response) == (28, 3.5)

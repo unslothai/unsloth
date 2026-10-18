@@ -495,3 +495,87 @@ def test_create_openai_video_keeps_its_signature():
         "current_subject",
         "hf_token",
     ]
+
+
+@pytest.mark.parametrize("switch", [True, False], ids = ["before-switch", "resident"])
+def test_minimax_h3_refuses_a_custom_fps(client, backend, monkeypatch, switch):
+    # H3 always writes its clip at 24 fps, so 30 fps would only mislabel the clip's length.
+    calls = _capture(monkeypatch, backend)
+    if switch:
+        switched = _switch_to(monkeypatch, "MiniMaxAI/MiniMax-H3", "minimax_h3_ref2va-Q4_K_M.gguf")
+    else:
+        switched = None
+        resident = backend.status
+
+        def _h3_status():
+            status = resident()
+            return {
+                **status,
+                "family": "minimax-h3",
+                "defaults": {**(status.get("defaults") or {}), "fps": 24},
+            }
+
+        monkeypatch.setattr(backend, "status", _h3_status)
+    resp = client.post("/v1/videos", json = {"prompt": "x", "model": "H3", "fps": 30})
+    assert resp.status_code == 400, resp.json()
+    error = resp.json()["error"]
+    assert error["param"] == "fps" and "fixed 24 fps" in error["message"]
+    assert calls == []
+    if switched is not None:
+        assert switched["completed"] is False
+    else:
+        resp = client.post("/v1/videos", json = {"prompt": "x", "fps": 24})
+        assert resp.status_code == 200, resp.json()
+
+
+def test_multipart_references_keep_their_wire_order_across_both_spellings(
+    client, backend, monkeypatch
+):
+    calls = _capture(monkeypatch, backend)
+    png, jpeg = _reference_image_bytes("PNG"), _reference_image_bytes("JPEG")
+    resp = client.post(
+        "/v1/videos",
+        data = {"prompt": "<Picture 1> meets <Picture 2>"},
+        files = [
+            ("reference_images[]", ("first.jpg", jpeg, "image/jpeg")),
+            ("reference_images", ("second.png", png, "image/png")),
+        ],
+    )
+    assert resp.status_code == 200, resp.json()
+    assert [_decoded(url) for url in calls[0]["reference_images"]] == [jpeg, png]
+
+
+def test_a_stored_audio_over_the_cap_is_refused_without_reading_it(audio_store, monkeypatch):
+    from models.inference import AudioSourceRef
+
+    ref = AudioSourceRef(clip_id = _store_clip())
+    monkeypatch.setattr(video_routes, "_VIDEO_REFERENCE_AUDIO_MAX_BYTES", len(_WAV) - 1)
+
+    def _no_read(self):
+        raise AssertionError(f"{self} was read before its size was checked")
+
+    monkeypatch.setattr(Path, "read_bytes", _no_read)
+    with pytest.raises(audio_inputs.AudioInputError) as exc:
+        video_routes._audio_ref_data_url(ref)
+    assert exc.value.status == 400 and "24 MB" in exc.value.detail
+
+
+def test_a_32_mb_image_fits_last_frame_and_reference_images():
+    from pydantic import ValidationError
+
+    from models.inference import VideoJobCreateRequest
+    from utils.upload_limits import VIDEO_INPUT_REFERENCE_MAX_BYTES
+
+    # A 32 MB image is about 42.7 MB of base64, past the old 32 MiB character cap.
+    header = "data:image/png;base64,"
+    full = header + "A" * (((VIDEO_INPUT_REFERENCE_MAX_BYTES + 2) // 3) * 4)
+    assert VideoJobCreateRequest(prompt = "x", last_frame = full).last_frame == full
+    assert VideoJobCreateRequest(prompt = "x", reference_images = [full]).reference_images == [full]
+    over = full + "A" * (64 * 1024)
+    with pytest.raises(ValidationError, match = "last_frame"):
+        VideoJobCreateRequest(prompt = "x", last_frame = over)
+    with pytest.raises(ValidationError, match = "each reference image must be at most 32 MB"):
+        VideoJobCreateRequest(prompt = "x", reference_images = [over])
+    audio = "data:audio/wav;base64," + "A" * (32 * 1024 * 1024)
+    with pytest.raises(ValidationError, match = "each reference audio must be at most 24 MB"):
+        VideoJobCreateRequest(prompt = "x", reference_images = [header], reference_audios = [audio])

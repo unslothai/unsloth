@@ -107,3 +107,32 @@ def test_the_seed_comes_back_on_the_job_and_on_get_job(monkeypatch):
     )
     assert result["structuredContent"]["seed"] == 1234
     assert base64.b64decode(result["content"][1]["data"]) == WEBP
+
+
+def test_images_share_the_one_request_budget_of_video_requests(monkeypatch):
+    import studio_mcp.tools.video as video_tool
+
+    # The budget covers first_frame, last_frame and reference_images together.
+    monkeypatch.setattr(video_tool, "VIDEO_INPUT_REFERENCE_MAX_BYTES", 2 * len(PNG))
+    ok = {"prompt": "x", "first_frame": PNG_URL, "reference_images": [PNG_URL]}
+    result, studio = run_tool(monkeypatch, _studio(), "generate_video", ok)
+    assert result["isError"] is False, result
+    for args in (
+        {**ok, "last_frame": PNG_URL},
+        {"prompt": "x", "reference_images": [PNG_URL] * 3},
+    ):
+        result, studio = run_tool(monkeypatch, _studio(), "generate_video", args)
+        assert result["isError"] is True
+        assert "larger than the 32 MB one video request takes" in result["content"][0]["text"]
+        assert studio.state.calls == []
+
+
+def test_a_body_over_the_route_cap_is_refused_before_the_call(monkeypatch):
+    import studio_mcp.tools.video as video_tool
+
+    # The route counts the encoded body, so a long prompt beside the images counts too.
+    monkeypatch.setattr(video_tool, "VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES", 1024)
+    args = {"prompt": "x" * 2048, "reference_images": [PNG_URL]}
+    result, studio = run_tool(monkeypatch, _studio(), "generate_video", args)
+    assert result["isError"] is True
+    assert studio.state.calls == []
