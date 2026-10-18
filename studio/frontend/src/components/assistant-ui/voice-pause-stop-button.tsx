@@ -133,12 +133,12 @@ export const VoicePauseStopButton: FC = () => {
               <SquareIcon className="size-3 fill-current" />
             </span>
           </span>
+          {/* The button styles every svg to size-4; the ring has to cover the button. */}
           <svg
             aria-hidden={true}
-            className="pointer-events-none absolute inset-0"
+            className="pointer-events-none absolute inset-0 !size-full"
             viewBox={`0 0 ${SIZE} ${SIZE}`}
-            width={SIZE}
-            height={SIZE}
+            preserveAspectRatio="xMidYMid meet"
           >
             <circle
               cx={SIZE / 2}
