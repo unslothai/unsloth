@@ -451,7 +451,6 @@ def test_nameless_choice_prefers_the_complete_mirror_over_a_partial_upstream(
     assert video_mod._video_fetch_repo(upstream) == upstream
 
 
-
 def test_a_lone_shard_without_its_index_is_not_a_complete_component(empty_cache, monkeypatch):
     repo = "Lightricks/LTX-2"
     monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
@@ -510,6 +509,7 @@ def test_h3_index_is_read_from_the_repo_the_base_pull_stages(empty_cache, monkey
         },
     )
     assert video_mod._video_index_repo(upstream) == upstream
+
 
 def test_offline_ltx23_base_choice_counts_only_the_folders_it_reads(empty_cache, monkeypatch):
     upstream, mirror = "Lightricks/LTX-2", "unsloth/LTX-2-FP8"

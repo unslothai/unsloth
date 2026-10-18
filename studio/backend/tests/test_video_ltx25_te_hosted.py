@@ -357,6 +357,7 @@ def test_hosted_path_ignores_the_base_revision(tmp_path, monkeypatch):
     assert Path(worker._hosted_path(spec, common)).read_bytes() == staged.read_bytes()
     assert common["revision"] == "f" * 40
 
+
 def test_builder_drops_a_tied_lm_head(tmp_path, monkeypatch):
     import build_ltx25_te_int8_convrot as builder
 

@@ -1838,7 +1838,11 @@ def _video_fetch_repo(
                 _video_cached_completeness(mirror),
             )
             if up >= 0 or mir >= 0:
-                if not up_whole and _is_gated_video_upstream(repo_id) and (mir >= 0 or _can_download()):
+                if (
+                    not up_whole
+                    and _is_gated_video_upstream(repo_id)
+                    and (mir >= 0 or _can_download())
+                ):
                     return mirror
                 return repo_id if up >= mir else mirror
     return prefer_ungated_mirror(repo_id, hf_token, files = files)
@@ -1846,14 +1850,13 @@ def _video_fetch_repo(
 
 def _is_gated_video_upstream(repo_id: str) -> bool:
     from .diffusion_families import _GATED_UPSTREAMS
-
     return (repo_id or "").strip().lower() in _GATED_UPSTREAMS
 
 
 def _can_download() -> bool:
     from .diffusion_prequant import _LOCAL_FILES_ONLY, hub_offline
-
     return not hub_offline() and not _LOCAL_FILES_ONLY.get()
+
 
 def _video_index_repo(base: str, *, local_files_only: bool = False) -> str:
     """The repo to read ``base``'s index from: the one its base pull will stage. The plan keeps a cached upstream only
@@ -1870,9 +1873,14 @@ def _video_index_repo(base: str, *, local_files_only: bool = False) -> str:
     up, up_whole = _video_cached_completeness_detail(base, skip = ("text_encoder",))
     if up_whole:
         return base
-    if up >= 0 and (local_files_only or not _can_download()) and _video_cached_completeness(mirror) < 0:
+    if (
+        up >= 0
+        and (local_files_only or not _can_download())
+        and _video_cached_completeness(mirror) < 0
+    ):
         return base
     return mirror
+
 
 def _video_offline_base_choice(
     base: str,
