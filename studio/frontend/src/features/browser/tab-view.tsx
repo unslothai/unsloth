@@ -104,6 +104,22 @@ function useFrameMessages(tabId: string, origin: string | null) {
         case "external":
           openExternalLink(message.url);
           break;
+        case "download": {
+          const tab = store.tabs.find((candidate) => candidate.id === tabId);
+          const entry = tab ? currentEntry(tab) : null;
+          const site = pageAddress(tab);
+          if (!site || !entry) break;
+          void saveBrowserDownload({
+            blob: message.blob,
+            name: message.name,
+            contentType: message.blob.type,
+            url: site,
+            site,
+            temporary: loadTemporary(tabId, entry) || undefined,
+            agentRule: agentDownloadRule(tabId, site, site),
+          });
+          break;
+        }
         case "loaded": {
           store.updateTab(tabId, { title: message.title, favicon: null, loading: false });
           pageLoadedForFind(tabId);

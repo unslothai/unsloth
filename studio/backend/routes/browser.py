@@ -568,13 +568,24 @@ _FRAME_HTML = r"""<!doctype html>
             if (!cancelled) action();
           });
         };
+        // Read at the click: a page may revoke a blob: URL as soon as its click returns.
+        const fileFrom = (link, raw) => {
+          if (!link.hasAttribute("download") || !/^(?:blob|data):/i.test(raw)) return null;
+          const name = link.getAttribute("download") || "download";
+          return nativeFetch(raw).then((response) => response.blob()).then((blob) => ({ name, blob }), () => null);
+        };
         const onLinkClick = (event) => {
           const link = linkFrom(event);
           if (!link) return;
           const raw = (link.getAttribute("href") || "").trim();
           if (/^javascript:/i.test(raw)) return;
           const modified = event.button === 1 || event.metaKey || event.ctrlKey || event.shiftKey;
+          const file = fileFrom(link, raw);
           unlessCancelled(event, () => {
+            if (file) {
+              file.then((download) => download && post({ type: "download", ...download }));
+              return;
+            }
             // Keep "#" links on the page; against <base> they would navigate.
             if (raw.startsWith("#")) {
               if (raw.length > 1) followHash(raw);
@@ -585,6 +596,18 @@ _FRAME_HTML = r"""<!doctype html>
         };
         document.addEventListener("click", onLinkClick, true);
         document.addEventListener("auxclick", (event) => { if (event.button === 1) onLinkClick(event); }, true);
+        // A script's click on a download link outside the document (FileSaver.js) never reaches the listener above.
+        const clickDetached = (anchor, click) => {
+          if (!(anchor instanceof HTMLAnchorElement) || anchor.isConnected || !anchor.hasAttribute("download")) return click();
+          anchor.addEventListener("click", onLinkClick);
+          try { return click(); } finally { anchor.removeEventListener("click", onLinkClick); }
+        };
+        const anchorClick = HTMLAnchorElement.prototype.click;
+        HTMLAnchorElement.prototype.click = function () { clickDetached(this, () => anchorClick.call(this)); };
+        const dispatch = EventTarget.prototype.dispatchEvent;
+        EventTarget.prototype.dispatchEvent = function (event) {
+          return event?.type === "click" ? clickDetached(this, () => dispatch.call(this, event)) : dispatch.call(this, event);
+        };
 
         const submitForm = (form, submitter) => {
           const method = ((submitter && submitter.getAttribute("formmethod")) || form.getAttribute("method") || "get").toLowerCase();

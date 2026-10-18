@@ -110,6 +110,7 @@ export function sendFrameCommand(tabId: string, command: FrameCommand): boolean 
 const isUserAction = (message: FrameMessage) =>
   (message.type === "navigate" && message.newTab === true) ||
   message.type === "external" ||
+  message.type === "download" ||
   message.type === "shortcut";
 
 // Activation outlives the click that loaded the page, so user actions are also rate limited, per page.

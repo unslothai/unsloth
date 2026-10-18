@@ -14,6 +14,7 @@ export type FrameMessage =
       body?: string;
     }
   | { type: "external"; url: string }
+  | { type: "download"; name: string; blob: Blob }
   | { type: "loaded"; title: string; favicon: string | null }
   | { type: "title"; title: string }
   | { type: "url"; url: string }
@@ -200,6 +201,10 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
     case "url": {
       const url = text(message.url, MAX_URL_CHARS);
       return url ? { type: message.type, url } : null;
+    }
+    case "download": {
+      const name = text(message.name, MAX_TITLE_CHARS);
+      return name && message.blob instanceof Blob ? { type: "download", name, blob: message.blob } : null;
     }
     case "loaded":
       return { type: "loaded", title: title(message.title), favicon: text(message.favicon, MAX_URL_CHARS) };

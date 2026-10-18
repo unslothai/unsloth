@@ -115,3 +115,14 @@ test("a page's request is checked field by field, and one the panel won't make s
   assert.deepEqual(from({ type: "requestAbort", id: "q1" }), { type: "requestAbort", id: "q1" });
   assert.equal(from({ type: "requestAbort", id: 3 }), null);
 });
+
+test("a file a page saves reaches the panel with its bytes and name only", () => {
+  const blob = new Blob(["a,b"], { type: "text/csv" });
+  const message = from({ type: "download", name: "data.csv", blob, url: "https://evil.example/" });
+  assert.deepEqual(message && Object.keys(message), ["type", "name", "blob"]);
+  assert.equal(message?.type === "download" && message.blob, blob);
+  assert.equal(message?.type === "download" && message.name, "data.csv");
+  assert.equal(from({ type: "download", name: "data.csv", blob: "a,b" }), null);
+  assert.equal(from({ type: "download", name: "", blob }), null);
+  assert.equal(from({ type: "download", name: "x".repeat(5000), blob }), null);
+});
