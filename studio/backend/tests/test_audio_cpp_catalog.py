@@ -347,6 +347,41 @@ def test_a_community_repo_whose_package_needs_sidecars_is_withheld(env):
     assert rows["Jmica/Drama-3-GGUF"].workflows == ["speak", "clone"]
 
 
+def test_a_community_repo_whose_gguf_is_not_audio_cpp_is_withheld(env, monkeypatch):
+    # SenseVoice and Echo-TTS publish GGUFs whose architecture is not "audiocpp": resolve() is None.
+    spec = {
+        "family": "sense_asr",
+        "tasks": ["asr"],
+        "package_defaults": {"download": {"repo": "FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp"}},
+        "packages": [{"id": "q8", "default": True, "format": "gguf", "files": ["sv.gguf"]}],
+    }
+    (env["specs"] / "sense_asr.json").write_text(json.dumps(spec))
+    probe = acm.read_remote_header
+    seen = []
+
+    def header(
+        repo_id,
+        filename,
+        hf_token = None,
+        *,
+        size = None,
+    ):
+        seen.append((repo_id, filename))
+        if repo_id.startswith("FunAudioLLM/"):
+            return AudioCppHeader("sensevoice-small", "sense_asr")
+        if repo_id == "Jmica/Drama-3-GGUF":
+            return AudioCppHeader("audiocpp", "fish_drama3")
+        return probe(repo_id, filename, hf_token, size = size)
+
+    monkeypatch.setattr(acm, "read_remote_header", header)
+    rows = _rows(catalog.audio_catalog_payload())
+    sense = rows["FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp"]
+    assert sense.workflows == [] and sense.unsupported_reason == catalog._NOT_AUDIO_CPP
+    assert rows["Jmica/Drama-3-GGUF"].workflows == ["speak", "clone"]
+    # The spec's recommended file is the one probed.
+    assert ("Jmica/Drama-3-GGUF", "drama-3-Q4_K_S.gguf") in seen
+
+
 def test_a_spec_dir_read_is_capped_and_ignores_bad_files(env, monkeypatch):
     (env["specs"] / "huge.json").write_bytes(b" " * (catalog._MAX_SPEC_BYTES + 1))
     (env["specs"] / "list.json").write_text("[]")

@@ -41,6 +41,7 @@ _TASKS = frozenset(("tts", "music", "asr", "sep"))
 _NO_FAMILY = "Unsloth Studio could not tell which model family this is."
 _NO_PAGE = "Unsloth Studio has no Audio page for this model yet."
 _SIDECARS = "Unsloth Studio cannot download the extra files this model needs beside its GGUF yet."
+_NOT_AUDIO_CPP = "This repository's GGUF is not in the audio.cpp format Unsloth Studio loads."
 
 _cache_lock = threading.Lock()
 _build_lock = threading.Lock()
@@ -284,6 +285,7 @@ def _row(
     family: Optional[str],
     spec: Optional[dict],
     files: Sequence[RepoFile],
+    header: Optional[acm.AudioCppHeader] = None,
 ) -> AudioCatalogModel:
     spec = spec if isinstance(spec, dict) else {}
     display = _text(spec.get("display_name"), 120) or folder or repo_id.split("/")[-1]
@@ -300,6 +302,9 @@ def _row(
             if not folder and not policy.package and _sidecars(spec):
                 # A Community repo loads as one GGUF: files its package reads beside it never download.
                 reason = reason or _SIDECARS
+            if header is not None and not header.is_audio_cpp:
+                # resolve() returns None for it, so loading the row would fail.
+                reason = reason or _NOT_AUDIO_CPP
             wanted = set(recommended_gguf_files(spec or None))
             picked = [f for f in files if Path(f.path).name in wanted]
             variant = None if picked else _ranked(files, folder, policy)
@@ -405,13 +410,24 @@ def _build(network: bool, specs_dir: Optional[Path]) -> tuple[AudioCatalogRespon
             for repo in community
         }
     )
+    header_probes = {}
+    for repo, repo_files in listings.items() if online else ():
+        ggufs = [f for f in repo_files or [] if f.path.lower().endswith(".gguf")]
+        wanted = set(recommended_gguf_files(index.get(community[repo])))
+        main = next((f for f in ggufs if Path(f.path).name in wanted), ggufs[0] if ggufs else None)
+        if main is not None:
+            header_probes[repo] = lambda repo = repo, f = main: acm.read_remote_header(
+                repo, f.path, False, size = f.size or None
+            )
+    headers = _bounded(header_probes)
     for repo in sorted(community, key = str.lower):
         family = community[repo]
-        rows.append(_row(repo, repo, "", family, index.get(family), listings.get(repo) or []))
+        files = listings.get(repo) or []
+        rows.append(_row(repo, repo, "", family, index.get(family), files, headers.get(repo)))
     payload = AudioCatalogResponse(
         source = source,
         fetched_at = fetched_at,
         runtime_specs = specs_dir is not None,
         models = rows,
     )
-    return payload, len(answered) == len(probes)
+    return payload, len(answered) == len(probes) and len(headers) == len(header_probes)
