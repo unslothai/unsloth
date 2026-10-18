@@ -5234,7 +5234,7 @@ export function createOpenAIStreamAdapter(
       );
       const imageGenerationEnabledForThisTurn =
         imageToolsEnabled && hostedImageGenerationForThisTurn;
-      // Otherwise the Images pill renders on the image or video model loaded in Unsloth Studio.
+      // Otherwise the Images pill renders on the image or video model loaded in Unsloth.
       const localMediaTools = localMediaToolsForTurn({
         imageToolsEnabled,
         supportsBuiltinImageGeneration: hostedImageGenerationForThisTurn,

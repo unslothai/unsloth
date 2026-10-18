@@ -1099,8 +1099,8 @@ type LocalMediaToolState = Pick<
 >;
 
 /**
- * The Images pill runs on the image or video model loaded in Unsloth Studio: the chat
- * model calls Unsloth Studio tools and one of them is resident. A hosted image model
+ * The Images pill runs on the image or video model loaded in Unsloth: the chat
+ * model calls Unsloth tools and one of them is resident. A hosted image model
  * keeps its own image_generation, so it wins.
  */
 export function localImageTool(s: LocalMediaToolState): boolean {
@@ -2534,9 +2534,9 @@ type ChatRuntimeStore = {
   supportsBuiltinWebFetch: boolean;
   /** mirrors the backend Settings switch "Keep multiple models loaded". */
   keepModelsLoaded: boolean;
-  /** A text-to-image model is loaded in Unsloth Studio, so the Images pill can offer generate_image. Not persisted. */
+  /** A text-to-image model is loaded in Unsloth, so the Images pill can offer generate_image. Not persisted. */
   localImageModelReady: boolean;
-  /** A video model is loaded in Unsloth Studio, so the Images pill can offer generate_video. Not persisted. */
+  /** A video model is loaded in Unsloth, so the Images pill can offer generate_video. Not persisted. */
   localVideoModelReady: boolean;
   toolsEnabled: boolean;
   /** persisted Code preference; codeToolsOn() gives the effective value. */

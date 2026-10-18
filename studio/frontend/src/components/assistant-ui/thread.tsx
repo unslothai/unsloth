@@ -6723,7 +6723,7 @@ const ImagesToggle: FC = () => {
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
   // The provider's own image_generation, or the image or video model loaded in
-  // Unsloth Studio for a model that calls Unsloth Studio tools. Mirror of
+  // Unsloth for a model that calls Unsloth tools. Mirror of
   // shared-composer's imageDisabled / showImagePill so this composer matches the empty state.
   const imageToolShown = useChatRuntimeStore(imageToolAvailable);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);

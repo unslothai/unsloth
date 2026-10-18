@@ -40,7 +40,7 @@ import { useSandboxImage } from "./use-sandbox-image";
  * `args.kind: "image"`. Without this, ToolFallback would print the prompt as
  * JSON with an empty Result block (the "no image" symptom).
  *
- * `generate_image` (the image model loaded in Unsloth Studio) shares this card. Its result is the
+ * `generate_image` (the image model loaded in Unsloth) shares this card. Its result is the
  * sandbox wrapper, so the image is fetched from the chat's sandbox, and it has no Edit: that needs
  * an OpenAI image-generation call id. A failed call answers with an "Error: ..." string.
  */
@@ -574,7 +574,7 @@ ImageGenerationToolUI.displayName = "ImageGenerationToolUI";
 
 const VIDEO_FILE = /\.(mp4|webm|mov)$/i;
 
-/** `generate_video`: the .mp4 the video model loaded in Unsloth Studio wrote into the chat's sandbox. */
+/** `generate_video`: the .mp4 the video model loaded in Unsloth wrote into the chat's sandbox. */
 const VideoGenerationToolUIImpl: ToolCallMessagePartComponent = ({
   args,
   result,

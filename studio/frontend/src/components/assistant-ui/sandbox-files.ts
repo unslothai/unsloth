@@ -13,7 +13,7 @@ const FILES_MARKER = "\n__FILES__:";
 export const SANDBOX_RUN_TOOLS = new Set(["python", "terminal"]);
 
 /**
- * The chat tools that render on the image or video model loaded in Unsloth Studio. They
+ * The chat tools that render on the image or video model loaded in Unsloth. They
  * write their output into the sandbox and answer with the file envelope. Keep in step
  * with MEDIA_CHAT_TOOLS in studio/backend/core/inference/media_chat_tools.py.
  */

@@ -3225,7 +3225,7 @@ export function ChatPage({
     // Reruns once settings hydrate: this normalization reads the stored pills and clamps them to the
     // model, and hydration refreshes what it reads, so it has to be applied last.
   }, [externalProvidersForChat, inferenceCheckpoint, settingsHydrated]);
-  // The Images pill can use the image or video model loaded in Unsloth Studio. Re-read on mount,
+  // The Images pill can use the image or video model loaded in Unsloth. Re-read on mount,
   // when any load settles (a chat load can evict them), when either is ejected, and on focus.
   useEffect(() => {
     let disposed = false;
