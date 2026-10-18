@@ -3338,3 +3338,37 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
             env_extra = {"UNSLOTH_DISABLE_UNIFIED_MEMORY": "1"},
         )
         assert all("GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env for _c, env in launches)
+
+
+class TestCompanionNamesOnAnUncoveredCard:
+    """A device name in the extras on the card the gate dropped must not widen the
+    automatic pin back onto it: the child's HSA enumeration dies on that agent."""
+
+    @pytest.mark.parametrize(
+        "extra",
+        [["-ot", "exps=ROCm1"], ["--mmproj-device", "ROCm1"], ["--spec-draft-device", "ROCm1"]],
+        ids = ["tensor_override", "mmproj", "draft"],
+    )
+    def test_the_dropped_card_stays_masked(self, tmp_path, monkeypatch, probe_env, extra):
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        torch = _fake_torch(
+            [
+                _device("gfx1030", free_mib = 12049),
+                _device("gfx1036", free_mib = 30000, is_integrated = 1),
+            ],
+            vendor = "amd",
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            GFX103X,
+            returncode = None,
+            intent_kwargs = {"extra_args": list(extra)},
+        )
+        assert len(launches) == 1
+        _cmd, env = launches[0]
+        assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
