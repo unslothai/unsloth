@@ -202,8 +202,8 @@ def test_load_model_uses_the_argv_and_skips_an_unmappable_mask():
     assert "_visibility_mask_is_unmappable()" in window
     # Every device name the child parses, env twins included: no LLAMA_ARG_DEVICE skip.
     assert 'env.get("LLAMA_ARG_DEVICE", "")' not in window
-    assert "allowed_ids = gpu_ids or None" in src[at : at + 300]
-    assert "env = env" in src[at : at + 300]
+    assert "allowed_ids = gpu_ids or [i for i, _f in _detected_gpus] or None" in src[at : at + 400]
+    assert "env = env" in src[at : at + 400]
     retry = src.index("_widen_pin_ids_for_companion_devices(", at + 1)
     assert "env = env" in src[retry : retry + 300]
 
@@ -214,7 +214,7 @@ def test_a_widened_explicit_pin_is_what_status_and_dedupe_see():
 
     src = inspect.getsource(llama_cpp.LlamaCppBackend.load_model)
     at = src.index("_widen_pin_ids_for_companion_devices(")
-    window = src[at : at + 900]
+    window = src[at : at + 1100]
     assert "if gpu_ids:" in window
     assert "self._adopt_widened_pin(_pin_ids)" in window
 
@@ -719,3 +719,12 @@ def test_a_gpu_projector_after_no_offload_still_widens():
         [0], ["--no-mmproj-offload", "--mmproj-device", "CUDA1"], inherited = [0, 1]
     )
     assert mask == [0, 1] and note
+
+
+@pytest.mark.parametrize("argv", [["-ot", "exps=ROCm0"], ["--mmproj-device", "ROCm0"]])
+def test_auto_widening_never_reaches_an_arch_excluded_card(argv):
+    # GPU 0 is an arch the build lacks; auto placement picked GPU 1 and passes the arch
+    # gate's survivors as the limit, so a name on GPU 0 never re-exposes it.
+    cmd, pin, note = _widen([1], argv, inherited = [0, 1], allowed_ids = [1])
+    assert pin == [1]
+    assert cmd == argv

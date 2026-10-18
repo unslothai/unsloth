@@ -32249,7 +32249,9 @@ class LlamaCppBackend:
                     # Mask on AMD at the ROCr/HSA layer: HIP-only masking still
                     # enumerates every agent first, which segfaults on a deselected
                     # unsupported GPU (e.g. gfx1036 iGPU under a gfx103X prebuilt).
-                    # Companion flags use the unpinned numbering (#11810). Skipped for a
+                    # Companion flags use the unpinned numbering (#11810), widening only
+                    # onto picked cards or, without a pick, the cards the arch-gated probe
+                    # kept (an excluded ROCm agent kills HSA enumeration). Skipped for a
                     # uuid/MIG mask (CUDA<n> is ambiguous). Every device name the child
                     # parses is fitted, env twins included (MTMD_BACKEND_DEVICE, an
                     # inherited LLAMA_ARG_DEVICE, which as the final main value also stops
@@ -32261,7 +32263,7 @@ class LlamaCppBackend:
                             cmd,
                             _pin_ids,
                             self._resolve_visible_physical_ids(),
-                            allowed_ids = gpu_ids or None,
+                            allowed_ids = gpu_ids or [i for i, _f in _detected_gpus] or None,
                             env = env,
                         )
                         # The names are now in the pin's numbering even when nothing had to
