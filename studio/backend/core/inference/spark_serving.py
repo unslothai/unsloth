@@ -1974,6 +1974,36 @@ def strip_layer_split_extra_args(extra: Sequence[str]) -> List[str]:
     return tokens
 
 
+def strip_echoed_split_block(extra: Sequence[str], peer: Optional[str]) -> Optional[List[str]]:
+    """``extra`` without a split block this module appended for ``peer``, when a client sends it back
+    as explicit args (the status surface reports it as the load's requested extras, and a rollback
+    resends that), or None when there is none. Looser than ``strip_layer_split_extra_args``, which
+    also runs off a Spark: Manual GPU mode moves ``--tensor-split`` into its own field and a server
+    tuning field can take ``--cache-ram``, so either pair may be missing; the --rpc must name the
+    configured peer."""
+    if not peer:
+        return None
+    tokens = [str(t) for t in extra]
+    optional = [("--tensor-split", SPLIT_TENSOR_SPLIT_EVEN), ("--cache-ram", "0")]
+    for start in range(len(tokens) - 1, -1, -1):
+        if tokens[start] != "--rpc":
+            continue
+        value = tokens[start + 1] if start + 1 < len(tokens) else ""
+        if value.rsplit(":", 1)[0] != peer:
+            return None
+        rest = tokens[start + 2 :]
+        if rest[:4] != ["--device", "RPC0,CUDA0", "-sm", "layer"]:
+            return None
+        rest = rest[4:]
+        for name, wanted in optional:
+            if rest[:2] == [name, wanted]:
+                rest = rest[2:]
+        if rest and not (len(rest) == 2 and rest[0] == PIPELINE_GROUPS_FLAG):
+            return None
+        return tokens[:start]
+    return None
+
+
 try:
     import ctypes as _ctypes
     _LIBC = _ctypes.CDLL("libc.so.6", use_errno = True)
@@ -3426,6 +3456,16 @@ async def before_load(
     )
     if st._passthrough:
         return request
+    explicit = getattr(request, "llama_extra_args", None)
+    if explicit:
+        cleaned = strip_echoed_split_block(explicit, peer_address())
+        if cleaned is not None:
+            # Our own block, sent back: re-plan it rather than read it as the caller's --rpc.
+            updates: Dict[str, Any] = {"llama_extra_args": cleaned}
+            moved = list(getattr(request, "tensor_split", None) or [])
+            if "--tensor-split" not in [str(t) for t in explicit] and moved == [0.5, 0.5]:
+                updates["tensor_split"] = None
+            request = SparkServing._request_with(request, updates)
     st._cancel_event = cancel_event
     st._confirm_teardown = confirm_teardown
     try:

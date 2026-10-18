@@ -4975,3 +4975,42 @@ def test_a_failed_replica_restart_is_retried_rather_than_reported_in_step(monkey
     count = len(events)
     assert run(state._sync_replica(_primary(plain)))
     assert len(events) == count
+
+
+@pytest.mark.parametrize("manual_gpu_mode", [False, True])
+def test_our_split_block_sent_back_as_explicit_args_is_replanned(
+    cluster, monkeypatch, tmp_path, manual_gpu_mode
+):
+    """Regression: status reports the split block as the load's requested extras and the UI rollback
+    resends it; read as a caller --rpc, no rpc-server was started and llama-server was pointed at a
+    dead peer. Manual GPU mode moves --tensor-split into its own field first."""
+    cluster.topology = "layer_split"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    _calls, started = _patch_remote(monkeypatch)
+    echoed = ["-ngl", "99"] + ss.layer_split_extra_args("127.0.0.1", 50052)
+    if manual_gpu_mode:
+        at = echoed.index("--tensor-split")
+        del echoed[at : at + 2]
+    request = _FakeRequest(str(model), llama_extra_args = echoed)
+    out = run(ss.before_load(request, 4))
+    assert started, "the echoed block must be re-planned, not read as a caller --rpc"
+    assert ss.state().topology == "layer_split"
+    assert out.llama_extra_args[:2] == ["-ngl", "99"]
+    assert out.llama_extra_args.count("--rpc") == 1
+
+
+def test_echoed_split_block_strip_leaves_a_users_own_rpc_alone():
+    block = ss.layer_split_extra_args("10.0.0.2", 50052)
+    assert ss.strip_echoed_split_block(["-c", "8192"] + block, "10.0.0.2") == ["-c", "8192"]
+    # Another host, or no configured peer: the caller's own --rpc.
+    assert ss.strip_echoed_split_block(block, "10.0.0.9") is None
+    assert ss.strip_echoed_split_block(block, None) is None
+    # Not our shape after the --rpc.
+    assert (
+        ss.strip_echoed_split_block(["--rpc", "10.0.0.2:50052", "-sm", "row"], "10.0.0.2") is None
+    )
+    assert ss.strip_echoed_split_block(block + ["--top-k", "20"], "10.0.0.2") is None
+    grouped = ss.layer_split_extra_args("10.0.0.2", 50052, pipeline_groups = 2)
+    assert ss.strip_echoed_split_block(grouped, "10.0.0.2") == []
