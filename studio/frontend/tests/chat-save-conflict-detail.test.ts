@@ -9,7 +9,6 @@ import test from "node:test";
 
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 import { skillLoadCardEvent } from "../src/features/chat/api/skill-load-event.ts";
-import * as abortSignals from "../src/features/hub/lib/abort-signals.ts";
 
 type Module = {
   saveChatMessage: (
@@ -44,11 +43,7 @@ function jsonResponse(status: number, body: unknown, kind: string | null = "prot
   };
 }
 
-function harness(
-  response: ReturnType<typeof jsonResponse>,
-  fetch?: (init?: RequestInit) => Promise<typeof response>,
-  timeout = abortSignals.disposableTimeoutSignal,
-) {
+function harness(response: ReturnType<typeof jsonResponse>) {
   const requests: { url: string; init?: RequestInit }[] = [];
   const module = loadWithStubs<Module>(
     new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
@@ -61,7 +56,7 @@ function harness(
       "@/features/auth": {
         authFetch: async (url: string, init?: RequestInit) => {
           requests.push({ url, init });
-          return fetch ? fetch(init) : response;
+          return response;
         },
       },
       "@/lib/format-fastapi-error": {
@@ -85,7 +80,7 @@ function harness(
         dismissCarveoutAdviceForModel: () => {},
         showCarveoutAdvice: () => {},
       },
-      "@/features/hub/lib/abort-signals": { ...abortSignals, disposableTimeoutSignal: timeout },
+      "@/features/hub/lib/abort-signals": {},
       "@/features/hub/lib/hub-token-header": { hubTokenHeader: () => ({}) },
       "@/features/hub/lib/network": { isHuggingFaceOffline: () => false },
       "@/features/native-intents/api": { consumeNativePathToken: () => undefined },
@@ -191,47 +186,4 @@ test("the manual-edit query parameter is still sent", async () => {
   const { module, requests } = harness(jsonResponse(200, message));
   await module.saveChatMessage(message, { allowGenerationEdit: true });
   assert.match(requests[0].url, /allowGenerationEdit=true/);
-});
-
-test("a stalled manual edit aborts and disposes its timeout", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  let disposed = false;
-  const timeout: typeof abortSignals.disposableTimeoutSignal = (ms) => {
-    assert.equal(ms, 30_000);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new DOMException("timeout", "TimeoutError")), ms);
-    return { signal: controller.signal, dispose: () => { disposed = true; clearTimeout(timer); } };
-  };
-  const { module, requests } = harness(jsonResponse(200, message), (init) => new Promise((_resolve, reject) => {
-    init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
-  }), timeout);
-  const result = assert.rejects(module.saveChatMessage(message, { allowGenerationEdit: true }), { name: "TimeoutError" });
-  assert.equal(requests[0].init?.signal?.aborted, false);
-  t.mock.timers.tick(30_000);
-  await result;
-  assert.equal(disposed, true);
-});
-
-test("a manual edit keeps its deadline while reading the response body", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  const response = jsonResponse(200, message);
-  let signal: AbortSignal | undefined;
-  let disposed = false;
-  response.json = () => new Promise((_resolve, reject) => {
-    signal?.addEventListener("abort", () => reject(signal?.reason), { once: true });
-  });
-  const { module } = harness(response, async (init) => {
-    signal = init?.signal ?? undefined;
-    return response;
-  }, (ms) => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new DOMException("timeout", "TimeoutError")), ms);
-    return { signal: controller.signal, dispose: () => { disposed = true; clearTimeout(timer); } };
-  });
-  const save = module.saveChatMessage(message, { allowGenerationEdit: true });
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(disposed, false);
-  t.mock.timers.tick(30_000);
-  await assert.rejects(save);
-  assert.equal(disposed, true);
 });

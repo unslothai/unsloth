@@ -24,77 +24,37 @@ const { outputText } = ts.transpileModule(
 
 type Update = { content: unknown[]; metadata: { custom: { serverRevision: number } } };
 
-async function follow(read: () => Promise<unknown>, status = "completed") {
-  let reads = 0;
-  const run = new Function(
-    "watchResearchRun",
-    "terminalResearchStatuses",
-    "getStoredChatMessage",
-    `${outputText}; return follow;`,
-  )(
-    async function* () {
-      yield { id: "research-1", status: "running", report: "draft", lastEventSeq: 1 };
-      yield { id: "research-1", status: "running", report: "longer draft", lastEventSeq: 2 };
-      yield { id: "research-1", status, report: "report", lastEventSeq: 3 };
-    },
-    new Set(["completed", "failed", "cancelled"]),
-    async (threadId: string, messageId: string) => {
-      assert.equal(threadId, "thread-1");
-      assert.equal(messageId, "assistant-1");
-      reads += 1;
-      return read();
-    },
-  ) as () => AsyncGenerator<Update>;
-  const updates: Update[] = [];
-  for await (const update of run()) updates.push(update);
-  return { reads, updates };
-}
-
-test("the settled research report uses the same reasoning and tools as reopening", async () => {
-  const content = [
-    { type: "reasoning", text: "research reasoning" },
-    { type: "tool-call", toolCallId: "call-1", toolName: "web_search", args: {}, result: "sources" },
-    { type: "text", text: "report" },
-  ];
-  const result = await follow(async () => ({
-    role: "assistant", content, metadata: { researchRunId: "research-1", researchStatus: "completed" },
-  }));
-  assert.equal(result.reads, 1);
-  assert.equal(result.updates.length, 2);
-  assert.deepEqual(result.updates[0].content, [{ type: "text", text: "draft" }]);
-  assert.deepEqual(result.updates[1].content, content);
-  assert.notEqual(result.updates[1].content, content);
-  assert.equal(result.updates[1].metadata.custom.serverRevision, 3);
-});
-
-for (const [name, read] of [
-  ["missing", async () => undefined],
-  ["unavailable", async () => { throw new Error("offline"); }],
-  ["another run", async () => ({ role: "assistant", content: [{ type: "text", text: "old" }], metadata: { researchRunId: "old" } })],
-] as const) {
-  test(`a ${name} stored row preserves the completed report`, async () => {
-    const result = await follow(read);
-    assert.deepEqual(result.updates.at(-1)?.content, [{ type: "text", text: "report" }]);
-  });
-}
-
-
+// Token-count bookkeeping must not make an already-delivered terminal update wait for storage.
 for (const status of ["completed", "failed", "cancelled"]) {
-  test(`a ${status} run ignores a stored pre-terminal handoff`, async () => {
-    const result = await follow(async () => ({
-      role: "assistant",
-      content: [{ type: "text", text: "Starting research" }],
-      metadata: { researchRunId: "research-1", researchStatus: "running" },
-    }), status);
-    assert.deepEqual(result.updates.at(-1)?.content, [{ type: "text", text: "report" }]);
-  });
+  for (const [historyState, read] of [
+    ["stalled", () => new Promise<never>(() => {})],
+    ["offline", async () => { throw new Error("offline"); }],
+  ] as const) {
+    test(`a ${status} research run finishes without reading ${historyState} history`, { timeout: 1000 }, async () => {
+      let reads = 0;
+      const follow = new Function(
+        "watchResearchRun",
+        "terminalResearchStatuses",
+        "getStoredChatMessage",
+        `${outputText}; return follow;`,
+      )(
+        async function* () {
+          yield { id: "research-1", status: "running", report: "draft", lastEventSeq: 1 };
+          yield { id: "research-1", status: "running", report: "longer draft", lastEventSeq: 2 };
+          yield { id: "research-1", status, report: "report", lastEventSeq: 3 };
+        },
+        new Set(["completed", "failed", "cancelled"]),
+        () => { reads += 1; return read(); },
+      ) as () => AsyncGenerator<Update>;
 
-  test(`a ${status} run accepts its matching terminal stored content`, async () => {
-    const content = [{ type: "text", text: "Stored terminal result" }];
-    const result = await follow(async () => ({
-      role: "assistant", content,
-      metadata: { researchRunId: "research-1", researchStatus: status },
-    }), status);
-    assert.deepEqual(result.updates.at(-1)?.content, content);
-  });
+      const updates: Update[] = [];
+      for await (const update of follow()) updates.push(update);
+
+      assert.equal(reads, 0);
+      assert.equal(updates.length, 2);
+      assert.deepEqual(updates[0].content, [{ type: "text", text: "draft" }]);
+      assert.deepEqual(updates[1].content, [{ type: "text", text: "report" }]);
+      assert.equal(updates[1].metadata.custom.serverRevision, 3);
+    });
+  }
 }

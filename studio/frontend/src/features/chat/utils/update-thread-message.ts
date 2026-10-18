@@ -169,51 +169,16 @@ function parseTaggedTextToContent(text: string): ContentPart[] {
   return parts;
 }
 
-type UpdateThreadMessageArgs = {
+export async function updateThreadMessage(args: {
   thread: ThreadImportExport;
   messageId: string;
   remoteId: string | undefined;
   newText: string;
-  isIncognito: boolean;
-};
-
-const pendingMessageSaves = new Map<string, Promise<ThreadMessage | undefined>>();
-const messageSaveListeners = new Set<() => void>();
-
-export function subscribeThreadMessageSaves(listener: () => void) {
-  messageSaveListeners.add(listener);
-  return () => { messageSaveListeners.delete(listener); };
-}
-
-export function isThreadMessageSavePending(remoteId: string | undefined, messageId: string) {
-  return pendingMessageSaves.has(JSON.stringify([remoteId, messageId]));
-}
-
-export async function updateThreadMessage(args: UpdateThreadMessageArgs) {
-  const key = JSON.stringify([args.remoteId, args.messageId]);
-  const previous = pendingMessageSaves.get(key);
-  const save = saveThreadMessage(args, previous);
-  const settled = save.catch(() => previous);
-  pendingMessageSaves.set(key, settled);
-  messageSaveListeners.forEach((listener) => listener());
-  try {
-    return (await save)?.content ?? [];
-  } finally {
-    if (pendingMessageSaves.get(key) === settled) {
-      pendingMessageSaves.delete(key);
-      messageSaveListeners.forEach((listener) => listener());
-    }
-  }
-}
-
-async function saveThreadMessage(
-  args: UpdateThreadMessageArgs,
-  previous: Promise<ThreadMessage | undefined> | undefined,
-) {
+  isIncognito: boolean; // <--- ADD THIS
+}) {
   const { thread, messageId, remoteId, newText, isIncognito } = args;
   const parsedEditableContent = parseTaggedTextToContent(newText);
   const currentExport = thread.export();
-  const previousMessage = previous ? await previous : undefined;
 
   const targetMessageEntry = currentExport.messages.find(m => m.message.id === messageId);
   if (!targetMessageEntry) {
@@ -225,7 +190,6 @@ async function saveThreadMessage(
   const updatedMessages = currentExport.messages.map((m) => {
     if (m.message.id !== messageId) return m;
 
-    const originalMessage = previousMessage ?? m.message;
     const originalContent = m.message.content;
     const finalContent: any[] = [];
 
@@ -273,7 +237,7 @@ async function saveThreadMessage(
       }
     }
 
-    const previousContent = originalMessage.content;
+    const previousContent = m.message.content;
     const previousTools = Array.isArray(previousContent)
       ? previousContent.filter((part) => !isEditablePart(part))
       : [];
@@ -283,36 +247,36 @@ async function saveThreadMessage(
     return {
       ...m,
       message: {
-        ...originalMessage,
+        ...m.message,
         content: finalContent,
         metadata:
           unchanged
-            ? withoutGeminiContinuationReplay(originalMessage.metadata)
-            : withRevision(withoutGeminiContinuationReplay(originalMessage.metadata)),
+            ? withoutGeminiContinuationReplay(m.message.metadata)
+            : withRevision(withoutGeminiContinuationReplay(m.message.metadata)),
       },
     };
   }) as typeof currentExport.messages;
 
+  const originalExport = currentExport;
+  thread.import({ ...currentExport, messages: updatedMessages });
+
   const editedMessage = updatedMessages.find(m => m.message.id === messageId)?.message;
 
+  // If it's NOT incognito, we attempt to save to the DB regardless of the ID.
   if (remoteId && !isIncognito && editedMessage) {
-    await saveChatMessage(
-      withoutServerOwnership(
-        exportedItemToRecord(remoteId, originalParentId, editedMessage),
-      ),
-      { allowGenerationEdit: true },
-    );
+    try {
+      await saveChatMessage(
+        withoutServerOwnership(
+          exportedItemToRecord(remoteId, originalParentId, editedMessage),
+        ),
+        { allowGenerationEdit: true },
+      );
+    } catch (e) {
+      thread.import(originalExport);
+      console.error("Backend sync failed for message update. Rolling back UI.", e);
+      throw e;
+    }
   }
 
-  const latestExport = thread.export();
-  if (editedMessage && latestExport.messages.some(m => m.message.id === messageId)) {
-    thread.import({
-      ...latestExport,
-      messages: latestExport.messages.map(m => m.message.id === messageId
-        ? { ...m, message: editedMessage }
-        : m),
-    });
-  }
-
-  return editedMessage;
+  return (updatedMessages.find(m => m.message.id === messageId)?.message.content) || [];
 }

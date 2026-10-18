@@ -323,7 +323,6 @@ import type {
 import { modelReadsSamplingSeed, type ChatModelRow } from "../types/runtime";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
 import {
-  getStoredChatMessage,
   getStoredChatThread,
   getStoredChatThreadReadResult,
   getStoredChatProject,
@@ -4974,24 +4973,8 @@ export function createOpenAIStreamAdapter(
               continue;
             }
             yieldedStatus = run.status;
-            let content: Extract<RunMessages[number], { role: "assistant" }>["content"] =
-              [{ type: "text", text: report }];
-            if (settled) {
-              const stored = await getStoredChatMessage(
-                resolvedThreadId,
-                unstable_assistantMessageId,
-              ).catch(() => undefined);
-              if (
-                stored?.role === "assistant" &&
-                stored.metadata?.researchRunId === run.id &&
-                stored.metadata?.researchStatus === run.status &&
-                stored.content.length > 0
-              ) {
-                content = structuredClone(stored.content) as typeof content;
-              }
-            }
             yield {
-              content,
+              content: [{ type: "text" as const, text: report }],
               metadata: {
                 custom: {
                   researchRunId: run.id,

@@ -461,12 +461,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import {
-  extractTaggedText,
-  isThreadMessageSavePending,
-  subscribeThreadMessageSaves,
-  updateThreadMessage,
-} from "@/features/chat/utils/update-thread-message";
+import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/update-thread-message";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
@@ -8288,13 +8283,6 @@ const DiffusionCanvas: FC = () => {
 
 const ResearchMessageRunIdContext = createContext<string | null>(null);
 
-function useMessageSavePending(messageId: string) {
-  const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
-  const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
-  const getSnapshot = () => isThreadMessageSavePending(remoteId || activeThreadId || undefined, messageId);
-  return useSyncExternalStore(subscribeThreadMessageSaves, getSnapshot, getSnapshot);
-}
-
 /**
  * AssistantMessage handles the display and inline-editing of AI responses.
  *
@@ -8306,7 +8294,6 @@ const AssistantMessage: FC = () => {
   const aui = useAui();
   const focusReveal = useActionBarFocusReveal();
   const messageId = useAuiState(({ message }) => message.id);
-  const isSaving = useMessageSavePending(messageId);
   const messageContent = useAuiState(({ message }) =>
     "status" in message && message.status?.type === "running"
       ? null
@@ -8351,8 +8338,7 @@ const AssistantMessage: FC = () => {
     const finalText = textareaRef.current?.value || "";
 
     // Prioritize the specific thread item ID, then fallback to the global active thread ID
-    const threadItem = aui.threadListItem().getState();
-    const remoteId = threadItem.remoteId
+    const remoteId = aui.threadListItem().getState().remoteId
                   || useChatRuntimeStore.getState().activeThreadId;
 
     if (!remoteId || remoteId === "" || remoteId === "/") {
@@ -8361,13 +8347,12 @@ const AssistantMessage: FC = () => {
       return;
     }
 
-    if (isThreadMessageSavePending(remoteId, messageId)) return;
-
     try {
-      const thread = aui.threads().__internal_getAssistantRuntime?.()
-        ?.threads.getById(threadItem.id) ?? aui.thread();
       await updateThreadMessage({
-        thread,
+        thread: {
+          export: () => aui.thread().export(),
+          import: (data) => aui.thread().import(data)
+        },
         messageId,
         remoteId,
         newText: finalText,
@@ -8377,9 +8362,7 @@ const AssistantMessage: FC = () => {
       console.error("UI: Error during save:", error);
       toast.error("Failed to save message edits.");
     } finally {
-      if (useChatRuntimeStore.getState().editingMessageId === messageId) {
-        setEditingId(null);
-      }
+      setEditingId(null);
     }
   };
 
@@ -8411,7 +8394,6 @@ const AssistantMessage: FC = () => {
             <textarea
               ref={textareaRef}
               defaultValue={extractTaggedText(messageContent ?? [])}
-              disabled={isSaving}
               className="block min-h-14 w-full max-h-[70dvh] resize-none overflow-y-auto bg-transparent p-4 text-foreground text-sm font-[450] outline-none"
               autoFocus
               onInput={adjustHeight}
@@ -8420,14 +8402,14 @@ const AssistantMessage: FC = () => {
                 if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
                   handleSave();
                 }
-                if (e.key === 'Escape' && !isSaving) {
+                if (e.key === 'Escape') {
                   setEditingId(null); // UX: Close editor on Escape
                 }
               }}
             />
             <div className="mx-3 flex items-center gap-2 self-end">
-              <Button type="button" size="sm" variant="ghost" disabled={isSaving} onClick={() => setEditingId(null)}>Cancel</Button>
-              <Button type="button" size="sm" disabled={isSaving} onClick={handleSave}>Save</Button>
+              <Button type="button" size="sm" variant="ghost" onClick={() => setEditingId(null)}>Cancel</Button>
+              <Button type="button" size="sm" onClick={handleSave}>Save</Button>
             </div>
           </div>
         ) : (
@@ -8872,7 +8854,6 @@ const CopyButton: FC = () => {
 
 const EditAssistantMessageButton: FC = () => {
   const messageId = useAuiState(({ message }) => message.id);
-  const isSaving = useMessageSavePending(messageId);
   const researchRunId = useResearchMessageRunId();
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
   const researchActive = useThreadResearchActive();
@@ -8883,7 +8864,7 @@ const EditAssistantMessageButton: FC = () => {
   return (
     <TooltipIconButton
       tooltip="Edit response"
-      disabled={isRunning || researchActive || isSaving}
+      disabled={isRunning || researchActive}
       onClick={() => setEditingId(messageId)}
     >
       <HugeiconsIcon
@@ -8932,7 +8913,6 @@ const ContinueResponseMenuItemForLastMessage: FC = () => {
 // The More menu's Edit response, shown when the button is not pinned to the bar.
 const EditAssistantMessageMenuItem: FC = () => {
   const messageId = useAuiState(({ message }) => message.id);
-  const isSaving = useMessageSavePending(messageId);
   const researchRunId = useResearchMessageRunId();
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
   const researchActive = useThreadResearchActive();
@@ -8942,7 +8922,7 @@ const EditAssistantMessageMenuItem: FC = () => {
 
   return (
     <ActionBarMorePrimitive.Item
-      disabled={isRunning || researchActive || isSaving}
+      disabled={isRunning || researchActive}
       onSelect={() => setEditingId(messageId)}
       className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
     >

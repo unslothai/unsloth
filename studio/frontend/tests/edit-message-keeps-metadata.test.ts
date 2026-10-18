@@ -25,8 +25,6 @@ type Exported = {
 
 type Module = {
   extractTaggedText: (content: unknown) => string;
-  subscribeThreadMessageSaves: (listener: () => void) => () => void;
-  isThreadMessageSavePending: (remoteId: string | undefined, messageId: string) => boolean;
   updateThreadMessage: (args: {
     thread: { export: () => Exported; import: (data: Exported) => void };
     messageId: string;
@@ -328,7 +326,7 @@ test("an incognito edit is never written at all", async () => {
   assert.equal(h.saved.length, 0);
 });
 
-test("an edit publishes its revision only after the server accepts it", async () => {
+test("an edit updates content and token-count revision before the existing save settles", async () => {
   let accept!: () => void;
   const pending = new Promise<void>((resolve) => { accept = resolve; });
   const h = harness(() => pending);
@@ -346,7 +344,9 @@ test("an edit publishes its revision only after the server accepts it", async ()
   });
 
   assert.equal(h.saved.length, 1);
-  assert.equal(published.length, 0);
+  assert.equal(published.length, 1);
+  assert.deepEqual(exported.messages[1].message.content, [{ type: "text", text: "edited" }]);
+  assert.equal(revisionTotal(exported.messages.map(({ message }) => message) as unknown as ThreadMessage[]), 1);
   accept();
   await save;
   assert.equal(published.length, 1);
@@ -355,30 +355,40 @@ test("an edit publishes its revision only after the server accepts it", async ()
   assert.deepEqual(messages[1].content, [{ type: "text", text: "edited" }]);
 });
 
-test("a refused edit leaves the runtime and its context revision untouched", async () => {
+test("upstream edit rollback restores content, revision and the saved token count", async () => {
   const error = new Error("server-managed generation messages cannot be edited");
-  const h = harness(async () => { throw error; });
-  const exported = thread([{ type: "text", text: "original" }]);
-  let imports = 0;
+  const write = deferred();
+  const h = harness(() => write.promise);
+  let exported = thread([{ type: "text", text: "original" }]);
+  const saved = { modelId: "local-model", promptTokens: 42, completionTokens: 8, totalTokens: 50, cachedTokens: 0 };
+  exported.messages[1].message.metadata = { custom: { contextUsage: saved } };
+  const shownUsage = () => branchContextUsage(
+    threadBranchRecords(exported.messages.map(({ message }) => message) as unknown as ThreadMessage[]),
+    "local-model", 4096, 4096,
+  );
 
-  await assert.rejects(h.module.updateThreadMessage({
+  const saving = h.module.updateThreadMessage({
     thread: {
       export: () => exported,
-      import: () => { imports += 1; },
+      import: (next) => { exported = next; },
     },
     messageId: "a0",
     remoteId: "remote-1",
     newText: "edited",
     isIncognito: false,
-  }), error);
+  });
+  assert.notEqual(shownUsage(), saved);
+  const rejected = assert.rejects(saving, error);
+  write.reject(error);
+  await rejected;
 
-  assert.equal(imports, 0);
+  assert.equal(shownUsage(), saved);
   const messages = exported.messages.map(({ message }) => message) as unknown as ThreadMessage[];
   assert.equal(revisionTotal(messages), 0);
   assert.deepEqual(messages[1].content, [{ type: "text", text: "original" }]);
 });
 
-test("overlapping edits persist in submission order with distinct revisions", async () => {
+test("token-count revisions do not serialize or delay upstream edit requests", async () => {
   const firstWrite = deferred();
   const secondWrite = deferred();
   const writes = [firstWrite, secondWrite];
@@ -397,9 +407,11 @@ test("overlapping edits persist in submission order with distinct revisions", as
   });
   const first = edit("edit A");
   const second = edit("edit B");
-  assert.equal(h.saved.length, 1);
+  assert.equal(h.saved.length, 2);
+  assert.deepEqual(exported.messages[1].message.content, [{ type: "text", text: "edit B" }]);
 
   secondWrite.resolve();
+  await second;
   firstWrite.resolve();
   await Promise.all([first, second]);
 
@@ -409,38 +421,6 @@ test("overlapping edits persist in submission order with distinct revisions", as
   ]);
   assert.deepEqual(h.saved.map((record) => (record.metadata as Record<string, unknown>).revision), [1, 2]);
   assert.deepEqual(exported.messages[1].message.content, [{ type: "text", text: "edit B" }]);
-  assert.equal(revisionTotal(exported.messages.map(({ message }) => message) as unknown as ThreadMessage[]), 2);
-});
-
-test("a failed queued edit preserves the last accepted revision for later saves", async () => {
-  const firstWrite = deferred();
-  const failedWrite = deferred();
-  const error = new Error("save rejected");
-  let writeIndex = 0;
-  const h = harness(() => [firstWrite.promise, failedWrite.promise, Promise.resolve()][writeIndex++]);
-  let exported = thread([{ type: "text", text: "original" }]);
-  const edit = (newText: string) => h.module.updateThreadMessage({
-    thread: {
-      export: () => exported,
-      import: (next) => { exported = next; },
-    },
-    messageId: "a0",
-    remoteId: "remote-1",
-    newText,
-    isIncognito: false,
-  });
-  const first = edit("edit A");
-  const failed = assert.rejects(edit("edit B"), error);
-  const last = edit("edit C");
-
-  firstWrite.resolve();
-  await first;
-  failedWrite.reject(error);
-  await failed;
-  await last;
-
-  assert.deepEqual(h.saved.map((record) => (record.metadata as Record<string, unknown>).revision), [1, 2, 2]);
-  assert.deepEqual(exported.messages[1].message.content, [{ type: "text", text: "edit C" }]);
   assert.equal(revisionTotal(exported.messages.map(({ message }) => message) as unknown as ThreadMessage[]), 2);
 });
 
@@ -482,187 +462,11 @@ test("repeating an edit with THINK whitespace keeps the accepted revision", asyn
   assert.deepEqual(h.saved.map((record) => (record.metadata as Record<string, unknown>).revision), [1, 1]);
 });
 
-test("queued tool markers use the content the editor opened with", async () => {
-  const firstWrite = deferred();
-  const h = harness(() => firstWrite.promise);
-  const toolA = { type: "tool-call", toolCallId: "a", toolName: "first", args: {}, result: "A" };
-  const toolB = { type: "tool-call", toolCallId: "b", toolName: "second", args: {}, result: "B" };
-  let exported = thread([toolA, toolB]);
-  const edit = (newText: string) => h.module.updateThreadMessage({
-    thread: { export: () => exported, import: (next) => { exported = next; } },
-    messageId: "a0", remoteId: "remote-1", isIncognito: false, newText,
-  });
-  const first = edit("<TOOL 2: second>\n\n<TOOL 1: first>");
-  const second = edit("<TOOL 1: first>\n\n<TOOL 2: second>\n\nlatest edit");
-  firstWrite.resolve();
-  await Promise.all([first, second]);
-  assert.deepEqual(exported.messages[1].message.content, [toolA, toolB, { type: "text", text: "latest edit" }]);
-});
-
 test("reordering distinct calls to the same tool increments the revision", async () => {
   const tool = (toolCallId: string) => ({ type: "tool-call", toolCallId, toolName: "search", args: {}, result: toolCallId });
   const record = await save("<TOOL 2: search>\n\n<TOOL 1: search>", [tool("a"), tool("b")]);
   assert.equal((record.metadata as Record<string, unknown>).revision, 1);
   assert.deepEqual(record.content, [tool("b"), tool("a")]);
-});
-
-test("pending edit state stays with its message until the final queued save settles", async () => {
-  const writes = [deferred(), deferred()];
-  let index = 0;
-  const h = harness(() => writes[index++].promise);
-  let exported = thread([{ type: "text", text: "original" }]);
-  const notifications: boolean[] = [];
-  const unsubscribe = h.module.subscribeThreadMessageSaves(() => {
-    notifications.push(h.module.isThreadMessageSavePending("remote-1", "a0"));
-  });
-  const edit = (newText: string) => h.module.updateThreadMessage({
-    thread: { export: () => exported, import: (next) => { exported = next; } },
-    messageId: "a0", remoteId: "remote-1", isIncognito: false, newText,
-  });
-  const first = edit("edit A");
-  const failed = assert.rejects(edit("edit B"), /save failed/);
-  assert.equal(h.module.isThreadMessageSavePending("remote-2", "a0"), false);
-  assert.equal(h.module.isThreadMessageSavePending("remote-1", "other"), false);
-  writes[0].resolve();
-  await first;
-  assert.equal(h.module.isThreadMessageSavePending("remote-1", "a0"), true);
-  writes[1].reject(new Error("save failed"));
-  await failed;
-  assert.deepEqual(notifications, [true, true, false]);
-  unsubscribe();
-  index = 0;
-  await edit("edit C");
-  assert.deepEqual(notifications, [true, true, false]);
-});
-
-test("queued edits still save their original thread after switching away", async () => {
-  const firstWrite = deferred();
-  const h = harness(() => firstWrite.promise);
-  let exported = thread([{ type: "text", text: "original" }]);
-  let imports = 0;
-  const edit = (newText: string) => h.module.updateThreadMessage({
-    thread: {
-      export: () => exported,
-      import: () => { imports += 1; },
-    },
-    messageId: "a0",
-    remoteId: "remote-1",
-    newText,
-    isIncognito: false,
-  });
-  const first = edit("edit A");
-  const second = edit("edit B");
-  exported = { headId: null, messages: [] };
-  firstWrite.resolve();
-  await Promise.all([first, second]);
-
-  assert.equal(imports, 0);
-  assert.deepEqual(h.saved.map((record) => record.threadId), ["remote-1", "remote-1"]);
-  assert.deepEqual(h.saved[1].content, [{ type: "text", text: "edit B" }]);
-  assert.equal((h.saved[1].metadata as Record<string, unknown>).revision, 2);
-});
-
-test("accepting an edit retains messages and the branch selected while saving", async () => {
-  let accept!: () => void;
-  const pending = new Promise<void>((resolve) => { accept = resolve; });
-  const h = harness(() => pending);
-  let exported = thread([{ type: "text", text: "original" }]);
-  const save = h.module.updateThreadMessage({
-    thread: {
-      export: () => exported,
-      import: (next) => { exported = next; },
-    },
-    messageId: "a0",
-    remoteId: "remote-1",
-    newText: "edited",
-    isIncognito: false,
-  });
-  const followup = {
-    parentId: "a0",
-    message: { id: "u1", role: "user", content: [{ type: "text", text: "next" }] },
-  };
-  exported = { headId: "u1", messages: [...exported.messages, followup] };
-  accept();
-  await save;
-
-  assert.equal(exported.headId, "u1");
-  assert.equal(exported.messages.at(-1), followup);
-  assert.deepEqual(exported.messages[1].message.content, [{ type: "text", text: "edited" }]);
-});
-
-test("accepting an edit after changing threads leaves the visible thread alone", async () => {
-  let accept!: () => void;
-  const pending = new Promise<void>((resolve) => { accept = resolve; });
-  const h = harness(() => pending);
-  let exported = thread([{ type: "text", text: "original" }]);
-  let imports = 0;
-  const save = h.module.updateThreadMessage({
-    thread: {
-      export: () => exported,
-      import: () => { imports += 1; },
-    },
-    messageId: "a0",
-    remoteId: "remote-1",
-    newText: "edited",
-    isIncognito: false,
-  });
-  exported = { headId: null, messages: [] };
-  accept();
-  await save;
-
-  assert.equal(imports, 0);
-});
-
-test("the editor saves into its captured runtime after switching chats", async () => {
-  const source = readSrc("components/assistant-ui/thread.tsx");
-  const component = source.slice(source.indexOf("const AssistantMessage: FC"));
-  const start = component.indexOf("  const handleSave = async () => {");
-  const end = component.indexOf("\n  };", start) + "\n  };".length;
-  assert.ok(start >= 0 && end > start);
-  const { outputText } = ts.transpileModule(component.slice(start, end), {
-    compilerOptions: { target: ts.ScriptTarget.ES2022 },
-  });
-  const write = deferred();
-  const h = harness(() => write.promise);
-  const exports = {
-    a: thread([{ type: "text", text: "original" }]),
-    b: { headId: null, messages: [] } as Exported,
-  };
-  let selected: keyof typeof exports = "a";
-  const state = { activeThreadId: "remote-1", editingMessageId: "a0" as string | null };
-  const runtime = (id: keyof typeof exports) => ({
-    export: () => exports[id],
-    import: (next: Exported) => { exports[id] = next; },
-  });
-  const save = new Function(
-    "textareaRef", "aui", "useChatRuntimeStore", "toast", "updateThreadMessage",
-    "isThreadMessageSavePending", "messageId", "incognito", "setEditingId",
-    `${outputText}\nreturn handleSave;`,
-  )(
-    { current: { value: "edited" } },
-    {
-      threadListItem: () => ({ getState: () => ({ id: selected, remoteId: state.activeThreadId }) }),
-      threads: () => ({ __internal_getAssistantRuntime: () => ({ threads: { getById: runtime } }) }),
-      thread: () => runtime(selected),
-    },
-    { getState: () => state },
-    { error: (message: string) => assert.fail(message) },
-    h.module.updateThreadMessage,
-    h.module.isThreadMessageSavePending,
-    "a0", false,
-    (id: string | null) => { state.editingMessageId = id; },
-  ) as () => Promise<void>;
-  const pending = save();
-  await save();
-  assert.equal(h.saved.length, 1, "double submit must not enqueue a second PUT");
-  selected = "b";
-  state.activeThreadId = "remote-2";
-  state.editingMessageId = "b0";
-  write.resolve();
-  await pending;
-  assert.deepEqual(exports.a.messages[1].message.content, [{ type: "text", text: "edited" }]);
-  assert.deepEqual(exports.b, { headId: null, messages: [] });
-  assert.equal(state.editingMessageId, "b0");
 });
 
 test("the turn keeps its timestamp when the export carries epoch millis", async () => {
