@@ -7092,10 +7092,11 @@ def _widen_pin_ids_for_companion_devices(
             if match:
                 prefix_word = prefix_word or match.group(1)
                 n = int(match.group(2))
-                if n < len(main_ids) and (site.group == "main" or not site.final):
+                if n < len(main_ids) and (site.group in ("main", "tensor") or not site.final):
                     # An overridden main value is parsed by the child like the final one,
-                    # and an overridden companion value only has to parse, so a position
-                    # on the pin already resolves there without exposing another card.
+                    # a tensor-override buffer on the pin keeps the child numbering it had
+                    # before widening existed, and an overridden companion value only has
+                    # to parse, so a position on the pin resolves there as it is.
                     physical = main_ids[n]
                 elif inherited_ids is None:
                     physical = n

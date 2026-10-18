@@ -728,3 +728,14 @@ def test_auto_widening_never_reaches_an_arch_excluded_card(argv):
     cmd, pin, note = _widen([1], argv, inherited = [0, 1], allowed_ids = [1])
     assert pin == [1]
     assert cmd == argv
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["-ot", ".*=CUDA0"], ["-ot", ".*=CUDA0", "--device", "CUDA0"], ["-otd", "exps=CUDA0"]],
+)
+def test_a_tensor_override_on_the_pin_keeps_the_child_numbering(argv):
+    # Auto picked physical GPU 1: the child's CUDA0 is that card, as before the fit read
+    # tensor overrides, so the override neither widens nor moves to physical GPU 0.
+    cmd, pin, note = _widen([1], argv, inherited = [0, 1])
+    assert (pin, note, cmd) == ([1], "", argv)
