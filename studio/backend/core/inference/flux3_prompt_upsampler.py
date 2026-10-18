@@ -1288,44 +1288,47 @@ def enhance_for_generation(
     cancel_event = cancel_event or threading.Event()
     outcome = EnhanceOutcome(status = STATUS_APPLIED)
     sidecar = get_sidecar()
-    with _tracking(len(distinct), cancel_event) as tracked:
-        for index, prompt in enumerate(distinct):
-            if cancel_event.is_set():
-                raise UpsamplerCancelledError("Cancelled.")
-            systemic = None
-            try:
-                caption = upsample(
-                    prompt,
-                    variant = variant,
-                    reference_images = reference_images,
-                    cancel_event = cancel_event,
-                    sidecar = sidecar,
-                )
-            except UpsamplerCancelledError:
-                raise
-            except UpsamplerUnavailableError as exc:
-                logger.warning("flux3.prompt_upsampler: unavailable (%s); prompt as typed", exc)
-                systemic = STATUS_UNAVAILABLE
-            except Exception as exc:  # noqa: BLE001 -- an upsampler failure never fails the image
+    # On every exit, a Stop included: a retry with enhancement off must not denoise beside a tight server.
+    try:
+        with _tracking(len(distinct), cancel_event) as tracked:
+            for index, prompt in enumerate(distinct):
                 if cancel_event.is_set():
-                    raise UpsamplerCancelledError("Cancelled.") from exc
-                logger.warning("flux3.prompt_upsampler: failed (%s); prompt as typed", exc)
-                systemic = STATUS_FAILED
-            else:
-                if caption == prompt:
-                    outcome.statuses[prompt] = STATUS_FAILED
+                    raise UpsamplerCancelledError("Cancelled.")
+                systemic = None
+                try:
+                    caption = upsample(
+                        prompt,
+                        variant = variant,
+                        reference_images = reference_images,
+                        cancel_event = cancel_event,
+                        sidecar = sidecar,
+                    )
+                except UpsamplerCancelledError:
+                    raise
+                except UpsamplerUnavailableError as exc:
+                    logger.warning("flux3.prompt_upsampler: unavailable (%s); prompt as typed", exc)
+                    systemic = STATUS_UNAVAILABLE
+                except Exception as exc:  # noqa: BLE001 -- an upsampler failure never fails the image
+                    if cancel_event.is_set():
+                        raise UpsamplerCancelledError("Cancelled.") from exc
+                    logger.warning("flux3.prompt_upsampler: failed (%s); prompt as typed", exc)
+                    systemic = STATUS_FAILED
                 else:
-                    outcome.captions[prompt] = caption
-                    outcome.statuses[prompt] = STATUS_APPLIED
-            if systemic is not None:
-                # The runtime itself failed (a start that timed out, a dead server): the rest of the batch would wait
-                # out the same timeout each, so they run as typed now.
-                for rest in distinct[index:]:
-                    outcome.statuses[rest] = systemic
-                break
-            _advance(tracked)
-    with suppress(Exception):
-        sidecar.release_if_tight()
+                    if caption == prompt:
+                        outcome.statuses[prompt] = STATUS_FAILED
+                    else:
+                        outcome.captions[prompt] = caption
+                        outcome.statuses[prompt] = STATUS_APPLIED
+                if systemic is not None:
+                    # The runtime itself failed (a start that timed out, a dead server): the rest of the batch would wait
+                    # out the same timeout each, so they run as typed now.
+                    for rest in distinct[index:]:
+                        outcome.statuses[rest] = systemic
+                    break
+                _advance(tracked)
+    finally:
+        with suppress(Exception):
+            sidecar.release_if_tight()
     if outcome.statuses and not outcome.captions:
         # Nothing applied: the batch-level status is the first reason.
         outcome.status = next(iter(outcome.statuses.values()))

@@ -295,6 +295,15 @@ def test_empty_caption_falls_back(runnable):
     assert out.status == "failed" and out.encoded("a") == "a"
 
 
+def test_a_stopped_enhancement_still_releases_a_tight_server(runnable, monkeypatch):
+    released = []
+    monkeypatch.setattr(runnable, "release_if_tight", lambda: released.append(True) or True)
+    runnable.error = pup.UpsamplerCancelledError("Cancelled.")
+    with pytest.raises(pup.UpsamplerCancelledError):
+        pup.enhance_for_generation(["a"], family_name = "flux.3-klein", enhance_prompt = None)
+    assert released == [True]
+
+
 def test_cancel_propagates(runnable):
     event = threading.Event()
     event.set()
