@@ -231,6 +231,7 @@ async def load_model(
         "gpu_layers": gpu_layers,
     }
     placement.check_placement(kind, model, variant, **where)
+    await placement.require_cpu_gguf(caller, kind, model, variant, device)
     if kind == "stt":
 
         async def load_stt(job: loading.LoadJob, _before: Any) -> LoadResult:

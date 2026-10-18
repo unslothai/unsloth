@@ -83,15 +83,33 @@ def check_placement(
             if value is not None:
                 raise ToolError(f"{name} is only for llm, tts and audio loads, not kind={kind!r}.")
         return
-    if kind == "llm" and device == "cpu" and not is_gguf(model, variant):
-        raise ToolError(
-            "device='cpu' needs a GGUF model for kind='llm': Unsloth Studio places only GGUF "
-            "chat models on the CPU. Pick a GGUF repo or a variant."
-        )
     if gpu_layers is not None and (
         (device == "cpu" and gpu_layers > 0) or (device == "gpu" and gpu_layers == 0)
     ):
         raise ToolError(f"gpu_layers={gpu_layers} contradicts device={device!r}.")
+
+
+CPU_NEEDS_GGUF = (
+    "device='cpu' needs a GGUF model for kind='llm': Unsloth Studio places only GGUF "
+    "chat models on the CPU. Pick a GGUF repo or a variant."
+)
+
+
+async def require_cpu_gguf(
+    caller: Caller, kind: str, model: str, variant: Optional[str], device: Optional[str]
+) -> None:
+    """Refuse device='cpu' for a chat model unless Unsloth Studio lists GGUF files for it; a name with "gguf" in it proves nothing."""
+    if kind != "llm" or device != "cpu":
+        return
+    repo, variant = _split(model, variant)
+    if is_local(repo) and repo.lower().endswith(".gguf"):
+        return
+    listing = as_dict(await _variants(caller, repo))
+    rows = [row for row in listing.get("variants") or [] if isinstance(row, dict)]
+    if not rows:
+        raise ToolError(CPU_NEEDS_GGUF)
+    if variant and pick_variant(listing, variant) is None:
+        raise ToolError(f"{repo} has no GGUF variant {variant}")
 
 
 def llm_fields(
@@ -331,6 +349,10 @@ async def plan_load(
     device: Optional[str],
     alongside: Optional[bool],
 ) -> PlanLoadResult:
+    # The same refusals load_model makes, so a plan is never shown for a load that cannot run.
+    where = {"device": device, "alongside": alongside, "kv_cache_type": None, "gpu_layers": None}
+    check_placement(kind, model, variant, **where)
+    await require_cpu_gguf(caller, kind, model, variant, device)
     status, image, video, stt = await asyncio.gather(
         try_json(caller, STATUS),
         try_json(caller, MEDIA_STATUS["image"]),

@@ -35,6 +35,7 @@ PLACED = {
     "text_encoder_quant": "fp8",
 }
 CPU = {"gpu_memory_mode": "manual", "gpu_layers": 0, "speculative_type": "off"}
+GGUF_FILES = {"default_variant": "Q4_K_M", "variants": [{"quant": "Q4_K_M", "filename": "q.gguf"}]}
 
 
 def _load(
@@ -103,6 +104,24 @@ def test_a_knob_the_kind_does_not_take_is_refused_before_any_call(monkeypatch, k
 
 
 @pytest.mark.parametrize(
+    "listing,args,refusal",
+    [
+        # "gguf" in a repo name proves nothing: only listed GGUF files do.
+        ({"variants": []}, {"model": "someone/not-a-gguf-repo"}, "needs a GGUF model"),
+        (None, {"model": QWEN}, "needs a GGUF model"),
+        (GGUF_FILES, {"model": QWEN, "variant": "Q8_0"}, "has no GGUF variant Q8_0"),
+    ],
+)
+def test_cpu_needs_a_confirmed_gguf(monkeypatch, listing, args, refusal):
+    routes = {**PAYLOADS}
+    if listing is not None:
+        routes[("GET", "/api/hub/gguf-variants")] = listing
+    result, studio, sent = _load(monkeypatch, {"kind": "llm", "device": "cpu", **args}, routes)
+    assert result["isError"] is True and refusal in str(result["content"])
+    assert sent == []
+
+
+@pytest.mark.parametrize(
     "model,kind,device,expected",
     [
         # audio.cpp honours audio_device; it is a GGUF repo that llama-server never sees.
@@ -116,7 +135,9 @@ def test_a_knob_the_kind_does_not_take_is_refused_before_any_call(monkeypatch, k
     ],
 )
 def test_device_maps_to_the_load_fields(monkeypatch, model, kind, device, expected):
-    _result, _studio, (body,) = _load(monkeypatch, {"model": model, "kind": kind, "device": device})
+    routes = {**PAYLOADS, ("GET", "/api/hub/gguf-variants"): GGUF_FILES}
+    args = {"model": model, "kind": kind, "device": device}
+    _result, _studio, (body,) = _load(monkeypatch, args, routes)
     base = {"model_path": model, "load_in_4bit": True, "max_seq_length": 0}
     assert body == {**base, **expected}
 
