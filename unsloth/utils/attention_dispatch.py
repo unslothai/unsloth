@@ -282,18 +282,23 @@ def _sdpa_gqa_choices(
     dropout_p,
     backends,
     single_query = False,
+    single_key = False,
 ):
     """(SDPBackend with enable_gqa, SDPBackend with K/V expanded) for these shapes, -1 if unknown.
     The probe tensors carry the real call's requires_grad, dropout and single-query (decode) shape:
     backends differ on all three (cuDNN rejects single-query dropout, for one)."""
+    # Lengths of 1 change eligibility (cuDNN rejects a K/V length of 1); longer ones do not.
     q_len = 1 if single_query else 128
+    kv_len = 1 if single_key else 128
     try:
         q = torch.empty(1, n_heads, q_len, head_dim, device = device, dtype = dtype)
-        k = torch.empty(1, n_kv_heads, 128, head_dim, device = device, dtype = dtype)
-        k_full = torch.empty(1, n_heads, 128, head_dim, device = device, dtype = dtype)
+        k = torch.empty(1, n_kv_heads, kv_len, head_dim, device = device, dtype = dtype)
+        k_full = torch.empty(1, n_heads, kv_len, head_dim, device = device, dtype = dtype)
         if needs_grad:
             q, k, k_full = (t.requires_grad_() for t in (q, k, k_full))
-        mask = torch.ones(1, 1, q_len, 128, device = device, dtype = torch.bool) if has_mask else None
+        mask = (
+            torch.ones(1, 1, q_len, kv_len, device = device, dtype = torch.bool) if has_mask else None
+        )
     except Exception:
         return -1, -1
     causal = is_causal and not has_mask
@@ -334,6 +339,7 @@ def _sdpa_gqa_state(
     needs_grad = False,
     dropout_p = 0.0,
     single_query = False,
+    single_key = False,
 ) -> bool:
     """False when enable_gqa would leave SDPA only its math kernel while expanded K/V would not.
     Flash and cuDNN take GQA, the memory-efficient kernel does not (before torch 2.14), so fp32,
@@ -362,6 +368,7 @@ def _sdpa_gqa_state(
         dropout_p,
         backends,
         single_query,
+        single_key,
     )
     from torch.nn.attention import SDPBackend
 
@@ -402,6 +409,7 @@ def _sdpa_takes_gqa(
         bool(needs_grad),
         float(dropout_p or 0.0),
         Q.shape[-2] == 1,
+        K.shape[-2] == 1,
     )
 
 

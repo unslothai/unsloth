@@ -308,7 +308,7 @@ def test_gqa_probe_carries_grad_and_dropout(monkeypatch, needs_grad, dropout_p, 
 
 def test_takes_gqa_reads_requires_grad_and_dropout(monkeypatch):
     calls = []
-    monkeypatch.setattr(ad, "_sdpa_gqa_state", lambda *args: calls.append(args[-3:-1]) or True)
+    monkeypatch.setattr(ad, "_sdpa_gqa_state", lambda *args: calls.append(args[-4:-2]) or True)
     Q = torch.empty(1, 8, 4, 64)
     K = torch.empty(1, 2, 4, 64)
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
@@ -389,4 +389,41 @@ def test_probe_cache_follows_deterministic_mode(monkeypatch):
         assert ad._sdpa_gqa_state("cpu", torch.float32, 64, 8, 2, False, False) is False
     finally:
         torch.use_deterministic_algorithms(was)
+        ad._sdpa_gqa_choices.cache_clear()
+
+
+def test_probe_matches_singleton_key_length(monkeypatch):
+    """A one-token prefill (q_len == kv_len == 1) is probed with K/V length 1: cuDNN rejects it."""
+    from torch.nn.attention import SDPBackend
+
+    MATH, EFFICIENT, CUDNN = (
+        int(SDPBackend.MATH),
+        int(SDPBackend.EFFICIENT_ATTENTION),
+        int(SDPBackend.CUDNN_ATTENTION),
+    )
+    kv_lengths = []
+
+    def choice(
+        q,
+        k,
+        v,
+        attn_mask = None,
+        dropout_p = 0.0,
+        is_causal = False,
+        enable_gqa = False,
+        **kwargs,
+    ):
+        kv_lengths.append(k.shape[-2])
+        if k.shape[-2] == 1:
+            return MATH if enable_gqa else EFFICIENT
+        return CUDNN if enable_gqa else EFFICIENT
+
+    monkeypatch.setattr(torch, "_fused_sdp_choice", choice)
+    ad._sdpa_gqa_choices.cache_clear()
+    try:
+        state = ad._sdpa_gqa_state
+        assert state("cpu", torch.float32, 64, 8, 2, False, False, False, 0.0, True, False) is True
+        assert state("cpu", torch.float32, 64, 8, 2, False, False, False, 0.0, True, True) is False
+        assert set(kv_lengths) == {128, 1}
+    finally:
         ad._sdpa_gqa_choices.cache_clear()
