@@ -98,5 +98,12 @@ def test_images_past_the_upload_limit_are_refused_before_any_upload(monkeypatch)
     monkeypatch.setattr("utils.upload_limits.get_upload_limit_bytes", lambda: len(PNG) + 1)
     result, studio = _upload(monkeypatch, images = [PNG_URL, PNG_URL])
     assert result["isError"] is True
-    assert "upload limit by image 2" in result["content"][0]["text"]
+    assert "at image 2, more than one upload_images call takes" in result["content"][0]["text"]
+    assert studio.state.calls == []
+
+
+def test_one_call_holds_at_most_the_mcp_budget(monkeypatch):
+    monkeypatch.setattr("studio_mcp.tools.data.MAX_IMAGE_UPLOAD_BYTES", len(PNG) + 1)
+    result, studio = _upload(monkeypatch, images = [PNG_URL, PNG_URL])
+    assert "at image 2" in result["content"][0]["text"]
     assert studio.state.calls == []

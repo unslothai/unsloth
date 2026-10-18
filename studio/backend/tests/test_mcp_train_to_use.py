@@ -239,3 +239,16 @@ def test_a_load_that_outlasts_wait_s_is_named_in_its_job_result():
 
     result = asyncio.run(go())
     assert (result.model, result.evicted) == ("qwen-lora", ["qwen-lora"])
+
+
+def test_an_evicted_gguf_export_is_named_by_its_folder(monkeypatch):
+    async def resolved():
+        caller = make_caller()
+        return await trained_models.resolve_export(caller, "qwen-lora/adapter", None)
+
+    async def fake_route(method, path, **kwargs):
+        return LORAS
+
+    monkeypatch.setattr(trained_models, "route_json", fake_route)
+    trained = asyncio.run(resolved())
+    assert trained.known[cache_reference(f"{EXPORTS}/qwen-GGUF")] == "qwen-GGUF"

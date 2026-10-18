@@ -122,7 +122,10 @@ async def resolve_export(caller: Caller, name: str, variant: Optional[str]) -> T
         is_lora = export_type == "lora",
         gguf_variant = gguf_variant,
         unplaced_gguf = export_type == "gguf" and not gguf_variant,
-        known = _known([(r[1], r[0]) for r in rows]),
+        # A GGUF export loads as its folder, so a later eviction names the folder.
+        known = _known(
+            [(r[1], r[0]) for r in rows] + [(_parent(r[1]), r[0]) for r in rows if r[2] == "gguf"]
+        ),
     )
 
 

@@ -34,6 +34,8 @@ UPLOAD_EXTS = (".csv", ".json", ".jsonl", ".parquet")
 IMAGE_EXTS = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
 # The caption route's limit, which sidecars sent with an upload would skip.
 MAX_CAPTION_CHARS = 2000
+# What one upload_images call holds in memory before it sends; the route's own limit can be gigabytes.
+MAX_IMAGE_UPLOAD_BYTES = 64 * 1024 * 1024
 
 
 def _ref(path: Any) -> Optional[str]:
@@ -202,18 +204,19 @@ async def _upload_images(
         raise ToolError(f"captions has {len(captions)} entries for {len(images)} images.")
     if any(len(caption) > MAX_CAPTION_CHARS for caption in captions or []):
         raise ToolError(f"A caption is longer than {MAX_CAPTION_CHARS} characters.")
-    from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
+    from utils.upload_limits import get_upload_limit_bytes
 
+    budget = min(MAX_IMAGE_UPLOAD_BYTES, get_upload_limit_bytes())
     # Fresh stems each call: a same-named file in a later upload would replace the earlier one.
     batch, files, total = secrets.token_hex(4), [], 0
     for i, image in enumerate(images):
         data, mime = await resolve_image(caller, image)
-        # The route caps the whole upload; stop before holding more than it takes.
-        total += len(data)
-        if total > get_upload_limit_bytes():
+        # Stop before holding more than one call may send, captions included.
+        total += len(data) + len(captions[i].encode() if captions else b"")
+        if total > budget:
             raise ToolError(
-                f"These images pass Unsloth Studio's {get_upload_limit_label()} upload limit by image {i + 1}. "
-                "Send them in several upload_images calls with the same name; each one adds to the dataset."
+                f"These images pass {budget // (1024 * 1024)} MB at image {i + 1}, more than one upload_images call takes. "
+                "Send them in several calls with the same name; each one adds to the dataset."
             )
         stem = f"mcp-{batch}-{i:03d}"
         files.append(("files", (stem + IMAGE_EXTS[mime], data, mime)))
