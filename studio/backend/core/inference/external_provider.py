@@ -55,6 +55,7 @@ _SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom"})
 _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
 _served_windows: dict[tuple[str, str, str], tuple[float, Optional[int]]] = {}
+_served_templates: dict[tuple[str, str, str], tuple[float, Optional[str]]] = {}
 _served_versions: dict[tuple[str, str], tuple[float, bool]] = {}
 
 
@@ -850,6 +851,25 @@ _LOCAL_SERVER_EFFORT_ALIASES = {"minimal": "low", "xhigh": "high", "max": "high"
 # vLLM 0.21.0 widened chat-completions reasoning_effort to none | minimal | low | medium | high | xhigh | max; older
 # servers 400 on the extra levels (vllm/entrypoints/openai/chat_completion/protocol.py at v0.20.0 vs v0.21.0).
 _VLLM_FULL_EFFORT_RELEASE = "0.21.0"
+
+
+def llama_cpp_template_controls(
+    enable_thinking: Optional[bool],
+    reasoning_effort: Optional[str],
+    preserve_thinking: Optional[bool],
+) -> tuple:
+    """The template variables stream_chat_completion sends llama-server for these controls."""
+    controls: dict[str, Any] = {}
+    if preserve_thinking is not None:
+        controls["preserve_thinking"] = preserve_thinking
+    effort = (reasoning_effort or "").strip().lower()
+    effort = _LOCAL_SERVER_EFFORT_ALIASES.get(effort, effort)
+    thinking = False if effort == "none" else enable_thinking
+    if thinking is not None:
+        controls["enable_thinking"] = bool(thinking)
+    if effort in ("minimal", "low", "medium", "high", "xhigh", "max"):
+        controls["reasoning_effort"] = effort
+    return tuple(sorted(controls.items()))
 
 
 def _vllm_takes_full_effort(version: Any) -> bool:
@@ -7718,6 +7738,41 @@ class ExternalProviderClient:
             del _served_windows[stale]
         _served_windows[key] = (now + _SERVED_WINDOW_TTL_S, window)
         return window
+
+    async def served_chat_template(self, model: str) -> Optional[str]:
+        """llama-server's chat template from /props, cached for a minute like the served window."""
+        if self.provider_type != "llama_cpp":
+            return None
+        now = time.monotonic()
+        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest(), model)
+        cached = _served_templates.get(key)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        template = None
+        try:
+            response = await _client().get(
+                f"{self.base_url.removesuffix('/v1')}/props",
+                params = {"model": model},
+                headers = self._auth_headers(),
+                timeout = _SERVED_WINDOW_TIMEOUT_S,
+            )
+            response.raise_for_status()
+            body = response.json()
+            value = body.get("chat_template") if isinstance(body, dict) else None
+            template = value if isinstance(value, str) and value.strip() else None
+        except httpx.ConnectError as exc:
+            logger.info(
+                "No served chat template from %s: %s", self.provider_type, type(exc).__name__
+            )
+            return None
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.info(
+                "No served chat template from %s: %s", self.provider_type, type(exc).__name__
+            )
+        for stale in [k for k, (expiry, _) in _served_templates.items() if expiry <= now]:
+            del _served_templates[stale]
+        _served_templates[key] = (now + _SERVED_WINDOW_TTL_S, template)
+        return template
 
     @staticmethod
     def _parse_gemini_models(payload: Any) -> list[dict[str, Any]]:
