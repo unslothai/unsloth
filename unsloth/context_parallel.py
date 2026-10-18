@@ -579,7 +579,10 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
     @functools.wraps(original_init)
     def patched_init(self, *args, **kwargs):
         config = kwargs["args"] if "args" in kwargs else (args[1] if len(args) > 1 else None)
-        context_parallel_options(config)
+        if context_parallel_options(config)[0] > 1:
+            # Before the original __init__: Unsloth wraps instance methods there (auto packing's
+            # train reset, the token budget's training_step), and they must capture the CP ones.
+            install_methods()
         original_init(self, *args, **kwargs)
         self._context_parallel_manager = None
         # Unsloth's attention ignores transformers' own CP: it would stay local to each shard.

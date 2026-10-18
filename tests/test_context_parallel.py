@@ -229,6 +229,7 @@ def test_every_rank_builds_the_same_global_mesh(monkeypatch):
 def _patched_trainer(
     monkeypatch,
     install_cp_methods = True,
+    on_init = None,
     **init_attrs,
 ):
     import trl
@@ -237,6 +238,8 @@ def _patched_trainer(
         def __init__(self, *a, **k):
             for key, value in init_attrs.items():
                 setattr(self, key, value)
+            if on_init is not None:
+                on_init(self)
 
         def training_step(
             self,
@@ -810,6 +813,7 @@ def _gated_trainer(
     model = None,
     accelerator = None,
     install_cp_methods = True,
+    on_init = None,
     **args_overrides,
 ):
     """A trainer that clears every CP gate, with the manager stubbed (no process group)."""
@@ -843,7 +847,7 @@ def _gated_trainer(
             state = types.SimpleNamespace(device_mesh = None),
         )
     init = {"args": args, "accelerator": accelerator, "model": model, "train_dataset": [1]}
-    return _patched_trainer(monkeypatch, install_cp_methods, **init), args, built
+    return _patched_trainer(monkeypatch, install_cp_methods, on_init, **init), args, built
 
 
 _CP_METHODS = (
@@ -1317,3 +1321,24 @@ def test_total_train_batch_size_counts_cp_groups_not_ranks(monkeypatch, fsdp2):
     # D = 2 data parallel groups of N = 4 CP peers that each consume the same batch.
     trainer._context_parallel_manager = _manager(size = 4)
     assert trainer.get_total_train_batch_size(args) == 2 * 3 * 2
+
+
+def test_instance_wrappers_made_in_init_capture_the_cp_methods(monkeypatch):
+    # Auto packing (self.train) and the token budget (self.training_step) wrap the class methods on
+    # the instance inside __init__; with lazy installation they must already see the CP wrappers.
+    import functools
+
+    captured = {}
+
+    def on_init(self):
+        for name in ("train", "training_step"):
+            method = getattr(type(self), name)
+            captured[name] = method
+            setattr(self, name, functools.partial(method, self))
+
+    Trainer, args, built = _gated_trainer(monkeypatch, install_cp_methods = False, on_init = on_init)
+    plain = {name: Trainer.__dict__[name] for name in ("train", "training_step")}
+    Trainer(None, args = args)  # SFTTrainer(model, args = SFTConfig(context_parallel_size = 2))
+    assert built == [(2, "ring", "allgather")]
+    for name, method in captured.items():
+        assert method is not plain[name] and method.__wrapped__ is plain[name]
