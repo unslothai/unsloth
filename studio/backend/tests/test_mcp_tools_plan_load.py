@@ -472,3 +472,8 @@ def test_the_memory_estimate_carries_the_hub_token(monkeypatch):
     assert result["structuredContent"]["est_gpu_bytes"] == 1234
     (body,) = bodies(studio, "/api/inference/estimate-memory")
     assert body["hf_token"] == "hf_arg"
+
+
+def test_a_hub_repo_named_like_a_gguf_file_is_still_listed(monkeypatch):
+    plan = _plan(monkeypatch, _world("off", []), {"model": "org/model.gguf"})
+    assert [row["variant"] for row in plan["variants"]] == ["Q4_K_M", "Q8_0"]
