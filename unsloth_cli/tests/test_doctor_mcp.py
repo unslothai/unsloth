@@ -236,3 +236,34 @@ def test_plain_doctor_is_unchanged(monkeypatch):
     assert ran == [60.0]
     help_text = CliRunner().invoke(unsloth_cli.app, ["doctor", "--help"]).output
     assert "--gpus" in help_text and "--mcp" in help_text
+
+
+@pytest.mark.parametrize("status", [400, 403, 406, 421])
+def test_gather_reports_an_unhandled_4xx_from_mcp_as_an_error(env, monkeypatch, status):
+    _stub_http(monkeypatch, {"/loaded-models": 200, "/mcp/": status})
+    facts = mcp_mod.gather_mcp_facts()
+    assert facts.mcp == "error" and str(status) in facts.mcp_detail
+    assert not mcp_mod.mcp_verdict(facts)[0]
+
+
+def test_probe_errors_never_quote_the_key(env, monkeypatch):
+    # http.client quotes a refused header value, so a key with a newline lands in the error.
+    monkeypatch.setenv("UNSLOTH_API_KEY", CANARY + "\r\n")
+    monkeypatch.setattr(mcp_mod, "find_studio_server", lambda *a, **k: "http://127.0.0.1:9")
+    facts = mcp_mod.gather_mcp_facts(timeout = 1.0)
+    assert facts.key == "error"
+    assert "LEAKCANARY" not in facts.key_detail, facts.key_detail
+    assert all("LEAKCANARY" not in line for line in mcp_mod.mcp_verdict(facts)[1])
+
+
+def test_probes_send_the_cli_user_agent(env, monkeypatch):
+    agents = []
+    monkeypatch.setattr(mcp_mod, "find_studio_server", lambda *a, **k: "http://127.0.0.1:8888")
+
+    def opener(request, timeout):
+        agents.append(request.get_header("User-agent"))
+        return _Resp()
+
+    monkeypatch.setattr(mcp_mod, "urlopen_no_redirect", opener)
+    mcp_mod.gather_mcp_facts()
+    assert agents == ["unsloth-cli"] * 2

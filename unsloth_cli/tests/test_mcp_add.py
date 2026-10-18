@@ -436,3 +436,20 @@ def test_the_key_never_leaks(home, fake_claude, monkeypatch):
             assert "LEAKCANARY" not in path.read_text(), path
     monkeypatch.delenv("UNSLOTH_API_KEY")
     assert "UNSLOTH_API_KEY is not set" in _add("cursor", "--url", URL).output
+
+
+@pytest.mark.parametrize(
+    "old",
+    [
+        # A header inside a multi-line string: the splice would cut the string and the keys after it.
+        'model = "o3"\nnotes = """\n[mcp_servers.unsloth-studio]\nkeep me\n"""\nsandbox = "x"\n',
+        # A nested array line inside the table would be left behind as broken TOML.
+        '[mcp_servers.unsloth-studio]\nurl = "x"\nm = [\n  [1, 2],\n]\n',
+    ],
+)
+def test_codex_check_without_a_toml_parser_refuses_unsafe_splices(monkeypatch, old):
+    monkeypatch.setattr(mcp_mod, "_toml_loads", lambda: None)
+    new = mcp_mod.codex_merge(old, "unsloth-studio", URL, "V", 300)
+    assert new != old
+    with pytest.raises(ValueError):
+        mcp_mod.codex_check(old, new, "unsloth-studio", EXPECTED)

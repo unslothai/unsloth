@@ -24,7 +24,12 @@ from urllib.parse import urlparse
 
 import typer
 
-from unsloth_cli._inference import find_studio_server, is_loopback_url, urlopen_no_redirect
+from unsloth_cli._inference import (
+    _USER_AGENT,
+    find_studio_server,
+    is_loopback_url,
+    urlopen_no_redirect,
+)
 from unsloth_cli.commands.start import (
     _codex_source_home,
     _fail,
@@ -43,6 +48,7 @@ mcp_app = typer.Typer(
 _DEFAULT_BASE = "http://127.0.0.1:8888"
 _ENV_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_TABLE_LINE_RE = re.compile(r"^[ \t]*\[\[?[^\[\]\n]+\]\]?[ \t]*(#[^\n]*)?\r?\n?$")
 # The longest an Unsloth Studio MCP tool waits before answering (the server's wait cap).
 # The backend can't be imported from the CLI, so it is repeated here.
 _MCP_WAIT_CAP_S = 240
@@ -156,10 +162,17 @@ def codex_check(old_text: str, new_text: str, name: str, expected: dict) -> None
     """Raise ValueError unless the splice changed exactly mcp_servers.NAME."""
     loads = _toml_loads()
     if loads is None:
-        # No TOML parser (Python < 3.11 without tomli): refuse any other mention of NAME.
+        # No TOML parser (Python < 3.11 without tomli): refuse any other mention of NAME, and
+        # anything that makes the line-based splice unsafe: a multi-line string can hold a
+        # line that looks like a table header, and a line opening with "[" can be array data.
         block = _codex_block(name, *expected.values())
         if name in new_text.replace(block, ""):
             raise ValueError(f"{name} is also defined in another form")
+        if '"""' in old_text or "'''" in old_text:
+            raise ValueError("it has multi-line strings and no TOML parser is installed")
+        for chunk in re.split(r"(?m)^(?=[ \t]*\[)", old_text)[1:]:
+            if not _TABLE_LINE_RE.match(chunk.splitlines(True)[0]):
+                raise ValueError("a line starting with '[' is not a table header")
         return
     try:
         old, new = loads(old_text), loads(new_text)
@@ -409,7 +422,11 @@ class McpFacts:
 
 def _probe(url: str, key: Optional[str], timeout: float, data: Optional[bytes]):
     """(status, detail); status is None when nothing answered. POSTs when data is given."""
-    headers = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
+    headers = {
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+        "User-Agent": _USER_AGENT,
+    }
     if key:
         headers["Authorization"] = f"Bearer {key}"
     try:
@@ -420,9 +437,17 @@ def _probe(url: str, key: Optional[str], timeout: float, data: Optional[bytes]):
             detail = str(json.loads(e.read(65536) or b"{}").get("detail") or e.reason)
         except Exception:
             detail = str(e.reason)
-        return e.code, detail.replace(key, "***") if key else detail
+        return e.code, _scrub(detail, key)
     except Exception as e:
-        return None, str(getattr(e, "reason", None) or e)
+        # http.client quotes a header value it refuses (a key with a newline) in its error.
+        return None, _scrub(str(getattr(e, "reason", None) or e), key)
+
+
+def _scrub(detail: str, key: Optional[str]) -> str:
+    for secret in (key, (key or "").strip(), repr(key or "")[1:-1]):
+        if secret:
+            detail = detail.replace(secret, "***")
+    return _redact(detail)
 
 
 def _ours(name: str, key: str, entry, urls: Tuple[str, ...]) -> bool:
@@ -490,10 +515,10 @@ def gather_mcp_facts(env_var: str = "UNSLOTH_API_KEY", timeout: float = 5.0) -> 
         facts.mcp = "absent"
     elif status == 401:
         facts.mcp, facts.mcp_detail = "refused", detail
-    elif status is None or 300 <= status < 400 or status >= 500:
-        facts.mcp, facts.mcp_detail = "error", f"{status or ''} {detail}".strip()
-    else:
+    elif status is not None and 200 <= status < 300:
         facts.mcp = "on"
+    else:
+        facts.mcp, facts.mcp_detail = "error", f"{status or ''} {detail}".strip()
     return facts
 
 
