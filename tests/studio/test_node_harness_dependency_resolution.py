@@ -141,8 +141,8 @@ def test_a_pulled_arrow_const_is_kept_like_a_function(tmp_path):
     assert "create(" not in resolved
 
 
-def test_a_const_calling_a_half_resolved_arrow_on_load_is_dropped(tmp_path):
-    """`TABLE = { v: f() }` runs `f` on load, so an `f` missing a reference dooms `TABLE`; one that only names it is kept."""
+def test_an_eager_const_naming_a_half_resolved_helper_is_dropped(tmp_path):
+    """`TABLE = { v: g() }` and `NAMES = [g]` both reach `f`, which is missing a reference: both are dropped."""
     module = tmp_path / "src" / "m.ts"
     module.parent.mkdir(parents = True)
     module.write_text(
@@ -155,37 +155,36 @@ def test_a_const_calling_a_half_resolved_arrow_on_load_is_dropped(tmp_path):
     )
     resolved = resolve_dependencies("const used = useIt();\n", (module,), root = tmp_path / "src")
     assert "const TABLE" not in resolved
-    assert "const NAMES = [g];" in resolved
+    assert "const NAMES" not in resolved
+    assert "const g = () => f();" in resolved
 
 
-def test_a_callback_that_calls_a_half_resolved_helper_is_not_a_load_time_call(tmp_path):
-    """`{ run: () => f() }` never calls `f` while the object is built, so the object is kept."""
+@pytest.mark.parametrize(
+    "initializer",
+    [
+        "{ run: () => f() }",
+        "{ run() {\n  return f();\n} }",
+        "function () {\n  return f();\n}()",
+        "function () {\n  return f();\n}(Math.max(1, 2))",
+        "(() => f())()",
+        "{ v: f?.() }",
+        "!true && f()",
+        "alias",
+    ],
+)
+def test_any_eager_reference_to_a_half_resolved_helper_drops_the_const(tmp_path, initializer):
+    """Whether an initializer really calls `f` on load is not decided: a load-time crash costs more than a drop."""
     module = tmp_path / "src" / "m.ts"
     module.parent.mkdir(parents = True)
     module.write_text(
         'import { missing } from "./nowhere";\n'
         "const f = () => missing();\n"
-        "const TABLE = { run: () => f(), also: function () {\n  return f();\n} };\n"
-        "export function useIt() {\n  return TABLE;\n}\n"
-    )
-    resolved = resolve_dependencies("const used = useIt();\n", (module,), root = tmp_path / "src")
-    assert "const TABLE" in resolved
-
-
-def test_an_immediately_invoked_function_calling_a_half_resolved_helper_is_dropped(tmp_path):
-    """An IIFE runs its body on load, so the `f()` inside it is a load-time call."""
-    module = tmp_path / "src" / "m.ts"
-    module.parent.mkdir(parents = True)
-    module.write_text(
-        'import { missing } from "./nowhere";\n'
-        "const f = () => missing();\n"
-        "const value = function () {\n  return f();\n}();\n"
-        "const other = (() => f())();\n"
-        "export function read() {\n  return [value, other];\n}\n"
+        "const alias = f;\n"
+        f"const VALUE = {initializer};\n"
+        "export function read() {\n  return VALUE;\n}\n"
     )
     resolved = resolve_dependencies("const used = read();\n", (module,), root = tmp_path / "src")
-    assert "const value" not in resolved
-    assert "const other" not in resolved
+    assert "const VALUE" not in resolved
 
 
 def test_a_type_only_reference_does_not_make_a_helper_half_resolved(tmp_path):

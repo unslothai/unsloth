@@ -32,8 +32,8 @@ _FUNCTION_DECL_RE = re.compile(
     r"^(?:export\s+)?(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*"
     r"(?:async\s+function\b|function\b|(?:async\s*)?(?:\([^()]*\)|[A-Za-z_$][\w$]*)\s*=>)"
 )
-# `const v = function () { ... }();` runs on load: an immediately invoked function stays eager.
-_IIFE_TAIL_RE = re.compile(r"\}\s*\)?\s*\([^()]*\)\s*$")
+# A `function` expression is lazy only when it is the whole initializer: `function () {...}(...)` runs on load.
+_FUNCTION_KEYWORD_INIT_RE = re.compile(r"=\s*(?:async\s+)?function\b")
 _SAFE_INIT_RE = re.compile(
     r"^(?:/|[\"'`]|\d|\[|\{|!|new\s+(?:Set|Map|RegExp|Date)\b"
     r"|async\s+function\b|function\b|async\s*\(|\(|[A-Za-z_$][\w$]*\s*(?:=>|;))"
@@ -393,60 +393,6 @@ def _frontend_root(sources: tuple[Path, ...]) -> Path | None:
     return None
 
 
-_INVOKED_AFTER_BODY_RE = re.compile(r"\s*\)?\s*\(")
-
-
-def _load_time_text(blanked: str) -> str:
-    """``blanked`` without the bodies of the functions it defines: only the rest runs on load."""
-    out: list[str] = []
-    i, n = 0, len(blanked)
-    while i < n:
-        arrow = blanked.startswith("=>", i)
-        func = re.match(r"function\b", blanked[i:]) and (
-            i == 0 or not (blanked[i - 1].isalnum() or blanked[i - 1] in "_$")
-        )
-        if not (arrow or func):
-            out.append(blanked[i])
-            i += 1
-            continue
-        start = i
-        j = i + 2 if arrow else blanked.find("{", i)
-        if j == -1:
-            break
-        while j < n and blanked[j].isspace():
-            j += 1
-        if blanked.startswith("{", j):
-            depth = 0
-            for k in range(j, n):
-                depth += blanked[k] in "{([" and 1 or 0
-                depth -= blanked[k] in "})]" and 1 or 0
-                if depth == 0:
-                    break
-            i = k + 1
-        else:
-            # An expression body runs to the `,` `;` or closing bracket that ends it.
-            depth = 0
-            k = j
-            while k < n:
-                ch = blanked[k]
-                if ch in "{([":
-                    depth += 1
-                elif ch in "})]":
-                    if depth == 0:
-                        break
-                    depth -= 1
-                elif ch in ",;" and depth == 0:
-                    break
-                k += 1
-            i = k
-        if _INVOKED_AFTER_BODY_RE.match(blanked, i):
-            # `function () { ... }()` and `(() => ...)()` run the body on load: keep it.
-            out.append(blanked[start:i])
-        else:
-            out.append(" ")
-    return "".join(out)
-
-
 def resolve_dependencies(
     harness_source: str,
     sources: tuple[Path, ...],
@@ -529,8 +475,9 @@ def resolve_dependencies(
                 wanted.add(reference)
             pull(reference, origin)
         kind = home.kind(name) or "const"
-        if _FUNCTION_DECL_RE.match(text.lstrip()) and not _IIFE_TAIL_RE.search(
-            _blank_noise(text).rstrip().rstrip(";")
+        tail = _blank_noise(text).rstrip().rstrip(";").rstrip()
+        if _FUNCTION_DECL_RE.match(text.lstrip()) and (
+            not _FUNCTION_KEYWORD_INIT_RE.search(text) or tail.endswith("}")
         ):
             kind = "function"
         pulled[name] = (
@@ -553,8 +500,9 @@ def resolve_dependencies(
     # one from here is a TDZ error rather than a resolution.
     eager = {"const", "let", "var", "class"}
     while True:
-        # A lazy declaration is only as complete as what it reads: `const T = { v: f() }` runs `f` on load, so an `f`
-        # left with an unresolved reference (directly or through another such function) dooms `T` too.
+        # A lazy declaration is only as complete as what it reads. Whether an eager initializer actually calls one
+        # left half-resolved (directly or through another) is not decided here: any reference dooms it, since a
+        # load-time crash is worse than the lazy ReferenceError a dropped declaration costs.
         partial: set[str] = set()
         while True:
             grown = {
@@ -567,18 +515,8 @@ def resolve_dependencies(
             partial = grown
         doomed = {
             name
-            for name, (kind, text, wanted) in pulled.items()
-            if kind in eager
-            and (
-                not wanted <= set(pulled)
-                or any(
-                    re.search(
-                        rf"(?<![\w$.]){re.escape(dep)}\s*\(|\bnew\s+{re.escape(dep)}\b",
-                        _load_time_text(_blank_noise(text)),
-                    )
-                    for dep in wanted & partial
-                )
-            )
+            for name, (kind, _, wanted) in pulled.items()
+            if kind in eager and not wanted <= set(pulled) - partial
         }
         if not doomed:
             break
