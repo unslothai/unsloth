@@ -29,6 +29,7 @@ const {
   indexTts2EmotionLogic,
   qwen3TimbreLogic,
   speakVoiceLogic,
+  speakVoiceStored,
   vibeVoiceDialogueLogic,
   voiceOptionName,
 } = await import("../src/features/audio/tools/panel-logic.ts");
@@ -572,4 +573,32 @@ test("transcribing the reference holds the page busy until it ends", () => {
   assert.match(body, /if \(!source \|\| busyRef\.current\) return;\s*busyRef\.current = "transcribing";\s*setBusy\("transcribing"\);/);
   assert.match(body, /finally \{\s*if \(busyRef\.current === "transcribing"\) \{\s*busyRef\.current = null;\s*setBusy\(null\);/);
   assert.match(body, /transcribe: transcribeReference/);
+});
+
+test("a voice chosen in Advanced before the picker carries into the picker", () => {
+  const send = (stored: unknown, saved: Record<string, unknown>, name: string) =>
+    speakVoiceLogic.toRequest(
+      panelValue(
+        speakVoiceLogic,
+        { [speakVoiceLogic.id]: speakVoiceStored(stored, saved, name) },
+        [],
+      ),
+      ctx({ voiceOption: name }),
+    );
+  // Kokoro's am_adam and Magpie's Jason were kept in Advanced, which the picker now claims.
+  assert.deepEqual(send(undefined, { voice: "am_adam" }, "voice"), {
+    options: { voice: "am_adam" },
+  });
+  assert.deepEqual(
+    send({ source: "builtin", voiceId: null }, { speaker: "Jason" }, "speaker"),
+    { options: { speaker: "Jason" } },
+  );
+  // A choice made in the picker wins, including going back to the default.
+  const picked = { source: "builtin", voiceId: null, builtin: null };
+  assert.deepEqual(send(picked, { voice: "am_adam" }, "voice"), {});
+  assert.deepEqual(send(undefined, {}, "voice"), {});
+  assert.match(
+    readSrc("features/audio/hooks/use-speech-generation.ts"),
+    /speakVoiceStored\(stored, audioOptionValues, toolContext\.voiceOption\)/,
+  );
 });
