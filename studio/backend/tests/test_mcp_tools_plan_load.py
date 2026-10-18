@@ -385,6 +385,7 @@ def test_a_speech_to_text_load_may_release_the_other_engines_model(monkeypatch):
         ({"model": QWEN, "variant": "Q4_K_M"}, True),
         # Another device, a default variant or another spelling of a local path may load it again.
         ({"model": QWEN, "variant": "Q4_K_M", "device": "gpu"}, False),
+        ({"model": QWEN, "variant": "Q4_K_M", "kv_cache_type": "q8_0"}, False),
         ({"model": QWEN}, False),
     ],
 )
@@ -417,3 +418,16 @@ def test_an_unreadable_chat_status_makes_the_plan_an_upper_bound(monkeypatch):
     world[STATUS] = JSONResponse({}, status_code = 503)
     plan = _plan(monkeypatch, world, {"model": QWEN, "variant": "Q4_K_M", "device": "gpu"})
     assert plan["would_evict_exact"] is False
+
+
+def test_gpu_layers_places_a_gguf_plan_like_device(monkeypatch):
+    world = _world("off", [], image = FLUX_GGUF)
+    off_gpu = _plan(monkeypatch, world, {"model": QWEN, "gpu_layers": 0})
+    on_gpu = _plan(monkeypatch, world, {"model": QWEN, "gpu_layers": 20})
+    auto = _plan(monkeypatch, world, {"model": QWEN, "gpu_layers": 0, "device": "auto"})
+    assert auto["would_evict"] == []
+    assert off_gpu["would_evict"] == [] and off_gpu["would_evict_exact"] is True
+    assert (
+        _names(on_gpu["would_evict"]) == {("image", FLUX_GGUF)}
+        and on_gpu["would_evict_exact"] is True
+    )

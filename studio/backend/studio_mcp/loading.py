@@ -407,7 +407,7 @@ async def load_llm(
                 kind,
                 gguf = gguf,
                 device = device,
-                alongside = await place.auto_alongside(caller, device, alongside),
+                alongside = await place.auto_alongside(caller, device, alongside, gpu_layers),
                 kv_cache_type = kv_cache_type,
                 gpu_layers = gpu_layers,
             )
