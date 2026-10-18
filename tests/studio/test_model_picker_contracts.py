@@ -426,13 +426,20 @@ def test_diffusion_capability_labeled_image_video_gen():
         "features/hub/lib/view-models.ts",
     ):
         assert "Image to text" not in _read(rel), rel
-    assert '{ value: "diffusion", label: "Image/video gen" }' in _read(
-        "features/hub/lib/model-type-filter.ts"
-    )
     # The Hub filter splits the capability into its two generator kinds (#13749).
     hub = _read("features/hub/lib/view-models.ts")
     assert '{ value: "image-gen", label: "Image gen" }' in hub
     assert '{ value: "video-gen", label: "Video gen" }' in hub
+    # The badge on a model carries the same two names.
+    assert '"Video gen" : "Image gen"' in _read("features/hub/lib/model-capabilities.ts")
+    # Since #14083 the On Device list takes Discover's picks and matcher instead of
+    # keeping its own option list, so the names above are the only ones it shows.
+    # Should it grow its own list again, the diffusion entry must still name generators.
+    on_device = _read("features/hub/lib/model-type-filter.ts")
+    if 'value: "diffusion"' in on_device:
+        assert '{ value: "diffusion", label: "Image/video gen" }' in on_device
+    else:
+        assert "matchesHubCapability" in on_device
 
 
 def test_active_model_config_round_trips_gpu_fields():
@@ -731,7 +738,7 @@ def test_model_picker_toolbar_reflows_before_crossing_picker_edge():
 
     tabs = _read("features/model-picker/components/model-selector/pill-tabs.tsx")
     assert 'fit ? "min-w-0 shrink" : "min-w-0 flex-1"' in tabs
-    assert '<span className="min-w-0 truncate">{tab.label}</span>' in tabs
+    assert '<span data-pill-tab-label className="min-w-0 truncate">' in tabs
 
     selector = _read("features/model-picker/components/model-selector.tsx")
     assert 'icon={StarIcon} className="size-3.5 shrink-0"' in selector

@@ -326,7 +326,16 @@ _HIDDEN_TAIL_RE = re.compile(r"(?:[ \t]*\r?\n){4,}|[ \t]{200,}")
 _MAX_POINT = 100_000
 _MAX_MODEL_CHARS = 24000
 _REF_RE = re.compile(r"^\[?r?(\d{1,9})\]?$", re.IGNORECASE)
-_LOCAL_SUFFIXES = (".local", ".localhost", ".internal", ".lan", ".home", ".home.arpa", ".corp")
+_LOCAL_SUFFIXES = (
+    ".local",
+    ".localhost",
+    ".internal",
+    ".lan",
+    ".home",
+    ".home.arpa",
+    ".corp",
+    ".intranet",
+)
 _FENCE = "untrusted_web_content"
 
 
@@ -385,7 +394,7 @@ def _host_problem(hostname: str) -> Optional[str]:
         ip = None
     if ip is not None:
         return None if ip.is_global else f"{host} is not a public address"
-    if host == "localhost" or "." not in host or host.endswith(_LOCAL_SUFFIXES):
+    if host == "localhost" or "." not in host or f".{host}".endswith(_LOCAL_SUFFIXES):
         return f"{host} is a local name"
     return None
 

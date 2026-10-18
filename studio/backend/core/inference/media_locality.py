@@ -275,14 +275,34 @@ def plan_gpu_ordinal() -> Optional[int]:
     pinned, ordinal = planned_gpu_ordinal()
     if pinned:
         return ordinal
-    from core.inference.diffusion_device import (
-        resolve_auto_cuda_ordinal,
-        resolve_diffusion_device_target,
-    )
+    from core.inference.diffusion_device import auto_cuda_ordinal_for_load
 
-    if resolve_diffusion_device_target().device != "cuda":
+    return auto_cuda_ordinal_for_load()
+
+
+def catalog_gpu_ordinal() -> Optional[int]:
+    """The one ordinal a catalog refresh plans every pick against, ranked once unless the cards are identical.
+
+    Identical visible cards pick the same precision and so the same artifacts on any of them, so the
+    refresh plans against the current device as it always did instead of re-ranking per pick.
+    """
+    pinned, ordinal = planned_gpu_ordinal()
+    if pinned:
+        return ordinal
+    from core.inference.diffusion_device import auto_cuda_ranking_possible
+
+    if not auto_cuda_ranking_possible():
         return None
-    return resolve_auto_cuda_ordinal()
+    try:
+        from utils.hardware import hardware as hw
+
+        # Under a CUDA order nvidia-smi does not share, mask ids are not its rows: compare every card.
+        ids = hw.get_parent_visible_gpu_ids() if hw._cuda_order_matches_smi() else None
+        if hw._cuda_cards_identical(ids) is True:
+            return None
+    except Exception:  # noqa: BLE001 -- unknown identity ranks once, like mixed cards
+        pass
+    return plan_gpu_ordinal()
 
 
 def _pipeline_components_present(root: Path) -> bool:
@@ -559,4 +579,5 @@ __all__ = [
     "plan_gpu_ordinal",
     "planned_gpu_ordinal",
     "planners_for",
+    "catalog_gpu_ordinal",
 ]

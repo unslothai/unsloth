@@ -40,8 +40,8 @@ import {
   Delete02Icon,
   PauseIcon,
   PlayIcon,
-  PowerSocket01Icon,
   Refresh01Icon,
+  RemoveCircleIcon,
   Settings02Icon,
   ApiIcon,
 } from "@hugeicons/core-free-icons";
@@ -50,6 +50,7 @@ import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { ApiModelLoadControls } from "./components/api-model-load-controls";
 import { SavedModelSettingsPanel } from "./components/saved-model-settings";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
+import { ToolbarTooltip } from "./components/toolbar-tooltip";
 import { unloadResident } from "./unload-resident";
 import {
   type MonitorStatusFilter,
@@ -182,32 +183,33 @@ function CopyButton({
     [],
   );
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="sm"
-      aria-label={label}
-      onClick={async () => {
-        if (await copyToClipboard(value)) {
-          setCopied(true);
-          if (timerRef.current !== undefined) {
-            window.clearTimeout(timerRef.current);
+    <ToolbarTooltip label={copied ? "Copied" : label}>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        aria-label={label}
+        onClick={async () => {
+          if (await copyToClipboard(value)) {
+            setCopied(true);
+            if (timerRef.current !== undefined) {
+              window.clearTimeout(timerRef.current);
+            }
+            timerRef.current = window.setTimeout(() => setCopied(false), 1800);
           }
-          timerRef.current = window.setTimeout(() => setCopied(false), 1800);
-        }
-      }}
-      className="h-7 shrink-0 gap-1.5 px-2 text-ui-11"
-    >
-      <HugeiconsIcon
-        icon={copied ? Tick02Icon : Copy01Icon}
-        strokeWidth={1.75}
-        className={cn(
-          "size-3.5",
-          copied && "text-emerald-600 dark:text-emerald-500",
-        )}
-      />
-      {copied ? "Copied" : "Copy"}
-    </Button>
+        }}
+        className="size-7 shrink-0 p-0"
+      >
+        <HugeiconsIcon
+          icon={copied ? Tick02Icon : Copy01Icon}
+          strokeWidth={1.75}
+          className={cn(
+            "size-3.5",
+            copied && "text-emerald-600 dark:text-emerald-500",
+          )}
+        />
+      </Button>
+    </ToolbarTooltip>
   );
 }
 
@@ -745,89 +747,102 @@ export function ApiMonitorPage(): ReactElement {
             onUnloadActive={unloadActiveModel}
             unloading={unloading}
           />
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setPaused(!paused)}
-            className="h-9 gap-1.5 rounded-full"
+          <ToolbarTooltip
+            label={paused ? "Resume the live feed" : "Pause the live feed"}
           >
-            <HugeiconsIcon
-              icon={paused ? PlayIcon : PauseIcon}
-              strokeWidth={1.75}
-              className="size-4"
-            />
-            {paused ? "Resume" : "Pause"}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => void unloadActiveModel()}
-            disabled={unloading || modelLoading || !data?.active_model}
-            title={
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setPaused(!paused)}
+              className="h-9 gap-1.5 rounded-full"
+            >
+              <HugeiconsIcon
+                icon={paused ? PlayIcon : PauseIcon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+              {paused ? "Resume" : "Pause"}
+            </Button>
+          </ToolbarTooltip>
+          <ToolbarTooltip
+            label={
               data?.active_model
-                ? `Unload ${data.active_model} and free its VRAM`
+                ? `Eject ${data.active_model} and free its VRAM`
                 : "No model is loaded"
             }
-            className="h-9 gap-1.5 rounded-full"
           >
-            <HugeiconsIcon
-              icon={PowerSocket01Icon}
-              strokeWidth={1.75}
-              className="size-4"
-            />
-            {unloading ? "Unloading" : "Unload"}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={refresh}
-            disabled={refreshing}
-            className="h-9 gap-1.5 rounded-full"
-          >
-            <HugeiconsIcon
-              icon={Refresh01Icon}
-              strokeWidth={1.75}
-              className={cn("size-4", refreshing && "animate-spin")}
-            />
-            Refresh
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={entries.length === 0}
-            onClick={() => {
-              setSelectedId(null);
-              void clear();
-            }}
-            className="h-9 gap-1.5 rounded-full"
-          >
-            <HugeiconsIcon
-              icon={Delete02Icon}
-              strokeWidth={1.75}
-              className="size-4"
-            />
-            Clear log
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() =>
-              useSettingsDialogStore.getState().openDialog("api-keys")
-            }
-            className="h-9 gap-1.5 rounded-full"
-          >
-            <HugeiconsIcon
-              icon={Settings02Icon}
-              strokeWidth={1.75}
-              className="size-4"
-            />
-            API settings
-          </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void unloadActiveModel()}
+              disabled={unloading || modelLoading || !data?.active_model}
+              className="h-9 gap-1.5 rounded-full"
+            >
+              <HugeiconsIcon
+                icon={RemoveCircleIcon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+              {unloading ? "Ejecting" : "Eject"}
+            </Button>
+          </ToolbarTooltip>
+          <ToolbarTooltip label="Refresh">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={refresh}
+              disabled={refreshing}
+              aria-label="Refresh"
+              className="size-9 rounded-full p-0"
+            >
+              <HugeiconsIcon
+                icon={Refresh01Icon}
+                strokeWidth={1.75}
+                className={cn("size-4", refreshing && "animate-spin")}
+              />
+            </Button>
+          </ToolbarTooltip>
+          <ToolbarTooltip label="Clear log">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={entries.length === 0}
+              onClick={() => {
+                setSelectedId(null);
+                void clear();
+              }}
+              aria-label="Clear log"
+              className="size-9 rounded-full p-0"
+            >
+              <HugeiconsIcon
+                icon={Delete02Icon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+            </Button>
+          </ToolbarTooltip>
+          <ToolbarTooltip label="API settings">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                useSettingsDialogStore.getState().openDialog("api-keys")
+              }
+              aria-label="API settings"
+              className="size-9 rounded-full p-0"
+            >
+              <HugeiconsIcon
+                icon={Settings02Icon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+            </Button>
+          </ToolbarTooltip>
         </div>
       </header>
 

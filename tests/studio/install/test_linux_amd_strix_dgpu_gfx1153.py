@@ -294,6 +294,14 @@ def test_python_strix_keeps_its_index_when_the_rocm_version_is_unreadable():
     assert _STRIX_INDEX in calls, calls
 
 
+@pytest.mark.parametrize("devices", [("gfx1151", "gfx1100"), ("gfx1151", "gfx942")])
+def test_python_strix_keeps_its_index_when_rocm_has_no_generic_tag(devices):
+    # ROCm 5.7 maps to no generic tag: deferring would install nothing and leave CPU torch.
+    assert stack_mod._generic_pytorch_rocm_tag((5, 7)) is None
+    calls = routing._run_install(gfx_devices = devices, rocm_version = (5, 7))
+    assert _STRIX_INDEX in calls, calls
+
+
 @pytest.mark.parametrize("devices", [("gfx1151", "gfx1100"), ("gfx1151", "gfx1201")])
 def test_python_strix_keeps_its_index_under_an_hsa_override(devices):
     # The override spoofs every agent, the dGPU included, so dGPU wheels would never load.
