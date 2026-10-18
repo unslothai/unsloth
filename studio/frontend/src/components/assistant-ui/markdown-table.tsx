@@ -8,7 +8,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useT } from "@/i18n";
-import { Cancel01Icon, ExpandIcon } from "@hugeicons/core-free-icons";
+import {
+  Cancel01Icon,
+  Copy01Icon,
+  Download01Icon,
+  ExpandIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ComponentProps,
@@ -21,10 +26,30 @@ import {
 import {
   type ExtraProps,
   StreamdownContext,
+  type StreamdownProps,
   TableCopyDropdown,
   TableDownloadDropdown,
   defaultTranslations,
 } from "streamdown";
+
+// Streamdown ships its own glyphs for the table controls; swap in ours so copy,
+// download and expand match the icons used everywhere else.
+// `strokeWidth` is dropped, not forwarded: SVG types it `string | number`, HugeiconsIcon wants a number.
+function streamdownIcon(icon: typeof Copy01Icon) {
+  return function StreamdownIcon({
+    size,
+    strokeWidth: _strokeWidth,
+    ...props
+  }: ComponentProps<"svg"> & { size?: number }) {
+    return <HugeiconsIcon icon={icon} size={size} {...props} />;
+  };
+}
+export const MARKDOWN_TABLE_ICONS = {
+  CopyIcon: streamdownIcon(Copy01Icon),
+  DownloadIcon: streamdownIcon(Download01Icon),
+  // Streamdown's key for the table's enlarge control.
+  Maximize2Icon: streamdownIcon(ExpandIcon),
+} satisfies NonNullable<StreamdownProps["icons"]>;
 
 // Streamdown's copy and download find the table through this attribute, so the wrapper keeps it.
 const TABLE_WRAPPER = "table-wrapper";
@@ -76,6 +101,37 @@ function TableScroll({
   );
 }
 
+// rgb()/rgba() and the modern `/ alpha` syntax; anything else is taken as opaque.
+const SLASH_ALPHA = /\/\s*([\d.]+%?)\s*\)$/;
+const RGBA_ALPHA = /^rgba\([^,]+,[^,]+,[^,]+,\s*([\d.]+)\s*\)$/;
+function isOpaque(color: string): boolean {
+  const alpha = SLASH_ALPHA.exec(color)?.[1] ?? RGBA_ALPHA.exec(color)?.[1];
+  if (alpha === undefined) {
+    return true;
+  }
+  return alpha.endsWith("%")
+    ? Number.parseFloat(alpha) >= 100
+    : Number(alpha) >= 1;
+}
+
+// The controls sit over the header, so they paint whatever is behind the table: every background
+// up to the first opaque one, stacked. Chat, the Hub, the browser panel and dialogs all differ.
+function paintSurface(wrapper: HTMLElement): void {
+  const layers: string[] = [];
+  for (let el = wrapper.parentElement; el; el = el.parentElement) {
+    const color = getComputedStyle(el).backgroundColor;
+    if (color === "transparent" || color === "rgba(0, 0, 0, 0)") {
+      continue;
+    }
+    layers.push(`linear-gradient(${color}, ${color})`);
+    if (isOpaque(color)) {
+      break;
+    }
+  }
+  layers.push("linear-gradient(var(--background), var(--background))");
+  wrapper.style.setProperty("--md-table-surface", layers.join(", "));
+}
+
 export function MarkdownTable({
   children,
   className,
@@ -86,8 +142,23 @@ export function MarkdownTable({
   const { isAnimating } = useContext(StreamdownContext);
   const [expanded, setExpanded] = useState(false);
   const label = defaultTranslations.viewFullscreen;
+  const wrapper = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (wrapper.current) {
+      paintSurface(wrapper.current);
+    }
+  }, []);
+  // Repainted on each approach, so a theme switch since mount is picked up.
+  const repaint = (event: { currentTarget: HTMLDivElement }) =>
+    paintSurface(event.currentTarget);
   return (
-    <div className="aui-md-table" data-streamdown={TABLE_WRAPPER}>
+    <div
+      ref={wrapper}
+      className="aui-md-table"
+      data-streamdown={TABLE_WRAPPER}
+      onPointerEnter={repaint}
+      onFocus={repaint}
+    >
       <TableScroll className={className} props={props}>
         {children}
       </TableScroll>
@@ -139,6 +210,22 @@ export function MarkdownTable({
           </DialogClose>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+// For markdown shown inside another control: the same table, without controls.
+export function StaticMarkdownTable({
+  children,
+  className,
+  node: _node,
+  ...props
+}: ComponentProps<"table"> & ExtraProps) {
+  return (
+    <div className="aui-md-table">
+      <TableScroll className={className} props={props}>
+        {children}
+      </TableScroll>
     </div>
   );
 }
