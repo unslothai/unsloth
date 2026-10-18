@@ -546,6 +546,18 @@ class _ToolLoopBackend(_ScriptedBackend):
 
 
 @pytest.mark.parametrize(
+    "policy", [None, {"allowedDomains": ["docs.python.org"], "blockedDomains": []}]
+)
+def test_web_search_domain_limits_reach_the_tool_loop(monkeypatch, policy):
+    backend = _ToolLoopBackend(_fixed("done"))
+    payload = _request(stream = False, enable_tools = True)
+    payload._website_policy = policy
+    _call(payload, monkeypatch, backend)
+    [kwargs] = backend.calls
+    assert kwargs.get("website_policy") == policy and ("website_policy" in kwargs) == bool(policy)
+
+
+@pytest.mark.parametrize(
     "kind, stream, expected",
     [
         ("plain", True, "stop"),

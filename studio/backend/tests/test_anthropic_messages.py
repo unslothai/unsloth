@@ -7173,6 +7173,17 @@ class TestInProcessMessages:
         self._serve(monkeypatch, 0, **_IP_FORMAT, **tools)
         assert (self.seen["req"].response_format is not None) is kept
 
+    @pytest.mark.parametrize("stream", [0, 1])
+    def test_web_search_domain_limits_reach_chats_loop(self, monkeypatch, stream):
+        search = {**_IP_WEB_SEARCH, "allowed_domains": ["docs.python.org/3"]}
+        _out, seen = self._serve(monkeypatch, stream, tools = [search])
+        assert seen["req"]._website_policy == {
+            "allowedDomains": ["docs.python.org"],
+            "blockedDomains": [],
+        }
+        _out, seen = self._serve(monkeypatch, stream, tools = [_IP_WEB_SEARCH])
+        assert seen["req"]._website_policy is None
+
     @pytest.mark.parametrize("stream", [1, 0])
     def test_server_tools_run_in_chats_loop_and_answer_as_on_llama_server(
         self, monkeypatch, stream

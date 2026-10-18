@@ -633,6 +633,7 @@ def run_safetensors_tool_loop(
     session_id: Optional[str] = None,
     thread_id: Optional[str] = None,
     rag_scope: Optional[dict] = None,
+    website_policy: Optional[dict] = None,
     confirm_tool_calls: bool = False,
     mcp_image = None,
     bypass_permissions: bool = False,
@@ -1700,6 +1701,8 @@ def run_safetensors_tool_loop(
                         rag_scope = rag_scope,
                         disable_sandbox = bypass_permissions,
                     )
+                    if website_policy:
+                        kwargs["website_policy"] = website_policy
                     # Run unasked only because the OS sandbox was on: refuse if it is not any more.
                     if _strict and _accepts_kwarg(execute_tool, "tool_execution_mode"):
                         kwargs["tool_execution_mode"] = "required"

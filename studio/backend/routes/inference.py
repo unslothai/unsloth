@@ -34859,6 +34859,11 @@ async def produce_openai_chat_completions(
         # Request-scoped usage/timings receptacle (filled at gen_done).
         _sf_stats_holder: dict = {}
 
+        _sf_website_policy = getattr(payload, "_website_policy", None)
+        _sf_website_policy_kwargs = (
+            {"website_policy": _sf_website_policy} if _sf_website_policy else {}
+        )
+
         def sf_generate_with_tools():
             return backend.generate_chat_completion_with_tools(
                 messages = _sf_chat_messages,
@@ -34910,6 +34915,7 @@ async def produce_openai_chat_completions(
                 context_policy = _request_context_policy(payload),
                 compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
                 compact_context = getattr(payload, "compact_context", None) is True,
+                **_sf_website_policy_kwargs,
             )
 
         _sf_tool_sentinel = object()
@@ -44560,6 +44566,7 @@ async def _anthropic_in_process_messages(
     request,
     current_subject,
     server_tools = (),
+    website_policy = None,
 ):
     """Serve /v1/messages from an in-process model (MLX, transformers) through chat."""
     backend = await asyncio.to_thread(get_inference_backend)
@@ -44602,6 +44609,8 @@ async def _anthropic_in_process_messages(
         session_id = payload.session_id,
         response_format = response_format,
     )
+    if server_tools:
+        chat_req._website_policy = website_policy
 
     monitor_id = None
     context_length = _monitor_context_length()
@@ -44895,6 +44904,7 @@ async def anthropic_messages(
             request,
             current_subject,
             server_tools = [] if _anthropic_has_image else selected_server_tools,
+            website_policy = website_policy,
         )
     if not llama_backend.is_loaded:
         _status, _detail = await _no_model_loaded_error(
