@@ -2145,6 +2145,25 @@ def test_generate_json_returns_seed_and_persists_settings(stub, tmp_path):
     assert json.loads(_sidecar(tmp_path, body["clip_id"]))["settings"] == {"seed": 5}
 
 
+def test_edit_and_convert_report_ignored_options(stub):
+    from test_audio_edit_route import _edit, _load
+
+    _reporting(_load(stub), None, ["top_k"])
+    with _client(ALICE) as client:
+        edited = _edit(client, _input(ALICE))
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["ignored_options"] == ["top_k"]
+    _reporting(_use(stub, "rvc", "RVC-GGUF"), 7, ["top_k"])
+    with _client(ALICE) as client:
+        converted = _convert(
+            client,
+            inputs = {"source": {"input_id": _input(ALICE, seconds = 2.0)}},
+            convert = {"voice": "manthos"},
+        )
+    assert converted.status_code == 200, converted.text
+    assert converted.json()["ignored_options"] == ["top_k"]
+
+
 def test_music_take_persists_group_role_variation_and_take_seed(stub, tmp_path, monkeypatch):
     backend = stub["use"](STABLE_AUDIO, _music_info())
     backend.__class__ = _MusicBackend

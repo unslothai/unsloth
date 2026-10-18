@@ -23942,6 +23942,7 @@ async def _run_audio_edit(
         audio_options = body.options,
         seed = body.seed,
     )
+    stats: dict = {}
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
         body.text,
         payload,
@@ -23956,6 +23957,7 @@ async def _run_audio_edit(
             "text": body.text,
         },
         requested_model = body.model or _RELOAD_ONLY_MODEL,
+        stats_holder = stats,
     )
     source_record = None
     try:
@@ -23985,7 +23987,9 @@ async def _run_audio_edit(
         "edit",
     )
     sources = [_audio_run_clip(source_record, "source")] if source_record is not None else []
-    return _audio_run_response(record, wav_bytes, sample_rate, model_name, sources)
+    return _audio_run_response(
+        record, wav_bytes, sample_rate, model_name, sources, _audio_stats(stats)
+    )
 
 
 _REPAINT_BEYOND_END_S = 30.0
@@ -24375,6 +24379,7 @@ async def _run_audio_convert(
         audio_options = body.options,
         seed = body.seed,
     )
+    stats: dict = {}
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
         source.name,
         payload,
@@ -24388,6 +24393,7 @@ async def _run_audio_convert(
             "prepare_audio_inputs": _prepare,
         },
         requested_model = body.model or _RELOAD_ONLY_MODEL,
+        stats_holder = stats,
     )
     builtin = None
     if target is not None:
@@ -24427,7 +24433,9 @@ async def _run_audio_convert(
         # An upload expires within a day; a history clip does not.
         (seen.get("paths") or {}).get("source") if source.kind == "input" else None,
     )
-    return _audio_run_response(record, wav_bytes, sample_rate, model_name)
+    return _audio_run_response(
+        record, wav_bytes, sample_rate, model_name, stats = _audio_stats(stats)
+    )
 
 
 @router.post("/audio/run", response_model = AudioRunResponse)
