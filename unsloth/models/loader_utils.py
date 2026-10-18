@@ -59,6 +59,12 @@ BAD_MAPPINGS = {
     "unsloth/Qwen3-30B-A3B-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B",  # We rather do it on the fly
     "unsloth/Qwen3-30B-A3B-Base-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base",  # HF loads MoEs too slowly
     "unsloth/Qwen3-30B-A3B-Base-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base",  # We rather do it on the fly
+    "unsloth/solar-10.7b-bnb-4bit".lower(): "upstage/SOLAR-10.7B-v1.0",
+    "unsloth/Hermes-3-Llama-3.1-405B-bnb-4bit".lower(): "NousResearch/Hermes-3-Llama-3.1-405B",
+    "unsloth/Pixtral-12B-2409-Base-bnb-4bit".lower(): "unsloth/Pixtral-12B-Base-2409-bnb-4bit",
+    "unsloth/Llama-3.1-Tulu-3-8B-bnb-4bit".lower(): "unsloth/Llama-3.1-Tulu-3-8B",
+    "unsloth/Llama-3.1-Tulu-3-70B-bnb-4bit".lower(): "allenai/Llama-3.1-Tulu-3-70B",
+    "unsloth/OpenThinker-7B-unsloth-bnb-4bit".lower(): "open-thoughts/OpenThinker-7B",
 }
 
 

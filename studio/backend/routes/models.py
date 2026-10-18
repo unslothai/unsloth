@@ -4757,13 +4757,17 @@ async def get_gguf_variants(
     # it is the only name an API-key caller has for a local GGUF (see the /hub twin).
     repo_id = resolve_host_path_reference(repo_id) or repo_id
     local_path = resolve_host_path_reference(local_path) or local_path
+    from hub.services.models import gguf_variants as hub_gguf_variants
+
     if account_access.managed_account():
-        await asyncio.to_thread(
-            account_access.require_model_access, repo_id, **({"offline": True} if offline else {})
+        await hub_gguf_variants.listing_thread(
+            offline,
+            account_access.require_model_access,
+            repo_id,
+            **({"offline": True} if offline else {}),
         )
     try:
         hf_token = _resolve_hub_token(hf_token_header, hf_token)
-        from hub.services.models import gguf_variants as hub_gguf_variants
 
         answer = await hub_gguf_variants.get_gguf_variants_answer(
             repo_id,
