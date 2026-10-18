@@ -777,20 +777,18 @@ def _numbered_chunks(count):
 
 
 def _held_append(monkeypatch):
-    """Patch append_events so every commit blocks until `gate` is set. Returns (entered, gate, calls)."""
+    """Patch append_events so every commit blocks until `gate` is set. Returns (entered, gate)."""
     entered = threading.Event()
     gate = threading.Event()
-    calls = []
     original = runs_db.append_events
 
     def held(run_id, worker_token, events):
-        calls.append(len(events))
         entered.set()
         assert gate.wait(10)
         return original(run_id, worker_token, events)
 
     monkeypatch.setattr(runs_db, "append_events", held)
-    return entered, gate, calls
+    return entered, gate
 
 
 @pytest.mark.asyncio
@@ -815,7 +813,7 @@ async def test_a_slow_commit_does_not_stop_the_stream_being_read(durable_run, mo
         return SimpleNamespace(status_code = 200, body_iterator = body())
 
     monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
-    entered, gate, _calls = _held_append(monkeypatch)
+    entered, gate = _held_append(monkeypatch)
     supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
     task = asyncio.create_task(supervisor._produce("run-1"))
     try:
@@ -909,7 +907,7 @@ async def test_cancel_during_a_commit_waits_for_it_before_settling(
         return SimpleNamespace(status_code = 200, body_iterator = body())
 
     monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
-    entered, gate, _calls = _held_append(monkeypatch)
+    entered, gate = _held_append(monkeypatch)
     supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
     loop = asyncio.get_running_loop()
     previous_handler = loop.get_exception_handler()
