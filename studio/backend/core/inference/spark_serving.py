@@ -514,6 +514,33 @@ def kv_bytes_per_elem(cache_type: Optional[str]) -> float:
     return _KV_BYTES_PER_ELEM.get(str(cache_type or "f16").strip().lower(), 2.0)
 
 
+def _loader_kv_bytes(
+    gguf_path: str, n_ctx: int, cache_type: Optional[str], cache_type_v: Optional[str]
+) -> Optional[int]:
+    """``LlamaCppBackend._estimate_kv_cache_bytes`` for this header, read into a probe instance so
+    the live backend's metadata is untouched; None when it cannot say."""
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        probe = object.__new__(LlamaCppBackend)
+        probe._model_identifier = "spark-kv-probe"
+        probe._read_gguf_metadata(str(_first_shard(gguf_path) or gguf_path))
+        k_type = str(cache_type or "f16").strip().lower()
+        v_type = k_type if cache_type_v is None else str(cache_type_v).strip().lower()
+        k_bytes = int(probe._estimate_kv_cache_bytes(int(n_ctx), k_type))
+        if k_bytes <= 0:
+            return None
+        if v_type == k_type:
+            return k_bytes
+        v_bytes = int(probe._estimate_kv_cache_bytes(int(n_ctx), v_type))
+        if v_bytes <= 0:
+            return None
+        # The estimator takes one type for both; K and V each carry half of either pricing.
+        return int((k_bytes + v_bytes) / 2)
+    except Exception:
+        return None
+
+
 def estimate_kv_bytes(
     gguf_path: Optional[str],
     n_ctx: int,
@@ -521,9 +548,16 @@ def estimate_kv_bytes(
     cache_type_v: Optional[str] = None,
 ) -> Optional[int]:
     """KV cache for ``n_ctx`` tokens at ``cache_type``, and ``cache_type_v`` when K and V are
-    configured apart, from the GGUF header, or None when the file or the keys cannot be read."""
+    configured apart, from the GGUF header, or None when the file or the keys cannot be read.
+
+    Priced by the loader's own architecture-aware estimator (hybrid recurrent layers, per-layer KV
+    heads, MLA, SWA, shared KV), so the pair is never refused a load the loader itself would fit;
+    the plain every-layer formula below is only the fallback when that cannot answer."""
     if not gguf_path or n_ctx <= 0:
         return None
+    loader = _loader_kv_bytes(gguf_path, int(n_ctx), cache_type, cache_type_v)
+    if loader is not None:
+        return loader
     try:
         from gguf import GGUFReader  # type: ignore
 

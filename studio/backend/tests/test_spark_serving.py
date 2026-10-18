@@ -5014,3 +5014,64 @@ def test_echoed_split_block_strip_leaves_a_users_own_rpc_alone():
     assert ss.strip_echoed_split_block(block + ["--top-k", "20"], "10.0.0.2") is None
     grouped = ss.layer_split_extra_args("10.0.0.2", 50052, pipeline_groups = 2)
     assert ss.strip_echoed_split_block(grouped, "10.0.0.2") == []
+
+
+def _header_gguf(path, arch, values):
+    gguf = pytest.importorskip("gguf")
+    writer = gguf.GGUFWriter(str(path), arch)
+    for key, value in values.items():
+        if isinstance(value, list):
+            writer.add_array(f"{arch}.{key}", value)
+        else:
+            writer.add_uint32(f"{arch}.{key}", value)
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return str(path)
+
+
+def test_kv_estimate_prices_hybrid_and_per_layer_kv_like_the_loader(tmp_path):
+    """Regression: every layer was charged full attention KV, so Qwen3.5-397B (60 blocks, one in
+    four attention) at 262k was priced 30 GiB instead of about 7.7 and refused on the pair, and
+    LFM2 (per-layer head_count_kv, layer 0 a conv layer) fell back to n_head on every layer."""
+    gib = 2**30
+    qwen = _header_gguf(
+        tmp_path / "qwen35moe.gguf",
+        "qwen35moe",
+        {
+            "block_count": 60,
+            "context_length": 262144,
+            "embedding_length": 4096,
+            "attention.head_count": 32,
+            "attention.head_count_kv": 2,
+            "attention.key_length": 256,
+            "attention.value_length": 256,
+            "ssm.conv_kernel": 4,
+            "ssm.state_size": 128,
+            "ssm.group_count": 16,
+            "ssm.time_step_rank": 64,
+            "ssm.inner_size": 8192,
+            "full_attention_interval": 4,
+        },
+    )
+    kv = ss.estimate_kv_bytes(qwen, 262144, "f16")
+    assert 7.5 * gib <= kv < 8 * gib
+    # The published Q4_K_S shards: 212.33 GiB. Fits the pair, so it must not be refused.
+    plan = ss.plan_topology(212.33 * gib, users = 1, kv_bytes_per_user = kv)
+    assert plan["fits_any_topology"] is True and plan["topology"] == "layer_split"
+
+    lfm = _header_gguf(
+        tmp_path / "lfm2.gguf",
+        "lfm2",
+        {
+            "block_count": 64,
+            "embedding_length": 5120,
+            "attention.head_count": 24,
+            "attention.key_length": 256,
+            "attention.value_length": 256,
+            "attention.head_count_kv": [0, 0, 8] * 21 + [8],
+        },
+    )
+    # 22 attention layers x 8 heads x 256 x (K + V at f16) x 262144 tokens.
+    assert ss.estimate_kv_bytes(lfm, 262144, "f16") == 22 * 8 * 256 * 4 * 262144
