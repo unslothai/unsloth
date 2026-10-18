@@ -132,7 +132,6 @@ class DiffusionTrainer(UnslothTrainer):
             return super().get_batch_samples(epoch_iterator, num_batches, device)
 
         # Labels count eligible targets, not the random subset used by the diffusion loss.
-        # Keep only inputs and noise for the window; forwards/backwards still run one microbatch at a time.
         batch_samples = []
         counts = []
         for _ in range(num_batches):
