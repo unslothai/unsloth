@@ -213,6 +213,9 @@ async def start(
         return DownloadRef(model = model, kind = kind, variant = variant, status = "completed")
 
     model, variant = _split(model, variant)
+    if variant is None and _native_audio(kind, model, variant):
+        # A speech repo with GGUF variants downloads one of them, not every file through the audio plan.
+        variant = await _default_variant(caller, model, required = False)
     if kind in loading.MEDIA_ROUTES or _native_audio(kind, model, variant):
         scope = SCOPED if kind in loading.MEDIA_ROUTES else AUDIO_SCOPED
         staged = await _plan_parts(caller, kind, model, variant, caller.hf_token, knobs or {})
@@ -237,7 +240,7 @@ async def start(
     started: list[tuple[Part, Optional[int]]] = []
     # Recorded first, so a load that starts meanwhile waits on every planned part.
     key = _key(caller, kind, model)
-    previous = _remembered.get(key)
+    before = set(_remembered.get(key, []))
     _remember(caller, kind, model, parts)
     try:
         for part, body in zip(parts, bodies):
@@ -258,10 +261,12 @@ async def start(
             generations.append(generation)
     except BaseException:
         # Stop the parts this call started, so a failed plan leaves nothing running without an id.
-        if previous is None:
-            _remembered.pop(key, None)
+        # Only this call's own parts: an overlapping prefetch may have added its plan meanwhile.
+        kept = [p for p in _remembered.get(key, []) if p in before or p not in parts]
+        if kept:
+            _remembered[key] = kept
         else:
-            _remembered[key] = previous
+            _remembered.pop(key, None)
         await _stop(caller, started)
         raise
     return DownloadRef(

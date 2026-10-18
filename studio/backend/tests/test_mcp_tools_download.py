@@ -462,3 +462,8 @@ def test_repo_variant_shorthand_for_speech_waits_on_the_variant():
 def test_a_gguf_repo_is_known_by_its_listing_not_its_name():
     studio = fake_studio({("GET", "/api/hub/gguf-variants"): VARIANTS, ("POST", START): STARTED})
     assert start(studio, model = "org/quants", kind = "llm").id == "org/quants::Q4_K_M"
+
+
+def test_a_speech_repo_with_variants_downloads_one():
+    studio = fake_studio({("GET", "/api/hub/gguf-variants"): VARIANTS, ("POST", START): STARTED})
+    assert start(studio, model = "org/speech", kind = "tts").id == "org/speech::Q4_K_M"
