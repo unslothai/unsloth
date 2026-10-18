@@ -200,12 +200,17 @@ export const BUDGET = {
   // (6,800,980 -> 6,805,412 B raw, 2,045,645 -> 2,047,341 B transfer against 15e4bc8fde, one machine and build,
   // Node 24, chunk count unchanged at 95): the shared slide module and SegmentedPill, imported by toggles that
   // already live in startup chunks, so there is no separate module to lazy-load. Raised by that growth.
-  // A preset pick forgetting the loaded model's remembered sampling (#14068) adds 995 B raw / 226 B transfer
-  // (6,804,000 -> 6,804,995 B raw, 2,047,463 -> 2,047,689 B transfer against 638f1345d, one machine and build,
+  // QwenCloud as a connection (#14033) adds 167 B raw / 43 B transfer (6,804,234 -> 6,804,401 B raw, 2,047,526 ->
+  // 2,047,569 B transfer against ca3d1d0ce4, one machine and build, Node 24, chunk count unchanged at 95): its
+  // connection row, logo mapping and capability entries live in tables the startup chunks already load. Raised
+  // by that growth.
+  // A preset pick forgetting the loaded model's remembered sampling (#14068) adds 983 B raw / 252 B transfer
+  // (6,804,401 -> 6,805,384 B raw, 2,047,544 -> 2,047,796 B transfer against f172c8d7c, one machine and build,
   // Node 24, chunk count unchanged at 95): the chat runtime store and settings sanitizer it extends are startup
-  // modules already, so there is no separate module to lazy-load. Raised by that growth.
-  transferBytes: 2_047_703,
-  rawBytes: 6_806_842,
+  // modules already, so there is no separate module to lazy-load. f172c8d7c itself measures 24 B over the limit
+  // above, so transfer is raised to the measured total plus main's usual 14 B margin; raw by the growth.
+  transferBytes: 2_047_810,
+  rawBytes: 6_806_997,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

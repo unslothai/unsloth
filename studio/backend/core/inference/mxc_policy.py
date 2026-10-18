@@ -191,8 +191,8 @@ def _scan_workdir(workdir: str, *, required: bool) -> tuple[str, ...]:
         raise MxcPolicyError(str(exc)) from exc
     if required and os_sandbox.WORKDIR_SCAN_INCOMPLETE in limitations:
         raise MxcPolicyError(
-            "the session workdir is too large to check for host channels, and `required` "
-            "cannot promise a boundary it did not verify. Start a new chat, or use `auto`."
+            "the session workdir is too large to check for host channels, "
+            "so this call needs the user's approval. Call the tool again to ask for it."
         )
     return limitations
 
