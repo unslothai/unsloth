@@ -265,6 +265,9 @@ async def _read_once(
     return await _video_job(caller, job_id)
 
 
+# The least time get_job gives its first read and, at the end of a wait, its rows read.
+FIRST_READ_S = 30
+LAST_READ_S = 5
 # Job statuses that mean the job is still going; get_job(wait_s) waits only on these.
 RUNNING = {"running", "queued", "in_progress", "created", "pending", "active", "cancelling"}
 
@@ -304,7 +307,15 @@ async def get_job(
     kind "load": a load_model call that returned ``status`` "loading", by its ``job_id``; once completed, ``load`` is the load's result with what it unloaded."""
     caller = current_caller()
     deadline = time.monotonic() + min(wait_s, loading.MAX_WAIT_S)
-    result = await _read_once(caller, kind, id, rows, offset)
+    # Forwarded reads have no HTTP timeout, so each one here is bounded: the first by the wait (at
+    # least FIRST_READ_S), the polls and the final rows read by what is left of it.
+    first = max(min(wait_s, loading.MAX_WAIT_S), FIRST_READ_S)
+    try:
+        result = await asyncio.wait_for(_read_once(caller, kind, id, rows, offset), timeout = first)
+    except asyncio.TimeoutError:
+        raise ToolError(
+            f"Unsloth Studio did not report on the {kind} job within {first:g} s; call get_job again"
+        ) from None
     start = _moment(result.structured_content)
     # A listing has nothing to wait on.
     waits = id is not None or kind in ("recipe", "training", "diffusion_training")
@@ -334,7 +345,13 @@ async def get_job(
         if ctx is not None and now[2] is not None:
             await ctx.report_progress(min(now[2] / 100.0, 1.0), 1.0, str(now[1] or now[0]))
     if polled and rows:
-        result = await _read_once(caller, kind, id, rows, offset)
+        try:
+            result = await asyncio.wait_for(
+                _read_once(caller, kind, id, rows, offset),
+                timeout = max(deadline - time.monotonic(), LAST_READ_S),
+            )
+        except asyncio.TimeoutError:
+            pass  # The answer goes out without rows; the next get_job reads them.
     # A wait that ended because the job moved on can be followed again at once.
     return _with_poll_after(kind, result, 0 if moved else POLL_AFTER_S[kind])
 
