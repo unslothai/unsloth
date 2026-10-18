@@ -48,10 +48,8 @@ def _load(side_effect) -> HTTPException:
 
 def test_load_detail_is_structured_when_classified_else_500_prefix():
     error = _load(af.AudioCppFailureError("Failed to load model", _oom()))
-    assert error.status_code == 503
-    assert (
-        error.detail["code"] == "out_of_memory" and "ran out of memory" in error.detail["message"]
-    )
+    assert error.status_code == 503 and error.detail["code"] == "out_of_memory"
+    assert "ran out of memory" in error.detail["message"]
     error = _load(RuntimeError("totally different failure"))
     assert error.status_code == 500 and error.detail.startswith("Failed to load model: ")
 
@@ -139,7 +137,6 @@ def test_placement_refusal_lists_variants_that_fit(monkeypatch):
     detail = raised.value.detail
     assert ri.audio_cpp_resident_gb is af.estimate_resident_gb
     assert raised.value.status_code == 400 and detail["code"] == "out_of_memory"
-    # 7 GB free on the roomiest card: Q2 (6.5 GB) and Q1 (4.0 GB) fit; Q4 and Q3 do not.
     assert [row["label"] for row in detail["smaller_variants"]] == ["Q2", "Q1"]
     assert detail["message"].startswith("No single GPU has enough free memory for Model M.")
 

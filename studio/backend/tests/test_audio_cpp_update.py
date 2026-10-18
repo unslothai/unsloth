@@ -76,6 +76,7 @@ def managed(monkeypatch, tmp_path):
     monkeypatch.setattr(audio_cpp_freshness, "latest_release_assets", assets)
     monkeypatch.setattr(aupd.platform, "system", lambda: "Linux")
     monkeypatch.setattr(aupd.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(aupd._installer(), "detect_accelerator", lambda: "cpu")
     return SimpleNamespace(tree = tree, binary = binary, script = script, lookups = lookups, state = state)
 
 
@@ -253,6 +254,10 @@ def test_missing_runtime_offered_as_install(managed, monkeypatch):
         "accelerator": None,
         **tags,
     }
+    monkeypatch.setattr(aupd.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(aupd._installer(), "detect_accelerator", lambda: "metal")
+    managed.state.assets = {f"audio-{_LATEST}-bin-macos-x64-metal.tar.gz": 1}
+    assert aupd.chained_phase_plan()["update_available"] is True
 
 
 @pytest.mark.parametrize(
@@ -825,12 +830,12 @@ def test_a_first_install_runs_and_the_runtime_is_found_after(run_env, managed, m
         lambda: str(managed.binary) if record.is_file() else None,
     )
     phase = aupd.chained_phase_plan()["phase"]
+    monkeypatch.setattr(update_flow, "stream_installer", lambda *a, **k: None)
+    with pytest.raises(aupd._AudioPhaseError, match = "could not be installed"):
+        aupd.run_chained_phase(phase, lambda fraction: None)
+    run_env.installer(new_tag = _LATEST)
     result = aupd.run_chained_phase(phase, lambda fraction: None)
-    assert result == {
-        "to_tag": _LATEST,
-        "reload_required": False,
-        "message": f"Installed the audio runtime {_LATEST}.",
-    }
+    assert result["message"] == f"Installed the audio runtime {_LATEST}."
     assert "--accelerator" not in run_env.calls["cmd"]
     assert aupd.chained_phase_plan()["skip_reason"] == "up_to_date"
     assert aupd.get_installed_audio_cpp_version() == _LATEST

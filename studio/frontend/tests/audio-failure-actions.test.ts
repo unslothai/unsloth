@@ -71,11 +71,9 @@ test("each code maps onto its actions; unknown codes keep today's action", () =>
   const cases: [unknown, Record<string, unknown>, string[], string[]][] = [
     [OOM, {}, ["Use Q4_K_M", CPU], ["variant:Q4_K_M", "cpu"]],
     [OOM, { deviceIsCpu: true }, ["Use Q4_K_M"], ["variant:Q4_K_M"]],
-    // MiniMax Music 3 needs CUDA.
     [OOM, { cpuUnsupported: true }, ["Use Q4_K_M"], ["variant:Q4_K_M"]],
     [bareOom, {}, [CPU], ["cpu"]],
     [bareOom, { deviceIsCpu: true }, [CHOOSE], ["choose"]],
-    // The run was already on the CPU, whatever the device choice says.
     [{ ...OOM, device: "cpu" }, {}, ["Use Q4_K_M"], ["variant:Q4_K_M"]],
     [{ code: "gpu_unavailable" }, {}, [CPU], ["cpu"]],
     [{ code: "file_incomplete" }, {}, [CHOOSE], ["choose"]],
@@ -125,4 +123,5 @@ test("generation hooks report failures and the page uses them only for the error
   const slot = readSrc("features/audio/hooks/use-audio-model-slot.ts");
   assert.match(slot, /res\.audio_device_fallback === "cpu" && !wantsCpu/);
   assert.match(slot, /duration: 12000,\s*action: action &&/);
+  assert.match(slot, /queued\.isGguf,\s*queued\.deviceOverride,/);
 });

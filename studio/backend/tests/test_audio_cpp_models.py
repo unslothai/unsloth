@@ -3205,12 +3205,10 @@ def test_audio_request_inputs_and_seed_row_follow_the_declared_keys():
 @pytest.mark.parametrize(
     "keys, options, sent, ignored",
     [
-        # A blank seed on a seed model gets a random one.
         (None, {"seed": ""}, "1234", []),
         ({"speed", "seed"}, {"seed": 42, "speed": 1.5}, "42", []),
         ({"speed", "seed"}, {"seed": "42", "speed": 1.5}, "42", []),
         ({"speed", "seed"}, {"seed": 42.0, "speed": 1.5}, "42", []),
-        # A strict spec without seed: not sent, reported as ignored.
         ({"speed"}, {"seed": 5}, None, ["seed"]),
         ({"speed", "seed"}, {"mode": "b", "bogus": 1, "speed": 1.5}, "1234", ["bogus", "mode"]),
         (None, {"voice": "am_adam", "speed": 1.5, "mode": "b", "seed": 3}, "3", []),

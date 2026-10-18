@@ -28,6 +28,7 @@ export interface GeneratedAudio {
   data: string;
   format: string;
   sample_rate: number;
+  seed?: number | null;
 }
 
 export interface GenerateAudioResponse {

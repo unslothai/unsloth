@@ -170,6 +170,7 @@ export function useAudioModelSlot({
     audioType?: string | null;
     remoteCodeApproval?: RemoteCodeApproval;
     isGguf?: boolean | null;
+    deviceOverride?: "cpu";
   } | null>(null);
   const ttsLoadGeneration = useRef(0);
   const pendingTtsLoad = useRef<{
@@ -221,6 +222,7 @@ export function useAudioModelSlot({
           audioType,
           remoteCodeApproval,
           isGguf,
+          deviceOverride,
         };
         return;
       }
@@ -451,6 +453,7 @@ export function useAudioModelSlot({
       queued.audioType,
       queued.remoteCodeApproval,
       queued.isGguf,
+      queued.deviceOverride,
     );
   }, []);
   const invalidatePendingStagedTts = useCallback(() => {

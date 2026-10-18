@@ -5863,9 +5863,9 @@ class AudioRunRequest(BaseModel):
     @model_validator(mode = "after")
     def _take_fields(self):
         if (self.take, self.group_id) != (None, None) and (
-            self.workflow != "music" or self.variations != 1
+            self.workflow != "music" or self.variations != 1 or None in (self.take, self.group_id)
         ):
-            raise ValueError("take and group_id are for music with variations 1.")
+            raise ValueError("take and group_id go together, for music with variations 1.")
         return self
 
     @model_validator(mode = "after")
@@ -5940,6 +5940,7 @@ class AudioRunAudio(BaseModel):
     data: str
     format: str = "wav"
     sample_rate: int
+    seed: Optional[int] = None
 
 
 class AudioRunResponse(BaseModel):

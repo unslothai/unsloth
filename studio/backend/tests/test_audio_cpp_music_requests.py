@@ -450,7 +450,7 @@ def test_stable_audio_batches_variations_as_a_string(starts, tmp_path):
             "batch_size": "3",
             **STABLE_AUDIO_DEFAULTS,
         }
-        and "seed" not in request
+        and "seed" in request
     )
     assert rate == 44100 and wav[:4] == b"RIFF"
     manifest = json.loads((run / "outputs.json").read_text())
@@ -506,7 +506,7 @@ def test_sequential_variations_call_once_per_take_with_consecutive_seeds(tmp_pat
     assert [_request(top, i)["seed"] for i in range(2)] == [str(2**31 - 1), "0"]
 
 
-def test_a_fixed_seed_family_gets_a_recorded_random_seed(tmp_path):
+def test_a_blank_seed_gets_a_recorded_random_seed(tmp_path):
     b = _backend(_model("heartmula"))
     _run(b, text = "pop", lyrics = "la", seed = None, output_dir = str(tmp_path))
     seed = int(_request(b)["seed"])
@@ -514,7 +514,7 @@ def test_a_fixed_seed_family_gets_a_recorded_random_seed(tmp_path):
     assert json.loads((tmp_path / "outputs.json").read_text())[0]["seed"] == seed
     sa = _backend(_model("stable_audio", strict = False))
     _run(sa, text = "house", seed = None)
-    assert "seed" not in _request(sa)
+    assert int(_request(sa)["seed"]) == sa.last_generation_stats["seed"]
 
 
 def test_the_wait_grows_with_the_audio_asked_for_and_is_capped():

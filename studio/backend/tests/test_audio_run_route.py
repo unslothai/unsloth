@@ -411,13 +411,14 @@ def test_an_emotion_clip_reaches_a_family_that_takes_one(stub):
 
 
 def test_a_failed_gallery_save_returns_the_audio_inline(stub, monkeypatch):
+    _reporting(stub["backend"], 77)
     input_id = _input(ALICE)
     monkeypatch.setattr(inference, "_persist_tts_clip", lambda *a, **k: None)
     with _client(ALICE) as client:
         response = _run(client, inputs = {"reference": {"input_id": input_id}, "reference_text": "x"})
     body = response.json()
     assert response.status_code == 200 and body["clips"] == []
-    assert body["audio"]["sample_rate"] == 24000
+    assert (body["audio"]["sample_rate"], body["audio"]["seed"]) == (24000, 77)
     assert base64.b64decode(body["audio"]["data"])[:4] == b"RIFF"
 
 
@@ -1820,6 +1821,8 @@ def test_the_worker_and_orchestrator_carry_convert_and_the_running_task(monkeypa
         def runtime_fields(self):
             return {"audio_server_task": "vc", "audio_convert_route": None}
 
+        separate_audio = lambda self, **kwargs: []
+
     responses: queue.Queue = queue.Queue()
     convert = {"mode": "speech", "pitch": None, "pitch_auto": False, "style": "source"}
     _handle_generate_audio(
@@ -1837,6 +1840,9 @@ def test_the_worker_and_orchestrator_carry_convert_and_the_running_task(monkeypa
     assert seen[0]["convert"] == convert and seen[0]["workflow"] == "convert"
     done = responses.get_nowait()
     assert done["audio_runtime"] == {"audio_server_task": "vc", "audio_convert_route": None}
+    sep = {"workflow": "separate", "audio_inputs": {"source": "s"}, "output_dir": "o"}
+    _handle_generate_audio(_Backend(), sep, responses, threading.Event())
+    assert responses.get_nowait()["audio_runtime"]["audio_server_task"] == "vc"
 
     orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
     sent = []
@@ -2152,7 +2158,7 @@ def test_generate_json_returns_seed_and_persists_settings(stub, tmp_path):
     assert json.loads(_sidecar(tmp_path, body["clip_id"]))["settings"] == {"seed": 5}
 
 
-def test_music_take_persists_group_role_variation_and_take_seed(stub, tmp_path):
+def test_music_take_persists_group_role_variation_and_take_seed(stub, tmp_path, monkeypatch):
     backend = stub["use"](STABLE_AUDIO, _music_info())
     backend.__class__ = _MusicBackend
     backend.takes, backend.run_dirs = 1, []
@@ -2165,11 +2171,12 @@ def test_music_take_persists_group_role_variation_and_take_seed(stub, tmp_path):
     (clip,) = body["clips"]
     assert (clip["role"], clip["seed"]) == ("variation", 40)
     meta = json.loads(_sidecar(tmp_path, clip["id"]))
-    assert (meta["group_id"], meta["role"], meta["settings"]["variation"]) == (
-        group,
-        "variation",
-        2,
-    )
+    assert (meta["group_id"], meta["role"]) == (group, "variation")
+    assert meta["settings"]["variation"] == 2
+    monkeypatch.setattr(inference, "_persist_tts_clip", lambda *a, **k: None)
+    with _client(ALICE) as client:
+        inline = _music(client, take = 1, group_id = group).json()
+    assert (inline["clips"], inline["audio"]["seed"]) == ([], 40)
 
 
 @pytest.mark.parametrize(
@@ -2180,6 +2187,7 @@ def test_music_take_persists_group_role_variation_and_take_seed(stub, tmp_path):
         {"workflow": "speak", "group_id": "ab" * 16},
         {"workflow": "music", "mode": "song", "group_id": "AB" * 16},
         {"workflow": "music", "mode": "song", "take": 5},
+        {"workflow": "music", "mode": "song", "take": 2},
     ],
 )
 def test_take_or_group_rejected_outside_single_variation_music(stub, body):

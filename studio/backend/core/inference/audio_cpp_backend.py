@@ -1126,7 +1126,7 @@ class AudioCppBackend:
                 f"{model.display_name} makes at most "
                 f"{MUSIC_MAX_VARIATIONS if mode.variations else 1} variation(s) at a time."
             )
-        if seed is None and model.music.fixed_seed:
+        if seed is None:
             seed = cm.random_seed()
         if music.get("take"):
             # One take of a run the page sends take by take.

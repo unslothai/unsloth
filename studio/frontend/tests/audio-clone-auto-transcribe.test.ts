@@ -30,7 +30,6 @@ test("a required transcript fills itself once per usable reference", () => {
     ["referenceId", null, false],
     ["referenceBusy", true, false],
     ["referenceExpired", true, false],
-    // Never starts a multi-GB STT download.
     ["sttReady", false, false],
     ["doneFor", "ref-1", false],
     ["doneFor", "ref-0", true],
@@ -43,7 +42,6 @@ test("a required transcript fills itself once per usable reference", () => {
 test("the clone hook runs the gate with the page's downloaded STT model", () => {
   assert.match(
     readSrc("features/audio/hooks/use-clone-generation.ts"),
-    // A busy page would refuse the run, so the reference waits instead of being marked done.
     /busy !== null \|\|\s*!shouldAutoTranscribeReference\(\{[\s\S]*doneFor: autoTranscribed\.current[\s\S]*autoTranscribed\.current = reference\.id;\s*void transcribeOnce\(reference\)/,
   );
   assert.match(

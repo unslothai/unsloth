@@ -477,10 +477,8 @@ def test_gpu_unavailable_start_retries_once_on_cpu(fake_binary, tmp_path, monkey
             "cpu",
             "cpu",
         )
-        # Sticks: a restart for this model goes straight to the CPU.
         backend._start_server(KOKORO)
         assert starts == [False, True, True]
-        # A restart mid-session reports the fallback too, so the parent stops counting VRAM.
         backend._model = KOKORO
         fields = backend.runtime_fields()
         assert (fields["audio_cpu"], fields["audio_device_fallback"]) == (True, "cpu")

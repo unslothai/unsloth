@@ -1811,6 +1811,7 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
                     "request_id": request_id,
                     "outputs": outputs,
                     "sample_rate": 44100,
+                    **_audio_runtime(backend),
                 },
             )
             logger.info("Finished audio separation for request_id=%s", request_id)

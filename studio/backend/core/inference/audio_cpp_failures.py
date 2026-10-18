@@ -72,6 +72,7 @@ _MESSAGES = {
     # Runtime 4xx: the input is too big for the device (upstream CapacityError).
     "capacity": "This input does not fit in device memory. Try a shorter input, or set the audio "
     "device to CPU.",
+    "capacity_cpu": "This input does not fit in memory. Try a shorter input.",
     # Unsloth Studio's own refusal before launch.
     "placement": "No single GPU has enough free memory for {name}. Free GPU memory, choose a "
     "smaller variant, or set the audio device to CPU.",
@@ -214,9 +215,9 @@ def classify_audio_cpp_failure(
             code == "out_of_memory" and runtime_status is not None and 400 <= runtime_status < 500
         )
         placement = "no single gpu" in lowered
-        on_cpu = code == "out_of_memory" and backend == "cpu" and not capacity
+        on_cpu = code == "out_of_memory" and backend == "cpu"
         key = "placement" if placement else "capacity" if capacity else code
-        key = "out_of_memory_cpu" if on_cpu and not placement else key
+        key = f"{key}_cpu" if on_cpu and key in ("out_of_memory", "capacity") else key
         message = _MESSAGES[key].format(name = getattr(model, "display_name", None) or "This model")
         # "device": the run was already on the CPU, so "set the audio device to CPU" can't help.
         extras: dict = {"device": "cpu"} if on_cpu else {}

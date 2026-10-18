@@ -131,13 +131,22 @@ def _stream_http(
 def test_help_output():
     """``unsloth studio run --help`` should show all documented options."""
     # Rich lays the help out at 80 columns when stdout is not a terminal and cuts the
-    # "--max-seq-length, --context-length" cell to "--max-seq-lengt…".
+    # "--max-seq-length, --context-length" cell to "--max-seq-lengt…". Typer passes an inherited
+    # TERMINAL_WIDTH as an explicit width, and GITHUB_ACTIONS / FORCE_COLOR / PY_COLORS force a
+    # terminal whose colour codes split every flag, so pin both. The child writes UTF-8.
     result = subprocess.run(
         ["unsloth", "studio", "run", "--help"],
         capture_output = True,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         timeout = 15,
-        env = {**os.environ, "COLUMNS": "200"},
+        env = {
+            **os.environ,
+            "COLUMNS": "200",
+            "TERMINAL_WIDTH": "200",
+            "_TYPER_FORCE_DISABLE_TERMINAL": "1",
+        },
     )
     out = result.stdout
     assert result.returncode == 0, f"--help exited with {result.returncode}"

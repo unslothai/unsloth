@@ -500,7 +500,6 @@ test("a missing audio.cpp runtime reads as a first install, not unknown → late
     LLAMA,
     /row\.component === "audio\.cpp" && row\.installedTag === null\s*\?\s*"Install the audio runtime"[\s\S]*\{lead \? `\$\{lead\} ` : null\}/,
   );
-  // The title names no engine either.
   assert.match(
     LLAMA,
     /title = firstInstall\s*\?\s*"Installing the audio runtime\.\.\."/,
