@@ -1483,7 +1483,9 @@ def test_hidream_table_share_leaves_out_the_separately_priced_te4(monkeypatch):
     assert got is not None
     mib, components, _exact = got
     assert set(components) == {"text_encoder_3", "text_encoder_4"}
-    t5_gb = family_bf16_components_gb(fam, fam.base_repo)[1] - 3.3 - HIDREAM_LLAMA_BF16_BYTES / 1000**3
+    t5_gb = (
+        family_bf16_components_gb(fam, fam.base_repo)[1] - 3.3 - HIDREAM_LLAMA_BF16_BYTES / 1000**3
+    )
     expected = int(HIDREAM_LLAMA_BF16_BYTES * tpq.TE_PREQUANT_BUDGET_SCALE) + int(
         t5_gb * 1000**3 * tpq.TE_PREQUANT_BUDGET_SCALE
     )
