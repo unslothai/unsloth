@@ -203,6 +203,24 @@ def test_a_type_reexported_through_a_barrel_is_still_erased(tmp_path):
     assert "const TABLE" in resolved
 
 
+def test_an_inline_type_reexport_through_a_barrel_is_still_erased(tmp_path):
+    """`export { type Props, helper } from "./view"` names a type Node erases next to a value."""
+    module = tmp_path / "src" / "m.ts"
+    module.parent.mkdir(parents = True)
+    module.write_text(
+        'import { Props } from "./barrel";\n'
+        "const f = (p?: Props) => 1;\n"
+        "const TABLE = { v: f() };\n"
+        "export function useIt() {\n  return TABLE;\n}\n"
+    )
+    (module.parent / "barrel.ts").write_text('export { type Props, helper } from "./view";\n')
+    (module.parent / "view.tsx").write_text(
+        "export interface Props {\n  on: boolean;\n}\nexport function helper() {\n  return 1;\n}\n"
+    )
+    resolved = resolve_dependencies("const used = useIt();\n", (module,), root = tmp_path / "src")
+    assert "const TABLE" in resolved
+
+
 def test_an_asserted_function_expression_stays_lazy(tmp_path):
     """`function () {...} as Fn` builds a function without calling it, so it is kept like one."""
     module = tmp_path / "src" / "m.ts"
