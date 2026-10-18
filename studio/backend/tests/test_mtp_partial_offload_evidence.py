@@ -634,8 +634,11 @@ def test_the_dense_hybrid_still_stands_mtp_down(tmp_path):
     assert backend.spec_fallback_reason == "mtp_partial_offload"
 
 
-@pytest.mark.parametrize("n_cpu_moe", [0, 1, 20])
-def test_manual_partial_layers_on_a_moe_warn(tmp_path, monkeypatch, n_cpu_moe):
+@pytest.mark.parametrize(
+    ("gpu_layers", "n_cpu_moe", "warns"),
+    [(42, 0, True), (42, 1, True), (42, 20, True), (65, 0, True), (66, 0, False), (99, 0, False)],
+)
+def test_manual_partial_layers_on_a_moe_warn(tmp_path, monkeypatch, gpu_layers, n_cpu_moe, warns):
     """Whole layers stay on the CPU whatever --n-cpu-moe does to the experts of the
     layers that are on the GPU, so the warning fires with expert offload too."""
     import core.inference.llama_cpp as llama_cpp
@@ -652,8 +655,10 @@ def test_manual_partial_layers_on_a_moe_warn(tmp_path, monkeypatch, n_cpu_moe):
         backend,
         gguf,
         gpu_memory_mode = "manual",
-        gpu_layers = 42,
+        gpu_layers = gpu_layers,
         n_cpu_moe = n_cpu_moe,
         n_ctx = 4096,
     )
-    assert any("Manual GPU layers on a MoE model" in w for w in warnings)
+    # 65 of 65 blocks still leaves the output layer on the CPU (llama.cpp offloads it only
+    # above block_count), the same boundary _partially_offloads_layers uses.
+    assert any("Manual GPU layers on a MoE model" in w for w in warnings) is warns

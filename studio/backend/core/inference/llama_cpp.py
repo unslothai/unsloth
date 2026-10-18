@@ -30245,7 +30245,7 @@ class LlamaCppBackend:
                     # also means _ctx_integrity_flags must not add --fit-ctx.
                     use_fit = False
                     cmd.extend(["--gpu-layers", str(gpu_layers), "--fit", "off"])
-                    if self.n_moe_layers > 0 and self.n_layers and 0 < gpu_layers < self.n_layers:
+                    if self.n_moe_layers > 0 and self.n_layers and 0 < gpu_layers <= self.n_layers:
                         # Whole MoE layers on the CPU also move their attention and
                         # recurrent state there: Qwen3.6-35B-A3B on a 16 GB card, 27 GPU
                         # layers 67.7 tok/s vs 175.1 with --fit (experts only on the CPU).
