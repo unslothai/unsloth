@@ -72,7 +72,6 @@ import {
   registerVoiceStopSpeaking,
   registerVoiceSubmit,
   registerVoiceThreadReset,
-  registerVoiceEnd,
   registerVoiceToggle,
   setVoiceMode as setLoopVoiceMode,
 } from "@/features/chat/voice/voice-loop-bridge";
@@ -1019,15 +1018,12 @@ export const VoiceEngine: FC = () => {
   // itself once it has a transcript, on its own end-of-turn AND on a manual stop,
   // so submission is already covered; the session ending is not a turn ending.
 
-  // End the loop. keepModels: the composer's stop leaves the voice, STT and speech
-  // detector loaded for the next start; the plus-menu toggle unloads them.
-  const turnOff = useCallback((keepModels: boolean) => {
-    const store = useChatRuntimeStore.getState();
-    store.setVoiceKeepModels(keepModels);
+  // End the loop (the plus-menu toggle; ChatPage unloads the voice models on it).
+  const turnOff = useCallback(() => {
     setLoopVoiceMode("off");
     voiceModeRef.current = "off";
     setVoiceModeState("off");
-    store.setVoiceMode("off");
+    useChatRuntimeStore.getState().setVoiceMode("off");
     if (voiceCoalesceTimerRef.current) {
       clearTimeout(voiceCoalesceTimerRef.current);
       voiceCoalesceTimerRef.current = null;
@@ -1056,7 +1052,7 @@ export const VoiceEngine: FC = () => {
     // CONFIGURING → OFF (user cancelled before picking)
     // ACTIVE → OFF (turn off the loop, models unloaded)
     if (voiceModeRef.current !== "off") {
-      turnOff(false);
+      turnOff();
       return;
     }
     setLoopVoiceMode("configuring");
@@ -1072,14 +1068,6 @@ export const VoiceEngine: FC = () => {
     // "configuring": dropdown appears via store; mic stays off.
   }, [turnOff, primeAudio]);
 
-  useEffect(() => {
-    registerVoiceEnd(() => {
-      if (voiceModeRef.current === "off") return;
-      voiceTrace("engine.end", { speaking: isSpeakingRef.current, playing: isPlayingRef.current });
-      turnOff(true);
-    });
-    return () => registerVoiceEnd(null);
-  }, [turnOff]);
 
   // Switching threads carries the loop over instead of ending it: cut the old
   // thread's reply and mic, drop its pending timers, then re-arm on the new one.
@@ -1150,11 +1138,22 @@ export const VoiceEngine: FC = () => {
     };
   }, [toggle]);
 
-  // The composer's stop button while a reply is being spoken after its run ended.
+  // The composer's stop square: everything in flight ends (reply audio, the run,
+  // held and queued utterances, a pending coalesced send) and the loop goes back
+  // to listening. Voice mode and its models stay as they are.
   useEffect(() => {
     registerVoiceStopSpeaking(() => {
       if (voiceModeRef.current !== "active") return;
       voiceTrace("engine.stopSpeaking", { speaking: isSpeakingRef.current, playing: isPlayingRef.current });
+      if (voiceCoalesceTimerRef.current) {
+        clearTimeout(voiceCoalesceTimerRef.current);
+        voiceCoalesceTimerRef.current = null;
+      }
+      clearHeldTurn();
+      clearFiller();
+      setPendingFiller(null);
+      queuedUtteranceRef.current = [];
+      pendingForVoiceRef.current = [];
       stop();
       const thread = auiRef.current.thread();
       if (thread.getState().isRunning) {
@@ -1167,7 +1166,7 @@ export const VoiceEngine: FC = () => {
       resumeListen();
     });
     return () => registerVoiceStopSpeaking(null);
-  }, [stop, resumeListen]);
+  }, [stop, resumeListen, clearFiller]);
 
   // Expose resumeListen so the dictation adapter can re-arm the mic after a
   // recoverable no-speech timeout. It self-guards: no-op unless voice is active.

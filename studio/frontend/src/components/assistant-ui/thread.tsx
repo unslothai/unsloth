@@ -160,7 +160,7 @@ import {
 } from "@/features/chat/api/chat-adapter";
 import {
   loadVoiceMode,
-  requestVoiceEnd,
+  requestVoiceStopSpeaking,
   requestVoiceToggle,
   useVoiceAvailable,
   useVoiceRequested,
@@ -7727,17 +7727,18 @@ const ComposerRightControls: FC<{
       </div>
       {/* Voice mode owns the send slot: one square the whole time, in place of the
           arrow, the run's stop and the stop-speaking button, so the controls never
-          change width under the orb. It ends the loop (reply, run and mic) and
-          keeps the models loaded; the plus-menu Voice item is what unloads them. */}
+          change width under the orb. It cuts whatever is in flight (reply, run,
+          held utterances) and goes back to listening; voice mode stays on, and the
+          plus-menu Voice item is what turns it off and unloads its models. */}
       {voiceEngaged ? (
         <Button
           type="button"
           variant="default"
           size="icon"
           className="aui-composer-cancel ml-1.5 size-9 rounded-full"
-          aria-label="Stop voice mode"
-          title="Stop voice mode"
-          onClick={requestVoiceEnd}
+          aria-label="Stop"
+          title="Stop the reply and listen"
+          onClick={requestVoiceStopSpeaking}
         >
           <SquareIcon className="size-3 fill-current" />
         </Button>

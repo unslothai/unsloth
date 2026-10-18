@@ -3102,14 +3102,13 @@ export function ChatPage({
     );
   }, [voiceMode, selectedVoiceModelId, hasChatCheckpoint, ensureVoiceSlotLoaded]);
 
-  // The plus-menu toggle unloads what the loop loaded (voice, STT, speech detector)
-  // and keeps the chat model; the composer's stop keeps all of it for the next start.
+  // Voice mode off unloads what the loop loaded (voice, STT, speech detector) and
+  // keeps the chat model.
   const prevVoiceModeRef = useRef(voiceMode);
   useEffect(() => {
     const was = prevVoiceModeRef.current;
     prevVoiceModeRef.current = voiceMode;
     if (voiceMode !== "off" || was === "off") return;
-    if (useChatRuntimeStore.getState().voiceKeepModels) return;
     unloadOwnVoice();
     void unloadSttModel().catch(() => {});
     void unloadVadModel();

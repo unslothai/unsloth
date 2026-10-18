@@ -2701,8 +2701,6 @@ type ChatRuntimeStore = {
    * Not persisted — resets to "off" on page load.
    */
   voiceMode: "off" | "configuring" | "active";
-  /** The composer's stop ended the loop: its models stay loaded for the next start. */
-  voiceKeepModels: boolean;
   /** The audio.cpp voice the loop speaks with. Persisted. */
   selectedVoiceModelId: string;
   /** A saved Audio voice for a voice that can clone; "" is the model's own. Persisted. */
@@ -2753,7 +2751,6 @@ type ChatRuntimeStore = {
   setLoadingModelPick: (pick: LoadingModelPick | null) => void;
   clearLoadingModelPick: (expected: LoadingModelPick) => void;
   setVoiceMode: (mode: "off" | "configuring" | "active") => void;
-  setVoiceKeepModels: (keep: boolean) => void;
   setSelectedVoiceModelId: (id: string) => void;
   setSelectedVoiceId: (id: string) => void;
   setSelectedVoiceSpeaker: (speaker: string) => void;
@@ -4566,7 +4563,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeNativePathToken: null,
   activeNativePathExpiresAtMs: null,
   voiceMode: "off" as const,
-  voiceKeepModels: false,
   // An Orpheus pick from the llama-server voice slot falls back to the default voice.
   selectedVoiceModelId: migrateVoiceTtsModel(loadString(CHAT_VOICE_MODEL_ID_KEY, "")),
   selectedVoiceId: loadString(CHAT_VOICE_SAVED_ID_KEY, ""),
@@ -4796,13 +4792,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }
       return { loadingModelPick: null };
     }),
-  setVoiceKeepModels: (voiceKeepModels) => set({ voiceKeepModels }),
   setVoiceMode: (voiceMode) =>
     // Leaving voice mode always resets the minimized/collapsed orb view so the
-    // next session starts expanded, and clears any lingering "hearing" state.
+    // next session starts expanded, and clears any lingering "hearing" state and
+    // the orb's last state: a stale "listening" came back over the welcome
+    // composer when voice was reopened to "configuring".
     set(
       voiceMode === "off"
-        ? { voiceMode, voiceOrbCollapsed: false, voiceHearing: false }
+        ? { voiceMode, voiceOrbCollapsed: false, voiceHearing: false, voiceOrbState: null }
         : { voiceMode },
     ),
   setVoiceHearing: (voiceHearing) => set({ voiceHearing }),
