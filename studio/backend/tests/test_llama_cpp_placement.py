@@ -5112,7 +5112,9 @@ def test_a_fit_ctx_equal_to_studios_still_prices_the_share(tmp_path, _moe_cache_
     "switch, free_mib, cached",
     [
         ("on", 24_000, True),
-        ("on", 14_000, True),
+        # ~14% resident: auto takes the cache below the old 0.35 floor, off still refuses it.
+        ("auto", 14_000, True),
+        ("off", 14_000, False),
         ("off", 20_000, False),
         ("auto", 20_000, True),
         ("bogus", 24_000, False),
@@ -5206,7 +5208,7 @@ def test_a_cache_launch_keeps_a_raise_the_resident_rule_allows(
 @pytest.mark.parametrize(
     "free_mib, ubatch",
     [(11_000, ["1120"]), (14_000, ["1120"]), (18_000, ["2048"])],
-    ids = ["tight_split", "tight_cache", "roomy"],
+    ids = ["low_share_cache", "tight_cache", "roomy"],
 )
 def test_a_skipped_raise_keeps_the_projector_micro_batch(
     tmp_path, _moe_cache_host, monkeypatch, free_mib, ubatch
@@ -5646,9 +5648,8 @@ def test_qwen38_on_a_16gib_card_launches_pinned_past_the_host_guard(
     """Qwen3.8-Flash-Next IQ1_S on one 16 GiB card, end to end with the real host-RAM
     preflight. The fit leaves the 26.82 GiB lazy table out and picks "none"; the
     preflight charged the whole 67.55 GiB file, read a shortfall, and the pageable
-    rewrite took the pinned mode (and with it the cache) back out. Forced on: ~13% of
-    the experts stay resident, below the band, so auto keeps the split here."""
-    monkeypatch.setenv("UNSLOTH_MOE_CACHE", "on")
+    rewrite took the pinned mode (and with it the cache) back out. ~13% of the experts
+    stay resident, and auto takes the cache there."""
     backend, cmd = _cache_launch(
         tmp_path,
         size_gib = _QWEN38_TOTAL / _GIB,
