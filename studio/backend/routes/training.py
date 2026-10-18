@@ -2847,7 +2847,8 @@ def _build_training_status(
             "loss": getattr(progress, "loss", None),
             "learning_rate": getattr(progress, "learning_rate", None),
             "elapsed_seconds": getattr(progress, "elapsed_seconds", None),
-            "eta_seconds": getattr(progress, "eta_seconds", None),
+            # A stopped run keeps its last ETA; only a live run has time remaining.
+            "eta_seconds": getattr(progress, "eta_seconds", None) if is_active else None,
             "output_dir": getattr(backend, "_output_dir", None) or None,
             "drafter": getattr(progress, "drafter", None),
             "model_download_repo_id": (

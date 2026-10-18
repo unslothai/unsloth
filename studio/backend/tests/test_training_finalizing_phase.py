@@ -172,3 +172,8 @@ def test_frontend_phase_union_covers_the_backend_literal():
     union = set(re.findall(r'\|\s*"([a-z_]+)"', runtime_ts.read_text(encoding = "utf-8")))
     missing = _phase_literals() - union
     assert not missing, f"TrainingPhase is missing backend phases: {sorted(missing)}"
+
+
+def test_a_stopped_run_reports_no_eta():
+    src = _ROUTES_TRAINING.read_text(encoding = "utf-8")
+    assert '"eta_seconds": getattr(progress, "eta_seconds", None) if is_active else None' in src
