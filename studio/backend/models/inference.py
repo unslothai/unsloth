@@ -34,13 +34,13 @@ from core.inference.llama_server_args import (
 )
 from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
 from utils.upload_limits import VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES
-
-# A 24 MB reference audio as a base64 data URL, with room for its header.
-_VIDEO_REFERENCE_AUDIO_MAX_CHARS = ((24 * 1024 * 1024 + 2) // 3) * 4 + 64 * 1024
 from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 from models.providers import ProviderReasoningConfig
 from utils.reasoning_budget import validate_reasoning_budget_message
+
+# A 24 MB reference audio as a base64 data URL, with room for its header.
+_VIDEO_REFERENCE_AUDIO_MAX_CHARS = ((24 * 1024 * 1024 + 2) // 3) * 4 + 64 * 1024
 
 
 def resolve_inventory_handle(value: str) -> str:
