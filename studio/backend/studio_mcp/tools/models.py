@@ -280,7 +280,8 @@ async def load_model(
 async def unload_model(kind: UnloadKind = "llm", model: Optional[str] = None) -> ToolResult:
     """Unload a model to free memory.
     Without ``model`` the active one of that kind is unloaded; image and video have one slot each, so ``model`` is ignored there.
-    kind "all" unloads every chat, speech, image, video and speech-to-text model in one call and lists them under ``unloaded``.
+    A load_model of that kind still running is stopped too (a speech-to-text load past its download finishes first, then unloads); for "llm", "tts" and "audio" without ``model``, that load is the one unloaded.
+    kind "all" unloads every chat, speech, image, video and speech-to-text model in one call, stops every load_model still running, and lists them under ``unloaded``.
     The embedding model is managed by Unsloth Studio and is not unloaded here.
     ``unloaded`` is false when nothing matching was loaded."""
     if kind == "all":

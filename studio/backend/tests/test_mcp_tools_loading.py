@@ -563,8 +563,9 @@ def test_a_chat_load_already_in_flight_is_followed_not_started_again(monkeypatch
     assert progress and "mmap" in progress[0]["message"]
 
 
-# What the load answer says wins: evicted_slots, else evicted placed by what was resident, else a
-# before/after diff (load routes from before evicted_slots).
+# The load answer's evicted_slots come first, else its evicted placed by what was resident; a
+# before/after diff adds what the answer leaves out (here the image model) or, on load routes from
+# before evicted_slots, finds everything.
 @pytest.mark.parametrize(
     "answer,expected",
     [
@@ -576,7 +577,11 @@ def test_a_chat_load_already_in_flight_is_followed_not_started_again(monkeypatch
                     {"kind": "audio", "model": "a/tts"},
                 ],
             },
-            [{"kind": "llm", "model": LLM}, {"kind": "audio", "model": "a/tts"}],
+            [
+                {"kind": "llm", "model": LLM},
+                {"kind": "audio", "model": "a/tts"},
+                {"kind": "image", "model": FLUX_GGUF},
+            ],
         ),
         ({"evicted": [FLUX_GGUF]}, [{"kind": "image", "model": FLUX_GGUF}]),
         ({}, [{"kind": "image", "model": FLUX_GGUF}]),
@@ -672,3 +677,117 @@ def test_progress_never_drops_back():
         "saving_chat_context",
         [(0.5, "Downloading")],
     )
+
+
+def test_the_model_a_load_replaced_is_reported_beside_what_the_route_lists(monkeypatch):
+    # The route lists the image model the arbiter unloaded, not the chat model this load replaced.
+    answer = {
+        **LOADED,
+        "evicted": [FLUX_GGUF],
+        "evicted_slots": [{"kind": "image", "model": FLUX_GGUF}],
+    }
+    routes = {
+        **PAYLOADS,
+        LOAD: answer,
+        STATUS_ROUTE: sequence({**STATUS, "serving": ["unsloth/Qwen3-0.6B"], "loaded": []}, STATUS),
+        IMAGE_STATUS: sequence(FLUX_LOADED, UNLOADED),
+    }
+    result, _studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM})
+    assert result["structuredContent"]["evicted_slots"] == [
+        {"kind": "image", "model": FLUX_GGUF},
+        {"kind": "llm", "model": "unsloth/Qwen3-0.6B"},
+    ]
+
+
+def test_a_speech_to_text_load_never_follows_a_chat_load(monkeypatch, fast_polls):
+    chat = {"loading": [WHISPER], "serving": [], "loaded": []}
+    studio = fake_studio(
+        {
+            STATUS_ROUTE: chat,
+            ("GET", f"{STT}/status"): {"transformers": stt_state(downloaded = [WHISPER])},
+            ("POST", f"{STT}/load"): {"loaded_model": WHISPER},
+        }
+    )
+    result, studio = run_tool(monkeypatch, studio, "load_model", {"model": WHISPER, "kind": "stt"})
+    assert result["structuredContent"]["kind"] == "stt"
+    assert len(bodies(studio, f"{STT}/load")) == 1
+
+
+def test_unloading_stt_stops_a_load_still_downloading(monkeypatch, fast_polls):
+    # cancel has no load kind, so unload_model is how an agent stops a load it left running.
+    downloading = {"downloading": True, "bytes_done": 1, "bytes_total": 10}
+    studio = fake_studio(
+        {
+            ("GET", f"{STT}/status"): {"transformers": stt_state(download = downloading)},
+            ("POST", f"{STT}/download"): {"downloading": True, "download_id": "d1"},
+            ("POST", f"{STT}/download/cancel"): {"downloading": False, "cancelled": True},
+            ("POST", f"{STT}/load"): {"loaded_model": WHISPER},
+        }
+    )
+    with session(monkeypatch, studio) as call:
+        early = call("load_model", {"model": WHISPER, "kind": "stt", "wait_s": 0})
+        assert early["structuredContent"]["status"] == "loading"
+        job_id = early["structuredContent"]["job_id"]
+        unloaded = call("unload_model", {"kind": "stt"})["structuredContent"]
+        job = call("get_job", {"kind": "load", "id": job_id})
+    assert unloaded == {"kind": "stt", "model": WHISPER, "unloaded": True}
+    assert job["structuredContent"]["status"] == "cancelled"
+    assert bodies(studio, f"{STT}/download/cancel") == [
+        {"model": WHISPER, "engine": "transformers", "download_id": "d1"}
+    ]
+    assert bodies(studio, f"{STT}/load") == []
+
+
+@pytest.mark.parametrize("kind", ["llm", "video"])
+def test_unloading_stops_a_load_still_running(monkeypatch, fast_polls, kind):
+    # Nothing is resident yet, so before this the unload answered "nothing loaded" and posted nothing.
+    model = LLM if kind == "llm" else LTX
+    unload = "/api/inference/unload" if kind == "llm" else "/api/inference/video/unload"
+    if kind == "llm":
+        routes = {**PAYLOADS, LOAD: slow(LOADED, 5.0), STATUS_ROUTE: EMPTY_STATUS}
+    else:
+        routes = {
+            ("POST", "/api/inference/video/download-plan"): {"entries": []},
+            ("POST", "/api/inference/video/load"): slow(LTX_LOADED, 5.0),
+            ("GET", "/api/inference/video/load-progress"): READY,
+            VIDEO_STATUS: UNLOADED,
+            IMAGE_STATUS: UNLOADED,
+            ("POST", unload): UNLOADED,
+        }
+    studio = fake_studio(routes)
+    with session(monkeypatch, studio) as call:
+        early = call("load_model", {"model": model, "kind": kind, "wait_s": 0})
+        job_id = early["structuredContent"]["job_id"]
+        unloaded = call("unload_model", {"kind": kind})["structuredContent"]
+        job = call("get_job", {"kind": "load", "id": job_id})
+    assert unloaded == {"kind": kind, "model": model, "unloaded": True}
+    assert job["structuredContent"]["status"] == "cancelled"
+    assert len([c for c in studio.state.calls if c[1] == unload]) == 1
+    if kind == "llm":
+        assert bodies(studio, unload) == [{"model_path": LLM}]
+
+
+def test_unloading_stt_lets_a_load_past_its_download_finish_then_unloads_it(
+    monkeypatch, fast_polls
+):
+    # Cancelling the in-process load route would not stop the sidecar load, so it is waited for.
+    studio = fake_studio(
+        {
+            ("GET", f"{STT}/status"): sequence(
+                {"transformers": stt_state(downloaded = [WHISPER])},
+                {"transformers": stt_state(downloaded = [WHISPER], loaded = WHISPER)},
+                {"transformers": stt_state(downloaded = [WHISPER])},
+            ),
+            ("POST", f"{STT}/load"): slow({"loaded_model": WHISPER}, 0.5),
+            ("POST", f"{STT}/unload"): {"loaded_model": None},
+        }
+    )
+    with session(monkeypatch, studio) as call:
+        early = call("load_model", {"model": WHISPER, "kind": "stt", "wait_s": 0})
+        job_id = early["structuredContent"]["job_id"]
+        unloaded = call("unload_model", {"kind": "stt"})["structuredContent"]
+        job = call("get_job", {"kind": "load", "id": job_id})
+    assert unloaded == {"kind": "stt", "model": WHISPER, "unloaded": True}
+    assert job["structuredContent"]["status"] == "completed"
+    assert bodies(studio, f"{STT}/download/cancel") == []
+    assert len(bodies(studio, f"{STT}/load")) == 1

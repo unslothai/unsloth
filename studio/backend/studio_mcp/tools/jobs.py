@@ -172,9 +172,11 @@ async def _training_job(caller: Caller, kind: str, job_id: Optional[str]) -> Too
     payload = as_dict(await route_json("GET", SLOT_ROUTES[kind], caller = caller))
     slot = (_training if kind == "training" else _diffusion_training)(payload)
     if job_id and slot.job_id and job_id != slot.job_id:
-        raise ToolError(
-            f'{job_id} is not the current training job; list_training_runs(run_id="{job_id}") has its result'
+        # list_training_runs reads LLM runs only.
+        where = (
+            f'; list_training_runs(run_id="{job_id}") has its result' if kind == "training" else ""
         )
+        raise ToolError(f"{job_id} is not the current training job{where}")
     phase = "running" if kind == "diffusion_training" and slot.phase == "busy" else slot.phase
     status = TRAINING_STATUS.get(phase, "running")
     training = TrainingJob(**slot.model_dump())
@@ -297,7 +299,7 @@ async def get_job(
     offset: Annotated[int, Field(ge = 0)] = 0,
 ) -> ToolResult:
     """The state of a long-running job.
-    Follow every long job with ``wait_s`` instead of polling: the call checks every 2 s, reports progress, and returns once the job finishes, its status or phase changes, or ``wait_s`` runs out; a running job then gives ``poll_after_s``.
+    Follow every long job with ``wait_s`` instead of polling: the call checks every 2 s, reports progress, and returns once the job finishes, its status changes (for an export or a training run, also its phase), or ``wait_s`` runs out; a running job then gives ``poll_after_s``.
     kind "video": with ``id``, its status and progress, and once completed a thumbnail plus the video's URL; without ``id``, recent video jobs.
     kind "recipe": a data recipe job's status and progress (without ``id``, the current one), and with ``rows`` that many generated rows from ``offset``.
     Unsloth Studio runs one recipe at a time; a recipe job id is not tied to an account.
