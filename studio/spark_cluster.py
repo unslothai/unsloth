@@ -1347,7 +1347,11 @@ def _print_manual_steps(
     peer_plan: List[Dict[str, str]],
     *,
     extra_plans: Optional[List[List[Dict[str, str]]]] = None,
+    node_indices: Optional[List[int]] = None,
 ) -> None:
+    """`node_indices`: the node number of `peer_plan` then each of `extra_plans`, so a rerun from
+    node 1 labels node 0's block as node 0 rather than renumbering by position."""
+
     def emit(where: str, entries: List[Dict[str, str]]) -> None:
         print(f"\n  Run these on {where}:")
         print("    sudo tee /etc/netplan/40-unsloth-cx7.yaml >/dev/null <<'EOF'")
@@ -1359,7 +1363,8 @@ def _print_manual_steps(
 
     emit("THIS Spark", plan)
     others = [peer_plan] + list(extra_plans or [])
-    for index, entries in enumerate(others, start = 1):
+    indices = list(node_indices) if node_indices else list(range(1, len(others) + 1))
+    for index, entries in zip(indices, others):
         label = "the PEER Spark" if len(others) == 1 else f"Spark node {index}"
         emit(label, entries)
 
@@ -1891,12 +1896,22 @@ def provision_paths() -> Tuple[Tuple[str, str], ...]:
     # The llama.cpp bundle is NOT inside the venv (see llama_bundle_dir): skip it and the peer keeps
     # an older bundle, which llama-server rejects at load as a version mismatch.
     return (
-        (str(_studio_root() / "unsloth_studio"), "Unsloth venv"),
+        (str(_studio_root() / "unsloth_studio"), _VENV_LABEL),
         (str(llama_bundle_dir()), "llama.cpp prebuilt"),
         ("~/.cache/flashinfer", "FlashInfer JIT cache"),
         ("~/.cache/vllm/flashinfer_autotune_cache", "vLLM FlashInfer autotune cache"),
         ("~/.cache/vllm/torch_compile_cache", "vLLM torch.compile cache"),
-    )
+    ) + _python_runtime_paths()
+
+
+_PYTHON_RUNTIME_LABEL = "Python runtime"
+_VENV_LABEL = "Unsloth venv"
+
+
+def _python_runtime_paths() -> Tuple[Tuple[str, str], ...]:
+    # Last, so the established order is unchanged; provision_peer copies it before the venv.
+    runtime = venv_python_runtime(str(_studio_root() / "unsloth_studio"))
+    return ((runtime, _PYTHON_RUNTIME_LABEL),) if runtime else ()
 
 
 def peer_destination(path: str) -> str:
@@ -1917,32 +1932,90 @@ def _sh_home_path(path: str) -> str:
     return shlex.quote(path)
 
 
-def venv_relocate_script(old_prefix: str, new_prefix: str) -> str:
-    """Shell that repairs a venv copied to a different absolute path."""
+def venv_python_runtime(venv: str) -> Optional[str]:
+    """The Python install `venv` was created from, when it is one this user owns (uv-managed under
+    $HOME or the Studio root). The venv's `bin/python` is a symlink INTO it, so a peer without it
+    gets a venv whose interpreter does not exist. None for a system Python."""
+    try:
+        with open(osp.join(venv, "pyvenv.cfg"), encoding = "utf-8") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return None
+    home = next(
+        (l.split("=", 1)[1].strip() for l in lines if l.split("=", 1)[0].strip() == "home"),
+        "",
+    )
+    if not home or not osp.isabs(home):
+        return None
+    root = osp.realpath(osp.dirname(home.rstrip("/")))
+    if not osp.isdir(osp.join(root, "lib")) or osp.realpath(venv).startswith(root + "/"):
+        return None
+    for owner in (osp.realpath(str(_studio_root())), osp.realpath(str(Path.home()))):
+        if root.startswith(owner.rstrip("/") + "/"):
+            return root
+    return None
+
+
+def venv_relocate_script(
+    old_prefix: str,
+    new_prefix: str,
+    old_python: Optional[str] = None,
+    new_python: Optional[str] = None,
+) -> str:
+    """Shell that repairs a venv copied to a different absolute path, and fails when the copied
+    venv's interpreter does not exist on the peer."""
     old = shlex.quote(old_prefix.rstrip("/"))
     new = _sh_home_path(new_prefix.rstrip("/"))
     files = " ".join(shlex.quote(m) for m in _VENV_MARKERS)
-    return (
+    script = (
         "set -eu\n"
         f"v={new}\n"
         f"old={old}\n"
         '[ -d "$v" ] || exit 0\n'
-        '[ "$v" = "$old" ] && exit 0\n'
+        'if [ "$v" != "$old" ]; then\n'
         f"for f in {files}; do\n"
         '  [ -f "$v/$f" ] && sed -i "s|$old|$v|g" "$v/$f" || true\n'
         "done\n"
         # Console scripts only: a shebang is the first line and no binary in bin/ has one.
         'for f in "$v"/bin/*; do\n'
-        '  [ -f "$f" ] || continue\n'
+        '  [ -f "$f" ] && [ ! -L "$f" ] || continue\n'
         '  head -c 2 "$f" 2>/dev/null | grep -q "^#!" || continue\n'
         '  sed -i "1s|$old|$v|" "$f" || true\n'
         "done\n"
+        "fi\n"
+    )
+    if old_python and new_python:
+        # The interpreter symlinks and pyvenv.cfg's `home` name the copied runtime by OUR path.
+        script += (
+            f"opy={shlex.quote(old_python.rstrip('/'))}\n"
+            f"npy={_sh_home_path(new_python.rstrip('/'))}\n"
+            'if [ "$npy" != "$opy" ]; then\n'
+            'for f in "$v"/bin/*; do\n'
+            '  [ -L "$f" ] || continue\n'
+            '  t=$(readlink "$f")\n'
+            '  case "$t" in "$opy"/*) ln -sfn "$npy${t#"$opy"}" "$f" ;; esac\n'
+            "done\n"
+            '[ -f "$v/pyvenv.cfg" ] && sed -i "s|$opy|$npy|g" "$v/pyvenv.cfg" || true\n'
+            "fi\n"
+        )
+    return script + (
+        'if [ -L "$v/bin/python" ] && [ ! -e "$v/bin/python" ]; then\n'
+        '  echo "$v/bin/python points at $(readlink "$v/bin/python"), which this node does not'
+        ' have" >&2\n'
+        "  exit 1\n"
+        "fi\n"
     )
 
 
 def _relocate_peer_venv(peer_ip: str, user: str, local: str, remote: str) -> str:
     """Run `venv_relocate_script` on the peer. Returns an error string, or "" on success."""
-    script = venv_relocate_script(local, _peer_path(remote))
+    runtime = venv_python_runtime(local)
+    script = venv_relocate_script(
+        local,
+        _peer_path(remote),
+        runtime,
+        _peer_path(peer_destination(runtime)) if runtime else None,
+    )
     try:
         res = subprocess.run(
             ["ssh", *_SSH_OPTS, f"{user}@{peer_ip}", "bash", "-s"],
@@ -2507,6 +2580,9 @@ def provision_peer(
             results["skipped"].append((label, "not present locally"))
             continue
         targets.append((path, label, local))
+    # The venv's relocation checks that its interpreter exists on the peer, so the runtime it links
+    # into must already be there.
+    targets.sort(key = lambda target: target[1] != _PYTHON_RUNTIME_LABEL)
 
     daemon: Optional[Dict[str, Any]] = None
     fast = results["fast"]
@@ -2575,7 +2651,10 @@ def provision_peer(
                 local + "/",
                 f"{user}@{peer_ip}:{remote}/",
             ]
-            if delete:
+            # The venv and its interpreter are mirrored exactly once the idle check passed: a
+            # package removed here would otherwise linger there (two dist-info for one package,
+            # stale modules), and the two ranks could import different code. Caches stay additive.
+            if delete or (not force and label in (_VENV_LABEL, _PYTHON_RUNTIME_LABEL)):
                 cmd.insert(2, "--delete")
             if dry_run:
                 cmd.insert(1, "--dry-run")
@@ -2586,7 +2665,7 @@ def provision_peer(
                     # A venv that landed at a different absolute path carries the first Spark's
                     # `VIRTUAL_ENV` and console-script shebangs, so `torchrun` there runs -- or
                     # fails to run -- out of a path that does not exist on the peer.
-                    if not dry_run and label == "Unsloth venv":
+                    if not dry_run and label == _VENV_LABEL:
                         error = _relocate_peer_venv(peer_ip, user, local, remote)
                         if error:
                             results["failed"].append((f"{label} (relocation)", error))
@@ -4544,10 +4623,9 @@ def _cmd_setup(
         return 1
     plan = report["plan"]
     peer_plan = rail_plan(rails, node_index = peer_index, n_nodes = n_nodes, switched = switched)
+    extra_indices = [i for i in range(n_nodes) if i not in (local, peer_index)]
     extra_plans = [
-        rail_plan(rails, node_index = i, n_nodes = n_nodes, switched = switched)
-        for i in range(n_nodes)
-        if i not in (local, peer_index)
+        rail_plan(rails, node_index = i, n_nodes = n_nodes, switched = switched) for i in extra_indices
     ]
     for note in report["notes"]:
         print(f"  NOTE: {note}")
@@ -4559,7 +4637,9 @@ def _cmd_setup(
             f"  {entry['ib_device']:<14} {entry['netdev']:<16} -> {entry['address']}/24 mtu {entry['mtu']}"
         )
 
-    _print_manual_steps(plan, peer_plan, extra_plans = extra_plans)
+    _print_manual_steps(
+        plan, peer_plan, extra_plans = extra_plans, node_indices = [peer_index] + extra_indices
+    )
     print("\n  NOTE: " + HOTPLUG_NOTE)
 
     print("\n  Then verify with:")
@@ -4916,6 +4996,21 @@ _PEER_STAGE_PID = "/tmp/unsloth_pp_stage1.pid"
 # The detached rank's exit status.
 _PEER_STAGE_RC = "/tmp/unsloth_pp_stage1.rc"
 _SSH_OPTS = ("-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no")
+_DEFAULT_MASTER_PORT = 29500
+
+
+def _peer_stage_file(path: str, port: Optional[int]) -> str:
+    """`path` keyed by the run's rendezvous port, off the default port: two runs on different ports
+    shared one pid file, so the first one's failure cleanup killed the second one's rank."""
+    if not port or port == _DEFAULT_MASTER_PORT:
+        return path
+    stem, dot, ext = path.rpartition(".")
+    return f"{stem}.{port}.{ext}" if dot else f"{path}.{port}"
+
+
+def _master_port(command: str) -> Optional[int]:
+    found = re.search(r"--master_port[= ](\d+)", command)
+    return int(found.group(1)) if found else None
 
 
 def peer_home(peer_ip: str, user: str) -> Optional[str]:
@@ -5040,6 +5135,17 @@ def wait_for_peer_stage(
     return {"ok": res.returncode == 0, "why": why}
 
 
+def _peer_save_path(save_dir: str, home: str) -> str:
+    """Where the peer rank (run from its own `$HOME`) writes `--save save_dir`, absolute. A `~/`
+    the shell left unexpanded (`--save=~/out`) is the peer's home, not a directory named `~`."""
+    home = home.rstrip("/")
+    if save_dir == "~":
+        return home
+    if save_dir.startswith("~/"):
+        return f"{home}/{save_dir[2:]}"
+    return save_dir if osp.isabs(save_dir) else f"{home}/{save_dir}"
+
+
 def collect_stage_outputs(
     save_dir: str,
     peer_ip: str,
@@ -5049,7 +5155,7 @@ def collect_stage_outputs(
 ) -> Optional[str]:
     """Bring the PEER's own `stageN/` directories back into the local save directory."""
     local = osp.expanduser(save_dir)
-    remote = save_dir if osp.isabs(save_dir) else f"{home.rstrip('/')}/{save_dir}"
+    remote = _peer_save_path(save_dir, home)
     os.makedirs(local, exist_ok = True)
     wanted = [f"stage{rank}" for rank in (ranks if ranks is not None else [1])]
     cmd = [
@@ -5084,6 +5190,10 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     """Actually launch a layer-split run on both Sparks."""
     user = _ssh_user()
     ssh_opts = list(_SSH_OPTS)
+    port = _master_port(plan["node0"])
+    pid_file = _peer_stage_file(_PEER_STAGE_PID, port)
+    rc_file = _peer_stage_file(_PEER_STAGE_RC, port)
+    log_peer = _peer_stage_file(log_peer, port)
     activate = venv_activate_sh()
     env = "; ".join(f"export {k}={v}" for k, v in plan["env"].items())
 
@@ -5106,7 +5216,7 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     # directory, so the same absolute path need not exist on the peer.
     stale = _save_dir_of(node1)
     if stale:
-        remote_save = stale if osp.isabs(stale) else f"{home.rstrip('/')}/{stale}"
+        remote_save = _peer_save_path(stale, home)
         target = f"{remote_save.rstrip('/')}/stage1"
         cleared = subprocess.run(
             ["ssh", "-n", *ssh_opts, f"{user}@{plan['peer_ip']}", f"rm -rf {shlex.quote(target)}"],
@@ -5126,15 +5236,15 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     # what `setsid` gives us, so the negative kill still takes the children.
     # Without the venv, rank 1 would run whatever torch the peer's PATH has.
     inner = (
-        f"if [ -f {activate} ] && . {activate}; then {env}; {node1}; echo $? > {_PEER_STAGE_RC}; "
+        f"if [ -f {activate} ] && . {activate}; then {env}; {node1}; echo $? > {rc_file}; "
         f"else echo 'the Unsloth venv on this node could not be activated; run "
-        f"`unsloth spark provision` first' >&2; echo 97 > {_PEER_STAGE_RC}; fi"
+        f"`unsloth spark provision` first' >&2; echo 97 > {rc_file}; fi"
     )
     remote = (
-        f'cd "$HOME" && rm -f {_PEER_STAGE_RC} {_PEER_STAGE_PID}; '
+        f'cd "$HOME" && rm -f {rc_file} {pid_file}; '
         f"setsid nohup bash -c {shlex.quote(inner)} "
         f"> {shlex.quote(log_peer)} 2>&1 < /dev/null & "
-        f"echo $! > {_PEER_STAGE_PID}"
+        f"echo $! > {pid_file}"
     )
     try:
         peer = subprocess.run(
@@ -5160,18 +5270,19 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
         return 1
     print(f"  peer stage started; its log is {log_peer} on {plan['peer_ip']}")
 
-    time.sleep(6)  # let the peer reach the rendezvous first
     child_env = dict(os.environ)
     child_env.update({k: str(v) for k, v in plan["env"].items()})
     try:
+        # Inside the guard: a Ctrl-C here left the detached peer rank waiting on the rendezvous.
+        time.sleep(6)  # let the peer reach the rendezvous first
         rc = subprocess.run(_local_launch(plan["node0"]), shell = True, env = child_env).returncode
     except BaseException:
-        stop_peer_by_pidfile(plan["peer_ip"], user, ssh_opts, _PEER_STAGE_PID)
+        stop_peer_by_pidfile(plan["peer_ip"], user, ssh_opts, pid_file)
         raise
     if rc != 0:
         # Only on failure.
         print(f"  local stage exited {rc}; stopping the peer stage")
-        stop_peer_by_pidfile(plan["peer_ip"], user, ssh_opts, _PEER_STAGE_PID)
+        stop_peer_by_pidfile(plan["peer_ip"], user, ssh_opts, pid_file)
         return rc
 
     save_dir = _save_dir_of(plan["node0"])
@@ -5182,7 +5293,7 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
         return rc
     if save_dir:
         print("  waiting for the peer stage to finish writing ...")
-        finished = wait_for_peer_stage(plan["peer_ip"], user, _PEER_STAGE_PID)
+        finished = wait_for_peer_stage(plan["peer_ip"], user, pid_file, rc_file = rc_file)
         if not finished["ok"]:
             print(f"  {finished['why']}.")
             print(f"  Not collecting: its stage is under {save_dir} on {plan['peer_ip']}, and")

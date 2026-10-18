@@ -6617,6 +6617,23 @@ def _extra_args_device(
     return value
 
 
+def _pipeline_groups_slot_step(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> int:
+    """The ``--pipeline-groups`` count a launch carries, else 1.
+
+    The server refuses a ``--parallel`` that is not a multiple of it, so a slot reduction has
+    to step in multiples of this rather than one slot at a time.
+    """
+    raw = _extra_args_device(extra_args, {"--pipeline-groups"})
+    if raw is None:
+        raw = (env or {}).get("LLAMA_ARG_PIPELINE_GROUPS")
+    try:
+        return max(1, int(str(raw).strip())) if raw is not None else 1
+    except ValueError:
+        return 1
+
+
 def _extra_args_main_device(extra_args: Optional[Iterable[str]]) -> Optional[str]:
     """Return the last explicit main-device value, if any."""
     return _extra_args_device(extra_args, {"--device", "-dev"})
@@ -18674,6 +18691,7 @@ class LlamaCppBackend:
         ctx_checkpoints: int = 0,
         include_requested: bool = False,
         exact: bool = False,
+        slot_step: int = 1,
     ) -> tuple[Optional[list[int]], bool, int]:
         """Largest serving-slot count that fits fully on GPU, so Unsloth keeps the model on
         GPU (-ngl -1) instead of --fit on, which offloads layers to host and collapses decode
@@ -18703,6 +18721,8 @@ class LlamaCppBackend:
         fits could be rejected and the load kept --fit. ``split_extra_for_slots(slots)``
         re-prices the split step, whose sliding-window masks also scale with slots."""
         for slots in range(n_parallel if include_requested else n_parallel - 1, 0, -1):
+            if slots % max(1, slot_step):
+                continue  # --pipeline-groups refuses a slot count it cannot divide
             _ub = ubatch_for_slots(slots) if ubatch_for_slots else n_ubatch
             cb = self._estimate_compute_buffer_bytes(
                 n_ubatch = _ub, n_parallel = slots, per_device_tensor = False
@@ -27664,7 +27684,10 @@ class LlamaCppBackend:
                                 )
 
                             _mtp_slots = _mtp_slots_ctx = 0
+                            _mtp_step = _pipeline_groups_slot_step(extra_args, os.environ)
                             for _s in range(n_parallel - 1, 0, -1):
+                                if _s % _mtp_step:
+                                    continue  # --pipeline-groups refuses it
                                 _keep = 1 - (
                                     _MTP_SLOT_CTX_TRIM if _s == 1 and not explicit_ctx else 0
                                 )
@@ -28618,6 +28641,7 @@ class LlamaCppBackend:
                             ubatch_for_slots = _ubatch_for_slots,
                             mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(_reduce_ctx, s, ub),
                             ctx_checkpoints = _placement_ctx_checkpoints,
+                            slot_step = _pipeline_groups_slot_step(extra_args, os.environ),
                         )
                         if not _uf_slots:
                             _slots_asked = n_parallel
@@ -38266,6 +38290,12 @@ class LlamaCppBackend:
             or type(slot) is not int
             or slot < 0
         ):
+            return False
+        from core.inference.spark_serving import route_base_url
+
+        if route_base_url(self) is not None:
+            # Behind the two-Spark router a slot id is local to whichever replica decoded the round,
+            # and /slots is answered by the primary: an erase would clear another chat's cache.
             return False
         try:
             response = httpx.post(

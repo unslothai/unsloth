@@ -57,6 +57,8 @@ _HOP_BY_HOP = frozenset(
 PREFIX_KEY_CHARS = 1024
 
 _VIRTUAL_NODES = 64
+# Per backend; effectively unbounded, as llama-server's own deferred-task queue is.
+DEFAULT_QUEUE_LIMIT = 1024
 _HEAD_LIMIT = 64 * 1024
 _BODY_LIMIT = 256 * 1024 * 1024
 _READ_CHUNK = 64 * 1024
@@ -184,11 +186,12 @@ def _join_to_limit(parts: Any) -> str:
 
 
 def _prompt_prefix(body: Dict[str, Any]) -> str:
-    """System prompt plus the first user turn, truncated so a huge first message does not cost a hash
-    of megabytes."""
+    """System prompt plus the first user turn, each truncated on its own so a huge first message does
+    not cost a hash of megabytes and a long shared system prompt cannot crowd the user turn out."""
     messages = body.get("messages")
     if isinstance(messages, list) and messages:
         parts: List[str] = []
+        user_part: Optional[str] = None
         first_user_seen = False
         for message in messages:
             if not isinstance(message, dict):
@@ -206,10 +209,14 @@ def _prompt_prefix(body: Dict[str, Any]) -> str:
                 parts.append("system:" + text)
                 continue
             if role == "user" and not first_user_seen:
-                parts.append("user:" + text)
+                user_part = "user:" + text
                 first_user_seen = True
                 break
-        return "\n".join(parts)[:PREFIX_KEY_CHARS]
+        system = "\n".join(parts)[:PREFIX_KEY_CHARS]
+        if user_part is None:
+            return system
+        user_part = user_part[:PREFIX_KEY_CHARS]
+        return f"{system}\n{user_part}" if parts else user_part
     prompt = body.get("prompt")
     if isinstance(prompt, list):
         prompt = _join_to_limit(prompt)
@@ -259,7 +266,7 @@ class SparkRouter:
         health_interval: float = 2.0,
         health_timeout: float = 2.0,
         unhealthy_after: int = 2,
-        queue_wait_s: float = 120.0,
+        queue_wait_s: Optional[float] = None,
         connect_timeout: float = 5.0,
         on_backend_down: Optional[Callable[[Backend], Awaitable[None]]] = None,
         on_backend_up: Optional[Callable[[Backend], Awaitable[None]]] = None,
@@ -298,8 +305,9 @@ class SparkRouter:
         queue_limit: Optional[int] = None,
     ) -> Backend:
         if queue_limit is None:
-            # Enough to absorb a burst between two slot releases, not to hide a saturated node.
-            queue_limit = max(2, min(8, int(slots) // 2))
+            # llama-server defers a request that finds every slot busy instead of refusing it, so
+            # the router queues the same way; the route's admission queue is what bounds the load.
+            queue_limit = DEFAULT_QUEUE_LIMIT
         backend = Backend(
             name = name,
             host = host,
@@ -570,12 +578,14 @@ class SparkRouter:
             ticket = object()
             backend._waiters.append(ticket)
             try:
-                deadline = time.monotonic() + self.queue_wait_s
+                deadline = (
+                    None if self.queue_wait_s is None else time.monotonic() + self.queue_wait_s
+                )
                 while not (self._has_room(backend) and backend._waiters[0] is ticket):
                     if not backend.healthy or not self._started:
                         raise UpstreamUnreachable(f"backend {backend.name} went away while queued")
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
+                    remaining = None if deadline is None else deadline - time.monotonic()
+                    if remaining is not None and remaining <= 0:
                         raise RouterError(
                             503, f"backend {backend.name} queue wait timed out", retry_after = 2
                         )
@@ -604,6 +614,12 @@ class SparkRouter:
             raise UpstreamUnreachable("no healthy llama-server backend")
         target = self.pick(key, healthy)
         assert target is not None
+        if key and not self._has_room(target):
+            # A full sticky target with a replica idle beside it: a recomputed prefix costs far less
+            # than waiting out another conversation's generation.
+            free = [b for b in healthy if b is not target and self._has_room(b) and b.queued == 0]
+            if free:
+                return min(free, key = lambda b: (b.in_flight + b.queued, b.name))
         if key and not self._has_room(target) and target.queued >= target.queue_limit:
             others = [
                 b

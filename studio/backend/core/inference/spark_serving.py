@@ -518,6 +518,33 @@ def kv_bytes_per_elem(cache_type: Optional[str]) -> float:
     return _KV_BYTES_PER_ELEM.get(str(cache_type or "f16").strip().lower(), 2.0)
 
 
+def _loader_kv_bytes(
+    gguf_path: str, n_ctx: int, cache_type: Optional[str], cache_type_v: Optional[str]
+) -> Optional[int]:
+    """``LlamaCppBackend._estimate_kv_cache_bytes`` for this header, read into a probe instance so
+    the live backend's metadata is untouched; None when it cannot say."""
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        probe = object.__new__(LlamaCppBackend)
+        probe._model_identifier = "spark-kv-probe"
+        probe._read_gguf_metadata(str(_first_shard(gguf_path) or gguf_path))
+        k_type = str(cache_type or "f16").strip().lower()
+        v_type = k_type if cache_type_v is None else str(cache_type_v).strip().lower()
+        k_bytes = int(probe._estimate_kv_cache_bytes(int(n_ctx), k_type))
+        if k_bytes <= 0:
+            return None
+        if v_type == k_type:
+            return k_bytes
+        v_bytes = int(probe._estimate_kv_cache_bytes(int(n_ctx), v_type))
+        if v_bytes <= 0:
+            return None
+        # The estimator takes one type for both; K and V each carry half of either pricing.
+        return int((k_bytes + v_bytes) / 2)
+    except Exception:
+        return None
+
+
 def estimate_kv_bytes(
     gguf_path: Optional[str],
     n_ctx: int,
@@ -525,9 +552,16 @@ def estimate_kv_bytes(
     cache_type_v: Optional[str] = None,
 ) -> Optional[int]:
     """KV cache for ``n_ctx`` tokens at ``cache_type``, and ``cache_type_v`` when K and V are
-    configured apart, from the GGUF header, or None when the file or the keys cannot be read."""
+    configured apart, from the GGUF header, or None when the file or the keys cannot be read.
+
+    Priced by the loader's own architecture-aware estimator (hybrid recurrent layers, per-layer KV
+    heads, MLA, SWA, shared KV), so the pair is never refused a load the loader itself would fit;
+    the plain every-layer formula below is only the fallback when that cannot answer."""
     if not gguf_path or n_ctx <= 0:
         return None
+    loader = _loader_kv_bytes(gguf_path, int(n_ctx), cache_type, cache_type_v)
+    if loader is not None:
+        return loader
     try:
         from gguf import GGUFReader  # type: ignore
 
@@ -1983,6 +2017,36 @@ def strip_layer_split_extra_args(extra: Sequence[str]) -> List[str]:
     return tokens
 
 
+def strip_echoed_split_block(extra: Sequence[str], peer: Optional[str]) -> Optional[List[str]]:
+    """``extra`` without a split block this module appended for ``peer``, when a client sends it back
+    as explicit args (the status surface reports it as the load's requested extras, and a rollback
+    resends that), or None when there is none. Looser than ``strip_layer_split_extra_args``, which
+    also runs off a Spark: Manual GPU mode moves ``--tensor-split`` into its own field and a server
+    tuning field can take ``--cache-ram``, so either pair may be missing; the --rpc must name the
+    configured peer."""
+    if not peer:
+        return None
+    tokens = [str(t) for t in extra]
+    optional = [("--tensor-split", SPLIT_TENSOR_SPLIT_EVEN), ("--cache-ram", "0")]
+    for start in range(len(tokens) - 1, -1, -1):
+        if tokens[start] != "--rpc":
+            continue
+        value = tokens[start + 1] if start + 1 < len(tokens) else ""
+        if value.rsplit(":", 1)[0] != peer:
+            return None
+        rest = tokens[start + 2 :]
+        if rest[:4] != ["--device", "RPC0,CUDA0", "-sm", "layer"]:
+            return None
+        rest = rest[4:]
+        for name, wanted in optional:
+            if rest[:2] == [name, wanted]:
+                rest = rest[2:]
+        if rest and not (len(rest) == 2 and rest[0] == PIPELINE_GROUPS_FLAG):
+            return None
+        return tokens[:start]
+    return None
+
+
 try:
     import ctypes as _ctypes
     _LIBC = _ctypes.CDLL("libc.so.6", use_errno = True)
@@ -3054,6 +3118,7 @@ class SparkServing:
         self.topology = "replicas"
         self.reason = str(plan.get("reason", ""))
         self.relaunch_attempts = 0
+        self._replica_sync_pending = False
         self.relaunch_gave_up = False
         logger.info(
             "spark serving: replicas on 127.0.0.1:%s and %s:%s behind %s (%s)",
@@ -3228,7 +3293,10 @@ class SparkServing:
                 replica_env(getattr(backend, "launched_env", None) or None),
             )
         keys = _read_keys(list(self.peer_keys))
-        if rebuilt == process.argv and keys == self.peer_keys:
+        # Matching argv and keys say what was asked for, not that the replica started with them: a
+        # restart that failed after recording them must still be retried, and the hold released.
+        pending = getattr(self, "_replica_sync_pending", False)
+        if rebuilt == process.argv and keys == self.peer_keys and not pending:
             return True
         # The primary already answers with the new key: a request sent to the old replica gets 401.
         if self.router is not None:
@@ -3242,12 +3310,14 @@ class SparkServing:
                 return False
             self.peer_keys = keys
         process.argv = rebuilt
+        self._replica_sync_pending = True
         try:
             await process.stop(timeout = 5.0)
             await process.start()
         except Exception as exc:
             logger.warning("spark serving: peer restart for the new key failed: %s", exc)
             return False
+        self._replica_sync_pending = False
         if self.router is not None:
             self.router.release("peer")
         return True
@@ -3549,6 +3619,16 @@ async def before_load(
     )
     if st._passthrough:
         return request
+    explicit = getattr(request, "llama_extra_args", None)
+    if explicit:
+        cleaned = strip_echoed_split_block(explicit, peer_address())
+        if cleaned is not None:
+            # Our own block, sent back: re-plan it rather than read it as the caller's --rpc.
+            updates: Dict[str, Any] = {"llama_extra_args": cleaned}
+            moved = list(getattr(request, "tensor_split", None) or [])
+            if "--tensor-split" not in [str(t) for t in explicit] and moved == [0.5, 0.5]:
+                updates["tensor_split"] = None
+            request = SparkServing._request_with(request, updates)
     st._cancel_event = cancel_event
     st._confirm_teardown = confirm_teardown
     try:

@@ -640,3 +640,85 @@ def test_a_replica_that_closes_before_headers_is_retried_on_the_primary():
             await a.stop()
 
     run(scenario())
+
+
+def test_a_full_sticky_backend_spills_to_an_idle_replica_instead_of_queueing():
+    async def go():
+        hold = asyncio.Event()
+        a = await FakeLlama("a", hold = hold).start()
+        b = await FakeLlama("b").start()
+        router = await _router(a, b, slots = 1)
+        try:
+            main = router.get_backend("a")
+            same = [k for k in (f"c{i}" for i in range(400)) if router.pick(k) is main][:2]
+            async with httpx.AsyncClient(timeout = 10) as client:
+                first = asyncio.create_task(
+                    _chat(client, router.base_url, {"stream": True}, {CONVERSATION_HEADER: same[0]})
+                )
+                while main.in_flight < 1:
+                    await asyncio.sleep(0.01)
+                # Without the spill this waits behind the held generation on "a" while "b" idles.
+                second = await asyncio.wait_for(
+                    _chat(
+                        client, router.base_url, {"stream": True}, {CONVERSATION_HEADER: same[1]}
+                    ),
+                    timeout = 5.0,
+                )
+                assert second
+                assert router.get_backend("b").served == 1
+                hold.set()
+                await first
+        finally:
+            await router.stop()
+            await a.stop()
+            await b.stop()
+
+    run(go())
+
+
+def test_a_burst_over_both_nodes_slots_queues_instead_of_503():
+    async def go():
+        a = await FakeLlama("a", delay = 0.05).start()
+        b = await FakeLlama("b", delay = 0.05).start()
+        router = SparkRouter(health_interval = 3600.0)
+        router.add_backend("a", "127.0.0.1", a.port, 8, primary = True)
+        router.add_backend("b", "127.0.0.1", b.port, 8)
+        await router.start()
+        try:
+            limits = httpx.Limits(max_connections = 100)
+            async with httpx.AsyncClient(timeout = 60, limits = limits) as client:
+
+                async def one():
+                    resp = await client.post(
+                        f"{router.base_url}/v1/chat/completions", json = {"stream": True}
+                    )
+                    return resp.status_code
+
+                codes = await asyncio.gather(*(one() for _ in range(40)))
+            # A single llama-server defers what does not fit a slot; the pair must not refuse it.
+            assert codes == [200] * 40
+            assert router.queue_wait_s is None
+        finally:
+            await router.stop()
+            await a.stop()
+            await b.stop()
+
+    run(go())
+
+
+def test_a_long_shared_system_prompt_does_not_collapse_distinct_chats_onto_one_key():
+    system = {"role": "system", "content": "s" * 2048}
+    keys = {
+        conversation_key({}, {"messages": [system, {"role": "user", "content": f"question {i}"}]})
+        for i in range(8)
+    }
+    assert len(keys) == 8
+    # Later turns of one chat keep its key.
+    first = [system, {"role": "user", "content": "question 0"}]
+    later = first + [{"role": "assistant", "content": "a"}, {"role": "user", "content": "more"}]
+    assert conversation_key({}, {"messages": first}) == conversation_key({}, {"messages": later})
+    # Short prompts hash exactly as before.
+    short = {
+        "messages": [{"role": "system", "content": "be brief"}, {"role": "user", "content": "hi"}]
+    }
+    assert sr._prompt_prefix(short) == "system:be brief\nuser:hi"

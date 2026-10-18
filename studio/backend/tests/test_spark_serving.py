@@ -4905,3 +4905,173 @@ def test_inherited_extras_handed_to_the_planner_are_shadow_stripped(monkeypatch)
     assert ri._spark_inherited_extra_args(applied) == ["--seed", "1"]
     untouched = LoadRequest(model_path = "unsloth/some-GGUF")
     assert ri._spark_inherited_extra_args(untouched) == ["--ctx-size", "4096", "--seed", "1"]
+
+
+def test_idle_slot_erase_is_declined_behind_the_replica_router(monkeypatch):
+    """/slots/N is answered by the primary, while the round may have decoded in slot N of the
+    peer: erasing through the router clears another chat's cache and frees a reservation the
+    peer still holds."""
+    import httpx
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = LlamaCppBackend()
+    backend._port = 41234
+    backend._slot_save_dir = "/nonexistent/slots"
+    posted = []
+
+    class _Ok:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"id_slot": 0, "n_erased": 10}
+
+    monkeypatch.setattr(httpx, "post", lambda url, **kw: posted.append(url) or _Ok())
+    # Off a Spark pair the erase goes out exactly as before.
+    assert backend.release_idle_chat_slot(backend.base_url, 0) is True
+    assert posted == ["http://127.0.0.1:41234/slots/0"]
+    posted.clear()
+    monkeypatch.setattr(ss, "route_base_url", lambda b: "http://127.0.0.1:50000")
+    assert backend.base_url == "http://127.0.0.1:50000"
+    assert backend.release_idle_chat_slot(backend.base_url, 0) is False
+    assert posted == []
+
+
+def test_a_failed_replica_restart_is_retried_rather_than_reported_in_step(monkeypatch, tmp_path):
+    """Regression: the restart recorded the new argv before the spawn, so after one failed spawn
+    the retry saw matching argv, returned True, and left the replica held forever."""
+    monkeypatch.chdir(tmp_path)
+    mtp = ["/l/llama-server", "-m", "/m.gguf", "--port", "9000", "--spec-type", "draft-mtp"]
+    state, events = _replica_state(
+        ss.replica_argv(mtp, binary = "/peer/llama-server", host = "192.168.200.13", port = 8081)
+    )
+    held, released = [], []
+
+    class _Router:
+        async def hold(self, name, reason):
+            held.append(name)
+
+        def release(self, name):
+            released.append(name)
+
+    state.router = _Router()
+    process = state.peer_process
+    original_start = type(process).start
+    failures = [RuntimeError("ssh: connect refused")]
+
+    async def flaky_start(self):
+        if failures:
+            raise failures.pop()
+        await original_start(self)
+
+    monkeypatch.setattr(type(process), "start", flaky_start)
+    plain = ["/l/llama-server", "-m", "/m.gguf", "--port", "9100"]
+    assert not run(state._sync_replica(_primary(plain)))
+    assert released == []
+    assert run(state._sync_replica(_primary(plain)))
+    assert released == ["peer"]
+    assert events[-1][0] == "start" and "--spec-type" not in events[-1][1]
+    # In step now: a further check restarts nothing.
+    count = len(events)
+    assert run(state._sync_replica(_primary(plain)))
+    assert len(events) == count
+
+
+@pytest.mark.parametrize("manual_gpu_mode", [False, True])
+def test_our_split_block_sent_back_as_explicit_args_is_replanned(
+    cluster, monkeypatch, tmp_path, manual_gpu_mode
+):
+    """Regression: status reports the split block as the load's requested extras and the UI rollback
+    resends it; read as a caller --rpc, no rpc-server was started and llama-server was pointed at a
+    dead peer. Manual GPU mode moves --tensor-split into its own field first."""
+    cluster.topology = "layer_split"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    _calls, started = _patch_remote(monkeypatch)
+    echoed = ["-ngl", "99"] + ss.layer_split_extra_args("127.0.0.1", 50052)
+    if manual_gpu_mode:
+        at = echoed.index("--tensor-split")
+        del echoed[at : at + 2]
+    request = _FakeRequest(str(model), llama_extra_args = echoed)
+    out = run(ss.before_load(request, 4))
+    assert started, "the echoed block must be re-planned, not read as a caller --rpc"
+    assert ss.state().topology == "layer_split"
+    assert out.llama_extra_args[:2] == ["-ngl", "99"]
+    assert out.llama_extra_args.count("--rpc") == 1
+
+
+def test_echoed_split_block_strip_leaves_a_users_own_rpc_alone():
+    block = ss.layer_split_extra_args("10.0.0.2", 50052)
+    assert ss.strip_echoed_split_block(["-c", "8192"] + block, "10.0.0.2") == ["-c", "8192"]
+    # Another host, or no configured peer: the caller's own --rpc.
+    assert ss.strip_echoed_split_block(block, "10.0.0.9") is None
+    assert ss.strip_echoed_split_block(block, None) is None
+    # Not our shape after the --rpc.
+    assert (
+        ss.strip_echoed_split_block(["--rpc", "10.0.0.2:50052", "-sm", "row"], "10.0.0.2") is None
+    )
+    assert ss.strip_echoed_split_block(block + ["--top-k", "20"], "10.0.0.2") is None
+    grouped = ss.layer_split_extra_args("10.0.0.2", 50052, pipeline_groups = 2)
+    assert ss.strip_echoed_split_block(grouped, "10.0.0.2") == []
+
+
+def _header_gguf(path, arch, values):
+    gguf = pytest.importorskip("gguf")
+    writer = gguf.GGUFWriter(str(path), arch)
+    for key, value in values.items():
+        if isinstance(value, list):
+            writer.add_array(f"{arch}.{key}", value)
+        else:
+            writer.add_uint32(f"{arch}.{key}", value)
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return str(path)
+
+
+def test_kv_estimate_prices_hybrid_and_per_layer_kv_like_the_loader(tmp_path):
+    """Regression: every layer was charged full attention KV, so Qwen3.5-397B (60 blocks, one in
+    four attention) at 262k was priced 30 GiB instead of about 7.7 and refused on the pair, and
+    LFM2 (per-layer head_count_kv, layer 0 a conv layer) fell back to n_head on every layer."""
+    gib = 2**30
+    qwen = _header_gguf(
+        tmp_path / "qwen35moe.gguf",
+        "qwen35moe",
+        {
+            "block_count": 60,
+            "context_length": 262144,
+            "embedding_length": 4096,
+            "attention.head_count": 32,
+            "attention.head_count_kv": 2,
+            "attention.key_length": 256,
+            "attention.value_length": 256,
+            "ssm.conv_kernel": 4,
+            "ssm.state_size": 128,
+            "ssm.group_count": 16,
+            "ssm.time_step_rank": 64,
+            "ssm.inner_size": 8192,
+            "full_attention_interval": 4,
+        },
+    )
+    kv = ss.estimate_kv_bytes(qwen, 262144, "f16")
+    assert 7.5 * gib <= kv < 8 * gib
+    # The published Q4_K_S shards: 212.33 GiB. Fits the pair, so it must not be refused.
+    plan = ss.plan_topology(212.33 * gib, users = 1, kv_bytes_per_user = kv)
+    assert plan["fits_any_topology"] is True and plan["topology"] == "layer_split"
+
+    lfm = _header_gguf(
+        tmp_path / "lfm2.gguf",
+        "lfm2",
+        {
+            "block_count": 64,
+            "embedding_length": 5120,
+            "attention.head_count": 24,
+            "attention.key_length": 256,
+            "attention.value_length": 256,
+            "attention.head_count_kv": [0, 0, 8] * 21 + [8],
+        },
+    )
+    # 22 attention layers x 8 heads x 256 x (K + V at f16) x 262144 tokens.
+    assert ss.estimate_kv_bytes(lfm, 262144, "f16") == 22 * 8 * 256 * 4 * 262144
