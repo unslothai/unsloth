@@ -22,6 +22,7 @@ import {
   hasResearchMetadata,
   reconcileServerManagedMessages,
 } from "./research-message-sync";
+import { withMessageRevision } from "./saved-context-usage";
 
 // A copy of the list, not of what is in it. assistant-ui replaces parts and attachments rather
 // than mutating them, and the records built from these are serialized straight into the PUT
@@ -162,6 +163,21 @@ export async function deleteThreadMessage(args: {
   }
 
   const next = repo.export();
+  const previousParents = new Map(
+    exported.messages.map(({ message, parentId }) => [message.id, parentId]),
+  );
+  next.messages = next.messages.map((item) => {
+    if (previousParents.get(item.message.id) === item.parentId) return item;
+    // A surviving child's history changed even though its text did not. Persist that fact so
+    // descendant legacy usage (without messageCount) stays invalid after a reload or branch switch.
+    return {
+      ...item,
+      message: {
+        ...item.message,
+        metadata: withMessageRevision(item.message.metadata),
+      } as ThreadMessage,
+    };
+  });
   if (remoteId) {
     await syncExportedRepositoryToBackend(remoteId, next, {
       pruneMissing: true,

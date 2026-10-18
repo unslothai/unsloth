@@ -4513,9 +4513,21 @@ def _reseat_protected_messages(conn, thread_id: str, reseat_parents: dict) -> No
     parents they pointed at need not, and a dangling parent makes the whole thread unimportable on
     the next load rather than just that turn."""
     for message_id, parent_id in reseat_parents.items():
+        row = conn.execute(
+            "SELECT parent_id, metadata_json FROM chat_messages WHERE thread_id = ? AND id = ?",
+            (thread_id, message_id),
+        ).fetchone()
+        if row is None or (row["parent_id"] or None) == parent_id:
+            continue
+        # The surviving branch changed. Client revisions are discarded for these protected rows,
+        # so invalidate saved context usage here as well, including after a reload or stale retry.
+        metadata = _json_loads(row["metadata_json"], {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata["revision"] = _chat_message_revision(metadata) + 1
         conn.execute(
-            "UPDATE chat_messages SET parent_id = ? WHERE thread_id = ? AND id = ?",
-            (parent_id, thread_id, message_id),
+            "UPDATE chat_messages SET parent_id = ?, metadata_json = ? WHERE thread_id = ? AND id = ?",
+            (parent_id, json.dumps(metadata), thread_id, message_id),
         )
 
 

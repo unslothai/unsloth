@@ -57,6 +57,7 @@ const RECORD_MODULE = loadWithStubs<{
       ) => records,
     },
     "./research-message-sync": researchSync,
+    "./saved-context-usage": savedUsage,
   },
 );
 

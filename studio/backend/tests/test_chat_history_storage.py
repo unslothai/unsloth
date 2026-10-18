@@ -1149,6 +1149,64 @@ def _without(messages: list[dict], *drop: str) -> list[dict]:
     return [dict(m) for m in messages if m["id"] not in drop]
 
 
+@pytest.mark.parametrize("owner", ["generation", "research"])
+@pytest.mark.parametrize("revision", [None, 4])
+def test_reparented_managed_prompt_invalidates_saved_usage_after_reload(
+    tmp_path, monkeypatch, owner, revision
+):
+    from storage import chat_generation_runs_db, research_runs_db
+
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("src"))
+    prompt = _stored_message(id = "prompt", parentId = "ancestor")
+    prompt["metadata"] = {"kept": "server value"}
+    if revision is not None:
+        prompt["metadata"]["revision"] = revision
+    studio_db.sync_chat_messages(
+        "src",
+        [
+            _stored_message(id = "ancestor", role = "assistant", createdAt = 1),
+            prompt,
+            _stored_message(id = "sibling", createdAt = 10),
+        ],
+    )
+    common = dict(
+        run_id = "run-1",
+        owner_subject = "owner",
+        thread_id = "src",
+        user_message_id = "prompt",
+        assistant_message_id = "report",
+    )
+    if owner == "generation":
+        chat_generation_runs_db.create_run(
+            **common,
+            request_payload = {"model": "local", "messages": [{"role": "user", "content": "Hello"}]},
+        )
+    else:
+        research_runs_db.create_run(**common, config = {}, created_at = 11)
+    before = {m["id"]: m for m in studio_db.list_chat_messages("src")}
+    payload = _without(list(before.values()), "ancestor")
+    edited = next(m for m in payload if m["id"] == "prompt")
+    edited["parentId"] = None
+    edited["metadata"] = {"revision": 999, "untrusted": True}
+    edited["content"] = [{"type": "text", "text": "client drift"}]
+
+    studio_db.sync_chat_messages("src", payload, prune_missing = True)
+    reloaded = {m["id"]: m for m in studio_db.list_chat_messages("src")}
+
+    assert reloaded["prompt"]["parentId"] is None
+    assert reloaded["prompt"]["metadata"] == {
+        **before["prompt"]["metadata"],
+        "revision": (revision or 0) + 1,
+    }
+    assert reloaded["prompt"]["content"] == before["prompt"]["content"]
+    assert reloaded["report"] == before["report"]
+    assert reloaded["sibling"] == before["sibling"]
+    # A stale retry cannot erase the revision or increment it a second time.
+    studio_db.sync_chat_messages("src", payload, prune_missing = True)
+    assert studio_db.list_chat_messages("src") == list(reloaded.values())
+
+
 def test_deleting_an_ancestor_relinks_the_research_prompt(tmp_path, monkeypatch):
     # The headline case: assistant-ui relinks the protected prompt to the deleted node's parent,
     # and the guard must read that as the repair it is rather than an edit.
@@ -1231,9 +1289,11 @@ def test_the_reseat_does_not_carry_any_other_edit(tmp_path, monkeypatch, field, 
     prompt = next(m for m in synced if m["id"] == "prompt")
     # The deleted ancestor was the root, so the repair is a reseat to the root.
     assert prompt["parentId"] is None
-    # .get on both sides: an absent key is how a None metadata comes back, and the point is
-    # that the client's value is not there either way.
-    assert prompt.get(field) == stored.get(field)
+    # Only the server's history revision changes; none of the client's edits are adopted.
+    expected = stored.get(field)
+    if field == "metadata":
+        expected = {**(expected or {}), "revision": 1}
+    assert prompt.get(field) == expected
     assert prompt.get(field) != value
 
 
