@@ -8,8 +8,10 @@
 
 import { authFetch } from "@/features/auth";
 import {
+  confirmStopRunningChatsIfNeeded,
   getInferenceStatus,
   isExternalModelId,
+  requestScopedLocalPromptQueueStop,
   resolveInferenceCheckpointId,
   unloadModel,
   useChatRuntimeStore,
@@ -152,6 +154,13 @@ export async function readLoadedModels(
 
 /** Release the model this row names, and only that one. See eject-chat-model.ts. */
 async function ejectChatRow(entry: LoadedModelEntry): Promise<EjectOutcome> {
+  const decision = await confirmStopRunningChatsIfNeeded(
+    "Unloading this model",
+    "unload",
+    entry.name,
+  );
+  if (!decision.proceed) return { status: "declined" };
+  requestScopedLocalPromptQueueStop(decision.promptQueueThreadIds);
   const { unloadedAliases, stillResident, replacedBy } = await ejectChatModel(
     entry.name,
     {
@@ -167,7 +176,11 @@ async function ejectChatRow(entry: LoadedModelEntry): Promise<EjectOutcome> {
           ),
         };
       },
-      unload: (modelPath) => unloadModel({ model_path: modelPath }),
+      unload: (modelPath) =>
+        unloadModel({
+          model_path: modelPath,
+          force_cancel_active: decision.forceCancelActive,
+        }),
       matches: modelIdsMatch,
       cachedRow: entry.inactive === true,
       readCached: async () => (await bounded(getInferenceStatus)).loaded ?? [],
@@ -204,6 +217,7 @@ function clearChatSelectionFor(aliases: string[]): void {
 export type EjectOutcome =
   | { status: "ejected" }
   | { status: "alreadyFree" }
+  | { status: "declined" }
   | { status: "replaced"; resident: string }
   | { status: "stillResident"; model: string }
   // The unload was accepted but the read that confirms it did not answer, so neither "done" nor
