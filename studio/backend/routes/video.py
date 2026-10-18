@@ -499,7 +499,9 @@ async def load_video_model_gated(
                 token = eviction_sink.set(evicted)
                 try:
                     with _diffusion_training_admission():
-                        return acquire_for_request(VIDEO, _begin_load, **policy_kwargs(multi_model_mode))
+                        return acquire_for_request(
+                            VIDEO, _begin_load, **policy_kwargs(multi_model_mode)
+                        )
                 finally:
                     eviction_sink.reset(token)
 

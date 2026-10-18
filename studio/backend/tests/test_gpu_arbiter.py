@@ -393,7 +393,13 @@ BOB = AccountContext("b" * 32, "bob")
 @pytest.fixture
 def arb_log(monkeypatch):
     log: list[str] = []
-    for name, value in (("_owner", None), ("_residents", {}), ("_accounts", {}), ("_owner_account", None), ("_prior_account", None)):
+    for name, value in (
+        ("_owner", None),
+        ("_residents", {}),
+        ("_accounts", {}),
+        ("_owner_account", None),
+        ("_prior_account", None),
+    ):
         monkeypatch.setattr(arb, name, value)
     for owner in (arb.CHAT, arb.DIFFUSION, arb.VIDEO, arb.DECISIONS):
         monkeypatch.setitem(arb._EVICTORS, owner, lambda owner = owner: log.append(f"evict-{owner}"))
@@ -404,7 +410,9 @@ def arb_log(monkeypatch):
 
 
 def _report(monkeypatch, log, owner, *slots):
-    monkeypatch.setitem(arb._SLOT_REPORTERS, owner, lambda: (log.append(f"report-{owner}"), list(slots))[1])
+    monkeypatch.setitem(
+        arb._SLOT_REPORTERS, owner, lambda: (log.append(f"report-{owner}"), list(slots))[1]
+    )
 
 
 @pytest.mark.parametrize(
@@ -438,14 +446,24 @@ def test_always_refuses_instead_of_evicting(arb_log, monkeypatch, resident, owne
 
 def test_always_refusal_for_a_managed_account_hides_another_accounts_model(arb_log, monkeypatch):
     arb.acquire_for(arb.CHAT)
-    _report(monkeypatch, arb_log, arb.CHAT, {"kind": "chat", "model": "bob/private-GGUF", "account": BOB.account_id})
+    _report(
+        monkeypatch,
+        arb_log,
+        arb.CHAT,
+        {"kind": "chat", "model": "bob/private-GGUF", "account": BOB.account_id},
+    )
     with pytest.raises(arb.MultiModelAlwaysRefusal) as excinfo:
         run_as(ALICE, arb.acquire_for, arb.DIFFUSION, policy = "always")
     message = str(excinfo.value)
     assert "bob/private-GGUF" not in message and "the chat model," in message
     assert "is set to keep loaded" in message and "is set to Always" not in message
     # Alice's own model stays named.
-    _report(monkeypatch, arb_log, arb.CHAT, {"kind": "chat", "model": "alice/mine-GGUF", "account": ALICE.account_id})
+    _report(
+        monkeypatch,
+        arb_log,
+        arb.CHAT,
+        {"kind": "chat", "model": "alice/mine-GGUF", "account": ALICE.account_id},
+    )
     with pytest.raises(arb.MultiModelAlwaysRefusal, match = "alice/mine-GGUF"):
         run_as(ALICE, arb.acquire_for, arb.DIFFUSION, policy = "always")
 
@@ -508,12 +526,22 @@ def test_evicted_collects_chat_primary_and_kept_slots_image_and_video(arb_log, m
         {"kind": "chat", "model": "org/B-GGUF", "account": "owner"},
     ]
     _report(monkeypatch, arb_log, arb.CHAT, *chat)
-    _report(monkeypatch, arb_log, arb.DIFFUSION, {"kind": "image", "model": "org/Img", "account": "owner"})
-    _report(monkeypatch, arb_log, arb.VIDEO, {"kind": "video", "model": "org/Vid", "account": "owner"})
+    _report(
+        monkeypatch,
+        arb_log,
+        arb.DIFFUSION,
+        {"kind": "image", "model": "org/Img", "account": "owner"},
+    )
+    _report(
+        monkeypatch, arb_log, arb.VIDEO, {"kind": "video", "model": "org/Vid", "account": "owner"}
+    )
     arb.acquire_for(arb.CHAT)
     evicted: list = []
     arb.acquire_for(arb.DIFFUSION, evicted = evicted)
-    assert evicted == [{"kind": "chat", "model": "org/A-GGUF"}, {"kind": "chat", "model": "org/B-GGUF"}]
+    assert evicted == [
+        {"kind": "chat", "model": "org/A-GGUF"},
+        {"kind": "chat", "model": "org/B-GGUF"},
+    ]
     assert arb_log.index("report-chat") < arb_log.index("evict-chat")
     # Through the sink: the idle H3 release and non-resident video report nothing.
     sink: list = []

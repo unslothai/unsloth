@@ -155,7 +155,10 @@ def test_a_cpu_tts_alongside_under_always_takes_a_kept_slot(backends, monkeypatc
     request = LoadRequest(model_path = "org/Higgs-TTS", audio_device = "cpu", alongside = True)
     response = asyncio.run(inf.load_model_gated(request, None, "s"))
     assert response.evicted == [] and response.evicted_slots == []
-    assert model_slots.slots[0] is extra and model_slots.slots[-1].request.model_path == "org/Higgs-TTS"
+    assert (
+        model_slots.slots[0] is extra
+        and model_slots.slots[-1].request.model_path == "org/Higgs-TTS"
+    )
     assert primary.model_identifier == "org/A-GGUF" and primary.is_active
 
 
@@ -190,9 +193,13 @@ def test_a_structured_out_of_memory_still_makes_room_under_fit(backends, monkeyp
 
 @pytest.mark.parametrize("status", [500, 503, 507])
 def test_a_structured_out_of_memory_counts_at_any_status(status):
-    assert inf._ran_out_of_memory(HTTPException(status, detail = {"code": "out_of_memory", "message": "m"}))
+    assert inf._ran_out_of_memory(
+        HTTPException(status, detail = {"code": "out_of_memory", "message": "m"})
+    )
     assert not inf._ran_out_of_memory(HTTPException(status, detail = {"code": "bad_request"}))
-    assert inf._ran_out_of_memory(HTTPException(status, detail = "CUDA out of memory")) is (status == 500)
+    assert inf._ran_out_of_memory(HTTPException(status, detail = "CUDA out of memory")) is (
+        status == 500
+    )
 
 
 # 5. The image and video load routes.
@@ -212,7 +219,10 @@ def _image_on_gpu(monkeypatch):
 
 
 def _expect_chat_evicted(body, evicted):
-    assert body["evicted_slots"] == [{"kind": "chat", "model": "org/A-GGUF"}, {"kind": "chat", "model": "org/B-GGUF"}]
+    assert body["evicted_slots"] == [
+        {"kind": "chat", "model": "org/A-GGUF"},
+        {"kind": "chat", "model": "org/B-GGUF"},
+    ]
     assert body["evicted"] == ["org/A-GGUF", "org/B-GGUF"] and evicted == [gpu_arbiter.CHAT]
 
 
@@ -270,7 +280,9 @@ def test_a_chat_load_that_evicts_an_image_model_lists_it(backends, monkeypatch):
     monkeypatch.setattr(model_slots, "slots", [])
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.DIFFUSION)
     evicted = _reporting(
-        monkeypatch, gpu_arbiter.DIFFUSION, [{"kind": "image", "model": "org/Flux", "account": None}]
+        monkeypatch,
+        gpu_arbiter.DIFFUSION,
+        [{"kind": "image", "model": "org/Flux", "account": None}],
     )
     monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: None)
 
@@ -286,8 +298,9 @@ def test_a_chat_load_that_evicts_an_image_model_lists_it(backends, monkeypatch):
     assert gpu_arbiter.residents() == {gpu_arbiter.CHAT: None}
 
 
-
-def test_idle_kept_models_unloaded_by_a_load_under_off_are_listed_in_both_fields(backends, monkeypatch):
+def test_idle_kept_models_unloaded_by_a_load_under_off_are_listed_in_both_fields(
+    backends, monkeypatch
+):
     _mode(monkeypatch, "off")
 
     async def load(request, *args, **kwargs):
@@ -304,11 +317,18 @@ def test_idle_kept_models_unloaded_by_a_load_under_off_are_listed_in_both_fields
 
 
 def test_the_openai_auto_switch_under_always_answers_an_openai_409(monkeypatch):
-    backend, _ = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), ("unsloth/B-GGUF", None, "unsloth/B-GGUF"))
+    backend, _ = _wired(
+        monkeypatch, _FakeBackend("unsloth/A-GGUF"), ("unsloth/B-GGUF", None, "unsloth/B-GGUF")
+    )
     _mode(monkeypatch, "always")
     calls = []
 
-    async def impl(request, fastapi_request, current_subject = None, **kwargs):
+    async def impl(
+        request,
+        fastapi_request,
+        current_subject = None,
+        **kwargs,
+    ):
         # The real impl's first check on a replacing load, before any teardown.
         calls.append(request.model_path)
         await inf._refuse_replacing_under_always(request, (request.model_path,))
@@ -330,11 +350,18 @@ def test_the_openai_auto_switch_under_always_answers_an_openai_409(monkeypatch):
     assert backend.model_identifier == "unsloth/A-GGUF" and backend.is_loaded
 
 
-def test_the_media_auto_switch_under_always_answers_an_openai_409(flux, enabled, backend, monkeypatch):
+def test_the_media_auto_switch_under_always_answers_an_openai_409(
+    flux, enabled, backend, monkeypatch
+):
     backend.repo_id = "Qwen/Qwen-Image"
     refusal = gpu_arbiter.refusal_for(_CHAT_SLOTS)
 
-    async def start(owner, pick, current_subject, hf_token = None):
+    async def start(
+        owner,
+        pick,
+        current_subject,
+        hf_token = None,
+    ):
         raise refusal.as_http_exception()
 
     monkeypatch.setattr(mas, "_start_load", start)
