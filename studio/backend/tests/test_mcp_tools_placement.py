@@ -432,8 +432,9 @@ def test_a_placed_load_never_follows_one_already_running(monkeypatch):
     assert {key: body.get(key) for key in CPU} == CPU
 
 
-def test_a_home_relative_gguf_file_is_local(monkeypatch):
-    args = {"model": "~/models/qwen.gguf", "device": "cpu"}
+@pytest.mark.parametrize("model", ["~/models/qwen.gguf", "models/qwen.gguf"])
+def test_a_gguf_file_path_needs_no_listing(monkeypatch, model):
+    args = {"model": model, "device": "cpu"}
     _result, studio, (body,) = _load(monkeypatch, args, PAYLOADS)
     assert {key: body.get(key) for key in CPU} == CPU
     assert not [call for call in studio.state.calls if call[1] == "/api/hub/gguf-variants"]

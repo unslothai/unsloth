@@ -101,7 +101,7 @@ async def listed_gguf(caller: Caller, model: str, variant: Optional[str]) -> Opt
     repo, variant = _split(model, variant)
     if repo.lower().startswith(AUDIO_CPP_PREFIX):
         return False
-    if is_local(repo) and repo.lower().endswith(".gguf"):
+    if repo.lower().endswith(".gguf"):
         return True
     listing = await _variants(caller, repo)
     if listing is None:
@@ -418,7 +418,7 @@ async def plan_load(
     rows: list[dict] = []
     row = listing = None
     # Whether it is a GGUF repo is the listing's answer, not the repo's spelling.
-    if kind != "stt" and not (is_local(repo) and repo.lower().endswith(".gguf")):
+    if kind != "stt" and not repo.lower().endswith(".gguf"):
         # A failed lookup stays None (unknown), not an empty listing.
         listing = await _variants(caller, repo)
         rows = [r for r in as_dict(listing).get("variants") or [] if isinstance(r, dict)]
@@ -427,7 +427,7 @@ async def plan_load(
             raise ToolError(f"{repo} has no GGUF variant {variant}")
     if device in (None, "auto") and gpu_layers is not None and kind in CHAT_KINDS:
         # llama-server honours gpu_layers, so a GGUF load is placed by it: 0 keeps it off the GPU.
-        if rows or (is_local(repo) and repo.lower().endswith(".gguf")):
+        if rows or repo.lower().endswith(".gguf"):
             device = "cpu" if gpu_layers == 0 else "gpu"
     download = est = None
     if row is not None:
