@@ -80,6 +80,22 @@ test("sequential takes run one request each and reuse take 1's seed", async () =
   );
 });
 
+test("an inline take 1 (history could not keep it) still hands its seed on", async () => {
+  const sent: AudioTextRunRequest[] = [];
+  await runMusicTakes({
+    request,
+    count: 2,
+    how: "sequential",
+    run: async (take) => {
+      sent.push(take);
+      return { clips: [], audio: { seed: 1001 } };
+    },
+    onTake: async () => {},
+    onStatus: () => {},
+  });
+  assert.deepEqual(sent.map((t) => t.seed), [undefined, 1001]);
+});
+
 test("Stop after take 2 keeps two takes; a failed take 2 keeps take 1 and rejects", async () => {
   const stopped = takes({ stopAfter: 2 });
   await stopped.done;

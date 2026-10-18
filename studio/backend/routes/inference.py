@@ -24292,6 +24292,7 @@ async def _run_music_workflow(
                         "data": base64.b64encode(wav).decode("ascii"),
                         "format": "wav",
                         "sample_rate": rate,
+                        "seed": seed,
                     },
                     ignored_options = ignored,
                 )

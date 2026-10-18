@@ -2139,7 +2139,7 @@ def test_generate_json_returns_seed_and_persists_settings(stub, tmp_path):
     assert json.loads(_sidecar(tmp_path, body["clip_id"]))["settings"] == {"seed": 5}
 
 
-def test_music_take_persists_group_role_variation_and_take_seed(stub, tmp_path):
+def test_music_take_persists_group_role_variation_and_take_seed(stub, tmp_path, monkeypatch):
     backend = stub["use"](STABLE_AUDIO, _music_info())
     backend.__class__ = _MusicBackend
     backend.takes, backend.run_dirs = 1, []
@@ -2152,11 +2152,13 @@ def test_music_take_persists_group_role_variation_and_take_seed(stub, tmp_path):
     (clip,) = body["clips"]
     assert (clip["role"], clip["seed"]) == ("variation", 40)
     meta = json.loads(_sidecar(tmp_path, clip["id"]))
-    assert (meta["group_id"], meta["role"], meta["settings"]["variation"]) == (
-        group,
-        "variation",
-        2,
-    )
+    assert (meta["group_id"], meta["role"]) == (group, "variation")
+    assert meta["settings"]["variation"] == 2
+    # History could not keep take 1: the inline audio still carries the seed take 2 reuses.
+    monkeypatch.setattr(inference, "_persist_tts_clip", lambda *a, **k: None)
+    with _client(ALICE) as client:
+        inline = _music(client, take = 1, group_id = group).json()
+    assert (inline["clips"], inline["audio"]["seed"]) == ([], 40)
 
 
 @pytest.mark.parametrize(

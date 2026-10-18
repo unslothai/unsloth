@@ -48,10 +48,8 @@ def _load(side_effect) -> HTTPException:
 
 def test_load_detail_is_structured_when_classified_else_500_prefix():
     error = _load(af.AudioCppFailureError("Failed to load model", _oom()))
-    assert error.status_code == 503
-    assert (
-        error.detail["code"] == "out_of_memory" and "ran out of memory" in error.detail["message"]
-    )
+    assert error.status_code == 503 and error.detail["code"] == "out_of_memory"
+    assert "ran out of memory" in error.detail["message"]
     error = _load(RuntimeError("totally different failure"))
     assert error.status_code == 500 and error.detail.startswith("Failed to load model: ")
 

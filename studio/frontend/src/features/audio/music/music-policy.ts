@@ -372,7 +372,10 @@ export function newMusicGroupId(): string {
 /** Sequential variations go one request per take, so Stop keeps the finished takes. Later takes
  *  reuse take 1's seed (the server offsets it by take); batch and single takes stay one request. */
 export async function runMusicTakes<
-  R extends { clips: readonly { seed?: number | null }[] },
+  R extends {
+    clips: readonly { seed?: number | null }[];
+    audio?: { seed?: number | null } | null;
+  },
 >({
   request,
   count,
@@ -408,7 +411,8 @@ export async function runMusicTakes<
       take,
       group_id: group,
     });
-    if (take === 1) seed = response.clips[0]?.seed ?? null;
+    if (take === 1)
+      seed = response.clips[0]?.seed ?? response.audio?.seed ?? null;
     await onTake(response);
   }
 }

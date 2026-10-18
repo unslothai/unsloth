@@ -5931,6 +5931,7 @@ class AudioRunAudio(BaseModel):
     data: str
     format: str = "wav"
     sample_rate: int
+    seed: Optional[int] = None
 
 
 class AudioRunResponse(BaseModel):

@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Each runtime string below is copied from audio.cpp at the tag in its comment, so a reworded
-upstream message shows up here rather than as a silently generic error."""
+"""Each runtime string below is copied from audio.cpp v0.9.2 (`git grep` at that tag finds it), so
+a reworded upstream message shows up here rather than as a silently generic error."""
 
 from __future__ import annotations
 
@@ -36,81 +36,59 @@ def _model(sizes = (8, 4, 3, 2, 1), current = 0) -> AudioCppModel:
 @pytest.mark.parametrize(
     "text, backend, code",
     [
-        # audio.cpp v0.9.2 src/framework/text/espeak_phonemizer.cpp:93
         (
             "Could not load eSpeak-ng; install the shared library or provide its path",
             None,
             "espeak_missing",
         ),
-        # audio.cpp v0.9.2 src/framework/text/espeak_phonemizer.cpp:108
         ("eSpeak-ng failed to initialize; check its data directory", None, "espeak_missing"),
-        # audio.cpp v0.9.2 src/framework/text/espeak_data.cpp:62
         ("eSpeak data package missing phontab", None, "espeak_missing"),
-        # audio.cpp v0.9.2 src/framework/runtime/registry.cpp:207 [v0.9.1 :163]
         ("unsupported model family hint: fish_drama3", None, "family_unknown_to_runtime"),
-        # audio.cpp v0.9.2 src/framework/runtime/registry.cpp:160 [v0.9.1 :134]
         ("no registered model loader can load: /m/x.gguf", None, "family_unknown_to_runtime"),
-        # audio.cpp v0.9.2 src/framework/core/backend.cpp:139-144
         (
             "CUDA backend requested but registry 'CUDA' has no device 0 (available: CPU)",
             "cuda",
             "gpu_unavailable",
         ),
-        # audio.cpp v0.9.2 src/framework/core/backend.cpp:161
         ("Failed to initialize Vulkan backend on device 0", "vulkan", "gpu_unavailable"),
-        # audio.cpp v0.9.2 external/ggml/src/ggml-cuda/ggml-cuda.cu:212
         (
             "ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected",
             "cuda",
             "gpu_unavailable",
         ),
-        # audio.cpp v0.9.2 external/ggml/src/ggml-vulkan/ggml-vulkan.cpp:6145
         ("ggml_vulkan: No devices found.", "vulkan", "gpu_unavailable"),
-        # audio.cpp v0.9.2 include/engine/framework/core/backend_weight_store.h:167 [v0.9.1 :165]
         ("failed to allocate CUDA0 backend weight buffer", "cuda", "out_of_memory"),
-        # audio.cpp v0.9.2 external/ggml/src/ggml-alloc.c:1133
         (
             "ggml_gallocr_reserve_n: failed to allocate CUDA0 buffer of size 9663676416",
             "cuda",
             "out_of_memory",
         ),
-        # audio.cpp v0.9.2 external/ggml/src/ggml-cuda/ggml-cuda.cu:803
         (
             "alloc: allocating 9216.00 MiB on device 0: cudaMalloc failed: out of memory",
             "cuda",
             "out_of_memory",
         ),
-        # audio.cpp v0.9.2 external/ggml/src/ggml-cuda/ggml-cuda.cu:102
         ("CUDA error: out of memory\n  current device: 0", "cuda", "out_of_memory"),
-        # audio.cpp v0.9.2 external/ggml/src/ggml-vulkan/ggml-vulkan.cpp:2876
         ("ggml_vulkan: Device memory allocation of size 123 failed.", "vulkan", "out_of_memory"),
-        # audio.cpp v0.9.2 src/community_models/lfm2_audio/backbone.cpp:322
         (
             "LFM2-Audio prefill graph does not fit in device memory at 9 prompt steps",
             "cuda",
             "out_of_memory",
         ),
-        # audio.cpp v0.9.2 app/server/runtime.cpp:2364-2367
         (
             "cannot load model 'm': estimated 9 GiB + 512 MiB headroom exceeds available CUDA memory",
             None,
             "out_of_memory",
         ),
-        # audio.cpp v0.9.2 external/ggml/src/gguf.cpp:413
         ("gguf_init_from_file_impl: failed to read magic", None, "file_incomplete"),
-        # audio.cpp v0.9.2 external/ggml/src/gguf.cpp:424
         (
             "gguf_init_from_file_impl: invalid magic characters: 'xxxx', expected 'GGUF'",
             None,
             "file_incomplete",
         ),
-        # audio.cpp v0.9.2 external/ggml/src/gguf.cpp:720
         ("gguf_init_from_file_impl: failed to read tensor data", None, "file_incomplete"),
-        # audio.cpp v0.9.2 src/framework/assets/tensor_source.cpp:1639
         ("failed to read GGUF metadata: /m/x.gguf", None, "file_incomplete"),
-        # audio.cpp v0.9.2 src/framework/assets/tensor_source.cpp:707
         ("tensor data range is out of bounds: blk.0.attn_q.weight", None, "file_incomplete"),
-        # audio.cpp v0.9.2 src/framework/runtime/registry.cpp:204 [v0.9.1 :160]
         ("model path does not exist: /m/x.gguf", None, "file_incomplete"),
         # A CUDA build logs its init failure on CPU launches too.
         (
@@ -123,9 +101,7 @@ def _model(sizes = (8, 4, 3, 2, 1), current = 0) -> AudioCppModel:
             None,
             None,
         ),
-        # audio.cpp v0.9.2 src/framework/assets/tensor_source.cpp:1963
         ("failed to allocate GGUF context", "cuda", None),
-        # audio.cpp v0.9.2 src/community_models/granite5asr/encoder.cpp:484
         ("Failed to initialize GGML context for Granite 5 ASR encoder", "cuda", None),
         ("CosyVoice3 requires reference audio", "cuda", None),
         # A refused request that only mentions eSpeak keeps the runtime's own reason.
@@ -199,6 +175,7 @@ def test_oom_lists_smaller_variants_and_offload_options(monkeypatch):
     text = "LFM2-Audio prefill graph does not fit in device memory at 9 prompt steps"
     capacity = af.classify_audio_cpp_failure(text, backend = "cuda", runtime_status = 400)
     assert (capacity.code, capacity.status, capacity.extras) == ("out_of_memory", 400, {})
+    assert af.AudioCppFailure.from_payload(capacity.payload()) == capacity
     # Shipped tags declare no expert offload (v0.9.2 fish_drama3 is absent; others lack it).
     session = [{"name": "context_length", "type": "int"}]
     monkeypatch.setattr(models, "runtime_spec", lambda family: {"options": {"session": session}})
