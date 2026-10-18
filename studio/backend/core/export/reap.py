@@ -6,8 +6,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
-from typing import Any, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from loggers import get_logger
 
@@ -167,6 +168,13 @@ def moe_export_info(
                     return moe_export_info(base, hf_token, is_local_path(base), _depth + 1)
                 if not has_config:
                     return None
+            if not (local / "adapter_config.json").is_file():
+                from core.export.drafter_export import training_manifest
+
+                # The export attaches a full checkpoint's trained MTP head, which REAP refuses.
+                manifest = training_manifest(str(local))
+                if manifest and manifest.get("strategy") == "mtp":
+                    return None
         return moe_info_from_config(_read_raw_config_json(model, hf_token, local_files_only, None))
     except Exception as exc:
         logger.debug("MoE detection skipped for '%s': %s", model, exc)
@@ -307,22 +315,41 @@ def apply_reap(
     return True, f"REAP kept {kept} experts per MoE layer in {len(report)} layers."
 
 
-def sync_reap_report(backend: Any, output_path: Optional[str]) -> None:
-    """After a successful export: the report when the exported model is pruned, else remove one a
-    previous REAP export left in a reused folder, so the folder never describes other weights."""
+def gguf_report_name(gguf: str) -> str:
+    """The report beside one GGUF file (``model.Q4_K_M.gguf`` -> ``model.Q4_K_M.reap_report.json``):
+    a reused GGUF folder keeps files from other loads, so each file carries its own."""
+    name = os.path.basename(str(gguf))
+    stem = name[: -len(".gguf")] if name.lower().endswith(".gguf") else name
+    return f"{stem}.reap_report.json"
+
+
+def sync_reap_report(
+    backend: Any,
+    output_path: Optional[str],
+    name: str = REPORT_NAME,
+    files: Optional[List[str]] = None,
+) -> None:
+    """After an export: the report when the exported model is pruned, else remove one a previous
+    REAP export left in a reused folder, so the folder never describes other weights."""
     if getattr(backend, "_reap_key", None) is not None:
-        write_reap_report(backend, output_path)
+        write_reap_report(backend, output_path, name, files)
         return
     if output_path and Path(output_path).is_dir():
-        stale = Path(output_path) / REPORT_NAME
+        stale = Path(output_path) / name
         try:
             stale.unlink(missing_ok = True)
         except OSError as exc:
-            logger.warning(f"Could not remove the stale {REPORT_NAME}: {exc}")
+            logger.warning(f"Could not remove the stale {name}: {exc}")
 
 
-def write_reap_report(backend: Any, output_path: Optional[str]) -> None:
-    """``reap_report.json`` (kept expert ids per layer and the settings) next to the export."""
+def write_reap_report(
+    backend: Any,
+    output_path: Optional[str],
+    name: str = REPORT_NAME,
+    files: Optional[List[str]] = None,
+) -> None:
+    """The report (kept expert ids per layer and the settings) next to the export; ``files`` names
+    the artifacts it describes when the folder can hold others."""
     model = getattr(backend, "current_model", None)
     report = getattr(model, "_unsloth_reap_report", None)
     key = getattr(backend, "_reap_key", None)
@@ -336,11 +363,11 @@ def write_reap_report(backend: Any, output_path: Optional[str]) -> None:
             "dataset": key[2] or "mlabonne/open-perfectblend",
             "kept_experts": report,
         }
-        (Path(output_path) / REPORT_NAME).write_text(
-            json.dumps(payload, indent = 1), encoding = "utf-8"
-        )
+        if files:
+            payload["files"] = files
+        (Path(output_path) / name).write_text(json.dumps(payload, indent = 1), encoding = "utf-8")
     except Exception as exc:
-        logger.warning(f"Could not write {REPORT_NAME}: {exc}")
+        logger.warning(f"Could not write {name}: {exc}")
 
 
 def discard_reap_staging(backend: Any) -> None:

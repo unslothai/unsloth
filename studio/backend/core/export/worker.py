@@ -534,10 +534,10 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
             )
         else:
             success, message = False, f"Unknown export type: {export_type}"
-        # A failed Hub upload or Q4NX step leaves complete local files: GGUF returns their path,
-        # merged / base record it once the local save finishes.
+        # A failed Hub upload leaves complete local files: merged / base record their folder once the
+        # local save finishes. GGUF exports keep one report per file themselves.
         local_path = output_path or getattr(backend, "_local_export_path", None)
-        if (success or local_path) and export_type in ("merged", "base", "gguf"):
+        if (success or local_path) and export_type in ("merged", "base"):
             from core.export.reap import sync_reap_report
             sync_reap_report(backend, local_path)
 

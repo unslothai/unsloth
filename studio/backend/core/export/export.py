@@ -598,8 +598,8 @@ This model was converted to GGUF format using [Unsloth](https://github.com/unslo
 # export_metadata.json is local bookkeeping whose base model can be a local path; the GGUF push
 # keeps it out of the repo too.
 _HUB_UPLOAD_IGNORE = ["export_metadata.json", "._*"]
-# REAP's report: uploaded with a pruned export, and deleted from a reused repo by any other merged,
-# base or GGUF upload (upload_folder never removes remote files on its own; one it uploads in the
+# REAP's report: uploaded with a pruned export, and deleted from a reused repo by any other merged
+# or base upload (GGUF files carry one each) (upload_folder never removes remote files on its own; one it uploads in the
 # same commit is kept).
 _REAP_REPORT = "reap_report.json"
 
@@ -702,6 +702,7 @@ def _push_mlx_merged(
             repo_id = repo_id,
             repo_type = "model",
             ignore_patterns = _HUB_UPLOAD_IGNORE,
+            delete_patterns = [_REAP_REPORT],
         )
     return repo_id
 
@@ -1212,6 +1213,22 @@ class ExportBackend:
 
     def _decision_only_gguf(self) -> Tuple[bool, str, Optional[str]]:
         return False, "Decision models export to GGUF only.", None
+
+    def _sync_gguf_reap_reports(self, folder, ggufs) -> List[str]:
+        """One report beside each GGUF this export wrote (a reused folder keeps other files);
+        returns their names, written or removed."""
+        try:
+            from core.export.reap import gguf_report_name, sync_reap_report
+
+            names = []
+            for gguf in ggufs:
+                name = gguf_report_name(gguf)
+                sync_reap_report(self, folder, name, [os.path.basename(gguf)])
+                names.append(name)
+            return names
+        except Exception as exc:  # noqa: BLE001 - the report never blocks an export
+            logger.warning(f"Could not update the REAP reports in {folder}: {exc}")
+            return []
 
     def _sync_reap_report(self, folder) -> None:
         """reap_report.json in ``folder`` describes the weights it holds (written for a REAP pruned
@@ -1760,6 +1777,7 @@ class ExportBackend:
 
         output_path: Optional[str] = None
         exported_ggufs: List[str] = []
+        gguf_reports: List[str] = []
         drafter_gguf_files: List[str] = []
         exported_modelfile = False
         exported_modelfile_bytes: Optional[bytes] = None
@@ -1932,8 +1950,8 @@ class ExportBackend:
                 # Only write metadata once an artifact is actually present.
                 self._write_export_metadata(abs_save_dir)
                 output_path = str(Path(abs_save_dir).resolve())
-                # Before the upload below, which allow-lists the report when there is one.
-                self._sync_reap_report(output_path)
+                # Before the upload below, which allow-lists each file's report when there is one.
+                gguf_reports = self._sync_gguf_reap_reports(output_path, exported_ggufs)
 
                 if npu_q4nx:
                     source = q4nx.source_gguf(exported_ggufs, quant_methods)
@@ -1979,12 +1997,13 @@ class ExportBackend:
                             *(["Modelfile"] if exported_modelfile else []),
                             *(["drafter.json"] if drafter_gguf_files else []),
                             *(
-                                [_REAP_REPORT]
-                                if (Path(output_path) / _REAP_REPORT).is_file()
-                                else []
+                                glob.escape(name)
+                                for name in gguf_reports
+                                if (Path(output_path) / name).is_file()
                             ),
                         ],
-                        delete_patterns = [_REAP_REPORT],
+                        # A report an earlier pruned export pushed for these same files.
+                        delete_patterns = [glob.escape(name) for name in gguf_reports] or None,
                     )
                     if exported_config is not None:
                         hf_api.upload_file(

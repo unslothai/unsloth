@@ -500,6 +500,8 @@ def test_mlx_export_push_to_a_reused_folder_does_not_upload_its_leftovers(
     assert seen["uploaded"] == _MLX_MERGED_FILES
     assert output_path == str(export_dir.resolve())
     assert backend.current_model.merges == [_MLX_EXPORTS[export][3]] * 2
+    # A REAP report an earlier export pushed to this repo is deleted in the same commit.
+    assert seen["delete_patterns"] == ["reap_report.json"]
     assert seen["folder"] != output_path
     assert not Path(seen["folder"]).exists()
 

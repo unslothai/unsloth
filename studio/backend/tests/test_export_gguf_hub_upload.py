@@ -990,6 +990,13 @@ def test_gguf_hub_export_carries_a_current_reap_report_only(tmp_path, monkeypatc
     )
     calls: list[str] = []
     seen: dict = {}
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    # A reused folder: an older GGUF from another load, with its own report, stays as it is.
+    (export_dir / "older.Q8_0.gguf").write_bytes(b"GGUF")
+    (export_dir / "older.Q8_0.reap_report.json").write_text('{"kept_experts": {"older": [3]}}')
+    # And a report an earlier pruned export left for the file this export overwrites.
+    (export_dir / "model.Q4_K_M.reap_report.json").write_text('{"kept_experts": {"old": [1]}}')
 
     class Model:
         _unsloth_reap_report = {"model.layers.0.mlp": [0, 2]}
@@ -998,18 +1005,21 @@ def test_gguf_hub_export_carries_a_current_reap_report_only(tmp_path, monkeypatc
             output = Path(f"{model_save_path}_gguf")
             output.mkdir(parents = True, exist_ok = True)
             (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
-            # A report a previous REAP export left in this reused folder.
-            (output / "reap_report.json").write_text('{"kept_experts": {"old": [1]}}')
 
     _patch_hub(monkeypatch, export_module, calls, seen)
     backend = _export_backend(export_module, Model)
     backend._reap_key = (0.5, 512, None) if pruned else None
-    success, message, output_path = _push_gguf(backend, str(tmp_path / "export"))
+    success, message, output_path = _push_gguf(backend, str(export_dir))
     assert success is True, message
-    # Synced before the upload: the pruned export's own report goes up, a stale one never does.
-    assert ("reap_report.json" in seen["uploaded"]) is pruned
-    assert Path(output_path, "reap_report.json").is_file() is pruned
+    report = Path(output_path, "model.Q4_K_M.reap_report.json")
+    # Synced before the upload: only this export's GGUF and its own current report go up.
+    assert seen["uploaded"] == (
+        ["model.Q4_K_M.gguf", "model.Q4_K_M.reap_report.json"] if pruned else ["model.Q4_K_M.gguf"]
+    )
+    assert report.is_file() is pruned
     if pruned:
-        assert '"old"' not in Path(output_path, "reap_report.json").read_text()
-    # A report an earlier pruned export pushed is deleted in the same commit.
-    assert seen["delete_patterns"] == ["reap_report.json"]
+        data = report.read_text()
+        assert '"old"' not in data and '"files": [\n  "model.Q4_K_M.gguf"\n ]' in data
+    # The other file's report is never touched, and a stale remote one for this file is deleted.
+    assert Path(output_path, "older.Q8_0.reap_report.json").is_file()
+    assert seen["delete_patterns"] == ["model.Q4_K_M.reap_report.json"]

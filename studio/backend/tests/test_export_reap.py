@@ -210,7 +210,8 @@ def test_worker_runs_reap_before_export(monkeypatch):
     _handle_export(
         backend, {"export_type": "gguf", "save_directory": "/tmp/o", "reap": {"sparsity": 0.5}}, q
     )
-    assert seen == [{"sparsity": 0.5}, ("report", "/out")]
+    # GGUF exports keep one report per file themselves, before their upload.
+    assert seen == [{"sparsity": 0.5}]
     assert backend.calls[0][0] == "gguf"
     final = _drain(q)[-1]
     assert final["success"] is True
@@ -768,24 +769,32 @@ def test_a_worker_that_survives_kill_is_not_swept(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "result, synced",
+    "result",
     [
-        ((False, "GGUF files were saved to /out, but the Hub upload failed: 503", "/out"), True),
-        ((False, "GGUF export failed: out of disk", None), False),
+        (False, "GGUF files were saved to /out, but the Hub upload failed: 503", "/out"),
+        (False, "GGUF export failed: out of disk", None),
+        (True, "ok", "/out"),
     ],
 )
-def test_a_failed_upload_after_complete_local_gguf_still_syncs_the_report(
-    monkeypatch, result, synced
-):
+def test_the_worker_leaves_gguf_reports_to_the_gguf_export(monkeypatch, result):
+    # export_gguf writes one report per GGUF before its upload; a folder-level one would describe
+    # every GGUF a reused folder holds.
     from core.export.worker import _handle_export
 
     seen = []
-    monkeypatch.setattr(reap_mod, "sync_reap_report", lambda b, path: seen.append(path))
+    monkeypatch.setattr(reap_mod, "sync_reap_report", lambda b, path, *a: seen.append(path))
     backend, q = _ExportBackend(), queue.Queue()
     backend.export_gguf = lambda **kwargs: result
     _handle_export(backend, {"export_type": "gguf", "save_directory": "/tmp/o"}, q)
-    assert seen == (["/out"] if synced else [])
-    assert _drain(q)[-1]["success"] is False
+    assert seen == []
+
+
+def test_gguf_report_names_follow_each_file():
+    assert (
+        reap_mod.gguf_report_name("/x/model-REAP.Q4_K_M.gguf")
+        == "model-REAP.Q4_K_M.reap_report.json"
+    )
+    assert reap_mod.gguf_report_name(".Q8_0.GGUF") == ".Q8_0.reap_report.json"
 
 
 def test_cleanup_after_a_worker_crash_sweeps_its_staging(monkeypatch):
@@ -1016,3 +1025,18 @@ def test_an_export_without_reap_after_a_pruned_one_on_the_same_load_is_refused(e
     assert backend.calls == []
     final = _drain(q)[-1]
     assert final["success"] is False and "Load it again" in final["message"]
+
+
+@pytest.mark.parametrize("strategy, offered", [("mtp", False), ("eagle3", True), (None, True)])
+def test_probe_hides_reap_for_a_full_checkpoint_carrying_a_trained_mtp_head(
+    tmp_path, strategy, offered
+):
+    # The export attaches that head on load, and REAP refuses an attached MTP head.
+    folder = tmp_path / "checkpoint-30"
+    folder.mkdir()
+    (folder / "config.json").write_text(json.dumps({"num_experts": 8, "num_experts_per_tok": 2}))
+    if strategy:
+        (folder / "drafter.json").write_text(json.dumps({"strategy": strategy}))
+        (folder / "eagle3").mkdir()
+        (folder / "eagle3" / "config.json").write_text("{}")
+    assert (reap_mod.moe_export_info(str(folder)) is not None) is offered
