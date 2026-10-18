@@ -13,6 +13,7 @@ const HUB_PROVIDER_IDS = new Map([
   ["kimi", "moonshotai"],
   ["qwen", "qwen"],
   ["qwencloud", "qwen"],
+  ["zai", "zai-org"],
 ]);
 
 const HUB_LOGO_PATHS = new Map(
