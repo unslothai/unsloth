@@ -45,6 +45,18 @@ def _first_int(
     return None
 
 
+def _model_parallel(distributed) -> bool:
+    """A saved distributed_config Core refuses: expert / tensor / pipeline / FSDP / sequence parallel."""
+    if not isinstance(distributed, dict):
+        return False
+    if distributed.get("enable_expert_parallel") or distributed.get("enable_sequence_parallel"):
+        return True
+    return any(
+        isinstance(distributed.get(k), int) and distributed.get(k) > 1
+        for k in ("tp_size", "pp_size", "fsdp_size")
+    )
+
+
 def moe_info_from_config(config: Optional[dict]) -> Optional[dict]:
     """``{num_experts, top_k}`` (plus ``n_group`` / ``topk_group`` for group-limited routers) for a
     routed-MoE config dict, else None."""
@@ -63,14 +75,19 @@ def moe_info_from_config(config: Optional[dict]) -> Optional[dict]:
         for h in holders
     ):
         return None
+    if any(_model_parallel(h.get("distributed_config")) for h in holders):
+        return None
     experts = first(_NUM_EXPERTS_KEYS)
     top_k = first(_TOP_K_KEYS, per_layer = True)
     if not (experts and top_k and experts > top_k):
         return None
     info = {"num_experts": experts, "top_k": top_k}
-    # Core prunes per group only when both are set, so the UI must count the same way.
     n_group, topk_group = first(_N_GROUP_KEYS), first(_TOPK_GROUP_KEYS)
-    if n_group and topk_group:
+    if n_group and n_group > 1:
+        if not topk_group:
+            # Core refuses grouped routing it cannot prune per group.
+            return None
+        # Core prunes per group, so the UI must count the same way.
         info.update(n_group = n_group, topk_group = topk_group)
     return info
 

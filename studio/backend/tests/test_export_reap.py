@@ -283,8 +283,8 @@ def test_moe_info_reports_router_groups():
         "n_group": 8,
         "topk_group": 4,
     }
-    # Core groups only when both are set.
-    assert "n_group" not in reap_mod.moe_info_from_config({**dsv3, "topk_group": None})
+    # Grouped routing without topk_group: Core refuses it, so the card is hidden.
+    assert reap_mod.moe_info_from_config({**dsv3, "topk_group": None}) is None
 
 
 def test_staging_parent_follows_the_chosen_drive(tmp_path, monkeypatch):
@@ -361,37 +361,48 @@ def test_moe_info_route_uses_the_authorized_adapter_base(monkeypatch, tmp_path):
     assert {"base_model": str(base), "hf_token": None} in checked
 
 
-def test_probe_keys_match_core():
-    # A key Core cannot read would advertise REAP for a model the export then refuses. Studio may
-    # only add raw config.json names that a transformers config maps onto one of Core's keys.
+def _core_keys():
     import ast
     from pathlib import Path
-
-    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 
     core = Path(__file__).resolve().parents[3] / "unsloth" / "models" / "reap.py"
     if not core.is_file():
         pytest.skip("Core reap.py is not in this tree")
     tree = ast.parse(core.read_text(encoding = "utf-8"))
-    consts = {
+    return {
         t.id: ast.literal_eval(node.value)
         for node in tree.body
         if isinstance(node, ast.Assign)
         for t in node.targets
         if isinstance(t, ast.Name) and t.id in ("_NUM_EXPERTS_KEYS", "_TOP_K_KEYS")
     }
+
+
+def test_probe_keys_cover_core():
+    # A key Core reads but the probe does not would hide REAP for a model Core can prune.
+    consts = _core_keys()
+    for name in ("_NUM_EXPERTS_KEYS", "_TOP_K_KEYS"):
+        assert set(consts[name]) <= set(getattr(reap_mod, name))
+    # HunYuan-A13B and Ernie 4.5 as their config.json files spell them.
+    assert reap_mod.moe_info_from_config({"num_experts": 64, "moe_topk": [8] * 32})["top_k"] == 8
+    assert reap_mod.moe_info_from_config({"moe_num_experts": 64, "moe_k": 6})["top_k"] == 6
+
+
+def test_probe_extra_keys_are_raw_names_core_reads():
+    # Studio may only add raw config.json names that a transformers config maps onto a Core key
+    # (Core reads them through attribute_map); anything else would advertise a model Core refuses.
+    pytest.importorskip("transformers")
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+
+    consts = _core_keys()
     mapped = {}
     for config_class in CONFIG_MAPPING.values():
         for alias, raw in (getattr(config_class, "attribute_map", None) or {}).items():
             mapped.setdefault(raw, set()).add(alias)
     for name in ("_NUM_EXPERTS_KEYS", "_TOP_K_KEYS"):
         core_keys, studio_keys = consts[name], getattr(reap_mod, name)
-        assert set(core_keys) <= set(studio_keys)
         for extra in set(studio_keys) - set(core_keys):
             assert mapped.get(extra, set()) & set(core_keys), f"{extra} is not read by Core"
-    # HunYuan-A13B and Ernie 4.5 as their config.json files spell them.
-    assert reap_mod.moe_info_from_config({"num_experts": 64, "moe_topk": [8] * 32})["top_k"] == 8
-    assert reap_mod.moe_info_from_config({"moe_num_experts": 64, "moe_k": 6})["top_k"] == 6
 
 
 def test_custom_calibration_dataset_uses_the_request_token(fake_reap, tmp_path, monkeypatch):
@@ -614,3 +625,20 @@ def test_report_follows_the_exported_model(fake_reap, tmp_path):
     # The same folder reused for an export of an unpruned model: the old report goes.
     reap_mod.sync_reap_report(_Backend(_Model()), str(out))
     assert not (out / reap_mod.REPORT_NAME).exists()
+
+
+def test_probe_hides_layouts_core_refuses():
+    base = {"n_routed_experts": 16, "num_experts_per_tok": 2}
+    # Grouped routing without topk_group, and model-parallel layouts saved in the config.
+    assert reap_mod.moe_info_from_config({**base, "n_group": 4}) is None
+    assert reap_mod.moe_info_from_config({**base, "n_group": 1})["num_experts"] == 16
+    for layout in (
+        {"tp_size": 2},
+        {"pp_size": 4},
+        {"fsdp_size": 2},
+        {"enable_expert_parallel": True},
+    ):
+        assert reap_mod.moe_info_from_config({**base, "distributed_config": layout}) is None
+    assert (
+        reap_mod.moe_info_from_config({**base, "distributed_config": {"tp_size": 1}})["top_k"] == 2
+    )
