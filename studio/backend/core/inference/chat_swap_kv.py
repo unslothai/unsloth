@@ -214,11 +214,12 @@ async def save_chat_kv_before_swap(
     *,
     policy: str = "off",
     need_mib: Optional[dict] = None,
+    gpu_ids: Optional[list] = None,
     **_ignored,
 ) -> SwapSave:
     """Save the chat KV if acquiring ``owner`` will evict the chat model; never raises.
 
-    ``policy`` and ``need_mib`` are the keywords the route passes to the acquire, so the peek
+    ``policy``, ``need_mib`` and ``gpu_ids`` are the keywords the route passes to the acquire, so the peek
     predicts that exact acquire. Off passes none, and the acquire then runs as Off too."""
     global _pending
     try:
@@ -226,7 +227,7 @@ async def save_chat_kv_before_swap(
         from core.inference.llama_keepwarm import _loaded_identity
         from utils.openai_auto_switch_settings import get_auto_unload_keep_kv
 
-        if not gpu_arbiter.would_evict(owner, policy = policy, need_mib = need_mib):
+        if not gpu_arbiter.would_evict(owner, policy = policy, need_mib = need_mib, gpu_ids = gpu_ids):
             return SwapSave()
         if not await asyncio.to_thread(get_auto_unload_keep_kv):
             return SwapSave()

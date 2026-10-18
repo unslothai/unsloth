@@ -160,6 +160,30 @@ def test_would_evict_matches_acquire_for(monkeypatch, policy, fits, current, tar
     assert predicted == ("evict-chat" in calls)
 
 
+@pytest.mark.parametrize("policy", ["fit", "always"])
+@pytest.mark.parametrize("gpu, evicts", [(1, False), (0, True)])
+def test_would_evict_honours_the_target_gpu_of_an_unpriced_load(monkeypatch, policy, gpu, evicts):
+    # media_fit_kwargs passes gpu_ids even when the load can't be priced; chat on another GPU stays.
+    from core.inference import gpu_residency as gr
+
+    calls: list[str] = []
+    monkeypatch.setattr(arb, "_owner", arb.CHAT)
+    monkeypatch.setattr(arb, "_residents", {arb.CHAT: frozenset({0})})
+    monkeypatch.setattr(
+        arb, "physical_gpu_ids", lambda ids: None if ids is None else frozenset(ids)
+    )
+    monkeypatch.setattr(gr, "_claim_holds_anything", lambda name: False)
+    for owner in (arb.CHAT, arb.DIFFUSION, arb.VIDEO):
+        monkeypatch.setitem(arb._EVICTORS, owner, lambda o = owner: calls.append(f"evict-{o}"))
+    predicted = arb.would_evict(arb.DIFFUSION, policy = policy, gpu_ids = [gpu])
+    try:
+        arb.acquire_for(arb.DIFFUSION, policy = policy, gpu_ids = [gpu])
+    except RuntimeError:
+        pass
+    assert predicted is evicts
+    assert predicted == ("evict-chat" in calls)
+
+
 _ELSEWHERE = {arb.CHAT: frozenset({1})}
 _SHARED = {arb.CHAT: frozenset({0}), arb.VIDEO: frozenset({0})}
 

@@ -694,14 +694,25 @@ def would_evict(
     *,
     policy: str = "off",
     need_mib: Optional[dict] = None,
+    gpu_ids: Optional[Iterable[int]] = None,
 ) -> bool:
-    """Lock-free peek: will ``acquire_for(owner, policy = ..., need_mib = ...)`` unload the chat model?
-    Never call it under ``_lock``."""
+    """Lock-free peek: will ``acquire_for(owner, policy = ..., need_mib = ..., gpu_ids = ...)`` unload
+    the chat model? Never call it under ``_lock``."""
     if owner == CHAT or owner not in _EVICTORS:
         return False
     holds = globals().get("holds")
     if not (holds(CHAT) if callable(holds) else _owner == CHAT):
         return False
+    if policy in ("fit", "always"):
+        # Same target as gpu_residency.coreside_locked: chat on other GPUs is never touched.
+        target = (
+            physical_gpu_ids(gpu_ids)
+            if gpu_ids is not None
+            else (frozenset(need_mib) if need_mib else None)
+        )
+        chat_gpus = _view().get(CHAT)
+        if chat_gpus is not None and target is not None and not set(chat_gpus) & set(target):
+            return False
     if policy == "always":
         # Always refuses the load rather than evicting, except a claim whose load failed and holds nothing.
         try:
@@ -717,9 +728,6 @@ def would_evict(
         except ImportError:
             gpu_residency, fits = None, None
         if callable(fits):
-            chat_gpus = _view().get(CHAT)
-            if chat_gpus is not None and not set(chat_gpus) & set(need_mib):
-                return False  # chat on other GPUs is never touched
             in_flight = getattr(gpu_residency, "chat_load_in_flight", None)
             if callable(in_flight) and in_flight():
                 return True  # coreside_locked evicts a chat that is still loading
