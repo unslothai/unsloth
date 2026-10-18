@@ -40,6 +40,7 @@ _STATUSES = frozenset(("supported", "community", "experimental", "testing", "wip
 _TASKS = frozenset(("tts", "music", "asr", "sep"))
 _NO_FAMILY = "Unsloth Studio could not tell which model family this is."
 _NO_PAGE = "Unsloth Studio has no Audio page for this model yet."
+_SIDECARS = "Unsloth Studio cannot download the extra files this model needs beside its GGUF yet."
 
 _cache_lock = threading.Lock()
 _build_lock = threading.Lock()
@@ -241,6 +242,22 @@ def _ranked(
     return variants[0] if variants else None
 
 
+def _sidecars(spec: dict) -> list[str]:
+    """Non-GGUF files of the spec's recommended (else default) GGUF package, ``embeddings/`` aside."""
+    packages = [p for p in _list(spec.get("packages")) if isinstance(p, dict)]
+    packages = [p for p in packages if str(p.get("format") or "").lower() == "gguf"]
+    wanted = _dict(spec.get("ui")).get("recommended_package")
+    package = next((p for p in packages if wanted and p.get("id") == wanted), None) or next(
+        (p for p in packages if p.get("default") is True), None
+    )
+    files = [f.replace("\\", "/") for f in _list(_dict(package).get("files")) if isinstance(f, str)]
+    return [f for f in files if not f.lower().endswith(".gguf") and "/embeddings/" not in f"/{f}"]
+
+
+def _list(value: Any) -> list:
+    return value if isinstance(value, list) else []
+
+
 def _text(value: Any, limit: int) -> Optional[str]:
     if not isinstance(value, str) or not value.strip():
         return None
@@ -268,6 +285,9 @@ def _row(
             workflows = [w for w in AUDIO_WORKFLOW_IDS if w in bindings]
             task = policy.task if policy.task in _TASKS else ""
             reason = policy.unsupported or (None if workflows else _NO_PAGE)
+            if not folder and not policy.package and _sidecars(spec):
+                # A Community repo loads as one GGUF: files its package reads beside it never download.
+                reason = reason or _SIDECARS
             wanted = set(recommended_gguf_files(spec or None))
             picked = [f for f in files if Path(f.path).name in wanted]
             variant = None if picked else _ranked(files, folder, policy)
