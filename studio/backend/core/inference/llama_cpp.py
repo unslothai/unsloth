@@ -7034,10 +7034,12 @@ def _widen_pin_ids_for_companion_devices(
 
     The sites are ``_device_list_sites``: env twins (``env``, the child's environment)
     and every argv occurrence. The FINAL main device value (argv, else
-    ``LLAMA_ARG_DEVICE``) is the child's own numbering over the pinned cards. Every other
-    ``CUDA<n>`` / ``ROCm<n>`` -- companions, an inherited ``MTMD_BACKEND_DEVICE``, and a
-    main value a later one overrides -- uses the unpinned numbering (position in
-    ``inherited_ids``, else the physical index): cards they name are appended after the
+    ``LLAMA_ARG_DEVICE``) is the child's own numbering over the pinned cards, and so is
+    a main value a later one overrides while it names a pinned position (the child
+    parses it the same way). Every other ``CUDA<n>`` / ``ROCm<n>`` -- companions, an
+    inherited ``MTMD_BACKEND_DEVICE``, and an overridden main value past the pin -- uses
+    the unpinned numbering (position in ``inherited_ids``, else the physical index), as
+    the child cannot resolve it unwidened: cards they name are appended after the
     pinned ones and each value is renumbered to the child's mask (env values in place),
     and a main ``--device`` is added when none is set so ``-ngl -1`` does not spread over
     the extra cards. Tokens the parent cannot see are left alone. ``allowed_ids``
@@ -7071,7 +7073,11 @@ def _widen_pin_ids_for_companion_devices(
             if match:
                 prefix_word = prefix_word or match.group(1)
                 n = int(match.group(2))
-                if inherited_ids is None:
+                if site.group == "main" and n < len(main_ids):
+                    # An overridden main value is parsed by the child like the final one,
+                    # so a position on the pin already resolves there.
+                    physical = main_ids[n]
+                elif inherited_ids is None:
                     physical = n
                 elif n < len(inherited_ids):
                     physical = int(inherited_ids[n])
