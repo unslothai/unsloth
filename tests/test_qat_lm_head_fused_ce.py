@@ -95,6 +95,6 @@ def test_forward_fake_quant_lm_head_takes_unfused_path(scheme):
     ids = ["llama", "mistral"],
 )
 def test_fused_ce_branches_fake_quantize_lm_head(forward):
-    source = inspect.getsource(forward)
-    assert "fake_quantize_lm_head_inputs(self.lm_head" in source
+    source = "".join(inspect.getsource(forward).split())
+    assert "fake_quantize_lm_head_inputs(self.lm_head," in source
     assert "lm_head_needs_forward(self.lm_head)" in source
