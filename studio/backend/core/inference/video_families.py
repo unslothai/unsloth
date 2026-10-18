@@ -296,6 +296,14 @@ class VideoFamily:
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id); same semantics as
     # DiffusionFamily.te_prequant_repos.
     te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # The scheme an UNSET text_encoder_quant takes (video.video_te_quant_request), same contract as
+    # DiffusionFamily.te_quant_auto: must be a scheme this family HOSTS (te_prequant_repos / TE_INT8_CONVROT_FILES), so
+    # the default never costs a dense download plus an in-place cast. "none" / "off" still pin the released encoder.
+    # MiniMax-H3 and LTX-2.5 resolve their own tri-state and leave this unset.
+    te_quant_auto: Optional[str] = None
+    # The pipeline encoders that automatic pick casts, when not all of them (empty = every present encoder). An
+    # explicit text_encoder_quant still covers every encoder.
+    te_quant_auto_encoders: tuple[str, ...] = ()
     # Hosted PRE-QUANTIZED DENOISER checkpoints as (scheme, repo_id). The DiT, NOT the text encoder that
     # te_prequant_repos above covers: the two are separate artifacts because a load can take one without the other. Same
     # semantics as DiffusionFamily.prequant_repos, so the shared diffusion_prequant resolver reads this table through
@@ -432,6 +440,8 @@ _WAN21_VAE_UNTILED = UntiledVae(bytes_per_latent_pixel = 0.6 * 2**20, output_sca
 # LTX-2 / 2.3 holds every frame: peak per output frame x latent pixel, 0.102-0.105 MiB measured bf16 (B200). LTX-2.5
 # has the same conv decoder layout (vae/ of the Diffusers pack); unmeasured, priced as 2.3.
 _LTX2_VAE_UNTILED = UntiledVae(bytes_per_frame_latent_pixel = 0.11 * 2**20, temporal_scale = 8)
+# Wan2.1 and Wan2.2 ship one UMT5-XXL encoder, so every Wan family loads the same hosted pre-cast file.
+_WAN_UMT5_TE_PREQUANT = (("fp8", "text_encoder", "unsloth/Wan2.2-TI2V-5B-FP8"),)
 
 _FAMILIES: tuple[VideoFamily, ...] = (
     VideoFamily(
@@ -650,6 +660,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         gguf_repo = "unsloth/LTX-2.3-GGUF",
         # pre-cast Gemma3-12B TE (fp32 ~49 GB on the hub, pre-cast ~13.2 GB): the biggest download win
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/LTX-2-FP8"),),
+        # fp8 by default. ComfyUI's LTX-2 / LTX-2.3 workflow templates (video_ltx2_t2v.json, video_ltx2_3_t2v.json) load
+        # gemma_3_12B_it_fp4_mixed; the hosted layerwise fp8 file is the nearest scheme we serve.
+        te_quant_auto = "fp8",
         # Hosted 2.3 DISTILLED DiT, used only by the 2.3 single-file assembly. fp8 only: LTX-2.3-INT8.pt predates the int8 excludes.
         prequant_variant_repos = (("lightricks/ltx-2.3", "fp8", "unsloth/LTX-2.3-FP8"),),
         # no steady gain on LTX's VAE / vocoder convs, but a per-shape re-tune (first render 26 s vs 10 s)
@@ -708,6 +721,12 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # UMT5 keeps its overflowing `wo` in fp32 itself; the VAE stays fp32 (vae_force_fp32).
         fp16_guard = "native",
         # Byte-identical mirror of QuantStack/Wan2.2-TI2V-5B-GGUF (13 quants + companion VAE).
+        # UMT5-XXL pre-cast fp8, one file for all four Wan bases (diffusion_te_prequant._TE_EQUIVALENT_BASES), the
+        # int8 ConvRot one beside it (TE_INT8_CONVROT_FILES). fp8 by default, as ComfyUI's Wan templates load
+        # umt5_xxl_fp8_e4m3fn_scaled (workflow templates video_wan2_2_5B_ti2v.json, video_wan2_2_14B_t2v.json,
+        # text_to_video_wan.json).
+        te_prequant_repos = _WAN_UMT5_TE_PREQUANT,
+        te_quant_auto = "fp8",
         gguf_repo = "unsloth/Wan2.2-TI2V-5B-GGUF",
         # expand_timesteps on the loaded config keeps the first-frame latent clean.
         i2v_pipeline_class = "WanImageToVideoPipeline",
@@ -764,6 +783,12 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # 114.3 fp32 sum. UMT5 TE bf16 (11.4); VAE fp32 (0.5).
         bf16_components_gb = (57.2, 11.4, 0.5),
         vae_force_fp32 = True,
+        # UMT5-XXL pre-cast fp8, one file for all four Wan bases (diffusion_te_prequant._TE_EQUIVALENT_BASES), the
+        # int8 ConvRot one beside it (TE_INT8_CONVROT_FILES). fp8 by default, as ComfyUI's Wan templates load
+        # umt5_xxl_fp8_e4m3fn_scaled (workflow templates video_wan2_2_5B_ti2v.json, video_wan2_2_14B_t2v.json,
+        # text_to_video_wan.json).
+        te_prequant_repos = _WAN_UMT5_TE_PREQUANT,
+        te_quant_auto = "fp8",
         # same VAE as TI2V-5B
         cudnn_benchmark = False,
         # no gguf_repo: community GGUFs split the experts; a gguf / single_file pick of either expert loads the pair
@@ -788,6 +813,12 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         resolution_presets = ((832, 480), (480, 832)),
         bf16_components_gb = (2.8, 11.4, 0.5),
         vae_force_fp32 = True,
+        # UMT5-XXL pre-cast fp8, one file for all four Wan bases (diffusion_te_prequant._TE_EQUIVALENT_BASES), the
+        # int8 ConvRot one beside it (TE_INT8_CONVROT_FILES). fp8 by default, as ComfyUI's Wan templates load
+        # umt5_xxl_fp8_e4m3fn_scaled (workflow templates video_wan2_2_5B_ti2v.json, video_wan2_2_14B_t2v.json,
+        # text_to_video_wan.json).
+        te_prequant_repos = _WAN_UMT5_TE_PREQUANT,
+        te_quant_auto = "fp8",
         cudnn_benchmark = False,
     ),
     # Wan2.1-T2V-14B: same keys as one Wan2.2 A14B expert, run as a single denoiser.
@@ -809,6 +840,12 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         resolution_presets = ((832, 480), (1280, 720), (480, 832), (720, 1280)),
         bf16_components_gb = (28.6, 11.4, 0.5),
         vae_force_fp32 = True,
+        # UMT5-XXL pre-cast fp8, one file for all four Wan bases (diffusion_te_prequant._TE_EQUIVALENT_BASES), the
+        # int8 ConvRot one beside it (TE_INT8_CONVROT_FILES). fp8 by default, as ComfyUI's Wan templates load
+        # umt5_xxl_fp8_e4m3fn_scaled (workflow templates video_wan2_2_5B_ti2v.json, video_wan2_2_14B_t2v.json,
+        # text_to_video_wan.json).
+        te_prequant_repos = _WAN_UMT5_TE_PREQUANT,
+        te_quant_auto = "fp8",
         cudnn_benchmark = False,
     ),
     # HunyuanVideo-1.5 (diffusers >= 0.39): 8.3B DiT, Qwen2.5-VL + ByT5 encoders. Three quirks: no guidance kwarg (CFG
@@ -852,6 +889,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         resolution_presets = ((832, 480), (480, 832), (640, 640)),
         # DiT fp32 on disk (32.0 to 16.6 bf16); VAE 4.7 to 2.4; Qwen2.5-VL TE bf16 14.0 + ByT5 0.8
         bf16_components_gb = (16.6, 14.8, 2.4),
+        # Qwen2.5-VL-7B text tower pre-cast fp8 (ByT5 stays dense: glyph rendering). fp8 by default, as ComfyUI's
+        # HunyuanVideo-1.5 template (video_hunyuan_video_1.5_720p_t2v.json) loads qwen_2.5_vl_7b_fp8_scaled. The tensors are Qwen/Qwen2.5-VL-7B-Instruct's
+        # language model unchanged (Apache-2.0), and the 480p and 720p repacks ship the same bytes.
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/HunyuanVideo-1.5-FP8"),),
+        te_quant_auto = "fp8",
+        # Only the Qwen tower: the ByT5 glyph encoder (text_encoder_2) stays dense under the default.
+        te_quant_auto_encoders = ("text_encoder",),
         fp16_guard = "native",
         cudnn_benchmark = False,
         # Needs the capture-safe forward (diffusion_capture_safe) and the memoized trim (diffusion_attention).
@@ -887,6 +931,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # 720p-class presets: landscape, vertical, square (all /16).
         resolution_presets = ((1280, 720), (720, 1280), (960, 960)),
         bf16_components_gb = (16.6, 14.8, 2.4),
+        # Qwen2.5-VL-7B text tower pre-cast fp8 (ByT5 stays dense: glyph rendering). fp8 by default, as ComfyUI's
+        # HunyuanVideo-1.5 template (video_hunyuan_video_1.5_720p_t2v.json) loads qwen_2.5_vl_7b_fp8_scaled. The tensors are Qwen/Qwen2.5-VL-7B-Instruct's
+        # language model unchanged (Apache-2.0), and the 480p and 720p repacks ship the same bytes.
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/HunyuanVideo-1.5-FP8"),),
+        te_quant_auto = "fp8",
+        # Only the Qwen tower: the ByT5 glyph encoder (text_encoder_2) stays dense under the default.
+        te_quant_auto_encoders = ("text_encoder",),
         fp16_guard = "native",
         cudnn_benchmark = False,
     ),

@@ -10092,15 +10092,16 @@ _TEXT_ONLY_PROVIDER_TYPES = frozenset({"cohere", "deepseek", "mistral"})
 
 # Mixed catalogs require model-level vision capability; family flags do not
 # identify which models accept images. Qwen has unrestricted text defaults;
-# its vision models use separate qwen-vl-* or Qwen2.5-VL IDs. Kimi is excluded
+# its vision models use separate qwen-vl-* or Qwen2.5-VL IDs. Z.ai lists text
+# GLMs beside the -v / flash vision ones. Kimi is excluded
 # because its allowlist permits only multimodal kimi-k3/k2.5/k2.6.
 # Single-endpoint types (custom, vllm, ollama, llamacpp, lmstudio) retain the
 # registry default: no model catalog exists to check the configured endpoint.
-_MIXED_CATALOG_PROVIDER_TYPES = frozenset({"huggingface", "openrouter", "qwen", "qwencloud"})
+_MIXED_CATALOG_PROVIDER_TYPES = frozenset({"huggingface", "openrouter", "qwen", "qwencloud", "zai"})
 
 # Mixed catalogs whose models.dev namespace answers vision per model.
 # Mirrors CATALOG_VISION_PROVIDER_TYPES in external-providers.ts.
-_CATALOG_VISION_NAMESPACES = {"qwencloud": "qwen"}
+_CATALOG_VISION_NAMESPACES = {"qwencloud": "qwen", "zai": "zai"}
 
 
 def _external_takes_mcp_images(
@@ -34937,6 +34938,11 @@ async def produce_openai_chat_completions(
         # Request-scoped usage/timings receptacle (filled at gen_done).
         _sf_stats_holder: dict = {}
 
+        _sf_website_policy = getattr(payload, "_website_policy", None)
+        _sf_website_policy_kwargs = (
+            {"website_policy": _sf_website_policy} if _sf_website_policy else {}
+        )
+
         def sf_generate_with_tools():
             return backend.generate_chat_completion_with_tools(
                 messages = _sf_chat_messages,
@@ -34988,6 +34994,7 @@ async def produce_openai_chat_completions(
                 context_policy = _request_context_policy(payload),
                 compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
                 compact_context = getattr(payload, "compact_context", None) is True,
+                **_sf_website_policy_kwargs,
             )
 
         _sf_tool_sentinel = object()
@@ -42350,6 +42357,45 @@ def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
     return requested
 
 
+def _anthropic_domain_entry(entry):
+    # Anthropic accepts an optional path ("example.com/blog", "example.com/*"); Studio limits by domain.
+    if isinstance(entry, str) and "://" not in entry:
+        return entry.split("/", 1)[0]
+    return entry
+
+
+def _anthropic_website_policy(tools: Optional[list]) -> Optional[dict]:
+    from core.inference.web_access_policy import normalize_website_policy
+
+    policy = {"allowedDomains": [], "blockedDomains": []}
+    try:
+        for tool in tools or []:
+            td = tool if isinstance(tool, dict) else tool.model_dump()
+            if _STUDIO_ANTHROPIC_TOOL_ALIASES.get(td.get("type")) != "web_search":
+                continue
+            declared = {}
+            for key, field in (
+                ("allowedDomains", "allowed_domains"),
+                ("blockedDomains", "blocked_domains"),
+            ):
+                entries = td.get(field)
+                if entries is None:
+                    entries = []
+                elif isinstance(entries, list):
+                    entries = [_anthropic_domain_entry(entry) for entry in entries]
+                declared[key] = entries
+            declared = normalize_website_policy(declared)
+            for key in policy:
+                policy[key] += declared[key]
+        policy = normalize_website_policy(policy)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code = 400,
+            detail = anthropic_error_body(str(exc), status = 400, err_type = "invalid_request_error"),
+        )
+    return policy if policy["allowedDomains"] or policy["blockedDomains"] else None
+
+
 def _select_anthropic_server_tools(
     all_tools: list[dict],
     requested_studio_tools: set[str],
@@ -44084,6 +44130,7 @@ async def anthropic_count_tokens(
     # Reject malformed tools before the switch, like /messages, so an invalid
     # count request can't evict the loaded model.
     _validate_anthropic_client_tools(payload.tools)
+    _anthropic_website_policy(payload.tools)
     # Counting compiles no output grammar, matching Anthropic's count_tokens behavior.
     _count_response_format = _anthropic_response_format(payload, require_llama_compatibility = False)
     _count_studio_tools = _anthropic_requested_studio_tools(payload.tools)
@@ -44608,6 +44655,7 @@ async def _anthropic_in_process_messages(
     request,
     current_subject,
     server_tools = (),
+    website_policy = None,
 ):
     """Serve /v1/messages from an in-process model (MLX, transformers) through chat."""
     backend = await asyncio.to_thread(get_inference_backend)
@@ -44650,6 +44698,8 @@ async def _anthropic_in_process_messages(
         session_id = payload.session_id,
         response_format = response_format,
     )
+    if server_tools:
+        chat_req._website_policy = website_policy
 
     monitor_id = None
     context_length = _monitor_context_length()
@@ -44811,6 +44861,7 @@ async def anthropic_messages(
     # before the switch too -- it depends only on the payload -- so an invalid
     # request never evicts the loaded model. Reused below for tool routing.
     requested_studio_tools = _anthropic_requested_studio_tools(payload.tools)
+    website_policy = _anthropic_website_policy(payload.tools)
     _has_client_tool = any(
         (t if isinstance(t, dict) else t.model_dump()).get("input_schema") is not None
         or anthropic_schema_client_tool_kind(t) is not None
@@ -44942,6 +44993,7 @@ async def anthropic_messages(
             request,
             current_subject,
             server_tools = [] if _anthropic_has_image else selected_server_tools,
+            website_policy = website_policy,
         )
     if not llama_backend.is_loaded:
         _status, _detail = await _no_model_loaded_error(
@@ -45567,6 +45619,7 @@ async def anthropic_messages(
                     llama_backend.context_length,
                 ),
                 replay_preserve_thinking = not _anthropic_history_has_thinking(payload),
+                website_policy = website_policy,
                 **_reasoning_args,
             )
 
