@@ -518,8 +518,14 @@ def test_preflight_admits_the_hosted_int8_encoder_on_mps(monkeypatch, family):
     names = [e[1] for comps in tpq.TE_INT8_CONVROT_FILES.values() for e in comps.values()]
 
     class _Api:
-        def model_info(self, repo, files_metadata = False):
-            return types.SimpleNamespace(siblings = [types.SimpleNamespace(rfilename = n, size = 1) for n in names])
+        def model_info(
+            self,
+            repo,
+            files_metadata = False,
+        ):
+            return types.SimpleNamespace(
+                siblings = [types.SimpleNamespace(rfilename = n, size = 1) for n in names]
+            )
 
     monkeypatch.setattr(huggingface_hub, "HfApi", lambda *a, **k: _Api())
     monkeypatch.setattr(tpq, "_held_locally", lambda *a, **k: False)

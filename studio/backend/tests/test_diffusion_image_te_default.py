@@ -1399,7 +1399,10 @@ def test_supplied_slots_are_planned_only_from_local_files():
 
     fam = _fam("hidream-i1")
     backend = D.DiffusionBackend()
-    assert backend._planned_supplied_text_encoders(fam, fam.base_repo, fam.base_repo, None, "int8") == ()
+    assert (
+        backend._planned_supplied_text_encoders(fam, fam.base_repo, fam.base_repo, None, "int8")
+        == ()
+    )
     # A Hub file would need its header fetched: left to the load's own check.
     assert (
         backend._planned_supplied_text_encoders(
@@ -1417,4 +1420,7 @@ def test_both_route_preflights_hand_over_the_supplied_files():
     src = inspect.getsource(R)
     calls = src.split("backend.assert_precision_available,")[1:]
     assert len(calls) == 3
-    assert all("text_encoder_files = request.supplied_text_encoder_files()," in c.split(")\n", 1)[0] for c in calls)
+    assert all(
+        "text_encoder_files = request.supplied_text_encoder_files()," in c.split(")\n", 1)[0]
+        for c in calls
+    )

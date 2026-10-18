@@ -2885,8 +2885,11 @@ class DiffusionBackend:
             return ()
         try:
             from .diffusion_comfy_components import parse_component_file
+
             refs = [
-                parse_component_file(spec, model_path = repo_id, trusted_repo = _is_trusted_diffusion_repo)
+                parse_component_file(
+                    spec, model_path = repo_id, trusted_repo = _is_trusted_diffusion_repo
+                )
                 for spec in text_encoder_files
             ]
             if any(not ref.local_path for ref in refs):
