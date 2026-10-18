@@ -200,8 +200,12 @@ export const BUDGET = {
   // (6,800,980 -> 6,805,412 B raw, 2,045,645 -> 2,047,341 B transfer against 15e4bc8fde, one machine and build,
   // Node 24, chunk count unchanged at 95): the shared slide module and SegmentedPill, imported by toggles that
   // already live in startup chunks, so there is no separate module to lazy-load. Raised by that growth.
-  transferBytes: 2_047_477,
-  rawBytes: 6_805_847,
+  // A preset pick forgetting the loaded model's remembered sampling (#14068) adds 995 B raw / 175 B transfer
+  // (6,803,946 -> 6,804,941 B raw, 2,047,439 -> 2,047,614 B transfer against 0b75841da, one machine and build,
+  // Node 24, chunk count unchanged at 95): the chat runtime store and settings sanitizer it extends are startup
+  // modules already, so there is no separate module to lazy-load. Raised by that growth.
+  transferBytes: 2_047_652,
+  rawBytes: 6_806_842,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
