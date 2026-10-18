@@ -719,6 +719,7 @@ class ChatGenerationSupervisor:
         # turn back behind the database, with the GPU idle.
         writing: list[tuple[str, dict[str, Any], int]] = []
         write_task: asyncio.Task | None = None
+        held_cancel: asyncio.CancelledError | None = None
         # When the last commit STARTED, so a commit slower than a frame is followed at once by one carrying everything
         # read meanwhile, instead of every later chunk getting a transaction of its own.
         last_flush = -math.inf
@@ -740,12 +741,17 @@ class ChatGenerationSupervisor:
 
         async def settle_write() -> BaseException | None:
             """Wait out the in-flight commit, returning its failure. Never cancels it: the thread runs on regardless,
-            and finish_run must not overtake an append. A failed batch goes back in front of pending, as an inline
-            append that raised used to leave it."""
-            nonlocal writing, pending, write_task
+            and finish_run must not overtake an append, so a cancel arriving meanwhile is held in held_cancel and
+            raised once the run is settled. A failed batch goes back in front of pending, as an inline append that
+            raised used to leave it."""
+            nonlocal writing, pending, write_task, held_cancel
             if write_task is None:
                 return None
-            await asyncio.wait({write_task})
+            while not write_task.done():
+                try:
+                    await asyncio.wait({write_task})
+                except asyncio.CancelledError as exc:
+                    held_cancel = exc
             task, write_task = write_task, None
             failure = asyncio.CancelledError() if task.cancelled() else task.exception()
             if failure is not None:
@@ -893,6 +899,8 @@ class ChatGenerationSupervisor:
                     break
 
             failure = await settle_write()
+            if held_cancel is not None:
+                raise held_cancel
             if failure is not None:
                 raise failure
             current = await asyncio.to_thread(db.get_run, run_id)
@@ -966,6 +974,8 @@ class ChatGenerationSupervisor:
                     pending_events = pending,
                 )
             pending = []
+            if held_cancel is not None:
+                raise held_cancel
         finally:
             if next_raw_task is not None:
                 if not next_raw_task.done():

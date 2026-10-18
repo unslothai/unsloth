@@ -891,7 +891,10 @@ async def test_a_failed_commit_keeps_its_events_and_fails_the_run(durable_run, m
 
 
 @pytest.mark.asyncio
-async def test_cancel_during_a_commit_waits_for_it_before_settling(durable_run, monkeypatch):
+@pytest.mark.parametrize("cancels", [1, 2], ids = ["cancel", "cancel-again-while-settling"])
+async def test_cancel_during_a_commit_waits_for_it_before_settling(
+    durable_run, monkeypatch, cancels
+):
     chunks = _numbered_chunks(20)
     leaked = []
     drained = asyncio.Event()
@@ -918,6 +921,9 @@ async def test_cancel_during_a_commit_waits_for_it_before_settling(durable_run, 
         await asyncio.wait_for(drained.wait(), timeout = 2)
         cancel_event.set()
         task.cancel()
+        # A second cancel (shutdown's forced one) lands while settlement waits on the commit; the run must still settle.
+        for _ in range(cancels - 1):
+            loop.call_later(0.05, task.cancel)
         # finish_run must not overtake the commit still holding its batch.
         loop.call_later(0.1, gate.set)
         with pytest.raises(asyncio.CancelledError):
