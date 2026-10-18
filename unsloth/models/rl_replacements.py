@@ -2533,12 +2533,22 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     stacklevel = 2,
                 )
                 lm_head_bias = None
-            if lm_head_bias is not None:
-                from functools import partial
-                chunked_hidden_states_selective_log_softmax = partial(
-                    chunked_hidden_states_selective_log_softmax,
-                    lm_head_bias = lm_head_bias,
+            _head_log_softmax = chunked_hidden_states_selective_log_softmax
+
+            def chunked_hidden_states_selective_log_softmax(
+                hidden_states, _lm_head, *args, **kwargs
+            ):
+                # FSDP2's forward hooks replace Parameters. Read the current head
+                # at projection time, including the bias, instead of retaining a shard.
+                if UNSLOTH_ZOO_HAS_HEAD_BIAS:
+                    kwargs["lm_head_bias"] = getattr(output_embeddings, "bias", None)
+                return _head_log_softmax(
+                    hidden_states,
+                    output_embeddings.weight,
+                    *args,
+                    **kwargs,
                 )
+
             # Opt-in (UNSLOTH_GRPO_TRUNCATED_SUPPORT=1): score over the rollout's top_k / top_p /
             # min_p kept set, matching vLLM's processed_logprobs. The zoo loss refuses to mix
             # normalisations unless this marker says the old / ref logps were scored the same way.

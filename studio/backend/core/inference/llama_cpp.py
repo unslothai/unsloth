@@ -22968,12 +22968,16 @@ class LlamaCppBackend:
 
         # A type this build lacks (prism-ml PQ2_0 / PTQ1_0 = 142 / 143) or packs differently (group-128 Q2_0, #11259).
         # A truncated download fails later instead, as "data is not within the file bounds".
-        bad_type = re.search(r"tensor '([^']*)' has invalid ggml type (\d+)", scan_tail)
+        # Bundled IQ1_XS..IQ1_XXXS = 64-66, so ids 43-63 fail later as an empty block-size-0 slot (#13908).
+        bad_type = re.search(
+            r"tensor '([^']*)' (?:has invalid ggml type (\d+)|of type (\d+) .*?not a multiple of block size \(0\))",
+            scan_tail,
+        )
         bad_layout = re.search(r"tensor '[^']*' has offset \d+, expected \d+", scan_tail)
         if bad_type or bad_layout:
             detail = (
                 f"tensor '{_short(bad_type.group(1))}' uses quantization type "
-                f"{bad_type.group(2)}, which this build does not have"
+                f"{bad_type.group(2) or bad_type.group(3)}, which this build does not have"
                 if bad_type
                 else "its tensor layout does not match this build's quantization types"
             )
@@ -39230,6 +39234,7 @@ class LlamaCppBackend:
         instruction_anchor_ids = None,
         sandbox_level: Optional[str] = None,
         compact_context: bool = False,
+        website_policy: Optional[dict] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -40440,6 +40445,7 @@ class LlamaCppBackend:
                                                 permission_mode = permission_mode,
                                                 name = current_name,
                                                 sandbox_level = sandbox_level,
+                                                session_id = session_id,
                                             )
                                             # A text-preview card still streams while gated;
                                             # hiding it blanks the chat.
@@ -40590,6 +40596,7 @@ class LlamaCppBackend:
                                                                 permission_mode = "off",
                                                                 name = _sniffed,
                                                                 sandbox_level = sandbox_level,
+                                                                session_id = session_id,
                                                             )
                                                         )
                                                         and not has_text_only_provisional_card(
@@ -41609,6 +41616,7 @@ class LlamaCppBackend:
                         is_high_risk = is_high_risk_tool_call,
                         never_needs = never_needs_approval,
                         sandbox_level = sandbox_level,
+                        session_id = session_id,
                     )
                     # Sending the user's image always asks, whatever the permission mode.
                     needs_confirm = needs_confirm or image_share is not None
@@ -41993,6 +42001,8 @@ class LlamaCppBackend:
                                 rag_scope = rag_scope,
                                 disable_sandbox = bypass_permissions,
                             )
+                            if website_policy:
+                                kwargs["website_policy"] = website_policy
                             # Run unasked only because the OS sandbox was on: refuse if it is not any more.
                             if _strict and accepts_kwarg(execute_tool, "tool_execution_mode"):
                                 kwargs["tool_execution_mode"] = "required"
