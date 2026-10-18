@@ -9,6 +9,7 @@ import type { ThreadMessage } from "@assistant-ui/react";
 import ts from "@typescript/typescript6";
 import type { MessageRecord } from "../src/features/chat/types.ts";
 import * as researchSync from "../src/features/chat/utils/research-message-sync.ts";
+import * as savedUsage from "../src/features/chat/utils/saved-context-usage.ts";
 import {
   branchContextUsage,
   contextUsageMarkers,
@@ -39,7 +40,7 @@ const RECORD_MODULE = loadWithStubs<{
     threadId: string,
     parentId: string | null,
     message: unknown,
-  ) => Record<string, unknown>;
+  ) => MessageRecord;
 }>(
   new URL(
     "../src/features/chat/utils/delete-thread-message.ts",
@@ -102,6 +103,7 @@ function harness(persist?: () => Promise<void>) {
       },
       "./delete-thread-message": RECORD_MODULE,
       "./research-message-sync": researchSync,
+      "./saved-context-usage": savedUsage,
     },
   );
   return { module, saved };
@@ -544,4 +546,102 @@ test("a reply whose only metadata was the run's claim writes only its revision",
   const record = await saveOwnedReply({ ...GENERATION_OWNERSHIP });
 
   assert.deepEqual(withoutRevision(record.metadata), {});
+});
+
+const adapters = provider.statements.find(
+  (node): node is ts.FunctionDeclaration =>
+    ts.isFunctionDeclaration(node) && node.name?.text === "useStudioRuntimeAdapters",
+);
+assert.ok(adapters?.body);
+const deletionEffect = adapters.body.statements.find((node) => {
+  let subscribes = false;
+  const visit = (child: ts.Node) => {
+    if (ts.isCallExpression(child) && child.expression.getText(provider) === "onChatAttachmentDeleted") {
+      subscribes = true;
+    }
+    ts.forEachChild(child, visit);
+  };
+  visit(node);
+  return subscribes;
+});
+assert.ok(deletionEffect);
+const deletionEffectCode = ts.transpileModule(deletionEffect.getText(provider), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+}).outputText;
+
+function attachmentDeletionHarness(exported: Exported, hash: () => Promise<string>) {
+  let listener!: (event: { messageId: string; attachmentId: string }) => Promise<void>;
+  let imports = 0;
+  new Function("useEffect", "aui", "onChatAttachmentDeleted",
+    "chatContentPartAttachmentSignature", "chatContentPartAttachmentIdFromSignature",
+    ...Object.keys(savedUsage), deletionEffectCode)(
+    (effect: () => unknown) => effect(),
+    { thread: () => ({
+      export: () => exported,
+      import: (next: Exported) => { Object.assign(exported, next); imports += 1; },
+    }) },
+    (callback: typeof listener) => { listener = callback; return () => {}; },
+    (part: { type: string }) => part.type === "image" ? "image-signature" : null,
+    hash,
+    ...Object.values(savedUsage),
+  );
+  return {
+    remove: (attachmentId: string) => listener({ messageId: "u0", attachmentId }),
+    imports: () => imports,
+  };
+}
+
+for (const kind of ["attachment", "content-hash", "legacy-content"] as const) {
+  test(`deleting an upload (${kind}) invalidates saved usage in the loaded branch and after hydration`, async () => {
+    const exported = thread([{ type: "text", text: "reply" }]);
+    const user = exported.messages[0].message;
+    user.metadata = { custom: { revision: 3, keep: "metadata" } };
+    const attachmentId = kind === "attachment" ? "file-1"
+      : kind === "content-hash" ? "content-part-sha256-test" : "content-part-1";
+    if (kind === "attachment") {
+      user.attachments = [{ id: attachmentId, content: [{ type: "text", text: "large file" }] }];
+    } else {
+      (user.content as unknown[]).push({ type: "image", image: "data:image/png;base64,AA==" });
+    }
+    const records = () => exported.messages.map((item) =>
+      RECORD_MODULE.exportedItemToRecord("thread-1", item.parentId, item.message),
+    );
+    const usage = {
+      promptTokens: 4000, completionTokens: 10, totalTokens: 4010, cachedTokens: 0,
+      modelId: "model", ...contextUsageMarkers(records()),
+    };
+    exported.messages[1].message.metadata = { custom: { contextUsage: usage } };
+    assert.equal(branchContextUsage(records(), "model", 8192, 8192), usage);
+    const h = attachmentDeletionHarness(exported, async () => attachmentId);
+    await h.remove(attachmentId);
+    assert.equal(h.imports(), 1);
+    const saved = records();
+    assert.deepEqual(saved[0].metadata, { revision: 4, keep: "metadata" });
+    assert.equal(branchContextUsage(saved, "model", 8192, 8192)?.estimated, true);
+    const reloaded = [hydrateUser(saved[0]), exported.messages[1].message as unknown as ThreadMessage];
+    assert.equal(revisionTotal(reloaded), 4);
+    assert.equal(branchContextUsage(threadBranchRecords(reloaded), "model", 8192, 8192)?.estimated, true);
+    await h.remove(attachmentId);
+    assert.equal(h.imports(), 1);
+    assert.equal(records()[0].metadata?.revision, 4);
+  });
+}
+
+test("an attachment removed during hashing does not revise the message again", async () => {
+  const exported = thread([{ type: "text", text: "reply" }]);
+  const attachmentId = "content-part-sha256-document";
+  const user = exported.messages[0].message;
+  user.attachments = [{ id: attachmentId }];
+  user.content = [{ type: "image", image: "data:image/png;base64,AA==" }];
+  user.metadata = { custom: { revision: 3 } };
+  const h = attachmentDeletionHarness(exported, async () => {
+    exported.messages[0].message = {
+      ...user, attachments: [], metadata: { custom: { revision: 4, keep: "new metadata" } },
+    };
+    return "content-part-sha256-image";
+  });
+  await h.remove(attachmentId);
+  assert.deepEqual(exported.messages[0].message.metadata, {
+    custom: { revision: 4, keep: "new metadata" },
+  });
 });

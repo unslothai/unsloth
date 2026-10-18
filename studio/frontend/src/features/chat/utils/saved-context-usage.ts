@@ -45,6 +45,13 @@ function revisionOf(custom: Record<string, unknown> | undefined): number {
   return typeof revision === "number" && Number.isInteger(revision) && revision > 0 ? revision : 0;
 }
 
+export function withMessageRevision<T extends ThreadMessage["metadata"]>(metadata: T): T {
+  return {
+    ...metadata,
+    custom: { ...metadata?.custom, revision: revisionOf(metadata?.custom) + 1 },
+  };
+}
+
 function researchRevisionOf(custom: Record<string, unknown> | undefined): number {
   if (typeof custom?.researchRunId !== "string") return 0;
   const run = custom.researchRun as { lastEventSeq?: unknown } | undefined;

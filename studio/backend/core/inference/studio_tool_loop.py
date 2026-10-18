@@ -1550,7 +1550,6 @@ async def stream_with_studio_tools(
             break
         provider_turns += 1
         turn = _Turn(round = provider_turns)
-        usage_totals.pop("context_tokens", None)
         # Clear stale timings even if this turn sends no usage chunk.
         last_timings = None
         # Per turn: ids restart each turn, so a later call_0 is a new card.

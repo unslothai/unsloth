@@ -220,6 +220,7 @@ import {
   revisionTotal,
   sameContextUsage,
   threadBranchRecords,
+  withMessageRevision,
 } from "./utils/saved-context-usage";
 import {
   awaitStoredChatThreadWrites,
@@ -275,6 +276,7 @@ import {
 } from "./utils/prompt-queue-boundary";
 import {
   currentContextUsageReasoningKey,
+  currentContextUsageSettingsKey,
   refreshContextUsage,
   setActiveBranchReader,
 } from "./utils/refresh-context-usage";
@@ -2617,6 +2619,11 @@ function useStudioRuntimeAdapters(
                     attachments?: readonly { id: string }[];
                   }
                 ).attachments;
+                if (
+                  !ids.includes(attachmentId) &&
+                  !(Array.isArray(attachments) &&
+                    attachments.some((attachment) => attachment.id === attachmentId))
+                ) return item;
                 return {
                   ...item,
                   message: {
@@ -2624,6 +2631,7 @@ function useStudioRuntimeAdapters(
                     content: latestContent.filter(
                       (_, index) => ids[index] !== attachmentId,
                     ),
+                    metadata: withMessageRevision(item.message.metadata),
                     ...(Array.isArray(attachments)
                       ? {
                           attachments: attachments.filter(
@@ -2660,6 +2668,7 @@ function useStudioRuntimeAdapters(
                   attachments: attachments.filter(
                     (attachment) => attachment.id !== attachmentId,
                   ),
+                  metadata: withMessageRevision(message.metadata),
                 } as typeof message,
               };
             }
@@ -2683,6 +2692,7 @@ function useStudioRuntimeAdapters(
                 message: {
                   ...message,
                   content: content.filter((_, i) => i !== idx),
+                  metadata: withMessageRevision(message.metadata),
                 } as typeof message,
               };
             }
@@ -3866,14 +3876,19 @@ function ThreadContextUsageRecount({
   const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const reasoningSettings = useChatRuntimeStore(currentContextUsageReasoningKey);
+  const promptSettings = useChatRuntimeStore(currentContextUsageSettingsKey);
   const threadSettingsPending = useChatRuntimeStore((s) => s.threadScopedSettingsPending);
   const threadLoading = useAuiState(({ thread }) => thread.isLoading);
+  const savedUsage = useAuiState(({ thread }) => thread.messages.at(-1)?.metadata?.custom?.contextUsage);
   const pricedReasoningRef = useRef<{
     threadId: string | null;
     checkpoint: string;
     settings: string | undefined;
     pending: boolean;
     loading: boolean;
+    promptSettings: string;
+    savedUsage: unknown;
+    stale: boolean;
   } | null>(null);
   // subscribe to run state so a recount skipped while busy is retried when the run ends
   const runActive = useChatRuntimeStore((s) =>
@@ -3903,12 +3918,24 @@ function ThreadContextUsageRecount({
 
   useEffect(() => {
     const previous = pricedReasoningRef.current;
+    const stale = Boolean(
+      previous &&
+      previous.threadId === activeThreadId &&
+      previous.checkpoint === checkpoint &&
+      previous.savedUsage === savedUsage &&
+      !previous.pending &&
+      !previous.loading &&
+      (previous.stale || previous.promptSettings !== promptSettings),
+    );
     pricedReasoningRef.current = {
       threadId: activeThreadId,
       checkpoint,
       settings: reasoningSettings,
       pending: threadSettingsPending,
       loading: threadLoading,
+      promptSettings,
+      savedUsage,
+      stale,
     };
     if (
       !enabled ||
@@ -3931,7 +3958,8 @@ function ThreadContextUsageRecount({
       if (activeThreadId && aui.threads().getState().mainThreadId !== activeThreadId) return;
       const thread = activeThreadId ? aui.thread().getState() : null;
       if (thread?.isLoading) return;
-      const branch = threadBranchRecords(thread?.messages ?? []);
+      const messages = thread?.messages ?? [];
+      const branch = threadBranchRecords(messages);
       let usage = branchContextUsage(
         branch,
         checkpoint,
@@ -3942,16 +3970,26 @@ function ThreadContextUsageRecount({
       if (
         usage != null &&
         !usage.estimated &&
-        !previous.pending &&
-        previous.settings !== reasoningSettings
+        (stale ||
+          (usage.reasoningKey === undefined &&
+            !previous.pending &&
+            previous.settings !== reasoningSettings))
       ) usage = null;
-      store.setContextUsage(usage ?? estimateBranch(branch));
+      store.setContextUsage(usage ?? (shown ? { ...shown, estimated: true } : estimateBranch(branch)));
       if (usage != null && !usage.estimated) return;
+      if (
+        loadedContextLength == null ||
+        (!store.loadedIsGguf && !store.loadedIsMlx) ||
+        messagesContainImage(messages) ||
+        findLatestUserAudioBase64(messages) ||
+        findLatestUserVideoBase64(messages) ||
+        (!store.loadedIsGguf && messages.some((message) => message.metadata?.custom?.contextTruncation))
+      ) return;
     } catch {
-      store.setContextUsage(null);
+      return;
     }
     void refreshContextUsage();
-  }, [activeThreadId, aui, checkpoint, enabled, loadedContextLength, modelLoading, reasoningSettings, threadLoading, threadSettingsPending]);
+  }, [activeThreadId, aui, checkpoint, enabled, loadedContextLength, modelLoading, promptSettings, reasoningSettings, savedUsage, threadLoading, threadSettingsPending]);
 
   useEffect(() => {
     if (

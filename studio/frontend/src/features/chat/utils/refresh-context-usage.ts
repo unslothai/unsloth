@@ -156,6 +156,35 @@ export function currentContextUsageReasoningKey(
   return contextUsageReasoningKey(buildLocalTokenCountReasoning(state));
 }
 
+export function currentContextUsageSettingsKey(
+  state = useChatRuntimeStore.getState(),
+): string {
+  return JSON.stringify([
+    state.params.systemPrompt,
+    state.params.systemVariables,
+    state.params.maxTokens,
+    state.loadedChatTemplateOverride,
+    state.autoCompactEnabled,
+    state.supportsTools,
+    state.toolsEnabled,
+    state.codeToolsEnabled,
+    state.codeToolsDeclinedUnderFullAccess,
+    state.mcpEnabledForChat,
+    state.ragEnabled,
+    state.ragSource,
+    state.ragMode,
+    state.ragTopK,
+    state.ragAutoInject,
+    state.ragAutoInjectMinScore,
+    state.autoHealToolCalls,
+    state.bypassPermissions,
+    state.deepResearchEnabled,
+    state.permissionMode,
+    state.sandboxLevel,
+    state.maxToolCallsPerMessage,
+  ]);
+}
+
 type RefreshOptions =
   | {
       threadId?: string;
@@ -300,6 +329,7 @@ export async function refreshContextUsage(
       const currentStore = useChatRuntimeStore.getState();
       return (
         !stale() &&
+        // Compared even when null: a count started with no thread must not land on one since opened.
         currentStore.activeThreadId === capturedThreadId &&
         currentStore.contextUsage === usageBeforeCount &&
         !Object.values(currentStore.runningByThreadId ?? {}).some(Boolean)
@@ -344,6 +374,7 @@ export async function refreshContextUsage(
       return;
     }
 
+    // The server includes template tokens and injected tool schemas, even for an empty chat.
     const { input_tokens: inputTokens, model: countedModel } =
       await countChatInputTokens(payload, serializedPayload);
 

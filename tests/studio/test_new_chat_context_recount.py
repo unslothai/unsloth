@@ -50,6 +50,8 @@ BOUND_NAMES = {
     "branchLength",
     "branchRevision",
     "reasoningSettings",
+    "promptSettings",
+    "savedUsage",
     "threadSettingsPending",
     "threadLoading",
 }
@@ -460,6 +462,8 @@ export function renderThreadContextUsageRecount(props: any = {}): void {
   const branchLength = messages.length;
   const branchRevision = revisionTotal(messages);
   const reasoningSettings = currentContextUsageReasoningKey(state);
+  const promptSettings = currentContextUsageSettingsKey(state);
+  const savedUsage = tip?.metadata?.custom?.contextUsage;
   const threadSettingsPending = Boolean(state.threadScopedSettingsPending);
   const threadLoading = aui.thread().getState().isLoading;
   const scope: any = {
@@ -477,6 +481,8 @@ export function renderThreadContextUsageRecount(props: any = {}): void {
     branchLength,
     branchRevision,
     reasoningSettings,
+    promptSettings,
+    savedUsage,
     threadSettingsPending,
     threadLoading,
   };
@@ -3637,7 +3643,7 @@ def test_finishing_settings_pairing_recounts_a_thinking_change_already_shown_whi
     assert out == {"before": 0, "counts": 1, "total": 341}
 
 
-def test_returning_to_the_saved_thinking_mode_revalidates_its_completion_count():
+def test_returning_to_the_saved_thinking_mode_restores_its_completion_count():
     out = _run(
         _script(
             """
@@ -3656,7 +3662,6 @@ def test_returning_to_the_saved_thinking_mode_revalidates_its_completion_count()
               contextUsage: { ...saved, reasoningKey: "[false,null,null]", totalTokens: 618 },
             });
             renderThreadContextUsageRecount();
-            world.countedTokensOverride = { value: 1990 };
             seed({ reasoningEnabled: true });
             renderThreadContextUsageRecount();
             await new Promise((resolve) => setTimeout(resolve, 30));
@@ -3669,4 +3674,4 @@ def test_returning_to_the_saved_thinking_mode_revalidates_its_completion_count()
             """
         )
     )
-    assert out == {"counts": 1, "preserved": False, "total": 1990, "estimated": False}
+    assert out == {"counts": 0, "preserved": True, "total": 619, "estimated": False}

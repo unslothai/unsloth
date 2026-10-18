@@ -3900,35 +3900,57 @@ def _content_part_id(part: dict) -> Optional[str]:
     return f"{_CONTENT_PART_ID_PREFIX}{hashlib.sha256(canonical).hexdigest()}"
 
 
-def _chat_attachment_tombstones_for_messages(
+def _chat_message_revision(metadata: Any) -> int:
+    revision = metadata.get("revision") if isinstance(metadata, dict) else None
+    return revision if type(revision) is int and revision > 0 else 0
+
+
+def _chat_attachment_deletions_for_messages(
     conn: sqlite3.Connection, thread_id: str, message_ids: list[str]
-) -> dict[str, set[str]]:
-    tombstones = {message_id: set() for message_id in message_ids}
+) -> dict[str, tuple[set[str], int]]:
+    deletions: dict[str, tuple[set[str], int]] = {}
     unique_ids = list(dict.fromkeys(message_ids))
     for start in range(0, len(unique_ids), _SQLITE_IN_CHUNK_SIZE):
         chunk = unique_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
         placeholders = ",".join("?" for _ in chunk)
         rows = conn.execute(
             f"""
-            SELECT message_id, attachment_id
-            FROM chat_attachment_tombstones
-            WHERE thread_id = ? AND message_id IN ({placeholders})
+            SELECT t.message_id, t.attachment_id, m.metadata_json
+            FROM chat_attachment_tombstones AS t
+            LEFT JOIN chat_messages AS m ON m.id = t.message_id AND m.thread_id = t.thread_id
+            WHERE t.thread_id = ? AND t.message_id IN ({placeholders})
             """,
             (thread_id, *chunk),
         ).fetchall()
         for row in rows:
-            tombstones[row["message_id"]].add(row["attachment_id"])
-    return tombstones
+            message_id = row["message_id"]
+            if message_id not in deletions:
+                deletions[message_id] = (
+                    set(),
+                    _chat_message_revision(_json_loads(row["metadata_json"], {})),
+                )
+            deletions[message_id][0].add(row["attachment_id"])
+    return deletions
 
 
-def _reconcile_chat_message_uploads(message: dict, tombstones: set[str]) -> dict:
+def _reconcile_chat_message_uploads(
+    message: dict,
+    tombstones: set[str],
+    stored_revision: int = 0,
+) -> dict:
     """Strip uploads previously deleted through the Data tab from a stale write."""
     if not tombstones:
         return message
 
     reconciled = dict(message)
+    removed_ids: set[str] = set()
     attachments = message.get("attachments")
     if isinstance(attachments, list):
+        removed_ids.update(
+            str(attachment.get("id") or "")
+            for attachment in attachments
+            if isinstance(attachment, dict) and str(attachment.get("id") or "") in tombstones
+        )
         reconciled["attachments"] = [
             attachment
             for attachment in attachments
@@ -3937,11 +3959,22 @@ def _reconcile_chat_message_uploads(message: dict, tombstones: set[str]) -> dict
 
     content = message.get("content")
     if isinstance(content, list):
-        reconciled["content"] = [
-            part
-            for part in content
-            if not (isinstance(part, dict) and (_content_part_id(part) or "") in tombstones)
-        ]
+        kept_content = []
+        for part in content:
+            part_id = _content_part_id(part) if isinstance(part, dict) else None
+            if part_id is not None and part_id in tombstones:
+                removed_ids.add(part_id)
+            else:
+                kept_content.append(part)
+        reconciled["content"] = kept_content
+    metadata = message.get("metadata")
+    incoming_revision = _chat_message_revision(metadata)
+    revision = max(stored_revision, incoming_revision + len(removed_ids))
+    if revision != incoming_revision:
+        reconciled["metadata"] = {
+            **(metadata if isinstance(metadata, dict) else {}),
+            "revision": revision,
+        }
     return reconciled
 
 
@@ -4177,14 +4210,14 @@ def upsert_chat_message(
             message["threadId"],
             [message["id"]],
         )
-        tombstones = _chat_attachment_tombstones_for_messages(
+        deletions = _chat_attachment_deletions_for_messages(
             conn,
             message["threadId"],
             [message["id"]],
         )
         reconciled = _reconcile_chat_message_uploads(
             message,
-            tombstones.get(message["id"], set()),
+            *deletions.get(message["id"], (set(), 0)),
         )
         content_json = json.dumps(reconciled.get("content", []))
         attachments_json = (
@@ -4324,13 +4357,14 @@ def sync_chat_messages(
             thread_id,
             [m["id"] for m in messages],
         )
-        tombstones = _chat_attachment_tombstones_for_messages(
+        deletions = _chat_attachment_deletions_for_messages(
             conn,
             thread_id,
             [m["id"] for m in messages],
         )
         reconciled_messages = [
-            _reconcile_chat_message_uploads(m, tombstones.get(m["id"], set())) for m in messages
+            _reconcile_chat_message_uploads(m, *deletions.get(m["id"], (set(), 0)))
+            for m in messages
         ]
         serialized_messages = [
             (
@@ -5164,7 +5198,7 @@ def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
         _ensure_chat_attachment_inventory_current(conn)
         row = conn.execute(
             """
-            SELECT thread_id, attachments_json, content_json
+            SELECT thread_id, attachments_json, content_json, metadata_json
             FROM chat_messages WHERE id = ?
             """,
             (message_id,),
@@ -5213,13 +5247,17 @@ def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
         if not deleted_attachment and not deleted_content:
             conn.rollback()
             return False
+        metadata = _json_loads(row["metadata_json"], {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata["revision"] = _chat_message_revision(metadata) + 1
         conn.execute(
             """
             UPDATE chat_messages
-            SET attachments_json = ?, content_json = ?
+            SET attachments_json = ?, content_json = ?, metadata_json = ?
             WHERE id = ?
             """,
-            (updated_attachments_json, updated_content_json, message_id),
+            (updated_attachments_json, updated_content_json, json.dumps(metadata), message_id),
         )
         _record_chat_attachment_tombstone(
             conn,

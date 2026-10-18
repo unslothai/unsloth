@@ -1,8 +1,9 @@
-import type { ExportedMessageRepository, ThreadMessage } from "@assistant-ui/react";
+import type { ExportedMessageRepository } from "@assistant-ui/react";
 import { saveChatMessage } from "../api/chat-api";
 import type { MessageRecord } from "../types";
 import { exportedItemToRecord } from "./delete-thread-message";
 import { RESEARCH_METADATA_KEYS } from "./research-message-sync";
+import { withMessageRevision } from "./saved-context-usage";
 
 // Mirrors studio_db._SERVER_MANAGED_LINK_KEYS. The backend detaches a finished run only when
 // the edit drops its ownership claim; display fields such as timing and incomplete stay.
@@ -41,14 +42,6 @@ function withoutGeminiContinuationReplay<T>(metadata: T): T {
   }
   const { geminiContinuationReplay: _stale, ...keptCustom } = customRecord;
   return { ...record, custom: keptCustom } as T;
-}
-
-function withRevision<T extends ThreadMessage["metadata"]>(metadata: T): T {
-  const revision = metadata?.custom?.revision;
-  return {
-    ...metadata,
-    custom: { ...metadata?.custom, revision: (typeof revision === "number" ? revision : 0) + 1 },
-  };
 }
 
 type ThreadImportExport = {
@@ -252,7 +245,7 @@ export async function updateThreadMessage(args: {
         metadata:
           unchanged
             ? withoutGeminiContinuationReplay(m.message.metadata)
-            : withRevision(withoutGeminiContinuationReplay(m.message.metadata)),
+            : withMessageRevision(withoutGeminiContinuationReplay(m.message.metadata)),
       },
     };
   }) as typeof currentExport.messages;
