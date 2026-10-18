@@ -245,6 +245,10 @@ interface GpuTorchMismatch {
   reason?: string;
   torch_version?: string | null;
   physical_count?: number;
+  /** An AMD device node this account cannot open, and the command that opens it. */
+  permission_hint?: string | null;
+  /** The closed node fully explains a ROCm wheel, so the reinstall advice is wrong. */
+  permission_hint_only?: boolean;
 }
 
 /** /api/system's `gpu.driver_warning`: a Windows AMD driver with the idle-eviction bug
@@ -538,14 +542,16 @@ export function ResourcesTab() {
       ? rawDriverWarning
       : null;
   // A CPU-only wheel is fixed by reinstalling torch, a dead runtime by the driver.
-  const gpuMismatchMessage = gpuMismatch
-    ? t(
-        gpuMismatch.reason === "torch_cpu_build"
-          ? "settings.resources.gpu.mismatchCpuBuild"
-          : "settings.resources.gpu.mismatchUnavailable",
-        { version: gpuMismatch.torch_version ?? unknownLabel },
-      )
-    : null;
+  const gpuPermissionHint = gpuMismatch?.permission_hint ?? null;
+  const gpuMismatchMessage =
+    gpuMismatch && !(gpuPermissionHint && gpuMismatch.permission_hint_only)
+      ? t(
+          gpuMismatch.reason === "torch_cpu_build"
+            ? "settings.resources.gpu.mismatchCpuBuild"
+            : "settings.resources.gpu.mismatchUnavailable",
+          { version: gpuMismatch.torch_version ?? unknownLabel },
+        )
+      : null;
 
   return (
     <div className="settings-page">
@@ -807,9 +813,16 @@ export function ResourcesTab() {
             selectable: the rows below are what a model can be loaded onto. */}
         {gpuMismatch ? (
           <div className="flex flex-col gap-2 border-b border-border/60 py-3">
-            <p className="text-sm text-amber-600 dark:text-amber-400">
-              {gpuMismatchMessage}
-            </p>
+            {gpuMismatchMessage && (
+              <p className="text-sm text-amber-600 dark:text-amber-400">
+                {gpuMismatchMessage}
+              </p>
+            )}
+            {gpuPermissionHint && (
+              <p className="select-text text-sm text-amber-600 dark:text-amber-400">
+                {gpuPermissionHint}
+              </p>
+            )}
             {physicalDevices.map((device, index) => (
               <div
                 key={`${device.vendor ?? "gpu"}-${device.index ?? index}-${device.name ?? ""}`}
