@@ -30,9 +30,9 @@ import sys
 import threading
 import time
 import traceback
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from core._torchao_stub import (
     alias_torchao_fqn_to_config,
@@ -66,6 +66,7 @@ from .diffusion_families import (
     local_pipeline_components_are_complete,
     _family_override_resolved,
     assert_flux2_gguf_matches_base,
+    assert_flux3_checkpoint_matches_family,
     assert_pipeline_class_available,
     _is_local_path,
     canonical_base,
@@ -76,6 +77,7 @@ from .diffusion_families import (
     detect_family_for_pick,
     excluded_model_reason,
     prefer_ungated_mirror,
+    mirror_hosts_artifacts,
     prequant_only_repo_ids,
     prequant_repo_role,
     resolve_base_repo,
@@ -86,8 +88,10 @@ from .diffusion_families import (
 )
 from .diffusion_compat import (
     assert_flux2_pick_compatible,
+    assert_flux3_pick_compatible,
     assert_pick_is_not_speech,
     flux2_pick_mismatch,
+    flux3_pick_mismatch,
     speech_pick_refusal,
 )
 from .diffusion_device import (
@@ -119,6 +123,14 @@ from .diffusion_hidream import (
     hidream_te4_kwargs,
 )
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
+from .diffusion_flux3 import (
+    FLUX3_COMPONENTS,
+    FLUX3_COMPONENT_FOLDERS,
+    FLUX3_INDEX,
+    is_flux3_family,
+    load_flux3_pipeline,
+)
+from .diffusion_flux3 import REFERENCE_AREA as FLUX3_REFERENCE_AREA
 from .diffusion_small_host import (
     INT8_DENOISER_NAMES,
     decide_small_host,
@@ -424,6 +436,85 @@ def _record_revision(out: Optional[dict[str, str]], repo_id: str, info: Any) -> 
         out[repo_id] = sha
 
 
+def _planned_progress_files(
+    repo_id: str,
+    gguf_filename: Optional[str],
+    *,
+    kind: str,
+    base: str,
+    fetch_base: str,
+    base_files: Sequence[str],
+    file_sizes: dict[str, dict[str, int]],
+    dit_prequant: Optional[tuple[str, str, int]] = None,
+    te_hub_files: Sequence[tuple[str, str, int]] = (),
+) -> tuple[tuple[str, str, int], ...]:
+    """``(repo, filename, size)`` for every file a diffusers load downloads, keyed by the repo the bytes LAND in: the
+    selected checkpoint, the base files under the repo they are fetched from, the hosted prequant denoiser and the
+    pre-cast encoders. One file named twice (a combined repo, a prequant in the companion repo) is listed once. The
+    single source of a load's expected_bytes and of the progress scan."""
+    out: dict[tuple[str, str], tuple[str, str, int]] = {}
+
+    def add(repo: Optional[str], name: Optional[str], size: Any) -> None:
+        if not repo or not name or _is_local_path(repo):
+            return
+        out.setdefault((repo.lower(), name), (repo, name, int(size or 0)))
+
+    if kind != "pipeline" and gguf_filename:
+        add(repo_id, gguf_filename, (file_sizes.get(repo_id) or {}).get(gguf_filename, 0))
+    base_sizes = (
+        file_sizes.get(base) or file_sizes.get(repo_id if kind == "pipeline" else base) or {}
+    )
+    for name in base_files:
+        add(fetch_base or base, name, base_sizes.get(name, 0))
+    if dit_prequant is not None:
+        add(dit_prequant[0], dit_prequant[1], dit_prequant[2])
+    for repo, name, size in te_hub_files:
+        add(repo, name, size)
+    return tuple(out.values())
+
+
+def _sibling_blob_key(sibling: Any) -> Optional[str]:
+    """The name huggingface_hub gives this file's blob (and its ``<key>.incomplete`` while downloading): the LFS
+    sha256 for an LFS file, else the git blob id. None when the listing did not say."""
+    lfs = getattr(sibling, "lfs", None)
+    sha = (
+        (lfs.get("sha256") if isinstance(lfs, dict) else getattr(lfs, "sha256", None))
+        if lfs
+        else None
+    )
+    key = sha or getattr(sibling, "blob_id", None)
+    return str(key) if key else None
+
+
+def _planned_blob_keys(
+    planned: Sequence[tuple[str, str, int]],
+    file_keys: dict[str, dict[str, str]],
+    *,
+    repo_id: str,
+    base: str,
+    fetch_base: str,
+) -> dict[tuple[str, str], str]:
+    """Blob keys for ``planned``, read off the listing that sized each file (the checkpoint under ``repo_id``, the
+    base files under ``base`` while they land in ``fetch_base``). A file with no key is left out."""
+    out: dict[tuple[str, str], str] = {}
+    for repo, name, _size in planned:
+        for source in dict.fromkeys((repo, repo_id, base) if repo == fetch_base else (repo,)):
+            key = (file_keys.get(source) or {}).get(name)
+            if key:
+                out[(repo.lower(), name)] = key
+                break
+    return out
+
+
+def _listing_extra(listing_repo: str, rfilename: str) -> bool:
+    """A file an artifact mirror ships beside the upstream folders that no pipeline load reads (its sample renders);
+    the root checkpoints are already excluded by every listing filter's top-level rule."""
+    return mirror_hosts_artifacts(listing_repo) and rfilename.split("/", 1)[0] in (
+        "samples",
+        "assets",
+    )
+
+
 def hub_cache_dir() -> str:
     """The cache root every loader call must be pinned to. diffusers resolves an unset cache_dir
     through huggingface_hub's import-time constant, which a mid-session cache-folder change does
@@ -595,7 +686,7 @@ def _baked_lora_names(pipe: Any) -> list:
 
 def resolve_local_single_file(model_path: str) -> Optional[str]:
     """The sole single-file checkpoint basename in a local ``model_path`` directory that is NOT a
-    diffusers pipeline (no ``model_index.json``) and holds exactly one ``.safetensors`` file, else
+    diffusers pipeline (no ``model_index.json`` or FLUX.3 ``modular_model_index.json``) and holds exactly one ``.safetensors`` file, else
     None.
 
     The On-Device scanner advertises a bare single-file safetensors directory as a text-to-image
@@ -607,7 +698,9 @@ def resolve_local_single_file(model_path: str) -> Optional[str]:
     """
     try:
         root = Path(model_path).expanduser()
-        if not root.is_dir() or (root / "model_index.json").is_file():
+        if not root.is_dir() or any(
+            (root / index).is_file() for index in ("model_index.json", FLUX3_INDEX)
+        ):
             return None
         # A PEFT adapter folder is not a base checkpoint; skip it so validation 400s before eviction
         if (root / "adapter_config.json").is_file():
@@ -860,8 +953,10 @@ def _assert_local_base_is_pipeline(
     base_repo: str,
     *,
     allow_modular: bool = False,
+    modular_only: bool = False,
     excluded_components: Sequence[str] = (),
     config_only_model_components: bool = False,
+    fixed_component_folders: Optional[Mapping[str, tuple[str, str, str]]] = None,
 ) -> None:
     """A companion ``base_repo`` fed to ``from_pretrained(base)`` (or ``config=base``) must be a
     diffusers PIPELINE directory (has ``model_index.json``). ``_is_trusted_diffusion_repo`` accepts
@@ -874,7 +969,8 @@ def _assert_local_base_is_pipeline(
     ``allow_modular`` accepts ``modular_model_index.json`` as well, for a caller whose loader is
     ``ModularPipeline.from_pretrained``: that IS the valid on-disk layout for a Modular Diffusers
     pipeline (MiniMax-H3 ships no ``model_index.json`` at all). Off by default: a conventional
-    ``DiffusionPipeline`` load still needs the conventional index.
+    ``DiffusionPipeline`` load still needs the conventional index. ``modular_only`` accepts nothing else, for a
+    loader that reads only the modular index (FLUX.3).
 
     ``excluded_components`` are supplied by the caller (the checkpoint's denoiser), not the base;
     ``config_only_model_components`` means the base only supplies component configs."""
@@ -888,8 +984,8 @@ def _assert_local_base_is_pipeline(
         return  # invalid path characters -> a remote id, not a local path
     if not exists:
         return
-    indexes = ["model_index.json"]
-    if allow_modular:
+    indexes = [] if modular_only else ["model_index.json"]
+    if allow_modular or modular_only:
         indexes.append("modular_model_index.json")
     if not root.is_dir() or not any(
         local_pipeline_components_are_complete(
@@ -897,6 +993,7 @@ def _assert_local_base_is_pipeline(
             name,
             excluded_components = excluded_components,
             config_only_model_components = config_only_model_components,
+            fixed_component_folders = fixed_component_folders,
         )
         for name in indexes
     ):
@@ -1130,6 +1227,27 @@ def _with_supplied_components(load: Callable[..., dict]) -> Callable[..., dict]:
     return wrapper
 
 
+def _generation_chunks(
+    family: Any,
+    jobs: list,
+    batch_size: int,
+    *,
+    layer_count: Any = None,
+) -> list:
+    """Per-forward chunks of ``(prompt, seed)`` jobs. Layered: one input per forward. FLUX.3 runs one image per
+    modular call, so each image is its own chunk: every one then gets its own encode, denoise and decode phase, and
+    the text-encoder release that comes with entering denoise (one chunk of several images would release it once,
+    and the next image's encode would bring it back for the rest of the chunk)."""
+    if layer_count or is_flux3_family(family):
+        return [[job] for job in jobs]
+    return chunk_jobs(jobs, batch_size)
+
+
+def _base_manifest_name(fam: Any) -> str:
+    """The pipeline index a base repo carries: FLUX.3 ships only ``modular_model_index.json``."""
+    return FLUX3_INDEX if is_flux3_family(fam) else "model_index.json"
+
+
 def _te_quant_for_supplied_encoders(requested: Optional[str]) -> Optional[str]:
     """Unset / auto never re-casts a supplied encoder (it would fetch the hosted encoder the file replaces)."""
     if requested is None or str(requested).strip().lower() in ("", "auto"):
@@ -1249,6 +1367,20 @@ class _LoadingState:
     # ONE named file: the scan counts what this load adds, not every byte already in the repo.
     asset_files: tuple[tuple[str, str, int, int], ...] = ()
     account_id: Optional[str] = None
+    # The single file this load reads from ``repo_id``, so progress through an artifact mirror counts that one
+    # checkpoint rather than every sibling quant cached beside it.
+    gguf_filename: Optional[str] = None
+    # ``(repo, filename, size)`` for every file this load downloads, from ``_planned_progress_files``: the ONE answer
+    # to "which files of which repos does this load count", which expected_bytes is the sum of and load_progress
+    # scans. Empty when the size estimate failed; load_progress then keeps its repo-level scan.
+    planned_files: tuple[tuple[str, str, int], ...] = ()
+    # ``{incomplete blob path: size}`` in the planned repos when this load claimed them: a cancelled sibling download
+    # leaves ``*.incomplete`` blobs behind, and only growth past this snapshot is this load's own bytes.
+    incomplete_baseline: dict[str, int] = field(default_factory = dict)
+    # ``{(repo_lower, filename): blob key}`` for the planned files whose listing named one. huggingface_hub writes a
+    # download to ``blobs/<key>.incomplete``, so an in-flight blob with a planned key IS that file, resumed bytes
+    # included, and every other ``.incomplete`` (a cancelled sibling's) is ignored outright.
+    planned_blob_keys: dict[tuple[str, str], str] = field(default_factory = dict)
     # (expected_bytes, downloaded) once every expected byte was on disk.
     finalized_scan: Optional[tuple[int, int]] = None
 
@@ -1564,13 +1696,23 @@ def _generation_defaults_for(
     gguf_filename: Optional[str],
     base_repo: Optional[str],
     grid: Optional[tuple[float, ...]] = None,
+    family: Any = None,
 ) -> Optional[dict[str, float]]:
     """The (steps, guidance) the OpenAI route renders this load with, header variant before base (FLUX.1's base is
     schnell), so the Images form can match it."""
     try:
-        steps, guidance = generation_params_with_grid(
-            grid, gguf_filename, content_variant_hint(repo_id, gguf_filename), repo_id, base_repo
+        # FLUX.3 first: the variant check has matched the checkpoint to the family, while the names cannot tell the
+        # variants apart (BFL's ComfyUI base files are flux3_image_klein_*.safetensors, no "base", and a base file can
+        # sit on the distilled repo's companions).
+        identifiers = (
+            gguf_filename,
+            content_variant_hint(repo_id, gguf_filename),
+            repo_id,
+            base_repo,
         )
+        if is_flux3_family(family):
+            identifiers = (family.name,) + identifiers
+        steps, guidance = generation_params_with_grid(grid, *identifiers)
     except Exception:  # noqa: BLE001 - status must not fail on a recipe lookup
         return None
     return {"steps": int(steps), "guidance": float(guidance)}
@@ -1926,8 +2068,11 @@ def _calibrated_activation(fam: Any, target: Any) -> Any:
     if getattr(target, "backend", None) != "cuda" or getattr(target, "vendor", None) != "nvidia":
         return None
     # Measured without input images: references the guard cannot size (no reference_resolutions) would overflow.
-    if getattr(fam, "reference", False) and not tuple(
-        getattr(fam, "reference_resolutions", ()) or ()
+    # FLUX.3 can: every reference is resized to 1 MP and the request guard charges those pixels on top.
+    if (
+        getattr(fam, "reference", False)
+        and not tuple(getattr(fam, "reference_resolutions", ()) or ())
+        and not is_flux3_family(fam)
     ):
         return None
     # Measured at 16-bit only; fp32-promoted families (Z-Image pre-Ampere) do not qualify.
@@ -2912,6 +3057,12 @@ class DiffusionBackend:
         # torchao. Refusing on the raw int8 rejected loads the runtime would run and report as fell_back.
         te_effective = effective_te_quant(te_mode, getattr(fam, "name", None))
         te_reason = None
+        if te_mode == "int8" and te_effective != te_mode:
+            from .diffusion_te_prequant import hosted_int8_convrot_te_runs_on
+            if hosted_int8_convrot_te_runs_on(fam, target):
+                # The family's hosted int8 ConvRot encoder (FLUX.3, Qwen-Image-2.1) is plain tensors and runs where the
+                # runtime-cast rewrite to fp8 does not (Apple Silicon): judge the file, not the downgrade.
+                te_effective = None
         if te_quant_needs_resident_weights(te_effective) and not torchao_quantize_importable():
             # The casters import torchao only after the pipeline is downloaded and built, so a broken or absent
             # install failed through load-progress instead of this 409.
@@ -3290,10 +3441,12 @@ class DiffusionBackend:
         fetch_base: Optional[str] = None,
         base_local_dir: Optional[str] = None,
         local_files_only: bool = False,
+        manifest: str = "model_index.json",
     ) -> Optional[str]:
         """Stage the shards a seeded plan left out of the pull; returns the snapshot dir to assemble
         from, or None for the hub id. ``from_pretrained`` treats a local dir as terminal, so a
-        failed seed has nothing."""
+        failed seed has nothing. ``manifest`` is the base's pipeline index (FLUX.3's is the modular one), fetched
+        with the shards so the top-up resolves the same snapshot."""
         files = [name for name in (skipped or ()) if name]
         if not files:
             return base_local_dir
@@ -3306,7 +3459,7 @@ class DiffusionBackend:
             repo_id,
             None,
             base,
-            [*files, "model_index.json"],
+            [*files, manifest],
             hf_token,
             fetch_base = fetch_base,
             local_files_only = local_files_only,
@@ -3413,7 +3566,8 @@ class DiffusionBackend:
             except (IndexError, ValueError, OSError):
                 root = ""
             roots.add(root)
-            if rfilename == "model_index.json":
+            # FLUX.3's manifest is the modular one; either marks the snapshot the companions were staged into.
+            if rfilename in ("model_index.json", FLUX3_INDEX):
                 snapshot_root = root or None
         # Only hand back a snapshot the whole set lives in; otherwise the hub id resolves each file through its own
         # root as before.
@@ -3436,6 +3590,14 @@ class DiffusionBackend:
             raise ValueError(
                 "text_encoder_file / vae_file load beside a single-file or GGUF transformer; a full pipeline "
                 "(or a whole-pipeline single file) already carries its own text encoders and VAE."
+            )
+        if is_flux3_family(fam):
+            # The supplied-component loader resolves classes from a model_index.json, which FLUX.3 does not ship, and
+            # its encoder is a Qwen3-VL with its processor in the same folder: refuse up front rather than load the
+            # official encoder and VAE in place of the files the user picked.
+            raise ValueError(
+                f"separate text encoder / VAE files are not supported for '{fam.name}' yet; omit "
+                "text_encoder_files and vae_file (the base repo's encoder and VAE are used)."
             )
         if vae_file and fam.name == KREA2_FAMILY_NAME:
             raise ValueError(
@@ -3643,6 +3805,9 @@ class DiffusionBackend:
             and not _is_local_path(repo_id)
         ):
             bases, schemes, te_schemes = prequant_repo_role(fam, repo_id)
+            if not bases and mirror_hosts_artifacts(repo_id):
+                # An artifact mirror: its folders are its base's pipeline, so name that base, not the family default.
+                bases = (canonical_base(repo_id),)
             shown = " or ".join(bases) or fam.base_repo
             knobs = []
             if schemes:
@@ -3650,9 +3815,8 @@ class DiffusionBackend:
             if te_schemes:
                 knobs.append(f"the text encoder precision to {' or '.join(te_schemes)}")
             raise ValueError(
-                f"'{repo_id}' hosts pre-quantised checkpoints for {shown} and is not a diffusers pipeline "
-                f"(it has no model_index.json). Pick {shown} and set {' and '.join(knobs) or 'a precision'} "
-                f"instead."
+                f"'{repo_id}' hosts pre-quantised checkpoints for {shown}; it is not a pipeline to pick "
+                f"directly. Pick {shown} and set {' and '.join(knobs) or 'a precision'} instead."
             )
         # Refuse a too-old diffusers here, not deep in the load, but only when this load builds the diffusers
         # pipeline: a GGUF this host routes to native sd.cpp never instantiates the class. The picker gate reads the
@@ -3701,7 +3865,13 @@ class DiffusionBackend:
             (fam.denoiser_attr,) if kind in ("gguf", "single_file") and not whole_file else ()
         )
         _assert_local_base_is_pipeline(
-            base_repo, excluded_components = excluded, config_only_model_components = whole_file
+            base_repo,
+            # FLUX.3 companions come from a Modular Diffusers base, and its loader reads only modular_model_index.json.
+            modular_only = is_flux3_family(fam),
+            excluded_components = excluded,
+            config_only_model_components = whole_file,
+            # The FLUX.3 assembler reads each component from its own folder here, never from a spec's source repo.
+            fixed_component_folders = FLUX3_COMPONENT_FOLDERS if is_flux3_family(fam) else None,
         )
         local_root = Path(repo_id).expanduser()
         # Path-shaped: "."/".." prefix, a backslash (never in "org/name"), or an absolute path.
@@ -3733,9 +3903,17 @@ class DiffusionBackend:
                     "a 'pipeline' load takes a full diffusers repo, not a single-file name."
                 )
             if local_root.exists():
-                if not local_pipeline_components_are_complete(local_root, "model_index.json"):
+                # FLUX.3 is a Modular Diffusers layout: its manifest is modular_model_index.json.
+                index_name = FLUX3_INDEX if is_flux3_family(fam) else "model_index.json"
+                if not local_pipeline_components_are_complete(
+                    local_root,
+                    index_name,
+                    fixed_component_folders = (
+                        FLUX3_COMPONENT_FOLDERS if is_flux3_family(fam) else None
+                    ),
+                ):
                     raise FileNotFoundError(
-                        f"Local pipeline directory has no complete valid model_index.json: {repo_id}"
+                        f"Local pipeline directory has no complete valid {index_name}: {repo_id}"
                     )
             elif path_shaped:
                 raise FileNotFoundError(f"Local model path does not exist: {repo_id}")
@@ -3776,12 +3954,16 @@ class DiffusionBackend:
         # Probe the repo the load will FETCH from: refusing the upstream id would reject the gated picks the ungated
         # mirror rescues, and the swap is pure, so it decides the same here as on the load thread. Only the raise
         # matters; _run_load recomputes the excused snapshot.
-        _assert_base_repo_accessible(prefer_ungated_mirror(base, hf_token), hf_token)
+        _assert_base_repo_accessible(
+            prefer_ungated_mirror(base, hf_token), hf_token, _base_manifest_name(fam)
+        )
         # Same reasoning for the FLUX.2 size pairing, and this is the only place it can be caught before a teardown:
         # the loader's own guard opens the downloaded checkpoint, so it fires after ~19 GB of base shards AND after
         # the resident pipeline was freed. Metadata only, and fails open on anything it cannot read. The UPSTREAM
         # base, not the mirror: the size tables key on vendor ids.
         assert_flux2_pick_compatible(fam, repo_id, gguf_filename, base, hf_token)
+        # FLUX.3's variant check (distilled vs base, BFL quantized packages) off the header, for the same reason.
+        assert_flux3_pick_compatible(fam, repo_id, gguf_filename, hf_token)
         # No media backend decodes a speech GGUF, and detect_family_for_pick answers from the folder name, so a csm
         # file beside a denoiser reaches this loader as one of its own. Cache-only for a load nobody asked for: this
         # probe would otherwise spend a revision HEAD, or a range request, on the one path that promised to stay off
@@ -3885,7 +4067,10 @@ class DiffusionBackend:
             self._cancel_event = cancel_event
             # Seed with the family fallback; the worker resolves the real base and updates this.
             self._loading = _LoadingState(
-                repo_id = repo_id, base_repo = fam.base_repo, account_id = current_account_id()
+                repo_id = repo_id,
+                base_repo = fam.base_repo,
+                account_id = current_account_id(),
+                gguf_filename = gguf_filename,
             )
 
         account_thread(
@@ -4065,6 +4250,8 @@ class DiffusionBackend:
             resident_sizes: list[tuple[str, int]] = []
             skipped_transformer_files: list[str] = []
             fetch_repos: dict[str, str] = {}
+            planned_sizes: dict[str, dict[str, int]] = {}
+            planned_keys: dict[str, dict[str, str]] = {}
             expected, base_files = self._estimate_download_bytes(
                 kwargs["repo_id"],
                 kwargs.get("gguf_filename"),
@@ -4073,6 +4260,8 @@ class DiffusionBackend:
                 kind = kind,
                 pipeline_components = _explicit_pipeline_components(fam),
                 single_file_is_pipeline = bool(fam and fam.single_file_is_pipeline),
+                companion_components = FLUX3_COMPONENTS if is_flux3_family(fam) else None,
+                base_manifest = _base_manifest_name(fam),
                 include_transformer = (
                     (
                         lambda companions, transformer_files: self._dense_quant_prefetch_needed(
@@ -4091,6 +4280,8 @@ class DiffusionBackend:
                 local_files_only = local_files_only,
                 resident_file_sizes_out = resident_sizes,
                 fetch_repos_out = fetch_repos,
+                file_sizes_out = planned_sizes,
+                file_keys_out = planned_keys,
             )
             # An OPERATOR'S OWN checkpoint has no Hub entry, so the plan drops no shards and the seed costs no bytes.
             # Suppressing it would ignore the file the load was asked to use and quantise the released bf16 shards in
@@ -4147,13 +4338,23 @@ class DiffusionBackend:
             # metadata, so no byte has moved yet. Returns a snapshot dir when it excused the base off a copy only the
             # import-time root holds.
             base_snapshot = _assert_base_repo_accessible(
-                fetch_base, kwargs.get("hf_token"), local_files_only = local_files_only
+                fetch_base,
+                kwargs.get("hf_token"),
+                _base_manifest_name(fam),
+                local_files_only = local_files_only,
             )
             # And the same size-pairing preflight the plan and the route run, here because a direct begin_load (a
             # saved config, the deploy path) reaches neither. Still metadata only, so it lands before _prefetch_files
             # stages the base and before load_pipeline unloads the resident pipeline.
             assert_flux2_pick_compatible(
                 fam, kwargs["repo_id"], kwargs.get("gguf_filename"), base, kwargs.get("hf_token")
+            )
+            assert_flux3_pick_compatible(
+                fam,
+                kwargs["repo_id"],
+                kwargs.get("gguf_filename"),
+                kwargs.get("hf_token"),
+                allow_network = not local_files_only,
             )
             # Same verdict here, so a direct begin_load is covered too.
             assert_pick_is_not_speech(
@@ -4186,10 +4387,36 @@ class DiffusionBackend:
                 raise RuntimeError(shortfall)
             # Outside the lock: a disk scan, and nothing of ours has written to the artifact repo yet.
             asset_baseline = self._cache_bytes(dit_prequant[0]) if skip_transformer_weights else 0
+            planned_files = _planned_progress_files(
+                kwargs["repo_id"],
+                kwargs.get("gguf_filename"),
+                kind = kind,
+                base = base,
+                fetch_base = fetch_base,
+                base_files = base_files,
+                file_sizes = planned_sizes,
+                dit_prequant = dit_prequant,
+                te_hub_files = te_hub_files,
+            )
             with self._load_cancel_lock:
                 if self._load_token == token and self._loading is not None:
                     self._loading.base_repo = base
                     self._loading.fetch_repo = fetch_base
+                    # One list for both numbers, so they cannot disagree. Used only when it accounts for the whole
+                    # estimate: a total that came back without per-file sizes keeps the repo-level scan.
+                    planned_total = sum(size for _r, _n, size in planned_files)
+                    if planned_total and planned_total == expected:
+                        self._loading.planned_files = planned_files
+                        self._loading.planned_blob_keys = _planned_blob_keys(
+                            planned_files,
+                            planned_keys,
+                            repo_id = kwargs["repo_id"],
+                            base = base,
+                            fetch_base = fetch_base,
+                        )
+                        self._loading.incomplete_baseline = self._incomplete_blob_sizes(
+                            {repo for repo, _n, _s in planned_files}
+                        )
                     self._loading.expected_bytes = expected
                     if skip_transformer_weights:
                         # Claimed before a byte moves. File entry first: load_progress reads lock-free.
@@ -4305,18 +4532,41 @@ class DiffusionBackend:
             # Nothing left to download: another tree walk only holds the GIL the load thread needs.
             return _progress("finalizing", finalized[1], finalized[0], 1.0)
 
+        if loading.planned_files and sum(size for _r, _n, size in loading.planned_files) > 0:
+            downloaded = DiffusionBackend._planned_progress_bytes(
+                loading.planned_files, loading.incomplete_baseline, loading.planned_blob_keys
+            )
+            return DiffusionBackend._progress_from(loading, downloaded)
         # Sum checkpoint + companion cache, scanning the repo the bytes LAND in (the mirror when one was swapped in),
         # else a mirrored companion download reads as zero and the bar sits still.
         companion = loading.fetch_repo or loading.base_repo
+
+        def _companion_progress_bytes(repo_id: str) -> int:
+            # An artifact mirror (``mirror_hosts_artifacts``) also holds root GGUF / prequant checkpoints the plan
+            # never counted, so only its diffusers part is scanned, plus the in-flight blobs (this load's own
+            # pipeline files). Every other repo is scanned exactly as before.
+            if mirror_hosts_artifacts(repo_id):
+                return self._cache_bytes(repo_id, pipeline_only = True, in_flight = True)
+            return self._cache_bytes(repo_id)
+
         if loading.base_repo and loading.base_repo == loading.repo_id:
             # Full pipeline: base IS the repo, so count it once. Summing would add the upstream's stale partial blobs,
             # the very thing that selects the mirror, to the mirror's live bytes, pushing the bar to 100% / finalizing
             # mid-download.
-            downloaded = self._cache_bytes(companion or loading.repo_id)
+            downloaded = _companion_progress_bytes(companion or loading.repo_id)
+        elif loading.gguf_filename and mirror_hosts_artifacts(loading.repo_id):
+            # A GGUF picked straight from an artifact mirror: the repo is also the companion, and also holds sibling
+            # quants and sample renders the plan never counted. The selected file, the pipeline folders and the
+            # in-flight blobs are what this load downloads.
+            downloaded = self._cache_file_bytes(
+                loading.repo_id, loading.gguf_filename
+            ) + _companion_progress_bytes(loading.repo_id)
+            if companion and companion.lower() != loading.repo_id.lower():
+                downloaded += _companion_progress_bytes(companion)
         else:
             downloaded = self._cache_bytes(loading.repo_id)
             if companion and companion != loading.repo_id:
-                downloaded += self._cache_bytes(companion)
+                downloaded += _companion_progress_bytes(companion)
         # Repos read before files (_run_load stores files first), so every repo seen has its file entry.
         asset_repos = loading.asset_repos
         asset_files = loading.asset_files
@@ -4333,6 +4583,10 @@ class DiffusionBackend:
                 size,
                 self._cache_file_bytes(repo, filename) + max(0, self._cache_bytes(repo) - baseline),
             )
+        return DiffusionBackend._progress_from(loading, downloaded)
+
+    @staticmethod
+    def _progress_from(loading: "_LoadingState", downloaded: int) -> dict[str, Any]:
         expected = loading.expected_bytes
         # Downloads done, still finalizing. The cache scan can exceed the estimate, so clamp to 100%.
         if expected > 0 and downloaded >= expected * 0.999:
@@ -4894,11 +5148,14 @@ class DiffusionBackend:
         pipeline_components: Optional[Sequence[str]] = None,
         single_file_is_pipeline: bool = False,
         include_transformer: "bool | Callable[[Sequence[str], Sequence[str]], bool]" = False,
+        companion_components: Optional[Sequence[str]] = None,
+        base_manifest: str = "model_index.json",
         sizes_out: Optional[dict[str, int]] = None,
         file_sizes_out: Optional[dict[str, dict[str, int]]] = None,
         resident_file_sizes_out: Optional[list[tuple[str, int]]] = None,
         revisions_out: Optional[dict[str, str]] = None,
         fetch_repos_out: Optional[dict[str, str]] = None,
+        file_keys_out: Optional[dict[str, dict[str, str]]] = None,
         skip_te_components: tuple[str, ...] = (),
         skip_transformer_weights: bool = False,
         skipped_files_out: Optional[list[str]] = None,
@@ -4936,8 +5193,9 @@ class DiffusionBackend:
             return 0, []
         from huggingface_hub import HfApi
 
-        # No swap on purpose: the Hub gates only the BYTE endpoint, so model_info answers anonymously and the mirror
-        # lists the same names. _prefetch_files swaps when it pulls.
+        # Metadata comes from the repo the bytes will: the base's unsloth mirror unless the upstream already holds
+        # them (prefer_ungated_mirror), so a fresh install asks the vendor nothing, and a cached upstream keeps the
+        # listing and the commit pin its cache probe needs.
         from .diffusion_te_prequant import is_prequant_covered_weight
 
         api = HfApi()
@@ -4995,15 +5253,17 @@ class DiffusionBackend:
                         skipped_files_out[:] = [s.rfilename for s in seeded]
                     return info, components, picked
 
-                metadata_repo = prefer_ungated_mirror(
-                    repo_id, hf_token, files = ("model_index.json",)
-                )
+                # The family's own index: FLUX.3 ships only modular_model_index.json, so probing
+                # model_index.json would never find a cached upstream and restage the mirror.
+                metadata_repo = prefer_ungated_mirror(repo_id, hf_token, files = (base_manifest,))
                 info, components, picked = _pipeline_listing(metadata_repo)
+                picked = [s for s in picked if not _listing_extra(metadata_repo, s.rfilename)]
                 base_files = [s.rfilename for s in picked]
                 fetch_repo = prefer_ungated_mirror(repo_id, hf_token, files = base_files)
                 if fetch_repo.lower() != metadata_repo.lower():
                     metadata_repo = fetch_repo
                     info, components, picked = _pipeline_listing(metadata_repo)
+                    picked = [s for s in picked if not _listing_extra(metadata_repo, s.rfilename)]
                     base_files = [s.rfilename for s in picked]
                 total = sum(s.size or 0 for s in picked)
                 if fetch_repos_out is not None:
@@ -5012,6 +5272,10 @@ class DiffusionBackend:
                     sizes_out[repo_id] = total
                 if file_sizes_out is not None:
                     file_sizes_out[repo_id] = {s.rfilename: int(s.size or 0) for s in picked}
+                if file_keys_out is not None:
+                    file_keys_out[repo_id] = {
+                        s.rfilename: k for s in picked if (k := _sibling_blob_key(s))
+                    }
                 if resident_file_sizes_out is not None and components is not None:
                     resident_file_sizes_out.extend(
                         (s.rfilename, int(s.size or 0))
@@ -5032,6 +5296,12 @@ class DiffusionBackend:
                         for s in info.siblings
                         if s.rfilename == gguf_filename
                     }
+                if file_keys_out is not None:
+                    file_keys_out[repo_id] = {
+                        s.rfilename: k
+                        for s in info.siblings
+                        if s.rfilename == gguf_filename and (k := _sibling_blob_key(s))
+                    }
                 _record_revision(revisions_out, repo_id, info)
             # A whole-pipeline single file (SDXL, or its GGUF) needs only the base's config/tokenizer, not its weights.
             if kind in ("single_file", "gguf") and single_file_is_pipeline:
@@ -5039,32 +5309,92 @@ class DiffusionBackend:
             else:
 
                 def base_filter(rfilename: str) -> bool:
-                    return _base_file_downloaded(rfilename, include_transformer = include_transformer)
+                    # ``companion_components``: an assembler that opens only these folders (FLUX.3), so the rest of
+                    # the base (BFL's variants/ packages) is never staged; transformer/ still follows the quant path.
+                    if (
+                        companion_components is not None
+                        and "/" in rfilename
+                        and rfilename.split("/", 1)[0] not in companion_components
+                    ):
+                        return False
+                    return _base_file_downloaded(
+                        rfilename, include_transformer = include_transformer, manifest = base_manifest
+                    )
 
-            base_info = api.model_info(base_repo, files_metadata = True, token = hf_token)
-            _record_revision(revisions_out, base_repo, base_info)
+            def _base_listing(listing_repo: str) -> list[Any]:
+                info = api.model_info(listing_repo, files_metadata = True, token = hf_token)
+                # Under the repo it describes: a mirror's commit says nothing about a cached upstream snapshot.
+                _record_revision(revisions_out, listing_repo, info)
+                return [s for s in info.siblings if not _listing_extra(listing_repo, s.rfilename)]
+
+            listing_repo = prefer_ungated_mirror(base_repo, hf_token)
+            base_siblings = _base_listing(listing_repo)
+            # Same two-step choice as the pipeline listing above: "any weight cached" picks the listing repo, the exact
+            # companion set then picks the repo they come from, and a different answer re-lists from that repo. The
+            # plan still takes its own fetch decision from the final file list. FLUX.3's mirror is its FP8 repo, whose
+            # companion folders are BFL's byte for byte and whose extra root files base_filter never stages, so its
+            # listing stays on the repo the prefetch pulls: an anonymous load never asks the gated vendor repo anything.
+            if companion_components is None:
+                wanted = [
+                    s.rfilename
+                    for s in base_siblings
+                    if _base_file_downloaded(
+                        s.rfilename, include_transformer = False, manifest = base_manifest
+                    )
+                ]
+                fetch_repo = prefer_ungated_mirror(base_repo, hf_token, files = wanted)
+                if fetch_repo.lower() != listing_repo.lower():
+                    listing_repo = fetch_repo
+                    base_siblings = _base_listing(listing_repo)
             if callable(include_transformer):
-                kept = [s.rfilename for s in base_info.siblings if not _dense_te_shard(s.rfilename)]
+                kept = [s.rfilename for s in base_siblings if not _dense_te_shard(s.rfilename)]
                 companions = tuple(
-                    f for f in kept if _base_file_downloaded(f, include_transformer = False)
+                    f
+                    for f in kept
+                    if _base_file_downloaded(f, include_transformer = False, manifest = base_manifest)
+                    and (
+                        companion_components is None
+                        or "/" not in f
+                        or f.split("/", 1)[0] in companion_components
+                    )
                 )
                 skip = set(companions)
                 transformer_files = tuple(
                     f
                     for f in kept
-                    if f not in skip and _base_file_downloaded(f, include_transformer = True)
+                    if f not in skip
+                    and _base_file_downloaded(f, include_transformer = True, manifest = base_manifest)
+                    # A scoped assembler's dense loader opens only transformer/, not BFL's variants/ packages.
+                    and (companion_components is None or f.split("/", 1)[0] == "transformer")
                 )
                 # Rebinding before base_filter is ever CALLED, so the loop below reads the answer.
                 include_transformer = bool(include_transformer(companions, transformer_files))
+            # The mirror choice above saw only the companions. Once the verdict may have widened the set to the dense
+            # transformer shards, decide again on the FINAL list: a gated upstream holding the companions but not the
+            # shards must not stay the fetch repo, or the shards 401 for an anonymous user. Recorded for the plan and
+            # the load, which stage and read from this one answer.
+            final_files = [
+                s.rfilename
+                for s in base_siblings
+                if base_filter(s.rfilename) and not _dense_te_shard(s.rfilename)
+            ]
+            final_repo = prefer_ungated_mirror(base_repo, hf_token, files = final_files)
+            if final_repo.lower() != listing_repo.lower():
+                listing_repo = final_repo
+                base_siblings = _base_listing(listing_repo)
+            if fetch_repos_out is not None and not _is_local_path(base_repo):
+                fetch_repos_out.setdefault(base_repo, listing_repo)
             # Do not stage a combined repo's checkpoint again as a companion.
             counted = {gguf_filename} if base_repo == repo_id and gguf_filename else set()
             base_bytes = 0
             base_sizes: dict[str, int] = {}
-            for s in base_info.siblings:
+            for s in base_siblings:
                 if not base_filter(s.rfilename) or _dense_te_shard(s.rfilename):
                     continue
                 if s.rfilename in counted:
                     continue
+                if file_keys_out is not None and (k := _sibling_blob_key(s)):
+                    file_keys_out.setdefault(base_repo, {})[s.rfilename] = k
                 base_files.append(s.rfilename)
                 base_bytes += s.size or 0
                 base_sizes[s.rfilename] = int(s.size or 0)
@@ -5075,7 +5405,6 @@ class DiffusionBackend:
                 sizes_out[base_repo] = sizes_out.get(base_repo, 0) + base_bytes
             if file_sizes_out is not None:
                 file_sizes_out.setdefault(base_repo, {}).update(base_sizes)
-            _record_revision(revisions_out, base_repo, base_info)
         except Exception as exc:  # noqa: BLE001 - estimate is best-effort
             logger.warning("diffusion.size_estimate_failed: %s", exc)
             # Recorded so a caller that must not guess (media auto-switch refuses rather than download) can tell a
@@ -5135,9 +5464,12 @@ class DiffusionBackend:
         # SELECTION time. Metadata only, and None whenever nothing is known to be wrong. The speech verdict belongs
         # here too, not only on the load preflight: the Images page stages and downloads before it calls load, so a
         # later refusal arrives after the bytes.
-        incompatible = flux2_pick_mismatch(
-            fam, repo_id, gguf_filename, base, hf_token
-        ) or speech_pick_refusal(repo_id, gguf_filename, hf_token)
+        incompatible = (
+            flux2_pick_mismatch(fam, repo_id, gguf_filename, base, hf_token)
+            # The FLUX.3 variant / BFL-package verdict, off the header or the manifest, for the same reason.
+            or flux3_pick_mismatch(fam, repo_id, gguf_filename, hf_token)
+            or speech_pick_refusal(repo_id, gguf_filename, hf_token)
+        )
         component_overrides = None
         if (
             discover_text_encoders
@@ -5252,6 +5584,8 @@ class DiffusionBackend:
             kind = kind,
             pipeline_components = _explicit_pipeline_components(fam),
             single_file_is_pipeline = bool(fam and fam.single_file_is_pipeline),
+            companion_components = FLUX3_COMPONENTS if is_flux3_family(fam) else None,
+            base_manifest = _base_manifest_name(fam),
             # The RESOLVED base, as the load passes it: a variant base picks its own pre-quant repo. Deferred exactly
             # as _run_load defers it. Called eagerly this runs before the base listing exists, so the cache gate sees
             # no transformer shards, always declines, and the plan scopes narrower than the load: the registry then
@@ -5290,7 +5624,7 @@ class DiffusionBackend:
         fetch_base = fetch_repos.get(base) or prefer_ungated_mirror(
             base, hf_token, files = base_files
         )
-        _assert_base_repo_accessible(fetch_base, hf_token)
+        _assert_base_repo_accessible(fetch_base, hf_token, _base_manifest_name(fam))
         entries: list[dict[str, Any]] = []
         checkpoint_bytes = 0
         if gguf_filename:
@@ -5757,7 +6091,70 @@ class DiffusionBackend:
         return best
 
     @staticmethod
-    def _cache_bytes(repo_id: str) -> int:
+    def _incomplete_blob_sizes(repos) -> dict[str, int]:
+        """``{path: size}`` of every ``blobs/*.incomplete`` of ``repos`` across cache roots. Never raises."""
+        out: dict[str, int] = {}
+        for repo in repos:
+            for repo_dir in DiffusionBackend._hub_cache_repo_dirs(repo):
+                try:
+                    for entry in (repo_dir / "blobs").iterdir():
+                        if entry.name.endswith(".incomplete"):
+                            out[str(entry)] = entry.stat().st_size
+                except OSError:
+                    continue
+        return out
+
+    @staticmethod
+    def _planned_progress_bytes(
+        planned: Sequence[tuple[str, str, int]],
+        baseline: Optional[dict[str, int]] = None,
+        blob_keys: Optional[dict[tuple[str, str], str]] = None,
+    ) -> int:
+        """Bytes on disk of exactly the files ``_planned_progress_files`` chose. Each finished file counts up to its
+        planned size (its largest copy across cache roots); a repo's ``*.incomplete`` blobs are the file it is
+        writing right now, capped so the repo never counts more than its planned files. Sibling quants, sample
+        renders, root checkpoints and other schemes already in the same repo are simply not in the list."""
+        by_repo: dict[str, list[tuple[str, int]]] = {}
+        for repo, name, size in planned:
+            by_repo.setdefault(repo, []).append((name, int(size or 0)))
+        total = 0
+        for repo, files in by_repo.items():
+            planned_total = sum(size for _n, size in files)
+            done_by_file = {
+                name: (min(size, DiffusionBackend._cache_file_bytes(repo, name)) if size else 0)
+                for name, size in files
+            }
+            # A planned file's in-flight blob is ``<its blob key>.incomplete``: counted in full (resumed bytes are
+            # this file's), up to what the file still lacks. Any other ``.incomplete`` belongs to some other download
+            # and is ignored, unless a planned file's key is unknown: only then does growth past the load's baseline
+            # stand in for it.
+            remaining_by_key: dict[str, int] = {}
+            unkeyed = False
+            for name, size in files:
+                key = (blob_keys or {}).get((repo.lower(), name))
+                if key:
+                    remaining_by_key[key] = remaining_by_key.get(key, 0) + max(
+                        0, size - done_by_file[name]
+                    )
+                elif size:
+                    unkeyed = True
+            in_flight = 0
+            for path, size in DiffusionBackend._incomplete_blob_sizes((repo,)).items():
+                stem = Path(path).name[: -len(".incomplete")]
+                if stem in remaining_by_key:
+                    in_flight += min(size, remaining_by_key[stem])
+                elif unkeyed:
+                    in_flight += max(0, size - (baseline or {}).get(path, 0))
+            total += min(planned_total, sum(done_by_file.values()) + in_flight)
+        return total
+
+    @staticmethod
+    def _cache_bytes(
+        repo_id: str,
+        *,
+        pipeline_only: bool = False,
+        in_flight: bool = False,
+    ) -> int:
         """Bytes of ``repo_id`` on disk across every cache root, for progress and the pipeline plan.
 
         Scoped per root to the revision that root serves (``refs/main``), because ``blobs/`` is
@@ -5765,6 +6162,11 @@ class DiffusionBackend:
         different etags, so summing the whole dir counts a stale full copy on top of the live
         partial one and ``load_progress`` reports finalizing through the rest of a multi-GB pull.
         The in-flight ``blobs/*.incomplete`` still counts: those are this download's own bytes.
+
+        ``pipeline_only`` counts just the diffusers part of the snapshot (``model_index.json`` and the component
+        folders), for a repo that also carries root GGUF / prequant checkpoints the pipeline never reads. Blobs
+        that cannot be attributed to a path are left out there, unless ``in_flight`` asks for the
+        ``*.incomplete`` ones: a load's progress counts what it is downloading right now.
 
         Keyed by blob filename, not summed per root: a blob is named after the file's etag, so a
         copy present in both roots counts once. Scanning only the live root reports 0 for a load a
@@ -5786,16 +6188,25 @@ class DiffusionBackend:
             except OSError:
                 blobs = []  # repo not in this root yet / unreadable / no-symlink cache mode
             if snapshot is None:
-                for entry in blobs:
-                    _add(entry.name, entry)
+                if not pipeline_only:
+                    for entry in blobs:
+                        _add(entry.name, entry)
                 continue
-            for entry in blobs:
-                if entry.name.endswith(".incomplete"):
-                    _add(entry.name, entry)
+            if not pipeline_only or in_flight:
+                for entry in blobs:
+                    if entry.name.endswith(".incomplete"):
+                        _add(entry.name, entry)
             try:
                 for f in snapshot.rglob("*"):
                     if not f.is_file():
                         continue
+                    if pipeline_only:
+                        rel = f.relative_to(snapshot).as_posix()
+                        if "/" not in rel and rel != "model_index.json":
+                            continue
+                        # The same predicate the plan's listing drops these with, so the two cannot drift.
+                        if _listing_extra(repo_id, rel):
+                            continue
                     # Dedupe on the path INSIDE the snapshot, so one logical file counts once however many roots hold
                     # it. The etag would not: each root serves its own revision, so a republished file summed both
                     # copies and could report finalizing at half the real progress. Works for a no-symlink cache too,
@@ -5827,8 +6238,10 @@ class DiffusionBackend:
                 continue
             if exclude_transformer and rel.parts and rel.parts[0] == "transformer":
                 continue
+            # from_pretrained reads <component>/<file> only: a deeper tree (FLUX.3's variants/fp8r, variants/nvfp4
+            # quantised packages) is never loaded and must not be priced.
             if load_itemsize is not None and (
-                len(rel.parts) < 2 or not _pipeline_default_variant_file(rel.as_posix())
+                len(rel.parts) != 2 or not _pipeline_default_variant_file(rel.as_posix())
             ):
                 continue
             try:
@@ -6118,12 +6531,12 @@ class DiffusionBackend:
         Uncached checkpoints are priced from the family table (``exact=False``). Never raises."""
         try:
             from .diffusion_te_prequant import (
-                TE_INT8_CONVROT_BUDGET_SCALE,
                 TE_PREQUANT_BUDGET_SCALE,
                 TE_PREQUANT_COMPONENTS,
                 int8_convrot_te_runs_on,
                 te_candidate_filenames,
                 te_candidate_is_readable,
+                te_int8_convrot_budget_scale,
                 te_prequant_sources_for_base,
             )
 
@@ -6205,7 +6618,7 @@ class DiffusionBackend:
                 share = table_priced / max(1, len(sources))
                 # MPS only takes the int8 ConvRot file, smaller than the fp8 one.
                 scale = (
-                    TE_INT8_CONVROT_BUDGET_SCALE
+                    te_int8_convrot_budget_scale(fam)
                     if int8_convrot_te_runs_on(target)
                     else TE_PREQUANT_BUDGET_SCALE
                 )
@@ -6479,6 +6892,7 @@ class DiffusionBackend:
                     # Admitted per file: prove it is a safetensors container before any probe or loader opens it.
                     assert_safetensors_file(single_file_path)
                 assert_flux2_gguf_matches_base(fam, base, single_file_path)
+                assert_flux3_checkpoint_matches_family(fam, single_file_path)
                 # A ComfyUI-quantized file loads through its own path below; a format it cannot run is refused here,
                 # from the header, before planning or reading a weight, rather than loaded with its scales dropped.
                 comfy_scan = refuse_comfy_quant(single_file_path) if kind == "single_file" else None
@@ -7510,6 +7924,12 @@ class DiffusionBackend:
                                             else _base_local_dir
                                         )
                                         or (fetch_base if local_files_only else None),
+                                        # the config from the dir assembly reads, the id for checkpoint compatibility
+                                        config_source = (
+                                            None
+                                            if fam.name == KREA2_FAMILY_NAME
+                                            else _base_local_dir
+                                        ),
                                     )
                                 )
                                 if pipeline_seed_scheme is not None:
@@ -7591,6 +8011,7 @@ class DiffusionBackend:
                                         fetch_base = fetch_base,
                                         base_local_dir = _base_local_dir,
                                         local_files_only = local_files_only,
+                                        manifest = _base_manifest_name(fam),
                                     )
                                     # A pipeline plan prices CACHED bytes, and the plan above saw companions only
                                     # (transformer/ was skipped). Re-plan now the dense shards are back, else an
@@ -7612,7 +8033,25 @@ class DiffusionBackend:
                                     bf16_pipeline_plan = plan
                                 self._raise_if_load_cancelled(_load_token)
                                 small_host = None
-                                if fam.name == KREA2_FAMILY_NAME:
+                                if is_flux3_family(fam):
+                                    # FLUX.3 ships modular blocks only: assemble per component behind the classic
+                                    # face (diffusion_flux3), from the staged dir when there is one.
+                                    try:
+                                        pipe = load_flux3_pipeline(
+                                            _base_local_dir or fetch_base,
+                                            dtype,
+                                            hf_token = hf_token,
+                                            check_cancelled = lambda: self._raise_if_load_cancelled(
+                                                _load_token
+                                            ),
+                                            local_files_only = local_files_only,
+                                            text_encoder = pipe_kwargs.get("text_encoder"),
+                                            transformer = pipe_kwargs.get("transformer"),
+                                            family_name = fam.name,
+                                        )
+                                    finally:
+                                        self._stop_load_prefetch()
+                                elif fam.name == KREA2_FAMILY_NAME:
                                     # krea's transformers-5.x configs break the 4.x line: assemble per component from
                                     # pipe_kwargs (pre-cast TE, seeded denoiser or None = dense shards).
                                     try:
@@ -7702,7 +8141,11 @@ class DiffusionBackend:
                             # Transformer-only single file; VAE/text-encoder/scheduler come from the base repo.
                             sf_kwargs: dict[str, Any] = {
                                 "torch_dtype": dtype,
-                                "config": fetch_base,
+                                # FLUX.3 reads the config from the staged companions, as its assembly below does: the
+                                # validated base holds transformer/config.json, and fetch_base would re-resolve it.
+                                "config": (_base_local_dir or fetch_base)
+                                if is_flux3_family(fam)
+                                else fetch_base,
                                 "subfolder": "transformer",
                                 "token": hf_token,
                                 "cache_dir": hub_cache_dir(),
@@ -7780,7 +8223,35 @@ class DiffusionBackend:
                                     _dequantize_gguf_outside_linears(transformer, dtype, logger)
                             self._raise_if_load_cancelled(_load_token)
 
-                            if fam.name == KREA2_FAMILY_NAME:
+                            if is_flux3_family(fam):
+                                # The single file / GGUF is the denoiser; the modular companions come from the base.
+                                # From the staged dir when the prefetch resolved one, as every other assembly does: a plan
+                                # that found the companions under another cache root must not re-resolve them here.
+                                pipe = load_flux3_pipeline(
+                                    _base_local_dir or fetch_base,
+                                    dtype,
+                                    hf_token = hf_token,
+                                    check_cancelled = lambda: self._raise_if_load_cancelled(
+                                        _load_token
+                                    ),
+                                    transformer = transformer,
+                                    local_files_only = local_files_only,
+                                    text_encoder = te_prequant_pipe_kwargs(
+                                        fam,
+                                        fetch_base,
+                                        te_quant_mode = text_encoder_quant,
+                                        target = target,
+                                        dtype = dtype,
+                                        hf_token = hf_token,
+                                        logger = logger,
+                                        local_files_only = local_files_only,
+                                        dense_source = _base_local_dir
+                                        or (fetch_base if local_files_only else None),
+                                        config_source = _base_local_dir,
+                                    ).get("text_encoder"),
+                                    family_name = fam.name,
+                                )
+                            elif fam.name == KREA2_FAMILY_NAME:
                                 pipe = load_krea2_pipeline(
                                     fetch_base,
                                     dtype,
@@ -7846,6 +8317,7 @@ class DiffusionBackend:
                                         local_files_only = local_files_only,
                                         dense_source = _base_local_dir
                                         or (fetch_base if local_files_only else None),
+                                        config_source = _base_local_dir,
                                     )
                                 )
                                 self._raise_if_load_cancelled(_load_token)
@@ -8165,6 +8637,8 @@ class DiffusionBackend:
                     static_plan: Optional[dict] = None
                     if cache_auto:
                         default_steps, _ = default_generation_params(
+                            # FLUX.3's family names its variant; its file names may not (see _generation_defaults_for).
+                            *((fam.name,) if is_flux3_family(fam) else ()),
                             gguf_filename,
                             content_variant_hint(repo_id, gguf_filename),
                             repo_id,
@@ -9311,6 +9785,36 @@ class DiffusionBackend:
         check_cancelled = check_cancelled or (lambda: None)
         check_cancelled()
         base = fetch_base or prefer_ungated_mirror(base, hf_token)
+        if is_flux3_family(fam):
+            # FLUX.3 ships modular blocks only, so from_pretrained has no model_index.json to read.
+            flux3_te = None
+            if target is not None:
+                flux3_te = te_prequant_pipe_kwargs(
+                    fam,
+                    base,
+                    te_quant_mode = te_quant_mode,
+                    target = target,
+                    dtype = dtype,
+                    hf_token = hf_token,
+                    logger = logger,
+                    local_files_only = local_files_only,
+                    dense_source = base_local_dir or (base if local_files_only else None),
+                    config_source = base_local_dir,
+                ).get("text_encoder")
+            check_cancelled()
+            pipe = load_flux3_pipeline(
+                base_local_dir or base,
+                dtype,
+                hf_token = hf_token,
+                transformer = transformer,
+                text_encoder = flux3_te,
+                check_cancelled = check_cancelled,
+                local_files_only = local_files_only,
+                family_name = getattr(fam, "name", None),
+            )
+            check_cancelled()
+            pipe.to(device)
+            return pipe
         if getattr(fam, "name", None) == KREA2_FAMILY_NAME:
             # krea ships transformers-5.x configs and no top-level tokenizer files, so assemble per-component.
             krea_te = None
@@ -9325,6 +9829,7 @@ class DiffusionBackend:
                     logger = logger,
                     local_files_only = local_files_only,
                     dense_source = base_local_dir or (base if local_files_only else None),
+                    config_source = base_local_dir,
                 ).get("text_encoder")
             check_cancelled()
             pipe = load_krea2_pipeline(
@@ -9373,6 +9878,7 @@ class DiffusionBackend:
                     logger = logger,
                     local_files_only = local_files_only,
                     dense_source = base_local_dir or (base if local_files_only else None),
+                    config_source = base_local_dir,
                 )
             )
         check_cancelled()
@@ -10030,7 +10536,9 @@ class DiffusionBackend:
                 self._local_dir_weight_bytes(staged_repo, exclude_transformer = False)
                 if staged_repo is not None and staged_repo.is_dir()
                 else 0,
-                self._cache_bytes(cache_repo) if cache_repo else 0,
+                self._cache_bytes(cache_repo, pipeline_only = mirror_hosts_artifacts(cache_repo))
+                if cache_repo
+                else 0,
             )
             if load_dtype is not None:
                 # Cached bytes are what the repo STORES, not what the load holds at this dtype.
@@ -11313,7 +11821,7 @@ class DiffusionBackend:
                 # Per-forward chunks: the whole job list in ONE forward by default, bounded by an explicit batch_size
                 # cap; the OOM backoff below halves a failed chunk. Layered: one input per forward (the pipeline's
                 # per-prompt layer stride is only right for one).
-                chunks = [[job] for job in jobs] if layer_count else chunk_jobs(jobs, batch_size)
+                chunks = _generation_chunks(state.family, jobs, batch_size, layer_count = layer_count)
                 guard_width = guard_height = guard_target = None
                 guard_batch = 1
 
@@ -11334,7 +11842,16 @@ class DiffusionBackend:
                             * getattr(fam, "condition_pixel_weight", 1.0)
                         )
                         if ref_resolution is not None
-                        else 0
+                        # FLUX.3 resizes every condition image to 1 MP itself (diffusion_flux3.resize_reference).
+                        else (
+                            int(
+                                (1 + len(ref_extra))
+                                * FLUX3_REFERENCE_AREA
+                                * getattr(fam, "condition_pixel_weight", 1.0)
+                            )
+                            if is_flux3_family(fam) and init_pil is not None
+                            else 0
+                        )
                     )
                     if layer_count:
                         # layers + 1 extra canvas-sized frames beside the output-sized one.
@@ -12126,7 +12643,11 @@ class DiffusionBackend:
             "transformer_cache_stats": static_skip_stats(state.pipe),
             "resolved": resolved,
             "generation_defaults": _generation_defaults_for(
-                state.repo_id, state.gguf_filename, state.base_repo, pipe_sample_sigmas(state.pipe)
+                state.repo_id,
+                state.gguf_filename,
+                state.base_repo,
+                pipe_sample_sigmas(state.pipe),
+                family = state.family,
             ),
             # Workflows the loaded family supports, so the UI can gate its tabs.
             "workflows": _family_workflows(state.family),
@@ -12296,13 +12817,18 @@ def _offload_controlnet_module(cn_model: Any, device: str, logger: Any) -> bool:
         return False
 
 
-def _base_file_downloaded(rfilename: str, *, include_transformer: bool = False) -> bool:
+def _base_file_downloaded(
+    rfilename: str,
+    *,
+    include_transformer: bool = False,
+    manifest: str = "model_index.json",
+) -> bool:
     """True for base-repo files ``from_pretrained`` actually fetches. The transformer is supplied by
     the GGUF, and repo docs (``assets/``, the top-level README/PDF/images) are never downloaded:
     counting them would peg the progress estimate above what lands on disk, so the bar would sit
     short of 100% for the whole pipeline-load phase. ``include_transformer`` admits the
     ``transformer/`` shards for loads where the dense transformer-quant path will fetch them
-    anyway."""
+    anyway. ``manifest`` is the base's pipeline index (FLUX.3's is ``modular_model_index.json``)."""
     if rfilename == "transformer/config.json":
         # The one transformer/ file that is ALWAYS needed, shards or not: from_single_file(config = <repo id>,
         # subfolder = "transformer") resolves it through the Hub, so a load that promised to download nothing cannot
@@ -12313,7 +12839,7 @@ def _base_file_downloaded(rfilename: str, *, include_transformer: bool = False) 
     if rfilename.startswith("transformer/"):
         return include_transformer
     if "/" not in rfilename:  # top-level: only the pipeline manifest is fetched
-        return rfilename == "model_index.json"
+        return rfilename == manifest
     return not rfilename.startswith("assets/")
 
 
@@ -12349,9 +12875,9 @@ def _pipeline_file_downloaded(rfilename: str) -> bool:
     ``transformer/`` subfolder is kept. Top-level docs and ``assets/`` are skipped, and so are
     artifacts the torch loader never touches (ONNX / OpenVINO / Flax exports and dtype-variant
     twins), so an official repo that ships many formats does not prefetch tens of GB it will not
-    load."""
+    load. A Modular Diffusers repo (FLUX.3) has ``modular_model_index.json`` as its manifest."""
     if "/" not in rfilename:  # top-level: only the pipeline manifest is fetched
-        return rfilename == "model_index.json"
+        return rfilename in ("model_index.json", FLUX3_INDEX)
     lower = rfilename.lower()
     if lower.startswith(("assets/", "onnx/", "openvino/")):
         return False
@@ -12385,6 +12911,8 @@ _PIPELINE_WEIGHT_PREFIX_RE = re.compile(
 def _explicit_pipeline_components(fam: Any) -> Optional[tuple[str, ...]]:
     """Component folders opened by image pipelines assembled outside generic Diffusers."""
     name = getattr(fam, "name", None)
+    if is_flux3_family(fam):
+        return FLUX3_COMPONENTS
     if name == KREA2_FAMILY_NAME:
         return ("scheduler", "text_encoder", "tokenizer", "transformer", "vae")
     if name == IDEOGRAM4_FAMILY_NAME:
@@ -12413,7 +12941,11 @@ def _pipeline_components_from_index(
     try:
         from huggingface_hub import hf_hub_download
 
-        if not any(s.rfilename == "model_index.json" for s in (info.siblings or ())):
+        siblings = {s.rfilename for s in (info.siblings or ())}
+        if "model_index.json" not in siblings:
+            if explicit_components is not None and FLUX3_INDEX in siblings:
+                # A modular repo (FLUX.3) whose assembler names its own folders: nothing else to read.
+                return frozenset(str(name) for name in explicit_components), frozenset()
             raise FileNotFoundError(f"{repo_id} has no model_index.json")
         path = hf_hub_download(
             repo_id,
@@ -12462,7 +12994,7 @@ def _pipeline_selected_file(
     components, ignored = selection
     if rfilename in ignored:
         return False
-    if rfilename == "model_index.json":
+    if rfilename in ("model_index.json", FLUX3_INDEX):
         return True
     if "/" not in rfilename or rfilename.split("/", 1)[0] not in components:
         return False
