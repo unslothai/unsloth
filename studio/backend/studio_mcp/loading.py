@@ -10,6 +10,7 @@ import dataclasses
 import hashlib
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from fastmcp import Context
@@ -103,7 +104,13 @@ def deadline_after(wait_s: Optional[float]) -> float:
 
 
 def _is_path(name: str) -> bool:
-    return name.startswith(("/", "~", ".")) or "\\" in name or name[1:3] in (":/", ":\\")
+    if name.startswith(("/", "~", ".")) or "\\" in name or name[1:3] in (":/", ":\\"):
+        return True
+    # A relative path (models/Foo.gguf) reads like a Hub id; one that exists on disk is a path.
+    try:
+        return Path(name).expanduser().exists()
+    except (OSError, ValueError):
+        return False
 
 
 def _same(left: Optional[str], right: Optional[str]) -> bool:

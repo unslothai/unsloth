@@ -5,6 +5,7 @@
 
 import asyncio
 import threading
+import time
 
 import pytest
 from fastapi.responses import Response
@@ -223,3 +224,23 @@ def test_a_recipe_wait_reads_its_rows_once(monkeypatch, fast_polls):
     assert result["structuredContent"]["status"] == "completed"
     # The first read and the answer; none of the polls between.
     assert len(pages) == 2
+
+
+def test_a_status_read_that_stalls_never_holds_a_wait_past_wait_s(monkeypatch, fast_polls):
+    reads = []
+
+    async def handler(request, body):
+        reads.append(1)
+        if len(reads) > 1:
+            await asyncio.sleep(10)
+        return _video("in_progress", 10)
+
+    studio = fake_studio(
+        {VIDEO: handler, ("GET", "/v1/videos/vid-1/content"): Response(status_code = 404)}
+    )
+    started = time.monotonic()
+    result, _studio = run_tool(
+        monkeypatch, studio, "get_job", {"kind": "video", "id": "vid-1", "wait_s": 1}
+    )
+    assert time.monotonic() - started < 5
+    assert result["structuredContent"]["status"] == "in_progress"
