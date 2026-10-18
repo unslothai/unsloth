@@ -209,10 +209,16 @@ def _media_backend(owner: str) -> Any:
 
 def _media_loading(owner: str) -> bool:
     """Whether an image or video load is in flight; lock-safe under ``_lock``."""
+    return bool(_media_backend(owner).loading_repo_ids())
+
+
+def _media_occupied(owner: str) -> bool:
+    """Whether an image or video model is loaded or loading. One that cannot be read counts as
+    loaded, so Always never evicts it blind."""
     try:
-        return bool(_media_backend(owner).loading_repo_ids())
+        return _media_status(owner) is not None or _media_loading(owner)
     except Exception:  # noqa: BLE001
-        return False
+        return True
 
 
 def _media_status(owner: str) -> Optional[dict]:
@@ -239,7 +245,13 @@ def refuse_replacing_media(
     if owner not in (DIFFUSION, VIDEO):
         return []
     names = {name for name in requested if name}
-    status = _media_status(owner)
+    try:
+        status = _media_status(owner)
+        loading = () if status is not None else _media_backend(owner).loading_repo_ids()
+    except Exception:  # noqa: BLE001 - unreadable: Always keeps it, Off replaces it as before
+        if policy == "always":
+            raise refusal_for([], KIND_LABELS[owner])
+        return []
     if status is not None:
         from core.inference.model_ids import public_model_id
 
@@ -251,9 +263,8 @@ def refuse_replacing_media(
         if policy == "always":
             raise refusal_for(slots, KIND_LABELS[owner])
         return slots
-    if policy == "always" and _media_loading(owner):
-        if names.isdisjoint(_media_backend(owner).loading_repo_ids()):
-            raise refusal_for([], KIND_LABELS[owner])
+    if policy == "always" and loading and names.isdisjoint(loading):
+        raise refusal_for([], KIND_LABELS[owner])
     return []
 
 
@@ -536,7 +547,7 @@ def acquire_for(
                 kept = [name for name in others if name in _KEPT_UNDER_ALWAYS]
                 slots = [slot for name in kept for slot in resident_slots(name)]
                 # A media claim whose load failed holds nothing: evicting it unloads nothing.
-                if slots or any(name == CHAT or _media_loading(name) for name in kept):
+                if slots or any(name == CHAT or _media_occupied(name) for name in kept):
                     raise refusal_for(slots, KIND_LABELS[kept[0]])
             # Never evict an account mid-generation; the caller retries after its stream ends.
             busy = other_accounts_active(acting)
