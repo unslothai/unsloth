@@ -1309,3 +1309,101 @@ def test_a_stale_reap_key_does_not_refuse_an_unpruned_export(monkeypatch):
     backend._reap_model = weakref.ref(_Model())
     _handle_export(backend, {"export_type": "merged", "save_directory": "/tmp/o"}, q)
     assert backend.calls and backend.calls[0][0] == "merged"
+
+
+def test_hub_file_checks_fall_back_to_the_local_cache(monkeypatch):
+    # Offline (or a failed request), a cached repo still answers from the Hub cache, so a cached
+    # export never needs the network just to show the card.
+    import huggingface_hub
+    from huggingface_hub import constants
+
+    cache = {}
+
+    def from_cache(
+        repo,
+        filename,
+        cache_dir = None,
+    ):
+        return cache.get(filename)
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", from_cache)
+    monkeypatch.setattr(constants, "HF_HUB_OFFLINE", True)
+    cache["mtp_head.safetensors"] = "/cache/snap/mtp_head.safetensors"
+    assert reap_mod.hub_file_exists("org/lora", "mtp_head.safetensors") is True
+    # Offline with the snapshot cached but no such file: the loader cannot fetch it either.
+    cache.clear()
+    cache["config.json"] = "/cache/snap/config.json"
+    assert reap_mod.hub_file_exists("org/moe", "hf_quant_config.json") is False
+    # Nothing cached: still unknown.
+    cache.clear()
+    with pytest.raises(reap_mod.MoeProbeError):
+        reap_mod.hub_file_exists("org/moe", "hf_quant_config.json")
+
+    # Online but the request fails: only a definite cache answer counts (a snapshot alone does not).
+    class Api:
+        def __init__(self, token = None):
+            pass
+
+        def file_exists(self, repo, filename):
+            raise ConnectionError("unreachable")
+
+    monkeypatch.setattr(constants, "HF_HUB_OFFLINE", False)
+    monkeypatch.setattr(huggingface_hub, "HfApi", Api)
+    cache["config.json"] = "/cache/snap/config.json"
+    with pytest.raises(reap_mod.MoeProbeError):
+        reap_mod.hub_file_exists("org/moe", "hf_quant_config.json")
+    cache["hf_quant_config.json"] = "/cache/snap/hf_quant_config.json"
+    assert reap_mod.hub_file_exists("org/moe", "hf_quant_config.json") is True
+
+
+@pytest.mark.parametrize(
+    "tier, default, offered",
+    [
+        ("457", "5.5.0", False),
+        ("default", "4.57.6", False),  # Python 3.9: the default tier is transformers 4.57.6
+        ("default", "5.5.0", True),
+        ("530", "4.57.6", True),
+        (RuntimeError("probe failed"), "5.5.0", True),  # unknown: Core still refuses clearly
+    ],
+)
+def test_probe_hides_reap_when_the_export_would_run_transformers_4(
+    tmp_path, monkeypatch, tier, default, offered
+):
+    import utils.transformers_version as tv
+
+    folder = tmp_path / "Mixtral-tiny"
+    folder.mkdir()
+    (folder / "config.json").write_text(
+        json.dumps({"num_local_experts": 8, "num_experts_per_tok": 2})
+    )
+
+    def activation_tier(model, token = None):
+        if isinstance(tier, Exception):
+            raise tier
+        return tier
+
+    monkeypatch.setattr(tv, "get_transformers_activation_tier", activation_tier)
+    monkeypatch.setattr(tv, "TRANSFORMERS_DEFAULT_VERSION", default)
+    assert (reap_mod.moe_export_info(str(folder)) is not None) is offered
+
+
+def test_moe_info_route_answers_503_when_a_confirmed_adapters_base_cannot_be_read(monkeypatch):
+    from fastapi import HTTPException
+
+    from routes import export as export_route
+    import routes.models as models_route
+    import utils.models.model_config as model_config
+
+    monkeypatch.setattr(models_route, "_require_model_access_or_caller_token", _async_none)
+    monkeypatch.setattr(
+        reap_mod, "hub_file_exists", lambda repo, name, token = None: name == "adapter_config.json"
+    )
+    # The adapter_config.json download failed after its retries.
+    monkeypatch.setattr(model_config, "get_base_model_from_lora_identifier", lambda m, t = None: None)
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(
+            export_route.get_moe_info(
+                model = "org/lora", hf_token = None, current_subject = "t", allow_ambient = False
+            )
+        )
+    assert err.value.status_code == 503

@@ -490,6 +490,10 @@ async def get_moe_info(
             from utils.models.model_config import get_base_model_from_lora_identifier
 
             base = await asyncio.to_thread(get_base_model_from_lora_identifier, model, probe_token)
+            if hub_adapter and not base:
+                # A confirmed adapter whose base could not be read (a failed download after its
+                # retries): unknown, not dense.
+                raise MoeProbeError(f"Could not resolve the base model of the adapter '{model}'")
             if (
                 base
                 and base != model

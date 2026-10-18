@@ -109,19 +109,70 @@ class MoeProbeError(RuntimeError):
     with REAP on must wait or have REAP turned off rather than go out unpruned."""
 
 
+def _cached_hub_file(repo: str, filename: str, offline: bool) -> Optional[bool]:
+    """What the local Hub cache knows: True when the file is cached, False when its absence is
+    recorded (or, offline, when the repo's snapshot is cached without it, so the loader could not
+    fetch it either), else None."""
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        cache_dir = active_hf_hub_cache()
+        found = try_to_load_from_cache(repo, filename, cache_dir = cache_dir)
+        if isinstance(found, str):
+            return True
+        if found is not None:  # _CACHED_NO_EXIST
+            return False
+        if offline and any(
+            isinstance(try_to_load_from_cache(repo, name, cache_dir = cache_dir), str)
+            for name in ("config.json", "adapter_config.json")
+        ):
+            return False
+    except Exception as exc:
+        logger.debug("Could not read the Hub cache for '%s': %s", repo, exc)
+    return None
+
+
 def hub_file_exists(
     repo: str,
     filename: str,
     hf_token = None,
 ) -> bool:
     """Whether a Hub repo has ``filename``. file_exists answers False only for a definite absence
-    (repo, file or revision not found); anything else (timeout, auth, gated) is unknown and raises
-    ``MoeProbeError``, so a file that would make REAP fail after the load is never assumed away."""
+    (repo, file or revision not found). Offline, or when the request fails, the local cache answers
+    if it knows; anything still unknown (timeout, auth, gated) raises ``MoeProbeError``, so a file
+    that would make REAP fail after the load is never assumed away."""
+    error = None
     try:
-        from huggingface_hub import HfApi
-        return bool(HfApi(token = hf_token).file_exists(repo, filename))
+        from huggingface_hub import HfApi, constants
+        offline = bool(constants.HF_HUB_OFFLINE)
+        if not offline:
+            return bool(HfApi(token = hf_token).file_exists(repo, filename))
     except Exception as exc:
-        raise MoeProbeError(f"Could not check '{repo}' for {filename}: {exc}") from exc
+        offline, error = False, exc
+    cached = _cached_hub_file(repo, filename, offline)
+    if cached is not None:
+        return cached
+    raise MoeProbeError(f"Could not check '{repo}' for {filename}: {error or 'offline'}") from error
+
+
+def _export_runs_transformers_4(model: str, hf_token = None) -> bool:
+    """Whether Studio would load ``model`` for export under transformers 4.x (the 4.57 tier, or the
+    default tier where the default is 4.57, e.g. Python 3.9). Core prunes only transformers 5's
+    fused experts; 4.x keeps a ModuleList, which it refuses after the full load. If the tier
+    cannot be resolved, the option stays (Core still refuses clearly, never exporting unpruned)."""
+    try:
+        from utils.transformers_version import (
+            TRANSFORMERS_DEFAULT_VERSION,
+            get_transformers_activation_tier,
+        )
+        tier = get_transformers_activation_tier(model, hf_token)
+        return tier == "457" or (
+            tier == "default" and str(TRANSFORMERS_DEFAULT_VERSION).startswith("4.")
+        )
+    except Exception as exc:
+        logger.debug("Could not resolve the transformers tier of '%s': %s", model, exc)
+        return False
 
 
 def hub_adapter_has_mtp_head(repo: str, hf_token = None) -> bool:
@@ -231,6 +282,8 @@ def moe_export_info(
             return None
         config = _read_raw_config_json(model, hf_token, local_files_only, None)
         info = moe_info_from_config(config, bnb_maps_to_16_bit = not local and _maps_to_16_bit(model))
+        if info is not None and _export_runs_transformers_4(model, hf_token):
+            return None
         if (
             info is not None
             and not local
