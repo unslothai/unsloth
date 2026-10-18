@@ -883,11 +883,13 @@ def test_shipped_video_and_image_families_resolve_the_scale(monkeypatch):
 
     monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
     scale = tpq.TE_PREQUANT_BUDGET_SCALE
-    # ltx-2 hosts its Gemma3-12B encoder pre-cast; the Wan families do not.
+    # ltx-2 hosts its Gemma3-12B encoder pre-cast, and every Wan family the one UMT5-XXL file.
     for repo, expected in (
         ("Lightricks/LTX-2", scale),
-        ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", 1.0),
-        ("Wan-AI/Wan2.2-T2V-A14B-Diffusers", 1.0),
+        ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", scale),
+        ("Wan-AI/Wan2.2-T2V-A14B-Diffusers", scale),
+        ("Wan-AI/Wan2.1-T2V-1.3B-Diffusers", scale),
+        ("Wan-AI/Wan2.1-T2V-14B-Diffusers", scale),
     ):
         fam = detect_video_family(repo)
         assert _budget_scale(fam, base = repo) == expected, repo

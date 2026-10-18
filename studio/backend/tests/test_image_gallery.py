@@ -706,3 +706,10 @@ def test_connection_images_record_no_local_engine(monkeypatch):
     remote = gallery.save(_img(), {**base, "model_kind": "connection"})
     assert local["engine"] == "diffusers"
     assert remote["engine"] is None
+
+
+def test_parameters_chunk_carries_the_encoded_caption():
+    meta = {**_meta(), "prompt": "a cat", "enhanced_prompt": "A tabby cat on a sunlit sill."}
+    text = gallery._params_text(meta)
+    assert text.splitlines()[0] == "A tabby cat on a sunlit sill."
+    assert gallery._params_text({**_meta(), "prompt": "a cat"}).splitlines()[0] == "a cat"
