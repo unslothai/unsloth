@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import weakref
+
 import functools
 import importlib.util
 import sys
@@ -945,6 +947,7 @@ def _reap_pruned(backend, monkeypatch):
     spec.loader.exec_module(module)
     monkeypatch.setitem(sys.modules, "core.export.reap", module)
     backend._reap_key = (0.5, 512, None)
+    backend._reap_model = weakref.ref(backend.current_model)
     backend.current_model._unsloth_reap_report = {"model.layers.0.mlp": [0, 2]}
     return backend
 
@@ -1035,3 +1038,21 @@ def test_hub_uploads_delete_a_reap_report_left_in_a_reused_repo(tmp_path, monkey
     )
     assert success is True, message
     assert seen["delete_patterns"] == ["reap_report.json"]
+
+
+def test_cleanup_clears_reap_state_even_when_an_unload_fails(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _reap_pruned(
+        _non_mlx_backend(monkeypatch, "test_export_hub_push_reap_cleanup", calls, seen), monkeypatch
+    )
+    backend._reap_model = weakref.ref(backend.current_model)
+
+    def unload(name):
+        raise RuntimeError("inference engine is busy")
+
+    backend.inference_backend = types.SimpleNamespace(
+        models = {"chat": object()}, unload_model = unload
+    )
+    assert backend.cleanup_memory() is False
+    assert backend._reap_key is None and backend._reap_model is None

@@ -434,11 +434,13 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
 
     output_path: Any = None
     try:
+        from core.export.reap import current_reap_key
+
         reap = cmd.get("reap") if export_type in ("merged", "base", "gguf") else None
         if (
             not reap
             and export_type in ("merged", "base", "gguf")
-            and getattr(backend, "_reap_key", None) is not None
+            and current_reap_key(backend) is not None
         ):
             # The loaded model is the pruned one now; "no REAP" must not export it. Studio loads
             # the checkpoint again for every export run; an API client has to do the same.

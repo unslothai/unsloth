@@ -775,9 +775,6 @@ class ExportBackend:
             self._checkpoint_token = None
             self._audio_type = None
             self.decision = None
-            from core.export.reap import discard_reap_staging
-
-            discard_reap_staging(self)
 
             clear_gpu_cache()
 
@@ -787,6 +784,14 @@ class ExportBackend:
         except Exception as e:
             logger.error(f"Error during memory cleanup: {e}")
             return False
+        finally:
+            # Even when an unload above failed: a later load must never inherit this load's REAP
+            # settings (they would read as "already pruned" for an unpruned model).
+            try:
+                from core.export.reap import discard_reap_staging
+                discard_reap_staging(self)
+            except Exception as e:
+                logger.warning(f"Could not clear the REAP state: {e}")
 
     def scan_checkpoints(
         self, outputs_dir: Optional[str] = None

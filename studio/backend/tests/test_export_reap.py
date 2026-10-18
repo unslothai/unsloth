@@ -8,6 +8,8 @@ Core's FastLanguageModel.reap_prune is stubbed; Core has its own GPU tests for t
 
 from __future__ import annotations
 
+import weakref
+
 import asyncio
 import json
 import queue
@@ -1046,6 +1048,8 @@ def test_an_export_without_reap_after_a_pruned_one_on_the_same_load_is_refused(e
 
     backend, q = _ExportBackend(), queue.Queue()
     backend._reap_key = (0.25, 512, None)
+    backend.current_model = _Model()
+    backend._reap_model = weakref.ref(backend.current_model)
     backend.export_base_model = lambda **kwargs: backend.calls.append(("base", kwargs))
     _handle_export(backend, {"export_type": export_type, "save_directory": "/tmp/o"}, q)
     assert backend.calls == []
@@ -1278,3 +1282,28 @@ def test_moe_info_route_answers_503_when_the_adapter_check_fails(monkeypatch):
             )
         )
     assert err.value.status_code == 503
+
+
+def test_a_reap_key_left_by_an_older_model_is_never_reused(fake_reap, tmp_path):
+    # An unload that failed part way, then a new load: the old settings must not read as
+    # "already pruned" for the unpruned new model.
+    backend = _Backend(_Model())
+    backend._reap_key = (0.25, 512, None)
+    backend._reap_model = weakref.ref(_Model())  # some other, earlier model
+    assert reap_mod.current_reap_key(backend) is None
+    ok, _ = reap_mod.apply_reap(backend, {"sparsity": 0.25}, str(tmp_path))
+    assert ok and len(fake_reap) == 1  # pruned again, this time for the loaded model
+    assert reap_mod.current_reap_key(backend) == (0.25, 512, None)
+    reap_mod.discard_reap_staging(backend)
+
+
+def test_a_stale_reap_key_does_not_refuse_an_unpruned_export(monkeypatch):
+    from core.export.worker import _handle_export
+
+    monkeypatch.setattr(reap_mod, "sync_reap_report", lambda *a, **k: None)
+    backend, q = _ExportBackend(), queue.Queue()
+    backend.current_model = _Model()
+    backend._reap_key = (0.25, 512, None)
+    backend._reap_model = weakref.ref(_Model())
+    _handle_export(backend, {"export_type": "merged", "save_directory": "/tmp/o"}, q)
+    assert backend.calls and backend.calls[0][0] == "merged"

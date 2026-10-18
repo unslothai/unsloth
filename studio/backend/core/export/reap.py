@@ -8,6 +8,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+import weakref
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
@@ -291,6 +292,17 @@ def _calibration_dataset(dataset: Optional[str], hf_token):
     )
 
 
+def current_reap_key(backend: Any):
+    """The REAP settings the loaded model was pruned with, else None. A key whose model is no
+    longer the loaded one (an unload that failed part way before a new load) is not this model's."""
+    key = getattr(backend, "_reap_key", None)
+    ref = getattr(backend, "_reap_model", None)
+    model = getattr(backend, "current_model", None)
+    if key is None or ref is None or model is None or ref() is not model:
+        return None
+    return key
+
+
 def apply_reap(
     backend: Any,
     options: Optional[dict],
@@ -302,7 +314,10 @@ def apply_reap(
     if not options:
         return True, ""
     key = _options_key(options)
-    applied = getattr(backend, "_reap_key", None)
+    applied = current_reap_key(backend)
+    if applied is None and getattr(backend, "_reap_key", None) is not None:
+        # Left by an unload that failed part way: it describes an older model, not this load.
+        discard_reap_staging(backend)
     if applied == key:
         return True, ""
     if applied is not None:
@@ -377,6 +392,8 @@ def apply_reap(
     # The model now points at the staging copy; Hub cards should name the model it came from.
     model._unsloth_reap_source = source or None
     backend._reap_key = key
+    # The settings belong to this model object only (see current_reap_key).
+    backend._reap_model = weakref.ref(model)
     report = getattr(model, "_unsloth_reap_report", None) or {}
     kept = len(next(iter(report.values()), []))
     return True, f"REAP kept {kept} experts per MoE layer in {len(report)} layers."
@@ -398,7 +415,7 @@ def sync_reap_report(
 ) -> None:
     """After an export: the report when the exported model is pruned, else remove one a previous
     REAP export left in a reused folder, so the folder never describes other weights."""
-    if getattr(backend, "_reap_key", None) is not None:
+    if current_reap_key(backend) is not None:
         write_reap_report(backend, output_path, name, files)
         return
     if output_path and Path(output_path).is_dir():
@@ -419,7 +436,7 @@ def write_reap_report(
     the artifacts it describes when the folder can hold others."""
     model = getattr(backend, "current_model", None)
     report = getattr(model, "_unsloth_reap_report", None)
-    key = getattr(backend, "_reap_key", None)
+    key = current_reap_key(backend)
     if not report or key is None or not output_path or not Path(output_path).is_dir():
         return
     try:
@@ -441,6 +458,7 @@ def discard_reap_staging(backend: Any) -> None:
     staging = getattr(backend, "_reap_staging", None)
     backend._reap_staging = None
     backend._reap_key = None
+    backend._reap_model = None
     backend._reap_merged_peft = False
     if staging is not None:
         try:

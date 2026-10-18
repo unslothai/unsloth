@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import weakref
+
 import importlib.util
 import os
 import types
@@ -1009,6 +1011,7 @@ def test_gguf_hub_export_carries_a_current_reap_report_only(tmp_path, monkeypatc
     _patch_hub(monkeypatch, export_module, calls, seen)
     backend = _export_backend(export_module, Model)
     backend._reap_key = (0.5, 512, None) if pruned else None
+    backend._reap_model = weakref.ref(backend.current_model)  # pruned this load
     success, message, output_path = _push_gguf(backend, str(export_dir))
     assert success is True, message
     report = Path(output_path, "model.Q4_K_M.reap_report.json")
@@ -1046,6 +1049,7 @@ def test_a_packaged_eagle3_drafter_gguf_gets_no_reap_report(tmp_path, monkeypatc
     _patch_hub(monkeypatch, export_module, calls, seen)
     backend = _export_backend(export_module, Model)
     backend._reap_key = (0.5, 512, None)
+    backend._reap_model = weakref.ref(backend.current_model)
 
     def package(merged_dir, gguf_dir, ggufs):
         drafter = Path(gguf_dir) / "drafter-eagle3.F16.gguf"

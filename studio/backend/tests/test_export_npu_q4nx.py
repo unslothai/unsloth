@@ -8,6 +8,8 @@ Reuses the harness in test_export_gguf_discovery.py; the converter itself is stu
 
 from __future__ import annotations
 
+import weakref
+
 import json
 import sys
 from pathlib import Path
@@ -439,6 +441,7 @@ def test_q4nx_folder_carries_the_current_reap_report(monkeypatch, tmp_path, prun
     export_mod, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, model)
     backend.current_tokenizer = _Tokenizer()
     backend._reap_key = (0.5, 512, None) if pruned else None
+    backend._reap_model = weakref.ref(model)
     _fake_converter(export_mod, monkeypatch, [])
     q4nx = save_dir / "npu-q4nx"
     q4nx.mkdir(parents = True)
