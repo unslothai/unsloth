@@ -558,3 +558,23 @@ def test_saliency_is_summed_across_ranks(tmp_path):
     before = one.total.clone()
     one.all_reduce()
     assert torch.equal(one.total, before)
+
+
+def test_saliency_reduces_on_the_accelerator_for_xccl_and_hccl(monkeypatch):
+    # Accelerator-only backends cannot reduce a CPU tensor, and their devices have no float64.
+    dist = torch.distributed
+    seen = []
+    monkeypatch.setattr(dist, "is_available", lambda: True)
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_world_size", lambda *a, **k: 2)
+    monkeypatch.setattr(dist, "get_backend", lambda *a, **k: "xccl")
+    monkeypatch.setattr(
+        dist, "all_reduce", lambda t, *a, **k: seen.append((t.device.type, t.dtype))
+    )
+    monkeypatch.setattr(
+        torch.accelerator, "current_accelerator", lambda *a, **k: torch.device("meta")
+    )
+    monkeypatch.setattr(torch.accelerator, "current_device_index", lambda: 0, raising = False)
+    saliency = reap._Saliency(4)
+    saliency.all_reduce()
+    assert seen == [("meta", torch.float32)]

@@ -357,15 +357,25 @@ class _Saliency:
         dist = torch.distributed
         if not (dist.is_available() and dist.is_initialized()) or dist.get_world_size() < 2:
             return
-        # Every rank joins, including one whose shard routed no token here.
-        if dist.get_backend() == "nccl":
+        # Every rank joins, including one whose shard routed no token here, so the device and dtype
+        # come from the process group, not from this rank's accumulator.
+        backend = str(dist.get_backend())
+        if "nccl" in backend:
             device = torch.device("cuda", torch.cuda.current_device())
-        else:
+        elif backend == "gloo":
             device = torch.device("cpu")
-        both = torch.zeros(2, self.num_experts, dtype = torch.float64, device = device)
+        else:
+            # HCCL (Ascend), XCCL (Intel XPU) and other accelerator-only backends. torch 2.6 names
+            # the index getter current_device_idx.
+            accel = torch.accelerator
+            index = getattr(accel, "current_device_index", None) or accel.current_device_idx
+            device = torch.device(accel.current_accelerator().type, index())
+        # Same rule as add(): MPS, XPU and NPU accumulate in float32.
+        acc = torch.float64 if device.type in ("cuda", "cpu") else torch.float32
+        both = torch.zeros(2, self.num_experts, dtype = acc, device = device)
         if self.total is not None:
-            both[0] = self.total.to(device, torch.float64)
-            both[1] = self.count.to(device, torch.float64)
+            both[0] = self.total.to(device, acc)
+            both[1] = self.count.to(device, acc)
         dist.all_reduce(both)
         self.total, self.count = both[0], both[1]
 
