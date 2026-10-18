@@ -409,12 +409,14 @@ def test_custom_calibration_dataset_uses_the_request_token(fake_reap, tmp_path, 
     import datasets
 
     opened = []
-    monkeypatch.setattr(datasets, "load_dataset", lambda *a, **k: opened.append((a, k)) or ["rows"])
+    monkeypatch.setattr(
+        datasets, "load_dataset", lambda *a, **k: opened.append((a, k)) or {"train": ["rows"]}
+    )
     backend = _Backend(_Model())
     reap_mod.apply_reap(
         backend, {"sparsity": 0.25, "dataset": "org/private"}, str(tmp_path), hf_token = "hf_x"
     )
-    assert opened == [(("org/private",), {"split": "train", "streaming": True, "token": "hf_x"})]
+    assert opened == [(("org/private",), {"streaming": True, "token": "hf_x"})]
     assert fake_reap[0]["dataset"] == ["rows"]
     reap_mod.discard_reap_staging(backend)
     # The default dataset is left to Core.
@@ -905,3 +907,27 @@ def test_custom_reap_dataset_is_validated_with_the_callers_token(route, request_
     finally:
         export_route.validate_job_paths = original
     assert {"hf_dataset": "org/calib", "hf_token": "hf_caller"} in checked
+
+
+@pytest.mark.parametrize(
+    "splits, expected",
+    [
+        ({"train": ["t"], "validation": ["v"]}, ["t"]),
+        ({"validation": ["v"]}, ["v"]),
+        ({"test": ["x"]}, ["x"]),
+        (["plain"], ["plain"]),
+    ],
+)
+def test_calibration_dataset_takes_train_or_its_only_split(monkeypatch, splits, expected):
+    import datasets
+    monkeypatch.setattr(datasets, "load_dataset", lambda *a, **k: splits)
+    assert reap_mod._calibration_dataset("org/calib", None) == expected
+
+
+def test_calibration_dataset_with_several_splits_and_no_train_is_refused(monkeypatch):
+    import datasets
+    monkeypatch.setattr(
+        datasets, "load_dataset", lambda *a, **k: {"validation": ["v"], "test": ["x"]}
+    )
+    with pytest.raises(ValueError, match = r"no train split .*\(test, validation\)"):
+        reap_mod._calibration_dataset("org/calib", None)

@@ -197,8 +197,19 @@ def _calibration_dataset(dataset: Optional[str], hf_token):
     from datasets import load_dataset
 
     kwargs = {} if hf_token is None else {"token": hf_token}
-    # Streaming reads only the rows Core uses.
-    return load_dataset(dataset, split = "train", streaming = True, **kwargs)
+    # Streaming reads only the rows Core uses. No split is forced: like Core, take `train`, else the
+    # only split (calibration sets often ship just `validation` or `test`).
+    splits = load_dataset(dataset, streaming = True, **kwargs)
+    if not isinstance(splits, dict):
+        return splits
+    if "train" in splits:
+        return splits["train"]
+    if len(splits) == 1:
+        return next(iter(splits.values()))
+    raise ValueError(
+        f"the calibration dataset '{dataset}' has no train split but several others "
+        f"({', '.join(sorted(splits))}); use a dataset with a train split or a single split"
+    )
 
 
 def apply_reap(
