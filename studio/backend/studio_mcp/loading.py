@@ -126,7 +126,7 @@ def _stop_loads(
     slots: Any,
     model: Optional[str] = None,
 ) -> list[LoadJob]:
-    """Mark this caller's loads of ``slots`` still running in the job store cancelled. cancel has no load kind, so unload_model is how an agent stops one; each unload also stops the load server-side."""
+    """Mark this caller's loads of ``slots`` still running in the job store cancelled. cancel has no load kind, so unload_model is how an agent stops one; the caller's unload route stops the load server-side."""
     jobs = [
         job
         for job in LOADS.running(caller.account_id)
@@ -406,13 +406,8 @@ async def unload_llm(
     model: Optional[str],
     kind: str = "llm",
 ) -> UnloadResult:
-    # A load_model still loading runs on in the job store, and the route stops a load only when the
-    # unload names it, so without ``model`` that load is the one unloaded.
-    stopped = _stop_loads(caller, CHAT_ROUTE_KINDS, model)
     serving, checkpoints, before = await _llm_resident(caller)
-    if model is None and stopped:
-        target = model = stopped[-1].model
-    elif model is None:
+    if model is None:
         if not checkpoints:
             return UnloadResult(kind = kind, unloaded = False)
         target, model = checkpoints[0], (serving[0] if serving else checkpoints[0])
@@ -424,7 +419,7 @@ async def unload_llm(
     )
     # An id that matches nothing still answers success, so compare what is resident before and after.
     _serving, _checkpoints, after = await _llm_resident(caller)
-    was_loaded = bool({model, target} & before) or bool(stopped)
+    was_loaded = bool({model, target} & before)
     return UnloadResult(
         kind = kind, model = model, unloaded = was_loaded and not ({model, target} & after)
     )
