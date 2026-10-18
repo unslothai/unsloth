@@ -238,11 +238,23 @@ async def _read(caller: Caller, part: Part) -> Optional[dict]:
 
 
 async def status(caller: Caller, download_id: str) -> JobStatus:
-    parts = parse_id(download_id)
-    answers = [await _read(caller, part) for part in parts]
+    parsed = _parse(download_id)
+    parts = [part for part, _generation in parsed]
+    answers, stale = [], None
+    for part, generation in parsed:
+        answer = await _read(caller, part)
+        current = answer.get("generation") if answer is not None else None
+        if generation is not None and isinstance(current, int) and current != generation:
+            # A newer run of the same repo replaced the one this id names: report that, not its state.
+            stale = stale or (
+                f"Unsloth Studio started a newer download of {part[0]} after this one; "
+                f'follow it with get_job(kind="download", id="{format_id([part], [current])}").'
+            )
+            answer = None
+        answers.append(answer)
     # A part that is not this account's reads as idle: there is nothing of yours to follow.
     states = [_state(a) if a is not None else "idle" for a in answers]
-    error = next(
+    error = stale or next(
         (opt_text(a.get("error")) for a in answers if a and opt_text(a.get("error"))), None
     )
     aggregate = _worst(states)

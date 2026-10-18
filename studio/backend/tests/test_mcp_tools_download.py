@@ -247,6 +247,14 @@ def test_the_id_keeps_each_start_generation_and_cancel_sends_it():
     ]
 
 
+def test_status_of_a_replaced_run_names_the_newer_one():
+    studio = fake_studio({("GET", STATUS): {"state": "running", "generation": 8}})
+    job = run(studio, model_downloads.status, "org/repo::Q8_0#7")
+    assert job.status == "idle"
+    assert 'id="org/repo::Q8_0#8"' in job.error
+    assert run(studio, model_downloads.status, "org/repo::Q8_0#8").status == "running"
+
+
 def test_a_failed_part_stops_the_parts_this_call_started():
     refused = JSONResponse({"detail": "scope_file_mismatch"}, status_code = 409)
     studio = fake_studio(
