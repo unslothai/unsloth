@@ -21,13 +21,30 @@ from core.inference.llama_cpp import GpuMemoryShortError, _gpu_short_message
 from models.inference import InferenceStatusResponse, LoadRequest, LoadResponse
 from utils import multi_model_settings
 
-from .test_diffusion_routes import _post_load, client as image_client  # noqa: F401
-from .test_media_auto_switch import _switch, backend, catalog, enabled, flux  # noqa: F401
-from .test_multi_model_serving import FakeLlama, _gated_load_fakes, _slot, backends  # noqa: F401
+from . import test_diffusion_routes as _diff
+from . import test_media_auto_switch as _switching
+from . import test_multi_model_serving as _serving
+from . import test_preview_routes as _preview
+from . import test_tunnel_safe_long_post as _tunnel
+from . import test_video_routes as _video
+from .test_diffusion_routes import _post_load
+from .test_media_auto_switch import _switch
+from .test_multi_model_serving import FakeLlama, _gated_load_fakes
 from .test_openai_auto_switch import _FakeBackend, _wired
-from .test_preview_routes import fake_slot, slot_state  # noqa: F401
-from .test_tunnel_safe_long_post import _collect, route  # noqa: F401
-from .test_video_routes import _shared_setup_3, client as video_client  # noqa: F401
+from .test_tunnel_safe_long_post import _collect
+from .test_video_routes import _shared_setup_3
+
+# Shared fixtures, bound by assignment so pytest finds them in this module.
+image_client = _diff.client
+backend = _switching.backend
+catalog = _switching.catalog
+enabled = _switching.enabled
+flux = _switching.flux
+backends = _serving.backends
+fake_slot = _preview.fake_slot
+slot_state = _preview.slot_state
+route = _tunnel.route
+video_client = _video.client
 
 REFUSAL = "multi-model-always"
 _REAL_ENABLED = multi_model_settings.get_multi_model_enabled
