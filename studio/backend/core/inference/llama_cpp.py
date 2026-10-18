@@ -6331,10 +6331,10 @@ def _extra_args_spec_draft_n_max(extra_args: Optional[Iterable[str]]) -> Optiona
         if flag not in ("--spec-draft-n-max", "--draft-max"):
             continue
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
-        try:
-            found = int(value)
-        except (TypeError, ValueError):
-            continue
+        # std::stoi, as arg.cpp reads it ("2 tokens" is 2); a value it throws on is skipped.
+        parsed = _stoi_prefix(value)
+        if parsed is not None:
+            found = parsed
     return found
 
 
@@ -6966,11 +6966,14 @@ _DRAFT_DEVICE_FLAGS = frozenset({"--spec-draft-device", "-devd", "--device-draft
 _COMPANION_DEVICE_FLAG_GROUPS = (_MMPROJ_DEVICE_FLAGS, _DRAFT_DEVICE_FLAGS)
 # Every option common/arg.cpp resolves by device NAME (parse_device_list), with the env
 # twin it reads first: -dev / LLAMA_ARG_DEVICE, -mmdev / MTMD_BACKEND_DEVICE (no
-# LLAMA_ARG_ prefix upstream), and -devd, which has no env twin.
+# LLAMA_ARG_ prefix upstream), and -devd, which has no env twin. "tensor" is the
+# pattern=BUFFER lists of -ot / -otd (parse_tensor_buffer_overrides looks the buffer name
+# up and throws "unknown buffer type" on a miss); they accumulate, so every one places.
 _DEVICE_LIST_OPTIONS: tuple[tuple[str, frozenset, Optional[str]], ...] = (
     ("main", _MAIN_DEVICE_FLAGS, "LLAMA_ARG_DEVICE"),
     ("mmproj", _MMPROJ_DEVICE_FLAGS, "MTMD_BACKEND_DEVICE"),
     ("draft", _DRAFT_DEVICE_FLAGS, None),
+    ("tensor", _OVERRIDE_TENSOR_FLAGS, "LLAMA_ARG_OVERRIDE_TENSOR"),
 )
 
 
@@ -7018,8 +7021,18 @@ def _device_list_sites(
             found.append((group, None, None, None, ""))
     last = {entry[0]: index for index, entry in enumerate(found)}
     return [
-        _DeviceListSite(*entry, final = last[entry[0]] == index) for index, entry in enumerate(found)
+        _DeviceListSite(*entry, final = entry[0] == "tensor" or last[entry[0]] == index)
+        for index, entry in enumerate(found)
     ]
+
+
+def _site_device_name(site: _DeviceListSite, token: str) -> str:
+    """The device name in one comma-separated token of a site: the whole token, or the
+    buffer after the last ``=`` of a tensor override (none without one)."""
+    if site.group != "tensor":
+        return token.strip()
+    pattern, eq, buffer = token.rpartition("=")
+    return buffer.strip() if eq else ""
 
 
 def _widen_pin_ids_for_companion_devices(
@@ -7068,7 +7081,7 @@ def _widen_pin_ids_for_companion_devices(
         tokens: list[tuple[str, Optional[int]]] = []
         excluded = False
         for token in site.value.split(","):
-            match = _GPU_DEVICE_TOKEN_RE.match(token.strip())
+            match = _GPU_DEVICE_TOKEN_RE.match(_site_device_name(site, token))
             physical = None
             if match:
                 prefix_word = prefix_word or match.group(1)
@@ -7115,8 +7128,10 @@ def _widen_pin_ids_for_companion_devices(
             if physical is None:
                 rewritten.append(token)
                 continue
-            match = _GPU_DEVICE_TOKEN_RE.match(token.strip())
-            rewritten.append(f"{match.group(1)}{widened.index(physical)}")
+            name = _site_device_name(site, token)
+            match = _GPU_DEVICE_TOKEN_RE.match(name)
+            head = token.rpartition("=")[0] + "=" if site.group == "tensor" else ""
+            rewritten.append(f"{head}{match.group(1)}{widened.index(physical)}")
         value = ",".join(rewritten)
         if site.env_name is not None:
             if value != env[site.env_name]:
@@ -32228,8 +32243,10 @@ class LlamaCppBackend:
                             allowed_ids = gpu_ids or None,
                             env = env,
                         )
+                        # The names are now in the pin's numbering even when nothing had to
+                        # change, and a reactive retry that narrows the mask refits from it.
+                        _companion_fit_mask = list(_pin_ids)
                         if _companion_widen:
-                            _companion_fit_mask = list(_pin_ids)
                             if not _had_main_device and _extra_args_main_device(cmd) is not None:
                                 _companion_added_device = list(cmd[-2:])
                             if gpu_ids:
