@@ -163,33 +163,46 @@ def apply_reap(
     from core.export.export import _staging_dir
     from unsloth import FastLanguageModel
 
-    if getattr(backend, "is_peft", False):
-        # REAP scores the fine-tuned experts, so the adapters are merged first (16-bit, in memory).
-        logger.info("REAP: merging the LoRA adapters into the 16-bit base before pruning...")
-        model = model.merge_and_unload()
-        backend.current_model = model
-        backend.is_peft = False
-    sweep_reap_staging()
-    staging = _staging_dir(staging_parent)
-    _register_staging(staging.name)
-    sparsity, samples, dataset = key
-    # save_directory repoints the model at the pruned copy, so every later save, merge or GGUF
-    # conversion reads the pruned weights and never the original checkpoint. GGUF files are named
-    # after that folder, so it carries the model's own name.
-    source = str(getattr(model.config, "_name_or_path", "") or "")
-    name = Path(source.rstrip("/\\") or "model").name
-    FastLanguageModel.reap_prune(
-        model,
-        tokenizer,
-        sparsity = sparsity,
-        dataset = _calibration_dataset(dataset, hf_token),
-        num_calibration_samples = samples,
-        save_directory = str(Path(staging.name) / f"{name or 'model'}-REAP"),
-    )
+    try:
+        if getattr(backend, "is_peft", False):
+            # REAP scores the fine-tuned experts, so the adapters are merged first (16-bit, in memory).
+            logger.info("REAP: merging the LoRA adapters into the 16-bit base before pruning...")
+            model = model.merge_and_unload()
+            backend.current_model = model
+            backend.is_peft = False
+        sweep_reap_staging()
+        staging = _staging_dir(staging_parent)
+        _register_staging(staging.name)
+        # Attached now, so an unload after a failure below also removes it.
+        backend._reap_staging = staging
+        sparsity, samples, dataset = key
+        # save_directory repoints the model at the pruned copy, so every later save, merge or GGUF
+        # conversion reads the pruned weights and never the original checkpoint. GGUF files are named
+        # after that folder, so it carries the model's own name.
+        source = str(getattr(model.config, "_name_or_path", "") or "")
+        name = Path(source.rstrip("/\\") or "model").name
+        FastLanguageModel.reap_prune(
+            model,
+            tokenizer,
+            sparsity = sparsity,
+            dataset = _calibration_dataset(dataset, hf_token),
+            num_calibration_samples = samples,
+            save_directory = str(Path(staging.name) / f"{name or 'model'}-REAP"),
+        )
+    except Exception as exc:
+        # A failure part way leaves the loaded model merged and partly pruned; never export it.
+        logger.warning("REAP failed, unloading the partly pruned model: %s", exc)
+        try:
+            backend.cleanup_memory()
+        except Exception as cleanup_exc:
+            logger.warning("Could not unload after a failed REAP run: %s", cleanup_exc)
+        raise RuntimeError(
+            f"REAP expert pruning failed: {exc}. The model was unloaded since it may be partly "
+            "pruned; load it again to export."
+        ) from exc
     # The model now points at the staging copy; Hub cards should name the model it came from.
     model._unsloth_reap_source = source or None
     backend._reap_key = key
-    backend._reap_staging = staging
     report = getattr(model, "_unsloth_reap_report", None) or {}
     kept = len(next(iter(report.values()), []))
     return True, f"REAP kept {kept} experts per MoE layer in {len(report)} layers."
@@ -293,8 +306,12 @@ def sweep_reap_staging(dead_pid: Optional[int] = None) -> None:
         alive = psutil.pid_exists
     except Exception:
         alive = None
+    entries = _read_registry()
+    if not entries:
+        # Nothing was ever staged: no file is created or rewritten for users who never use REAP.
+        return
     keep = []
-    for entry in _read_registry():
+    for entry in entries:
         path, pid = Path(entry["path"]), entry["pid"]
         if not path.exists():
             continue
@@ -309,4 +326,5 @@ def sweep_reap_staging(dead_pid: Optional[int] = None) -> None:
                 logger.info("Removed a REAP staging copy left by a stopped export: %s", path)
                 continue
         keep.append(entry)
-    _write_registry(keep)
+    if keep != entries:
+        _write_registry(keep)

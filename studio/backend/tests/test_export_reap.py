@@ -539,3 +539,39 @@ def test_base_export_of_a_lora_keeps_its_refusal(monkeypatch):
     assert seen == []
     final = _drain(q)[-1]
     assert final["success"] is False and "LoRA" in final["message"]
+
+
+def test_sweep_writes_nothing_for_users_who_never_used_reap(tmp_path, monkeypatch):
+    registry = tmp_path / "cache" / "reap_staging.json"
+    monkeypatch.setattr(reap_mod, "_registry", lambda: registry)
+    reap_mod.sweep_reap_staging()
+    reap_mod.sweep_reap_staging(dead_pid = 12345)
+    reap_mod.discard_reap_staging(_Backend(_Model()))
+    assert not registry.exists() and not registry.parent.exists()
+
+
+def test_failed_pruning_unloads_the_partly_pruned_model(tmp_path, monkeypatch):
+    def reap_prune(model, tokenizer, **kwargs):
+        raise RuntimeError("out of memory in layer 7")
+
+    fake = types.ModuleType("unsloth")
+    fake.FastLanguageModel = types.SimpleNamespace(reap_prune = reap_prune)
+    monkeypatch.setitem(sys.modules, "unsloth", fake)
+    monkeypatch.setattr(reap_mod, "_registry", lambda: tmp_path / "reap_staging.json")
+    unloaded = []
+
+    class _Loaded(_Backend):
+        def cleanup_memory(self):
+            unloaded.append(True)
+            reap_mod.discard_reap_staging(self)
+            self.current_model = None
+
+    backend = _Loaded(_Model(), is_peft = True)
+    with pytest.raises(RuntimeError, match = "unloaded"):
+        reap_mod.apply_reap(backend, {"sparsity": 0.25}, str(tmp_path))
+    # Merged and possibly part pruned: unloaded, so no later export (REAP or not) can use it.
+    assert unloaded and backend.current_model is None
+    assert backend._reap_key is None and backend._reap_staging is None
+    import glob
+
+    assert not glob.glob(str(tmp_path / "unsloth-hub-upload-*"))
