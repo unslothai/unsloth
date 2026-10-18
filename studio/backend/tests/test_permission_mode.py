@@ -3818,6 +3818,9 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     "compare -respect-parentheses a.png b.png /usr/share/pixmaps/diff.png",
     "magick in.png png:/usr/share/pixmaps/out.png",
     "magick in.png PNG32:/home/alice/out.png",
+    'pandoc notes.md -o "$(printf /usr/share/doc/report.docx)"',
+    "ffmpeg -i in.mp4 -map 0 -c copy -f tee '[f=mp4]/usr/share/doc/a.mp4|out.mkv'",
+    "display input.png -write /usr/share/pixmaps/copy.png",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
@@ -4182,6 +4185,7 @@ _INDIRECT_BENIGN_TERMINAL = (
     "cd /usr/share/sounds && ffprobe alert.wav",
     "magick compare -fuzz 5% -metric AE /usr/share/pixmaps/a.png /usr/share/pixmaps/b.png",
     "magick png:/usr/share/pixmaps/a.png out.jpg",
+    "ffmpeg -i in.mp4 -map 0 -c copy -f tee '[f=mp4]a.mp4|out.mkv'",
 )
 
 _INDIRECT_BENIGN_PYTHON = (

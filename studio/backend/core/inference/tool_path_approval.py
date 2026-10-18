@@ -1225,12 +1225,12 @@ _BARE_SWITCH_RE = re.compile(r"^[/\\][^/\\.]*$")
 _OUTPUT_FILE_FLAGS = frozenset({"-o", "--output"})
 
 # Flags that name a file or directory the command writes, beyond `-o`/`--output`: ImageMagick's
-# `-write`/`+write` and pandoc's `--extract-media`/`--log`.
-_COMMAND_OUTPUT_FLAGS = {
-    "magick": frozenset({"-write", "+write"}),
-    "convert": frozenset({"-write", "+write"}),
-    "pandoc": frozenset({"--extract-media", "--log"}),
-}
+# `-write`/`+write` (every ImageMagick tool, `display` included) and pandoc's `--extract-media`/`--log`.
+_COMMAND_OUTPUT_FLAGS = {"pandoc": frozenset({"--extract-media", "--log"})}
+_MAGICK_OUTPUT_FLAGS = frozenset({"-write", "+write"})
+
+# ffmpeg's tee muxer: `[f=mp4]/out/a.mp4|b.mkv` names one output per `|`, options in brackets.
+_FFMPEG_TEE_OPTIONS_RE = re.compile(r"^\[[^\]]*\]")
 
 # Tools that name their output positionally. `ffmpeg ... {[input_options] -i input} ... output`:
 # an absolute operand is an output unless it is the value of an option that reads a file. ffmpeg's
@@ -1299,6 +1299,8 @@ def _unlisted_command_operands(command, args) -> "list[tuple[str, bool]]":
         outputs = _MAGICK_VERB_OUTPUTS[args[0]]
     images = _magick_images(args[1:] if command == "magick" else args)
     output_flags = _OUTPUT_FILE_FLAGS | _COMMAND_OUTPUT_FLAGS.get(command, frozenset())
+    if command in _MAGICK_COMMANDS:
+        output_flags |= _MAGICK_OUTPUT_FLAGS
     operands = []
     writes_next = False
     for index, arg in enumerate(args):
@@ -1324,9 +1326,15 @@ def _unlisted_command_operands(command, args) -> "list[tuple[str, bool]]":
             writing = writing or not reads
         if command in _MAGICK_COMMANDS and value.lower()[:5] != "file:":
             value = _MAGICK_CODER_PREFIX_RE.sub("", value, count = 1)
-        # A lone rooted word is a Windows switch (`/E`), unless it is the file the command writes.
-        if _looks_absolute(value) and (writing or not _BARE_SWITCH_RE.match(value)):
-            operands.append((value, writing))
+        values = [value]
+        if command == "ffmpeg" and "|" in value:
+            values = [_FFMPEG_TEE_OPTIONS_RE.sub("", part) for part in value.split("|")]
+        for value in values:
+            # A lone rooted word is a Windows switch (`/E`), unless it is the file the command writes.
+            if _looks_absolute(value) and (writing or not _BARE_SWITCH_RE.match(value)):
+                operands.append((value, writing))
+            elif not _looks_absolute(value):
+                operands.extend((path, writing) for path in _substitution_operand_paths(value))
     return operands
 
 
