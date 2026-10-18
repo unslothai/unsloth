@@ -548,7 +548,6 @@ export function HighlightedCode({
 }: {
   code: string;
   language: string;
-  /** names the capped example's scroll region for assistive tech */
   label: string;
   redactFromReload: boolean;
 }) {
