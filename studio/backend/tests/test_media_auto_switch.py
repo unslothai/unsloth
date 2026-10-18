@@ -792,6 +792,7 @@ def test_the_load_runs_on_the_card_the_locality_check_planned(
     )
     ranks = itertools.chain([1, 1], itertools.repeat(0))
     monkeypatch.setattr(dd, "resolve_auto_cuda_ordinal", lambda: next(ranks))
+    monkeypatch.setattr(dd, "auto_cuda_ranking_possible", lambda: True)
     planned: list = []
     backend.download_plan = lambda model_path, **kw: planned.append(kw["gpu_ordinal"]) or {
         "total_bytes": 0
