@@ -476,3 +476,91 @@ def test_an_unmasked_split_on_torch_ordinals_is_declined_unless_the_order_is_pci
         assert "-ot" not in cmd and cmd[cmd.index("--fit") + 1] == "on", cmd
         assert "--tensor-split" not in cmd, cmd
         assert not backend._spill_plan_flags
+
+
+# ------------------------------- -sm none budgets row 0, the child keeps its own device 0 (r24)
+
+
+def _sm_none_launch(
+    tmp_path,
+    monkeypatch,
+    *,
+    mask,
+    picked = None,
+):
+    """Two cards (48 and 24 GiB), --split-mode none: _planned_tensor_spill budgets the first row it
+    keeps, llama.cpp keeps only the child's device 0."""
+    from core.inference import llama_cpp as llama_mod
+    from test_llama_cpp_placement import _backend, _launch
+    from test_offload_planner_launch import DENSE
+
+    cls = llama_mod.LlamaCppBackend
+    monkeypatch.setenv("UNSLOTH_SMART_OFFLOAD", "1")
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    if mask is None:
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    else:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+    monkeypatch.setattr(cls, "_host_torch_is_rocm", staticmethod(lambda: False))
+    monkeypatch.setattr(cls, "_GPU_IDS_ARE_PCI_INDICES", True)
+    if picked is not None:
+        original = cls.load_model
+
+        def load(self, intent, *a, **k):
+            return original(self, replace(intent, gpu_ids = picked), *a, **k)
+
+        monkeypatch.setattr(cls, "load_model", load)
+    big, small = 48 * 1024, 24 * 1024
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, big, big), (1, small, small)])
+
+    def read(_path):
+        for key, value in DENSE.items():
+            setattr(backend, key, value)
+
+    backend._read_gguf_metadata = read
+    backend._get_gguf_size_bytes = lambda _path: 90 * GIB
+    del backend._can_estimate_kv
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "supports_kv_unified": True,
+        "supports_fit_ctx": True,
+        "supports_cache_ram": True,
+    }
+    backend._available_system_memory_mib = lambda: 256 * 1024
+    asked = []
+    backend._planned_tensor_spill = lambda inputs, **_kw: asked.append(inputs) or _one_card_plan()
+    launched = _launch(
+        backend,
+        gguf,
+        speculative_type = "off",
+        n_ctx = 8192,
+        n_parallel = 1,
+        extra_args = ["--split-mode", "none"],
+    )
+    assert asked, "the planner was never consulted"
+    return launched["cmd"], launched["env"], backend
+
+
+@pytest.mark.parametrize(
+    "mask, picked, keeps_plan",
+    [
+        # CUDA_VISIBLE_DEVICES=1,0 makes the 24 GiB card device 0; the plan priced the 48 GiB row.
+        ("1,0", None, False),
+        # A dragged pick reaches the child mask in its own order, the same way.
+        (None, (1, 0), False),
+        # Same order as the rows: device 0 is the card the plan priced.
+        ("0,1", None, True),
+        (None, None, True),
+        (None, (0, 1), True),
+    ],
+)
+def test_a_split_mode_none_plan_declines_when_another_card_is_device_0(
+    tmp_path, monkeypatch, mask, picked, keeps_plan
+):
+    cmd, env, backend = _sm_none_launch(tmp_path, monkeypatch, mask = mask, picked = picked)
+    if keeps_plan:
+        assert "-ot" in cmd and cmd[cmd.index("--fit") + 1] == "off", cmd
+        child = env.get("CUDA_VISIBLE_DEVICES")
+        assert child is None or child.split(",")[0] == "0", child
+    else:
+        assert "-ot" not in cmd and cmd[cmd.index("--fit") + 1] == "on", cmd
+        assert not backend._spill_plan_flags

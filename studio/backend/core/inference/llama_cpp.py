@@ -31604,8 +31604,33 @@ class LlamaCppBackend:
                             )
                         )
                     )
+                    # -sm none keeps only the child's device 0, which _planned_tensor_spill budgets
+                    # as the first row it kept. A pick's order, or a parent mask reordering the same
+                    # cards, makes another card device 0, and the multi-device clause below never
+                    # sees a one-device plan.
+                    _sm_none_rows = (
+                        [
+                            int(_idx)
+                            for _idx, _free in ((_spill_inputs or {}).get("gpus") or ())
+                            if int(_idx)
+                            not in set((_spill_inputs or {}).get("shared_gpu_ids") or ())
+                            and (gpu_indices is None or int(_idx) in {int(i) for i in gpu_indices})
+                        ]
+                        if _extra_args_split_mode(extra_args, {}) == "none"
+                        else []
+                    )
+                    _sm_none_moves_device_0 = len(_sm_none_rows) > 1 and (
+                        (gpu_indices is not None and int(list(gpu_indices)[0]) != _sm_none_rows[0])
+                        or (
+                            not is_vulkan_backend
+                            and not gpu_ids
+                            and (self._inherited_child_gpu_order(_sm_none_rows) or _sm_none_rows)[0]
+                            != _sm_none_rows[0]
+                        )
+                    )
                     if _spill is not None and (
                         _cuda_order_unverified
+                        or _sm_none_moves_device_0
                         or (
                             len(getattr(_spill, "device_layer_counts", ()) or ()) > 1
                             and gpu_indices is not None
