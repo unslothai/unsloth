@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import {
   Tooltip,
   TooltipContent,
@@ -13,7 +14,7 @@ import {
 } from "@/features/hub";
 import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import {
   type DownloadTransportSettings,
   loadDownloadTransportSettings,
@@ -45,6 +46,7 @@ const OPTIONS: {
 
 export function DownloadTransportRow() {
   const t = useT();
+  const pillId = useId();
   const [mode, setMode] = useTransportMode();
   // huggingface_hub 1.18 refetches an interrupted transfer from zero, so promising HTTPS
   // "resumes where it stopped" there is backwards.
@@ -155,10 +157,13 @@ export function DownloadTransportRow() {
                     disabled
                       ? "cursor-not-allowed text-muted-foreground/45"
                       : active
-                        ? "hub-tab-toggle-pill text-foreground"
+                        ? "text-foreground"
                         : "text-muted-foreground hover:text-foreground",
                   )}
                 >
+                  {active && !disabled && (
+                    <SegmentedPill group={`${pillId}-transport`} />
+                  )}
                   <span className="relative z-10">{t(opt.labelKey)}</span>
                 </button>
               </TooltipTrigger>

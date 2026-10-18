@@ -3312,7 +3312,7 @@ def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str]
 
 
 # Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3", "lilicorr")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 # Human label per resolved spec mode, for launch logging and the UI notice.
@@ -3422,7 +3422,7 @@ def _is_root_dflash_drafter_path(path: str) -> bool:
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
 _GGUF_KNOWN_QUANT_RE = re.compile(
     r"(UD-)?"
-    r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"((?:MX|NV)FP[0-9]+(?:_[A-Z0-9]+)*"
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
@@ -7450,6 +7450,9 @@ _LAZY_READ_TENSORS: dict[str, tuple[str, ...]] = {
     "qwen4exp": ("per_layer_token_embd.weight",),
 }
 _LAZY_READ_AUTO_MIN_BYTES = 4 * 1024**3
+# Embedded NextN/MTP heads llama.cpp skips at load unless --spec-type draft-mtp, measured:
+# Nemotron 3.5 Super loads 2987 MiB less with MTP off (b11642 + ggml-org#30520).
+_NEXTN_SKIPPED_WITHOUT_MTP_ARCHS = frozenset({"nemotron_h_moe"})
 # --tensor-read-lazy predates ggml-org/llama.cpp#27969; a build reads only its own spelling.
 _LAZY_MODE_SPELLINGS: dict[str, tuple[frozenset[str], str]] = {
     "--lazy-mode": (frozenset({"-lzm", "--lazy-mode"}), "LLAMA_ARG_LAZY_MODE"),
@@ -8191,11 +8194,27 @@ _INKLING_REASONING_EFFORT = {
 }
 
 
+# Muse Spark's template accepts only low/medium/high/xhigh and raise_exception()s on
+# anything else, so a "none" or "max" request would fail the render. It cannot turn
+# reasoning off: "none" and "minimal" take the smallest budget, "max" the largest.
+_MUSE_SPARK_REASONING_EFFORT = {
+    "none": "low",
+    "minimal": "low",
+    "max": "xhigh",
+}
+
+
 def _coerce_reasoning_effort(architecture, kwargs: dict) -> dict:
     if architecture == "inkling":
         effort = kwargs.get("reasoning_effort")
         if isinstance(effort, str):
             mapped = _INKLING_REASONING_EFFORT.get(effort.strip().lower())
+            if mapped is not None:
+                kwargs["reasoning_effort"] = mapped
+    elif architecture == "muse-spark":
+        effort = kwargs.get("reasoning_effort")
+        if isinstance(effort, str):
+            mapped = _MUSE_SPARK_REASONING_EFFORT.get(effort.strip().lower())
             if mapped is not None:
                 kwargs["reasoning_effort"] = mapped
     return kwargs
@@ -8568,6 +8587,8 @@ class LlamaCppBackend:
         self._expert_feed_forward_length: Optional[int] = None
         self._expert_shared_feed_forward_length: Optional[int] = None
         self._expert_shared_count: Optional[int] = None
+        # Nemotron 3.5: routed experts run in this latent width, not n_embd.
+        self._moe_latent_size: Optional[int] = None
         # Gemma 3n / Gemma 4 per-layer input embedding width.
         self._embedding_length_per_layer_input: Optional[int] = None
         self._vocab_size: Optional[int] = None
@@ -11053,10 +11074,13 @@ class LlamaCppBackend:
         return total
 
     @staticmethod
-    def _gguf_scan_tensor_bytes(path: str) -> "tuple[Optional[str], dict[str, int], int]":
+    def _gguf_scan_tensor_bytes(
+        path: str, also: Optional[Callable[[str], bool]] = None
+    ) -> "tuple[Optional[str], dict[str, int], int]":
         """(architecture, lazy-read candidate bytes by name, routed expert bytes) from one
         GGUF header. Streamed: ``GGUFReader`` materialises the vocabulary under the load
-        lock. A quant type gguf predates is sized from the next tensor's offset."""
+        lock. A quant type gguf predates is sized from the next tensor's offset. Names
+        ``also`` accepts are kept by name too, routed experts included."""
         from gguf.constants import GGML_QUANT_SIZES
         from core.inference.offload_layout import _BLOCK_RE, _MOE_EXPERT_RE
 
@@ -11092,11 +11116,12 @@ class LlamaCppBackend:
                 ggml_type = struct.unpack("<I", f.read(4))[0]
                 offset = struct.unpack("<Q", f.read(8))[0]
                 offsets.append(offset)
-                block_match = _BLOCK_RE.match(raw_name.decode("utf-8", "replace"))
-                is_expert = bool(block_match and _MOE_EXPERT_RE.match(block_match.group(2)))
-                if not is_expert and raw_name not in wanted:
-                    continue
                 name = raw_name.decode("utf-8", "replace")
+                block_match = _BLOCK_RE.match(name)
+                is_expert = bool(block_match and _MOE_EXPERT_RE.match(block_match.group(2)))
+                kept = also is not None and also(name)
+                if not is_expert and raw_name not in wanted and not kept:
+                    continue
                 block = GGML_QUANT_SIZES.get(ggml_type)
                 if block is None:
                     unsized.append((name, offset))
@@ -11104,7 +11129,7 @@ class LlamaCppBackend:
                 size = math.prod(dims) // block[0] * block[1]
                 if is_expert:
                     experts += size
-                else:
+                if not is_expert or kept:
                     named[name] = size
             if unsized:
                 data_start = -(-f.tell() // alignment) * alignment
@@ -11114,9 +11139,10 @@ class LlamaCppBackend:
                     later = ordered[bisect.bisect_right(ordered, offset) :]
                     size = max(0, (later[0] if later else data_end) - offset)
                     block_match = _BLOCK_RE.match(name)
-                    if block_match and _MOE_EXPERT_RE.match(block_match.group(2)):
+                    is_expert = bool(block_match and _MOE_EXPERT_RE.match(block_match.group(2)))
+                    if is_expert:
                         experts += size
-                    else:
+                    if not is_expert or (also is not None and also(name)):
                         named[name] = size
         return architecture, named, experts
 
@@ -11154,6 +11180,38 @@ class LlamaCppBackend:
             result = None
         self._gguf_tensor_scan_cache = (key, result)
         return result
+
+    def _unloaded_nextn_bytes(self, model_path: Optional[str]) -> int:
+        """Bytes of the embedded NextN/MTP blocks llama.cpp leaves unloaded without
+        ``--spec-type draft-mtp`` (nextn_flags marks them TENSOR_SKIP unless load_mtp).
+        Only for architectures measured to skip them; 0 when unknown or unreadable."""
+        from core.inference.offload_layout import _BLOCK_RE, split_shard_paths
+
+        nextn = int(getattr(self, "_nextn_predict_layers", None) or 0)
+        n_blocks = int(getattr(self, "_n_layers", None) or 0)
+        if (
+            not model_path
+            or nextn <= 0
+            or n_blocks <= nextn
+            or getattr(self, "_architecture", None) not in _NEXTN_SKIPPED_WITHOUT_MTP_ARCHS
+        ):
+            return 0
+        first = n_blocks - nextn
+
+        def in_head(name: str) -> bool:
+            match = _BLOCK_RE.match(name)
+            return bool(match) and int(match.group(1)) >= first
+
+        try:
+            return sum(
+                size
+                for p in (split_shard_paths(model_path) or [model_path])
+                for name, size in self._gguf_scan_tensor_bytes(p, also = in_head)[1].items()
+                if in_head(name)
+            )
+        except Exception as e:  # missing shard or truncated header: discount nothing
+            logger.debug("NextN block scan failed for %s (%s)", model_path, e)
+            return 0
 
     def _lazy_read_host_bytes(
         self,
@@ -11848,6 +11906,10 @@ class LlamaCppBackend:
         emit, so callers can treat non-None as "this changed something".
         """
         inherited = LlamaCppBackend._resolve_visible_physical_ids()
+        if not inherited:
+            # A uuid mask the ordinal resolvers leave open (FASTEST_FIRST) still orders
+            # the cards the memory probe matched by uuid.
+            inherited = LlamaCppBackend._smi_uuid_mask_order()
         if not inherited:
             return None
         wanted = [int(i) for i in pinned_ids]
@@ -13150,6 +13212,9 @@ class LlamaCppBackend:
     _GPU_IDS_ARE_PCI_INDICES = None
     # index -> inherited uuid, when CUDA_VISIBLE_DEVICES named the NVML rows by uuid.
     _NVML_ROWS: list = []  # the last NVML inventory; _child_visibility_for reads it
+    _SMI_UUID_ROWS: list = []  # (index, uuid) from the last nvidia-smi memory probe
+    # MIG cards that same probe saw (None = discovery unknown), so pinning uses its snapshot.
+    _SMI_MIG_INDICES: Optional[frozenset] = None
 
     # Boot-time property: read once, not per launch (the #10613 host has 175
     # groups). Only the default root is cached; an explicit root (tests) re-reads.
@@ -13690,10 +13755,18 @@ class LlamaCppBackend:
             return {}
 
     @classmethod
-    def _cuda_sm_gate_error(cls, binary: Optional[str] = None) -> Optional[str]:
+    def _cuda_sm_gate_error(
+        cls,
+        binary: Optional[str] = None,
+        gpu_indices: Optional[Iterable[int]] = None,
+    ) -> Optional[str]:
         """Error message when every visible GPU is OLDER than the oldest arch the
         installed CUDA bundle was built for, or None to proceed. Fails open on
         unknown coverage or caps.
+
+        ``gpu_indices`` (physical ids the child is pinned to) tightens "every
+        visible" to "any pinned": the child places work on each pinned card, so one
+        too-old card aborts the load even beside a supported one.
 
         Only the too-old direction is broken. The bundles compile plain arch
         numbers, so each fatbin carries PTX beside its cubins, and the driver JITs
@@ -13712,7 +13785,12 @@ class LlamaCppBackend:
             return None
         caps = cls._cuda_compute_caps()
         oldest = min(supported)
-        if not caps or any(sm >= oldest for sm in caps.values()):
+        if gpu_indices is not None:
+            pinned = {int(i) for i in gpu_indices}
+            caps = {idx: sm for idx, sm in caps.items() if idx in pinned and sm < oldest}
+        elif any(sm >= oldest for sm in caps.values()):
+            return None
+        if not caps:
             return None
         present = ", ".join(f"GPU {idx} is sm_{sm}" for idx, sm in sorted(caps.items()))
         # The updater cannot replace a pinned LLAMA_SERVER_PATH or a llama-server
@@ -13722,6 +13800,30 @@ class LlamaCppBackend:
             f"newer, but {present} -- it was likely installed on a machine with a "
             f"newer GPU, so {cls._runtime_remedy(binary)}."
         )
+
+    @classmethod
+    def _cuda_sm_gate_keep(
+        cls, binary: Optional[str], gpus: list[tuple[int, int, int]]
+    ) -> list[tuple[int, int, int]]:
+        """``gpus`` minus the CUDA cards older than the installed bundle's oldest
+        arch, so auto placement cannot pin one beside a supported card (RTX 4090 +
+        GTX 1060 under an sm_75+ build). Unchanged on unknown coverage or caps, and
+        when no card survives: the gate then refuses with its own message."""
+        supported = cls._installed_llama_cuda_sms(binary)
+        if supported is None or not gpus:
+            return gpus
+        caps = cls._cuda_compute_caps()
+        oldest = min(supported)
+        kept = [g for g in gpus if caps.get(g[0], oldest) >= oldest]
+        if not kept or len(kept) == len(gpus):
+            return gpus
+        for idx, _free, _total in gpus:
+            if caps.get(idx, oldest) < oldest:
+                logger.warning(
+                    f"Skipping GPU {idx} (sm_{caps[idx]}): installed llama.cpp "
+                    f"build only has GPU code for sm_{oldest} and newer"
+                )
+        return kept
 
     @classmethod
     def _arch_gate_survivors(cls, binary: Optional[str] = None) -> list[int]:
@@ -14880,13 +14982,19 @@ class LlamaCppBackend:
     def _nvml_rows_visible(rows: list[dict]) -> list[dict]:
         """The NVML rows CUDA_VISIBLE_DEVICES permits, in mask order: an index or a GPU-/MIG-
         uuid prefix per entry, as the CUDA runtime reads it. An entry naming no single device
-        ends the mask there: "0,2,-1,1" exposes 0 and 2, "-1" alone hides every GPU. A GPU in
-        MIG mode is one slice to CUDA (the first, when the mask does not name one), so its
-        first slice row stands in for the parent's whole-card memory, and a second slice of
-        the same card is dropped: the rows are keyed by physical index, and one slice per
-        card is what the driver exposed before R570 and what the child is pinned to."""
+        ends the mask there: "0,2,-1,1" exposes 0 and 2, "-1" alone hides every GPU, and a
+        repeated index empties it, as CUDA does. A GPU in MIG mode is one row backed by one
+        slice, which the child is pinned to: the first slice the mask names, else the one with
+        the least free memory, so the budget never exceeds the device the child gets (R570+
+        enumerates every slice, but one per card is sized and pinned)."""
         raw = os.environ.get("CUDA_VISIBLE_DEVICES")
         parents = [r for r in rows if not r.get("mig")]
+
+        def free_mib(r: dict) -> int:
+            try:
+                return int(r.get("memory_free_mib") or 0)
+            except (TypeError, ValueError):
+                return 0
 
         def as_cuda_sees(r: dict) -> dict:
             if r.get("mig"):
@@ -14894,31 +15002,41 @@ class LlamaCppBackend:
             slices = [
                 s for s in rows if s.get("mig") and str(s.get("index")) == str(r.get("index"))
             ]
-            return slices[0] if slices else r
+            return min(slices, key = free_mib) if slices else r
 
-        tokens = [t.strip() for t in (raw or "").split(",") if t.strip()]
+        tokens = [t.strip() for t in (raw or "").split(",")] if raw else []
         picked: list[dict] = []
         if raw is None:
             picked = [as_cuda_sees(r) for r in parents]
+        seen: set[int] = set()
         for token in tokens:
-            if token.isdigit():
-                hits = [r for r in parents if str(r.get("index")) == token]
-            elif token.startswith("GPU-"):
-                hits = [r for r in parents if str(r.get("uuid", "")).startswith(token)]
-            elif token.startswith("MIG-"):
+            if not token:
+                break  # an empty entry ends the mask, as CUDA reads it
+            prefix = re.match(r"\+?\d+", token)
+            # Case-insensitive, as the nvidia-smi uuid matcher reads the same mask.
+            low = token.lower()
+            if low.startswith("gpu-"):
+                hits = [r for r in parents if str(r.get("uuid", "")).lower().startswith(low)]
+            elif low.startswith("mig-"):
                 # A MIG- entry names a slice row the probe lists under its parent.
                 hits = [
-                    r for r in rows if r.get("mig") and str(r.get("uuid", "")).startswith(token)
+                    r
+                    for r in rows
+                    if r.get("mig") and str(r.get("uuid", "")).lower().startswith(low)
                 ]
+            elif prefix:
+                # CUDA reads an index strtoul-style: "1gpu2" is GPU 1.
+                index = int(prefix.group())
+                if index in seen:
+                    return []
+                seen.add(index)
+                hits = [r for r in parents if str(r.get("index")) == str(index)]
             else:
                 hits = []
             if len(hits) != 1:
                 break
-            picked.extend(
-                r
-                for r in map(as_cuda_sees, hits)
-                if str(r.get("index")) not in {str(p.get("index")) for p in picked}
-            )
+            if str(hits[0].get("index")) not in {str(p.get("index")) for p in picked}:
+                picked.append(as_cuda_sees(hits[0]))
         return picked
 
     @staticmethod
@@ -14943,6 +15061,102 @@ class LlamaCppBackend:
         if by_index and all(i in by_index for i in ids):
             return ",".join(by_index[i] for i in ids)
         return ",".join(str(i) for i in ids)
+
+    @staticmethod
+    def _pinned_child_visibility(gpu_indices) -> Optional[str]:
+        """``_child_visibility_for``, or None when the inherited CUDA mask must stand: a MIG
+        or unresolvable UUID mask the ids cannot be mapped back to, where a numeric pin would
+        be re-read against the whole host (a card the parent hid, or the whole MIG card)."""
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if (
+            LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is False
+            and cvd is not None
+            and cvd.strip()
+            and LlamaCppBackend._visibility_mask_is_unmappable()
+        ):
+            # Torch ordinals: map through the mask itself, never through NVML rows cached by
+            # an earlier probe (their indices are physical, so ordinal 0 could name another slice).
+            return LlamaCppBackend._mig_tokens_for_ordinals(cvd, gpu_indices)
+        mask = LlamaCppBackend._child_visibility_for(gpu_indices)
+        if (
+            cvd is not None
+            and cvd.strip()
+            and mask == ",".join(str(int(i)) for i in gpu_indices)
+            and LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES") is None
+            and LlamaCppBackend._visibility_mask_is_unmappable()
+        ):
+            # Physical rows the memory probe matched by uuid: hand the child those uuids.
+            uuids = LlamaCppBackend._smi_uuids_for(cvd, gpu_indices)
+            if uuids is not None:
+                return uuids
+            return LlamaCppBackend._mig_tokens_for_ordinals(cvd, gpu_indices)
+        return mask
+
+    @staticmethod
+    def _smi_uuid_mask_order() -> Optional[list[int]]:
+        """Physical ids of a whole-GPU uuid mask in mask order, from the last nvidia-smi
+        rows; None unless the probe's ids are physical and every token matched a row."""
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is not True or not (cvd or "").strip():
+            return None
+        from utils.hardware import nvidia
+
+        visible = nvidia._uuid_visible_ordinal_map(cvd, LlamaCppBackend._SMI_UUID_ROWS)
+        return sorted(visible, key = visible.__getitem__) if visible else None
+
+    @staticmethod
+    def _smi_uuids_for(cvd: str, gpu_indices) -> Optional[str]:
+        """The uuids of these physical ids when the current whole-GPU uuid mask names each
+        of them in the last nvidia-smi rows, else None. Never for a MIG card: CUDA hands a
+        GPU- entry on one a slice, which only the NVML rows name."""
+        if LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is not True:
+            return None
+        from utils.hardware import nvidia
+
+        rows = LlamaCppBackend._SMI_UUID_ROWS
+        visible = nvidia._uuid_visible_ordinal_map(cvd, rows)
+        try:
+            ids = [int(i) for i in gpu_indices]
+        except (TypeError, ValueError):
+            return None
+        if not visible or not ids or len(set(ids)) != len(ids):
+            return None
+        if any(i not in visible for i in ids):
+            return None
+        # The probe that chose these rows classified them; a later recheck failing must
+        # not widen the child to the whole inherited mask.
+        mig = LlamaCppBackend._SMI_MIG_INDICES
+        if mig is None:
+            # Unknown then too: NVML rows from that probe still name MIG cards.
+            mig = {
+                int(r["index"])
+                for r in LlamaCppBackend._NVML_ROWS
+                if r.get("mig") and str(r.get("index", "")).isdigit()
+            }
+        if set(ids) & mig:
+            return None
+        by_index = dict(rows)
+        return ",".join(by_index[i] for i in ids)
+
+    @staticmethod
+    def _mig_tokens_for_ordinals(cvd: str, gpu_indices) -> Optional[str]:
+        """The inherited MIG- entries behind torch ordinals, or None (keep the whole mask). Only
+        when torch enumerated every entry, so ordinal i is entry i in mask order."""
+        tokens = [t.strip() for t in cvd.split(",") if t.strip()]
+        if LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is not False or not all(
+            t.startswith("MIG-") for t in tokens
+        ):
+            return None
+        try:
+            import torch
+            if torch.cuda.device_count() != len(tokens):
+                return None
+            ids = [int(i) for i in gpu_indices]
+        except Exception:
+            return None
+        if not ids or len(set(ids)) != len(ids) or not all(0 <= i < len(tokens) for i in ids):
+            return None
+        return ",".join(tokens[i] for i in ids)
 
     @staticmethod
     def _get_gpu_memory_nvml() -> list[tuple[int, int, int]]:
@@ -14992,6 +15206,28 @@ class LlamaCppBackend:
         return gpus
 
     @staticmethod
+    def _whole_gpu_mask_rows(
+        cvd: str, uuid_rows: list[tuple[int, str]], physical_ids: set[int]
+    ) -> Optional[set[int]]:
+        """Physical rows behind a whole-GPU uuid mask the ordinal resolvers left open.
+        A uuid names its card whatever CUDA_DEVICE_ORDER says, so only membership is
+        needed. None for a MIG mask or a token no row verifies, so the caller keeps
+        its conservative path."""
+        from utils.hardware import nvidia
+
+        tokens = [t.strip().lower() for t in cvd.split(",") if t.strip()]
+        if not tokens or any(not t.startswith("gpu-") for t in tokens):
+            return None
+        if uuid_rows:
+            visible = nvidia._uuid_visible_ordinal_map(cvd, uuid_rows)
+            return set(visible) if visible is not None else None
+        # No uuid column: verify with the separate uuid query, never assume. Only a
+        # one-card mask: these rows carry no uuids to order or pin a multi-card subset,
+        # while the inherited mask already pins a single card.
+        ids = nvidia.resolve_uuid_mask(cvd)
+        return set(ids) if ids and len(ids) == 1 and set(ids) <= physical_ids else None
+
+    @staticmethod
     def _get_gpu_memory(
         binary: Optional[str] = None, *, for_llama_server: bool = False
     ) -> list[tuple[int, int, int]]:
@@ -15026,6 +15262,7 @@ class LlamaCppBackend:
             return LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
         # ── NVIDIA via nvidia-smi ────────────────────────────────────
         unsized_ids: list[int] = []
+        mig_card_rows: list[tuple[int, int, int]] = []
         try:
             from utils.hardware import gpu_query
 
@@ -15033,7 +15270,9 @@ class LlamaCppBackend:
             result = gpu_query.run_nvidia_smi(
                 [
                     "nvidia-smi",
-                    "--query-gpu=index,memory.free,memory.total",
+                    # uuid in the same call: a whole-GPU uuid mask resolves without
+                    # CUDA_DEVICE_ORDER or a second query.
+                    "--query-gpu=index,memory.free,memory.total,uuid",
                     "--format=csv,noheader,nounits",
                 ],
                 capture_output = True,
@@ -15045,12 +15284,19 @@ class LlamaCppBackend:
                 **_windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:
+                from utils.hardware import nvidia
+
                 allowed = LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES")
-                gpus: list[tuple[int, int, int]] = []
+                _cvd = (os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip()
+                rows: list[tuple[int, int, int]] = []
+                unsized_rows: list[int] = []
+                uuid_rows: list[tuple[int, str]] = []
                 for line in result.stdout.strip().splitlines():
                     parts = [p.strip() for p in line.split(",")]
                     if len(parts) < 2:
                         continue
+                    if len(parts) >= 4 and parts[0].isdigit() and parts[3]:
+                        uuid_rows.append((int(parts[0]), parts[3]))
                     # Index and free required; skip a bad line rather than abandon
                     # the probe to the torch fallback.
                     try:
@@ -15058,8 +15304,8 @@ class LlamaCppBackend:
                         free_mib = int(parts[1])
                     except ValueError:
                         # Jetson answers "[N/A]": no dedicated VRAM (#4862).
-                        if parts[0].isdigit() and (allowed is None or int(parts[0]) in allowed):
-                            unsized_ids.append(int(parts[0]))
+                        if parts[0].isdigit():
+                            unsized_rows.append(int(parts[0]))
                         continue
                     # Total parsed separately: a two-column line or a non-integer
                     # total ("N/A" on MIG/vGPU) keeps the GPU at total 0 (fit uses
@@ -15070,13 +15316,57 @@ class LlamaCppBackend:
                             total_mib = int(parts[2])
                         except ValueError:
                             total_mib = 0
-                    if allowed is not None and idx not in allowed:
-                        continue
-                    gpus.append((idx, free_mib, total_mib))
+                    rows.append((idx, free_mib, total_mib))
+                LlamaCppBackend._SMI_UUID_ROWS = uuid_rows
+                LlamaCppBackend._SMI_MIG_INDICES = None
+                if allowed is None and _cvd:
+                    allowed = LlamaCppBackend._whole_gpu_mask_rows(
+                        _cvd, uuid_rows, {r[0] for r in rows} | set(unsized_rows)
+                    )
+                if allowed is None and _cvd:
+                    # CUDA's numeric-prefix reading ("1gpu2" is 1, "0,1,abc" is 0,1).
+                    _ids = LlamaCppBackend._resolve_visible_physical_ids()
+                    allowed = set(_ids) if _ids is not None else None
+                unsized_ids = [i for i in unsized_rows if allowed is None or i in allowed]
+                gpus = [r for r in rows if allowed is None or r[0] in allowed]
                 # Match the docstring's sort-by-id guarantee (driver order isn't).
                 gpus.sort(key = lambda g: g[0])
+                if allowed is None and _cvd:
+                    # A MIG / unresolvable UUID mask names devices these rows cannot be
+                    # matched to: listing every card sizes against GPUs the parent hid.
+                    # The NVML branch names slices and uuids.
+                    gpus = []
+                elif gpus:
+                    mig_known = nvidia.get_mig_gpu_indices_or_none()
+                    if mig_known is not None:
+                        LlamaCppBackend._SMI_MIG_INDICES = frozenset(mig_known)
+                    mig = (mig_known or set()) & {g[0] for g in gpus}
+                    if mig_known is None:
+                        # MIG discovery failed: a row may be a whole MIG card. NVML names
+                        # slices and whole cards alike, so its reading wins; without one
+                        # the CLI rows stand, as before MIG support (no CUDA context).
+                        nvml = {g[0]: g for g in LlamaCppBackend._get_gpu_memory_nvml()}
+                        if nvml:
+                            gpus = [nvml.get(g[0], g) for g in gpus]
+                        else:
+                            # No current NVML inventory: an older one must not name devices.
+                            LlamaCppBackend._NVML_ROWS = []
+                    elif not mig:
+                        # The CLI now answers for these cards: an earlier NVML inventory
+                        # (slices since removed) must not name the child's devices.
+                        LlamaCppBackend._NVML_ROWS = []
+                    if mig:
+                        # A MIG card's row is the whole card: swap in its NVML slice reading,
+                        # keeping the whole cards. No reading at all: the later probes decide,
+                        # then these rows as before.
+                        slices = {g[0]: g for g in LlamaCppBackend._get_gpu_memory_nvml()}
+                        mig_card_rows = gpus
+                        gpus = [slices.get(g[0], g) if g[0] in mig else g for g in gpus]
+                        gpus = [g for g in gpus if g[0] not in mig or g[0] in slices]
                 if gpus:
                     LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
+                    if for_llama_server:
+                        gpus = LlamaCppBackend._cuda_sm_gate_keep(binary, gpus)
                     # The CLI row is the carve-out, not the pool. Discrete rows unchanged.
                     return LlamaCppBackend._widen_integrated_cuda_rows(gpus)
         except Exception as e:
@@ -15086,6 +15376,8 @@ class LlamaCppBackend:
         nvml_gpus = LlamaCppBackend._get_gpu_memory_nvml()
         if nvml_gpus:
             LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
+            if for_llama_server:
+                nvml_gpus = LlamaCppBackend._cuda_sm_gate_keep(binary, nvml_gpus)
             # nvidia-smi IS NVML: same carve-out, same PCI indexing, same correction.
             return LlamaCppBackend._widen_integrated_cuda_rows(nvml_gpus)
 
@@ -15098,6 +15390,9 @@ class LlamaCppBackend:
 
         # ── Torch fallback (covers AMD ROCm and missing nvidia-smi) ──
         gpus = LlamaCppBackend._get_gpu_memory_torch(binary, for_llama_server)
+        if not gpus and mig_card_rows:
+            LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
+            return LlamaCppBackend._widen_integrated_cuda_rows(mig_card_rows)
         if gpus or not (for_llama_server and unsized_ids):
             return gpus
         return LlamaCppBackend._tegra_unified_memory_rows(unsized_ids)
@@ -18345,13 +18640,16 @@ class LlamaCppBackend:
             return verify_rows
         ub = max(1, int(self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch))
         width = self._compute_activation_width()
-        if drafter_path:
-            db = self._draft_backend_for(drafter_path)
+        db = self._draft_backend_for(drafter_path) if drafter_path else None
+        if db is not None:
             draft_width = getattr(db, "_compute_activation_width", lambda: 0)()
             if draft_width > 0:
                 width = draft_width + 2 * (getattr(self, "_embedding_length", None) or 0)
         activations = int(width * ub * 4 * self._COMPUTE_BUFFER_SAFETY)
-        return verify_rows + max(0, ub * 2 * n_ctx + activations - self._MTP_DRAFT_COMPUTE_BYTES)
+        spec = verify_rows + max(0, ub * 2 * n_ctx + activations - self._MTP_DRAFT_COMPUTE_BYTES)
+        if getattr(db, "_architecture", None) == "dflash":
+            spec = max(spec, self._DFLASH_DRAFT_COMPUTE_BYTES)
+        return spec
 
     def _spec_verify_rows_bytes(self, n_parallel: int, spec_draft_n_max: int) -> int:
         """Target output rows for verified draft tokens, wherever the drafter runs."""
@@ -18437,6 +18735,11 @@ class LlamaCppBackend:
     # at which "does it fit" means "does every layer stay on the GPU".
     _MMPROJ_FIT_FLOOR_CTX = 8192
     _MTP_DRAFT_COMPUTE_BYTES = 224 * 1024 * 1024  # MTP draft decode graph beyond its KV
+    # A DFlash/DSpark draft context re-reserves a flat block graph once the drafter initialises,
+    # independent of n_ctx. Measured on llama.cpp b11642, draft graph + target verify graph:
+    # Nemotron 3.5 Bolt DSpark (block 8) 528.5 + 44 MiB, LiLiCorr (block 8, SWA 1024) 307 + 60 MiB.
+    # The _MTP_DRAFT_COMPUTE_BYTES floor is charged beside this, so the floor is the excess over it.
+    _DFLASH_DRAFT_COMPUTE_BYTES = 349 * 1024 * 1024
     # Draft depth to budget when the extras own the spec block and the probe cannot
     # read the build's own default off its --help. Shipped values are 3
     # (common_params_speculative_draft::n_max) and 16; take the deeper, since the
@@ -18497,7 +18800,9 @@ class LlamaCppBackend:
             shared = dim("_expert_shared_feed_forward_length") or (
                 n_ff_exp * dim("_expert_shared_count")
             )
-            widths.append(n_used * (2 * n_embd + 3 * n_ff_exp) + 3 * shared)
+            # Nemotron 3.5 routes experts through a moe_latent_size projection.
+            n_embd_exp = dim("_moe_latent_size") or n_embd
+            widths.append(n_used * (2 * n_embd_exp + 3 * n_ff_exp) + 3 * shared)
         inner = dim("_ssm_inner_size")
         if inner > 0:
             conv_in = inner + 2 * (dim("_ssm_group_count") or 1) * dim("_ssm_state_size")
@@ -19491,6 +19796,7 @@ class LlamaCppBackend:
         self._expert_feed_forward_length = None
         self._expert_shared_feed_forward_length = None
         self._expert_shared_count = None
+        self._moe_latent_size = None
         self._embedding_length_per_layer_input = None
         self._vocab_size = None
         self._kv_key_length = None
@@ -19616,6 +19922,7 @@ class LlamaCppBackend:
                                         f"{arch}.expert_feed_forward_length": "expert_feed_forward_length",
                                         f"{arch}.expert_shared_feed_forward_length": "expert_shared_feed_forward_length",
                                         f"{arch}.expert_shared_count": "expert_shared_count",
+                                        f"{arch}.moe_latent_size": "moe_latent_size",
                                         f"{arch}.embedding_length_per_layer_input": "embedding_length_per_layer_input",
                                         f"{arch}.attention.key_length": "kv_key_length",
                                         f"{arch}.attention.value_length": "kv_value_length",
@@ -19684,6 +19991,12 @@ class LlamaCppBackend:
                                     self._feed_forward_length = max(
                                         self._feed_forward_length_by_layer
                                     )
+                                elif (
+                                    attr in ("expert_used_count", "expert_feed_forward_length")
+                                    and val_a
+                                ):
+                                    # Per-layer on Nemotron 3.5 Bolt; the widest layer sizes the graph.
+                                    setattr(self, f"_{attr}", max(int(x) for x in val_a))
                             else:
                                 self._gguf_skip_value(f, vtype)
                         else:
@@ -26688,6 +27001,12 @@ class LlamaCppBackend:
                         _user_mtp_via_extras
                         or (_auto_studio_mtp and _mtp_effective not in ("dspark", "dflash"))
                     )
+                    # Without draft-mtp the embedded head is never loaded, so its blocks
+                    # leave the weights the fit prices (about 3 GB on Nemotron 3.5 Super).
+                    if not _engaged_is_mtp:
+                        _nextn_unloaded = self._unloaded_nextn_bytes(model_path)
+                        gguf_size -= _nextn_unloaded
+                        model_size -= _nextn_unloaded
                     # The recurrent rollback copies are a WIDER set than that copy
                     # (_TARGET_ROLLBACK_SPEC_TYPES): DSpark and DFlash pay them too,
                     # and draft-simple is the one engaged draft mode that does not,
@@ -31735,8 +32054,14 @@ class LlamaCppBackend:
                 # read as GPU-bearing there, only the resolved argv knows. Still
                 # before every spawn below and outside the fit's try/except, so the
                 # refusal cannot be swallowed into the --fit on fallback.
+                # Pinned ids are checked against nvidia-smi's caps only in its index space
+                # (torch-fallback ordinals are not); otherwise "any visible", as before.
+                _sm_gate_ids_are_pci = not is_vulkan_backend and _p2p_ids_are_pci
                 if not (_cpu_only_zero_offload or _arch_gate_forced_cpu):
-                    _sm_gate = self._cuda_sm_gate_error(binary)
+                    # Pinned launches check the pinned cards, not "any visible".
+                    _sm_gate = self._cuda_sm_gate_error(
+                        binary, gpu_indices if _sm_gate_ids_are_pci else None
+                    )
                     if _sm_gate:
                         raise RuntimeError(_sm_gate)
                 # The arch gate emptying the pool lands here for the same reason
@@ -31858,11 +32183,21 @@ class LlamaCppBackend:
                             "numbering; fitted the pinned mask to them: %s",
                             _companion_widen,
                         )
-                    self._emit_child_gpu_visibility(
-                        env,
-                        LlamaCppBackend._child_visibility_for(_pin_ids),
-                        prefer_rocr = True,
-                    )
+                        # The widened mask can add a card the gate above never saw.
+                        if _sm_gate_ids_are_pci:
+                            _sm_gate = self._cuda_sm_gate_error(binary, _pin_ids)
+                            if _sm_gate:
+                                raise RuntimeError(_sm_gate)
+                    _child_mask = LlamaCppBackend._pinned_child_visibility(_pin_ids)
+                    if _child_mask is None:
+                        logger.info(
+                            "Keeping the inherited CUDA_VISIBLE_DEVICES=%s: GPU ids %s "
+                            "cannot be mapped to it.",
+                            os.environ.get("CUDA_VISIBLE_DEVICES"),
+                            _pin_ids,
+                        )
+                    else:
+                        self._emit_child_gpu_visibility(env, _child_mask, prefer_rocr = True)
                     _child_gpu_physical_ids = tuple(int(i) for i in _pin_ids)
                     _launch_pinned_ids = list(_pin_ids)
                 elif not is_vulkan_backend and not gpu_ids:

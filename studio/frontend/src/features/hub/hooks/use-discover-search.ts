@@ -17,6 +17,7 @@ import {
   type HfSortDirection,
   type HfSortKey,
   type HfTaskFilter,
+  hubListingSort,
   useHubModelSearch,
 } from "./use-hub-model-search";
 import {
@@ -149,7 +150,7 @@ export function useDiscoverSearch({
     // and returns [] when false, so a backoff blanked every rendered row.
     enabled: isDiscoverTab && isDatasetMode,
     paused: !canProbe,
-    sortBy,
+    sortBy: hubListingSort(sortBy),
     sortDirection: direction,
   });
 

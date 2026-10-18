@@ -3,12 +3,13 @@
 
 """Detect AMD NPUs without starting a runtime.
 
-XDNA 2 (1022:17f0) is supported; XDNA 1 (1022:1502) is not.
-Runtime readiness is checked separately by ``flm validate``.
+XDNA 2 (1022:17f0) is supported, and only with ``UNSLOTH_STUDIO_ENABLE_NPU=1``; XDNA 1
+(1022:1502) is not. Runtime readiness is checked separately by ``flm validate``.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -18,6 +19,12 @@ _XDNA2_DEVICE = "17f0"
 _XDNA1_DEVICE = "1502"
 _PCI_ROOT = Path("/sys/bus/pci/devices")
 _MODULE_ROOT = Path("/sys/module")
+# Off by default: the NPU section, NPU loads and the CLI's NPU ids all wait on this.
+ENABLE_ENV = "UNSLOTH_STUDIO_ENABLE_NPU"
+
+
+def npu_enabled() -> bool:
+    return os.environ.get(ENABLE_ENV, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _read(path: Path) -> Optional[str]:
@@ -126,5 +133,8 @@ def detect_amd_npu() -> dict[str, Any]:
             info = {"present": False}
     except Exception as exc:  # noqa: BLE001 -- detection must never break startup or /status
         info = {"present": False, "error": str(exc)}
-    info["supported"] = bool(info.get("present")) and info.get("family") == "XDNA2"
+    info["enabled"] = npu_enabled()
+    info["supported"] = (
+        info["enabled"] and bool(info.get("present")) and info.get("family") == "XDNA2"
+    )
     return info

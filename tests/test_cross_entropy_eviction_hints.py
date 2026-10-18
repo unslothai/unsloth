@@ -15,6 +15,11 @@ triton = pytest.importorskip("triton")
 from triton.backends.compiler import GPUTarget
 from triton.compiler import ASTSource
 
+import inspect
+
+if "constexprs" not in inspect.signature(ASTSource.__init__).parameters:
+    pytest.skip("ASTSource takes constexprs from Triton 3.3", allow_module_level = True)
+
 from unsloth.kernels import cross_entropy_loss as ce_mod
 from unsloth.kernels import rope_embedding as rope_mod
 
@@ -60,14 +65,17 @@ def test_chunked_cross_entropy_assembles_before_volta(capability, monkeypatch):
     assert _compile(evict, cc).asm["cubin"]
 
 
-@pytest.mark.parametrize("capability", [(10, 0), (10, 3)])
-def test_chunked_cross_entropy_skips_the_hint_on_sm100(capability, monkeypatch):
-    # Measured 1.25% slower on B200 with the hint.
+@pytest.mark.parametrize("capability", [(9, 0), (10, 0), (10, 3)])
+def test_chunked_cross_entropy_skips_the_hint_on_sm90_and_sm100(capability, monkeypatch):
+    # Measured slower with the hint: H100 1.6% to 2.4%, B200 1.25%.
     assert _policy(capability, monkeypatch) == ""
 
 
-@pytest.mark.parametrize("capability", [(7, 0), (7, 5), (8, 0), (9, 0), (12, 0)])
+@pytest.mark.parametrize("capability", [(7, 0), (7, 5), (8, 0), (8, 9), (12, 0)])
 def test_chunked_cross_entropy_streams_logits_from_volta(capability, monkeypatch):
     evict = _policy(capability, monkeypatch)
     assert evict == "evict_first"
-    assert "ld.global.L1::evict_first" in _compile(evict, 75).asm["ptx"]
+    assert (
+        "ld.global.L1::evict_first"
+        in _compile(evict, capability[0] * 10 + capability[1]).asm["ptx"]
+    )

@@ -21,10 +21,12 @@ from typing import Any, Optional, Tuple
 
 import torch
 from torch import Tensor
-from torch.nn.functional import scaled_dot_product_attention
+import torch.nn.functional as F
 
 from ..device_type import DEVICE_TYPE
 from ..models._utils import *
+from ..context_parallel import get_cp_manager
+from .ulysses import ulysses_attention
 from ..utils.packing import (
     build_sdpa_packed_attention_mask,
     build_xformers_block_causal_mask,
@@ -89,6 +91,11 @@ if HAS_XFORMERS and not HAS_FLASH_ATTENTION and torch.cuda.is_available():
 _XFORMERS_FP32_UNSUPPORTED = (
     torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 10
 )
+
+
+def scaled_dot_product_attention(*args, **kwargs):
+    # Resolved per call: context_parallel monkey patches torch.nn.functional.
+    return F.scaled_dot_product_attention(*args, **kwargs)
 
 
 def _per_device_backends(capabilities):
@@ -158,7 +165,7 @@ def _backend_for_device(
     return backend
 
 
-SDPA_HAS_GQA = "enable_gqa" in (scaled_dot_product_attention.__doc__ or "")
+SDPA_HAS_GQA = "enable_gqa" in (F.scaled_dot_product_attention.__doc__ or "")
 
 # Packed SDPA runs per segment: a dense (T, T) mask + enable_gqa leaves only the math kernel.
 _SDPA_PACKED_SEGMENTS = os.environ.get("UNSLOTH_SDPA_PACKED_SEGMENTS", "1").lower() not in (
@@ -522,9 +529,21 @@ class AttentionContext:
     is_causal: bool = True
 
 
+def _ring_attention_active() -> bool:
+    manager = get_cp_manager()
+    return manager is not None and manager.backend == "ring"
+
+
 def select_attention_backend(use_varlen: bool = False) -> str:
     """Return attention backend based on availability / priority order."""
 
+    if _ring_attention_active():
+        if use_varlen:
+            raise ValueError(
+                "Unsloth: ring context parallelism does not support packing / padding-free; "
+                "use context_parallel_backend = 'ulysses'."
+            )
+        return SDPA
     if HAS_FLASH_ATTENTION:
         if use_varlen:
             return FLASH_VARLEN
@@ -599,7 +618,15 @@ def run_attention(
     Varlen flash is preferred for packed batches as it avoids padding; xFormers
     and SDPA handle packing via a block-diagonal mask.
     """
+    manager = get_cp_manager()
+    if manager is not None and manager.backend == "ulysses":
+        return ulysses_attention(_run_attention, config, context, Q, K, V, manager.group)
+    return _run_attention(config = config, context = context, Q = Q, K = K, V = V)
 
+
+def _run_attention(
+    *, config: AttentionConfig, context: AttentionContext, Q: Tensor, K: Tensor, V: Tensor
+) -> Tensor:
     # PrefixGrouper shared-prefix attention (GRPO dedup): Q/K/V here are [bsz, H, T, D] while the kernel
     # takes and returns [1, T, H, D], matching the other backends.
     if context.prefix_seg_info is not None:
@@ -720,9 +747,13 @@ def run_attention(
 
     # DoRA promotes q/k/v_proj outputs to fp32, which FlashAttention rejects (as does the xformers
     # flash-2 op on sm_100+), so downcast any fp32 Q/K/V to a supported dtype (#1013).
+    # Ring attention (context parallelism) likewise needs a flash-eligible dtype.
+    ring = backend == SDPA and _ring_attention_active()
+    cp_out_dtype = Q.dtype if ring else None
     if (
         backend in (FLASH_DENSE, FLASH_VARLEN)
         or (backend == XFORMERS and xformers_fp32_unsupported)
+        or ring
     ) and torch.float32 in (
         Q.dtype,
         K.dtype,
@@ -956,6 +987,13 @@ def run_attention(
         kwargs.setdefault("is_causal", is_causal_local)
 
         use_sdpa_gqa = SDPA_HAS_GQA and config.n_groups != 1
+        # Flash takes GQA natively, halving the ring's K/V peak; UNSLOTH_CP_GQA=0 expands.
+        if (
+            use_sdpa_gqa
+            and _ring_attention_active()
+            and os.environ.get("UNSLOTH_CP_GQA", "1") == "0"
+        ):
+            use_sdpa_gqa = False
         if (
             use_sdpa_gqa
             and (not requires_grad)
@@ -970,7 +1008,8 @@ def run_attention(
         if use_sdpa_gqa:
             kwargs.setdefault("enable_gqa", True)
             out = scaled_dot_product_attention(Q, K, V, **kwargs)
-            return out.transpose(1, 2)
+            out = out.transpose(1, 2)
+            return out if cp_out_dtype is None else out.to(cp_out_dtype)
 
         K_mod = K
         V_mod = V
@@ -990,7 +1029,8 @@ def run_attention(
             V_mod.contiguous(),
             **kwargs,
         )
-        return out.transpose(1, 2).contiguous()
+        out = out.transpose(1, 2).contiguous()
+        return out if cp_out_dtype is None else out.to(cp_out_dtype)
 
 
 __all__ = [

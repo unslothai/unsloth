@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from utils.datasets.cells import text_cell_check
+from utils.datasets.cells import text_cell_check, unwrap_message_column
 from utils.datasets.format_detection import detect_dataset_format, has_message_prompt_completion
 from utils.datasets.pretokenized import PRETOKENIZED_FORMAT, is_pretokenized_dataset
 
@@ -882,12 +882,14 @@ def _standardize_sharegpt_row(row: dict[str, Any], chat_column: str) -> dict[str
 
 def format_dataset_preview(dataset):
     detected = detect_dataset_format(dataset)
-    if detected.get("format") != "sharegpt":
-        return dataset
     chat_column = detected.get("chat_column")
-    if not isinstance(chat_column, str):
+    if (
+        detected.get("format") not in ("chatml", "sharegpt")
+        or not isinstance(chat_column, str)
+        or not hasattr(dataset, "map")
+    ):
         return dataset
-
-    if hasattr(dataset, "map"):
+    dataset = unwrap_message_column(dataset, chat_column)
+    if detected["format"] == "sharegpt":
         return dataset.map(lambda row: _standardize_sharegpt_row(row, chat_column))
     return dataset

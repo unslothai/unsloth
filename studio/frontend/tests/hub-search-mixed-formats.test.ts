@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import { classifyUnslothSupport } from "../src/features/hub/lib/unsloth-support.ts";
 
 // Execute the production mapper without loading React, the Hub client or the network hooks.

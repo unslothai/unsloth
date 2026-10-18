@@ -4245,5 +4245,6 @@ def test_linux_rdna2_plan_keeps_its_rocm_bundle(linux_no_rocm_env):
 
 def test_linux_no_rocm_set_matches_the_torch_installer():
     # Duplicated because this module is vendored standalone; keep the two in step.
+    # gfx1153 is torch-only: no torch wheel, but the llama.cpp HIP route is left alone.
     ips = importlib.import_module("install_python_stack")
-    assert ilp.LINUX_NO_ROCM_GFX_TARGETS == ips._LINUX_UNCOVERED_AMD_GFX
+    assert ilp.LINUX_NO_ROCM_GFX_TARGETS == ips._LINUX_UNCOVERED_AMD_GFX - {"gfx1153"}
