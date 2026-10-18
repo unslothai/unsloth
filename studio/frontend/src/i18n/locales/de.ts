@@ -3172,7 +3172,7 @@ export const de = {
       },
       mcp: {
         title: "Agentenzugriff (MCP)",
-        description: "Lass Coding-Agenten wie Claude Code und Codex Unsloth Studio über MCP nutzen. Agenten melden sich mit einem Unsloth-Studio-API-Schlüssel von dieser Seite an.",
+        description: "Lass Coding-Agenten wie Claude Code und Codex Unsloth über MCP nutzen. Agenten melden sich mit einem Unsloth-Studio-API-Schlüssel von dieser Seite an.",
         enable: "Agentenverbindungen erlauben",
         enableDescription: "Stellt /mcp/ für Anfragen mit einem Unsloth-Studio-API-Schlüssel bereit.",
         lockedByEnv: "Festgelegt durch {name}.",
