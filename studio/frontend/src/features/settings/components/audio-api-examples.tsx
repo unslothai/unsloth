@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { usePlatformStore } from "@/config/env";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
@@ -9,7 +10,14 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type {
   KeylessApiAccessExposure,
   KeylessApiAccessScope,
@@ -66,10 +74,12 @@ const RUN_LABEL: Record<AudioRunWorkflow, TranslationKey> = {
 
 function Pill({
   active,
+  pillGroup,
   onClick,
   children,
 }: {
   active: boolean;
+  pillGroup: string;
   onClick: () => void;
   children: ReactNode;
 }) {
@@ -79,12 +89,13 @@ function Pill({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+        "relative rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         active
-          ? "hub-tab-toggle-pill text-foreground"
+          ? "text-foreground"
           : "text-muted-foreground hover:text-foreground",
       )}
     >
+      {active && <SegmentedPill group={pillGroup} />}
       {children}
     </button>
   );
@@ -102,6 +113,7 @@ export function AudioApiExamples({
   keylessExposure?: KeylessApiAccessExposure | null;
 }) {
   const t = useT();
+  const pillId = useId();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
@@ -253,11 +265,12 @@ export function AudioApiExamples({
       </p>
       <div className="min-w-0 max-w-full overflow-hidden rounded-lg border border-border bg-muted/20">
         <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 border-b border-border px-2 py-1.5">
-          <div className="flex min-w-0 flex-wrap items-center gap-0.5">
+          <div className="isolate flex min-w-0 flex-wrap items-center gap-0.5">
             {AUDIO_API_TABS.map((id) => (
               <Pill
                 key={id}
                 active={tab === id}
+                pillGroup={`${pillId}-tab`}
                 onClick={() => {
                   setTab(id);
                   setStoredTab(id);
@@ -267,11 +280,12 @@ export function AudioApiExamples({
               </Pill>
             ))}
           </div>
-          <div className="flex min-w-0 flex-wrap items-center gap-0.5">
+          <div className="isolate flex min-w-0 flex-wrap items-center gap-0.5">
             {LANGS.map((item) => (
               <Pill
                 key={item.id}
                 active={lang === item.id}
+                pillGroup={`${pillId}-lang`}
                 onClick={() => {
                   setLang(item.id);
                   const stored = audioLangToStore(
@@ -287,18 +301,24 @@ export function AudioApiExamples({
           </div>
         </div>
         {tab === "workflows" ? (
-          <div className="flex min-w-0 flex-wrap items-center gap-0.5 border-b border-border px-2 py-1.5">
+          <div className="isolate flex min-w-0 flex-wrap items-center gap-0.5 border-b border-border px-2 py-1.5">
             {AUDIO_RUN_WORKFLOWS.map((id) => (
-              <Pill key={id} active={run === id} onClick={() => setRun(id)}>
+              <Pill
+                key={id}
+                active={run === id}
+                pillGroup={`${pillId}-run`}
+                onClick={() => setRun(id)}
+              >
                 {t(RUN_LABEL[id])}
               </Pill>
             ))}
           </div>
         ) : null}
         {lang === "curl" ? (
-          <div className="flex min-w-0 items-center gap-0.5 border-b border-border px-2 py-1.5">
+          <div className="isolate flex min-w-0 items-center gap-0.5 border-b border-border px-2 py-1.5">
             <Pill
               active={os === "unix"}
+              pillGroup={`${pillId}-os`}
               onClick={() => {
                 setOs("unix");
                 setStoredOs("unix");
@@ -308,6 +328,7 @@ export function AudioApiExamples({
             </Pill>
             <Pill
               active={os === "windows"}
+              pillGroup={`${pillId}-os`}
               onClick={() => {
                 setOs("windows");
                 setStoredOs("windows");
