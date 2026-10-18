@@ -657,6 +657,7 @@ def test_count_tokens_prices_the_same_roster_the_completion_sends(rag_conn, monk
         tools_on,
         mcp_allowed,
         supports_vision = False,
+        checkpoint_fitted = False,
     ):
         return TOOLS
 

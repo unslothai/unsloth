@@ -50,6 +50,7 @@ BOUND_NAMES = {
     "branchLength",
     "branchRevision",
     "reasoningSettings",
+    "threadSettingsPending",
 }
 
 
@@ -383,6 +384,7 @@ const auiFixture: any = {
   // The mounted main thread's visible branch: a test's live messages, else its stored records.
   thread: () => ({
     getState: () => ({
+      isLoading: world.threadLoading ?? false,
       messages:
         world.liveMessages?.[state.activeThreadId] ??
         (world.storedMessages[state.activeThreadId] ?? []).map(storedMessageToRunMessage),
@@ -425,6 +427,15 @@ const recountDeps: any[] = [];
 const pricedTipRef: any = { current: null };
 const pricedReasoningRef: any = { current: null };
 
+export function registerActiveBranchReader(): void {
+  const enabled = true;
+  const aui = auiFixture;
+  const effects: any[] = [
+__ACTIVE_BRANCH_EFFECTS__
+  ];
+  for (const effect of effects) effect.run();
+}
+
 export function renderThreadContextUsageRecount(props: any = {}): void {
   const enabled = props.enabled ?? true;
   const aui = auiFixture;
@@ -446,6 +457,7 @@ export function renderThreadContextUsageRecount(props: any = {}): void {
   const branchLength = messages.length;
   const branchRevision = revisionTotal(messages);
   const reasoningSettings = currentContextUsageReasoningKey(state);
+  const threadSettingsPending = Boolean(state.threadScopedSettingsPending);
   const scope: any = {
     activeThreadId,
     aui,
@@ -461,6 +473,7 @@ export function renderThreadContextUsageRecount(props: any = {}): void {
     branchLength,
     branchRevision,
     reasoningSettings,
+    threadSettingsPending,
   };
   const effects: any[] = [
 __RECOUNT_EFFECTS__
@@ -663,6 +676,11 @@ def _harness_source() -> str:
     prelude = HARNESS_PRELUDE.replace("__STORE_REDUCERS__", _store_reducers())
     render = HARNESS_RENDER.replace("__EFFECTS__", _rendered_effects(_new_chat_effects())).replace(
         "__RECOUNT_EFFECTS__", _rendered_effects(_thread_recount_effects())
+    ).replace(
+        "__ACTIVE_BRANCH_EFFECTS__",
+        _rendered_effects(_component_effects(
+            "function ActiveBranchRegistrar(", "function CompactionCountRegistrar("
+        )),
     )
     resident = HARNESS_RESIDENT.replace("__FAST_PATH__", _resident_fast_path())
     status_poll = HARNESS_STATUS_POLL.replace("__STATUS_POLL_TAIL__", _status_poll_adoption_tail())
@@ -3401,8 +3419,9 @@ def test_a_change_made_while_another_chat_generates_is_priced_when_it_ends(steps
         ('world.countError = new Error("count refused");', 1),
         ("world.countedTokensOverride = { value: Number.NaN };", 1),
         (
-            'world.countExtras = { rag_scope: { kb_id: "kb-1", autoinject: "always" } };',
-            0,
+            'world.countExtras = { rag_scope: { kb_id: "kb-1", autoinject: "always" } };'
+            'world.countError = new Error("count refused");',
+            1,
         ),
     ],
     ids = ["refused", "invalid_response", "pending_retrieval"],
@@ -3485,3 +3504,151 @@ def test_a_refused_empty_prompt_clears_the_deleted_turn_count():
     script = script.replace("const after =", 'world.countError = new Error("empty prompt");\nconst after =')
     out = _run(script)
     assert out == {"counts": 1, "total": None, "estimated": None}
+
+
+@pytest.mark.parametrize("loading", [True, False], ids = ["loading_history", "loaded_empty_branch"])
+def test_the_registered_branch_reader_distinguishes_loading_from_an_emptied_chat(loading):
+    out = _run(
+        _script(
+            """
+            import { hydrateThreadUsage, refreshContextUsage, registerActiveBranchReader, seed, snapshot, world } from "./harness.ts";
+            __LOADED_MODEL__
+            seed({ activeThreadId: "thread-a" });
+            const messages = [
+              { id: "u1", parentId: null, role: "user", createdAt: 1, content: [{ type: "text", text: "hello" }] },
+              { id: "a1", parentId: "u1", role: "assistant", createdAt: 2, content: [{ type: "text", text: "hello back" }], metadata: { contextTruncation: { boundary_messages: 1 } } },
+            ];
+            world.storedMessages["thread-a"] = messages;
+            world.liveMessages = { "thread-a": [] };
+            world.threadLoading = __LOADING__;
+            registerActiveBranchReader();
+            if (world.threadLoading) {
+              await hydrateThreadUsage({ remoteId: "thread-a", messages });
+              delete world.liveMessages["thread-a"];
+              world.threadLoading = false;
+            } else {
+              await refreshContextUsage();
+            }
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({
+              counts: world.countedMessages.length,
+              messages: world.countedMessages.at(-1)?.length,
+              total: snapshot().contextUsage?.totalTokens,
+              estimated: snapshot().contextUsage?.estimated ?? false,
+            }));
+            """,
+            LOADING = json.dumps(loading),
+        )
+    )
+    assert out == {
+        "counts": 1,
+        "messages": 2 if loading else 0,
+        "total": 62 if loading else 12,
+        "estimated": False,
+    }
+
+
+def test_restoring_chat_thinking_settings_keeps_its_exact_snapshot_until_the_user_changes_them():
+    out = _run(
+        _script(
+            """
+            import { renderThreadContextUsageRecount, seed, snapshot, useChatRuntimeStore, world } from "./harness.ts";
+            __LOADED_MODEL__
+            const saved = {
+              promptTokens: 600, completionTokens: 19, totalTokens: 619, cachedTokens: 0,
+              modelId: "unsloth/gguf-model", reasoningKey: "[true,null,null]",
+            };
+            const messages = [
+              { id: "u1", parentId: null, role: "user", createdAt: 1, content: [{ type: "text", text: "hello" }] },
+              { id: "a1", parentId: "u1", role: "assistant", createdAt: 2, content: [{ type: "text", text: "hello back" }], metadata: { contextUsage: saved } },
+            ];
+            world.storedMessages["thread-a"] = messages;
+            world.storedMessages["thread-b"] = messages;
+            seed({
+              activeThreadId: "thread-a", supportsReasoning: true, reasoningEnabled: true,
+              contextUsage: saved, contextUsageByThreadId: { "thread-a": saved, "thread-b": saved },
+            });
+            renderThreadContextUsageRecount();
+            useChatRuntimeStore.getState().setActiveThreadId("thread-b");
+            seed({ threadScopedSettingsPending: true });
+            renderThreadContextUsageRecount();
+            seed({ reasoningEnabled: false });
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            const duringPairing = { counts: world.countedMessages.length, usage: snapshot().contextUsage };
+            seed({ reasoningEnabled: true, threadScopedSettingsPending: false });
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            const restored = { counts: world.countedMessages.length, usage: snapshot().contextUsage };
+            seed({ reasoningEnabled: false });
+            world.countedTokensOverride = { value: 618 };
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({
+              duringPairing: { counts: duringPairing.counts, preserved: duringPairing.usage === saved },
+              restored: { counts: restored.counts, preserved: restored.usage === saved },
+              changed: { counts: world.countedMessages.length, total: snapshot().contextUsage?.totalTokens },
+            }));
+            """
+        )
+    )
+    assert out == {
+        "duringPairing": {"counts": 0, "preserved": True},
+        "restored": {"counts": 0, "preserved": True},
+        "changed": {"counts": 1, "total": 618},
+    }
+
+
+def test_finishing_settings_pairing_recounts_a_thinking_change_already_shown_while_loading():
+    out = _run(
+        _script(
+            """
+            import { renderThreadContextUsageRecount, seed, snapshot, world } from "./harness.ts";
+            __LOADED_MODEL__
+            seed({
+              activeThreadId: "thread-a", supportsReasoning: true, reasoningEnabled: true,
+              contextUsage: { promptTokens: 351, completionTokens: 0, totalTokens: 351, cachedTokens: 0, reasoningKey: "[true,null,null]" },
+            });
+            renderThreadContextUsageRecount();
+            seed({ threadScopedSettingsPending: true, reasoningEnabled: false });
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            const before = world.countedMessages.length;
+            world.countedTokensOverride = { value: 341 };
+            seed({ threadScopedSettingsPending: false });
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({ before, counts: world.countedMessages.length, total: snapshot().contextUsage?.totalTokens }));
+            """
+        )
+    )
+    assert out == {"before": 0, "counts": 1, "total": 341}
+
+
+def test_returning_to_the_saved_thinking_mode_restores_its_exact_completion_count():
+    out = _run(
+        _script(
+            """
+            import { renderThreadContextUsageRecount, seed, snapshot, world } from "./harness.ts";
+            __LOADED_MODEL__
+            const saved = {
+              promptTokens: 600, completionTokens: 19, totalTokens: 619, cachedTokens: 0,
+              modelId: "unsloth/gguf-model", reasoningKey: "[true,null,null]",
+            };
+            world.storedMessages["thread-a"] = [
+              { id: "u1", parentId: null, role: "user", createdAt: 1, content: [{ type: "text", text: "hello" }] },
+              { id: "a1", parentId: "u1", role: "assistant", createdAt: 2, content: [{ type: "text", text: "hello back" }], metadata: { contextUsage: saved } },
+            ];
+            seed({
+              activeThreadId: "thread-a", supportsReasoning: true, reasoningEnabled: false,
+              contextUsage: { ...saved, reasoningKey: "[false,null,null]", totalTokens: 618 },
+            });
+            renderThreadContextUsageRecount();
+            seed({ reasoningEnabled: true });
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({ counts: world.countedMessages.length, preserved: snapshot().contextUsage === saved }));
+            """
+        )
+    )
+    assert out == {"counts": 0, "preserved": True}

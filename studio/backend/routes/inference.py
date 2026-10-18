@@ -43518,7 +43518,15 @@ async def chat_count_tokens(
     if (
         not _takes_passthrough
         and llama_backend.supports_tools
-        and (_tools_on or _mcp_on or _checkpoint_recall_may_enable_tools(payload))
+        and (
+            _tools_on
+            or _mcp_on
+            or (
+                not _client_disabled_tool_calls
+                and payload.max_tool_calls_per_message != 0
+                and _checkpoint_recall_may_enable_tools(payload)
+            )
+        )
     ):
         tools_to_use = await _select_request_tools(
             payload,

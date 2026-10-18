@@ -107,6 +107,16 @@ function harness(persist?: () => Promise<void>) {
   return { module, saved };
 }
 
+function deferred() {
+  let resolve!: () => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<void>((accept, refuse) => {
+    resolve = accept;
+    reject = refuse;
+  });
+  return { promise, resolve, reject };
+}
+
 function thread(content: unknown[]): Exported {
   return {
     headId: "a0",
@@ -364,6 +374,121 @@ test("a refused edit leaves the runtime and its context revision untouched", asy
   const messages = exported.messages.map(({ message }) => message) as unknown as ThreadMessage[];
   assert.equal(revisionTotal(messages), 0);
   assert.deepEqual(messages[1].content, [{ type: "text", text: "original" }]);
+});
+
+test("overlapping edits persist in submission order with distinct revisions", async () => {
+  const firstWrite = deferred();
+  const secondWrite = deferred();
+  const writes = [firstWrite, secondWrite];
+  let writeIndex = 0;
+  const h = harness(() => writes[writeIndex++].promise);
+  let exported = thread([{ type: "text", text: "original" }]);
+  const edit = (newText: string) => h.module.updateThreadMessage({
+    thread: {
+      export: () => exported,
+      import: (next) => { exported = next; },
+    },
+    messageId: "a0",
+    remoteId: "remote-1",
+    newText,
+    isIncognito: false,
+  });
+  const first = edit("edit A");
+  const second = edit("edit B");
+  assert.equal(h.saved.length, 1);
+
+  secondWrite.resolve();
+  firstWrite.resolve();
+  await Promise.all([first, second]);
+
+  assert.deepEqual(h.saved.map((record) => record.content), [
+    [{ type: "text", text: "edit A" }],
+    [{ type: "text", text: "edit B" }],
+  ]);
+  assert.deepEqual(h.saved.map((record) => (record.metadata as Record<string, unknown>).revision), [1, 2]);
+  assert.deepEqual(exported.messages[1].message.content, [{ type: "text", text: "edit B" }]);
+  assert.equal(revisionTotal(exported.messages.map(({ message }) => message) as unknown as ThreadMessage[]), 2);
+});
+
+test("a failed queued edit preserves the last accepted revision for later saves", async () => {
+  const firstWrite = deferred();
+  const failedWrite = deferred();
+  const error = new Error("save rejected");
+  let writeIndex = 0;
+  const h = harness(() => [firstWrite.promise, failedWrite.promise, Promise.resolve()][writeIndex++]);
+  let exported = thread([{ type: "text", text: "original" }]);
+  const edit = (newText: string) => h.module.updateThreadMessage({
+    thread: {
+      export: () => exported,
+      import: (next) => { exported = next; },
+    },
+    messageId: "a0",
+    remoteId: "remote-1",
+    newText,
+    isIncognito: false,
+  });
+  const first = edit("edit A");
+  const failed = assert.rejects(edit("edit B"), error);
+  const last = edit("edit C");
+
+  firstWrite.resolve();
+  await first;
+  failedWrite.reject(error);
+  await failed;
+  await last;
+
+  assert.deepEqual(h.saved.map((record) => (record.metadata as Record<string, unknown>).revision), [1, 2, 2]);
+  assert.deepEqual(exported.messages[1].message.content, [{ type: "text", text: "edit C" }]);
+  assert.equal(revisionTotal(exported.messages.map(({ message }) => message) as unknown as ThreadMessage[]), 2);
+});
+
+test("submitting the same edit twice does not add a second revision", async () => {
+  const firstWrite = deferred();
+  const h = harness(() => firstWrite.promise);
+  let exported = thread([{ type: "text", text: "original" }]);
+  const edit = () => h.module.updateThreadMessage({
+    thread: {
+      export: () => exported,
+      import: (next) => { exported = next; },
+    },
+    messageId: "a0",
+    remoteId: "remote-1",
+    newText: "edit A",
+    isIncognito: false,
+  });
+  const first = edit();
+  const second = edit();
+  firstWrite.resolve();
+  await Promise.all([first, second]);
+
+  assert.deepEqual(h.saved.map((record) => (record.metadata as Record<string, unknown>).revision), [1, 1]);
+});
+
+test("queued edits still save their original thread after switching away", async () => {
+  const firstWrite = deferred();
+  const h = harness(() => firstWrite.promise);
+  let exported = thread([{ type: "text", text: "original" }]);
+  let imports = 0;
+  const edit = (newText: string) => h.module.updateThreadMessage({
+    thread: {
+      export: () => exported,
+      import: () => { imports += 1; },
+    },
+    messageId: "a0",
+    remoteId: "remote-1",
+    newText,
+    isIncognito: false,
+  });
+  const first = edit("edit A");
+  const second = edit("edit B");
+  exported = { headId: null, messages: [] };
+  firstWrite.resolve();
+  await Promise.all([first, second]);
+
+  assert.equal(imports, 0);
+  assert.deepEqual(h.saved.map((record) => record.threadId), ["remote-1", "remote-1"]);
+  assert.deepEqual(h.saved[1].content, [{ type: "text", text: "edit B" }]);
+  assert.equal((h.saved[1].metadata as Record<string, unknown>).revision, 2);
 });
 
 test("accepting an edit retains messages and the branch selected while saving", async () => {

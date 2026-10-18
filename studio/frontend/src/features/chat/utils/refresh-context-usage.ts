@@ -23,10 +23,7 @@ import { orderBySelectedBranch } from "./message-order";
 // render the template and tokenize.
 const countsInFlight = new Set<string | null>();
 
-// A trigger deferred behind an in-flight count, replayed once that count settles WITHOUT
-// publishing. Dropping it loses the bar: a run stopped before it emits usage fires the
-// retry this depends on. Replaying it unconditionally would restore the doubled model-load
-// count, where the first trigger publishes.
+// Replay a deferred trigger only when the in-flight count did not publish.
 const retryAfterInFlight = new Map<string | null, RefreshOptions>();
 
 let completedCount: {
@@ -296,38 +293,6 @@ export async function refreshContextUsage(
     );
     if (!canPublish()) return;
 
-    const ragScope = countExtras.rag_scope as
-      | {
-          autoinject?: boolean;
-          whole_doc?: boolean;
-          kb_id?: string;
-          thread_id?: string;
-          project_id?: string;
-        }
-      | undefined;
-    const lastRole = countHistory.messages.at(-1)?.role;
-    const pendingRetrieval =
-      ragScope != null &&
-      (lastRole === "user" || lastRole === "tool") &&
-      (store.loadedIsGguf ||
-        (countExtras.enable_tools === true &&
-          countExtras.max_tool_calls_per_message !== 0 &&
-          (countExtras.permission_mode !== "ask" ||
-            countExtras.bypass_permissions === true) &&
-          Boolean(
-            ragScope.kb_id || ragScope.thread_id || ragScope.project_id,
-          ) &&
-          (ragScope.autoinject !== false ||
-            Boolean(
-              ragScope.thread_id &&
-                !ragScope.kb_id &&
-                ragScope.whole_doc !== false,
-            ))));
-    if (pendingRetrieval) {
-      replayQueued = false;
-      return;
-    }
-
     const payload = {
       model: capturedCheckpoint,
       ...countHistory,
@@ -354,7 +319,6 @@ export async function refreshContextUsage(
     const { input_tokens: inputTokens, model: countedModel } =
       await countChatInputTokens(payload);
 
-    if (stale()) return;
     // The response type is a compile-time assertion only: anything else answering 200 would put
     // undefined on the bar and throw from toLocaleString.
     if (
@@ -371,18 +335,18 @@ export async function refreshContextUsage(
       replayQueued = false;
       return;
     }
-    if (!canPublish()) return;
-
-    useChatRuntimeStore.getState().setContextUsage({
+    const usage = {
       promptTokens: inputTokens,
       completionTokens: 0,
       totalTokens: inputTokens,
       cachedTokens: 0,
       cacheWriteTokens: 0,
       reasoningKey: contextUsageReasoningKey(JSON.parse(capturedReasoning)),
-    });
-    const usage = useChatRuntimeStore.getState().contextUsage;
-    if (usage) completedCount = { key: countKey, usage };
+    };
+    completedCount = { key: countKey, usage };
+    if (!canPublish()) return;
+
+    useChatRuntimeStore.getState().setContextUsage(usage);
     published = true;
   } catch {
     replayQueued = false;
@@ -391,12 +355,19 @@ export async function refreshContextUsage(
     countsInFlight.delete(capturedThreadId);
     const queued = retryAfterInFlight.get(capturedThreadId);
     const hadQueued = retryAfterInFlight.delete(capturedThreadId);
+    const current = useChatRuntimeStore.getState();
+    const settingsChanged =
+      current.activeThreadId === capturedThreadId &&
+      current.params.checkpoint === capturedCheckpoint &&
+      current.queuedSettingsEpoch !== capturedSettingsEpoch;
     if (
-      hadQueued &&
       !published &&
-      (replayQueued || inputsChanged() || queued?.invalidate)
+      (settingsChanged ||
+        (hadQueued && (replayQueued || inputsChanged() || queued?.invalidate)))
     ) {
-      void refreshContextUsage(queued);
+      void refreshContextUsage(
+        hadQueued ? queued : { ...options, invalidate: false },
+      );
     }
   }
 }

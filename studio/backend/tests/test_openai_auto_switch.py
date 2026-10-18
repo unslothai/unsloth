@@ -5158,6 +5158,45 @@ def _counted_body(payload):
     return json.loads(response.body)
 
 
+@pytest.mark.parametrize(
+    ("fields", "recall_expected"),
+    [
+        ({}, True),
+        ({"tool_choice": "none"}, False),
+        ({"max_tool_calls_per_message": 0}, False),
+        ({"max_tool_calls_per_message": 1}, True),
+        ({"tool_choice": "none", "enable_tools": True}, True),
+    ],
+)
+def test_chat_count_tokens_respects_checkpoint_recall_eligibility(
+    monkeypatch, fields, recall_expected
+):
+    _, counted = _count_tokens_backend(monkeypatch, supports_tools = True)
+    monkeypatch.setattr(_tp, "get_tool_policy", lambda: None)
+    monkeypatch.setattr(inference_route, "_thread_has_conversation_archive", lambda _thread: True)
+    monkeypatch.setattr(inference_route, "_thread_has_checkpoint", lambda *_args: True)
+    payload = _count_request(
+        [
+            {"role": "user", "content": "Continue."},
+            {"role": "assistant", "content": "Done."},
+        ],
+        **{
+            "thread_id": "compacted-thread",
+            "context_overflow": "truncate_oldest",
+            "context_policy": "checkpoint",
+            "enable_tools": False,
+            "enabled_tools": [],
+            **fields,
+        },
+    )
+
+    assert _counted_body(payload)["input_tokens"] == 10
+    assert [tool["function"]["name"] for tool in counted["tools"] or []] == (
+        ["search_conversation"] if recall_expected else []
+    )
+    assert ("search_conversation" in json.dumps(counted["messages"])) is recall_expected
+
+
 @pytest.mark.parametrize("policy", ["checkpoint", "rolling"])
 def test_chat_count_tokens_replays_saved_compaction_without_archive_work(monkeypatch, policy):
     from core.rag import conversation_archive

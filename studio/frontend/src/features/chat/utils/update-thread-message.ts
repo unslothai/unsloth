@@ -169,16 +169,39 @@ function parseTaggedTextToContent(text: string): ContentPart[] {
   return parts;
 }
 
-export async function updateThreadMessage(args: {
+type UpdateThreadMessageArgs = {
   thread: ThreadImportExport;
   messageId: string;
   remoteId: string | undefined;
   newText: string;
-  isIncognito: boolean; // <--- ADD THIS
-}) {
+  isIncognito: boolean;
+};
+
+const pendingMessageSaves = new Map<string, Promise<ThreadMessage | undefined>>();
+
+export async function updateThreadMessage(args: UpdateThreadMessageArgs) {
+  const key = JSON.stringify([args.remoteId, args.messageId]);
+  const previous = pendingMessageSaves.get(key);
+  const save = saveThreadMessage(args, previous);
+  const settled = save.catch(() => previous);
+  pendingMessageSaves.set(key, settled);
+  try {
+    return (await save)?.content ?? [];
+  } finally {
+    if (pendingMessageSaves.get(key) === settled) {
+      pendingMessageSaves.delete(key);
+    }
+  }
+}
+
+async function saveThreadMessage(
+  args: UpdateThreadMessageArgs,
+  previous: Promise<ThreadMessage | undefined> | undefined,
+) {
   const { thread, messageId, remoteId, newText, isIncognito } = args;
   const parsedEditableContent = parseTaggedTextToContent(newText);
   const currentExport = thread.export();
+  const previousMessage = previous ? await previous : undefined;
 
   const targetMessageEntry = currentExport.messages.find(m => m.message.id === messageId);
   if (!targetMessageEntry) {
@@ -190,7 +213,8 @@ export async function updateThreadMessage(args: {
   const updatedMessages = currentExport.messages.map((m) => {
     if (m.message.id !== messageId) return m;
 
-    const originalContent = m.message.content;
+    const originalMessage = previousMessage ?? m.message;
+    const originalContent = originalMessage.content;
     const finalContent: any[] = [];
 
     // Text the editor produced, appended to the run before it rather than opening a
@@ -240,12 +264,12 @@ export async function updateThreadMessage(args: {
     return {
       ...m,
       message: {
-        ...m.message,
+        ...originalMessage,
         content: finalContent,
         metadata:
           newText === extractTaggedText(originalContent)
-            ? withoutGeminiContinuationReplay(m.message.metadata)
-            : withRevision(withoutGeminiContinuationReplay(m.message.metadata)),
+            ? withoutGeminiContinuationReplay(originalMessage.metadata)
+            : withRevision(withoutGeminiContinuationReplay(originalMessage.metadata)),
       },
     };
   }) as typeof currentExport.messages;
@@ -271,5 +295,5 @@ export async function updateThreadMessage(args: {
     });
   }
 
-  return (updatedMessages.find(m => m.message.id === messageId)?.message.content) || [];
+  return editedMessage;
 }

@@ -3817,7 +3817,8 @@ function ActiveBranchRegistrar({
     }
     setActiveBranchReader(() => {
       try {
-        return aui.thread().getState().messages;
+        const state = aui.thread().getState();
+        return state.isLoading ? null : state.messages;
       } catch {
         // without a mounted thread, recount from stored records
         return null;
@@ -3864,10 +3865,12 @@ function ThreadContextUsageRecount({
   const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const reasoningSettings = useChatRuntimeStore(currentContextUsageReasoningKey);
+  const threadSettingsPending = useChatRuntimeStore((s) => s.threadScopedSettingsPending);
   const pricedReasoningRef = useRef<{
     threadId: string | null;
     checkpoint: string;
     settings: string | undefined;
+    pending: boolean;
   } | null>(null);
   // subscribe to run state so a recount skipped while busy is retried when the run ends
   const runActive = useChatRuntimeStore((s) =>
@@ -3901,36 +3904,40 @@ function ThreadContextUsageRecount({
       threadId: activeThreadId,
       checkpoint,
       settings: reasoningSettings,
+      pending: threadSettingsPending,
     };
     if (
       !enabled ||
       modelLoading ||
+      threadSettingsPending ||
       !previous ||
       previous.threadId !== activeThreadId ||
       previous.checkpoint !== checkpoint ||
-      previous.settings === reasoningSettings ||
+      (previous.settings === reasoningSettings && !previous.pending) ||
       !checkpoint ||
       isExternalModelId(checkpoint)
     ) {
       return;
     }
     const store = useChatRuntimeStore.getState();
+    const shown = store.contextUsage;
+    if (shown != null && !shown.estimated && shown.reasoningKey === reasoningSettings) return;
     try {
       const branch = threadBranchRecords(activeThreadId ? aui.thread().getState().messages : []);
-      store.setContextUsage(
-        branchContextUsage(
-          branch,
-          checkpoint,
-          loadedContextLength,
-          store.loadedIsGguf ? loadedContextLength : null,
-          currentContextUsageReasoningKey(),
-        ) ?? estimateBranch(branch),
+      const usage = branchContextUsage(
+        branch,
+        checkpoint,
+        loadedContextLength,
+        store.loadedIsGguf ? loadedContextLength : null,
+        currentContextUsageReasoningKey(),
       );
+      store.setContextUsage(usage ?? estimateBranch(branch));
+      if (usage != null && !usage.estimated) return;
     } catch {
       store.setContextUsage(null);
     }
     void refreshContextUsage();
-  }, [activeThreadId, aui, checkpoint, enabled, loadedContextLength, modelLoading, reasoningSettings]);
+  }, [activeThreadId, aui, checkpoint, enabled, loadedContextLength, modelLoading, reasoningSettings, threadSettingsPending]);
 
   useEffect(() => {
     if (

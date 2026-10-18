@@ -60,7 +60,7 @@ function harness() {
     loadedIsGguf: true,
     modelLoading: false,
     models: [],
-    params: { checkpoint: "local-model" },
+    params: { checkpoint: "local-model", temperature: 0.7 },
     queuedSettingsEpoch: 0,
     runningByThreadId: {} as Record<string, boolean>,
     setContextUsage: (usage: Usage | null) => {
@@ -200,6 +200,53 @@ test("an old reasoning count is discarded and the queued setting is counted", as
   assert.equal(h.state.contextUsage?.totalTokens, 52);
 });
 
+for (const invalidate of [false, true]) {
+  test(`a sampling change during a count reuses the result (invalidate=${invalidate})`, async () => {
+    const h = harness();
+    const gate = deferred();
+    h.world.gate = gate.promise;
+    const first = h.refreshContextUsage({ invalidate });
+    await setImmediate();
+    h.state.params.temperature = 0.9;
+    h.state.queuedSettingsEpoch += 1;
+    gate.release();
+    await first;
+    await setImmediate();
+    assert.equal(h.world.requests.length, 1);
+    assert.equal(h.state.contextUsage?.totalTokens, 42);
+  });
+}
+
+test("a prompt setting change during a count obtains a replacement without another trigger", async () => {
+  const h = harness();
+  const gate = deferred();
+  h.world.gate = gate.promise;
+  const first = h.refreshContextUsage();
+  await setImmediate();
+  h.world.extras = { enable_tools: true };
+  h.world.tokens = 52;
+  h.state.queuedSettingsEpoch += 1;
+  gate.release();
+  await first;
+  await setImmediate();
+  assert.equal(h.world.requests.length, 2);
+  assert.equal(h.world.requests[1]?.enable_tools, true);
+  assert.equal(h.state.contextUsage?.totalTokens, 52);
+});
+
+test("a settings change while building history restarts the count before sending", async () => {
+  const h = harness();
+  const gate = deferred();
+  h.world.historyGate = gate.promise;
+  const first = h.refreshContextUsage();
+  h.state.queuedSettingsEpoch += 1;
+  gate.release();
+  await first;
+  await setImmediate();
+  assert.equal(h.world.requests.length, 1);
+  assert.equal(h.state.contextUsage?.totalTokens, 42);
+});
+
 test("a failed count does not replay an identical overlapping trigger", async () => {
   const h = harness();
   const gate = deferred();
@@ -280,44 +327,44 @@ test("an emptied mounted branch never falls back to deleted stored messages", as
   assert.deepEqual(h.world.requests[0]?.messages, []);
 });
 
-for (const role of ["user", "assistant"] as const) {
-  test(`GGUF RAG recount ${role === "user" ? "declines a pending" : "prices a completed"} turn`, async () => {
+for (const loadedIsGguf of [true, false]) {
+  test(`RAG admission uses the server's result (GGUF=${loadedIsGguf})`, async () => {
     const h = harness();
-    h.world.branch = [message("tip", role, "text")];
-    h.world.extras = {
-      rag_scope: { project_id: "project-1", autoinject: false },
-    };
-    await h.refreshContextUsage();
-    assert.equal(h.world.requests.length, role === "user" ? 0 : 1);
-  });
-}
-
-for (const permission of ["auto", "ask"] as const) {
-  test(`MLX RAG recount respects ${permission} retrieval permission`, async () => {
-    const h = harness();
-    h.state.loadedIsGguf = false;
+    h.state.loadedIsGguf = loadedIsGguf;
     h.world.branch = [message("tip", "user", "text")];
     h.world.extras = {
       enable_tools: true,
-      permission_mode: permission,
+      permission_mode: "auto",
       rag_scope: { project_id: "project-1", autoinject: true },
     };
     await h.refreshContextUsage();
-    assert.equal(h.world.requests.length, permission === "auto" ? 0 : 1);
+    assert.equal(h.world.requests.length, 1);
+    assert.equal(h.state.contextUsage?.totalTokens, 42);
+  });
+
+  test(`a refused RAG count preserves the estimate (GGUF=${loadedIsGguf})`, async () => {
+    const h = harness();
+    h.state.loadedIsGguf = loadedIsGguf;
+    h.world.branch = [message("tip", "user", "text")];
+    h.world.extras = {
+      enable_tools: true,
+      permission_mode: "auto",
+      rag_scope: { project_id: "project-1", autoinject: true },
+    };
+    h.world.failure = true;
+    const estimate = {
+      promptTokens: 10,
+      completionTokens: 0,
+      totalTokens: 10,
+      cachedTokens: 0,
+      estimated: true,
+    };
+    h.state.contextUsage = estimate;
+    await h.refreshContextUsage();
+    assert.equal(h.world.requests.length, 1);
+    assert.equal(h.state.contextUsage, estimate);
   });
 }
-
-test("MLX RAG recount prices a turn with retrieval disabled", async () => {
-  const h = harness();
-  h.state.loadedIsGguf = false;
-  h.world.branch = [message("tip", "user", "text")];
-  h.world.extras = {
-    enable_tools: true,
-    rag_scope: { thread_id: "thread-1", autoinject: false, whole_doc: false },
-  };
-  await h.refreshContextUsage();
-  assert.equal(h.world.requests.length, 1);
-});
 
 test("negative count responses never become exact usage", async () => {
   const h = harness();
