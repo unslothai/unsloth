@@ -142,6 +142,14 @@ CHECKPOINTS = {
             28_595_765_408 + 629_247_232,
         ),
         _gguf(
+            "d1-3b",
+            "d1 3B",
+            "LiquidAI/d1-3B-GGUF",
+            "Liquid AI d1 3B on LFM2.5 (Q8_0 GGUF, llama.cpp only): text and images, runs on CPU. "
+            "LFM Open License v1.0.",
+            2_874_781_280 + 853_993_696,
+        ),
+        _gguf(
             "laya-gguf",
             "Laya GGUF",
             "ggml-org/Laya-GGUF",
@@ -170,7 +178,7 @@ class GgufCompanion:
     sha256: tuple[str, ...] = ()
 
 
-# ggml-org GGUFs served by llama.cpp's /v1/systemone (b11443 and newer).
+# GGUFs served by llama.cpp's /v1/systemone (b11443 and newer); ggml-org's, plus each vendor's own build.
 GGUF_COMPANIONS = {
     "clef-flash": GgufCompanion(
         "ggml-org/Clef-Flash-GGUF",
@@ -246,6 +254,17 @@ GGUF_COMPANIONS = {
                 (
                     "5e5574cfeb9145809d3ebe3e854761d62a947033d3f76af4c4b1dd8562409412",
                     "e372cdbf59fdd6bd2504cb64c988b31c7a42ac406a8f711df4b7a7acd9216f1e",
+                ),
+            ),
+            (
+                "d1-3b",
+                "LiquidAI/d1-3B-GGUF",
+                "bb1e436ea78eb96a3f1acb6da865f70c2fbeb563",
+                "d1-3B-Q8_0.gguf",
+                "mmproj-d1-3B-F16.gguf",
+                (
+                    "2f0942d5a5f64cf69c3356d2be439b71644b1f0eb3a580912a5a0179eeaba77d",
+                    "093be6e3437800b868bc24df13f1d6f6da877ad28dfa5a5da5db01e9e8df7128",
                 ),
             ),
             (

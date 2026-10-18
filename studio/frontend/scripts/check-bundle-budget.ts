@@ -31,6 +31,13 @@ const DIST = resolve(HERE, "..", "dist");
  * what the main thread has to parse and execute, which is the part that shows up as a slow launch on a weak
  * machine.
  */
+// Measured again at 638f1345d on one machine and build: 6,804,012 bytes raw / 2,047,451
+// transfer, 26 bytes of transfer to spare. The Decision API image example takes 352 raw /
+// 89 transfer of that headroom and 63 bytes past it (6,804,364 / 2,047,540): the en copy for
+// the connection's image switch and the thumbnail markup in the try dialog, both inside the
+// already-eager settings chunk. Transfer is raised to cover it, raw is left where it was and
+// still has room. The example PNG is in neither figure: it loads from
+// decision-example-image.ts through import() only when that preset is picked.
 export const BUDGET = {
   // Re-measured together on one machine and build: 6,023.4 KB raw / 1,802.1 KB transfer at 5b78bafd04,
   // plus the margin the previous raises chose (210.8 KB raw, 65.1 KB transfer). The growth since is
@@ -204,7 +211,12 @@ export const BUDGET = {
   // 2,047,569 B transfer against ca3d1d0ce4, one machine and build, Node 24, chunk count unchanged at 95): its
   // connection row, logo mapping and capability entries live in tables the startup chunks already load. Raised
   // by that growth.
-  transferBytes: 2_047_520,
+  // Images on a Decision API connection add 352 B raw / 125 B transfer (6,804,401 -> 6,804,753 B raw, 2,047,544
+  // -> 2,047,669 B transfer against 5f8a2ec7f7, one machine and build, Node 24, chunk count unchanged at 95): the en
+  // copy for the connection's image switch and the thumbnail markup in the try dialog, both in the eager
+  // settings chunk. The example PNG is in neither figure: decision-example-image.ts is reached through import().
+  // Transfer raised by that growth; raw is left alone, it still has room.
+  transferBytes: 2_047_645,
   rawBytes: 6_806_014,
 };
 

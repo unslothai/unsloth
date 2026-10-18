@@ -618,6 +618,11 @@ def native_ready(checkpoint) -> bool:
 
 def input_modalities(checkpoint) -> list[str]:
     """What this entry reads here: images too when llama.cpp serves it with a vision projector, or MLX a Clef that has its tower; audio when MLX serves a Clef that hears."""
+    from core.systemone.catalog import Connection
+
+    if isinstance(checkpoint, Connection):
+        from utils.systemone_settings import connection_input_modalities
+        return connection_input_modalities(checkpoint.name)
     if mlx_ready(checkpoint):
         media = [
             kind

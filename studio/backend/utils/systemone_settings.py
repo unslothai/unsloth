@@ -15,10 +15,13 @@ MODEL_KEY = "systemone_model"
 DEVICE_KEY = "systemone_device"
 BACKEND_KEY = "systemone_backend"
 NATIVE_CTX_KEY = "systemone_native_ctx"
+# What the configured Decision API connection reads, declared by the owner: {"name": ..., "input_modalities": [...]}.
+CONNECTION_MODALITIES_KEY = "systemone_connection_modalities"
 DEFAULT_MODEL = "laya-multilingual"
 DEVICES = ("cpu", "gpu")
 BACKENDS = ("auto", "llama.cpp", "mlx", "pytorch")
 DEFAULT_NATIVE_CTX = 16384
+INPUT_MODALITIES = ("text", "image")
 # -c / -b / -ub of the llama.cpp decision server; compute memory grows with it (~0.24 MiB GPU per token).
 NATIVE_CTX_RANGE = (512, 65536)
 
@@ -132,6 +135,31 @@ def get_native_ctx() -> int:
     return stored if _valid_ctx(stored) else DEFAULT_NATIVE_CTX
 
 
+def connection_input_modalities(name: str) -> list[str]:
+    """What the owner declared the connection ``name`` reads. Text only until they say otherwise."""
+    stored = _owner_setting(CONNECTION_MODALITIES_KEY)
+    if not isinstance(stored, dict) or stored.get("name") != name:
+        return ["text"]
+    declared = stored.get("input_modalities")
+    if not isinstance(declared, list):
+        return ["text"]
+    return ["text", *(m for m in INPUT_MODALITIES if m != "text" and m in declared)]
+
+
+def _validated_modalities(values: Any) -> list[str]:
+    if not isinstance(values, list) or any(not isinstance(v, str) for v in values):
+        raise ValueError("input_modalities must be a list of modality names.")
+    unknown = sorted(set(values) - set(INPUT_MODALITIES))
+    if unknown:
+        raise ValueError(
+            f"Unknown Decision API input modality: {', '.join(unknown)}. "
+            f"Supported: {', '.join(INPUT_MODALITIES)}."
+        )
+    if "text" not in values:
+        raise ValueError('input_modalities must include "text".')
+    return ["text", *(m for m in INPUT_MODALITIES if m != "text" and m in values)]
+
+
 def validate(
     *,
     enabled: bool | None = None,
@@ -139,6 +167,7 @@ def validate(
     device: str | None = None,
     backend: str | None = None,
     native_ctx: int | None = None,
+    input_modalities: list[str] | None = None,
 ) -> dict[str, Any]:
     from core.systemone.catalog import (
         CHECKPOINTS,
@@ -190,6 +219,16 @@ def validate(
         values[NATIVE_CTX_KEY] = native_ctx
     serving = enabled if enabled is not None else model is not None and get_enabled()
     name = get_model() if model is None else model
+    if input_modalities is not None:
+        declared = _validated_modalities(input_modalities)
+        if parse_connection(name) is None:
+            raise ValueError(
+                "Input modalities are declared only for a Decision API connection; "
+                "a built-in model's are read from the checkpoint."
+            )
+        values[CONNECTION_MODALITIES_KEY] = {"name": name, "input_modalities": declared}
+    elif model is not None and parse_connection(name) is None:
+        values[CONNECTION_MODALITIES_KEY] = {}
     local = parse_connection(name) is None and not llama_cpp_only(name)
     if serving and local and (reason := runtime_unavailable_reason()):
         raise ValueError(reason)

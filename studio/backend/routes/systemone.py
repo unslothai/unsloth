@@ -292,9 +292,14 @@ async def _decide(
         _validate(name, question)
     if images:
         _validate_images(images)
-        if isinstance(checkpoint, catalog.Connection):
+        reads = laya_runtime.input_modalities(checkpoint)
+        if isinstance(checkpoint, catalog.Connection) and "image" not in reads:
             raise _error(
-                400, "api_usage_error", "Images are not forwarded to Decision API connections"
+                400,
+                "api_usage_error",
+                "This Decision API connection is not declared to read images. "
+                'Set its input modalities to ["text", "image"] in Settings > API '
+                "if the remote model takes them.",
             )
     if audio:
         _validate_audio(audio)
@@ -308,6 +313,7 @@ async def _decide(
             checkpoint,
             state,
             {name: q.model_dump(exclude_unset = True) for name, q in questions.items()},
+            images or None,
         )
     try:
         result = await run_in_threadpool(
@@ -331,7 +337,10 @@ async def _decide(
 
 
 async def _connection_decide(
-    connection: catalog.Connection, state: JSONContent, questions: dict[str, dict[str, Any]]
+    connection: catalog.Connection,
+    state: JSONContent,
+    questions: dict[str, dict[str, Any]],
+    images: list[str] | None = None,
 ) -> dict:
     # The connection and its key are the owner's; the URL check and the request run as the caller,
     # so a managed account keeps its egress policy.
@@ -362,7 +371,7 @@ async def _connection_decide(
     api_key = await arun_as(OWNER, _connection_key(provider_id, config))
     client = ExternalProviderClient(config["provider_type"], base_url, api_key)
     try:
-        result = await client.create_decision(connection.model, state, questions)
+        result = await client.create_decision(connection.model, state, questions, images)
     except httpx.HTTPStatusError as exc:
         raise _upstream_error(config["display_name"], exc.response) from None
     except (httpx.HTTPError, ValueError) as exc:

@@ -739,6 +739,27 @@ export function DecisionApiSection(): ReactElement | null {
           </SettingsRow>
         )}
 
+        {isRemote && remote ? (
+          <SettingsRow
+            label={t("settings.apiKeys.decisionApi.connectionImages")}
+            description={t(
+              "settings.apiKeys.decisionApi.connectionImagesDescription",
+            )}
+          >
+            <Switch
+              checked={settings.inputModalities.includes("image")}
+              disabled={busy || settings.modelLocked}
+              aria-label={t("settings.apiKeys.decisionApi.connectionImages")}
+              onCheckedChange={(on) =>
+                void apply(
+                  { inputModalities: on ? ["text", "image"] : ["text"] },
+                  false,
+                )
+              }
+            />
+          </SettingsRow>
+        ) : null}
+
         {connections?.length === 0 && !settings.modelLocked ? (
           <p className="pb-3 text-xs text-muted-foreground">
             {t("settings.apiKeys.decisionApi.addConnection")}{" "}
