@@ -919,14 +919,19 @@ async def unload_all(caller: Caller) -> UnloadAllResult:
         # Kept models first, so unloading the primary never promotes one of them in between.
         for name, target in reversed(pairs):
             await unload(name, target)
-        _serving, _checkpoints, after = await _llm_resident(caller)
+        now_serving, now_checkpoints, after = await _llm_resident(caller)
+        # A model the unloads promoted still serves (by name and by checkpoint): unload it too.
+        promoted = [pair for pair in zip(now_serving, now_checkpoints) if pair not in pairs]
+        for name, target in promoted:
+            await unload(name, target)
         # Models held in memory behind the active one are listed only under loaded.
-        held = [name for name in after if name not in checkpoints and name not in serving]
+        known = {*serving, *checkpoints, *now_serving, *now_checkpoints}
+        held = [name for name in after if name not in known]
         for name in held:
             await unload(name, name)
-        if held:
+        if held or promoted:
             _serving, _checkpoints, after = await _llm_resident(caller)
-        pairs += [(name, name) for name in held]
+        pairs += promoted + [(name, name) for name in held]
         unloaded += [
             SlotModel(kind = "llm", model = name)
             for name, target in pairs

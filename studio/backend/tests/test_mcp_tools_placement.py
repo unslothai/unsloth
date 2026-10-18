@@ -489,3 +489,20 @@ def test_gpu_layers_is_refused_for_a_model_llama_server_does_not_run(monkeypatch
     )
     assert result["isError"] is True and "only for GGUF models" in str(result["content"])
     assert sent == []
+
+
+def test_unload_all_unloads_a_promoted_model_once_by_its_checkpoint(monkeypatch):
+    # The kept model could not go first, so unloading the primary promoted it.
+    first = {
+        "loaded": [LLM, QWEN],
+        "serving": [LLM, QWEN],
+        "serving_checkpoints": ["/m/llm", "/m/qwen"],
+    }
+    promoted = {"loaded": [QWEN], "serving": [QWEN], "serving_checkpoints": ["/m/qwen-2"]}
+    routes = {
+        STATUS_ROUTE: sequence(first, promoted, EMPTY_STATUS),
+        ("POST", "/api/inference/unload"): {"status": "unloaded"},
+    }
+    result, studio = run_tool(monkeypatch, routes, "unload_model", {"kind": "all"}, fallback = {})
+    assert bodies(studio, "/api/inference/unload")[-1] == {"model_path": "/m/qwen-2"}
+    assert len(bodies(studio, "/api/inference/unload")) == 3
