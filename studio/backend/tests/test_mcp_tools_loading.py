@@ -334,11 +334,23 @@ def test_a_previous_model_answer_then_the_new_one_loads(monkeypatch, fast_polls)
             {"gguf_filename": "flux1-schnell-Q8_0.gguf"},
         ),
         ("video", {"gguf_variant": "Q4_K_S"}, {"gguf_variant": "Q8_0"}),
+        # Same quant, other MiniMax-H3 partition: only h3_task tells them apart.
+        (
+            "video",
+            {"gguf_variant": "Q8_0", "h3_task": "fl2va"},
+            {"gguf_variant": "Q8_0", "h3_task": "ref2va"},
+        ),
     ],
 )
 def test_another_variant_of_the_resident_repo_waits_for_its_own_load(
     monkeypatch, fast_polls, kind, old, new
 ):
+    if old.get("h3_task"):
+
+        async def ref2va(*_args):
+            return "minimax_h3_ref2va-Q8_0.gguf"
+
+        monkeypatch.setattr(loading, "_gguf_filename", ref2va)
     resident = {"loaded": True, "repo_id": FLUX_GGUF, "model_kind": "gguf"}
     old, unnamed, new = {**resident, **old}, {**resident, "gguf_variant": None}, {**resident, **new}
     studio = _media_studio(

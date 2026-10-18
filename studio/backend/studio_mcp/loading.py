@@ -562,7 +562,17 @@ def _resident_matches(
     quant = extract_quant_token(wanted) if wanted.lower().endswith(".gguf") else None
     if not quant:
         return True
-    return (opt_text(status.get("gguf_variant")) or "").lower() == quant.lower()
+    if (opt_text(status.get("gguf_variant")) or "").lower() != quant.lower():
+        return False
+    # MiniMax-H3 ships its fl2va and ref2va partitions at the same quant; status names the one loaded.
+    h3_task = opt_text(status.get("h3_task"))
+    if not h3_task:
+        return True
+    try:
+        from core.inference.video_minimax_h3 import h3_transformer_task
+    except Exception:
+        return False
+    return h3_task.lower() == h3_transformer_task(wanted).lower()
 
 
 async def _gguf_filename(caller: Caller, model: str, variant: Optional[str]) -> Optional[dict]:
