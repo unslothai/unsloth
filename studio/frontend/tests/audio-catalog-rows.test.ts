@@ -133,7 +133,7 @@ test("an unclassified umbrella folder warns; a stale UNOFFERED entry fails", () 
   assert.equal(warnings.length, 1);
   assert.match(
     warnings[0],
-    /'Brand-New-GGUF\/' is not in the bundled seed; Unsloth Studio lists it/,
+    /'Brand-New-GGUF\/' is not in the bundled seed; Unsloth lists it/,
   );
   assert.deepEqual(failures, [
     `${REPO}: AUDIO_CPP_UNOFFERED_FOLDERS lists 'Gone-GGUF', which the repo no longer has`,
