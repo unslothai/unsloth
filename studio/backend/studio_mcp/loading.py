@@ -194,20 +194,20 @@ async def start_load(
         variant = variant,
         options = options,
     )
-    job = _in_flight(caller, asked)
-    if job is None:
+
+    async def drive(job: LoadJob) -> LoadResult:
+        # Every route read runs inside the job, so a slow one never holds the call past its deadline.
         before, chat = await _resident(caller)
         # A chat load Unsloth Studio is already running (started elsewhere) is followed, not started
         # again. The status names only the repo, so a load asking for a variant always posts.
         loading_now = strings(chat.get("loading"))
         if slot in CHAT_ROUTE_KINDS and not variant and any(_same(n, model) for n in loading_now):
-            job = _in_flight(caller, asked) or LOADS.start(
-                asked, lambda job: _watch_llm(caller, slot, model, before, job)
-            )
+            return await _watch_llm(caller, slot, model, before, job)
         # K16, after the attach: M5 waits on a download of the same model here, then M7 refuses a partial one.
-    if job is None:
         await place.refuse_partial_variant(caller, model, slot, variant)
-        job = _in_flight(caller, asked) or LOADS.start(asked, lambda job: run(job, before))
+        return await run(job, before)
+
+    job = _in_flight(caller, asked) or LOADS.start(asked, drive)
     return await wait_load(ctx, job, deadline)
 
 

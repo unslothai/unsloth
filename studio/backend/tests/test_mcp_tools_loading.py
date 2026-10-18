@@ -816,14 +816,20 @@ def test_an_stt_load_that_outlasts_the_unload_is_unloaded_once_it_finishes(monke
     ]
 
 
-def test_a_slow_media_preflight_does_not_hold_the_call_past_wait_s(monkeypatch, fast_polls):
+# The resident-model snapshot and the media Hub and plan reads all run inside the job.
+@pytest.mark.parametrize("slow_route", ["plan", "status"])
+def test_a_slow_read_before_the_load_does_not_hold_the_call_past_wait_s(
+    monkeypatch, fast_polls, slow_route
+):
     studio = fake_studio(
         {
-            ("POST", "/api/inference/video/download-plan"): slow({"entries": []}, 1.0),
+            ("POST", "/api/inference/video/download-plan"): (
+                slow({"entries": []}, 1.0) if slow_route == "plan" else {"entries": []}
+            ),
             ("POST", "/api/inference/video/load"): LTX_LOADED,
             ("GET", "/api/inference/video/load-progress"): READY,
             VIDEO_STATUS: sequence(UNLOADED, LTX_LOADED),
-            IMAGE_STATUS: UNLOADED,
+            IMAGE_STATUS: slow(UNLOADED, 1.0) if slow_route == "status" else UNLOADED,
         }
     )
     with session(monkeypatch, studio) as call:

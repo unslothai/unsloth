@@ -18827,6 +18827,10 @@ async def _guard_primary_replacement(request: LoadRequest, names) -> None:
         for slot in list(model_slots.slots):
             if model_slots.in_use(slot):
                 raise refusal_for(await asyncio.to_thread(_kept_slot_reports, slot))
+        # A slot that failed to stop still holds its model, and the retire retries its unload.
+        stuck = list(model_slots.stuck)
+        if stuck:
+            raise refusal_for(await asyncio.to_thread(_kept_slot_reports, stuck[0]), "chat")
     try:
         reports = await asyncio.to_thread(model_slots.in_slot, None, _primary_chat_reports)
     except Exception:  # noqa: BLE001 - nothing to name, so nothing to protect
@@ -19443,7 +19447,9 @@ async def _load_model_impl(
         )
         # Under Always, a load that would unload the serving primary or a kept model is refused
         # here, before any teardown; another quant, context or engine of the same repo is not.
-        if replacing and (serving or (request.engine != "auto" and model_slots.slots)):
+        if replacing and (
+            serving or (request.engine != "auto" and (model_slots.slots or model_slots.stuck))
+        ):
             await _guard_primary_replacement(
                 request,
                 (
@@ -49710,6 +49716,17 @@ def _unload_native_video_sharing_the_sd_cpp_tree(policy: str = "off", evicted = 
         gpu_arbiter.note_evictions(slots, evicted)
 
 
+def _activate_checked(check, activate):
+    """``activate()`` with ``check`` run before an engine switch unloads the active engine."""
+    from core.inference.diffusion_engine_router import before_engine_switch
+
+    token = before_engine_switch.set(check)
+    try:
+        return activate()
+    finally:
+        before_engine_switch.reset(token)
+
+
 def _guard_diffusion_load_against_training() -> None:
     """Refuse loading an image model while a training run is active. Unlike chat,
     a diffusion pipeline's VRAM can't be cheaply estimated before the load, so the
@@ -50365,7 +50382,12 @@ async def load_diffusion_model_gated(
                 _unload_native_video_sharing_the_sd_cpp_tree, multi_model_mode, evicted_slots
             )
         # Pick the engine for this host (diffusers on GPU, native sd.cpp otherwise), installing sd-cli if needed, BEFORE evicting chat.
+        # Under Always the switch re-checks under the router's transition lock: another load may have landed meanwhile.
         engine = await asyncio.to_thread(
+            _activate_checked,
+            functools.partial(refuse_replacing_media, DIFFUSION, multi_model_mode, media_names)
+            if multi_model_mode == "always"
+            else None,
             functools.partial(
                 select_and_activate_engine,
                 fam,
@@ -50379,7 +50401,7 @@ async def load_diffusion_model_gated(
                 ),
                 # Only the opt-in MLX engine reads it (to judge the GGUF quant).
                 gguf_filename = request.gguf_filename,
-            )
+            ),
         )
         # predict_engine is selection's read-only twin: it never installs, so a host whose sd-cli
         # install then fails lands on the OTHER engine. Re-ask the engine actually activated when
