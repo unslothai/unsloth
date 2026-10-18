@@ -556,6 +556,9 @@ jobs:
         working-directory: ${{ github.workspace }}
         timeout-minutes: 10
         run: python3 tests/studio/playwright_project_folders.py --out "$RUNNER_TEMP/project-folders"
+      - name: Browser agent checks radios and checkboxes by their labels
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_browser_agent_select.py
 
       - name: Icon tooltips follow the pointer between neighbours
         working-directory: ${{ github.workspace }}

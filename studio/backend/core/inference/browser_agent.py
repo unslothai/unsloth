@@ -207,7 +207,8 @@ BROWSER_SELECT_TOOL = {
         "name": "browser_select",
         "description": (
             "Choose an option in a dropdown, or set a checkbox or radio button, by ref. value is "
-            'the option text, or "true"/"false" for a checkbox.'
+            'the option text, or "true"/"false" for a checkbox or radio button, whose own ref '
+            "is the one to pass."
         ),
         "parameters": {
             "type": "object",

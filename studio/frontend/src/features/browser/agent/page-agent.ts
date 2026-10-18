@@ -1242,7 +1242,12 @@ export function installPageAgent(): PageAgent {
     }
     const role = roleOf(el);
     if (role === "checkbox" || role === "radio" || role === "switch") {
-      const on = ["true", "on", "yes", "checked", "1", "check"].includes(value.trim().toLowerCase());
+      const wanted = value.trim().toLowerCase();
+      const own = [nameOf(el), el instanceof HTMLInputElement ? el.value : ""].some((name) => name && name.toLowerCase() === wanted);
+      const on = own || ["true", "on", "yes", "checked", "1", "check"].includes(wanted);
+      if (!(on || ["false", "off", "no", "unchecked", "0", "uncheck"].includes(wanted))) {
+        return { ok: false, error: `${ref} is a ${role}; value must be "true", "false" or its own label. Pick the ref of the option to choose.` };
+      }
       const current = el instanceof HTMLInputElement ? el.checked : el.getAttribute("aria-checked") === "true";
       if (current && !on && role === "radio") {
         return { ok: false, error: `${ref} is a radio button; select another option in its group instead.` };
