@@ -152,3 +152,60 @@ def test_get_or_autotune_wires_dims(ac, monkeypatch, hidden, inter):
             )
             for c in configs:
                 assert n % c.BLOCK_SIZE_N == 0 and k % c.BLOCK_SIZE_K == 0, (env, n, k, c)
+
+
+# Shared memory step-down of the heuristic dX (measured 122,880 B at 64x64x256 x 4 stages on
+# sm_80+; 101,376 B limit on L4 / RTX PRO 6000). The device is mocked.
+def _device(ac, monkeypatch, capability, smem):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: capability)
+    monkeypatch.setattr(ac, "_device_smem_per_block", lambda: smem)
+
+
+@pytest.mark.parametrize("capability", [(8, 6), (8, 9), (12, 0)])
+def test_heuristic_dx_steps_down_on_small_smem(ac, monkeypatch, capability):
+    _device(ac, monkeypatch, capability, 101376)
+    fwd, dx, dw = ac._get_heuristic_configs(n_dim = 1536, k_dim = 2048)
+    assert _tiles((fwd, dx, dw)) == (OLD_HEURISTIC[0], (64, 64, 256, 8, 3), OLD_HEURISTIC[2])
+
+
+@pytest.mark.parametrize(
+    "capability,smem",
+    [((7, 5), 65536), ((8, 0), 166912), ((9, 0), 232448), ((10, 0), 232448), ((8, 7), 166912)],
+)
+@pytest.mark.parametrize("hidden,inter", UNCHANGED_SHAPES)
+def test_heuristic_unchanged_with_enough_smem(ac, monkeypatch, capability, smem, hidden, inter):
+    for kwargs, _ in _gemms(hidden, inter):
+        dims = dict(n_dim = 2 * kwargs["intermediate_dim"], k_dim = kwargs["hidden_dim"])
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+        old = [c.__dict__ for c in ac._get_heuristic_configs(**dims)]
+        _device(ac, monkeypatch, capability, smem)
+        assert [c.__dict__ for c in ac._get_heuristic_configs(**dims)] == old
+
+
+def test_heuristic_shrunk_dx_is_not_stepped(ac, monkeypatch):
+    # 1408 GEMM2: dX already 64x64x128 x 4 stages after the dims fit (73,728 B), not in the table.
+    _device(ac, monkeypatch, (8, 9), 101376)
+    _, dx, _ = ac._get_heuristic_configs(n_dim = 2048, k_dim = 1408)
+    assert (dx.BLOCK_SIZE_K, dx.num_stages) == (128, 4)
+
+
+@pytest.mark.parametrize("smem", [None, 65536])
+def test_heuristic_unknown_or_tiny_smem_keeps_config(ac, monkeypatch, smem):
+    # Unknown limit, or one the step-down does not fit either (81,920 B): keep today's config.
+    _device(ac, monkeypatch, (8, 9), smem)
+    assert _tiles(ac._get_heuristic_configs(n_dim = 1536, k_dim = 2048)) == OLD_HEURISTIC
+
+
+def test_default_configs_not_stepped(ac, monkeypatch):
+    _device(ac, monkeypatch, (8, 9), 101376)
+    assert _tiles(ac._get_default_configs(n_dim = 1536, k_dim = 2048)) == OLD_DEFAULT
+
+
+def test_get_or_autotune_heuristic_steps_down(ac, monkeypatch):
+    _device(ac, monkeypatch, (8, 9), 101376)
+    monkeypatch.setenv("UNSLOTH_MOE_DISABLE_AUTOTUNE", "1")
+    _, dx, _ = ac.get_or_autotune_moe_kernels(
+        num_experts = 128, hidden_dim = 2048, intermediate_dim = 768, top_k = 8, dtype = torch.bfloat16
+    )
+    assert dx.num_stages == 3

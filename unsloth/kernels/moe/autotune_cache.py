@@ -397,6 +397,54 @@ def _fit_configs_to_dims(
     return configs
 
 
+# Heuristic configs whose measured shared memory does not fit every device, with the
+# smallest change that fits. Bytes are Triton's compiled metadata.shared for 16-bit dtypes:
+# sm_80+ keeps num_stages - 1 cp.async buffers, so the 64x64x256 4-stage dX needs 122,880 B
+# (OutOfResources on L4 / RTX PRO 6000: 101,376 B limit); 3 stages need 81,920 B. The other
+# heuristic kernels fit 101,376 B as they are (fwd 98,304 B, dW 36,864 B). sm_75 has no
+# cp.async multi-buffering (65,536 B for every heuristic kernel on a T4), so it is excluded.
+# kind -> {(BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages): (bytes, fitting num_stages, its bytes)}
+_HEURISTIC_SMEM_STEP_DOWN = {
+    "dX": {(64, 64, 256, 4): (122880, 3, 81920)},
+}
+
+
+def _device_smem_per_block() -> Optional[int]:
+    try:
+        from .grouped_gemm.kernels.tuning import get_device_properties
+
+        return int(get_device_properties().SIZE_SMEM)  # triton max_shared_mem (opt-in)
+    except Exception:
+        try:
+            props = torch.cuda.get_device_properties(torch.cuda.current_device())
+            return int(props.shared_memory_per_block_optin)
+        except Exception:
+            return None
+
+
+def _fit_heuristic_configs_to_smem(configs: Tuple[Any, Any, Any]) -> Tuple[Any, Any, Any]:
+    """Apply _HEURISTIC_SMEM_STEP_DOWN on CUDA sm_80+ devices whose shared memory is too small."""
+    try:
+        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+            return configs
+        if torch.cuda.get_device_capability()[0] < 8:
+            return configs
+    except Exception:
+        return configs
+    smem = _device_smem_per_block()
+    if smem is None:
+        return configs
+    for kind, config in zip(("fwd", "dX", "dW"), configs):
+        key = (config.BLOCK_SIZE_M, config.BLOCK_SIZE_N, config.BLOCK_SIZE_K, config.num_stages)
+        entry = _HEURISTIC_SMEM_STEP_DOWN.get(kind, {}).get(key)
+        if entry is not None and entry[2] <= smem < entry[0]:
+            config.num_stages = entry[1]
+            logger.info(
+                f"MoE heuristic {kind} config: num_stages {key[3]} -> {entry[1]} to fit {smem} B shared memory"
+            )
+    return configs
+
+
 def _get_heuristic_configs(
     n_dim: Optional[int] = None, k_dim: Optional[int] = None
 ) -> Tuple[Any, Any, Any]:
@@ -405,7 +453,8 @@ def _get_heuristic_configs(
     These are verified to be safe on A100 (SM80) and provide ~9x speedup on H100/B200.
 
     n_dim / k_dim are this GEMM's N (output features) and K (input features); when given,
-    BLOCK_SIZE_N / BLOCK_SIZE_K shrink to divide them (see _fit_configs_to_dims).
+    BLOCK_SIZE_N / BLOCK_SIZE_K shrink to divide them (see _fit_configs_to_dims). On sm_80+
+    devices with too little shared memory, num_stages steps down per _HEURISTIC_SMEM_STEP_DOWN.
     """
     from .grouped_gemm.kernels.tuning import (
         KernelConfigForward,
@@ -453,7 +502,8 @@ def _get_heuristic_configs(
         use_tma_store = False,
     )
 
-    return _fit_configs_to_dims((config_fwd, config_bwd_dx, config_bwd_dw), n_dim, k_dim)
+    configs = _fit_configs_to_dims((config_fwd, config_bwd_dx, config_bwd_dw), n_dim, k_dim)
+    return _fit_heuristic_configs_to_smem(configs)
 
 
 def _get_default_configs(
