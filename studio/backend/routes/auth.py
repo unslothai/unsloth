@@ -597,8 +597,10 @@ def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Res
 
     from auth.policy import installation_is_multi_user
 
-    if installation_is_multi_user():
-        # The secret proves the shell owns the backend, not which account is using it.
+    # The secret proves the shell owns the backend, not which account is using it. Not while the
+    # owner password is still the seeded one the desktop never showed: no credential could complete
+    # that login, so the shell would only lock the owner out of their own install.
+    if installation_is_multi_user() and not storage.requires_password_change(username):
         return Response(
             content = '{"login_required":true,"login_mode":"multi"}',
             media_type = "application/json",
