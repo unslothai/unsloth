@@ -77,6 +77,8 @@ The [Unsloth Docker image](https://hub.docker.com/r/unsloth/unsloth) `unsloth/un
 brew install --cask unsloth
 ```
 
+On Linux, the cask installs the AppImage under `~/Applications`, adds `unsloth` to your `PATH`, and registers an application menu entry.
+
 #### Winget (Windows):
 ```powershell
 winget install --id UnslothAI.Unsloth -e
