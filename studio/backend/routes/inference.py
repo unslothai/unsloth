@@ -18609,7 +18609,8 @@ async def load_model_gated(
 
 def _ran_out_of_memory(exc: HTTPException) -> bool:
     if isinstance(exc.detail, dict):  # a classified audio.cpp failure
-        return exc.detail.get("code") == "out_of_memory"
+        # Out of CPU RAM: evicting GPU models frees none of it.
+        return exc.detail.get("code") == "out_of_memory" and exc.detail.get("device") != "cpu"
     return exc.status_code == 500 and "out of memory" in str(exc.detail).lower()
 
 
