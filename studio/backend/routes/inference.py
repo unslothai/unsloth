@@ -26733,10 +26733,20 @@ async def _analyze_transcript(source, expected_text: str, request: Request) -> d
     from core.inference.audio_metrics import match_score
     from core.inference.stt_sidecar import DEFAULT_STT_MODEL
 
+    def usable(resident: Optional[str], name: str) -> bool:
+        # A managed caller cannot use a resident model another account loaded outside its access.
+        if not resident or not account_access.managed_account():
+            return bool(resident)
+        try:
+            account_access.require_model_access(_stt_repo_reference(resident, name))
+        except HTTPException:
+            return False
+        return True
+
     model, engine = DEFAULT_STT_MODEL, None
     for name in stt_registry.STT_ENGINES:
         resident = await asyncio.to_thread(_stt_resident_model, name)
-        if resident:
+        if await asyncio.to_thread(usable, resident, name):
             model, engine = resident, name
             break
     serving_engine = _resolve_serving_stt_engine(engine)

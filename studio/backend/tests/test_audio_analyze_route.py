@@ -106,11 +106,33 @@ def test_expected_text_scores_the_transcript(source):
 
 
 def test_a_resident_stt_model_is_used_first(source, monkeypatch):
+    from hub.services.models import account_access
+
+    monkeypatch.setattr(account_access, "require_model_access", lambda *_a, **_k: None)
     monkeypatch.setattr(
         inference, "_stt_resident_model", lambda engine: "m/asr" if engine == "mtmd" else None
     )
     body = _post({"clip_id": CLIP, "expected_text": "hello world"}).json()
     assert body["stt_model"] == "m/asr" and source["stt"][0][0] == "m/asr"
+
+
+def test_a_resident_model_outside_the_callers_access_is_skipped(source, monkeypatch):
+    from core.inference.stt_sidecar import DEFAULT_STT_MODEL
+    from hub.services.models import account_access
+
+    monkeypatch.setattr(
+        inference, "_stt_resident_model", lambda engine: "o/large" if engine == "mtmd" else None
+    )
+    monkeypatch.setattr(inference, "_stt_repo_reference", lambda model, engine: model)
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+
+    def require(reference, *_a, **_k):
+        if reference == "o/large":
+            raise HTTPException(status_code = 403, detail = "Model not allowed")
+
+    monkeypatch.setattr(account_access, "require_model_access", require)
+    body = _post({"clip_id": CLIP, "expected_text": "hello world"}).json()
+    assert body["stt_model"] == DEFAULT_STT_MODEL and source["stt"][0][0] == DEFAULT_STT_MODEL
 
 
 def test_an_stt_refusal_passes_through(source):
