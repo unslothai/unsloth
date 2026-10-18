@@ -95,9 +95,12 @@ const SEED_FOLDERS = new Set(
 );
 const SEED_IDS = new Set(AUDIO_CPP_MODELS.map((m) => m.id.toLowerCase()));
 
-/** Supported rows the bundled seed does not list: new umbrella folders and Community repos. */
+/** Supported rows the bundled seed does not list: new umbrella folders and Community repos.
+ *  With `runtimeSpecs` the backend judged each row against the installed runtime's own specs,
+ *  so its verdict wins; without them the static unoffered list still applies. */
 export function catalogMoreRows(
   rows: readonly AudioCatalogRow[],
+  runtimeSpecs = false,
 ): AudioCatalogRow[] {
   return rows
     .filter((row) => row.unsupported_reason == null && row.workflows.length > 0)
@@ -105,7 +108,8 @@ export function catalogMoreRows(
       row.source === "community"
         ? !SEED_IDS.has(row.id.toLowerCase())
         : !SEED_FOLDERS.has(row.folder) &&
-          !Object.hasOwn(AUDIO_CPP_UNOFFERED_FOLDERS, row.folder),
+          (runtimeSpecs ||
+            !Object.hasOwn(AUDIO_CPP_UNOFFERED_FOLDERS, row.folder)),
     )
     .sort(
       (a, b) =>
@@ -217,12 +221,14 @@ export interface AudioCatalogSnapshot {
   rows: readonly AudioCatalogRow[];
   byId: ReadonlyMap<string, AudioCatalogEntry>;
   source: AudioCatalogResponse["source"] | "static";
+  runtimeSpecs: boolean;
 }
 
 const STATIC_SNAPSHOT: AudioCatalogSnapshot = {
   rows: [],
   byId: new Map(),
   source: "static",
+  runtimeSpecs: false,
 };
 
 /** A module-level cache for `useSyncExternalStore`, refetched after `ttlMs` (the server's own
@@ -249,7 +255,12 @@ export function createAudioCatalogStore(
       inflight = fetchCatalog()
         .then((response) => {
           const rows = Array.isArray(response?.models) ? response.models : [];
-          snapshot = { rows, byId: catalogById(rows), source: response.source };
+          snapshot = {
+            rows,
+            byId: catalogById(rows),
+            source: response.source,
+            runtimeSpecs: response.runtime_specs === true,
+          };
           nextFetchAt = now() + ttlMs;
           for (const listener of listeners) listener();
         })

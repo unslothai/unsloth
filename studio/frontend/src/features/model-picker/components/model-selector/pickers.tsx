@@ -5855,8 +5855,9 @@ export function HubModelPicker({
     }
 
     if (section === "recommended") {
+      // The More group renders right after the recommended rows, so it continues the same order.
       keys.push(
-        ...recommendedRows
+        ...[...recommendedRows, ...moreRows]
           .filter((r) => !loadedRowIds.has(r.id.toLowerCase()))
           .map((r) => makeModelOptionKey("recommended", r.id)),
       );
@@ -5885,6 +5886,7 @@ export function HubModelPicker({
     sortedLmStudio,
     lmStudioCollapsed,
     recommendedRows,
+    moreRows,
     section,
     showHfSection,
     sortedLocalDir,

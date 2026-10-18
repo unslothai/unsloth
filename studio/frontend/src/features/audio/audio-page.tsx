@@ -1531,11 +1531,14 @@ export function AudioPage({
             label: "More models",
             models: pageModels(
               pageWorkflow,
-              catalogMoreRows(audioCatalog.rows).map(catalogModelOption),
+              catalogMoreRows(
+                audioCatalog.rows,
+                audioCatalog.runtimeSpecs,
+              ).map(catalogModelOption),
               pagePrefs,
             ),
           },
-    [audioCatalog.rows, pageWorkflow, pagePrefs],
+    [audioCatalog.rows, audioCatalog.runtimeSpecs, pageWorkflow, pagePrefs],
   );
   const selectorRowFilter = useCallback(
     (row: PageModelRow) => rowOnPage(pageWorkflow, row, pagePrefs),
@@ -1761,7 +1764,7 @@ export function AudioPage({
                   void navigateSelf({ to: "/studio" });
                 }}
                 fit={true}
-                className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>span]:sr-only"
+                className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
                 tabs={[
                   {
                     value: "create",

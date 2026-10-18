@@ -67,6 +67,11 @@ test("More rows skip the seed, UNOFFERED and unsupported rows, and keep Communit
     catalogMoreRows(rows).map((r) => r.display_name),
     ["Alpha", "Drama 3", "Beta", "Zeta"],
   );
+  // Judged against the installed runtime's specs, a supported UNOFFERED folder is listed.
+  assert.deepEqual(
+    catalogMoreRows(rows, true).map((r) => r.display_name),
+    ["Alpha", "Sidon-GGUF", "Drama 3", "Beta", "Zeta"],
+  );
 });
 
 test("catalogById keys by lower-case id; an option carries name, description and size", () => {
@@ -144,6 +149,7 @@ test("a failed catalog fetch leaves the static seed, with no rows", async () => 
   await store.refresh();
   assert.deepEqual(store.getSnapshot().rows, []);
   assert.equal(store.getSnapshot().source, "static");
+  assert.equal(store.getSnapshot().runtimeSpecs, false);
   await store.refresh();
   assert.equal(calls, 1, "a failure is not refetched on every render");
 });
@@ -169,6 +175,7 @@ test("a fetched catalog notifies and is cached for the TTL", async () => {
   });
   await store.refresh();
   assert.equal(store.getSnapshot().source, "hub");
+  assert.equal(store.getSnapshot().runtimeSpecs, true);
   assert.equal(store.getSnapshot().byId.size, 1);
   await store.refresh();
   clock = 300_001;
@@ -185,6 +192,15 @@ test("the picker renders the More group with ListLabel through the row filter", 
     /<ListLabel key="more-models" divider>\s*\{moreModels\.label\}/,
   );
   assert.match(src, /\[\.\.\.recommendedRows, \.\.\.moreRows\]\.map/);
+  // More rows join the roving option list in drawn order, so each gets its own option id.
+  const keys = src.slice(
+    src.indexOf("const hubOptionKeys"),
+    src.indexOf("const selectedHubOptionKey"),
+  );
+  assert.match(
+    keys,
+    /\.\.\.\[\.\.\.recommendedRows, \.\.\.moreRows\]\s*\.filter\(\(r\) => !loadedRowIds\.has/,
+  );
   assert.match(
     src,
     /\.filter\(\(model\) => !rowFilter \|\| rowFilter\(\{ id: model\.id \}\)\)/,

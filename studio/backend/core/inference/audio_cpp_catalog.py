@@ -323,6 +323,9 @@ def _build(network: bool, specs_dir: Optional[Path]) -> tuple[AudioCatalogRespon
     found: dict[str, tuple[Optional[str], Optional[dict]]] = {}
     probes: dict[str, Callable[[], Any]] = {}
     online = network and not acm.hub_offline()
+    # A family whose runtime spec places other folders but not this one: the name hint is wrong
+    # (Voxtral-4B-TTS reads as voxtral_realtime), so the header decides instead.
+    placed = set(targets.values())
     for name, folder_files in folders.items():
         if name in targets:
             found[name] = (targets[name], None)
@@ -334,7 +337,9 @@ def _build(network: bool, specs_dir: Optional[Path]) -> tuple[AudioCatalogRespon
             found[name] = (header.family, header.spec)
             continue
         family = acm.family_from_names((name, *(Path(f.path).name for f in folder_files)))
+        family = None if family in placed else family
         _files, saved_family, saved_spec = saved_folders.get(name) or ((), None, None)
+        saved_family = None if saved_family in placed else saved_family
         if family not in acm.FAMILIES and family not in index and saved_family:
             found[name] = (saved_family, _dict(saved_spec) or None)
             continue
