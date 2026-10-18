@@ -4935,3 +4935,43 @@ def test_idle_slot_erase_is_declined_behind_the_replica_router(monkeypatch):
     assert backend.base_url == "http://127.0.0.1:50000"
     assert backend.release_idle_chat_slot(backend.base_url, 0) is False
     assert posted == []
+
+
+def test_a_failed_replica_restart_is_retried_rather_than_reported_in_step(monkeypatch, tmp_path):
+    """Regression: the restart recorded the new argv before the spawn, so after one failed spawn
+    the retry saw matching argv, returned True, and left the replica held forever."""
+    monkeypatch.chdir(tmp_path)
+    mtp = ["/l/llama-server", "-m", "/m.gguf", "--port", "9000", "--spec-type", "draft-mtp"]
+    state, events = _replica_state(
+        ss.replica_argv(mtp, binary = "/peer/llama-server", host = "192.168.200.13", port = 8081)
+    )
+    held, released = [], []
+
+    class _Router:
+        async def hold(self, name, reason):
+            held.append(name)
+
+        def release(self, name):
+            released.append(name)
+
+    state.router = _Router()
+    process = state.peer_process
+    original_start = type(process).start
+    failures = [RuntimeError("ssh: connect refused")]
+
+    async def flaky_start(self):
+        if failures:
+            raise failures.pop()
+        await original_start(self)
+
+    monkeypatch.setattr(type(process), "start", flaky_start)
+    plain = ["/l/llama-server", "-m", "/m.gguf", "--port", "9100"]
+    assert not run(state._sync_replica(_primary(plain)))
+    assert released == []
+    assert run(state._sync_replica(_primary(plain)))
+    assert released == ["peer"]
+    assert events[-1][0] == "start" and "--spec-type" not in events[-1][1]
+    # In step now: a further check restarts nothing.
+    count = len(events)
+    assert run(state._sync_replica(_primary(plain)))
+    assert len(events) == count

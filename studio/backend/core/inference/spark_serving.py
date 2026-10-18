@@ -3035,6 +3035,7 @@ class SparkServing:
         self.topology = "replicas"
         self.reason = str(plan.get("reason", ""))
         self.relaunch_attempts = 0
+        self._replica_sync_pending = False
         self.relaunch_gave_up = False
         logger.info(
             "spark serving: replicas on 127.0.0.1:%s and %s:%s behind %s (%s)",
@@ -3209,7 +3210,10 @@ class SparkServing:
                 replica_env(getattr(backend, "launched_env", None) or None),
             )
         keys = _read_keys(list(self.peer_keys))
-        if rebuilt == process.argv and keys == self.peer_keys:
+        # Matching argv and keys say what was asked for, not that the replica started with them: a
+        # restart that failed after recording them must still be retried, and the hold released.
+        pending = getattr(self, "_replica_sync_pending", False)
+        if rebuilt == process.argv and keys == self.peer_keys and not pending:
             return True
         # The primary already answers with the new key: a request sent to the old replica gets 401.
         if self.router is not None:
@@ -3223,12 +3227,14 @@ class SparkServing:
                 return False
             self.peer_keys = keys
         process.argv = rebuilt
+        self._replica_sync_pending = True
         try:
             await process.stop(timeout = 5.0)
             await process.start()
         except Exception as exc:
             logger.warning("spark serving: peer restart for the new key failed: %s", exc)
             return False
+        self._replica_sync_pending = False
         if self.router is not None:
             self.router.release("peer")
         return True
