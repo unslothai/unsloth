@@ -584,3 +584,20 @@ def test_an_unreadable_primary_under_always_refuses_instead_of_replacing(backend
     monkeypatch.setattr(inf, "_primary_chat_reports", broken)
     with pytest.raises(MultiModelAlwaysRefusal):
         asyncio.run(inf._guard_primary_replacement(LoadRequest(model_path = "org/C"), ("org/C",)))
+
+
+@pytest.mark.parametrize(
+    "model_path, managed, status",
+    [("lemonade:", False, 400), ("lemonade:a/b", False, 400), ("lemonade:qwen", True, 403)],
+)
+def test_an_npu_load_that_can_only_fail_never_asks_to_unload(
+    monkeypatch, model_path, managed, status
+):
+    async def refuse(*args, **kwargs):
+        raise AssertionError("the Always guard ran before the NPU checks")
+
+    monkeypatch.setattr(inf, "_guard_primary_replacement", refuse)
+    monkeypatch.setattr(inf.account_access, "managed_account", lambda: managed)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(inf._load_model_impl(LoadRequest(model_path = model_path), None, "owner"))
+    assert caught.value.status_code == status
