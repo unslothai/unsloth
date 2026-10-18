@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { createApiKey } from "../api/api-keys";
 
 const EXPIRY_PRESETS = [
@@ -23,6 +24,7 @@ export function CreateKeyForm({
   onError: (message: string) => void;
 }) {
   const t = useT();
+  const pillId = useId();
   const [name, setName] = useState("");
   const [expiry, setExpiry] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -64,12 +66,13 @@ export function CreateKeyForm({
                 onClick={() => setExpiry(p.value)}
                 aria-pressed={active}
                 className={cn(
-                  "inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  "relative inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                   active
-                    ? "hub-tab-toggle-pill text-foreground"
+                    ? "text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
+                {active && <SegmentedPill group={`${pillId}-expiry`} />}
                 {p.value === null ? t("settings.apiKeys.never") : p.label}
               </button>
             );

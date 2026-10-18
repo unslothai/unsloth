@@ -493,7 +493,9 @@ def _bound_spec(entry):
 def _entry_bytes(entry) -> int:
     import mlx.core as mx
 
-    state = entry.state
+    # mlx-lm 0.32's KV `state` is the whole preallocated buffer; `keys_and_values` is the held part.
+    held = getattr(entry, "keys_and_values", None)
+    state = held() if callable(held) and getattr(entry, "keys", None) is not None else entry.state
     if isinstance(state, mx.array):
         state = (state,)
     elif not isinstance(state, (list, tuple)):
@@ -540,8 +542,12 @@ def _conv_width(entry) -> int:
     state = entry.state
     if not isinstance(state, (list, tuple)):
         return 0
+    # mlx-lm 0.32's ArraysCache state is (arrays, left_padding, lengths).
+    items = [
+        sub for item in state for sub in (item if isinstance(item, (list, tuple)) else (item,))
+    ]
     return sum(
-        int(item.shape[-1]) for item in state if isinstance(item, mx.array) and item.ndim == 3
+        int(item.shape[-1]) for item in items if isinstance(item, mx.array) and item.ndim == 3
     )
 
 

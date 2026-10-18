@@ -2078,7 +2078,10 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             "                completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)\n"
             "            rewards_per_func = self._calculate_rewards(inputs, prompts_text, completions_text, completion_ids_list)\n"
             "        else:\n"
-            "            rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)"
+            "            rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)\n"
+            # On CPython <= 3.12 a later locals() call would store this frame dict in itself, a
+            # cycle that keeps every rollout tensor alive until the cyclic GC runs.
+            "        del _unsloth_reward_locals"
         )
         function = function.replace(string_to_find, replacement_string)
 

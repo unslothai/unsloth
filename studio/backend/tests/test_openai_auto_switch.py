@@ -725,6 +725,185 @@ def test_local_gguf_entry_filters_non_gguf_and_recurses(tmp_path):
     assert e2 is not None and e2.variants
 
 
+def test_local_gguf_entry_uses_the_variantless_same_quant_default(tmp_path):
+    alpha = tmp_path / "alpha-Q4_K_M.gguf"
+    beta_one = tmp_path / "beta-Q4_K_M-00001-of-00002.gguf"
+    beta_two = tmp_path / "beta-Q4_K_M-00002-of-00002.gguf"
+    alpha.write_bytes(b"x" * 100)
+    beta_one.write_bytes(b"x" * 60)
+    beta_two.write_bytes(b"x" * 60)
+
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+
+    assert entry is not None
+    assert entry.variants[0] == "Q4_K_M"
+    assert resolver._resolve_from_index("local/model", {"local/model": entry})[1] == "Q4_K_M"
+
+
+def test_local_gguf_entry_does_not_publish_a_torn_sibling_build(tmp_path):
+    (tmp_path / "alpha-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "beta-Q4_K_M-00001-of-00002.gguf").write_bytes(b"x" * 200)
+
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+
+    assert entry is not None
+    assert entry.variants == ("Q4_K_M",)
+
+
+def test_local_gguf_entry_keeps_a_split_build_linked_to_its_complete_set(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    for index in (1, 2):
+        (store / f"beta-Q4_K_M-0000{index}-of-00002.gguf").write_bytes(b"x" * 60)
+    folder = tmp_path / "models"
+    folder.mkdir()
+    (folder / "alpha-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    try:
+        (folder / "beta-Q4_K_M-00001-of-00002.gguf").symlink_to(
+            store / "beta-Q4_K_M-00001-of-00002.gguf"
+        )
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(folder)))
+
+    assert entry is not None
+    assert len(entry.variants) == 2
+
+
+def test_local_gguf_entry_keeps_the_preferred_quant_over_a_larger_sibling_build(tmp_path):
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x" * 50)
+    (tmp_path / "alpha-F16.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "beta-F16.gguf").write_bytes(b"x" * 120)
+
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+
+    assert entry is not None
+    assert entry.variants[0] == "Q4_K_M"
+
+
+def test_a_torn_build_key_misses_instead_of_serving_its_sibling(tmp_path, monkeypatch):
+    (tmp_path / "alpha-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "beta-Q4_K_M-00001-of-00002.gguf").write_bytes(b"x" * 200)
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+    assert entry is not None and "beta-q4_k_m" in entry.withheld
+
+    index = {"local/model": entry}
+    assert resolver._resolve_from_index("local/model:beta-Q4_K_M", index) is None
+    assert resolver._resolve_from_index("local/model:latest", index)[1] == "Q4_K_M"
+    torn_first = resolver._LocalGgufEntry(
+        "local/model",
+        str(tmp_path),
+        ("beta-Q4_K_M",),
+        aliases = (("q4_k_m", "beta-Q4_K_M"),),
+        withheld = ("q4_k_m",),
+    )
+    assert resolver._resolve_from_index("local/model:Q4_K_M", {"local/model": torn_first}) is None
+
+    monkeypatch.setattr(resolver, "_scan", (1.0, index))
+    loaded = _FakeBackend(loaded_id = "local/model", hf_variant = "Q4_K_M")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    assert inference_route._loaded_satisfies("local/model:beta-Q4_K_M") is False
+    assert inference_route._loaded_satisfies("local/model:latest") is True
+
+
+def test_a_build_stem_still_resolves_after_its_sibling_is_removed(tmp_path):
+    (tmp_path / "alpha-F16.gguf").write_bytes(b"x" * 80)
+    (tmp_path / "beta-F16.gguf").write_bytes(b"x" * 80)
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x" * 40)
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+    assert "beta-F16" in entry.variants
+
+    (tmp_path / "alpha-F16.gguf").unlink()
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+
+    resolved = resolver._resolve_from_index("local/model:beta-F16", {"local/model": entry})
+    assert resolved is not None and resolved[1] == "F16"
+    assert entry.aliases == ()
+
+
+def test_a_filename_build_key_still_resolves_after_its_sibling_is_removed(tmp_path):
+    (tmp_path / "0-model-F16.gguf").write_bytes(b"x" * 80)
+    (tmp_path / "F16.gguf").write_bytes(b"x" * 80)
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x" * 40)
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+    assert "F16.gguf" in entry.variants
+
+    (tmp_path / "0-model-F16.gguf").unlink()
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+
+    resolved = resolver._resolve_from_index("local/model:F16.gguf", {"local/model": entry})
+    assert resolved is not None and resolved[1] == "F16"
+
+
+def test_a_deleted_build_stem_misses_instead_of_serving_its_sibling(tmp_path, monkeypatch):
+    (tmp_path / "alpha-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "beta-Q4_K_M.gguf").write_bytes(b"x" * 90)
+    (tmp_path / "beta-Q4_K_M.gguf").unlink()
+    entry = resolver._local_gguf_entry("local/model", SimpleNamespace(path = str(tmp_path)))
+    index = {"local/model": entry}
+
+    assert resolver._resolve_from_index("local/model:beta-Q4_K_M", index) is None
+    assert resolver._resolve_from_index("local/model:alpha-Q4_K_M", index)[1] == "Q4_K_M"
+    assert resolver._resolve_from_index("local/model:latest", index)[1] == "Q4_K_M"
+
+    monkeypatch.setattr(resolver, "_scan", (1.0, index))
+    loaded = _FakeBackend(loaded_id = "local/model", hf_variant = "Q4_K_M")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    assert inference_route._loaded_satisfies("local/model:beta-Q4_K_M") is False
+    assert inference_route._loaded_satisfies("local/model:alpha-Q4_K_M") is True
+
+
+def test_a_deleted_quant_directory_build_is_withheld(tmp_path, monkeypatch):
+    (tmp_path / "Q4_K_M").mkdir()
+    (tmp_path / "Q4_K_M" / "alpha-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    entry = resolver._local_gguf_entry("custom-model", SimpleNamespace(path = str(tmp_path)))
+    index = {"custom-model": entry}
+    pin = "custom-model:Q4_K_M/beta-Q4_K_M"
+
+    assert resolver._resolve_from_index(pin, index) is None
+    monkeypatch.setattr(resolver, "_scan", (1.0, index))
+    assert resolver.local_gguf_withheld(pin) is True
+    assert resolver.local_gguf_withheld("custom-model:latest") is False
+
+
+def test_a_quant_directory_build_pin_is_authorized_by_its_base_model(monkeypatch):
+    from fastapi import HTTPException
+
+    def _refuse(_name):
+        raise HTTPException(status_code = 404, detail = "Model not found")
+
+    async def _no_catalog():
+        return None
+
+    async def _no_token(*_args):
+        return False
+
+    pinned = "custom-model:Q4_K_M/beta-Q4_K_M"
+    monkeypatch.setattr(inference_route.account_access, "require_model_access", _refuse)
+    monkeypatch.setattr(inference_route, "_cached_local_catalog", _no_catalog)
+    monkeypatch.setattr(inference_route, "_caller_token_authorizes_download", _no_token)
+    monkeypatch.setattr(
+        inference_route,
+        "_own_local_model_for_alias",
+        lambda alias: "/models/custom" if alias == "custom-model" else None,
+    )
+    scans = []
+
+    def _pinned(requested, allow_scan = True):
+        scans.append(allow_scan)
+        return "Q4_K_M/beta-Q4_K_M" if requested == pinned else None
+
+    monkeypatch.setattr(resolver, "local_gguf_pinned_variant", _pinned)
+
+    asyncio.run(inference_route._require_named_model_access(pinned))
+    # a cold index after restart must not refuse the pin, so this lookup may scan
+    assert scans[-1] is True
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(inference_route._require_named_model_access("custom-model:Q4_K_M/other"))
+    assert refused.value.status_code == 404
+
+
 def test_local_gguf_entry_labels_a_quantless_filename_as_the_picker_does(tmp_path):
     # No quant token in the name, so the picker and every saved setting key this variant by
     # the stem. Labelling it "v2" here left an API load reading a key nothing wrote (#10227).
@@ -8726,6 +8905,21 @@ def test_two_local_paths_differing_only_in_case_are_not_the_same_model(monkeypat
     alias = _FakeBackend(loaded_id = "unsloth/Qwen3-4B-GGUF")
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: alias)
     assert inference_route._loaded_satisfies("unsloth/qwen3-4b-gguf") is True
+
+
+def test_a_cold_index_does_not_answer_a_build_stem_with_the_resident_sibling(monkeypatch):
+    # alpha-Q4_K_M is resident under the bare Q4_K_M key; before the first scan nothing can
+    # pin beta-Q4_K_M, so the resident sibling must not count as serving it (#13957).
+    loaded = _FakeBackend(loaded_id = "local/model")
+    loaded.hf_variant = "Q4_K_M"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    assert inference_route._loaded_satisfies("local/model:beta-Q4_K_M") is False
+    assert inference_route._loaded_satisfies("local/model:latest") is True
+    assert inference_route._loaded_satisfies("local/model:Q4_K_M") is True
+
+    monkeypatch.setattr(resolver, "_scan", (1.0, {}))
+    assert inference_route._loaded_satisfies("local/model:beta-Q4_K_M") is True
 
 
 def test_abs_path_ids_are_recognised_in_either_platform_spelling():
