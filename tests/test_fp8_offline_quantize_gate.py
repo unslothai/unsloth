@@ -58,4 +58,6 @@ def _fake_vllm(monkeypatch, version):
 def test_who_quantizes(monkeypatch, resolved, fast_inference, vllm, expected):
     if vllm is not None:
         _fake_vllm(monkeypatch, vllm)
-    assert loader_utils._fp8_needs_offline_quantize(resolved, "my-org/x", fast_inference) is expected
+    assert (
+        loader_utils._fp8_needs_offline_quantize(resolved, "my-org/x", fast_inference) is expected
+    )
