@@ -262,6 +262,16 @@ def test_two_finished_downloads_of_different_sizes_still_compare(tmp_path: Path)
     assert _run(base, head).returncode == 2
 
 
+def test_two_finished_downloads_differing_only_in_units_still_compare(tmp_path: Path) -> None:
+    """`1.0 MB / 1.0 MB` then `1.0 GB / 1.0 GB` are two downloads, not a redraw."""
+    first = "  ██████████████████████████████  1.0 MB / 1.0 MB"
+    second = "  ██████████████████████████████  1.0 GB / 1.0 GB"
+    lines = BASELINE.split("\n")
+    base = _write(tmp_path / "base", transcript = "\n".join(lines[:1] + [first, second] + lines[1:]))
+    head = _write(tmp_path / "head", transcript = "\n".join(lines[:1] + [first] + lines[1:]))
+    assert _run(base, head).returncode == 2
+
+
 def test_a_download_that_never_finishes_still_compares(tmp_path: Path) -> None:
     """The full bar a finished download ends on is kept, so losing it is reported."""
     lines = BASELINE.split("\n")
