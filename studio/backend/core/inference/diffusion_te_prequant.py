@@ -150,6 +150,15 @@ TE_PREQUANT_BUDGET_SCALE = 0.65
 # The int8 ConvRot encoder alone (no fp8 fallback to cover): Qwen-Image-2.1's is 9,349,769,248 bytes against
 # 17,534,339,488 for the dense encoder, 0.533, rounded up.
 TE_INT8_CONVROT_BUDGET_SCALE = 0.56
+# Per family where the file's ratio differs: Wan's UMT5 keeps its 256k-row embedding dense, so its int8 file is
+# 6,735,404,944 bytes against 11,361,851,208 dense (0.593), rounded up the same way.
+_TE_INT8_CONVROT_BUDGET_SCALES = {
+    name: 0.62 for name in ("wan2.2-ti2v-5b", "wan2.2-t2v-a14b", "wan2.1-t2v-1.3b", "wan2.1-t2v-14b")
+}
+
+
+def te_int8_convrot_budget_scale(family_name: Optional[str]) -> float:
+    return _TE_INT8_CONVROT_BUDGET_SCALES.get(family_name or "", TE_INT8_CONVROT_BUDGET_SCALE)
 
 
 def te_prequant_budget_scale(
@@ -169,7 +178,11 @@ def te_prequant_budget_scale(
     Best-effort like the rest of this module: anything unresolvable returns 1.0, i.e. today's
     bf16 budget."""
     if getattr(fam, "name", None) == "ltx-2.5":
-        from .video_ltx25 import ltx25_te_budget_scale
+        from .video_ltx25 import ltx25_te_budget_scale, ltx25_te_prequant_sources
+
+        # Only the hosted file is int8-sized end to end: the at-load fallback materializes the dense encoder first.
+        if not ltx25_te_prequant_sources(te_quant_mode, base):
+            return 1.0
         components = getattr(fam, "bf16_components_gb", None) or (0.0, 0.0)
         return ltx25_te_budget_scale(te_quant_mode, components[1])
     try:
@@ -184,7 +197,7 @@ def te_prequant_budget_scale(
     if not sources:
         return 1.0
     if _int8_convrot_only(te_quant_mode, target):
-        return TE_INT8_CONVROT_BUDGET_SCALE
+        return te_int8_convrot_budget_scale(getattr(fam, "name", None))
     return TE_PREQUANT_BUDGET_SCALE
 
 

@@ -293,7 +293,12 @@ def convert(
             # Store a tied embedding once (UMT5's encoder.embed_tokens.weight is shared.weight): the TE loader fills
             # the alias from the model's own tie (diffusion_te_prequant._fill_tied_aliases). Older readers refuse such
             # a file and load the dense encoder, so only use it for an encoder no older release was pointed at.
-            dropped = tied_copies(state_dict)
+            # A tied lm_head stays: the loader never fills a head alias (whether a head is tied is per config).
+            dropped = {
+                alias: key
+                for alias, key in tied_copies(state_dict).items()
+                if not alias.endswith("lm_head.weight")
+            }
             written = {k: v for k, v in state_dict.items() if k not in dropped}
         write_plain_safetensors(dst, fmt = fmt, state_dict = written, metadata = metadata, extra = extra)
         back = ps.load_plain_prequant_safetensors(dst)

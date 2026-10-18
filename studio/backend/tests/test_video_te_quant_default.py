@@ -474,3 +474,50 @@ def test_speed_off_keeps_the_released_encoder_unless_a_scheme_is_named(name):
     assert video_te_quant_request(fam, "int8", speed_mode = "off") == ("int8", False)
     if name != "ltx-2.5":
         assert video_te_quant_request(fam, None, speed_mode = "default")[1] is True
+
+
+def test_wan_int8_budget_covers_the_measured_file():
+    # 6,735,404,944 bytes int8 against 11,361,851,208 dense (Wan2.2-TI2V-5B UMT5).
+    for name in ("wan2.2-ti2v-5b", "wan2.1-t2v-14b"):
+        assert 11_361_851_208 * tpq.te_int8_convrot_budget_scale(name) >= 6_735_404_944
+    assert tpq.te_int8_convrot_budget_scale("qwen-image-2.1") == tpq.TE_INT8_CONVROT_BUDGET_SCALE
+
+
+def test_ltx25_budgets_the_dense_peak_unless_the_hosted_encoder_applies():
+    fam = types.SimpleNamespace(name = "ltx-2.5", bf16_components_gb = (40.0, 23.9))
+    hosted = tpq.te_prequant_budget_scale(
+        fam, te_quant_mode = None, target = None, base = "Lightricks/LTX-2.5-Diffusers"
+    )
+    assert hosted < 1.0
+    # A custom pack quantizes the dense encoder at load: its peak is the dense one.
+    assert tpq.te_prequant_budget_scale(fam, te_quant_mode = None, target = None, base = "someone/ltx25-pack") == 1.0
+    assert tpq.te_prequant_budget_scale(
+        fam, te_quant_mode = "none", target = None, base = "Lightricks/LTX-2.5-Diffusers"
+    ) == 1.0
+
+
+def test_drop_tied_copies_keeps_a_tied_lm_head(tmp_path):
+    import core.inference.prequant_safetensors as ps
+
+    conv = _converter()
+    embed = torch.randn(8, 4)
+    shared = torch.randn(8, 4)
+    state = {
+        "shared.weight": shared,
+        "encoder.embed_tokens.weight": shared,
+        "model.embed_tokens.weight": embed,
+        "lm_head.weight": embed,
+    }
+    src = tmp_path / "te-FP8.pt"
+    torch.save(
+        {
+            "format": tpq.TE_PREQUANT_FORMAT,
+            "state_dict": state,
+            "metadata": {"scheme": "fp8", "component": "text_encoder", "base_model_id": WAN_BASES[0]},
+        },
+        src,
+    )
+    rec = conv.convert(str(src), str(tmp_path), repo = None, revision = None, sha = None, drop_tied = True)
+    # The loader fills the embedding alias from the model's tie, never a head one.
+    assert rec["tied_copies_dropped"] == {"encoder.embed_tokens.weight": "shared.weight"}
+    assert "lm_head.weight" in ps.load_plain_prequant_safetensors(rec["dst"])["state_dict"]
