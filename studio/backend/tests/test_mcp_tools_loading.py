@@ -348,7 +348,8 @@ def test_another_variant_of_the_resident_repo_waits_for_its_own_load(
     if old.get("h3_task"):
 
         async def ref2va(*_args):
-            return "minimax_h3_ref2va-Q8_0.gguf"
+            # The variant row, as _gguf_filename returns it here.
+            return {"filename": "minimax_h3_ref2va-Q8_0.gguf"}
 
         monkeypatch.setattr(loading, "_gguf_filename", ref2va)
     resident = {"loaded": True, "repo_id": FLUX_GGUF, "model_kind": "gguf"}
