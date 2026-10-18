@@ -604,7 +604,7 @@ def test_always_evicts_a_media_claim_that_holds_nothing_unless_it_is_loading(arb
     [
         ("always", ("org/Other",), True),
         ("always", ("org/Flux",), False),
-        ("always", ("/models/flux", "org/Flux"), False),
+        ("always", ("/hf/hub/models--org--Flux/snapshots/abc",), False),
         ("fit", ("org/Other",), False),
     ],
 )
@@ -624,6 +624,30 @@ def test_always_refuses_replacing_a_loaded_media_model_with_another_repo(
     monkeypatch.setattr(arb, "_media_status", lambda owner: None)
     monkeypatch.setattr(arb, "_media_loading", lambda owner: False)
     assert arb.refuse_replacing_media(arb.VIDEO, "always", ("org/Other",)) == []
+
+
+def test_always_identifies_media_by_model_path_not_the_callers_display_label(arb_log, monkeypatch):
+    import inspect
+
+    import routes.inference as image_routes
+    import routes.video as video_routes
+
+    # A resident loaded from a local copy keeps its label, yet only its path says what it holds.
+    monkeypatch.setattr(
+        arb,
+        "_media_status",
+        lambda owner: {"loaded": True, "repo_id": "/models/b", "display_repo_id": "org/Flux"},
+    )
+    _report(monkeypatch, arb_log, arb.DIFFUSION, {"kind": "image", "model": "org/Flux"})
+    with pytest.raises(arb.MultiModelAlwaysRefusal):
+        arb.refuse_replacing_media(arb.DIFFUSION, "always", ("org/Flux",))
+    assert arb.refuse_replacing_media(arb.DIFFUSION, "always", ("/models/b",)) == []
+    # Both load routes key the gate on the path alone: a display label naming the resident would
+    # pass another repo off as a reload of it.
+    for routes in (image_routes, video_routes):
+        source = inspect.getsource(routes)
+        assert "media_names = (request.model_path,)" in source
+        assert "media_names = (request.model_path, request.display_repo_id)" not in source
 
 
 def test_a_media_load_registered_meanwhile_is_not_replaced_under_always(arb_log, monkeypatch):
