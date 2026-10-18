@@ -208,7 +208,6 @@ export const BUDGET = {
   // 2,047,580 B transfer against f172c8d7c4, one machine and build, Node 24, chunk count unchanged at 95): its
   // logo mapping, capability row and vision gate entries live in tables the startup chunks already load. Raised
   // by that growth.
-<<<<<<< HEAD
   // DeepInfra as a connection adds ~75 B raw / ~30 B transfer (capability row, logo mapping, vision gate and
   // service-tier helper, all in startup-loaded tables). Raised by that growth.
   // The audio.cpp v0.9.2 picker rows (#14073) add 253 B raw / 59 B transfer to the eager audio catalog
@@ -217,12 +216,6 @@ export const BUDGET = {
   // either PR's own: transfer from #14073 (2,047,608 B), raw from the DeepInfra raise (6,806,162 B).
   transferBytes: 2_047_608,
   rawBytes: 6_806_162,
-=======
-  // The audio.cpp v0.9.2 picker rows (#14073) add 253 B raw / 59 B transfer to the eager audio catalog
-  // table (one machine and build, chunk count unchanged at 95). Raised by that.
-  transferBytes: 2_047_608,
-  rawBytes: 6_806_087,
->>>>>>> upstream/main
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
