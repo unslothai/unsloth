@@ -34,7 +34,7 @@ from typing import Any, Optional
 from core.inference.diffusion_auto_policy import build_resolved_record, format_generation_for_log
 from core.inference.diffusion_compat import flux2_inner_dim_for_pick
 from core.inference.diffusion_device import (
-    resolve_auto_cuda_ordinal,
+    auto_cuda_ordinal_for_load,
     resolve_diffusion_device_target,
     resolve_selected_cuda_ordinal,
 )
@@ -2934,14 +2934,13 @@ class SdCppDiffusionBackend:
         # but a direct caller (an MCP client, a test, a plugin) hands over gpu_ids alone, and without this the native
         # engine is the one engine that would drop the pick silently. Re-ranked only when nobody has, so a
         # route-resolved winner is never second-guessed against free VRAM that has moved since.
-        if gpu_ordinal is None:
-            # Automatic ranks the torch cards too, unless sd.cpp runs on one torch cannot see.
-            if off_torch is not None or resolve_diffusion_device_target().device != "cuda":
-                gpu_ordinal = None
-            elif gpu_ids:
-                gpu_ordinal = resolve_selected_cuda_ordinal(gpu_ids)
-            else:
-                gpu_ordinal = resolve_auto_cuda_ordinal()
+        auto_ordinal = gpu_ordinal is None and not gpu_ids and off_torch is None
+        if gpu_ordinal is None and gpu_ids:
+            gpu_ordinal = (
+                resolve_selected_cuda_ordinal(gpu_ids)
+                if resolve_diffusion_device_target().device == "cuda"
+                else None
+            )
         if not gguf_filename:
             raise ValueError(
                 "gguf_filename is required: the native engine loads single-file GGUF checkpoints only."
@@ -2957,6 +2956,9 @@ class SdCppDiffusionBackend:
             )
         if not family_sd_cpp_supported(fam):
             raise ValueError(f"Family '{fam.name}' has no native sd.cpp asset mapping.")
+        if auto_ordinal:
+            # Automatic ranks the torch cards too, after validation, unless sd.cpp runs on one torch cannot see.
+            gpu_ordinal = auto_cuda_ordinal_for_load()
         self._loading_family = fam
 
         base = resolve_base_repo(fam, base_repo)

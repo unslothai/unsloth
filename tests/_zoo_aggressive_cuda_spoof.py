@@ -35,9 +35,15 @@ def apply() -> None:
     torch.cuda.is_bf16_supported = lambda *a, **k: True
     torch.cuda._is_in_bad_fork = lambda *a, **k: False  # type: ignore[attr-defined]
 
-    # CPU-only wheels lack _cuda_getCurrentRawStream, which unsloth/kernels/utils.py reads at import.
-    # 0 is the default stream; set only when absent so real CUDA keeps its own.
-    if not hasattr(torch._C, "_cuda_getCurrentRawStream"):
+    # unsloth/kernels/utils.py reads _cuda_getCurrentRawStream at import. CPU-only wheels lack it,
+    # and a CUDA wheel on a runner with no driver has it but raises (a notebook install cell that
+    # pulls vLLM brings in such a wheel). 0 is the default stream; a working handle is kept.
+    _raw_stream = getattr(torch._C, "_cuda_getCurrentRawStream", None)
+    try:
+        _raw_stream_works = _raw_stream is not None and _raw_stream(0) is not None
+    except Exception:
+        _raw_stream_works = False
+    if not _raw_stream_works:
         torch._C._cuda_getCurrentRawStream = lambda index = 0: 0  # type: ignore[attr-defined]
 
     class _Props:

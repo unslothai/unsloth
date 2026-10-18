@@ -13,7 +13,7 @@
 #     committed YAML / JSON config.
 #
 # TypeScript and Rust are NOT duplicated here on purpose:
-#   - Unsloth Frontend CI runs `npm run typecheck` (= `tsc --noEmit`)
+#   - Unsloth Frontend CI runs `npm run typecheck` (tsc, and bun check)
 #     and `npm run build` (vite/swc) on every studio/frontend/**
 #     change, which is a full TS AST + type check.
 #   - Unsloth Tauri CI runs `tauri build --debug --no-bundle` on

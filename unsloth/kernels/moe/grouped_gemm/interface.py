@@ -724,12 +724,17 @@ class GroupedGemm(torch.autograd.Function):
         topk = ctx.topk
         permute_x = ctx.permute_x
         permute_y = ctx.permute_y
-        fuse_mul_post = ctx.fuse_mul_post
         kernel_config_bwd_dX = ctx.kernel_config_bwd_dX
         kernel_config_bwd_dW = ctx.kernel_config_bwd_dW
         autotune = ctx.autotune
-        dX_only = ctx.dX_only
-        dW_only = ctx.dW_only
+        assert (
+            not ctx.fuse_mul_post
+        ), "fused_mul should only be used for inference, not for training"
+        # Frozen W (LoRA, dequantized experts) or X: skip its kernel and buffer, as autograd does for _grouped_mm.
+        dX_only = ctx.dX_only or not ctx.needs_input_grad[1]
+        dW_only = ctx.dW_only or not ctx.needs_input_grad[0]
+        if dX_only and dW_only:
+            return (None,) * 15
 
         if not autotune:
             if not dW_only:
@@ -740,8 +745,6 @@ class GroupedGemm(torch.autograd.Function):
                 assert (
                     kernel_config_bwd_dW is not None
                 ), "kernel_config_bwd_dW must be provided if autotune is False"
-
-        assert not fuse_mul_post, "fused_mul should only be used for inference, not for training"
 
         if not dX_only:
             bwd_dW_config = {}

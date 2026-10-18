@@ -87,8 +87,9 @@ def context_parallel_options(config) -> tuple:
     return size, backend, rotate_method
 
 
-def _unsupported_attention(config) -> Optional[str]:
+def _unsupported_attention(config, backend = "ring") -> Optional[str]:
     # Ring and Llama's forward ignore mask, window and softcap, so both backends refuse them.
+    allowed = {"full_attention", "linear_attention"} if backend == "ulysses" else {"full_attention"}
     configs = [config]
     text_config = getattr(config, "text_config", None)
     if text_config is not None and text_config is not config:
@@ -97,9 +98,14 @@ def _unsupported_attention(config) -> Optional[str]:
         if c is None:
             continue
         layer_types = getattr(c, "layer_types", None)
-        if layer_types and any(t != "full_attention" for t in layer_types):
-            kinds = sorted({t for t in layer_types if t != "full_attention"})
-            return f"{', '.join(kinds)} layers"
+        if layer_types and any(t not in allowed for t in layer_types):
+            kinds = sorted({t for t in layer_types if t not in allowed})
+            hint = (
+                " (use context_parallel_backend = 'ulysses')"
+                if kinds == ["linear_attention"]
+                else ""
+            )
+            return f"{', '.join(kinds)} layers{hint}"
         # Any positive window, even with use_sliding_window off: Unsloth's masks read it directly.
         sliding_window = getattr(c, "sliding_window", None)
         if (isinstance(sliding_window, int) and sliding_window > 0) or getattr(
@@ -125,6 +131,13 @@ def _unregister_cp_sharding_rules() -> None:
 
 from .device_type import DEVICE_TYPE_TORCH
 from .utils.ulysses import _document_positions, ulysses_head_plan
+from .utils.ulysses_hybrid import (
+    GATED_DELTA_ATTENTION_CLASSES,
+    check_gated_delta_heads,
+    install_hf_attention_wrapper,
+    is_ulysses_gated_delta,
+    wrap_gated_delta_forward,
+)
 
 # A module global, not a ContextVar: CUDA runs backward (and checkpoint recompute) on another thread.
 _ACTIVE_MANAGER: Optional["ContextParallelManager"] = None
@@ -135,20 +148,78 @@ _PAD_VALUES = {"labels": -100, "shift_labels": -100, "attention_mask": 0, "input
 
 
 _INSTALLED_MESH = []
+_INSTALLED_PARALLELISM_CONFIG = []
 
 
 def get_cp_manager() -> Optional["ContextParallelManager"]:
     return _ACTIVE_MANAGER
 
 
-def _supports_context_parallel(model) -> bool:
+def _stateful_mixers(model) -> list:
+    from .utils.packing import _iter_stateful_mixers
+    return _iter_stateful_mixers(model) if isinstance(model, torch.nn.Module) else []
+
+
+def _positions_restart(position_ids, attention_mask) -> bool:
+    restart = position_ids[:, 1:] <= position_ids[:, :-1]
+    if isinstance(attention_mask, torch.Tensor) and attention_mask.shape == position_ids.shape:
+        # Right padding may carry any positions; only steps between real tokens count.
+        valid = attention_mask.bool()
+        restart = restart & valid[:, 1:] & valid[:, :-1]
+    return bool(restart.any())
+
+
+def _hybrid_config_blocker(model) -> Optional[str]:
+    config = getattr(model, "config", None)
+    if getattr(config, "vision_config", None) is not None:
+        # Only text buffers are sharded; image / video features would stay whole on every rank.
+        return "multimodal models"
+    text_config = getattr(config, "text_config", None) or config
+    if getattr(text_config, "output_router_logits", False):
+        # The load balancing loss is a product of per-sequence means, not a sum over shards.
+        return "the MoE router auxiliary loss (output_router_logits)"
+    if any(isinstance(getattr(m, "experts", None), torch.nn.ModuleList) for m in model.modules()):
+        # Per-expert modules run only for experts the local shard routes to, so with DDP's
+        # find_unused_parameters off an expert unused on one rank stalls the gradient reduction.
+        return "sparse MoE layers with per-expert modules (transformers 4.x Qwen3-Next)"
+    return None
+
+
+def _supports_context_parallel(model, backend = "ring") -> bool:
     from .models.llama import LlamaAttention_fast_forward
-    forwards = [
-        getattr(type(module).forward, "__func__", type(module).forward)
-        for name, module in model.named_modules()
-        if name.endswith("self_attn")
-    ]
-    return bool(forwards) and all(f is LlamaAttention_fast_forward for f in forwards)
+
+    modules = [module for name, module in model.named_modules() if name.endswith("self_attn")]
+    forwards = [getattr(type(m).forward, "__func__", type(m).forward) for m in modules]
+    if bool(forwards) and all(f is LlamaAttention_fast_forward for f in forwards):
+        return not _stateful_mixers(model)
+    mixers = _stateful_mixers(model)
+    return (
+        backend == "ulysses"
+        and bool(mixers)
+        and all(is_ulysses_gated_delta(m) for m, _ in mixers)
+        and all(type(m).__name__ in GATED_DELTA_ATTENTION_CLASSES for m in modules)
+        and _hybrid_config_blocker(model) is None
+    )
+
+
+def _check_stateful_mixers(model, backend, size) -> None:
+    mixers = _stateful_mixers(model)
+    if not mixers:
+        return
+    if backend != "ulysses":
+        kinds = sorted({type(m).__name__ for m, _ in mixers})
+        raise NotImplementedError(
+            f"Unsloth: ring context parallelism cannot split the sequential scans of {kinds}; "
+            "use context_parallel_backend = 'ulysses'."
+        )
+    unsupported = sorted({type(m).__name__ for m, _ in mixers if not is_ulysses_gated_delta(m)})
+    if unsupported:
+        raise NotImplementedError(
+            "Unsloth: Ulysses context parallelism supports Gated DeltaNet linear attention only, "
+            f"not {unsupported}."
+        )
+    for module, _ in mixers:
+        check_gated_delta_heads(module, size)
 
 
 def _self_attn_pre_forward_hook(_module, module_args, module_kwargs):
@@ -166,16 +237,22 @@ class ContextParallelManager:
         size: int,
         backend: str = "ring",
         rotate_method: str = "allgather",
+        fsdp2: bool = False,
     ):
         self.size = size
         self.backend = backend
         self.rotate_method = rotate_method
+        self.fsdp2 = fsdp2
         world_size = dist.get_world_size()
+        # FSDP2 shards parameters over dp_shard x cp flattened (torchtitan, accelerate's dp_shard_cp):
+        # CP peers hold different tokens, so their gradients must be reduced like data parallel ones.
         self.device_mesh = DeviceMesh(
             DEVICE_TYPE_TORCH,
             torch.arange(world_size).reshape(world_size // size, size),
-            mesh_dim_names = ("dp_replicate", "cp"),
+            mesh_dim_names = ("dp_shard" if fsdp2 else "dp_replicate", "cp"),
         )
+        if fsdp2:
+            self.device_mesh[("dp_shard", "cp")]._flatten("dp_shard_cp")
         self.mesh = self.device_mesh["cp"]
 
     @property
@@ -183,6 +260,18 @@ class ContextParallelManager:
         return self.mesh.get_group()
 
     def attach_attention_hooks(self, model: torch.nn.Module) -> None:
+        if self.backend == "ulysses":
+            for module, _ in _stateful_mixers(model):
+                if is_ulysses_gated_delta(module):
+                    wrap_gated_delta_forward(module, get_cp_manager)
+            for name, module in model.named_modules():
+                if (
+                    name.endswith("self_attn")
+                    and type(module).__name__ in GATED_DELTA_ATTENTION_CLASSES
+                ):
+                    install_hf_attention_wrapper(
+                        module, module.config._attn_implementation, get_cp_manager
+                    )
         for name, module in model.named_modules():
             if name.endswith("self_attn") and not getattr(module, "_unsloth_cp_hooked", False):
                 module.register_forward_pre_hook(
@@ -209,6 +298,29 @@ class ContextParallelManager:
                 raise ValueError(
                     f"Unsloth: packed_seq_lengths sum to {used} but the packed row has {seq_len} tokens."
                 )
+        if inputs.get("output_router_logits"):
+            raise ValueError(
+                "Unsloth: context parallelism does not support the MoE router auxiliary loss "
+                "(output_router_logits): it is a product of per-sequence means, not a sum over shards."
+            )
+        position_ids = inputs.get("position_ids")
+        if isinstance(position_ids, torch.Tensor) and position_ids.ndim != 2:
+            # Sharding slices dim 1, which is the batch axis of e.g. Qwen3.5's [4, batch, seq] ids.
+            raise ValueError(
+                f"Unsloth: context parallelism needs 2D [batch, seq] position_ids, got {position_ids.ndim}D."
+            )
+        if (
+            ulysses
+            and packed_seq_lengths is None
+            and isinstance(position_ids, torch.Tensor)
+            and position_ids.ndim == 2
+            and _positions_restart(position_ids, inputs.get("attention_mask"))
+        ):
+            # Restarting positions mark packed documents that attention and scans could not see.
+            raise ValueError(
+                "Unsloth: Ulysses context parallelism needs packed_seq_lengths for packed batches; "
+                "position_ids that restart are not enough."
+            )
         # .get: a collator may carry the key with None, which would leave positions shard-local.
         if inputs.get("position_ids") is None and packed_seq_lengths is not None:
             inputs["position_ids"] = _document_positions(
@@ -272,10 +384,13 @@ class ContextParallelManager:
                 inputs[name] = tensor[:, rank * local : (rank + 1) * local].contiguous()
         global _ACTIVE_MANAGER
         previous, _ACTIVE_MANAGER = _ACTIVE_MANAGER, self
+        # Some decoders (transformers 5.3 / 5.5) do not forward packed_seq_lengths to linear_attn.
+        self.packed_seq_lengths = inputs.get("packed_seq_lengths")
         try:
             yield
         finally:
             _ACTIVE_MANAGER = previous
+            self.packed_seq_lengths = None
 
     @contextlib.contextmanager
     def apply(self, inputs: dict) -> Iterator[None]:
@@ -353,6 +468,53 @@ def _cp_gather_for_metrics(accelerator, size: int):
     return gather
 
 
+def _is_fsdp2(accelerator, distributed_type: str) -> bool:
+    plugin = getattr(getattr(accelerator, "state", None), "fsdp_plugin", None)
+    return distributed_type == "FSDP" and getattr(plugin, "fsdp_version", 1) == 2
+
+
+def _check_fsdp2_parallelism_config(accelerator) -> None:
+    pc = getattr(getattr(accelerator, "state", None), "parallelism_config", None)
+    if pc is None:
+        return
+    others = {name: getattr(pc, f"{name}_size", 1) or 1 for name in ("dp_replicate", "tp", "sp")}
+    others = {name: n for name, n in others.items() if n > 1}
+    if others:
+        raise NotImplementedError(
+            "Unsloth: context parallelism with FSDP2 supports a (dp_shard, cp) mesh only, "
+            f"not parallelism_config {others}."
+        )
+
+
+def _install_fsdp2_parallelism_config(state, manager) -> None:
+    # accelerate's fsdp2_prepare_model shards over mesh[parallelism_config.fsdp_dim_names], i.e.
+    # "dp_shard_cp" (accelerate >= 1.10). cp_size stays 1 here: cp_size > 1 would make accelerate attach
+    # its own ring hooks and transformers divide num_items_in_batch by cp, both done by Unsloth already.
+    from accelerate.parallelism_config import ParallelismConfig
+
+    current = getattr(state, "parallelism_config", None)
+    if _INSTALLED_PARALLELISM_CONFIG and current is _INSTALLED_PARALLELISM_CONFIG[1]:
+        previous = _INSTALLED_PARALLELISM_CONFIG[0]
+    else:
+        previous = current
+    pc = ParallelismConfig(
+        dp_replicate_size = 1,
+        dp_shard_size = manager.device_mesh["dp_shard_cp"].size(),
+        tp_size = 1,
+        cp_size = 1,
+    )
+    state.parallelism_config = pc
+    _INSTALLED_PARALLELISM_CONFIG[:] = [previous, pc]
+
+
+def _restore_parallelism_config(state) -> None:
+    if _INSTALLED_PARALLELISM_CONFIG and (
+        getattr(state, "parallelism_config", None) is _INSTALLED_PARALLELISM_CONFIG[1]
+    ):
+        state.parallelism_config = _INSTALLED_PARALLELISM_CONFIG[0]
+        _INSTALLED_PARALLELISM_CONFIG.clear()
+
+
 def patch_sft_trainer() -> None:
     import trl
 
@@ -378,6 +540,10 @@ def patch_sft_trainer() -> None:
     original_evaluate = _original("evaluate")
     original_predict = _original("predict")
     original_evaluation_loop = _original("evaluation_loop")
+    original_save_model = _original("save_model")
+    has_total_train_batch_size = hasattr(trainer_cls, "get_total_train_batch_size")
+    if has_total_train_batch_size:
+        original_get_total_train_batch_size = _original("get_total_train_batch_size")
 
     def _install_accelerator_state(self):
         manager = getattr(self, "_context_parallel_manager", None)
@@ -385,12 +551,22 @@ def patch_sft_trainer() -> None:
         state = getattr(accelerator, "state", None)
         if manager is None:
             if _INSTALLED_MESH and getattr(state, "device_mesh", None) is _INSTALLED_MESH[0]:
-                state.device_mesh = None
+                # The mesh an accepted FSDP2 ParallelismConfig indexes, restored with that config.
+                state.device_mesh = _INSTALLED_MESH[1] if len(_INSTALLED_MESH) > 1 else None
+                _INSTALLED_MESH.clear()
+            _restore_parallelism_config(state)
             return
         if accelerator is None:
             return
+        current = getattr(accelerator.state, "device_mesh", None)
+        if _INSTALLED_MESH and current is _INSTALLED_MESH[0]:
+            current = _INSTALLED_MESH[1] if len(_INSTALLED_MESH) > 1 else None
         accelerator.state.device_mesh = manager.device_mesh
-        _INSTALLED_MESH[:] = [manager.device_mesh]
+        _INSTALLED_MESH[:] = [manager.device_mesh, current]
+        if getattr(manager, "fsdp2", False):
+            _install_fsdp2_parallelism_config(accelerator.state, manager)
+        else:
+            _restore_parallelism_config(accelerator.state)
         # PEFT makes the Trainer ask DDP for find_unused_parameters, which breaks reentrant checkpointing.
         if getattr(self.args, "ddp_find_unused_parameters", None) in (None, False):
             self.args.ddp_find_unused_parameters = False
@@ -470,7 +646,7 @@ def patch_sft_trainer() -> None:
         if Version(accelerate.__version__) < Version("1.10.0"):
             raise NotImplementedError("Unsloth: context parallelism needs accelerate >= 1.10.0.")
         model_config = getattr(self.model, "config", None)
-        unsupported = _unsupported_attention(model_config)
+        unsupported = _unsupported_attention(model_config, backend)
         if unsupported is not None:
             raise NotImplementedError(
                 f"Unsloth: {backend} context parallelism does not support {unsupported}."
@@ -484,17 +660,27 @@ def patch_sft_trainer() -> None:
                 or text_config.num_attention_heads,
                 size,
             )
-        if not _supports_context_parallel(self.model):
+        _check_stateful_mixers(self.model, backend, size)
+        blocker = _hybrid_config_blocker(self.model) if _stateful_mixers(self.model) else None
+        if blocker is not None:
             raise NotImplementedError(
-                "Unsloth: context parallelism currently supports Llama-style attention only "
-                "(Llama, Qwen2, Gemma)."
+                f"Unsloth: context parallelism on Gated DeltaNet hybrids does not support {blocker}."
+            )
+        if not _supports_context_parallel(self.model, backend):
+            raise NotImplementedError(
+                "Unsloth: context parallelism currently supports Llama-style attention "
+                "(Llama, Qwen2, Gemma), and Qwen3-Next / Qwen3.5 Gated DeltaNet hybrids with Ulysses."
             )
         accelerator = getattr(self, "accelerator", None)
         distributed_type = getattr(getattr(accelerator, "distributed_type", None), "name", "NO")
-        if distributed_type != "NO" and not distributed_type.startswith("MULTI_"):
+        fsdp2 = _is_fsdp2(accelerator, distributed_type)
+        if distributed_type != "NO" and not distributed_type.startswith("MULTI_") and not fsdp2:
             raise NotImplementedError(
-                f"Unsloth: context parallelism supports DDP only, not {distributed_type}."
+                f"Unsloth: context parallelism supports DDP and FSDP2 only, not {distributed_type}"
+                + (" version 1." if distributed_type == "FSDP" else ".")
             )
+        if fsdp2:
+            _check_fsdp2_parallelism_config(accelerator)
         if getattr(accelerator, "dispatch_batches", None):
             raise NotImplementedError(
                 "Unsloth: context parallelism does not support dispatch_batches."
@@ -502,7 +688,7 @@ def patch_sft_trainer() -> None:
         _refuse_iterable_datasets(
             getattr(self, "train_dataset", None), getattr(self, "eval_dataset", None)
         )
-        manager = ContextParallelManager(size, backend, rotate_method)
+        manager = ContextParallelManager(size, backend, rotate_method, fsdp2 = fsdp2)
         self._context_parallel_manager = manager
         manager.attach_attention_hooks(self.model)
         _install_accelerator_state(self)
@@ -512,7 +698,12 @@ def patch_sft_trainer() -> None:
         _scope_flash_attention_impl(self.model, self)
         print(
             f"Unsloth: Context parallelism enabled with size = {size} ({backend}"
-            + (f", rotate_method = {rotate_method})." if backend == "ring" else ").")
+            + (f", rotate_method = {rotate_method})" if backend == "ring" else ")")
+            + (
+                f", FSDP2 sharding over dp_shard = {world_size // size} x cp = {size}."
+                if fsdp2
+                else "."
+            )
         )
 
     @functools.wraps(original_prediction_step)
@@ -568,6 +759,20 @@ def patch_sft_trainer() -> None:
         _install_accelerator_state(self)
         return original_predict(self, test_dataset, *args, **kwargs)
 
+    @functools.wraps(original_save_model)
+    def patched_save_model(self, *args, **kwargs):
+        state = getattr(getattr(self, "accelerator", None), "state", None)
+        installed = _INSTALLED_PARALLELISM_CONFIG[1] if _INSTALLED_PARALLELISM_CONFIG else None
+        if installed is None or getattr(state, "parallelism_config", None) is not installed:
+            return original_save_model(self, *args, **kwargs)
+        # transformers < 5 takes any non-None parallelism_config before FSDP and skips the FSDP2 state
+        # dict gather, so save without one; even a user dp_shard config would take that branch.
+        state.parallelism_config = None
+        try:
+            return original_save_model(self, *args, **kwargs)
+        finally:
+            state.parallelism_config = installed
+
     @functools.wraps(original_evaluation_loop)
     def patched_evaluation_loop(self, *args, **kwargs):
         manager = getattr(self, "_context_parallel_manager", None)
@@ -594,9 +799,26 @@ def patch_sft_trainer() -> None:
                 args = (args[0] // manager.size, *args[1:])
             elif kwargs.get("num_items_in_batch") is not None:
                 kwargs["num_items_in_batch"] = kwargs["num_items_in_batch"] // manager.size
+            # Without gradient checkpointing the model would build a cache for the sharded scans.
+            if hasattr(inputs, "setdefault"):
+                inputs.setdefault("use_cache", False)
         # Forward and backward both inside, so gradient checkpointing recomputes with ring attention.
         with manager.apply(inputs) if manager else contextlib.nullcontext():
             return original_training_step(self, model, inputs, *args, **kwargs)
+
+    if has_total_train_batch_size:
+
+        @functools.wraps(original_get_total_train_batch_size)
+        def patched_get_total_train_batch_size(self, *args, **kwargs):
+            total = original_get_total_train_batch_size(self, *args, **kwargs)
+            manager = getattr(self, "_context_parallel_manager", None)
+            # CP peers share one batch, but the parallelism_config Unsloth exposes (DDP: none,
+            # FSDP2: cp_size = 1) makes transformers count all D x N ranks as data parallel.
+            if manager is not None and manager.size > 1:
+                total = total // manager.size
+            return total
+
+        trainer_cls.get_total_train_batch_size = patched_get_total_train_batch_size
 
     trainer_cls.__init__ = patched_init
     trainer_cls.prediction_step = patched_prediction_step
@@ -604,5 +826,6 @@ def patch_sft_trainer() -> None:
     trainer_cls.evaluate = patched_evaluate
     trainer_cls.predict = patched_predict
     trainer_cls.evaluation_loop = patched_evaluation_loop
+    trainer_cls.save_model = patched_save_model
     trainer_cls.training_step = patched_training_step
     trainer_cls.__unsloth_context_parallel__ = True

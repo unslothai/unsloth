@@ -129,6 +129,7 @@ def test_training_step_divides_the_pre_shard_token_count_by_cp_size(monkeypatch)
             num_items_in_batch = None,
         ):
             seen.append(("train", num_items_in_batch))
+            assert inputs["use_cache"] is False
 
         def prediction_step(self, model, inputs, prediction_loss_only):
             return (None, None, None)
@@ -398,22 +399,73 @@ def test_fp32_qkv_is_downcast_under_cp(monkeypatch):
     assert out.dtype == torch.float32
 
 
-@pytest.mark.parametrize("distributed_type", ["DEEPSPEED", "FSDP"])
-def test_deepspeed_and_fsdp_are_refused(monkeypatch, distributed_type):
+@pytest.mark.parametrize("distributed_type, fsdp_version", [("DEEPSPEED", None), ("FSDP", 1)])
+def test_deepspeed_and_fsdp1_are_refused(monkeypatch, distributed_type, fsdp_version):
     import types
 
     monkeypatch.setattr(cp.dist, "is_available", lambda: True)
     monkeypatch.setattr(cp.dist, "is_initialized", lambda: True)
     monkeypatch.setattr(cp.dist, "get_world_size", lambda: 2)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    monkeypatch.setattr(cp, "_supports_context_parallel", lambda model: True)
+    monkeypatch.setattr(cp, "_supports_context_parallel", lambda model, backend = "ring": True)
     args = types.SimpleNamespace(context_parallel_size = 2, label_smoothing_factor = 0.0)
+    plugin = None if fsdp_version is None else types.SimpleNamespace(fsdp_version = fsdp_version)
     accelerator = types.SimpleNamespace(
-        distributed_type = types.SimpleNamespace(name = distributed_type)
+        distributed_type = types.SimpleNamespace(name = distributed_type),
+        state = types.SimpleNamespace(fsdp_plugin = plugin),
     )
     Trainer = _patched_trainer(monkeypatch, args = args, accelerator = accelerator, model = None)
-    with pytest.raises(NotImplementedError, match = "DDP only"):
+    with pytest.raises(NotImplementedError, match = "DDP and FSDP2 only"):
         Trainer()
+
+
+def _fsdp2_accelerator(parallelism_config = None):
+    import types
+    return types.SimpleNamespace(
+        distributed_type = types.SimpleNamespace(name = "FSDP"),
+        state = types.SimpleNamespace(
+            device_mesh = None,
+            fsdp_plugin = types.SimpleNamespace(fsdp_version = 2),
+            parallelism_config = parallelism_config,
+        ),
+    )
+
+
+def test_fsdp2_shards_over_dp_shard_cp_and_a_later_trainer_restores_the_config(monkeypatch):
+    import types
+
+    monkeypatch.setattr(cp, "_INSTALLED_MESH", [])
+    monkeypatch.setattr(cp, "_INSTALLED_PARALLELISM_CONFIG", [])
+    user_pc = types.SimpleNamespace(dp_replicate_size = 1, tp_size = 1, sp_size = 1, cp_size = 1)
+    accelerator = _fsdp2_accelerator(user_pc)
+    Trainer, _, built = _gated_trainer(monkeypatch, accelerator = accelerator)
+    Trainer()
+    assert built == [(2, "ring", "allgather", "fsdp2")]
+    pc = accelerator.state.parallelism_config
+    # What accelerate's fsdp2_prepare_model indexes the mesh with; cp stays Unsloth's own.
+    assert pc.fsdp_dim_names == ["dp_shard_cp"]
+    assert (pc.dp_shard_size, pc.cp_size, pc.non_data_parallel_size) == (4, 1, 1)
+    assert accelerator.state.device_mesh is not None
+    later = _patched_trainer(
+        monkeypatch,
+        args = types.SimpleNamespace(context_parallel_size = 1),
+        accelerator = accelerator,
+    )
+    later()
+    assert accelerator.state.parallelism_config is user_pc
+    assert accelerator.state.device_mesh is None
+
+
+@pytest.mark.parametrize("dim", ["dp_replicate", "tp", "sp"])
+def test_fsdp2_refuses_other_parallel_dims(monkeypatch, dim):
+    import types
+
+    sizes = {"dp_replicate_size": 1, "tp_size": 1, "sp_size": 1, f"{dim}_size": 2}
+    accelerator = _fsdp2_accelerator(types.SimpleNamespace(cp_size = 1, **sizes))
+    Trainer, _, built = _gated_trainer(monkeypatch, accelerator = accelerator)
+    with pytest.raises(NotImplementedError, match = "dp_shard, cp"):
+        Trainer()
+    assert built == []
 
 
 def _cp_env(monkeypatch):
@@ -421,7 +473,7 @@ def _cp_env(monkeypatch):
     monkeypatch.setattr(cp.dist, "is_initialized", lambda: True)
     monkeypatch.setattr(cp.dist, "get_world_size", lambda: 2)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    monkeypatch.setattr(cp, "_supports_context_parallel", lambda model: True)
+    monkeypatch.setattr(cp, "_supports_context_parallel", lambda model, backend = "ring": True)
 
 
 @pytest.mark.parametrize("case", ["iterable", "dispatch", "eval_dict"])
@@ -511,6 +563,21 @@ def test_a_later_non_cp_trainer_drops_the_installed_mesh(monkeypatch):
     assert state.device_mesh is other
 
 
+def test_a_later_non_cp_trainer_restores_the_mesh_cp_replaced(monkeypatch):
+    import types
+
+    # An accepted FSDP2 ParallelismConfig came with its own mesh; CP swapped both.
+    prior, cp_mesh = object(), object()
+    monkeypatch.setattr(cp, "_INSTALLED_MESH", [cp_mesh, prior])
+    state = types.SimpleNamespace(device_mesh = cp_mesh)
+    args = types.SimpleNamespace(context_parallel_size = 1)
+    Trainer = _patched_trainer(
+        monkeypatch, args = args, accelerator = types.SimpleNamespace(state = state)
+    )
+    Trainer()
+    assert state.device_mesh is prior
+
+
 def test_every_attention_layer_must_be_the_llama_forward():
     from unsloth.models.llama import LlamaAttention_fast_forward
 
@@ -543,7 +610,7 @@ def test_find_unused_parameters_is_off_under_cp_unless_the_user_set_it(monkeypat
     monkeypatch.setattr(
         cp,
         "ContextParallelManager",
-        lambda size, *rest: types.SimpleNamespace(
+        lambda size, *rest, **kwargs: types.SimpleNamespace(
             size = size,
             backend = "ring",
             device_mesh = object(),
@@ -737,6 +804,7 @@ def test_cp_dtensor_dispatcher_is_torn_down_when_the_step_raises(monkeypatch):
 def _gated_trainer(
     monkeypatch,
     model = None,
+    accelerator = None,
     **args_overrides,
 ):
     """A trainer that clears every CP gate, with the manager stubbed (no process group)."""
@@ -749,12 +817,14 @@ def _gated_trainer(
         size,
         backend = "ring",
         rotate_method = "allgather",
+        fsdp2 = False,
     ):
-        built.append((size, backend, rotate_method))
+        built.append((size, backend, rotate_method) + (("fsdp2",) if fsdp2 else ()))
         return types.SimpleNamespace(
             size = size,
             backend = backend,
-            device_mesh = object(),
+            fsdp2 = fsdp2,
+            device_mesh = {"dp_shard_cp": types.SimpleNamespace(size = lambda: 4)},
             attach_attention_hooks = lambda model: None,
         )
 
@@ -762,10 +832,11 @@ def _gated_trainer(
     args = types.SimpleNamespace(context_parallel_size = 2, label_smoothing_factor = 0.0)
     for key, value in args_overrides.items():
         setattr(args, key, value)
-    accelerator = types.SimpleNamespace(
-        distributed_type = types.SimpleNamespace(name = "MULTI_GPU"),
-        state = types.SimpleNamespace(device_mesh = None),
-    )
+    if accelerator is None:
+        accelerator = types.SimpleNamespace(
+            distributed_type = types.SimpleNamespace(name = "MULTI_GPU"),
+            state = types.SimpleNamespace(device_mesh = None),
+        )
     init = {"args": args, "accelerator": accelerator, "model": model, "train_dataset": [1]}
     return _patched_trainer(monkeypatch, **init), args, built
 
@@ -1183,3 +1254,31 @@ def test_only_ring_needs_sm80(monkeypatch, backend):
     else:
         Trainer()
         assert built == [(2, "ulysses", "allgather")]
+
+
+@pytest.mark.parametrize("fsdp2", [False, True])
+def test_total_train_batch_size_counts_cp_groups_not_ranks(monkeypatch, fsdp2):
+    import types
+
+    import transformers
+    import trl
+
+    # The real transformers formula: DDP leaves parallelism_config unset, FSDP2 installs cp_size = 1.
+    class Trainer(transformers.Trainer):
+        def __init__(self, *a, **k):
+            pass
+
+    monkeypatch.setattr(trl, "SFTTrainer", Trainer)
+    cp.patch_sft_trainer()
+    trainer = object.__new__(Trainer)
+    pc = types.SimpleNamespace(cp_size = 1, sp_size = 1, tp_size = 1) if fsdp2 else None
+    trainer.accelerator = types.SimpleNamespace(parallelism_config = pc)
+    trainer.model = types.SimpleNamespace()
+    trainer.is_deepspeed_enabled = False
+    trainer._train_batch_size = 2
+    args = types.SimpleNamespace(world_size = 8, gradient_accumulation_steps = 3)
+    trainer._context_parallel_manager = None
+    assert trainer.get_total_train_batch_size(args) == 2 * 3 * 8
+    # D = 2 data parallel groups of N = 4 CP peers that each consume the same batch.
+    trainer._context_parallel_manager = _manager(size = 4)
+    assert trainer.get_total_train_batch_size(args) == 2 * 3 * 2

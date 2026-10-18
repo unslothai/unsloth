@@ -18,6 +18,7 @@ import triton.language as tl
 import torch
 from typing import Tuple
 from .utils import calculate_settings, long_indexing, torch_gpu_device
+from . import triton_launch
 from .triton_launch import launch
 
 
@@ -85,15 +86,11 @@ def _rms_backward_row(
     TRAIN_W: tl.constexpr,
     FROM_Y: tl.constexpr,
 ):
-    # FROM_Y: X holds the forward output Y, and normed = Y / W (r still scales dX).
+    # with FROM_Y, X holds Y and normed = Y / W; r still scales dX.
     dY += row_idx * dY_row_stride
     X += row_idx * X_row_stride
     r += row_idx * r_row_stride
-
-    if GEMMA:
-        dX += row_idx * dX_row_stride
-    else:
-        dX = dY
+    dX += row_idx * dX_row_stride
 
     dY_row = tl.load(dY + col_offsets, mask = mask, other = 0).to(tl.float32)
     X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
@@ -101,12 +98,12 @@ def _rms_backward_row(
 
     inv_var = tl.load(r).to(tl.float32)
     if FROM_Y:
-        # Masked lanes would be 0 / 0.
+        # masked lanes would divide 0 by 0.
         normed = tl.where(mask, X_row / (W_row + 1.0 if GEMMA else W_row), 0.0)
     else:
         normed = X_row * inv_var
     if TRAIN_W:
-        # dW before the row sum so the fp32 dY row is not held across it (fewer registers, all programs resident).
+        # accumulate dW before the row sum to free the fp32 dY row and keep all programs resident.
         if GEMMA:
             dW_acc += dY_row * normed
         else:
@@ -372,15 +369,12 @@ def _rms_backward_rows_block(
         dY_W = dY_rows * W_row[None, :]
 
     rowsum_dY_normed = _row_dot_in_row_kernel_order(dY_W, normed, ROWS, WARPS)
-    # Spelled as in the one-row kernel: an explicit fma here turns -0 into +0 on sm75.
+    # match one-row arithmetic because its fused multiply-add turns -0 into +0 on sm75.
     output = (inv_var / n_cols)[:, None] * (n_cols * dY_W - normed * rowsum_dY_normed[:, None])
-    if GEMMA:
-        tl.store(dX + rows[:, None] * dX_row_stride + col_offsets[None, :], output, mask = mask)
-    else:
-        tl.store(dY + rows[:, None] * dY_row_stride + col_offsets[None, :], output, mask = mask)
-    # Masked rows load zeros, so they add nothing; dead code unless TRAIN_W.
+    tl.store(dX + rows[:, None] * dX_row_stride + col_offsets[None, :], output, mask = mask)
+    # masked rows contribute zero; this dW path is dead unless TRAIN_W.
     if not GEMMA:
-        # The forward multiplies W by normed rounded to W's dtype.
+        # forward multiplies W by normed rounded to W's dtype.
         normed = normed.to(W.dtype.element_ty).to(tl.float32)
     return tl.sum(dY_rows * normed, axis = 0)
 
@@ -489,7 +483,13 @@ def _settings(n_cols):
 
 def _launch(wrap, kernel, grid, args, n_tensors, constexprs, device, **options):
     # Eager CUDA skips Triton's arg binding (triton_launch.py); traced / non-Triton keep kernel[grid].
-    if wrap is _eager_kernel and device.type == "cuda" and not torch.compiler.is_compiling():
+    # is_compiling first: Dynamo must not read (and guard on) the mutable _ENABLED.
+    if (
+        not torch.compiler.is_compiling()
+        and triton_launch._ENABLED
+        and wrap is _eager_kernel
+        and device.type == "cuda"
+    ):
         fn = kernel
         if isinstance(kernel, triton.runtime.autotuner.Heuristics):
             # What Heuristics.run does; these heuristics only read their own constexpr.
@@ -569,8 +569,8 @@ def _multirow_self_check(device, dtype, W_dtype, n_cols, eps, gemma, multirow):
         results = []
         for rows in (False, multirow):
             Y, r = _rms_forward(X, W, eps, gemma, _eager_kernel, rows)
-            dX = dY.clone()
-            _rms_backward(dY.clone() if gemma else dX, dX, X, W, r, eps, gemma, _eager_kernel, rows)
+            dX = torch.empty_like(dY)
+            _rms_backward(dY, dX, X, W, r, eps, gemma, _eager_kernel, rows)
             results.append((Y, r, dX))
         return all(torch.equal(_bits(a), _bits(b)) for a, b in zip(*results))
 
@@ -729,7 +729,6 @@ def _rms_backward(
     train_w = False,
     from_y = False,
 ):
-    # Non-Gemma writes dX over dY (the kernel ignores dX); Gemma writes into dX.
     n_rows, n_cols = dY.shape
     device = dY.device
     if multirow is None:
@@ -835,6 +834,9 @@ _SAVE_OUTPUT = os.environ.get("UNSLOTH_RMSNORM_SAVE_OUTPUT", "0") == "1"
 
 def _save_output_ok(W, gemma, dtype):
     # Y / W needs |W| (|1 + W| for Gemma) clear of 0 and fp16 Y not subnormal. Cached per weight version.
+    if torch.is_inference(W):
+        # Inference tensors have no version counter to key the cache on: save X.
+        return False
     key = (W._version, W.data_ptr(), gemma, dtype)
     cached = getattr(W, "_unsloth_save_output", None)
     if cached is not None and cached[0] == key:
@@ -861,6 +863,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         eps: float,
         gemma: bool = False,
         save_output: bool = False,
+        reuse_grad: bool = False,
     ):
         shape = X.shape
         dim: int = shape[-1]
@@ -871,18 +874,20 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
             Y, r = _rms_forward(X, W, eps, gemma, _eager_kernel)
         ctx.eps = eps
         ctx.GEMMA = gemma
+        ctx.reuse_grad = reuse_grad
         Y = Y.view(*shape)
         # save_output: the caller guarantees nothing writes into Y (an untracked Triton write would
         # corrupt dX silently). Only frozen W: a trained W changes every step.
         ctx.FROM_Y = (
             save_output
             and _SAVE_OUTPUT
+            and ctx.needs_input_grad[0]
             and not ctx.needs_input_grad[1]
             and _save_output_ok(W, gemma, Y.dtype)
         )
         ctx.save_for_backward(Y if ctx.FROM_Y else X, W, r)
         if ctx.FROM_Y:
-            # LoRA_QKV / LoRA_MLP then do not overwrite Y with their dX, nor views of it (tiled MLP).
+            # LoRA_QKV and LoRA_MLP use this marker to preserve Y and its tiled views.
             Y._unsloth_rmsnorm_saved = True
             if Y._base is not None:
                 Y._base._unsloth_rmsnorm_saved = True
@@ -894,8 +899,13 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         dim: int = shape[-1]
         dY = dY.reshape(-1, dim).contiguous()
         X, W, r = ctx.saved_tensors
-        X = X.view(-1, dim)
-        dX = torch.empty_like(dY) if ctx.GEMMA else dY
+        if ctx.FROM_Y:
+            # The saved Y keeps the caller's shape; a saved X is already 2D.
+            X = X.view(-1, dim)
+        # Autograd may share dY with other nodes or the caller, so dX gets its own buffer.
+        # reuse_grad is for call sites whose output only feeds layers that return a fresh grad
+        # (pre-norm decoder norms): there dX overwrites dY and saves one activation.
+        dX = dY if ctx.reuse_grad and not ctx.GEMMA else torch.empty_like(dY)
         with torch_gpu_device(dY.device):
             dW = _rms_backward(
                 dY,
@@ -910,10 +920,10 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
                 from_y = ctx.FROM_Y,
             )
         dX = dX.view(*shape)
-        return dX, dW, None, None, None
+        return dX, dW, None, None, None, None
 
 
-# Compiled graphs take these ops: same kernels, fresh outputs (the Function writes dX over dY).
+# compiled graphs use these ops with the same kernels as the Function.
 _TRACEABLE = hasattr(torch.library, "triton_op") and hasattr(torch.library, "wrap_triton")
 
 
@@ -956,7 +966,7 @@ if _TRACEABLE:
     def _rms_layernorm_op(
         X: torch.Tensor, W: torch.Tensor, eps: float, gemma: bool
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Called eagerly (outside a compiled graph) the launch needs X's device made current.
+        # eager launches outside compiled graphs need X's device made current.
         with torch_gpu_device(X.device):
             return _rms_forward(X, W, eps, gemma, _traced_kernel)
 
@@ -971,10 +981,9 @@ if _TRACEABLE:
         train_w: bool,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         dX = torch.empty_like(dY)
-        # Non-Gemma rewrites its dY argument, so it gets a copy.
         with torch_gpu_device(dY.device):
             dW = _rms_backward(
-                dY if gemma else dX.copy_(dY),
+                dY,
                 dX,
                 X,
                 W,
@@ -984,7 +993,7 @@ if _TRACEABLE:
                 _traced_kernel,
                 train_w = train_w,
             )
-        # Empty dW = frozen (ops return tensors only).
+        # empty dW represents a frozen weight because ops return tensors only.
         return dX, dW if train_w else W.new_empty(0)
 
     def _rms_setup_context(ctx, inputs, output):
@@ -1013,8 +1022,9 @@ def _fast_rms_layernorm_untraced(
     eps,
     gemma,
     save_output = False,
+    reuse_grad = False,
 ):
-    return Fast_RMS_Layernorm.apply(X, W, eps, gemma, save_output)
+    return Fast_RMS_Layernorm.apply(X, W, eps, gemma, save_output, reuse_grad)
 
 
 def fast_rms_layernorm(
@@ -1022,19 +1032,20 @@ def fast_rms_layernorm(
     X: torch.Tensor,
     gemma: bool = False,
     save_output: bool = False,
+    reuse_grad: bool = False,
 ):
     W: torch.Tensor = layernorm.weight
     eps: float = (
         layernorm.variance_epsilon if hasattr(layernorm, "variance_epsilon") else layernorm.eps
     )
     if not torch.compiler.is_compiling():
-        return Fast_RMS_Layernorm.apply(X, W, eps, gemma, save_output)
+        return Fast_RMS_Layernorm.apply(X, W, eps, gemma, save_output, reuse_grad)
     if (
         not _TRACEABLE
         or X.device.type != "cuda"
         or (X.dtype == torch.bfloat16 and not _BF16_TRACEABLE)
     ):
-        return _fast_rms_layernorm_untraced(X, W, eps, gemma, save_output)
+        return _fast_rms_layernorm_untraced(X, W, eps, gemma, save_output, reuse_grad)
     shape = X.shape
     Y, _ = torch.ops.unsloth.rms_layernorm(
         X.reshape(-1, shape[-1]).contiguous(), W.contiguous(), eps, gemma
