@@ -853,3 +853,44 @@ def test_training_offline_with_a_busy_lock_hides_the_extension_free_copy(
     assert uninstalled == []
     assert sys.modules["mamba_ssm"] is None
     assert refreshed == [{"removed": True}]
+
+
+def test_a_failed_uninstall_hides_the_extension_free_copy(real_install, monkeypatch):
+    # Remembered CUDA failure, lock held, but the uninstall cannot remove the files.
+    real_install["importable"].update({"mamba_ssm", "causal_conv1d"})
+    ssm_runtime._FAILED_INSTALLS.add(ssm_runtime._failure_key("mamba_ssm", None))
+    monkeypatch.setattr(ssm_runtime, "_remove_broken", lambda *a, **k: None)  # nothing removed
+    try:
+        installed = ssm_runtime.ensure_ssm_runtime(
+            "tiiuae/falcon-mamba-7b",
+            wants_causal_conv1d = False,
+            is_ssm = True,
+            mamba_ssm_required = False,
+            mamba_ssm_fatal = False,
+        )
+        assert sys.modules["mamba_ssm"] is None
+        assert installed == [f"{ssm_runtime.REMOVED_PREFIX}mamba_ssm"]
+    finally:
+        ssm_runtime._unblock_import("mamba_ssm")
+
+
+def test_training_failed_uninstall_hides_the_extension_free_copy(monkeypatch, tmp_path):
+    from unittest import mock
+
+    importable = {"mamba_ssm"}
+    worker, uninstalled = _training_env(monkeypatch, tmp_path, importable, offline = True)
+    monkeypatch.setattr(worker, "_uninstall_package", lambda *a, **k: False)  # files stay
+    refreshed = []
+    monkeypatch.setattr(
+        ssm_runtime, "refresh_transformers_kernel_gates", lambda **k: refreshed.append(k)
+    )
+    try:
+        assert not worker._install_package_wheel_first(
+            event_queue = mock.Mock(),
+            **worker._pinned_kernel_kwargs(worker.MAMBA_SSM),
+            extension = ssm_runtime.MAMBA_SSM_EXTENSION,
+        )
+        assert sys.modules["mamba_ssm"] is None
+        assert refreshed == [{"removed": True}]
+    finally:
+        ssm_runtime._unblock_import("mamba_ssm")

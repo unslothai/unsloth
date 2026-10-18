@@ -906,6 +906,16 @@ def block_import(import_name: str, extension: str | None = None) -> None:
     sys.modules[import_name] = None
 
 
+def _hide_if_still_extension_free(import_name: str, extension: str) -> None:
+    """After an uninstall attempt: if the extension-free copy is still installed (read-only env,
+    locked files), hide it from this process so transformers does not pick selective_scan_fn."""
+    if _is_importable(import_name) and not _is_importable(extension):
+        logger.info(
+            "Could not uninstall the extension-free %s; hiding it from this load", import_name
+        )
+        block_import(import_name, extension)
+
+
 def _unblock_import(import_name: str) -> None:
     if import_name in sys.modules and sys.modules[import_name] is None:
         del sys.modules[import_name]
@@ -1094,6 +1104,7 @@ def _install_kernel(
                 _remove_broken(pypi_name, display_name, run)
                 if replacing:
                     forget_imported_modules(import_name, extension)
+                    _hide_if_still_extension_free(import_name, extension)
                     if not _is_importable(import_name):
                         _note_removed(newly_installed, import_name)
                 _FAILED_INSTALLS.add(failure_key)
@@ -1137,7 +1148,8 @@ def _drop_extension_free_copy(
         )
         _remove_broken(pypi_name, display_name, run)
         forget_imported_modules(import_name, extension)
-        return not _is_importable(import_name)
+        _hide_if_still_extension_free(import_name, extension)
+        return True
 
 
 def _install_kernel_locked(

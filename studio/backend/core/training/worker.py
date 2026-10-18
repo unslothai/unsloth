@@ -1501,6 +1501,11 @@ def _install_package_wheel_first(
             )
             _uninstall_package(pypi_name, display_name)
             forget_imported_modules(import_name, extension)
+            if _is_importable(import_name) and not _is_importable(extension):
+                # Uninstall failed (read-only env, locked files): hide it from this process.
+                from utils.ssm_runtime import block_import, refresh_transformers_kernel_gates
+                block_import(import_name, extension)
+                refresh_transformers_kernel_gates(removed = True)
 
     if _model_offline_mode_enabled() or _package_installs_offline():
         logger.info("Skipping %s installation while offline", display_name)
@@ -1581,6 +1586,11 @@ def _install_package_wheel_first(
             if not installed:
                 _FAILED_INSTALLS.add(failure_key)
                 _reject_install(event_queue, pypi_name, display_name, "will not import")
+                if extension is not None and _is_importable(import_name):
+                    # The extension-free copy could not be removed: hide it from this process.
+                    from utils.ssm_runtime import block_import, refresh_transformers_kernel_gates
+                    block_import(import_name, extension)
+                    refresh_transformers_kernel_gates(removed = True)
 
 
 def _attempt_package_install(
