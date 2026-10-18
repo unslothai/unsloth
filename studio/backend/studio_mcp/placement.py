@@ -245,7 +245,9 @@ async def refuse_partial_variant(
     if kind == "stt" or is_local(model) or model.lower().startswith(AUDIO_CPP_PREFIX):
         return
     repo, variant = _split(model, variant)
-    if not is_gguf(repo, variant):
+    # A chat model is a GGUF when the listing has rows, whatever it is called; an image or video
+    # load uses a GGUF file only for a named variant or a GGUF repo, as load_media does.
+    if kind in MEDIA_PROGRESS and not is_gguf(repo, variant):
         return
     row = pick_variant(await _variants(caller, repo), variant)
     if row is None or row.get("partial") is not True or row.get("downloaded") is True:

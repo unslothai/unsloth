@@ -436,3 +436,11 @@ def test_a_home_relative_gguf_file_is_local(monkeypatch):
     _result, studio, (body,) = _load(monkeypatch, args, PAYLOADS)
     assert {key: body.get(key) for key in CPU} == CPU
     assert not [call for call in studio.state.calls if call[1] == "/api/hub/gguf-variants"]
+
+
+def test_a_partial_default_variant_is_refused_whatever_the_repo_is_called(monkeypatch):
+    result, _studio, sent = _load(
+        monkeypatch, {"model": "someone/qwen-quants"}, _partial_routes("idle")
+    )
+    assert result["isError"] is True and "still downloading or incomplete" in str(result["content"])
+    assert sent == []
