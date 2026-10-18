@@ -206,6 +206,7 @@ async def start_load(
     run: Callable[[LoadJob, dict[str, list[str]]], Awaitable[LoadResult]],
     options: Any = None,
     hub_token: Optional[str] = None,
+    attach: bool = True,
 ) -> LoadResult:
     """Run a load as a job and wait for it until ``deadline``. A repeat call for the same load while it runs follows it; one with another Hub token (a retry with a fixed token, say) starts its own."""
     token = hub_token or caller.hf_token
@@ -224,7 +225,12 @@ async def start_load(
         # A chat load Unsloth Studio is already running (started elsewhere) is followed, not started
         # again. The status names only the repo, so a load asking for a variant always posts.
         loading_now = strings(chat.get("loading"))
-        if slot in CHAT_ROUTE_KINDS and not variant and any(_same(n, model) for n in loading_now):
+        if (
+            slot in CHAT_ROUTE_KINDS
+            and attach
+            and not variant
+            and any(_same(n, model) for n in loading_now)
+        ):
             return await _watch_llm(caller, slot, model, before, job)
         # K16, after the attach: M5 waits on a download of the same model here, then M7 refuses a partial one.
         await place.refuse_partial_variant(caller, model, slot, variant)
@@ -426,6 +432,12 @@ async def load_llm(
             gpu_layers,
         ),
         hub_token = token,
+        # A load placed differently is never the one already running; following it would skip
+        # the placement asked for (and the CPU check).
+        attach = device is None
+        and alongside is None
+        and kv_cache_type is None
+        and gpu_layers is None,
     )
 
 

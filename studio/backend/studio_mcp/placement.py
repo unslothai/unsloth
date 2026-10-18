@@ -55,7 +55,7 @@ def media_knobs(kind: str, **knobs: Optional[str]) -> dict[str, str]:
 
 
 def is_local(model: str) -> bool:
-    return model.startswith(("/", "\\", ".")) or ":" in model[:3]
+    return model.startswith(("/", "\\", ".", "~")) or ":" in model[:3]
 
 
 def is_gguf(model: str, variant: Optional[str]) -> bool:
@@ -354,7 +354,7 @@ def predict(
         off_set = chat + (media if gpu else [])
         upper = [] if joins and not gpu else off_set
         # Always lets a load replace its own repo, as another file or setting of it.
-        same = same_repo
+        same, holders = same_repo, upper
     else:
         # Only another build of the same repo may replace the resident under Always; another model is refused.
         same = same_repo
@@ -366,12 +366,14 @@ def predict(
             exact = False
         off_set = held + media
         upper = chat + media
+        # A chat model holding no VRAM gave up its GPU claim, so Always does not protect it.
+        holders = off_set
     if mode == "off":
         return off_set, exact, False
     if mode == "fit":
         return upper, False, False
     if mode == "always":
-        return [], False, any(s not in same for s in upper)
+        return [], False, any(s not in same for s in holders)
     # Unknown mode (an Unsloth Studio that does not report it): whatever either rule could unload.
     return upper + [s for s in off_set if s not in upper], False, False
 
@@ -479,7 +481,8 @@ async def plan_load(
     slot_kind = "llm" if kind in CHAT_KINDS else kind
     unpinned = device not in ("cpu", "gpu") and any(s.kind != slot_kind for s in would_evict)
     unlisted = kind in CHAT_KINDS and listing is None
-    if unlisted or unpinned or not all(isinstance(read, dict) for read in (image, video)):
+    reads = (image, video, stt) if kind == "stt" else (image, video)
+    if unlisted or unpinned or not all(isinstance(read, dict) for read in reads):
         # A slot whose status could not be read may hold a model the load would unload.
         exact = False
     return PlanLoadResult(

@@ -391,3 +391,16 @@ def test_only_an_exact_resident_chat_variant_is_a_sure_no_op(monkeypatch, args, 
 def test_local_paths_keep_their_case(monkeypatch):
     plan = _plan(monkeypatch, _world("always", ["/models/Foo.gguf"]), {"model": "/models/foo.gguf"})
     assert plan["would_refuse"] is True
+
+
+def test_an_unreadable_stt_status_makes_an_stt_plan_an_upper_bound(monkeypatch):
+    world = _world("off", [])
+    world[("GET", "/api/inference/audio/stt/status")] = JSONResponse({}, status_code = 503)
+    plan = _plan(monkeypatch, world, {"model": "openai/whisper-large-v3", "kind": "stt"})
+    assert plan["would_evict"] == [] and plan["would_evict_exact"] is False
+
+
+def test_always_does_not_protect_a_chat_model_holding_no_vram(monkeypatch):
+    world = _world("always", [QWEN], gpu_memory_mode = "manual", gpu_layers = 0)
+    plan = _plan(monkeypatch, world, {"model": FLUX_GGUF, "kind": "image"})
+    assert plan["would_refuse"] is False

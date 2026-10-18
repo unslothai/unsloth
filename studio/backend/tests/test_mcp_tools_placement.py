@@ -418,3 +418,21 @@ def test_a_stalled_gguf_listing_never_holds_a_cpu_load_past_wait_s(monkeypatch):
     args = {"model": QWEN, "device": "cpu", "wait_s": 0}
     result, _studio, sent = _load(monkeypatch, args, routes)
     assert result["structuredContent"]["status"] == "loading" and sent == []
+
+
+def test_a_placed_load_never_follows_one_already_running(monkeypatch):
+    # Unsloth Studio is loading this model already (started elsewhere), placed its own way.
+    routes = {
+        **PAYLOADS,
+        STATUS_ROUTE: {**EMPTY_STATUS, "loading": [QWEN]},
+        ("GET", "/api/hub/gguf-variants"): GGUF_FILES,
+    }
+    _result, _studio, (body,) = _load(monkeypatch, {"model": QWEN, "device": "cpu"}, routes)
+    assert {key: body.get(key) for key in CPU} == CPU
+
+
+def test_a_home_relative_gguf_file_is_local(monkeypatch):
+    args = {"model": "~/models/qwen.gguf", "device": "cpu"}
+    _result, studio, (body,) = _load(monkeypatch, args, PAYLOADS)
+    assert {key: body.get(key) for key in CPU} == CPU
+    assert not [call for call in studio.state.calls if call[1] == "/api/hub/gguf-variants"]
