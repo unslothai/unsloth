@@ -204,6 +204,12 @@ export const BUDGET = {
   // 2,047,569 B transfer against ca3d1d0ce4, one machine and build, Node 24, chunk count unchanged at 95): its
   // connection row, logo mapping and capability entries live in tables the startup chunks already load. Raised
   // by that growth.
+  // Z.ai as a connection (#14034) adds 73 B raw / 29 B transfer (6,804,389 -> 6,804,462 B raw, 2,047,551 ->
+  // 2,047,580 B transfer against f172c8d7c4, one machine and build, Node 24, chunk count unchanged at 95): its
+  // logo mapping, capability row and vision gate entries live in tables the startup chunks already load. Raised
+  // by that growth.
+  // The audio.cpp v0.9.2 picker rows (#14073) add 253 B raw / 59 B transfer to the eager audio catalog
+  // table (one machine and build, chunk count unchanged at 95). Raised by that.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -224,6 +230,7 @@ export const BUDGET = {
   // Re-measured on main at f172c8d7c: +7,290 B raw / +2,204 B transfer (6,804,401 -> 6,811,691 B raw,
   // 2,047,544 -> 2,049,748 B transfer, one machine and build). Set to main's limits plus that growth, with
   // 0.9 KB raw / 0.4 KB transfer above it for the CI runner.
+  // Re-measured on main at 475a02ac1: PENDING.
   transferBytes: 2_050_124,
   rawBytes: 6_814_204,
 };

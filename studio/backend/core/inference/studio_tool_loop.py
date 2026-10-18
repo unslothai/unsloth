@@ -430,6 +430,7 @@ class ToolLoopPolicy:
     deduplicate_tool_calls: bool | None = None
     sandbox_level: str = "high"
     parallel_tool_calls: bool | None = None
+    website_policy: dict[str, Any] | None = None
 
 
 def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
@@ -1502,6 +1503,7 @@ async def stream_with_studio_tools(
     scoped_tool_stream = account_tool_stream(stream_tool_execution)
     confirm_tool_calls = policy.confirm_calls
     rag_scope = policy.rag_scope
+    website_policy = policy.website_policy
     sandbox_level = normalize_sandbox_level(policy.sandbox_level)
 
     from core.inference.skill_mentions import load_mentioned_skills
@@ -2257,6 +2259,8 @@ async def stream_with_studio_tools(
                         "rag_scope": rag_scope,
                         "disable_sandbox": bypass_permissions,
                     }
+                    if website_policy:
+                        kwargs["website_policy"] = website_policy
                     # Run unasked only because the OS sandbox was on: refuse if it is not any
                     # more.
                     if strict and accepts_kwarg(execute_tool, "tool_execution_mode"):

@@ -269,8 +269,9 @@ class TestOldCallers:
         )
         assert names.index("sandbox_level") == names.index("instruction_anchor_ids") + 1
         assert names.index("compact_context") == names.index("sandbox_level") + 1
+        assert names.index("website_policy") == names.index("compact_context") + 1
         signature = inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools)
-        for later in names[names.index("compact_context") + 1 :]:
+        for later in names[names.index("website_policy") + 1 :]:
             assert signature.parameters[later].default is None, f"{later} was not appended"
         assert names.index("promote_reasoning_only") == names.index("permission_mode") + 1
 

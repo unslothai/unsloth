@@ -1080,6 +1080,14 @@ _MEASURED_IMAGE_ACTIVATION_MIB: dict[
     "qwen-image-2.1": ((1_849, 666, 7_648, 1_697, 2_479), (1_849, 2_489, 7_648, 1_697, 9_602)),
     "flux.1": ((288, 892, 2_666, 2_456, 2_674), (288, 892, 2_666, 2_456, 2_674)),
     "flux.2-klein": ((1_516, 1_160, 2_645, 2_456, 3_876), (1_516, 1_205, 2_677, 2_456, 3_924)),
+    # FLUX.3 Klein (distilled, no CFG), measured B200 bf16, 1024^2 t2i: TE 301 MiB at a ~560-token window, denoise eager
+    # 594 bf16 / 901 int8 / 850 fp8, compiled 543-676 (int8 / fp8, regional dynamic=True), untiled AutoencoderKLFlux2
+    # decode 2_437. Tiled decode is unmeasured (flux.2-klein's same VAE reads 2_456): capped at the untiled figure, which
+    # a tiled decode cannot exceed. The compiled tier keeps the eager 901 rather than its measured 543-676, since the
+    # table's tiers may only grow with speed. The 2048^2 column is max(denoise eager fp8 3_359, tiled decode) since the
+    # untiled 2048 decode is 9_738. References are charged through ``condition_pixel_weight``. The base (CFG) is
+    # unmeasured and keeps the flat estimate.
+    "flux.3-klein": ((301, 901, 2_437, 2_437, 3_359), (301, 901, 2_437, 2_437, 3_359)),
     "z-image": ((744, 1_199, 2_666, 2_456, 4_327), (744, 1_271, 2_669, 2_456, 4_327)),
 }
 
@@ -2265,6 +2273,8 @@ _MEASURED_PEAK_ROUND_MIB = 256
 MEASURED_ACTIVATION_DENSE_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_DENSE"
 _MEASURED_DENSE_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
     "flux.2-klein": (2455, 7800),
+    # FLUX.3 Klein: worst phase is the untiled VAE decode (2_437 MiB @1024^2, bf16); DiT 10_583 MiB bf16.
+    "flux.3-klein": (2437, 10600),
     "flux.1": (2448, 23800),
     "qwen-image": (4248, 40900),
 }
