@@ -51,6 +51,9 @@ _HIDDEN_STATE_ONLY_FAMILIES = frozenset(
         "hidream-i1",
         # Qwen3VLModel, headless; a hidden-state stack (0, 3, ..., 35)
         "ideogram-4",
+        # FLUX.3 Klein stacks hidden_states[4..32] (diffusers Flux3TextEncoderStep)
+        "flux.3-klein",
+        "flux.3-klein-base",
     }
 )
 

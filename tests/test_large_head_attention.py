@@ -31,6 +31,7 @@ def _load():
 
 
 LH = _load()
+_SM80 = has_real_cuda() and torch.cuda.get_device_capability()[0] >= 8
 
 
 def _causal(S):
@@ -199,7 +200,7 @@ def test_kernel_matches_reference(S, heads, kind):
         assert err.mean() <= 0.01 * b.abs().mean() + 2e-3
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_router_engages_on_gemma4_global_call():
     calls, original = _sentinel()
     router = LH._make_router(original)
@@ -214,7 +215,7 @@ def test_router_engages_on_gemma4_global_call():
     assert router(_Module(), q, kv, kv, left_pad[None, None])[0] == "original"
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_router_defers_trainable_additive_mask():
     calls, original = _sentinel()
     router = LH._make_router(original)
@@ -234,7 +235,7 @@ def _cuda_dtype():
     return torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_self_check_leaves_global_rng_alone(monkeypatch):
     device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
     LH._SELF_CHECK.pop((str(device), dtype), None)
@@ -246,7 +247,7 @@ def test_self_check_leaves_global_rng_alone(monkeypatch):
     assert torch.equal(torch.cuda.get_rng_state(device), state)
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_self_check_under_inference_mode():
     device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
     LH._SELF_CHECK.pop((str(device), dtype), None)
@@ -254,7 +255,7 @@ def test_self_check_under_inference_mode():
         assert LH._self_check(device, dtype) is True
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_patch_self_checks_so_compiled_graphs_use_the_kernel(monkeypatch):
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
@@ -286,7 +287,7 @@ def test_patch_self_checks_so_compiled_graphs_use_the_kernel(monkeypatch):
     assert LH._SELF_CHECK.get((str(device), dtype)) is True
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_router_defers_autocast_dtype_change():
     calls, original = _sentinel()
     router = LH._make_router(original)
@@ -301,7 +302,7 @@ def test_router_defers_autocast_dtype_change():
     assert LH.LARGE_HEAD_ENGAGED["calls"] == before + 1 and len(calls) == 1
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_router_honours_math_sdpa_selection():
     from torch.nn.attention import SDPBackend, sdpa_kernel
 
@@ -383,5 +384,115 @@ def test_install_sits_beneath_the_packed_router(monkeypatch):
         assert ALL_ATTENTION_FUNCTIONS["sdpa"] is packed_router
         assert packed._ORIG_SDPA[0]._unsloth_large_head
         assert packed._ORIG_SDPA[0]._unsloth_original is inner
+    finally:
+        ALL_ATTENTION_FUNCTIONS["sdpa"] = saved
+
+
+def test_autotune_skips_the_flush_buffer_benchmarker():
+    # Triton's default benchmarker allocates a 256 MB L2 flush buffer, enough to OOM a model that fits.
+    for kernel in (LH._lh_fwd, LH._lh_bwd_dq, LH._lh_bwd_dkdv):
+        assert kernel.do_bench is LH._bench_in_place
+
+
+def test_self_check_oom_falls_back_to_sdpa(monkeypatch):
+    def oom(*args, **kwargs):
+        raise torch.cuda.OutOfMemoryError("CUDA out of memory.")
+
+    monkeypatch.setattr(LH, "large_head_attention", oom)
+    monkeypatch.setattr(LH, "_measured_faster_on", lambda device: True)
+    key = (str(torch.device("cpu")), torch.float32)
+    monkeypatch.setitem(LH._SELF_CHECK, key, None)
+    LH._SELF_CHECK.pop(key)
+    assert LH._self_check(torch.device("cpu"), torch.float32) is False
+    assert LH._SELF_CHECK[key] is False
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+def test_autotune_of_a_new_shape_adds_no_flush_buffer():
+    dtype = _cuda_dtype()
+    # G = 3 is not used elsewhere in this file, so this call autotunes fwd and bwd from scratch.
+    q = torch.randn(1, 6, 40, 512, device = "cuda", dtype = dtype, requires_grad = True)
+    k = torch.randn(1, 2, 40, 512, device = "cuda", dtype = dtype, requires_grad = True)
+    v = torch.randn(1, 2, 40, 512, device = "cuda", dtype = dtype, requires_grad = True)
+    lo, hi = LH._dense_intervals(1, 40, True, q.device)
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
+    base = torch.cuda.memory_allocated()
+    LH.large_head_attention(q, k, v, lo, hi).float().sum().backward()
+    torch.cuda.synchronize()
+    assert torch.cuda.max_memory_allocated() - base < 32 * 1024**2
+
+
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_router_falls_back_to_sdpa_on_kernel_oom(monkeypatch):
+    calls, original = _sentinel()
+    router = LH._make_router(original)
+    dtype = _cuda_dtype()
+    assert LH._self_check(torch.device("cuda", torch.cuda.current_device()), dtype) is True
+
+    def oom(*args, **kwargs):
+        raise torch.cuda.OutOfMemoryError("CUDA out of memory.")
+
+    monkeypatch.setattr(LH, "_attention", oom)
+    q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = dtype)
+    kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = dtype)
+    before = LH.LARGE_HEAD_ENGAGED["fallback"]
+    assert router(_Module(), q, kv, kv, None)[0] == "original"
+    assert LH.LARGE_HEAD_ENGAGED["fallback"] == before + 1 and len(calls) == 1
+
+
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_router_skips_the_mask_scan_when_it_cannot_use_the_result(monkeypatch):
+    # The scan needs a host sync: inference masks would pay it on every layer, and a failed self
+    # check makes the result unusable.
+    def scan(*args, **kwargs):
+        raise AssertionError("mask scanned")
+
+    calls, original = _sentinel()
+    router = LH._make_router(original)
+    device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
+    assert LH._self_check(device, dtype) is True
+    monkeypatch.setattr(LH, "intervals_from_mask", scan)
+    q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = dtype)
+    kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = dtype)
+    with torch.inference_mode():
+        mask = _causal(24).cuda()[None, None]
+        assert router(_Module(), q, kv, kv, mask)[0] == "original"
+    monkeypatch.setitem(LH._SELF_CHECK, (str(device), dtype), False)
+    assert router(_Module(), q, kv, kv, _causal(24).cuda()[None, None])[0] == "original"
+    assert len(calls) == 2
+
+
+def test_pre_ampere_keeps_sdpa_without_compiling(monkeypatch):
+    def kernel(*args, **kwargs):
+        raise AssertionError("kernel compiled on sm75")
+
+    monkeypatch.setattr(LH, "large_head_attention", kernel)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device = None: (7, 5))
+    key = (str(torch.device("cpu")), torch.float16)
+    monkeypatch.setitem(LH._SELF_CHECK, key, None)
+    LH._SELF_CHECK.pop(key)
+    assert LH._self_check(torch.device("cpu"), torch.float16) is False
+
+
+def test_install_skipped_when_every_self_check_fails(monkeypatch):
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    class _Param:
+        is_cuda = True
+        device = torch.device("cuda", 0)
+        dtype = torch.float16
+
+    model = torch.nn.Linear(4, 4)
+    model.head_dim = 512
+    monkeypatch.setattr(model, "parameters", lambda: iter([_Param()]))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(LH, "_PATCHED", [False])
+    monkeypatch.setattr(LH, "_self_check", lambda device, dtype: False)
+    saved = ALL_ATTENTION_FUNCTIONS["sdpa"]
+    try:
+        assert LH.patch_large_head_attention(model) is False
+        assert ALL_ATTENTION_FUNCTIONS["sdpa"] is saved
     finally:
         ALL_ATTENTION_FUNCTIONS["sdpa"] = saved

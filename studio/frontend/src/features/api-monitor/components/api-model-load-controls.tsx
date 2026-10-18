@@ -32,7 +32,7 @@ import {
 } from "@/features/model-picker";
 import { isNpuModelId } from "@/features/npu";
 import { cn } from "@/lib/utils";
-import { Download01Icon, RefreshIcon } from "@hugeicons/core-free-icons";
+import { ReloadIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type Dispatch,
@@ -47,6 +47,7 @@ import {
   RELOAD_MISSING_HISTORY_MESSAGE,
   reloadLastModel,
 } from "../reload-last-model";
+import { ToolbarTooltip } from "./toolbar-tooltip";
 
 // A pick superseded by a newer one rejects too; the newer pick owns the outcome.
 function loadErrorMessage(err: unknown, fallback: string): string | null {
@@ -457,24 +458,25 @@ export function ApiModelLoadControls({
         onOpenChange={setSelectorOpen}
         className={cn("h-9 rounded-full")}
       />
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={() => {
-          handleReload();
-        }}
-        disabled={reloadDisabled}
-        title={reloadTitle(lastLoadLabel, Boolean(activeModel))}
-        className="h-9 gap-1.5 rounded-full"
-      >
-        <HugeiconsIcon
-          icon={reloading ? RefreshIcon : Download01Icon}
-          strokeWidth={1.75}
-          className={cn("size-4", reloading && "animate-spin")}
-        />
-        {reloading ? "Reloading" : "Reload"}
-      </Button>
+      <ToolbarTooltip label={reloadTitle(lastLoadLabel, Boolean(activeModel))}>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            handleReload();
+          }}
+          disabled={reloadDisabled}
+          className="h-9 gap-1.5 rounded-full"
+        >
+          <HugeiconsIcon
+            icon={ReloadIcon}
+            strokeWidth={1.75}
+            className={cn("size-4", reloading && "animate-spin")}
+          />
+          {reloading ? "Reloading" : "Reload"}
+        </Button>
+      </ToolbarTooltip>
       {actionError ? (
         <span
           role="alert"

@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -332,7 +333,7 @@ def test_llama_backend_source_choice_in_setup_ps1(backend, force_vulkan, expecte
     assert out.stdout.strip() == f"RESULT:{expected_backend}:{expected_explicit}"
 
 
-def _run_ps1(value: str | None) -> str:
+def _run_ps1(value: str | None, extra_env: dict[str, str] | None = None) -> str:
     normalize = _ps1_search(
         r"\$llamaBackend = \$sourceLlamaBackend.*?Ignoring UNSLOTH_LLAMA_CPP_BACKEND.*?\n\s*\}",
         re.DOTALL,
@@ -346,6 +347,7 @@ def _run_ps1(value: str | None) -> str:
     }
     if value is not None:
         env["UNSLOTH_LLAMA_CPP_BACKEND"] = value
+    env.update(extra_env or {})
     harness = (
         # The spliced snippet warns through setup.ps1's output sink, which the real
         # script defines above every call site. Stub it to Write-Host so the warning
@@ -393,15 +395,15 @@ def test_ps1_backend_gpu_opt_out_is_accepted(value):
     assert out.strip() == "ARGS:"
 
 
-def test_ps1_forced_vulkan_fails_closed_on_windows_arm64():
-    ps1 = _SETUP_PS1.read_text(encoding = "utf-8")
-    branch = ps1.index(
-        'if ($llamaBackend -eq "vulkan" -or $explicitLlamaSourceBackend -eq "vulkan")'
+@_SKIP_NO_PWSH
+@pytest.mark.skipif(sys.platform == "darwin", reason = "the branch reads $IsMacOS, read-only in pwsh")
+def test_ps1_forced_vulkan_reaches_the_installer_on_windows_arm64():
+    # The installer resolves the Windows ARM64 Vulkan bundle (#11674), so setup must not refuse first.
+    out = _run_ps1(
+        "vulkan",
+        {"OS": "Windows_NT", "PROCESSOR_ARCHITECTURE": "ARM64", "PROCESSOR_ARCHITEW6432": ""},
     )
-    guarded = ps1[branch : ps1.index("Vulkan selected for GGUF inference", branch)]
-    assert "elseif ($windowsArm64)" in guarded
-    assert "no Windows ARM64 Vulkan bundle is published" in guarded
-    assert "UNSLOTH_FORCE_VULKAN" in guarded
+    assert "Vulkan selected for GGUF inference" in out
 
 
 @_SKIP_NO_PWSH

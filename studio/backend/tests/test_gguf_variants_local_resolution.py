@@ -429,7 +429,7 @@ def test_relative_identifiers_keep_their_relative_alias(in_tmp_cwd):
 
 
 def test_loadable_variants_include_the_relative_fallback_label(in_tmp_cwd):
-    # The resolver accepts the snapshot-relative stem, so the answer must not omit it.
+    # snapshot-relative stems accepted by the resolver must remain advertised.
     from utils.models.model_config import _find_local_gguf_by_variant
 
     (in_tmp_cwd / "config.json").write_text("{}")
@@ -443,20 +443,20 @@ def test_loadable_variants_include_the_relative_fallback_label(in_tmp_cwd):
 
 
 def test_a_torn_split_keeps_its_quant_partial(in_tmp_cwd):
-    # A short shard-like name is ready alone, but not when the file the resolver binds for
-    # that quant is an earlier torn five-digit split.
-    (in_tmp_cwd / "config.json").write_text("{}")
-    (in_tmp_cwd / "a-Q4_K_M-00001-of-00002.gguf").write_bytes(b"GGUF")
-    (in_tmp_cwd / "z-Q4_K_M-001-of-002.gguf").write_bytes(b"GGUF")
+    # an HF snapshot lists one build per quant, so the earlier torn split hides the ready short shard.
+    snapshot = in_tmp_cwd / "models--org--Model-GGUF" / "snapshots" / "rev1"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "a-Q4_K_M-00001-of-00002.gguf").write_bytes(b"GGUF")
+    (snapshot / "z-Q4_K_M-001-of-002.gguf").write_bytes(b"GGUF")
 
-    response = _variants(os.fspath(in_tmp_cwd))
+    response = _variants(os.fspath(snapshot))
     assert response.variants[0].partial is True
     assert response.loadable_variants == []
 
 
 def test_short_shard_like_name_in_a_directory_reads_ready(in_tmp_cwd):
-    # The cache scan's looser grammar calls this torn, but the load opens a -001-of-002
-    # name as an ordinary file.
+    # cache scanning marks -001-of-002 as torn, but loading treats it as an ordinary file.
     from utils.models.model_config import detect_gguf_model
 
     (in_tmp_cwd / "config.json").write_text("{}")

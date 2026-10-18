@@ -2475,6 +2475,10 @@ type ChatRuntimeStore = {
   searchImages: boolean;
   mcpEnabledForChat: boolean;
   ragEnabled: boolean;
+  /** The files panel's X: hides the panel while retrieval stays on; turning RAG on or picking a source shows it again. */
+  ragPanelHidden: boolean;
+  /** Files the panel lists, for the RAG tag's Show files item while the panel is hidden. */
+  ragPanelFileCount: number;
   ragSource: RagSource;
   projectAttachmentTarget: ProjectAttachmentTarget;
   /** session-only per-chat target override; leaves other chats unchanged. */
@@ -2790,6 +2794,8 @@ type ChatRuntimeStore = {
   clearToolConfirmation: (toolCallId: string) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
   setRagEnabled: (enabled: boolean) => void;
+  setRagPanelHidden: (hidden: boolean) => void;
+  setRagPanelFileCount: (count: number) => void;
   setRememberParamsPerModel: (enabled: boolean) => void;
   setRagSource: (source: RagSource) => void;
   setProjectAttachmentTarget: (target: ProjectAttachmentTarget) => void;
@@ -4364,6 +4370,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
   // RAG is opt-in per session: always starts off, never restored from storage.
   ragEnabled: false,
+  ragPanelHidden: false,
+  ragPanelFileCount: 0,
   ragSource: loadRagSource(),
   projectAttachmentTarget: loadProjectAttachmentTarget(),
   projectAttachmentTargetByThread: {},
@@ -5811,9 +5819,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (ragEnabled !== state.ragEnabled) captureThreadScopedEdit("ragEnabled");
       return {
         ragEnabled,
+        ragPanelHidden: false,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
+  setRagPanelHidden: (ragPanelHidden) => set({ ragPanelHidden }),
+  setRagPanelFileCount: (ragPanelFileCount) => set({ ragPanelFileCount }),
   setProjectAttachmentTarget: (projectAttachmentTarget) =>
     set(() => {
       saveString(CHAT_PROJECT_ATTACHMENT_TARGET_KEY, projectAttachmentTarget);
@@ -5918,6 +5929,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveRagSource(ragSource);
       return {
         ragSource,
+        ragPanelHidden: false,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),

@@ -754,6 +754,12 @@
      segmented toggle in the app (Hub Discover/On Device, Models/Datasets,
      Unsloth/All, Recent/Name/Size, plus Settings + Train tabs) shares one
      design: a soft track with a white, softly-shadowed sliding pill. */
+  /* The selected pill sits at -z-10 under every segment's label (see
+     SegmentedPill), so the track keeps it from sinking below the page. */
+  .hub-tab-toggle {
+    isolation: isolate;
+  }
+
   html:not(.dark) .hub-tab-toggle {
     background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), transparent);
     border: 0;
@@ -802,13 +808,6 @@
   html:not(.dark) .hub-tab-toggle-pill:hover {
     /* #f3f3f3, on the curve its dark twin already follows. */
     background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), var(--background));
-  }
-
-  /* A tab is a real button, so unlike the sliding indicator it can hover. In
-     light the pill is already the lightest thing on the panel, so it stays
-     put rather than moving the only direction left, which is down. */
-  html:not(.dark) .hub-tab-toggle-pill[role="tab"]:hover {
-    background-color: var(--background);
   }
 
   /* The selected segment takes --accent, the app's one selection colour, so it

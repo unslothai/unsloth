@@ -903,7 +903,7 @@ def _macos_release_major() -> "int | None":
 
 # The pinned MLX versions publish macosx_14_0_arm64 wheels, no sdist and no cp39, so
 # macOS 13 and Python 3.9 have nothing to resolve to (`uv pip install --python-platform
-# aarch64-apple-darwin mlx==0.32.3`). Asked before the install, like
+# aarch64-apple-darwin mlx==0.32.4`). Asked before the install, like
 # _torchcodec_spec_is_installable: pip_install exits on failure, so trying would end an
 # install that today just comes up chat-only.
 _MLX_MIN_PYTHON = (3, 10)
@@ -2337,21 +2337,13 @@ def _detect_windows_gfx_arch() -> str | None:
                     # Torch ends here, llama.cpp does not: Vulkan drives these cards
                     # (#8458 ran an RX 580 through it). PowerShell syntax because this
                     # branch is Windows-only: a pasted VAR=value parses there as a
-                    # command name and sets nothing. Not on ARM64: setup.ps1 THROWS on
-                    # that variable there, so this would abort the next update.
-                    if _is_windows_arm64():
-                        _safe_print(
-                            "   [INFO] GGUF chat would need Vulkan on this GPU, and no "
-                            "Windows ARM64 Vulkan bundle is published: build llama.cpp "
-                            "from source, or run this on x64."
-                        )
-                    else:
-                        _safe_print(
-                            "   [INFO] GGUF chat can still run on this GPU through Vulkan: set "
-                            '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. '
-                            "It selects the llama.cpp bundle at install time, so setting it "
-                            "afterwards has no effect until you install or update again."
-                        )
+                    # command name and sets nothing.
+                    _safe_print(
+                        "   [INFO] GGUF chat can still run on this GPU through Vulkan: set "
+                        '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. '
+                        "It selects the llama.cpp bundle at install time, so setting it "
+                        "afterwards has no effect until you install or update again."
+                    )
                 else:
                     _safe_print(
                         f"   [WARN] could not map '{_names[_sel]}' to a gfx arch, so torch "
@@ -3645,12 +3637,15 @@ def _runtime_gfx_target(
         if gfx_devices
         else None
     )
-    # Strix defers only where the discrete card's wheel can be installed and will run: a readable
-    # ROCm version (the versionless path has no generic tag for it) and no HSA override (which
-    # spoofs every agent, the dGPU included). Otherwise it keeps its own per-arch index, as before.
+    # Strix defers only where the discrete card's wheel can be installed and will run: a ROCm
+    # version with a generic tag (unreadable or pre-6.0 has none, so nothing would install) and
+    # no HSA override (which spoofs every agent, the dGPU included). Otherwise it keeps its own
+    # per-arch index, as before.
+    _strix_rocm = _detect_rocm_version() if runtime_gfx in _STRIX_APU_GFX else None
     _strix_first = (
         runtime_gfx in _STRIX_APU_GFX
-        and _detect_rocm_version() is not None
+        and _strix_rocm is not None
+        and _generic_pytorch_rocm_tag(_strix_rocm) is not None
         and _hsa_override_gfx_arch(os.environ.get("HSA_OVERRIDE_GFX_VERSION")) is None
     )
     if (runtime_gfx in _SHADOWING_INTEGRATED_GFX or _strix_first) and not _visible_devices_pinned():
@@ -10349,6 +10344,73 @@ def _mirror_retry(args: "tuple[str, ...]", output: bytes, rerun) -> "bool | None
     return ok
 
 
+FEED_CEILING_MARKER = "unsloth_feed_ceiling.json"
+
+
+def _desktop_unsloth_spec(package_name: str) -> str:
+    """Desktop's backend floor, lowered to a lagging index's newest release (#14031).
+
+    Twin of install.sh's _relax_unsloth_floors_to_index.
+    """
+    desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
+    if not (desktop_min_ver and package_name == "unsloth"):
+        return package_name
+    spec = f"unsloth>={desktop_min_ver}"
+    marker = Path(sys.prefix) / FEED_CEILING_MARKER
+    try:
+        marker.unlink()
+    except OSError:
+        pass
+    if not USE_UV:
+        return spec
+
+    def newest(requirement: str, name: str = "unsloth") -> "str | None":
+        # --output-file: a uv.toml output-file would otherwise be overwritten by every probe.
+        with tempfile.TemporaryDirectory() as scratch:
+            out = Path(scratch) / "probe.txt"
+            argv = ["uv", "pip", "compile", "--python", sys.executable, "--no-deps"]
+            argv += ["--resolution", "highest", "--no-header", "--no-annotate", "--quiet"]
+            argv += ["--output-file", str(out), "-"]
+            try:
+                result = subprocess.run(
+                    argv,
+                    input = requirement + "\n",
+                    stdout = subprocess.DEVNULL,
+                    stderr = subprocess.DEVNULL,
+                    text = True,
+                    timeout = 120,
+                    **_windows_hidden_subprocess_kwargs(),
+                )
+                text = out.read_text(encoding = "utf-8") if result.returncode == 0 else None
+            except (OSError, subprocess.SubprocessError):
+                return None
+        if text is None:
+            return None
+        match = re.search(rf"^{name}==([0-9][0-9A-Za-z.+!-]*)", text, re.MULTILINE)
+        return match.group(1) if match else None
+
+    if newest(spec) is not None:
+        return spec
+    # The newest zoo, then the newest unsloth not above it (an unsloth never needs a newer zoo).
+    zoo = newest("unsloth-zoo", "unsloth-zoo")
+    available = newest(f"unsloth<={zoo}") if zoo else None
+    if available is None:
+        return spec
+    _note(
+        f"[WARN] your package index does not have {spec} yet; "
+        f"installing unsloth {available}, the newest it has",
+        _warn,
+    )
+    try:
+        marker.write_text(
+            json.dumps({"requested": desktop_min_ver, "available": available}) + "\n",
+            encoding = "utf-8",
+        )
+    except OSError:
+        pass
+    return f"unsloth=={available}"
+
+
 def pip_install(
     label: str,
     *args: str,
@@ -10605,11 +10667,16 @@ def _has_working_git() -> bool:
 
 # The MLX stack, one place; test_mlx_install.py compares it with utils/mlx_repair.py's
 # _MLX_INSTALL_SPECS.
-_MLX_PINS: tuple[str, ...] = ("mlx==0.32.3", "mlx-metal==0.32.3", "mlx-lm==0.31.3")
+_MLX_PINS: tuple[str, ...] = ("mlx==0.32.4", "mlx-metal==0.32.4")
+# A range, like mlx-vlm: 0.32 requires Python 3.11, so Python 3.10 resolves 0.31.3.
+_MLX_LM_SPEC = "mlx-lm>=0.31.3,<=0.32.2"
 _MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.8"
 # Exact: llguidance.mlx / llguidance.hf are the API grammar_constraint.py binds to.
 _LLGUIDANCE_PIN = "llguidance==1.8.0"
-_MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + ("mlx-vlm",)
+_MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + (
+    "mlx-lm",
+    "mlx-vlm",
+)
 # mflux goes in --no-deps: its declared torch / transformers floors would move the MLX pins, and Z-Image
 # needs only the deps below. Best-effort: a failure must never mark the MLX stack broken.
 _MLX_DIFFUSION_PINS: tuple[str, ...] = ("mflux==0.22.0",)
@@ -10656,7 +10723,15 @@ def _install_mlx_diffusion_engine() -> None:
 
 
 def _mlx_vlm_spec_for_installed_zoo() -> str:
-    """_MLX_VLM_SPEC, intersected with the range the INSTALLED unsloth-zoo declares.
+    return _mlx_spec_for_installed_zoo(_MLX_VLM_SPEC)
+
+
+def _mlx_lm_spec_for_installed_zoo() -> str:
+    return _mlx_spec_for_installed_zoo(_MLX_LM_SPEC)
+
+
+def _mlx_spec_for_installed_zoo(spec: str) -> str:
+    """`spec`, intersected with the range the INSTALLED unsloth-zoo declares for its package.
 
     This step runs before the core phase, and on a fresh install (SKIP_STUDIO_BASE=1) the core
     phase is skipped entirely, so the zoo install.sh already put down is the one that stays.
@@ -10664,31 +10739,33 @@ def _mlx_vlm_spec_for_installed_zoo() -> str:
     accept it, so admitting 0.7.1 beside such a zoo raises TypeError at the first Qwen3.5 VLM
     training step, after mlx_stack_available() has cleared the chat-only gate. Reading what the
     installed zoo itself declares keeps the two in step without naming a zoo version here, and it
-    widens on its own once a zoo declaring 0.7.1 is installed. Mirrors utils/mlx_repair.py's
-    _install_packages, which does the same for the unattended self-heal.
+    widens on its own once a zoo declaring 0.7.1 is installed. Likewise a zoo pinning mlx-lm 0.31.3
+    keeps 0.31.3. Mirrors utils/mlx_repair.py's _install_packages, which does the same for the
+    unattended self-heal.
     """
     try:
         from importlib.metadata import requires
         from packaging.requirements import Requirement
         from packaging.utils import canonicalize_name
     except ImportError:
-        return _MLX_VLM_SPEC
+        return spec
     try:
         declared = requires("unsloth_zoo") or ()
+        wanted = canonicalize_name(Requirement(spec).name)
     except Exception:  # noqa: BLE001 - not installed, or unreadable metadata
-        return _MLX_VLM_SPEC
+        return spec
     for raw in declared:
         try:
             requirement = Requirement(raw)
         except Exception:  # noqa: BLE001 - a requirement string packaging cannot parse
             continue
-        if canonicalize_name(requirement.name) == "mlx-vlm" and str(requirement.specifier):
-            return f"{_MLX_VLM_SPEC},{requirement.specifier}"
-    return _MLX_VLM_SPEC
+        if canonicalize_name(requirement.name) == wanted and str(requirement.specifier):
+            return f"{spec},{requirement.specifier}"
+    return spec
 
 
 def _mlx_stack_is_current() -> bool:
-    """Whether the three exact pins and mlx-vlm's range are all already satisfied.
+    """Whether the exact pins and the mlx-lm and mlx-vlm ranges are all already satisfied.
 
     Without this the step ran `--upgrade` on every update and fetched ~60 MB of wheels
     it then discarded, because the pins were already exact and the upgrade only moved
@@ -10696,12 +10773,18 @@ def _mlx_stack_is_current() -> bool:
     """
     if not all(_exact_distribution_spec_is_installed(spec) for spec in _MLX_PINS):
         return False
-    installed = _installed_distribution_version("mlx-vlm")
-    if not installed:
+    installed, installed_lm = (
+        _installed_distribution_version(name) for name in ("mlx-vlm", "mlx-lm")
+    )
+    if not installed or not installed_lm:
         return False
     try:
         from packaging.requirements import Requirement
-
+        if not Requirement(_mlx_lm_spec_for_installed_zoo()).specifier.contains(
+            installed_lm,
+            prereleases = True,
+        ):
+            return False
         # The narrowed spec, not the static one: with an older zoo beside an already-installed
         # 0.7.1 the static range reads as satisfied and the step skips the very install that
         # would put mlx-vlm back where the zoo can drive it.
@@ -10747,7 +10830,10 @@ def _mlx_closure_unmet() -> bool:
         os.close(_fd)
         handle = Path(_name)
         handle.write_text(
-            "\n".join([*_MLX_PINS, _mlx_vlm_spec_for_installed_zoo()]) + "\n",
+            "\n".join(
+                [*_MLX_PINS, _mlx_lm_spec_for_installed_zoo(), _mlx_vlm_spec_for_installed_zoo()]
+            )
+            + "\n",
             encoding = "utf-8",
         )
         unmet = install_manifest.closure_unmet_requirements(handle, _installed_index())
@@ -10802,8 +10888,10 @@ def _mlx_health_fingerprint() -> dict:
     """What a recorded MLX verdict is only valid for."""
     return {
         # The narrowed spec, so installing a different zoo invalidates a recorded verdict.
-        "pins": list(_MLX_PINS) + [_mlx_vlm_spec_for_installed_zoo()],
+        "pins": list(_MLX_PINS)
+        + [_mlx_lm_spec_for_installed_zoo(), _mlx_vlm_spec_for_installed_zoo()],
         "python": _installer_python_tag(),
+        "mlx_lm": _installed_distribution_version("mlx-lm") or "",
         "mlx_vlm": _installed_distribution_version("mlx-vlm") or "",
         # Versions as installed; an older record without this key is probed once and rewritten.
         "imports": {
@@ -11661,9 +11749,10 @@ def _triton_kernels_step() -> None:
 
 DIFFUSERS_MAIN_ENV = "UNSLOTH_DIFFUSERS_MAIN"
 
-# Diffusers main declares requires-python >= 3.10 while the release pin file still names 0.36.0
-# for anything older, so 3.9 is a supported install this step can never satisfy.
-DIFFUSERS_MAIN_MIN_PYTHON = (3, 10)
+# Diffusers main declares requires-python >= 3.11 (huggingface/diffusers#15030) while the release
+# pin covers 3.10 (0.41.0) and 3.9 (0.36.0), so both are supported installs this step can never
+# satisfy. They keep the release and only a model that needs the main build is unavailable.
+DIFFUSERS_MAIN_MIN_PYTHON = (3, 11)
 
 
 def _diffusers_main_requested() -> bool:
@@ -12006,11 +12095,11 @@ def _diffusers_main_step() -> None:
         _progress("diffusers main (opted out, skipped)")
         return
     if sys.version_info < DIFFUSERS_MAIN_MIN_PYTHON:
-        # Diffusers main needs 3.10, and the release pin file still carries a 0.36.0 line for
-        # older interpreters, so 3.9 is a supported path this can never satisfy. Unmarked, pip would
-        # clone the repository and only then reject its requires-python, and since the build can
-        # never become resident that clone repeats on every install and update forever.
-        _progress("diffusers main (skipped, needs python 3.10)")
+        # Diffusers main needs 3.11, and the release pin covers 3.10 and 3.9, so those are supported
+        # paths this can never satisfy. Unmarked, pip would clone the repository and only then reject
+        # its requires-python, and since the build can never become resident that clone repeats on
+        # every install and update forever.
+        _progress("diffusers main (skipped, needs python 3.11)")
         return
     req = REQ_ROOT / "diffusers-main.txt"
     if not req.is_file():
@@ -12517,6 +12606,7 @@ def install_python_stack() -> int:
     # None when the MLX step did not run at all, so the re-resolve after the core phase has
     # nothing to compare against.
     _mlx_vlm_spec_used: Optional[str] = None
+    _mlx_lm_spec_used: Optional[str] = None
     if IS_MAC_ARM and not NO_TORCH:
         # Both branches spend the slot, so the denominator does not depend on the host.
         if _mlx_pins_are_installable():
@@ -12539,12 +12629,14 @@ def install_python_stack() -> int:
                     # transitive dependency; _build_pip_cmd translates back for pip.
                     *[arg for name in _MLX_NAMES for arg in ("--upgrade-package", name)],
                     *_MLX_PINS,
+                    _mlx_lm_spec_for_installed_zoo(),
                     _mlx_vlm_spec_for_installed_zoo(),
                 )
             # Inside the MLX slot, after the pins it runs on; its own check, so a satisfied
             # stack still gets a missing engine.
             _install_mlx_diffusion_engine()
             _mlx_vlm_spec_used = _mlx_vlm_spec_for_installed_zoo()
+            _mlx_lm_spec_used = _mlx_lm_spec_for_installed_zoo()
         else:
             _progress("MLX stack (skipped, no wheel for this macOS or Python)")
             _note(
@@ -12569,12 +12661,7 @@ def install_python_stack() -> int:
     elif NO_TORCH:
         # No-torch update path: --no-deps throughout (PyPI metadata makes torch a hard dep).
         _progress("base packages (no torch)")
-        desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
-        unsloth_spec = (
-            f"{package_name}>={desktop_min_ver}"
-            if (desktop_min_ver and package_name == "unsloth")
-            else package_name
-        )
+        unsloth_spec = _desktop_unsloth_spec(package_name)
         pip_install(
             f"Updating {package_name} + unsloth-zoo (no-torch mode)",
             "--no-cache-dir",
@@ -12627,12 +12714,7 @@ def install_python_stack() -> int:
         )
     else:
         _progress("base packages")
-        desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
-        unsloth_spec = (
-            f"{package_name}>={desktop_min_ver}"
-            if (desktop_min_ver and package_name == "unsloth")
-            else package_name
-        )
+        unsloth_spec = _desktop_unsloth_spec(package_name)
         with _FreezeNewTorchForCoreUpdate():
             pip_install(
                 "Updating core packages",
@@ -12657,7 +12739,11 @@ def install_python_stack() -> int:
     # moved, so the common update pays a metadata read and nothing else.
     if IS_MAC_ARM and not NO_TORCH:
         _mlx_vlm_spec_now = _mlx_vlm_spec_for_installed_zoo()
-        if _mlx_vlm_spec_used is None or _mlx_vlm_spec_now == _mlx_vlm_spec_used:
+        _mlx_lm_spec_now = _mlx_lm_spec_for_installed_zoo()
+        if _mlx_vlm_spec_used is None or (_mlx_vlm_spec_now, _mlx_lm_spec_now) == (
+            _mlx_vlm_spec_used,
+            _mlx_lm_spec_used,
+        ):
             _progress("MLX stack (zoo unchanged, skipped)")
         else:
             _progress("MLX stack (re-resolved for the new zoo)")
@@ -12667,6 +12753,7 @@ def install_python_stack() -> int:
                 "--no-cache-dir",
                 *[arg for name in _MLX_NAMES for arg in ("--upgrade-package", name)],
                 *_MLX_PINS,
+                _mlx_lm_spec_now,
                 _mlx_vlm_spec_now,
             )
 

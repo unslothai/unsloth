@@ -121,8 +121,8 @@ def Qwen3Attention_fast_forward(
     else:
         # Qwen3 adds QKNorm, the only difference from Qwen2. A compiled norm mismatches Transformers'
         # numbers, so use fast_rms_layernorm.
-        Q = fast_rms_layernorm(self.q_norm, Q)
-        K = fast_rms_layernorm(self.k_norm, K)
+        Q = fast_rms_layernorm(self.q_norm, Q, reuse_grad = True)
+        K = fast_rms_layernorm(self.k_norm, K, reuse_grad = True)
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)

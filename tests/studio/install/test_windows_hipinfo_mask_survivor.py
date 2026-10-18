@@ -101,3 +101,25 @@ def test_hipinfo_under_cuda_and_rocr_masks_takes_the_cuda_survivor(monkeypatch):
     env = {"CUDA_VISIBLE_DEVICES": "2,0", "ROCR_VISIBLE_DEVICES": "1"}
     host = detect(monkeypatch, "hipinfo", hipinfo_listing([PHYSICAL[2], PHYSICAL[0]]), env)
     assert host.rocm_gfx_target == "gfx1100"
+
+
+@pytest.mark.parametrize(
+    "env,expected",
+    [
+        # An all-hiding ROCR mask still means no GPU, as before survivor indexing.
+        ({"CUDA_VISIBLE_DEVICES": "0", "ROCR_VISIBLE_DEVICES": "-1"}, None),
+        ({"CUDA_VISIBLE_DEVICES": "0", "ROCR_VISIBLE_DEVICES": ""}, None),
+        ({"ROCR_VISIBLE_DEVICES": "-1"}, None),
+        # Otherwise the CUDA mask's survivor 0, as in the mixed-mask test above.
+        ({"CUDA_VISIBLE_DEVICES": "0", "ROCR_VISIBLE_DEVICES": "1"}, "gfx1151"),
+        # HIP_VISIBLE_DEVICES still wins over both.
+        ({"HIP_VISIBLE_DEVICES": "0", "ROCR_VISIBLE_DEVICES": "-1"}, "gfx1151"),
+    ],
+)
+def test_hipinfo_honours_an_all_hiding_rocr_mask(env, expected, monkeypatch):
+    for var in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+    for var, value in env.items():
+        monkeypatch.setenv(var, value)
+    out = hipinfo_listing(["gfx1151"])
+    assert m._pick_rocm_gfx_target(out, hip_filtered = True) == expected
