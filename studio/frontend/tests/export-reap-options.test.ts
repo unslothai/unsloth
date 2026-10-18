@@ -71,3 +71,13 @@ test("group-limited routers count like Core: per group, at least 2 left in each"
   const half = { num_experts: 20, top_k: 2, n_group: 4, topk_group: 2 };
   assert.equal(reapKeptExperts(half, 0.5), 12);
 });
+
+test("the summary reports what Core removes, not the requested fraction", () => {
+  const odd = { num_experts: 12, top_k: 2, n_group: 4, topk_group: 2 };
+  const on = { ...DEFAULT_REAP_SETTINGS, enabled: true, sparsity: 0.25 };
+  assert.equal(reapSummaryLabel(on, odd), "33% of experts removed (8 of 12 kept)");
+  assert.equal(
+    reapSummaryLabel(on, { num_experts: 128, top_k: 8 }),
+    "25% of experts removed (96 of 128 kept)",
+  );
+});

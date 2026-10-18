@@ -102,5 +102,9 @@ export function reapSummaryLabel(
 ): string | null {
   const sparsity = reapEffectiveSparsity(settings, moe);
   if (!settings.enabled || sparsity === null) return null;
-  return `${Math.round(sparsity * 100)}% of experts removed (${reapKeptExperts(moe, sparsity)} of ${moe.num_experts} kept)`;
+  const kept = reapKeptExperts(moe, sparsity);
+  // From the experts Core actually drops: grouped routers round per group (12 in 4 groups at 25%
+  // drops 4, i.e. 33%).
+  const removed = Math.round(((moe.num_experts - kept) / moe.num_experts) * 100);
+  return `${removed}% of experts removed (${kept} of ${moe.num_experts} kept)`;
 }
