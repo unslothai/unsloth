@@ -324,7 +324,7 @@ export function AudioPage({
   }, []);
 
   const isMac = usePlatformStore((s) => s.deviceType) === "mac";
-  const audioCatalog = useAudioCatalog(true);
+  const audioCatalog = useAudioCatalog(active);
   const pagePrefs = useMemo<PageModelPrefs>(
     () => ({ isMac, catalog: audioCatalog.byId }),
     [isMac, audioCatalog.byId],
