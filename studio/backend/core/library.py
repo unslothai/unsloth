@@ -814,14 +814,13 @@ def _sandbox_sessions() -> list[_SandboxSession]:
 
     conn = get_connection()
     try:
-        threads = conn.execute(
-            "SELECT id, title, pair_id FROM chat_threads WHERE project_id IS NULL"
-        ).fetchall()
+        threads = conn.execute("SELECT id, title, pair_id FROM chat_threads").fetchall()
         projects = conn.execute(
             "SELECT id, name, root_path FROM chat_projects WHERE COALESCE(working_folder, '') = ''"
         ).fetchall()
     finally:
         conn.close()
+    thread_ids = {row["id"] for row in threads}
     return [
         _SandboxSession(row["id"], row["id"], row["title"], pair_id = row["pair_id"])
         for row in threads
@@ -830,7 +829,9 @@ def _sandbox_sessions() -> list[_SandboxSession]:
             f"{_PROJECT_SESSION_PREFIX}{row['id']}", None, row["name"], project_id = row["id"]
         )
         for row in projects
-        if _studio_project_root(row["root_path"])
+        # A chat with this id owns the directory (_get_project_workdir): listing both walks it twice.
+        if f"{_PROJECT_SESSION_PREFIX}{row['id']}" not in thread_ids
+        and _studio_project_root(row["root_path"])
     ]
 
 
@@ -853,9 +854,7 @@ def _sandbox_session_eligible(session_id: str) -> bool:
 
     conn = get_connection()
     try:
-        if conn.execute(
-            "SELECT 1 FROM chat_threads WHERE id = ? AND project_id IS NULL", (session_id,)
-        ).fetchone():
+        if conn.execute("SELECT 1 FROM chat_threads WHERE id = ?", (session_id,)).fetchone():
             return True
         if not session_id.startswith(_PROJECT_SESSION_PREFIX):
             return False
