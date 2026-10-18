@@ -1100,3 +1100,30 @@ async def test_permitted_prefill_renews_lease_but_decode_silence_does_not(durabl
     monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
     await supervisor._produce("run-1")
     assert observations == [True, True]
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_run_settles_even_when_its_stream_never_closes(durable_run, monkeypatch):
+    """A barge-in before the first token: the engine drops the task but the stream stays open, and the
+    first-token wait would renew the lease forever. The producer must stop draining and settle as cancelled."""
+    hung = asyncio.Event()
+
+    async def body():
+        yield 'data: {"choices":[{"delta":{"reasoning_content":"hm"},"finish_reason":null}]}\n\n'
+        await hung.wait()
+
+    async def fake(_payload, _request, _subject, *, cancel_on_disconnect):
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    monkeypatch.setattr("core.inference.chat_generation_runs._CANCEL_DRAIN_SECONDS", 0.2)
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    cancel_event = threading.Event()
+    task = asyncio.create_task(supervisor._produce("run-1", cancel_event))
+    await asyncio.sleep(0.05)
+    runs_db.request_cancel("run-1")
+    cancel_event.set()
+    await asyncio.wait_for(task, timeout = 5)
+    run = runs_db.get_run("run-1", "alice")
+    assert (run["status"], run["finishReason"]) == ("cancelled", "cancelled")
+    hung.set()

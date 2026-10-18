@@ -69,6 +69,7 @@ import {
   setVoiceMode as setLoopVoiceMode,
 } from "@/features/chat/voice/voice-loop-bridge";
 import { voiceServing } from "@/features/chat/voice/voice-slot";
+import { getActiveChatGenerationRuns } from "@/features/chat/api/chat-generation-api";
 import { cn } from "@/lib/utils";
 import { useAui } from "@assistant-ui/react";
 import { MessageSquareIcon, MicOffIcon } from "lucide-react";
@@ -90,6 +91,9 @@ const VOICE_COALESCE_MS = 650;
 // bubbles unanswered, re-check every VOICE_COALESCE_MS up to this many times
 // (~10s) before concluding the run will never settle.
 const VOICE_COALESCE_MAX_RETRIES = 15;
+// How long to wait for the backend to settle a cancelled run before starting the next.
+const VOICE_RUN_SETTLE_MAX_MS = 6000;
+const VOICE_RUN_SETTLE_POLL_MS = 150;
 // How long playback may pause between sentences before the orb admits a real
 // synth stall and turns lilac ("Generating voice"). The swap between two already
 // synthesized clips is well under this, so ordinary sentence boundaries hold the
@@ -462,11 +466,39 @@ export const VoiceEngine: FC = () => {
       // (something else answered while we waited), starting another run here
       // would regenerate on top of it.
       if (!last || last.role !== "user") return;
-      try {
-        t.startRun({ parentId: last.id });
-      } catch {
-        // startRun unsupported -- the bubbles are already shown; nothing to do.
+      // The barge-in's cancel is acknowledged here before the backend has settled
+      // the old run, and a new run on the thread while the old one is still
+      // "cancelling" is refused outright. Ask the server, not the local state.
+      const threadId = useChatRuntimeStore.getState().activeThreadId;
+      const start = () => {
+        if (voiceModeRef.current !== "active") return;
+        try {
+          t.startRun({ parentId: last.id });
+        } catch {
+          // startRun unsupported -- the bubbles are already shown; nothing to do.
+        }
+      };
+      if (!threadId) {
+        start();
+        return;
       }
+      void (async () => {
+        const deadline = Date.now() + VOICE_RUN_SETTLE_MAX_MS;
+        for (;;) {
+          let active = 0;
+          try {
+            active = (await getActiveChatGenerationRuns(threadId)).length;
+          } catch {
+            break;
+          }
+          if (active === 0 || Date.now() >= deadline) {
+            if (active) voiceTrace("engine.runStillActive", { threadId, active });
+            break;
+          }
+          await new Promise((r) => setTimeout(r, VOICE_RUN_SETTLE_POLL_MS));
+        }
+        start();
+      })();
     };
     if (voiceCoalesceTimerRef.current) clearTimeout(voiceCoalesceTimerRef.current);
     voiceCoalesceTimerRef.current = setTimeout(

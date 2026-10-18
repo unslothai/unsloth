@@ -29,6 +29,10 @@ logger = get_logger(__name__)
 _EVENT_BATCH_SIZE = 16
 # Followers only see appended chunks, so this is the chat's text frame rate: at most one commit per display frame.
 _EVENT_FLUSH_SECONDS = 1 / 60
+# How long a cancelled producer keeps waiting for its stream to close. A run cancelled before its first token
+# sat in "cancelling" for good: the engine dropped the task, the stream never ended, and the first-token wait
+# kept renewing the lease, so the thread refused every later turn with "already has an active generation".
+_CANCEL_DRAIN_SECONDS = 3.0
 _SHUTDOWN_GRACE_SECONDS = 10.0
 # Second budget, after task.cancel(). Shorter than the grace period: by this point the run is already being abandoned,
 # and the only question is whether shutdown returns.
@@ -791,8 +795,13 @@ class ChatGenerationSupervisor:
                 raise RuntimeError("Local generation did not return an event stream")
             decoder = _SSEDecoder()
             last_keepalive = time.monotonic()
+            cancelled_at: float | None = None
             next_raw_task = asyncio.create_task(iterator.__anext__())
             while True:
+                if cancel_event.is_set():
+                    cancelled_at = cancelled_at or time.monotonic()
+                    if time.monotonic() - cancelled_at >= _CANCEL_DRAIN_SECONDS:
+                        break
                 timeout = (
                     max(0.0, _EVENT_FLUSH_SECONDS - (time.monotonic() - last_flush))
                     if pending
@@ -801,6 +810,8 @@ class ChatGenerationSupervisor:
                 # Wake to renew the lease across a first-token wait the backend is still inside its own deadline for.
                 renew_interval = _renew_interval_seconds()
                 timeout = renew_interval if timeout is None else min(timeout, renew_interval)
+                # The cancel is a threading.Event, so the wait polls it; a half-second tick is what bounds the drain.
+                timeout = min(timeout, 0.5)
                 ready, _waiting = await asyncio.wait({next_raw_task}, timeout = timeout)
                 if (
                     first_token_wait.active()
