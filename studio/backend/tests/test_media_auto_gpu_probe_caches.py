@@ -28,7 +28,11 @@ def test_failed_bus_id_join_is_not_respawned(monkeypatch):
     assert len(calls) == 2
 
 
-def _smi(stdout, returncode = 0, calls = None):
+def _smi(
+    stdout,
+    returncode = 0,
+    calls = None,
+):
     def _run(argv, **_kw):
         if calls is not None:
             calls.append(list(argv[1:]))
