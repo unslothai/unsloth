@@ -211,6 +211,11 @@ def _describe(
         message = _detail_message(detail)
         if isinstance(detail, dict):
             code = detail.get("code")
+            if code is None and detail.get("error") == "download_busy":
+                seconds = detail.get("retry_after")
+                hint = f" Retry after {seconds} s." if seconds is not None else ""
+                tag = _tag("download_busy", retry_after = seconds)
+                return tag, f"Another speech-to-text download is running.{hint}", ""
     elif isinstance(envelope, dict):
         message = _text(envelope.get("message"))
         # /v1 validation is a 400 whose envelope names the offending field.

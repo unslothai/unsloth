@@ -103,6 +103,13 @@ CASES = DETAIL_CASES + [
         id = "gpu-busy-detail-wrapped",
     ),
     pytest.param(
+        _response(409, {"detail": {"error": "download_busy", "retry_after": 1}}),
+        [
+            "[download_busy retry_after=1] Another speech-to-text download is running. Retry after 1 s."
+        ],
+        id = "download-busy-detail",
+    ),
+    pytest.param(
         _v1(400, "messages: Field required", param = "messages"),
         ["Invalid arguments: messages: Field required"],
         id = "v1-validation-400",
