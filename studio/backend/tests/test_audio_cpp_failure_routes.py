@@ -137,7 +137,6 @@ def test_placement_refusal_lists_variants_that_fit(monkeypatch):
     detail = raised.value.detail
     assert ri.audio_cpp_resident_gb is af.estimate_resident_gb
     assert raised.value.status_code == 400 and detail["code"] == "out_of_memory"
-    # 7 GB free on the roomiest card: Q2 (6.5 GB) and Q1 (4.0 GB) fit; Q4 and Q3 do not.
     assert [row["label"] for row in detail["smaller_variants"]] == ["Q2", "Q1"]
     assert detail["message"].startswith("No single GPU has enough free memory for Model M.")
 
