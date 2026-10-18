@@ -315,6 +315,31 @@ def test_a_community_repo_several_specs_download_from_is_not_listed(env):
     assert targets == ({}, {"One/Repo": "c"})
 
 
+def test_a_community_repo_whose_package_needs_sidecars_is_withheld(env):
+    # trklou/audio.cpp (F5/Habibi) reads vocab.txt beside its GGUF; ampixa/sanoTTS a config.json.
+    for family, repo, files in (
+        (
+            "f5_tts",
+            "trklou/audio.cpp",
+            ["habibi-unified/habibi-unified-orig.gguf", "habibi-unified/vocab.txt"],
+        ),
+        ("sanotts", "ampixa/sanoTTS", ["gguf/heart-nano-f32.gguf", "gguf/config.json"]),
+        ("voices_tts", "Voices/TTS", ["v-q8_0.gguf", "embeddings/alba.safetensors"]),
+    ):
+        spec = {
+            "family": family,
+            "tasks": ["tts", "clone"],
+            "package_defaults": {"download": {"repo": repo}},
+            "packages": [{"id": "p", "default": True, "format": "gguf", "files": files}],
+        }
+        (env["specs"] / f"{family}.json").write_text(json.dumps(spec))
+    rows = _rows(catalog.audio_catalog_payload())
+    for repo in ("trklou/audio.cpp", "ampixa/sanoTTS"):
+        assert rows[repo].workflows == [] and rows[repo].unsupported_reason == catalog._SIDECARS
+    assert rows["Voices/TTS"].unsupported_reason is None and rows["Voices/TTS"].workflows
+    assert rows["Jmica/Drama-3-GGUF"].workflows == ["speak", "clone"]
+
+
 def test_a_spec_dir_read_is_capped_and_ignores_bad_files(env, monkeypatch):
     (env["specs"] / "huge.json").write_bytes(b" " * (catalog._MAX_SPEC_BYTES + 1))
     (env["specs"] / "list.json").write_text("[]")
