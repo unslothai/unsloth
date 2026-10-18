@@ -89,6 +89,33 @@ def test_forward_fake_quant_lm_head_takes_unfused_path(scheme):
     assert llama.lm_head_needs_forward(lm_head)
 
 
+@pytest.mark.parametrize("scheme", ["nvfp4", "mx"])
+def test_forward_fake_quant_lm_head_in_modules_to_save_takes_unfused_path(scheme):
+    peft = pytest.importorskip("peft")
+
+    class _Model(_Head):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(DIM, DIM, bias = False)
+
+    torch.manual_seed(0)
+    model = peft.get_peft_model(
+        _Model(), peft.LoraConfig(r = 16, target_modules = ["proj"], modules_to_save = ["lm_head"])
+    )
+    only_head_copy = (
+        lambda m, fqn: isinstance(m, torch.nn.Linear) and "lm_head.modules_to_save" in fqn
+    )
+    _prepare_model_for_qat(
+        model,
+        TorchAOConfig(
+            qat_scheme = None, base_config_and_filter_fns = [(_base_config(scheme), only_head_copy)]
+        ),
+    )
+    lm_head = model.base_model.model.lm_head
+    assert type(lm_head).__name__ == "ModulesToSaveWrapper"
+    assert llama.lm_head_needs_forward(lm_head)
+
+
 @pytest.mark.parametrize(
     "forward",
     [llama.CausalLM_fast_forward, mistral.MistralForCausalLM_fast_forward],

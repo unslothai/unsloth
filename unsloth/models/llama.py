@@ -237,7 +237,11 @@ def fake_quantize_lm_head_inputs(lm_head_module, hidden_states, weight):
 
 def lm_head_needs_forward(lm_head_module):
     # NVFP4 / MX QAT linears fake-quantize inside forward() with no quantizer children: fused CE cannot mirror them.
-    return isinstance(lm_head_module, _forward_fake_quant_linears())
+    # modules() also reaches the copy inside a PEFT modules_to_save wrapper, which isinstance alone misses.
+    forward_fake_quant_linears = _forward_fake_quant_linears()
+    return bool(forward_fake_quant_linears) and any(
+        isinstance(module, forward_fake_quant_linears) for module in lm_head_module.modules()
+    )
 
 
 def original_apply_o(self, X):
