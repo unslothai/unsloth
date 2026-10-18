@@ -7299,8 +7299,7 @@ class _StreamingDisplayStrip:
 
     The full strip rescans the whole buffer per call, quadratic over a turn on the event loop. No arm can edit
     text holding none of ``_DISPLAY_STRIP_SENTINELS`` and no ``call:``, so such a buffer is returned as is and the
-    scan resumes where it stopped. After a sentinel the full strip runs on every call, as before. A buffer that
-    does not extend the previous one (a new tool iteration) starts over.
+    scan resumes where it stopped. After a sentinel the full strip runs on every call, as before.
     """
 
     __slots__ = ("_auto_heal", "_names", "_prev", "_scanned", "_gemma_from", "_marked")
