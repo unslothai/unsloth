@@ -1407,3 +1407,13 @@ def test_moe_info_route_answers_503_when_a_confirmed_adapters_base_cannot_be_rea
             )
         )
     assert err.value.status_code == 503
+
+
+def test_a_stray_mtp_head_file_in_a_full_checkpoint_does_not_hide_reap(tmp_path):
+    # The loader attaches a full checkpoint's head only per its training manifest; a leftover
+    # mtp_head.safetensors next to full weights is never loaded.
+    folder = tmp_path / "full-moe"
+    folder.mkdir()
+    (folder / "config.json").write_text(json.dumps({"num_experts": 8, "num_experts_per_tok": 2}))
+    (folder / "mtp_head.safetensors").write_bytes(b"head")
+    assert reap_mod.moe_export_info(str(folder))["num_experts"] == 8

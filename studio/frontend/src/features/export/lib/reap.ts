@@ -121,6 +121,25 @@ export function reapProbeFailed(
   return settings.enabled && !!probeKey && failedKey === probeKey;
 }
 
+/** REAP is on, but the probe for this source answered that it cannot be pruned (dense, packed
+ * weights, a transformers 4 load, ...): the export waits for the user to turn REAP off rather than
+ * quietly dropping the opt-in. */
+export function reapUnavailable(
+  settings: ReapSettings,
+  probeKey: string,
+  answeredKey: string | null | undefined,
+  probeFailed: boolean,
+  available: boolean,
+): boolean {
+  return (
+    settings.enabled &&
+    !!probeKey &&
+    answeredKey === probeKey &&
+    !probeFailed &&
+    !available
+  );
+}
+
 export function reapProbePending(
   settings: ReapSettings,
   probeKey: string,

@@ -258,8 +258,11 @@ def moe_export_info(
         if is_local_path(model):
             local = Path(normalize_path(model)).expanduser()
             has_config = (local / "config.json").is_file()
-            # Unsloth's loader re-attaches a LoRA folder's trained MTP head, which REAP refuses.
-            if (local / "mtp_head.safetensors").is_file():
+            # Unsloth's loader re-attaches a LoRA folder's trained MTP head, which REAP refuses. A
+            # full checkpoint's head is attached only per its training manifest (checked below).
+            if (local / "adapter_config.json").is_file() and (
+                local / "mtp_head.safetensors"
+            ).is_file():
                 return None
             # An adapter folder may carry a config.json too; the export loader follows
             # adapter_config.json, so the probe does as well.

@@ -10,6 +10,7 @@ import {
   reapKeptExperts,
   reapProbeFailed,
   reapProbePending,
+  reapUnavailable,
   reapRequest,
   reapSummaryLabel,
 } from "../src/features/export/lib/reap.ts";
@@ -102,4 +103,15 @@ test("a failed MoE probe keeps a REAP export blocked until a retry answers or RE
   assert.equal(reapProbeFailed(on, "org/moe|", "org/old|"), false);
   // Turned off: the full model exports.
   assert.equal(reapProbeFailed(DEFAULT_REAP_SETTINGS, "org/moe|", "org/moe|"), false);
+});
+
+test("a source the probe confirms cannot be pruned keeps a REAP export blocked until REAP is off", () => {
+  const on = { ...DEFAULT_REAP_SETTINGS, enabled: true };
+  // Answered for this source, not failed, no usable REAP options: blocked.
+  assert.equal(reapUnavailable(on, "org/fp8-moe|", "org/fp8-moe|", false, false), true);
+  // Available, still being probed, failed (handled by its own notice), or REAP off: not this gate.
+  assert.equal(reapUnavailable(on, "org/moe|", "org/moe|", false, true), false);
+  assert.equal(reapUnavailable(on, "org/fp8-moe|", "org/old|", false, false), false);
+  assert.equal(reapUnavailable(on, "org/fp8-moe|", "org/fp8-moe|", true, false), false);
+  assert.equal(reapUnavailable(DEFAULT_REAP_SETTINGS, "org/fp8-moe|", "org/fp8-moe|", false, false), false);
 });

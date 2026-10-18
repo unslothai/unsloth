@@ -105,6 +105,7 @@ import {
   reapAllowedSparsities,
   reapProbeFailed,
   reapProbePending,
+  reapUnavailable,
   reapRequest,
   reapSummaryLabel,
 } from "./lib/reap";
@@ -839,6 +840,15 @@ export function ExportPage() {
       moeProbeKey,
       moeState?.failed ? moeState.key : null,
     );
+  const reapBlocked =
+    reapMethodApplies &&
+    reapUnavailable(
+      reapSettings,
+      moeProbeKey,
+      moeState?.key,
+      !!moeState?.failed,
+      showReap,
+    );
   const reapOptions =
     showReap && moeInfo ? reapRequest(reapSettings, moeInfo) : null;
   const reapLabel =
@@ -860,7 +870,8 @@ export function ExportPage() {
     (exportMethod !== "merged" || selectedFormats.length > 0) &&
     (!isDecision || (exportMethod === "gguf" && !decisionIneligible)) &&
     !reapPending &&
-    !reapFailed
+    !reapFailed &&
+    !reapBlocked
   );
 
   const applyHfSourceModel = useCallback((value: string) => {
@@ -936,7 +947,7 @@ export function ExportPage() {
     if (exportUnsupported) return;
     if (diffusionDisabledMethods.includes(exportMethod)) return;
     // REAP is on but the new source's MoE probe has not answered (or failed): never send it unpruned.
-    if (reapPending || reapFailed) return;
+    if (reapPending || reapFailed || reapBlocked) return;
     // GGUF with no quant, or merged with no format, would run an empty export; require at least one.
     if (exportMethod === "gguf" && !ggufAsLora && quantLevels.length === 0)
       return;
@@ -1056,6 +1067,7 @@ export function ExportPage() {
   }, [
     reapPending,
     reapFailed,
+    reapBlocked,
     reapOptions,
     reapLabel,
     checkpoint,
@@ -2125,6 +2137,30 @@ export function ExportPage() {
                     <Button
                       type="button"
                       variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        setReapSettings((s) => ({ ...s, enabled: false }))
+                      }
+                    >
+                      Turn off expert pruning
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {reapBlocked && (
+                <div
+                  role="alert"
+                  className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs"
+                >
+                  <p>
+                    Expert pruning (REAP) is on, but this model cannot be
+                    pruned: it is not a routed MoE, or its weights or setup are
+                    not supported. Turn pruning off to export it.
+                  </p>
+                  <div className="mt-2 flex gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
                       size="sm"
                       onClick={() =>
                         setReapSettings((s) => ({ ...s, enabled: false }))
