@@ -70,7 +70,6 @@ async def _image_contents(
     thumb = await _fetch(caller, image_gallery_path(item.id, thumb = preview_px or True))
     contents: list[Any] = []
     if thumb is not None and len(thumb) <= INLINE_CAP:
-        # Unsloth Studio sends the original PNG when it cannot make the thumbnail.
         contents.append(image_content(thumb, sniff_image(thumb) or "image/webp"))
     contents.append(link)
     return contents

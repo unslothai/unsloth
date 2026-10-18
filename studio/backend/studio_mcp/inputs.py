@@ -107,7 +107,6 @@ async def resolve_image(
             raise ToolError("data_url must be data:image/png, image/jpeg or image/webp;base64,...")
         data = decode_base64(match.group(2), max_bytes, "data_url")
     elif image.video_id is not None:
-        # The frame is decoded by Unsloth Studio and never saved to the Images gallery.
         at = image.frame if image.frame is not None else "first"
         response = await forward(
             caller, "GET", video_frame_path(image.video_id), params = {"at": str(at)}

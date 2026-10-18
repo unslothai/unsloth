@@ -29,7 +29,6 @@ def _minted(base, media_id):
 
 
 def _files(studio, needle = ""):
-    # Every media fetch the tool made, mints aside.
     return [c[1] for c in studio.state.calls if needle in c[1] and not c[1].endswith("/signed-url")]
 
 
@@ -187,7 +186,6 @@ def test_a_saved_transcript_returns_its_id(monkeypatch):
     assert result["structuredContent"]["transcript_id"] is None
 
 
-# Gallery videos as inputs: a frame for an image input, the sound for an audio input.
 @pytest.mark.parametrize("frame,at", [(None, "first"), ("last", "last"), (2.5, "2.5")])
 def test_a_video_frame_is_an_image_input(monkeypatch, frame, at):
     source = {"video_id": "video-1", **({"frame": frame} if frame is not None else {})}

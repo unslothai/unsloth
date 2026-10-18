@@ -326,7 +326,6 @@ def frame_png(
     except FileNotFoundError:
         raise
     except av.error.FFmpegError:
-        # PyAV messages carry the file path, so callers get a fixed one.
         raise ValueError("This clip could not be decoded.") from None
     if max_px:
         image.thumbnail((max_px, max_px), Image.LANCZOS)

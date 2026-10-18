@@ -64,7 +64,6 @@ async def _video_job(
                 caller, "GET", _video_path(video_id, "/content"), params = {"variant": "thumbnail"}
             )
         elif return_media == "preview":
-            # The first frame at the asked size, from the Unsloth Studio Video gallery.
             params = {"at": "first", "max_px": preview_px or THUMB_SIDE}
             thumb = await forward(caller, "GET", video_frame_path(video_id), params = params)
             mime = "image/png"

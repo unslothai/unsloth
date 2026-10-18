@@ -101,10 +101,8 @@ def test_generated_and_listed_media_download_without_the_key(monkeypatch):
     fetched = _fetch_bare(image["download_url"])
     assert fetched.status_code == 200, fetched.text
     assert Image.open(io.BytesIO(fetched.content)).getpixel((0, 0)) == (200, 10, 10)
-    # The bearer url is still there, and still needs the key.
     assert _fetch_bare(image["url"]).status_code in (401, 403)
 
-    # A later session finds it again by listing, with a fresh key-free link and no host path.
     listed, _ = run_tool(monkeypatch, studio, "list_media", {"kind": "image"})
     rows = listed["structuredContent"]["images"]
     assert [row["id"] for row in rows] == [image["id"]]
@@ -112,7 +110,6 @@ def test_generated_and_listed_media_download_without_the_key(monkeypatch):
     assert "/tmp" not in json.dumps(listed) and str(image_gallery.gallery_dir()) not in json.dumps(
         listed
     )
-    # Another account's library is its own.
     other, _ = run_tool(monkeypatch, _studio(BOB), "list_media", {"kind": "image"})
     assert other["structuredContent"]["images"] == []
 
@@ -132,7 +129,6 @@ def test_the_last_frame_of_one_clip_starts_the_next(monkeypatch):
     assert sent.startswith("data:image/png;base64,")
     frame = Image.open(io.BytesIO(base64.b64decode(sent.split(",", 1)[1]))).convert("L")
     assert abs(frame.getpixel((32, 24)) - 210) <= 12
-    # Bob cannot take a frame of Alice's clip.
     refused, bob = run_tool(
         monkeypatch,
         _studio(BOB),

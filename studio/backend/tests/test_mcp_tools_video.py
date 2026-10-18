@@ -124,7 +124,6 @@ def test_a_completed_job_returns_its_thumbnail_and_a_link_never_the_mp4(monkeypa
     assert content[2]["uri"] == out["video"]["download_url"]
     assert content[2]["mimeType"] == "video/mp4"
     assert queries(studio, "/v1/videos/video-1/content") == [{"variant": "thumbnail"}]
-    # The link is minted for about an hour; nothing is fetched from the gallery.
     assert queries(studio, SIGNED) == [{"ttl_s": "3600"}]
     assert [c[1] for c in studio.state.calls if "/gallery/" in c[1]] == [SIGNED]
 

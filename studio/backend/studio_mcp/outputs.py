@@ -340,7 +340,6 @@ class TranscriptSegment(ToolOutput):
 
 class TranscriptResult(ToolOutput):
     text: str
-    # Its Audio history id when it was saved there.
     transcript_id: Optional[RouteText] = None
     language: Optional[RouteText] = None
     model: Optional[RouteText] = None

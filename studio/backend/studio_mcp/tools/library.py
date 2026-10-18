@@ -192,7 +192,6 @@ async def list_media(
     if kind == "transcript":
         items, after = await _transcripts(caller, limit, rest)
         return MediaPage(kind = kind, transcripts = items, next_cursor = after)
-    # Voices come back all at once, so they are paged here.
     voices, offset = await _voice_list(caller), int(rest or 0)
     after = f"voice:{offset + limit}" if offset + limit < len(voices) else None
     return MediaPage(kind = kind, voices = voices[offset : offset + limit], next_cursor = after)

@@ -216,8 +216,6 @@ def test_a_bad_list_media_call_is_refused_without_a_call(monkeypatch, args, mess
     assert studio.state.calls == []
 
 
-# The voices tool, from here to the end of the file.
-
 SAVED = {("POST", VOICES): JSONResponse(_voice(4), status_code = 201)}
 VOICE_PAYLOADS = {
     **PAYLOADS,
