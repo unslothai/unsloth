@@ -355,6 +355,7 @@ export function AudioApiExamples({
             key={snippet}
             code={snippet}
             language={shikiLang}
+            label={t("settings.apiKeys.audioApi.title")}
             redactFromReload={Boolean(apiKey)}
           />
         </div>

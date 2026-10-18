@@ -4285,6 +4285,11 @@ def test_h3_native_drops_stream_layers_without_cpu_offload(monkeypatch, tmp_path
 
 
 _AMD_VULKAN = "Vulkan0\tAMD Radeon RX 7800 XT (RADV NAVI32)\n"
+# ggml-vulkan's init line rides along on stderr; "uma: 1" is an integrated GPU.
+_AMD_UMA_VULKAN = (
+    "ggml_vulkan: 0 = AMD Radeon Graphics (RADV GFX1151) (radv) | uma: 1 | fp16: 1 | bf16: 0 |\n"
+    "Vulkan0\tAMD Radeon Graphics (RADV GFX1151)\n"
+)
 
 
 def _tiny_gtt(
@@ -4302,6 +4307,13 @@ def _tiny_gtt(
     limit = video_minimax_h3.H3_NATIVE_PINNED_MARGIN_BYTES + (4 if encoder_fits else 3)
     monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_reading", lambda *a, **k: (limit, True))
     monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: free_vram)
+    _discrete_vram(monkeypatch)
+
+
+def _discrete_vram(monkeypatch, free = 1 << 50):
+    """The selected card's sysfs free VRAM; the default holds any render's activations, so nothing spills to GTT."""
+    from core.inference import video_minimax_h3
+    monkeypatch.setattr(video_minimax_h3, "amdgpu_vram_free_bytes", lambda *a, **k: free)
 
 
 def test_h3_native_auto_prepares_the_encoder_on_the_cpu_for_an_offloaded_render(
@@ -4368,6 +4380,7 @@ def _no_gtt_room(monkeypatch, free_vram):
 
     monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_reading", lambda *a, **k: (0, True))
     monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: free_vram)
+    _discrete_vram(monkeypatch)
 
 
 def test_h3_native_auto_refuses_at_load_only_when_no_render_could_go_resident(
@@ -4395,6 +4408,32 @@ def test_h3_native_auto_defers_the_gtt_refusal_when_a_resident_render_fits(monke
     )
     assert "--clip-on-cpu" not in offload
     assert "GTT" in state.pipe.offload_refusal
+
+
+def test_h3_native_refuses_a_uma_card_whose_gtt_cannot_hold_the_smallest_clips_activations(
+    monkeypatch, tmp_path
+):
+    """A UMA card (small carve-out) serves the denoiser's compute buffer from GTT too. Measured on a gfx1151 with the
+    pool held to 22.5 GiB free: the weights fit, every default-size render failed in sd.cpp's capacity check."""
+    _tiny_gtt(monkeypatch, encoder_fits = True)
+    _discrete_vram(monkeypatch, free = 512 << 20)
+    with pytest.raises(RuntimeError, match = "activations"):
+        _load_h3_native_offload(
+            monkeypatch,
+            tmp_path,
+            help_text = _GRAPH_CUT_HELP,
+            devices = _AMD_UMA_VULKAN,
+            installed_accelerator = "vulkan",
+        )
+    # A discrete card's VRAM is not GTT: the same reading leaves its load alone.
+    state, offload = _load_h3_native_offload(
+        monkeypatch,
+        tmp_path,
+        help_text = _GRAPH_CUT_HELP,
+        devices = _AMD_VULKAN,
+        installed_accelerator = "vulkan",
+    )
+    assert state.pipe.offload_refusal is None and state.pipe.fit_inputs.uma is False
 
 
 def test_h3_native_refuses_balanced_on_an_overflowing_vulkan_gtt_pool(monkeypatch, tmp_path):
@@ -4477,6 +4516,7 @@ def test_h3_native_replacement_frees_the_outgoing_idle_server_before_refusing(
         lambda *a, **k: (roomy if slot.released else 0, True),
     )
     monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: 1)
+    _discrete_vram(monkeypatch)
     state, offload = _load_h3_native_offload(
         monkeypatch,
         tmp_path,
@@ -4506,6 +4546,7 @@ def test_h3_native_a_busy_outgoing_server_is_not_counted_as_freed(monkeypatch, t
 
     monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_reading", gtt)
     monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: 1)
+    _discrete_vram(monkeypatch)
     with pytest.raises(RuntimeError, match = "still running"):
         _load_h3_native_offload(
             monkeypatch,
@@ -4523,6 +4564,7 @@ def _render_runtime(
     base = ("--offload-to-cpu", "--diffusion-fa"),
     slot = None,
     snapshot_refusal = None,
+    uma = False,
 ):
     from core.inference.video_minimax_h3 import H3NativeFitInputs
     inputs = H3NativeFitInputs(
@@ -4534,6 +4576,7 @@ def _render_runtime(
         te_bytes = 1,
         vae_bytes = 2,
         device_name = "Vulkan0",
+        uma = uma,
     )
     return types.SimpleNamespace(
         fit_inputs = inputs,
@@ -4580,6 +4623,78 @@ def test_an_offloaded_auto_render_lifts_a_refusal_once_memory_is_free(monkeypatc
     )
     assert "--clip-on-cpu" in flags
     assert flags[-2:] == ["--backend", "diffusion=Vulkan0,te=cpu,vae=Vulkan0"]
+
+
+def test_an_offloaded_render_charges_activations_vram_cannot_hold_to_gtt(monkeypatch):
+    from core.inference import video_minimax_h3
+    from core.inference.video import _h3_offloaded_render_flags
+    from core.inference.video_minimax_h3 import H3NativeMemoryRefusal, h3_native_compute_bytes
+
+    compute = h3_native_compute_bytes(864, 480, 124)
+    # Room for the weights and this clip's activations beside them, nothing more.
+    _live_gtt(
+        monkeypatch,
+        video_minimax_h3.H3_NATIVE_PINNED_MARGIN_BYTES + 4 + compute,
+    )
+    _discrete_vram(monkeypatch, free = 0)
+
+    def render(compute_bytes, uma = True):
+        return _h3_offloaded_render_flags(
+            _render_runtime(uma = uma),
+            ["--offload-to-cpu", "--diffusion-fa"],
+            render_resident = False,
+            memory_mode = "auto",
+            reuse_live_server = False,
+            compute_bytes = compute_bytes,
+        )
+
+    assert "--clip-on-cpu" not in render(compute)
+    with pytest.raises(H3NativeMemoryRefusal, match = "activations"):
+        render(h3_native_compute_bytes(1344, 768, 124))
+    # A discrete card's compute buffer is in VRAM, whatever sysfs says is free there.
+    assert "--clip-on-cpu" not in render(h3_native_compute_bytes(1344, 768, 124), uma = False)
+    # A UMA card whose carve-out holds the activations keeps them out of GTT.
+    _discrete_vram(monkeypatch, free = 16 << 30)
+    assert "--clip-on-cpu" not in render(h3_native_compute_bytes(1344, 768, 124))
+    # Several cards and no slot: the carve-out cannot be read, so the activations count against GTT.
+    _discrete_vram(monkeypatch, free = None)
+    with pytest.raises(H3NativeMemoryRefusal, match = "activations"):
+        render(h3_native_compute_bytes(1344, 768, 124))
+
+
+def test_an_explicit_mode_on_a_uma_card_launches_with_the_pinned_reserve(monkeypatch):
+    """Low VRAM keeps its placement; the --max-vram reserve only corrects the budget sd.cpp reads at startup."""
+    from core.inference import video_minimax_h3
+    from core.inference.video import _h3_offloaded_render_flags
+
+    _live_gtt(monkeypatch, 1 << 50)
+    _discrete_vram(monkeypatch, free = 0)
+    base = ("--offload-to-cpu", "--clip-on-cpu", "--diffusion-fa", "--max-vram", "-1")
+    pinned = (
+        1 + 2 + video_minimax_h3.H3_NATIVE_PINNED_MARGIN_BYTES
+    )  # denoiser + VAEs, the encoder on the CPU
+    flags = _h3_offloaded_render_flags(
+        _render_runtime(base = base, uma = True),
+        list(base),
+        render_resident = False,
+        memory_mode = "low_vram",
+        compute_bytes = 1,
+    )
+    assert flags == [
+        "--offload-to-cpu",
+        "--clip-on-cpu",
+        "--diffusion-fa",
+        "--max-vram",
+        f"-{pinned / 1024**3:.2f}",
+    ]
+    discrete = _h3_offloaded_render_flags(
+        _render_runtime(base = base),
+        list(base),
+        render_resident = False,
+        memory_mode = "low_vram",
+        compute_bytes = 1,
+    )
+    assert discrete == list(base)
 
 
 def test_a_live_offloaded_server_keeps_its_flags_without_a_reading(monkeypatch):
@@ -9524,6 +9639,8 @@ def test_gguf_plan_budgets_a_pre_cast_text_encoder_at_its_real_size(
         gguf_filename = "model.gguf",
         base_repo = "Lightricks/LTX-2",
         family_override = "ltx-2",
+        # Pinned dense: unset now takes the family's hosted fp8 encoder.
+        text_encoder_quant = "none",
     )
     bf16_companion = calls[0]["companion_dense_mib"]
     bf16_dense = calls[0]["model_dense_mib"]
@@ -9574,18 +9691,46 @@ def test_plan_returns_to_bf16_when_the_pre_cast_encoder_does_not_inject(fake_run
 
 
 def test_plan_keeps_the_bf16_budget_without_a_hosted_pre_cast_encoder(fake_runtime, monkeypatch):
-    # Wan requests fp8 the same way, but hosts no pre-cast checkpoint: the encoder is downloaded
-    # dense and cast in place AFTER assembly, so its PEAK is bf16 and the budget must not shrink.
+    # A family that requests fp8 the same way but hosts no pre-cast checkpoint: the encoder is
+    # downloaded dense and cast in place AFTER assembly, so its PEAK is bf16 and the budget must not
+    # shrink. Every shipped generic-path family now hosts one, so the table entry is dropped here.
+    import dataclasses
+
+    import core.inference.video_families as vf
     from core.inference.video_families import detect_video_family
 
     _allow_te_prequant(monkeypatch)
-    components = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers").bf16_components_gb
+    wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    bare = dataclasses.replace(wan, te_prequant_repos = (), te_quant_auto = None)
+    monkeypatch.setattr(vf, "_FAMILIES", tuple(bare if f is wan else f for f in vf._FAMILIES))
+    import core.inference.diffusion_te_prequant as tpq
+
+    monkeypatch.setattr(tpq, "TE_INT8_CONVROT_FILES", {})
+    components = wan.bf16_components_gb
 
     calls = _capture_plan(monkeypatch)
     VideoBackend().load_pipeline(
         "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", text_encoder_quant = "fp8"
     )
     assert calls[0]["model_dense_mib"] == int(sum(components) * _MIB_PER_GB)
+
+
+def test_default_load_budgets_the_hosted_encoder_its_family_defaults_to(fake_runtime, monkeypatch):
+    # An UNSET request on a family with te_quant_auto takes the hosted fp8 encoder, so the plan is
+    # built from the pre-cast size, exactly as for an explicit fp8; "none" keeps the bf16 budget.
+    from core.inference.video_families import detect_video_family
+    scale = _allow_te_prequant(monkeypatch)
+    for repo in ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"):
+        fam = detect_video_family(repo)
+        transformer_gb, text_encoder_gb, vae_gb = fam.bf16_components_gb
+        calls = _capture_plan(monkeypatch)
+        VideoBackend().load_pipeline(repo, model_kind = "pipeline")
+        assert calls[0]["text_encoder_dense_mib"] == int(
+            text_encoder_gb * scale * _MIB_PER_GB
+        ), repo
+        calls = _capture_plan(monkeypatch)
+        VideoBackend().load_pipeline(repo, model_kind = "pipeline", text_encoder_quant = "none")
+        assert calls[0]["text_encoder_dense_mib"] == int(text_encoder_gb * _MIB_PER_GB), repo
 
 
 def test_plan_is_unchanged_when_no_text_encoder_quant_is_requested(fake_runtime, monkeypatch):
@@ -9605,13 +9750,24 @@ def test_plan_is_unchanged_when_no_text_encoder_quant_is_requested(fake_runtime,
         if fam.modular_workflow:
             continue
         calls.clear()
-        VideoBackend().load_pipeline(fam.base_repo, model_kind = "pipeline")
+        # "none": a family with te_quant_auto takes its hosted encoder on an unset request, which
+        # test_default_load_budgets_the_hosted_encoder_its_family_defaults_to covers.
+        VideoBackend().load_pipeline(
+            fam.base_repo,
+            model_kind = "pipeline",
+            text_encoder_quant = "none" if fam.te_quant_auto else None,
+        )
         # LTX-2.5's encoder runs in a second process; its CUDA context is priced on top of the table.
         from core.inference.video_ltx25 import LTX25_WORKER_RESIDENT_GB
 
         extra_gb = LTX25_WORKER_RESIDENT_GB if fam.name == "ltx-2.5" else 0.0
+        components = list(fam.bf16_components_gb)
+        if fam.name == "ltx-2.5":
+            # LTX-2.5's unset request is its int8 ConvRot encoder (ComfyUI's), so the table's encoder is priced int8.
+            from core.inference.video_ltx25 import LTX25_TE_INT8_GB
+            components[1] = LTX25_TE_INT8_GB
         assert calls[0]["model_dense_mib"] == int(
-            (sum(fam.bf16_components_gb) + extra_gb) * _MIB_PER_GB
+            (sum(components) + extra_gb) * _MIB_PER_GB
         ), fam.name
 
 
@@ -14007,3 +14163,40 @@ def test_a_diffusers_without_the_i2v_class_reports_no_first_frame(fake_runtime):
     with pytest.raises(ValueError, match = "WanImageToVideoPipeline"):
         backend.begin_generate(prompt = "p", first_frame = _data_url(64, 64))
     assert backend.generate_progress()["active"] is False
+
+
+def test_an_automatic_encoder_pick_that_does_not_engage_loads_dense_without_a_refusal(
+    fake_runtime, monkeypatch
+):
+    """Wan's unset request resolves to the hosted fp8 encoder. When nothing engages (the file is not
+    published yet and the stub pipeline has no encoder to cast), the load keeps the dense encoder and
+    reports the raw request; the same outcome on an EXPLICIT fp8 is still refused."""
+    import core.inference.diffusion_precision as precision
+    import core.inference.diffusion_te_prequant as tpq
+    import core.inference.video as video_mod
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", raising = False)
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
+    monkeypatch.setattr(tpq, "te_prequant_pipe_kwargs", lambda *a, **k: {})
+    seen = []
+
+    def _quantize(pipe, target, *, mode, **kw):
+        seen.append(mode)
+        return precision.TEQuantOutcome(None, "no text encoder could be cast", "unsupported")
+
+    monkeypatch.setattr(video_mod, "quantize_text_encoders", _quantize)
+    backend = VideoBackend()
+    status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    # No hosted file injected: the automatic pick keeps the released encoder instead of casting it at runtime.
+    assert [precision.normalize_te_quant(m) for m in seen] == [None]
+    assert status["resolved"]["text_encoder_quant"]["requested"] in (None, "auto")
+    backend.unload()
+    seen.clear()
+    status = VideoBackend().load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", text_encoder_quant = "none"
+    )
+    assert [precision.normalize_te_quant(m) for m in seen] == [None]
+    with pytest.raises(RuntimeError, match = "text_encoder_quant"):
+        VideoBackend().load_pipeline(
+            "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", text_encoder_quant = "fp8"
+        )

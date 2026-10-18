@@ -1,6 +1,7 @@
 use super::types::ManagedProbe;
 use super::version::{
-    managed_backend_version_stale_reason, DESKTOP_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
+    compare_versions, expected_backend_version, managed_backend_version_stale_reason,
+    parse_version, DESKTOP_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
 };
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
@@ -905,7 +906,7 @@ fn cache_matches(cache: &ManagedCapabilityCache, fingerprint: &ManagedBinFingerp
         && cache.marker_size == fingerprint.marker_size
         && cache.marker_mtime_ms == fingerprint.marker_mtime_ms
         && cache.llama_runtime == fingerprint.llama_runtime
-        && desktop_capability_ready(&cache.capability)
+        && managed_capability_ready(Path::new(&fingerprint.bin_path), &cache.capability)
 }
 
 fn read_cached_capability(fingerprint: &ManagedBinFingerprint) -> Option<DesktopCapability> {
@@ -1202,8 +1203,54 @@ fn desktop_capability_stale_reason(capability: &DesktopCapability) -> Option<Str
     managed_backend_version_stale_reason(capability.version.as_deref())
 }
 
+#[cfg(test)]
 fn desktop_capability_ready(capability: &DesktopCapability) -> bool {
     desktop_capability_stale_reason(capability).is_none()
+}
+
+/// Beside pyvenv.cfg, written by the installers when the package index lacked this
+/// build's backend release (#14031): a repair would only reinstall the same one.
+const FEED_CEILING_MARKER: &str = "unsloth_feed_ceiling.json";
+
+#[derive(Deserialize)]
+struct FeedCeiling {
+    requested: String,
+    available: String,
+}
+
+fn feed_ceiling_holds(bin: &Path, version: Option<&str>, expected: &str) -> bool {
+    let (Some(venv_dir), Some(version)) = (bin.parent().and_then(Path::parent), version) else {
+        return false;
+    };
+    let Ok(bytes) = fs::read(venv_dir.join(FEED_CEILING_MARKER)) else {
+        return false;
+    };
+    let Ok(ceiling) = serde_json::from_slice::<FeedCeiling>(&bytes) else {
+        return false;
+    };
+    // An update can keep an installed release above the ceiling; a newer app re-grades.
+    let installed = parse_version(version);
+    let available = parse_version(&ceiling.available);
+    let (Some(installed), Some(available)) = (installed, available) else {
+        return false;
+    };
+    ceiling.requested == expected && compare_versions(&installed, &available).is_ge()
+}
+
+fn managed_capability_stale_reason(bin: &Path, capability: &DesktopCapability) -> Option<String> {
+    let reason = desktop_capability_stale_reason(capability)?;
+    let version = capability.version.as_deref();
+    if reason == "desktop_backend_version_outdated"
+        && feed_ceiling_holds(bin, version, expected_backend_version())
+    {
+        info!("Managed preflight: backend {version:?} is the newest the package index has; not repairing");
+        return None;
+    }
+    Some(reason)
+}
+
+fn managed_capability_ready(bin: &Path, capability: &DesktopCapability) -> bool {
+    managed_capability_stale_reason(bin, capability).is_none()
 }
 
 /// The reason an unbuildable context is reported under, if that is what went
@@ -1303,7 +1350,7 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
         ) {
             write_cached_capability(fingerprint, &capability);
         }
-        if desktop_capability_ready(&capability) {
+        if managed_capability_ready(&bin, &capability) {
             info!(
                 "Managed preflight: cli ready for {:?} in {}ms",
                 bin,
@@ -1316,11 +1363,9 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
             bin,
             started.elapsed().as_millis()
         );
-        return ManagedProbe::Stale {
-            bin,
-            reason: desktop_capability_stale_reason(&capability)
-                .unwrap_or_else(|| "desktop_capability_incompatible".to_string()),
-        };
+        let reason = managed_capability_stale_reason(&bin, &capability)
+            .unwrap_or_else(|| "desktop_capability_incompatible".to_string());
+        return ManagedProbe::Stale { bin, reason };
     }
 
     info!(
@@ -1382,6 +1427,48 @@ mod tests {
             llama_runtime_reason: None,
             version: Some(MIN_DESKTOP_BACKEND_VERSION.to_string()),
         }
+    }
+
+    #[test]
+    fn a_feed_ceiling_marker_covers_only_the_release_it_names() {
+        let venv = std::env::temp_dir().join(format!(
+            "unsloth-feed-ceiling-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let bin = venv.join("bin").join("unsloth");
+        fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        assert!(!feed_ceiling_holds(&bin, Some("2026.10.3"), "2026.10.6"));
+
+        fs::write(
+            venv.join(FEED_CEILING_MARKER),
+            r#"{"requested": "2026.10.6", "available": "2026.10.3"}"#,
+        )
+        .unwrap();
+        assert!(feed_ceiling_holds(&bin, Some("2026.10.3"), "2026.10.6"));
+        // A newer app wants a newer backend; a backend the update kept above the ceiling is fine.
+        assert!(!feed_ceiling_holds(&bin, Some("2026.10.3"), "2026.10.8"));
+        assert!(feed_ceiling_holds(&bin, Some("2026.10.4"), "2026.10.6"));
+        assert!(!feed_ceiling_holds(&bin, Some("2026.10.2"), "2026.10.6"));
+        assert!(!feed_ceiling_holds(&bin, None, "2026.10.6"));
+
+        // It only ever answers "outdated": a backend below the floor is still repaired.
+        let mut capability = healthy_capability();
+        capability.version = Some("2026.5.2".to_string());
+        fs::write(
+            venv.join(FEED_CEILING_MARKER),
+            r#"{"requested": "2026.8.4", "available": "2026.5.2"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            managed_capability_stale_reason(&bin, &capability).as_deref(),
+            Some("desktop_backend_version_too_old")
+        );
+        assert!(managed_capability_ready(&bin, &healthy_capability()));
+
+        fs::write(venv.join(FEED_CEILING_MARKER), "not json").unwrap();
+        assert!(!feed_ceiling_holds(&bin, Some("2026.10.3"), "2026.10.6"));
+        let _ = fs::remove_dir_all(&venv);
     }
 
     #[test]

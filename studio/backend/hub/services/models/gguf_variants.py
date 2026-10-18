@@ -8,6 +8,8 @@ from __future__ import annotations
 from hub.services.models import account_access
 
 import asyncio
+import contextvars
+import functools
 import hashlib
 import json
 import re
@@ -15,6 +17,7 @@ import threading
 import time
 import weakref
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import NamedTuple, Optional
 
@@ -1033,8 +1036,24 @@ def _complete_with_servable(snapshot: str, complete, variants):
 # running, and 23 retries filled all 20 default-executor workers.
 _VARIANTS_INFLIGHT: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
+# Not the default executor: a stalled Hub holds a remote listing's thread until it answers, and enough
+# of them blocked every asyncio.to_thread caller (load, chat) and the On Device disk-only listing (#14038).
+_HUB_LISTING_POOL = ThreadPoolExecutor(thread_name_prefix = "gguf-hub-listing")
+_DISK_LISTING_POOL = ThreadPoolExecutor(thread_name_prefix = "gguf-disk-listing")
 
-async def _shared_variants_scan(key: tuple, compute):
+
+async def listing_thread(offline: bool, fn, /, *args, **kwargs):
+    """``asyncio.to_thread`` on the listing pool for *offline* (context variables carried along)."""
+    loop = asyncio.get_running_loop()
+    call = functools.partial(contextvars.copy_context().run, fn, *args, **kwargs)
+    return await loop.run_in_executor(_DISK_LISTING_POOL if offline else _HUB_LISTING_POOL, call)
+
+
+async def _shared_variants_scan(
+    key: tuple,
+    compute,
+    offline: bool = False,
+):
     """*compute* in a thread, shared with any identical request already running."""
     loop = asyncio.get_running_loop()
     inflight = _VARIANTS_INFLIGHT.get(loop)
@@ -1044,7 +1063,7 @@ async def _shared_variants_scan(key: tuple, compute):
 
     task = inflight.get(key)
     if task is None:
-        task = asyncio.ensure_future(asyncio.to_thread(compute))
+        task = asyncio.ensure_future(listing_thread(offline, compute))
 
         def _release(finished: asyncio.Future) -> None:
             inflight.pop(key, None)
@@ -1096,11 +1115,11 @@ async def _audio_cpp_variants_answer(
         return None
     real_repo = audio_cpp_models.repo_of(text) or text
     if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_model_access, real_repo)
+        await listing_thread(False, account_access.require_model_access, real_repo)
     network = not (offline or audio_cpp_models.hub_offline())
     try:
-        model = await asyncio.to_thread(
-            audio_cpp_models.resolve, text, None, hf_token, network = network
+        model = await listing_thread(
+            not network, audio_cpp_models.resolve, text, None, hf_token, network = network
         )
     except Exception as exc:  # noqa: BLE001 - the generic lister reports an unreadable repo
         logger.debug("audio.cpp variants for %s unavailable: %s", text, exc)
@@ -1200,7 +1219,7 @@ async def _audio_cpp_variants_answer(
             )
         return rows
 
-    details = await asyncio.to_thread(_details)
+    details = await listing_thread(not network, _details)
     loadable = [row.quant for row in details if row.downloaded]
     return VariantsAnswer(
         GgufVariantsResponse(
@@ -1327,7 +1346,7 @@ async def _mlx_precision_variants_answer(
             variant_format = "mlx",
         )
 
-    response = await asyncio.to_thread(_listing)
+    response = await listing_thread(offline, _listing)
     if response is None:
         return None
     return VariantsAnswer(response, None, cache_authorized = False)
@@ -1352,8 +1371,8 @@ async def get_gguf_variants_answer(
     access_options = {"offline": True} if offline else {}
     if local_path:
         if account_access.managed_account():
-            await asyncio.to_thread(
-                account_access.require_model_access, local_path, **access_options
+            await listing_thread(
+                offline, account_access.require_model_access, local_path, **access_options
             )
     hf_token = account_access.account_hf_token(hf_token)
     from core.inference.audio_cpp_models import is_umbrella_id
@@ -1365,7 +1384,9 @@ async def get_gguf_variants_answer(
             return audio_cpp_answer
     if account_access.managed_account():
         try:
-            await asyncio.to_thread(account_access.require_model_access, repo_id, **access_options)
+            await listing_thread(
+                offline, account_access.require_model_access, repo_id, **access_options
+            )
         except HTTPException:
             # No grant exists before the first download, so for a private repo the caller's own
             # token proves Hub access instead. Offline requests need an existing grant or public proof.
@@ -1373,7 +1394,9 @@ async def get_gguf_variants_answer(
                 raise
             if is_local_path(repo_id) or not _is_valid_repo_id(repo_id):
                 raise
-            await asyncio.to_thread(account_access.authorize_download, repo_id, "model", hf_token)
+            await listing_thread(
+                False, account_access.authorize_download, repo_id, "model", hf_token
+            )
     # Returned with the listing because the HF cache answers before local_path, so a caller cannot infer
     # the copy from the request alone.
     answered_from: list[Optional[str]] = [None]
@@ -2549,7 +2572,9 @@ async def get_gguf_variants_answer(
         configured_cache_key(),
     )
     try:
-        answer = await _shared_variants_scan(inflight_key, _compute_with_cleanables)
+        answer = await _shared_variants_scan(
+            inflight_key, _compute_with_cleanables, offline = bool(offline)
+        )
         # Only after an empty GGUF listing, so GGUF answers never change.
         if not answer.response.variants and not local_path:
             mlx_answer = await _mlx_precision_variants_answer(

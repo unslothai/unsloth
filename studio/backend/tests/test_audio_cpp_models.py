@@ -349,6 +349,7 @@ def test_unsupported_task_tokens_are_refused_by_a_readable_name(hub):
 
 
 _REAL_RUNTIME_KNOWS_FAMILY = acm.runtime_knows_family
+_REAL_RUNTIME_SPEC = acm.runtime_spec
 
 
 def _fake_runtime(
@@ -376,34 +377,15 @@ def _fake_runtime(
     return binary
 
 
-def test_the_spec_family_list_covers_the_published_runtimes():
-    from core.inference.audio_cpp_spec_families import (
-        AUDIO_CPP_SPEC_FAMILIES,
-        AUDIO_CPP_SPEC_FAMILIES_TAGS,
-    )
-
-    # Both releases ship the same model_specs/ stems, so a v0.9.0 install keeps the up-front refusal.
-    assert {"v0.9.0-unsloth.1", "v0.9.1-unsloth.1"} <= AUDIO_CPP_SPEC_FAMILIES_TAGS
-    for family in ("crisperwhisper", "index_echo", "audio_flamingo", "kugelaudio", "smart_turn"):
-        assert family not in AUDIO_CPP_SPEC_FAMILIES
-    for family in ("samsone", "gigaam_asr", "maya1"):
-        assert family in AUDIO_CPP_SPEC_FAMILIES
-    assert set(acm.FAMILIES) - AUDIO_CPP_SPEC_FAMILIES == {"marblenet_vad", "silero_vad"}
-
-
-def test_runtime_knows_a_family_from_its_specs_or_the_listed_tags(monkeypatch, tmp_path):
+def test_runtime_knows_a_family_from_its_specs_folder(monkeypatch, tmp_path):
     from core.inference import audio_cpp_server
 
     monkeypatch.setattr(audio_cpp_server, "find_audio_cpp_server_binary", lambda: None)
     assert acm.runtime_knows_family("samsone") is None
-    for tag in ("v0.9.0-unsloth.1", "v0.9.1-unsloth.1"):
-        _fake_runtime(monkeypatch, tmp_path / tag, tag = tag)
-        assert acm.runtime_knows_family("samsone") is True
-        assert acm.runtime_knows_family("crisperwhisper") is False
-    _fake_runtime(monkeypatch, tmp_path / "newer", tag = "v9.9.9-unsloth.1")
-    assert acm.runtime_knows_family("crisperwhisper") is None
-    _fake_runtime(monkeypatch, tmp_path / "custom")
-    assert acm.runtime_knows_family("crisperwhisper") is None
+    # No folder (a custom build, or a fetch that failed) is unknown whatever the tag says.
+    for tag in ("v0.9.1-unsloth.1", "v0.9.2-unsloth.1", None):
+        _fake_runtime(monkeypatch, tmp_path / str(tag), tag = tag)
+        assert acm.runtime_knows_family("crisperwhisper") is None
     _fake_runtime(
         monkeypatch, tmp_path / "specs", tag = "v0.9.1-unsloth.1", specs = ("crisperwhisper",)
     )
@@ -414,7 +396,13 @@ def test_runtime_knows_a_family_from_its_specs_or_the_listed_tags(monkeypatch, t
 def test_a_spec_fallback_family_the_runtime_lacks_is_refused(hub, monkeypatch, tmp_path):
     # The hub fixture leaves the runtime out of reach; this test installs one.
     monkeypatch.setattr(acm, "runtime_knows_family", _REAL_RUNTIME_KNOWS_FAMILY)
-    _fake_runtime(monkeypatch, tmp_path, tag = "v0.9.1-unsloth.1")
+    monkeypatch.setattr(acm, "runtime_spec", _REAL_RUNTIME_SPEC)
+    binary = _fake_runtime(
+        monkeypatch, tmp_path, tag = "v0.9.1-unsloth.1", specs = ("gigaam_asr", "kokoro_tts")
+    )
+    (binary.parent / "model_specs" / "gigaam_asr.json").write_text(
+        json.dumps({"family": "gigaam_asr", "tasks": ["asr"]})
+    )
     for family, folder, tasks in (
         ("gigaam_asr", "GigaAM-v3-GGUF", ["asr"]),
         ("crisperwhisper", "CrisperWhisper2.0-GGUF", ["asr"]),
