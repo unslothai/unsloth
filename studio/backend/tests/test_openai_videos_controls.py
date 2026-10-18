@@ -670,3 +670,27 @@ def test_readable_reference_audio_goes_on_to_the_switch(client, backend, monkeyp
     }
     client.post("/v1/videos", json = body)
     assert seen == [_WAV] and switched["completed"] is True
+
+
+@pytest.mark.parametrize("key, limit", [("reference_images", 9), ("reference_audios", 3)])
+def test_too_many_multipart_references_are_refused_before_encoding(
+    client, backend, monkeypatch, key, limit
+):
+    from models.inference import VideoJobCreateRequest
+
+    assert VideoJobCreateRequest.model_fields[key].metadata[0].max_length == limit
+    encoded = []
+
+    async def _no_encode(*args, **kwargs):
+        encoded.append(args)
+        raise AssertionError("a file was encoded before the count check")
+
+    monkeypatch.setattr(video_routes, "_reference_to_data_url", _no_encode)
+    monkeypatch.setattr(video_routes, "_audio_upload_to_data_url", _no_encode)
+    calls = _capture(monkeypatch, backend)
+    png = _reference_image_bytes("PNG")
+    files = [(key, (f"{i}.png", png, "image/png")) for i in range(limit + 1)]
+    resp = client.post("/v1/videos", data = {"prompt": "x"}, files = files)
+    assert resp.status_code == 400, resp.json()
+    assert resp.json()["error"]["param"] == key
+    assert encoded == [] and calls == []

@@ -1174,6 +1174,8 @@ _VIDEO_CREATE_FIELDS = (
     "last_frame",
 )
 _VIDEO_CREATE_LISTS = ("reference_images", "reference_audios")
+# VideoJobCreateRequest's list limits, checked before multipart files are encoded.
+_VIDEO_CREATE_LIST_MAX = {"reference_images": 9, "reference_audios": 3}
 # A reference audio rides as base64 in a field capped at 32 MiB, which is 24 MiB of audio.
 _VIDEO_REFERENCE_AUDIO_MAX_BYTES = 24 * 1024 * 1024
 # Upper bound on how long DELETE waits for a cancelled run to stop writing.
@@ -1592,6 +1594,10 @@ async def _read_video_create_body(request: Request) -> tuple[dict, Any]:
         for key in _VIDEO_CREATE_LISTS:
             # In wire order across both spellings: <Picture n> follows the order sent.
             items = [value for name, value in form.multi_items() if name in (key, f"{key}[]")]
+            if len(items) > _VIDEO_CREATE_LIST_MAX[key]:
+                raise _openai_video_error(
+                    400, f"{key}: send at most {_VIDEO_CREATE_LIST_MAX[key]}.", param = key
+                )
             if items:
                 fields[key] = items
         reference = form.get("input_reference")
