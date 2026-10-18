@@ -467,7 +467,12 @@ async def plan_load(
             await _post_json(
                 caller,
                 "/api/inference/estimate-memory",
-                {"model_path": repo, "gguf_variant": opt_text(row.get("quant"))},
+                {
+                    "model_path": repo,
+                    "gguf_variant": opt_text(row.get("quant")),
+                    # Read from the body, like the plan routes.
+                    **({"hf_token": caller.hf_token} if caller.hf_token else {}),
+                },
             )
         )
         est = integer(estimate.get("gpu_bytes")) if estimate.get("available") is True else None

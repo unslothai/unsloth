@@ -456,3 +456,11 @@ def test_an_stt_model_status_repeats_is_listed_once(monkeypatch):
     world[("GET", "/api/inference/audio/stt/status")] = {"transformers": whisper, "active": whisper}
     plan = _plan(monkeypatch, world, {"model": "openai/whisper-large-v3", "kind": "stt"})
     assert plan["would_evict"] == [{"kind": "stt", "model": "openai/whisper-small"}]
+
+
+def test_the_memory_estimate_carries_the_hub_token(monkeypatch):
+    args = {"model": QWEN, "hf_token": "hf_arg"}
+    result, studio = run_tool(monkeypatch, _world("off", []), "plan_load", args, fallback = {})
+    assert result["structuredContent"]["est_gpu_bytes"] == 1234
+    (body,) = bodies(studio, "/api/inference/estimate-memory")
+    assert body["hf_token"] == "hf_arg"
