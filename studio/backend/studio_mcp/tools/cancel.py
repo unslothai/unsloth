@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from fastmcp.exceptions import ToolError
 
-from studio_mcp import export_jobs, video_queue
+from studio_mcp import export_jobs, job_store, video_queue
 from studio_mcp.caller import current_caller
 from studio_mcp.outputs import CancelResult
 from studio_mcp.tools import DESTRUCTIVE, EXPORT_STATUS, as_dict, opt_text, route_json
@@ -86,15 +86,15 @@ async def _cancel_export_job(caller: Any, job: export_jobs.ExportJob) -> tuple[b
             "POST", "/api/export/cancel", caller = caller, json_body = {"expected_op_id": op_id}
         )
         if _stopped("export", answer):
-            export_jobs.mark_cancelled(job)
+            job_store.mark_cancelled(job)
             return True, "The export was stopped and its checkpoint unloaded."
         # Its step just ended, or is queued behind someone else's: let a finished job report itself.
-        await export_jobs.settle(job, SETTLE_S)
+        await job_store.settle(job, SETTLE_S)
         if job.finished:
             return False, f"The export already {job.status}."
         if job.op_id == op_id:
             break
-    export_jobs.mark_cancelled(job)
+    job_store.mark_cancelled(job)
     return True, "The export job was stopped before its next step."
 
 
