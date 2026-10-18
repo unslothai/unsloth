@@ -114,7 +114,7 @@ def _moe_parts(module, num_experts):
 
 def _find_layers(model, num_experts):
     """(owner, layers): the ModuleList of decoder layers holding the MoE blocks and its parent."""
-    best = None
+    best, stacks = None, set()
     for name, module in model.named_modules():
         layers = getattr(module, "layers", None)
         if not isinstance(layers, nn.ModuleList) or len(layers) == 0:
@@ -124,8 +124,16 @@ def _find_layers(model, num_experts):
         )
         if n_moe and (best is None or n_moe > best[0]):
             best = (n_moe, module, layers)
+        if n_moe:
+            stacks.add(id(layers))
     if best is None:
         return None, None
+    if len(stacks) > 1:
+        # Pruning one stack would still rewrite the expert counts the other stacks read.
+        raise ValueError(
+            "Unsloth: REAP found MoE layers in several decoder stacks (e.g. separate multimodal "
+            "decoders); it prunes models with one MoE decoder stack."
+        )
     return best[1], best[2]
 
 
@@ -840,6 +848,7 @@ def reap_prune(
         )
         rebuilt_layers = 0
         for index, layer in enumerate(layers):
+            post_error = None
             moved = False
             layer_device = _layer_device(layer, device)
             if (
@@ -959,15 +968,17 @@ def reap_prune(
                     # Tensors change from here on: no longer the checkpoint any earlier save wrote.
                     model._unsloth_reap_saved = None
                     pruning = block_name
-                    _prune_block(block, experts, router, retained, num_experts)
-                    report[block_name] = retained
-                    pruning = None
+                    try:
+                        _prune_block(block, experts, router, retained, num_experts)
+                        report[block_name] = retained
+                        pruning = None
+                    except Exception as e:
+                        post_error = e
 
-                # Each rank's own shard flows through the (pruned) layer; a rank-specific failure
-                # here is shared before the next layer's collectives.
-                post_error = None
+                # Each rank's own shard flows through the (pruned) layer. A rank-specific failure in
+                # the slicing above or here is shared before the next layer's collectives.
                 try:
-                    for b in range(len(batches)):
+                    for b in range(len(batches) if post_error is None else 0):
                         h = hidden[b].to(layer_device, non_blocking = True)
                         if norm is not None:
                             out = h + _hidden(block(norm(h))).reshape(h.shape)

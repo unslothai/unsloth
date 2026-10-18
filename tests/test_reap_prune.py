@@ -632,6 +632,12 @@ def _prune_rank(
             return original(*args, **kwargs)
 
         model.save_pretrained = save
+        if bad_shard == "slice" and rank == 1:
+
+            def fail_slice(*args, **kwargs):
+                raise RuntimeError("out of memory while slicing experts")
+
+            reap._prune_block = fail_slice
         if bad_shard == "post" and rank == 1:
             # Rank 1 fails in the post-prune pass (an OOM on a larger shard, say).
             original_prune = reap._prune_block
@@ -833,3 +839,39 @@ def test_failure_inside_the_first_slice_still_marks_the_model(monkeypatch):
     with pytest.raises(RuntimeError, match = "one tensor"):
         reap.reap_prune(model, None, sparsity = 0.25, dataset = _samples(), device = "cpu")
     assert model._unsloth_reap_report and model._unsloth_reap_saved is None
+
+
+def test_one_rank_failing_to_slice_stops_every_rank(tmp_path):
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")
+    out = ctx.Queue()
+    args = (str(tmp_path / "pg"), str(tmp_path / "pruned"), out, False, "slice")
+    procs = [ctx.Process(target = _prune_rank, args = (r, *args)) for r in range(2)]
+    for p in procs:
+        p.start()
+    results = sorted(out.get(timeout = 300) for _ in procs)
+    for p in procs:
+        p.join(timeout = 60)
+        assert p.exitcode == 0
+    assert results[0][1] == "error" and "another rank failed to run decoder layer" in results[0][2]
+    assert results[1][1] == "error" and "slicing experts" in results[1][2]
+
+
+def test_several_moe_decoder_stacks_are_refused():
+    class TwoStacks(torch.nn.Module):
+        def __init__(self, a, b):
+            super().__init__()
+            self.config = a.config
+            self.text = a.model
+            self.other = b.model
+
+    a, b = _qwen3_moe(seed = 0), _qwen3_moe(seed = 1)
+    model = TwoStacks(a, b)
+    experts = next(m for n, m in model.other.named_modules() if n.endswith("mlp.experts"))
+    before = experts.gate_up_proj.shape
+    with pytest.raises(ValueError, match = "several decoder stacks"):
+        reap.reap_prune(model, None, sparsity = 0.25, dataset = _samples(), device = "cpu")
+    # Refused before anything changed.
+    assert experts.gate_up_proj.shape == before
+    assert model.config.num_experts == before[0]
