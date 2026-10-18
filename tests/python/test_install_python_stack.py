@@ -2790,6 +2790,19 @@ class TestDesktopBackendVersionConstraint:
         assert spec == "unsloth>=2026.10.6"
         assert not (tmp_path / ips.FEED_CEILING_MARKER).exists()
 
+    def test_extra_index_beside_pypi_counts(self, tmp_path):
+        # first-index: a lagging UV_INDEX mirror shadows PyPI for the packages it carries.
+        env = {
+            "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
+            "UV_INDEX": "https://feed.example/simple",
+        }
+        assert self._spec(tmp_path, env)[0] == "unsloth>=2026.10.3"
+        env = {
+            "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
+            "UV_EXCLUDE_NEWER_PACKAGE": "unsloth=2026-10-09",
+        }
+        assert self._spec(tmp_path, env)[0] == "unsloth>=2026.10.3"
+
     def test_upload_cutoff_alone_counts(self, tmp_path):
         env = {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6", "UV_EXCLUDE_NEWER": "2026-10-09"}
         assert self._spec(tmp_path, env)[0] == "unsloth>=2026.10.3"

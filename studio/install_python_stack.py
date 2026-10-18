@@ -10355,6 +10355,16 @@ def _mirror_retry(args: "tuple[str, ...]", output: bytes, rerun) -> "bool | None
 FEED_CEILING_MARKER = "unsloth_feed_ceiling.json"
 
 
+def _uv_index_may_lag() -> bool:
+    """Any index besides PyPI, or an upload cutoff: install.sh's _mirror_configured gate."""
+    names = ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL")
+    names += ("UV_EXCLUDE_NEWER", "UV_EXCLUDE_NEWER_PACKAGE")
+    if any(os.environ.get(name, "").strip() for name in names):
+        return True
+    policy = _uv_config_index_policy()
+    return bool(policy["default_index"] or policy["extra_indexes"] or policy["no_index"])
+
+
 def _desktop_unsloth_spec(package_name: str) -> str:
     """Desktop's backend floor, lowered to the newest release a lagging index has (#14031).
 
@@ -10371,8 +10381,7 @@ def _desktop_unsloth_spec(package_name: str) -> str:
         marker.unlink()
     except OSError:
         pass
-    cutoff = os.environ.get("UV_EXCLUDE_NEWER", "").strip()
-    if not USE_UV or (_uv_reaches_public_pypi() and not cutoff):
+    if not USE_UV or not _uv_index_may_lag():
         return spec
 
     def newest(requirement: str) -> "str | None":
