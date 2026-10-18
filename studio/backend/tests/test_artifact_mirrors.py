@@ -852,7 +852,9 @@ def test_artifact_folder_bytes_counts_physical_blobs(tmp_path):
     assert artifact_folder_bytes(repo_dir) == 300 + 500 + 70
 
 
-def test_folders_left_by_a_deleted_gguf_are_offered_even_with_transformer_shards(monkeypatch, tmp_path):
+def test_folders_left_by_a_deleted_gguf_are_offered_even_with_transformer_shards(
+    monkeypatch, tmp_path
+):
     """No GGUF of the artifact mirror left in any root: its transformer/ shards (a GGUF speed load's dense fetch) are
     no installed checkpoint, since a pipeline load of the mirror id is refused, so Free up space offers the folders."""
     import asyncio
@@ -906,8 +908,20 @@ def test_artifact_folder_bytes_without_inodes_keys_by_blob_path(monkeypatch, tmp
 
     def no_inode(self, *a, **k):
         st = real_stat(self, *a, **k)
-        return os.stat_result((st.st_mode, 0, st.st_dev, st.st_nlink, st.st_uid, st.st_gid, st.st_size,
-                               st.st_atime, st.st_mtime, st.st_ctime))
+        return os.stat_result(
+            (
+                st.st_mode,
+                0,
+                st.st_dev,
+                st.st_nlink,
+                st.st_uid,
+                st.st_gid,
+                st.st_size,
+                st.st_atime,
+                st.st_mtime,
+                st.st_ctime,
+            )
+        )
 
     monkeypatch.setattr(Path, "stat", no_inode)
     assert cache_inventory.artifact_folder_bytes(repo_dir) == 800
