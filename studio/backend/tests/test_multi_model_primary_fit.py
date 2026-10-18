@@ -274,7 +274,10 @@ def _placement(
     native_gb = None,
 ):
     return SimpleNamespace(
-        resolved_gpu_ids = resolved, gpu_ids_are_vulkan_ordinals = vulkan, native_required_gb = native_gb
+        requested_gpu_ids = None,
+        resolved_gpu_ids = resolved,
+        gpu_ids_are_vulkan_ordinals = vulkan,
+        native_required_gb = native_gb,
     )
 
 
@@ -352,3 +355,16 @@ def test_the_replace_fallback_never_refuses_a_partial_fit():
         < source.index("_primary_can_retry_fit.set(False)", unload)
         < source.index("_run_tracked_load_model_impl", unload)
     )
+
+
+def test_a_pinned_non_gguf_chat_load_keeps_its_requested_gpus(monkeypatch):
+    # Only GGUF and native audio resolve their GPUs: a Transformers load pinned to GPU 1 still targets GPU 1.
+    pinned = inf._LoadPlacement([1], None, False, None)
+    monkeypatch.setattr(gpu_residency, "current_policy", lambda: "always")
+    monkeypatch.setattr("utils.hardware.hardware.get_parent_visible_gpu_ids", lambda: [])
+    monkeypatch.setattr(gpu_residency, "media_held_mib", lambda: {0: 4096})
+    assert inf._chat_fit_kwargs(SimpleNamespace(is_gguf = False), pinned) == {
+        "policy": "always",
+        "gpu_ids": [1],
+    }
+    assert inf._media_on_target_gpus(pinned) is False
