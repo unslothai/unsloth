@@ -139,6 +139,9 @@ function useFrameMessages(tabId: string, origin: string | null) {
         case "reload":
           store.reload(tabId);
           break;
+        case "typed":
+          store.updateTab(tabId, { typedAt: Date.now() });
+          break;
         case "upload":
         case "scriptNavigation":
         case "needsBrowser": {

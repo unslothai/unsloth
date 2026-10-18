@@ -95,6 +95,20 @@ def test_the_shell_guards():
     assert "requestSubmit = " not in shell
 
 
+def test_the_page_tells_the_panel_once_the_reader_types():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    typed = boot[boot.index("const onTyped = ") :]
+    typed = typed[: typed.index('document.addEventListener("input", onTyped, true);')]
+    assert boot.count('post({ type: "typed" });') == 1
+    assert typed.index("if (!event.isTrusted) return;") < typed.index(
+        'document.removeEventListener("input", onTyped, true);'
+    )
+    assert typed.index('document.removeEventListener("input", onTyped, true);') < typed.index(
+        'post({ type: "typed" });'
+    )
+
+
 def test_the_shell_tells_the_panel_when_the_sandbox_refuses_a_feature():
     # Checked in Chromium, Firefox and WebKit, as this suite has no browser to run the shell in.
     shell = browser_mod._FRAME_HTML

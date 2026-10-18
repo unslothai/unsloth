@@ -21,6 +21,7 @@ export type FrameMessage =
   | { type: "upload" }
   | { type: "scriptNavigation" }
   | { type: "needsBrowser" }
+  | { type: "typed" }
   /** Find in page: how many matches the query has, and which one is shown (-1: none). */
   | { type: "findResult"; count: number; active: number }
   /** The page's current markup, for printing; null when it couldn't be copied or was too large. */
@@ -210,6 +211,7 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
     case "upload":
     case "scriptNavigation":
     case "needsBrowser":
+    case "typed":
       return { type: message.type };
     case "findResult": {
       const { count, active } = message;

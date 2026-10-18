@@ -2372,17 +2372,31 @@ function DeviceBar() {
 }
 
 const MAX_MOUNTED_TABS = 4;
-// Hidden web pages run scripts on the chat's thread, so only the newest stays live.
+// Hidden web pages run scripts on the chat's thread, so only the newest stays live, besides the pages last typed into.
 const MAX_HIDDEN_WEB_PAGES = 1;
+const MAX_TYPED_PAGES = 3;
+
+function typedTabIds(tabs: BrowserTab[]): Set<string> {
+  const typed = tabs.filter((tab) => tab.typedAt).sort((a, b) => (b.typedAt ?? 0) - (a.typedAt ?? 0));
+  return new Set(typed.slice(0, MAX_TYPED_PAGES).map((tab) => tab.id));
+}
+
+function mountedTabIds(mounted: readonly string[], tabs: BrowserTab[], activeTabId: string): string[] {
+  const open = new Set(tabs.map((tab) => tab.id));
+  const typed = typedTabIds(tabs);
+  const recent = [...mounted.filter((id) => id !== activeTabId && open.has(id)), activeTabId];
+  return recent.filter((id, index) => index >= recent.length - MAX_MOUNTED_TABS || typed.has(id));
+}
 
 function liveTabIds(mounted: readonly string[], tabs: BrowserTab[], activeTabId: string | null): Set<string> {
   const byId = new Map(tabs.map((tab) => [tab.id, tab]));
+  const typed = typedTabIds(tabs);
   const live = new Set<string>();
   let hiddenWeb = 0;
   for (const id of [...mounted].reverse()) {
     const tab = byId.get(id);
     if (!tab) continue;
-    if (id !== activeTabId && currentEntry(tab).kind === "web") {
+    if (id !== activeTabId && currentEntry(tab).kind === "web" && !typed.has(id)) {
       if (hiddenWeb >= MAX_HIDDEN_WEB_PAGES) continue;
       hiddenWeb += 1;
     }
@@ -2426,13 +2440,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
     activeTabId ? [activeTabId] : [],
   );
   if (activeTabId && mounted[mounted.length - 1] !== activeTabId) {
-    const open = new Set(tabs.map((tab) => tab.id));
-    setMounted(
-      [
-        ...mounted.filter((id) => id !== activeTabId && open.has(id)),
-        activeTabId,
-      ].slice(-MAX_MOUNTED_TABS),
-    );
+    setMounted(mountedTabIds(mounted, tabs, activeTabId));
   }
   const live = liveTabIds(mounted, tabs, activeTabId);
   const fileTab = activeEntry?.kind === "file";
