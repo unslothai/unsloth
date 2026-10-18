@@ -5929,18 +5929,28 @@ def unsloth_generic_save(
             'written. Call `reap_prune(..., save_directory = "pruned_model")` (or save the pruned '
             "model and load it again) before `get_peft_model`."
         )
-    # The pruned base REAP saved is a local folder (moved or deleted since, the adapter config still
-    # names it): an adapter pushed against it names a path no one else can load.
+    # The pruned base REAP saved is a local folder: an adapter pushed against it names a path no one
+    # else can load. In this process the marker says so (even if the folder moved since); after a
+    # reload from that folder, the provenance file reap_prune wrote there does.
     if (
         push_to_hub
         and isinstance(model, PeftModel)
         and _is_adapter_save_method(save_method)
-        and getattr(model, "_unsloth_reap_saved", None)
+        and (
+            getattr(model, "_unsloth_reap_saved", None)
+            or any(
+                os.path.isfile(
+                    os.path.join(
+                        str(getattr(c, "base_model_name_or_path", None) or ""), "unsloth_reap.json"
+                    )
+                )
+                for c in (getattr(model, "peft_config", None) or {}).values()
+            )
+        )
     ):
         raise RuntimeError(
-            "Unsloth: this adapter's base is the REAP pruned model saved to the local folder "
-            f"`{getattr(model, '_unsloth_reap_saved', None)}`, so a pushed adapter could not be "
-            "loaded anywhere else. Nothing was uploaded. Push the pruned base "
+            "Unsloth: this adapter's base is a REAP pruned model saved to a local folder, so a "
+            "pushed adapter could not be loaded anywhere else. Nothing was uploaded. Push the pruned base "
             "to the Hub first and load it from there before finetuning, or push a merged model "
             '(`save_method = "merged_16bit"`).'
         )
@@ -6287,6 +6297,19 @@ def unsloth_generic_save_pretrained_merged(
     asks for a pickle.
     """
     _assert_export_target_is_not_base_with_lora_layers(self)
+    # Inline, builtins only, like unsloth_generic_save's REAP guard, but before the compressed /
+    # torchao dispatch below, whose helpers install their runtime and create the Hub repo first.
+    if (
+        isinstance(self, PeftModel)
+        and getattr(self, "_unsloth_reap_report", None)
+        and not getattr(self, "_unsloth_reap_saved", None)
+    ):
+        raise RuntimeError(
+            "Unsloth: this model was REAP pruned in memory only, but this save would use the base "
+            f"checkpoint `{self.config._name_or_path}`, which still has every expert. Nothing was "
+            'written. Call `reap_prune(..., save_directory = "pruned_model")` (or save the pruned '
+            "model and load it again) before `get_peft_model`."
+        )
     if tokenizer is None:
         logger.warning_once(
             "Unsloth: You're not saving a tokenizer as well?\n"
@@ -6429,6 +6452,19 @@ def unsloth_generic_push_to_hub_merged(
     asks for a pickle.
     """
     _assert_export_target_is_not_base_with_lora_layers(self)
+    # Inline, builtins only, like unsloth_generic_save's REAP guard, but before the compressed /
+    # torchao dispatch below, whose helpers install their runtime and create the Hub repo first.
+    if (
+        isinstance(self, PeftModel)
+        and getattr(self, "_unsloth_reap_report", None)
+        and not getattr(self, "_unsloth_reap_saved", None)
+    ):
+        raise RuntimeError(
+            "Unsloth: this model was REAP pruned in memory only, but this save would use the base "
+            f"checkpoint `{self.config._name_or_path}`, which still has every expert. Nothing was "
+            'written. Call `reap_prune(..., save_directory = "pruned_model")` (or save the pruned '
+            "model and load it again) before `get_peft_model`."
+        )
     if tokenizer is None:
         logger.warning_once(
             "Unsloth: You're not saving a tokenizer as well?\n"
