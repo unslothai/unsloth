@@ -127,7 +127,7 @@ def _stop_loads(
     slots: Any,
     model: Optional[str] = None,
 ) -> list[LoadJob]:
-    """Mark this caller's loads of ``slots`` still running in the job store cancelled. cancel has no load kind, so unload_model is how an agent stops one; each unload also stops the load server-side."""
+    """Mark this caller's loads of ``slots`` still running in the job store cancelled. cancel has no load kind, so unload_model is how an agent stops one; the caller's unload route stops the load server-side."""
     jobs = [
         job
         for job in LOADS.running(caller.account_id)
@@ -358,6 +358,8 @@ async def load_llm(
         caller = dataclasses.replace(caller, hf_token = hf_token)
     if device == "cpu" and gguf is None:
         gguf = await place.listed_gguf(caller, model, variant)
+        if gguf is None:
+            gguf = place.is_gguf(model, variant)
     body.update(
         place.llm_fields(
             kind,
@@ -463,13 +465,8 @@ async def unload_llm(
     model: Optional[str],
     kind: str = "llm",
 ) -> UnloadResult:
-    # A load_model still loading runs on in the job store, and the route stops a load only when the
-    # unload names it, so without ``model`` that load is the one unloaded.
-    stopped = _stop_loads(caller, CHAT_ROUTE_KINDS, model)
     serving, checkpoints, before = await _llm_resident(caller)
-    if model is None and stopped:
-        target = model = stopped[-1].model
-    elif model is None:
+    if model is None:
         if not checkpoints:
             return UnloadResult(kind = kind, unloaded = False)
         target, model = checkpoints[0], (serving[0] if serving else checkpoints[0])
@@ -481,7 +478,7 @@ async def unload_llm(
     )
     # An id that matches nothing still answers success, so compare what is resident before and after.
     _serving, _checkpoints, after = await _llm_resident(caller)
-    was_loaded = bool({model, target} & before) or bool(stopped)
+    was_loaded = bool({model, target} & before)
     return UnloadResult(
         kind = kind, model = model, unloaded = was_loaded and not ({model, target} & after)
     )
@@ -766,12 +763,30 @@ async def load_stt(
     return LoadResult(kind = "stt", model = resident)
 
 
+# Unloads waiting on an STT load that outlasted the unload call, held so they are not collected.
+_LATE_UNLOADS: set[asyncio.Task] = set()
+
+
+async def _unload_once_loaded(caller: Caller, job: LoadJob) -> None:
+    if job.task is not None:
+        await asyncio.wait({job.task})
+    if job.status == "completed" and isinstance(job.result, LoadResult):
+        try:
+            await unload_stt(caller, job.result.model)
+        except Exception:
+            pass
+
+
 async def _stop_stt_loads(caller: Caller, model: Optional[str]) -> Optional[str]:
-    """Stop this caller's STT loads still downloading, and their downloads, and let one already loading finish so it can be unloaded; the last model stopped, if any."""
+    """Stop this caller's STT loads still downloading, and their downloads, and let one already loading finish so it can be unloaded (later, if it outlasts this call); the last model stopped, if any."""
     stopped = None
     for job in LOADS.running(caller.account_id):
         if job.slot == "stt" and job.posted and (model is None or _same_id(job.model, model)):
             await job_store.settle(job, MAX_WAIT_S)
+            if not job.finished:
+                late = asyncio.get_running_loop().create_task(_unload_once_loaded(caller, job))
+                _LATE_UNLOADS.add(late)
+                late.add_done_callback(_LATE_UNLOADS.discard)
     jobs = [
         job
         for job in LOADS.running(caller.account_id)
@@ -827,28 +842,19 @@ async def unload_all(caller: Caller) -> UnloadAllResult:
         except ToolError as exc:
             failed.append(f"{name}: {exc}")
 
-    # A chat load_model still loading runs on in the job store; the route stops it when the unload names it.
-    stopped = [job.model for job in _stop_loads(caller, CHAT_ROUTE_KINDS)]
     serving, checkpoints, _before = await _llm_resident(caller)
     pairs = list(zip(serving, checkpoints))
     # Kept models first, so unloading the primary never promotes one of them in between.
     for name, target in reversed(pairs):
         await unload(name, target)
-    loads = [name for name in dict.fromkeys(stopped) if name not in serving]
-    for name in loads:
-        await unload(name, name)
     _serving, _checkpoints, after = await _llm_resident(caller)
     # Models held in memory behind the active one are listed only under loaded.
-    held = [
-        name
-        for name in after
-        if name not in checkpoints and name not in serving and name not in loads
-    ]
+    held = [name for name in after if name not in checkpoints and name not in serving]
     for name in held:
         await unload(name, name)
     if held:
         _serving, _checkpoints, after = await _llm_resident(caller)
-    pairs += [(name, name) for name in loads + held]
+    pairs += [(name, name) for name in held]
     unloaded = [
         SlotModel(kind = "llm", model = name) for name, target in pairs if not {name, target} & after
     ]

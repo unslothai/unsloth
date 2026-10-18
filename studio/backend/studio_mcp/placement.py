@@ -6,12 +6,13 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from typing import Any, Optional
 
 from fastmcp.exceptions import ToolError
 
 from studio_mcp.caller import Caller
-from studio_mcp.errors import raise_for_route
+from studio_mcp.errors import raise_for_route, tool_error
 from studio_mcp.forward import forward
 from studio_mcp.outputs import Placement, PlanLoadResult, PlanVariant, SlotModel
 from studio_mcp.tools import as_dict, integer, opt_text, strings, try_json
@@ -95,15 +96,18 @@ CPU_NEEDS_GGUF = (
 )
 
 
-async def listed_gguf(caller: Caller, model: str, variant: Optional[str]) -> bool:
-    """Whether the load runs on llama-server: Unsloth Studio lists GGUF files for the model (a name with "gguf" in it proves nothing). audio.cpp models never do."""
+async def listed_gguf(caller: Caller, model: str, variant: Optional[str]) -> Optional[bool]:
+    """Whether the load runs on llama-server: Unsloth Studio lists GGUF files for the model (a name with "gguf" in it proves nothing). audio.cpp models never do. None when the listing could not be read."""
     repo, variant = _split(model, variant)
     if repo.lower().startswith(AUDIO_CPP_PREFIX):
         return False
     if is_local(repo) and repo.lower().endswith(".gguf"):
         return True
-    listing = as_dict(await _variants(caller, repo))
-    return any(isinstance(row, dict) for row in listing.get("variants") or [])
+    listing = await _variants(caller, repo)
+    if listing is None:
+        # Unsloth Studio could not list it (offline, say): the name is all there is to go on.
+        return None
+    return any(isinstance(row, dict) for row in as_dict(listing).get("variants") or [])
 
 
 async def require_cpu_gguf(
@@ -115,6 +119,9 @@ async def require_cpu_gguf(
     gguf = await listed_gguf(caller, model, variant)
     if kind == "llm" and not gguf:
         raise ToolError(CPU_NEEDS_GGUF)
+    if gguf is None:
+        # A TTS still goes to the CPU; only llama-server needs its layers kept off the GPU too.
+        gguf = is_gguf(model, variant)
     repo, variant = _split(model, variant)
     if gguf and variant and not is_local(repo):
         if pick_variant(await _variants(caller, repo), variant) is None:
@@ -299,6 +306,7 @@ def predict(
     slots: list[SlotModel],
     has_vision: bool = False,
     variant: Optional[str] = None,
+    rebuild: bool = False,
 ) -> tuple[list[SlotModel], bool, bool]:
     """(would_evict, would_evict_exact, would_refuse) for one load. Exact under Off; under When they fit and Always, or when the mode is unknown, an upper bound."""
     slot_kind = "llm" if kind in CHAT_KINDS else kind
@@ -308,11 +316,14 @@ def predict(
         for s in slots
         if s.kind == slot_kind and s.model.split(":", 1)[0].lower() == model.lower()
     ]
-    if kind == "stt" or any(s.model.lower() == wanted for s in slots if s.kind == slot_kind):
+    if kind == "stt":
+        return [], True, False
+    # rebuild: the same repo is resident but built differently (another MiniMax-H3 task), so it reloads.
+    if not rebuild and any(s.model.lower() == wanted for s in slots if s.kind == slot_kind):
         return [], True, False
     # Status may name a GGUF by its bare repo: whether that resident is this variant is unknown.
     exact = not (variant and any(":" not in s.model for s in same_repo))
-    if not variant and same_repo:
+    if not variant and same_repo and not rebuild:
         return [], True, False
     chat = [s for s in slots if s.kind == "llm"]
     media = [s for s in slots if s.kind in ("image", "video")]
@@ -323,7 +334,12 @@ def predict(
             if alongside is not None
             else (mode == "always" and device == "cpu" and bool(chat))
         )
-        # Off replaces the primary and unloads the idle kept models whatever alongside says.
+        # Off replaces the primary and unloads the idle kept models whatever alongside says. A model
+        # only held in memory (not serving) may stay, so with one the prediction is an upper bound.
+        if set(strings(as_dict(status).get("loaded"))) - set(
+            strings(as_dict(status).get("serving"))
+        ):
+            exact = False
         off_set = chat + (media if gpu else [])
         upper = [] if joins and not gpu else off_set
         same = []
@@ -361,11 +377,16 @@ async def plan_load(
     device: Optional[str],
     alongside: Optional[bool],
     knobs: Optional[dict[str, str]] = None,
+    hf_token: Optional[str] = None,
 ) -> PlanLoadResult:
+    if hf_token:
+        # As in load_model: the listing reads it from the header, the plan routes from the body.
+        caller = dataclasses.replace(caller, hf_token = hf_token)
     # The same refusals load_model makes, so a plan is never shown for a load that cannot run.
     where = {"device": device, "alongside": alongside, "kv_cache_type": None, "gpu_layers": None}
     check_placement(kind, model, variant, **where)
     await require_cpu_gguf(caller, kind, model, variant, device)
+    await refuse_partial_variant(caller, model, kind, variant)
     status, image, video, stt = await asyncio.gather(
         try_json(caller, STATUS),
         try_json(caller, MEDIA_STATUS["image"]),
@@ -404,6 +425,8 @@ async def plan_load(
             body["hf_token"] = caller.hf_token
         # The plan load_model would read first, with the same knobs; its refusal is the load's.
         plan = as_dict(await post_plan(caller, MEDIA_PLAN[kind], body, knobs or {}))
+        if opt_text(plan.get("incompatible_reason")):
+            raise tool_error(plan["incompatible_reason"])
         download = integer(plan.get("total_bytes"))
     elif row is not None and row.get("downloaded") is True:
         estimate = as_dict(
@@ -416,6 +439,9 @@ async def plan_load(
         est = integer(estimate.get("gpu_bytes")) if estimate.get("available") is True else None
     slots = residents(status, image, video, stt)
     mode = multi_model_mode(status)
+    h3_task = (knobs or {}).get("h3_task")
+    resident_task = opt_text(as_dict(video).get("h3_task"))
+    rebuild = kind == "video" and bool(h3_task and resident_task) and h3_task != resident_task
     would_evict, exact, refuse = predict(
         kind = kind,
         model = repo,
@@ -426,7 +452,11 @@ async def plan_load(
         slots = slots,
         has_vision = as_dict(listing).get("has_vision") is True,
         variant = variant,
+        rebuild = rebuild,
     )
+    if not all(isinstance(read, dict) for read in (image, video)):
+        # A slot whose status could not be read may hold a model the load would unload.
+        exact = False
     return PlanLoadResult(
         model = repo,
         kind = kind,

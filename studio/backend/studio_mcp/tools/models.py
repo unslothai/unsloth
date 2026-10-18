@@ -320,8 +320,8 @@ async def load_model(
 async def unload_model(kind: UnloadKind = "llm", model: Optional[str] = None) -> ToolResult:
     """Unload a model to free memory.
     Without ``model`` the active one of that kind is unloaded; image and video have one slot each, so ``model`` is ignored there.
-    A load_model of that kind still running is stopped too (a speech-to-text load past its download finishes first, then unloads); for "llm", "tts" and "audio" without ``model``, that load is the one unloaded.
-    kind "all" unloads every chat, speech, image, video and speech-to-text model in one call, stops every load_model still running, and lists them under ``unloaded``.
+    For "image", "video" and "stt", a load_model of that kind still running is stopped too (a speech-to-text load past its download is unloaded once it finishes, after this call if it takes longer than 240 s).
+    kind "all" unloads every chat, speech, image, video and speech-to-text model in one call, stopping image, video and speech-to-text loads as those kinds do, and lists them under ``unloaded``.
     The embedding model is managed by Unsloth Studio and is not unloaded here.
     ``unloaded`` is false when nothing matching was loaded."""
     if kind == "all":
@@ -358,10 +358,11 @@ async def plan_load(
     transformer_quant: TransformerQuant = None,
     text_encoder_quant: TextEncoderQuant = None,
     h3_task: H3Task = None,
+    hf_token: Optional[str] = None,
 ) -> PlanLoadResult:
     """Preview a load_model call without loading or downloading anything.
     ``variants`` lists a GGUF repo's quantizations with their size and whether each is downloaded or only partly on disk; ``download_bytes`` is what the load would still download, and ``est_gpu_bytes`` the GPU memory a downloaded GGUF chat model is estimated to take.
-    ``residents`` are the models loaded now, and ``would_evict`` the ones this load would unload; pass the same ``device``, ``alongside`` and image or video options you would pass to load_model.
+    ``residents`` are the models loaded now, and ``would_evict`` the ones this load would unload; pass the same ``device``, ``alongside``, image or video options and ``hf_token`` you would pass to load_model.
     Under Keep multiple models loaded set to Off the prediction is exact; under When they fit it is an upper bound (``would_evict_exact`` false), since a model that fits stays.
     Under Always nothing is unloaded and ``would_refuse`` says the load may be refused instead; unload_model(kind="all"), alongside=true or device="cpu" avoid that."""
     return await placement.plan_load(
@@ -379,6 +380,7 @@ async def plan_load(
             text_encoder_quant = text_encoder_quant,
             h3_task = h3_task,
         ),
+        hf_token = hf_token,
     )
 
 
