@@ -31,6 +31,8 @@ from utils.upload_limits import (
 LOAD_VIDEO_HINT = "Load a video model with load_model(kind='video') first."
 # /v1/videos takes a reference audio of at most 24 MB.
 MAX_REFERENCE_AUDIO_BYTES = 24 * 1024 * 1024
+# /v1/videos takes at most this many frames (MAX_VIDEO_NUM_FRAMES).
+MAX_NUM_FRAMES = 1024
 # One /v1/videos request carries about 32 MB of images once base64-encoded.
 TOO_MANY_IMAGE_BYTES = (
     "The images together are larger than the 32 MB one video request takes; "
@@ -107,7 +109,12 @@ async def generate_video(
         Field(ge = 0, le = 20, description = "Guidance scale; left out, the model's default."),
     ] = None,
     num_frames: Annotated[
-        Optional[int], Field(ge = 1, description = "Frame count instead of seconds; send one of them.")
+        Optional[int],
+        Field(
+            ge = 1,
+            le = MAX_NUM_FRAMES,
+            description = "Frame count instead of seconds; send one of them.",
+        ),
     ] = None,
     fps: Annotated[
         Optional[int],
@@ -124,6 +131,8 @@ async def generate_video(
     The job carries the ``seed`` it used; pass it again with the same settings to repeat a take.
     studio_status video.prompt_hint says how the loaded model reads prompts."""
     caller = current_caller()
+    if isinstance(seconds, str) and seconds.strip().lower() in ("", "auto"):
+        seconds = None  # /v1/videos reads both as an omitted duration
     body: dict[str, Any] = {
         "prompt": prompt,
         **present(
@@ -154,20 +163,31 @@ async def generate_video(
     budget = VIDEO_INPUT_REFERENCE_MAX_BYTES
     for key, image in (("input_reference", first_frame), ("last_frame", last_frame)):
         if image is not None:
-            data, mime = await resolve_image(caller, image)
+            data, mime = await resolve_image(
+                caller, image, max_bytes = VIDEO_INPUT_REFERENCE_MAX_BYTES
+            )
             budget -= len(data)
             if budget < 0:
                 raise ToolError(TOO_MANY_IMAGE_BYTES)
             body[key] = data_url(data, mime)
     if reference_images:
         body["reference_images"] = await resolve_images(
-            caller, reference_images, total_cap = budget, too_large = TOO_MANY_IMAGE_BYTES
+            caller,
+            reference_images,
+            total_cap = budget,
+            too_large = TOO_MANY_IMAGE_BYTES,
+            max_bytes = VIDEO_INPUT_REFERENCE_MAX_BYTES,
         )
+    # The request size cap counts the encoded body, prompt included. Checked before any audio is
+    # uploaded, with room for the short ids the uploads add, so a refused call stores nothing.
+    sized = dict(body)
+    if reference_audios:
+        # An id is at most 128 characters.
+        sized["reference_audios"] = [{"input_id": "x" * 128} for _ in reference_audios]
+    if len(json.dumps(sized)) > VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES:
+        raise ToolError(TOO_MANY_IMAGE_BYTES)
     if reference_audios:
         body["reference_audios"] = [await audio_ref(caller, audio) for audio in reference_audios]
-    # The request size cap counts the encoded body, prompt included.
-    if len(json.dumps(body)) > VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES:
-        raise ToolError(TOO_MANY_IMAGE_BYTES)
     job = await route_json(
         "POST",
         "/v1/videos",

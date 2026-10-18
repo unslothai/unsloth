@@ -90,6 +90,7 @@ def test_audio_without_a_reference_image_is_refused_before_any_call(monkeypatch)
         {"seed": 2**53},
         {"steps": 0},
         {"fps": 121},
+        {"num_frames": 1025},
     ],
 )
 def test_out_of_range_controls_never_reach_a_route(monkeypatch, args):
@@ -186,3 +187,45 @@ def test_fractional_seconds_reach_the_route(monkeypatch):
     )
     assert result["isError"] is False, result
     assert bodies(studio, "/v1/videos") == [{"prompt": "x", "seconds": 2.5}]
+
+
+def test_a_body_over_the_route_cap_uploads_no_audio(monkeypatch):
+    import studio_mcp.tools.video as video_tool
+
+    monkeypatch.setattr(video_tool, "VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES", 1024)
+    audio = {"data_base64": b64(_WAV), "filename": "v.wav"}
+    args = {"prompt": "x" * 2048, "reference_images": [PNG_URL], "reference_audios": [audio]}
+    result, studio = run_tool(monkeypatch, _studio(), "generate_video", args)
+    assert result["isError"] is True
+    assert studio.state.calls == []
+
+
+@pytest.mark.parametrize("seconds", ["auto", " ", ""])
+def test_seconds_auto_or_blank_beside_num_frames_is_omitted(monkeypatch, seconds):
+    args = {"prompt": "x", "seconds": seconds, "num_frames": 49}
+    result, studio = run_tool(monkeypatch, _studio(), "generate_video", args)
+    assert result["isError"] is False, result
+    assert bodies(studio, "/v1/videos") == [{"prompt": "x", "num_frames": 49}]
+
+
+@pytest.mark.parametrize("field", ["first_frame", "last_frame", "reference_images"])
+def test_an_image_over_24_mib_fits_the_32_mb_video_budget(monkeypatch, field):
+    # /v1/videos takes a 32 MB image; the general 24 MiB MCP image cap must not refuse it first.
+    big = PNG + b"\0" * (25 * 1024 * 1024)
+    studio = _studio()
+    studio.add_api_route(
+        "/api/inference/images/gallery/big/file",
+        lambda: Response(big, media_type = "image/png"),
+        methods = ["GET"],
+    )
+    image = {"gallery_id": "big"}
+    args = {"prompt": "x", field: [image] if field == "reference_images" else image}
+    result, studio = run_tool(monkeypatch, studio, "generate_video", args)
+    assert result["isError"] is False, result["content"][0]["text"][:300]
+    (body,) = bodies(studio, "/v1/videos")
+    sent = (
+        body[field][0]
+        if field == "reference_images"
+        else body[{"first_frame": "input_reference"}.get(field, field)]
+    )
+    assert base64.b64decode(sent.split(",", 1)[1]) == big
