@@ -348,6 +348,8 @@ async def load_llm(
         caller = dataclasses.replace(caller, hf_token = hf_token)
     if device == "cpu" and gguf is None:
         gguf = await place.listed_gguf(caller, model, variant)
+        if gguf is None:
+            gguf = place.is_gguf(model, variant)
     body.update(
         place.llm_fields(
             kind,
@@ -821,12 +823,14 @@ async def unload_all(caller: Caller) -> UnloadAllResult:
     stopped = [job.model for job in _stop_loads(caller, CHAT_ROUTE_KINDS)]
     serving, checkpoints, _before = await _llm_resident(caller)
     pairs = list(zip(serving, checkpoints))
-    # Kept models first, so unloading the primary never promotes one of them in between.
-    for name, target in reversed(pairs):
-        await unload(name, target)
-    loads = [name for name in dict.fromkeys(stopped) if name not in serving]
+    loads = [name for name in dict.fromkeys(stopped) if not any(_same_id(name, s) for s in serving)]
+    # Running loads first: an unload naming one cancels it at once, while any other unload waits
+    # behind the load gate until that load ends.
     for name in loads:
         await unload(name, name)
+    # Kept models next, so unloading the primary never promotes one of them in between.
+    for name, target in reversed(pairs):
+        await unload(name, target)
     _serving, _checkpoints, after = await _llm_resident(caller)
     # Models held in memory behind the active one are listed only under loaded.
     held = [

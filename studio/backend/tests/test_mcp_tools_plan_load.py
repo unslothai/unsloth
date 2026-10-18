@@ -6,6 +6,8 @@
 import pytest
 from fastapi.responses import JSONResponse
 
+from studio_mcp import forward
+
 from .mcp_harness import bodies, fast_polls, run_tool, stt_state  # noqa: F401
 from .test_mcp_tools_loading import FLUX_GGUF, LOADED, LTX, READY, _media_studio
 
@@ -28,6 +30,14 @@ VARIANTS = {
         },
     ],
 }
+
+
+@pytest.fixture(autouse = True)
+def download_status_reachable(monkeypatch):
+    # The download routes join the MCP allowlist in the PR stacked on this one.
+    monkeypatch.setattr(
+        forward, "ALLOWED_PREFIXES", (*forward.ALLOWED_PREFIXES, "/api/hub/download")
+    )
 
 
 def _chat(mode, serving, **fields):
@@ -55,6 +65,8 @@ def _world(
             "transformers": stt_state(loaded = "openai/whisper-small")
         },
         ("GET", "/api/hub/gguf-variants"): VARIANTS,
+        # The partial Q8_0 is one Unsloth Studio is still downloading, so a load waits on it.
+        ("GET", "/api/hub/download-status"): {"state": "running"},
         ("POST", "/api/inference/estimate-memory"): {"available": True, "gpu_bytes": 1234},
         ("POST", "/api/inference/images/download-plan"): {"entries": [], "total_bytes": 9000},
     }
@@ -261,9 +273,55 @@ def test_a_download_plan_refusal_is_the_plans_error(monkeypatch):
     assert result["isError"] is True and "no such precision" in str(result["content"])
 
 
-def test_a_model_held_behind_the_primary_is_a_resident_off_unloads(monkeypatch):
+def test_a_model_held_behind_the_primary_is_a_resident_off_may_unload(monkeypatch):
     world = _world("off", [QWEN])
     world[STATUS] = {**world[STATUS], "loaded": [QWEN, KEPT]}
     plan = _plan(monkeypatch, world, {"model": OUTETTS, "kind": "tts", "device": "cpu"})
     assert ("llm", KEPT) in _names(plan["residents"])
+    # A held standard model can outlive a GGUF load, so it is listed as an upper bound.
     assert _names(plan["would_evict"]) == {("llm", QWEN), ("llm", KEPT)}
+    assert plan["would_evict_exact"] is False
+
+
+def test_a_pick_the_plan_calls_incompatible_gets_no_plan(monkeypatch):
+    plan = {"entries": [], "total_bytes": 9, "incompatible_reason": "base and GGUF sizes differ"}
+    world = {**_world("off", []), ("POST", "/api/inference/images/download-plan"): plan}
+    args = {"model": FLUX_GGUF, "kind": "image"}
+    result, _studio = run_tool(monkeypatch, world, "plan_load", args, fallback = {})
+    assert result["isError"] is True and "sizes differ" in str(result["content"])
+
+
+def test_another_h3_task_of_the_resident_video_model_is_a_new_load(monkeypatch):
+    world = _world("off", [QWEN], video = LTX)
+    world[("GET", VIDEO)] = {**world[("GET", VIDEO)], "h3_task": "fl2va"}
+    same = _plan(monkeypatch, world, {"model": LTX, "kind": "video", "h3_task": "fl2va"})
+    assert same["would_evict"] == []
+    other = _plan(monkeypatch, world, {"model": LTX, "kind": "video", "h3_task": "ref2va"})
+    assert _names(other["would_evict"]) == {("llm", QWEN), ("video", LTX)}
+
+
+def test_a_partial_variant_load_model_refuses_gets_no_plan(monkeypatch):
+    partial = {"variants": [{"quant": "Q8_0", "filename": "b.gguf", "partial": True}]}
+    world = {
+        **_world("off", []),
+        ("GET", "/api/hub/gguf-variants"): partial,
+        ("GET", "/api/hub/download-status"): {"state": "idle"},
+    }
+    args = {"model": QWEN, "variant": "Q8_0"}
+    result, _studio = run_tool(monkeypatch, world, "plan_load", args, fallback = {})
+    assert result["isError"] is True and "still downloading or incomplete" in str(result["content"])
+
+
+def test_an_unreadable_media_status_makes_the_plan_an_upper_bound(monkeypatch):
+    world = _world("off", [QWEN])
+    world[("GET", VIDEO)] = JSONResponse({"detail": "busy"}, status_code = 503)
+    plan = _plan(monkeypatch, world, {"model": FLUX_GGUF, "kind": "image"})
+    assert plan["multi_model_mode"] == "off" and plan["would_evict_exact"] is False
+
+
+def test_the_hf_token_argument_reaches_the_listing_and_the_plan(monkeypatch):
+    args = {"model": FLUX_GGUF, "kind": "image", "hf_token": "hf_arg"}
+    result, studio = run_tool(monkeypatch, _world("off", []), "plan_load", args, fallback = {})
+    assert result.get("isError") is not True
+    (body,) = bodies(studio, "/api/inference/images/download-plan")
+    assert body["hf_token"] == "hf_arg"

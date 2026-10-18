@@ -381,3 +381,31 @@ def test_unload_all_stops_a_chat_load_still_running(monkeypatch, fast_polls):
     assert unloaded["unloaded"] == [{"kind": "llm", "model": LLM}]
     assert job["structuredContent"]["status"] == "cancelled"
     assert bodies(studio, "/api/inference/unload") == [{"model_path": LLM}]
+
+
+def test_unload_all_cancels_a_running_load_before_unloading_what_serves(monkeypatch, fast_polls):
+    # Any other unload waits behind the load gate until the load ends, so the load goes first.
+    serving = {"loaded": [QWEN], "serving": [QWEN], "serving_checkpoints": ["/m/qwen.gguf"]}
+    routes = {**PAYLOADS, LOAD: slow(LOADED, 5.0), STATUS_ROUTE: serving}
+    studio = fake_studio(routes, fallback = {})
+    with session(monkeypatch, studio) as call:
+        call("load_model", {"model": LLM, "wait_s": 0})
+        call("unload_model", {"kind": "all"})
+    assert bodies(studio, "/api/inference/unload")[:2] == [
+        {"model_path": LLM},
+        {"model_path": "/m/qwen.gguf"},
+    ]
+
+
+def test_cpu_tts_falls_back_to_the_name_when_the_listing_cannot_be_read(monkeypatch):
+    # No gguf-variants route: the listing is unreadable (an offline host, say).
+    _result, _studio, (body,) = _load(
+        monkeypatch, {"model": OUTETTS, "kind": "tts", "device": "cpu"}
+    )
+    assert body == {
+        "model_path": OUTETTS,
+        "load_in_4bit": True,
+        "max_seq_length": 0,
+        "audio_device": "cpu",
+        **CPU,
+    }
