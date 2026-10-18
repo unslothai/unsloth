@@ -302,3 +302,19 @@ def test_a_second_video_never_overtakes_one_entering_the_queue(monkeypatch):
     assert (first.status, second.status) == ("queued", "queued")
     assert posted == ["A"]
     assert [item.body["prompt"] for item in video_queue._waiting["a"]] == ["A", "B"]
+
+
+def test_the_last_queued_video_is_followed_to_its_end(monkeypatch):
+    fake = OneVideoStudio()
+    with open_client(monkeypatch, fake) as http:
+        generate(http, "A")
+        b = generate(http, "B")
+        fake.finish()
+        wait_until(http, b["id"], lambda job: job["id"] == "video-2")
+        fake.finish()
+        deadline = time.monotonic() + 10.0
+        while video_queue._running and time.monotonic() < deadline:
+            time.sleep(0.02)
+        # Nothing waits on the finished clip any more, so its record can be dropped at the cap.
+        assert video_queue._running == {}
+        assert video_queue._ended(video_queue.lookup(*next(iter(video_queue._items)).split(":", 1)))

@@ -475,9 +475,19 @@ async def plan_load(
         variant = variant,
         rebuild = rebuild,
     )
+    # Unloading another kind's model depends on the load reaching the GPU, which only a pinned
+    # device says: Unsloth Studio may run an image, video or audio load (or anything, without a GPU)
+    # on the CPU, where it leaves the other slots alone.
+    slot_kind = "llm" if kind in CHAT_KINDS else kind
+    unpinned = device not in ("cpu", "gpu") and any(s.kind != slot_kind for s in would_evict)
     # A rebuild is a guess from the settings status reports, so the prediction is an upper bound.
     unlisted = kind in CHAT_KINDS and listing is None
-    if rebuild or unlisted or not all(isinstance(read, dict) for read in (image, video)):
+    if (
+        rebuild
+        or unlisted
+        or unpinned
+        or not all(isinstance(read, dict) for read in (image, video))
+    ):
         # A slot whose status could not be read may hold a model the load would unload.
         exact = False
     return PlanLoadResult(
