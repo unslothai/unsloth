@@ -854,6 +854,10 @@ class AudioCppSttSidecar:
         _notify(on_phase, "downloading_aligner")
         try:
             aligner = audio_cpp_backend._resolve_companion(entry, QWEN3_ALIGNER, network = True)
+            # The same old-runtime gate as the model's own files.
+            problem = audio_cpp_server.stale_runtime_download_problem(aligner)
+            if problem:
+                raise audio_cpp_server.AudioCppRuntimeTooOldError(problem)
             audio_cpp_backend.AudioCppBackend._download_missing(aligner, None, cancel_event)
         except AudioCppRequestCancelledError:
             raise SttTranscriptionCancelledError("Transcription cancelled.") from None

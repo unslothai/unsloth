@@ -103,6 +103,23 @@ def test_scope_requires_files_and_rejects_a_variant(monkeypatch):
     assert "mutually exclusive" in str(both.value)
 
 
+def test_a_scoped_start_runs_the_old_audio_runtime_gate_first(monkeypatch):
+    _shared_setup_1(monkeypatch)
+    seen = []
+
+    async def refuse(repo_id, files, hf_token):
+        seen.append((repo_id, files))
+        raise HTTPException(status_code = 409, detail = "needs a newer audio runtime")
+
+    monkeypatch.setattr(dl, "_refuse_stale_scoped_download", refuse)
+    monkeypatch.setattr(
+        download_lifecycle, "launch_worker", lambda *a, **k: pytest.fail("job started")
+    )
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(dl.download_model_response(_request()))
+    assert refused.value.status_code == 409 and seen == [(REPO, FILES)]
+
+
 def test_scoped_start_spawns_a_file_scoped_worker(monkeypatch, tmp_path):
     spawned: dict = {}
 

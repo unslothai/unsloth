@@ -254,6 +254,19 @@ async def _audio_cpp_target(
     return target
 
 
+async def _refuse_stale_scoped_download(
+    repo_id: str, files: list[str], hf_token: Optional[str]
+) -> None:
+    """A scoped job skips ``_audio_cpp_target``; its audio GGUFs get the same old-runtime gate."""
+    from core.inference.audio_cpp_models import refuse_stale_download
+    from core.inference.audio_cpp_server import AudioCppRuntimeTooOldError
+
+    try:
+        await asyncio.to_thread(refuse_stale_download, repo_id, None, hf_token, files = files)
+    except AudioCppRuntimeTooOldError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+
+
 async def download_model_response(
     body: DownloadModelRequest,
     hf_token: Optional[str] = None,
@@ -311,6 +324,7 @@ async def download_model_response(
         if not _is_valid_gguf_variant(scope_variant):
             raise HTTPException(status_code = 400, detail = f"Invalid scope_id: {body.scope_id!r}")
         variant = scope_variant
+        await _refuse_stale_scoped_download(repo_id, scoped_files, hf_token)
     key = _download_job_key(repo_id, variant)
     _reject_if_load_owned(key)
     # Size and Auto resolution may perform network probes, so keep both off the event loop.

@@ -260,6 +260,67 @@ def test_a_download_job_outside_the_umbrella_is_gated_too(monkeypatch, tmp_path)
     assert asyncio.run(downloads._audio_cpp_target(music.id, "Q8_0")) == (music.id, "Q8_0")
 
 
+def test_a_scoped_download_job_is_gated_on_the_files_it_fetches(monkeypatch, tmp_path):
+    import asyncio
+
+    import huggingface_hub
+    from fastapi import HTTPException
+
+    from hub.services.models import downloads
+
+    aligner = _model("Qwen3-ForcedAligner-0.6B-GGUF", "qwen3_forced_aligner", "aligner")
+    looked_up = []
+    monkeypatch.setattr(acm, "resolve", lambda ident, *a, **kw: looked_up.append(ident) or aligner)
+    cached = set()
+    monkeypatch.setattr(
+        huggingface_hub,
+        "try_to_load_from_cache",
+        lambda repo, name, **kw: "/cache/blob" if name in cached else None,
+    )
+    _missing(monkeypatch, [("x.gguf", 4)])
+    files = ["Qwen3-ForcedAligner-0.6B-GGUF/aligner-q8_0.gguf", "README.md"]
+    scoped = lambda repo, names: asyncio.run(  # noqa: E731
+        downloads._refuse_stale_scoped_download(repo, names, None)
+    )
+    _runtime(monkeypatch, tmp_path / "new", record = {"release_tag": "v0.9.2-unsloth.1"})
+    scoped(acm.AUDIO_CPP_REPO, files)
+    assert looked_up == []
+    _runtime(monkeypatch, tmp_path / "old", record = {"release_tag": "v0.9.1-unsloth.1"})
+    with pytest.raises(HTTPException) as refused:
+        scoped(acm.AUDIO_CPP_REPO, files)
+    assert (
+        refused.value.status_code == 409 and "needs a newer audio runtime" in refused.value.detail
+    )
+    # The umbrella's files resolve as their folder rows.
+    assert looked_up == [aligner.id]
+    # Files already cached, or no GGUF at all, fetch nothing the runtime loads.
+    cached.add(files[0])
+    scoped(acm.AUDIO_CPP_REPO, files)
+    scoped("org/some-model", ["README.md", "config.json"])
+    assert looked_up == [aligner.id]
+
+
+def test_the_timestamp_aligner_is_not_fetched_for_an_old_runtime(monkeypatch, tmp_path):
+    from core.inference import stt_audiocpp_sidecar
+
+    _runtime(monkeypatch, tmp_path / "rt", record = {"release_tag": "v0.9.1-unsloth.1"})
+    _missing(monkeypatch, [("x.gguf", 4)])
+    aligner = _model("Qwen3-ForcedAligner-0.6B-GGUF", "qwen3_forced_aligner", "aligner")
+    monkeypatch.setattr(audio_cpp_backend, "_resolve_companion", lambda *a, **kw: aligner)
+    downloads = []
+    monkeypatch.setattr(
+        audio_cpp_backend.AudioCppBackend,
+        "_download_missing",
+        staticmethod(lambda model, *a, **kw: downloads.append(model.id)),
+    )
+    side = stt_audiocpp_sidecar.AudioCppSttSidecar()
+    with pytest.raises(
+        stt_audiocpp_sidecar.SttModelNotDownloadedError, match = "needs a newer audio runtime"
+    ):
+        side._ensure_aligner_downloaded(_model("Qwen3-ASR-0.6B-GGUF", "qwen3_asr", "asr"))
+    assert downloads == []
+
+
 def test_runtime_knows_family_reads_the_folder_beside_the_server(monkeypatch, tmp_path):
     # Windows bundles keep the server and its fetched folder under bin/.
     _runtime(

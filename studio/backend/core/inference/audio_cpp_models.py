@@ -2761,21 +2761,44 @@ def refuse_stale_download(
     identifier: Optional[str],
     variant: Optional[str],
     hf_token: Optional[str] = None,
+    *,
+    files: Sequence[str] = (),
 ) -> None:
     """The old-runtime gate for a download job of a repo outside the umbrella, such as
-    ``audio-cpp/MiniMax-Music3-GGUF``; ``download_target`` gates the umbrella's folders."""
+    ``audio-cpp/MiniMax-Music3-GGUF``, or of a scoped job's ``files`` in any repo;
+    ``download_target`` gates the umbrella's folder rows."""
     from core.inference.audio_cpp_server import SPEC_FIRST_RUNTIME, runtime_release_key
 
     release = runtime_release_key()
     # Only an old runtime needs the lookup, so other GGUF downloads never pay for it.
-    if release is None or release >= SPEC_FIRST_RUNTIME or is_umbrella_id(identifier):
+    if release is None or release >= SPEC_FIRST_RUNTIME or not identifier:
         return
-    try:
-        model = resolve(identifier, variant, hf_token, network = not hub_offline())
-    except Exception:  # noqa: BLE001 - a repo that cannot be resolved is the downloader's to report
+    rows = [identifier]
+    if files:
+        from huggingface_hub import try_to_load_from_cache
+
+        def cached(name: str) -> bool:
+            try:
+                return isinstance(try_to_load_from_cache(identifier, name), str)
+            except Exception:  # noqa: BLE001 - an unreadable cache entry is one to fetch
+                return False
+
+        # A scoped job fetches exactly these files: only the GGUFs it would download count.
+        wanted = [f for f in files if f.lower().endswith(".gguf") and not cached(f)]
+        if identifier.lower() + "/" == _UMBRELLA_PREFIX:
+            rows = sorted({f"{AUDIO_CPP_REPO}/{f.split('/')[0]}" for f in wanted if "/" in f})
+        elif not wanted:
+            rows = []
+        variant = None
+    elif is_umbrella_id(identifier):
         return
-    if model is not None:
-        _refuse_stale_download(model, hf_token)
+    for row in rows:
+        try:
+            model = resolve(row, variant, hf_token, network = not hub_offline())
+        except Exception:  # noqa: BLE001 - a repo that cannot be resolved is the downloader's to report
+            continue
+        if model is not None:
+            _refuse_stale_download(model, hf_token)
 
 
 def download_target(
