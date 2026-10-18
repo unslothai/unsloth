@@ -101,9 +101,9 @@ async def listed_gguf(caller: Caller, model: str, variant: Optional[str]) -> Opt
     repo, variant = _split(model, variant)
     if repo.lower().startswith(AUDIO_CPP_PREFIX):
         return False
-    if repo.startswith("ref:"):
-        # A trained load's handle: only a GGUF export carries a variant (its quantization).
-        return bool(variant)
+    if repo.startswith("ref:") and variant:
+        # A trained GGUF export's handle carries its quantization; any other ref: the listing decides.
+        return True
     if repo.lower().endswith(".gguf"):
         return True
     listing = await _variants(caller, repo)
