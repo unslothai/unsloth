@@ -181,6 +181,11 @@ def moe_info_from_config(
     return info
 
 
+class MoeProbeError(RuntimeError):
+    """The config could not be read (network, Hub, I/O): unknown, not a dense answer, so an export
+    with REAP on must wait or have REAP turned off rather than go out unpruned."""
+
+
 def moe_export_info(
     model: str,
     hf_token = None,
@@ -189,8 +194,8 @@ def moe_export_info(
     adapter_base: Optional[str] = None,
 ) -> Optional[dict]:
     """MoE info for a local checkpoint / model folder or a Hub id (a LoRA folder resolves to its
-    base, or to ``adapter_base`` when the caller already authorized it). Never raises: an
-    unreadable config just hides the option."""
+    base, or to ``adapter_base`` when the caller already authorized it). None for a dense model, a
+    repo without config.json or a malformed one; ``MoeProbeError`` when the config could not be read."""
     try:
         from utils.models.diffusion_lm import _local_adapter_base
         from utils.models.model_config import _read_raw_config_json
@@ -231,9 +236,14 @@ def moe_export_info(
         ):
             return None
         return info
-    except Exception as exc:
+    except MoeProbeError:
+        raise
+    except ValueError as exc:
+        # A malformed config.json (JSONDecodeError and friends) stays malformed: hide the option.
         logger.debug("MoE detection skipped for '%s': %s", model, exc)
         return None
+    except Exception as exc:
+        raise MoeProbeError(f"Could not read the config of '{model}': {exc}") from exc
 
 
 def _options_key(options: dict) -> Tuple[float, int, Optional[str]]:

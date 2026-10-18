@@ -445,7 +445,12 @@ async def get_moe_info(
 ):
     """Routed-expert counts for the REAP option on the export page; null counts for a dense model.
     The token (gated repos) comes in the X-HF-Token header, as for /api/models/export-size."""
-    from core.export.reap import hub_adapter_has_mtp_head, hub_file_exists, moe_export_info
+    from core.export.reap import (
+        MoeProbeError,
+        hub_adapter_has_mtp_head,
+        hub_file_exists,
+        moe_export_info,
+    )
     from routes.models import _normalize_hf_token, _require_model_access_or_caller_token
     from utils.paths import is_local_path
 
@@ -466,38 +471,42 @@ async def get_moe_info(
     hub_adapter = not local and await asyncio.to_thread(
         hub_file_exists, model, "adapter_config.json", probe_token
     )
-    # A local folder never reaches the network; a Hub id reads only its config.json.
-    info = (
-        None
-        if hub_adapter
-        else await asyncio.to_thread(
-            moe_export_info,
-            model,
-            probe_token,
-            local,
-            adapter_base = adapter_base,
+    try:
+        # A local folder never reaches the network; a Hub id reads only its config.json.
+        info = (
+            None
+            if hub_adapter
+            else await asyncio.to_thread(
+                moe_export_info,
+                model,
+                probe_token,
+                local,
+                adapter_base = adapter_base,
+            )
         )
-    )
-    if info is None and not local:
-        # A Hub LoRA repo publishes adapter_config.json, not config.json: probe its base, which is
-        # authorized first like the adapter.
-        from utils.models.model_config import get_base_model_from_lora_identifier
+        if info is None and not local:
+            # A Hub LoRA repo publishes adapter_config.json, not config.json: probe its base, which is
+            # authorized first like the adapter.
+            from utils.models.model_config import get_base_model_from_lora_identifier
 
-        base = await asyncio.to_thread(get_base_model_from_lora_identifier, model, probe_token)
-        if (
-            base
-            and base != model
-            and await asyncio.to_thread(hub_adapter_has_mtp_head, model, probe_token)
-        ):
-            # Unsloth's loader re-attaches this adapter's trained MTP head, which REAP refuses.
-            base = None
-        if base and base != model:
-            base_local = is_local_path(base)
-            if base_local:
-                validate_job_paths({"base_model": base, "hf_token": token})
-            else:
-                await _require_model_access_or_caller_token(base, token)
-            info = await asyncio.to_thread(moe_export_info, base, probe_token, base_local)
+            base = await asyncio.to_thread(get_base_model_from_lora_identifier, model, probe_token)
+            if (
+                base
+                and base != model
+                and await asyncio.to_thread(hub_adapter_has_mtp_head, model, probe_token)
+            ):
+                # Unsloth's loader re-attaches this adapter's trained MTP head, which REAP refuses.
+                base = None
+            if base and base != model:
+                base_local = is_local_path(base)
+                if base_local:
+                    validate_job_paths({"base_model": base, "hf_token": token})
+                else:
+                    await _require_model_access_or_caller_token(base, token)
+                info = await asyncio.to_thread(moe_export_info, base, probe_token, base_local)
+    except MoeProbeError as exc:
+        # Unknown is not dense: the page keeps a REAP export blocked and offers a retry.
+        raise HTTPException(status_code = 503, detail = str(exc)) from exc
     return MoeInfoResponse(model = model, **(info or {}))
 
 

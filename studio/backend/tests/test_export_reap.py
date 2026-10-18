@@ -1180,3 +1180,47 @@ def test_moe_info_route_probes_a_hub_adapter_through_its_base_even_with_a_config
     )
     assert "org/lora" not in probed
     assert res.num_experts == (None if mtp_head else 8)
+
+
+def test_probe_tells_an_unreadable_config_from_a_dense_or_missing_one(tmp_path, monkeypatch):
+    import utils.models.model_config as model_config
+
+    # Read failure (network, Hub 5xx): unknown, raised for the route to report.
+    def flaky(*a, **k):
+        raise OSError("Connection reset by peer")
+
+    monkeypatch.setattr(model_config, "_read_raw_config_json", flaky)
+    with pytest.raises(reap_mod.MoeProbeError, match = "Connection reset"):
+        reap_mod.moe_export_info("org/moe", local_files_only = False)
+    # No config.json at all (a GGUF repo): a definite answer.
+    monkeypatch.setattr(model_config, "_read_raw_config_json", lambda *a, **k: None)
+    assert reap_mod.moe_export_info("org/gguf-only", local_files_only = False) is None
+    # A malformed config.json stays malformed: hidden, not retried.
+    folder = tmp_path / "broken"
+    folder.mkdir()
+    (folder / "config.json").write_text("{not json")
+    monkeypatch.undo()
+    assert reap_mod.moe_export_info(str(folder)) is None
+
+
+def test_moe_info_route_answers_503_when_the_config_cannot_be_read(monkeypatch):
+    # The page then keeps a REAP export blocked with a retry instead of exporting unpruned.
+    from fastapi import HTTPException
+
+    from routes import export as export_route
+    import routes.models as models_route
+
+    monkeypatch.setattr(models_route, "_require_model_access_or_caller_token", _async_none)
+    monkeypatch.setattr(reap_mod, "hub_file_exists", lambda repo, name, token = None: False)
+
+    def unreadable(*a, **k):
+        raise reap_mod.MoeProbeError("Could not read the config of 'org/moe': timeout")
+
+    monkeypatch.setattr(reap_mod, "moe_export_info", unreadable)
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(
+            export_route.get_moe_info(
+                model = "org/moe", hf_token = None, current_subject = "t", allow_ambient = False
+            )
+        )
+    assert err.value.status_code == 503
