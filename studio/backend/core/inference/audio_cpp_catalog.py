@@ -117,7 +117,9 @@ def _spec_targets(index: dict[str, dict], folders: Sequence[str]) -> tuple[dict,
     """``({umbrella folder: family}, {community repo: family})`` from the specs' gguf packages."""
     by_lower = {f.lower(): f for f in folders}
     umbrella: dict[str, str] = {}
-    community: dict[str, str] = {}
+    # A repo several specs download from (mirek190/audio.cpp: GLM-TTS, Hviske, OuteTTS) is not one
+    # model: its bare id resolves to whichever GGUF ranks first, so only single-family repos list.
+    community: dict[str, tuple[str, set[str]]] = {}
     for family, spec in index.items():
         packages = spec.get("packages")
         base = _dict(_dict(spec.get("package_defaults")).get("download"))
@@ -132,8 +134,8 @@ def _spec_targets(index: dict[str, dict], folders: Sequence[str]) -> tuple[dict,
                 if folder:
                     umbrella.setdefault(folder, family)
             elif acm._REPO_ID_RE.match(repo):
-                community.setdefault(repo, family)
-    return umbrella, community
+                community.setdefault(repo.lower(), (repo, set()))[1].add(family)
+    return umbrella, {repo: f.pop() for repo, f in community.values() if len(f) == 1}
 
 
 def _dict(value: Any) -> dict:
@@ -339,7 +341,6 @@ def _build(network: bool, specs_dir: Optional[Path]) -> tuple[AudioCatalogRespon
         family = acm.family_from_names((name, *(Path(f.path).name for f in folder_files)))
         family = None if family in placed else family
         _files, saved_family, saved_spec = saved_folders.get(name) or ((), None, None)
-        saved_family = None if saved_family in placed else saved_family
         if family not in acm.FAMILIES and family not in index and saved_family:
             found[name] = (saved_family, _dict(saved_spec) or None)
             continue
