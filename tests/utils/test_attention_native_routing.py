@@ -166,7 +166,10 @@ def test_select_prefers_native_over_xformers(monkeypatch, use_varlen):
     monkeypatch.setattr(ad, "HAS_FLASH_ATTENTION", False)
     monkeypatch.setattr(ad, "HAS_XFORMERS", True)
     monkeypatch.setattr(ad, "_NATIVE_BEATS_XFORMERS", True)
-    assert ad.select_attention_backend(use_varlen) == ad.SDPA
+    monkeypatch.setattr(ad, "_SDPA_PACKED_SEGMENTS", True)
+    # Packed route prefers torch's kernels; dense calls keep xformers (block-diagonal causal_mask,
+    # no KV-cache expansion on fp32 decode).
+    assert ad.select_attention_backend(use_varlen) == (ad.SDPA if use_varlen else ad.XFORMERS)
     monkeypatch.setattr(ad, "_NATIVE_BEATS_XFORMERS", False)
     assert ad.select_attention_backend(use_varlen) == ad.XFORMERS
     # FlashAttention installed: unchanged.
@@ -244,7 +247,7 @@ def test_packed_segments_opt_out_keeps_xformers_for_packed_calls(monkeypatch):
     monkeypatch.setattr(ad, "_SDPA_PACKED_SEGMENTS", False)
     # Packed SDPA would build the dense (T, T) mask under the opt-out.
     assert ad.select_attention_backend(use_varlen = True) == ad.XFORMERS
-    assert ad.select_attention_backend(use_varlen = False) == ad.SDPA
+    assert ad.select_attention_backend(use_varlen = False) == ad.XFORMERS
 
 
 def test_sentence_unpadding_keeps_xformers_when_training_prefers_native(monkeypatch):
@@ -262,3 +265,55 @@ def test_sentence_unpadding_keeps_xformers_when_training_prefers_native(monkeypa
     # No xformers either: unpadding stays off rather than padding silently on an unsupported path.
     monkeypatch.setattr(ad, "HAS_XFORMERS", False)
     assert unpad._unpadding_backend() is None
+
+
+@pytest.mark.parametrize(
+    "needs_grad, dropout_p, expect",
+    [
+        (False, 0.0, True),  # inference: flash takes GQA
+        (True, 0.0, False),  # training: only math takes GQA, mem-efficient takes expanded K/V
+        (False, 0.1, False),  # dropout: same
+    ],
+)
+def test_gqa_probe_carries_grad_and_dropout(monkeypatch, needs_grad, dropout_p, expect):
+    seen = []
+
+    def choice(
+        q,
+        k,
+        v,
+        attn_mask = None,
+        dropout_p = 0.0,
+        is_causal = False,
+        enable_gqa = False,
+        **_,
+    ):
+        training = q.requires_grad and torch.is_grad_enabled()
+        seen.append((training, dropout_p))
+        if training or dropout_p:
+            return MATH if enable_gqa else EFFICIENT
+        return FLASH
+
+    monkeypatch.setattr(torch, "_fused_sdp_choice", choice)
+    ad._sdpa_gqa_choices.cache_clear()
+    try:
+        assert (
+            ad._sdpa_gqa_state("cpu", torch.float32, 64, 8, 2, True, False, needs_grad, dropout_p)
+            is expect
+        )
+        assert seen and all(entry == (needs_grad, dropout_p) for entry in seen)
+    finally:
+        ad._sdpa_gqa_choices.cache_clear()
+
+
+def test_takes_gqa_reads_requires_grad_and_dropout(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ad, "_sdpa_gqa_state", lambda *args: calls.append(args[-2:]) or True)
+    Q = torch.empty(1, 8, 4, 64)
+    K = torch.empty(1, 2, 4, 64)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    ad._sdpa_takes_gqa(Q, K, True, False)
+    ad._sdpa_takes_gqa(Q.requires_grad_(), K, True, False, None, 0.25)
+    with torch.no_grad():
+        ad._sdpa_takes_gqa(Q, K, True, False)
+    assert calls == [(False, 0.0), (True, 0.25), (False, 0.0)]

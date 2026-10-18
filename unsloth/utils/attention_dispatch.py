@@ -270,12 +270,26 @@ if hasattr(torch.compiler, "assume_constant_result"):
 
 
 @functools.lru_cache(maxsize = 128)
-def _sdpa_gqa_choices(device, dtype, head_dim, n_heads, n_kv_heads, is_causal, has_mask, backends):
-    """(SDPBackend with enable_gqa, SDPBackend with K/V expanded) for these shapes, -1 if unknown."""
+def _sdpa_gqa_choices(
+    device,
+    dtype,
+    head_dim,
+    n_heads,
+    n_kv_heads,
+    is_causal,
+    has_mask,
+    needs_grad,
+    dropout_p,
+    backends,
+):
+    """(SDPBackend with enable_gqa, SDPBackend with K/V expanded) for these shapes, -1 if unknown.
+    The probe tensors carry the real call's requires_grad and dropout: backends differ on both."""
     try:
         q = torch.empty(1, n_heads, 128, head_dim, device = device, dtype = dtype)
         k = torch.empty(1, n_kv_heads, 128, head_dim, device = device, dtype = dtype)
         k_full = torch.empty(1, n_heads, 128, head_dim, device = device, dtype = dtype)
+        if needs_grad:
+            q, k, k_full = (t.requires_grad_() for t in (q, k, k_full))
         mask = torch.ones(1, 1, 128, 128, device = device, dtype = torch.bool) if has_mask else None
     except Exception:
         return -1, -1
@@ -285,9 +299,12 @@ def _sdpa_gqa_choices(device, dtype, head_dim, n_heads, n_kv_heads, is_causal, h
         # Each on its own: torch raises when no enabled backend fits, and a GQA call nothing
         # takes must still learn whether the expanded call would run.
         try:
-            return int(
-                torch._fused_sdp_choice(q, key, key, attn_mask = mask, is_causal = causal, **kwargs)
-            )
+            with torch.set_grad_enabled(needs_grad):
+                return int(
+                    torch._fused_sdp_choice(
+                        q, key, key, attn_mask = mask, dropout_p = dropout_p, is_causal = causal, **kwargs
+                    )
+                )
         except Exception:
             return None
 
@@ -303,7 +320,17 @@ def _sdpa_gqa_choices(device, dtype, head_dim, n_heads, n_kv_heads, is_causal, h
 _SDPA_NO_BACKEND = -2
 
 
-def _sdpa_gqa_state(device, dtype, head_dim, n_heads, n_kv_heads, is_causal, has_mask) -> bool:
+def _sdpa_gqa_state(
+    device,
+    dtype,
+    head_dim,
+    n_heads,
+    n_kv_heads,
+    is_causal,
+    has_mask,
+    needs_grad = False,
+    dropout_p = 0.0,
+) -> bool:
     """False when enable_gqa would leave SDPA only its math kernel while expanded K/V would not.
     Flash and cuDNN take GQA, the memory-efficient kernel does not (before torch 2.14), so fp32,
     pre-sm80 GPUs and masked calls flash cannot run would otherwise fall to math: several times
@@ -317,7 +344,16 @@ def _sdpa_gqa_state(device, dtype, head_dim, n_heads, n_kv_heads, is_causal, has
         tuple(getattr(torch._C, "_get_sdp_priority_order", tuple)()),
     )
     gqa, mha = _sdpa_gqa_choices(
-        device, dtype, head_dim, n_heads, n_kv_heads, is_causal, has_mask, backends
+        device,
+        dtype,
+        head_dim,
+        n_heads,
+        n_kv_heads,
+        is_causal,
+        has_mask,
+        needs_grad,
+        dropout_p,
+        backends,
     )
     from torch.nn.attention import SDPBackend
 
@@ -331,14 +367,32 @@ if hasattr(torch.compiler, "assume_constant_result"):
     _sdpa_gqa_state = torch.compiler.assume_constant_result(_sdpa_gqa_state)
 
 
-def _sdpa_takes_gqa(Q: Tensor, K: Tensor, is_causal: bool, has_mask: bool) -> bool:
+def _sdpa_takes_gqa(
+    Q: Tensor,
+    K: Tensor,
+    is_causal: bool,
+    has_mask: bool,
+    V: Optional[Tensor] = None,
+    dropout_p = 0.0,
+) -> bool:
     """Whether to pass enable_gqa (True) or expand K/V (False) for this SDPA call."""
     if not SDPA_HAS_GQA:
         return False
     if not Q.is_cuda:
         return True
+    needs_grad = torch.is_grad_enabled() and any(
+        t is not None and t.requires_grad for t in (Q, K, V)
+    )
     return _sdpa_gqa_state(
-        str(Q.device), Q.dtype, Q.shape[-1], Q.shape[1], K.shape[1], bool(is_causal), bool(has_mask)
+        str(Q.device),
+        Q.dtype,
+        Q.shape[-1],
+        Q.shape[1],
+        K.shape[1],
+        bool(is_causal),
+        bool(has_mask),
+        bool(needs_grad),
+        float(dropout_p or 0.0),
     )
 
 
@@ -480,7 +534,9 @@ def _sdpa_packed_segments(
                 is_causal = is_causal,
             )
         kwargs["is_causal"] = is_causal and not windowed
-        gqa = n_groups != 1 and _sdpa_takes_gqa(Q, K, kwargs["is_causal"], windowed)
+        gqa = n_groups != 1 and _sdpa_takes_gqa(
+            Q, K, kwargs["is_causal"], windowed, V, kwargs.get("dropout_p", 0.0)
+        )
         if gqa:
             kwargs["enable_gqa"] = True
         K_run, V_run = kv(gqa)
@@ -654,8 +710,11 @@ def select_attention_backend(use_varlen: bool = False) -> str:
             return FLASH_VARLEN
         else:
             return FLASH_DENSE
-    # With UNSLOTH_SDPA_PACKED_SEGMENTS off, packed SDPA builds a dense (T, T) mask: keep xformers.
-    if HAS_XFORMERS and not (_NATIVE_BEATS_XFORMERS and (_SDPA_PACKED_SEGMENTS or not use_varlen)):
+    # Only the packed route prefers torch's kernels (varlen / per-segment SDPA). Dense calls keep
+    # xformers: it alone consumes a caller's block-diagonal causal_mask, and expanding a GQA KV cache
+    # for SDPA on fp32 decode costs memory. With UNSLOTH_SDPA_PACKED_SEGMENTS off, packed SDPA would
+    # build a dense (T, T) mask, so xformers stays there too.
+    if HAS_XFORMERS and not (use_varlen and _NATIVE_BEATS_XFORMERS and _SDPA_PACKED_SEGMENTS):
         return XFORMERS
     return SDPA
 
@@ -1112,7 +1171,12 @@ def _run_attention(
             use_sdpa_gqa = False
 
         if use_sdpa_gqa and not _sdpa_takes_gqa(
-            Q, K, kwargs.get("is_causal", False), kwargs.get("attn_mask") is not None
+            Q,
+            K,
+            kwargs.get("is_causal", False),
+            kwargs.get("attn_mask") is not None,
+            V,
+            kwargs.get("dropout_p", 0.0),
         ):
             use_sdpa_gqa = False
 
