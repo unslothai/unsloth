@@ -2734,14 +2734,20 @@ def companion_files(path: str, names: Iterable[str]) -> tuple[str, ...]:
     return tuple(found)
 
 
-def _fetches_gguf(repo_id: str, path: str, hf_token: Optional[str]) -> bool:
-    """Whether a download job would fetch the GGUF ``path`` of ``repo_id``. The downloader links a blob
-    already stored under the Hub's current etag and fetches anything else, so a cached older copy of the
-    same size still counts as fetched. Offline, or with the Hub unreachable, any cached copy counts."""
+def _fetches_gguf(
+    repo_id: str,
+    path: str,
+    hf_token: Optional[str],
+    hub_cache: Optional[Path] = None,
+) -> bool:
+    """Whether a download job into ``hub_cache`` would fetch the GGUF ``path`` of ``repo_id``. The
+    downloader keeps a blob stored under the Hub's current etag (or, without symlinks, the file in the
+    current commit's snapshot) and fetches anything else, so a cached older copy of the same size still
+    counts as fetched. Offline, or with the Hub unreachable, any cached copy counts."""
     if not path.lower().endswith(".gguf"):
         return False
     try:
-        snapshots = snapshot_dirs(repo_id)
+        snapshots = snapshot_dirs(repo_id, hub_cache)
     except Exception:  # noqa: BLE001 - an unreadable cache is one to fetch into
         snapshots = []
     on_disk = any((snapshot / path).is_file() for snapshot in snapshots)
@@ -2749,20 +2755,23 @@ def _fetches_gguf(repo_id: str, path: str, hf_token: Optional[str]) -> bool:
         return not on_disk
     try:
         from huggingface_hub import get_hf_file_metadata, hf_hub_url
-        etag = get_hf_file_metadata(
-            hf_hub_url(repo_id, path), token = hf_token or None, timeout = 10
-        ).etag
+        meta = get_hf_file_metadata(hf_hub_url(repo_id, path), token = hf_token or None, timeout = 10)
     except Exception:  # noqa: BLE001 - unreachable Hub: judge by the cache alone
         return not on_disk
+    etag, commit = getattr(meta, "etag", None), getattr(meta, "commit_hash", None)
     if not etag or not snapshots:
         return not on_disk
-    return not (snapshots[0].parent.parent / "blobs" / etag).is_file()
+    repo_dir = snapshots[0].parent.parent
+    if (repo_dir / "blobs" / etag).is_file():
+        return False
+    return not (commit and (repo_dir / "snapshots" / commit / path).is_file())
 
 
 def _refuse_stale_download(
     model: AudioCppModel,
     hf_token: Optional[str],
     fetched: Sequence[str] = (),
+    hub_cache: Optional[Path] = None,
 ) -> None:
     """Raise ``AudioCppRuntimeTooOldError`` when a download job for ``model`` would fetch GGUFs
     the installed runtime is too old to load; ``fetched`` are files already known to be fetched."""
@@ -2789,7 +2798,7 @@ def _refuse_stale_download(
         if item.local_path or not item.repo_id:
             continue
         if any(
-            f.path in fetched or _fetches_gguf(item.repo_id, f.path, hf_token)
+            f.path in fetched or _fetches_gguf(item.repo_id, f.path, hf_token, hub_cache)
             for f in item.variant.files
         ):
             raise AudioCppRuntimeTooOldError(
@@ -2803,6 +2812,7 @@ def refuse_stale_download(
     hf_token: Optional[str] = None,
     *,
     files: Sequence[str] = (),
+    hub_cache: Optional[Path] = None,
 ) -> None:
     """The old-runtime gate for a download job of a repo outside the umbrella, such as
     ``audio-cpp/MiniMax-Music3-GGUF``, or of a scoped job's ``files`` in any repo;
@@ -2816,7 +2826,7 @@ def refuse_stale_download(
     rows: dict[str, Optional[list[str]]] = {identifier: None}
     if files:
         # A scoped job fetches exactly these files: only the GGUFs it would download count.
-        wanted = [f for f in files if _fetches_gguf(identifier, f, hf_token)]
+        wanted = [f for f in files if _fetches_gguf(identifier, f, hf_token, hub_cache)]
         umbrella = identifier.lower() + "/" == _UMBRELLA_PREFIX
         rows = {}
         for name in wanted:
@@ -2843,7 +2853,7 @@ def refuse_stale_download(
             continue
         for found in checked:
             if found is not None:
-                _refuse_stale_download(found, hf_token, fetched = names or ())
+                _refuse_stale_download(found, hf_token, names or (), hub_cache)
 
 
 def download_target(
@@ -2851,6 +2861,7 @@ def download_target(
     variant: Optional[str],
     hf_token: Optional[str] = None,
     persist: bool = True,
+    hub_cache: Optional[Path] = None,
 ) -> Optional[tuple[str, str]]:
     """``(repo, variant key)`` the Hub GGUF downloader fetches for an umbrella folder row, else None.
 
@@ -2864,7 +2875,7 @@ def download_target(
     if model is None or not model.repo_id or not model.variant.primary:
         return None
     if persist:
-        _refuse_stale_download(model, hf_token)
+        _refuse_stale_download(model, hf_token, hub_cache = hub_cache)
     from hub.utils.gguf import gguf_variant_key
 
     key = gguf_variant_key(model.variant.primary)

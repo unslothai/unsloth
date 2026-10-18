@@ -107,7 +107,12 @@ def test_a_scoped_start_runs_the_old_audio_runtime_gate_first(monkeypatch):
     _shared_setup_1(monkeypatch)
     seen = []
 
-    async def refuse(repo_id, files, hf_token):
+    async def refuse(
+        repo_id,
+        files,
+        hf_token,
+        hub_cache = None,
+    ):
         seen.append((repo_id, files))
         raise HTTPException(status_code = 409, detail = "needs a newer audio runtime")
 

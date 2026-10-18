@@ -89,7 +89,12 @@ def _hub(monkeypatch, tmp_path, remote: dict) -> Path:
         huggingface_hub,
         "get_hf_file_metadata",
         lambda url, **kw: type(
-            "M", (), {"etag": remote.get(url.rsplit("/", 1)[-1], remote.get("etag"))}
+            "M",
+            (),
+            {
+                "etag": remote.get(url.rsplit("/", 1)[-1], remote.get("etag")),
+                "commit_hash": remote.get("commit"),
+            },
         )(),
     )
     return root
@@ -336,6 +341,51 @@ def test_a_scoped_download_job_is_gated_on_the_files_it_fetches(monkeypatch, tmp
     remote["etag"] = "refreshed"
     with pytest.raises(HTTPException):
         scoped(acm.AUDIO_CPP_REPO, files)
+
+
+def test_a_download_job_reads_the_cache_it_writes_into(monkeypatch, tmp_path):
+    from hub.services.models import downloads
+
+    model = _model()
+    path = model.variant.files[0].path
+    monkeypatch.setattr(acm, "resolve", lambda *a, **kw: model)
+    _hub(monkeypatch, tmp_path, {"etag": "cursha", "commit": "c0ffee"})
+    _runtime(monkeypatch, tmp_path / "old", record = {"release_tag": "v0.9.1-unsloth.1"})
+    chosen = tmp_path / "chosen"
+    _cache(chosen, model.repo_id, path, "cursha")
+    # Complete in the chosen folder, empty in the Models folder: the job fetches nothing.
+    acm._refuse_stale_download(model, None, hub_cache = chosen)
+    with pytest.raises(audio_cpp_server.AudioCppRuntimeTooOldError):
+        acm._refuse_stale_download(model, None)
+    assert downloads._gate_hub_cache(None) is None
+    assert downloads._gate_hub_cache("   ") is None
+
+
+def test_a_cache_without_symlinks_counts_as_complete(monkeypatch, tmp_path):
+    # Without symlink support huggingface_hub moves the blob into the commit's snapshot.
+    model = _model()
+    path = model.variant.files[0].path
+    monkeypatch.setattr(acm, "resolve", lambda *a, **kw: model)
+    root = _hub(monkeypatch, tmp_path, {"etag": "cursha", "commit": "c0ffee"})
+    target = root / ("models--" + model.repo_id.replace("/", "--")) / "snapshots" / "c0ffee" / path
+    target.parent.mkdir(parents = True)
+    target.write_bytes(b"GGUF")
+    _runtime(monkeypatch, tmp_path / "old", record = {"release_tag": "v0.9.1-unsloth.1"})
+    acm._refuse_stale_download(model, None)
+
+
+def test_a_full_snapshot_job_is_never_gated(monkeypatch, tmp_path):
+    import asyncio
+
+    from hub.services.models import downloads
+
+    looked_up = []
+    monkeypatch.setattr(acm, "resolve", lambda ident, *a, **kw: looked_up.append(ident))
+    _runtime(monkeypatch, tmp_path / "old", record = {"release_tag": "v0.9.1-unsloth.1"})
+    # No variant means a full snapshot, which skips every *.gguf.
+    repo = "audio-cpp/MiniMax-Music3-GGUF"
+    assert asyncio.run(downloads._audio_cpp_target(repo, None, persist = True)) == (repo, None)
+    assert looked_up == []
 
 
 def test_a_scoped_job_is_checked_at_the_quant_of_its_file(monkeypatch, tmp_path):

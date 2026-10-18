@@ -215,12 +215,25 @@ def _download_cache_paths(download_dir: Optional[str]):
     return paths
 
 
+def _gate_hub_cache(download_dir: Optional[str]) -> Optional[Path]:
+    """The Hub cache a job with ``download_dir`` writes into, without registering the folder; None
+    (the Models folder) for no folder or one the job itself will refuse."""
+    if not (download_dir or "").strip():
+        return None
+    try:
+        from utils.hf_cache_settings import download_cache_paths
+        return Path(download_cache_paths(download_dir).hub_cache)
+    except Exception:  # noqa: BLE001 - an invalid folder is the job's to report
+        return None
+
+
 async def _audio_cpp_target(
     repo_id: str,
     variant: Optional[str],
     hf_token: Optional[str] = None,
     persist: bool = False,
     stale_gate: bool = True,
+    hub_cache: Optional[Path] = None,
 ) -> tuple[str, Optional[str]]:
     """``(repo, variant)`` a download of an audio.cpp umbrella folder row really works on.
 
@@ -232,10 +245,13 @@ async def _audio_cpp_target(
     from core.inference.audio_cpp_server import AudioCppRuntimeTooOldError
 
     if not text.lower().startswith("audio-cpp/audio.cpp-gguf/"):
-        if persist and stale_gate:
+        # A variant-less job is a full snapshot, which never fetches a GGUF (SNAPSHOT_IGNORE_PATTERNS).
+        if persist and stale_gate and variant:
             from core.inference.audio_cpp_models import refuse_stale_download
             try:
-                await asyncio.to_thread(refuse_stale_download, text, variant, hf_token)
+                await asyncio.to_thread(
+                    refuse_stale_download, text, variant, hf_token, hub_cache = hub_cache
+                )
             except AudioCppRuntimeTooOldError as exc:
                 raise HTTPException(status_code = 409, detail = str(exc)) from exc
         return text, variant
@@ -243,7 +259,7 @@ async def _audio_cpp_target(
     try:
         from core.inference.audio_cpp_models import download_target
         target = await asyncio.to_thread(
-            download_target, text, (variant or "").strip() or None, hf_token, persist
+            download_target, text, (variant or "").strip() or None, hf_token, persist, hub_cache
         )
     except AudioCppRuntimeTooOldError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
@@ -256,14 +272,19 @@ async def _audio_cpp_target(
 
 
 async def _refuse_stale_scoped_download(
-    repo_id: str, files: list[str], hf_token: Optional[str]
+    repo_id: str,
+    files: list[str],
+    hf_token: Optional[str],
+    hub_cache: Optional[Path] = None,
 ) -> None:
     """A scoped job skips ``_audio_cpp_target``; its audio GGUFs get the same old-runtime gate."""
     from core.inference.audio_cpp_models import refuse_stale_download
     from core.inference.audio_cpp_server import AudioCppRuntimeTooOldError
 
     try:
-        await asyncio.to_thread(refuse_stale_download, repo_id, None, hf_token, files = files)
+        await asyncio.to_thread(
+            refuse_stale_download, repo_id, None, hf_token, files = files, hub_cache = hub_cache
+        )
     except AudioCppRuntimeTooOldError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
 
@@ -288,9 +309,16 @@ async def download_model_response(
     # The old-runtime preflight resolves with ambient credentials (resolve() has no anonymous mode),
     # so a caller that must stay anonymous skips it for repos other than the public umbrella.
     stale_gate = bool(hf_token) or allow_ambient_token
+    # The gate reads the cache the job writes into, not the Models folder.
+    gate_cache = _gate_hub_cache(getattr(body, "download_dir", None))
     if body.gguf_variant or not body.scope_id:
         target_repo, target_variant = await _audio_cpp_target(
-            body.repo_id, body.gguf_variant, hf_token, persist = True, stale_gate = stale_gate
+            body.repo_id,
+            body.gguf_variant,
+            hf_token,
+            persist = True,
+            stale_gate = stale_gate,
+            hub_cache = gate_cache,
         )
         if target_repo != body.repo_id.strip():
             body = body.model_copy(update = {"repo_id": target_repo, "gguf_variant": target_variant})
@@ -329,7 +357,7 @@ async def download_model_response(
             raise HTTPException(status_code = 400, detail = f"Invalid scope_id: {body.scope_id!r}")
         variant = scope_variant
         if stale_gate:
-            await _refuse_stale_scoped_download(repo_id, scoped_files, hf_token)
+            await _refuse_stale_scoped_download(repo_id, scoped_files, hf_token, gate_cache)
     key = _download_job_key(repo_id, variant)
     _reject_if_load_owned(key)
     # Size and Auto resolution may perform network probes, so keep both off the event loop.
