@@ -59,6 +59,7 @@ def test_efficient_call_latches_this_trainers_precision(monkeypatch):
     trainer = types.SimpleNamespace(
         args = types.SimpleNamespace(mixed_precision = "bf16", bf16 = True, fp16 = False),
         model = None,
+        use_vllm = True,
     )
     out = ns["_get_per_token_logps_and_entropies"](
         trainer, None, None, None, 4, compute_efficient = True
@@ -71,7 +72,11 @@ def test_efficient_call_latches_this_trainers_precision(monkeypatch):
 def test_efficient_call_keeps_an_existing_latch(monkeypatch):
     ns = _namespace()
     trainer = types.SimpleNamespace(
-        args = None, model = None, _autocast_enabled = False, _autocast_dtype = torch.float16
+        args = None,
+        model = None,
+        use_vllm = True,
+        _autocast_enabled = False,
+        _autocast_dtype = torch.float16,
     )
     ns["_get_per_token_logps_and_entropies"](trainer, None, None, None, 4, compute_efficient = True)
     assert trainer._autocast_enabled is False
@@ -86,6 +91,48 @@ def test_legacy_logprob_replacement_latches_too(monkeypatch):
     trainer = types.SimpleNamespace(
         args = types.SimpleNamespace(mixed_precision = "bf16", bf16 = True, fp16 = False),
         model = None,
+        use_vllm = True,
     )
     assert ns["_get_per_token_logps"](trainer, None, None, None, 4) is None
     assert trainer._autocast_dtype is torch.bfloat16
+
+
+def _forced_float32_trainer(use_vllm):
+    # What rl.py builds for a forced float32 model (Gemma3 on a T4, or dtype = torch.float16).
+    return types.SimpleNamespace(
+        args = types.SimpleNamespace(mixed_precision = "no", bf16 = False, fp16 = False),
+        model = types.SimpleNamespace(_unsloth_forced_float32 = True),
+        use_vllm = use_vllm,
+    )
+
+
+def test_efficient_call_without_vllm_leaves_forced_float32_unlatched(monkeypatch):
+    # Without vLLM and with nothing scored, nothing latched before the efficient call did, and zoo then
+    # trained a forced float32 model with no loss autocast. A latch here turns on float16 autocast.
+    monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "no")
+    monkeypatch.setenv("UNSLOTH_FORCE_FLOAT32", "1")
+    ns = _namespace()
+    trainer = _forced_float32_trainer(use_vllm = False)
+    assert ns["_get_per_token_logps_and_entropies"](
+        trainer, None, None, None, 4, compute_efficient = True
+    ) == (None, None)
+    assert not hasattr(trainer, "_autocast_enabled")
+    assert not hasattr(trainer, "_autocast_dtype")
+
+    legacy = {"torch": torch, "os": os}
+    exec(_function("_unsloth_grpo_autocast"), legacy)
+    exec(_function("_get_per_token_logps", "grpo_trainer__get_per_token_logps"), legacy)
+    trainer = _forced_float32_trainer(use_vllm = False)
+    assert legacy["_get_per_token_logps"](trainer, None, None, None, 4) is None
+    assert not hasattr(trainer, "_autocast_dtype")
+
+
+def test_efficient_call_with_vllm_latches_forced_float32_as_the_old_forward_did(monkeypatch):
+    # Under vLLM the old-policy forward always ran before the TRL gate came back and latched float16 autocast.
+    monkeypatch.setenv("UNSLOTH_FORCE_FLOAT32", "1")
+    ns = _namespace()
+    trainer = _forced_float32_trainer(use_vllm = True)
+    ns["_get_per_token_logps_and_entropies"](trainer, None, None, None, 4, compute_efficient = True)
+    assert trainer._autocast_enabled is True
+    assert trainer._autocast_dtype is torch.float16
+    assert trainer._autocast_force_float32 is True
