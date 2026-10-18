@@ -24,7 +24,6 @@ import {
   judgeTurnComplete,
   reportLayaOutcome,
 } from "@/features/chat/voice/voice-models-client";
-import { gateAddressed, resetAddressed } from "@/features/chat/voice/voice-addressed";
 import { attachInputSpectrum, detachInputSpectrum } from "@/features/chat/voice/voice-spectrum";
 import { publishSttDecision, publishVadDecision } from "@/features/chat/voice/voice-decisions";
 import { QUICK_CONTINUE_MS } from "@/features/chat/voice/laya-outcomes";
@@ -232,7 +231,6 @@ export function getHeldTurnText(): string {
 export function clearHeldTurn(): void {
   heldTurn = null;
   heldJudgeId = null;
-  resetAddressed();
 }
 
 // True from the first voiced frame until the session has emitted its transcript
@@ -422,17 +420,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         heldTurn = null;
         reportLayaOutcome(heldJudgeId, "flushed", { text });
         heldJudgeId = null;
-        void gateAddressed(text).then((verdict) => {
-          if (!verdict.submit) {
-            // Said to someone else: kept as context, nothing sent, listen on.
-            finish("stopped");
-            setTimeout(() => requestVoiceResume(), 0);
-            return;
-          }
-          emitSpeech(text, true);
-          finish("stopped", text);
-          setTimeout(() => requestVoiceSubmit(verdict.text), 0);
-        });
+        emitSpeech(text, true);
+        finish("stopped", text);
+        setTimeout(() => requestVoiceSubmit(text), 0);
         return;
       }
       finish("stopped");
@@ -570,16 +560,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         }
         heldTurn = null;
         if (transcript) {
-          // Was it even for the assistant? Decided before the reveal so an overheard
-          // turn never lands in the composer; with the gate off this submits as before.
-          const verdict = await gateAddressed(transcript);
-          if (ended) return;
-          if (!verdict.submit) {
-            if (bargedIn) requestVoiceBargeAbort();
-            finish("stopped");
-            setTimeout(() => requestVoiceResume(), 0);
-            return;
-          }
           // Fake a streaming reveal: replay the transcript as growing interim
           // results so the composer types it out char-by-char (like Web Speech),
           // then commit + send. Bails immediately if the session is superseded.
@@ -602,7 +582,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           // composer as before.
           emitSpeech(transcript, true);
           finish("stopped", transcript);
-          setTimeout(() => requestVoiceSubmit(verdict.text), 0);
+          setTimeout(() => requestVoiceSubmit(transcript), 0);
         } else {
           // STT heard nothing usable in the burst that held the reply.
           if (bargedIn) {

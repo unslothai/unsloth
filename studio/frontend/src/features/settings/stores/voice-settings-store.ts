@@ -187,10 +187,6 @@ export interface VoiceSettingsState {
   ttsVolume: number;
   setTtsVolume: (value: number) => void;
 
-  /** Answer only turns the addressed model says were for the assistant; the rest is kept as context. Off by default. */
-  voiceAddressedGate: boolean;
-  setVoiceAddressedGate: (value: boolean) => void;
-
   /** Log every voice-model verdict (with the transcript it judged) to the backend's decision log. Off by default. */
   voiceLogEnabled: boolean;
   setVoiceLogEnabled: (value: boolean) => void;
@@ -387,8 +383,6 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       ttsVolume: 1,
       setTtsVolume: (ttsVolume) => set({ ttsVolume }),
 
-      voiceAddressedGate: false,
-      setVoiceAddressedGate: (voiceAddressedGate) => set({ voiceAddressedGate }),
       voiceLogEnabled: false,
       setVoiceLogEnabled: (voiceLogEnabled) => set({ voiceLogEnabled }),
       voiceLogOptOutThreadIds: [],
@@ -472,7 +466,6 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           ttsRate: clampNumber(saved?.ttsRate, 0.5, 2, 1),
           ttsPitch: clampNumber(saved?.ttsPitch, 0, 2, 1),
           ttsVolume: clampNumber(saved?.ttsVolume, 0, 1, 1),
-          voiceAddressedGate: saved?.voiceAddressedGate === true,
           voiceLogEnabled: saved?.voiceLogEnabled === true,
           voiceLogOptOutThreadIds: Array.isArray(saved?.voiceLogOptOutThreadIds)
             ? saved.voiceLogOptOutThreadIds.filter((v): v is string => typeof v === "string" && !!v)

@@ -8,7 +8,7 @@ import { authFetch } from "@/features/auth";
 import { downloadFile } from "@/lib/native-files";
 import { voiceTrace } from "./voice-trace";
 
-export type LayaModel = "judge" | "filler" | "interject" | "addressed";
+export type LayaModel = "judge" | "filler" | "interject";
 
 export interface LayaModelStats {
   verdicts: number;

@@ -510,13 +510,6 @@ const VoiceDecisionCaption: FC = () => {
       at: d.interject.at,
       text: `mid-think · ${d.interject.action} ${Math.round(d.interject.confidence * 100)}%`,
     },
-    d.addressed && {
-      at: d.addressed.at,
-      text:
-        d.addressed.label === "assistant"
-          ? `for me · ${Math.round(d.addressed.confidence * 100)}%`
-          : `not for me · ${d.addressed.label}`,
-    },
     d.vad && { at: d.vad.at, text: `vad · ${d.vad.kept ? "kept" : "dropped"}` },
     d.stt && { at: d.stt.at, text: `stt · ${d.stt.kept ? "kept" : `dropped, ${d.stt.why}`}` },
   ]
