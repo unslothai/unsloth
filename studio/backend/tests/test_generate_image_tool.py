@@ -250,7 +250,9 @@ def test_omitted_steps_and_guidance_follow_the_loaded_model(
 ):
     engine.status_dict.update(status)
     monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(tmp_path / "w"))
-    result = _in_thread(OWNER, tools.execute_tool, "generate_image", {"prompt": "p"}, session_id = "s")
+    result = _in_thread(
+        OWNER, tools.execute_tool, "generate_image", {"prompt": "p"}, session_id = "s"
+    )
     assert result.startswith("Generated a 1024x1024 image"), result
     assert (engine.calls[0]["steps"], engine.calls[0]["guidance"]) == expected
 
