@@ -29,7 +29,7 @@ import {
   setMicMuted,
 } from "@/features/chat/adapters/studio-voice-loop-adapter";
 import { MicIcon as DictateMicIcon } from "@/lib/mic-icon";
-import { useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
+import { splitStreaming, useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
 import {
   fillerDelayMs,
   pickStage2,
@@ -38,6 +38,10 @@ import {
   toolKindOf,
   type FillerDecision,
   type ToolKind,
+  pickQuietFallback,
+  pickWriting,
+  QUIET_FALLBACK_AFTER_MS,
+  WRITING_AFTER_MS,
 } from "@/features/chat/voice/thinking-filler";
 import {
   fillerFromModel,
@@ -846,6 +850,10 @@ export const VoiceEngine: FC = () => {
           }, fillerDelayMs());
         }
         if (streamPollRef.current) clearInterval(streamPollRef.current);
+        // Per run: the bridge said when the classifier chose silence, and the one
+        // said while the answer is being written.
+        let quietFallbackAt: number | null = null;
+        let writingDone = false;
         streamPollRef.current = setInterval(() => {
           const f = fillerRef.current;
           const text = latestAssistantText();
@@ -854,15 +862,43 @@ export const VoiceEngine: FC = () => {
           } else {
             feedTextRef.current(text);
           }
+          const now = Date.now();
           if (
             f?.queued &&
             !f.stage2Done &&
             f.spokenAt !== null &&
             !text &&
-            Date.now() - f.spokenAt >= STAGE2_AFTER_MS
+            now - f.spokenAt >= STAGE2_AFTER_MS
           ) {
             f.stage2Done = true;
             sayAsideRef.current(pickStage2(latestAssistantToolKinds()));
+          }
+          // The classifier chose silence and nothing has played: the quiet reads
+          // as a miss after a couple of seconds, so bridge it.
+          if (
+            !f &&
+            quietFallbackAt === null &&
+            !isPlayingRef.current &&
+            now - runStartedAtRef.current >= QUIET_FALLBACK_AFTER_MS
+          ) {
+            quietFallbackAt = now;
+            voiceTrace("engine.fillerFallback", { sinceStart: now - runStartedAtRef.current });
+            sayAsideRef.current(pickQuietFallback());
+          }
+          // Text is arriving (the writing step) but its first sentence is still on
+          // the way, and the last aside was a while ago: "almost there" is true now,
+          // and the aside lands ahead of that first sentence.
+          const lastAsideAt = quietFallbackAt ?? f?.spokenAt ?? runStartedAtRef.current;
+          if (
+            !writingDone &&
+            text &&
+            splitStreaming(text).complete.length === 0 &&
+            !isPlayingRef.current &&
+            now - lastAsideAt >= WRITING_AFTER_MS
+          ) {
+            writingDone = true;
+            voiceTrace("engine.fillerWriting", { sinceAside: now - lastAsideAt });
+            sayAsideRef.current(pickWriting());
           }
           setIsReasoning(latestAssistantIsReasoning());
         }, 150);

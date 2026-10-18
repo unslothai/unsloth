@@ -10,6 +10,8 @@ import {
   consumePendingFiller,
   fillerDelayMs,
   pickStage2,
+  pickQuietFallback,
+  pickWriting,
   pickWeighted,
   setPendingFiller,
   toolKindOf,
@@ -38,4 +40,12 @@ test("delay is never instant and the pending slot reads once", () => {
   assert.equal(consumePendingFiller(), null);
   setPendingFiller({ say: false, cls: "none", phrase: "" });
   assert.equal(consumePendingFiller(), null);
+});
+
+test("the quiet fallback and the writing aside pick from their own banks", () => {
+  const zero = () => 0;
+  assert.equal(pickQuietFallback(zero), "Hmm, okay.");
+  assert.equal(pickWriting(zero), "Almost there.");
+  // "Almost there" is no longer a thinking phrase: it is said once the answer is being written.
+  assert.notEqual(pickStage2([], () => 0.99), "Almost there.");
 });

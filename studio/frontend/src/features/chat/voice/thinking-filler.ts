@@ -39,9 +39,38 @@ const STAGE2: Record<ToolKind | "elapsed", Weighted> = {
   elapsed: [
     ["Still on it.", 4],
     ["This is a larger request, one moment please.", 3],
-    ["Almost there.", 2],
+    ["Give me a second.", 2],
   ],
 };
+
+// The classifier chose silence but the reply is slow anyway: a short bridge so the
+// pause does not read as a miss.
+const QUIET_FALLBACK: Weighted = [
+  ["Hmm, okay.", 3],
+  ["One sec.", 3],
+  ["Let me think.", 2],
+];
+
+// The answer is being written and its first sentence is still on the way: said in
+// that gap, which is when "almost there" is true.
+const WRITING: Weighted = [
+  ["Almost there.", 4],
+  ["Here we go.", 2],
+  ["Okay, here it is.", 2],
+];
+
+export function pickQuietFallback(rand: () => number = Math.random): string {
+  return pickWeighted(QUIET_FALLBACK, rand);
+}
+
+export function pickWriting(rand: () => number = Math.random): string {
+  return pickWeighted(WRITING, rand);
+}
+
+// Nothing has played this long after the run started: say something.
+export const QUIET_FALLBACK_AFTER_MS = 2500;
+// Text is arriving but the first sentence has not played this long after the last aside.
+export const WRITING_AFTER_MS = 2500;
 
 export function pickWeighted(
   options: Weighted,
