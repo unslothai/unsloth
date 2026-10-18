@@ -329,8 +329,13 @@ export function DownloadManagerPanel({
         // flow as a right-aligned row so overlays stack instead of overlapping.
         // min-h-0 there: a flex item's min-height defaults to auto, so the capped
         // stack would squeeze the update card instead of this list.
+        // Below md the chat composer spans the full width at the bottom, so a
+        // bottom-4 corner lands on its send button (#14146): lift the overlay
+        // above the input bar there.
         "pointer-events-none",
-        positioned ? "fixed bottom-4 right-4 z-50" : "flex min-h-0 justify-end",
+        positioned
+          ? "fixed right-4 z-50 bottom-4 max-md:bottom-24"
+          : "flex min-h-0 justify-end",
       )}
     >
       {collapsed ? (
