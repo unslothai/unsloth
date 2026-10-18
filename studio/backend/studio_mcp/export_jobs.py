@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from studio_mcp import job_store
-from studio_mcp.job_store import finish, mark_cancelled, settle  # noqa: F401  (public names)
 from studio_mcp.tools import leaf_name
 
 CAPACITY = 64
