@@ -619,3 +619,45 @@ def test_fused_head_rechecked_after_head_is_replaced():
     assert fusable_head(model, model) is model.head
     model.head = torch.nn.Sequential(model.head)
     assert fusable_head(model, model) is None
+
+
+def _window_trainer(model, world = 1):
+    from collections import defaultdict
+    from unsloth.models.diffusion_trainer import DiffusionTrainer
+
+    trainer = DiffusionTrainer.__new__(DiffusionTrainer)
+    trainer.diffusion_profile = _profile("nemotron_labs_diffusion")
+    trainer.model, trainer._diffusion_metrics = model, defaultdict(list)
+    trainer.args = SimpleNamespace(average_tokens_across_devices = True, world_size = world)
+    trainer.accelerator = SimpleNamespace(num_processes = world, gather = lambda t: t.reshape(1))
+    trainer._prepare_inputs = lambda inputs: inputs
+    return trainer
+
+
+def test_nemotron_accumulation_window_matches_one_batch():
+    # Nemotron returns (sum_loss, num_mask_tokens) for the trainer to divide by the window's count, so
+    # micro-batches of 1 must give the summed loss and grads of the full batch under the same masks.
+    inputs, _ = _batch()
+    rows = [{k: v[i : i + 1] for k, v in inputs.items()} for i in range(len(inputs["input_ids"]))]
+    model, reference = _Bidirectional(), _Bidirectional()
+    trainer = _window_trainer(model)
+    torch.manual_seed(5)
+    samples, count = trainer.get_batch_samples(iter(rows), len(rows), "cpu")
+    masks = [s["_diffusion_masked_batch"][3] for s in samples]
+    assert int(count) == sum(int(m.sum()) for m in masks) and len({int(m.sum()) for m in masks}) > 1
+    total = sum(trainer.compute_loss(model, s, num_items_in_batch = count) for s in samples)
+    total.backward()
+
+    prepared = [
+        None if parts[0] is None else torch.cat(parts)
+        for parts in zip(*(s["_diffusion_masked_batch"] for s in samples))
+    ]
+    full = {**inputs, "_diffusion_masked_batch": tuple(prepared)}
+    loss, _, _ = trainer.diffusion_profile.compute_loss(reference, full, None)
+    loss.backward()
+    torch.testing.assert_close(total, loss, rtol = 1e-6, atol = 1e-6)
+    for (n, a), b in zip(model.named_parameters(), reference.parameters()):
+        torch.testing.assert_close(a.grad, b.grad, rtol = 1e-5, atol = 1e-7, msg = n)
+    assert trainer.compute_loss(model, samples[0]).item() == pytest.approx(
+        trainer.diffusion_profile.compute_loss(model, samples[0], None)[0].item()
+    )
