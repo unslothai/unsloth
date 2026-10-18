@@ -820,6 +820,7 @@ def _sandbox_sessions() -> list[_SandboxSession]:
         ).fetchall()
     finally:
         conn.close()
+    thread_ids = {row["id"] for row in threads}
     return [
         _SandboxSession(row["id"], row["id"], row["title"], pair_id = row["pair_id"])
         for row in threads
@@ -828,7 +829,9 @@ def _sandbox_sessions() -> list[_SandboxSession]:
             f"{_PROJECT_SESSION_PREFIX}{row['id']}", None, row["name"], project_id = row["id"]
         )
         for row in projects
-        if _studio_project_root(row["root_path"])
+        # A chat with this id owns the directory (_get_project_workdir): listing both walks it twice.
+        if f"{_PROJECT_SESSION_PREFIX}{row['id']}" not in thread_ids
+        and _studio_project_root(row["root_path"])
     ]
 
 

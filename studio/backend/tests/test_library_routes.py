@@ -2856,3 +2856,24 @@ def test_a_stream_link_reads_only_its_own_accounts_item(client, two_accounts):
     assert response.status_code == 404 and b"bob" not in response.content
     assert _stream(theirs_id, sign(alice, mine_id)).status_code == 401
     assert _stream(mine_id, sign(OWNER, mine_id)).status_code == 404
+
+
+@pytest.mark.parametrize("in_project", [False, True])
+def test_a_chat_named_like_its_project_session_is_listed_once(
+    client, signed_in, monkeypatch, tmp_path, in_project
+):
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects home"))
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    studio_db.upsert_chat_project(
+        {"id": "p-lib", "name": "Research", "createdAt": 1, "updatedAt": 1}
+    )
+    _sandbox_chat("a.txt", b"mine", thread = "project-p-lib")
+    if in_project:
+        studio_db.update_chat_thread("project-p-lib", {"projectId": "p-lib"})
+    library.invalidate_listing()
+    body = client.get("/api/library").json()["items"]
+    ids = [item["id"] for item in body]
+    assert ids.count("sandbox:project-p-lib:a.txt") == 1
+    assert body[ids.index("sandbox:project-p-lib:a.txt")]["threadId"] == "project-p-lib"
