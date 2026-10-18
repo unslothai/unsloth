@@ -84,8 +84,15 @@ type SandboxMediaResult = {
 const sandboxMediaResult = (result: unknown): SandboxMediaResult | null =>
   isSandboxToolResult(result) ? (result as SandboxMediaResult) : null;
 
+// Success is always an object (the sandbox wrapper or the hosted image); a plain string is an
+// "Error: ..." from the tool, or the loop's own text for a stopped or skipped call.
 const toolErrorText = (result: unknown): string =>
-  typeof result === "string" && result.startsWith("Error:") ? result : "";
+  typeof result === "string" ? result.trim() : "";
+
+const notGeneratedLabel = (kind: "Image" | "Video", text: string): string =>
+  text.startsWith("Error:")
+    ? `${kind} generation failed`
+    : `${kind} not generated`;
 
 const baseName = (name: string): string => name.split("/").pop() || name;
 
@@ -399,7 +406,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
 
   const runningLabel = "Generating image…";
   const completedLabel = errorText
-    ? "Image generation failed"
+    ? notGeneratedLabel("Image", errorText)
     : formatGeneratedImageLabel(prompt);
 
   const showPreview = () => {
@@ -591,7 +598,7 @@ const VideoGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     );
   }
   const completedLabel = errorText
-    ? "Video generation failed"
+    ? notGeneratedLabel("Video", errorText)
     : prompt
       ? `Generated video: ${prompt.length > 80 ? `${prompt.slice(0, 80)}…` : prompt}`
       : "Generated video";

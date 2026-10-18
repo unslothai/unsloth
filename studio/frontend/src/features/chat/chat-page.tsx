@@ -3226,7 +3226,7 @@ export function ChatPage({
     // model, and hydration refreshes what it reads, so it has to be applied last.
   }, [externalProvidersForChat, inferenceCheckpoint, settingsHydrated]);
   // The Images pill can use the image or video model loaded in Unsloth Studio. Re-read on mount,
-  // when any load settles (a chat load can evict them) and when either is ejected.
+  // when any load settles (a chat load can evict them), when either is ejected, and on focus.
   useEffect(() => {
     let disposed = false;
     let controller: AbortController | null = null;
@@ -3257,6 +3257,9 @@ export function ChatPage({
       subscribeModelEjected("image", refresh),
       subscribeModelEjected("video", refresh),
     ];
+    // An idle unload, another tab or an MCP client changes them with no event in this tab.
+    window.addEventListener("focus", refresh);
+    unsubscribers.push(() => window.removeEventListener("focus", refresh));
     return () => {
       disposed = true;
       controller?.abort();

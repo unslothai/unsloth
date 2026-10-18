@@ -153,6 +153,7 @@ test("chat-page refreshes readiness from both status routes and the lifecycle ev
     "subscribeModelLifecycle(",
     'subscribeModelEjected("image", refresh)',
     'subscribeModelEjected("video", refresh)',
+    'window.addEventListener("focus", refresh)',
   ]) {
     assert.ok(chatPage.includes(needle), needle);
   }

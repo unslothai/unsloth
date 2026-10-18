@@ -181,6 +181,43 @@ def test_the_cancel_event_stops_the_job(tmp_path, backend, keepwarm):
     assert not (tmp_path / "work").exists()
 
 
+def _slow_create(monkeypatch, keepwarm, delay):
+    async def _begin(owner):
+        keepwarm.append(("begin", owner))
+        await asyncio.sleep(delay)
+
+    monkeypatch.setattr(media_keepwarm, "begin_request", _begin)
+
+
+def test_a_slow_create_is_never_cancelled_so_its_job_stays_tracked(
+    tmp_path, backend, keepwarm, monkeypatch
+):
+    backend.gate.clear()
+    _slow_create(monkeypatch, keepwarm, 0.6)
+    monkeypatch.setattr(tool, "_CREATE_TIMEOUT_S", 0.1)
+    assert _run(tmp_path, {"prompt": "slow create"}, timeout = 30) == tool.STILL_RENDERING_MSG
+    deadline = time.monotonic() + 5
+    while not (video_routes._jobs or video_routes._managed_jobs) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    # The create finished after the tool answered, and the job is on record.
+    assert video_routes._lookup_video(_only_job()).status in ("queued", "in_progress")
+
+
+def test_stop_during_a_slow_create_stops_the_job_it_starts(tmp_path, backend, keepwarm, monkeypatch):
+    backend.gate.clear()
+    _slow_create(monkeypatch, keepwarm, 0.6)
+    monkeypatch.setattr(tool, "_STOP_WAIT_S", 0.05)
+    stop = threading.Event()
+    stop.set()
+    assert _run(tmp_path, {"prompt": "stop early"}, cancel_event = stop) == tool.STOPPED_MSG
+    deadline = time.monotonic() + 5
+    while not (video_routes._jobs or video_routes._managed_jobs) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    _wait_phase(backend, "failed")
+    job = video_routes._lookup_video(_only_job())
+    assert job.status == "failed" and job.error.code == "cancelled"
+
+
 def test_a_failed_job_reports_its_error(tmp_path, backend, keepwarm):
     backend.fail_with = "the sampler blew up"
     assert _run(tmp_path, {"prompt": "x"}).startswith("Error: ")

@@ -414,6 +414,31 @@ def test_stop_and_timeout_stop_the_engine_too(
     assert not os.listdir(tmp_path)
 
 
+def test_a_render_that_finishes_inside_the_stop_window_is_still_returned(
+    engine, server_loop, keepwarm, monkeypatch, tmp_path
+):
+    # The timeout lands at the last step: the engine finishes the image instead of cancelling.
+    _alice_loaded(monkeypatch)
+    finish = engine.generate
+
+    def generate(**kwargs):
+        engine.started.set()
+        engine.release.wait(20)
+        return finish(**kwargs)
+
+    monkeypatch.setattr(engine, "generate", generate)
+    monkeypatch.setattr(
+        diffusion_engine_router,
+        "cancel_generation_for_account",
+        lambda account_id: engine.cancel_generate(expected_account = account_id),
+    )
+    result = _in_thread(
+        ALICE, tool.run_generate_image, {"prompt": "x"}, workdir = str(tmp_path), timeout = 1
+    )
+    assert result.startswith("Generated a 1024x1024 image"), result
+    assert [n for n in os.listdir(tmp_path) if n.startswith("generated-image-")]
+
+
 def test_keepwarm_counts_once_per_tool_call_and_never_in_the_core(
     engine, server_loop, keepwarm, tmp_path
 ):

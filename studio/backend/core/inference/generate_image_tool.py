@@ -211,14 +211,19 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
     future = asyncio.run_coroutine_threadsafe(arun_as(account, _generate(request)), loop)
     limit = _MAX_WAIT_S if timeout is None or timeout >= 9999 else max(1.0, float(timeout))
     deadline = time.monotonic() + limit
+    stopped = None
     while not future.done():
         if cancel_event is not None and cancel_event.is_set():
+            stopped = ERR_STOPPED
+        elif time.monotonic() >= deadline:
+            stopped = ERR_TIMEOUT
+        if stopped:
             _stop(future, account.account_id)
-            return ERR_STOPPED
-        if time.monotonic() >= deadline:
-            _stop(future, account.account_id)
-            return ERR_TIMEOUT
+            break
         concurrent.futures.wait([future], timeout = _POLL_S)
+    # A render that finished inside the stop window is still a saved image: hand it over.
+    if stopped and (not future.done() or future.cancelled() or future.exception() is not None):
+        return stopped
     try:
         response = future.result()
     except concurrent.futures.CancelledError:

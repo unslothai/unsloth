@@ -11,9 +11,11 @@ backend's own thread; the tool polls it and copies the finished MP4 into the cha
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import os
 import shutil
+import threading
 import time
 from typing import Any, Optional
 
@@ -166,8 +168,24 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
             media_keepwarm.end_request(VIDEO, counted = created)
 
     future = asyncio.run_coroutine_threadsafe(arun_as(acct, _create()), loop)
+    # Never cancel a create in flight: past the backend's begin_generate the job already runs,
+    # and a cancel there would leave it rendering with no record on the Video page.
+    create_by = time.monotonic() + min(_CREATE_TIMEOUT_S, max(cap, 1.0))
+    while not future.done():
+        if cancel_event is not None and cancel_event.is_set():
+            concurrent.futures.wait([future], timeout = _STOP_WAIT_S)
+            if not future.done():
+                # Stop the job as soon as the create hands one back.
+                future.add_done_callback(lambda f: _cancel_created_job(acct, f))
+                return STOPPED_MSG
+            break
+        if time.monotonic() >= create_by:
+            return STILL_RENDERING_MSG
+        concurrent.futures.wait([future], timeout = 0.25)
     try:
-        job = future.result(timeout = min(_CREATE_TIMEOUT_S, max(cap, 1.0)))
+        job = future.result()
+    except concurrent.futures.CancelledError:
+        return STOPPED_MSG
     except GpuBusyForAnotherAccountError:
         return OTHER_ACCOUNT_MSG
     except HTTPException as exc:
@@ -177,11 +195,31 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
         if exc.status_code == 503:
             return NOT_LOADED_MSG
         return f"Error: {message}"
-    except TimeoutError:
-        future.cancel()
-        return STILL_RENDERING_MSG
 
     return _await_job(acct, job.id, workdir, prompt, seed, cancel_event, deadline)
+
+
+def _cancel_created_job(acct, future) -> None:
+    """Done-callback (server loop): stop the job a create finished after the user pressed Stop."""
+    if future.cancelled() or future.exception() is not None:
+        return
+
+    def _cancel(video_id: str) -> None:
+        from core.inference.video import get_video_backend
+        from utils.account_context import run_as
+
+        try:
+            run_as(
+                acct,
+                get_video_backend().cancel_generate,
+                expected_video_id = video_id,
+                expected_account = acct.account_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("generate_video: stopping job %s failed: %s", video_id, exc)
+
+    # Off the loop thread: the backend cancel takes its lock.
+    threading.Thread(target = _cancel, args = (future.result().id,), daemon = True).start()
 
 
 def _await_job(acct, video_id: str, workdir: str, prompt: str, seed, cancel_event, deadline) -> str:
