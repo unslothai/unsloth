@@ -46,6 +46,9 @@ LAYER_ROUNDING_MARGIN = 0.05
 LIST_DEVICES_TIMEOUT_S = 60.0
 WORKER_START_TIMEOUT_S = 60.0
 REACH_TIMEOUT_S = 3.0
+# ggml-rpc-server serves one client at a time, so a worker the live llama-server holds never answers
+# a probe: give up on it this fast and plan with what it reported before that load.
+BUSY_PROBE_TIMEOUT_S = 8.0
 # KV share of the weights reserved for a Hub GGUF whose header is not downloaded yet.
 _MMPROJ_VRAM_SAFETY = 1.4  # LlamaCppBackend._MMPROJ_VRAM_SAFETY
 
@@ -184,6 +187,7 @@ def _read_gguf_header(
     *,
     tensors: bool = False,
     kv_end: Optional[List[int]] = None,
+    read_all: Optional[List[bool]] = None,
 ) -> Tuple[Dict[str, Any], Dict[int, int]]:
     """From a GGUF header stream: general.architecture and the integer keys estimate_kv_bytes
     reads (a per-layer array keeps its largest value), and with ``tensors`` the weight bytes of
@@ -261,10 +265,15 @@ def _read_gguf_header(
             return out, {}
         block_size, type_size = GGML_QUANT_SIZES[ttype]
         blocks[index] = blocks.get(index, 0) + elements // block_size * type_size
+    if read_all is not None:
+        read_all.append(
+            True
+        )  # a shard may hold no block at all (gguf-split --no-tensor-first-split)
     return out, blocks
 
 
-_OUTPUT_KEYS = {"output": -1, "token_embd": -2}
+# Per-layer token embeddings (Gemma 3n / Gemma 4) are LLM_TENSOR_LAYER_INPUT, kept in host RAM.
+_OUTPUT_KEYS = {"output": -1, "token_embd": -2, "per_layer_token_embd": -3}
 _REMOTE_HEADER_KV: Dict[Tuple[str, str], bytes] = {}
 
 
@@ -503,11 +512,12 @@ def _local_gguf_header(path: str, ss: Any) -> Tuple[Dict[str, Any], Dict[int, in
     blocks: Dict[int, int] = {}
     try:
         for index, shard in enumerate(ss.gguf_shard_paths(path) or [path]):
+            done: List[bool] = []
             with open(shard, "rb") as f:
-                shard_vals, shard_blocks = _read_gguf_header(f, tensors = True)
+                shard_vals, shard_blocks = _read_gguf_header(f, tensors = True, read_all = done)
             if index == 0:
                 vals = shard_vals
-            if not shard_blocks:
+            if not done:
                 return vals, {}
             for block, size in shard_blocks.items():
                 blocks[block] = blocks.get(block, 0) + size
@@ -541,14 +551,17 @@ def _remote_gguf_header(
         blocks: Dict[int, int] = {}
         for index, shard in enumerate(shards):
             end: List[int] = []
+            done: List[bool] = []
             with fs.open(f"{model_path}/{shard}", "rb", block_size = 1 << 20) as f:
-                shard_vals, shard_blocks = _read_gguf_header(f, tensors = True, kv_end = end)
+                shard_vals, shard_blocks = _read_gguf_header(
+                    f, tensors = True, kv_end = end, read_all = done
+                )
                 if index == 0 and end:
                     f.seek(0)
                     _REMOTE_HEADER_KV[(model_path, str(variant))] = f.read(end[0])
             if index == 0:
                 vals = shard_vals
-            if not shard_blocks:
+            if not done:
                 return vals, {}  # a shard without a readable tensor table leaves the max unknown
             for block, size in shard_blocks.items():
                 blocks[block] = blocks.get(block, 0) + size
@@ -700,6 +713,19 @@ _CUDA_RUNTIME = (
 
 def _with_cuda_runtime(argv: List[str]) -> List[str]:
     return ["sh", "-c", _CUDA_RUNTIME] + list(argv)
+
+
+def _bind_address(host: str) -> str:
+    """ggml-rpc-server -H takes only a dotted IPv4 address (inet_addr): a node named by host name
+    binds the address this machine reaches it at."""
+    import socket
+
+    if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host):
+        return host
+    try:
+        return socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
+    except (OSError, IndexError):
+        return host
 
 
 _DEVICE_LINE = re.compile(r"^\s+(\S+): (.*) \((\d+) MiB, (\d+) MiB free\)\s*$")
@@ -930,7 +956,11 @@ def _endpoint_in(desc: str, endpoints: Sequence[str]) -> str:
     return desc
 
 
-def list_devices(binary: str, endpoints: Sequence[str]) -> Tuple[List[Device], str]:
+def list_devices(
+    binary: str,
+    endpoints: Sequence[str],
+    timeout: float = LIST_DEVICES_TIMEOUT_S,
+) -> Tuple[List[Device], str]:
     """The devices the coordinator would see with these RPC servers, and any error text."""
     try:
         # The child's own environment: the managed CUDA / ROCm runtime and the bundle's libraries.
@@ -940,10 +970,10 @@ def list_devices(binary: str, endpoints: Sequence[str]) -> Tuple[List[Device], s
         env = None
     try:
         proc = subprocess.run(
-            [binary, "--rpc", ",".join(endpoints), "--list-devices"],
+            [binary, *(["--rpc", ",".join(endpoints)] if endpoints else []), "--list-devices"],
             capture_output = True,
             text = True,
-            timeout = LIST_DEVICES_TIMEOUT_S,
+            timeout = timeout,
             env = env,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -1126,6 +1156,8 @@ class ClusterServing:
         # the probe's "used", and the load being planned replaces it.
         self._backend: Any = None
         self._resident: Dict[Tuple[str, str], float] = {}
+        # Each worker's devices as last probed while no llama-server held it.
+        self._seen: Dict[str, List[Device]] = {}
         # Workers the current load's probe found unusable; a commit without them stops them.
         self._down: set = set()
         self._native_ctx: bool = False
@@ -1133,6 +1165,7 @@ class ClusterServing:
         self._unsized_kv: bool = False
         self._max_block: Optional[float] = None
         self._host_embd: float = 0.0
+        self._host_input: float = 0.0
         self._untied = False
         self._diffusion = False
         self._ctx_compute: float = 0.0
@@ -1198,7 +1231,12 @@ class ClusterServing:
                 failed[node.endpoint] = f"{node.host} has no ggml-rpc-server at the bundle path"
                 continue
             argv = _with_cuda_runtime(
-                ss.rpc_server_argv(binary, bind = node.host, port = node.rpc_port, cache = False)
+                ss.rpc_server_argv(
+                    binary,
+                    bind = await asyncio.to_thread(_bind_address, node.host),
+                    port = node.rpc_port,
+                    cache = False,
+                )
             )
             log_dir = ss._log_dir()
             process = ss.PeerProcess(
@@ -1228,6 +1266,29 @@ class ClusterServing:
             self.workers[node.endpoint] = process
             self._started.add(node.endpoint)
         return failed
+
+    async def _held_workers(self, binary: str, endpoints: Sequence[str]) -> Dict[str, List[Device]]:
+        """Workers the live split holds, mapped to their devices as probed before that load. One
+        that answers a probe of its own is no longer held (it restarted) and is probed as usual."""
+        served = self._pre_load[2] if self._pre_load else None
+        if (
+            served is None
+            or served.topology != "layer_split"
+            or self._backend is None
+            or not getattr(self._backend, "is_loaded", False)
+        ):
+            return {}
+        held = [
+            e for e in endpoints if e in self._seen and any(d.endpoint == e for d in served.devices)
+        ]
+        answers = await asyncio.gather(
+            *(asyncio.to_thread(list_devices, binary, [e], BUSY_PROBE_TIMEOUT_S) for e in held)
+        )
+        return {
+            e: self._seen[e]
+            for e, (devs, _err) in zip(held, answers)
+            if not any(d.endpoint == e for d in devs)
+        }
 
     async def before_load(
         self,
@@ -1414,8 +1475,13 @@ class ClusterServing:
         )
         down = list(failed) + [n.endpoint for n, ok in zip(live, reachable) if not ok]
         endpoints = [n.endpoint for n, ok in zip(live, reachable) if ok]
+        order = list(endpoints)
+        busy = await self._held_workers(binary, endpoints)
+        endpoints = [e for e in endpoints if e not in busy]
         devices, error = (
-            await asyncio.to_thread(list_devices, binary, endpoints) if endpoints else ([], "")
+            await asyncio.to_thread(list_devices, binary, endpoints)
+            if endpoints or busy
+            else ([], "")
         )
         while endpoints and error and not any(d.remote for d in devices):
             # One worker that answers TCP but fails the handshake aborts the whole listing.
@@ -1440,6 +1506,21 @@ class ClusterServing:
             devices, error = (
                 await asyncio.to_thread(list_devices, binary, endpoints) if endpoints else ([], "")
             )
+        for e in endpoints:
+            mine = [d for d in devices if d.endpoint == e]
+            if mine:
+                self._seen[e] = [replace(d) for d in mine]
+        if busy:
+            # The held workers keep their place in the --rpc list, and RPC<k> counts over it.
+            endpoints = [e for e in order if e in endpoints or e in busy]
+            remote = [
+                replace(d)
+                for e in endpoints
+                for d in (busy.get(e) or [d for d in devices if d.endpoint == e])
+            ]
+            for k, d in enumerate(remote):
+                d.name = f"RPC{k}"
+            devices = remote + [d for d in devices if not d.remote]
         if self._cancelled():
             self.topology, self.reason = "single", "the load was cancelled"
             return request
@@ -1456,6 +1537,8 @@ class ClusterServing:
                 else {}
             )
             for d in devices:
+                if d.endpoint in busy:
+                    continue  # still attached to the live server, so it did not restart
                 held = max(self._resident.get(d.key, 0.0), placed.get(d.key, 0.0))
                 if d.remote and held > 512 * 2**20 and d.free_bytes > d.total_bytes - held / 2:
                     # Its memory is free again: the worker restarted (or was replaced by hand)
@@ -1463,8 +1546,8 @@ class ClusterServing:
                     self._started.add(d.endpoint)
             # This load tears the current one down first, so what it holds counts as free.
             for d in devices:
-                if d.endpoint in self._started:
-                    continue
+                if d.endpoint in self._started or d.endpoint in busy:
+                    continue  # busy: reported before the served model loaded, so already free
                 d.free_bytes = int(min(d.total_bytes, d.free_bytes + self._resident.get(d.key, 0)))
         stray = [d.description for d in devices if d.remote and d.endpoint not in endpoints]
         if stray:
@@ -1529,9 +1612,9 @@ class ClusterServing:
 
         # The input embedding stays whole in this machine's host RAM: off every device's share
         # (untied; a tied model's output copy is still a lump), and all of it on a unified device.
-        off_device = self._host_embd if self._untied else 0.0
+        off_device = (self._host_embd if self._untied else 0.0) + self._host_input
         if unified:
-            local_extra += self._host_embd
+            local_extra += self._host_embd + self._host_input
         plan = plan_for(model_bytes - off_device)
         skipped = self._nextn_bytes  # in the plan's weights, never loaded on a split
         if plan.topology == "refuse" and self._nextn_bytes:
@@ -1543,7 +1626,7 @@ class ClusterServing:
         plan.uncertain_extra_bytes = self._uncertain_extra + checkpoints
         plan.layer_bytes = float(layer_bytes or 0.0)
         # On unified memory the embedding is in extra_bytes, freed with the process like the rest.
-        plan.host_bytes = (0.0 if unified else self._host_embd - off_device) + (
+        plan.host_bytes = (0.0 if unified else self._host_embd + self._host_input - off_device) + (
             skipped if plan.topology == "layer_split" else 0.0
         )
         self.plan = plan
@@ -1630,6 +1713,7 @@ class ClusterServing:
         # The input embedding stays on the host; the output matrix (or a tied model's copy of the
         # embedding) is one more lump on the last device.
         self._host_embd = float(blocks.get(-2, 0))
+        self._host_input = float(blocks.get(-3, 0))  # never on a device, tied or not
         self._untied = -1 in blocks
         output = blocks.get(-1, blocks.get(-2, 0))
         unread_adapters = 0

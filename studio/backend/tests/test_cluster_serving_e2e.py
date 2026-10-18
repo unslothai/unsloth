@@ -114,6 +114,20 @@ def test_a_three_worker_split_loads_on_every_worker_and_answers(monkeypatch, tmp
         text = log.read_text(encoding = "utf-8")
         for endpoint in endpoints:
             assert f"[{endpoint}] model buffer size" in text, endpoint
+        # A reload while this server holds every worker: ggml-rpc-server takes one client at a
+        # time, so the workers cannot answer a probe; the plan must still be the same split.
+        backend = SimpleNamespace(
+            _process = SimpleNamespace(args = [str(bin_dir / "llama-server")] + out.llama_extra_args),
+            is_loaded = True,
+        )
+        asyncio.run(ss.after_load(backend, 4))
+        t0 = time.time()
+        again = asyncio.run(
+            ss.before_load(SimpleNamespace(**{**vars(request), "llama_extra_args": None}), 4)
+        )
+        assert ss.status()["topology"] == "layer_split", ss.status()
+        assert again.llama_extra_args == out.llama_extra_args
+        assert time.time() - t0 < 4 * cs.BUSY_PROBE_TIMEOUT_S
     finally:
         for p in reversed(procs):
             try:

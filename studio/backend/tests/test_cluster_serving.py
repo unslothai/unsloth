@@ -251,7 +251,7 @@ def _cluster_env(
     monkeypatch.setattr(cs, "_keeps_resident", lambda: False)
     seen = []
 
-    def fake_list(binary, endpoints):
+    def fake_list(binary, endpoints, *a, **kw):
         # llama.cpp lists only the endpoints it was given.
         seen.append((binary, list(endpoints)))
         devices = cs.parse_device_list(listing, endpoints)
@@ -364,6 +364,59 @@ def test_a_failed_load_puts_the_previous_topology_back(monkeypatch):
     assert ss.status()["topology"] == "single"
     run(ss.load_failed())  # the split it would have replaced is still loaded
     assert ss.status()["topology"] == "layer_split"
+
+
+def test_a_reload_while_serving_plans_with_the_workers_the_live_server_holds(monkeypatch):
+    # ggml-rpc-server serves one client at a time: while the split is loaded, any probe that names
+    # one of its workers hangs until the timeout. The reload must still plan the same split.
+    _cluster_env(monkeypatch)
+    first = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + first.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    held = set(first.llama_extra_args[first.llama_extra_args.index("--rpc") + 1].split(","))
+    calls = []
+
+    def _local_while_serving(endpoints):
+        # The coordinator's own card holds its served share; a worker named alone is free.
+        devices = [
+            d
+            for d in cs.parse_device_list(LISTING, endpoints)
+            if not d.remote or d.endpoint in endpoints
+        ]
+        for d in devices:
+            if not d.remote:
+                d.free_bytes = max(0, d.free_bytes - int(cs.state()._resident.get(d.key, 0)))
+        return devices
+
+    def single_client(binary, endpoints, *a, **kw):
+        calls.append(list(endpoints))
+        if held & set(endpoints):
+            return [], "TimeoutExpired: timed out after 8 seconds"
+        return _local_while_serving(endpoints), ""
+
+    monkeypatch.setattr(cs, "list_devices", single_client)
+    again = run(ss.before_load(_request(), 4))
+    assert again.llama_extra_args == first.llama_extra_args
+    assert ss.status()["topology"] == "layer_split" and not ss.status()["last_error"]
+    assert [d["name"] for d in ss.status()["plan"]["devices"]] == ["RPC0", "RPC1", "RPC2", "CUDA0"]
+    # each held worker was asked alone once, and the planning listing named none of them
+    assert sorted(c[0] for c in calls if len(c) == 1) == sorted(held) and [] in calls
+
+    # A worker that answers on its own has restarted: it is probed as usual and relaunched.
+    def restarted(binary, endpoints, *a, **kw):
+        calls.append(list(endpoints))
+        live = held - {"10.0.0.3:50052"}
+        if live & set(endpoints):
+            return [], "TimeoutExpired: timed out after 8 seconds"
+        return _local_while_serving(endpoints), ""
+
+    monkeypatch.setattr(cs, "list_devices", restarted)
+    run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "layer_split"
+    assert "10.0.0.3:50052" in cs.state()._started
 
 
 def test_an_unreachable_worker_is_left_out_and_named(monkeypatch):
@@ -825,7 +878,7 @@ def test_a_worker_that_breaks_the_combined_listing_is_dropped_and_listed_again(m
     _cluster_env(monkeypatch, model_bytes = 150 * GIB)
     calls = []
 
-    def fake_list(binary, endpoints):
+    def fake_list(binary, endpoints, *a, **kw):
         calls.append(list(endpoints))
         if "10.0.0.3:50052" in endpoints:
             return [], "Failed to connect to 10.0.0.3:50052"
@@ -1318,7 +1371,7 @@ def test_a_failing_worker_is_matched_by_its_whole_endpoint(monkeypatch):
 """
     calls = []
 
-    def fake_list(binary, endpoints):
+    def fake_list(binary, endpoints, *a, **kw):
         calls.append(list(endpoints))
         if "10.0.0.2:50052" in endpoints:
             return [], "Failed to connect to 10.0.0.2:50052"
@@ -1592,7 +1645,7 @@ def test_a_probe_that_times_out_without_a_name_asks_each_worker_alone(monkeypatc
     _cluster_env(monkeypatch, model_bytes = 150 * GIB)
     calls = []
 
-    def fake_list(binary, endpoints):
+    def fake_list(binary, endpoints, *a, **kw):
         calls.append(list(endpoints))
         if "10.0.0.3:50052" in endpoints:
             return [], "timed out after 30 seconds"
@@ -2114,6 +2167,32 @@ def test_the_header_reader_matches_the_local_kv_estimate(monkeypatch, tmp_path):
     shard.write_bytes(_gguf_header(kvs, tensors))
     monkeypatch.setattr(ss, "gguf_shard_paths", lambda path: [str(shard), str(shard)])
     assert cs._local_gguf_header(str(shard), ss) == (vals, doubled)
+
+
+def test_a_metadata_only_first_shard_and_per_layer_embeddings(monkeypatch, tmp_path):
+    import io
+
+    kvs = {
+        "general.architecture": (8, "llama"),
+        "llama.block_count": (4, 2),
+        "llama.attention.head_count": (4, 8),
+        "llama.embedding_length": (4, 64),
+    }
+    tensors = [
+        ("token_embd.weight", [64, 100], 1),
+        ("per_layer_token_embd.weight", [64, 100], 1),
+        ("blk.0.attn_q.weight", [64, 64], 1),
+        ("blk.1.attn_q.weight", [64, 64], 1),
+    ]
+    _vals, blocks = cs._read_gguf_header(io.BytesIO(_gguf_header(kvs, tensors)), tensors = True)
+    # Gemma 3n / 4 per-layer embeddings are a layer input, kept on the host like token_embd.
+    assert blocks == {-2: 64 * 100 * 2, -3: 64 * 100 * 2, 0: 64 * 64 * 2, 1: 64 * 64 * 2}
+    # gguf-split --no-tensor-first-split: shard 1 holds only metadata, the blocks are in shard 2.
+    first, second = tmp_path / "m-00001-of-00002.gguf", tmp_path / "m-00002-of-00002.gguf"
+    first.write_bytes(_gguf_header(kvs))
+    second.write_bytes(_gguf_header(kvs, tensors))
+    monkeypatch.setattr(ss, "gguf_shard_paths", lambda path: [str(first), str(second)])
+    assert cs._local_gguf_header(str(first), ss)[1] == blocks
 
 
 def test_the_rounding_reserve_is_the_largest_block(monkeypatch):
@@ -3142,3 +3221,22 @@ def test_the_last_projector_given_is_the_one_sized(monkeypatch, tmp_path):
     extra = ["--mmproj", str(first), "--mmproj", str(last)]
     run(ss.before_load(_request(max_seq_length = 8192, llama_extra_args = extra), 4))
     assert seen and str(seen[0]) == str(last)
+
+
+def test_a_managed_node_named_by_host_name_binds_its_ipv4_address(monkeypatch):
+    # ggml-rpc-server -H goes through inet_addr: "gpu2.local" is "Invalid host address".
+    import socket
+
+    def fake_getaddrinfo(host, *a, **kw):
+        assert host == "gpu2.local"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.9", 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    assert cs._bind_address("gpu2.local") == "10.0.0.9"
+    assert cs._bind_address("10.0.0.2") == "10.0.0.2"
+
+    def unresolved(host, *a, **kw):
+        raise socket.gaierror("no such host")
+
+    monkeypatch.setattr(socket, "getaddrinfo", unresolved)
+    assert cs._bind_address("gpu2.local") == "gpu2.local"
