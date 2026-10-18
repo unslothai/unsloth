@@ -14,8 +14,6 @@ from .mcp_harness import (  # noqa: F401
     fast_polls,
     run_tool,
     sequence,
-    session,
-    slow,
     stt_state,
 )
 from .test_mcp_tools_loading import (
@@ -368,33 +366,6 @@ def test_the_cpu_check_reads_a_gated_listing_with_the_calls_hub_token(monkeypatc
     result, _studio, (body,) = _load(monkeypatch, args, routes)
     assert result.get("isError") is not True
     assert {key: body.get(key) for key in CPU} == CPU
-
-
-def test_unload_all_stops_a_chat_load_still_running(monkeypatch, fast_polls):
-    # Nothing serves yet: the running load is named in an unload, which stops it server-side.
-    routes = {**PAYLOADS, LOAD: slow(LOADED, 5.0), STATUS_ROUTE: EMPTY_STATUS}
-    studio = fake_studio(routes, fallback = {})
-    with session(monkeypatch, studio) as call:
-        early = call("load_model", {"model": LLM, "wait_s": 0})
-        unloaded = call("unload_model", {"kind": "all"})["structuredContent"]
-        job = call("get_job", {"kind": "load", "id": early["structuredContent"]["job_id"]})
-    assert unloaded["unloaded"] == [{"kind": "llm", "model": LLM}]
-    assert job["structuredContent"]["status"] == "cancelled"
-    assert bodies(studio, "/api/inference/unload") == [{"model_path": LLM}]
-
-
-def test_unload_all_cancels_a_running_load_before_unloading_what_serves(monkeypatch, fast_polls):
-    # Any other unload waits behind the load gate until the load ends, so the load goes first.
-    serving = {"loaded": [QWEN], "serving": [QWEN], "serving_checkpoints": ["/m/qwen.gguf"]}
-    routes = {**PAYLOADS, LOAD: slow(LOADED, 5.0), STATUS_ROUTE: serving}
-    studio = fake_studio(routes, fallback = {})
-    with session(monkeypatch, studio) as call:
-        call("load_model", {"model": LLM, "wait_s": 0})
-        call("unload_model", {"kind": "all"})
-    assert bodies(studio, "/api/inference/unload")[:2] == [
-        {"model_path": LLM},
-        {"model_path": "/m/qwen.gguf"},
-    ]
 
 
 def test_cpu_tts_falls_back_to_the_name_when_the_listing_cannot_be_read(monkeypatch):

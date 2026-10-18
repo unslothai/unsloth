@@ -832,30 +832,19 @@ async def unload_all(caller: Caller) -> UnloadAllResult:
         except ToolError as exc:
             failed.append(f"{name}: {exc}")
 
-    # A chat load_model still loading runs on in the job store; the route stops it when the unload names it.
-    stopped = [job.model for job in _stop_loads(caller, CHAT_ROUTE_KINDS)]
     serving, checkpoints, _before = await _llm_resident(caller)
     pairs = list(zip(serving, checkpoints))
-    loads = [name for name in dict.fromkeys(stopped) if not any(_same_id(name, s) for s in serving)]
-    # Running loads first: an unload naming one cancels it at once, while any other unload waits
-    # behind the load gate until that load ends.
-    for name in loads:
-        await unload(name, name)
-    # Kept models next, so unloading the primary never promotes one of them in between.
+    # Kept models first, so unloading the primary never promotes one of them in between.
     for name, target in reversed(pairs):
         await unload(name, target)
     _serving, _checkpoints, after = await _llm_resident(caller)
     # Models held in memory behind the active one are listed only under loaded.
-    held = [
-        name
-        for name in after
-        if name not in checkpoints and name not in serving and name not in loads
-    ]
+    held = [name for name in after if name not in checkpoints and name not in serving]
     for name in held:
         await unload(name, name)
     if held:
         _serving, _checkpoints, after = await _llm_resident(caller)
-    pairs += [(name, name) for name in loads + held]
+    pairs += [(name, name) for name in held]
     unloaded = [
         SlotModel(kind = "llm", model = name) for name, target in pairs if not {name, target} & after
     ]
