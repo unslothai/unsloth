@@ -393,6 +393,50 @@ def _frontend_root(sources: tuple[Path, ...]) -> Path | None:
     return None
 
 
+def _load_time_text(blanked: str) -> str:
+    """``blanked`` without the bodies of the functions it defines: only the rest runs on load."""
+    out: list[str] = []
+    i, n = 0, len(blanked)
+    while i < n:
+        arrow = blanked.startswith("=>", i)
+        func = re.match(r"function\b", blanked[i:]) and (i == 0 or not (blanked[i - 1].isalnum() or blanked[i - 1] in "_$"))
+        if not (arrow or func):
+            out.append(blanked[i])
+            i += 1
+            continue
+        j = i + 2 if arrow else blanked.find("{", i)
+        if j == -1:
+            break
+        while j < n and blanked[j].isspace():
+            j += 1
+        if blanked.startswith("{", j):
+            depth = 0
+            for k in range(j, n):
+                depth += blanked[k] in "{([" and 1 or 0
+                depth -= blanked[k] in "})]" and 1 or 0
+                if depth == 0:
+                    break
+            i = k + 1
+        else:
+            # An expression body runs to the `,` `;` or closing bracket that ends it.
+            depth = 0
+            k = j
+            while k < n:
+                ch = blanked[k]
+                if ch in "{([":
+                    depth += 1
+                elif ch in "})]":
+                    if depth == 0:
+                        break
+                    depth -= 1
+                elif ch in ",;" and depth == 0:
+                    break
+                k += 1
+            i = k
+        out.append(" ")
+    return "".join(out)
+
+
 def resolve_dependencies(
     harness_source: str,
     sources: tuple[Path, ...],
@@ -415,6 +459,21 @@ def resolve_dependencies(
     pulled: dict[str, tuple[str, str, set[str]]] = {}
     order: list[str] = []
     seen: set[tuple[Path, str]] = set()
+
+    def type_only(name: str, origin: Path, hops: int = 0) -> bool:
+        """``name`` as seen from ``origin`` is a type or interface, which Node erases."""
+        home = module(origin)
+        if name in home.declarations:
+            return all(kind in {"type", "interface"} for kind, _ in home.declarations[name])
+        target = home.imports.get(name) or home.reexports.get(name)
+        if target is None or hops > 8:
+            return False
+        path = _resolve_module(target[0], origin, root)
+        if path is None and target[0].startswith((".", _ALIAS)):
+            # Lifting never follows into a component file, but a type declared there is still erased.
+            base = root / target[0][len(_ALIAS) :] if target[0].startswith(_ALIAS) else origin.parent / target[0]
+            path = next((c for c in (Path(f"{base}.tsx"), base / "index.tsx") if c.is_file()), None)
+        return path is not None and type_only(target[1], path, hops + 1)
 
     def pull(name: str, origin: Path) -> None:
         """Emit ``name`` as resolved from ``origin``, dependencies first."""
@@ -448,7 +507,7 @@ def resolve_dependencies(
                 reference in home.declarations
                 or reference in home.imports
                 or reference in home.reexports
-            ):
+            ) and not type_only(reference, origin):
                 wanted.add(reference)
             pull(reference, origin)
         kind = home.kind(name) or "const"
@@ -497,7 +556,7 @@ def resolve_dependencies(
                 or any(
                     re.search(
                         rf"(?<![\w$.]){re.escape(dep)}\s*\(|\bnew\s+{re.escape(dep)}\b",
-                        _blank_noise(text),
+                        _load_time_text(_blank_noise(text)),
                     )
                     for dep in wanted & partial
                 )

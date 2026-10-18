@@ -158,6 +158,35 @@ def test_a_const_calling_a_half_resolved_arrow_on_load_is_dropped(tmp_path):
     assert "const NAMES = [g];" in resolved
 
 
+def test_a_callback_that_calls_a_half_resolved_helper_is_not_a_load_time_call(tmp_path):
+    """`{ run: () => f() }` never calls `f` while the object is built, so the object is kept."""
+    module = tmp_path / "src" / "m.ts"
+    module.parent.mkdir(parents = True)
+    module.write_text(
+        'import { missing } from "./nowhere";\n'
+        "const f = () => missing();\n"
+        "const TABLE = { run: () => f(), also: function () {\n  return f();\n} };\n"
+        "export function useIt() {\n  return TABLE;\n}\n"
+    )
+    resolved = resolve_dependencies("const used = useIt();\n", (module,), root = tmp_path / "src")
+    assert "const TABLE" in resolved
+
+
+def test_a_type_only_reference_does_not_make_a_helper_half_resolved(tmp_path):
+    """A type Node erases (here from a .tsx file, which is never lifted) is not a missing runtime value."""
+    module = tmp_path / "src" / "m.ts"
+    module.parent.mkdir(parents = True)
+    module.write_text(
+        'import { Props } from "./view";\n'
+        "const f = (p?: Props) => 1;\n"
+        "const TABLE = { v: f() };\n"
+        "export function useIt() {\n  return TABLE;\n}\n"
+    )
+    (module.parent / "view.tsx").write_text("export interface Props {\n  on: boolean;\n}\n")
+    resolved = resolve_dependencies("const used = useIt();\n", (module,), root = tmp_path / "src")
+    assert "const TABLE" in resolved
+
+
 def test_an_immediately_invoked_function_stays_eager(tmp_path):
     """`const v = function () { ... }();` runs on load, so it is dropped when its body cannot be resolved."""
     module = tmp_path / "src" / "m.ts"
