@@ -634,3 +634,15 @@ def test_an_npu_load_that_can_only_fail_never_asks_to_unload(
     with pytest.raises(HTTPException) as caught:
         asyncio.run(inf._load_model_impl(LoadRequest(model_path = model_path), None, "owner"))
     assert caught.value.status_code == status
+
+
+def test_a_respawning_primary_under_always_refuses_another_model(monkeypatch):
+    _mode(monkeypatch, "always")
+    monkeypatch.setattr(model_slots, "slots", [])
+    monkeypatch.setattr(inf, "_primary_chat_reports", lambda: [])
+    respawning = types.SimpleNamespace(is_active = True, is_loaded = False)
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: respawning)
+    with pytest.raises(MultiModelAlwaysRefusal):
+        asyncio.run(inf._guard_primary_replacement(LoadRequest(model_path = "org/C"), ("org/C",)))
+    respawning.is_active = False
+    asyncio.run(inf._guard_primary_replacement(LoadRequest(model_path = "org/C"), ("org/C",)))
