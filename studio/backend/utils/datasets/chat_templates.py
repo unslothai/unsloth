@@ -345,15 +345,21 @@ def _render_conversation(tokenizer, conversation, tools = None, fallback_without
 
 
 def _thinking_as_reasoning_content(tokenizer, conversation):
+    def wants_alias(message):
+        return (
+            isinstance(message, dict)
+            and message.get("thinking")
+            and message.get("reasoning_content") is None
+            and "</think>" not in str(message.get("content") or "")
+        )
+
+    # Rows are checked first: stringifying a named-template catalog per row is costly.
+    if not any(wants_alias(message) for message in conversation):
+        return conversation
     if "reasoning_content" not in str(getattr(tokenizer, "chat_template", None) or ""):
         return conversation
     return [
-        {**message, "reasoning_content": message["thinking"]}
-        if isinstance(message, dict)
-        and message.get("thinking")
-        and message.get("reasoning_content") is None
-        and "</think>" not in str(message.get("content") or "")
-        else message
+        {**message, "reasoning_content": message["thinking"]} if wants_alias(message) else message
         for message in conversation
     ]
 
