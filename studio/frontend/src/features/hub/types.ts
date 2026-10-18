@@ -29,7 +29,9 @@ export type ModelFormatFilter =
   | "gguf"
   | "checkpoint"
   | "mlx"
-  | "npu";
+  | "npu"
+  /** On Device only: models fine-tuned or exported in Studio. */
+  | "unsloth";
 
 export type CapabilityFilter = "all" | CapabilityKey;
 

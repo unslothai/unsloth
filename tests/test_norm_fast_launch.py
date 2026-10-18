@@ -37,9 +37,17 @@ CASES = [
 ]
 
 
-def _module(kind, width, train, device = "cuda", bias = True):
+def _module(
+    kind,
+    width,
+    train,
+    device = "cuda",
+    bias = True,
+):
     g = torch.Generator().manual_seed(width)
-    weight = torch.nn.Parameter(torch.randn(width, generator = g).to(device, DTYPE), requires_grad = train)
+    weight = torch.nn.Parameter(
+        torch.randn(width, generator = g).to(device, DTYPE), requires_grad = train
+    )
     b = torch.nn.Parameter(torch.randn(width, generator = g).to(device, DTYPE), requires_grad = train)
     return weight, (b if kind == "ln" and bias else None)
 
@@ -61,7 +69,12 @@ def _clear(weight, bias):
             p.grad = None
 
 
-def _inputs(width, rows = 300, device = "cuda", seed = 0):
+def _inputs(
+    width,
+    rows = 300,
+    device = "cuda",
+    seed = 0,
+):
     g = torch.Generator().manual_seed(seed)
     return (
         torch.randn(2, rows, width, generator = g).to(device, DTYPE),
@@ -80,7 +93,9 @@ def test_warm_eager_call_skips_triton_dispatch(monkeypatch, kind, width, gemma, 
     calls = []
     run = triton.runtime.jit.JITFunction.run
     monkeypatch.setattr(
-        triton.runtime.jit.JITFunction, "run", lambda self, *a, **k: calls.append(self) or run(self, *a, **k)
+        triton.runtime.jit.JITFunction,
+        "run",
+        lambda self, *a, **k: calls.append(self) or run(self, *a, **k),
     )
     got = _step(kind, gemma, x, weight, bias, dy)
     assert calls == [], [c.__name__ for c in calls]
@@ -89,12 +104,16 @@ def test_warm_eager_call_skips_triton_dispatch(monkeypatch, kind, width, gemma, 
 
 
 @pytest.mark.skipif(not getattr(torch.library, "triton_op", None), reason = "needs triton_op")
-@pytest.mark.parametrize("kind,width,gemma", [("rms", 128, False), ("rms", 4096, True), ("ln", 1000, False)])
+@pytest.mark.parametrize(
+    "kind,width,gemma", [("rms", 128, False), ("rms", 4096, True), ("ln", 1000, False)]
+)
 def test_compiled_calls_never_use_fast_launch(monkeypatch, kind, width, gemma):
     calls = []
     for module in (rms_layernorm, layernorm):
         real = module.launch
-        monkeypatch.setattr(module, "launch", lambda *a, real = real, **k: calls.append(a[0]) or real(*a, **k))
+        monkeypatch.setattr(
+            module, "launch", lambda *a, real = real, **k: calls.append(a[0]) or real(*a, **k)
+        )
     # fp32: T4 cannot trace bf16 Triton.
     weight = torch.nn.Parameter(torch.randn(width, device = "cuda"))
     bias = torch.nn.Parameter(torch.randn(width, device = "cuda"))
@@ -110,8 +129,24 @@ def test_compiled_calls_never_use_fast_launch(monkeypatch, kind, width, gemma):
     torch.compile(fn, fullgraph = True)(x).sum().backward()
     assert calls == []
     assert x.grad is not None and weight.grad is not None
-    fn(x.detach().requires_grad_()).sum().backward()  # eager: same module, launch() taken
-    assert calls
+    fn(x.detach().requires_grad_()).sum().backward()  # eager: launch() only when fast launch is on
+    assert bool(calls) == FAST
+
+
+@pytest.mark.parametrize("train", [False, True], ids = ["frozen", "trainable"])
+@pytest.mark.parametrize("kind,gemma", [("rms", False), ("rms", True), ("ln", False)])
+def test_launcher_off_calls_triton_directly(monkeypatch, kind, gemma, train):
+    calls = []
+    for module in (rms_layernorm, layernorm):
+        real = module.launch
+        monkeypatch.setattr(
+            module, "launch", lambda *a, real = real, **k: calls.append(a[0]) or real(*a, **k)
+        )
+    monkeypatch.setattr(triton_launch, "_ENABLED", False)
+    weight, bias = _module(kind, 256, train)
+    x, dy = _inputs(256)
+    _step(kind, gemma, x, weight, bias, dy)
+    assert calls == []
 
 
 @pytest.mark.parametrize("train", [False, True], ids = ["frozen", "trainable"])
@@ -167,7 +202,7 @@ def test_launches_follow_the_current_stream(kind, width, gemma, train):
         assert torch.equal(a, b)
 
 
-@pytest.mark.skipif(torch.cuda.device_count() < 2, reason = "needs two GPUs")
+@pytest.mark.skipif(not has_real_cuda() or torch.cuda.device_count() < 2, reason = "needs two GPUs")
 @pytest.mark.parametrize("train", [False, True], ids = ["frozen", "trainable"])
 @pytest.mark.parametrize("kind,width,gemma", CASES)
 def test_second_device_with_first_current(kind, width, gemma, train):
@@ -183,3 +218,29 @@ def test_second_device_with_first_current(kind, width, gemma, train):
         torch.cuda.synchronize(1)
         for a, b in zip(ref, got):
             assert a.device == b.device and torch.equal(a, b)
+
+
+@pytest.mark.parametrize("kind", ["rms", "ln"])
+def test_flipping_the_launcher_flag_does_not_recompile(monkeypatch, kind):
+    # launch() disables the launcher on a failed launch; compiled graphs must not guard on that flag.
+    compiles = []
+
+    def backend(gm, example_inputs):
+        compiles.append(1)
+        return gm.forward
+
+    weight = torch.nn.Parameter(torch.randn(256, device = "cuda"))
+    norm = torch.nn.Module()
+    norm.weight, norm.bias, norm.eps, norm.variance_epsilon = weight, None, 1e-5, 1e-6
+    norm.elementwise_affine = True
+    if kind == "rms":
+        fn = lambda x: rms_layernorm.fast_rms_layernorm(norm, x)
+    else:
+        fn = lambda x: layernorm.fast_layernorm(norm, x)
+    torch._dynamo.reset()
+    compiled = torch.compile(fn, backend = backend)
+    x = torch.randn(4, 256, device = "cuda")
+    compiled(x)
+    monkeypatch.setattr(triton_launch, "_ENABLED", not triton_launch._ENABLED)
+    compiled(x)
+    assert len(compiles) == 1

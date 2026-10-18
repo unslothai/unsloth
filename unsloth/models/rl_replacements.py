@@ -470,6 +470,80 @@ RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_compute_loss_liger)
 RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_data_collator_vision_keys)
 
 
+def _insert_after_docstring(function, lines):
+    """Put ``lines`` (body-relative) first in the method body, after any docstring."""
+    import ast
+
+    try:
+        node = ast.parse(textwrap.dedent(function)).body[0]
+    except SyntaxError:
+        return function
+    if not isinstance(node, ast.FunctionDef) or not node.body:
+        return function
+    first = node.body[0]
+    has_docstring = (
+        isinstance(first, ast.Expr)
+        and isinstance(getattr(first, "value", None), ast.Constant)
+        and isinstance(first.value.value, str)
+    )
+    source_lines = function.split("\n")
+    anchor = node.body[1] if has_docstring and len(node.body) > 1 else first
+    indent = re.match(r"[ \t]*", source_lines[anchor.lineno - 1]).group(0)
+    insert_at = first.end_lineno if has_docstring else first.lineno - 1
+    block = [indent + line for line in lines]
+    return "\n".join(source_lines[:insert_at] + block + source_lines[insert_at:])
+
+
+def _fused_preference_dispatch(function_name, function, call, signature):
+    if function_name != "concatenated_forward" or signature not in function:
+        return function
+    if os.environ.get("UNSLOTH_FUSED_PREFERENCE_LOSS", "0") != "1":
+        return function
+    if "_unsloth_fused_output" in function:
+        return function
+    return _insert_after_docstring(
+        function,
+        [
+            "from unsloth.models.dpo import " + call.split("(")[0],
+            "_unsloth_fused_output = " + call,
+            "if _unsloth_fused_output is not None:",
+            "    return _unsloth_fused_output",
+        ],
+    )
+
+
+def dpo_trainer_fused_preference_forward(function_name, function):
+    return _fused_preference_dispatch(
+        function_name,
+        function,
+        "unsloth_fused_dpo_concatenated_forward(self, model, batch, is_ref_model)",
+        "is_ref_model",
+    )
+
+
+def orpo_trainer_fused_preference_forward(function_name, function):
+    return _fused_preference_dispatch(
+        function_name,
+        function,
+        'unsloth_fused_orpo_concatenated_forward(self, model, batch, method = "orpo")',
+        "batch",
+    )
+
+
+def cpo_trainer_fused_preference_forward(function_name, function):
+    return _fused_preference_dispatch(
+        function_name,
+        function,
+        'unsloth_fused_orpo_concatenated_forward(self, model, batch, method = "cpo")',
+        "batch",
+    )
+
+
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_fused_preference_forward)
+RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_fused_preference_forward)
+RL_FUNCTIONS["cpo_trainer"].append(cpo_trainer_fused_preference_forward)
+
+
 # Unsloth's training forward drops the 2D mask, so right-align Online DPO rows (GRPO's left_pack_padding) before scoring.
 _ONLINE_DPO_MODEL_CALL = re.compile(
     r"^(?P<indent>[ \t]*)output = model\(prompt_completion_ids, "
@@ -1809,18 +1883,8 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             "image batch is being sliced there without its image counts.",
         )
 
-    pattern_to_find = re.compile(
-        r"^\s*if self\.args\.gradient_accumulation_steps % generate_every != 0 or \(\s*"
-        r"self\.use_vllm and self\.vllm_importance_sampling_correction\s*"
-        r"\):",
-        re.MULTILINE,
-    )
-
-    replacement_text = """
-            if self.args.gradient_accumulation_steps % generate_every != 0 or (
-                self.use_vllm
-            ):"""
-    function, num_replacements = pattern_to_find.subn(replacement_text, function)
+    # Keep TRL's old logprob gate: every old_per_token_logps consumer runs only under IS correction
+    # or treats None as per_token_logps.detach(), so forcing it on for vLLM is a wasted forward.
 
     pattern_to_find = re.compile(
         r"(^\s*)all_logprobs = \["  # Capture indentation (group 1)
@@ -2014,7 +2078,10 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             "                completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)\n"
             "            rewards_per_func = self._calculate_rewards(inputs, prompts_text, completions_text, completion_ids_list)\n"
             "        else:\n"
-            "            rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)"
+            "            rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)\n"
+            # On CPython <= 3.12 a later locals() call would store this frame dict in itself, a
+            # cycle that keeps every rollout tensor alive until the cyclic GC runs.
+            "        del _unsloth_reward_locals"
         )
         function = function.replace(string_to_find, replacement_string)
 
@@ -2199,6 +2266,32 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
                 + function[_signature.end() :]
             )
 
+    # Opt-in ScaleRL loss weights (zero-variance group exclusion, prompt-level aggregation). They need
+    # the group layout, which only exists here: the loss sees shuffled micro-batches.
+    _zero_std_anchor = (
+        'self._metrics[mode]["frac_reward_zero_std"].append(is_std_zero.float().mean().item())'
+    )
+    _return_anchor = "\n        return output"
+    if function.count(_zero_std_anchor) == 1 and function.count(_return_anchor) == 1:
+        function = function.replace(
+            _zero_std_anchor,
+            _zero_std_anchor + "\n"
+            "        _unsloth_sample_weight = _unsloth_grpo_sample_weight(\n"
+            "            self, mode, rewards_per_func, completion_mask, locals().get('tool_mask'), process_slice,\n"
+            "        )",
+        )
+        function = function.replace(
+            _return_anchor,
+            "\n        if _unsloth_sample_weight is not None:\n"
+            '            output["unsloth_sample_weight"] = _unsloth_sample_weight' + _return_anchor,
+        )
+    elif _unsloth_grpo_sample_weight_mode() is not None:
+        _warn_once(
+            "grpo_sample_weight",
+            "Unsloth: UNSLOTH_GRPO_ZERO_VARIANCE_EXCLUDE / UNSLOTH_GRPO_LOSS_AGGREGATION could "
+            "not be installed for this TRL version and are ignored.",
+        )
+
     return function
 
 
@@ -2259,15 +2352,62 @@ def grpo_trainer_fix_maybe_apply_chat_template(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer_fix_maybe_apply_chat_template)
 
 
+def _unsloth_vllm_sync_unsafe(model):
+    # FSDP2 turns Params4bit into a DTensor, so also read the load flags the model keeps.
+    if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):
+        return True
+    if getattr(model, "peft_config", None):
+        return True
+    for module in model.modules():
+        if hasattr(module, "lora_A") or hasattr(module, "base_layer"):
+            return True
+    for param in model.parameters():
+        if type(param).__name__ in ("Params4bit", "Int8Params"):
+            return True
+        if param.is_floating_point() and param.element_size() == 1:
+            return True
+    return False
+
+
 def grpo_trainer__move_model_to_vllm(function_name, function):
     if function_name != "_move_model_to_vllm":
         return function
 
-    def _move_model_to_vllm(self, *args, **kwargs):
-        return None
+    # Only fast_inference shares weights with vLLM. TRL's own vLLM (colocate or server, e.g. full
+    # finetuning, which fast_inference refuses) must still receive the trainer weights every step.
+    match = re.search(
+        r"^[ \t]*def _move_model_to_vllm\(.*?\).*?:[ \t]*\n",
+        function,
+        re.MULTILINE | re.DOTALL,
+    )
+    body_indent = (
+        re.search(r"^([ \t]+)\S", function[match.end() :], re.MULTILINE) if match else None
+    )
+    if match is None or body_indent is None:
 
-    function = inspect.getsource(_move_model_to_vllm)
-    return function
+        def _move_model_to_vllm(self, *args, **kwargs):
+            return None
+
+        return inspect.getsource(_move_model_to_vllm)
+    indent = body_indent.group(1)
+    # Keep the old no-op where TRL's sync is unsafe:
+    # - LoRA / PEFT: merge_adapter + unmerge_adapter on the live model is a lossy round trip in
+    #   fp16 / bf16, so frozen base weights drift every sync; it also requantizes bitsandbytes bases
+    #   from the fp32 delta (fast_lora backward then fails) and refuses FP8 grouped-linear bases.
+    # - Quantized bases (bitsandbytes, 1-byte floats such as FP8) cannot be loaded into vLLM as is.
+    # So the sync only runs for dense full finetuning.
+    guard = (
+        f"{indent}if getattr(getattr(self, 'llm', None), 'shared_weights', False):\n"
+        f"{indent}    return None\n"
+        f"{indent}if getattr(self, '_unsloth_vllm_sync_skip', None) is None:\n"
+        f"{indent}    from unsloth.models.rl_replacements import _unsloth_vllm_sync_unsafe\n"
+        f"{indent}    self._unsloth_vllm_sync_skip = _unsloth_vllm_sync_unsafe(self.model)\n"
+        f"{indent}    if self._unsloth_vllm_sync_skip:\n"
+        f"{indent}        print('Unsloth: vLLM weight sync is skipped for a LoRA / PEFT or quantized model without fast_inference, so rollouts use the initial weights. Load with fast_inference = True to sample from the trained model.')\n"
+        f"{indent}if self._unsloth_vllm_sync_skip:\n"
+        f"{indent}    return None\n"
+    )
+    return function[: match.end()] + guard + function[match.end() :]
 
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__move_model_to_vllm)
@@ -2286,6 +2426,8 @@ def grpo_trainer__get_per_token_logps(function_name, function):
         compute_efficient = False,
     ):
         if True:  # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
+            # Older TRL calls this instead of _get_per_token_logps_and_entropies: latch here too.
+            _unsloth_grpo_autocast(self)
             return None  # Unsloth efficient GRPO
         _unsloth_grpo_autocast(self)
 
@@ -2329,6 +2471,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
     ):
         # All Unsloth code in this function is licensed under AGPL3.
         if compute_efficient:
+            # No scoring forward may run (vLLM, beta = 0): latch precision here, not from the shared env.
+            _unsloth_grpo_autocast(self)
             return None, None
         else:
             _unsloth_grpo_autocast(self)
@@ -2373,7 +2517,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
             unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
 
-            from unsloth_zoo.rl_replacements import chunked_hidden_states_selective_log_softmax
+            from unsloth_zoo.rl_replacements import (
+                chunked_hidden_states_selective_log_softmax,
+                chunked_selective_log_softmax,
+            )
 
             output_embeddings = unwrapped_model.get_output_embeddings()
             lm_head = output_embeddings.weight
@@ -2392,6 +2539,26 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     chunked_hidden_states_selective_log_softmax,
                     lm_head_bias = lm_head_bias,
                 )
+            # Opt-in (UNSLOTH_GRPO_TRUNCATED_SUPPORT=1): score over the rollout's top_k / top_p /
+            # min_p kept set, matching vLLM's processed_logprobs. The zoo loss refuses to mix
+            # normalisations unless this marker says the old / ref logps were scored the same way.
+            try:
+                from unsloth_zoo.rl_replacements import grpo_truncated_support_kwargs
+                _support_kwargs = grpo_truncated_support_kwargs(self)
+            except Exception:
+                _support_kwargs = {}
+            if _support_kwargs:
+                from functools import partial
+
+                chunked_hidden_states_selective_log_softmax = partial(
+                    chunked_hidden_states_selective_log_softmax,
+                    **_support_kwargs,
+                )
+                chunked_selective_log_softmax = partial(
+                    chunked_selective_log_softmax,
+                    **_support_kwargs,
+                )
+                self._unsloth_truncated_support_scored = True
 
             # Size on the dtype the forward actually runs in: with autocast off that is the model's own dtype.
             forward_dtype = (
@@ -2624,6 +2791,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             # Sequence packing (default on; UNSLOTH_GRPO_SEQ_PACKING=0 disables): one varlen block-diagonal forward replaces the padded loop exactly and fixes its left-pad RoPE error. Self-verified, re-checked as T grows, falls back if a backend ignores packed_seq_lengths, and lm_head runs on completion positions only.
             _pk_result = None
             _pk_use = False
+            _pk_T = None
+            # True only while the packed forward and its scatter run, so an OOM elsewhere (setup, per-row verifier) is not read as a length limit.
+            _pk_in_packed = False
             _pk_enabled = UNSLOTH_GRPO_SEQ_PACKING_ON
             # Without zoo#840's masked-column guard, zeroed prompt/pad columns turn NaN in exp().
             _pk_enabled = _pk_enabled and UNSLOTH_ZOO_HAS_MASKED_COL_GUARD
@@ -2642,8 +2812,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     _pk_len = _pk_keep.sum(dim = 1)
                     _pk_len_cpu = _pk_len.tolist()  # single GPU->CPU sync, reused below
                     _pk_nz_cpu = [_n for _n in _pk_len_cpu if _n > 0]
-                    _pk_flat = input_ids[_pk_keep].unsqueeze(0)
-                    _pk_T = _pk_flat.shape[1]
+                    _pk_T = sum(_pk_nz_cpu)
                     _pk_L = input_ids.shape[1]
                     _pk_W = logits_to_keep + max_left_pad
                     _pk_maxseg = max(_pk_nz_cpu) if _pk_nz_cpu else 0
@@ -2652,25 +2821,28 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         getattr(unwrapped_model, "config", None), "sliding_window", None
                     )
                     _pk_sw_ok = not (isinstance(_pk_sw, int) and _pk_sw > 0 and _pk_maxseg > _pk_sw)
-                    # Per-row completion mask (same as the loss); prompt-only rows count as inactive.
-                    _pk_cmask = create_completion_attention_mask(
-                        input_ids[:, -_pk_W:], left_pad_tokens_per_prompt, max_left_pad, _pk_pad
-                    )
-                    _pk_active = int(_pk_cmask.any(dim = 1).sum())
                     # Skip the packed forward entirely at known-unsafe lengths, avoiding a wasted pass or OOM.
                     _pk_unsafe = getattr(
                         unwrapped_model, "_unsloth_seq_packing_nograd_unsafe_T", None
                     )
                     # Cap the flattened forward at one padded [batch_size, seq_len] mini-batch's token budget; anything larger uses the chunked padded loop.
                     _pk_cap = batch_size * seq_len
-                    if (
+                    # Decided from the host lengths alone, so a capped batch skips the flatten and the active-row sync below.
+                    _pk_fits = (
                         _pk_T >= 2
                         and _pk_T <= _pk_cap
                         and len(_pk_nz_cpu) > 0
                         and _pk_sw_ok
                         and not (_pk_unsafe is not None and _pk_T >= _pk_unsafe)
-                        and (_pk_ok is True or _pk_active >= 2)
-                    ):
+                    )
+                    if _pk_fits:
+                        _pk_flat = input_ids[_pk_keep].unsqueeze(0)
+                        # Per-row completion mask (same as the loss); prompt-only rows count as inactive.
+                        _pk_cmask = create_completion_attention_mask(
+                            input_ids[:, -_pk_W:], left_pad_tokens_per_prompt, max_left_pad, _pk_pad
+                        )
+                        _pk_active = int(_pk_cmask.any(dim = 1).sum())
+                    if _pk_fits and (_pk_ok is True or _pk_active >= 2):
                         _pk_pos = (_pk_keep.cumsum(dim = 1) - 1)[_pk_keep].unsqueeze(0)
                         _pk_chunks = max(1, total_rows * multiplier)
                         _pk_nz_idx = _pk_keep.nonzero(
@@ -2680,6 +2852,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         # Per-row completion start after left-packing, matching create_completion_attention_mask.
                         _pk_cstart = (_pk_L - logits_to_keep) - left_pad_tokens_per_prompt  # [rows]
                         _pk_ctgt = (_pk_nz_idx[1:, 1] >= _pk_cstart[_pk_nz_idx[1:, 0]]) & _pk_within
+                        _pk_in_packed = True
                         with _get_inference_mode_context_manager(model):
                             with torch.amp.autocast(
                                 device_type = DEVICE_TYPE_TORCH,
@@ -2732,6 +2905,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             .index_put((_pk_tgt,), _pk_sel.to(torch.float32))
                             .view(total_rows, _pk_L)[:, -_pk_W:]
                         )
+                        _pk_in_packed = False
                         # Re-verify when T or the longest segment grows past the verified envelope; a LongRoPE cache switch can change the result.
                         _pk_vT = int(
                             getattr(unwrapped_model, "_unsloth_seq_packing_nograd_verified_T", 0)
@@ -2833,19 +3007,36 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                         flush = True,
                                     )
                 except Exception as _pk_err:
-                    # Any failure: drop intermediates, use the padded loop, do not retry.
+                    # Any failure: drop intermediates and use the padded loop for this batch.
                     _pk_hidden = None
                     _pk_sel = None
                     _pk_result = None
                     _pk_use = False
                     if isinstance(_pk_err, torch.cuda.OutOfMemoryError):
                         torch.cuda.empty_cache()
-                    unwrapped_model._unsloth_seq_packing_nograd_ok = False
-                    if UNSLOTH_ENABLE_LOGGING:
-                        print(
-                            f"[Unsloth] GRPO sequence-packing (no-grad) disabled (fell back to padded): {_pk_err!r}",
-                            flush = True,
+                    if (
+                        isinstance(_pk_err, torch.cuda.OutOfMemoryError)
+                        and _pk_in_packed
+                        and _pk_T is not None
+                    ):
+                        # An OOM in the packed forward says this flattened length does not fit, not that packing is wrong: keep packing smaller batches.
+                        _pk_unsafe = getattr(
+                            unwrapped_model, "_unsloth_seq_packing_nograd_unsafe_T", None
                         )
+                        _pk_unsafe = _pk_T if _pk_unsafe is None else min(_pk_unsafe, _pk_T)
+                        unwrapped_model._unsloth_seq_packing_nograd_unsafe_T = _pk_unsafe
+                        if UNSLOTH_ENABLE_LOGGING:
+                            print(
+                                f"[Unsloth] GRPO sequence-packing (no-grad) OOM at T={_pk_T}: packing capped below T={_pk_unsafe}, this batch uses the padded loop: {_pk_err!r}",
+                                flush = True,
+                            )
+                    else:
+                        unwrapped_model._unsloth_seq_packing_nograd_ok = False
+                        if UNSLOTH_ENABLE_LOGGING:
+                            print(
+                                f"[Unsloth] GRPO sequence-packing (no-grad) disabled (fell back to padded): {_pk_err!r}",
+                                flush = True,
+                            )
             # PrefixGrouper first-use self-verify (no-grad): compare the untrusted PG result to the packed result over the completion mask. Below tol_ok trust the structure, at or above TOL_KILL mark it unsafe forever, borderline falls back for this shape.
             if _pg_forward_fn is not None and not _pg_use:
                 if _pk_use and _pk_result is not None:
@@ -2914,6 +3105,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 zipped_inputs = []
             else:
                 _pk_hidden = _pk_sel = _pk_result = _pk_ref = None
+                # Index buffers of a declined packed batch would otherwise live through the padded loop.
+                _pk_keep = _pk_len = _pk_flat = _pk_pos = _pk_cmask = None
+                _pk_nz_idx = _pk_within = _pk_cstart = _pk_ctgt = _pk_tgt = _pk_ids = _pk_cm = None
 
             with _get_inference_mode_context_manager(model):
                 for (
@@ -3247,6 +3441,85 @@ def grpo_update_SamplingParams(
     return generation_kwargs
 
 
+def _unsloth_grpo_sample_weight_mode():
+    import os
+
+    exclude = os.environ.get("UNSLOTH_GRPO_ZERO_VARIANCE_EXCLUDE", "0") == "1"
+    aggregation = os.environ.get("UNSLOTH_GRPO_LOSS_AGGREGATION", "").strip().lower()
+    if aggregation not in ("", "prompt"):
+        raise ValueError(
+            f"Unsloth: UNSLOTH_GRPO_LOSS_AGGREGATION must be 'prompt' or unset, got {aggregation}."
+        )
+    if not exclude and aggregation != "prompt":
+        return None
+    return exclude, aggregation == "prompt"
+
+
+def _unsloth_grpo_sample_weight(
+    trainer, mode, rewards_per_func, completion_mask, tool_mask, process_slice
+):
+    """Per-completion loss weights normalised over the whole generation batch (all processes),
+    or None when off. ScaleRL (arXiv 2510.13786): zero-variance filtering drops groups whose
+    rewards are all equal from the loss and its token count; prompt-level aggregation averages
+    tokens within each group, then over groups. Training batches only."""
+    settings = _unsloth_grpo_sample_weight_mode()
+    if settings is None or mode != "train":
+        return None
+    exclude, prompt_level = settings
+    loss_type = getattr(trainer.args, "loss_type", None)
+    if (prompt_level and loss_type == "luspo") or (
+        not prompt_level and loss_type not in ("bnpo", "dapo", "cispo", "vespo")
+    ):
+        if not getattr(trainer, "_unsloth_sample_weight_warned", False):
+            import warnings
+            warnings.warn(
+                f"Unsloth: zero-variance exclusion alone needs a token-normalised loss_type "
+                f"(bnpo, dapo, cispo, vespo) and prompt-level aggregation does not support "
+                f"luspo; ignored for loss_type={loss_type}.",
+                stacklevel = 2,
+            )
+            trainer._unsloth_sample_weight_warned = True
+        return None
+    num_generations = trainer.num_generations
+    loss_mask = completion_mask if tool_mask is None else completion_mask * tool_mask
+    lengths = trainer.accelerator.gather(loss_mask.sum(dim = 1).to(torch.float32))
+
+    def nan_variance(x, dim):
+        # TRL's nanstd squared: Bessel corrected, nan (never "zero") with fewer than two values.
+        centred = x - torch.nanmean(x, dim = dim, keepdim = True)
+        count = (~torch.isnan(x)).sum(dim = dim, keepdim = True)
+        variance = torch.nansum(centred * centred, dim = dim, keepdim = True) / (count - 1).clamp(min = 1)
+        return torch.where(count > 1, variance, torch.full_like(variance, torch.nan))
+
+    weights = trainer.reward_weights.to(rewards_per_func.device).unsqueeze(0)
+    if getattr(trainer, "multi_objective_aggregation", None) == "normalize_then_sum":
+        # TRL normalises each reward function within its group before the weighted sum.
+        per_func = rewards_per_func.view(-1, num_generations, rewards_per_func.shape[1])
+        per_func = (per_func - torch.nanmean(per_func, dim = 1, keepdim = True)) / (
+            nan_variance(per_func, 1).sqrt() + 1e-4
+        )
+        rewards = (per_func.view_as(rewards_per_func) * weights).nansum(dim = 1)
+    else:
+        rewards = (rewards_per_func * weights).nansum(dim = 1)
+    rewards[torch.isnan(rewards_per_func).all(dim = 1)] = torch.nan
+    variance = nan_variance(rewards.view(-1, num_generations), 1).squeeze(1)
+    group_keep = torch.ones_like(variance, dtype = torch.bool)
+    if exclude:
+        # TRL's frac_reward_zero_std test, per group.
+        group_keep = ~torch.isclose(variance.sqrt(), torch.zeros_like(variance))
+    keep = group_keep.repeat_interleave(num_generations).to(torch.float32).to(lengths.device)
+    if prompt_level:
+        group_tokens = (lengths * keep).view(-1, num_generations).sum(dim = 1)
+        groups = group_keep.sum().to(torch.float32).clamp(min = 1.0)
+        weight = keep / (group_tokens.clamp(min = 1.0).repeat_interleave(num_generations) * groups)
+    else:
+        weight = keep / (lengths * keep).sum().clamp(min = 1.0)
+    trainer._metrics[mode]["frac_reward_zero_std_excluded"].append(
+        float(1.0 - group_keep.float().mean()) if exclude else 0.0
+    )
+    return weight[process_slice].to(completion_mask.device)
+
+
 def _unsloth_grpo_is_metric_values(delta, flat_is_ratio, mask, sequence_level):
     # Inputs are zero-filled outside the mask; TRL reduces over masked tokens only, else min ratio reads 0.
     if mask is None or delta.shape != mask.shape or flat_is_ratio.shape != mask.shape:
@@ -3280,6 +3553,8 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_accumulation_steps))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_metric_values))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight_mode))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_vision_inputs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_split_vision_by_sample))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_unsplit_vision))
@@ -3584,6 +3859,14 @@ def grpo_trainer_compute_loss(function_name, function):
                     )
                 self._unsloth_grpo_tool_mask_zoo_checked = True
             _grpo_accumulated_loss_kwargs = {}
+            _sample_weight = inputs.get("unsloth_sample_weight", None)
+            if _sample_weight is not None:
+                if "sample_weight" not in inspect.getsource(grpo_compute_loss):
+                    raise RuntimeError(
+                        "UNSLOTH_GRPO_ZERO_VARIANCE_EXCLUDE / UNSLOTH_GRPO_LOSS_AGGREGATION need a "
+                        "newer unsloth_zoo. Please upgrade unsloth_zoo."
+                    )
+                _grpo_accumulated_loss_kwargs["sample_weight"] = _sample_weight
             if tool_mask is not None:
                 _grpo_accumulated_loss_kwargs["tool_mask"] = tool_mask
             if hasattr(self.args, "loss_type"):
@@ -3713,7 +3996,8 @@ def grpo_trainer_compute_loss(function_name, function):
         completion_token_count = completion_mask.sum().clamp(min = 1.0)
 
         def masked_batch_mean(x):
-            if x.shape[1] == 1:  # when importance_sampling_level == "sequence"
+            # a width-1 tensor is sequence-level only when the completion mask spans multiple tokens
+            if x.shape[1] == 1 and completion_mask.shape[1] != 1:
                 return x.mean()
             else:
                 return (x * completion_mask).sum() / completion_token_count
@@ -3958,6 +4242,49 @@ def openenv_vllm_reload_weights():
 RL_ADDITIONAL_FUNCTIONS["openenv"].append(openenv_vllm_reload_weights)
 
 
+def _vllm_weight_sync_bucket_bytes():
+    raw = os.environ.get("UNSLOTH_VLLM_WEIGHT_SYNC_BUCKET_MB", "1024")
+    try:
+        mb = float(raw)
+    except ValueError:
+        mb = 1024.0
+    return int(mb * 2**20) if mb > 0 else 0
+
+
+def _unsloth_vllm_sync_colocate(generation, vllm_model):
+    """TRL's colocate sync calls load_weights once per tensor, and every call rebuilds vLLM's
+    parameter lookup (~0.4 ms each). Hand over the same (name, tensor) references in a few calls:
+    no copies, and each weight_loader runs on the same data, so vLLM's weights are bit-identical.
+    UNSLOTH_VLLM_WEIGHT_SYNC_BUCKET_MB = 0 restores the per-tensor loop."""
+    weights = generation._iter_named_params()
+    cap = _vllm_weight_sync_bucket_bytes()
+    state = getattr(getattr(generation, "accelerator", None), "state", None)
+    # ZeRO-3 / FSDP yield gathered tensors that are only valid until the next step of the
+    # iterator, and PEFT unmerges in place once it is exhausted: holding references is wrong there.
+    unsafe = (
+        state is None
+        or getattr(state, "deepspeed_plugin", None) is not None
+        or getattr(state, "fsdp_plugin", None) is not None
+        or getattr(generation.model, "peft_config", None) is not None
+    )
+    if cap == 0 or unsafe:
+        for name, param in weights:
+            vllm_model.load_weights([(name, param)])
+        return
+    bucket, size = [], 0
+    for name, param in weights:
+        bucket.append((name, param))
+        size += param.numel() * param.element_size()
+        if size >= cap:
+            vllm_model.load_weights(bucket)
+            bucket, size = [], 0
+    if bucket:
+        vllm_model.load_weights(bucket)
+    generation._unsloth_bucketed_weight_syncs = (
+        getattr(generation, "_unsloth_bucketed_weight_syncs", 0) + 1
+    )
+
+
 def vllm_generation_init_patch():
     # trl moved vllm code to trl/generation/vllm_generation.py (commit 0eb66d8, 0.28.0+), which must be patched so it does not build a second vLLM instance when fast_inference has one.
 
@@ -4061,6 +4388,23 @@ def vllm_generation_init_patch():
             raise RuntimeError(
                 "Unsloth: Warning - regex did not match, VLLMGeneration.sync_weights patch may have failed"
             )
+        # TRL >= 1.10 colocate loop; older layouts stay per-tensor.
+        colocate_loop = re.compile(
+            r"^(?P<indent>[ \t]*)for name, param in self\._iter_named_params\(\):\n"
+            r"(?P=indent)[ \t]+self\.llm\.llm_engine\.model_executor\.driver_worker\.model_runner\.model"
+            r"\.load_weights\(\[\(name, param\)\]\)\n",
+            re.MULTILINE,
+        )
+        patched_src, n_loops = colocate_loop.subn(
+            lambda m: (
+                f"{m.group('indent')}_unsloth_vllm_sync_colocate(self, "
+                "self.llm.llm_engine.model_executor.driver_worker.model_runner.model)\n"
+            ),
+            patched_src,
+            count = 1,
+        )
+        if n_loops:
+            vllm_generation._unsloth_vllm_sync_colocate = _unsloth_vllm_sync_colocate
         return patched_src
 
     # `generate` is deliberately NOT source-patched: its two anchors drifted (TRL >= 1.x deleted the collective_rpc("reload_weights") call for self.sync_weights(), so the anchor matched 0 times, raised, and took the lora injection with it, making GRPO rollouts come from the BASE model), and the generate regex is not paren-balanced and mis-edits multi-line calls. Intercept on the vLLM engine instead of TRL's method body: self.llm is the vLLM LLM object in colocate mode in every release with VLLMGeneration, and generate / chat / collective_rpc are public stable APIs checked across vLLM 0.11.0-0.27.1. The override is scoped to one VLLMGeneration.generate call and undone in a finally.

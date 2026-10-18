@@ -142,6 +142,7 @@ from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
 from .loader_utils import (
     _bnb_bits_requested,
+    fsdp2_requested,
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
     planner_config_overrides,
@@ -169,6 +170,7 @@ from .loader_utils import (
     sync_load_when_quantizing,
     warn_if_bitsandbytes_quantized_nothing,
 )
+from .fsdp2_qlora import prepare_fsdp2_qlora, set_fsdp2_quant_storage
 # `unsloth.save` imports `.models.loader_utils`, so binding a name out of it here at module
 # scope closes a cycle and a cold `import unsloth.save` fails on the half-built module.
 # `_gpu_init` hid that by importing `.models` first; the MLX branch never reaches it. So the
@@ -191,6 +193,11 @@ from unsloth_zoo.gradient_checkpointing import (
     unpatch_unsloth_gradient_checkpointing,
     unpatch_unsloth_smart_gradient_checkpointing,
 )
+
+try:
+    from unsloth_zoo.gradient_checkpointing import non_reentrant_offload_hooks
+except ImportError:  # older unsloth_zoo
+    non_reentrant_offload_hooks = None
 import torch.utils.checkpoint as torch_checkpoint
 import transformers.modeling_utils as hf_modeling_utils
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
@@ -2998,6 +3005,15 @@ def _offload_activation_unpack(packed):
     return x if device is None else x.to(device, non_blocking = True)
 
 
+def _offload_activation_hooks():
+    # The zoo hooks copy on a side stream; the fallback queues the copy on the compute stream.
+    if non_reentrant_offload_hooks is not None:
+        return non_reentrant_offload_hooks()
+    return torch.autograd.graph.saved_tensors_hooks(
+        _offload_activation_pack, _offload_activation_unpack
+    )
+
+
 _NON_REENTRANT_GC_MODEL_TYPES = ("deepseek_v41",)
 
 
@@ -3651,6 +3667,10 @@ class FastBaseModel:
                 bnb_4bit_compute_dtype = bnb_compute_dtype,
                 llm_int8_skip_modules = _skip_modules,
             )
+            if fsdp2_requested():
+                # FSDP2 shards packed 4-bit bytes only in a float storage dtype; the compute dtype makes its
+                # mixed precision cast of them a no-op.
+                set_fsdp2_quant_storage(bnb_config, bnb_compute_dtype)
         elif load_in_8bit:
             bnb_config = BitsAndBytesConfig(
                 load_in_8bit = True,
@@ -3909,6 +3929,8 @@ class FastBaseModel:
                 _prepare_compressed_tensors_model(model, full_finetuning = full_finetuning)
                 if full_finetuning:
                     _dequantize_bitsandbytes_for_full_finetuning(model, torch_dtype, model_name)
+                elif fsdp2_requested():
+                    prepare_fsdp2_qlora(model, bnb_compute_dtype)
                 if load_in_16bit and not load_in_4bit and not load_in_8bit:
                     _dequantize_leftover_fp8_params(
                         model,
@@ -4466,6 +4488,13 @@ class FastBaseModel:
                     f"({type(_exc).__name__}: {_exc})."
                 )
         _install_bnb_nf4_override()
+        # head_dim 512 layers (Gemma-4 globals) otherwise fall to SDPA's efficient / math kernels.
+        # Lazy: the kernel module defines Triton autotuners, which need a driver at import.
+        from ..kernels.large_head_attention import (
+            patch_large_head_attention as _patch_large_head_attention,
+        )
+
+        _patch_large_head_attention(model)
         return _mark_requested_float32(model, user_float32), tokenizer
 
     @staticmethod
@@ -4636,6 +4665,7 @@ class FastBaseModel:
 
         # Only a regex generated here may be widened to expert submodules below.
         _target_modules_auto_regex = False
+        _target_modules_from_explicit_list = False
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,
@@ -4669,16 +4699,26 @@ class FastBaseModel:
                         "finetune_(vision|language|attention|mlp) filters; adapters "
                         "attach only where both select."
                     )
-                target_modules = get_peft_regex(
-                    model,
-                    finetune_vision_layers = finetune_vision_layers,
-                    finetune_language_layers = finetune_language_layers,
-                    finetune_attention_modules = finetune_attention_modules,
-                    finetune_mlp_modules = finetune_mlp_modules,
-                    target_modules = list(target_modules),
-                    **_audio_kwargs,
-                )
+                try:
+                    target_modules = get_peft_regex(
+                        model,
+                        finetune_vision_layers = finetune_vision_layers,
+                        finetune_language_layers = finetune_language_layers,
+                        finetune_attention_modules = finetune_attention_modules,
+                        finetune_mlp_modules = finetune_mlp_modules,
+                        target_modules = list(target_modules),
+                        **_audio_kwargs,
+                    )
+                except RuntimeError:
+                    # Mixtral's [w1, w2, w3]: block_sparse_moe has no MLP tag, so Zoo matches nothing.
+                    expert_regex = None
+                    if finetune_language_layers and finetune_mlp_modules:
+                        expert_regex = native_expert_only_regex(model, target_modules)
+                    if expert_regex is None:
+                        raise
+                    target_modules = expert_regex
                 _target_modules_auto_regex = True
+                _target_modules_from_explicit_list = True
 
         if hasattr(model, "vllm_engine"):
             if (
@@ -4723,6 +4763,7 @@ class FastBaseModel:
                 target_modules,
                 _moe_module_detect,
                 auto_regex = _target_modules_auto_regex and bool(finetune_language_layers),
+                explicit_leaves = _target_modules_from_explicit_list and bool(finetune_mlp_modules),
             )
         )
         if _expert_submodule_leaves:
@@ -4977,9 +5018,7 @@ class FastBaseModel:
                 kwargs["use_reentrant"] = False
                 if not _offload:
                     return _orig_checkpoint(function, *args, **kwargs)
-                with torch.autograd.graph.saved_tensors_hooks(
-                    _offload_activation_pack, _offload_activation_unpack
-                ):
+                with _offload_activation_hooks():
                     return _orig_checkpoint(function, *args, **kwargs)
 
             _nonre_checkpoint._unsloth_original = _orig_checkpoint
