@@ -69,7 +69,11 @@ async def _video_jobs(caller: Caller) -> ToolResult:
     jobs = [
         JobSummary.from_route(
             row,
-            status = opt_text(row.get("status")) or "queued",
+            status = (
+                "cancelled"
+                if as_dict(row.get("error")).get("code") == "cancelled"
+                else opt_text(row.get("status")) or "queued"
+            ),
             progress_percent = number(row.get("progress")),
         )
         for row in rows or []

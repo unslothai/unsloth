@@ -130,3 +130,13 @@ def test_a_client_that_rejects_progress_does_not_fail_the_tool(fast_beat):
         return "ok"
 
     assert asyncio.run(tool(ctx = ctx)) == "ok"
+
+
+def test_a_note_the_tool_stopped_sending_expires(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(progress.time, "monotonic", lambda: clock[0])
+    relay = progress._Relay(SimpleNamespace())
+    asyncio.run(relay.report_progress(0.63, 1.0, "Downloading"))
+    assert relay.note == "Downloading 63%"
+    clock[0] += progress.NOTE_TTL_S + 1
+    assert relay.note is None

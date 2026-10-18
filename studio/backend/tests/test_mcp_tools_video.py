@@ -177,3 +177,9 @@ def test_without_an_id_recent_jobs_are_listed(monkeypatch):
         {"id": "video-1", "status": "completed", "progress_percent": 100.0},
     ]
     assert [c[1] for c in studio.state.calls] == ["/v1/videos"]
+
+
+def test_a_cancelled_job_reads_cancelled_in_the_recent_list(monkeypatch):
+    cancelled = _job("video-4", "failed", 30, error = {"code": "cancelled", "message": "Cancelled."})
+    result, _studio = _get_job(monkeypatch, {}, {("GET", "/v1/videos"): {"data": [cancelled]}})
+    assert result["structuredContent"]["jobs"][0]["status"] == "cancelled"

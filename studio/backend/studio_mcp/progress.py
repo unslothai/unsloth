@@ -11,6 +11,7 @@ import time
 from typing import Any, Awaitable, Callable, Optional, TypeVar
 
 HEARTBEAT_S = 2.0
+NOTE_TTL_S = 3 * HEARTBEAT_S
 
 _Fn = TypeVar("_Fn", bound = Callable[..., Awaitable[Any]])
 
@@ -20,7 +21,8 @@ class _Relay:
 
     def __init__(self, ctx: Any) -> None:
         self._ctx = ctx
-        self.note: Optional[str] = None
+        self._note: Optional[str] = None
+        self._note_at = 0.0
 
     async def report_progress(
         self,
@@ -29,7 +31,15 @@ class _Relay:
         message: Optional[str] = None,
     ) -> None:
         percent = f" {100 * progress / total:.0f}%" if total else ""
-        self.note = f"{message or 'Working'}{percent}"
+        self._note = f"{message or 'Working'}{percent}"
+        self._note_at = time.monotonic()
+
+    @property
+    def note(self) -> Optional[str]:
+        # A finished phase (a model download) sends no last report, so a quiet note has ended.
+        if time.monotonic() - self._note_at > NOTE_TTL_S:
+            return None
+        return self._note
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._ctx, name)
