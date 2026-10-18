@@ -54,7 +54,9 @@ def _key(caller: Caller, kind: str, model: str) -> tuple[str, str, str]:
 
 def _remember(caller: Caller, kind: str, model: str, parts: list[Part]) -> None:
     key = _key(caller, kind, model)
-    _remembered[key] = parts
+    # Prefetches with other options stage other files; a load waits on all of them, newest last.
+    merged = [part for part in _remembered.get(key, []) if part not in parts] + parts
+    _remembered[key] = merged[-MAX_PARTS:]
     _remembered.move_to_end(key)
     while len(_remembered) > _REMEMBER_MAX:
         _remembered.popitem(last = False)

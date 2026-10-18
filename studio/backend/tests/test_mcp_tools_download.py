@@ -421,3 +421,21 @@ def test_get_job_download_needs_the_id(monkeypatch):
     result, studio = run_tool(monkeypatch, TOOL_PAYLOADS, "get_job", {"kind": "download"})
     assert result["isError"] is True and "download_model" in result["content"][0]["text"]
     assert studio.state.calls == []
+
+
+def test_a_second_media_prefetch_keeps_the_first_ones_parts():
+    plan = "/api/inference/images/download-plan"
+    second = {"entries": [{"repo_id": "org/te-int8", "files": ["te.safetensors"]}]}
+    studio = fake_studio({("POST", plan): sequence(PLAN, second), ("POST", START): STARTED})
+    start(studio, model = "org/FLUX", kind = "image", knobs = {"text_encoder_quant": "fp8"})
+    start(studio, model = "org/FLUX", kind = "image", knobs = {"text_encoder_quant": "int8"})
+    assert model_downloads.keys_for(make_caller(), "image", "org/FLUX", None) == [
+        (FLUX, "@diffusion"),
+        (VAE, "@diffusion"),
+        ("org/te-int8", "@diffusion"),
+    ]
+
+
+def test_two_ref_handles_are_two_models():
+    assert not loading._same_id("ref:aaa", "ref:bbb")
+    assert loading._same_id("ref:aaa", "ref:aaa")

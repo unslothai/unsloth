@@ -122,7 +122,9 @@ def _same(left: Optional[str], right: Optional[str]) -> bool:
 
 def _repo(name: str) -> str:
     # A GGUF is listed as repo:variant in one place and the bare repo in another. A local path
-    # (C:\models\a.gguf) has a drive letter there, not a variant.
+    # (C:\models\a.gguf) has a drive letter there, not a variant, and a ref: handle is one opaque id.
+    if name.startswith("ref:"):
+        return name
     head, sep, tail = name.partition(":")
     return head if sep and len(head) > 1 and "/" not in tail and "\\" not in tail else name
 
