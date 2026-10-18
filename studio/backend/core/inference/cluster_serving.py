@@ -1706,15 +1706,31 @@ class ClusterServing:
         if unified:
             local_extra += self._host_embd + self._host_input
 
-        def plan_with(groups: int) -> Tuple[ClusterPlan, float]:
+        from core.inference.llama_cpp import _canonicalize_spec_mode, _extra_args_set_spec_type
+
+        mode = _canonicalize_spec_mode(getattr(request, "speculative_type", None)) or "auto"
+        # Whether Studio may still turn on MTP (or a drafter it picks), which loads the trailing
+        # NextN / MTP blocks; with it off llama.cpp skips them in any topology.
+        auto_spec = mode not in ("off", "ngram", "ngram-simple") and not _extra_args_set_spec_type(
+            flags
+        )
+        spec_off_single = False
+
+        def plan_with(groups: int) -> Tuple[ClusterPlan, float, bool]:
+            trimmed_bytes = model_bytes - off_device - self._nextn_bytes
+            if self._nextn_bytes and not auto_spec:
+                return plan_for(trimmed_bytes, groups), 0.0, False
             plan = plan_for(model_bytes - off_device, groups)
             skipped = self._nextn_bytes  # in the plan's weights, never loaded on a split
-            if plan.topology == "refuse" and self._nextn_bytes:
+            if plan.topology != "single" and self._nextn_bytes:
                 # A split runs without speculation, so trailing NextN / MTP blocks never load.
-                trimmed = plan_for(model_bytes - off_device - self._nextn_bytes, groups)
-                if trimmed.topology == "layer_split":
+                trimmed = plan_for(trimmed_bytes, groups)
+                if trimmed.topology == "single":
+                    # Without them it fits here: one machine with speculation off beats a split.
+                    return trimmed, 0.0, True
+                if plan.topology == "refuse" and trimmed.topology == "layer_split":
                     plan, skipped = trimmed, 0.0
-            return plan, skipped
+            return plan, skipped, False
 
         from core.inference.llama_cpp import _pipeline_groups_slot_step
 
@@ -1722,7 +1738,7 @@ class ClusterServing:
         # never a second flag, but the plan prices the contexts it opens.
         caller_groups = _pipeline_groups_slot_step(flags, os.environ)
         groups = caller_groups if caller_groups > 1 else 0
-        plan, skipped = plan_with(groups)
+        plan, skipped, spec_off_single = plan_with(groups)
         emit_groups = 0
         if caller_groups > 1:
             self.pipeline_groups_reason = (
@@ -1742,7 +1758,7 @@ class ClusterServing:
                 len(plan.devices), slots, refusal = refusal, binary = binary
             )
             for g in candidates:
-                grouped, grouped_skipped = plan_with(g)
+                grouped, grouped_skipped, _single = plan_with(g)
                 if grouped.topology == "layer_split":
                     plan, skipped, groups, emit_groups = grouped, grouped_skipped, g, g
                     why = ""
@@ -1768,6 +1784,9 @@ class ClusterServing:
         self.topology, self.reason = plan.topology, plan.reason
         if plan.topology != "layer_split":
             self.block = []
+            if spec_off_single:
+                self.reason += "; speculative decoding off so its NextN / MTP layers stay unloaded"
+                return ss.SparkServing._request_with(request, {"speculative_type": "off"})
             return request
         # RPC<k> counts devices over the probed --rpc list, so every endpoint that exposed one stays
         # in it even at zero weight; one that exposed none takes no number and is left out.
@@ -1799,10 +1818,7 @@ class ClusterServing:
         _remember_block(self.block)
         logger.info("cluster serving: layer split %s", " ".join(self.block))
         updates: Dict[str, Any] = {"llama_extra_args": effective + self.block}
-        from core.inference.llama_cpp import _canonicalize_spec_mode, _extra_args_set_spec_type
-
-        mode = _canonicalize_spec_mode(getattr(request, "speculative_type", None)) or "auto"
-        if mode not in ("off", "ngram", "ngram-simple") and not _extra_args_set_spec_type(flags):
+        if auto_spec:
             # MTP state and a drafter Studio picks are resolved after this plan, outside its budget.
             updates["speculative_type"] = "off"
             self.reason += "; speculative decoding off for the split"

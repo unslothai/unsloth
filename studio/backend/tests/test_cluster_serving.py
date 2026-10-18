@@ -3478,3 +3478,49 @@ def test_a_projector_an_argv_one_replaces_is_not_charged(monkeypatch, tmp_path):
     assert both.topology == "layer_split"
     assert both.extra_bytes == pytest.approx(cs.state().plan.extra_bytes)
     assert both.resident() == pytest.approx(cs.state().plan.resident())
+
+
+def _nextn_env(
+    monkeypatch,
+    model_bytes,
+    nextn_bytes,
+    listing = LISTING,
+):
+    _cluster_env(monkeypatch, listing = listing, model_bytes = model_bytes)
+    header = dict(_llama_header(8), **{"llama.nextn_predict_layers": 1})
+    monkeypatch.setattr(
+        cs, "_local_gguf_header", lambda *a, **k: (header, {78: GIB, 79: nextn_bytes})
+    )
+
+
+def test_a_model_that_fits_here_without_its_mtp_head_is_not_split(monkeypatch):
+    # 115 GiB does not fit this machine; 90 GiB without the MTP head does, so one machine with
+    # speculation off is planned rather than a split, which runs it off anyway.
+    _nextn_env(monkeypatch, 115 * GIB, 25 * GIB)
+    out = run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "single"
+    assert out.speculative_type == "off"
+    assert "--rpc" not in (out.llama_extra_args or [])
+
+
+def test_a_model_that_fits_here_only_without_its_mtp_head_is_not_refused(monkeypatch):
+    small = """Available devices:
+  RPC0: 10.0.0.2:50052 (4096 MiB, 2000 MiB free)
+  CUDA0: NVIDIA GB10 (122502 MiB, 110000 MiB free)
+"""
+    _nextn_env(monkeypatch, 115 * GIB, 25 * GIB, listing = small)
+    monkeypatch.setenv(cs.ENV_NODES, "10.0.0.2")
+    out = run(ss.before_load(_request(), 4))  # 115 GiB fits nowhere; 90 GiB fits here
+    assert ss.status()["topology"] == "single" and out.speculative_type == "off"
+
+
+def test_speculation_already_off_plans_without_the_mtp_head(monkeypatch):
+    _nextn_env(monkeypatch, 115 * GIB, 25 * GIB)
+    request = _request(speculative_type = "off")
+    assert run(ss.before_load(request, 4)) is request
+    assert ss.status()["topology"] == "single"
+    # MTP left to Studio and the model fits whole: speculation is untouched.
+    _nextn_env(monkeypatch, 80 * GIB, 25 * GIB)
+    request = _request()
+    assert run(ss.before_load(request, 4)) is request
+    assert ss.status()["topology"] == "single"
