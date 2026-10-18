@@ -28,6 +28,8 @@ POLL_INTERVAL_S = 2.0
 MAX_WAIT_S = 240
 # What a caller still waiting on a job is told to wait before its next get_job without wait_s.
 POLL_AFTER_S = 10
+# Forwarded reads have no HTTP timeout; a status or progress read taking longer counts as failed.
+READ_S = 15.0
 
 Progress = Optional[tuple[float, str]]
 
@@ -46,7 +48,7 @@ async def with_progress(
             if done:
                 return task.result()
             try:
-                progress = await poll()
+                progress = await asyncio.wait_for(poll(), timeout = READ_S)
             except Exception:
                 progress = None
             if progress is not None and job is not None:
@@ -252,11 +254,19 @@ def _media_name(status: Any) -> Optional[str]:
     return opt_text(status.get("display_repo_id")) or opt_text(status.get("repo_id"))
 
 
+async def _read_json(caller: Caller, path: str) -> Any:
+    """``try_json`` within READ_S: a read that stalls is None, like one that failed."""
+    try:
+        return await asyncio.wait_for(try_json(caller, path), timeout = READ_S)
+    except asyncio.TimeoutError:
+        return None
+
+
 async def _resident(caller: Caller) -> tuple[dict[str, list[str]], dict]:
     chat, image, video = await asyncio.gather(
-        try_json(caller, "/api/inference/status"),
-        try_json(caller, MEDIA_ROUTES["image"]["status"]),
-        try_json(caller, MEDIA_ROUTES["video"]["status"]),
+        _read_json(caller, "/api/inference/status"),
+        _read_json(caller, MEDIA_ROUTES["image"]["status"]),
+        _read_json(caller, MEDIA_ROUTES["video"]["status"]),
     )
     slots: dict[str, list[str]] = {}
     # A slot that could not be read is left out: this only feeds a report.
@@ -449,7 +459,7 @@ async def _watch_llm(
     misses = 0
     while True:
         await asyncio.sleep(POLL_INTERVAL_S)
-        status = await try_json(caller, "/api/inference/status")
+        status = await _read_json(caller, "/api/inference/status")
         if not isinstance(status, dict):
             # A failed read is skipped; only a run of them ends the follow.
             misses += 1
@@ -462,7 +472,7 @@ async def _watch_llm(
                 return await finish_load(caller, kind, model, before, {})
             raise ToolError(f"Unsloth Studio stopped loading {model} before it was ready")
         try:
-            progress = await poll()
+            progress = await asyncio.wait_for(poll(), timeout = READ_S)
         except Exception:
             progress = None
         if progress is not None:
