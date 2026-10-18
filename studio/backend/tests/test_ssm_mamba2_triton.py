@@ -22,6 +22,7 @@ def _kernels(
     *,
     fatal = False,
     remote = frozenset(),
+    remote_used = False,
     ssm = True,
 ):
     return ssm_runtime.SsmKernels(
@@ -32,6 +33,7 @@ def _kernels(
         model_types = frozenset(model_types),
         remote_code = remote,
         mamba_ssm_fatal = fatal,
+        remote_code_used = remote_used,
     )
 
 
@@ -81,6 +83,10 @@ def test_each_gate_keeps_the_cuda_wheels(capable, monkeypatch):
     assert ssm_runtime.mamba2_runs_on_triton(k)
     assert not ssm_runtime.mamba2_runs_on_triton(_kernels({"nemotron_h"}, fatal = True))
     assert not ssm_runtime.mamba2_runs_on_triton(
+        _kernels({"nemotron_h"}, remote = frozenset({("a", "b")}), remote_used = True)
+    )
+    # A config that only advertises remote code (native class used) keeps the Triton route.
+    assert ssm_runtime.mamba2_runs_on_triton(
         _kernels({"nemotron_h"}, remote = frozenset({("a", "b")}))
     )
     assert not ssm_runtime.mamba2_runs_on_triton(_kernels({"nemotron_h"}, ssm = False))
@@ -268,6 +274,8 @@ def _pure_then_cuda(
         if url == pure_url and pure_outcome != "installed":
             return pure_outcome
         state["importable"].add("mamba_ssm")
+        if url != pure_url:
+            state["importable"].add(ssm_runtime.MAMBA_SSM_EXTENSION)  # the CUDA wheel's scan
         return "installed" if verify() else "rejected"
 
     monkeypatch.setattr(ssm_runtime, "url_exists", url_exists)
@@ -365,3 +373,145 @@ def test_training_failure_memo_follows_the_wheel_source(monkeypatch):
     # ... but not the CUDA wheel.
     assert worker._install_package_wheel_first(event_queue = [], **kwargs) is True
     assert seen == [None]
+
+
+# ── The CUDA route never settles for the extension-free wheel ─────────────────
+
+
+def _cuda_route(
+    state,
+    monkeypatch,
+    *,
+    cuda_exists = True,
+    required = True,
+    outcome = "installed",
+):
+    state["kwargs"] = []
+    state["removed"] = []
+    state["importable"].add("causal_conv1d")  # every SSM load also wants it; already present here
+
+    def install_prebuilt(url, *, verify, **kwargs):
+        state["installed"].append(url)
+        state["kwargs"].append(kwargs)
+        if outcome != "installed":
+            return outcome
+        state["importable"].update({"mamba_ssm", ssm_runtime.MAMBA_SSM_EXTENSION})
+        return "installed" if verify() else "rejected"
+
+    monkeypatch.setattr(ssm_runtime, "url_exists", lambda url: cuda_exists)
+    monkeypatch.setattr(ssm_runtime, "install_prebuilt", install_prebuilt)
+    monkeypatch.setattr(
+        ssm_runtime,
+        "_remove_broken",
+        lambda pypi_name, *a, **k: state["removed"].append(pypi_name)
+        or state["importable"].discard("mamba_ssm"),
+    )
+    return ssm_runtime.ensure_ssm_runtime(
+        "tiiuae/falcon-mamba-7b",
+        wants_causal_conv1d = False,
+        is_ssm = True,
+        mamba_ssm_required = required,
+        mamba_ssm_fatal = False,
+    )
+
+
+def test_cuda_route_replaces_the_extension_free_wheel(real_install, monkeypatch):
+    real_install["importable"].add("mamba_ssm")  # a Mamba-2 load left the extension-free wheel
+    monkeypatch.setitem(sys.modules, "mamba_ssm", types.ModuleType("mamba_ssm"))
+    monkeypatch.setitem(sys.modules, "mamba_ssm.ops", types.ModuleType("mamba_ssm.ops"))
+    installed = _cuda_route(real_install, monkeypatch)
+    assert real_install["installed"] == [real_install["cuda_url"]]
+    assert real_install["kwargs"][0].get("reinstall") is True
+    assert installed == ["mamba_ssm"]  # new to this worker: restart detection sees it
+    # The stale extension-free modules are gone, so the next import loads the CUDA copy.
+    assert "mamba_ssm" not in sys.modules and "mamba_ssm.ops" not in sys.modules
+
+
+def test_cuda_route_accepts_a_mamba_ssm_with_its_scan(real_install, monkeypatch):
+    real_install["importable"].update({"mamba_ssm", ssm_runtime.MAMBA_SSM_EXTENSION})
+    assert _cuda_route(real_install, monkeypatch) == []
+    assert real_install["installed"] == []
+
+
+def test_a_failed_replacement_removes_the_extension_free_wheel(real_install, monkeypatch):
+    real_install["importable"].add("mamba_ssm")
+    installed = _cuda_route(real_install, monkeypatch, cuda_exists = False, required = False)
+    assert installed == []
+    # Left behind, a Mamba-1 load would take the fast path and fail in selective_scan_fn.
+    assert real_install["removed"] == ["mamba-ssm"]
+    assert "mamba_ssm" not in real_install["importable"]
+
+
+def test_the_pure_route_keeps_an_installed_cuda_mamba_ssm(real_install, monkeypatch):
+    real_install["importable"].update({"mamba_ssm", ssm_runtime.MAMBA_SSM_EXTENSION})
+    monkeypatch.setattr(
+        ssm_runtime, "install_prebuilt", lambda *a, **k: pytest.fail("no downgrade")
+    )
+    assert (
+        ssm_runtime.ensure_ssm_runtime(
+            "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
+            wants_causal_conv1d = True,
+            is_ssm = True,
+            mamba_ssm_required = True,
+            mamba_ssm_fatal = False,
+            mamba2_triton = True,
+        )
+        == []
+    )
+
+
+def test_training_cuda_route_replaces_the_extension_free_wheel(monkeypatch, tmp_path):
+    from core.training import worker
+
+    importable = {"mamba_ssm"}
+    seen = {}
+    monkeypatch.setattr(worker, "_is_importable", lambda name: name in importable)
+    monkeypatch.setattr(worker, "_model_offline_mode_enabled", lambda: False)
+    monkeypatch.setattr(worker, "_package_installs_offline", lambda: False)
+    monkeypatch.setattr(ssm_runtime, "_FAILED_INSTALLS", set())
+    monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", str(tmp_path / "locks"))
+
+    def attempt(**kwargs):
+        seen.update(kwargs)
+        importable.add(ssm_runtime.MAMBA_SSM_EXTENSION)
+        return True
+
+    monkeypatch.setattr(worker, "_attempt_package_install", attempt)
+    monkeypatch.setitem(sys.modules, "mamba_ssm", types.ModuleType("mamba_ssm"))
+    from unittest import mock
+
+    assert worker._install_package_wheel_first(
+        event_queue = mock.Mock(),
+        **worker._pinned_kernel_kwargs(worker.MAMBA_SSM),
+        extension = ssm_runtime.MAMBA_SSM_EXTENSION,
+    )
+    assert seen["replacing"] is True and seen["extension"] == ssm_runtime.MAMBA_SSM_EXTENSION
+    assert "mamba_ssm" not in sys.modules
+    # And the CUDA-route call asks for the extension.
+    src = (_BACKEND / "core" / "training" / "worker.py").read_text()
+    assert "extension = MAMBA_SSM_EXTENSION" in src
+
+
+# ── Remote code counts only when the load runs it ─────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "trust, native, used", [(False, True, False), (True, True, True), (False, False, True)]
+)
+def test_remote_code_used_follows_the_selected_implementation(monkeypatch, trust, native, used):
+    config = {
+        "model_type": "nemotron_h",
+        "architectures": ["NemotronHForCausalLM"],
+        "auto_map": {"AutoModelForCausalLM": "modeling_nemotron_h.NemotronHForCausalLM"},
+    }
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda t: native)
+    monkeypatch.setattr(ssm_runtime, "_remote_source_text", lambda *a, **k: "import torch\n")
+    kernels = ssm_runtime.resolve_ssm_kernels(
+        "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
+        "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
+        None,
+        model_config = config,
+        trust_remote_code = trust,
+    )
+    assert kernels.remote_code  # restart detection still knows the remote modules
+    assert kernels.remote_code_used is used

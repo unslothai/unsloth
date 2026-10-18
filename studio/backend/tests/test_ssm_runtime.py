@@ -1293,7 +1293,13 @@ class _Host:
         )
         monkeypatch.setattr(ssm_runtime, "url_exists", lambda url: head)
         monkeypatch.setattr(ssm_runtime, "install_wheel", self.install_wheel)
-        monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: name in self.imports)
+        # Every mamba_ssm this fake installs (CUDA wheel or source build) carries its compiled scan.
+        monkeypatch.setattr(
+            ssm_runtime,
+            "_is_importable",
+            lambda name: name in self.imports
+            or (name == ssm_runtime.MAMBA_SSM_EXTENSION and "mamba_ssm" in self.imports),
+        )
         monkeypatch.setattr(
             ssm_runtime,
             "_installed_distribution",

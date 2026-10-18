@@ -1363,16 +1363,18 @@ def _is_importable(import_name: str) -> bool:
 _IMPORT_PROBE_TIMEOUT = 300
 
 
-def _is_importable_isolated(import_name: str) -> bool:
+def _is_importable_isolated(import_name: str, after_torch: bool = False) -> bool:
     """Probe the import in a child process. A wrong-arch wheel can abort or segfault in its
     initialiser instead of raising, which would kill this worker rather than fall back. A child
-    turns that into a return code (negative = fatal signal)."""
+    turns that into a return code (negative = fatal signal). *after_torch* imports torch first, as
+    a bare torch extension (selective_scan_cuda) needs its libraries loaded."""
     try:
         result = _sp.run(
             [
                 sys.executable,
                 "-c",
-                "import importlib, sys; importlib.import_module(sys.argv[1])",
+                ("import torch; " if after_torch else "")
+                + "import importlib, sys; importlib.import_module(sys.argv[1])",
                 import_name,
             ],
             stdout = _sp.DEVNULL,
@@ -1444,6 +1446,7 @@ def _install_package_wheel_first(
     display_name: str,
     pypi_name: str,
     required: bool = False,
+    extension: str | None = None,
     **kwargs: Any,
 ) -> bool:
     """Install a fast-path package, wheel first, and never leave an unusable one behind. The two
@@ -1451,8 +1454,15 @@ def _install_package_wheel_first(
     before any subprocess, and offline changes nothing. Everything after them is an install
     attempt, so ANY unsuccessful exit -- timeout, failed install, bad import -- discards what is
     left rather than leaving metadata the in-process import would pick up. Enforced here rather
-    than at each return because four separate exits have now been found that forgot to clean up."""
-    if _is_importable(import_name):
+    than at each return because four separate exits have now been found that forgot to clean up.
+    With *extension*, a copy without that compiled module (the extension-free mamba_ssm wheel) is
+    replaced rather than accepted."""
+    from utils.ssm_runtime import forget_imported_modules
+
+    def kernel_usable() -> bool:
+        return _is_importable(import_name) and (extension is None or _is_importable(extension))
+
+    if kernel_usable():
         logger.info("%s already installed", display_name)
         return True
 
@@ -1492,9 +1502,17 @@ def _install_package_wheel_first(
                 "it, or the lock is unavailable); continuing without it",
             )
             return False
-        if _is_importable(import_name):
+        if kernel_usable():
             logger.info("%s installed by another process", display_name)
+            if extension is not None:
+                forget_imported_modules(import_name, extension)
             return True
+        # Importable but without the compiled module: the extension-free wheel, replaced here.
+        replacing = extension is not None and _is_importable(import_name)
+        if replacing:
+            _send_status(
+                event_queue, f"Replacing the extension-free {display_name} with its CUDA kernels..."
+            )
         installed = False
         try:
             installed = _attempt_package_install(
@@ -1502,10 +1520,16 @@ def _install_package_wheel_first(
                 import_name = import_name,
                 display_name = display_name,
                 pypi_name = pypi_name,
+                extension = extension,
+                replacing = replacing,
                 **kwargs,
             )
             return installed
         finally:
+            if replacing:
+                # The process imported the extension-free copy: the next import must load what is
+                # installed now (or nothing, after a failed replacement removes it).
+                forget_imported_modules(import_name, extension)
             if not installed:
                 _FAILED_INSTALLS.add(failure_key)
                 _reject_install(event_queue, pypi_name, display_name, "will not import")
@@ -1525,8 +1549,17 @@ def _attempt_package_install(
     pypi_spec: str | None = None,
     pypi_status_message: str | None = None,
     allow_source_build: bool = True,
+    extension: str | None = None,
+    replacing: bool = False,
 ) -> bool:
     """The install itself. Call it through _install_package_wheel_first, never directly."""
+
+    def _verify() -> bool:
+        # Out of process: a bad wheel can take the worker down with it.
+        if not _is_importable_isolated(import_name):
+            return False
+        return extension is None or _is_importable_isolated(extension, after_torch = True)
+
     # Set when a wheel installed but would not import; see the uninstall before the fallback.
     wheel_rejected = False
 
@@ -1565,8 +1598,7 @@ def _attempt_package_install(
         outcome = install_prebuilt(
             wheel_url,
             install = install_wheel,
-            # Out of process: a bad wheel can take the worker down with it.
-            verify = lambda: _is_importable_isolated(import_name),
+            verify = _verify,
             on_failed = lambda installer, result: logger.warning(
                 "%s failed to install %s wheel:\n%s",
                 installer,
@@ -1575,6 +1607,8 @@ def _attempt_package_install(
             ),
             use_uv = bool(shutil.which("uv")),
             run = _sp.run,
+            # Over the extension-free copy of the same version, which uv / pip would keep.
+            **({"reinstall": True} if replacing else {}),
         )
         if outcome == "installed":
             logger.info("Installed prebuilt %s wheel successfully", display_name)
@@ -1809,11 +1843,15 @@ def _ensure_mamba_ssm(
             return
 
     logger.info("SSM model detected; setting up mamba-ssm after causal-conv1d")
+    from utils.ssm_runtime import MAMBA_SSM_EXTENSION
+
     _install_package_wheel_first(
         event_queue = event_queue,
         **_pinned_kernel_kwargs(MAMBA_SSM),
         allow_source_build = essential,
         required = essential,
+        # Never settle for the extension-free wheel a Mamba-2 load may have left here.
+        extension = MAMBA_SSM_EXTENSION,
     )
 
 
@@ -4193,6 +4231,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 model_load_target,
                 _worker_hf_token(config),
                 adapter_base = config.get("adapter_base_pin") or None,
+                # Whether the load runs a checkpoint's remote code, not just whether it has some.
+                trust_remote_code = bool(config.get("trust_remote_code", False)),
             )
             is_ssm = kernels.mamba_ssm
             wants_causal_conv1d = kernels.causal_conv1d

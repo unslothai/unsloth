@@ -118,6 +118,10 @@ class SsmKernels(NamedTuple):
     # Falcon-H1, Granite-4.0-H) only means "worth a source build": their native transformers
     # models run without it.
     mamba_ssm_fatal: bool = False
+    # Whether this load runs the remote implementation: an auto_map plus trust_remote_code, or a
+    # model type this transformers has no native class for. A config that merely advertises remote
+    # code still loads the native class when trust_remote_code is off.
+    remote_code_used: bool = False
 
 
 def _base_model_type(model_type: str) -> str:
@@ -530,6 +534,12 @@ def resolve_ssm_kernels(
         required = model_requires_mamba_ssm(probe)
     if wants is None:
         wants = model_wants_causal_conv1d(probe)
+    ssm_types = {t for t in model_types if t in SSM_MODEL_TYPES}
+    remote_code_used = bool(remote_code) and (
+        bool(trust_remote_code)
+        or not ssm_types
+        or not all(native_modeling_available(t) for t in ssm_types)
+    )
     fatal = False
     if is_ssm and required:
         if model_config is not None and model_types:
@@ -551,6 +561,7 @@ def resolve_ssm_kernels(
         model_types = model_types,
         remote_code = remote_code,
         mamba_ssm_fatal = bool(fatal),
+        remote_code_used = remote_code_used,
     )
 
 
@@ -824,7 +835,7 @@ def mamba2_runs_on_triton(kernels: "SsmKernels") -> bool:
     config-resolved Mamba-2 family on a CUDA torch with Triton, transformers >= 5.15 and a zoo with
     the Triton drop-ins. Never for a load whose own code needs mamba_ssm (``mamba_ssm_fatal``) or a
     name-only guess."""
-    if not kernels.mamba_ssm or kernels.mamba_ssm_fatal or kernels.remote_code:
+    if not kernels.mamba_ssm or kernels.mamba_ssm_fatal or kernels.remote_code_used:
         return False
     ssm_types = {t for t in kernels.model_types if t in SSM_MODEL_TYPES}
     if not ssm_types or not ssm_types <= MAMBA2_TRITON_MODEL_TYPES:
@@ -836,6 +847,26 @@ def mamba2_runs_on_triton(kernels: "SsmKernels") -> bool:
     if _kernel_backend(_torch_env()) != "cuda":
         return False  # zoo's drop-ins are CUDA only; ROCm keeps its source builds
     return _transformers_resolves_kernels_per_function() and _zoo_has_mamba2_triton_drop_ins()
+
+
+# The compiled Mamba-1 scan. The extension-free mamba_ssm wheel imports fine without it, so a load on
+# the CUDA route (Mamba-1 families, remote code, UNSLOTH_MAMBA_CUDA_KERNELS=1) must check for it: with
+# it missing, transformers still takes mamba_ssm's fast path and selective_scan_fn raises.
+MAMBA_SSM_EXTENSION = "selective_scan_cuda"
+
+
+def kernel_usable(import_name: str, extension: str | None = None) -> bool:
+    """The package imports and, when *extension* is named, so does its compiled module."""
+    return _is_importable(import_name) and (extension is None or _is_importable(extension))
+
+
+def forget_imported_modules(import_name: str, extension: str | None = None) -> None:
+    """Drop a replaced package from sys.modules so the next import loads the new copy: mamba_ssm
+    binds selective_scan_cuda (or None) when its modules are first imported."""
+    for name in list(sys.modules):
+        if name == import_name or name.startswith(import_name + ".") or name == extension:
+            sys.modules.pop(name, None)
+    importlib.invalidate_caches()
 
 
 def _failure_key(import_name: str, wheel_url_builder: Callable[..., Any] | None = None) -> tuple:
@@ -905,12 +936,15 @@ def _install_kernel(
     allow_source_build: bool = True,
     required: bool = False,
     wheel_url_builder: Callable[[dict[str, str] | None], str | None] | None = None,
+    extension: str | None = None,
 ) -> bool:
     """Install one kernel wheel-first, then (when *allow_source_build*) a HIP-aware PyPI source build
     (never on Windows). Returns True iff importable afterwards; idempotent (no-op when already
     installed). An install this call made is appended to *newly_installed*. One install per kernel
-    runs at a time across processes; a failed one is not retried in this process."""
-    if _is_importable(import_name):
+    runs at a time across processes; a failed one is not retried in this process. With
+    *extension*, an installed copy without that compiled module (the extension-free mamba_ssm
+    wheel) is replaced rather than accepted."""
+    if kernel_usable(import_name, extension):
         logger.info("%s already installed", display_name)
         return True
 
@@ -949,11 +983,19 @@ def _install_kernel(
             return False
         # Another process may have installed it while this one waited: new to this worker all the
         # same, so its already-imported modeling modules are refreshed or restarted.
-        if _is_importable(import_name):
+        if kernel_usable(import_name, extension):
             logger.info("%s installed by another process", display_name)
+            if extension is not None:
+                forget_imported_modules(import_name, extension)
             if newly_installed is not None:
                 newly_installed.append(import_name)
             return True
+        # Importable but without the compiled module: the extension-free wheel, replaced here.
+        replacing = extension is not None and _is_importable(import_name)
+        if replacing:
+            _emit(
+                status_cb, f"Replacing the extension-free {display_name} with its CUDA kernels..."
+            )
         installed: bool | None = False
         try:
             installed = _install_kernel_locked(
@@ -967,6 +1009,8 @@ def _install_kernel(
                 run = run,
                 allow_source_build = allow_source_build,
                 wheel_url_builder = wheel_url_builder,
+                extension = extension,
+                replacing = replacing,
             )
         except Exception as exc:
             # An installer that cannot even start (OSError) fails like any other attempt.
@@ -974,7 +1018,11 @@ def _install_kernel(
             installed = False
         finally:
             if installed is False:
+                # A failed replacement removes the extension-free copy too: left in place, a Mamba-1
+                # load would take mamba_ssm's fast path and fail in selective_scan_fn.
                 _remove_broken(pypi_name, display_name, run)
+                if replacing:
+                    forget_imported_modules(import_name, extension)
                 _FAILED_INSTALLS.add(failure_key)
         if installed is None:
             return False  # nothing attempted (unsupported torch backend)
@@ -995,8 +1043,16 @@ def _install_kernel_locked(
     run: Callable[..., Any],
     allow_source_build: bool,
     wheel_url_builder: Callable[[dict[str, str] | None], str | None] | None = None,
+    extension: str | None = None,
+    replacing: bool = False,
 ) -> bool | None:
     """The install itself, under the kernel's lock. None when nothing was attempted."""
+
+    def _verify() -> bool:
+        if replacing:
+            forget_imported_modules(import_name, extension)
+        return kernel_usable(import_name, extension)
+
     env = _torch_env()
     backend = _kernel_backend(env)
     if backend is None:
@@ -1035,7 +1091,7 @@ def _install_kernel_locked(
             outcome = install_prebuilt(
                 wheel_url,
                 install = install_wheel,
-                verify = lambda: _is_importable(import_name),
+                verify = _verify,
                 on_failed = lambda installer, result: logger.warning(
                     "%s could not install %s wheel:\n%s",
                     installer,
@@ -1044,6 +1100,8 @@ def _install_kernel_locked(
                 ),
                 use_uv = bool(shutil.which("uv")),
                 run = run,
+                # Over the extension-free copy of the same version, which uv / pip would keep.
+                **({"reinstall": True} if replacing else {}),
             )
         if outcome == "installed":
             logger.info("Installed prebuilt %s wheel", display_name)
@@ -1108,7 +1166,7 @@ def _install_kernel_locked(
         return False
     if getattr(result, "returncode", 1) != 0:
         logger.warning("%s source install failed:\n%s", display_name, getattr(result, "stdout", ""))
-    return _is_importable(import_name)
+    return _verify()
 
 
 def _pinned_kwargs(kernel: PinnedKernel) -> dict[str, str]:
@@ -1212,7 +1270,9 @@ def ensure_ssm_runtime(
         if reason is not None:
             _emit(status_cb, f"Skipping mamba-ssm, which {reason}; using the model's torch path.")
             return installed
-    if not _install(MAMBA_SSM, allow_source_build = mamba_ssm_required):
+    if not _install(
+        MAMBA_SSM, allow_source_build = mamba_ssm_required, extension = MAMBA_SSM_EXTENSION
+    ):
         if mamba_ssm_fatal:
             # The model cannot load without mamba-ssm (its remote code imports it), so no torch
             # path exists to fall back on. On a CPU / XPU torch no install could have helped, so
