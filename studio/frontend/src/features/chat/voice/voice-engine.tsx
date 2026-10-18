@@ -52,6 +52,7 @@ import {
   interjectOutcomeFor,
   REPEAT_WINDOW_MS,
   replyEchoesFiller,
+  sharesMostWords,
 } from "@/features/chat/voice/laya-outcomes";
 import { clearVoiceDecisions } from "@/features/chat/voice/voice-decisions";
 import { voiceTrace } from "@/features/chat/voice/voice-trace";
@@ -91,6 +92,10 @@ let _prevRunning = false;
 // instead of stacking as separate turns. Tunable: lower = snappier single turns,
 // higher = groups slower/longer multi-part barge-ins.
 const VOICE_COALESCE_MS = 650;
+// After a barge-in cut a run that had not answered yet: the user tends to keep
+// going ("can you hear me?" ... "hello?"), and each restart threw the model's
+// thinking away, so the next run waits longer for the rest to stack up.
+const VOICE_RESTART_COALESCE_MS = 1800;
 // thread.cancelRun() is asynchronous, so the old run can still read as running
 // when the coalesce window closes. Rather than give up and leave the appended
 // bubbles unanswered, re-check every VOICE_COALESCE_MS up to this many times
@@ -275,6 +280,7 @@ export const VoiceEngine: FC = () => {
   const streamBegunRef = useRef(false);
   // Interval that feeds the growing assistant reply into the TTS stream.
   const streamPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastFallbackAtRef = useRef(0);
   const sayAsideRef = useRef(sayAside);
   sayAsideRef.current = sayAside;
   // Thinking filler for the run in flight: decided at submit (the model is told
@@ -377,7 +383,8 @@ export const VoiceEngine: FC = () => {
     voiceTrace("engine.commitUtterance", { text, speaking: isSpeakingRef.current, playing: isPlayingRef.current });
     if (isSpeakingRef.current || isPlayingRef.current) stop();
     const thread = auiRef.current.thread();
-    if (thread.getState().isRunning) {
+    const cutRun = thread.getState().isRunning;
+    if (cutRun) {
       // The barge-in cuts the filler with the reply.
       const f = fillerRef.current;
       if (f?.logId) {
@@ -510,7 +517,7 @@ export const VoiceEngine: FC = () => {
     if (voiceCoalesceTimerRef.current) clearTimeout(voiceCoalesceTimerRef.current);
     voiceCoalesceTimerRef.current = setTimeout(
       () => fireCoalescedRun(0),
-      VOICE_COALESCE_MS,
+      cutRun ? VOICE_RESTART_COALESCE_MS : VOICE_COALESCE_MS,
     );
   }, [resumeListen, stop]);
 
@@ -649,9 +656,17 @@ export const VoiceEngine: FC = () => {
         const words = text.split(/\s+/).filter(Boolean).length;
         // Saying the held thing again is insisting on it, not a second hold.
         const repeated = queuedUtteranceRef.current.includes(text);
-        const action =
-          (verdict === "ignore" && words > 3) || (verdict !== "restart" && repeated) ? "restart" : verdict;
-        voiceTrace("engine.interject", { action, verdict, words, text });
+        // Asking the pending question again ("can you hear me?" over its own
+        // reply being thought out) is impatience, not a new request: restarting
+        // threw the thinking away and made the wait longer every time.
+        const sameAsk = sharesMostWords(lastUserPrompt(), text);
+        const action = sameAsk
+          ? "ignore"
+          : (verdict === "ignore" && words > 3) || (verdict !== "restart" && repeated)
+            ? "restart"
+            : verdict;
+        voiceTrace("engine.interject", { action, verdict, words, text, sameAsk });
+        if (sameAsk) sayAsideRef.current(pickStage2(latestAssistantToolKinds()));
         if (answer?.id) {
           if (action === "ignore" || action === "queue") {
             settleInterject(null);
@@ -854,6 +869,8 @@ export const VoiceEngine: FC = () => {
         // said while the answer is being written.
         let quietFallbackAt: number | null = null;
         let writingDone = false;
+        // One bridge per stretch of restarts, not one per restart ("one sec" three times).
+        const FALLBACK_REPEAT_GAP_MS = 8000;
         streamPollRef.current = setInterval(() => {
           const f = fillerRef.current;
           const text = latestAssistantText();
@@ -879,9 +896,11 @@ export const VoiceEngine: FC = () => {
             !f &&
             quietFallbackAt === null &&
             !isPlayingRef.current &&
-            now - runStartedAtRef.current >= QUIET_FALLBACK_AFTER_MS
+            now - runStartedAtRef.current >= QUIET_FALLBACK_AFTER_MS &&
+            now - lastFallbackAtRef.current >= FALLBACK_REPEAT_GAP_MS
           ) {
             quietFallbackAt = now;
+            lastFallbackAtRef.current = now;
             voiceTrace("engine.fillerFallback", { sinceStart: now - runStartedAtRef.current });
             sayAsideRef.current(pickQuietFallback());
           }
