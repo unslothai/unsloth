@@ -839,3 +839,25 @@ def test_a_slow_read_before_the_load_does_not_hold_the_call_past_wait_s(
         )
     assert job["structuredContent"]["status"] == "completed"
     assert job["structuredContent"]["load"]["model"] == LTX
+
+
+@pytest.mark.parametrize(
+    "left,right,same",
+    [
+        ("unsloth/Q-GGUF:Q4_K_M", "unsloth/Q-GGUF", True),
+        ("C:\\models\\old.gguf", "C:\\models\\new.gguf", False),
+        ("C:/models/old.gguf", "C:/models/new.gguf", False),
+    ],
+)
+def test_only_a_repo_id_drops_its_variant_when_matching(left, right, same):
+    assert loading._same_id(left, right) is same
+
+
+def test_a_retry_with_another_hub_token_starts_its_own_load(monkeypatch, fast_polls):
+    studio = fake_studio({**PAYLOADS, LOAD: slow(LOADED, 1.0), STATUS_ROUTE: EMPTY_STATUS})
+    with session(monkeypatch, studio) as call:
+        first = call("load_model", {"model": LLM, "wait_s": 0, "hf_token": "hf_old"})
+        same = call("load_model", {"model": LLM, "wait_s": 0, "hf_token": "hf_old"})
+        retry = call("load_model", {"model": LLM, "wait_s": 0, "hf_token": "hf_new"})
+    ids = [r["structuredContent"]["job_id"] for r in (first, same, retry)]
+    assert ids[0] == ids[1] != ids[2]

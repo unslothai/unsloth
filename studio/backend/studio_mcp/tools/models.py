@@ -155,6 +155,7 @@ async def load_model(
             variant = variant,
             deadline = deadline,
             run = load_stt,
+            hub_token = hf_token,
         )
     if kind in loading.MEDIA_ROUTES:
         return await loading.load_media(
