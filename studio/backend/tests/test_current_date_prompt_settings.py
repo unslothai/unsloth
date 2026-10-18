@@ -215,10 +215,76 @@ class TestExternalProviderMessages:
         assert out[0]["content"] == "The current date is 2026-08-15.\n\nBe terse."
         assert out[1] == {"role": "user", "content": "hi"}
 
-    def test_other_local_servers_still_get_a_synthesized_system_turn(self):
+    @pytest.mark.parametrize("provider_type", ("llama_cpp", "vllm", "lemonade"))
+    def test_template_servers_keep_their_default_system_prompt_when_studio_sends_none(
+        self, provider_type
+    ):
+        import routes.inference as inference
+
+        messages = [{"role": "user", "content": "hi"}]
+        out = inference._prepend_current_date_to_messages(messages, provider_type = provider_type)
+        assert out is messages
+
+    @pytest.mark.parametrize("provider_type", ("llama_cpp", "vllm", "lemonade"))
+    def test_template_servers_still_date_a_system_turn_studio_composed(self, provider_type):
         import routes.inference as inference
         out = inference._prepend_current_date_to_messages(
-            [{"role": "user", "content": "hi"}], provider_type = "llama_cpp"
+            [{"role": "system", "content": "Be terse."}, {"role": "user", "content": "hi"}],
+            provider_type = provider_type,
+        )
+        assert out[0]["content"] == "The current date is 2026-08-15.\n\nBe terse."
+
+    def test_llama_cpp_carries_the_served_template_default_along_with_the_date(self):
+        import routes.inference as inference
+        out = inference._prepend_current_date_to_messages(
+            [{"role": "user", "content": "hi"}],
+            provider_type = "llama_cpp",
+            served_template = _QWEN25_LIKE,
+        )
+        assert out[0] == {
+            "role": "system",
+            "content": "The current date is 2026-08-15.\n\nYou are Qwen, a helpful assistant.",
+        }
+
+    def test_llama_cpp_probes_the_served_template_with_the_request_controls(self):
+        import routes.inference as inference
+
+        template = (
+            "{% if messages[0]['role'] == 'system' %}{% set sys = messages[0]['content'] %}"
+            "{% set rest = messages[1:] %}{% else %}{% set rest = messages %}"
+            "{% if enable_thinking is defined and enable_thinking is false %}"
+            "{% set sys = 'Answer directly.' %}{% else %}{% set sys = 'Think first.' %}{% endif %}"
+            "{% endif %}<|im_start|>system\n{{ sys }}<|im_end|>\n"
+            "{% for m in rest %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
+        )
+        out = inference._prepend_current_date_to_messages(
+            [{"role": "user", "content": "hi"}],
+            provider_type = "llama_cpp",
+            served_template = template,
+            controls = (("enable_thinking", False),),
+        )
+        assert out[0]["content"] == "The current date is 2026-08-15.\n\nAnswer directly."
+
+    def test_llama_cpp_dates_a_served_template_with_no_default(self):
+        import routes.inference as inference
+        out = inference._prepend_current_date_to_messages(
+            [{"role": "user", "content": "hi"}], provider_type = "llama_cpp", served_template = _CHATML
+        )
+        assert out[0] == {"role": "system", "content": "The current date is 2026-08-15."}
+
+    def test_llama_cpp_sends_no_system_turn_a_served_template_refuses(self):
+        import routes.inference as inference
+
+        messages = [{"role": "user", "content": "hi"}]
+        out = inference._prepend_current_date_to_messages(
+            messages, provider_type = "llama_cpp", served_template = _REFUSES_SYSTEM
+        )
+        assert out is messages
+
+    def test_custom_connections_still_get_a_synthesized_system_turn(self):
+        import routes.inference as inference
+        out = inference._prepend_current_date_to_messages(
+            [{"role": "user", "content": "hi"}], provider_type = "custom"
         )
         assert out[0] == {"role": "system", "content": "The current date is 2026-08-15."}
 

@@ -662,6 +662,80 @@ def test_the_capability_message_for_a_host(monkeypatch, linux, case):
     _asserts(message, says, does_not_say)
 
 
+_AMD_CARD = {"vendor": "amd", "index": 0, "name": "Radeon RX 7900 XTX", "memory_total_gb": 24.0}
+
+
+@pytest.mark.parametrize("case", [
+    # #14067: render-group fix, not "repair the installation".
+    pytest.param((_KFD_SHUT, "torch_cuda_unavailable", "2.11.0+rocm7.0", True, True),
+                 id = "a_rocm_wheel_behind_a_closed_node_gets_only_the_hint"),
+    pytest.param((_KFD_SHUT, "torch_cpu_build", "2.11.0+cpu", True, False),
+                 id = "a_cpu_wheel_behind_a_closed_node_keeps_the_repair_line"),
+    pytest.param((_BOTH_OPEN, "torch_cuda_unavailable", "2.11.0+rocm7.0", False, False),
+                 id = "nodes_that_open_add_no_hint"),
+])
+def test_the_system_tab_mismatch_names_a_closed_node(monkeypatch, linux, case):
+    """/api/system's ``gpu.mismatch`` carries the same hint the capability messages give."""
+    layout, verdict, label, has_hint, hint_only = case
+    _nodes(monkeypatch, **layout)
+    _mismatch_vendors(monkeypatch, {"amd"})
+    for _probe, _answer in _pins(rocm_intent = False, hip_runtime = False).items():
+        monkeypatch.setattr(hardware, _probe, lambda _a = _answer: _a)
+    monkeypatch.setattr(hardware, "torch_build_snapshot", lambda **_k: {"reason": verdict})
+    monkeypatch.setattr(
+        hardware, "get_physical_gpu_inventory", lambda **_k: {"devices": [_AMD_CARD], "sources": ["sysfs"]}
+    )
+    monkeypatch.setattr(hardware, "_devices_that_can_establish_a_mismatch", lambda devices: devices)
+    monkeypatch.setattr(hardware, "_reported_torch_label", lambda *_a: label)
+    mismatch = hardware._torch_gpu_mismatch_report()["mismatch"]
+    assert mismatch["reason"] == verdict
+    if has_hint:
+        assert _USERMOD in mismatch["permission_hint"]
+    else:
+        assert mismatch["permission_hint"] is None
+    assert mismatch["permission_hint_only"] is hint_only
+
+
+@pytest.mark.parametrize("case", [
+    pytest.param((_KFD_SHUT, "torch_cuda_unavailable", "2.11.0+rocm7.0", True), id = "rocm_wheel_gets_the_hint"),
+    pytest.param((_KFD_SHUT, "torch_cpu_build", "2.11.0+cpu", False), id = "cpu_wheel_keeps_the_repair"),
+    pytest.param((_BOTH_OPEN, "torch_cuda_unavailable", "2.11.0+rocm7.0", False), id = "open_nodes_add_nothing"),
+])
+def test_the_health_hint_for_the_train_tooltip(monkeypatch, linux, case):
+    """/api/health's ``chat_only_hint`` replaces the sidebar's reinstall advice only for a ROCm wheel."""
+    layout, verdict, label, has_hint = case
+    _nodes(monkeypatch, **layout)
+    _mismatch_vendors(monkeypatch, {"amd"})
+    for _probe, _answer in _pins(rocm_intent = False, hip_runtime = False).items():
+        monkeypatch.setattr(hardware, _probe, lambda _a = _answer: _a)
+    monkeypatch.setattr(hardware, "_CHAT_ONLY_HINT", None)
+    # Computed by detection (off the async health path), then only looked up.
+    hardware._record_chat_only_hint(verdict, label)
+    hint = hardware.chat_only_permission_hint(verdict, label)
+    if has_hint:
+        assert _USERMOD in hint
+    else:
+        assert hint is None
+    # A verdict detection did not record gets nothing.
+    assert hardware.chat_only_permission_hint("no_gpu", None) is None
+
+
+def test_the_system_tab_reads_vendors_from_the_cards_it_reports(monkeypatch, linux):
+    """An AMD card the inventory found after detection still gets the hint (stale global vendors)."""
+    _nodes(monkeypatch, **_KFD_SHUT)
+    _mismatch_vendors(monkeypatch, set())
+    for _probe, _answer in _pins(rocm_intent = False, hip_runtime = False).items():
+        monkeypatch.setattr(hardware, _probe, lambda _a = _answer: _a)
+    monkeypatch.setattr(hardware, "torch_build_snapshot", lambda **_k: {"reason": "torch_cuda_unavailable"})
+    monkeypatch.setattr(
+        hardware, "get_physical_gpu_inventory", lambda **_k: {"devices": [_AMD_CARD], "sources": ["sysfs"]}
+    )
+    monkeypatch.setattr(hardware, "_devices_that_can_establish_a_mismatch", lambda devices: devices)
+    monkeypatch.setattr(hardware, "_reported_torch_label", lambda *_a: "2.11.0+rocm7.0")
+    mismatch = hardware._torch_gpu_mismatch_report()["mismatch"]
+    assert _USERMOD in mismatch["permission_hint"]
+
+
 @pytest.mark.parametrize("case", [
     # The load-time line. It runs ahead of the Vulkan branch on purpose: a closed render
     # node is the reason UNDERNEATH "the Vulkan probe reported no device", and that
