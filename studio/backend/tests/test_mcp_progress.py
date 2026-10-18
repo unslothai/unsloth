@@ -85,7 +85,6 @@ def test_the_tools_own_progress_becomes_the_heartbeat_note(fast_beat):
         await _until(ctx._ctx, 2)
         await ctx.report_progress(1, None)
         await _until(ctx._ctx, len(ctx._ctx.reports) + 2)
-        # Other ctx attributes pass through.
         return ctx.session_id
 
     assert asyncio.run(tool(ctx = ctx)) == "session-1"

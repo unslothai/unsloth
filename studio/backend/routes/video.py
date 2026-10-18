@@ -820,8 +820,7 @@ async def cancel_video_generation(
         cancelled = False
     else:
         if reserved is None:
-            # No reservation yet: bind the cancel to the caller, else an account reserving before
-            # the executor runs would receive it.
+            # No reservation yet: bind the cancel to the caller so a later reservation can't receive it.
             from utils.account_context import current_account
             expected = current_account().account_id
         else:

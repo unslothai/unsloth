@@ -150,7 +150,6 @@ def _export_status(job: export_jobs.ExportJob) -> JobStatus:
 
 async def _export_job(caller: Caller, job_id: Optional[str]) -> ToolResult:
     if job_id is None:
-        # Newest first, with what each export made or why it failed.
         jobs = [
             ExportJobSummary(
                 id = job.job_id,

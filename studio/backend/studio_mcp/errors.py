@@ -46,7 +46,6 @@ MULTI_MODEL_MARKERS = ("is set to Always", "is set to keep loaded")
 _TAG_CODE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 _TAG_VALUE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
-# The kind a refusal names, as unload_model takes it.
 UNLOAD_KINDS = {"chat": "llm", "audio": "audio", "image": "image", "video": "video"}
 MULTI_MODEL_HINT = "Call unload_model(kind='{kind}') to free the GPU; retrying won't help."
 MULTI_MODEL_HINT_ANY = (
@@ -57,7 +56,7 @@ ACTIVE_GENERATIONS_HINT = (
     " cancel(kind='chat', id=<its cancel_id>)."
 )
 MEMORY_HINT = "Pass allow_oversized=true to try anyway."
-# Guidance for a route's own error code, used in place of the tool's status hint. Empty for now.
+# Guidance for a route's own error code, used in place of the tool's status hint.
 CODE_HINTS: dict[str, str] = {}
 
 _UNLOAD_KIND = re.compile(r"would unload the (\w+) model")

@@ -228,7 +228,6 @@ class ChatResult(ToolOutput):
 class EmbedMatch(ToolOutput):
     index: int
     score: float
-    # The agent's own text, so never rewritten.
     text: str
 
 
@@ -306,7 +305,6 @@ class VideoJobRef(ToolOutput):
     progress_percent: Optional[float] = None
 
     def model_post_init(self, context: Any) -> None:
-        # The same number under the name JobStatus uses.
         if self.progress_percent is None and self.progress is not None:
             self.progress_percent = float(self.progress)
 

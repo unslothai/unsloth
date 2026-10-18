@@ -29,7 +29,6 @@ def rendering(client, monkeypatch):  # noqa: F811
         assert cancel_event is not None and cancel_event.wait(5)
         raise RuntimeError(VIDEO_CANCELLED_MSG)
 
-    # The real begin_generate records the id, as the /v1/videos route passes it.
     begin = backend.begin_generate
     monkeypatch.setattr(
         backend, "begin_generate", lambda **kwargs: begin(**{**kwargs, "video_id": "vid-1"})
@@ -45,7 +44,6 @@ def test_a_wrong_id_is_refused_and_the_render_keeps_going(client, rendering):  #
     assert resp.status_code == 409
     assert resp.json()["detail"] == "That video is not rendering."
     assert client.get("/api/inference/video/generate-progress").json()["active"] is True
-    # Cleanup, and proof it was still running.
     assert client.post(CANCEL).json() == {"cancelled": True}
     assert _wait_terminal(client)["error"] == VIDEO_CANCELLED_MSG
 

@@ -118,7 +118,6 @@ def test_without_an_id_only_this_accounts_jobs_are_listed(monkeypatch):
     register_export_job(account_id = "alice-id", job_id = "theirs")
     register_export_job(job_id = "newer", status = "failed", phase = "exporting", error = "Disk full")
     result, _studio = _get(monkeypatch, {"kind": "export"})
-    # Newest first, each with its format, phase, output and error.
     assert result["structuredContent"]["jobs"] == [
         {
             "id": "newer",

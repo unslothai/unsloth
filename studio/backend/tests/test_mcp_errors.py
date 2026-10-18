@@ -461,7 +461,6 @@ def test_llama_server_output_is_cut_to_its_error_lines(error):
     assert "Full log" not in message
     for line in ERRORS:
         assert line in message
-    # Briefing an already brief message changes nothing.
     assert str(tool_error(message)) == message
 
 
