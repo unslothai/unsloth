@@ -13,6 +13,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { cn } from "@/lib/utils";
 import {
   AudioLinesIcon,
+  AudioWaveformIcon,
   Loader2Icon,
   MicOffIcon,
   InfoIcon,
@@ -130,7 +131,7 @@ const orbMeta: Record<OrbStateName, { label: string; icon: IconKind }> = {
   transcribing: { label: "Transcribing", icon: "pencil" },
   thinking: { label: "Thinking", icon: "brain" },
   generating: { label: "Writing the answer", icon: "dots" },
-  synthesizing: { label: "Generating voice", icon: "waveform" },
+  synthesizing: { label: "Generating voice", icon: "synth" },
   speaking: { label: "Speaking", icon: "waveform" },
   paused: { label: "Paused", icon: "pause" },
 };
@@ -144,6 +145,7 @@ type IconKind =
   | "spinner"
   | "pencil"
   | "waveform"
+  | "synth"
   | "pause";
 
 // Deboss: near-black fill with a faint highlight below and a dark cut above, so
@@ -343,10 +345,14 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
         <HugeiconsIcon icon={EditResponseIcon} size={44} strokeWidth={2.2} />
       </span>
     );
+  if (icon === "synth")
+    // Generating voice: a waveform being built, not the speaker, which means
+    // audio is actually playing.
+    return (
+      <AudioWaveformIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
+    );
   if (icon === "waveform")
-    // Generating voice: a single audio waveform being built. Static like the rest,
-    // so it grows/shrinks with the sphere instead of animating on its own.
-    // Generating voice: the action bar's Read aloud speaker.
+    // Speaking: the action bar's Read aloud speaker.
     return (
       <span style={{ color: HOLE, filter: DEBOSS, display: "grid" }}>
         <HugeiconsIcon icon={ReadAloudIcon} size={46} strokeWidth={2.2} />
