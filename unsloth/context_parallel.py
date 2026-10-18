@@ -580,7 +580,13 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
     @functools.wraps(original_init)
     def patched_init(self, *args, **kwargs):
         config = kwargs["args"] if "args" in kwargs else (args[1] if len(args) > 1 else None)
-        if context_parallel_options(config)[0] > 1:
+        # SFTTrainer(..., args = base_args, context_parallel_size = N) is moved into args only
+        # inside the original __init__ (_backwards_compatible_trainer), so read it here too.
+        forwarded = kwargs.get("context_parallel_size")
+        forwarded = (
+            forwarded if isinstance(forwarded, int) and not isinstance(forwarded, bool) else 1
+        )
+        if max(context_parallel_options(config)[0], forwarded) > 1:
             # Before the original __init__: Unsloth wraps instance methods there (auto packing's
             # train reset, the token budget's training_step), and they must capture the CP ones.
             install_methods()

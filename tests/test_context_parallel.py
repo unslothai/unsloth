@@ -1336,12 +1336,26 @@ def test_instance_wrappers_made_in_init_capture_the_cp_methods(monkeypatch):
             captured[name] = method
             setattr(self, name, functools.partial(method, self))
 
-    Trainer, args, built = _gated_trainer(monkeypatch, install_cp_methods = False, on_init = on_init)
-    plain = {name: Trainer.__dict__[name] for name in ("train", "training_step")}
-    Trainer(None, args = args)  # SFTTrainer(model, args = SFTConfig(context_parallel_size = 2))
-    assert built == [(2, "ring", "allgather")]
-    for name, method in captured.items():
-        assert method is not plain[name] and method.__wrapped__ is plain[name]
+    import types
+
+    for forwarded in (False, True):
+        captured.clear()
+        Trainer, args, built = _gated_trainer(
+            monkeypatch, install_cp_methods = False, on_init = on_init
+        )
+        plain = {name: Trainer.__dict__[name] for name in ("train", "training_step")}
+        if forwarded:
+            # SFTTrainer(model, args = base_args, context_parallel_size = 2): moved into args in __init__
+            Trainer(
+                None, args = types.SimpleNamespace(context_parallel_size = 1), context_parallel_size = 2
+            )
+        else:
+            Trainer(
+                None, args = args
+            )  # SFTTrainer(model, args = SFTConfig(context_parallel_size = 2))
+        assert built == [(2, "ring", "allgather")]
+        for name, method in captured.items():
+            assert method is not plain[name] and method.__wrapped__ is plain[name]
 
 
 def test_a_trainer_built_before_cp_still_restores_the_accelerator_state(monkeypatch):
