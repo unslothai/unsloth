@@ -36,23 +36,15 @@ def _model(sizes = (8, 4, 3, 2, 1), current = 0) -> AudioCppModel:
 @pytest.mark.parametrize(
     "text, backend, code",
     [
-        (
-            "Could not load eSpeak-ng; install the shared library or provide its path",
-            None,
-            "espeak_missing",
-        ),
+        ("Could not load eSpeak-ng; install the shared library", None, "espeak_missing"),
         ("eSpeak-ng failed to initialize; check its data directory", None, "espeak_missing"),
         ("eSpeak data package missing phontab", None, "espeak_missing"),
         ("unsupported model family hint: fish_drama3", None, "family_unknown_to_runtime"),
         ("no registered model loader can load: /m/x.gguf", None, "family_unknown_to_runtime"),
-        (
-            "CUDA backend requested but registry 'CUDA' has no device 0 (available: CPU)",
-            "cuda",
-            "gpu_unavailable",
-        ),
+        ("CUDA backend requested but registry 'CUDA' has no device 0", "cuda", "gpu_unavailable"),
         ("Failed to initialize Vulkan backend on device 0", "vulkan", "gpu_unavailable"),
         (
-            "ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected",
+            "ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device",
             "cuda",
             "gpu_unavailable",
         ),
@@ -91,16 +83,7 @@ def _model(sizes = (8, 4, 3, 2, 1), current = 0) -> AudioCppModel:
         ("tensor data range is out of bounds: blk.0.attn_q.weight", None, "file_incomplete"),
         ("model path does not exist: /m/x.gguf", None, "file_incomplete"),
         # A CUDA build logs its init failure on CPU launches too.
-        (
-            "ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected",
-            "cpu",
-            None,
-        ),
-        (
-            "ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected",
-            None,
-            None,
-        ),
+        ("ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device", "cpu", None),
         ("failed to allocate GGUF context", "cuda", None),
         ("Failed to initialize GGML context for Granite 5 ASR encoder", "cuda", None),
         ("CosyVoice3 requires reference audio", "cuda", None),

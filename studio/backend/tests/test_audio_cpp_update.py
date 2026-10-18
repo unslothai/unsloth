@@ -76,6 +76,7 @@ def managed(monkeypatch, tmp_path):
     monkeypatch.setattr(audio_cpp_freshness, "latest_release_assets", assets)
     monkeypatch.setattr(aupd.platform, "system", lambda: "Linux")
     monkeypatch.setattr(aupd.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(aupd._installer(), "detect_accelerator", lambda: "cpu")
     return SimpleNamespace(tree = tree, binary = binary, script = script, lookups = lookups, state = state)
 
 
@@ -253,6 +254,10 @@ def test_missing_runtime_offered_as_install(managed, monkeypatch):
         "accelerator": None,
         **tags,
     }
+    monkeypatch.setattr(aupd.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(aupd._installer(), "detect_accelerator", lambda: "metal")
+    managed.state.assets = {f"audio-{_LATEST}-bin-macos-x64-metal.tar.gz": 1}
+    assert aupd.chained_phase_plan()["update_available"] is True
 
 
 @pytest.mark.parametrize(

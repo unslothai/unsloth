@@ -1808,6 +1808,8 @@ def test_the_worker_and_orchestrator_carry_convert_and_the_running_task(monkeypa
         def runtime_fields(self):
             return {"audio_server_task": "vc", "audio_convert_route": None}
 
+        separate_audio = lambda self, **kwargs: []
+
     responses: queue.Queue = queue.Queue()
     convert = {"mode": "speech", "pitch": None, "pitch_auto": False, "style": "source"}
     _handle_generate_audio(
@@ -1825,6 +1827,9 @@ def test_the_worker_and_orchestrator_carry_convert_and_the_running_task(monkeypa
     assert seen[0]["convert"] == convert and seen[0]["workflow"] == "convert"
     done = responses.get_nowait()
     assert done["audio_runtime"] == {"audio_server_task": "vc", "audio_convert_route": None}
+    sep = {"workflow": "separate", "audio_inputs": {"source": "s"}, "output_dir": "o"}
+    _handle_generate_audio(_Backend(), sep, responses, threading.Event())
+    assert responses.get_nowait()["audio_runtime"]["audio_server_task"] == "vc"
 
     orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
     sent = []
@@ -2169,6 +2174,7 @@ def test_music_take_persists_group_role_variation_and_take_seed(stub, tmp_path, 
         {"workflow": "speak", "group_id": "ab" * 16},
         {"workflow": "music", "mode": "song", "group_id": "AB" * 16},
         {"workflow": "music", "mode": "song", "take": 5},
+        {"workflow": "music", "mode": "song", "take": 2},
     ],
 )
 def test_take_or_group_rejected_outside_single_variation_music(stub, body):

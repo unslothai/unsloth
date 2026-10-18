@@ -204,7 +204,10 @@ def _install_plan(plan: dict, *, force_refresh: bool = False) -> dict:
     if (
         latest is None
         or script is None
-        or not _host_has_prebuilt(list(assets) if assets else None, None)
+        # The installer's own pick: a macOS release has Metal bundles only.
+        or not _host_has_prebuilt(
+            list(assets) if assets else None, _installer().detect_accelerator()
+        )
     ):
         return plan
     plan.update(
