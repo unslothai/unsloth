@@ -681,6 +681,13 @@ def free_for(
         )
 
 
+def _claim_holds_anything(name: str) -> bool:
+    """Whether a kept claim holds or is loading a model; unreadable counts as yes. Caller holds the lock."""
+    if arb.resident_slots(name):
+        return True
+    return arb._chat_occupied() if name == arb.CHAT else arb._media_occupied(name)
+
+
 def coreside_locked(
     owner: str,
     *,
@@ -712,6 +719,13 @@ def coreside_locked(
             raise arb.GpuOwnerBusyError(name)
         _evict_resident(name, acting, evicted, [])
     kept = [n for n in overlap if n in arb._KEPT_UNDER_ALWAYS]
+    if policy == "always":
+        # A claim whose load failed holds nothing, so Always evicts it rather than refusing (gpu_arbiter.acquire_for).
+        for name in [n for n in kept if not _claim_holds_anything(n)]:
+            if not allow_evict:
+                raise arb.GpuOwnerBusyError(name)
+            _evict_resident(name, acting, evicted, [])
+            kept.remove(name)
 
     def evict_or_refuse(names: list[str]) -> None:
         if not names:
