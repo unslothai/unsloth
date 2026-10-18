@@ -1342,3 +1342,29 @@ def test_instance_wrappers_made_in_init_capture_the_cp_methods(monkeypatch):
     assert built == [(2, "ring", "allgather")]
     for name, method in captured.items():
         assert method is not plain[name] and method.__wrapped__ is plain[name]
+
+
+def test_a_trainer_built_before_cp_still_restores_the_accelerator_state(monkeypatch):
+    # A non-CP trainer whose __init__ wrapped self.train (auto packing) before any CP trainer existed
+    # must still drop the mesh a later CP trainer installs, as patched_train does.
+    import functools
+    import types
+
+    plain_args = [types.SimpleNamespace(context_parallel_size = 1)]
+
+    def on_init(self):
+        if plain_args:  # the first trainer has CP off
+            self.args = plain_args.pop()
+        self.train = functools.partial(type(self).train, self)
+
+    Trainer, args, built = _gated_trainer(monkeypatch, install_cp_methods = False, on_init = on_init)
+    restored = []
+    monkeypatch.setattr(cp, "_restore_parallelism_config", lambda state: restored.append(state))
+    early = Trainer(None, args = types.SimpleNamespace(context_parallel_size = 1))
+    assert early._context_parallel_manager is None
+    early.accelerator = types.SimpleNamespace(state = types.SimpleNamespace(device_mesh = None))
+    Trainer(None, args = args)  # enables CP: installs the class wrappers
+    assert built == [(2, "ring", "allgather")]
+    restored.clear()
+    assert early.train() == "trained"
+    assert restored == [early.accelerator.state]

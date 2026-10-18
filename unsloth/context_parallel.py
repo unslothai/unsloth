@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import weakref
 from typing import Iterator, Optional
 
 import torch
@@ -595,6 +596,11 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
         size, backend, rotate_method = context_parallel_options(getattr(self, "args", None))
         if size <= 1:
             _install_accelerator_state(self)
+            if not trainer_cls.__dict__.get("__unsloth_context_parallel_methods__"):
+                try:
+                    pre_cp_trainers.add(self)
+                except TypeError:
+                    pass  # unhashable trainer subclass: nothing to rewrap later
             return
         # train() would swap in a fresh model without the attention hooks or the support check.
         if getattr(self, "model_init", None) is not None:
@@ -824,9 +830,29 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
                 total = total // manager.size
             return total
 
+    # Non-CP trainers built before any trainer enabled CP: their __init__ may have wrapped train /
+    # evaluate / predict on the instance around the plain methods (auto packing's train reset).
+    pre_cp_trainers = weakref.WeakSet()
+
+    def _restoring(trainer, bound):
+        @functools.wraps(bound)
+        def call(*args, **kwargs):
+            # What patched_train / evaluate / predict do for a non-CP trainer: drop the mesh and
+            # parallelism config a CP trainer installed on the shared accelerator state.
+            _install_accelerator_state(trainer)
+            return bound(*args, **kwargs)
+
+        return call
+
     def install_methods():
         if trainer_cls.__dict__.get("__unsloth_context_parallel_methods__"):
             return
+        for trainer in list(pre_cp_trainers):
+            for name in ("train", "evaluate", "predict"):
+                bound = trainer.__dict__.get(name)
+                if bound is not None:
+                    trainer.__dict__[name] = _restoring(trainer, bound)
+        pre_cp_trainers.clear()
         trainer_cls.prediction_step = patched_prediction_step
         trainer_cls.train = patched_train
         trainer_cls.evaluate = patched_evaluate
