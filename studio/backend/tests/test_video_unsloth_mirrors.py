@@ -490,7 +490,9 @@ def test_the_download_plan_probes_a_cached_upstream_base_at_its_own_snapshot():
     import inspect
 
     # The base entry reads the kept upstream snapshot's commit and sizes, as _plan_fetch does for the load.
-    assert "_cached_snapshot_plan(fetch_base, [n for n, _ in base_files])" in inspect.getsource(video_mod)
+    assert "_cached_snapshot_plan(fetch_base, [n for n, _ in base_files])" in inspect.getsource(
+        video_mod
+    )
 
 
 def test_named_choice_reuses_an_upstream_complete_in_the_fallback_root(empty_cache):
