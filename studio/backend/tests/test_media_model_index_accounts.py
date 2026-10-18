@@ -27,8 +27,7 @@ def home(monkeypatch, tmp_path):
     # machine with image models downloaded, they would be listed beside the private ones.
     monkeypatch.delitem(hf_cache_settings._EXPLICIT_CACHE_ENV, "HF_HOME", raising = False)
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
-    # Default HF cache (Path.home()/.cache, which ignores XDG), the LM Studio / Hermes / Ollama / oMLX
-    # model folders and ./models are scanned too; point all of them away from the host.
+    # The scan also reads hf_default_cache_dir() (ignores XDG), the LM Studio / Hermes / Ollama / oMLX dirs and ./models.
     import utils.paths
 
     monkeypatch.setattr(utils.paths, "hf_default_cache_dir", lambda: tmp_path / "default_hub")

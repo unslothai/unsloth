@@ -232,8 +232,7 @@ def _raw_frame(raw: str) -> str:
 
 def normalise_transcript(text: str) -> list[str]:
     lines = []
-    # The repeated full bar is only a redraw when nothing moved in between: a partial frame since the
-    # kept bar means a new transfer ran, and a different raw frame (other sizes or units) is a different download.
+    # A repeated full bar is a redraw only if no partial frame came between and the raw frame matches.
     last_frame = None
     frame_since_kept = False
     for raw in text.splitlines():

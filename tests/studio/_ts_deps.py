@@ -277,13 +277,12 @@ class _Module:
             )
         self.imports = self._parse(_IMPORT_RE)
         self.reexports = self._parse(_REEXPORT_RE)
-        # `export type { A } from "./x"` names only types, which Node erases: kept apart so it is never lifted.
+        # Type-only re-exports (`export type { A }`, `export { type A }`) name erased types; never lifted.
         self.type_reexports = {
             (alias or name): (match.group("spec"), name)
             for match in _TYPE_REEXPORT_RE.finditer(self.uncommented)
             for name, alias in _TYPE_REEXPORT_NAME_RE.findall(match.group("names"))
         }
-        # ... and `export { type A, B } from "./x"`, whose `type` entries the value parser skips.
         for match in _REEXPORT_RE.finditer(self.uncommented):
             braces = re.search(r"\{([^}]*)\}", match.group("clause"), re.DOTALL)
             for entry in braces.group(1).split(",") if braces else ():
@@ -540,9 +539,8 @@ def resolve_dependencies(
     # one from here is a TDZ error rather than a resolution.
     eager = {"const", "let", "var", "class"}
     while True:
-        # A lazy declaration is only as complete as what it reads. Whether an eager initializer actually calls one
-        # left half-resolved (directly or through another) is not decided here: any reference dooms it, since a
-        # load-time crash is worse than the lazy ReferenceError a dropped declaration costs.
+        # Any reference to a half-resolved lazy helper dooms an eager declaration: whether it is called on load is
+        # not decided, and a load-time crash costs more than a dropped declaration.
         partial: set[str] = set()
         while True:
             grown = {
