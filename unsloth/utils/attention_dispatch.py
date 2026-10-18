@@ -233,7 +233,10 @@ def _torch_varlen_takes(
 
 
 # Above this mean segment length cuDNN's per-segment SDPA beats torch's varlen flash kernel (B200 sweep).
+# Only sm_100-family: on H100 the same cuDNN choice is 2.2x to 2.6x slower than varlen at mean lengths
+# 1024 to 2048, so there varlen always wins.
 _VARLEN_CUDNN_MAX_MEAN_LEN = 1024
+_VARLEN_CUDNN_ARCH_MAJORS = frozenset({10})
 
 
 @functools.lru_cache(maxsize = 64)
@@ -266,6 +269,59 @@ if hasattr(torch.compiler, "assume_constant_result"):
     _sdpa_backend_state = torch.compiler.assume_constant_result(_sdpa_backend_state)
 
 
+@functools.lru_cache(maxsize = 128)
+def _sdpa_gqa_choices(device, dtype, head_dim, n_heads, n_kv_heads, is_causal, has_mask, backends):
+    """(SDPBackend with enable_gqa, SDPBackend with K/V expanded) for these shapes, -1 if unknown."""
+    try:
+        q = torch.empty(1, n_heads, 128, head_dim, device = device, dtype = dtype)
+        k = torch.empty(1, n_kv_heads, 128, head_dim, device = device, dtype = dtype)
+        k_full = torch.empty(1, n_heads, 128, head_dim, device = device, dtype = dtype)
+        mask = torch.ones(1, 1, 128, 128, device = device, dtype = torch.bool) if has_mask else None
+        causal = is_causal and not has_mask
+        gqa = torch._fused_sdp_choice(q, k, k, attn_mask = mask, is_causal = causal, enable_gqa = True)
+        mha = torch._fused_sdp_choice(q, k_full, k_full, attn_mask = mask, is_causal = causal)
+        return int(gqa), int(mha)
+    except Exception:
+        return -1, -1
+
+
+def _sdpa_gqa_state(device, dtype, head_dim, n_heads, n_kv_heads, is_causal, has_mask) -> bool:
+    """False when enable_gqa would leave SDPA only its math kernel while expanded K/V would not.
+    Flash and cuDNN take GQA, the memory-efficient kernel does not (before torch 2.14), so fp32,
+    pre-sm80 GPUs and masked calls flash cannot run would otherwise fall to math: several times
+    slower and a (T, T) score matrix per head. Asked of torch, so ROCm's backend set is covered too."""
+    cuda = torch.backends.cuda
+    backends = (
+        cuda.flash_sdp_enabled(),
+        cuda.cudnn_sdp_enabled(),
+        cuda.mem_efficient_sdp_enabled(),
+        cuda.math_sdp_enabled(),
+        tuple(getattr(torch._C, "_get_sdp_priority_order", tuple)()),
+    )
+    gqa, mha = _sdpa_gqa_choices(
+        device, dtype, head_dim, n_heads, n_kv_heads, is_causal, has_mask, backends
+    )
+    from torch.nn.attention import SDPBackend
+
+    math = int(SDPBackend.MATH)
+    return not (gqa == math and mha not in (math, -1))
+
+
+if hasattr(torch.compiler, "assume_constant_result"):
+    _sdpa_gqa_state = torch.compiler.assume_constant_result(_sdpa_gqa_state)
+
+
+def _sdpa_takes_gqa(Q: Tensor, K: Tensor, is_causal: bool, has_mask: bool) -> bool:
+    """Whether to pass enable_gqa (True) or expand K/V (False) for this SDPA call."""
+    if not SDPA_HAS_GQA:
+        return False
+    if not Q.is_cuda:
+        return True
+    return _sdpa_gqa_state(
+        str(Q.device), Q.dtype, Q.shape[-1], Q.shape[1], K.shape[1], bool(is_causal), bool(has_mask)
+    )
+
+
 def _torch_varlen_beats_segments(
     Q: Tensor, K: Tensor, lengths: Tuple[int, ...], n_groups: int, is_causal: bool
 ) -> bool:
@@ -295,6 +351,8 @@ def _torch_varlen_beats_segments(
     if choice == int(SDPBackend.FLASH_ATTENTION):
         return True
     if choice == int(SDPBackend.CUDNN_ATTENTION):
+        if torch.cuda.get_device_capability(Q.device)[0] not in _VARLEN_CUDNN_ARCH_MAJORS:
+            return True
         return sum(lengths) / len(lengths) <= _VARLEN_CUDNN_MAX_MEAN_LEN
     return False
 
@@ -365,10 +423,19 @@ def _sdpa_packed_segments(
     None when the lengths do not tile the row."""
     if sum(length for length in lengths if length > 0) != Q.shape[-2]:
         return None
-    gqa = n_groups != 1 and _sdpa_flash_takes_gqa(Q)
-    if n_groups != 1 and not gqa:
-        K = K.repeat_interleave(n_groups, dim = 1)
-        V = V.repeat_interleave(n_groups, dim = 1)
+    expanded = None
+
+    def kv(gqa):
+        nonlocal expanded
+        if n_groups == 1 or gqa:
+            return K, V
+        if expanded is None:
+            expanded = (
+                K.repeat_interleave(n_groups, dim = 1),
+                V.repeat_interleave(n_groups, dim = 1),
+            )
+        return expanded
+
     outs, start, i = [], 0, 0
     lengths = [length for length in lengths if length > 0]
     while i < len(lengths):
@@ -393,9 +460,11 @@ def _sdpa_packed_segments(
                 is_causal = is_causal,
             )
         kwargs["is_causal"] = is_causal and not windowed
+        gqa = n_groups != 1 and _sdpa_takes_gqa(Q, K, kwargs["is_causal"], windowed)
         if gqa:
             kwargs["enable_gqa"] = True
-        out = scaled_dot_product_attention(split(Q), split(K), split(V), **kwargs)
+        K_run, V_run = kv(gqa)
+        out = scaled_dot_product_attention(split(Q), split(K_run), split(V_run), **kwargs)
         outs.append(out.transpose(1, 2).flatten(0, 1))
         start, i = end, j
     return torch.cat(outs, dim = 0).unsqueeze(0)
@@ -534,6 +603,22 @@ def _ring_attention_active() -> bool:
     return manager is not None and manager.backend == "ring"
 
 
+def _native_beats_xformers(capabilities, varlen_loaded: bool) -> bool:
+    """Without FlashAttention, torch's own kernels match or beat xformers 0.0.35 (which itself calls
+    torch's flash / memory-efficient ops) once torch has a varlen kernel (2.12+) on sm_80+ CUDA:
+    packed / padding-free 1.00x to 1.06x on A100, L4, RTX PRO 6000 and H100. Below sm_80 there is no
+    torch varlen, and xformers' block-diagonal kernel stays 8% to 21% faster (T4); a mixed host keeps
+    xformers for its older card."""
+    if not varlen_loaded or not capabilities or torch.version.hip is not None:
+        return False
+    return all(capability[0] >= 8 for capability in capabilities)
+
+
+_NATIVE_BEATS_XFORMERS = _native_beats_xformers(
+    _visible_capabilities(), _TORCH_VARLEN_ATTN is not None
+)
+
+
 def select_attention_backend(use_varlen: bool = False) -> str:
     """Return attention backend based on availability / priority order."""
 
@@ -549,7 +634,7 @@ def select_attention_backend(use_varlen: bool = False) -> str:
             return FLASH_VARLEN
         else:
             return FLASH_DENSE
-    if HAS_XFORMERS:
+    if HAS_XFORMERS and not _NATIVE_BEATS_XFORMERS:
         return XFORMERS
     return SDPA
 
@@ -1003,6 +1088,11 @@ def _run_attention(
         ):
             # Batched masked inference has shown row-coupled drift with SDPA GQA, so fall back to explicit KV
             # expansion for deterministic row-wise behavior.
+            use_sdpa_gqa = False
+
+        if use_sdpa_gqa and not _sdpa_takes_gqa(
+            Q, K, kwargs.get("is_causal", False), kwargs.get("attn_mask") is not None
+        ):
             use_sdpa_gqa = False
 
         if use_sdpa_gqa:
