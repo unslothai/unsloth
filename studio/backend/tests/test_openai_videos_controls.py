@@ -694,3 +694,66 @@ def test_too_many_multipart_references_are_refused_before_encoding(
     assert resp.status_code == 400, resp.json()
     assert resp.json()["error"]["param"] == key
     assert encoded == [] and calls == []
+
+
+@pytest.mark.parametrize("spelling", ["sdk_brackets", "json_text"])
+def test_a_multipart_audio_id_resolves_like_json(
+    client, backend, monkeypatch, audio_store, spelling
+):
+    input_id = _store_input()
+
+    async def _no_switch(model, **_kwargs):
+        return None
+
+    monkeypatch.setattr(media_auto_switch, "maybe_auto_switch_media_model", _no_switch)
+    calls = _capture(monkeypatch, backend)
+    data = {"prompt": "x"}
+    if spelling == "sdk_brackets":
+        # What the OpenAI SDK sends for reference_audios=[{"input_id": ...}] beside a file.
+        data["reference_audios[][input_id]"] = input_id
+    else:
+        data["reference_audios"] = json.dumps({"input_id": input_id})
+    png = _reference_image_bytes("PNG")
+    resp = client.post(
+        "/v1/videos",
+        data = data,
+        files = [("reference_images[]", ("ref.png", png, "image/png"))],
+    )
+    assert resp.status_code == 200, resp.json()
+    (audio,) = calls[0]["reference_audios"]
+    assert _decoded(audio) == _WAV
+
+
+@pytest.mark.parametrize(
+    "body, param", [({"num_frames": 50}, "num_frames"), ({"seconds": "4"}, "seconds")]
+)
+def test_a_frame_count_refusal_names_the_field_the_caller_sent(
+    client, backend, monkeypatch, body, param
+):
+    from core.inference.video_families import VideoShapeError
+
+    def _refuse(**_kwargs):
+        raise VideoShapeError("LTX-2 needs a frame count of 8k+1.")
+
+    monkeypatch.setattr(backend, "begin_generate", _refuse)
+    resp = client.post("/v1/videos", json = {"prompt": "x", **body})
+    assert resp.status_code == 400, resp.json()
+    assert resp.json()["error"]["param"] == param
+
+
+def test_multipart_nested_image_references_are_kept(client, backend, monkeypatch):
+    calls = _capture(monkeypatch, backend)
+    png = _reference_data_url("PNG", "image/png")
+    jpeg = _reference_data_url("JPEG", "image/jpeg")
+    resp = client.post(
+        "/v1/videos",
+        data = {"prompt": "x", "reference_images[][image_url]": png},
+        files = [
+            ("reference_images[]", ("second.jpg", _reference_image_bytes("JPEG"), "image/jpeg"))
+        ],
+    )
+    assert resp.status_code == 200, resp.json()
+    assert len(calls[0]["reference_images"]) == 2
+    resp = client.post("/v1/videos", data = {"prompt": "x", "last_frame[image_url]": jpeg})
+    assert resp.status_code == 200, resp.json()
+    assert _decoded(calls[1]["last_frame"]) == _decoded(jpeg)

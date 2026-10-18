@@ -18,6 +18,7 @@ import asyncio
 import base64
 import hashlib as _hashlib
 import inspect
+import json
 import hmac as _hmac
 import re as _re
 import secrets as _secrets
@@ -1176,6 +1177,11 @@ _VIDEO_CREATE_FIELDS = (
 _VIDEO_CREATE_LISTS = ("reference_images", "reference_audios")
 # VideoJobCreateRequest's list limits, checked before multipart files are encoded.
 _VIDEO_CREATE_LIST_MAX = {"reference_images": 9, "reference_audios": 3}
+# The OpenAI SDK flattens a list of objects to key[][field]; each such part is one item.
+_OBJECT_PART = {
+    "reference_images": _re.compile(r"reference_images(?:\[\d*\])?\[(image_url|file_id)\]"),
+    "reference_audios": _re.compile(r"reference_audios(?:\[\d*\])?\[(input_id|clip_id|voice_id)\]"),
+}
 # A reference audio rides as base64 in a field capped at 32 MiB, which is 24 MiB of audio.
 _VIDEO_REFERENCE_AUDIO_MAX_BYTES = 24 * 1024 * 1024
 # Upper bound on how long DELETE waits for a cancelled run to stop writing.
@@ -1583,6 +1589,12 @@ def _all_videos() -> list[VideoJob]:
     return listed
 
 
+def _shape_error_param(exc: Exception, body) -> str:
+    if "frame count" not in str(exc):
+        return "size"
+    return "num_frames" if body.num_frames is not None else "seconds"
+
+
 async def _read_video_create_body(request: Request) -> tuple[dict, Any]:
     ctype = (request.headers.get("content-type") or "").lower()
     if ctype.startswith(("multipart/form-data", "application/x-www-form-urlencoded")):
@@ -1593,21 +1605,23 @@ async def _read_video_create_body(request: Request) -> tuple[dict, Any]:
         fields = {key: form.get(key) for key in _VIDEO_CREATE_FIELDS if key in form}
         for key in _VIDEO_CREATE_LISTS:
             # In wire order across both spellings: <Picture n> follows the order sent.
-            items = [value for name, value in form.multi_items() if name in (key, f"{key}[]")]
+            items = []
+            for name, value in form.multi_items():
+                if name in (key, f"{key}[]"):
+                    items.append(value)
+                elif match := _OBJECT_PART[key].fullmatch(name):
+                    items.append({match.group(1): value})
             if len(items) > _VIDEO_CREATE_LIST_MAX[key]:
                 raise _openai_video_error(
                     400, f"{key}: send at most {_VIDEO_CREATE_LIST_MAX[key]}.", param = key
                 )
             if items:
                 fields[key] = items
+        if "last_frame" not in fields and (nested := _nested_image_ref(form, "last_frame")):
+            fields["last_frame"] = nested
         reference = form.get("input_reference")
         if reference is None:
-            nested_reference = {
-                key: form.get(f"input_reference[{key}]")
-                for key in ("image_url", "file_id")
-                if f"input_reference[{key}]" in form
-            }
-            reference = nested_reference or None
+            reference = _nested_image_ref(form, "input_reference")
         return await _media_fields(fields), reference
     try:
         data = await request.json()
@@ -1619,6 +1633,15 @@ async def _read_video_create_body(request: Request) -> tuple[dict, Any]:
         key: data.get(key) for key in _VIDEO_CREATE_FIELDS + _VIDEO_CREATE_LISTS if key in data
     }
     return await _media_fields(fields), data.get("input_reference")
+
+
+def _nested_image_ref(form, key: str) -> Optional[dict]:
+    nested = {
+        field: form.get(f"{key}[{field}]")
+        for field in ("image_url", "file_id")
+        if f"{key}[{field}]" in form
+    }
+    return nested or None
 
 
 async def _media_fields(fields: dict) -> dict:
@@ -1639,6 +1662,12 @@ async def _media_fields(fields: dict) -> dict:
         for index, item in enumerate(audios):
             if isinstance(item, UploadFile):
                 audios[index] = await _audio_upload_to_data_url(item, f"reference_audios[{index}]")
+            elif isinstance(item, str) and item.lstrip().startswith("{"):
+                # A multipart part can only carry an id object as JSON text.
+                try:
+                    audios[index] = json.loads(item)
+                except ValueError:
+                    pass
     return fields
 
 
@@ -1949,9 +1978,7 @@ async def _create_openai_video(
             before_switch = _refuse_unservable_request,
         )
     except VideoShapeError as exc:
-        raise _openai_video_error(
-            400, str(exc), param = "seconds" if "frame count" in str(exc) else "size"
-        )
+        raise _openai_video_error(400, str(exc), param = _shape_error_param(exc, body))
     except ValueError as exc:
         raise _openai_video_error(
             400, str(exc), param = _conditioning_param(body, reference, "input_reference")
@@ -2017,9 +2044,7 @@ async def _create_openai_video(
                 generate_kwargs["expected_state"] = expected_state
             resolved = await asyncio.to_thread(backend.begin_generate, **generate_kwargs)
         except VideoShapeError as exc:
-            raise _openai_video_error(
-                400, str(exc), param = "seconds" if "frame count" in str(exc) else "size"
-            )
+            raise _openai_video_error(400, str(exc), param = _shape_error_param(exc, body))
         except ValueError as exc:
             raise _openai_video_error(400, str(exc), param = _conditioning_param(body, reference))
         except RuntimeError as exc:
