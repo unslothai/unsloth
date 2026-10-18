@@ -1048,24 +1048,30 @@ def _component_class_and_config(
         vae_cls = getattr(diffusers, class_name, None)
         if vae_cls is None:
             raise ComponentFileError(f"diffusers has no {class_name}; update diffusers")
+        from .diffusion_families import pinned_revision_kwargs
+
         return vae_cls, vae_cls.load_config(
             base,
             subfolder = COMPONENT_VAE,
             token = hf_token,
             cache_dir = cache_dir,
             local_files_only = local_files_only,
+            **pinned_revision_kwargs(base),
         )
     import transformers
 
     encoder_cls = getattr(transformers, class_name, None)
     if encoder_cls is None:
         raise ComponentFileError(f"transformers has no {class_name}; update transformers")
+    from .diffusion_families import pinned_revision_kwargs
+
     config = transformers.AutoConfig.from_pretrained(
         base,
         subfolder = component,
         token = hf_token,
         cache_dir = cache_dir,
         local_files_only = local_files_only,
+        **pinned_revision_kwargs(base),
     )
     from .diffusion_krea2 import remap_rope_parameters
 
@@ -1198,12 +1204,15 @@ def read_model_index(
             continue
     from huggingface_hub import hf_hub_download
 
+    from .diffusion_families import pinned_revision_kwargs
+
     local = hf_hub_download(
         base,
         "model_index.json",
         token = hf_token,
         cache_dir = cache_dir,
         local_files_only = local_files_only,
+        **pinned_revision_kwargs(base),
     )
     return json.loads(Path(local).read_text(encoding = "utf-8"))
 
