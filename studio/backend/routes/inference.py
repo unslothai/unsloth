@@ -6675,6 +6675,14 @@ async def _select_request_tools(
             if tool["function"]["name"] in payload.enabled_tools
             and (supports_vision or tool["function"]["name"] != BROWSER_SCREENSHOT)
         ]
+    if tools_on and payload.enabled_tools is not None:
+        # Opt-in by name too, and only while an image or video model this account may use is loaded.
+        from core.inference.media_chat_tools import offered_media_chat_tools, remember_server_loop
+        media_tools = offered_media_chat_tools(payload.enabled_tools)
+        if media_tools:
+            # The tools run on a worker thread and hand the render back to this loop.
+            remember_server_loop(asyncio.get_running_loop())
+            tools += media_tools
     tools = [
         tool
         for tool in tools
@@ -42268,8 +42276,14 @@ _STUDIO_ANTHROPIC_TOOL_ALIASES = {
 # this channel has no way to present, so an omitted permission_mode ("ask") only
 # asks then. render_html is excluded because a networked canvas prompts in auto,
 # and this channel invokes the loop without confirm; auto/ask reject, off/full run.
-_ANTHROPIC_UNPROMPTED_SAFE_TOOLS = frozenset(
-    {"web_search", "search_knowledge_base", "search_conversation", "read_skill", "view_image"}
+from core.inference.media_chat_tools import MEDIA_CHAT_TOOLS as _MEDIA_CHAT_TOOLS
+
+# The media tools are always-safe too, though this channel never selects them (ALL_TOOLS only).
+_ANTHROPIC_UNPROMPTED_SAFE_TOOLS = (
+    frozenset(
+        {"web_search", "search_knowledge_base", "search_conversation", "read_skill", "view_image"}
+    )
+    | _MEDIA_CHAT_TOOLS
 )
 
 
@@ -50497,7 +50511,13 @@ async def generate_diffusion_image(
 ):
     if request.provider_id:
         return await _external_image_generation(request, http_request)
+    return await _generate_diffusion_image_core(request)
 
+
+async def _generate_diffusion_image_core(
+    request: DiffusionGenerateRequest,
+) -> DiffusionGenerateResponse:
+    """The local-engine image run, shared by the route and the chat generate_image tool."""
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
     from core.inference.diffusion_families import (

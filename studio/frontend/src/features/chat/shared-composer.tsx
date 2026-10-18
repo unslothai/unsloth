@@ -230,6 +230,8 @@ import {
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
   codeToolsOn,
+  localImagePillCount,
+  localImageTool,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
@@ -1012,9 +1014,20 @@ export function SharedComposer({
   // Gemini rejects codeExecution alongside image modalities. Search is blocked on older Gemini image
   // ids but allowed on Gemini 3 image models, so only Code is disabled unconditionally there.
   const isExternalGemini = selectedExternalProvider?.providerType === "gemini";
-  const imageDisabled = !modelLoaded || !supportsBuiltinImageGeneration;
+  // The image or video model loaded in Unsloth Studio, reached through generate_image / generate_video.
+  const localImageToolHere = useChatRuntimeStore((s) =>
+    localImageTool({ ...s, supportsBuiltinImageGeneration }),
+  );
+  const localImagePills = useChatRuntimeStore((s) =>
+    localImagePillCount({ ...s, supportsBuiltinImageGeneration }),
+  );
+  const imageDisabled =
+    !modelLoaded || !(supportsBuiltinImageGeneration || localImageToolHere);
   const imageModeDisablesCode =
-    isExternalGemini && imageToolsEnabled && !imageDisabled;
+    isExternalGemini &&
+    imageToolsEnabled &&
+    modelLoaded &&
+    supportsBuiltinImageGeneration;
   // Image-tier Gemini models always reject codeExecution and reject web_search on older ids, so gate
   // strictly on provider builtin support: local `supportsTools` must not re-enable a pill the
   // Gemini backend silently drops.
@@ -1046,9 +1059,10 @@ export function SharedComposer({
   const codeDisabled =
     (modelLoaded && (isGeminiImageTier || !canRunCode)) ||
     imageModeDisablesCode;
-  // Images pill lights only on OpenAI cloud Responses-API models and the Gemini Nano Banana
-  // family. No local tool runtime fallback.
-  const showImagePill = supportsBuiltinImageGeneration;
+  // Images pill: the provider's own image generation on OpenAI cloud Responses-API models and the
+  // Gemini Nano Banana family, else the image or video model loaded in Unsloth Studio when the chat
+  // model calls Unsloth Studio tools.
+  const showImagePill = supportsBuiltinImageGeneration || localImageToolHere;
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
@@ -1060,7 +1074,8 @@ export function SharedComposer({
   const isMobile = useIsMobile();
   const pillCount =
     4 +
-    (showImagePill ? 1 : 0) +
+    (supportsBuiltinImageGeneration ? 1 : 0) +
+    localImagePills +
     (showRagPill && ragEnabled ? 1 : 0) +
     (showWebFetchPill ? 1 : 0) +
     (mcpEnabledForChat ? 1 : 0);

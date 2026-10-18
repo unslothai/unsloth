@@ -9,17 +9,25 @@ import { cn } from "@/lib/utils";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ImageIcon, PencilIcon } from "lucide-react";
+import { downloadUrl, isDownloadCancelled } from "@/lib/native-files";
+import { toast } from "@/lib/toast";
+import { ImageIcon, PencilIcon, VideoIcon } from "lucide-react";
 import type { CSSProperties, MouseEvent } from "react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useGeneratedImageOverlay } from "./generated-image-overlay-context";
 import { downloadImagePart } from "./image";
+import {
+  isSandboxToolResult,
+  type SandboxFile,
+  sandboxFilePath,
+} from "./sandbox-files";
 import { isToolCallRunning, toolArgText } from "./tool-arg-text";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
+import { useSandboxImage } from "./use-sandbox-image";
 
 /**
  * Renders the synthetic `_toolEvent` chunks emitted by
@@ -31,6 +39,10 @@ import {
  * The `tool_start` carries the revised prompt as `args.prompt` plus
  * `args.kind: "image"`. Without this, ToolFallback would print the prompt as
  * JSON with an empty Result block (the "no image" symptom).
+ *
+ * `generate_image` (the image model loaded in Unsloth Studio) shares this card. Its result is the
+ * sandbox wrapper, so the image is fetched from the chat's sandbox, and it has no Edit: that needs
+ * an OpenAI image-generation call id. A failed call answers with an "Error: ..." string.
  */
 interface ImageGenerationArgs {
   // Straight off the wire; the provider decides the JSON type, not this file.
@@ -61,6 +73,21 @@ type GeneratedImagePart = {
   image: string;
   filename?: string;
 };
+
+type SandboxMediaResult = {
+  text: string;
+  sessionId: string;
+  images: unknown[];
+  files?: SandboxFile[];
+};
+
+const sandboxMediaResult = (result: unknown): SandboxMediaResult | null =>
+  isSandboxToolResult(result) ? (result as SandboxMediaResult) : null;
+
+const toolErrorText = (result: unknown): string =>
+  typeof result === "string" && result.startsWith("Error:") ? result : "";
+
+const baseName = (name: string): string => name.split("/").pop() || name;
 
 const CAPTION_COLLAPSED_LINES = 4;
 const INLINE_IMAGE_MAX_WIDTH = 520;
@@ -144,6 +171,97 @@ const loadingDots = Array.from({ length: 64 }, (_, index) => {
   );
 });
 
+/**
+ * A generate_image or generate_video result: the file in the chat's sandbox, fetched with auth,
+ * with Download and no Edit. The ref sits on the frame so the lazy fetch starts near the viewport.
+ */
+function SandboxMediaFigure({
+  kind,
+  url,
+  filename,
+  title,
+  caption,
+}: {
+  kind: "image" | "video";
+  url: string;
+  filename: string;
+  title: string;
+  caption: string;
+}) {
+  const { ref, state } = useSandboxImage<HTMLDivElement>(url);
+  const loaded = state.status === "loaded" ? state.url : null;
+  const handleDownload = () => {
+    if (!loaded) return;
+    if (kind === "image") {
+      downloadImagePart({ image: loaded, filename });
+      return;
+    }
+    void downloadUrl(loaded, filename).catch((error) => {
+      if (!isDownloadCancelled(error)) toast.error("Could not save video.");
+    });
+  };
+  return (
+    <figure
+      className="m-0 flex max-w-full flex-col items-start gap-2 align-top"
+      style={{ width: INLINE_IMAGE_MAX_WIDTH, maxWidth: "100%" }}
+    >
+      <div
+        ref={ref}
+        className="group/generated-image relative w-full overflow-hidden rounded-2xl align-top"
+      >
+        {state.status === "failed" ? (
+          <p className="text-xs leading-5 text-muted-foreground">
+            {kind === "image" ? "Image not available" : "Video not available"}
+          </p>
+        ) : !loaded ? (
+          <div
+            aria-busy="true"
+            aria-label={kind === "image" ? "Loading image…" : "Loading video…"}
+            className="aspect-square w-full rounded-2xl bg-muted/20"
+          />
+        ) : kind === "image" ? (
+          <img
+            src={loaded}
+            alt={title}
+            className="block h-auto max-h-[min(70dvh,620px)] max-w-full rounded-2xl object-contain"
+          />
+        ) : (
+          <video
+            src={loaded}
+            controls={true}
+            playsInline={true}
+            preload="metadata"
+            aria-label={title}
+            className="block h-auto max-h-[min(70dvh,620px)] w-full rounded-2xl"
+          />
+        )}
+        {loaded ? (
+          <div
+            {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
+            className="pointer-events-none absolute top-0 right-0 z-20 p-3 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/generated-image:opacity-100 sm:group-focus-within/generated-image:opacity-100"
+          >
+            <Button
+              type="button"
+              variant="dark"
+              size="icon-sm"
+              className="pointer-events-auto rounded-full bg-black/70 text-white hover:bg-black/85"
+              onClick={handleDownload}
+              aria-label={`Download generated ${kind}`}
+            >
+              <HugeiconsIcon icon={Download01Icon} className="size-4" />
+            </Button>
+          </div>
+        ) : null}
+      </div>
+      {caption ? (
+        <figcaption className="line-clamp-4 w-full whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">
+          {caption}
+        </figcaption>
+      ) : null}
+    </figure>
+  );
+}
+
 function GeneratedImagePlaceholder({ label }: { label: string }) {
   return (
     <div
@@ -177,6 +295,11 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     typeof result === "object" &&
     typeof (result as ImageGenerationResult).image_b64 === "string";
   const imageResult = isImageResult ? (result as ImageGenerationResult) : null;
+  const localResult = isImageResult ? null : sandboxMediaResult(result);
+  const localImageName = localResult?.images.find(
+    (name): name is string => typeof name === "string" && name.length > 0,
+  );
+  const errorText = toolErrorText(result);
   // Coerced for the same reason `prompt` is: these reach `.match`,
   // `.toLowerCase` and `Array.join`, all of which throw on a non-string.
   const size = toolArgText(imageResult?.size);
@@ -225,7 +348,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     canExpand: boolean;
   } | null>(null);
   const captionRef = useRef<HTMLDivElement | null>(null);
-  const isPendingImage = !imagePart && isRunning;
+  const isPendingImage = !imagePart && !localImageName && isRunning;
 
   const promptOverflowMeasured = promptOverflow?.prompt === captionPrompt;
   const promptCanExpand = promptOverflowMeasured
@@ -326,6 +449,18 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
         icon={ImageIcon}
       />
       <ToolFallbackContent>
+        {errorText ? (
+          <p className="text-xs leading-5 text-muted-foreground">{errorText}</p>
+        ) : null}
+        {localResult && localImageName ? (
+          <SandboxMediaFigure
+            kind="image"
+            url={sandboxFilePath(localResult.sessionId, localImageName)}
+            filename={baseName(localImageName)}
+            title={imageTitle}
+            caption={captionPrompt}
+          />
+        ) : null}
         {imagePart ? (
           <figure
             className="m-0 flex max-w-full flex-col items-start gap-2 align-top"
@@ -426,3 +561,64 @@ export const ImageGenerationToolUI = memo(
   ImageGenerationToolUIImpl,
 ) as unknown as ToolCallMessagePartComponent;
 ImageGenerationToolUI.displayName = "ImageGenerationToolUI";
+
+const VIDEO_FILE = /\.(mp4|webm|mov)$/i;
+
+/** `generate_video`: the .mp4 the video model loaded in Unsloth Studio wrote into the chat's sandbox. */
+const VideoGenerationToolUIImpl: ToolCallMessagePartComponent = ({
+  args,
+  result,
+  status,
+}) => {
+  const prompt = toolArgText((args as { prompt?: unknown })?.prompt).trim();
+  const isRunning = isToolCallRunning(status);
+  const localResult = sandboxMediaResult(result);
+  const videoFile = localResult?.files?.find((file) =>
+    VIDEO_FILE.test(file.name),
+  );
+  const [open, setOpen] = useState(true);
+  const errorText = toolErrorText(result);
+  const runningLabel = "Generating video…";
+
+  if (!videoFile && isRunning) {
+    return (
+      <div className="aui-tool-fallback-root w-full py-1">
+        <GeneratedImagePlaceholder label={runningLabel} />
+      </div>
+    );
+  }
+  const completedLabel = errorText
+    ? "Video generation failed"
+    : prompt
+      ? `Generated video: ${prompt.length > 80 ? `${prompt.slice(0, 80)}…` : prompt}`
+      : "Generated video";
+
+  return (
+    <ToolFallbackRoot open={open} onOpenChange={setOpen}>
+      <ToolFallbackTrigger
+        toolName={isRunning ? runningLabel : completedLabel}
+        status={status}
+        icon={VideoIcon}
+      />
+      <ToolFallbackContent>
+        {errorText ? (
+          <p className="text-xs leading-5 text-muted-foreground">{errorText}</p>
+        ) : null}
+        {localResult && videoFile ? (
+          <SandboxMediaFigure
+            kind="video"
+            url={sandboxFilePath(localResult.sessionId, videoFile.name)}
+            filename={baseName(videoFile.name)}
+            title={prompt || "Generated video"}
+            caption={prompt}
+          />
+        ) : null}
+      </ToolFallbackContent>
+    </ToolFallbackRoot>
+  );
+};
+
+export const VideoGenerationToolUI = memo(
+  VideoGenerationToolUIImpl,
+) as unknown as ToolCallMessagePartComponent;
+VideoGenerationToolUI.displayName = "VideoGenerationToolUI";

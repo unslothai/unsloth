@@ -12,8 +12,19 @@ const FILES_MARKER = "\n__FILES__:";
 /** The tools that run code in the sandbox. Their result is always wrapped: the session is the only record of where it ran. */
 export const SANDBOX_RUN_TOOLS = new Set(["python", "terminal"]);
 
+/**
+ * The chat tools that render on the image or video model loaded in Unsloth Studio. They
+ * write their output into the sandbox and answer with the file envelope. Keep in step
+ * with MEDIA_CHAT_TOOLS in studio/backend/core/inference/media_chat_tools.py.
+ */
+export const MEDIA_CHAT_TOOLS: ReadonlySet<string> = new Set(["generate_image", "generate_video"]);
+
 /** The tools that emit the file envelope; edit_file only for a file it created. Nothing else's output is an envelope. */
-export const SANDBOX_FILE_TOOLS = new Set([...SANDBOX_RUN_TOOLS, "edit_file"]);
+export const SANDBOX_FILE_TOOLS = new Set([
+  ...SANDBOX_RUN_TOOLS,
+  "edit_file",
+  ...MEDIA_CHAT_TOOLS,
+]);
 
 /**
  * The tools that emit the image envelope: the sandbox ones, and the provider's hosted
@@ -21,7 +32,11 @@ export const SANDBOX_FILE_TOOLS = new Set([...SANDBOX_RUN_TOOLS, "edit_file"]);
  * well-formed `__IMAGES__` line from any other tool as content the model reads, so
  * the card has to keep it too, or the user sees less than the model was given.
  */
-export const IMAGE_SENTINEL_TOOLS = new Set([...SANDBOX_RUN_TOOLS, "code_execution"]);
+export const IMAGE_SENTINEL_TOOLS = new Set([
+  ...SANDBOX_RUN_TOOLS,
+  "code_execution",
+  "generate_image",
+]);
 
 function isSandboxFile(entry: unknown): entry is SandboxFile {
   if (typeof entry !== "object" || entry === null) return false;

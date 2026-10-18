@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 from core.inference.browser_agent import BROWSER_TOOL_NAMES
 from core.inference.llama_tool_schema import unrelaxed
 from core.inference.mcp_images import is_image_tool, split_images as split_mcp_images
+from core.inference.media_chat_tools import MEDIA_CHAT_TOOLS
 
 # Stamped by mcp_client on every tool it registers; the provenance the envelope
 # is trusted on.
@@ -30,6 +31,9 @@ MCP_TOOL_PREFIX = "mcp__"
 # tools.MCP_TOOL_SEARCH_NAME; tools imports this module.
 MCP_TOOL_SEARCH_NAME = "mcp_tool_search"
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, TOOL_ERROR_PREFIXES
+
+# Never deduplicated: an identical call is new work (the page as it is now, another render).
+REPEATABLE_TOOL_NAMES = BROWSER_TOOL_NAMES | MEDIA_CHAT_TOOLS
 
 
 _CANONICAL_HEAL_ARG = {
@@ -843,6 +847,9 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
         return f"Running: {preview}" if preview else "Running command..."
     if tool_name == "view_image":
         return "Viewing image: " + str(arguments.get("path") or "")[:80]
+    if tool_name in MEDIA_CHAT_TOOLS:
+        kind = "image" if tool_name == "generate_image" else "video"
+        return f"Generating {kind}: " + str(arguments.get("prompt") or "")[:60]
     if tool_name == "edit_file":
         # The name, not the patch: the tool card below already shows the edit.
         path = str(arguments.get("path") or "").strip()
@@ -1042,8 +1049,8 @@ def _strip_rag_sources_sentinel(result: str) -> str:
 # Only these emit the file envelope, and only their output is defused first. An MCP tool or a fetched page ending in a
 # well-formed __FILES__ line is content, not an envelope, and stripping it would take that line away from the model.
 _SANDBOX_TOOLS = frozenset({"python", "terminal"})
-# edit_file emits it too, for a file it created.
-_FILE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"edit_file"}
+# edit_file emits it too, for a file it created, and the media tools for the file they rendered.
+_FILE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"edit_file"} | MEDIA_CHAT_TOOLS
 
 # Only an MCP result can carry the UI envelope; mcp_client defuses tool-written ones.
 _MCP_TOOL_PREFIX = "mcp__"
@@ -1054,7 +1061,7 @@ _MCP_TOOL_PREFIX = "mcp__"
 # document an MCP tool read, or a page that was fetched, ending in a well-formed one of
 # either is content the model needs, and cutting it leaves the model reasoning over less
 # than the card the user is looking at.
-_IMAGE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"code_execution"}
+_IMAGE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"code_execution", "generate_image"}
 _SOURCE_MAP_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
 # Invalidated by workspace writes, but reading an image is not new work that licenses a rerun.
 _WORKSPACE_READ_TOOLS = frozenset({"view_image"})
@@ -1332,11 +1339,12 @@ class ToolLoopController:
         elif (
             self._deduplicate_tool_calls
             and key in self._successful_keys
-            and tool_name not in BROWSER_TOOL_NAMES
+            and tool_name not in REPEATABLE_TOOL_NAMES
             and tool_name != MCP_TOOL_SEARCH_NAME
         ):
             # Not the browser tools: each acts on or reads the page as it is now, so a second
             # scroll down or a snapshot after a click is new work, and two such no-ops ended the turn.
+            # Nor the media tools: the same prompt again is another image with a fresh seed.
             # Nor mcp_tool_search: a repeat restores tools a later load evicted.
             action = "duplicate"
             noop = _noop_result("duplicate", tool_name)

@@ -196,8 +196,12 @@ export const BUDGET = {
   // 95). Nearly all of it is searching a model maker in the Model hub (#13998, +3,038 B raw / +1,000 B transfer):
   // its owner-to-uploads search lives in use-hub-model-search, a hook the startup screen already loads, so there
   // is no separate module to lazy-load. #13999 and #13993 add 79 B raw / 58 B transfer. Raised by that growth.
-  transferBytes: 2_045_781,
-  rawBytes: 6_801_415,
+  // The Images pill making images and videos with the loaded local models adds 4,975 B raw / 1,658 B transfer
+  // (6,797,963 -> 6,802,938 B raw, 2,044,964 -> 2,046,622 B transfer against d0ffef38b7, one machine and build,
+  // Node 24, chunk count unchanged at 95): the local image and video cards in the eager tool UI registry and the
+  // composer and adapter gates in the eager chat chunk. Raised by that growth.
+  transferBytes: 2_047_439,
+  rawBytes: 6_806_390,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

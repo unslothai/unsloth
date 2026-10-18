@@ -1082,10 +1082,56 @@ function isPillClampedOff(
   > = {
     toolsEnabled: state.supportsTools || state.supportsBuiltinWebSearch,
     codeToolsEnabled: state.supportsTools || state.supportsBuiltinCodeExecution,
-    imageToolsEnabled: state.supportsBuiltinImageGeneration,
+    // Capability, not readiness: the image model coming and going must not drop a chat's Images pref.
+    imageToolsEnabled:
+      state.supportsBuiltinImageGeneration || state.supportsTools,
     webFetchToolsEnabled: state.supportsBuiltinWebFetch,
   };
   return !capable[key];
+}
+
+type LocalMediaToolState = Pick<
+  ChatRuntimeStore,
+  | "supportsTools"
+  | "supportsBuiltinImageGeneration"
+  | "localImageModelReady"
+  | "localVideoModelReady"
+>;
+
+/**
+ * The Images pill runs on the image or video model loaded in Unsloth Studio: the chat
+ * model calls Unsloth Studio tools and one of them is resident. A hosted image model
+ * keeps its own image_generation, so it wins.
+ */
+export function localImageTool(s: LocalMediaToolState): boolean {
+  return (
+    !s.supportsBuiltinImageGeneration &&
+    s.supportsTools &&
+    (s.localImageModelReady || s.localVideoModelReady)
+  );
+}
+
+/** Whether the Images pill and + menu item show for this model. */
+export function imageToolAvailable(s: LocalMediaToolState): boolean {
+  return s.supportsBuiltinImageGeneration || localImageTool(s);
+}
+
+/** The local pill takes composer room only while it is on, like RAG; the hosted pill counts as before. */
+export function localImagePillCount(
+  s: LocalMediaToolState & Pick<ChatRuntimeStore, "imageToolsEnabled">,
+): number {
+  return localImageTool(s) && s.imageToolsEnabled ? 1 : 0;
+}
+
+/** The local media tools a turn sends in enabled_tools; never the hosted "image_generation". */
+export function localMediaToolsForTurn(
+  s: LocalMediaToolState & Pick<ChatRuntimeStore, "imageToolsEnabled">,
+): string[] {
+  if (!s.imageToolsEnabled || !localImageTool(s)) return [];
+  return [
+    ...(s.localImageModelReady ? ["generate_image"] : []),
+    ...(s.localVideoModelReady ? ["generate_video"] : []),
+  ];
 }
 
 /** Sampling keys share `params` with the model's recommendation, so a load in this window
@@ -2458,6 +2504,10 @@ type ChatRuntimeStore = {
   supportsBuiltinWebFetch: boolean;
   /** mirrors the backend Settings switch "Keep multiple models loaded". */
   keepModelsLoaded: boolean;
+  /** A text-to-image model is loaded in Unsloth Studio, so the Images pill can offer generate_image. Not persisted. */
+  localImageModelReady: boolean;
+  /** A video model is loaded in Unsloth Studio, so the Images pill can offer generate_video. Not persisted. */
+  localVideoModelReady: boolean;
   toolsEnabled: boolean;
   /** persisted Code preference; codeToolsOn() gives the effective value. */
   codeToolsEnabled: boolean;
@@ -2768,6 +2818,7 @@ type ChatRuntimeStore = {
   setPreserveThinking: (value: boolean) => void;
   setToolsEnabled: (enabled: boolean, options?: { persist?: boolean }) => void;
   setKeepModelsLoaded: (keep: boolean) => void;
+  setLocalMediaModelsReady: (ready: { image: boolean; video: boolean }) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
   setImageToolsEnabled: (enabled: boolean) => void;
   setDeepResearchEnabled: (enabled: boolean) => void;
@@ -4343,6 +4394,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   supportsBuiltinWebFetch: false,
   toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
   keepModelsLoaded: false,
+  localImageModelReady: false,
+  localVideoModelReady: false,
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   codeToolsDeclinedUnderFullAccess: false,
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
@@ -5565,6 +5618,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       };
     }),
   setKeepModelsLoaded: (keepModelsLoaded) => set({ keepModelsLoaded }),
+  setLocalMediaModelsReady: ({ image, video }) =>
+    set((state) =>
+      state.localImageModelReady === image && state.localVideoModelReady === video
+        ? state
+        : { localImageModelReady: image, localVideoModelReady: video },
+    ),
   setCodeToolsEnabled: (codeToolsEnabled) =>
     set((state) => {
       saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, codeToolsEnabled);

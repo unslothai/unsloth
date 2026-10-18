@@ -85,6 +85,15 @@ import {
 import { isNpuModelId } from "@/features/npu";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
+// The images and video barrels export only their pages; the status calls alone keep those pages out of the chat chunk.
+// eslint-disable-next-line no-restricted-imports
+import { getDiffusionStatus } from "@/features/images/api";
+// eslint-disable-next-line no-restricted-imports
+import { getVideoStatus } from "@/features/video/api";
+import {
+  subscribeModelEjected,
+  subscribeModelLifecycle,
+} from "@/lib/model-lifecycle-events";
 import { useDocumentFlag } from "@/lib/document-flag";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
 import { hasKnownContextWindow } from "./lib/context-window-known";
@@ -3202,9 +3211,11 @@ export function ChatPage({
       supportsBuiltinWebFetch,
       toolsEnabled: nextToolsEnabled,
       codeToolsEnabled: canRunCode ? (storedCodeToolsEnabled ?? false) : false,
-      imageToolsEnabled: supportsBuiltinImageGeneration
-        ? (storedImageToolsEnabled ?? false)
-        : false,
+      // Unsloth-tools models can render on the loaded image model; readiness gates the pill, not this.
+      imageToolsEnabled:
+        supportsBuiltinImageGeneration || supportsStudioToolsHere
+          ? (storedImageToolsEnabled ?? false)
+          : false,
       // Default Fetch off (Anthropic bills per fetch); deliberate opt-in.
       webFetchToolsEnabled: supportsBuiltinWebFetch
         ? (storedWebFetchToolsEnabled ?? false)
@@ -3213,6 +3224,45 @@ export function ChatPage({
     // Reruns once settings hydrate: this normalization reads the stored pills and clamps them to the
     // model, and hydration refreshes what it reads, so it has to be applied last.
   }, [externalProvidersForChat, inferenceCheckpoint, settingsHydrated]);
+  // The Images pill can use the image or video model loaded in Unsloth Studio. Re-read on mount,
+  // when any load settles (a chat load can evict them) and when either is ejected.
+  useEffect(() => {
+    let disposed = false;
+    let controller: AbortController | null = null;
+    const refresh = () => {
+      controller?.abort();
+      const current = new AbortController();
+      controller = current;
+      void Promise.allSettled([
+        getDiffusionStatus(current.signal),
+        getVideoStatus(current.signal),
+      ]).then(([image, video]) => {
+        if (disposed || current.signal.aborted) return;
+        const imageStatus = image.status === "fulfilled" ? image.value : null;
+        useChatRuntimeStore.getState().setLocalMediaModelsReady({
+          image: Boolean(
+            imageStatus?.loaded &&
+              (!imageStatus.workflows ||
+                imageStatus.workflows.includes("txt2img")),
+          ),
+          video: video.status === "fulfilled" && video.value.loaded,
+        });
+      });
+    };
+    refresh();
+    const unsubscribers = [
+      subscribeModelLifecycle(({ loading }) => {
+        if (!loading) refresh();
+      }),
+      subscribeModelEjected("image", refresh),
+      subscribeModelEjected("video", refresh),
+    ];
+    return () => {
+      disposed = true;
+      controller?.abort();
+      for (const unsubscribe of unsubscribers) unsubscribe();
+    };
+  }, []);
   // Another tab can change the active model's pin (the pin store listens for the storage event),
   // and the normalization above reads the pin through a getState helper without subscribing, so
   // the composer kept the old level until a switch. Only the effort here: the pills and the rest
@@ -4009,9 +4059,10 @@ export function ChatPage({
           codeToolsEnabled: canRunCode
             ? (storedCodeToolsEnabled ?? false)
             : false,
-          imageToolsEnabled: supportsBuiltinImageGeneration
-            ? (storedImageToolsEnabled ?? false)
-            : false,
+          imageToolsEnabled:
+            supportsBuiltinImageGeneration || supportsStudioToolsHere
+              ? (storedImageToolsEnabled ?? false)
+              : false,
           webFetchToolsEnabled: supportsBuiltinWebFetch
             ? (storedWebFetchToolsEnabled ?? false)
             : false,
