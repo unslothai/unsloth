@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Settings > Voice > Voice mode: the decision log toggle, one card per voice model
-// from /voice/laya/stats, the JSONL export and the clear button.
+// Settings > Voice > Voice mode: the addressed gate, the decision log toggle, one card
+// per voice model from /voice/laya/stats, the JSONL export and the clear button.
 
 import {
   AlertDialog,
@@ -40,8 +40,8 @@ import { useVoiceSettingsStore } from "../stores/voice-settings-store";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
-const MODELS: LayaModel[] = ["judge", "interject", "filler"];
-// The backend's voice_log.ERROR_KINDS, two per model.
+const MODELS: LayaModel[] = ["judge", "interject", "filler", "addressed"];
+// The backend's voice_log.ERROR_KINDS.
 const ERROR_KINDS = [
   "finished_but_continued",
   "held_but_flushed",
@@ -49,6 +49,7 @@ const ERROR_KINDS = [
   "queued_but_reasked",
   "echoed",
   "too_late",
+  "missed_address",
 ] as const;
 type ErrorKind = (typeof ERROR_KINDS)[number];
 const isErrorKind = (k: string): k is ErrorKind => (ERROR_KINDS as readonly string[]).includes(k);
@@ -110,6 +111,8 @@ export function VoiceDecisionLogSection() {
   const t = useT();
   const enabled = useVoiceSettingsStore((s) => s.voiceLogEnabled);
   const setEnabled = useVoiceSettingsStore((s) => s.setVoiceLogEnabled);
+  const addressedGate = useVoiceSettingsStore((s) => s.voiceAddressedGate);
+  const setAddressedGate = useVoiceSettingsStore((s) => s.setVoiceAddressedGate);
   const exportedAt = useVoiceSettingsStore((s) => s.voiceLogExportedAt);
   const setExportedAt = useVoiceSettingsStore((s) => s.setVoiceLogExportedAt);
   const [stats, setStats] = useState<LayaStats | null>(null);
@@ -166,6 +169,12 @@ export function VoiceDecisionLogSection() {
 
   return (
     <SettingsSection title={t("settings.voice.voiceMode.sectionTitle")}>
+      <SettingsRow
+        label={t("settings.voice.voiceMode.addressedLabel")}
+        description={t("settings.voice.voiceMode.addressedDescription")}
+      >
+        <Switch checked={addressedGate} onCheckedChange={setAddressedGate} />
+      </SettingsRow>
       <SettingsRow
         label={t("settings.voice.voiceMode.logLabel")}
         description={t("settings.voice.voiceMode.logDescription")}

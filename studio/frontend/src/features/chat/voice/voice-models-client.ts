@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The three small voice-mode models served by the backend: is the turn over, what to
-// say while thinking, what to do with speech that lands mid-think. Every call resolves
+// The four small voice-mode models served by the backend: is the turn over, what to
+// say while thinking, what to do with speech that lands mid-think, and was it said to
+// the assistant at all. Every call resolves
 // null when the model is not served or does not answer in time, so the caller keeps
 // its word-rule fallback. With the decision log on, each answer carries the log row's
 // id and the loop reports what happened next through reportLayaOutcome.
@@ -11,7 +12,9 @@ import { authFetch } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import type { FillerDecision } from "./thinking-filler";
+import type { AddressedLabel, AddressedPrev } from "./addressed-gate";
 import {
+  publishAddressedDecision,
   publishFillerDecision,
   publishInterjectDecision,
   publishTurnDecision,
@@ -128,4 +131,27 @@ export async function interjectAction(
   publishInterjectDecision(r.action, r.confidence ?? 0);
   if (fields.log) voiceTrace("laya.interject", { id: r.id ?? null, action: r.action });
   return { action: r.action, id: r.id ?? null };
+}
+
+export interface AddressedAnswer {
+  label: AddressedLabel;
+  confidence: number;
+  id: string | null;
+}
+
+/** Who the finished turn was for, or null without the model (the turn is then sent as before). */
+export async function addressedLabel(
+  text: string,
+  prev: AddressedPrev,
+): Promise<AddressedAnswer | null> {
+  const fields = logFields();
+  const r = await post<{ label: AddressedLabel; confidence: number; id?: string | null }>(
+    "addressed",
+    { text, prev, ...fields },
+  );
+  if (r?.label !== "assistant" && r?.label !== "other" && r?.label !== "reading") return null;
+  const confidence = typeof r.confidence === "number" ? r.confidence : 0;
+  publishAddressedDecision(r.label, confidence);
+  voiceTrace("laya.addressed", { id: r.id ?? null, label: r.label, confidence, text, prev });
+  return { label: r.label, confidence, id: r.id ?? null };
 }

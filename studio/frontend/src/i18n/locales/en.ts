@@ -1706,14 +1706,18 @@ export const en = {
       },
       voiceMode: {
         sectionTitle: "Voice mode",
+        addressedLabel: "Only answer when I'm talking to it",
+        addressedDescription:
+          "Keeps listening but stays quiet when you talk to someone else in the room or read something aloud. What it overheard goes to your next question as context.",
         logLabel: "Keep a log of voice decisions",
         logDescription:
-          "Stores transcripts of what you say with each turn, interrupt and filler verdict, so the voice models can be retrained on your mistakes. Stays on this computer.",
+          "Stores transcripts of what you say with each turn, interrupt, filler and addressed verdict, so the voice models can be retrained on your mistakes. Stays on this computer.",
         models: {
           all: "All models",
           judge: "Turn judge",
           interject: "Interrupt",
           filler: "Filler",
+          addressed: "Addressed",
         },
         noRows: "No decisions logged yet",
         noOutcomes: "No outcomes yet",
@@ -1725,6 +1729,7 @@ export const en = {
           queued_but_reasked: "Queued, then asked again",
           echoed: "Reply repeated it",
           too_late: "Reply beat it",
+          missed_address: "Stayed quiet, then repeated",
         },
         exportLabel: "Export",
         exportDescription: "{rows} rows, {size} on disk",
