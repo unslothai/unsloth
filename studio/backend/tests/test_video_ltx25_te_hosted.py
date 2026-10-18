@@ -81,7 +81,10 @@ def test_unset_request_resolves_to_the_hosted_file(monkeypatch):
     assert v25.ltx25_te_prequant_sources(None, "/packs/custom/LTX-2.5-Diffusers") == {}
     assert v25.ltx25_te_prequant_sources(None, "someone/LTX-2.5-Diffusers") == {}
     cached = "/hf/hub/models--Lightricks--LTX-2.5-Diffusers/snapshots/abc123"
-    assert v25.ltx25_te_prequant_sources(None, cached)["text_encoder"].location == v25.LTX25_TE_HOSTED_REPO
+    assert (
+        v25.ltx25_te_prequant_sources(None, cached)["text_encoder"].location
+        == v25.LTX25_TE_HOSTED_REPO
+    )
     assert v25.ltx25_te_prequant_sources(None, v25.LTX25_SINGLE_FILE_REPO) == {}
     assert v25.ltx25_te_prequant_sources("fp8", BASE) == {}
     monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "0")
@@ -257,7 +260,12 @@ def test_a_rejected_hosted_file_refuses_the_dense_fallback_without_room(tmp_path
         "dtype": "bfloat16",
         "te_quant": "int8",
         "dense_te_gb": 23.9,
-        "te_prequant": {"repo": "r", "filename": "x", "mirror_path": str(tmp_path / "absent"), "base": BASE},
+        "te_prequant": {
+            "repo": "r",
+            "filename": "x",
+            "mirror_path": str(tmp_path / "absent"),
+            "base": BASE,
+        },
     }
     with pytest.raises(RuntimeError, match = "needs about 24 GB"):
         worker._load(config)

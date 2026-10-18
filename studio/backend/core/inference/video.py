@@ -3623,7 +3623,10 @@ class VideoBackend:
             # those dense shards. Resolved through the family default the loader applies, so an unset request on a
             # family whose default is a hosted encoder does not stage the dense one. kwargs keep the RAW request.
             te_planned, _ = video_te_quant_request(
-                fam, kwargs.get("text_encoder_quant"), base = base, speed_mode = kwargs.get("speed_mode")
+                fam,
+                kwargs.get("text_encoder_quant"),
+                base = base,
+                speed_mode = kwargs.get("speed_mode"),
             )
             te_sources = self._te_prequant_sources(
                 fam,

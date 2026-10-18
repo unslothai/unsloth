@@ -171,7 +171,10 @@ TE_INT8_CONVROT_BUDGET_SCALE = 0.56
 _TE_INT8_CONVROT_BUDGET_SCALES = {
     "flux.3-klein": 0.60,
     "flux.3-klein-base": 0.60,
-    **{name: 0.62 for name in ("wan2.2-ti2v-5b", "wan2.2-t2v-a14b", "wan2.1-t2v-1.3b", "wan2.1-t2v-14b")},
+    **{
+        name: 0.62
+        for name in ("wan2.2-ti2v-5b", "wan2.2-t2v-a14b", "wan2.1-t2v-1.3b", "wan2.1-t2v-14b")
+    },
 }
 
 
@@ -1056,7 +1059,11 @@ def _build_int8_convrot_encoder(
     if getattr(encoder, "lm_head", None) is not None and not trim:
         raise ValueError("the int8 ConvRot encoder carries no lm_head and needs the lm_head trim")
     trim_text_encoder(encoder)
-    if getattr(encoder, "lm_head", None) is not None and not is_trimmed(encoder) and config_ties_lm_head(config):
+    if (
+        getattr(encoder, "lm_head", None) is not None
+        and not is_trimmed(encoder)
+        and config_ties_lm_head(config)
+    ):
         # A tied head (FLUX.3's Qwen3-VL-4B) is kept by the trim, but this file has no lm_head key for it and the
         # family reads hidden states only, so drop it here: a meta head would fail the strict load below.
         head = encoder.lm_head

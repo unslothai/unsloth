@@ -412,7 +412,6 @@ MPS_BF16 = types.SimpleNamespace(device = "mps", dtype = torch.bfloat16)
 def test_an_explicit_wan_int8_on_mps_reaches_the_hosted_convrot_file():
     # MPS runs the hosted int8 ConvRot encoder without fp8, so the gate must not rewrite int8 to fp8 and refuse it.
     import core.inference.video as v
-
     v._assert_video_precision_for_target(
         _family("wan2.2-ti2v-5b"), MPS_BF16, model_kind = "pipeline", text_encoder_quant = "int8"
     )
@@ -490,10 +489,18 @@ def test_ltx25_budgets_the_dense_peak_unless_the_hosted_encoder_applies():
     )
     assert hosted < 1.0
     # A custom pack quantizes the dense encoder at load: its peak is the dense one.
-    assert tpq.te_prequant_budget_scale(fam, te_quant_mode = None, target = None, base = "someone/ltx25-pack") == 1.0
-    assert tpq.te_prequant_budget_scale(
-        fam, te_quant_mode = "none", target = None, base = "Lightricks/LTX-2.5-Diffusers"
-    ) == 1.0
+    assert (
+        tpq.te_prequant_budget_scale(
+            fam, te_quant_mode = None, target = None, base = "someone/ltx25-pack"
+        )
+        == 1.0
+    )
+    assert (
+        tpq.te_prequant_budget_scale(
+            fam, te_quant_mode = "none", target = None, base = "Lightricks/LTX-2.5-Diffusers"
+        )
+        == 1.0
+    )
 
 
 def test_drop_tied_copies_keeps_a_tied_lm_head(tmp_path):
@@ -513,7 +520,11 @@ def test_drop_tied_copies_keeps_a_tied_lm_head(tmp_path):
         {
             "format": tpq.TE_PREQUANT_FORMAT,
             "state_dict": state,
-            "metadata": {"scheme": "fp8", "component": "text_encoder", "base_model_id": WAN_BASES[0]},
+            "metadata": {
+                "scheme": "fp8",
+                "component": "text_encoder",
+                "base_model_id": WAN_BASES[0],
+            },
         },
         src,
     )

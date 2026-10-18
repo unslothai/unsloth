@@ -191,7 +191,6 @@ _PROJECTIONS = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", 
 def _available_host_bytes() -> Optional[int]:
     try:
         import psutil
-
         return int(psutil.virtual_memory().available)
     except Exception:  # noqa: BLE001 -- no psutil in this venv
         pass
