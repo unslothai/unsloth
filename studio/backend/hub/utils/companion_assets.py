@@ -160,10 +160,11 @@ _DENOISER_DIRS = ("transformer/", "unet/")
 _WEIGHT_SUFFIXES = (".safetensors", ".bin", ".ckpt", ".pt", ".pth", ".gguf")
 
 
-def repo_holds_denoiser(repo) -> bool:
+def repo_holds_denoiser(repo, *, folders: bool = True) -> bool:
     """Whether *repo* holds a runnable checkpoint, i.e. is a model the user installed. Beyond the name-only test: a single_file pick caches its checkpoint as ONE top-level file, ``sd_xl_base_1.0.safetensors`` for a whole-pipeline family and ``flux2-dev-fp8.safetensors`` for a transformer-only one, with no denoiser folder to recognise. Those repos are curated companion bases whose self-dependency is dropped, so without this the orphan listing called an installed checkpoint an unused leftover and Free up space deleted it. A companion-only fetch never lands a weight at the snapshot root, and the two ways to be wrong are not symmetric: an orphan we decline to offer costs disk, a checkpoint we offer costs the model. The one root weight that is NOT a checkpoint is the curated component repos' own asset, which is why they are excluded by id: a single-file VAE or text encoder is the companion, and reading it as an installed model is what kept an orphaned pair pinned to disk."""
     names = list(_snapshot_relative_names(repo))
-    if any(holds_denoiser(name) for name in names):
+    # ``folders=False``: root checkpoints only, for an artifact mirror, whose transformer/ shards are no install.
+    if folders and any(holds_denoiser(name) for name in names):
         return True
     repo_id = str(getattr(repo, "repo_id", "") or "")
     if _normalise(repo_id) in _component_only_repo_ids():

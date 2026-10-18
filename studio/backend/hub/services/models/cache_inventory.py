@@ -1432,7 +1432,7 @@ def artifact_folder_bytes(*repo_paths: Path) -> int:
     the physical blob each snapshot entry resolves to, as ``repo_unique_size_bytes`` does: a whole-repo delete frees
     every revision's blob once, so a file changed under the same name counts twice and one blob behind several paths
     once. Never raises."""
-    seen: dict[tuple[int, int], int] = {}
+    seen: dict[object, int] = {}
     for repo_path in repo_paths:
         snapshots = Path(repo_path) / "snapshots"
         try:
@@ -1440,7 +1440,9 @@ def artifact_folder_bytes(*repo_paths: Path) -> int:
                 if path.name.lower().endswith(".gguf") or not path.is_file():
                     continue
                 st = path.stat()
-                seen[(st.st_dev, st.st_ino)] = st.st_size
+                # No inode on this filesystem: the resolved blob path, as _blob_key does.
+                key = (st.st_dev, st.st_ino) if st.st_ino else str(path.resolve())
+                seen[key] = st.st_size
         except (OSError, ValueError):
             continue
     return sum(seen.values())

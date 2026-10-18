@@ -384,10 +384,11 @@ def _orphan_companions_blocking() -> dict:
             continue
         repos = by_id[base_key]
         # exclude user-installed copies with denoisers; companion fetches omit transformer/ and orphan rows are per root.
-        # Not for an artifact mirror: a pipeline load of its id is refused, so with no GGUF left (checked above) its
-        # transformer/ shards, left by a GGUF speed load, are no installed checkpoint.
-        if not cache_inventory._hosts_artifacts(base_key):
-            repos = [r for r in repos if not _repo_holds_denoiser(r)]
+        # An artifact mirror is judged by its root checkpoints only (an FP8 mirror's checkpoint is installed): a
+        # pipeline load of its id is refused, so with no GGUF left (checked above) transformer/ shards a GGUF speed
+        # load left are no installed checkpoint.
+        folders = not cache_inventory._hosts_artifacts(base_key)
+        repos = [r for r in repos if not _repo_holds_denoiser(r, folders = folders)]
         if not repos:
             continue
         # One row per cache root: a delete is scoped to a single cache, so pooling copies from several would promise bytes one removal cannot deliver.

@@ -868,3 +868,46 @@ def test_folders_left_by_a_deleted_gguf_are_offered_even_with_transformer_shards
     monkeypatch.setattr(companion_cleanup.cache_inventory, "all_hf_cache_scans", lambda: scans)
     offered = asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
     assert [c["repo_id"] for c in offered if c["repo_id"] == repo] == [repo]
+
+
+def test_an_installed_fp8_artifact_mirror_checkpoint_is_never_an_orphan(monkeypatch, tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+
+    from hub.services.models import cache_inventory, companion_cleanup
+    from hub.utils import companion_assets
+
+    repo = "unsloth/Qwen-Image-2.1-Turbo-FP8"
+    assert cache_inventory._hosts_artifacts(repo)
+    assert repo.lower() in {k.lower() for k in companion_assets.known_companion_base_ids()}
+    installed = _cache_repo(
+        tmp_path / "live", repo, {**_FOLDERS, "Qwen-Image-2.1-Turbo-FP8.safetensors": 4_000}
+    )
+    scans = [SimpleNamespace(repos = [installed])]
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "app-cache")
+    monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: scans)
+    monkeypatch.setattr(companion_cleanup.cache_inventory, "all_hf_cache_scans", lambda: scans)
+    offered = asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+    # Its root checkpoint is the installed model; only an artifact mirror's transformer/ shards are not.
+    assert [c for c in offered if c["repo_id"] == repo] == []
+
+
+def test_artifact_folder_bytes_without_inodes_keys_by_blob_path(monkeypatch, tmp_path):
+    import os
+
+    from hub.services.models import cache_inventory
+
+    repo_dir = tmp_path / "models--unsloth--Z-Image-GGUF"
+    vae = repo_dir / "snapshots" / "rev1" / "vae"
+    vae.mkdir(parents = True)
+    (vae / "a.safetensors").write_bytes(b"\0" * 300)
+    (vae / "b.safetensors").write_bytes(b"\0" * 500)
+    real_stat = Path.stat
+
+    def no_inode(self, *a, **k):
+        st = real_stat(self, *a, **k)
+        return os.stat_result((st.st_mode, 0, st.st_dev, st.st_nlink, st.st_uid, st.st_gid, st.st_size,
+                               st.st_atime, st.st_mtime, st.st_ctime))
+
+    monkeypatch.setattr(Path, "stat", no_inode)
+    assert cache_inventory.artifact_folder_bytes(repo_dir) == 800
