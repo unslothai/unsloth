@@ -324,12 +324,12 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
 // in "speaking" sky (lit while a line was chosen), the mid-think call on the
 // right in "thinking" indigo (how sure of its call). Faint tracks until a model
 // has spoken; a filled arc never moves on its own.
-const RING = 232;
-const RING_R = 106;
+const RING_R = 110;
+const RING_W = 6.5;
+const RING = Math.ceil(2 * (RING_R + RING_W));
 // Three thirds with rounded ends and a small gap at each seam; the judge owns the
 // left third, the filler the top-right, the mid-think call the bottom-right.
 const ARC_DEG = 120;
-const RING_W = 5;
 const GAP_DEG = 7;
 const ARCS: Array<{ key: keyof VoiceDecisions; start: number; color: string; label: string }> = [
   { key: "turn", start: 180, color: "#fb7185", label: "turn" },
