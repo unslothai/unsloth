@@ -424,9 +424,8 @@ def test_explicit_edit_keeps_display_metadata_but_not_the_run_claim(chat_home):
 def test_finished_generation_whose_settle_was_refused_can_still_be_edited(
     chat_home, finish_reason, tab_reason
 ):
-    """#13938: the tab's settle write is refused when its `incomplete` disagrees with the
-    producer's (a reply that ended with nothing on screen, a window stop the server records as
-    `length`), so the row never gets generationSettled. The run is finished, so an edit detaches it."""
+    """#13938: a settle whose `incomplete` disagrees with the producer's is refused, so the row
+    never gets generationSettled; the run is finished, so an edit must still detach it."""
     _create()
     token = runs_db.get_worker_token("run-1")
     assert runs_db.mark_running("run-1", token)

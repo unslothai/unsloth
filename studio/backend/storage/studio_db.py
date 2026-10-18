@@ -3834,9 +3834,8 @@ def _detach_terminal_generation_for_edit(
         return False
     stored_metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
     incoming_metadata = message.get("metadata")
-    # The run row's terminal status is the authority, not the tab's generationSettled stamp: the
-    # settle write is refused whenever the tab's `incomplete` disagrees with the producer's (an
-    # empty reply, a context-window stop), which left the reply uneditable for good (#13938).
+    # Not generationSettled: a settle whose `incomplete` disagrees with the producer's is refused,
+    # so a finished reply would never become editable (#13938). The run status above decides.
     if (
         not isinstance(stored_metadata, dict)
         or stored_metadata.get("serverManaged") is not True
