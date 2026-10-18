@@ -67,7 +67,6 @@ class TestSetupShConfigure:
         assert block.count("-DGGML_RPC_RDMA=OFF") == 1
         flags = 'CMAKE_ARGS="$CMAKE_ARGS -DGGML_RPC=ON -DGGML_RPC_RDMA=OFF"'
         assert block.index(flags) < block.index(CPU_FALLBACK_COPY)
-        # Not inside any platform branch.
         base = block.index('CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release')
         darwin = block.index('if [ "$_HOST_SYSTEM" = "Darwin" ]; then')
         assert base < block.index(flags) < darwin
@@ -570,7 +569,6 @@ def test_a_build_configured_before_rpc_is_reconfigured_with_it_first(tmp_path) -
     assert "-DGGML_RPC=ON" in calls[0] and "-DGGML_RPC_RDMA=OFF" in calls[0], calls
     assert "--build" in calls[1], calls
 
-    # Already RPC-configured: straight to the build, no reconfigure.
     (tmp_path / "cmake.log").unlink()
     tree2 = _old_install(tmp_path / "second")
     _upgrade_harness(tmp_path, tree = tree2, cmake_writes = "ggml-rpc-server")

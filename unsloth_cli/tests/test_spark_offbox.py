@@ -443,7 +443,6 @@ def test_peer_gpu_probe_fails_closed(monkeypatch) -> None:
     def fake(out):
         return lambda *a, **k: _Result(out)
 
-    # nvidia-smi never ran: no RC marker, so unknown -> busy.
     monkeypatch.setattr(sc.subprocess, "run", fake("bash: nvidia-smi: not found\n"))
     assert sc.peer_gpu_busy("h")["busy"] is True
     monkeypatch.setattr(sc.subprocess, "run", fake("RC=9\n"))
@@ -455,11 +454,9 @@ def test_peer_gpu_probe_fails_closed(monkeypatch) -> None:
     monkeypatch.setattr(sc.subprocess, "run", fake("1234, 11020\nRC=0\n"))
     busy = sc.peer_gpu_busy("h")
     assert busy["busy"] is True and busy["processes"] == [{"pid": 1234, "used_mib": 11020}]
-    # A CUDA context alone is not a job.
     monkeypatch.setattr(sc.subprocess, "run", fake("1234, 12\nRC=0\n"))
     assert sc.peer_gpu_busy("h")["busy"] is False
 
-    # An exception is not permission either.
     def boom(*a, **k):
         raise OSError("ssh died")
 
@@ -504,13 +501,11 @@ def test_provision_refuses_a_busy_peer_and_deletes_only_in_the_venv_by_default(m
     monkeypatch.setattr(sc.subprocess, "run", record)
     sc.provision_peer("192.168.200.13")
     rsyncs = [cmd for cmd in ran if cmd and cmd[0] == "rsync"]
-    # An idle peer mirrors the venv exactly (no stale packages); caches are never deleted.
     venv = [cmd for cmd in rsyncs if cmd[-1].rstrip("/").endswith("unsloth_studio")]
     assert venv and all("--delete" in cmd for cmd in venv)
     assert all("--delete" not in cmd for cmd in rsyncs if cmd not in venv)
     ran.clear()
     sc.provision_peer("192.168.200.13", delete = True)
-    # rsync commands only.
     assert all("--delete" in cmd for cmd in ran if cmd and cmd[0] == "rsync")
     assert any(cmd and cmd[0] == "rsync" for cmd in ran)
     ran.clear()
@@ -1011,7 +1006,6 @@ def test_recommend_topology_never_splits_a_fitting_model_unless_prefill_heavy() 
     assert out["topology"] == "layer_split"
     assert "prefill" in out["reason"] and "1.7x" in out["reason"]
     assert out["prefill_speedup"] == sc.LAYER_SPLIT_PREFILL_SPEEDUP
-    # At 8 or more users the replicas still win end to end, prefill-heavy or not.
     out = sc.recommend_topology(16.4 * _GIB, 0.4 * _GIB, 16, 4096, 113 * _GIB, prefill_heavy = True)
     assert out["topology"] == "replicas"
 
@@ -1026,7 +1020,6 @@ def test_recommend_topology_counts_kv_for_every_user() -> None:
     assert out["replica_node_bytes"] == out["single_node_bytes"]
     out = sc.recommend_topology(100 * _GIB, 4 * _GIB, 16, 512, 120 * _GIB)
     assert out["topology"] == "layer_split" and "KV" in out["reason"]
-    # Whenever replicas ARE chosen, a node must hold a full copy plus KV for every user.
     for users in (1, 2, 4, 8, 16, 32, 64):
         out = sc.recommend_topology(20 * _GIB, 0.5 * _GIB, users, 512, 113 * _GIB)
         if out["topology"] == "replicas":
@@ -1195,7 +1188,6 @@ def test_compare_bundles_names_both_versions_and_the_fix(tmp_path) -> None:
     hashed = sc.compare_llama_bundles(new, patched)
     assert hashed["ok"] is False and "libggml-rpc differs" in hashed["problems"][0]
 
-    # Unverifiable is never reported as matching.
     unknown = sc.compare_llama_bundles(new, None)
     assert unknown["ok"] is None and not unknown["problems"]
     assert "UNVERIFIED" in unknown["notes"][0]
@@ -1343,7 +1335,6 @@ def test_rpc_preflight_reports_a_confirmed_mismatch_and_says_the_fix(monkeypatch
     pre = sc.rpc_protocol_preflight("192.168.200.13")
     assert pre["ok"] is False and "6.0.0" in pre["problems"][0] and "5.1.0" in pre["problems"][0]
 
-    # Unverifiable peer, nothing listening: not a failure, but not a pass either.
     monkeypatch.setattr(sc, "peer_llama_bundle_identity", lambda *a, **k: None)
     monkeypatch.setattr(
         sc,
@@ -1403,7 +1394,6 @@ def test_bundle_dir_defaults_to_the_legacy_location(monkeypatch, tmp_path) -> No
     monkeypatch.delenv("STUDIO_HOME", raising = False)
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
     assert sc.llama_bundle_dir() == Path.home() / ".unsloth" / "llama.cpp"
-    # Pointing UNSLOTH_STUDIO_HOME at the default location must not move the bundle.
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(Path.home() / ".unsloth" / "studio"))
     assert sc.llama_bundle_dir() == Path.home() / ".unsloth" / "llama.cpp"
 
@@ -1468,7 +1458,6 @@ def test_fast_setup_script_keeps_the_secret_in_a_600_file() -> None:
     script = sc.daemon_setup_script(cfg, "u", "S3cr3t-value", ["$HOME/x"], "/tmp/w", 45000)
     assert "umask 077" in script and 'mkdir -m 700 "$d"' in script
     assert 'chmod 600 "$d/rsyncd.secrets"' in script
-    # The secret is inside a quoted heredoc on stdin, never an argument.
     assert "<<'UNSLOTH_EOF'\nu:S3cr3t-value\nUNSLOTH_EOF" in script
     assert "rsync --daemon" in script and "--no-detach" in script
     assert f"timeout {sc.FAST_DAEMON_MAX_SECONDS}" in script
@@ -1530,7 +1519,6 @@ def test_fast_path_gating(monkeypatch, system, spark, no_fast, env, peer, local,
     out = sc.fast_path_decision(peer, no_fast = no_fast, env = environ)
     assert out["ok"] is expect, out
     assert out["reason"]
-    # The rail lookup forks `ip`; a refused platform or flag must never reach it.
     monkeypatch.setattr(
         sc, "rail_local_address", lambda p, rails = None: pytest.fail("looked up rails")
     )
@@ -1576,7 +1564,6 @@ def test_provision_work_split_is_disjoint_complete_and_capped(tmp_path) -> None:
     flat = [p for b in buckets for p in b]
     assert len(flat) == len(set(flat)) == len(expected)  # disjoint, nothing twice
     assert set(flat) == expected  # every regular file, no symlink
-    # Byte-balanced: the two biggest files never share a worker.
     big = {p for b in buckets for p in b if p in ("f1", "f2")}
     assert big and not any({"f1", "f2"} <= set(b) for b in buckets)
     assert len(sc.provision_work_split(str(root), max_workers = 2)) == 2
@@ -1696,7 +1683,6 @@ def test_fast_path_retries_a_stalled_worker_on_a_fresh_connection(monkeypatch, t
     assert res["fast"]["used"] is True and res["fast"]["errors"] == []
     assert res["fast"]["retries"] == 1 and len(fake.workers()) == 3
     assert len(fake.stops()) == 1
-    # A worker that fails every attempt gives up after FAST_WORKER_ATTEMPTS, not forever.
     fake = _Fake(worker_rc = 30)
     monkeypatch.setattr(sc.subprocess, "run", fake)
     res = sc.provision_peer("192.168.200.13")
@@ -1973,7 +1959,6 @@ def test_fast_path_check_is_advisory_and_never_raises() -> None:
     """It runs on the training path, so a broken probe must cost a silent None, not the run."""
     pp = _load("studio/spark_pipeline.py")
     assert pp.check_fast_path("no/such/model/anywhere", log = lambda *_: None) is None
-    # The CPU path has nothing to lose, so it must not warn even with the packages absent.
     assert pp.check_fast_path("no/such/model", log = lambda *_: None, use_cpu = True) is None
 
 

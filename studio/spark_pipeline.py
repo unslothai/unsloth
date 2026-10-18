@@ -15,7 +15,6 @@ import os.path as osp
 import time
 from typing import List, Optional, Sequence
 
-# Architectures nest the decoder stack differently.
 _LAYER_PATHS = (
     ("model", "layers"),  # Llama, Qwen, Mistral, Gemma...
     ("model", "decoder", "layers"),  # OPT-style
@@ -55,7 +54,6 @@ def _embed_multiplier(owner) -> Optional[float]:
 
 
 def _multiply_embeddings(h, multiplier):
-    # A plain Python float, exactly as the model forward multiplies it.
     return h if multiplier is None else h * multiplier
 
 
@@ -246,9 +244,6 @@ def _ranges(ids: Sequence[int]) -> str:
     return ",".join(str(a) if a == b else f"{a}-{b}" for a, b in out)
 
 
-# `loop` maps stage i to rank i % world, so every hop changes rank.
-
-
 def stage_to_rank_map(
     world: int,
     num_stages: int,
@@ -298,7 +293,6 @@ def torch_pp_plan(
     class_name, fixed_v, style = TORCH_PP_SCHEDULES[schedule]
     v = fixed_v if fixed_v is not None else virtual_stages
     if fixed_v is not None and virtual_stages != fixed_v and virtual_stages != 2:
-        # Defaults to 2, so only complain when the user actually chose an impossible value.
         raise RuntimeError(
             f"--schedule {schedule} requires exactly {fixed_v} stage(s) per rank; "
             f"--virtual-stages {virtual_stages} cannot be satisfied."
@@ -319,7 +313,6 @@ def torch_pp_plan(
         )
     if microbatches < 1:
         raise RuntimeError(f"--microbatches must be >= 1 (got {microbatches})")
-    # Upstream's own constructor checks, here so they fail before a model is loaded.
     if class_name in ("GPipe", "1F1B") and microbatches < num_stages:
         raise RuntimeError(
             f"--schedule {schedule} needs --microbatches >= the number of stages "
@@ -567,7 +560,6 @@ def _materialise(model, model_name, cfg, device, dtype, log):
             f"checkpoint whose weights need their scales to dequantize. Use the bf16 release "
             f"of this model, or load it without --shard-load."
         )
-    # The dtype each tensor has in the stage: integer / bool buffers keep it.
     target = {k: v.dtype for k, v in model.named_parameters()}
     target.update({k: v.dtype for k, v in model.named_buffers()})
     wanted = set(target)
@@ -585,7 +577,6 @@ def _materialise(model, model_name, cfg, device, dtype, log):
 
     shards = sorted(glob.glob(osp.join(snap, "*.safetensors")))
     if not shards:
-        # Said plainly, and before the tensors are read.
         legacy = glob.glob(osp.join(snap, "*.bin"))
         raise RuntimeError(
             f"--shard-load reads safetensors, and {snap} has none"
@@ -631,7 +622,6 @@ def _materialise(model, model_name, cfg, device, dtype, log):
             source = model.get_parameter(src)
             setattr(model.get_submodule(owner_name) if owner_name else model, leaf, source)
 
-    # Buffers were computed on the CPU by _parameters_on_meta; move them beside the weights.
     for mod in model.modules():
         for name, buf in mod._buffers.items():
             if buf is not None and not buf.is_meta:
@@ -675,7 +665,6 @@ class _Stage:
         self.embed_scale = _embed_scale(self.base.config, self.inner.embed_tokens)
         self.embed_multiplier = _embed_multiplier(self.inner)
         self.hidden = self.base.config.hidden_size
-        # Set by the caller.
         self.grad_checkpoint = False
 
     def _run_layer(self, layer, h, pos):
@@ -851,7 +840,6 @@ def run_1f1b(stage, batches, posid, mb_rows, dist, torch):
     dn = rank + 1 if not stage.is_last else None
     seq_len = posid.shape[1]
 
-    # Group BOUNDARIES must correspond across the pair, not merely op order (see _p2p_group).
     def new_hidden():
         return torch.empty(mb_rows, seq_len, stage.hidden, dtype = stage.dtype, device = stage.device)
 
@@ -1016,7 +1004,6 @@ def run_interleaved(stage, batches, posid, mb_rows, dist, torch):
     M = len(batches)
     seq = posid.shape[1]
 
-    # Validate the chunk map: getting this wrong is the silent-wrong-parameters case.
     v, rem = divmod(n_chunks, world)
     if rem or v < 1:
         raise RuntimeError(
@@ -1072,7 +1059,6 @@ def run_interleaved(stage, batches, posid, mb_rows, dist, torch):
             queue_send(h.detach().contiguous(), next_rank(c))
     exchange([])
 
-    # Without this phase the run trains only the final chunk -- see bug (1) above.
     for m, c in bwd_tasks:
         h, inp, loss = fwd[(m, c)]
         if c == n_chunks - 1:
@@ -1181,8 +1167,6 @@ def run_zerobubble(stage, batches, posid, mb_rows, dist, torch):
         r.wait()
     return total
 
-
-# Why `torch.distributed.pipelining` is the default.
 
 _STAGE_MODULE_CLS = None
 
@@ -1397,11 +1381,9 @@ def stage_module_cls():
             if self.rotary_emb is not None or self.pass_position_ids or self.pass_cache_position:
                 ids = torch.arange(h.shape[1], device = h.device)
                 ids = ids.unsqueeze(0).expand(h.shape[0], -1)
-            # Only recomputed per layer when the tables actually differ per layer.
             pos = {} if self.rotary_wants_layer_type else self._rotary(None, h, ids)
             mask = None
             if self.needs_causal_mask:
-                # Additive, upper triangle excluding the diagonal, broadcast over batch and heads.
                 length = h.shape[1]
                 mask = torch.full(
                     (length, length), torch.finfo(h.dtype).min, device = h.device, dtype = h.dtype
@@ -1533,14 +1515,12 @@ def build_torch_schedule(
     if "return_outputs" in step_params:
         step_kw["return_outputs"] = False
     else:
-        # torch <= 2.9 always merges them in step(); the result is discarded, so skip the copy.
         schedule._merge_outputs = lambda output_chunks: None
 
     def scale_grads_after_step():
         """Upstream's `PipelineStage.scale_grads` for the versions that do not have it."""
         if upstream_scales_grads or not PP_SCALE_GRADS or microbatches == 1:
             return
-        # By identity, not per module.
         seen = set()
         for mod in mods:
             for p in mod.parameters():
@@ -1619,8 +1599,6 @@ SCHEDULES = {
     "zerobubble": run_zerobubble,
 }
 
-# The union of both backends' names; an upstream-only layout under `--pp-backend legacy` is refused
-# by name rather than ignored.
 SCHEDULE_CHOICES = sorted(set(SCHEDULES) | set(TORCH_PP_SCHEDULES))
 PP_BACKENDS = ("torch", "legacy")
 
@@ -1672,7 +1650,6 @@ def check_fast_path(
         from transformers import AutoConfig
 
         model_type = getattr(AutoConfig.from_pretrained(model_name), "model_type", None)
-        # The repo's config names the module, so only a plain identifier is looked up.
         if not isinstance(model_type, str) or not model_type.isidentifier():
             return None
         module = importlib.import_module(f"transformers.models.{model_type}.modeling_{model_type}")
@@ -1698,7 +1675,6 @@ def check_fast_path(
 
 
 def _positive_int(value: str) -> int:
-    # Checked by argparse on both ranks, before either joins the process group or loads a model.
     n = int(value)
     if n < 1:
         raise argparse.ArgumentTypeError(f"must be at least 1, got {n}")
@@ -1865,7 +1841,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # padding mask for the representations; only the labels have to exclude pads.
     tok.padding_side = "right"
 
-    # Before the weights load, so the sentence is not buried in the loading output.
     check_fast_path(args.model, log = log, use_cpu = use_cpu)
 
     from transformers import AutoConfig
@@ -1973,7 +1948,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise SystemExit("--batch must be divisible by --microbatches")
     mb_rows = args.batch // args.microbatches
 
-    # A split only pays while the work is COMPUTE-bound.
     ROOFLINE_CROSSOVER_TOKENS = 436
     mb_tokens = mb_rows * args.seq
     if mb_tokens < ROOFLINE_CROSSOVER_TOKENS:
@@ -2068,11 +2042,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             padding = "max_length",
             truncation = True,
             max_length = args.seq,
-            # The template already rendered BOS/EOS into the text.
             add_special_tokens = False,
         )
         ids = enc.input_ids
-        # Padded positions are not text.
         labels = ids.masked_fill(enc.attention_mask == 0, -100)
         reps = (need + len(ids) - 1) // len(ids)
         ids_all = ids.repeat(reps, 1)[:need]
@@ -2137,7 +2109,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         out = osp.join(args.save, f"stage{rank}")
         os.makedirs(out, exist_ok = True)
         model.save_pretrained(out)
-        # How many stages there were meant to be.
         with open(osp.join(out, "unsloth_stage.json"), "w", encoding = "utf-8") as handle:
             json.dump({"rank": rank, "world": world, "n_layers": n_layers_total}, handle)
         log(f"saved stage {rank} to {out}")
