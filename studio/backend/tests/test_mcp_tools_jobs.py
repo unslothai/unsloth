@@ -22,6 +22,7 @@ from .mcp_harness import (
     run_tool,
     sequence,
     session,
+    slow,
 )
 
 VIDEO = ("GET", "/v1/videos/vid-1")
@@ -156,11 +157,15 @@ def test_a_diffusion_training_run_has_no_llm_history_pointer(monkeypatch):
     assert job["training"]["loss_history"] is None
 
 
+@pytest.mark.parametrize("idle", [False, True])
 @pytest.mark.parametrize("kind,route", [("training", TRAIN), ("diffusion_training", DIFFUSION)])
-def test_a_training_job_that_is_not_current_points_at_its_history(monkeypatch, kind, route):
-    current = (
-        TRAINING if kind == "training" else {"active": True, "job_id": "d-2", "status": "running"}
-    )
+def test_a_training_job_that_is_not_current_points_at_its_history(monkeypatch, kind, route, idle):
+    if idle:
+        current = {"phase": "idle", "is_training_running": False} if kind == "training" else {}
+    elif kind == "training":
+        current = TRAINING
+    else:
+        current = {"active": True, "job_id": "d-2", "status": "running"}
     result, _studio = run_tool(
         monkeypatch, {route: current}, "get_job", {"kind": kind, "id": "job-1"}
     )
@@ -244,3 +249,15 @@ def test_a_status_read_that_stalls_never_holds_a_wait_past_wait_s(monkeypatch, f
     )
     assert time.monotonic() - started < 5
     assert result["structuredContent"]["status"] == "in_progress"
+
+
+def test_a_first_read_that_stalls_ends_with_a_retry_hint(monkeypatch):
+    from studio_mcp.tools import jobs
+
+    monkeypatch.setattr(jobs, "FIRST_READ_S", 0.2)
+    studio = fake_studio({VIDEO: slow(_video("in_progress", 10), 10)})
+    started = time.monotonic()
+    result, _studio = run_tool(monkeypatch, studio, "get_job", {"kind": "video", "id": "vid-1"})
+    assert time.monotonic() - started < 5
+    assert result["isError"] is True
+    assert "call get_job again" in result["content"][0]["text"]
