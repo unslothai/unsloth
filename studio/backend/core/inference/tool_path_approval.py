@@ -1215,31 +1215,22 @@ _REDIR_HEREDOC_RE = re.compile(r"^\d*<<<?-?$")
 _SHELL_ASSIGN_TOKEN_RE = re.compile(r"^[A-Za-z_]\w*=")
 
 
-# `cmd /c`, `robocopy a b /E` and find's `\;`: a lone rooted word is a switch, not a path. A dot
-# keeps it a file, since `/recording.wav` at the POSIX root is one.
+# `cmd /c`, `robocopy a b /E`, find's `\;`: a switch, not a path; a dot keeps `/recording.wav` a file.
 _BARE_SWITCH_RE = re.compile(r"^[/\\][^/\\.]*$")
 
 
-# `pandoc --help`: "-o FILE, --output=FILE  Write output to FILE"; the same spelling names the output file
-# for most tools this scan has no table for.
+# `pandoc --help`: "-o FILE, --output=FILE  Write output to FILE", as for most unlisted tools.
 _OUTPUT_FILE_FLAGS = frozenset({"-o", "--output"})
 
-# Flags that name a file or directory the command writes, beyond `-o`/`--output`: ImageMagick's
-# `-write`/`+write` (every ImageMagick tool, `display` included) and pandoc's `--extract-media`/`--log`.
 _COMMAND_OUTPUT_FLAGS = {"pandoc": frozenset({"--extract-media", "--log"})}
 _MAGICK_OUTPUT_FLAGS = frozenset({"-write", "+write"})
 
-# ffmpeg's tee muxer: `[f=mp4]/out/a.mp4|b.mkv` names one output per `|`, options in brackets.
+# ffmpeg's tee muxer: `[f=mp4]/out/a.mp4|b.mkv`.
 _FFMPEG_TEE_OPTIONS_RE = re.compile(r"^\[[^\]]*\]")
 
-# Tools that name their output positionally. `ffmpeg ... {[input_options] -i input} ... output`:
-# an absolute operand is an output unless it is the value of an option that reads a file. ffmpeg's
-# options that write a file (`-passlogfile`, `-progress`, `-stats_enc_pre`, `-hls_segment_filename`,
-# ...) are too many to list, so an option nobody listed fails toward asking.
-# `magick input-file ... output-file` writes the last one; `compare image image [difference]` only
-# when the difference image is given. `display` and `animate` only show their files; `mogrify`
-# overwrites every image it is given, or writes them into its `-path` directory. ImageMagick 6
-# ships the verbs as their own binaries.
+# ffmpeg: any absolute operand not read by an `_FFMPEG_READ_VALUE_FLAGS` option is an output, since
+# its file-writing options (`-progress`, `-stats_enc_pre`, ...) are too many to list.
+# `compare image image [difference]`; `mogrify` overwrites its inputs or writes into `-path`.
 _POSITIONAL_OUTPUT_COMMANDS = {
     "ffmpeg": "not_option_value",
     "magick": "last",
@@ -1257,8 +1248,7 @@ _MAGICK_VERB_OUTPUTS = {
     "mogrify": "all",
 }
 
-# `compare` flags that consume the next word(s). Any other flag is taken as valueless, so an
-# unlisted valued flag counts its value as an image and can only add a prompt.
+# Unlisted flags count as valueless, so a missed valued flag can only add a prompt.
 _MAGICK_COMPARE_VALUE_FLAGS = dict.fromkeys(
     "-alpha -authenticate -background -channel -colorspace -compose -compress -debug -decipher "
     "-define -density -depth -dissimilarity-threshold -encipher -extract -format -fuzz -gravity "
@@ -1267,8 +1257,7 @@ _MAGICK_COMPARE_VALUE_FLAGS = dict.fromkeys(
     1,
 ) | {"-limit": 2, "-set": 2}
 
-# ffmpeg options whose value is a file it reads: inputs, filter scripts, presets, attachments, and
-# `-/opt FILE`, which loads an option's value from FILE.
+# Plus `-/opt FILE`, which loads an option's value from FILE.
 _FFMPEG_READ_VALUE_FLAGS = frozenset(
     "-i -filter_script -filter_complex_script -attach -fpre -vpre -apre -spre -pre "
     "-hls_key_info_file".split()
@@ -1277,7 +1266,7 @@ _FFMPEG_READ_VALUE_FLAGS = frozenset(
 _MAGICK_COMMANDS = frozenset(
     "magick convert composite montage mogrify compare display animate identify".split()
 )
-# `png:/out.png`: ImageMagick's explicit-format prefix, ahead of the file it names.
+# `png:/out.png`
 _MAGICK_CODER_PREFIX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]+:(?=[/\\~]|[A-Za-z]:)")
 
 
@@ -1337,7 +1326,6 @@ def _unlisted_command_operands(command, args) -> "list[tuple[str, bool]]":
         if command == "ffmpeg" and "|" in value:
             values = [_FFMPEG_TEE_OPTIONS_RE.sub("", part) for part in value.split("|")]
         for value in values:
-            # A lone rooted word is a Windows switch (`/E`), unless it is the file the command writes.
             if _looks_absolute(value) and (writing or not _BARE_SWITCH_RE.match(value)):
                 operands.append((value, writing))
             elif not _looks_absolute(value):
@@ -1397,8 +1385,7 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
             if _looks_absolute(token):
                 operands.append((token, writing))
             continue
-        # `magick \( in.png -resize 50% \) out.png`: an escaped paren is ImageMagick's image stack,
-        # not a subshell, and the output after it belongs to the same command.
+        # `magick \( in.png -resize 50% \) out.png`: an image stack, not a subshell.
         if token in ("(", ")") and _segment_runs_magick(segment):
             segment.append(token)
             continue
