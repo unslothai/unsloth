@@ -453,3 +453,53 @@ def test_device_list_sites_follow_the_parsers_order():
         assert site.value == "CUDA0"
         owner = next(o for o in llama_cpp._DEVICE_LIST_OPTIONS if flag in o[1])
         assert owner[2] == twin
+
+
+# --- Overridden main values resolve in the pinned child's numbering (r13) ---
+# arg.cpp parses every -dev / LLAMA_ARG_DEVICE value with parse_device_list against the
+# devices the CHILD sees, exactly like the final one, so an overridden CUDA0 already names
+# the child's first pinned card: it must not drag parent GPU 0 into the mask.
+
+_OVERRIDDEN_MAIN_ON_THE_PIN = [
+    pytest.param(["--device", "CUDA0"], {"LLAMA_ARG_DEVICE": "CUDA0"}, id = "env_device-device"),
+    pytest.param(["--device", "CUDA0", "--device", "CUDA0"], {}, id = "device-device"),
+    pytest.param(["-dev", "CUDA0", "--device=CUDA0"], {}, id = "dev-device_inline"),
+    pytest.param(["-dev", "ROCm0"], {"LLAMA_ARG_DEVICE": "ROCm0"}, id = "env_rocm-dev"),
+]
+
+
+@pytest.mark.parametrize(("argv", "env"), _OVERRIDDEN_MAIN_ON_THE_PIN)
+def test_an_overridden_main_device_on_the_pin_does_not_widen(argv, env):
+    # Auto placement pinned physical GPU 1; physical GPU 0 may be unsupported by the build.
+    for inherited in (None, [0, 1]):
+        cmd, child_env, pin, note = _widen_env([1], argv, env, inherited = inherited)
+        assert (pin, note) == ([1], ""), "CUDA0 is the child's GPU 1 already"
+        assert cmd == argv and child_env == env
+        assert _unresolvable(cmd, child_env, len(pin)) == []
+
+
+@pytest.mark.parametrize(("argv", "env"), _OVERRIDDEN_MAIN_ON_THE_PIN)
+def test_an_overridden_main_device_on_the_pin_survives_explicit_gpu_ids(argv, env):
+    cmd, child_env, pin, note = _widen_env([1], argv, env, inherited = [0, 1], allowed_ids = [1])
+    assert (pin, note) == ([1], "")
+    assert cmd == argv and child_env == env
+
+
+@pytest.mark.parametrize(("argv", "env"), _OVERRIDDEN_MAIN_ON_THE_PIN)
+def test_the_arch_crash_retry_does_not_widen_back_onto_the_crashed_card(argv, env):
+    # First launch on [0]; GPU 0 crashes, respawn on 2: CUDA0 is now the child's GPU 2.
+    cmd, child_env, pin, note = _widen_env([2], argv, env, inherited = [0])
+    assert (pin, note) == ([2], "")
+    assert cmd == argv and child_env == env
+
+
+def test_an_overridden_main_device_past_the_pin_still_widens():
+    # CUDA1 cannot resolve in a one-card child, so it keeps the parent numbering and widens.
+    cmd, env, pin, note = _widen_env(
+        [1], ["--device", "CUDA0"], {"LLAMA_ARG_DEVICE": "CUDA1,CUDA0"}, inherited = [0, 1, 2]
+    )
+    assert pin == [1], "parent CUDA1 is physical 1, already pinned"
+    assert env["LLAMA_ARG_DEVICE"] == "CUDA0,CUDA0"
+    cmd, env, pin, note = _widen_env([0], ["--device", "CUDA2", "--device", "CUDA0"], {}, [0, 1, 2])
+    assert pin == [0, 2] and note
+    assert cmd == ["--device", "CUDA1", "--device", "CUDA0"]
