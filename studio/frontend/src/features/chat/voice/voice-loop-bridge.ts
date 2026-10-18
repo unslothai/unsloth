@@ -220,6 +220,18 @@ export function requestVoiceSubmit(text?: string): void {
   voiceSubmit?.(text);
 }
 
+let voiceEnd: (() => void) | null = null;
+
+/** Called by the mounted voice loop. Pass null on teardown. */
+export function registerVoiceEnd(fn: (() => void) | null): void {
+  voiceEnd = fn;
+}
+
+/** The composer's stop: end the loop (reply, run and mic) and keep its models loaded. */
+export function requestVoiceEnd(): void {
+  voiceEnd?.();
+}
+
 let voiceStopSpeaking: (() => void) | null = null;
 
 /** Called by the mounted voice loop. Pass null on teardown. */

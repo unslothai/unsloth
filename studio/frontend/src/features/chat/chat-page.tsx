@@ -31,6 +31,8 @@ import {
   requestVoiceThreadReset,
 } from "@/features/chat/voice/voice-loop-bridge";
 import { isAudioCppFolderId } from "@/features/audio/audio-cpp-catalog";
+import { unloadSttModel } from "@/features/chat/adapters/studio-model-dictation-adapter";
+import { unloadVadModel } from "@/features/chat/voice/vad-client";
 import { usePlatformStore } from "@/config/env";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
@@ -3100,8 +3102,18 @@ export function ChatPage({
     );
   }, [voiceMode, selectedVoiceModelId, hasChatCheckpoint, ensureVoiceSlotLoaded]);
 
+  // The plus-menu toggle unloads what the loop loaded (voice, STT, speech detector)
+  // and keeps the chat model; the composer's stop keeps all of it for the next start.
+  const prevVoiceModeRef = useRef(voiceMode);
   useEffect(() => {
-    if (voiceMode === "off") unloadOwnVoice();
+    const was = prevVoiceModeRef.current;
+    prevVoiceModeRef.current = voiceMode;
+    if (voiceMode !== "off" || was === "off") return;
+    if (useChatRuntimeStore.getState().voiceKeepModels) return;
+    unloadOwnVoice();
+    void unloadSttModel().catch(() => {});
+    void unloadVadModel();
+    useChatRuntimeStore.getState().setVadSlotLoaded(false);
   }, [voiceMode, unloadOwnVoice]);
 
   // Leaving Chat with voice mode on unmounts this without voiceMode going "off".

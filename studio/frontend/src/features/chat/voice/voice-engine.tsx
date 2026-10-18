@@ -72,6 +72,7 @@ import {
   registerVoiceStopSpeaking,
   registerVoiceSubmit,
   registerVoiceThreadReset,
+  registerVoiceEnd,
   registerVoiceToggle,
   setVoiceMode as setLoopVoiceMode,
 } from "@/features/chat/voice/voice-loop-bridge";
@@ -1018,43 +1019,67 @@ export const VoiceEngine: FC = () => {
   // itself once it has a transcript, on its own end-of-turn AND on a manual stop,
   // so submission is already covered; the session ending is not a turn ending.
 
+  // End the loop. keepModels: the composer's stop leaves the voice, STT and speech
+  // detector loaded for the next start; the plus-menu toggle unloads them.
+  const turnOff = useCallback((keepModels: boolean) => {
+    const store = useChatRuntimeStore.getState();
+    store.setVoiceKeepModels(keepModels);
+    setLoopVoiceMode("off");
+    voiceModeRef.current = "off";
+    setVoiceModeState("off");
+    store.setVoiceMode("off");
+    if (voiceCoalesceTimerRef.current) {
+      clearTimeout(voiceCoalesceTimerRef.current);
+      voiceCoalesceTimerRef.current = null;
+    }
+    clearHeldTurn();
+    clearFiller();
+    setPendingFiller(null);
+    queuedUtteranceRef.current = [];
+    pendingForVoiceRef.current = [];
+    clearVoiceDecisions();
+    stop();
+    const thread = auiRef.current.thread();
+    if (thread.getState().isRunning) {
+      try {
+        thread.cancelRun();
+      } catch {
+        // Run may have ended between the check and here.
+      }
+    }
+    const composer = auiRef.current.composer();
+    if (composer.getState().dictation) composer.stopDictation();
+  }, [stop, clearFiller]);
+
   const toggle = useCallback(() => {
     // OFF → CONFIGURING (show dropdown, don't start mic)
     // CONFIGURING → OFF (user cancelled before picking)
-    // ACTIVE → OFF (turn off the loop)
-    const next: "off" | "configuring" =
-      voiceModeRef.current === "off" ? "configuring" : "off";
-    setLoopVoiceMode(next);
-    voiceModeRef.current = next;
-    setVoiceModeState(next);
-    useChatRuntimeStore.getState().setVoiceMode(next);
-
-    if (next === "configuring") {
-      // The pick is left alone. Clearing it here used to be safe because null
-      // meant "browser voice" -- a working fallback. With the browser voice gone
-      // null means silence, so voice would open mute every time. ChatPage seeds a
-      // default when nothing is remembered; the slot still loads on activate, not
-      // here, so opening the picker costs nothing.
-      primeAudio();
+    // ACTIVE → OFF (turn off the loop, models unloaded)
+    if (voiceModeRef.current !== "off") {
+      turnOff(false);
+      return;
     }
-
-    if (next === "off") {
-      if (voiceCoalesceTimerRef.current) {
-        clearTimeout(voiceCoalesceTimerRef.current);
-        voiceCoalesceTimerRef.current = null;
-      }
-      clearHeldTurn();
-      clearFiller();
-      setPendingFiller(null);
-      queuedUtteranceRef.current = [];
-      pendingForVoiceRef.current = [];
-      clearVoiceDecisions();
-      stop();
-      const composer = auiRef.current.composer();
-      if (composer.getState().dictation) composer.stopDictation();
-    }
+    setLoopVoiceMode("configuring");
+    voiceModeRef.current = "configuring";
+    setVoiceModeState("configuring");
+    useChatRuntimeStore.getState().setVoiceMode("configuring");
+    // The pick is left alone. Clearing it here used to be safe because null
+    // meant "browser voice" -- a working fallback. With the browser voice gone
+    // null means silence, so voice would open mute every time. ChatPage seeds a
+    // default when nothing is remembered; the slot still loads on activate, not
+    // here, so opening the picker costs nothing.
+    primeAudio();
     // "configuring": dropdown appears via store; mic stays off.
-  }, [stop, primeAudio, clearFiller]);
+  }, [turnOff, primeAudio]);
+
+  useEffect(() => {
+    registerVoiceEnd(() => {
+      if (voiceModeRef.current === "off") return;
+      voiceTrace("engine.end", { speaking: isSpeakingRef.current, playing: isPlayingRef.current });
+      turnOff(true);
+    });
+    return () => registerVoiceEnd(null);
+  }, [turnOff]);
 
   // Switching threads carries the loop over instead of ending it: cut the old
   // thread's reply and mic, drop its pending timers, then re-arm on the new one.

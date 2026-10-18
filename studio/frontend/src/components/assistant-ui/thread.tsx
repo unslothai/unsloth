@@ -160,7 +160,7 @@ import {
 } from "@/features/chat/api/chat-adapter";
 import {
   loadVoiceMode,
-  requestVoiceStopSpeaking,
+  requestVoiceEnd,
   requestVoiceToggle,
   useVoiceAvailable,
   useVoiceRequested,
@@ -7679,11 +7679,6 @@ const ComposerRightControls: FC<{
   // these). Kept mounted (display:none) only so composer state stays consistent.
   const voiceEngaged = useChatRuntimeStore((s) => s.voiceMode !== "off");
   const voiceRequested = useVoiceRequested();
-  // The reply keeps speaking after its run has ended, when the run's own stop
-  // button is already gone.
-  const voiceSpeaking = useChatRuntimeStore(
-    (s) => s.voiceOrbState === "speaking" || s.voiceOrbState === "synthesizing",
-  );
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
@@ -7730,20 +7725,23 @@ const ComposerRightControls: FC<{
           )}
         </ComposerPrimitive.If>
       </div>
-      {voiceEngaged && voiceSpeaking ? (
-        <AuiIf condition={({ thread }) => !thread.isRunning}>
-          <Button
-            type="button"
-            variant="default"
-            size="icon"
-            className="aui-composer-cancel ml-1.5 size-9 rounded-full"
-            aria-label="Stop speaking"
-            onClick={requestVoiceStopSpeaking}
-          >
-            <SquareIcon className="size-3 fill-current" />
-          </Button>
-        </AuiIf>
-      ) : null}
+      {/* Voice mode owns the send slot: one square the whole time, in place of the
+          arrow, the run's stop and the stop-speaking button, so the controls never
+          change width under the orb. It ends the loop (reply, run and mic) and
+          keeps the models loaded; the plus-menu Voice item is what unloads them. */}
+      {voiceEngaged ? (
+        <Button
+          type="button"
+          variant="default"
+          size="icon"
+          className="aui-composer-cancel ml-1.5 size-9 rounded-full"
+          aria-label="Stop voice mode"
+          title="Stop voice mode"
+          onClick={requestVoiceEnd}
+        >
+          <SquareIcon className="size-3 fill-current" />
+        </Button>
+      ) : (
       <AuiIf
         condition={({ thread }) =>
           !thread.isRunning && !isQueueRunning && !isResearchActive
@@ -7775,7 +7773,8 @@ const ComposerRightControls: FC<{
           </TooltipIconButton>
         </ComposerPrimitive.Send>
       </AuiIf>
-      {isQueueRunning && !isResearchActive ? (
+      )}
+      {!voiceEngaged && isQueueRunning && !isResearchActive ? (
         <AuiIf condition={({ thread }) => !thread.isRunning}>
           {queueEntry?.paused && queueDisabled ? (
             <TooltipIconButton
@@ -7819,7 +7818,7 @@ const ComposerRightControls: FC<{
           )}
         </AuiIf>
       ) : null}
-      {isResearchActive ? (
+      {voiceEngaged ? null : isResearchActive ? (
         <Button
           type="button"
           variant="default"
