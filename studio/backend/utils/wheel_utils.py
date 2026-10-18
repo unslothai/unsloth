@@ -555,7 +555,9 @@ def install_wheel(
         uv_cmd.append(wheel_url)
         config_dir = tempfile.mkdtemp(prefix = "unsloth-uv-")
         try:
-            # --project, not cwd, so relative paths such as UV_CACHE_DIR still resolve here.
+            # --project, not cwd, so relative paths such as UV_CACHE_DIR still resolve here. uv pip
+            # ignores it for the venv but reads its config from there (uv 0.8.16 to 0.13.1); a
+            # uv that stopped would only download twice again.
             if _uv_static_metadata_config(wheel_url, config_dir):
                 uv_cmd[1:1] = ["--project", config_dir]
             result = run(
