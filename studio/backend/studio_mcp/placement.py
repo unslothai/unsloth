@@ -398,12 +398,18 @@ async def plan_load(
     alongside: Optional[bool],
     knobs: Optional[dict[str, str]] = None,
     hf_token: Optional[str] = None,
+    gpu_layers: Optional[int] = None,
 ) -> PlanLoadResult:
     if hf_token:
         # As in load_model: the listing reads it from the header, the plan routes from the body.
         caller = dataclasses.replace(caller, hf_token = hf_token)
     # The same refusals load_model makes, so a plan is never shown for a load that cannot run.
-    where = {"device": device, "alongside": alongside, "kv_cache_type": None, "gpu_layers": None}
+    where = {
+        "device": device,
+        "alongside": alongside,
+        "kv_cache_type": None,
+        "gpu_layers": gpu_layers,
+    }
     check_placement(kind, model, variant, **where)
     await require_cpu_gguf(caller, kind, model, variant, device)
     await refuse_partial_variant(caller, model, kind, variant)
@@ -423,6 +429,10 @@ async def plan_load(
         row = pick_variant(listing, variant)
         if variant and row is None:
             raise ToolError(f"{repo} has no GGUF variant {variant}")
+    if device is None and gpu_layers is not None and kind in CHAT_KINDS:
+        # llama-server honours gpu_layers, so a GGUF load is placed by it: 0 keeps it off the GPU.
+        if rows or (is_local(repo) and repo.lower().endswith(".gguf")):
+            device = "cpu" if gpu_layers == 0 else "gpu"
     download = est = None
     if row is not None:
         download = (
