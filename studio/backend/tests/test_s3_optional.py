@@ -123,6 +123,8 @@ def test_s3_download_uses_optional_sdk(monkeypatch, tmp_path):
     assert len(files) == 1
     assert Path(files[0]).read_text(encoding = "utf-8") == '{"text": "hello"}\n'
     sdk.client.assert_called_once_with(
-        "s3", region_name = "us-west-2",
-        aws_access_key_id = "test-key", aws_secret_access_key = "test-secret",
+        "s3",
+        region_name = "us-west-2",
+        aws_access_key_id = "test-key",
+        aws_secret_access_key = "test-secret",
     )

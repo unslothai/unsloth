@@ -40,7 +40,7 @@ from utils.paths.path_utils import drop_shadowed_appledouble_names
 logger = logging.getLogger(__name__)
 
 S3_INSTALL_MESSAGE = (
-    'S3 dataset loading requires boto3. Install it in the Studio environment with: '
+    "S3 dataset loading requires boto3. Install it in the Studio environment with: "
     'python -m pip install "unsloth[s3]"'
 )
 
