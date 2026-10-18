@@ -170,6 +170,12 @@ def test_oom_retry_and_monitor_read_the_structured_detail(monkeypatch):
     assert ri._ran_out_of_memory(oom)
     other = af.classify_audio_cpp_failure("model path does not exist: /m", backend = "cuda")
     assert not ri._ran_out_of_memory(HTTPException(status_code = 422, detail = other.detail()))
+    # Out of CPU RAM: unloading kept GPU models cannot make room, so no eviction retry.
+    cpu = af.classify_audio_cpp_failure(
+        "failed to allocate CPU buffer of size 9663676416", backend = "cpu"
+    )
+    assert cpu.extras == {"device": "cpu"}
+    assert not ri._ran_out_of_memory(HTTPException(status_code = 503, detail = cpu.detail()))
     monitor = MagicMock()
     monkeypatch.setattr(ri, "api_monitor", monitor)
     monkeypatch.setattr(ri, "_request_used_api_key", lambda request: False)

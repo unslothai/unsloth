@@ -18612,7 +18612,8 @@ async def load_model_gated(
 
 def _ran_out_of_memory(exc: HTTPException) -> bool:
     if isinstance(exc.detail, dict):  # a classified audio.cpp failure
-        return exc.detail.get("code") == "out_of_memory"
+        # Out of CPU RAM: evicting GPU models frees none of it.
+        return exc.detail.get("code") == "out_of_memory" and exc.detail.get("device") != "cpu"
     return exc.status_code == 500 and "out of memory" in str(exc.detail).lower()
 
 
@@ -23949,6 +23950,7 @@ async def _run_audio_edit(
         audio_options = body.options,
         seed = body.seed,
     )
+    stats: dict = {}
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
         body.text,
         payload,
@@ -23963,6 +23965,7 @@ async def _run_audio_edit(
             "text": body.text,
         },
         requested_model = body.model or _RELOAD_ONLY_MODEL,
+        stats_holder = stats,
     )
 
     def keep() -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
@@ -23992,7 +23995,9 @@ async def _run_audio_edit(
 
     source_record, record = await asyncio.to_thread(keep)
     sources = [_audio_run_clip(source_record, "source")] if source_record is not None else []
-    return _audio_run_response(record, wav_bytes, sample_rate, model_name, sources)
+    return _audio_run_response(
+        record, wav_bytes, sample_rate, model_name, sources, _audio_stats(stats)
+    )
 
 
 _REPAINT_BEYOND_END_S = 30.0
@@ -24409,6 +24414,7 @@ async def _run_audio_convert(
         audio_options = body.options,
         seed = body.seed,
     )
+    stats: dict = {}
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
         source.name,
         payload,
@@ -24422,6 +24428,7 @@ async def _run_audio_convert(
             "prepare_audio_inputs": _prepare,
         },
         requested_model = body.model or _RELOAD_ONLY_MODEL,
+        stats_holder = stats,
     )
     builtin = None
     if target is not None:
@@ -24461,7 +24468,9 @@ async def _run_audio_convert(
         # An upload expires within a day; a history clip does not.
         (seen.get("paths") or {}).get("source") if source.kind == "input" else None,
     )
-    return _audio_run_response(record, wav_bytes, sample_rate, model_name)
+    return _audio_run_response(
+        record, wav_bytes, sample_rate, model_name, stats = _audio_stats(stats)
+    )
 
 
 @router.post("/audio/run", response_model = AudioRunResponse)

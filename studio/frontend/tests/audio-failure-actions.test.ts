@@ -125,3 +125,16 @@ test("generation hooks report failures and the page uses them only for the error
   assert.match(slot, /duration: 12000,\s*action: action &&/);
   assert.match(slot, /queued\.isGguf,\s*queued\.deviceOverride,/);
 });
+
+test("CPU recovery after a generation failure reloads the resident model, not a failed attempt", () => {
+  const slot = readSrc("features/audio/hooks/use-audio-model-slot.ts");
+  const success = slot.indexOf("if (res.is_audio && isTtsAudioType(res.audio_type))");
+  const failure = slot.indexOf("const failure = audioFailureOf(error);");
+  assert.ok(success > 0 && failure > success);
+  const records = [...slot.matchAll(/lastTtsLoad\.current = /g)].map((m) => m.index);
+  // Recorded only inside the success branch, so a failed load B keeps A as the retry target.
+  assert.equal(records.length, 1);
+  assert.ok(records[0] > success && records[0] < failure);
+  // The failed load's own toast still retries that attempt.
+  assert.match(slot, /handlers\.selectCpuDevice\(\);\s*void retryLoad\("cpu"\);/);
+});
