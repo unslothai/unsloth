@@ -321,7 +321,6 @@ def predict(
     slots: list[SlotModel],
     has_vision: bool = False,
     variant: Optional[str] = None,
-    placed: bool = False,
 ) -> tuple[list[SlotModel], bool, bool]:
     """(would_evict, would_evict_exact, would_refuse) for one load. Exact under Off; under When they fit and Always, or when the mode is unknown, an upper bound."""
     slot_kind = "llm" if kind in CHAT_KINDS else kind
@@ -330,17 +329,8 @@ def predict(
         others = [s for s in slots if s.kind == "stt" and _ident(s.model) != _ident(model)]
         return others, not others, False
     same_repo = [s for s in slots if s.kind == slot_kind and _repo(s.model) == _repo(model)]
-    # Only a chat GGUF named by its exact repo:variant, with no placement asked, is surely already
-    # loaded as asked. Any other load of a resident repo (a default variant, another device or build)
-    # may load it again, so it is predicted as a new load and reported as an upper bound.
-    asked = f"{model}:{variant}" if variant else None
-    if (
-        slot_kind == "llm"
-        and asked
-        and not placed
-        and any(_ident(s.model) == _ident(asked) for s in same_repo)
-    ):
-        return [], True, False
+    # A load of a resident repo may load it again (another variant, context, device or build), so it
+    # is predicted as a new load and reported as an upper bound.
     exact = not same_repo
     chat = [s for s in slots if s.kind == "llm"]
     media = [s for s in slots if s.kind in ("image", "video")]
@@ -415,7 +405,6 @@ async def plan_load(
         "kv_cache_type": kv_cache_type,
         "gpu_layers": gpu_layers,
     }
-    placed = any(value is not None for value in where.values())
     check_placement(kind, model, variant, **where)
     await require_cpu_gguf(caller, kind, model, variant, device)
     await refuse_partial_variant(caller, model, kind, variant)
@@ -492,7 +481,6 @@ async def plan_load(
         # A local GGUF file is not listed, so whether a projector keeps it on the GPU is unknown.
         has_vision = listing is None or as_dict(listing).get("has_vision") is True,
         variant = variant,
-        placed = placed,
     )
     # Unloading another kind's model depends on the load reaching the GPU, which only a pinned
     # device says: Unsloth Studio may run an image, video or audio load (or anything, without a GPU)

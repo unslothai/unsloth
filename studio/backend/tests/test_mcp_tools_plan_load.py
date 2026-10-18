@@ -194,7 +194,6 @@ def test_another_variant_of_a_resident_repo_is_a_new_load(monkeypatch):
     world = _world("off", [f"{QWEN}:Q4_K_M"], image = FLUX_GGUF)
     plan = _plan(monkeypatch, world, {"model": QWEN, "variant": "Q8_0"})
     assert _names(plan["would_evict"]) == {("llm", f"{QWEN}:Q4_K_M"), ("image", FLUX_GGUF)}
-    assert _plan(monkeypatch, world, {"model": QWEN, "variant": "Q4_K_M"})["would_evict"] == []
     # Status naming only the bare repo cannot tell which variant serves.
     plan = _plan(monkeypatch, _world("off", [QWEN]), {"model": QWEN, "variant": "Q8_0"})
     assert plan["would_evict_exact"] is False
@@ -374,19 +373,18 @@ def test_a_speech_to_text_load_may_release_the_other_engines_model(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "args,exact",
+    "args",
     [
-        ({"model": QWEN, "variant": "Q4_K_M"}, True),
-        # Another device, a default variant or another spelling of a local path may load it again.
-        ({"model": QWEN, "variant": "Q4_K_M", "device": "gpu"}, False),
-        ({"model": QWEN, "variant": "Q4_K_M", "kv_cache_type": "q8_0"}, False),
-        ({"model": QWEN}, False),
+        # The same variant may still load again (another context, device or cache type).
+        {"model": QWEN, "variant": "Q4_K_M"},
+        {"model": QWEN, "variant": "Q4_K_M", "kv_cache_type": "q8_0"},
+        {"model": QWEN},
     ],
 )
-def test_only_an_exact_resident_chat_variant_is_a_sure_no_op(monkeypatch, args, exact):
+def test_a_load_of_a_resident_chat_repo_is_a_possible_reload(monkeypatch, args):
     plan = _plan(monkeypatch, _world("off", [f"{QWEN}:Q4_K_M"]), args)
-    assert plan["would_evict_exact"] is exact
-    assert (plan["would_evict"] == []) is exact
+    assert _names(plan["would_evict"]) == {("llm", f"{QWEN}:Q4_K_M")}
+    assert plan["would_evict_exact"] is False
 
 
 def test_local_paths_keep_their_case(monkeypatch):
