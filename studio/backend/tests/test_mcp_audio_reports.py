@@ -8,7 +8,6 @@ from .mcp_harness import WAV_INPUT, bodies, run_tool
 from .test_mcp_tools_audio import (
     COMPLETE,
     PAYLOADS as AUDIO_PAYLOADS,
-    SOURCE,
     STT_STATUS,
     STT_STATUS_ROUTE,
     TRANSCRIPT,
@@ -16,7 +15,6 @@ from .test_mcp_tools_audio import (
     UPLOADED,
     _from_source,
     _memo,
-    _ndjson,
 )
 from .test_mcp_tools_status import PAYLOADS as STATUS_PAYLOADS
 

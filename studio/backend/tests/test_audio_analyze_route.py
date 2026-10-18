@@ -21,8 +21,12 @@ _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
-from test_account_media_isolation import ALICE, isolated  # noqa: E402,F401
+import test_account_media_isolation as _media  # noqa: E402
+from test_account_media_isolation import ALICE  # noqa: E402
 from test_audio_run_extras import app_for  # noqa: E402
+
+# Shared fixtures, bound by assignment so pytest finds them in this module.
+isolated = _media.isolated
 
 CLIP = "c" * 32
 FIELDS = {

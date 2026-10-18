@@ -28,10 +28,16 @@ if _TESTS_DIR not in sys.path:
 
 import test_audio_cpp_music_requests as music  # noqa: E402
 import test_audio_cpp_separation as sep  # noqa: E402
-from test_account_media_isolation import ALICE, isolated  # noqa: E402,F401
+import test_account_media_isolation as _media  # noqa: E402
+from test_account_media_isolation import ALICE  # noqa: E402
 from test_audio_run_cancel import KOKORO, SPEAK_INFO  # noqa: E402
-from test_audio_run_extras import Backend, app_for, use_backend  # noqa: E402,F401
+import test_audio_run_extras as _extras  # noqa: E402
+from test_audio_run_extras import Backend, app_for  # noqa: E402
 from test_audio_runtime_errors import _Nullcontext  # noqa: E402
+
+# Shared fixtures, bound by assignment so pytest finds them in this module.
+isolated = _media.isolated
+use_backend = _extras.use_backend
 
 _DEAD = (
     "The audio runtime stopped while serving the request. Last output: abort at "

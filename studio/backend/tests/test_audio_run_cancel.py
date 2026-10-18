@@ -18,8 +18,10 @@ _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
-from test_account_media_isolation import ALICE, isolated  # noqa: E402,F401
-from test_audio_run_extras import Backend, app_for, use_backend  # noqa: E402,F401
+import test_account_media_isolation as _media  # noqa: E402
+from test_account_media_isolation import ALICE  # noqa: E402
+import test_audio_run_extras as _extras  # noqa: E402
+from test_audio_run_extras import Backend, app_for  # noqa: E402
 
 KOKORO = "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"
 SPEAK_INFO = {
@@ -30,6 +32,10 @@ SPEAK_INFO = {
     "audio_required_inputs": [],
 }
 RUN_A, RUN_B, EARLY = "run-aaaaaaaa", "run-bbbbbbbb", "run-cccccccc"
+
+# Shared fixtures, bound by assignment so pytest finds them in this module.
+isolated = _media.isolated
+use_backend = _extras.use_backend
 
 
 def _blocking_backend():

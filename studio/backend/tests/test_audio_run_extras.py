@@ -24,7 +24,8 @@ _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
-from test_account_media_isolation import ALICE, isolated  # noqa: E402,F401
+import test_account_media_isolation as _media  # noqa: E402
+from test_account_media_isolation import ALICE  # noqa: E402
 
 MUSIC = "audio-cpp/audio.cpp-gguf/Stable-Audio-3-Small-Music-GGUF"
 TTS = "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF"
@@ -44,6 +45,9 @@ TTS_INFO = {
     "audio_required_inputs": [],
     "audio_clone": {"reference_text": "required", "emotion_audio": False},
 }
+
+# Shared fixtures, bound by assignment so pytest finds them in this module.
+isolated = _media.isolated
 
 
 def wav_bytes(rate = 24000, frames = 2400) -> bytes:
