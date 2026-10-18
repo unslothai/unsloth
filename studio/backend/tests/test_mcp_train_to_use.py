@@ -252,3 +252,39 @@ def test_an_evicted_gguf_export_is_named_by_its_folder(monkeypatch):
     monkeypatch.setattr(trained_models, "route_json", fake_route)
     trained = asyncio.run(resolved())
     assert trained.known[cache_reference(f"{EXPORTS}/qwen-GGUF")] == "qwen-GGUF"
+
+
+def test_a_checkpoint_load_names_an_evicted_export_and_back(monkeypatch):
+    async def fake_route(method, path, **kwargs):
+        return RUN_CHECKPOINTS if path == "/api/models/checkpoints" else LORAS
+
+    monkeypatch.setattr(checkpoints, "route_json", fake_route)
+    monkeypatch.setattr(trained_models, "route_json", fake_route)
+    caller = make_caller()
+    loaded = asyncio.run(trained_models.resolve_checkpoint(caller, "qwen-lora"))
+    assert loaded.known[cache_reference(f"{EXPORTS}/qwen-lora/adapter")] == "qwen-lora/adapter"
+    loaded = asyncio.run(trained_models.resolve_export(caller, "qwen-lora/adapter", None))
+    assert loaded.known[cache_reference(f"{OUT}/qwen-lora")] == "qwen-lora"
+
+
+def test_a_stalled_listing_does_not_hold_the_call(monkeypatch):
+    async def stalled(method, path, **kwargs):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(checkpoints, "route_json", stalled)
+    monkeypatch.setattr(trained_models, "RESOLVE_TIMEOUT_S", 0.05)
+
+    async def go():
+        import time
+        return await trained_models.resolve_by(
+            time.monotonic(),
+            make_caller(),
+            model = None,
+            checkpoint = "qwen-lora",
+            export = None,
+            kind = "llm",
+            variant = None,
+        )
+
+    with pytest.raises(Exception, match = "did not list its training runs"):
+        asyncio.run(go())

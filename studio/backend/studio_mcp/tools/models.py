@@ -235,8 +235,14 @@ async def load_model(
     Loading may unload other models to make room, for example a chat model to fit an image model; ``evicted`` lists them and ``evicted_slots`` gives each one's kind."""
     caller = current_caller()
     deadline = loading.deadline_after(wait_s)
-    trained = await trained_models.resolve(
-        caller, model = model, checkpoint = checkpoint, export = export, kind = kind, variant = variant
+    trained = await trained_models.resolve_by(
+        deadline,
+        caller,
+        model = model,
+        checkpoint = checkpoint,
+        export = export,
+        kind = kind,
+        variant = variant,
     )
     knobs = placement.media_knobs(
         kind,

@@ -39,6 +39,7 @@ STATES = {"complete": "completed", "error": "failed"}
 WAITING = "Waiting for Unsloth Studio's download"
 # How long a load job waits on a download before it fails and names the download to follow.
 MAX_LOAD_WAIT_S = 3600.0
+READ_TIMEOUT_S = 30.0
 
 Part = tuple[str, Optional[str]]
 
@@ -382,7 +383,8 @@ async def wait_for_managed(
         active = []
         for part in keys:
             try:
-                answer = await _read(caller, part)
+                # A stalled read must not hold the load past its cap; an unreadable part is no wait.
+                answer = await asyncio.wait_for(_read(caller, part), READ_TIMEOUT_S)
             except Exception:
                 answer = None
             if answer is not None and opt_text(answer.get("state")) in ACTIVE:

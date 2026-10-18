@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -16,6 +18,8 @@ from studio_mcp.outputs import LoadResult
 from studio_mcp.tools import as_dict, leaf_name, opt_text, route_json
 
 NOT_LLM_KINDS = ("image", "video", "stt")
+# The listing reads before a load job exists; past this (or wait_s, if longer) the call gives up.
+RESOLVE_TIMEOUT_S = 30.0
 
 
 @dataclass(frozen = True)
@@ -71,6 +75,36 @@ def _parent(path: str) -> str:
     return trimmed[: len(trimmed) - len(leaf_name(trimmed))].rstrip("\\/") or trimmed
 
 
+async def _export_rows(caller: Caller) -> list[tuple[str, str, Optional[str]]]:
+    listing = await route_json("GET", "/api/models/loras", caller = caller, hub_header = True)
+    rows = []
+    for row in as_dict(listing).get("loras") or []:
+        row = as_dict(row)
+        label, path = opt_text(row.get("display_name")), opt_text(row.get("adapter_path"))
+        if row.get("source") == "exported" and label and path:
+            # The scan names a two-level export "run / name"; export_model reports "run/name".
+            rows.append((label.replace(" / ", "/"), path, row.get("export_type")))
+    return rows
+
+
+def _export_known(rows: list[tuple[str, str, Optional[str]]]) -> dict[str, str]:
+    # A GGUF export loads as its folder, so a later eviction names the folder.
+    return _known(
+        [(r[1], r[0]) for r in rows] + [(_parent(r[1]), r[0]) for r in rows if r[2] == "gguf"]
+    )
+
+
+async def _other_known(caller: Caller, of: str) -> dict[str, str]:
+    """Names for the other kind of trained model, so a load that evicts one names it too."""
+    try:
+        if of == "checkpoint":
+            return _export_known(await _export_rows(caller))
+        found, _folders = await checkpoints.list_checkpoints(caller)
+        return _known([(c.path, c.name) for c in found])
+    except Exception:
+        return {}
+
+
 async def resolve_checkpoint(caller: Caller, name: str) -> TrainedModel:
     found, _folders = await checkpoints.list_checkpoints(caller)
     match = next((c for c in found if c.name == name), None)
@@ -82,19 +116,15 @@ async def resolve_checkpoint(caller: Caller, name: str) -> TrainedModel:
         name = name,
         ref = cache_reference(match.path),
         is_lora = match.peft_type is not None,
-        known = _known([(c.path, c.name) for c in found]),
+        known = {
+            **await _other_known(caller, "checkpoint"),
+            **_known([(c.path, c.name) for c in found]),
+        },
     )
 
 
 async def resolve_export(caller: Caller, name: str, variant: Optional[str]) -> TrainedModel:
-    listing = await route_json("GET", "/api/models/loras", caller = caller, hub_header = True)
-    rows = []
-    for row in as_dict(listing).get("loras") or []:
-        row = as_dict(row)
-        label, path = opt_text(row.get("display_name")), opt_text(row.get("adapter_path"))
-        if row.get("source") == "exported" and label and path:
-            # The scan names a two-level export "run / name"; export_model reports "run/name".
-            rows.append((label.replace(" / ", "/"), path, row.get("export_type")))
+    rows = await _export_rows(caller)
     match = [r for r in rows if r[0] == name] or [
         r for r in rows if r[0].casefold() == name.casefold()
     ]
@@ -122,10 +152,7 @@ async def resolve_export(caller: Caller, name: str, variant: Optional[str]) -> T
         is_lora = export_type == "lora",
         gguf_variant = gguf_variant,
         unplaced_gguf = export_type == "gguf" and not gguf_variant,
-        # A GGUF export loads as its folder, so a later eviction names the folder.
-        known = _known(
-            [(r[1], r[0]) for r in rows] + [(_parent(r[1]), r[0]) for r in rows if r[2] == "gguf"]
-        ),
+        known = {**await _other_known(caller, "export"), **_export_known(rows)},
     )
 
 
@@ -150,3 +177,16 @@ async def resolve(
     if checkpoint is not None:
         return await resolve_checkpoint(caller, checkpoint)
     return await resolve_export(caller, export, variant)
+
+
+async def resolve_by(
+    deadline: float, caller: Caller, **kwargs: Optional[str]
+) -> Optional[TrainedModel]:
+    """resolve, bounded: the listing reads run before the load job, so a stalled one must not hold the call."""
+    timeout = max(deadline - time.monotonic(), RESOLVE_TIMEOUT_S)
+    try:
+        return await asyncio.wait_for(resolve(caller, **kwargs), timeout)
+    except asyncio.TimeoutError:
+        raise tool_error(
+            "Unsloth Studio did not list its training runs and exports in time; call load_model again."
+        ) from None

@@ -439,3 +439,12 @@ def test_a_second_media_prefetch_keeps_the_first_ones_parts():
 def test_two_ref_handles_are_two_models():
     assert not loading._same_id("ref:aaa", "ref:bbb")
     assert loading._same_id("ref:aaa", "ref:aaa")
+
+
+def test_a_stalled_status_read_is_no_wait(monkeypatch):
+    from .mcp_harness import slow
+
+    monkeypatch.setattr(model_downloads, "READ_TIMEOUT_S", 0.05)
+    studio = fake_studio({("GET", STATUS): slow({"state": "running"}, 2.0)})
+    ctx = wait(studio, model = "org/repo", variant = "Q4_K_M", budget_s = 5.0)
+    assert ctx.messages == []

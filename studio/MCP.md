@@ -310,7 +310,5 @@ Unsloth Studio's exports folder, and `export_model` takes only a relative
   unload route does not resolve it. Unload it in the Unsloth Studio UI.
 - Unsloth Studio runs one Data Recipe job at a time, and a recipe job id is not tied to
   an account. Anyone with a key who knows the id can read that job's status.
-- Image LoRA training takes a dataset that is already in Unsloth Studio. There is no
-  upload tool.
 - Models can be unloaded between calls when an idle timeout is set. Tools then
   say to load the model again.
