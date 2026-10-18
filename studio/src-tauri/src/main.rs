@@ -43,6 +43,7 @@ mod shell_path;
 mod staged_update;
 mod studio_home;
 mod update;
+mod voice_typing;
 mod webview_permissions;
 mod windows_job;
 mod x11_threads;
@@ -2384,6 +2385,11 @@ fn main() {
             get_launch_at_login,
             set_launch_at_login,
             set_tray_server_status,
+            voice_typing::voice_typing_info,
+            voice_typing::voice_typing_configure,
+            voice_typing::voice_typing_hud_state,
+            voice_typing::voice_typing_hud_level,
+            voice_typing::paste::voice_typing_insert,
             ];
             handler(invoke)
         })
@@ -2430,6 +2436,9 @@ fn main() {
                 setup_terminate_interception(app);
             }
             setup_tray(app)?;
+            // Resident global-shortcut poll for system-wide voice typing; the
+            // overlay window is created on first use.
+            voice_typing::init(app.handle());
             #[cfg(unix)]
             setup_unix_termination_signals(app)?;
             Ok(())
