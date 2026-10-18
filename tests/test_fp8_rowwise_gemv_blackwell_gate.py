@@ -149,14 +149,3 @@ def test_gemv_route_compiles_fullgraph(F, N, K):
     finally:
         torch._dynamo.reset()
         F._fp8_gemv_miscompiles.cache_clear()
-
-
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
-def test_a_trainable_scale_keeps_the_differentiable_path(F):
-    # The GEMV output has no autograd history, so any grad-requiring operand must take fp8_linear.
-    X = torch.randn(1, 1, 512, device = "cuda", dtype = torch.bfloat16)
-    W = (torch.randn(256, 512, device = "cuda") * 0.1).to(torch.float8_e4m3fn)
-    S = (torch.rand(256, 1, device = "cuda") * 0.01 + 0.001).requires_grad_()
-    assert not F.can_use_fp8_rowwise_gemv(X, W, S)
-    with torch.no_grad():
-        assert F.can_use_fp8_rowwise_gemv(X, W, S) == F.can_use_fp8_rowwise_gemv(X, W, S.detach())

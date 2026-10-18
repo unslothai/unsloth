@@ -206,3 +206,20 @@ def test_get_or_autotune_heuristic_steps_down(ac, monkeypatch):
         num_experts = 128, hidden_dim = 2048, intermediate_dim = 768, top_k = 8, dtype = torch.bfloat16
     )
     assert dx.num_stages == 3
+
+
+def test_smem_limit_follows_the_current_device(ac, monkeypatch):
+    # Mixed GPUs in one process: the limit must come from the current device, not the first one seen.
+    import types
+
+    limits = {0: 166912, 1: 101376}
+    current = {"index": 0}
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: current["index"])
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_properties",
+        lambda index: types.SimpleNamespace(shared_memory_per_block_optin = limits[index]),
+    )
+    assert ac._device_smem_per_block() == 166912
+    current["index"] = 1
+    assert ac._device_smem_per_block() == 101376

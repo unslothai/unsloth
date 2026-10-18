@@ -391,13 +391,18 @@ _HEURISTIC_SMEM_STEP_DOWN = {
 
 
 def _device_smem_per_block() -> Optional[int]:
+    # Per current device: tuning.get_device_properties() caches the first device's limit process-wide.
     try:
-        from .grouped_gemm.kernels.tuning import get_device_properties
-        return int(get_device_properties().SIZE_SMEM)  # triton max_shared_mem (opt-in)
+        index = torch.cuda.current_device()
+    except Exception:
+        return None
+    try:
+        return int(torch.cuda.get_device_properties(index).shared_memory_per_block_optin)
     except Exception:
         try:
-            props = torch.cuda.get_device_properties(torch.cuda.current_device())
-            return int(props.shared_memory_per_block_optin)
+            return int(
+                triton.runtime.driver.active.utils.get_device_properties(index)["max_shared_mem"]
+            )
         except Exception:
             return None
 
