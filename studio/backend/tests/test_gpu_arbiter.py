@@ -9,6 +9,8 @@ these verify only the ownership/eviction sequencing — no torch, GPU, or subpro
 
 from __future__ import annotations
 
+import types
+
 import pytest
 
 import core.inference.gpu_arbiter as arb
@@ -607,6 +609,34 @@ def test_always_refuses_replacing_a_loaded_media_model_with_another_repo(
             arb.refuse_replacing_media(arb.DIFFUSION, policy, requested)
         assert (excinfo.value.kind, excinfo.value.model) == ("image", "org/Flux")
     else:
-        arb.refuse_replacing_media(arb.DIFFUSION, policy, requested)
+        # Off and fit replace it, and the load reports it.
+        replaced = arb.refuse_replacing_media(arb.DIFFUSION, policy, requested)
+        assert replaced == ([{"kind": "image", "model": "org/Flux"}] if policy == "fit" else [])
     monkeypatch.setattr(arb, "_media_status", lambda owner: None)
-    arb.refuse_replacing_media(arb.VIDEO, "always", ("org/Other",))
+    monkeypatch.setattr(arb, "_media_loading", lambda owner: False)
+    assert arb.refuse_replacing_media(arb.VIDEO, "always", ("org/Other",)) == []
+
+
+def test_a_media_load_registered_meanwhile_is_not_replaced_under_always(arb_log, monkeypatch):
+    # Two loads checked before either registered: the second re-checks under the arbiter lock.
+    monkeypatch.setattr(arb, "_media_status", lambda owner: None)
+    monkeypatch.setattr(arb, "_media_loading", lambda owner: True)
+    monkeypatch.setattr(
+        arb,
+        "_media_backend",
+        lambda owner: types.SimpleNamespace(loading_repo_ids = lambda: ("org/First",)),
+    )
+    begun = []
+
+    def begin():
+        begun.append(True)
+        return "started"
+
+    second = arb.guarded_media_begin(arb.DIFFUSION, "always", ("org/Second",), begin)
+    with pytest.raises(arb.MultiModelAlwaysRefusal):
+        arb.acquire_for(arb.DIFFUSION, second, policy = "always")
+    with pytest.raises(arb.MultiModelAlwaysRefusal):
+        arb.begin_media_load(arb.DIFFUSION, "always", ("org/Second",), begin)
+    assert begun == []
+    assert arb.begin_media_load(arb.DIFFUSION, "always", ("org/First",), begin) == "started"
+    assert arb.guarded_media_begin(arb.DIFFUSION, "fit", ("org/Second",), begin) is begin

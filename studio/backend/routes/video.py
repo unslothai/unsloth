@@ -342,6 +342,8 @@ async def load_video_model_gated(
         eviction_sink,
         note_evictions,
         policy_kwargs,
+        begin_media_load,
+        guarded_media_begin,
         refusal_for,
         refuse_replacing_media,
         release,
@@ -471,14 +473,17 @@ async def load_video_model_gated(
         from utils.multi_model_settings import get_multi_model_mode
 
         multi_model_mode = await asyncio.to_thread(get_multi_model_mode)
+        media_names = (request.model_path, request.display_repo_id)
         # On any device: the load would replace the loaded video model, which no acquire evicts.
-        await asyncio.to_thread(
-            refuse_replacing_media,
-            VIDEO,
-            multi_model_mode,
-            (request.model_path, request.display_repo_id),
+        replaced_media = await asyncio.to_thread(
+            refuse_replacing_media, VIDEO, multi_model_mode, media_names
         )
         evicted: list = []
+        note_evictions(replaced_media, evicted)
+
+        def begin():
+            return begin_media_load(VIDEO, multi_model_mode, media_names, _begin_load)
+
         if is_h3_native(fam, kind):
             from core.inference.diffusion_engine_router import get_active_diffusion_engine
             images = get_active_diffusion_engine()
@@ -497,7 +502,7 @@ async def load_video_model_gated(
             and await asyncio.to_thread(forces_cpu_backend, device)
         )
         if forced_cpu:
-            status_dict = await asyncio.to_thread(_begin_load)
+            status_dict = await asyncio.to_thread(begin)
         elif device != "cpu":
             # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts VIDEO
             # before the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps
@@ -508,7 +513,9 @@ async def load_video_model_gated(
                 try:
                     with _diffusion_training_admission():
                         return acquire_for_request(
-                            VIDEO, _begin_load, **policy_kwargs(multi_model_mode)
+                            VIDEO,
+                            guarded_media_begin(VIDEO, multi_model_mode, media_names, _begin_load),
+                            **policy_kwargs(multi_model_mode),
                         )
                 finally:
                     eviction_sink.reset(token)
@@ -516,7 +523,7 @@ async def load_video_model_gated(
             status_dict = await asyncio.to_thread(_acquire_and_begin)
         else:
             await asyncio.to_thread(release, VIDEO)
-            status_dict = await asyncio.to_thread(_begin_load)
+            status_dict = await asyncio.to_thread(begin)
         # Keyed to the target: this load can still fail with the previous model resident
         note_load_origin(
             VIDEO,
