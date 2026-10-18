@@ -211,6 +211,9 @@ class DiffusionFamily:
     sd_cpp_arch_marker: Optional[str] = None
     # Literal an sd.cpp build carries once it can EDIT this family; the arch marker proves text-to-image only.
     sd_cpp_edit_marker: Optional[str] = None
+    # sd.cpp feeds this family's reference images through the VAE (no vision projector), so any build the arch marker
+    # admits runs the reference workflow natively.
+    sd_cpp_reference: bool = False
     # True when Unsloth can TRAIN a LoRA on this family; the training-start path refuses a non-trainable family up
     # front.
     trainable: bool = False
@@ -496,6 +499,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_text_encoders = _FLUX3_SD_CPP_TEXT_ENCODERS,
         sd_cpp_sampling_method = "euler",
         sd_cpp_arch_marker = _FLUX3_SD_CPP_ARCH_MARKER,
+        sd_cpp_reference = True,
     ),
     DiffusionFamily(
         name = "flux.3-klein",
@@ -540,6 +544,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # sd.cpp's documented invocation (docs/flux3.md). No flow shift: its scheduler already applies FLUX.3's 6.93.
         sd_cpp_sampling_method = "euler",
         sd_cpp_arch_marker = _FLUX3_SD_CPP_ARCH_MARKER,
+        sd_cpp_reference = True,
     ),
     # FLUX.2-dev: full (non-distilled) FLUX.2 on the Mistral Flux2Pipeline, so its own entry. Gated base,
     # text-to-image only; sd-cli takes the Mistral encoder from unsloth/FLUX.2-dev-ComfyUI and the VAE from

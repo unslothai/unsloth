@@ -132,3 +132,78 @@ def test_no_gpu_host_routes_flux3_gguf_to_sd_cpp_only_on_a_capable_build(_router
     monkeypatch.setattr(r, "ensure_sd_cpp_binary", lambda **_: _binary(tmp_path, "sd-cli-new", marker = True))
     r.select_and_activate_engine(fam)
     assert r.active_engine_name() == ENGINE_SD_CPP
+
+
+def _flux3_native_state(name):
+    import core.inference.sd_cpp_backend as bk
+    from core.inference.sd_cpp_engine import SdCppModelFiles
+
+    fam = detect_family("", override = name)
+    files = SdCppModelFiles(diffusion_model = "/m/flux3.gguf", vae = "/m/vae.safetensors", llm = "/m/te.gguf")
+    return bk._SdState(
+        repo_id = "unsloth/flux-3-image-klein-GGUF",
+        base_repo = fam.base_repo,
+        family = fam,
+        device = "cpu",
+        files = files,
+        sampling_method = fam.sd_cpp_sampling_method,
+        mode = "oneshot",
+        server = None,
+    )
+
+
+def _ref_png(color):
+    import base64
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64), color).save(buf, format = "PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+@pytest.mark.parametrize("name", ["flux.3-klein", "flux.3-klein-base"])
+def test_flux3_references_run_natively_without_a_projector(monkeypatch, name):
+    # sd.cpp feeds FLUX.3 references through the VAE: no vision projector, no edit marker.
+    from PIL import Image
+
+    engine = _FakeEngine()
+    b = SdCppDiffusionBackend(engine = engine)
+    b._state = _flux3_native_state(name)
+    status = b.status()
+    assert "reference" in status["workflows"] and "edit" not in status["workflows"]
+    seen = {}
+
+    def _capture(files, params, output_path, **kw):
+        seen["refs"] = len(params.ref_images)
+        Image.new("RGB", (1, 1)).save(output_path)
+
+    monkeypatch.setattr(engine, "generate", _capture)
+    out = b.generate(
+        prompt = "p",
+        steps = 2,
+        workflow = "reference",
+        width = 512,
+        height = 512,
+        init_image = _ref_png((10, 0, 0)),
+        reference_images = [_ref_png((20, 0, 0))],
+    )
+    assert seen["refs"] == 2 and out["workflow"] == "reference"
+    # An instruction edit is still not something these families do natively.
+    with pytest.raises(ValueError, match = "Image editing is not available"):
+        b.generate(prompt = "p", workflow = "edit", init_image = _ref_png((1, 1, 1)), width = 512, height = 512)
+
+
+def test_the_native_load_refuses_the_other_flux3_variant():
+    # The diffusers loader's variant refusal runs on the native path too, right after the assets resolve and before
+    # the sigmas and the native state are built.
+    import inspect
+
+    import core.inference.sd_cpp_backend as bk
+
+    src = inspect.getsource(bk.SdCppDiffusionBackend._run_load)
+    fetch = src.index("paths = self._fetch_assets(")
+    check = src.index('assert_flux3_checkpoint_matches_family(fam, paths["diffusion_model"])')
+    sigmas = src.index("sample_sigmas, grid_base = _base_sample_sigmas(")
+    assert fetch < check < sigmas
