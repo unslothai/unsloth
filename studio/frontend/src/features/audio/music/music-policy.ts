@@ -363,7 +363,7 @@ function editSourceRef(source: AudioSourceSelection | null) {
 
 /** The id one run's takes share, as the server expects it: 32 lowercase hex digits. */
 export function newMusicGroupId(): string {
-  // Not randomUUID: Unsloth Studio on a LAN address is not a secure context.
+  // Not randomUUID: Unsloth on a LAN address is not a secure context.
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
     byte.toString(16).padStart(2, "0"),
   ).join("");
