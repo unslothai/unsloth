@@ -261,6 +261,12 @@ def test_a_download_job_outside_the_umbrella_is_gated_too(monkeypatch, tmp_path)
         "Q4_K_M",
     )
     assert asyncio.run(downloads._audio_cpp_target(music.id, "Q8_0")) == (music.id, "Q8_0")
+    # A caller that must stay anonymous never has a repo resolved with the ambient token.
+    looked_up.clear()
+    assert asyncio.run(
+        downloads._audio_cpp_target(music.id, "Q8_0", persist = True, stale_gate = False)
+    ) == (music.id, "Q8_0")
+    assert looked_up == []
 
 
 def test_a_scoped_download_job_is_gated_on_the_files_it_fetches(monkeypatch, tmp_path):

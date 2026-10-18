@@ -220,6 +220,7 @@ async def _audio_cpp_target(
     variant: Optional[str],
     hf_token: Optional[str] = None,
     persist: bool = False,
+    stale_gate: bool = True,
 ) -> tuple[str, Optional[str]]:
     """``(repo, variant)`` a download of an audio.cpp umbrella folder row really works on.
 
@@ -231,7 +232,7 @@ async def _audio_cpp_target(
     from core.inference.audio_cpp_server import AudioCppRuntimeTooOldError
 
     if not text.lower().startswith("audio-cpp/audio.cpp-gguf/"):
-        if persist:
+        if persist and stale_gate:
             from core.inference.audio_cpp_models import refuse_stale_download
             try:
                 await asyncio.to_thread(refuse_stale_download, text, variant, hf_token)
@@ -284,9 +285,12 @@ async def download_model_response(
         raise HTTPException(status_code = 403, detail = "Account is retired")
     hf_token = account_access.account_hf_token(hf_token)
     allow_ambient_token = allow_ambient_token and not account_access.managed_account()
+    # The old-runtime preflight resolves with ambient credentials (resolve() has no anonymous mode),
+    # so a caller that must stay anonymous skips it for repos other than the public umbrella.
+    stale_gate = bool(hf_token) or allow_ambient_token
     if body.gguf_variant or not body.scope_id:
         target_repo, target_variant = await _audio_cpp_target(
-            body.repo_id, body.gguf_variant, hf_token, persist = True
+            body.repo_id, body.gguf_variant, hf_token, persist = True, stale_gate = stale_gate
         )
         if target_repo != body.repo_id.strip():
             body = body.model_copy(update = {"repo_id": target_repo, "gguf_variant": target_variant})
@@ -324,7 +328,8 @@ async def download_model_response(
         if not _is_valid_gguf_variant(scope_variant):
             raise HTTPException(status_code = 400, detail = f"Invalid scope_id: {body.scope_id!r}")
         variant = scope_variant
-        await _refuse_stale_scoped_download(repo_id, scoped_files, hf_token)
+        if stale_gate:
+            await _refuse_stale_scoped_download(repo_id, scoped_files, hf_token)
     key = _download_job_key(repo_id, variant)
     _reject_if_load_owned(key)
     # Size and Auto resolution may perform network probes, so keep both off the event loop.
