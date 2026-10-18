@@ -4087,6 +4087,7 @@ from core.inference.providers import (
 )
 from core.inference.external_provider import (
     ExternalProviderClient,
+    llama_cpp_template_controls,
     _is_kimi_k3,
     _is_openai_family_cloud,
     compacts_server_side,
@@ -7070,6 +7071,7 @@ def _prepend_current_date_to_messages(
     provider_type: str | None = None,
     served_template: str | None = None,
     tools: bool = False,
+    controls: tuple = (),
 ) -> list[dict]:
     """Apply the date to an already-built message list for a provider Studio proxies to.
 
@@ -7125,7 +7127,7 @@ def _prepend_current_date_to_messages(
         from datetime import date
 
         today = date.fromisoformat(date_line[len(CURRENT_DATE_PROMPT_PREFIX) : -1])
-        takes_turn, default = template_system_turn(served_template, today, tools)
+        takes_turn, default = template_system_turn(served_template, today, tools, controls)
         if not takes_turn or default is None:
             return messages
         if default:
@@ -29746,6 +29748,9 @@ async def _proxy_to_external_provider(
         provider_type = None if _external_nudge else provider_type,
         served_template = _served_template,
         tools = bool(external_studio_tools or payload.tools),
+        controls = llama_cpp_template_controls(
+            payload.enable_thinking, payload.reasoning_effort, payload.preserve_thinking
+        ),
     )
     if _external_nudge:
         chat_messages = _append_to_system_message(chat_messages, _external_nudge)

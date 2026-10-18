@@ -853,6 +853,25 @@ _LOCAL_SERVER_EFFORT_ALIASES = {"minimal": "low", "xhigh": "high", "max": "high"
 _VLLM_FULL_EFFORT_RELEASE = "0.21.0"
 
 
+def llama_cpp_template_controls(
+    enable_thinking: Optional[bool],
+    reasoning_effort: Optional[str],
+    preserve_thinking: Optional[bool],
+) -> tuple:
+    """The template variables stream_chat_completion sends llama-server for these controls."""
+    controls: dict[str, Any] = {}
+    if preserve_thinking is not None:
+        controls["preserve_thinking"] = preserve_thinking
+    effort = (reasoning_effort or "").strip().lower()
+    effort = _LOCAL_SERVER_EFFORT_ALIASES.get(effort, effort)
+    thinking = False if effort == "none" else enable_thinking
+    if thinking is not None:
+        controls["enable_thinking"] = bool(thinking)
+    if effort in ("minimal", "low", "medium", "high", "xhigh", "max"):
+        controls["reasoning_effort"] = effort
+    return tuple(sorted(controls.items()))
+
+
 def _vllm_takes_full_effort(version: Any) -> bool:
     """A pre-release or unparsable version keeps the low | medium | high subset."""
     from packaging.version import InvalidVersion, Version

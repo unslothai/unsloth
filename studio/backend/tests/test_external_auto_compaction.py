@@ -9,6 +9,7 @@ import sys
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
+import pytest
 from starlette.requests import Request
 
 import routes.inference as ri
@@ -698,3 +699,40 @@ def test_a_failed_template_read_logs_no_url_credentials(monkeypatch):
     _run(go)
     assert got == [None]
     assert lines and not any("secret" in line for line in lines)
+
+
+@pytest.mark.parametrize(
+    "enable_thinking,reasoning_effort,preserve_thinking",
+    [
+        (None, None, None),
+        (True, None, None),
+        (False, None, True),
+        (None, "none", None),
+        (True, "max", False),
+        (None, "medium", None),
+    ],
+)
+def test_the_probed_template_controls_are_the_ones_sent(
+    enable_thinking, reasoning_effort, preserve_thinking
+):
+    with _Server() as server:
+        provider = ep_mod.ExternalProviderClient("llama_cpp", server.base_url, "")
+
+        async def go():
+            async for _ in provider.stream_chat_completion(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "a-model",
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+            ):
+                pass
+
+        _run(go)
+        body = server.bodies[-1]
+    sent = dict(body.get("chat_template_kwargs") or {})
+    if "reasoning_effort" in body:
+        sent["reasoning_effort"] = body["reasoning_effort"]
+    assert ep_mod.llama_cpp_template_controls(
+        enable_thinking, reasoning_effort, preserve_thinking
+    ) == tuple(sorted(sent.items()))
