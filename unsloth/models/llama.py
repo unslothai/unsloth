@@ -147,6 +147,7 @@ from unsloth.models._attn_mask_compat import (
 from transformers.cache_utils import DynamicCache, Cache
 from ..kernels import *
 from ..kernels.utils import _has_active_lora_bias, has_mxfp4_base
+from ..kernels.fast_lora import _forward_fake_quant_linears
 from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
 from ..tokenizer_utils import *
 from ..context_parallel import get_cp_manager
@@ -221,6 +222,22 @@ def original_apply_qkv(self, X):
     K = self.k_proj(X)
     V = self.v_proj(X)
     return Q, K, V
+
+
+def fake_quantize_lm_head_inputs(lm_head_module, hidden_states, weight):
+    # Fused CE bypasses lm_head.forward(), where TorchAO QAT fake-quantizes both the input and the weight.
+    activation_fake_quantizer = getattr(lm_head_module, "activation_fake_quantizer", None)
+    if activation_fake_quantizer is not None:
+        hidden_states = activation_fake_quantizer(hidden_states)
+    weight_fake_quantizer = getattr(lm_head_module, "weight_fake_quantizer", None)
+    if weight_fake_quantizer is not None:
+        weight = weight_fake_quantizer(weight)
+    return hidden_states, weight
+
+
+def lm_head_needs_forward(lm_head_module):
+    # NVFP4 / MX QAT linears fake-quantize inside forward() with no quantizer children: fused CE cannot mirror them.
+    return isinstance(lm_head_module, _forward_fake_quant_linears())
 
 
 def original_apply_o(self, X):
@@ -1852,7 +1869,9 @@ def CausalLM_fast_forward(fast_forward_inference):
         elif num_logits_to_keep != 0:
             logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :].to(dtype))
         else:
-            RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
+            RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1" or (
+                lm_head_needs_forward(self.lm_head)
+            )
             # Below 1024 normal Unsloth uses less VRAM.
             if bsz * q_len <= 1024 and not RETURN_LOGITS:
                 # unsloth_fused_ce_loss calculates the best chunk size to reduce VRAM usage.
@@ -1866,6 +1885,10 @@ def CausalLM_fast_forward(fast_forward_inference):
                 # Without these the fused branch optimizes a different loss than the branch below.
                 logit_softcapping, logit_scale_multiply, logit_scale_divide = (
                     resolve_logit_transforms(self.config)
+                )
+
+                hidden_states, lm_head = fake_quantize_lm_head_inputs(
+                    self.lm_head, hidden_states, lm_head
                 )
 
                 if self.config.model_type == "falcon_h1" and logit_scale_multiply:
@@ -1882,11 +1905,6 @@ def CausalLM_fast_forward(fast_forward_inference):
                     labels,
                     kwargs.get("packed_seq_lengths"),
                 )
-
-                # Fused CE bypasses lm_head.forward(), where TorchAO applies weight fake quantization.
-                weight_fake_quantizer = getattr(self.lm_head, "weight_fake_quantizer", None)
-                if weight_fake_quantizer is not None:
-                    lm_head = weight_fake_quantizer(lm_head)
 
                 # fused_linear_cross_entropy is disabled: T4 raises OutOfResources (needs 98304 shared memory
                 # against a 65536 limit).
