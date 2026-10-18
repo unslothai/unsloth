@@ -50,8 +50,7 @@ def _hub(torch_function, implementation):
 
 
 def _torch_fallback(name):
-    # On GPU unsloth_zoo may already have replaced the module global: read transformers' torch
-    # fallback from a pristine copy of the modeling file.
+    # unsloth_zoo may have replaced the global on GPU: read a pristine copy of the modeling file.
     closure = packing_module._hub_closure(getattr(qm, name))
     if "torch_function" not in closure:
         spec = importlib.util.spec_from_file_location(

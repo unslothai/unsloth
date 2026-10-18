@@ -1062,8 +1062,6 @@ def _wrap_short_conv_forward(module) -> None:
 
 
 def _ple_input_with_gaps(tensor, varlen, gap, fill_value):
-    # Keep a single packed call, with only the finite history between documents cleared.
-    # Shapes supply the expanded length; no device scalar or per-document host loop is needed.
     positions = torch.arange(tensor.shape[1], device = tensor.device)
     positions = positions + varlen[1][0].to(device = tensor.device, dtype = torch.long) * gap
     length = tensor.shape[1] + (varlen[0].numel() - 2) * gap
@@ -1072,9 +1070,7 @@ def _ple_input_with_gaps(tensor, varlen, gap, fill_value):
 
 
 def _wrap_ple_boundaries(module) -> None:
-    # PLE's dilated convolution cannot use the usual causal-conv seq_idx kernel.
-    # Insert zero history before each document and gather only real outputs. The
-    # native convolution, SiLU, autocast and autograd all remain in use.
+    # PLE's dilated conv has no seq_idx kernel: pad zero history before each document, gather real outputs.
     conv_orig = module._short_conv
     embedding = module.ple_embedding
     embedding_orig = embedding.forward
@@ -1102,8 +1098,7 @@ def _wrap_ple_boundaries(module) -> None:
         varlen = packed_input(input_ids, past_key_values)
         if varlen is None:
             return embedding_orig(input_ids, past_key_values)
-        # A packing boundary need not contain EOS. Synthetic EOS history gives
-        # the native hash the same context as a separate document's forward.
+        # Boundaries need not hold EOS: synthetic EOS history resets the n-gram hash like a separate forward.
         expanded, positions = _ple_input_with_gaps(
             input_ids, varlen, embedding.context_len, embedding.eos_token_id
         )
@@ -1254,7 +1249,7 @@ def _restore_mixers(saved) -> None:
 
 
 def _auto_hybrid_device_ok(module) -> bool:
-    # PLE uses native torch ops, and its large n-gram table may remain on CPU.
+    # Native torch ops; the n-gram table may stay on CPU.
     if _stateful_mixer_kind(module) == "ple":
         return True
     weight = next(module.parameters(), None)
