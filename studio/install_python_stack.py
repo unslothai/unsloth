@@ -6635,13 +6635,15 @@ def _ensure_rocm_torch() -> "bool | None":
         # The discrete card a leading Strix deferred to. One served only by the generic index
         # (gfx942) skips this per-arch install: the generic route below installs for it, since
         # the deferral already required a readable ROCm version.
-        # Only to a card something installs for (a per-arch index or a generic tag): a target moved
-        # by KFD order on a versionless host has neither and would leave CPU torch.
+        # Only to a card something installs for (a per-arch index, a generic tag, or a known
+        # minimum generic tag the fallback below picks without a version, e.g. gfx950): a target
+        # moved by KFD order on a versionless host with none of these would leave CPU torch.
         if (
             not _gfx_override_env
             and _inferred_target != _inferred_linux_gfx
             and (
                 _amd_arch_index_url(_inferred_target) is not None
+                or _inferred_target in _GENERIC_WHEEL_GFX_MIN_ROCM
                 or (
                     (_target_rocm := _detect_rocm_version()) is not None
                     and _generic_pytorch_rocm_tag(_target_rocm) is not None
