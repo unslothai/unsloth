@@ -3779,6 +3779,9 @@ from models.inference import (
     DiffusionLoadRequest,
     DiffusionGenerateRequest,
     DiffusionGenerateResponse,
+    PromptUpsamplerDownloadRequest,
+    PromptUpsamplerPreviewRequest,
+    PromptUpsamplerPreviewResponse,
     DiffusionGenerateProgressResponse,
     DiffusionStatusResponse,
     DiffusionDownloadPlanResponse,
@@ -49759,6 +49762,8 @@ async def diffusion_download_plan(
                     gpu_ordinal = gpu_ordinal,
                     repo_id = request.model_path,
                     base_repo = request.base_repo,
+                    text_encoder_files = request.supplied_text_encoder_files(),
+                    gguf_filename = request.gguf_filename,
                 )
             else:
                 _assert_native_precision_unset(
@@ -50087,6 +50092,9 @@ async def load_diffusion_model_gated(
                 gpu_ordinal = gpu_ordinal,
                 repo_id = request.model_path,
                 base_repo = request.base_repo,
+                local_files_only = not user_initiated,
+                text_encoder_files = request.supplied_text_encoder_files(),
+                gguf_filename = request.gguf_filename,
             )
         elif fam is not None and pending_name in (ENGINE_SD_CPP, ENGINE_MLX):
             # The opt-in MLX engine shares the native contract: one GGUF, no dense-quant knobs.
@@ -50177,6 +50185,9 @@ async def load_diffusion_model_gated(
                     gpu_ordinal = gpu_ordinal,
                     repo_id = request.model_path,
                     base_repo = request.base_repo,
+                    local_files_only = not user_initiated,
+                    text_encoder_files = request.supplied_text_encoder_files(),
+                    gguf_filename = request.gguf_filename,
                 )
         if off_torch is not None:
             if activated == ENGINE_SD_CPP:
@@ -50209,6 +50220,10 @@ async def load_diffusion_model_gated(
             # worker is handed the credential.
             for _ref in _media_repos_to_record:
                 _note_load_fetched_with_a_request_token(_ref, request.hf_token)
+            # Past admission: the upsampler serves the model being replaced, and a same-owner swap runs no eviction.
+            from core.inference.flux3_prompt_upsampler import stop_for_handover
+
+            stop_for_handover()
             # Kicks the slow load onto a background thread and returns at once (the client polls images/load-progress).
             return engine.begin_load(
                 request.model_path,
@@ -50555,6 +50570,56 @@ async def _external_image_generation(
         _stopped_external_image_runs.discard(task)
 
 
+async def _enhance_generate_prompts(backend, request: DiffusionGenerateRequest):
+    """FLUX.3 prompt upsampling for one generate call (``EnhanceOutcome``). Every other family, and FLUX.3 with
+    ``enhance_prompt=false``, passes its prompts through untouched. Never fails the generation: only a Stop during
+    the upsampling surfaces, as the cancelled 409."""
+    from core.inference import flux3_prompt_upsampler as pup
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+
+    try:
+        status = await asyncio.to_thread(backend.status)
+        family = status.get("family") if status.get("loaded") else None
+    except Exception as exc:  # noqa: BLE001 -- no status, no upsampling
+        logger.debug("flux3.prompt_upsampler: status probe failed: %s", exc)
+        status, family = {}, None
+    if not pup.supports_family(family):
+        return pup.EnhanceOutcome(status = None)
+    # A workflow the family refuses fails in the run anyway: no upsampler start (or vision load) ahead of that 400.
+    workflows = status.get("workflows") or []
+    if request.workflow and workflows and request.workflow not in workflows:
+        return pup.EnhanceOutcome(status = None)
+    if not pup.resolve_enhance(family, request.enhance_prompt):
+        return pup.EnhanceOutcome(status = pup.STATUS_OFF)
+    if account_access.managed_account():
+        # The run below refuses a resident model this account may not use; refuse before the sidecar works for it.
+        await asyncio.to_thread(account_access.require_media_generation_access, status, "diffusion")
+    references = ([request.init_image] if request.init_image else []) + list(
+        request.reference_images or []
+    )
+    # The sidecar takes GPU memory of its own: never beside another account's chat, image or video run.
+    try:
+        account_access.require_idle_other_accounts()
+    except (HTTPException, account_access.GpuBusyForAnotherAccountError):
+        return pup.EnhanceOutcome(status = pup.STATUS_UNAVAILABLE)
+    try:
+        with account_access.media_generation("diffusion"):
+            outcome = await asyncio.to_thread(
+                pup.enhance_for_generation,
+                list(request.prompts or [request.prompt]),
+                family_name = family,
+                enhance_prompt = request.enhance_prompt,
+                reference_images = references or None,
+            )
+    except pup.UpsamplerCancelledError:
+        raise HTTPException(status_code = 409, detail = DIFFUSION_CANCELLED_MSG)
+    if outcome.status not in (None, pup.STATUS_OFF):
+        # Every attempted enhancement, a fallback too: a model swapped in meanwhile retries with its own default.
+        from core.inference.diffusion_families import load_identity
+        outcome.load = load_identity(status.get("repo_id"), status.get("base_repo"), family)
+    return outcome
+
+
 @studio_router.post("/images/generate", response_model = DiffusionGenerateResponse)
 @account_access.gpu_busy_route
 async def generate_diffusion_image(
@@ -50593,6 +50658,8 @@ async def generate_diffusion_image(
         if request.localized_edit is not None
         else None
     )
+    # FLUX.3 prompt upsampling runs ahead of the run, so the sidecar can leave the VRAM before the DiT denoises.
+    enhancement = await _enhance_generate_prompts(backend, request)
     result = None
     for attempt in range(2):
         expected_load = None
@@ -50605,6 +50672,9 @@ async def generate_diffusion_image(
                 expected_load = load_identity(
                     status.get("repo_id"), status.get("base_repo"), status.get("family")
                 )
+        if enhancement.load is not None:
+            # Captions are written for one family: a model swapped in since then retries with fresh ones.
+            expected_load = enhancement.load
         # Ahead of the run: milestones key off the previous poll, so a resumed range logs nothing.
         reset_media_generation_progress("image")
         try:
@@ -50612,7 +50682,7 @@ async def generate_diffusion_image(
                 result = await asyncio.to_thread(
                     backend.generate,
                     expected_load = expected_load,
-                    prompt = request.prompt,
+                    prompt = enhancement.encoded(request.prompt),
                     negative_prompt = request.negative_prompt,
                     width = None if size_omitted else request.width,
                     height = None if size_omitted else request.height,
@@ -50620,7 +50690,11 @@ async def generate_diffusion_image(
                     guidance = request.guidance,
                     seed = request.seed,
                     batch_size = request.batch_size,
-                    prompts = request.prompts,
+                    prompts = (
+                        [enhancement.encoded(p) for p in request.prompts]
+                        if request.prompts
+                        else request.prompts
+                    ),
                     seeds = request.seeds,
                     init_image = request.init_image,
                     mask_image = request.mask_image,
@@ -50663,6 +50737,8 @@ async def generate_diffusion_image(
         except DiffusionModelReplacedError as exc:
             if attempt > 0:
                 raise HTTPException(status_code = 409, detail = str(exc))
+            # The caption was written for the replaced model's family.
+            enhancement = await _enhance_generate_prompts(backend, request)
             continue
         except RuntimeError as exc:
             # Match these two EXACT client-state messages (409); other RuntimeErrors are failures.
@@ -50689,16 +50765,21 @@ async def generate_diffusion_image(
                 if per_image_seeds and index < len(per_image_seeds)
                 else result["seed"]
             )
+            # A prompts-list batch records each image's OWN prompt so its recipe replays exactly.
+            typed_prompt = (
+                request.prompts[index]
+                if request.prompts and index < len(request.prompts)
+                else request.prompt
+            )
             records.append(
                 image_gallery.save(
                     image,
                     {
-                        # A prompts-list batch records each image's OWN prompt so its recipe replays exactly.
-                        "prompt": (
-                            request.prompts[index]
-                            if request.prompts and index < len(request.prompts)
-                            else request.prompt
-                        ),
+                        "prompt": typed_prompt,
+                        # The caption actually encoded (FLUX.3 prompt upsampling); replaying it with
+                        # enhance_prompt=false reproduces the image.
+                        "enhanced_prompt": enhancement.caption_for(typed_prompt),
+                        "prompt_enhancement": enhancement.status_for(typed_prompt),
                         "negative_prompt": result.get("negative_prompt"),
                         # Persist the ACTUAL output size, not the request sliders: the conditioned workflows derive it from the upload.
                         "width": getattr(image, "width", None) or request.width,
@@ -51454,6 +51535,12 @@ async def unload_diffusion_model(
     if account_access.account_scope() is not None:
         unload = functools.partial(unload, expected_account = current_account_id())
     status_dict = await asyncio.to_thread(unload)
+    # The FLUX.3 prompt upsampler serves the image model: it leaves with it instead of holding VRAM to its keep-alive.
+    from core.inference import flux3_prompt_upsampler as pup
+
+    # Blocking: DIFFUSION ownership is dropped below, so a sidecar still starting or answering would sit beside the
+    # next owner without an eviction to stop it.
+    await asyncio.to_thread(pup.stop_for_handover)
     # Drop DIFFUSION ownership only if nothing is resident AND no load is in flight, or a later chat load skips eviction and
     # OOMs the new pipeline. An in-flight load reads is_loaded False, so gate on loading_repo_ids() and use release_if.
     engine = get_active_diffusion_engine()
@@ -51559,6 +51646,16 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
 
     progress = get_active_diffusion_engine().generate_progress()
     log_media_generation_progress("image", progress)
+    if not progress["active"]:
+        from core.inference.flux3_prompt_upsampler import progress as upsampler_progress
+        enhancing = upsampler_progress()
+        if enhancing is not None:
+            progress = {
+                **progress,
+                "active": True,
+                "phase": "enhance",
+                "message": enhancing.get("message"),
+            }
     if external and not progress["active"]:
         progress = {**progress, "active": True, "target": "connection"}
     # A finished generation still persisting its gallery record counts as active, so a reload probe keeps polling.
@@ -51600,13 +51697,116 @@ async def cancel_diffusion_generation(
     ):
         return {"cancelled": False}
 
+    # A run still upsampling its prompt has not reached the engine yet.
+    from core.inference.flux3_prompt_upsampler import cancel_active as cancel_upsampling
+
+    # Both: another tab's request may be enhancing while this one denoises.
+    upsampling = cancel_upsampling()
     # The slot can change hands before the executor callback, so the engine rechecks under the lock.
     expected = account_access.tracked_generation_account()
     cancel = get_active_diffusion_engine().cancel_generate
     if expected is not None:
         cancel = functools.partial(cancel, expected_account = expected)
     cancelled = await asyncio.get_running_loop().run_in_executor(_CANCEL_EXECUTOR, cancel)
-    return {"cancelled": cancelled}
+    return {"cancelled": bool(cancelled or upsampling)}
+
+
+# ── FLUX.3 prompt upsampler (llama.cpp sidecar) ──────────────────────────────────────────────────────────
+
+
+@studio_router.get("/images/prompt-upsampler/status")
+async def prompt_upsampler_status(current_subject: str = Depends(get_current_subject)):
+    """Whether the FLUX.3 prompt upsampler can run (llama-server present), is downloaded, is loaded, and the
+    download progress (the dictation download's shape)."""
+    from core.inference import flux3_prompt_upsampler
+    return JSONResponse(content = await asyncio.to_thread(flux3_prompt_upsampler.status))
+
+
+@studio_router.post("/images/prompt-upsampler/download")
+async def prompt_upsampler_download(
+    payload: Optional[PromptUpsamplerDownloadRequest] = None,
+    current_subject: str = Depends(get_current_subject),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
+):
+    """Start the background download of the upsampler GGUF and its vision projector; progress on /status."""
+    from core.inference import flux3_prompt_upsampler
+    from core.inference.stt_sidecar import SttDownloadCacheError, SttModelIdError
+
+    account_access.require_installation_owner()
+    if flux3_prompt_upsampler.status().get("override"):
+        raise HTTPException(
+            status_code = 409,
+            detail = "The prompt upsampler files come from UNSLOTH_FLUX3_UPSAMPLER_GGUF / _MMPROJ; set both instead.",
+        )
+    token = account_access.account_hf_token(
+        (payload.hf_token if payload is not None and payload.hf_token else None) or hf_token
+    )
+    try:
+        download_id = await asyncio.to_thread(flux3_prompt_upsampler.start_download, token)
+    except (SttModelIdError, SttDownloadCacheError) as exc:
+        raise HTTPException(status_code = 409, detail = str(exc))
+    return JSONResponse(
+        content = {**flux3_prompt_upsampler.download_status(), "download_id": download_id}
+    )
+
+
+@studio_router.post("/images/prompt-upsampler/cancel")
+async def prompt_upsampler_cancel(current_subject: str = Depends(get_current_subject)):
+    """Stop the upsampler download; partial files stay cached, so the next download resumes."""
+    from core.inference import flux3_prompt_upsampler
+
+    account_access.require_installation_owner()
+    cancelled = await asyncio.to_thread(flux3_prompt_upsampler.cancel_download)
+    return JSONResponse(
+        content = {**flux3_prompt_upsampler.download_status(), "cancelled": cancelled}
+    )
+
+
+@studio_router.post(
+    "/images/prompt-upsampler/preview", response_model = PromptUpsamplerPreviewResponse
+)
+@account_access.gpu_busy_route
+async def prompt_upsampler_preview(
+    request: PromptUpsamplerPreviewRequest, current_subject: str = Depends(get_current_subject)
+):
+    """The caption the upsampler writes for ``prompt`` (and references), so the page can show or edit it before
+    generating. 409 when not downloaded, 501 without llama-server."""
+    from core.inference import flux3_prompt_upsampler as pup
+
+    variant = request.variant
+    if variant is None:
+        try:
+            from core.inference.diffusion_engine_router import get_active_diffusion_engine
+            status = await asyncio.to_thread(get_active_diffusion_engine().status)
+            variant = pup.variant_for_family(status.get("family") if status.get("loaded") else None)
+        except Exception:  # noqa: BLE001 -- nothing loaded reads as distilled
+            variant = "distilled"
+    account_access.require_idle_other_accounts()
+    try:
+        with account_access.media_generation("diffusion"):
+            caption = await asyncio.to_thread(
+                pup.upsample,
+                request.prompt,
+                variant = variant,
+                reference_images = request.reference_images or None,
+            )
+    except pup.UpsamplerNotDownloadedError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc))
+    except pup.UpsamplerUnavailableError as exc:
+        raise HTTPException(status_code = 501, detail = str(exc))
+    except pup.UpsamplerCancelledError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.error("flux3.prompt_upsampler.preview_failed: %s", exc, exc_info = True)
+        raise HTTPException(status_code = 500, detail = "The prompt upsampler failed.")
+    finally:
+        try:
+            await asyncio.to_thread(pup.get_sidecar().release_if_tight)
+        except Exception:  # noqa: BLE001 -- the keep-alive reclaims it anyway
+            pass
+    return PromptUpsamplerPreviewResponse(enhanced_prompt = caption)
 
 
 # ──────────────────────────────────────────────────────────────────────────

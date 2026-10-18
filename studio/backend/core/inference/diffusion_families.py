@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import contextvars
 import os
 import re
 import sys
@@ -176,8 +177,14 @@ class DiffusionFamily:
     # ``family_prequant_filename``.
     prequant_filenames: tuple[tuple[str, ...], ...] = field(default_factory = tuple)
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id). Layerwise-fp8 only: the cast is
-    # deterministic, so the artifact is bit-identical while skipping the dense TE download.
-    te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # deterministic, so the artifact is bit-identical while skipping the dense TE download. An optional fourth element
+    # names the component the hosted file was built as, when this family loads another family's bytes into a
+    # different slot (HiDream's text_encoder_3 is FLUX.1's text_encoder_2).
+    te_prequant_repos: tuple[tuple[str, ...], ...] = field(default_factory = tuple)
+    # The same rows for a VARIANT base whose encoder is a different model, as (base_repo, scheme, component, repo_id):
+    # FLUX.2 klein 9B carries Qwen3-8B where the family base carries Qwen3-4B. A load of that base (or one in its
+    # equivalence group) resolves these rows only; ``te_prequant_repos`` keeps serving the family base.
+    te_prequant_variant_repos: tuple[tuple[str, str, str, str], ...] = field(default_factory = tuple)
     # The text-encoder scheme an UNSET request resolves to on this family, or None to keep the released bf16 encoder.
     # Opt-in per family rather than implied by ``te_prequant_repos``, because hosting an artifact says the cast is
     # reproducible, not that its conditioning is good enough to hand someone who asked for nothing. These encoders are
@@ -211,6 +218,9 @@ class DiffusionFamily:
     sd_cpp_arch_marker: Optional[str] = None
     # Literal an sd.cpp build carries once it can EDIT this family; the arch marker proves text-to-image only.
     sd_cpp_edit_marker: Optional[str] = None
+    # sd.cpp feeds this family's reference images through the VAE (no vision projector), so any build the arch marker
+    # admits runs the reference workflow natively.
+    sd_cpp_reference: bool = False
     # True when Unsloth can TRAIN a LoRA on this family; the training-start path refuses a non-trainable family up
     # front.
     trainable: bool = False
@@ -299,6 +309,41 @@ _HIDREAM_BF16_WHEN_RESIDENT = (
     "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail"
 )
 
+# FLUX.1's sd-cli encoders are BFL's own diffusers files, read as-is: sd.cpp loads the CLIP-L text_encoder and the
+# sharded T5 through its index (the shards sit beside it in the snapshot). The shards are listed so every fetch,
+# size and cache probe sees them as plain files; ``*_shard`` kinds are fetched but never handed to sd-cli. dev, Krea
+# and Kontext reuse schnell's files, as they shared one repack before.
+_FLUX1_SD_CPP_TEXT_ENCODERS: tuple[tuple[str, str, str], ...] = (
+    ("black-forest-labs/FLUX.1-schnell", "text_encoder/model.safetensors", "clip_l"),
+    ("black-forest-labs/FLUX.1-schnell", "text_encoder_2/model.safetensors.index.json", "t5xxl"),
+    (
+        "black-forest-labs/FLUX.1-schnell",
+        "text_encoder_2/model-00001-of-00002.safetensors",
+        "t5xxl_shard",
+    ),
+    (
+        "black-forest-labs/FLUX.1-schnell",
+        "text_encoder_2/model-00002-of-00002.safetensors",
+        "t5xxl_shard",
+    ),
+)
+# FLUX.3 Klein's encoder is Qwen3-VL-4B-Instruct (byte-identical), read by sd.cpp through --llm with hidden states 4..32.
+# References go through the VAE, not the vision tower, so editing needs no projector. Q8_0 rather than Q4_K_M: the
+# encoder quant dominates the error here. Against a BF16 DiT + BF16 encoder render (sd.cpp, 4 prompts, 1024, same
+# seeds, B200), LPIPS-alex mean with the Q8_0 DiT is 0.031 (Q8_0 encoder) vs 0.080 (Q4_K_M) on the distilled model and
+# 0.008 vs 0.082 on the base; with UD-Q4_K_XL 0.068 vs 0.090 and 0.110 vs 0.109. 4.28 GB against 2.50 GB.
+_FLUX3_SD_CPP_TEXT_ENCODERS = (
+    (
+        "unsloth/Qwen3-VL-4B-Instruct-GGUF",
+        "Qwen3-VL-4B-Instruct-Q8_0.gguf",
+        "llm",
+    ),
+)
+# FLUX.3 landed upstream in master-968 (leejet/stable-diffusion.cpp#2143), after builds were in the wild. The model
+# version name is in every sd-cli / sd-server that can run it and in none before.
+_FLUX3_SD_CPP_ARCH_MARKER = "Flux.3 Image Klein"
+
+
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry
 # covers Turbo/full, schnell/dev.
 _FAMILIES: tuple[DiffusionFamily, ...] = (
@@ -349,6 +394,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Pre-cast T5-XXL (9.52 -> 5.90 GB; CLIP-L stays dense). One artifact serves schnell/dev/Krea-dev (T5 shards
         # are byte-identical).
         te_prequant_repos = (("fp8", "text_encoder_2", "unsloth/FLUX.1-schnell-FP8"),),
+        # No te_quant_auto: a small encoder (T5-XXL, 4.8B) stays bf16 unless ComfyUI's template quantizes it, and the
+        # FLUX.1 templates load t5xxl_fp16. Measured against the bf16 encoder (bf16 DiT, schnell 4 steps, 24 prompts,
+        # bf16 A/A repeat bit-identical): the hosted int8 ConvRot T5 scores LPIPS-alex mean 0.055, SSIM 0.927, layerwise
+        # fp8 0.096 on 12; both stay one explicit pick away (T5 resident 8.87 -> 4.56 GiB).
         aliases = ("flux1", "flux-1"),
         # LoRA training targets FLUX.1-dev via the DiT trainer (QLoRA nf4); the dev repo is gated
         trainable = True,
@@ -358,11 +407,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         controlnet_pipeline_class = "FluxControlNetPipeline",
         controlnet_model_class = "FluxControlNetModel",
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
-        # Byte-identical mirror of comfyanonymous/flux_text_encoders (CLIP-L + T5-XXL fp16).
-        sd_cpp_text_encoders = (
-            ("unsloth/flux-text-encoders", "clip_l.safetensors", "clip_l"),
-            ("unsloth/flux-text-encoders", "t5xxl_fp16.safetensors", "t5xxl"),
-        ),
+        sd_cpp_text_encoders = _FLUX1_SD_CPP_TEXT_ENCODERS,
     ),
     # FLUX.2-klein is Flux2KleinPipeline (Qwen3 encoder), not the Mistral Flux2Pipeline, so it must precede a generic
     # flux match.
@@ -386,6 +431,24 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/FLUX.2-klein-4B-FP8"),
             ("fp8", "unsloth/FLUX.2-klein-4B-FP8"),
         ),
+        # Stock Qwen3-4B pre-cast fp8, the int8 ConvRot encoder's fallback (in
+        # diffusion_te_prequant.TE_INT8_CONVROT_FILES); the distilled and base 4B repos ship the same bytes.
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/FLUX.2-klein-4B-FP8"),),
+        # The 9B pair carries stock Qwen3-8B, a different model, so it has its own files (int8 ConvRot in
+        # diffusion_te_prequant.TE_INT8_CONVROT_VARIANT_FILES).
+        te_prequant_variant_repos = (
+            (
+                "black-forest-labs/FLUX.2-klein-9B",
+                "fp8",
+                "text_encoder",
+                "unsloth/FLUX.2-klein-9B-FP8",
+            ),
+        ),
+        # No te_quant_auto: an unset request keeps the bf16 encoder. ComfyUI loads qwen_3_4b bf16 for the 4B pair and
+        # qwen_3_8b_fp8mixed for the 9B pair; against the bf16 encoder (bf16 DiT) the hosted int8 ConvRot files score
+        # LPIPS-alex mean 0.078 (4B, 4 steps, 24 prompts), 0.103 (base 4B, 20 steps CFG 5) and 0.047 (9B), layerwise fp8
+        # 0.115 / 0.214 / 0.072. The encoder itself is close (int8 hidden-state cosine 0.9997 at the read layers), but
+        # the distilled 4B amplifies it past what a silent default should cost; the files stay for explicit picks.
         aliases = ("flux2-klein",),
         # A local ComfyUI file has no card tag, so without these a 9B pick got the 4B base and was refused.
         named_variant_bases = (
@@ -416,15 +479,13 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         inpaint_pipeline_class = "Flux2KleinInpaintPipeline",
         # FLUX.2 scales >1MP inputs to ~1MP, so outpaint can't grow.
         inpaint_preserves_size = False,
-        sd_cpp_vae = ("unsloth/FLUX.2-VAE", "split_files/vae/flux2-vae.safetensors"),
+        # BFL's own diffusers VAE file, byte-identical to the single-file repack this used to name.
+        sd_cpp_vae = ("black-forest-labs/FLUX.2-dev", "vae/diffusion_pytorch_model.safetensors"),
         sd_cpp_vae_format = "flux2",
-        sd_cpp_text_encoders = (
-            (
-                "unsloth/Z-Image-Turbo-ComfyUI",
-                "split_files/text_encoders/qwen_3_4b.safetensors",
-                "llm",
-            ),
-        ),
+        # Klein 4B's text encoder IS Qwen3-4B (byte-identical shards to unsloth/Qwen3-4B; the BF16 GGUF matches it
+        # tensor for tensor and renders pixel-identical to the old single-file encoder), so sd-cli reads unsloth's
+        # own GGUF of it. Q8_0, not Q4_K_M: on klein 4B the Q4 encoder moved renders by LPIPS 0.15, Q8 by 0.06.
+        sd_cpp_text_encoders = (("unsloth/Qwen3-4B-GGUF", "Qwen3-4B-Q8_0.gguf", "llm"),),
     ),
     # FLUX.3 Image Klein: a 5.6B flow-map DiT with a Qwen3-VL-4B encoder (layers 4..32 stacked) and the FLUX.2 VAE.
     # Diffusers ships it only as modular blocks, so diffusion_flux3 assembles it per component behind a classic
@@ -474,6 +535,15 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # fp8 denoiser, measured on B200, against the estimator's 8192 MiB per megapixel: 0.11 covers the quantised
         # figure.
         condition_pixel_weight = 0.11,
+        # Native (sd.cpp) assets, the same set as the distilled entry: see there.
+        sd_cpp_vae = (
+            "unsloth/flux-3-image-klein-base-FP8",
+            "vae/diffusion_pytorch_model.safetensors",
+        ),
+        sd_cpp_text_encoders = _FLUX3_SD_CPP_TEXT_ENCODERS,
+        sd_cpp_sampling_method = "euler",
+        sd_cpp_arch_marker = _FLUX3_SD_CPP_ARCH_MARKER,
+        sd_cpp_reference = True,
     ),
     DiffusionFamily(
         name = "flux.3-klein",
@@ -509,10 +579,20 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         max_condition_images = 10,
         dimension_multiple = 16,
         condition_pixel_weight = 0.11,
+        # Native (sd.cpp) assets. sd.cpp reads the unsloth/flux-3-image-klein[-base]-GGUF denoisers as published
+        # (BFL tensor names, detected from emb_in.image + txt_mode_blocks). The VAE is the FLUX.2 VAE, byte-identical
+        # in both FP8 repos and in unsloth/FLUX.2-VAE (sha256 d64f3a68...), taken from this family's own FP8 repo,
+        # which prequant_repos keeps loadable. sd.cpp detects its layout itself, so no --vae-format.
+        sd_cpp_vae = ("unsloth/flux-3-image-klein-FP8", "vae/diffusion_pytorch_model.safetensors"),
+        sd_cpp_text_encoders = _FLUX3_SD_CPP_TEXT_ENCODERS,
+        # sd.cpp's documented invocation (docs/flux3.md). No flow shift: its scheduler already applies FLUX.3's 6.93.
+        sd_cpp_sampling_method = "euler",
+        sd_cpp_arch_marker = _FLUX3_SD_CPP_ARCH_MARKER,
+        sd_cpp_reference = True,
     ),
     # FLUX.2-dev: full (non-distilled) FLUX.2 on the Mistral Flux2Pipeline, so its own entry. Gated base,
-    # text-to-image only; sd-cli takes the Mistral encoder from unsloth/FLUX.2-dev-ComfyUI and the VAE from
-    # unsloth/FLUX.2-VAE.
+    # text-to-image only; sd-cli takes the Mistral encoder from unsloth's Mistral-Small-3.2 GGUF and the VAE from
+    # BFL's own diffusers file.
     DiffusionFamily(
         name = "flux.2-dev",
         label = "FLUX.2-dev",
@@ -527,15 +607,23 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         # Pre-cast Mistral-Small-24B conditioner (bf16 ~48 GB dense, ~24.7 GB pre-cast).
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/FLUX.2-dev-FP8"),),
+        # int8 ConvRot by default. ComfyUI's FLUX.2-dev templates load mistral_3_small_flux2_bf16 (2 of 3; the third
+        # fp8); against the bf16 encoder (bf16 DiT, 20 steps guidance 4, 24 prompts, bf16 A/A repeat bit-identical) the
+        # hosted int8 ConvRot file scores LPIPS-alex mean 0.057, SSIM 0.929, layerwise fp8 0.266 / SSIM 0.730 on 12. The
+        # Pixtral vision tower stays bf16. Resident 44.7 -> 22.8 GiB, load 9.3 -> 3.6 s.
+        te_quant_auto = "int8",
         aliases = ("flux2-dev", "flux2dev"),
         trainable = True,
         train_base_repos = ("black-forest-labs/FLUX.2-dev",),
-        sd_cpp_vae = ("unsloth/FLUX.2-VAE", "split_files/vae/flux2-vae.safetensors"),
+        # BFL's own diffusers VAE file, byte-identical to the single-file repack this used to name.
+        sd_cpp_vae = ("black-forest-labs/FLUX.2-dev", "vae/diffusion_pytorch_model.safetensors"),
         sd_cpp_vae_format = "flux2",
+        # FLUX.2-dev's text encoder is Mistral-Small-3.2-24B-Instruct-2506 (byte-identical shards to the unsloth
+        # copy; the BF16 GGUF matches every text tensor), so sd-cli reads unsloth's GGUF of it.
         sd_cpp_text_encoders = (
             (
-                "unsloth/FLUX.2-dev-ComfyUI",
-                "split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors",
+                "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF",
+                "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf",
                 "llm",
             ),
         ),
@@ -553,14 +641,17 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         uses_negative_prompt = False,
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-Kontext-dev",
+        # FLUX.1's pre-cast T5-XXL: Kontext ships the same text_encoder_2 shards (sha256 compared 2026-10-16).
+        te_prequant_repos = (("fp8", "text_encoder_2", "unsloth/FLUX.1-schnell-FP8"),),
+        # fp8 by default, as ComfyUI's Kontext template (t5xxl_fp8_e4m3fn_scaled): against the bf16 encoder (bf16 DiT, 8
+        # edits, 20 steps, bf16 A/A repeat bit-identical) LPIPS-alex mean 0.034 / max 0.143, SSIM 0.945. The shared int8
+        # ConvRot T5 scores 0.021 and is one explicit pick away.
+        te_quant_auto = "fp8",
         aliases = ("flux.1-kontext-dev", "flux1-kontext", "flux-kontext", "kontext"),
         edit = True,
         # Native: FLUX.1's VAE + CLIP-L / T5-XXL, the source as a reference image (sd.cpp docs/kontext.md).
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
-        sd_cpp_text_encoders = (
-            ("unsloth/flux-text-encoders", "clip_l.safetensors", "clip_l"),
-            ("unsloth/flux-text-encoders", "t5xxl_fp16.safetensors", "t5xxl"),
-        ),
+        sd_cpp_text_encoders = _FLUX1_SD_CPP_TEXT_ENCODERS,
     ),
     DiffusionFamily(
         # Qwen instruction editing: the 2511 checkpoint ships as QwenImageEditPlusPipeline. Specific aliases first so
@@ -590,6 +681,13 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "QwenImageEditPlusPipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image-Edit-2511",
+        # Qwen-Image's pre-cast Qwen2.5-VL-7B: every edit release (original, 2509, 2511) ships the same text_encoder/
+        # shards. The vision tower is cast too, and the edit path runs it.
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
+        # int8 ConvRot by default. ComfyUI loads qwen_2.5_vl_7b_fp8_scaled; our layerwise fp8 (no scales) sits at the
+        # limit against the bf16 encoder (bf16 DiT, 8 edits, 40 steps: LPIPS-alex mean 0.060, max 0.330), the shared
+        # int8 ConvRot file at 0.017 / max 0.033, SSIM 0.970. The vision tower stays bf16 in it.
+        te_quant_auto = "int8",
         cfg_kwarg = "true_cfg_scale",
         aliases = (
             "qwen-image-edit-2511",
@@ -603,7 +701,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         fp16_incompatible = True,
         # Native: qwen-image's VAE + Qwen2.5-VL, plus its projector (edits read the source through the VLM; a GGUF
         # encoder has no vision weights). 2511 needs no flag: sd.cpp keys zero_cond_t off __index_timestep_zero__.
-        sd_cpp_vae = ("unsloth/Qwen-Image-ComfyUI", "split_files/vae/qwen_image_vae.safetensors"),
+        # The official diffusers VAE; sd.cpp maps its names itself, as it does for Layered's.
+        sd_cpp_vae = ("Qwen/Qwen-Image", "vae/diffusion_pytorch_model.safetensors"),
         sd_cpp_text_encoders = (
             (
                 "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
@@ -633,6 +732,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "QwenImageLayeredPipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image-Layered",
+        # Qwen-Image's pre-cast Qwen2.5-VL-7B: the layered release ships the same text_encoder/ shards.
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
+        # fp8 by default, as ComfyUI's layered templates (qwen_2.5_vl_7b_fp8_scaled): LPIPS-alex mean 0.0055 / max
+        # 0.034, SSIM 0.993 against the bf16 encoder (bf16 DiT, 8 inputs, 20 steps CFG 2.5, bf16 A/A repeat
+        # bit-identical).
+        te_quant_auto = "fp8",
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image_layered", "qwenimagelayered"),
         edit = True,
@@ -688,6 +793,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         # Pre-cast Qwen2.5-VL-7B (16.6 -> 8.8 GB). Always was independent of the DiT scheme rules.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
+        # int8 ConvRot by default. ComfyUI loads qwen_2.5_vl_7b_fp8_scaled, but our layerwise fp8 (no per-tensor scale)
+        # moves too much: against the bf16 encoder (bf16 DiT, 20 steps CFG 4, bf16 A/A repeat bit-identical) LPIPS-alex
+        # mean 0.138 / SSIM 0.844 on 12 prompts, int8 ConvRot 0.057 / SSIM 0.938 on 24 (one 0.47 is a cone moved to the
+        # side the prompt asks for). Text renders correctly in both. Resident 15.45 -> 8.36 GiB, load 7.3 -> 2.6 s.
+        te_quant_auto = "int8",
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image", "qwenimage"),
         # fp16 overflows to NaN latents (black images)
@@ -699,8 +809,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         inpaint_pipeline_class = "QwenImageInpaintPipeline",
         controlnet_pipeline_class = "QwenImageControlNetPipeline",
         controlnet_model_class = "QwenImageControlNetModel",
-        # Byte-identical mirror of Comfy-Org/Qwen-Image_ComfyUI.
-        sd_cpp_vae = ("unsloth/Qwen-Image-ComfyUI", "split_files/vae/qwen_image_vae.safetensors"),
+        # The official diffusers VAE; sd.cpp maps its names itself, as it does for Layered's.
+        sd_cpp_vae = ("Qwen/Qwen-Image", "vae/diffusion_pytorch_model.safetensors"),
         # Qwen2.5-VL as a Q4_K_M GGUF keeps the CPU RAM win (bf16 encoder is ~15 GB). sd-cli --qwen2vl aliases --llm.
         sd_cpp_text_encoders = (
             (
@@ -894,8 +1004,13 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # must quantize its own dense weights.
         prequant_excluded_bases = ("tongyi-mai/z-image",),
         # Pre-cast Qwen3-4B TE (8.04 -> 4.41 GB), shared with the undistilled base (byte-identical encoder). NOT
-        # shared with flux.2-klein-4B: klein TE retrained layer 35 MLP (up/down_proj maxdiff 0.86 vs this checkpoint).
+        # shared with flux.2-klein-4B: klein ships stock Qwen3-4B (sha256-identical to unsloth/Qwen3-4B), while this
+        # encoder is Z-Image's own variant of it (layer 35 MLP up/down_proj maxdiff 0.86 against klein's).
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Z-Image-Turbo-FP8"),),
+        # No te_quant_auto: a small encoder (Qwen3-4B) stays bf16 unless ComfyUI's template quantizes it, and 3 of its
+        # 4 templates load qwen_3_4b bf16. Measured against the bf16 encoder (bf16 DiT, 8 steps, 12 prompts, bf16 A/A
+        # repeat bit-identical): int8 ConvRot LPIPS-alex mean 0.049, SSIM 0.934, layerwise fp8 0.105; both stay one
+        # explicit pick away (resident 7.49 -> 4.11 GiB).
         aliases = ("zimage", "z_image"),
         # LoRA training via the DiT trainer (bf16); defaults to the prequant nf4 repo for QLoRA
         trainable = True,
@@ -913,15 +1028,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         fp16_guard = "rescale_post_norm",
         mlx_model_config = "z-image-turbo",
         mlx_model_config_by_base = (("Tongyi-MAI/Z-Image", "z-image"),),
-        # Byte-identical mirror of Comfy-Org/z_image_turbo (AE + Qwen3-4B).
-        sd_cpp_vae = ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors"),
-        sd_cpp_text_encoders = (
-            (
-                "unsloth/Z-Image-Turbo-ComfyUI",
-                "split_files/text_encoders/qwen_3_4b.safetensors",
-                "llm",
-            ),
-        ),
+        # Z-Image decodes with the FLUX.1 autoencoder: BFL's ae.safetensors, byte-identical to the repack's file.
+        sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
+        # Z-Image's encoder differs from stock Qwen3-4B only in the LAST layer's MLP, which neither diffusers
+        # (hidden_states[-2]) nor sd.cpp (out_layers {35}) reads, so the conditioning is the same. Same Q8_0 file
+        # klein 4B reads, so one download serves both.
+        sd_cpp_text_encoders = (("unsloth/Qwen3-4B-GGUF", "Qwen3-4B-Q8_0.gguf", "llm"),),
     ),
     DiffusionFamily(
         name = "krea-2",
@@ -938,6 +1050,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Pre-cast Qwen3-VL-4B TE (8.88 -> 4.83 GB); handed into load_krea2_pipeline directly (assembly never sees
         # pipe_kwargs).
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Krea-2-Turbo-FP8"),),
+        # int8 ConvRot by default. ComfyUI loads qwen3vl_4b_fp8_scaled; our layerwise fp8 scores LPIPS-alex mean 0.110
+        # against the bf16 encoder (bf16 DiT, Turbo 8 steps, 12 prompts, bf16 A/A repeat bit-identical), int8 ConvRot
+        # (the Comfy-Org/Krea-2 qwen3vl_4b_int8_convrot scheme) 0.047 / SSIM 0.934. Resident 8.27 -> 4.79 GiB.
+        te_quant_auto = "int8",
         aliases = ("krea2",),
         # no prequant repo yet, so nf4 quantizes on the fly
         trainable = True,
@@ -961,6 +1077,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         # pre-cast Gemma2-2B TE; the Hub stores it fp32 (10.46 GB), so the 3.20 GB artifact is a 3.3x download cut
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Lumina-Image-2.0-FP8"),),
+        # No te_quant_auto: a small encoder (Gemma-2-2B) stays bf16 unless ComfyUI's template quantizes it, and ComfyUI
+        # ships gemma_2_2b_fp16 only. Measured against the bf16 encoder (bf16 DiT, 50 steps, 8 prompts, bf16 A/A repeat
+        # bit-identical): int8 ConvRot LPIPS-alex mean 0.015, SSIM 0.986, layerwise fp8 0.177; both stay one explicit
+        # pick away (resident 4.87 -> 2.99 GiB, download 10.46 GB fp32 -> 3.21 GB).
         aliases = ("lumina-image-2.0", "lumina-image-2", "lumina2"),
         fp16_incompatible = True,
     ),
@@ -984,6 +1104,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         # the Qwen2.5-VL TE is byte-identical to Qwen-Image (verified sha256), so reuse that artifact: 16.58 -> 8.84 GB.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
+        # int8 ConvRot by default (Comfy-Org's HunyuanImage repo offers bf16 and fp8_scaled, no template): Qwen-Image's
+        # shared file scores LPIPS-alex mean 0.063, SSIM 0.917 against the bf16 encoder (bf16 DiT, 50 steps, 24 prompts,
+        # bf16 A/A repeat bit-identical); layerwise fp8 0.165. ByT5 stays bf16. Resident 15.45 -> 8.36 GiB.
+        te_quant_auto = "int8",
         pipeline_class = "HunyuanImagePipeline",
         transformer_class = "HunyuanImageTransformer2DModel",
         base_repo = "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
@@ -1014,8 +1138,17 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # refuses the Full artifact only after the plan has dropped their released shards.
         prequant_excluded_bases = ("hidream-ai/hidream-i1-dev", "hidream-ai/hidream-i1-fast"),
         # Pre-cast Llama-3.1-8B TE4 (16.1 -> 8.1 GB). The generic TE pass only covers text_encoder.._3, so TE4 engages
-        # via hidream_te4_kwargs.
-        te_prequant_repos = (("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),),
+        # via hidream_te4_kwargs. text_encoder_3 is FLUX.1's T5-XXL byte for byte (sha256 compared 2026-10-16, Full and
+        # Dev), so it loads FLUX.1's hosted text_encoder_2 file: 9.52 -> 5.90 GB.
+        te_prequant_repos = (
+            ("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),
+            ("fp8", "text_encoder_3", "unsloth/FLUX.1-schnell-FP8", "text_encoder_2"),
+        ),
+        # No te_quant_auto. ComfyUI loads t5xxl_fp8_e4m3fn_scaled + llama_3.1_8b_instruct_fp8_scaled; against the bf16
+        # encoders (bf16 DiT, Full 50 steps CFG 5, 12 prompts, bf16 A/A repeat bit-identical) the hosted int8 ConvRot T5
+        # + Llama score LPIPS-alex mean 0.103 / SSIM 0.890 and layerwise fp8 0.225 / SSIM 0.763: this DiT reads every
+        # Llama layer, and neither is close enough for a silent default. Both stay one explicit pick away (CLIPs stay
+        # bf16).
         pipeline_class = "HiDreamImagePipeline",
         transformer_class = "HiDreamImageTransformer2DModel",
         base_repo = "HiDream-ai/HiDream-I1-Full",
@@ -1033,6 +1166,13 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         uses_negative_prompt = False,
         transformer_class = "Ideogram4Transformer2DModel",
         base_repo = "ideogram-ai/ideogram-4-fp8",
+        # Qwen3-VL-8B, built from the vendor's per-channel-scaled fp8 shards dequantized to bf16 (what a dense load
+        # runs): layerwise fp8 here, int8 ConvRot in diffusion_te_prequant.TE_INT8_CONVROT_FILES.
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/ideogram-4-FP8"),),
+        # No te_quant_auto. ComfyUI loads qwen3vl_8b_fp8_scaled; against the dequantized vendor encoder (bf16 DiT, 20
+        # steps CFG 7, 12 prompts, bf16 A/A repeat bit-identical) int8 ConvRot scores LPIPS-alex mean 0.081 and
+        # layerwise fp8 0.114, both past what a silent default should cost, although text survives and the encoder loads
+        # in 2.1 s instead of 153 s (8.7 instead of 15.2 GiB). The files stay for explicit picks.
         aliases = ("ideogram4", "ideogram-v4", "ideogram"),
         # Two DiTs assembled per-component, so no transformer-only single-file / GGUF load.
         pipeline_only = True,
@@ -1346,12 +1486,22 @@ _UNGATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("Qwen/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1"),
     ("Qwen/Qwen-Image", "unsloth/Qwen-Image"),
     ("Qwen/Qwen-Image-Edit-2511", "unsloth/Qwen-Image-Edit-2511"),
+    # Variant bases reached only through a GGUF's base_model card tag (Edit, Edit-2509, Z-Image) or a named variant
+    # (2.1 Turbo, also a direct bf16 pick), plus Layered, whose sd-cli VAE is read straight from its base. No separate
+    # mirror repo: the official diffusers folders (model_index.json, transformer/, text_encoder/, tokenizer/,
+    # processor/, scheduler/, vae/) sit byte-identical at their upstream paths inside the model's EXISTING unsloth
+    # repo, its -FP8 repo where one exists, else its -GGUF repo, beside the quantised files that repo already ships.
+    ("Qwen/Qwen-Image-2.1-Turbo", "unsloth/Qwen-Image-2.1-Turbo-FP8"),
+    ("Qwen/Qwen-Image-Edit", "unsloth/Qwen-Image-Edit-GGUF"),
+    ("Qwen/Qwen-Image-Edit-2509", "unsloth/Qwen-Image-Edit-2509-GGUF"),
+    ("Qwen/Qwen-Image-Layered", "unsloth/Qwen-Image-Layered-GGUF"),
     ("black-forest-labs/FLUX.2-klein-4B", "unsloth/FLUX.2-klein-4B"),
     # Lookup is by exact id, so every VARIANT a pick can resolve to needs its own row: the base-4B is what
     # `unsloth/FLUX.2-klein-base-4B-GGUF` resolves to from its card tag, and Dev / Fast are offered directly as bf16
     # pipeline picks. Without these three the table silently misses them.
     ("black-forest-labs/FLUX.2-klein-base-4B", "unsloth/FLUX.2-klein-base-4B"),
     ("Tongyi-MAI/Z-Image-Turbo", "unsloth/Z-Image-Turbo"),
+    ("Tongyi-MAI/Z-Image", "unsloth/Z-Image-GGUF"),
     ("Alpha-VLLM/Lumina-Image-2.0", "unsloth/Lumina-Image-2.0"),
     ("HiDream-ai/HiDream-I1-Full", "unsloth/HiDream-I1-Full"),
     ("HiDream-ai/HiDream-I1-Dev", "unsloth/HiDream-I1-Dev"),
@@ -1360,14 +1510,112 @@ _UNGATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("stabilityai/sdxl-turbo", "unsloth/sdxl-turbo"),
 )
 _MIRROR_PAIRS: tuple[tuple[str, str], ...] = _GATED_MIRROR_PAIRS + _UNGATED_MIRROR_PAIRS
-_GATED_MIRRORS: dict[str, str] = {u.lower(): m for u, m in _MIRROR_PAIRS}
-_MIRROR_UPSTREAM: dict[str, str] = {m.lower(): u for u, m in _MIRROR_PAIRS}
-_GATED_UPSTREAMS: frozenset[str] = frozenset(u.lower() for u, _m in _GATED_MIRROR_PAIRS)
+
+# The VIDEO bases (video_families). No separate mirror repo: the official files Studio loads (the diffusers folders,
+# bf16 transformer included, or the single files of a split release) are copied byte-identical, at their upstream
+# paths, into the EXISTING unsloth repo of that model -- its -FP8 repo, or -GGUF when there is no -FP8 -- beside the
+# upstream LICENSE and the NOTICE the licence asks for. The listing selectors skip that repo's own root checkpoints
+# (.pt, root .safetensors, .gguf, samples/), so it serves as the base. MiniMax-H3 already has a complete copy.
+# Kept OUT of ``_MIRROR_PAIRS``: that tuple is the IMAGE companion table (hub/utils/companion_assets reads it to decide
+# which cached repos an image checkpoint can strand), while these feed only the id lookups below, so mirror_repo /
+# canonical_base / prefer_ungated_mirror answer for video ids and nothing image-side changes.
+# Absent on purpose: HunyuanVideo-1.5, whose Tencent Hunyuan Community licence is limited to a Territory that excludes
+# the EU, UK and South Korea, which a public Hub repo cannot honour (the reason HunyuanImage-2.1 has no mirror either);
+# and Wan2.1-T2V-1.3B / -14B, for which no unsloth repo exists to carry the files.
+_VIDEO_GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
+    ("Lightricks/LTX-2.5-Diffusers", "unsloth/LTX-2.5-FP8"),
+    # The split single-file release (text_encoders/, vae/, latent_upscale_models/, diffusion_models/ bf16 DiTs). In the
+    # GGUF repo because the FP8 repo already carries the Diffusers pack, and one repo cannot stand for two upstreams.
+    ("Lightricks/LTX-2.5", "unsloth/LTX-2.5-GGUF"),
+)
+_VIDEO_UNGATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
+    ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", "unsloth/Wan2.2-TI2V-5B-FP8"),
+    ("Wan-AI/Wan2.2-T2V-A14B-Diffusers", "unsloth/Wan2.2-T2V-A14B-FP8"),
+    # LTX-2 is the base of the ltx-2 family AND the source of LTX-2.3's scheduler, Gemma3 text encoder and tokenizer.
+    ("Lightricks/LTX-2", "unsloth/LTX-2-FP8"),
+    # LTX-2.3 ships single files only (the bf16 dev / distilled / distilled-1.1 DiTs a pick names).
+    ("Lightricks/LTX-2.3", "unsloth/LTX-2.3-FP8"),
+    ("MiniMaxAI/MiniMax-H3", "unsloth/MiniMax-H3"),
+)
+_VIDEO_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
+    _VIDEO_GATED_MIRROR_PAIRS + _VIDEO_UNGATED_MIRROR_PAIRS
+)
+
+# Mirror targets that are ALSO a model's own artifact repo (its GGUF / prequant checkpoints sit at the root beside the
+# official diffusers folders). A user picks these ids directly, so they are never "just a copy of the upstream": no
+# opt-out may rewrite them to the upstream (which has no such checkpoint), a cached one is its own checkpoint rather
+# than a stand-in for the base, and only the folder part of the snapshot is the pipeline.
+# Listed by hand, never inferred from a -GGUF / -FP8 suffix: unsloth/ideogram-4-fp8 is an ordinary complete copy of
+# ideogram-ai/ideogram-4-fp8 (the FP8 is in the upstream name), so it must keep canonicalising like every full mirror.
+_ARTIFACT_MIRRORS: frozenset[str] = frozenset(
+    {
+        "unsloth/z-image-gguf",
+        "unsloth/qwen-image-2.1-turbo-fp8",
+        "unsloth/qwen-image-edit-gguf",
+        "unsloth/qwen-image-edit-2509-gguf",
+        "unsloth/qwen-image-layered-gguf",
+    }
+)
+_ALL_MIRROR_PAIRS: tuple[tuple[str, str], ...] = _MIRROR_PAIRS + _VIDEO_MIRROR_PAIRS
+_GATED_MIRRORS: dict[str, str] = {u.lower(): m for u, m in _ALL_MIRROR_PAIRS}
+_MIRROR_UPSTREAM: dict[str, str] = {m.lower(): u for u, m in _ALL_MIRROR_PAIRS}
+_GATED_UPSTREAMS: frozenset[str] = frozenset(
+    u.lower() for u, _m in _GATED_MIRROR_PAIRS + _VIDEO_GATED_MIRROR_PAIRS
+)
+
+
+# Repo id (lowercased) -> the commit a load's plan pinned it to, for the duration of that load's assembly. Set only by
+# ``pinned_repo_revision`` around a video load; every hub-id CONFIG read of a base repo (encoder / VAE / transformer
+# configs, model_index, the LTX-2.5 companions) asks ``pinned_revision_kwargs`` so it reads the planned commit. Empty
+# outside such a block, so unpinned callers (image loads, direct calls) pass no revision and behave as before.
+_PINNED_REVISIONS: "contextvars.ContextVar[Optional[dict[str, str]]]" = contextvars.ContextVar(
+    "unsloth_pinned_repo_revisions", default = None
+)
+
+
+def _pins() -> "contextvars.ContextVar[Optional[dict[str, str]]]":
+    return _PINNED_REVISIONS
+
+
+class pinned_repo_revision:
+    """``with pinned_repo_revision(repo, revision):`` pins hub-id reads of ``repo`` to ``revision`` in this context.
+    A no-op when either is missing or ``repo`` is a local path."""
+
+    def __init__(self, repo: Optional[str], revision: Optional[str]):
+        self._key = (
+            (repo or "").strip().lower() if repo and revision and not _is_local_path(repo) else ""
+        )
+        self._revision = revision
+        self._token = None
+
+    def __enter__(self) -> "pinned_repo_revision":
+        if self._key:
+            var = _pins()
+            self._token = var.set({**(var.get() or {}), self._key: str(self._revision)})
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        if self._token is not None:
+            _pins().reset(self._token)
+            self._token = None
+
+
+def pinned_revision_kwargs(repo: Any) -> dict[str, str]:
+    """``{"revision": <commit>}`` when ``repo`` is pinned in this context, else ``{}``."""
+    if not isinstance(repo, str) or not repo:
+        return {}
+    revision = (_pins().get() or {}).get(repo.strip().lower())
+    return {"revision": revision} if revision else {}
 
 
 def mirror_repo(repo_id: Optional[str]) -> Optional[str]:
     """The unsloth mirror of ``repo_id``, or None when it is not a mirrored vendor base."""
     return _GATED_MIRRORS.get((repo_id or "").strip().lower())
+
+
+def mirror_hosts_artifacts(repo_id: Optional[str]) -> bool:
+    """True when ``repo_id`` is a mirror target that also ships the model's own GGUF / prequant checkpoints."""
+    return (repo_id or "").strip().lower() in _ARTIFACT_MIRRORS
 
 
 def upstream_is_gated(repo_id: Optional[str]) -> bool:
@@ -1535,21 +1783,10 @@ def cache_holds_files(repo_id: str, files: Sequence[str]) -> bool:
 # Lowercased unsloth mirror -> the community repack the tables named before it. The mirrors are byte identical, so an
 # existing install that already pulled the repack holds the very same bytes under the OLD repo key: the HF cache is
 # keyed by repo id, so re-pointing the table alone would re-download up to tens of GB on upgrade and fail outright
-# offline.
-_SD_CPP_LEGACY_SOURCES: dict[str, str] = {
-    "unsloth/flux-text-encoders": "comfyanonymous/flux_text_encoders",
-    "unsloth/qwen-image-comfyui": "Comfy-Org/Qwen-Image_ComfyUI",
-    "unsloth/flux.2-vae": "Comfy-Org/flux2-dev",
-    "unsloth/flux.2-dev-comfyui": "Comfy-Org/flux2-dev",
-    "unsloth/z-image-turbo-comfyui": "Comfy-Org/z_image_turbo",
-    "unsloth/flux.2-klein-9b-comfyui": "Comfy-Org/vae-text-encorder-for-flux-klein-9b",
-    "unsloth/wan2.2-ti2v-5b-gguf": "QuantStack/Wan2.2-TI2V-5B-GGUF",
-    # MiniMax-H3, where only PART of the mirror came from the repack: the two VAEs now sit beside the denoisers in the
-    # GGUF repo, and the int8 ConvRot conditioner beside the other prequantized checkpoints. That is why every caller
-    # passes the exact file list -- a denoiser the repack never carried simply misses the probe and keeps the mirror.
-    "unsloth/minimax-h3-gguf": "Comfy-Org/MiniMax-H3",
-    "unsloth/minimax-h3-fp8": "Comfy-Org/MiniMax-H3",
-}
+# offline. Empty now: every image sd-cli asset is an official upstream file or an unsloth GGUF, and a video load never
+# reads from a Comfy or third-party repack (the MiniMax-H3 and Wan2.2-TI2V-5B-GGUF rows are gone), so no load reads a
+# repack, not even bytes already cached under one. Kept as the hook ``prefer_cached_legacy_source`` reads.
+_SD_CPP_LEGACY_SOURCES: dict[str, str] = {}
 
 
 def legacy_source_repo(repo_id: Optional[str]) -> Optional[str]:
@@ -1593,6 +1830,7 @@ def prefer_ungated_mirror(
     hf_token: Optional[str] = None,
     *,
     files: Optional[Sequence[str]] = None,
+    other_root: bool = False,
 ) -> str:
     """``base``, or its ungated unsloth mirror when that is the better repo to FETCH from.
 
@@ -1616,7 +1854,10 @@ def prefer_ungated_mirror(
     """
     del hf_token  # noqa: F841 -- signature stability only
     if os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
-        return base if _is_local_path(base) else canonical_base(base)
+        # An artifact repo stays itself: its GGUF / FP8 checkpoint does not exist under the upstream id.
+        if _is_local_path(base) or mirror_hosts_artifacts(base):
+            return base
+        return canonical_base(base)
     mirror = mirror_repo(base)
     if not mirror:
         return base
@@ -1624,7 +1865,14 @@ def prefer_ungated_mirror(
     # the copy already downloaded
     if _is_local_path(base):
         return base
-    return base if _upstream_is_cached(base, files) else mirror
+    # ``other_root`` for a fetch that resolves each file through either cache root (``reuse_other_cache_root``):
+    # an upstream copy left in the pre-change root then serves the load, so it must keep the upstream id.
+    cached = (
+        _upstream_is_cached(base, files, other_root = True)
+        if other_root
+        else _upstream_is_cached(base, files)
+    )
+    return base if cached else mirror
 
 
 # Default (steps, guidance) per model for callers that cannot pass them. Matched by substring, most specific first;
@@ -2567,14 +2815,45 @@ def family_sd_cpp_supported(fam: DiffusionFamily) -> bool:
 
 
 # FLUX.2-klein 9B pairs with Qwen3-8B, the 4B with the family-default Qwen3-4B (a mismatched encoder fails deep in
-# sd-cli), so pick per variant. Byte-identical mirror of Comfy-Org/vae-text-encorder-for-flux-klein-9b.
-_FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS = (
-    (
-        "unsloth/FLUX.2-klein-9B-ComfyUI",
-        "split_files/text_encoders/qwen_3_8b.safetensors",
-        "llm",
-    ),
+# sd-cli), so pick per variant. Klein 9B's text encoder is byte-identical to unsloth/Qwen3-8B.
+_FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS = (("unsloth/Qwen3-8B-GGUF", "Qwen3-8B-Q4_K_M.gguf", "llm"),)
+
+
+# sd-cli companion repos released Studio builds fetched and this one no longer reads: the unsloth copies of the
+# ComfyUI-built repacks, each holding only VAE / text-encoder files (no denoiser). Nothing loads from them now, but an
+# upgraded install still holds their bytes (up to ~70 GB), so they stay companion-only: hidden from the model pickers
+# and offered by Free up space once nothing pins them. Never fetched again. The Comfy-Org originals are NOT listed:
+# those repos also ship denoisers a user may load as single files, so they must stay ordinary cached repos.
+_RETIRED_SD_CPP_COMPANION_REPOS: frozenset[str] = frozenset(
+    {
+        "unsloth/flux-text-encoders",
+        "unsloth/qwen-image-comfyui",
+        "unsloth/flux.2-vae",
+        "unsloth/flux.2-dev-comfyui",
+        "unsloth/z-image-turbo-comfyui",
+        "unsloth/flux.2-klein-9b-comfyui",
+    }
 )
+
+
+# The community repacks those retired copies stood in for. Released builds sent an sd-cli fetch back to one already
+# cached, so a recorded companion link may name it. Ordinary cached repos otherwise (some also ship denoiser files), so
+# this set only drops stale LINKS; it never makes one a companion.
+_RETIRED_SD_CPP_LEGACY_SOURCES: frozenset[str] = frozenset(
+    {
+        "comfyanonymous/flux_text_encoders",
+        "comfy-org/qwen-image_comfyui",
+        "comfy-org/flux2-dev",
+        "comfy-org/z_image_turbo",
+        "comfy-org/vae-text-encorder-for-flux-klein-9b",
+    }
+)
+
+
+def retired_companion_link_ids() -> frozenset[str]:
+    """Lowercased repo ids no load reads any more, so a companion link naming one is stale: released sd.cpp loads
+    recorded these asset repos, and an installed GGUF must not keep pinning them in Free up space forever."""
+    return _RETIRED_SD_CPP_COMPANION_REPOS | _RETIRED_SD_CPP_LEGACY_SOURCES
 
 
 def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
@@ -2603,26 +2882,38 @@ def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
             loadable.add(fam.deploy_base_repo)
         loadable.update(repo for _scheme, repo in fam.prequant_repos)
         loadable.update(repo for _base, _scheme, repo in fam.prequant_variant_repos)
-        loadable.update(repo for _scheme, _component, repo in fam.te_prequant_repos)
+        loadable.update(row[2] for row in fam.te_prequant_repos)
+        loadable.update(row[3] for row in fam.te_prequant_variant_repos)
     companions.update(repo for repo, _f, _k in _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
-    return frozenset(r.strip().lower() for r in companions - loadable if r)
+    return (
+        frozenset(r.strip().lower() for r in companions - loadable if r)
+        | _RETIRED_SD_CPP_COMPANION_REPOS
+    )
 
 
 def prequant_only_repo_ids() -> frozenset[str]:
-    """Repos hosting only prequant checkpoints (no model_index.json), never a base or mirror."""
+    """Repos a pick names for their prequant checkpoints, never a base or a full mirror. A prequant repo that also
+    carries the official diffusers folders for its base (``mirror_hosts_artifacts``) stays here: those folders are
+    what a pick of the BASE fetches, and picking the prequant repo itself as a pipeline is still the wrong request."""
     hosted: set[str] = set()
     bases: set[str] = set()
     for fam in _FAMILIES:
         hosted.update(repo for _scheme, repo in fam.prequant_repos)
         hosted.update(repo for _base, _scheme, repo in fam.prequant_variant_repos)
-        hosted.update(repo for _scheme, _component, repo in fam.te_prequant_repos)
+        hosted.update(row[2] for row in fam.te_prequant_repos)
+        hosted.update(row[3] for row in fam.te_prequant_variant_repos)
         bases.add(fam.base_repo)
         bases.update(fam.train_base_repos)
         if fam.deploy_base_repo:
             bases.add(fam.deploy_base_repo)
-    bases.update(rid for pair in _MIRROR_PAIRS for rid in pair)
+    bases.update(rid for pair in _MIRROR_PAIRS for rid in pair if not mirror_hosts_artifacts(rid))
     lowered = {b.strip().lower() for b in bases if b}
-    return frozenset(r.strip().lower() for r in hosted if r and r.strip().lower() not in lowered)
+    # Every artifact mirror too: the -GGUF ones host no prequant scheme, but their folders are the BASE's pipeline
+    # all the same, and a pipeline pick of the repo id itself is the wrong request.
+    return (
+        frozenset(r.strip().lower() for r in hosted if r and r.strip().lower() not in lowered)
+        | _ARTIFACT_MIRRORS
+    )
 
 
 def prequant_repo_role(
@@ -2644,13 +2935,11 @@ def prequant_repo_role(
         if repo.strip().lower() == key:
             bases.append(fam.base_repo)
             schemes.append(scheme)
-    te = sorted(
-        {
-            scheme
-            for scheme, _component, repo in fam.te_prequant_repos
-            if repo.strip().lower() == key
-        }
-    )
+    te = sorted({row[0] for row in fam.te_prequant_repos if row[2].strip().lower() == key})
+    te_variant = [row for row in fam.te_prequant_variant_repos if row[3].strip().lower() == key]
+    te = sorted({*te, *(row[1] for row in te_variant)})
+    if te_variant and not bases:
+        bases.extend(known.get(row[0].lower(), row[0]) for row in te_variant)
     if te and not bases:
         bases.append(fam.base_repo)
     return tuple(dict.fromkeys(bases)), tuple(sorted(set(schemes))), tuple(te)
