@@ -278,6 +278,14 @@ def test_rejects_bad_requests():
     with pytest.raises(ValueError, match = "causal"):
         reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
     model.model.layers[1].self_attn.is_causal = True
+    layer0 = model.model.layers[0]
+    original = layer0.forward
+    layer0.forward = lambda hidden_states, prev_topk_indices = None, **kwargs: original(
+        hidden_states, **kwargs
+    )  # GLM-5 / HY-V4 hand top-k indices from layer to layer
+    with pytest.raises(ValueError, match = "extra state to the next layer"):
+        reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
+    del layer0.forward
     model.peft_config = {}
     with pytest.raises(RuntimeError, match = "get_peft_model"):
         reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
@@ -485,3 +493,19 @@ def test_refuses_layers_with_several_moe_blocks_and_keeps_training_modes():
     reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
     assert model.training and model.model.layers[1].training
     assert not model.model.layers[0].training
+
+
+def test_chunked_scoring_matches_one_pass(monkeypatch):
+    samples = _samples(n = 6, seed = 5)
+    a, b = _qwen3_moe(seed = 6), _qwen3_moe(seed = 6)
+    reap.reap_prune(a, None, sparsity = 0.25, dataset = samples, device = "cpu")
+    monkeypatch.setattr(reap, "_TAP_CHUNK_BYTES", 1)  # one token per experts call
+    reap.reap_prune(b, None, sparsity = 0.25, dataset = samples, device = "cpu")
+    assert a._unsloth_reap_report == b._unsloth_reap_report
+    for name in a._unsloth_reap_saliency:
+        torch.testing.assert_close(
+            torch.tensor(a._unsloth_reap_saliency[name], dtype = torch.float64),
+            torch.tensor(b._unsloth_reap_saliency[name], dtype = torch.float64),
+            rtol = 1e-9,
+            atol = 1e-12,
+        )

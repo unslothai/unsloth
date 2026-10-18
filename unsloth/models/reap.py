@@ -12,6 +12,7 @@ pair as its own row) instead of per-expert Linear modules, so no extra dependenc
 
 import inspect
 import json
+from collections.abc import MutableMapping
 import os
 import time
 
@@ -25,6 +26,12 @@ _NUM_EXPERTS_MODULE_KEYS = ("num_experts", "n_experts", "n_routed_experts", "num
 _TOP_K_KEYS = ("num_experts_per_tok", "top_k", "moe_top_k", "top_k_experts")
 _ROUTER_ATTRS = ("gate", "router")
 _DEFAULT_DATASET = "mlabonne/open-perfectblend"
+_TAP_CHUNK_BYTES = 256 << 20
+_STATEFUL_LAYERS = (
+    "Unsloth: REAP calibrates one decoder layer at a time, so it does not support decoder layers "
+    "that hand extra state to the next layer (GLM-5 / HY-V4 sparse-attention top-k indices, ZAYA "
+    "router states)."
+)
 # llm-compressor's fallback for tokenizers without a chat template (PerfectBlendDataset).
 _DEFAULT_CHAT_TEMPLATE = (
     "{% for message in messages %}\n"
@@ -282,6 +289,10 @@ def _capture_inputs(owner, layers, input_ids):
         owner(input_ids = input_ids, use_cache = False)
     except _StopForward:
         pass
+    except (TypeError, ValueError) as error:
+        if "unpack" not in str(error):
+            raise
+        raise ValueError(_STATEFUL_LAYERS) from error
     finally:
         for layer, original in zip(layers, originals):
             if original is None:
@@ -316,21 +327,19 @@ class _Saliency:
         norms,
         mask = None,
     ):
+        # MPS has no float64.
+        acc = torch.float32 if norms.device.type == "mps" else torch.float64
         if self.total is None:
-            self.total = torch.zeros(self.num_experts, dtype = torch.float64, device = norms.device)
-            self.count = torch.zeros(self.num_experts, dtype = torch.float64, device = norms.device)
-        ones = (
-            torch.ones_like(norms, dtype = torch.float64) if mask is None else mask.to(torch.float64)
-        )
-        self.total.index_add_(
-            0, expert_ids, weights.to(torch.float64) * norms.to(torch.float64) * ones
-        )
+            self.total = torch.zeros(self.num_experts, dtype = acc, device = norms.device)
+            self.count = torch.zeros(self.num_experts, dtype = acc, device = norms.device)
+        ones = torch.ones_like(norms, dtype = acc) if mask is None else mask.to(acc)
+        self.total.index_add_(0, expert_ids, weights.to(acc) * norms.to(acc) * ones)
         self.count.index_add_(0, expert_ids, ones)
 
     def mean(self):
         if self.total is None:
             return torch.zeros(self.num_experts, dtype = torch.float64)
-        return self.total.cpu() / self.count.cpu().clamp(min = 1.0)
+        return self.total.cpu().double() / self.count.cpu().double().clamp(min = 1.0)
 
 
 def _retained(saliency, n_drop, n_drop_per_group, n_group):
@@ -424,31 +433,46 @@ class _ExpertsTap:
         top_k_index = top_k_index.reshape(hidden_states.shape[0], -1)
         top_k_weights = top_k_weights.reshape(hidden_states.shape[0], -1)
         n_tokens, top_k = top_k_index.shape
-        # One row per routed (token, slot) pair with gate 1 gives each expert's raw output f_j(t).
-        rows = self.forward(
-            hidden_states.repeat_interleave(top_k, dim = 0),
-            top_k_index.reshape(-1, 1),
-            torch.ones(
-                (n_tokens * top_k, 1), dtype = top_k_weights.dtype, device = top_k_weights.device
-            ),
-            *args,
-            **kwargs,
+        valid = self.valid if self.valid is not None and self.valid.numel() == n_tokens else None
+        # Routed rows are top_k times the batch, so they are scored in bounded chunks.
+        step = max(
+            1, _TAP_CHUNK_BYTES // (top_k * hidden_states.shape[-1] * hidden_states.element_size())
         )
-        scored = rows if self.post is None else nn.functional.linear(rows, self.post.weight)
-        norms = torch.linalg.vector_norm(
-            scored, dim = -1, dtype = torch.float64 if rows.dtype == torch.float64 else torch.float32
-        )
-        expert_ids = top_k_index.reshape(-1).long()
-        weights = top_k_weights.reshape(-1)
-        valid, mask = self.valid, None
-        if valid is not None and valid.numel() == n_tokens:
-            # Masking by multiplication avoids the host sync boolean indexing needs.
-            mask = valid.to(norms.device, non_blocking = True).repeat_interleave(top_k)
-        self.saliency.add(expert_ids, weights, norms, mask)
+        outs = []
+        for start in range(0, n_tokens, step):
+            x = hidden_states[start : start + step]
+            index = top_k_index[start : start + step]
+            gate = top_k_weights[start : start + step]
+            n = x.shape[0]
+            # One row per routed (token, slot) pair with gate 1 gives each expert's raw output f_j(t).
+            rows = self.forward(
+                x.repeat_interleave(top_k, dim = 0),
+                index.reshape(-1, 1),
+                torch.ones((n * top_k, 1), dtype = gate.dtype, device = gate.device),
+                *args,
+                **kwargs,
+            )
+            scored = rows if self.post is None else nn.functional.linear(rows, self.post.weight)
+            norms = torch.linalg.vector_norm(
+                scored,
+                dim = -1,
+                dtype = torch.float64 if rows.dtype == torch.float64 else torch.float32,
+            )
+            mask = None
+            if valid is not None:
+                # Masking by multiplication avoids the host sync boolean indexing needs.
+                mask = (
+                    valid[start : start + step]
+                    .to(norms.device, non_blocking = True)
+                    .repeat_interleave(top_k)
+                )
+            self.saliency.add(index.reshape(-1).long(), gate.reshape(-1), norms, mask)
+            if not self.stop:
+                out = rows.view(n, top_k, -1) * gate.unsqueeze(-1).to(rows.dtype)
+                outs.append(out.sum(1).to(rows.dtype))
         if self.stop:
             raise _StopForward
-        out = (rows.view(n_tokens, top_k, -1) * top_k_weights.unsqueeze(-1).to(rows.dtype)).sum(1)
-        return out.to(rows.dtype).reshape(shape)
+        return (outs[0] if len(outs) == 1 else torch.cat(outs)).reshape(shape)
 
     def remove(self):
         if self.original is None:
@@ -539,7 +563,7 @@ def reap_prune(
         raise ValueError(
             "Unsloth: REAP needs an MoE model with an expert count and top_k in its config."
         )
-    n_group = _first_attr(configs, ("n_group",))
+    n_group = _first_attr(configs, ("n_group", "num_expert_group"))
     topk_group = _first_attr(configs, ("topk_group", "top_k_group"))
     if (n_group is None) != (topk_group is None):
         n_group = topk_group = None
@@ -564,6 +588,8 @@ def reap_prune(
             "Unsloth: REAP found no MoE layers with fused experts. It needs transformers 5.x MoE "
             "modules (an `experts` module with 3D expert weights next to a `gate` / `router`)."
         )
+    if any(p.startswith("prev_") for p in inspect.signature(layers[0].forward).parameters):
+        raise ValueError(_STATEFUL_LAYERS)
     # Non-causal text attention (openai/privacy-filter) carries no config flag.
     if any(getattr(m, "is_causal", None) is False for layer in layers for m in layer.modules()):
         raise ValueError(
@@ -687,7 +713,25 @@ def reap_prune(
 
                 def run(b, h):
                     args, kwargs = kwargs_per_batch[b][index]
-                    return _hidden(layer(h, *_to(args, layer_device), **_to(kwargs, layer_device)))
+                    # Gemma 4's per-batch `shared_kv_states` (a UserDict the attention writes K / V
+                    # into) is shared by identity across layers; offloaded, its tensors follow the
+                    # activations instead of piling up on the GPU for every batch.
+                    shared = [
+                        v
+                        for v in kwargs.values()
+                        if isinstance(v, MutableMapping) and not isinstance(v, dict)
+                    ]
+                    if store is not None:
+                        for m in shared:
+                            m.update(_to(dict(m), layer_device))
+                    try:
+                        return _hidden(
+                            layer(h, *_to(args, layer_device), **_to(kwargs, layer_device))
+                        )
+                    finally:
+                        if store is not None:
+                            for m in shared:
+                                m.update(_to(dict(m), store))
 
                 moe = _layer_moe(layer, num_experts)
                 norm = None

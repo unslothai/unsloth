@@ -5933,6 +5933,21 @@ def unsloth_generic_save(
 
     # Full-finetuned models have no adapters to merge, so fall back to save_pretrained, mirroring the torchao and GGUF save paths.
     _is_peft = isinstance(model, PeftModel)
+    # Inline, builtins only (no new locals: they are forwarded below). After an in-memory REAP prune
+    # the base checkpoint on disk still has every expert, and both a merge (which rebuilds from it)
+    # and an adapter save (which records it as the base) would use it. get_peft_model refuses this
+    # too; raw PEFT does not.
+    if (
+        _is_peft
+        and getattr(model, "_unsloth_reap_report", None)
+        and not getattr(model, "_unsloth_reap_saved", None)
+    ):
+        raise RuntimeError(
+            "Unsloth: this model was REAP pruned in memory only, but this save would use the base "
+            f"checkpoint `{model.config._name_or_path}`, which still has every expert. Nothing was "
+            'written. Call `reap_prune(..., save_directory = "pruned_model")` (or save the pruned '
+            "model and load it again) before `get_peft_model`."
+        )
     if not _is_peft:
         if not is_main_process:
             return
@@ -6055,17 +6070,6 @@ def unsloth_generic_save(
         )
     else:
         raise_if_merging_mistral_format_view(model, save_method)
-        # Inline, builtins only: the merge rebuilds the base from disk, which still has every expert
-        # after an in-memory REAP prune (get_peft_model refuses this too; raw PEFT does not).
-        if getattr(model, "_unsloth_reap_report", None) and not getattr(
-            model, "_unsloth_reap_saved", None
-        ):
-            raise RuntimeError(
-                "Unsloth: this model was REAP pruned in memory only, but a merged save rebuilds the "
-                f"base weights from `{model.config._name_or_path}`, which still has every expert. "
-                'Nothing was written. Call `reap_prune(..., save_directory = "pruned_model")` (or '
-                "save the pruned model and load it again) before `get_peft_model`."
-            )
         from unsloth_zoo.saving_utils import merge_and_overwrite_lora
 
         # An older unsloth_zoo accepts `output_dtype` but still writes the base dtype.
