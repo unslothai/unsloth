@@ -9187,6 +9187,17 @@ _unsloth_spark_cluster_offer() {
         | sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
     if [ "$_sp_state" = "configured" ]; then
         step "spark" "second Spark already paired" "$C_OK"
+        # This run just replaced the local venv and llama.cpp bundle; the peer still has the old
+        # ones until it is provisioned again, and mismatched copies diverge or hang in two-node runs.
+        case "${UNSLOTH_SPARK_CLUSTER:-}" in
+            1|yes|YES|true|TRUE|on|ON)
+                "$VENV_DIR/bin/python" -m studio.spark_cluster provision || \
+                    substep "Provisioning the peer failed; run:  unsloth spark provision"
+                ;;
+            *)
+                substep "Copy this update to the second Spark:  unsloth spark provision"
+                ;;
+        esac
         return 0
     fi
 

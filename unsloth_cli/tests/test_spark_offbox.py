@@ -468,7 +468,7 @@ def test_peer_gpu_probe_fails_closed(monkeypatch) -> None:
     assert sc.peer_gpu_busy("h")["busy"] is True
 
 
-def test_provision_refuses_a_busy_peer_and_never_deletes_by_default(monkeypatch) -> None:
+def test_provision_refuses_a_busy_peer_and_deletes_only_in_the_venv_by_default(monkeypatch) -> None:
     sc = _load("studio/spark_cluster.py")
     monkeypatch.setattr(sc.shutil, "which", lambda name: "/usr/bin/" + name)
     monkeypatch.setenv(sc.FAST_ENV, "0")
@@ -504,7 +504,11 @@ def test_provision_refuses_a_busy_peer_and_never_deletes_by_default(monkeypatch)
 
     monkeypatch.setattr(sc.subprocess, "run", record)
     sc.provision_peer("192.168.200.13")
-    assert ran and all("--delete" not in cmd for cmd in ran)
+    rsyncs = [cmd for cmd in ran if cmd and cmd[0] == "rsync"]
+    # An idle peer mirrors the venv exactly (no stale packages); caches are never deleted.
+    venv = [cmd for cmd in rsyncs if cmd[-1].rstrip("/").endswith("unsloth_studio")]
+    assert venv and all("--delete" in cmd for cmd in venv)
+    assert all("--delete" not in cmd for cmd in rsyncs if cmd not in venv)
     ran.clear()
     sc.provision_peer("192.168.200.13", delete = True)
     # rsync commands only.

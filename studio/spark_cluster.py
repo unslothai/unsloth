@@ -2776,7 +2776,7 @@ SPARK_USABLE_GIB = 121.69
 SERVE_OVERHEAD_GIB = 8.0
 
 
-_GGUF_SHARD_RE = re.compile(r"^(?P<series>.+)-\d{5}-of-\d{5}\.gguf$")
+_GGUF_SHARD_RE = re.compile(r"^(?P<series>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})\.gguf$")
 
 
 def _weight_group(filename: str) -> Optional[str]:
@@ -2795,10 +2795,16 @@ def _size_one_group(files: List[Tuple[str, str]]) -> Dict[str, Any]:
     """Total bytes of the ONE model in `files` [(name, path)], or why there is not exactly one."""
     groups: Dict[str, int] = {}
     seen: set = set()
+    shards: Dict[str, Tuple[set, int]] = {}
     for name, full in files:
         group = _weight_group(name)
         if group is None:
             continue
+        match = _GGUF_SHARD_RE.match(name) if name.endswith(".gguf") else None
+        if match:
+            found, _total = shards.get(group, (set(), 0))
+            found.add(int(match.group("index")))
+            shards[group] = (found, int(match.group("total")))
         try:
             real = osp.realpath(full)
             if real in seen:
@@ -2811,6 +2817,13 @@ def _size_one_group(files: List[Tuple[str, str]]) -> Dict[str, Any]:
         groups.pop("bin", None)
     if not groups:
         return {"bytes": None, "why": "no weight files found"}
+    for group, (found, total) in shards.items():
+        if group in groups and found != set(range(1, total + 1)):
+            # Summing what is present would size a fraction of the model.
+            return {
+                "bytes": None,
+                "why": f"{group[5:]} is split into {total} files and only {len(found)} are present",
+            }
     if len(groups) > 1:
         names = ", ".join(sorted(groups))
         return {
@@ -3010,7 +3023,10 @@ def gguf_kv_bytes_per_token(meta: Dict[str, Any]) -> Optional[float]:
     if not isinstance(arch, str) or not arch:
         return None
     layers = meta.get(f"{arch}.block_count")
+    # Optional in GGUF: llama.cpp reads an absent one as head_count (plain multi-head attention).
     heads_kv = meta.get(f"{arch}.attention.head_count_kv")
+    if heads_kv is None:
+        heads_kv = meta.get(f"{arch}.attention.head_count")
     key_len = meta.get(f"{arch}.attention.key_length")
     value_len = meta.get(f"{arch}.attention.value_length")
     if key_len is None or value_len is None:
@@ -4725,6 +4741,10 @@ def _cmd_serve(
     slots: int = 16,
 ) -> int:
     """Serve a GGUF across BOTH Sparks, using the layout that actually wins."""
+    if ctx < 1 or slots < 1:
+        # The sizing clamps these to 1, but the printed llama-server command would not.
+        print(f"  --ctx ({ctx}) and --slots ({slots}) must both be at least 1")
+        return 2
     if not is_dgx_spark():
         print(NOT_A_SPARK)
         return 0
