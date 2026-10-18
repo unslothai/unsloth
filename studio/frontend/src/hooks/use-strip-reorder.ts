@@ -10,8 +10,7 @@ export interface StripDropCue {
   edge: "before" | "after";
 }
 
-// Custom type so other drop targets do not read the drag as a file or link. ImageDropzone accepts it
-// as a copy when the page registers a gallery image source.
+// Custom type so other drop targets do not read the drag as a file or link.
 export const GALLERY_ITEM_DRAG_TYPE = "application/x-unsloth-gallery-item";
 
 /** Whether the event came from the tile's own DOM, not a portalled menu or dialog inside it. */
