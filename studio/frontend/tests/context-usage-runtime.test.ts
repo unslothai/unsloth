@@ -389,6 +389,23 @@ test("hydrating the saved reasoning settings keeps legacy usage exact", () => {
   assert.deepEqual(h.world.recounts, []);
 });
 
+test("settings pairing preserves an exact count already priced for the restored reasoning mode", () => {
+  const h = harness();
+  const enabled = contextUsageReasoningKey({ enable_thinking: true });
+  h.state.reasoningKey = contextUsageReasoningKey({ enable_thinking: false });
+  h.state.threadScopedSettingsPending = true;
+  h.world.thread.messages = [reply(usage(84, enabled))];
+  h.render();
+  const counted = usage(101, enabled);
+  h.state.contextUsage = counted;
+  h.state.reasoningKey = enabled;
+  h.state.threadScopedSettingsPending = false;
+  h.render();
+  assert.equal(h.state.contextUsage, counted);
+  assert.deepEqual(h.writes, []);
+  assert.deepEqual(h.world.recounts, []);
+});
+
 test("settings pairing cannot replace restored usage with the still-loading empty branch", () => {
   const h = harness();
   h.state.reasoningKey = contextUsageReasoningKey({ enable_thinking: true });
