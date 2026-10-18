@@ -408,7 +408,7 @@ _FUSED_CALLS = {"fwd": 0, "bwd": 0}
 
 
 def _read_fused_env():
-    # UNSLOTH_NVFP4_FUSED: 0 dense, 1 fused, unset = per-GPU row gate (UNSLOTH_NVFP4_FUSED_MAX_ROWS overrides it).
+    # UNSLOTH_NVFP4_FUSED: 0 dense, 1 fused, unset = per-GPU row gate (UNSLOTH_NVFP4_FUSED_MAX_ROWS: a flat row limit).
     rows = os.environ.get("UNSLOTH_NVFP4_FUSED_MAX_ROWS")
     return os.environ.get("UNSLOTH_NVFP4_FUSED", "auto").strip().lower(), int(
         rows
@@ -436,15 +436,25 @@ _FUSED_FORCE = ("1", "true", "on", "yes", "force")
 _IS_HIP = torch.version.hip is not None
 
 
-def _fused_ok(A, packed, scale, global_scale, inner):
+def _fused_max_rows(capability, weight_numel, dx = False):
+    # Rows of X (forward) or of the output gradient (dX) up to which fused beats dense; 0 = never (unmeasured GPU).
+    gate = _FUSED_ROW_GATE.get(capability)
+    if gate is None:
+        return 0
+    div, max_rows, dx_floor = gate
+    return max(dx_floor if dx else 32, min(max_rows, weight_numel // div))
+
+
+def _fused_ok(A, packed, scale, global_scale, inner, dx = False):
     # Anything unusual keeps the dense path (and its errors).
     mode, rows = _fused_env()
     if mode in _FUSED_OFF or _IS_HIP or not A.is_cuda:
         return False
     index = A.get_device()
     if mode not in _FUSED_FORCE:
-        limit = rows if rows is not None else _FUSED_MAX_ROWS.get(_device_capability(index), 0)
-        if A.numel() > limit * inner:  # unmeasured GPUs (limit 0) leave here
+        if rows is None:
+            rows = _fused_max_rows(_device_capability(index), packed.numel() * 2, dx)
+        if A.numel() > rows * inner:  # unmeasured GPUs (limit 0) leave here
             return False
     if A.dtype not in (torch.float16, torch.bfloat16) or A.numel() == 0 or A.shape[-1] != inner:
         return False
@@ -467,8 +477,10 @@ def _fused_ok(A, packed, scale, global_scale, inner):
     )
 
 
-# Max rows where fused beats dense (measured at N, K multiples of 64); unmeasured GPUs stay dense.
-_FUSED_MAX_ROWS = {(8, 0): 64, (8, 9): 256, (12, 0): 128}
+# Fused beats dense while the weight (N * K elements) gives the GPU enough tiles: rows <= clamp(N * K // div, floor,
+# max_rows), floor 32 forward and dx_floor for dX. capability: (div, max_rows, dx_floor). Measured in bf16 at N, K
+# multiples of 64, rows 1 to 256, N * K 2.4M to 67M (A100, L4, RTX PRO 6000); unmeasured GPUs stay dense.
+_FUSED_ROW_GATE = {(8, 0): (3 << 17, 64, 16), (8, 9): (3 << 16, 256, 32), (12, 0): (3 << 17, 128, 16)}
 
 
 def _scale_args(scale):
@@ -640,7 +652,7 @@ def _nvfp4_matmul_bwd(
 ) -> torch.Tensor:
     # create_graph: the raw launch has no autograd history, so differentiate through the dense matmul.
     if not (grad.requires_grad and torch.is_grad_enabled()) and _fused_ok(
-        grad, packed, scale, global_scale, packed.shape[0]
+        grad, packed, scale, global_scale, packed.shape[0], dx = True
     ):
         return _nvfp4_matmul_dx_fused(grad, packed, scale, global_scale.reshape(-1)[:1])
     return torch.matmul(grad, nvfp4_dequantize(packed, scale, global_scale, grad.dtype))
