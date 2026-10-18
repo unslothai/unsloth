@@ -145,6 +145,68 @@ def test_the_shells_base_follows_the_router_only_without_a_page_base():
     )
 
 
+def test_the_pages_history_stays_out_of_studios():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    assert "history.pushState" not in boot and "originalPush" not in boot
+    for guard in (
+        'if (method === "pushState") pushRoute(state, title, next);',
+        "history.back = () => history.go(-1);",
+        "history.forward = () => history.go(1);",
+        'post({ type: step < 0 ? "back" : "forward" });',
+        'dispatchEvent(new PopStateEvent("popstate", { state: history.state }));',
+    ):
+        assert guard in boot, guard
+
+
+def test_an_anchor_jump_is_a_back_step_that_returns_to_the_same_spot():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    follow = boot[boot.index("const followHash = ") : boot.index("const navigate = ")]
+    assert 'if (next.href !== pageUrl) pushRoute(null, "", next.href);' in follow
+    assert follow.index("pushRoute(") < follow.index("scrollToHash(hash);")
+    for guard in (
+        "routes[route].scroll = { x: scrollX, y: scrollY };",
+        'if (target.scroll && history.scrollRestoration !== "manual") scrollTo(target.scroll.x, target.scroll.y);',
+        'post({ type: "history", back: Boolean(routes[stepFrom(-1)]), forward: Boolean(routes[stepFrom(1)]) });',
+        "routes[route].skip = navigator.userActivation?.isActive === false;",
+        "const to = stepFrom(data.delta === -1 ? -1 : 1);",
+        'post({ type: to < route ? "back" : "forward" });',
+    ):
+        assert guard in boot, guard
+
+
+def test_moving_between_fragments_fires_hashchange_for_hash_routers():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    assert (
+        'dispatchEvent(new HashChangeEvent("hashchange", { oldURL: from, newURL: pageUrl }));'
+        in boot
+    )
+    assert 'location.href.split("#")[0] + new URL(next).hash' in boot
+    move = boot[boot.index("const moveRoute = ") : boot.index("for (const method of")]
+    assert move.index('new PopStateEvent("popstate"') < move.index("tellHashChange(from);")
+    follow = boot[boot.index("const followHash = ") : boot.index("const navigate = ")]
+    assert follow.index("scrollToHash(hash);") < follow.index("tellHashChange(from);")
+
+
+def test_the_shell_reports_and_restores_where_the_page_was_scrolled():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    for guard in (
+        'post({ type: "scroll", x: scrollX, y: scrollY });',
+        'if (scrollTimer && message.type === "navigate") reportScroll();',
+        "scrollTimer ||= setTimeout(reportScroll, 200);",
+        "const restore = () => scrollTo(cfg.scroll.x, cfg.scroll.y);",
+        'addEventListener("load", () => { if (scrollY === settled) restore(); }, { once: true });',
+    ):
+        assert guard in boot, guard
+    assert boot.index("if (cfg.scroll) {") < boot.index(
+        "} else if (new URL(pageUrl).hash) scrollToHash("
+    )
+    assert "scroll: data.scroll || null" in shell
+
+
 def test_annotate_code_is_sent_only_when_annotating():
     shell, code = browser_mod._FRAME_HTML, browser_mod._ANNOTATE_JS
     # Not in the shell (so not in every page), installed once and only from the shell's own message.

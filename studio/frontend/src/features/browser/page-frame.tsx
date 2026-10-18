@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { browserFrameUrl, type PageResponse, requestForPage } from "./api";
 import { type AnnotateEvent, type FrameMessage, parseFrameMessage } from "./frame-message";
 import { pageRequests } from "./page-requests";
+import type { ScrollPosition } from "./store";
 import {
   onPageStorageClear,
   onPageStorageWrite,
@@ -24,6 +25,7 @@ export type FrameCommand =
   | { command: "find"; query: string }
   | { command: "findStep"; delta: -1 | 1 }
   | { command: "snapshot" }
+  | { command: "go"; delta: -1 | 1 }
   | { command: "zoom"; value: number }
   | { command: "mute"; on: boolean }
   | { command: "clearStorage" }
@@ -134,11 +136,13 @@ export function PageFrame({
   tabId,
   zoom = 1,
   muted = false,
+  scroll,
   onMessage,
 }: {
   tabId: string;
   zoom?: number;
   muted?: boolean;
+  scroll?: ScrollPosition;
   html: string;
   url: string | null;
   base: string | null;
@@ -224,7 +228,12 @@ export function PageFrame({
       if (message.type === "loaded") {
         if (loaded) message = { type: "title", title: message.title };
         loaded = true;
-      } else if ((message.type === "navigate" && !message.newTab) || message.type === "reload") {
+      } else if (
+        (message.type === "navigate" && !message.newTab) ||
+        message.type === "reload" ||
+        message.type === "back" ||
+        message.type === "forward"
+      ) {
         if (left) return;
         left = true;
         // An unrequested redirect replaces this page, as browsers keep it off Back.
@@ -308,6 +317,7 @@ export function PageFrame({
             refresh: refresh ?? null,
             zoom: zoomRef.current,
             muted: mutedRef.current,
+            scroll: scroll ?? null,
             storage: origin ? readPageStorage(origin, tabId) : null,
           },
           "*",

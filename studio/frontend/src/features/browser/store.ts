@@ -89,6 +89,7 @@ export type BrowserTab = {
   nativeError: string | null;
   /** The proxied page failed to load, so an error shows instead of its frame. */
   pageError?: boolean;
+  pageHistory?: { back: boolean; forward: boolean } | null;
   /** The name the reader gave the tab; kept as it navigates. */
   customTitle: string | null;
   muted: boolean;
@@ -178,6 +179,18 @@ export function cachePage(entry: BrowserEntry, page: BrowserPage): void {
 
 export function clearPageCache(): void {
   pageCache.clear();
+}
+
+export type ScrollPosition = { x: number; y: number };
+
+const scrollPositions = new WeakMap<BrowserEntry, ScrollPosition>();
+
+export function saveScroll(entry: BrowserEntry, position: ScrollPosition): void {
+  scrollPositions.set(entry, position);
+}
+
+export function savedScroll(entry: BrowserEntry): ScrollPosition | undefined {
+  return scrollPositions.get(entry);
 }
 
 // Posted entries already sent: loading one again asks rather than resubmitting (tab-view.tsx).
@@ -356,7 +369,15 @@ type BrowserState = {
     patch: Partial<
       Pick<
         BrowserTab,
-        "title" | "favicon" | "documentType" | "displayUrl" | "loading" | "nativeHistory" | "nativeError" | "pageError"
+        | "title"
+        | "favicon"
+        | "documentType"
+        | "displayUrl"
+        | "loading"
+        | "nativeHistory"
+        | "nativeError"
+        | "pageError"
+        | "pageHistory"
       >
     >,
   ) => void;
@@ -421,6 +442,7 @@ function pushEntry(tab: BrowserTab, entry: BrowserEntry, replace = false): Brows
     openKey: null,
     nativeError: null,
     pageError: false,
+    pageHistory: null,
     zoom,
   };
 }
@@ -439,6 +461,7 @@ function moveTo(tab: BrowserTab, index: number): BrowserTab {
     openKey: entry.kind === "file" ? (entry.openKey ?? null) : null,
     nativeError: null,
     pageError: false,
+    pageHistory: null,
   };
 }
 
@@ -726,7 +749,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       set((state) => ({
         tabs: patchTab(state.tabs, tabId, (tab) => {
           const moved = routerEntry(tab);
-          if (!moved) return { ...tab, reloadKey: tab.reloadKey + 1 };
+          if (!moved) return { ...tab, reloadKey: tab.reloadKey + 1, pageHistory: null };
           // Swapped in place, as a browser's reload: Forward keeps its pages.
           const next = pushEntry(tab, moved, true);
           return { ...next, history: [...next.history, ...tab.history.slice(tab.index + 1)], reloadKey: tab.reloadKey + 1 };

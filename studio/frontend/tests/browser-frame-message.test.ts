@@ -54,6 +54,11 @@ test("an upload notice carries nothing a page could fill", () => {
   assert.deepEqual(from({ type: "scriptNavigation", url: "https://evil.example/" }), { type: "scriptNavigation" });
 });
 
+test("a page's Back and Forward reach the panel bare", () => {
+  assert.deepEqual(from({ type: "back", url: "https://evil.example/" }), { type: "back" });
+  assert.deepEqual(from({ type: "forward", steps: 9 }), { type: "forward" });
+});
+
 test("a page the sandbox refused a feature reaches the panel as a bare notice", () => {
   assert.deepEqual(from({ type: "needsBrowser", url: "https://evil.example/" }), { type: "needsBrowser" });
 });
