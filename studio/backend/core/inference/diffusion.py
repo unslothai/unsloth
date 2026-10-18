@@ -872,6 +872,7 @@ def _assert_local_base_is_pipeline(
     base_repo: str,
     *,
     allow_modular: bool = False,
+    modular_only: bool = False,
     excluded_components: Sequence[str] = (),
     config_only_model_components: bool = False,
     fixed_component_folders: Optional[Mapping[str, tuple[str, str, str]]] = None,
@@ -887,7 +888,8 @@ def _assert_local_base_is_pipeline(
     ``allow_modular`` accepts ``modular_model_index.json`` as well, for a caller whose loader is
     ``ModularPipeline.from_pretrained``: that IS the valid on-disk layout for a Modular Diffusers
     pipeline (MiniMax-H3 ships no ``model_index.json`` at all). Off by default: a conventional
-    ``DiffusionPipeline`` load still needs the conventional index.
+    ``DiffusionPipeline`` load still needs the conventional index. ``modular_only`` accepts nothing else, for a
+    loader that reads only the modular index (FLUX.3).
 
     ``excluded_components`` are supplied by the caller (the checkpoint's denoiser), not the base;
     ``config_only_model_components`` means the base only supplies component configs."""
@@ -901,8 +903,8 @@ def _assert_local_base_is_pipeline(
         return  # invalid path characters -> a remote id, not a local path
     if not exists:
         return
-    indexes = ["model_index.json"]
-    if allow_modular:
+    indexes = [] if modular_only else ["model_index.json"]
+    if allow_modular or modular_only:
         indexes.append("modular_model_index.json")
     if not root.is_dir() or not any(
         local_pipeline_components_are_complete(
@@ -3765,8 +3767,8 @@ class DiffusionBackend:
         )
         _assert_local_base_is_pipeline(
             base_repo,
-            # FLUX.3 companions come from a Modular Diffusers base (modular_model_index.json, no model_index.json).
-            allow_modular = is_flux3_family(fam),
+            # FLUX.3 companions come from a Modular Diffusers base, and its loader reads only modular_model_index.json.
+            modular_only = is_flux3_family(fam),
             excluded_components = excluded,
             config_only_model_components = whole_file,
             # The FLUX.3 assembler reads each component from its own folder here, never from a spec's source repo.
