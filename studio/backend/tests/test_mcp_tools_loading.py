@@ -261,6 +261,18 @@ def test_a_plan_entry_supplies_the_checkpoint_file(monkeypatch, fast_polls):
     assert [c for c in studio.state.calls if c[1] == "/api/hub/gguf-variants"] == []
 
 
+def test_a_video_checkpoint_with_a_dtype_in_its_name_still_loads(monkeypatch, fast_polls):
+    # Video status publishes no file and no quant for a plain checkpoint.
+    entry = {"checkpoint": True, "gguf_filename": "ltx-video-2b-v0.9.5-bf16.safetensors"}
+    studio = _media_studio(
+        "video",
+        statuses = [{"loaded": True, "repo_id": LTX, "model_kind": "single_file"}],
+        plan = {"entries": [entry]},
+    )
+    result, _studio = run_tool(monkeypatch, studio, "load_model", {"model": LTX, "kind": "video"})
+    assert result["structuredContent"]["loaded"] is True
+
+
 PREVIOUS = {"loaded": True, "repo_id": "old/model"}
 AB = {"model": "a/b", "kind": "image"}
 DISK_FULL = [{"phase": "downloading"}, {"phase": "error", "error": "Out of disk space"}]

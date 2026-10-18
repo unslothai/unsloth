@@ -505,8 +505,8 @@ def _resident_matches(
         return os.path.normcase(resident) == os.path.normcase(wanted)
     from hub.utils.gguf import extract_quant_token
 
-    # Video status names only the quant; a plain checkpoint has none to compare.
-    quant = extract_quant_token(wanted)
+    # Video status names only a GGUF's quant; a plain checkpoint has none to compare.
+    quant = extract_quant_token(wanted) if wanted.lower().endswith(".gguf") else None
     if not quant:
         return True
     return (opt_text(status.get("gguf_variant")) or "").lower() == quant.lower()
