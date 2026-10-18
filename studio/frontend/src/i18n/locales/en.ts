@@ -2415,7 +2415,7 @@ export const en = {
           "Loading a model keeps the others when they fit. When they don't, it unloads the ones not in use first, then the active one.",
         multiModelDescriptionAlways:
           "Loading a model never unloads another. A model that does not fit is not loaded. Idle auto-unload and training still free memory.",
-        multiModelHint: "Covers chat, image and video models. Each loaded chat model answers the requests that name it. With several GPUs, Unsloth Studio tries to place a new model on a GPU no other model uses. “When they fit” leaves about 1 GB spare. “When they fit” and “Always” never unload a model on another GPU.",
+        multiModelHint: "Covers chat, image and video models. Each loaded chat model answers the requests that name it. With several GPUs, Unsloth tries to place a new model on a GPU no other model uses. “When they fit” leaves about 1 GB spare. “When they fit” and “Always” never unload a model on another GPU.",
         mediaIdleUnloadDescription:
           "Free VRAM by unloading the image and video models after this many idle seconds. 0 keeps them loaded, minimum 60.",
         mlockVetoed: "--mlock stays off: pinning the model in place would reserve RAM for all of it. Idle auto-unload is still disabled.",

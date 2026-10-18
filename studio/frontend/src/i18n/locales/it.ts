@@ -2299,7 +2299,7 @@ export const it = {
           "Caricare un modello mantiene gli altri se c'è spazio. Altrimenti scarica prima quelli non in uso, poi quello attivo.",
         multiModelDescriptionAlways:
           "Caricare un modello non ne scarica mai un altro. Un modello che non entra non viene caricato. Lo scaricamento automatico per inattività e l'addestramento liberano comunque memoria.",
-        multiModelHint: "Vale per i modelli di chat, immagini e video. Ogni modello di chat caricato risponde alle richieste che lo nominano. Con più GPU, Unsloth Studio prova a mettere un nuovo modello su una GPU che nessun altro modello usa. «Se c'è spazio» lascia circa 1 GB libero. «Se c'è spazio» e «Sempre» non scaricano mai un modello su un'altra GPU.",
+        multiModelHint: "Vale per i modelli di chat, immagini e video. Ogni modello di chat caricato risponde alle richieste che lo nominano. Con più GPU, Unsloth prova a mettere un nuovo modello su una GPU che nessun altro modello usa. «Se c'è spazio» lascia circa 1 GB libero. «Se c'è spazio» e «Sempre» non scaricano mai un modello su un'altra GPU.",
         mediaIdleUnloadDescription:
           "Libera la VRAM scaricando i modelli di immagini e video dopo il numero indicato di secondi di inattività. 0 li mantiene in memoria; il minimo è 60.",
         mlockVetoed: "--mlock resta disattivato: bloccare il modello riserverebbe RAM per l'intero modello. Lo scaricamento automatico in inattività resta disattivato.",

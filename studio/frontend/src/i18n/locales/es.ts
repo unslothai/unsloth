@@ -2388,7 +2388,7 @@ export const es = {
           "Al cargar un modelo, los demás se mantienen si caben. Si no caben, primero se descargan los que no se están usando y después el activo.",
         multiModelDescriptionAlways:
           "Al cargar un modelo nunca se descarga otro. Un modelo que no cabe no se carga. La descarga automática por inactividad y el entrenamiento siguen liberando memoria.",
-        multiModelHint: "Se aplica a los modelos de chat, imagen y vídeo. Cada modelo de chat cargado responde a las solicitudes que lo nombran. Con varias GPU, Unsloth Studio intenta colocar un modelo nuevo en una GPU que ningún otro modelo usa. «Cuando quepan» deja aproximadamente 1 GB libre. «Cuando quepan» y «Siempre» nunca descargan un modelo de otra GPU.",
+        multiModelHint: "Se aplica a los modelos de chat, imagen y vídeo. Cada modelo de chat cargado responde a las solicitudes que lo nombran. Con varias GPU, Unsloth intenta colocar un modelo nuevo en una GPU que ningún otro modelo usa. «Cuando quepan» deja aproximadamente 1 GB libre. «Cuando quepan» y «Siempre» nunca descargan un modelo de otra GPU.",
         mediaIdleUnloadDescription:
           "Libera la VRAM descargando los modelos de imagen y vídeo después de este número de segundos de inactividad. El valor 0 los mantiene cargados; el mínimo es 60.",
         mlockVetoed: "--mlock permanece desactivado: fijar el modelo reservaría RAM para todo él. La descarga automática por inactividad sigue desactivada.",

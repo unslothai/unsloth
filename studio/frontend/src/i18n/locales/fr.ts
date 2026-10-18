@@ -2392,7 +2392,7 @@ export const fr = {
           "Charger un modèle garde les autres s'ils tiennent. Sinon, il décharge d'abord ceux qui ne sont pas utilisés, puis le modèle actif.",
         multiModelDescriptionAlways:
           "Charger un modèle n'en décharge jamais un autre. Un modèle qui ne tient pas n'est pas chargé. Le déchargement automatique en veille et l'entraînement libèrent toujours de la mémoire.",
-        multiModelHint: "Concerne les modèles de discussion, d'image et de vidéo. Chaque modèle de discussion chargé répond aux requêtes qui le nomment. Avec plusieurs GPU, Unsloth Studio essaie de placer un nouveau modèle sur un GPU qu'aucun autre modèle n'utilise. « S'ils tiennent » laisse environ 1 Go libre. « S'ils tiennent » et « Toujours » ne déchargent jamais un modèle sur un autre GPU.",
+        multiModelHint: "Concerne les modèles de discussion, d'image et de vidéo. Chaque modèle de discussion chargé répond aux requêtes qui le nomment. Avec plusieurs GPU, Unsloth essaie de placer un nouveau modèle sur un GPU qu'aucun autre modèle n'utilise. « S'ils tiennent » laisse environ 1 Go libre. « S'ils tiennent » et « Toujours » ne déchargent jamais un modèle sur un autre GPU.",
         mediaIdleUnloadDescription:
           "Libérer la VRAM en déchargeant les modèles d’image et de vidéo après ce nombre de secondes d’inactivité. 0 les maintient chargés ; le minimum est 60.",
         mlockVetoed: "--mlock reste désactivé : épingler le modèle réserverait de la RAM pour l'intégralité de celui-ci. Le déchargement automatique en veille reste désactivé.",
