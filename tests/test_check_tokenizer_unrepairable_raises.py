@@ -63,9 +63,7 @@ def test_unrepairable_tokenizer_raises(tmp_path):
     # An extra special token has no named *_token slot, so it can't be removed.
     path = _tiny_tokenizer(tmp_path, additional_special_tokens = ["<x>"])
     with pytest.raises(RuntimeError, match = "out of bounds memory accesses"):
-        tu.check_tokenizer(
-            _model(len(VOCAB)), AutoTokenizer.from_pretrained(path), model_name = path
-        )
+        tu.check_tokenizer(_model(len(VOCAB)), AutoTokenizer.from_pretrained(path), model_name = path)
 
 
 def test_in_range_tokenizer_is_returned_unchanged(tmp_path):
