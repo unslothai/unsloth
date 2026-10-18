@@ -123,10 +123,7 @@ def _load(
 ):
     async def _go():
         swap = await cs.save_chat_kv_before_swap(owner, media, **fit)
-        try:
-            await asyncio.to_thread(acquire or (lambda: arb.acquire_for(owner)))
-        finally:
-            swap.close()
+        await cs.acquire_then_close(swap, acquire or (lambda: arb.acquire_for(owner)))
 
     asyncio.run(_go())
 
@@ -234,6 +231,31 @@ def test_an_off_route_saves_even_if_the_mode_changes_before_the_peek(env, monkey
     monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: "always")
     _load()  # media_fit_kwargs gave {} under Off, so the acquire runs as Off
     assert env.saves == [False] and kw._kv_resume["origin"] == "swap"
+
+
+def test_a_cancelled_load_keeps_the_save_until_its_acquire_thread_ends(env):
+    release = threading.Event()
+
+    def acquire():
+        release.wait(10)
+        arb.acquire_for(arb.DIFFUSION)
+
+    async def _go():
+        swap = await cs.save_chat_kv_before_swap(arb.DIFFUSION, "image")
+        request = asyncio.ensure_future(cs.acquire_then_close(swap, acquire))
+        await asyncio.sleep(0.05)
+        request.cancel()  # the client went away; the acquire thread runs on
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        release.set()
+        for _ in range(500):
+            if env.rows:
+                break
+            await asyncio.sleep(0.01)
+
+    asyncio.run(_go())
+    assert kw._kv_resume["origin"] == "swap" and env.files[0].exists()
+    assert [(r["event"], r["reason"]) for r in env.rows] == [("unload", "swap")]
 
 
 def test_a_fit_swap_leaves_the_eviction_row_to_the_residency_code(env, monkeypatch):

@@ -130,6 +130,20 @@ class SwapSave:
             logger.debug("chat KV swap cleanup failed: %s", exc)
 
 
+async def acquire_then_close(swap: SwapSave, acquire):
+    """Run the blocking acquire on a thread and close ``swap`` only once that thread is done. A
+    cancelled request leaves the thread running, and it may still evict chat and commit the save."""
+    task = asyncio.ensure_future(asyncio.to_thread(acquire))
+
+    def _done(finished) -> None:
+        if not finished.cancelled():
+            finished.exception()  # an awaiter still there re-raises it
+        swap.close()
+
+    task.add_done_callback(_done)
+    return await asyncio.shield(task)
+
+
 def _keep_kv() -> bool:
     try:
         from utils.openai_auto_switch_settings import get_auto_unload_keep_kv

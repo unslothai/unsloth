@@ -508,13 +508,10 @@ async def load_video_model_gated(
                 finally:
                     eviction_sink.reset(token)
 
-            from core.inference.chat_swap_kv import save_chat_kv_before_swap
+            from core.inference.chat_swap_kv import acquire_then_close, save_chat_kv_before_swap
 
             swap = await save_chat_kv_before_swap(VIDEO, "video", **fit_kwargs)
-            try:
-                status_dict = await asyncio.to_thread(_acquire_and_begin)
-            finally:
-                swap.close()
+            status_dict = await acquire_then_close(swap, _acquire_and_begin)
         else:
             await asyncio.to_thread(release, VIDEO)
             status_dict = await asyncio.to_thread(_begin_load)
