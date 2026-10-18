@@ -10063,11 +10063,12 @@ _TEXT_ONLY_PROVIDER_TYPES = frozenset({"cohere", "deepseek", "mistral"})
 
 # Mixed catalogs require model-level vision capability; family flags do not
 # identify which models accept images. Qwen has unrestricted text defaults;
-# its vision models use separate qwen-vl-* or Qwen2.5-VL IDs. Kimi is excluded
+# its vision models use separate qwen-vl-* or Qwen2.5-VL IDs. Z.ai lists text
+# GLMs beside the -v / flash vision ones. Kimi is excluded
 # because its allowlist permits only multimodal kimi-k3/k2.5/k2.6.
 # Single-endpoint types (custom, vllm, ollama, llamacpp, lmstudio) retain the
 # registry default: no model catalog exists to check the configured endpoint.
-_MIXED_CATALOG_PROVIDER_TYPES = frozenset({"huggingface", "openrouter", "qwen"})
+_MIXED_CATALOG_PROVIDER_TYPES = frozenset({"huggingface", "openrouter", "qwen", "zai"})
 
 
 def _external_takes_mcp_images(

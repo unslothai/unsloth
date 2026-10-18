@@ -191,3 +191,14 @@ def test_zai_models_get_their_window_and_modalities_from_the_catalog():
     )
     assert catalog["zai"]["glm-4.7-flashx"] == {"input": ["text"], "context": 200000}
     assert catalog["zai"]["glm-5v-turbo"]["input"] == ["text", "image"]
+
+
+def test_zai_mcp_pictures_reach_only_its_vision_models():
+    from core.inference.providers import get_provider_info
+    from routes.inference import _external_takes_mcp_images
+
+    info = get_provider_info("zai")
+    assert _external_takes_mcp_images("zai", info["supports_vision"], "glm-4.6v-flash", info)
+    assert not _external_takes_mcp_images("zai", info["supports_vision"], "glm-5.3", info)
+    # The live list carries text GLMs the table does not name: no picture for those.
+    assert not _external_takes_mcp_images("zai", info["supports_vision"], "glm-4.7-flashx", info)

@@ -437,6 +437,7 @@ test("the upload gate is the backend's external MCP gate, not provider-level vis
   assert.equal(providerModelTakesMcpImages("openrouter", "some/unknown-model"), false);
   assert.equal(providerModelTakesMcpImages("huggingface", "org/unknown"), false);
   assert.equal(providerModelTakesMcpImages("qwen", "qwen2.5-72b-instruct"), false);
+  assert.equal(providerModelTakesMcpImages("zai", "glm-4.7-flashx"), false);
   // Known text-only endpoints stay a no; a vision family with a plain catalog is a yes.
   assert.equal(providerModelTakesMcpImages("mistral", "mistral-large"), false);
   assert.equal(providerModelTakesMcpImages("anthropic", "claude-x"), true);
