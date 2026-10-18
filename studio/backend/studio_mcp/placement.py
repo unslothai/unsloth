@@ -151,7 +151,7 @@ def llm_fields(
     # audio_device is read by native and audio.cpp audio only; a chat GGUF sent it is refused.
     if kind != "llm" and device is not None:
         fields["audio_device"] = device
-    if device == "cpu" and gguf:
+    if (device == "cpu" or (device in (None, "auto") and gpu_layers == 0)) and gguf:
         # No layers, and no speculative drafter, which would put the GPU back to use.
         fields.update(gpu_memory_mode = "manual", gpu_layers = 0, speculative_type = "off")
     elif gpu_layers is not None:

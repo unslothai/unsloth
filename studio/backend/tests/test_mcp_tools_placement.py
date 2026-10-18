@@ -524,3 +524,9 @@ def test_unload_all_still_frees_media_when_chat_status_stalls(monkeypatch):
     result, studio = run_tool(monkeypatch, routes, "unload_model", {"kind": "all"}, fallback = {})
     assert result["isError"] is True and f"image {FLUX_GGUF}" in str(result["content"])
     assert ("POST", "/api/inference/images/unload") in [call[:2] for call in studio.state.calls]
+
+
+def test_zero_gpu_layers_is_a_cpu_load_without_a_drafter(monkeypatch):
+    routes = {**PAYLOADS, ("GET", "/api/hub/gguf-variants"): GGUF_FILES}
+    _result, _studio, (body,) = _load(monkeypatch, {"model": QWEN, "gpu_layers": 0}, routes)
+    assert {key: body.get(key) for key in CPU} == CPU
