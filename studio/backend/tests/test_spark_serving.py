@@ -4778,7 +4778,7 @@ def test_inherited_extras_handed_to_the_planner_are_shadow_stripped(monkeypatch)
 
 def test_idle_slot_erase_is_declined_behind_the_replica_router(monkeypatch):
     """/slots/N erase is skipped behind the router: slot N may belong to the peer."""
-    import httpx
+    from core.inference import llama_cpp
     from core.inference.llama_cpp import LlamaCppBackend
 
     backend = LlamaCppBackend()
@@ -4793,7 +4793,10 @@ def test_idle_slot_erase_is_declined_behind_the_replica_router(monkeypatch):
         def json(self):
             return {"id_slot": 0, "n_erased": 10}
 
-    monkeypatch.setattr(httpx, "post", lambda url, **kw: posted.append(url) or _Ok())
+    # The module llama_cpp resolves: another test can swap sys.modules["httpx"].
+    monkeypatch.setattr(
+        llama_cpp.httpx, "post", lambda url, **kw: posted.append(url) or _Ok(), raising = False
+    )
     assert backend.release_idle_chat_slot(backend.base_url, 0) is True
     assert posted == ["http://127.0.0.1:41234/slots/0"]
     posted.clear()

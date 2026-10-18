@@ -246,6 +246,9 @@ def test_a_tied_weight_shared_by_two_stages_on_a_rank_is_scaled_once(pipeline, m
 
     if not dist.is_available():
         pytest.skip("torch.distributed is not available")
+    problem = pipeline.gloo_same_rank_problem("zbv", torch.__version__)
+    if problem:
+        pytest.skip(problem)
     config = transformers.LlamaConfig(
         vocab_size = 64,
         hidden_size = 32,
@@ -373,3 +376,21 @@ def test_a_model_directory_is_restaged_with_deletion(cluster, monkeypatch, tmp_p
     cluster.stage_run_inputs(f"train.py --model {model}", "10.0.0.2", "me", "/home/me")
     rsync = [c for c in calls if c and c[0] == "rsync"]
     assert rsync and "--delete" in rsync[0]
+
+
+@pytest.mark.parametrize(
+    "schedule, version, refused",
+    [
+        ("zbv", "2.10.0+cpu", True),
+        ("dualpipev", "2.11.0", True),
+        ("zbv", "2.12.0+cpu", False),
+        ("zbv", "2.13.0a0+git1234", False),
+        ("1f1b", "2.6.0", False),
+        ("interleaved", "2.10.0", False),
+    ],
+)
+def test_v_layouts_over_gloo_are_refused_before_torch_2_12(pipeline, schedule, version, refused):
+    problem = pipeline.gloo_same_rank_problem(schedule, version)
+    assert (problem is not None) is refused
+    if refused:
+        assert schedule in problem and "torch >= 2.12" in problem
