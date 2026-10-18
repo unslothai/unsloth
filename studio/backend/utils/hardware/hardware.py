@@ -384,14 +384,15 @@ def _linux_kfd_gfx1153_candidates() -> list[str]:
     if "gfx1153" not in found:
         return []
     # KFD reads the silicon, immune to HSA_OVERRIDE_GFX_VERSION; the installers judge a readable
-    # override instead (install_python_stack._linux_host_only_uncovered_amd) and give it a ROCm
-    # wheel, so keep the conservative no-candidates answer there rather than exempting the card.
+    # override instead (install_python_stack._linux_host_only_uncovered_amd). One naming an arch
+    # they install a ROCm wheel for keeps the conservative no-candidates answer; an uncovered one
+    # (gfx803, gfx101x) stays on CPU torch on purpose, so the exemption holds.
     _hsa = (os.environ.get("HSA_OVERRIDE_GFX_VERSION") or "").strip()
     if not (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip() and re.fullmatch(
         r"[0-9]+\.[0-9]+\.[0-9]+", _hsa
     ):
         _maj, _min, _step = (int(p) for p in _hsa.split("."))
-        if _maj > 0 and _min <= 9 and _step <= 15 and f"gfx{_maj}{_min}{_step:x}" != "gfx1153":
+        if _maj > 0 and _min <= 9 and _step <= 15 and f"gfx{_maj}{_min}{_step:x}" in _ROCM_SUPPORTED_GFX:
             return []
     return found
 

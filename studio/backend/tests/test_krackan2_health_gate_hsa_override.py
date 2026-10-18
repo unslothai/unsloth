@@ -81,3 +81,9 @@ def test_plain_gfx1153_still_exempt():
 def test_unreadable_override_keeps_exemption(bad):
     ok, cand = _eligible(bad)
     assert not ok, f"unreadable override {bad!r} must not lift the exemption (candidates={cand})"
+
+
+@pytest.mark.parametrize("uncovered", ["10.1.0", "8.0.3", "11.5.3"])
+def test_override_to_an_uncovered_arch_keeps_exemption(uncovered):
+    ok, cand = _eligible(uncovered)
+    assert not ok, f"override {uncovered} stays on CPU torch on purpose (candidates={cand})"
