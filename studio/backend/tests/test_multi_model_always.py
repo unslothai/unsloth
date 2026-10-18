@@ -313,6 +313,78 @@ def test_idle_kept_models_unloaded_by_a_load_under_off_are_listed_in_both_fields
     assert response.evicted == ["org/B-GGUF"]
 
 
+def test_kept_models_a_vllm_load_retires_are_listed_in_both_fields(backends, monkeypatch):
+    _mode(monkeypatch, "fit")
+    monkeypatch.setattr(inf, "_gate_kept_models", lambda *args, **kwargs: None)
+
+    async def load(request, *args, **kwargs):
+        # What _load_model_impl does at the point of no return for a vLLM or SGLang load.
+        await inf._retire_kept_models(request)
+        return LoadResponse.model_construct(status = "loaded", model = request.model_path)
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", load)
+    request = LoadRequest(model_path = "org/C", engine = "vllm")
+    response = asyncio.run(inf.load_model_gated(request, None, "s"))
+    assert model_slots.slots == []
+    assert response.evicted_slots == [{"kind": "chat", "model": "org/B-GGUF"}]
+    assert response.evicted == ["org/B-GGUF"]
+
+
+def _loaded_media(monkeypatch, owner, kind, repo):
+    monkeypatch.setattr(
+        gpu_arbiter,
+        "_media_status",
+        lambda o: {"loaded": True, "repo_id": repo} if o == owner else None,
+    )
+    return _reporting(monkeypatch, owner, [{"kind": kind, "model": repo, "account": None}])
+
+
+def test_the_image_load_under_always_refuses_to_replace_another_image_model(
+    image_client, monkeypatch
+):
+    _image_on_gpu(monkeypatch)
+    _mode(monkeypatch, "always")
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.DIFFUSION)
+    evicted = _loaded_media(monkeypatch, gpu_arbiter.DIFFUSION, "image", "org/Flux")
+    resp = _post_load(image_client, **_IMAGE)
+    assert resp.status_code == 409 and resp.headers["x-unsloth-refusal"] == REFUSAL
+    assert "the image model org/Flux" in resp.json()["detail"] and evicted == []
+
+
+def test_the_video_load_under_always_refuses_to_replace_another_video_model(
+    video_client, monkeypatch
+):
+    _shared_setup_3(monkeypatch)
+    _mode(monkeypatch, "always")
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
+    evicted = _loaded_media(monkeypatch, gpu_arbiter.VIDEO, "video", "org/Wan")
+    resp = video_client.post("/api/inference/video/load", json = _VIDEO)
+    assert resp.status_code == 409 and resp.headers["x-unsloth-refusal"] == REFUSAL
+    assert "the video model org/Wan" in resp.json()["detail"] and evicted == []
+
+
+@pytest.mark.parametrize("policy", ["off", "always"])
+def test_an_off_torch_image_load_reports_or_refuses_the_native_video_model(monkeypatch, policy):
+    import core.inference.video as video_mod
+
+    unloaded = []
+    video = types.SimpleNamespace(
+        _loading = None, status = lambda: {"engine": "sd_cpp"}, unload = lambda: unloaded.append(1)
+    )
+    monkeypatch.setattr(video_mod, "get_video_backend", lambda: video)
+    _reporting(
+        monkeypatch, gpu_arbiter.VIDEO, [{"kind": "video", "model": "org/H3", "account": None}]
+    )
+    evicted = []
+    if policy == "always":
+        with pytest.raises(MultiModelAlwaysRefusal):
+            inf._unload_native_video_sharing_the_sd_cpp_tree(policy, evicted)
+        assert unloaded == [] and evicted == []
+    else:
+        inf._unload_native_video_sharing_the_sd_cpp_tree(policy, evicted)
+        assert unloaded == [1] and evicted == [{"kind": "video", "model": "org/H3"}]
+
+
 # 7. Auto-switch and the public preview.
 
 

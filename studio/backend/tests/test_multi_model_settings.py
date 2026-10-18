@@ -160,3 +160,15 @@ def test_the_payload_needs_exactly_one_valid_field(payload):
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
         settings_routes.MultiModelPayload(**payload)
+
+
+def test_an_unreadable_setting_keeps_the_last_mode_read(monkeypatch):
+    def broken():
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(mms, "_read_mode", broken)
+    mms.invalidate_multi_model_cache()
+    assert mms.get_multi_model_mode() == "off"
+    monkeypatch.setattr(mms, "_cache", (-1e9, "always"))
+    assert mms.get_multi_model_mode() == "always"
+    mms.invalidate_multi_model_cache()

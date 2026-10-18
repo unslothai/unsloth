@@ -199,19 +199,55 @@ def _chat_slots() -> list[dict[str, str]]:
     return chat_eviction_reports()
 
 
+def _media_backend(owner: str) -> Any:
+    if owner == DIFFUSION:
+        from core.inference.diffusion_engine_router import get_active_diffusion_engine
+        return get_active_diffusion_engine()
+    from core.inference.video import get_video_backend
+    return get_video_backend()
+
+
+def _media_loading(owner: str) -> bool:
+    """Whether an image or video load is in flight; lock-safe under ``_lock``."""
+    try:
+        return bool(_media_backend(owner).loading_repo_ids())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _media_status(owner: str) -> Optional[dict]:
+    """The loaded image or video model's status, or None when none is loaded."""
+    backend = _media_backend(owner)
+    status = backend.status() if hasattr(backend, "status") else None
+    return status if isinstance(status, dict) and status.get("loaded") else None
+
+
 def _diffusion_slots() -> list[dict[str, str]]:
-    from core.inference.diffusion_engine_router import get_active_diffusion_engine
-    return _media_slot("image", DIFFUSION, get_active_diffusion_engine())
+    return _media_slot("image", DIFFUSION, _media_status(DIFFUSION))
 
 
 def _video_slots() -> list[dict[str, str]]:
-    from core.inference.video import get_video_backend
-    return _media_slot("video", VIDEO, get_video_backend())
+    return _media_slot("video", VIDEO, _media_status(VIDEO))
 
 
-def _media_slot(kind: str, owner: str, backend: Any) -> list[dict[str, str]]:
-    status = backend.status() if hasattr(backend, "status") else None
-    if not isinstance(status, dict) or not status.get("loaded"):
+def refuse_replacing_media(owner: str, policy: str, requested: Iterable[Optional[str]]) -> None:
+    """Under Always, refuse an image or video load that would replace a different model of its own
+    kind. Another file or setting of the same repo is allowed, as for chat. Call outside ``_lock``."""
+    if policy != "always" or owner not in (DIFFUSION, VIDEO):
+        return
+    status = _media_status(owner)
+    if status is None:
+        return
+    from core.inference.model_ids import public_model_id
+
+    repo = status.get("repo_id")
+    loaded = {repo, status.get("display_repo_id"), public_model_id(repo) if repo else None}
+    if loaded.isdisjoint({name for name in requested if name}):
+        raise refusal_for(resident_slots(owner), KIND_LABELS[owner])
+
+
+def _media_slot(kind: str, owner: str, status: Optional[dict]) -> list[dict[str, str]]:
+    if status is None:
         return []
     from core.inference.model_ids import public_model_id
     from hub.services.models.account_access import _resident_loader
@@ -460,8 +496,9 @@ def acquire_for(
                 raise GpuOwnerBusyError(others[-1])
             if policy == "always" and owner in _KEPT_UNDER_ALWAYS:
                 kept = [name for name in others if name in _KEPT_UNDER_ALWAYS]
-                if kept:
-                    slots = [slot for name in kept for slot in resident_slots(name)]
+                slots = [slot for name in kept for slot in resident_slots(name)]
+                # A media claim whose load failed holds nothing: evicting it unloads nothing.
+                if slots or any(name == CHAT or _media_loading(name) for name in kept):
                     raise refusal_for(slots, KIND_LABELS[kept[0]])
             # Never evict an account mid-generation; the caller retries after its stream ends.
             busy = other_accounts_active(acting)

@@ -572,3 +572,41 @@ def test_owner_account_and_restore_are_tracked_per_owner(arb_log):
     arb._accounts[arb.CHAT] = (BOB.account_id, ALICE.account_id)
     assert run_as(BOB, arb.restore_owner_account, arb.CHAT) is True
     assert arb.owner_account(arb.CHAT) == ALICE.account_id
+
+
+def test_always_evicts_a_media_claim_that_holds_nothing_unless_it_is_loading(arb_log, monkeypatch):
+    # An image load that failed in the background keeps its claim yet holds no model.
+    loading = {"now": False}
+    monkeypatch.setattr(arb, "_media_loading", lambda owner: loading["now"])
+    arb.acquire_for(arb.DIFFUSION)
+    loading["now"] = True
+    with pytest.raises(arb.MultiModelAlwaysRefusal):
+        arb.acquire_for(arb.CHAT, policy = "always")
+    loading["now"] = False
+    arb_log.clear()
+    arb.acquire_for(arb.CHAT, policy = "always")
+    assert "evict-diffusion" in arb_log and arb.residents() == {arb.CHAT: None}
+
+
+@pytest.mark.parametrize(
+    "policy, requested, refused",
+    [
+        ("always", ("org/Other",), True),
+        ("always", ("org/Flux",), False),
+        ("always", ("/models/flux", "org/Flux"), False),
+        ("fit", ("org/Other",), False),
+    ],
+)
+def test_always_refuses_replacing_a_loaded_media_model_with_another_repo(
+    arb_log, monkeypatch, policy, requested, refused
+):
+    monkeypatch.setattr(arb, "_media_status", lambda owner: {"loaded": True, "repo_id": "org/Flux"})
+    _report(monkeypatch, arb_log, arb.DIFFUSION, {"kind": "image", "model": "org/Flux"})
+    if refused:
+        with pytest.raises(arb.MultiModelAlwaysRefusal) as excinfo:
+            arb.refuse_replacing_media(arb.DIFFUSION, policy, requested)
+        assert (excinfo.value.kind, excinfo.value.model) == ("image", "org/Flux")
+    else:
+        arb.refuse_replacing_media(arb.DIFFUSION, policy, requested)
+    monkeypatch.setattr(arb, "_media_status", lambda owner: None)
+    arb.refuse_replacing_media(arb.VIDEO, "always", ("org/Other",))
