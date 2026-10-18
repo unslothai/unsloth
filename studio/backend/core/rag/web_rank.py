@@ -70,7 +70,6 @@ def retrieve_web_chunks(
     if not query or top_n <= 0 or not pages or not rag_db.RAG_AVAILABLE:
         return "", []
     model = model_name or config.effective_embedding_model()
-    max_tokens = max_tokens or config.CHUNK_TOKENS
     overlap = config.CHUNK_OVERLAP if overlap is None else overlap
     count = embeddings.token_counter(model)
 
@@ -82,6 +81,7 @@ def retrieve_web_chunks(
     scope = f"research_scrape_{uuid.uuid4().hex}"
     doc_ids: list[str] = []
     try:
+        max_tokens = max_tokens or embeddings.chunk_tokens(model)
         for page in pages:
             text = str(page.get("text") or "").strip()
             if not text:

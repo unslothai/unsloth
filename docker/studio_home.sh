@@ -184,6 +184,23 @@ if [ -s "$APP/.src-update.rollback" ]; then
     fi
 fi
 
+# Studio keeps the owner's skills on the volume; ~/.agents/skills, which the Skills dialog and
+# other agents in the container use, points there.
+skills="${UNSLOTH_STUDIO_SKILLS_HOME:-}"
+if [ -n "$skills" ]; then
+    (umask 077 && mkdir -p -- "$skills") || log "WARNING: cannot create $skills"
+    agents="${HOME:-/root}/.agents/skills"
+    current="$(readlink -- "$agents" || true)"
+    if [ "$current" = "$skills" ]; then
+        :
+    elif { [ ! -e "$agents" ] && [ ! -L "$agents" ]; } || [ "$current" = "$HOME_DIR/skills" ]; then
+        { (umask 077 && mkdir -p -- "${agents%/*}") && ln -sfnT -- "$skills" "$agents"; } \
+            || log "WARNING: cannot link $agents to $skills"
+    else
+        log "WARNING: Unsloth Studio lists and saves skills in $skills, not in $agents"
+    fi
+fi
+
 if [ "${#moved[@]}" -gt 0 ]; then
     size="$(du -sh -- "$legacy" 2>/dev/null | cut -f1)"
     log "kept aside in $legacy (${size:-?}): ${moved[*]}"

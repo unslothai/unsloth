@@ -303,7 +303,9 @@ pub(crate) fn host_is_private(host: &url::Host<&str>) -> bool {
             let domain = domain.trim_end_matches('.').to_ascii_lowercase();
             // A dotless name only resolves locally.
             !domain.contains('.')
-                || ["localhost", "local", "internal", "lan", "home.arpa", "intranet"]
+                || [
+                    "localhost", "local", "internal", "lan", "home", "home.arpa", "corp", "intranet",
+                ]
                     .iter()
                     .any(|suffix| domain == *suffix || domain.ends_with(&format!(".{suffix}")))
                 // Written as a number the URL parser didn't normalise.
