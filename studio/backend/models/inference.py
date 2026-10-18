@@ -6131,10 +6131,14 @@ class VideoJobCreateRequest(BaseModel):
 
     @field_validator("model", "seconds", "size", mode = "before")
     @classmethod
-    def _blank_means_default(cls, value):
+    def _blank_means_default(cls, value, info):
         if value is None:
             return None
-        return str(value).strip() or None
+        text = str(value).strip()
+        # "auto" is OpenAI's omitted duration, so it must not count against num_frames.
+        if info.field_name == "seconds" and text.lower() == "auto":
+            return None
+        return text or None
 
     @field_validator(
         "seed",
