@@ -995,7 +995,9 @@ def test_a_confirmed_automatic_file_that_fails_to_build_refuses_when_dense_is_no
     assert fetched == []
 
 
-def test_an_online_load_whose_confirmed_file_fails_to_build_still_refuses_the_dense_fetch(monkeypatch):
+def test_an_online_load_whose_confirmed_file_fails_to_build_still_refuses_the_dense_fetch(
+    monkeypatch,
+):
     # Online, assembly passes no dense_source (it may still fetch), but the plan priced the file and left the dense
     # shards out, so the fallback would download and materialize an encoder the plan never covered.
     fetched = []
