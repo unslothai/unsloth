@@ -9551,6 +9551,7 @@ def test_default_load_budgets_the_hosted_encoder_its_family_defaults_to(fake_run
     # the dense encoder, so that is what it budgets.
     import core.inference.diffusion_te_prequant as tpq
     from core.inference.video_families import detect_video_family
+
     scale = _allow_te_prequant(monkeypatch)
     for repo in ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"):
         fam = detect_video_family(repo)

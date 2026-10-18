@@ -97,7 +97,8 @@ def test_vision_loader_wraps_patch_model_and_tokenizer():
         ctx = [
             item.context_expr.func.id
             for item in node.items
-            if isinstance(item.context_expr, ast.Call) and isinstance(item.context_expr.func, ast.Name)
+            if isinstance(item.context_expr, ast.Call)
+            and isinstance(item.context_expr.func, ast.Name)
         ]
         if "packed_4bit_as_uint8" not in ctx:
             continue

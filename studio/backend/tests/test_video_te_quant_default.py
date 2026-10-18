@@ -436,7 +436,6 @@ def test_the_builder_quantizes_a_non_gated_t5_feed_forward():
     assert not pattern.match("encoder.block.3.layer.1.DenseReluDense.wix.weight")
 
 
-
 def test_the_transformers_builder_honours_keep_dense(tmp_path):
     import importlib.util
     from pathlib import Path
@@ -450,17 +449,39 @@ def test_the_transformers_builder_honours_keep_dense(tmp_path):
     builder = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(builder)
     config = transformers.T5Config(
-        vocab_size = 32, d_model = 64, d_kv = 16, d_ff = 128, num_layers = 1, num_heads = 4,
+        vocab_size = 32,
+        d_model = 64,
+        d_kv = 16,
+        d_ff = 128,
+        num_layers = 1,
+        num_heads = 4,
         feed_forward_proj = "gated-gelu",
     )
     src = tmp_path / "te"
     transformers.T5EncoderModel(config).save_pretrained(src)
     out = tmp_path / "te-int8.safetensors"
-    builder.main([
-        "--base", "someone/t5", "--family", "flux.1", "--src", str(src), "--out", str(out),
-        "--load", "transformers", "--te-class", "T5EncoderModel", "--keep-dense", "wo",
-        "--group", "64", "--device", "cpu",
-    ])
+    builder.main(
+        [
+            "--base",
+            "someone/t5",
+            "--family",
+            "flux.1",
+            "--src",
+            str(src),
+            "--out",
+            str(out),
+            "--load",
+            "transformers",
+            "--te-class",
+            "T5EncoderModel",
+            "--keep-dense",
+            "wo",
+            "--group",
+            "64",
+            "--device",
+            "cpu",
+        ]
+    )
     with safe_open(str(out), framework = "pt") as handle:
         keys = set(handle.keys())
         wo = handle.get_tensor("encoder.block.0.layer.1.DenseReluDense.wo.weight")
@@ -468,6 +489,7 @@ def test_the_transformers_builder_honours_keep_dense(tmp_path):
     assert "encoder.block.0.layer.1.DenseReluDense.wo.weight_scale" not in keys
     # T5 keeps ``wo`` in float32, and a dense one is stored that way.
     assert wo.dtype == torch.float32
+
 
 def test_a_wan_load_claims_the_hosted_encoder_repo_while_it_fetches():
     # The hosted file lives in a third repo; without the claim the delete-cached guard admits deleting it mid-load.
