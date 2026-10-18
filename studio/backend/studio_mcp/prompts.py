@@ -149,8 +149,11 @@ async def make_short_film(idea: str, length_seconds: str = "20") -> str:
         '6. Poll get_job(kind="video", id=<job id>) until each shot is completed and keep its URL.\n'
         '7. Call unload_model(kind="video") before loading an audio model, so Unsloth Studio has room.\n'
         '8. For music, load a list_models(source="catalog", kind="audio", workflow="music") row and call '
-        'generate_audio(workflow="music", mode="song", instrumental=true, duration_s=<length>); '
-        'for a voice-over, load a list_models(source="catalog", kind="tts", workflow="speak") row and '
+        'generate_audio(workflow="music", mode="song", instrumental=true, duration_s=<length>). '
+        'Not every music model makes an instrumental song: if Unsloth Studio refuses mode="song", the '
+        'model makes sound effects only, so call mode="sfx" with text describing the sound or pick '
+        "another row; if it says the model always sings, set instrumental=false and pass lyrics. "
+        'For a voice-over, load a list_models(source="catalog", kind="tts", workflow="speak") row and '
         'call generate_audio(workflow="speak", text=<script>).\n'
         "9. Unload each model when you are done with it, then download the clips and audio from their "
         "Unsloth Studio URLs and stitch them yourself, for example with ffmpeg.\n"

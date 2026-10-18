@@ -201,6 +201,16 @@ def test_long_input_stays_under_the_cap(stubbed):
     assert "Steps:" in text
 
 
+def test_film_soundtrack_call_fits_models_without_instrumental_songs(stubbed):
+    # The music page also lists sound-effect-only models (Stable Audio SFX, ControlFoley) and ones that
+    # always sing (HeartMuLa, MiniMax Music 3); the recipe says how to call those instead of only song.
+    text = _render("make_short_film", {"idea": "x" * 10_000, "length_seconds": "20"})
+    assert 'refuses mode="song"' in text and 'mode="sfx"' in text
+    assert "always sings, set instrumental=false and pass lyrics" in text
+    # Still whole under the cap with the longest idea.
+    assert "stitch them yourself" in text
+
+
 def test_every_mention_says_unsloth_studio(stubbed):
     for name, args in (
         ("make_short_film", {"idea": "x"}),
