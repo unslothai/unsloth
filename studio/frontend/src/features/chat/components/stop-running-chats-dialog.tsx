@@ -37,10 +37,14 @@ export function StopRunningChatsDialog() {
   const sharer = hasNonChat ? "request" : "conversation";
   // Ejecting leaves no model loaded. Saying it "reloads the model" and offering "Stop and reload"
   // promised the opposite of what confirming does, for the destructive one.
-  const unloads = effect === "unload";
-  const lead = unloads
-    ? `${action || "Unloading the model"} leaves no model loaded, and every open ${sharer} shares it, `
-    : `${action ? `${action} reloads the model, ` : "Reloading the model "}which every open ${sharer} shares, `;
+  const unloads = effect !== "reload";
+  // Other models can stay loaded, so only the conversations on this one stop.
+  const lead =
+    effect === "unloadOne"
+      ? `${action || "Unloading this model"} stops every ${sharer} using it, `
+      : unloads
+        ? `${action || "Unloading the model"} leaves no model loaded, and every open ${sharer} shares it, `
+        : `${action ? `${action} reloads the model, ` : "Reloading the model "}which every open ${sharer} shares, `;
   const shown = titles.slice(0, 5);
   const remaining = Math.max(0, titles.length - shown.length);
 

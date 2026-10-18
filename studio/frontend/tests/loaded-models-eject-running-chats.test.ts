@@ -10,9 +10,8 @@ import test from "node:test";
 register("./helpers/loaded-models-eject-resolver.mjs", import.meta.url);
 
 const stub = await import("./helpers/loaded-models-eject-stub.ts");
-const { ejectLoadedModel } = await import(
-  "../src/features/loaded-models/loaded-models-api.ts"
-);
+const { ejectLoadedModel } =
+  await import("../src/features/loaded-models/loaded-models-api.ts");
 
 const QWEN = "unsloth/Qwen3-4B-GGUF";
 const ORNITH = "ornith-ai/Ornith-1.5-35B-A3B-GGUF";
@@ -33,7 +32,7 @@ test("a generating model is ejected once stopping its chat is confirmed", async 
   stub.state.confirmAnswer = { proceed: true, forceCancelActive: true };
   const outcome = await ejectLoadedModel(chatRow(QWEN));
   assert.deepEqual(stub.state.confirmCalls, [
-    { action: "Unloading this model", effect: "unload", model: QWEN },
+    { action: "Unloading this model", effect: "unloadOne", model: QWEN },
   ]);
   assert.equal(stub.state.unloads[0].force_cancel_active, true);
   assert.deepEqual(outcome, { status: "ejected" });
