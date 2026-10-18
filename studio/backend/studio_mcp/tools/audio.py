@@ -503,7 +503,7 @@ async def transcribe(
         Field(
             max_length = 20000,
             description = "The words the audio should say; adds match_score, 1.0 when every "
-            "word matches.",
+            "word matches and null when the texts are too long to align.",
         ),
     ] = None,
     model: Optional[str] = None,
@@ -514,7 +514,7 @@ async def transcribe(
     Audio over 25 MB, given by id, or sent with ``speakers`` is stored with Unsloth Studio first and its transcript is saved to Audio history (``saved_to_history``); translation needs a smaller file.
     ``timestamps`` adds segments and needs a model that times them, such as Qwen3-ASR (audio.cpp) or Parakeet-TDT; others refuse it, and translation has none.
     ``speakers`` labels who speaks each segment and needs a model that tells speakers apart.
-    ``expected_text`` adds match_score: 1 minus the word error rate against it, so 1.0 when every word matches.
+    ``expected_text`` adds match_score: 1 minus the word error rate against it, so 1.0 when every word matches; it is null when the texts are too long to align (over 50 million word pairs; each Chinese or Japanese character counts as a word).
     A missing model is downloaded first.
     Without ``model`` the loaded speech-to-text model or Unsloth Studio's default is used."""
     if translate and (timestamps or speakers):
@@ -617,13 +617,13 @@ async def analyze_audio(
         Field(
             max_length = 20000,
             description = "The words the audio should say; adds the transcript and match_score, "
-            "1.0 when every word matches.",
+            "1.0 when every word matches and null when the texts are too long to align.",
         ),
     ] = None,
 ) -> AnalysisResult:
     """Measure a clip: its duration, integrated loudness (LUFS), true peak (dBTP), clipped samples and where the sound starts and ends.
     ``audio`` is an Unsloth Studio id (such as a clip_id from generate_audio), inline base64 with a filename, or a path on the Unsloth Studio computer.
-    With ``expected_text`` the clip is also transcribed by the loaded or default speech-to-text model, and match_score is 1 minus the word error rate.
+    With ``expected_text`` the clip is also transcribed by the loaded or default speech-to-text model, and match_score is 1 minus the word error rate, or null when the texts are too long to align.
     Nothing is added to Audio history."""
     caller = current_caller()
     body = {**await audio_ref(caller, audio), **present(expected_text = expected_text)}

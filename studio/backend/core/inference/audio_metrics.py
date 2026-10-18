@@ -25,11 +25,13 @@ _IR_SECONDS = 1.0
 # Every measure walks the audio this many frames at a time, so a 10-minute take never needs
 # full-length float64 copies.
 _CHUNK = 1 << 18
-# Clipping: at least 3 identical samples in a row at full scale. A clean tone keeps moving at its
-# peak, however low it is; a clipped one sits on one value. 0.99 lets the 8-bit positive rail
-# (127/128) count.
+# Clipping: at least 3 identical samples in a row at full scale, reached or left by a jump of more
+# than _CLIP_EDGE quantization steps. A clean peak, even a low tone that PCM rounds to a flat top,
+# eases onto and off its top one step at a time; a clipped waveform hits the rail at speed. 0.99 lets
+# the 8-bit positive rail (127/128) count.
 _CLIP_LEVEL = 0.99
 _CLIP_RUN = 3
+_CLIP_EDGE = 2
 # Sound span: 20 ms frames louder than 40 dB under the loudest frame, never below -60 dBFS.
 _FRAME_S = 0.02
 _SPAN_RANGE_DB = 40.0
@@ -38,6 +40,12 @@ _SPAN_FLOOR_DB = -60.0
 
 def read_wav(path: Path) -> tuple[np.ndarray, int]:
     """(frames x channels float32 in [-1, 1], sample rate) for an 8/16/24/32-bit PCM WAV."""
+    data, rate, _step = _read_pcm(path)
+    return data, rate
+
+
+def _read_pcm(path: Path) -> tuple[np.ndarray, int, float]:
+    """``read_wav`` plus the size of one quantization step."""
     with wave.open(str(path)) as w:
         rate = w.getframerate()
         channels = w.getnchannels()
@@ -60,7 +68,7 @@ def read_wav(path: Path) -> tuple[np.ndarray, int]:
         data = np.frombuffer(raw, dtype = "<i4").astype(np.float32) / float(1 << 31)
     else:
         raise ValueError(f"Unsupported WAV sample width: {width * 8} bits")
-    return data.reshape(-1, max(channels, 1)), rate
+    return data.reshape(-1, max(channels, 1)), rate, 2.0 ** (1 - 8 * width)
 
 
 def _biquad_coefficients(rate: int) -> list[tuple[np.ndarray, np.ndarray]]:
@@ -198,13 +206,18 @@ def true_peak(data: np.ndarray) -> float:
     return peak
 
 
-def clipped_samples(data: np.ndarray) -> int:
-    """Samples in runs of at least ``_CLIP_RUN`` identical full-scale samples, per channel."""
+def clipped_samples(data: np.ndarray, step: float = 0.0) -> int:
+    """Samples in runs of at least ``_CLIP_RUN`` identical full-scale samples, per channel, that the
+    waveform reaches or leaves by more than ``_CLIP_EDGE`` quantization steps (``step``; 0 for
+    float audio)."""
     total = 0
     for channel in range(data.shape[1]):
         x = data[:, channel]
-        run = 0  # length of the run still open at the end of the last chunk
-        for start in range(0, len(x), _CHUNK):
+        n = len(x)
+        starts: list[np.ndarray] = []
+        lengths: list[np.ndarray] = []
+        open_start, open_length = 0, 0  # the run still open at the end of the last chunk
+        for start in range(0, n, _CHUNK):
             # One sample of overlap, so a run that crosses chunks stays one run.
             lead = 1 if start else 0
             seg = x[start - lead : start + _CHUNK]
@@ -214,14 +227,35 @@ def clipped_samples(data: np.ndarray) -> int:
             rail, same = rail[lead:], same[lead:]
             # Each rail sample that does not continue the previous one opens a run; id 0 is the
             # run carried in from the last chunk.
-            ids = np.cumsum(rail & ~same)
-            lengths = np.bincount(ids[rail], minlength = int(ids[-1]) + 1)
-            lengths[0] += run
-            run = int(lengths[-1]) if rail[-1] else 0
-            closed = lengths[:-1] if rail[-1] else lengths
-            total += int(closed[closed >= _CLIP_RUN].sum())
-        if run >= _CLIP_RUN:
-            total += run
+            opens = rail & ~same
+            ids = np.cumsum(opens)
+            counts = np.bincount(ids[rail], minlength = int(ids[-1]) + 1)
+            run_starts = np.concatenate(([open_start], np.flatnonzero(opens) + start))
+            counts[0] += open_length
+            if rail[-1]:
+                open_start, open_length = int(run_starts[-1]), int(counts[-1])
+                run_starts, counts = run_starts[:-1], counts[:-1]
+            else:
+                open_start, open_length = 0, 0
+            starts.append(run_starts)
+            lengths.append(counts)
+        starts.append(np.array([open_start]))
+        lengths.append(np.array([open_length]))
+        first = np.concatenate(starts)
+        length = np.concatenate(lengths)
+        long_runs = length >= _CLIP_RUN
+        first, length = first[long_runs], length[long_runs]
+        if not first.size:
+            continue
+        last = first + length - 1
+        top = x[first].astype(np.float64)
+        # The larger jump onto or off the run; -1 at an end of the audio, where there is none, and
+        # a run that fills the whole channel counts.
+        into = np.where(first > 0, np.abs(top - x[np.maximum(first - 1, 0)]), -1.0)
+        out = np.where(last < n - 1, np.abs(top - x[np.minimum(last + 1, n - 1)]), -1.0)
+        edge = np.maximum(into, out)
+        steep = (edge > _CLIP_EDGE * step) | (edge < 0)
+        total += int(length[steep].sum())
     return total
 
 
@@ -262,11 +296,16 @@ def sound_span(data: np.ndarray, rate: int) -> Optional[tuple[float, float]]:
     return round(float(loud[0]) * frame / rate, 3), round(end / rate, 3)
 
 
-def measure(data: np.ndarray, rate: int) -> dict[str, Any]:
-    """The metrics for ``data`` (frames x channels in [-1, 1]) at ``rate``."""
+def measure(
+    data: np.ndarray,
+    rate: int,
+    step: float = 0.0,
+) -> dict[str, Any]:
+    """The metrics for ``data`` (frames x channels in [-1, 1]) at ``rate``; ``step`` is the PCM
+    quantization step the samples were decoded from (0 for float audio)."""
     duration = data.shape[0] / rate if rate else 0.0
     lufs = integrated_loudness(data, rate)
-    clipped = clipped_samples(data)
+    clipped = clipped_samples(data, step)
     span = sound_span(data, rate)
     return {
         "duration_s": round(duration, 3),
@@ -283,8 +322,8 @@ def measure(data: np.ndarray, rate: int) -> dict[str, Any]:
 
 def measure_file(path: Path) -> dict[str, Any]:
     """``measure`` for a PCM WAV; raises wave.Error, EOFError or ValueError for anything else."""
-    data, rate = read_wav(path)
-    return measure(data, rate)
+    data, rate, step = _read_pcm(path)
+    return measure(data, rate, step)
 
 
 # Scripts written without spaces between words: each character counts as a word.

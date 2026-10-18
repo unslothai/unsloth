@@ -59,13 +59,20 @@ def test_loudness_agrees_with_pyloudnorm():
     assert am.integrated_loudness(stereo, RATE) == pytest.approx(expected, abs = 0.1)
 
 
-def test_hard_clipping_counts_and_a_clean_full_scale_sine_does_not():
+def test_hard_clipping_counts_and_a_clean_full_scale_sine_does_not(tmp_path):
     clipped = am.measure(np.clip(3.0 * _sine(1.0, 1.0, 100.0), -1.0, 1.0), RATE)
     assert clipped["clipping_ratio"] > 0.3
     assert am.measure(_sine(1.0, 1.0), RATE)["clipped_samples"] == 0
     # A low full-scale sine lingers near the rail for many samples but never holds one value.
     for freq in (100.0, 10.0):
         assert am.measure(_sine(1.0, 1.0, freq), RATE)["clipped_samples"] == 0
+    # 16-bit PCM rounds a low full-scale sine to a flat top, which it eases onto one step at a
+    # time; an overdriven one lands on the rail with a jump.
+    for freq in (10.0, 40.0):
+        clean = am.measure_file(_write(tmp_path / f"clean{freq}.wav", _sine(1.0, 1.0, freq)))
+        assert clean["clipped_samples"] == 0
+    loud = np.clip(1.1 * _sine(1.0, 1.0, 10.0), -1.0, 1.0)
+    assert am.measure_file(_write(tmp_path / "loud.wav", loud))["clipping_ratio"] > 0.2
     # Two samples at the rail are a peak, three in a row are clipping.
     burst = np.zeros((100, 1))
     burst[10:12] = 1.0

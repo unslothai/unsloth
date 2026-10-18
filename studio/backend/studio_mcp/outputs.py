@@ -339,7 +339,8 @@ class TranscriptResult(ToolOutput):
     language: Optional[RouteText] = None
     model: Optional[RouteText] = None
     segments: Optional[list[TranscriptSegment]] = None
-    # 1 - word error rate against expected_text, from 0 to 1; None without expected_text.
+    # 1 - word error rate against expected_text, from 0 to 1; None without expected_text or when
+    # the texts are too long to align.
     match_score: Optional[float] = None
     saved_to_history: bool = False
 
@@ -358,6 +359,7 @@ class AnalysisResult(ToolOutput):
     speech_end_s: Optional[float] = None
     # Model-written, so never rewritten; only with expected_text.
     transcript: Optional[str] = None
+    # None when the texts are too long to align.
     match_score: Optional[float] = None
     stt_model: Optional[RouteText] = None
 
