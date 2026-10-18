@@ -2740,10 +2740,8 @@ def _fetches_gguf(
     hf_token: Optional[str],
     hub_cache: Optional[Path] = None,
 ) -> bool:
-    """Whether a download job into ``hub_cache`` would fetch the GGUF ``path`` of ``repo_id``. The
-    downloader keeps a blob stored under the Hub's current etag (or, without symlinks, the file in the
-    current commit's snapshot) and fetches anything else, so a cached older copy of the same size still
-    counts as fetched. Offline, or with the Hub unreachable, any cached copy counts."""
+    """Whether a download job into ``hub_cache`` fetches GGUF ``path``: true unless the Hub's current
+    file is already there (its etag blob, or the commit's snapshot without symlinks). Offline: any copy."""
     if not path.lower().endswith(".gguf"):
         return False
     try:

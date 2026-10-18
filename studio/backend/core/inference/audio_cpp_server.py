@@ -236,7 +236,7 @@ def stale_runtime_download_problem(
     from core.inference.audio_cpp_files import missing_files
 
     try:
-        # Only a GGUF carries the spec an old runtime may misread; a missing config or embedding is fetched as before.
+        # Only a GGUF carries the spec an old runtime may misread; other files are fetched as before.
         missing = [] if assume_fetched else missing_files(model, hub_cache = hub_cache)
         if not assume_fetched and not any(path.lower().endswith(".gguf") for path, _ in missing):
             return None

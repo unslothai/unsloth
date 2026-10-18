@@ -309,7 +309,6 @@ async def download_model_response(
     # The old-runtime preflight resolves with ambient credentials (resolve() has no anonymous mode),
     # so a caller that must stay anonymous skips it for repos other than the public umbrella.
     stale_gate = bool(hf_token) or allow_ambient_token
-    # The gate reads the cache the job writes into, not the Models folder.
     gate_cache = _gate_hub_cache(getattr(body, "download_dir", None))
     if body.gguf_variant or not body.scope_id:
         target_repo, target_variant = await _audio_cpp_target(
