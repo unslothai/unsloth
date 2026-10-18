@@ -537,6 +537,33 @@ def _residual_split(layer, block):
     return None
 
 
+def _model_parallel_layout(model):
+    """Name of a model-parallel layout (expert / tensor / pipeline / FSDP / sequence), else None."""
+    distributed = getattr(getattr(model, "config", None), "distributed_config", None)
+
+    def field(name):
+        if isinstance(distributed, dict):
+            return distributed.get(name)
+        return getattr(distributed, name, None)
+
+    if field("enable_expert_parallel"):
+        return "expert parallel"
+    for name, label in (
+        ("tp_size", "tensor parallel"),
+        ("pp_size", "pipeline parallel"),
+        ("fsdp_size", "FSDP sharded"),
+    ):
+        size = field(name)
+        if isinstance(size, int) and size > 1:
+            return label
+    if field("enable_sequence_parallel"):
+        return "sequence parallel"
+    tp_size = getattr(model, "_tp_size", None)
+    if isinstance(tp_size, int) and tp_size > 1:
+        return "tensor parallel"
+    return None
+
+
 @torch.no_grad()
 def reap_prune(
     model,
@@ -596,17 +623,14 @@ def reap_prune(
             "Unsloth: REAP does not prune the attached MTP head, so a save would write it with the "
             "old expert count. Run `reap_prune` before `get_mtp_head`."
         )
-    distributed = getattr(getattr(model, "config", None), "distributed_config", None)
-    if (
-        distributed.get("enable_expert_parallel")
-        if isinstance(distributed, dict)
-        else getattr(distributed, "enable_expert_parallel", False)
-    ):
-        # Each rank holds a slice of the experts and sees other ranks' routes as out of range ids,
-        # so scores would be rank local and the pruning decision would differ per rank.
+    layout = _model_parallel_layout(model)
+    if layout is not None:
+        # Expert / tensor / FSDP sharding gives each rank a slice of the expert weights (and expert
+        # parallel routes other ranks' tokens to out of range ids); pipeline stages own different
+        # layers, so per-layer scores cannot line up across ranks. Data parallel runs are fine.
         raise RuntimeError(
-            "Unsloth: REAP does not support expert parallel models. Load the model on one device "
-            "(or with `device_map`) to prune it."
+            f"Unsloth: REAP does not support {layout} models. Load the model on one device (or with "
+            "`device_map`, or plain data parallel) to prune it."
         )
     if isinstance(dataset, dict):
         # load_dataset(...) without split= gives a DatasetDict, which iterates its split names.
@@ -925,9 +949,15 @@ def reap_prune(
     model._unsloth_reap_saliency = saliencies
     if save_directory is not None:
         save_directory = os.path.abspath(save_directory)
-        model.save_pretrained(save_directory)
-        if tokenizer is not None:
-            tokenizer.save_pretrained(save_directory)
+        # Every rank pruned the same experts (summed saliency); one writes, the rest wait for it.
+        dist = torch.distributed
+        multi_rank = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
+        if not multi_rank or dist.get_rank() == 0:
+            model.save_pretrained(save_directory)
+            if tokenizer is not None:
+                tokenizer.save_pretrained(save_directory)
+        if multi_rank:
+            dist.barrier()
         # Merged / GGUF saves read config._name_or_path; PEFT's adapter config reads model.name_or_path.
         for config in configs:
             config._name_or_path = save_directory

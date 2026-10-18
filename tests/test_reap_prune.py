@@ -270,9 +270,19 @@ def test_rejects_bad_requests():
     with pytest.raises(RuntimeError, match = "MTP head"):
         reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
     del model.__dict__["_unsloth_mtp_head"]
-    model.config.distributed_config = {"enable_expert_parallel": True}
-    with pytest.raises(RuntimeError, match = "expert parallel"):
-        reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
+    for layout, match in (
+        ({"enable_expert_parallel": True}, "expert parallel"),
+        ({"tp_size": 2}, "tensor parallel"),
+        ({"pp_size": 2}, "pipeline parallel"),
+        ({"fsdp_size": 2}, "FSDP"),
+        ({"enable_sequence_parallel": True}, "sequence parallel"),
+    ):
+        model.config.distributed_config = layout
+        with pytest.raises(RuntimeError, match = match):
+            reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
+    # Size 1 is not model parallel.
+    model.config.distributed_config = {"tp_size": 1, "pp_size": 1}
+    assert reap._model_parallel_layout(model) is None
     del model.config.distributed_config
     model.config.use_bidirectional_attention = "all"
     with pytest.raises(ValueError, match = "causal"):
@@ -594,3 +604,65 @@ def test_dataset_dict_uses_a_split_not_its_names():
     two = datasets.DatasetDict(validation = split, test = split)
     with pytest.raises(ValueError, match = "splits"):
         reap.reap_prune(copy.deepcopy(model), None, sparsity = 0.25, dataset = two, device = "cpu")
+
+
+def _prune_rank(rank, init_file, save_dir, out):
+    import os
+    import torch.distributed as dist
+
+    os.environ["UNSLOTH_MOE_BACKEND"] = "native_torch"
+    torch.set_num_threads(1)
+    dist.init_process_group("gloo", init_method = f"file://{init_file}", rank = rank, world_size = 2)
+    try:
+        model = _qwen3_moe(seed = 0)
+        original = model.save_pretrained
+
+        def save(*args, **kwargs):
+            with open(os.path.join(os.path.dirname(save_dir), f"saved_by_{rank}"), "w") as f:
+                f.write("1")
+            return original(*args, **kwargs)
+
+        model.save_pretrained = save
+        # Each rank calibrates on its own shard, as a DDP job would.
+        reap.reap_prune(
+            model,
+            None,
+            sparsity = 0.25,
+            dataset = _samples(n = 5, seed = 20 + rank),
+            device = "cpu",
+            save_directory = save_dir,
+        )
+        out.put((rank, model._unsloth_reap_report, model.config._name_or_path))
+    finally:
+        dist.destroy_process_group()
+
+
+def test_ddp_ranks_keep_the_same_experts_and_one_writes(tmp_path):
+    import multiprocessing
+
+    save_dir = str(tmp_path / "pruned")
+    ctx = multiprocessing.get_context("spawn")
+    out = ctx.Queue()
+    procs = [
+        ctx.Process(target = _prune_rank, args = (r, str(tmp_path / "pg"), save_dir, out))
+        for r in range(2)
+    ]
+    for p in procs:
+        p.start()
+    results = sorted(out.get(timeout = 300) for _ in procs)
+    for p in procs:
+        p.join(timeout = 60)
+        assert p.exitcode == 0
+    (_, report0, path0), (_, report1, path1) = results
+    assert report0 == report1 and path0 == path1 == save_dir
+    assert (tmp_path / "saved_by_0").exists() and not (tmp_path / "saved_by_1").exists()
+    # The one shared-data answer: both shards together, in one process.
+    one = _qwen3_moe(seed = 0)
+    reap.reap_prune(
+        one,
+        None,
+        sparsity = 0.25,
+        dataset = _samples(n = 5, seed = 20) + _samples(n = 5, seed = 21),
+        device = "cpu",
+    )
+    assert one._unsloth_reap_report == report0
