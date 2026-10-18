@@ -110,9 +110,11 @@ def _make_prepare(stock: Any, mod: Any) -> Any:
         # stock body below the projections, op for op (fingerprinted at install)
         query, key, value = int8_linear(fused, hidden_states).chunk(3, dim = -1)
 
-        query = query.unflatten(-1, (attn.heads, -1))
-        key = key.unflatten(-1, (attn.heads, -1))
-        value = value.unflatten(-1, (attn.heads, -1))
+        # main's split (by head_dim); equal to 0.41.0's ``(attn.heads, -1)`` when every head is local
+        head_dim = attn.inner_dim // attn.heads
+        query = query.unflatten(-1, (-1, head_dim))
+        key = key.unflatten(-1, (-1, head_dim))
+        value = value.unflatten(-1, (-1, head_dim))
 
         query = attn.norm_q(query).to(value.dtype)
         key = attn.norm_k(key).to(value.dtype)

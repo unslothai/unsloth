@@ -169,3 +169,107 @@ def test_base_template_has_no_channel_thought_injection():
     out = _render("gemma4_template", msgs, add_generation_prompt = True)
     assert out.endswith("<|turn>model\n")
     assert "<|channel>thought" not in out
+
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get the weather",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string", "description": "City name"}},
+                "required": ["city"],
+            },
+        },
+    }
+]
+TOOL_CONVO = [
+    {"role": "user", "content": "Weather in Paris?"},
+    {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "get_weather", "arguments": {"city": "Paris"}},
+            }
+        ],
+    },
+    {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+    {"role": "assistant", "content": "It is sunny."},
+]
+TOOL_SYSTEM = (
+    '<|turn>system\n<|tool>declaration:get_weather{description:<|"|>Get the weather<|"|>,'
+    'parameters:{properties:{city:{description:<|"|>City name<|"|>,type:<|"|>STRING<|"|>}},'
+    'required:[<|"|>city<|"|>],type:<|"|>OBJECT<|"|>}}<tool|><turn|>\n'
+)
+TOOL_ROUND = (
+    "<|turn>user\nWeather in Paris?<turn|>\n<|turn>model\n"
+    '<|tool_call>call:get_weather{city:<|"|>Paris<|"|>}<tool_call|>'
+    '<|tool_response>response:get_weather{value:<|"|>sunny<|"|>}<tool_response|>'
+)
+
+
+def _render_hf(template_name, messages, **kwargs):
+    env = Environment(trim_blocks = True, lstrip_blocks = True)
+    env.globals["raise_exception"] = lambda msg: (_ for _ in ()).throw(TemplateError(msg))
+    ctx = {"messages": messages, "add_generation_prompt": False, "tools": None}
+    ctx.update(kwargs)
+    return env.from_string(_extract_template(template_name)).render(**ctx)
+
+
+@pytest.mark.parametrize("name", ["gemma4_template", "gemma4_thinking_template"])
+def test_tool_calling_conversation_renders_like_gemma4(name):
+    out = _render_hf(name, TOOL_CONVO, tools = TOOLS)
+    assert out == TOOL_SYSTEM + TOOL_ROUND + "It is sunny.<turn|>\n"
+
+
+@pytest.mark.parametrize("name", ["gemma4_template", "gemma4_thinking_template"])
+def test_generation_after_tool_result_continues_the_model_turn(name):
+    out = _render_hf(name, TOOL_CONVO[:3], tools = TOOLS, add_generation_prompt = True)
+    assert out == TOOL_SYSTEM + TOOL_ROUND
+
+
+@pytest.mark.parametrize("name", ["gemma4_template", "gemma4_thinking_template"])
+def test_tool_responses_on_the_assistant_message_render_like_tool_messages(name):
+    call = TOOL_CONVO[1]["tool_calls"]
+    merged = [
+        TOOL_CONVO[0],
+        {
+            "role": "assistant",
+            "tool_calls": call,
+            "tool_responses": [{"name": "get_weather", "response": "sunny"}],
+            "content": "It is sunny.",
+        },
+    ]
+    assert _render_hf(name, merged, tools = TOOLS) == _render_hf(name, TOOL_CONVO, tools = TOOLS)
+    pending = [TOOL_CONVO[0], {k: v for k, v in merged[1].items() if k != "content"}]
+    out = _render_hf(name, pending, tools = TOOLS, add_generation_prompt = True)
+    assert out == TOOL_SYSTEM + TOOL_ROUND
+
+
+@pytest.mark.parametrize(
+    "name, opener",
+    [
+        ("gemma4_template", "<|turn>model\n"),
+        ("gemma4_thinking_template", "<|turn>model\n<|channel>thought\n<channel|>"),
+    ],
+)
+def test_a_closed_tool_turn_reopens_the_model_turn(name, opener):
+    msgs = [dict(m) for m in TOOL_CONVO[:3]]
+    msgs[1]["content"] = "Let me check."
+    out = _render_hf(name, msgs, tools = TOOLS, add_generation_prompt = True)
+    assert out.endswith("Let me check.<turn|>\n" + opener)
+
+
+@pytest.mark.parametrize("name", ["gemma4_template", "gemma4_thinking_template"])
+def test_object_tool_result_renders_its_fields(name):
+    msgs = [dict(m) for m in TOOL_CONVO[:3]]
+    msgs[2]["content"] = {"temperature": 18, "sky": "sunny"}
+    out = _render_hf(name, msgs, tools = TOOLS, add_generation_prompt = True)
+    assert out.endswith(
+        '<|tool_response>response:get_weather{sky:<|"|>sunny<|"|>,temperature:18}<tool_response|>'
+    )

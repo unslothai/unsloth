@@ -20,6 +20,17 @@ const MODEL_DEFAULTS: Array<{
   { match: "kontext", steps: 20, guidance: 2.5 },
   { match: "flux.1-krea", steps: 20, guidance: 3.5 },
   { match: "flux.1", steps: 20, guidance: 3.5 },
+  // FLUX.3 Image Klein (ComfyUI templates, the BFL reference): base 50 steps at CFG 3.5, distilled 16 steps without CFG. Base first.
+  // Every alias the backend registers for the two families, and the canonical family names (an opaque path
+  // resolves through the explicit family).
+  { match: "flux.3-klein-base", steps: 50, guidance: 3.5 },
+  { match: "flux-3-image-klein-base", steps: 50, guidance: 3.5 },
+  { match: "flux3-image-klein-base", steps: 50, guidance: 3.5 },
+  { match: "flux3-klein-base", steps: 50, guidance: 3.5 },
+  { match: "flux.3-klein", steps: 16, guidance: 1 },
+  { match: "flux-3-image-klein", steps: 16, guidance: 1 },
+  { match: "flux3-image-klein", steps: 16, guidance: 1 },
+  { match: "flux3-klein", steps: 16, guidance: 1 },
   // Klein base is undistilled. The generic key below covers both distilled sizes.
   { match: "flux.2-klein-base", steps: 20, guidance: 5 },
   { match: "flux.2-klein", steps: 4, guidance: 1 },
@@ -69,9 +80,15 @@ export function defaultsFor(repoId: string): {
     : DEFAULT_GEN;
 }
 
+// Families whose explicit choice outranks the name: FLUX.3 base and distilled share names (BFL's ComfyUI base
+// files are flux3_image_klein_*.safetensors), and the backend refuses a checkpoint of the other variant.
+const FAMILY_NAMES_THE_VARIANT = new Set(["flux.3-klein", "flux.3-klein-base"]);
+
 /** A recognizable variant (Schnell vs Dev) keeps its own key; an explicit family keys only an opaque path. */
 export function defaultsKeyFor(repoId: string, familyOverride: unknown): string {
-  return defaultsFor(repoId) !== DEFAULT_GEN ? repoId : (explicitFamily(familyOverride) ?? repoId);
+  const family = explicitFamily(familyOverride);
+  if (family && FAMILY_NAMES_THE_VARIANT.has(family)) return family;
+  return defaultsFor(repoId) !== DEFAULT_GEN ? repoId : (family ?? repoId);
 }
 
 /** The loaded model's recipe for a pick that got the fallback (its name named no family), else null. */
