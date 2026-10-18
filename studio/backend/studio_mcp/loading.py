@@ -67,6 +67,8 @@ class LoadJob(job_store.Job):
     fraction: Optional[float] = None
     # Each distinct (fraction, phase) the load went through, for every caller following it.
     marks: list[tuple[float, str]] = field(default_factory = list, repr = False)
+    # The STT download body this load started, so unload_model can stop it.
+    download: Optional[dict] = None
 
     def note(self, fraction: Optional[float], phase: str) -> None:
         # A step without a fraction keeps the last one, so progress never drops back.
@@ -179,7 +181,7 @@ async def start_load(
         # A chat load Unsloth Studio is already running (started elsewhere) is followed, not started
         # again. The status names only the repo, so a load asking for a variant always posts.
         loading_now = strings(chat.get("loading"))
-        if slot not in MEDIA_ROUTES and not variant and any(_same(n, model) for n in loading_now):
+        if slot in CHAT_ROUTE_KINDS and not variant and any(_same(n, model) for n in loading_now):
             job = _in_flight(caller, asked) or LOADS.start(
                 asked, lambda job: _watch_llm(caller, slot, model, before, job)
             )
@@ -189,6 +191,8 @@ async def start_load(
     return await wait_load(ctx, job, deadline)
 
 
+# The load_model kinds that load through the chat route.
+CHAT_ROUTE_KINDS = ("llm", "tts", "audio")
 # Route slot kinds as MCP kinds.
 ROUTE_KINDS = {"chat": "llm", "audio": "audio", "image": "image", "video": "video"}
 
@@ -235,7 +239,7 @@ def _slot_rows(rows: Any) -> list[EvictedSlot]:
 async def finish_load(
     caller: Caller, kind: str, model: str, before: dict[str, list[str]], answer: Any, **extras: Any
 ) -> LoadResult:
-    """The LoadResult for a finished load, with what it unloaded: the load answer's ``evicted_slots``, else its ``evicted`` ids placed by the ``before`` snapshot, else a before/after diff for routes that report neither."""
+    """The LoadResult for a finished load, with what it unloaded: the load answer's ``evicted_slots`` (else its ``evicted`` ids placed by the ``before`` snapshot), plus a before/after diff for what the answer leaves out."""
     answer = as_dict(answer)
     named = strings(answer.get("evicted"))
     slots = _slot_rows(answer.get("evicted_slots"))
@@ -250,19 +254,19 @@ async def finish_load(
             )
             for name in named
         ]
-        # Ids the route did not list: its own list names chat drops only (or nothing, before it had one).
-        diffed = [k for k, models in before.items() if models and (k != "llm" or not named)]
-        if diffed:
-            after = await resident_slots(caller)
-            slots += [
-                EvictedSlot(kind = slot, model = name)
-                for slot in diffed
-                if slot in after
-                for name in before[slot]
-                if not any(_same(name, m) for m in after[slot])
-                and not _same_id(name, model)
-                and not any(_same_id(name, s.model) for s in slots)
-            ]
+    # The route lists what it unloaded to make room, never the model this load replaced in its own
+    # slot (and nothing at all before it had a list), so whatever else left is found by a diff.
+    if any(before.values()):
+        after = await resident_slots(caller)
+        slots += [
+            EvictedSlot(kind = slot, model = name)
+            for slot, models in before.items()
+            if slot in after
+            for name in models
+            if not any(_same(name, m) for m in after[slot])
+            and not _same_id(name, model)
+            and not any(_same_id(name, s.model) for s in slots)
+        ]
     evicted = [slot.model for slot in slots] if slots else named
     return LoadResult(kind = kind, model = model, evicted = evicted, evicted_slots = slots, **extras)
 
@@ -616,6 +620,8 @@ async def download_stt(
         hub_header = True,
     )
     download_id = started.get("download_id") if isinstance(started, dict) else None
+    if isinstance(ctx, LoadJob):
+        ctx.download = {"model": model, "engine": engine, "download_id": download_id}
     while True:
         await asyncio.sleep(POLL_INTERVAL_S)
         state = (await stt_status(caller, model)).get(engine)
@@ -668,7 +674,28 @@ async def load_stt(
     return LoadResult(kind = "stt", model = resident)
 
 
+async def _stop_stt_loads(caller: Caller, model: Optional[str]) -> Optional[str]:
+    """Stop this caller's STT loads still running in the job store, and their downloads; the last model stopped, if any."""
+    stopped = None
+    for job in LOADS.running(caller.account_id):
+        if job.slot != "stt" or (model is not None and not _same(job.model, model)):
+            continue
+        job_store.mark_cancelled(job)
+        stopped = job.model
+        # Partial files stay cached, so a later load resumes the download.
+        if job.download is not None:
+            await route_json(
+                "POST",
+                "/api/inference/audio/stt/download/cancel",
+                caller = caller,
+                json_body = job.download,
+            )
+    return stopped
+
+
 async def unload_stt(caller: Caller, model: Optional[str]) -> UnloadResult:
+    # A load_model still downloading or loading runs on in the job store, so unloading stops it too.
+    stopped = await _stop_stt_loads(caller, model)
     status = await stt_status(caller)
     resident = {
         engine: status[engine]["loaded_model"]
@@ -677,7 +704,7 @@ async def unload_stt(caller: Caller, model: Optional[str]) -> UnloadResult:
     }
     targets = [(e, m) for e, m in resident.items() if model is None or m == model]
     if not targets:
-        return UnloadResult(kind = "stt", model = model, unloaded = False)
+        return UnloadResult(kind = "stt", model = stopped or model, unloaded = stopped is not None)
     engine, name = targets[0]
     await route_json(
         "POST",

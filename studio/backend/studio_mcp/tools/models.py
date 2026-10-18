@@ -180,7 +180,7 @@ async def load_model(
 
 
 async def unload_model(kind: ModelKind = "llm", model: Optional[str] = None) -> UnloadResult:
-    """Unload a model to free memory. Without ``model`` the active one of that kind is unloaded; image and video have one slot each, so ``model`` is ignored there. The embedding model is managed by Unsloth Studio and is not unloaded here. ``unloaded`` is false when nothing matching was loaded."""
+    """Unload a model to free memory. Without ``model`` the active one of that kind is unloaded; image and video have one slot each, so ``model`` is ignored there. The embedding model is managed by Unsloth Studio and is not unloaded here. ``unloaded`` is false when nothing matching was loaded. For "stt" it also stops a load_model of that kind still downloading or loading."""
     if kind == "stt":
         return await loading.unload_stt(current_caller(), model)
     if kind in loading.MEDIA_ROUTES:

@@ -172,9 +172,11 @@ async def _training_job(caller: Caller, kind: str, job_id: Optional[str]) -> Too
     payload = as_dict(await route_json("GET", SLOT_ROUTES[kind], caller = caller))
     slot = (_training if kind == "training" else _diffusion_training)(payload)
     if job_id and slot.job_id and job_id != slot.job_id:
-        raise ToolError(
-            f'{job_id} is not the current training job; list_training_runs(run_id="{job_id}") has its result'
+        # list_training_runs reads LLM runs only.
+        where = (
+            f'; list_training_runs(run_id="{job_id}") has its result' if kind == "training" else ""
         )
+        raise ToolError(f"{job_id} is not the current training job{where}")
     phase = "running" if kind == "diffusion_training" and slot.phase == "busy" else slot.phase
     status = TRAINING_STATUS.get(phase, "running")
     training = TrainingJob(**slot.model_dump())
