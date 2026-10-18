@@ -210,11 +210,11 @@ export const BUDGET = {
   // by that growth.
   // The audio.cpp v0.9.2 picker rows (#14073) add 253 B raw / 59 B transfer to the eager audio catalog
   // table (one machine and build, chunk count unchanged at 95). Raised by that.
-  // Matching letter shortcuts by the letter the layout types (#14113) adds 328 B raw / 126 B transfer
-  // (6,805,192 -> 6,805,520 B raw, 2,047,700 -> 2,047,826 B transfer against 475a02ac1, one machine and build,
+  // Matching letter shortcuts by the letter the layout types (#14113) adds 328 B raw / 137 B transfer
+  // (6,809,493 -> 6,809,821 B raw, 2,049,157 -> 2,049,294 B transfer against a6da154b3, one machine and build,
   // Node 24, chunk count unchanged at 95): the matcher runs on every keydown from the first screen, so there is
   // no separate module to lazy-load. Raised by that growth.
-  transferBytes: 2_047_734,
+  transferBytes: 2_047_745,
   rawBytes: 6_806_415,
 };
 
