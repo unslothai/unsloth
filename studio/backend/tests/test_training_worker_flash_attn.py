@@ -1981,11 +1981,14 @@ def test_the_eager_install_and_the_hook_share_one_failed_attempt(monkeypatch):
     assert attempts == ["causal_conv1d"]
 
 
-@pytest.mark.parametrize("required, budget", [(False, 120), (True, 2400)])
+@pytest.mark.parametrize("required, budget", [(False, 120), (True, None)])
 def test_training_waits_long_only_for_a_required_kernel(monkeypatch, required, budget):
     import contextlib
 
     from utils import kernel_install
+
+    if budget is None:
+        budget = kernel_install.KERNEL_LOCK_WAIT
 
     seen = {}
 
