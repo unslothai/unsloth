@@ -2781,9 +2781,22 @@ def refuse_stale_download(
             try:
                 from utils.hf_cache_settings import active_hf_hub_cache
                 hit = try_to_load_from_cache(identifier, name, cache_dir = active_hf_hub_cache())
-                return isinstance(hit, str)
             except Exception:  # noqa: BLE001 - an unreadable cache entry is one to fetch
                 return False
+            if not isinstance(hit, str):
+                return False
+            if hub_offline():
+                return True
+            # refs/main may still name an older copy while the job fetches the Hub's current one;
+            # blobs are stored under their etag, so only a matching blob means nothing is fetched.
+            try:
+                from huggingface_hub import get_hf_file_metadata, hf_hub_url
+                meta = get_hf_file_metadata(
+                    hf_hub_url(identifier, name), token = hf_token or None, timeout = 10
+                )
+            except Exception:  # noqa: BLE001 - unreachable Hub: the job cannot fetch it either
+                return True
+            return not meta.etag or Path(hit).resolve().name == meta.etag
 
         # A scoped job fetches exactly these files: only the GGUFs it would download count.
         wanted = [f for f in files if f.lower().endswith(".gguf") and not cached(f)]

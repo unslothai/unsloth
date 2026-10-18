@@ -286,6 +286,12 @@ def test_a_scoped_download_job_is_gated_on_the_files_it_fetches(monkeypatch, tmp
         "try_to_load_from_cache",
         lambda repo, name, **kw: "/cache/blob" if name in cached else None,
     )
+    remote = {"etag": "blob"}
+    monkeypatch.setattr(
+        huggingface_hub,
+        "get_hf_file_metadata",
+        lambda url, **kw: type("M", (), {"etag": remote["etag"]})(),
+    )
     _missing(monkeypatch, [("x.gguf", 4)])
     files = ["Qwen3-ForcedAligner-0.6B-GGUF/aligner-q8_0.gguf", "README.md"]
     scoped = lambda repo, names: asyncio.run(  # noqa: E731
@@ -307,6 +313,10 @@ def test_a_scoped_download_job_is_gated_on_the_files_it_fetches(monkeypatch, tmp
     scoped(acm.AUDIO_CPP_REPO, files)
     scoped("org/some-model", ["README.md", "config.json"])
     assert looked_up == [aligner.id]
+    # An older cached copy does not count when the Hub serves a refreshed file.
+    remote["etag"] = "refreshed"
+    with pytest.raises(HTTPException):
+        scoped(acm.AUDIO_CPP_REPO, files)
 
 
 def test_a_scoped_job_is_checked_at_the_quant_of_its_file(monkeypatch, tmp_path):
