@@ -418,6 +418,17 @@ _GEMMA_LIKE = (
     "{% if loop.first %}{{ first }}{% endif %}{{ m['content'] }}<end_of_turn>\n{% endfor %}"
 )
 
+_GEMMA4_LIKE = (
+    "{{ bos_token }}{% set loop_messages = messages %}"
+    "{% set system = messages and messages[0]['role'] == 'system' %}"
+    "{% if enable_thinking or system %}<|turn>system\n"
+    "{% if enable_thinking %}<|think|>\n{% endif %}{% if system %}"
+    "{{ messages[0]['content'] }}{% set loop_messages = messages[1:] %}{% endif %}<turn|>\n"
+    "{% endif %}{% for m in loop_messages %}<|turn>{{ m['role'] }}\n{{ m['content'] }}<turn|>\n"
+    "{% endfor %}"
+)
+_GLM_LIKE = "[gMASK]<sop>{% for m in messages %}<|{{ m['role'] }}|>{{ m['content'] }}{% endfor %}"
+
 
 _REFUSES_SYSTEM = (
     "{% if messages[0]['role'] == 'system' %}{{ raise_exception('no system') }}{% endif %}"
@@ -450,6 +461,11 @@ class TestTemplateSystemTurn:
     @pytest.mark.parametrize("template", [_CHATML, _GEMMA_LIKE, None, "", "{% if %}"])
     def test_templates_without_a_default_return_nothing(self, template):
         assert _turn(template) == (True, "")
+
+    @pytest.mark.parametrize("template", ["{{ bos_token }}" + _CHATML, _GLM_LIKE, _GEMMA4_LIKE])
+    @pytest.mark.parametrize("thinking", [False, True])
+    def test_a_fixed_prefix_is_not_a_default(self, template, thinking):
+        assert _turn(template, controls = (("enable_thinking", thinking),)) == (True, "")
 
     def test_a_default_that_dates_itself_is_dated_for_the_given_day(self):
         dated = _QWEN25_LIKE.replace(
@@ -747,6 +763,26 @@ class TestDateStaysInTheSystemTurn:
         ]
         out = self.inference._prepend_current_date_to_messages(history, object())
         assert out == [{"role": "system", "content": "The current date is 2026-10-04."}, *history]
+
+    def test_a_fixed_prefix_template_without_thinking_gets_the_date(self, monkeypatch):
+        from types import SimpleNamespace
+
+        line = self.inference.current_date_prompt_line
+        monkeypatch.undo()
+        monkeypatch.setattr(self.inference, "current_date_prompt_line", line)
+        monkeypatch.setattr(self.inference, "_request_has_api_key", lambda _request: False)
+        llama = SimpleNamespace(
+            is_loaded = True,
+            chat_template = _GEMMA4_LIKE,
+            chat_template_override = None,
+            extra_args = [],
+        )
+        monkeypatch.setattr(self.inference, "get_llama_cpp_backend", lambda: llama)
+        controls = (("enable_thinking", False),)
+        assert (
+            self.inference._apply_current_date_prompt("", object(), controls = controls)
+            == "The current date is 2026-10-04."
+        )
 
     def test_a_disabled_setting_adds_nothing(self, monkeypatch):
         monkeypatch.setattr(self.inference, "current_date_prompt_line", lambda **_kwargs: "")
