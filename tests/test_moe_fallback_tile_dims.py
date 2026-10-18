@@ -29,8 +29,7 @@ OLD_DEFAULT = ((128, 128, 64, 8, 3),) * 3
 
 # (hidden_size, moe_intermediate_size)
 SHAPES = [(2048, 1408), (2048, 768), (4096, 1536), (2880, 2880), (4096, 14336), (1024, 352)]
-# Shapes whose fallback configs worked before the fix: must stay byte-identical.
-# Qwen3-30B-A3B, Qwen3-235B-A22B, Mixtral-8x7B, OLMoE-1B-7B.
+# Qwen3-30B-A3B, Qwen3-235B-A22B, Mixtral-8x7B, OLMoE-1B-7B: their configs must stay byte-identical.
 UNCHANGED_SHAPES = [(2048, 768), (4096, 1536), (4096, 14336), (2048, 1024)]
 
 
@@ -56,8 +55,7 @@ def ac(monkeypatch):
 
 
 def _gemms(hidden, inter):
-    # Exactly what unsloth_zoo forward_triton_grouped_gemm passes per GEMM, and the (N, K)
-    # each GEMM really has. GEMM1: gate_up, K = H, N = 2I. GEMM2: down, K = I, N = H.
+    # As unsloth_zoo forward_triton_grouped_gemm calls it. GEMM1: K = H, N = 2I. GEMM2: K = I, N = H.
     return [
         (dict(hidden_dim = hidden, intermediate_dim = inter), (2 * inter, hidden)),
         (
@@ -91,7 +89,6 @@ def test_fallback_tiles_divide_each_gemm(ac, hidden, inter, which):
             m, bn, bk, warps, stages = tile
             assert n % bn == 0 and k % bk == 0, (which, hidden, inter, n, k, tile)
             assert bn >= 16 and bk >= 16
-            # Only N / K shrink; never grow (shared memory never exceeds the old config).
             assert bn <= old_tile[1] and bk <= old_tile[2]
             assert (m, warps, stages) == (old_tile[0], old_tile[3], old_tile[4])
         if _divides(old, n, k):
@@ -151,8 +148,6 @@ def test_get_or_autotune_wires_dims(ac, monkeypatch, hidden, inter):
                 assert n % c.BLOCK_SIZE_N == 0 and k % c.BLOCK_SIZE_K == 0, (env, n, k, c)
 
 
-# Shared memory step-down of the heuristic dX (measured 122,880 B at 64x64x256 x 4 stages on
-# sm_80+; 101,376 B limit on L4 / RTX PRO 6000). The device is mocked.
 def _device(ac, monkeypatch, capability, smem):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: capability)
