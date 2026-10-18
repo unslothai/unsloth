@@ -12606,9 +12606,6 @@ def fix_transformers_longcat_lsa_config():
         )
 
 
-_BAILING_HYBRID_MODULE = "transformers.models.bailing_hybrid.modeling_bailing_hybrid"
-
-
 class _BailingHybridLowRankQuery:
     """`q_b_proj(q_a_layernorm(q_a_proj(x)))` standing in for the attention's `q_proj` call. Not a
     module, so the state dict holds the three checkpoint tensors and no `q_proj`."""
@@ -12630,8 +12627,7 @@ def fix_transformers_bailing_hybrid_low_rank_query():
     low-rank query the checkpoint and its own modeling code carry; `q_lora_rank = None` (Ling-3.0-flash)
     is untouched. Lazy: called from the loader once the config names bailing_hybrid."""
     try:
-        import importlib
-        module = importlib.import_module(_BAILING_HYBRID_MODULE)
+        from transformers.models.bailing_hybrid import modeling_bailing_hybrid as module
     except Exception:
         return
     cls = getattr(module, "BailingHybridAttention", None)
