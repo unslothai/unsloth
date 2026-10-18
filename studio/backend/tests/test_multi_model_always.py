@@ -570,3 +570,17 @@ def test_status_reports_the_multi_model_mode(backends, monkeypatch, mode):
 
     monkeypatch.setattr(inf, "_slot_status", slot_status)
     assert asyncio.run(inf.get_status("s")).multi_model_mode == mode
+
+
+def test_an_unreadable_primary_under_always_refuses_instead_of_replacing(backends, monkeypatch):
+    from core.inference.gpu_arbiter import MultiModelAlwaysRefusal
+
+    _mode(monkeypatch, "always")
+    monkeypatch.setattr(model_slots, "slots", [])
+
+    def broken():
+        raise RuntimeError("status unreadable")
+
+    monkeypatch.setattr(inf, "_primary_chat_reports", broken)
+    with pytest.raises(MultiModelAlwaysRefusal):
+        asyncio.run(inf._guard_primary_replacement(LoadRequest(model_path = "org/C"), ("org/C",)))
