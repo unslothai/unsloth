@@ -451,3 +451,9 @@ def test_a_stalled_status_read_is_no_wait(monkeypatch):
     studio = fake_studio({("GET", STATUS): slow({"state": "running"}, 2.0)})
     ctx = wait(studio, model = "org/repo", variant = "Q4_K_M", budget_s = 5.0)
     assert ctx.messages == []
+
+
+def test_repo_variant_shorthand_for_speech_waits_on_the_variant():
+    assert model_downloads.keys_for(make_caller(), "tts", "org/speech:Q4_K_M", None) == [
+        ("org/speech", "Q4_K_M")
+    ]

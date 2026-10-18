@@ -314,6 +314,7 @@ async def load_model(
     # The route echoes the minted ref; the agent gets the name it asked for.
     if not trained:
         return result
+    trained_models.remember_load(caller, trained)
     trained_models.rename_job(caller, result.job_id, trained)
     return trained.renamed(result)
 
@@ -333,7 +334,13 @@ async def unload_model(kind: UnloadKind = "llm", model: Optional[str] = None) ->
         return media_result([], await loading.unload_stt(current_caller(), model))
     if kind in loading.MEDIA_ROUTES:
         return media_result([], await loading.unload_media(current_caller(), kind))
-    return media_result([], await loading.unload_llm(current_caller(), model, kind))
+    caller = current_caller()
+    # A checkpoint or export is resident under its ref: handle, not the name load_model reported.
+    target = trained_models.loaded_ref(caller, model)
+    result = await loading.unload_llm(caller, target, kind)
+    if target != model:
+        result = result.model_copy(update = {"model": model})
+    return media_result([], result)
 
 
 def _unload_schema() -> dict[str, Any]:

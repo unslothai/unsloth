@@ -353,13 +353,13 @@ def keys_for(caller: Caller, kind: str, model: str, variant: Optional[str]) -> l
         model = _split(model, variant)[0]
         remembered = _remembered.get(_key(caller, kind, model))
         return list(remembered or [(model, SCOPED)])
+    model, variant = _split(model, variant)
     if _native_audio(kind, model, variant):
-        # The plan's parts, codecs included; without a prefetch, the repo itself.
+        # The plan's parts, codecs included; without a prefetch, the repo or the Audio page's staged download of it.
         remembered = _remembered.get(_key(caller, kind, model))
-        # Without a prefetch here, the repo itself or the Audio page's staged download of it.
         return list(remembered or [(model, None), (model, AUDIO_SCOPED)])
     # A load without a variant reads the repo's default, not the variant download_model last staged.
-    return [_split(model, variant)]
+    return [(model, variant)]
 
 
 async def wait_for_managed(

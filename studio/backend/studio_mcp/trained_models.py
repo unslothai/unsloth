@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -42,6 +43,23 @@ class TrainedModel:
         return result.model_copy(
             update = {"model": self.name, "evicted": evicted, "evicted_slots": slots}
         )
+
+
+# (account, name) -> the ref: handle it was loaded under, so unload_model(model=<name>) finds it.
+_loaded_as: "OrderedDict[tuple[str, str], str]" = OrderedDict()
+
+
+def remember_load(caller: Caller, trained: TrainedModel) -> None:
+    key = (caller.account_id, trained.name)
+    _loaded_as[key] = trained.ref
+    _loaded_as.move_to_end(key)
+    while len(_loaded_as) > 256:
+        _loaded_as.popitem(last = False)
+
+
+def loaded_ref(caller: Caller, model: Optional[str]) -> Optional[str]:
+    """The ref: handle a checkpoint or export name was loaded under, else the model as given."""
+    return _loaded_as.get((caller.account_id, model), model) if model else model
 
 
 def rename_job(caller: Caller, job_id: Optional[str], trained: TrainedModel) -> None:

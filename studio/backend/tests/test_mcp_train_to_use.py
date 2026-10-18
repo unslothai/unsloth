@@ -11,7 +11,7 @@ import pytest
 from hub.utils.host_paths import cache_reference, resolve_host_path_reference
 from studio_mcp import checkpoints, trained_models
 
-from .mcp_harness import OUT, RUN_CHECKPOINTS, bodies, make_caller, run_tool
+from .mcp_harness import OUT, RUN_CHECKPOINTS, bodies, make_caller, run_tool, sequence
 
 EXPORTS = "/srv/unsloth/exports"
 LORAS = {
@@ -288,3 +288,32 @@ def test_a_stalled_listing_does_not_hold_the_call(monkeypatch):
 
     with pytest.raises(Exception, match = "did not list its training runs"):
         asyncio.run(go())
+
+
+def test_a_trained_load_unloads_by_its_name(monkeypatch):
+    ref = cache_reference(f"{OUT}/qwen-lora/checkpoint-30")
+    unloaded = []
+
+    def unload(request, body):
+        unloaded.append(json.loads(body)["model_path"])
+        return {"status": "unloaded"}
+
+    status = sequence(
+        {"loaded": [ref], "serving": [ref], "serving_checkpoints": [ref]},
+        {"loaded": [], "serving": [], "serving_checkpoints": []},
+    )
+    routes = {
+        **_routes(),
+        ("GET", "/api/inference/status"): status,
+        ("POST", "/api/inference/unload"): unload,
+    }
+    trained_models.remember_load(
+        make_caller(),
+        trained_models.TrainedModel(name = "qwen-lora/checkpoint-30", ref = ref, is_lora = True),
+    )
+    args = {"kind": "llm", "model": "qwen-lora/checkpoint-30"}
+    result, _studio = run_tool(monkeypatch, routes, "unload_model", args)
+    assert unloaded == [ref]
+    out = result["structuredContent"]
+    assert (out["model"], out["unloaded"]) == ("qwen-lora/checkpoint-30", True)
+    assert "ref:" not in json.dumps(result)
