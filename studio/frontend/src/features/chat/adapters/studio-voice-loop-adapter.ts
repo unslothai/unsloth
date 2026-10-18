@@ -177,6 +177,11 @@ let heldFromBarge = false;
 
 // Mute keeps the session open and drops its frames; the no-speech clock waits.
 let micMuted = false;
+
+// The one open session. A second listen() while it is live (two re-arms racing)
+// used to leave an orphan holding the mic beside the real one, and the loop went
+// deaf until a thread switch tore both down; now the older one is cancelled.
+let liveSession: { cancel: () => void } | null = null;
 export function setMicMuted(muted: boolean): void {
   micMuted = muted;
 }
@@ -288,6 +293,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     let bargeConfirming = false;
     const preroll: Float32Array[] = [];
     let bargedIn = heldTurn !== null && heldFromBarge;
+    // What the mic delivered, for the trace: a session that heard nothing at all
+    // (a muted or silent device) shows as peakRms 0 against a named device.
+    let peakRms = 0;
+    let trackLabel = "";
+    let trackMutedAt = 0;
     let sampleRate = 16000;
     let heardSpeech = false;
     let lastVoiceAt = 0;
@@ -339,6 +349,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       },
     };
 
+    if (liveSession) {
+      voiceTrace("session.supersede", {});
+      liveSession.cancel();
+    }
+    liveSession = session;
     voiceTrace("session.start", { playback: isVoicePlaybackActive() });
     // A mic picked in Settings mid-session: this session keeps the old device, so
     // end it (once nothing is being said) and the re-arm opens the new one.
@@ -356,13 +371,43 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         if (state.micDeviceId !== prev.micDeviceId) reopen("micSwitch", { to: state.micDeviceId });
       },
     );
-    const onDevicesChanged = () => reopen("deviceChange");
+    // Output routes change too (a reply starting to play fires this on macOS), and
+    // reopening the mic for that cut sessions mid-turn: only a changed set of
+    // inputs reopens, so a plugged or pulled headset is picked up and nothing else.
+    let inputIds: string | null = null;
+    const audioInputIds = async () => {
+      const devices = await navigator.mediaDevices.enumerateDevices?.();
+      return (devices ?? [])
+        .filter((d) => d.kind === "audioinput")
+        .map((d) => d.deviceId)
+        .sort()
+        .join(",");
+    };
+    void audioInputIds().then((ids) => {
+      if (inputIds === null) inputIds = ids;
+    });
+    const onDevicesChanged = () => {
+      void audioInputIds().then((ids) => {
+        if (inputIds !== null && ids === inputIds) return;
+        inputIds = ids;
+        reopen("deviceChange");
+      });
+    };
     navigator.mediaDevices.addEventListener?.("devicechange", onDevicesChanged);
+    // WebKit mutes a capture track while the window is away and does not always
+    // unmute it: a muted track that is still muted when the window comes back is
+    // reopened rather than left delivering silence.
+    const onFocus = () => {
+      const t = stream?.getAudioTracks()[0];
+      if (t?.muted) reopen("mutedOnFocus", { mutedMs: Math.round(performance.now() - trackMutedAt) });
+    };
+    window.addEventListener("focus", onFocus);
 
     const teardown = () => {
       unsubMic?.();
       unsubMic = null;
       navigator.mediaDevices.removeEventListener?.("devicechange", onDevicesChanged);
+      window.removeEventListener("focus", onFocus);
       // Mic is closing: no longer hearing the user, so drop the orb's salmon
       // "hearing you" state (the utterance ended or was cancelled).
       useChatRuntimeStore.getState().setVoiceHearing(false);
@@ -387,7 +432,14 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       if (ended) return;
       ended = true;
       utteranceInFlight = false;
-      voiceTrace("session.finish", { reason, transcript: transcript ?? null, bargedIn });
+      if (liveSession === session) liveSession = null;
+      voiceTrace("session.finish", {
+        reason,
+        transcript: transcript ?? null,
+        bargedIn,
+        peakRms: Number(peakRms.toFixed(4)),
+        device: trackLabel,
+      });
       session.status = { type: "ended", reason };
       if (transcript) {
         for (const cb of speechEndCallbacks) cb({ transcript });
@@ -661,8 +713,21 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         }
         sampleRate = audioCtx.sampleRate;
         for (const track of stream.getAudioTracks()) {
+          trackLabel = track.label;
           track.addEventListener("ended", () => reopen("trackEnded", { label: track.label }));
+          track.addEventListener("mute", () => {
+            trackMutedAt = performance.now();
+            voiceTrace("mic.muted", { label: track.label });
+          });
+          track.addEventListener("unmute", () => {
+            voiceTrace("mic.unmuted", { label: track.label, mutedMs: Math.round(performance.now() - trackMutedAt) });
+            // The silence while muted was not the user's.
+            const t = performance.now();
+            startedAt = t;
+            lastVoiceAt = t;
+          });
         }
+        voiceTrace("mic.open", { label: trackLabel, muted: stream.getAudioTracks()[0]?.muted ?? null });
         source = audioCtx.createMediaStreamSource(stream);
         attachInputSpectrum(audioCtx, source);
         processor = audioCtx.createScriptProcessor(4096, 1, 1);
@@ -696,7 +761,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         let wasMuted = false;
         processor.onaudioprocess = (event) => {
           if (ended || finalizing) return;
-          if (micMuted) {
+          if (micMuted || stream?.getAudioTracks()[0]?.muted) {
             wasMuted = true;
             return;
           }
@@ -713,6 +778,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           for (let i = 0; i < input.length; i++)
             sumSquares += input[i] * input[i];
           const rms = Math.sqrt(sumSquares / input.length);
+          if (rms > peakRms) peakRms = rms;
           const now = performance.now();
 
           const frameMs = (input.length / sampleRate) * 1000;
