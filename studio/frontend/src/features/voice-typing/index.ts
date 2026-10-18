@@ -6,4 +6,12 @@ export { useVoiceTyping } from "./use-voice-typing";
 export {
   useVoiceTypingStore,
   type VoiceTypingMode,
+  type VoiceTypingReadiness,
 } from "./voice-typing-store";
+export {
+  queryMicrophonePermission,
+  requestVoiceTypingMicrophoneAccess,
+  requestVoiceTypingModelDownload,
+  type MicrophonePermission,
+  type VoiceTypingModelState,
+} from "./voice-typing-preflight";

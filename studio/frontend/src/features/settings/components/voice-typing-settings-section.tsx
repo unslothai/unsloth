@@ -19,11 +19,16 @@ import {
   chordFromEvent,
   formatShortcut,
   isModifierCode,
+  queryMicrophonePermission,
+  requestVoiceTypingMicrophoneAccess,
+  requestVoiceTypingModelDownload,
+  type MicrophonePermission,
   type VoiceTypingMode,
   useVoiceTypingStore,
 } from "@/features/voice-typing";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
+import { useVoiceSettingsStore } from "../stores/voice-settings-store";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
@@ -56,10 +61,26 @@ export function VoiceTypingSettingsSection() {
   const setKeepOnClipboard = useVoiceTypingStore(
     (state) => state.setKeepOnClipboard,
   );
+  const readiness = useVoiceTypingStore((state) => state.readiness);
+  const preloadModel = useVoiceTypingStore((state) => state.preloadModel);
+  const setPreloadModel = useVoiceTypingStore((state) => state.setPreloadModel);
+  const autoStopSilence = useVoiceTypingStore((state) => state.autoStopSilence);
+  const setAutoStopSilence = useVoiceTypingStore(
+    (state) => state.setAutoStopSilence,
+  );
+  const pasteAutomatically = useVoiceTypingStore(
+    (state) => state.pasteAutomatically,
+  );
+  const setPasteAutomatically = useVoiceTypingStore(
+    (state) => state.setPasteAutomatically,
+  );
+  const sttModel = useVoiceSettingsStore((state) => state.sttModel);
 
   const [info, setInfo] = useState<VoiceTypingInfo | null>(null);
   const [capturing, setCapturing] = useState(false);
   const [needsModifier, setNeedsModifier] = useState(false);
+  const [micPermission, setMicPermission] =
+    useState<MicrophonePermission>("unknown");
 
   useEffect(() => {
     if (!isTauri) return;
@@ -71,6 +92,23 @@ export function VoiceTypingSettingsSection() {
       .catch(() => {});
     return () => {
       live = false;
+    };
+  }, []);
+
+  // The microphone row follows the webview's own permission state, which can
+  // change while the dialog is open (the user leaves to click Allow and returns).
+  useEffect(() => {
+    let live = true;
+    const refresh = () => {
+      void queryMicrophonePermission().then((permission) => {
+        if (live) setMicPermission(permission);
+      });
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => {
+      live = false;
+      window.removeEventListener("focus", refresh);
     };
   }, []);
 
@@ -110,6 +148,21 @@ export function VoiceTypingSettingsSection() {
         ? t("settings.voice.voiceTyping.modeToggleDescription")
         : t("settings.voice.voiceTyping.modeHybridDescription");
 
+  const modelStatusText =
+    readiness === "ready"
+      ? t("settings.voice.voiceTyping.modelReady")
+      : readiness === "loading"
+        ? t("settings.voice.voiceTyping.modelLoading")
+        : readiness === "will-load"
+          ? t("settings.voice.voiceTyping.modelWillLoad")
+          : readiness === "needs-download"
+            ? t("settings.voice.voiceTyping.modelNeedsDownload")
+            : readiness === "engine-missing"
+              ? t("settings.voice.voiceTyping.modelEngineMissing")
+              : readiness === "custom"
+                ? t("settings.voice.voiceTyping.modelCustom")
+                : t("settings.voice.voiceTyping.modelUnknown");
+
   return (
     <SettingsSection
       title={t("settings.voice.voiceTyping.sectionTitle")}
@@ -126,6 +179,80 @@ export function VoiceTypingSettingsSection() {
           aria-label={t("settings.voice.voiceTyping.enableLabel")}
         />
       </SettingsRow>
+      {enabled ? (
+        <p
+          className="-mt-1 pb-3 text-xs text-muted-foreground"
+          data-testid="voice-typing-active-hint"
+        >
+          {t("settings.voice.voiceTyping.activeHint", {
+            shortcut: formatShortcut(shortcut),
+          })}
+        </p>
+      ) : null}
+
+      {enabled ? (
+        <SettingsRow
+          label={t("settings.voice.voiceTyping.modelLabel")}
+          description={sttModel}
+        >
+          <div className="flex items-center gap-2">
+            <span
+              className="text-xs text-muted-foreground"
+              data-testid="voice-typing-model-status"
+            >
+              {modelStatusText}
+            </span>
+            {readiness === "needs-download" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                data-testid="voice-typing-model-download"
+                onClick={requestVoiceTypingModelDownload}
+              >
+                {t("settings.voice.voiceTyping.modelDownloadAction")}
+              </Button>
+            ) : null}
+          </div>
+        </SettingsRow>
+      ) : null}
+
+      {enabled ? (
+        <SettingsRow
+          label={t("settings.voice.dictation.microphoneLabel")}
+          description={
+            micPermission === "denied"
+              ? t("settings.voice.dictation.micAccessBlockedDesktop")
+              : t("settings.voice.dictation.microphoneDescription")
+          }
+        >
+          <div className="flex items-center gap-2">
+            <span
+              className="text-xs text-muted-foreground"
+              data-testid="voice-typing-mic-status"
+            >
+              {micPermission === "granted"
+                ? t("settings.voice.voiceTyping.micAccessGranted")
+                : micPermission === "denied"
+                  ? t("settings.voice.voiceTyping.micAccessBlockedStatus")
+                  : t("settings.voice.voiceTyping.micAccessNeeded")}
+            </span>
+            {micPermission !== "granted" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                data-testid="voice-typing-mic-allow"
+                onClick={() => {
+                  void requestVoiceTypingMicrophoneAccess().then(() => {
+                    void queryMicrophonePermission().then(setMicPermission);
+                  });
+                }}
+              >
+                {t("settings.voice.dictation.allowMicrophone")}
+              </Button>
+            ) : null}
+          </div>
+        </SettingsRow>
+      ) : null}
 
       <SettingsRow
         label={t("settings.voice.voiceTyping.shortcutLabel")}
@@ -228,6 +355,42 @@ export function VoiceTypingSettingsSection() {
           onCheckedChange={setKeepOnClipboard}
           data-testid="voice-typing-keep-clipboard"
           aria-label={t("settings.voice.voiceTyping.clipboardLabel")}
+        />
+      </SettingsRow>
+
+      <SettingsRow
+        label={t("settings.voice.voiceTyping.pasteLabel")}
+        description={t("settings.voice.voiceTyping.pasteDescription")}
+      >
+        <Switch
+          checked={pasteAutomatically}
+          onCheckedChange={setPasteAutomatically}
+          data-testid="voice-typing-paste"
+          aria-label={t("settings.voice.voiceTyping.pasteLabel")}
+        />
+      </SettingsRow>
+
+      <SettingsRow
+        label={t("settings.voice.voiceTyping.preloadLabel")}
+        description={t("settings.voice.voiceTyping.preloadDescription")}
+      >
+        <Switch
+          checked={preloadModel}
+          onCheckedChange={setPreloadModel}
+          data-testid="voice-typing-preload"
+          aria-label={t("settings.voice.voiceTyping.preloadLabel")}
+        />
+      </SettingsRow>
+
+      <SettingsRow
+        label={t("settings.voice.voiceTyping.autoStopLabel")}
+        description={t("settings.voice.voiceTyping.autoStopDescription")}
+      >
+        <Switch
+          checked={autoStopSilence}
+          onCheckedChange={setAutoStopSilence}
+          data-testid="voice-typing-auto-stop"
+          aria-label={t("settings.voice.voiceTyping.autoStopLabel")}
         />
       </SettingsRow>
 

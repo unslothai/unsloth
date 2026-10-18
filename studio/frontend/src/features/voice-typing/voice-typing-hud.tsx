@@ -17,12 +17,14 @@ interface HudPayload {
 }
 
 const DOT_COLORS: Record<string, string> = {
+  preparing: "#60a5fa",
   recording: "#f87171",
   transcribing: "#fbbf24",
   done: "#34d399",
 };
 
 const BAR_COLORS: Record<string, string> = {
+  preparing: "#93c5fd",
   recording: "#fca5a5",
   transcribing: "#fcd34d",
   done: "#6ee7b7",
@@ -58,13 +60,15 @@ export function VoiceTypingHud() {
   }, []);
 
   const label =
-    state === "recording"
-      ? t("settings.voice.voiceTyping.hudListening")
-      : state === "transcribing"
-        ? t("settings.voice.voiceTyping.hudTranscribing")
-        : state === "done"
-          ? t("settings.voice.voiceTyping.hudInserted")
-          : "";
+    state === "preparing"
+      ? t("settings.voice.voiceTyping.hudPreparing")
+      : state === "recording"
+        ? t("settings.voice.voiceTyping.hudListening")
+        : state === "transcribing"
+          ? t("settings.voice.voiceTyping.hudTranscribing")
+          : state === "done"
+            ? t("settings.voice.voiceTyping.hudInserted")
+            : "";
 
   if (!label) {
     // Nothing recorded yet: keep the (transparent) window empty.
