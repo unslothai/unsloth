@@ -360,13 +360,7 @@ _MIN_FALLBACK_BLOCK_SIZE = 16
 
 
 def _fit_block_size(block_size: int, dim: Optional[int]) -> int:
-    """
-    Largest power of two <= block_size (and >= 16) that divides dim.
-
-    Returns block_size unchanged when dim is unknown, when block_size already divides dim,
-    or when no power of two >= 16 divides dim (that case keeps today's behaviour: the
-    forward kernel masks N, while the K asserts and the backward N asserts still fire).
-    """
+    # Largest power of two <= block_size and >= 16 dividing dim; else unchanged (the kernel asserts still fire).
     if dim is None or dim <= 0 or dim % block_size == 0:
         return block_size
     candidate = 1 << (block_size.bit_length() - 1)
@@ -380,27 +374,16 @@ def _fit_block_size(block_size: int, dim: Optional[int]) -> int:
 def _fit_configs_to_dims(
     configs: Tuple[Any, Any, Any], n_dim: Optional[int], k_dim: Optional[int]
 ) -> Tuple[Any, Any, Any]:
-    """
-    Shrink the fixed fallback tiles so BLOCK_SIZE_N / BLOCK_SIZE_K divide this GEMM's N / K.
-
-    The grouped GEMM kernels static_assert K % BLOCK_SIZE_K == 0 (forward, dX) and
-    N % BLOCK_SIZE_N == 0 (dX; dW with TMA store). All three kernels use the same W layout
-    [E, N, K], so one (N, K) pair covers the forward, dX and dW configs of a GEMM.
-    BLOCK_SIZE_M tiles the per-expert token count, which is dynamic and masked, so it is
-    left alone. Tiles only shrink, so shared memory use never grows past the fixed config.
-    """
+    # The kernels static_assert K % BLOCK_SIZE_K == 0 and N % BLOCK_SIZE_N == 0; W is [E, N, K] for all three.
+    # BLOCK_SIZE_M tiles the masked per-expert token count, so it stays.
     for config in configs:
         config.BLOCK_SIZE_N = _fit_block_size(config.BLOCK_SIZE_N, n_dim)
         config.BLOCK_SIZE_K = _fit_block_size(config.BLOCK_SIZE_K, k_dim)
     return configs
 
 
-# Heuristic configs whose measured shared memory does not fit every device, with the
-# smallest change that fits. Bytes are Triton's compiled metadata.shared for 16-bit dtypes:
-# sm_80+ keeps num_stages - 1 cp.async buffers, so the 64x64x256 4-stage dX needs 122,880 B
-# (OutOfResources on L4 / RTX PRO 6000: 101,376 B limit); 3 stages need 81,920 B. The other
-# heuristic kernels fit 101,376 B as they are (fwd 98,304 B, dW 36,864 B). sm_75 has no
-# cp.async multi-buffering (65,536 B for every heuristic kernel on a T4), so it is excluded.
+# Triton metadata.shared (16-bit) of the 4-stage 64x64x256 dX: 122,880 B, over the 101,376 B of L4 / RTX PRO 6000;
+# 3 stages need 81,920 B. sm_75 needs 65,536 B (no cp.async multi-buffering), so it is excluded.
 # kind -> {(BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages): (bytes, fitting num_stages, its bytes)}
 _HEURISTIC_SMEM_STEP_DOWN = {
     "dX": {(64, 64, 256, 4): (122880, 3, 81920)},
@@ -420,7 +403,6 @@ def _device_smem_per_block() -> Optional[int]:
 
 
 def _fit_heuristic_configs_to_smem(configs: Tuple[Any, Any, Any]) -> Tuple[Any, Any, Any]:
-    """Apply _HEURISTIC_SMEM_STEP_DOWN on CUDA sm_80+ devices whose shared memory is too small."""
     try:
         if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
             return configs
@@ -448,10 +430,6 @@ def _get_heuristic_configs(
     """
     Get 'Safe Heuristic' kernel configurations.
     These are verified to be safe on A100 (SM80) and provide ~9x speedup on H100/B200.
-
-    n_dim / k_dim are this GEMM's N (output features) and K (input features); when given,
-    BLOCK_SIZE_N / BLOCK_SIZE_K shrink to divide them (see _fit_configs_to_dims). On sm_80+
-    devices with too little shared memory, num_stages steps down per _HEURISTIC_SMEM_STEP_DOWN.
     """
     from .grouped_gemm.kernels.tuning import (
         KernelConfigForward,
@@ -506,12 +484,7 @@ def _get_heuristic_configs(
 def _get_default_configs(
     n_dim: Optional[int] = None, k_dim: Optional[int] = None
 ) -> Tuple[Any, Any, Any]:
-    """
-    Get default kernel configurations as fallback.
-
-    n_dim / k_dim are this GEMM's N and K; when given, BLOCK_SIZE_N / BLOCK_SIZE_K shrink to
-    divide them (see _fit_configs_to_dims).
-    """
+    """Get default kernel configurations as fallback."""
     from .grouped_gemm.kernels.tuning import (
         KernelConfigForward,
         KernelConfigBackward_dX,
