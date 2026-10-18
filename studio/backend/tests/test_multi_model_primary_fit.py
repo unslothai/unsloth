@@ -74,10 +74,10 @@ def env(monkeypatch):
         *,
         need_mib = None,
         short_mib = 0,
+        media_only = False,
     ):
-        state.free_calls.append(
-            {"owner": owner, "gpu_ids": tuple(gpu_ids or ()), "short_mib": short_mib}
-        )
+        call = {"owner": owner, "gpu_ids": tuple(gpu_ids or ()), "short_mib": short_mib}
+        state.free_calls.append({**call, "media_only": True} if media_only else call)
         evicted.extend(dict(s) for s in state.frees)
         return [s["model"] for s in state.frees]
 
@@ -386,3 +386,30 @@ def test_a_serving_primary_reloaded_under_always_is_not_torn_down_for_a_refusal(
         assert inf._primary_refuses_partial_fit(serving, policy, placement) is expected
     finally:
         inf._primary_can_retry_fit.reset(token)
+
+
+def test_an_extra_chat_load_frees_an_idle_image_before_replacing_the_primary(env, monkeypatch):
+    # Chat A + an idle image under When they fit: chat B loaded alongside comes up short. The image goes and B
+    # loads beside A, instead of A being unloaded (and the image after it, by the replacement primary load).
+    extra = model_slots.ExtraSlot(FakeLlama(), FakeOrchestrator(), "owner")
+
+    async def select(_request):
+        return extra
+
+    monkeypatch.setattr(inf, "_select_load_slot", select)
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: "fit")
+    monkeypatch.setattr(model_slots, "eviction_victims", lambda *a, **k: [])
+    monkeypatch.setattr(inf, "_raise_or_cancel_active_generations", lambda **k: None)
+    env.errors = [_short()]
+
+    async def run():
+        request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
+        return await inf.load_model_gated(request, None, "s")
+
+    response = asyncio.run(run())
+    assert env.unloads == []
+    assert env.free_calls == [
+        {"owner": gpu_arbiter.CHAT, "gpu_ids": (0,), "short_mib": 5000, "media_only": True}
+    ]
+    assert len(env.requests) == 2 and env.requests[1].alongside
+    assert response.evicted == ["org/Img"]

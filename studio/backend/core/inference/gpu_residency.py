@@ -580,13 +580,14 @@ def _free_steps(
     need_mib: Optional[dict] = None,
     short_mib: int = 0,
     acting: Optional[str] = None,
+    media_only: bool = False,
 ) -> list[str]:
     """Free the cheapest residents on ``gpu_ids`` first, re-checking after each step. Caller holds the arbiter lock.
 
     Order: anything still loading, idle video servers, the idle image or video model, idle chat models kept
     alongside, then the active chat model. Residents on other GPUs are never touched. With ``need_mib`` it stops once
     the load fits; without one (a chat launch prices itself) it stops after the first step that freed something.
-    "Keep model in GPU memory" does not protect a model here, as with Off.
+    ``media_only`` stops before any chat model. "Keep model in GPU memory" does not protect a model here, as with Off.
     """
     target = set(gpu_ids) if gpu_ids is not None else None
     freed: list[str] = []
@@ -601,6 +602,8 @@ def _free_steps(
 
     # 1. Residents still loading can't be sized.
     for name in overlapping():
+        if media_only and name not in MEDIA_OWNERS:
+            continue
         loading = (
             chat_load_in_flight()
             if name == arb.CHAT
@@ -627,6 +630,8 @@ def _free_steps(
             _evict_resident(name, acting, evicted, freed)
             if done():
                 return freed
+    if media_only:
+        return freed
     # 4. Idle chat models kept alongside, least recently used first.
     if arb.CHAT in overlapping() or owner == arb.CHAT:
         from core.inference import model_slots
@@ -691,6 +696,7 @@ def free_for(
     *,
     need_mib: Optional[dict] = None,
     short_mib: int = 0,
+    media_only: bool = False,
 ) -> list[str]:
     """Free residents on ``gpu_ids`` so ``owner`` fits, cheapest first. Appends {kind, model} to ``evicted``."""
     from utils.account_context import current_account_id
@@ -699,7 +705,14 @@ def free_for(
     with arb._lock:
         arb._sync_from_view()
         return _free_steps(
-            owner, gpu_ids, reason, evicted, need_mib = need_mib, short_mib = short_mib, acting = acting
+            owner,
+            gpu_ids,
+            reason,
+            evicted,
+            need_mib = need_mib,
+            short_mib = short_mib,
+            acting = acting,
+            media_only = media_only,
         )
 
 

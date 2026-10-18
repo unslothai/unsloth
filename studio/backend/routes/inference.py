@@ -12605,6 +12605,19 @@ async def _make_room_for_primary(request: LoadRequest, exc, evicted: list) -> Lo
             for s in gpu_arbiter.resident_slots(o)
         ]
         raise gpu_residency.need_free_refusal(info if gpus else {}, slots)
+    freed = await _free_for_chat(exc, evicted)
+    # Anything freed (an idle video server counts) earns a retry at full size; else llama-server fits what it can.
+    return request if freed else request.model_copy(update = {"force_alongside": True})
+
+
+async def _free_for_chat(
+    exc,
+    evicted: list,
+    media_only: bool = False,
+) -> list[str]:
+    """Free the cheapest residents on the GPUs a chat load came up short on; ``media_only`` keeps every chat model."""
+    from core.inference import gpu_arbiter, gpu_residency
+
     # The route's eviction sink when it keeps one (it reports the slots itself), else the plain list.
     sink = gpu_arbiter.eviction_sink.get()
     slots: list = sink if sink is not None else []
@@ -12616,11 +12629,11 @@ async def _make_room_for_primary(request: LoadRequest, exc, evicted: list) -> Lo
         "a chat model",
         slots,
         short_mib = exc.short_mib,
+        media_only = media_only,
     )
     if sink is None:
         evicted += [s["model"] for s in slots[before:] if s.get("model")]
-    # Anything freed (an idle video server counts) earns a retry at full size; else llama-server fits what it can.
-    return request if freed else request.model_copy(update = {"force_alongside": True})
+    return freed
 
 
 def reap_dead_managed_engine(backend) -> None:
@@ -16541,6 +16554,46 @@ def _native_audio_post_handoff_free_gb(
     )
 
 
+def _free_idle_media_for_native_audio(
+    availability: Optional[_NativeAudioAvailability], candidates, required_gb: float
+) -> list[tuple[int, float]]:
+    """Under When they fit, a primary native load that fits no GPU once the chat model goes frees the idle image or
+    video model on the GPU where both together make room, as the CHAT acquire would. Returns [(gpu, free GB)]."""
+    from core.inference import gpu_arbiter, gpu_residency
+
+    if (
+        availability is None
+        or availability.credited != gpu_arbiter.CHAT
+        or routed_slot.get() is not None
+        or gpu_residency.current_policy() != "fit"
+    ):
+        return []
+    held, unallocated = gpu_residency.media_held_mib(), gpu_residency.media_unallocated_mib()
+    best = max(
+        (
+            (free + max(held.get(g, 0) - unallocated.get(g, 0), 0) / 1024, g)
+            for g, free in availability.effective_free_gb.items()
+            if g in candidates and held.get(g)
+        ),
+        default = None,
+    )
+    ordinals = _visible_ordinals([best[1]]) if best and best[0] >= required_gb else None
+    if not ordinals:
+        return []
+    evicted: list = []
+    sink = gpu_arbiter.eviction_sink.get()
+    gpu_residency.free_for(
+        gpu_arbiter.CHAT,
+        ordinals,
+        "an audio model",
+        sink if sink is not None else evicted,
+        media_only = True,
+    )
+    fresh = _native_audio_post_handoff_free_gb()
+    free_gb = fresh.effective_free_gb.get(best[1]) if fresh is not None else None
+    return [(best[1], free_gb)] if free_gb is not None and free_gb >= required_gb else []
+
+
 def _wait_for_native_audio_gpu_free_gb(
     gpu_index: int,
     required_gb: float,
@@ -17002,6 +17055,7 @@ async def _preflight_native_audio_placement(
             required_override_gb = required_gb,
         )
         post_handoff_free_gb = None
+        media_fit: list[tuple[int, float]] = []
         if required_gb is None:
             required_gb = metadata.get("required_gb")
         if metadata.get("selection_mode") == "fallback_all":
@@ -17016,6 +17070,10 @@ async def _preflight_native_audio_placement(
                 ),
                 key = lambda item: (-item[1], item[0]),
             )
+            if not fitting and required_gb is not None:
+                fitting = media_fit = _free_idle_media_for_native_audio(
+                    availability, candidates, required_gb
+                )
             if not fitting:
                 raise ValueError(
                     "No single GPU has enough free memory for this native audio model. "
@@ -17024,7 +17082,10 @@ async def _preflight_native_audio_placement(
             resolved = [fitting[0][0]]
         if automatic and availability is not None and resolved and len(resolved) == 1:
             selected_gpu = resolved[0]
-            reported = availability.effective_free_gb.get(selected_gpu)
+            # Freeing the image or video model left a fresh reading.
+            reported = dict(media_fit).get(
+                selected_gpu, availability.effective_free_gb.get(selected_gpu)
+            )
             if reported is not None:
                 post_handoff_free_gb = {selected_gpu: reported}
         if resolved and len(resolved) > 1:
@@ -18760,6 +18821,9 @@ async def load_model_gated(
                             raise refusal_for(
                                 await asyncio.to_thread(chat_eviction_reports)
                             ) from exc
+                        # An idle image or video model goes before any chat model, as gpu_residency orders it.
+                        if await _free_for_chat(exc, evicted, media_only = True):
+                            continue
                         # No chat may start on a victim between its pick and teardown.
                         async with inference_lifecycle_gate() if new_slot else nullcontext():
                             victims = await asyncio.to_thread(
