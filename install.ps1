@@ -10736,23 +10736,28 @@ main()
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
-            $null = @($ReleaseSpec, $ZooSpec) | & $script:UvExe pip compile --python $VenvPython --no-deps --resolution highest --no-header --no-annotate --quiet - 2>$null
-            if ($LASTEXITCODE -eq 0) { return $result }
-            # The newest zoo, then the newest unsloth not above it: an unsloth never needs a zoo newer than itself.
+            # --output-file: a uv.toml output-file would otherwise be overwritten by every probe.
+            $probeOut = Join-Path $VenvDir ".unsloth-index-probe.txt"
             $newest = {
-                param([string]$Requirement, [string]$Name)
-                $lines = @(@($Requirement) | & $script:UvExe pip compile --python $VenvPython --no-deps --resolution highest --no-header --no-annotate --quiet - 2>$null)
-                if ($LASTEXITCODE -ne 0) { return $null }
+                param([string[]]$Requirements, [string]$Name)
+                Remove-Item -LiteralPath $probeOut -Force -ErrorAction SilentlyContinue
+                $null = @($Requirements) | & $script:UvExe pip compile --python $VenvPython --no-deps --resolution highest --no-header --no-annotate --quiet --output-file $probeOut - 2>$null
+                $ok = $LASTEXITCODE -eq 0
+                $lines = if ($ok -and (Test-Path -LiteralPath $probeOut)) { @(Get-Content -LiteralPath $probeOut) } else { @() }
+                Remove-Item -LiteralPath $probeOut -Force -ErrorAction SilentlyContinue
+                if (-not $ok) { return $null }
                 foreach ($line in $lines) { if ("$line".Trim() -match "^$Name==([0-9][0-9A-Za-z.+!-]*)") { return $Matches[1] } }
-                return $null
+                return ""
             }
-            $zoo = & $newest "unsloth-zoo" "unsloth-zoo"
+            if ($null -ne (& $newest @($ReleaseSpec, $ZooSpec) "unsloth")) { return $result }
+            # The newest zoo, then the newest unsloth not above it (an unsloth never needs a newer zoo), pinned as a pair.
+            $zoo = & $newest @("unsloth-zoo") "unsloth-zoo"
             if (-not $zoo) { return $result }
-            $unsloth = & $newest "unsloth<=$zoo" "unsloth"
+            $unsloth = & $newest @("unsloth<=$zoo") "unsloth"
             if (-not $unsloth) { return $result }
             substep "[WARN] your package index does not have $ReleaseSpec yet; installing unsloth $unsloth, the newest it has" "Yellow"
-            $result.Release = "unsloth>=$unsloth"
-            $result.Zoo = "unsloth-zoo>=$zoo"
+            $result.Release = "unsloth==$unsloth"
+            $result.Zoo = "unsloth-zoo==$zoo"
             $result.Available = $unsloth
             if ($DesktopVersion) {
                 $json = '{"requested": "' + $DesktopVersion + '", "available": "' + $unsloth + '"}'

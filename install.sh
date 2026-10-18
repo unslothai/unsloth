@@ -8198,22 +8198,27 @@ _unsloth_zoo_install_spec="unsloth-zoo>=2026.10.6"
 # An index lagging PyPI (mirror, delayed feed, cutoff) may lack these floors (#14031): lower them to its newest release.
 # The marker tells Desktop preflight this older backend is the newest available, so it is not repaired forever.
 _UNSLOTH_FEED_CEILING_MARKER="$VENV_DIR/unsloth_feed_ceiling.json"
+# Resolves stdin without dependencies, printing NAME's newest version. --output-file: a uv.toml output-file would
+# otherwise be overwritten by every probe.
+_rfi_newest() {
+    _rfi_out="$VENV_DIR/.unsloth-index-probe.txt"
+    rm -f "$_rfi_out"
+    uv pip compile --python "$_VENV_PY" --no-deps --resolution highest --no-header --no-annotate --quiet \
+        --output-file "$_rfi_out" - > /dev/null 2>&1 || { rm -f "$_rfi_out"; return 1; }
+    sed -n "s/^$1==\([0-9][0-9A-Za-z.+!-]*\).*/\1/p" "$_rfi_out"
+    rm -f "$_rfi_out"
+}
 _relax_unsloth_floors_to_index() {
     rm -f "$_UNSLOTH_FEED_CEILING_MARKER"
-    printf '%s\n%s\n' "$_unsloth_release_install_spec" "$_unsloth_zoo_install_spec" \
-        | uv pip compile --python "$_VENV_PY" --no-deps --resolution highest --no-header --no-annotate --quiet - > /dev/null 2>&1 && return 0
-    # The newest zoo, then the newest unsloth not above it: an unsloth never needs a zoo newer than itself.
-    _rfi_zoo=$(printf 'unsloth-zoo\n' \
-        | uv pip compile --python "$_VENV_PY" --no-deps --resolution highest --no-header --no-annotate --quiet - 2>/dev/null \
-        | sed -n 's/^unsloth-zoo==\([0-9][0-9A-Za-z.+!-]*\).*/\1/p') || return 0
+    printf '%s\n%s\n' "$_unsloth_release_install_spec" "$_unsloth_zoo_install_spec" | _rfi_newest unsloth > /dev/null && return 0
+    # The newest zoo, then the newest unsloth not above it (an unsloth never needs a newer zoo), pinned as a pair.
+    _rfi_zoo=$(printf 'unsloth-zoo\n' | _rfi_newest unsloth-zoo) || return 0
     [ -n "$_rfi_zoo" ] || return 0
-    _rfi_unsloth=$(printf 'unsloth<=%s\n' "$_rfi_zoo" \
-        | uv pip compile --python "$_VENV_PY" --no-deps --resolution highest --no-header --no-annotate --quiet - 2>/dev/null \
-        | sed -n 's/^unsloth==\([0-9][0-9A-Za-z.+!-]*\).*/\1/p') || return 0
+    _rfi_unsloth=$(printf 'unsloth<=%s\n' "$_rfi_zoo" | _rfi_newest unsloth) || return 0
     [ -n "$_rfi_unsloth" ] || return 0
     substep "[WARN] your package index does not have $_unsloth_release_install_spec yet; installing unsloth $_rfi_unsloth, the newest it has" "$C_WARN"
-    _unsloth_release_install_spec="unsloth>=$_rfi_unsloth"
-    _unsloth_zoo_install_spec="unsloth-zoo>=$_rfi_zoo"
+    _unsloth_release_install_spec="unsloth==$_rfi_unsloth"
+    _unsloth_zoo_install_spec="unsloth-zoo==$_rfi_zoo"
     if [ -n "$_unsloth_desktop_install_spec" ]; then
         _unsloth_desktop_install_spec=$_unsloth_release_install_spec
         printf '{"requested": "%s", "available": "%s"}\n' "$UNSLOTH_DESKTOP_BACKEND_VERSION" "$_rfi_unsloth" \

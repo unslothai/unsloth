@@ -10373,28 +10373,33 @@ def _desktop_unsloth_spec(package_name: str) -> str:
         return spec
 
     def newest(requirement: str, name: str = "unsloth") -> "str | None":
-        argv = ["uv", "pip", "compile", "--python", sys.executable, "--no-deps"]
-        argv += ["--resolution", "highest", "--no-header", "--no-annotate", "--quiet", "-"]
-        try:
-            result = subprocess.run(
-                argv,
-                input = requirement + "\n",
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                text = True,
-                timeout = 120,
-                **_windows_hidden_subprocess_kwargs(),
-            )
-        except (OSError, subprocess.SubprocessError):
+        # --output-file: a uv.toml output-file would otherwise be overwritten by every probe.
+        with tempfile.TemporaryDirectory() as scratch:
+            out = Path(scratch) / "probe.txt"
+            argv = ["uv", "pip", "compile", "--python", sys.executable, "--no-deps"]
+            argv += ["--resolution", "highest", "--no-header", "--no-annotate", "--quiet"]
+            argv += ["--output-file", str(out), "-"]
+            try:
+                result = subprocess.run(
+                    argv,
+                    input = requirement + "\n",
+                    stdout = subprocess.DEVNULL,
+                    stderr = subprocess.DEVNULL,
+                    text = True,
+                    timeout = 120,
+                    **_windows_hidden_subprocess_kwargs(),
+                )
+                text = out.read_text(encoding = "utf-8") if result.returncode == 0 else None
+            except (OSError, subprocess.SubprocessError):
+                return None
+        if text is None:
             return None
-        if result.returncode != 0:
-            return None
-        match = re.search(rf"^{name}==([0-9][0-9A-Za-z.+!-]*)", result.stdout, re.MULTILINE)
+        match = re.search(rf"^{name}==([0-9][0-9A-Za-z.+!-]*)", text, re.MULTILINE)
         return match.group(1) if match else None
 
     if newest(spec) is not None:
         return spec
-    # The newest zoo, then the newest unsloth not above it: an unsloth never needs a newer zoo.
+    # The newest zoo, then the newest unsloth not above it (an unsloth never needs a newer zoo).
     zoo = newest("unsloth-zoo", "unsloth-zoo")
     available = newest(f"unsloth<={zoo}") if zoo else None
     if available is None:
@@ -10411,7 +10416,7 @@ def _desktop_unsloth_spec(package_name: str) -> str:
         )
     except OSError:
         pass
-    return f"unsloth>={available}"
+    return f"unsloth=={available}"
 
 
 def pip_install(

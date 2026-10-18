@@ -2732,16 +2732,17 @@ class TestDesktopBackendVersionConstraint:
             **kwargs,
         ):
             assert argv[:3] == ["uv", "pip", "compile"] and "--no-deps" in argv
+            out = Path(argv[argv.index("--output-file") + 1])
             floor = re.search(r">=(\S+)", input)
             if floor and Version(floor.group(1)) > Version(have):
-                return subprocess.CompletedProcess(argv, 1, stdout = "")
+                return subprocess.CompletedProcess(argv, 1)
             if input.strip() == "unsloth-zoo":
-                return subprocess.CompletedProcess(
-                    argv, 0, stdout = f"unsloth-zoo=={zoo or have} \\\n"
-                )
-            cap = re.search(r"<=(\S+)", input)
-            pick = min(have, cap.group(1), key = Version) if cap else have
-            return subprocess.CompletedProcess(argv, 0, stdout = f"unsloth=={pick}\n")
+                out.write_text(f"unsloth-zoo=={zoo or have} \\\n", encoding = "utf-8")
+            else:
+                cap = re.search(r"<=(\S+)", input)
+                pick = min(have, cap.group(1), key = Version) if cap else have
+                out.write_text(f"unsloth=={pick}\n", encoding = "utf-8")
+            return subprocess.CompletedProcess(argv, 0)
 
         return run
 
@@ -2789,7 +2790,7 @@ class TestDesktopBackendVersionConstraint:
             "UV_DEFAULT_INDEX": "https://feed.example/simple",
         }
         spec, _ = self._spec(tmp_path, env)
-        assert spec == "unsloth>=2026.10.3"
+        assert spec == "unsloth==2026.10.3"
         marker = json.loads((tmp_path / ips.FEED_CEILING_MARKER).read_text(encoding = "utf-8"))
         assert marker == {"requested": "2026.10.6", "available": "2026.10.3"}
 
@@ -2804,23 +2805,23 @@ class TestDesktopBackendVersionConstraint:
             "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
             "UV_INDEX": "https://feed.example/simple",
         }
-        assert self._spec(tmp_path, env)[0] == "unsloth>=2026.10.3"
+        assert self._spec(tmp_path, env)[0] == "unsloth==2026.10.3"
         env = {
             "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
             "UV_EXCLUDE_NEWER_PACKAGE": "unsloth=2026-10-09",
         }
-        assert self._spec(tmp_path, env)[0] == "unsloth>=2026.10.3"
+        assert self._spec(tmp_path, env)[0] == "unsloth==2026.10.3"
 
     def test_zoo_lagging_unsloth_caps_the_backend(self, tmp_path):
         env = {
             "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
             "UV_INDEX": "https://feed.example/simple",
         }
-        assert self._spec(tmp_path, env, zoo = "2026.10.2")[0] == "unsloth>=2026.10.2"
+        assert self._spec(tmp_path, env, zoo = "2026.10.2")[0] == "unsloth==2026.10.2"
 
     def test_upload_cutoff_alone_counts(self, tmp_path):
         env = {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6", "UV_EXCLUDE_NEWER": "2026-10-09"}
-        assert self._spec(tmp_path, env)[0] == "unsloth>=2026.10.3"
+        assert self._spec(tmp_path, env)[0] == "unsloth==2026.10.3"
 
 
 class TestRecordlessDistributionRecovery:
