@@ -35525,14 +35525,42 @@ class LlamaCppBackend:
         """Whether a zero-layer launch still has a reason to use visible GPUs.
 
         Keep this shared by child masking and post-launch residency bookkeeping:
-        a device pin, surviving tensor mode, mmproj, or GPU drafter prevents the
-        launch from being a confirmed zero-VRAM server.
+        a device pin, surviving tensor mode, mmproj, GPU drafter, or tensor override
+        naming a GPU buffer prevents the launch from being a confirmed zero-VRAM server.
         """
         return (
             LlamaCppBackend._cmd_has_gpu_device_pin(cmd, env)
             or _effective_tensor_parallel(cmd, False, env)
             or LlamaCppBackend._cmd_has_gpu_companion(cmd, env)
             or LlamaCppBackend._cmd_names_mmproj_device(cmd, env)
+            or LlamaCppBackend._cmd_overrides_tensors_off_cpu(cmd, env)
+        )
+
+    @staticmethod
+    def _cmd_overrides_tensors_off_cpu(cmd: list, env: Optional[Mapping[str, str]] = None) -> bool:
+        """True when any -ot / -otd value (or LLAMA_ARG_OVERRIDE_TENSOR) names a buffer
+        other than CPU.
+
+        arg.cpp parses every one of them (env first, then argv; overrides accumulate) and
+        parse_tensor_buffer_overrides looks each buffer name up among the devices the child
+        enumerates, throwing "unknown buffer type" on a miss, so hiding the GPUs fails the
+        launch the way an unresolvable device-list name does. Same CPU-target rule as
+        ``_paravirtual_strip_gpu_overrides``."""
+        args = [str(a) for a in cmd]
+        values = []
+        inherited = (env or {}).get("LLAMA_ARG_OVERRIDE_TENSOR")
+        if inherited is not None:
+            values.append(str(inherited))
+        for i, raw in enumerate(args):
+            if _flag_name(raw) not in _OVERRIDE_TENSOR_FLAGS:
+                continue
+            _, eq, inline = raw.partition("=")
+            values.append(inline if eq else (args[i + 1] if i + 1 < len(args) else ""))
+        return any(
+            part.rsplit("=", 1)[-1].strip().lower() != "cpu"
+            for value in values
+            for part in value.split(",")
+            if "=" in part
         )
 
     @staticmethod

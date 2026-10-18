@@ -2145,6 +2145,13 @@ def test_inherited_owner_paths_get_the_same_managed_check(monkeypatch, tmp_path)
 # --- every device value arg.cpp parses must resolve in the child's mask -------------------
 
 
+def _drop_inherited_gpu_masks(monkeypatch):
+    # A runner that already hides its GPUs (CUDA_VISIBLE_DEVICES=-1) would otherwise
+    # pass "-1" through and read as the launcher's own mask.
+    for name in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+        monkeypatch.delenv(name, raising = False)
+
+
 @pytest.mark.parametrize(
     "extras",
     [
@@ -2153,10 +2160,11 @@ def test_inherited_owner_paths_get_the_same_managed_check(monkeypatch, tmp_path)
     ],
     ids = ["main", "draft"],
 )
-def test_a_zero_offload_load_keeps_an_overridden_gpu_device_visible(tmp_path, extras):
+def test_a_zero_offload_load_keeps_an_overridden_gpu_device_visible(tmp_path, monkeypatch, extras):
     """parse_device_list (common/arg.cpp) resolves each --device / -devd value as it reads
     it, so CUDA_VISIBLE_DEVICES=-1 fails the earlier CUDA0 with "invalid device" though
     the final none places nothing on the card."""
+    _drop_inherited_gpu_masks(monkeypatch)
     backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
     env = _launch(
         backend, gguf, n_ctx = 4096, gpu_memory_mode = "manual", gpu_layers = 0, extra_args = extras
@@ -2164,8 +2172,9 @@ def test_a_zero_offload_load_keeps_an_overridden_gpu_device_visible(tmp_path, ex
     assert env.get("CUDA_VISIBLE_DEVICES") != "-1", env.get("CUDA_VISIBLE_DEVICES")
 
 
-def test_a_zero_offload_load_with_only_none_devices_still_hides_the_gpus(tmp_path):
+def test_a_zero_offload_load_with_only_none_devices_still_hides_the_gpus(tmp_path, monkeypatch):
     # Control: nothing named a GPU, so the deliberate CPU-only mask stands.
+    _drop_inherited_gpu_masks(monkeypatch)
     backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
     env = _launch(
         backend,
@@ -2174,6 +2183,54 @@ def test_a_zero_offload_load_with_only_none_devices_still_hides_the_gpus(tmp_pat
         gpu_memory_mode = "manual",
         gpu_layers = 0,
         extra_args = ["--mmproj-device", "none", "--device", "none", "-devd", "none"],
+    )["env"]
+    assert env.get("CUDA_VISIBLE_DEVICES") == "-1"
+
+
+@pytest.mark.parametrize(
+    "extras, inherited",
+    [
+        (["-ot", r"blk\.0\..*=CUDA0", "--mmproj-device", "none"], {}),
+        (["-otd", ".*=CUDA0", "--mmproj-device", "none"], {}),
+        (["--override-tensor=exps=CPU,blk.0=CUDA0", "-mmdev=none"], {}),
+        (["-ot", ".*=CUDA0"], {"LLAMA_ARG_MMPROJ_OFFLOAD": "0"}),
+        (["--mmproj-device", "none"], {"LLAMA_ARG_OVERRIDE_TENSOR": ".*=CUDA0"}),
+    ],
+    ids = ["ot", "otd", "ot-mixed-inline", "ot-env-offload-off", "env-ot"],
+)
+def test_a_zero_offload_load_keeps_a_gpu_tensor_override_visible(
+    tmp_path, monkeypatch, extras, inherited
+):
+    """parse_tensor_buffer_overrides (common/arg.cpp) looks every buffer name up among the
+    devices the child enumerates and throws "unknown buffer type" on a miss, so a CPU
+    projector must not hide the GPUs an -ot / -otd value (or LLAMA_ARG_OVERRIDE_TENSOR)
+    names, the same way a device-list name keeps them visible."""
+    _drop_inherited_gpu_masks(monkeypatch)
+    for name, value in inherited.items():
+        monkeypatch.setenv(name, value)
+    backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
+    env = _launch(
+        backend, gguf, n_ctx = 4096, gpu_memory_mode = "manual", gpu_layers = 0, extra_args = extras
+    )["env"]
+    assert env.get("CUDA_VISIBLE_DEVICES") != "-1", env.get("CUDA_VISIBLE_DEVICES")
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [
+        ["-ot", "exps=CPU", "--mmproj-device", "none"],
+        ["-otd", ".*=CPU", "-ot", "a=CPU,b=CPU", "--mmproj-device", "none"],
+    ],
+    ids = ["ot", "ot-otd"],
+)
+def test_a_zero_offload_load_with_cpu_tensor_overrides_still_hides_the_gpus(
+    tmp_path, monkeypatch, extras
+):
+    # Control: every override names the CPU buffer, which the child always enumerates.
+    _drop_inherited_gpu_masks(monkeypatch)
+    backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
+    env = _launch(
+        backend, gguf, n_ctx = 4096, gpu_memory_mode = "manual", gpu_layers = 0, extra_args = extras
     )["env"]
     assert env.get("CUDA_VISIBLE_DEVICES") == "-1"
 
