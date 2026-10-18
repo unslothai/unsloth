@@ -230,6 +230,26 @@ def test_a_second_download_still_compares(tmp_path: Path) -> None:
     assert _run(base, head).returncode == 2
 
 
+def test_a_second_transfer_with_no_header_still_compares(tmp_path: Path) -> None:
+    """A partial frame between two full bars is a new transfer, not a redraw of the first."""
+    full = "  ██████████████████████████████  17.2 MB / 17.2 MB"
+    partial = "  ███████████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  8.6 MB / 17.2 MB"
+    lines = BASELINE.split("\n")
+    base = _write(tmp_path / "base", transcript = "\n".join(lines[:1] + [full, partial, full] + lines[1:]))
+    head = _write(tmp_path / "head", transcript = "\n".join(lines[:1] + [full] + lines[1:]))
+    assert _run(base, head).returncode == 2
+
+
+def test_two_finished_downloads_of_different_sizes_still_compare(tmp_path: Path) -> None:
+    """Both bars normalise to <size> / <size>, but different raw sizes are two downloads."""
+    first = "  ██████████████████████████████  17.2 MB / 17.2 MB"
+    second = "  ██████████████████████████████  34.4 MB / 34.4 MB"
+    lines = BASELINE.split("\n")
+    base = _write(tmp_path / "base", transcript = "\n".join(lines[:1] + [first, second] + lines[1:]))
+    head = _write(tmp_path / "head", transcript = "\n".join(lines[:1] + [first] + lines[1:]))
+    assert _run(base, head).returncode == 2
+
+
 def test_a_download_that_never_finishes_still_compares(tmp_path: Path) -> None:
     """The full bar a finished download ends on is kept, so losing it is reported."""
     lines = BASELINE.split("\n")

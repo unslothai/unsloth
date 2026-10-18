@@ -222,17 +222,30 @@ _PARTIAL_PROGRESS_FRAME = re.compile(r"[█▒]*▒[█▒]*\s+(?:<percent>|<siz
 # bar that repeats the line kept right before it is dropped, so a download that never finishes, or a
 # second download (its own "Downloading" line sits between the bars), still compares.
 _FULL_PROGRESS_FRAME = re.compile(r"█+\s+(?:<percent>|<size> / <size>)")
+_NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
 
 
 def normalise_transcript(text: str) -> list[str]:
     lines = []
+    # The repeated full bar is only a redraw when nothing moved in between: a partial frame since the
+    # kept bar means a new transfer ran, and different raw numbers mean a different download.
+    last_numbers = None
+    frame_since_kept = False
     for raw in text.splitlines():
         line = normalise_line(raw)
+        if _PARTIAL_PROGRESS_FRAME.fullmatch(line.strip()):
+            frame_since_kept = True
+            continue
         if (
             not line.strip()
             or line.strip() in _SPINNER_FRAMES
-            or _PARTIAL_PROGRESS_FRAME.fullmatch(line.strip())
-            or (lines and line == lines[-1] and _FULL_PROGRESS_FRAME.fullmatch(line.strip()))
+            or (
+                lines
+                and line == lines[-1]
+                and not frame_since_kept
+                and _NUMBER.findall(raw) == last_numbers
+                and _FULL_PROGRESS_FRAME.fullmatch(line.strip())
+            )
         ):
             continue
         # Runner-injected noise, and ONLY what the runner injects. These carry the workflow's own
@@ -253,6 +266,8 @@ def normalise_transcript(text: str) -> list[str]:
         if line.startswith(("##[group]", "##[endgroup]", "::group::", "::endgroup::", "##[debug]")):
             continue
         lines.append(line)
+        last_numbers = _NUMBER.findall(raw)
+        frame_since_kept = False
     return lines
 
 
