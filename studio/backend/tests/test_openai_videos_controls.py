@@ -739,3 +739,21 @@ def test_a_frame_count_refusal_names_the_field_the_caller_sent(
     resp = client.post("/v1/videos", json = {"prompt": "x", **body})
     assert resp.status_code == 400, resp.json()
     assert resp.json()["error"]["param"] == param
+
+
+def test_multipart_nested_image_references_are_kept(client, backend, monkeypatch):
+    calls = _capture(monkeypatch, backend)
+    png = _reference_data_url("PNG", "image/png")
+    jpeg = _reference_data_url("JPEG", "image/jpeg")
+    resp = client.post(
+        "/v1/videos",
+        data = {"prompt": "x", "reference_images[][image_url]": png},
+        files = [
+            ("reference_images[]", ("second.jpg", _reference_image_bytes("JPEG"), "image/jpeg"))
+        ],
+    )
+    assert resp.status_code == 200, resp.json()
+    assert len(calls[0]["reference_images"]) == 2
+    resp = client.post("/v1/videos", data = {"prompt": "x", "last_frame[image_url]": jpeg})
+    assert resp.status_code == 200, resp.json()
+    assert _decoded(calls[1]["last_frame"]) == _decoded(jpeg)
