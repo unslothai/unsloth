@@ -77,6 +77,18 @@ cannot be sized that way is served here.
 A worker that does not answer, or a managed one that cannot be started, is left out and named
 in the status; the load is planned over the rest.
 
+With one context, an S-stage split keeps one batch in flight and runs at about one device (on
+Kaggle 2xT4, both GPUs about 35% busy). When the bundled `llama-server` has `--pipeline-groups`
+(unslothai/llama.cpp PR #187), a split with at least two devices gets S+1 groups if there are at
+least 16 slots per group, else S groups, else none: measured at 16 sequences per group against S
+times one device, RPC reaches 76-81% with 2 groups, 81-86% with 3 and 80-84% with 4 (native
+2-GPU: 90% and 91%), while 8 sequences per group give half the throughput of one context. Every
+group gets the full `-c`, so the plan charges G contexts of KV and compute scratch and falls back
+to fewer groups (or none) when that does not fit. No groups with a projector, a control vector,
+`--sleep-idle-seconds` or no explicit context; a load's own `--pipeline-groups` is kept (and
+priced). `UNSLOTH_CLUSTER_PIPELINE_GROUPS=0` (or `off`) disables them, a number forces that count
+(it still has to divide the slots), `auto` is the default.
+
 `UNSLOTH_CLUSTER_TOPOLOGY=layer_split` splits even a model that would fit here (useful to test
 a cluster); `=single` never splits.
 

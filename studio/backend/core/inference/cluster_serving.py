@@ -34,6 +34,11 @@ logger = logging.getLogger(__name__)
 ENV_NODES = "UNSLOTH_CLUSTER_NODES"
 ENV_MANAGED = "UNSLOTH_CLUSTER_MANAGED"  # "1": start every node's rpc-server over ssh
 ENV_TOPOLOGY = "UNSLOTH_CLUSTER_TOPOLOGY"  # single | layer_split
+# auto (default) | 0 / off | a positive group count; layer splits only (llama.cpp PR #187).
+ENV_PIPELINE_GROUPS = "UNSLOTH_CLUSTER_PIPELINE_GROUPS"
+# Measured on CUDA (2xT4, gemma-4-12B / LFM2-8B-A1B): below about 16 sequences per group the
+# groups lose to one context (8 per group: two groups give half the throughput of one).
+GROUPS_MIN_SEQS = 16
 CONFIG_NAME = "cluster.json"
 RPC_PORT_DEFAULT = 50052
 _GIB = 1024**3
@@ -787,6 +792,8 @@ class ClusterPlan:
     layer_bytes: float = 0.0
     # The input embedding, counted in the model size but kept in host RAM: never freed VRAM.
     host_bytes: float = 0.0
+    # Contexts the KV and compute scratch were charged for (--pipeline-groups); 0 or 1 is one.
+    pipeline_groups: int = 0
 
     def resident(self) -> Dict[Tuple[str, str], float]:
         """What this plan puts on each device, so a replacement load can count it as freed."""
@@ -802,6 +809,12 @@ class ClusterPlan:
         return out
 
     def snapshot(self) -> Dict[str, Any]:
+        out = self._snapshot()
+        if self.pipeline_groups > 1:
+            out["pipeline_groups"] = self.pipeline_groups
+        return out
+
+    def _snapshot(self) -> Dict[str, Any]:
         return {
             "topology": self.topology,
             "reason": self.reason,
@@ -1094,6 +1107,62 @@ def plan_cluster(
     )
 
 
+def _groups_env() -> Tuple[Optional[int], str]:
+    """``(forced count or None for auto, raw)``; a forced 0 or 1 means no groups."""
+    raw = (os.environ.get(ENV_PIPELINE_GROUPS) or "").strip().lower()
+    if raw in ("", "auto"):
+        return None, raw
+    if raw in ("0", "off", "false", "no", "none"):
+        return 0, raw
+    try:
+        return max(0, int(raw)), raw
+    except ValueError:
+        return 0, raw
+
+
+def pipeline_groups_candidates(
+    stages: int,
+    slots: int,
+    *,
+    refusal: Optional[str] = None,
+    binary: Optional[str] = None,
+) -> Tuple[List[int], str]:
+    """The ``--pipeline-groups`` counts worth trying for a layer split over ``stages`` devices, best
+    first, and why there are none. One context keeps a single batch in flight, so an S-stage split
+    runs at about one device; G groups keep G batches moving (measured over RPC on 2xT4 at 16
+    sequences per group: G=2 76-81% of S x one device, G=3 81-86%, G=4 80-84%), so S + 1 groups,
+    else S, each with at least GROUPS_MIN_SEQS sequences."""
+    from core.inference import spark_serving as ss
+
+    forced, raw = _groups_env()
+    if forced is not None and forced <= 1:
+        return [], f"disabled by {ENV_PIPELINE_GROUPS}={raw}"
+    if stages < 2:
+        return [], "one stage"
+    if refusal:
+        return [], f"the server refuses {ss.PIPELINE_GROUPS_FLAG} together with {refusal}"
+    slots = max(1, int(slots or 1))
+    if forced is not None:
+        if slots < forced or slots % forced:
+            return [], f"{slots} slots are not a multiple of {ENV_PIPELINE_GROUPS}={forced}"
+        candidates = [forced]
+    else:
+        candidates = [
+            g for g in (stages + 1, stages) if slots >= GROUPS_MIN_SEQS * g and slots % g == 0
+        ]
+        if not candidates:
+            return [], (
+                f"{slots} slots give fewer than {GROUPS_MIN_SEQS} sequences per group over "
+                f"{stages} stages"
+            )
+    if not binary or not (
+        ss.llama_server_supports(ss.PIPELINE_GROUPS_FLAG, binary)
+        or ss.llama_server_accepts(ss.PIPELINE_GROUPS_FLAG, binary = binary)
+    ):
+        return [], f"this llama-server lacks {ss.PIPELINE_GROUPS_FLAG}"
+    return candidates, ""
+
+
 def split_extra_args(endpoints: Sequence[str], plan: ClusterPlan) -> List[str]:
     weights = ",".join(f"{w:.4f}".rstrip("0").rstrip(".") or "0" for w in plan.weights)
     return [
@@ -1181,6 +1250,11 @@ class ClusterServing:
         self._projector_file: Optional[str] = None
         self._uncertain_extra: float = 0.0
         self._started: set = set()
+        # Whether the launch carries a positive -c (argv, request or LLAMA_ARG_CTX_SIZE): the
+        # groups refuse to start without one.
+        self._explicit_ctx: bool = False
+        # Why the last planned split runs without --pipeline-groups (or whose count it runs).
+        self.pipeline_groups_reason: Optional[str] = None
 
     def _cancelled(self) -> bool:
         event = self._cancel_event
@@ -1325,6 +1399,7 @@ class ClusterServing:
 
         self._cancel_event = cancel_event
         self.in_flight = True
+        self.pipeline_groups_reason = None
         self._alongside = bool(getattr(request, "alongside", False)) or bool(
             getattr(request, "force_alongside", False)
         )
@@ -1565,16 +1640,29 @@ class ClusterServing:
             if failed:
                 self.last_error += "; " + "; ".join(failed.values())
             logger.warning("cluster serving: %s", self.last_error)
-        layer_bytes = None
-        if self._n_layers and model_bytes and self._max_block:
+        one_kv = float(kv_bytes or 0)
+
+        def group_kv(groups: int) -> float:
+            # --pipeline-groups G gives EVERY group its own context with the FULL -c (PR #187:
+            # "n_ctx is deliberately NOT divided"), and Studio's cluster launch is --kv-unified with
+            # -c = the per-request context it promises, so dividing -c by G would cap every request
+            # at -c/G. The attention KV is therefore G times one context's; the recurrent state is
+            # per sequence, and the G groups hold slots/G sequences each, so it stays as it is.
+            if groups <= 1:
+                return one_kv
+            return max(0.0, one_kv - self._recurrent) * groups + self._recurrent
+
+        def layer_for(kv: float) -> Optional[float]:
+            if not (self._n_layers and model_bytes and self._max_block):
+                return None
             # The largest block a tensor split can round onto a device, not the average one.
             layer_weights = self._max_block
-            attention = max(0.0, kv_bytes - self._recurrent)
+            attention = max(0.0, kv - self._recurrent)
             # Spread over the attention layers only: a hybrid's recurrent blocks hold none.
             per_attention = attention / max(1, min(self._n_layers, self._attention_layers or 10**9))
             layer_kv = attention * self._kv_layer_frac or per_attention
-            layer_bytes = layer_weights + max(layer_kv, per_attention)
-            layer_bytes += self._recurrent_layer
+            return layer_weights + max(layer_kv, per_attention) + self._recurrent_layer
+
         from core.inference.llama_server_args import fit_target_margin_in
 
         # llama.cpp's fitter keeps an explicit --fit-target free on every device.
@@ -1597,17 +1685,19 @@ class ClusterServing:
             local_extra = max(0.0, local_extra - self._host_projector)
             self._uncertain_extra = max(0.0, self._uncertain_extra - self._host_projector)
 
-        def plan_for(weights: float) -> ClusterPlan:
+        def plan_for(weights: float, groups: int) -> ClusterPlan:
+            kv = group_kv(groups)
             return plan_cluster(
                 weights,
-                kv_bytes,
+                kv,
                 local_extra + checkpoints,
                 devices,
                 forced = forced,
-                layer_bytes = layer_bytes,
+                layer_bytes = layer_for(kv),
                 margin_bytes = margin,
-                # Every device of a layer split holds its own context-dependent compute scratch.
-                scratch_bytes = self._ctx_compute,
+                # Every device of a layer split holds its own context-dependent compute scratch,
+                # one per pipeline group.
+                scratch_bytes = self._ctx_compute * max(1, groups),
             )
 
         # The input embedding stays whole in this machine's host RAM: off every device's share
@@ -1615,14 +1705,53 @@ class ClusterServing:
         off_device = (self._host_embd if self._untied else 0.0) + self._host_input
         if unified:
             local_extra += self._host_embd + self._host_input
-        plan = plan_for(model_bytes - off_device)
-        skipped = self._nextn_bytes  # in the plan's weights, never loaded on a split
-        if plan.topology == "refuse" and self._nextn_bytes:
-            # A split runs without speculation, so trailing NextN / MTP blocks never load.
-            trimmed = plan_for(model_bytes - off_device - self._nextn_bytes)
-            if trimmed.topology == "layer_split":
-                plan, skipped = trimmed, 0.0
-        plan.kv_bytes = float(kv_bytes or 0)
+
+        def plan_with(groups: int) -> Tuple[ClusterPlan, float]:
+            plan = plan_for(model_bytes - off_device, groups)
+            skipped = self._nextn_bytes  # in the plan's weights, never loaded on a split
+            if plan.topology == "refuse" and self._nextn_bytes:
+                # A split runs without speculation, so trailing NextN / MTP blocks never load.
+                trimmed = plan_for(model_bytes - off_device - self._nextn_bytes, groups)
+                if trimmed.topology == "layer_split":
+                    plan, skipped = trimmed, 0.0
+            return plan, skipped
+
+        from core.inference.llama_cpp import _pipeline_groups_slot_step
+
+        # The caller's own --pipeline-groups (argv or LLAMA_ARG_PIPELINE_GROUPS) is kept as theirs:
+        # never a second flag, but the plan prices the contexts it opens.
+        caller_groups = _pipeline_groups_slot_step(flags, os.environ)
+        groups = caller_groups if caller_groups > 1 else 0
+        plan, skipped = plan_with(groups)
+        emit_groups = 0
+        if caller_groups > 1:
+            self.pipeline_groups_reason = (
+                f"the caller set {ss.PIPELINE_GROUPS_FLAG} {caller_groups}"
+            )
+        elif plan.topology == "layer_split":
+            slots = ss._extra_args_slots(flags)
+            slots = int(slots if slots is not None else n_parallel)
+            refusal = None
+            if self._has_projector:
+                refusal = "a multimodal projector"
+            elif not self._explicit_ctx:
+                refusal = "an automatic context (no -c)"
+            else:
+                refusal = ss.extra_args_refuse_pipeline_groups(flags)
+            candidates, why = pipeline_groups_candidates(
+                len(plan.devices), slots, refusal = refusal, binary = binary
+            )
+            for g in candidates:
+                grouped, grouped_skipped = plan_with(g)
+                if grouped.topology == "layer_split":
+                    plan, skipped, groups, emit_groups = grouped, grouped_skipped, g, g
+                    why = ""
+                    break
+                why = f"{g} groups' KV does not fit: {grouped.reason}"
+            self.pipeline_groups_reason = why or None
+        plan.pipeline_groups = groups if groups > 1 else 0
+        layer_bytes = layer_for(group_kv(groups))
+        plan.kv_bytes = group_kv(groups)
         plan.uncertain_extra_bytes = self._uncertain_extra + checkpoints
         plan.layer_bytes = float(layer_bytes or 0.0)
         # On unified memory the embedding is in extra_bytes, freed with the process like the rest.
@@ -1644,6 +1773,11 @@ class ClusterServing:
         # in it even at zero weight; one that exposed none takes no number and is left out.
         used = [e for e in endpoints if any(d.endpoint == e for d in devices)]
         self.block = split_extra_args(used, plan)
+        if emit_groups > 1:
+            self.block += [ss.PIPELINE_GROUPS_FLAG, str(emit_groups)]
+            self.reason += f"; {emit_groups} pipeline groups"
+        elif self.pipeline_groups_reason:
+            logger.info("cluster serving: no pipeline groups: %s", self.pipeline_groups_reason)
         local = plan.sidecar_device
         from core.inference.llama_cpp import _resolved_mmproj_offload
 
@@ -1886,6 +2020,7 @@ class ClusterServing:
                 ctx = max(0, int((os.environ.get("LLAMA_ARG_CTX_SIZE") or "0").strip()))
             except ValueError:
                 ctx = 0
+        self._explicit_ctx = ctx > 0
         floor = fit_ctx_in(extras, os.environ)
         if not ctx and floor is not None and floor < 0:
             self._native_ctx = True  # llama.cpp reads a negative floor as the whole context

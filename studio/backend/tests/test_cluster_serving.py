@@ -3240,3 +3240,214 @@ def test_a_managed_node_named_by_host_name_binds_its_ipv4_address(monkeypatch):
 
     monkeypatch.setattr(socket, "getaddrinfo", unresolved)
     assert cs._bind_address("gpu2.local") == "gpu2.local"
+
+
+# --pipeline-groups (unslothai/llama.cpp PR #187) on an N-node layer split.
+LISTING_2 = """Available devices:
+  RPC0: 10.0.0.2:50052 (24576 MiB, 23000 MiB free)
+  CUDA0: NVIDIA L4 (24576 MiB, 23000 MiB free)
+"""
+LISTING_3 = """Available devices:
+  RPC0: 10.0.0.2:50052 (24576 MiB, 23000 MiB free)
+  RPC1: 10.0.0.3:50052 (24576 MiB, 23000 MiB free)
+  CUDA0: NVIDIA L4 (24576 MiB, 23000 MiB free)
+"""
+KV_PER_CELL = 64 * 1024  # 4096 cells = 256 MiB of KV for one context
+
+
+def _groups_env(
+    monkeypatch,
+    listing = LISTING_2,
+    model_bytes = 30 * GIB,
+    supported = True,
+):
+    _cluster_env(monkeypatch, listing = listing, model_bytes = model_bytes)
+    nodes = "10.0.0.2" if listing is LISTING_2 else "10.0.0.2,10.0.0.3"
+    monkeypatch.setenv(cs.ENV_NODES, nodes)
+    monkeypatch.delenv(cs.ENV_PIPELINE_GROUPS, raising = False)
+    monkeypatch.delenv("LLAMA_ARG_PIPELINE_GROUPS", raising = False)
+    monkeypatch.setattr(ss, "estimate_kv_bytes", lambda path, cells, *a, **k: cells * KV_PER_CELL)
+    probes = []
+
+    def supports(flag, binary = None):
+        probes.append(flag)
+        return supported and flag == ss.PIPELINE_GROUPS_FLAG
+
+    monkeypatch.setattr(ss, "llama_server_supports", supports)
+    monkeypatch.setattr(ss, "llama_server_accepts", lambda *a, **k: False)
+    return probes
+
+
+def _groups_load(
+    slots,
+    extra = None,
+    ctx = 4096,
+    **kw,
+):
+    out = run(ss.before_load(_request(max_seq_length = ctx, llama_extra_args = extra, **kw), slots))
+    st = cs.state()
+    return out, st.block, st.plan
+
+
+def _groups_of(block):
+    return int(block[block.index("--pipeline-groups") + 1]) if "--pipeline-groups" in block else 0
+
+
+@pytest.mark.parametrize(
+    "listing, slots, groups",
+    [
+        (LISTING_2, 48, 3),  # S + 1
+        (LISTING_2, 32, 2),  # S: 48 slots would be needed for three
+        (LISTING_2, 16, 0),  # 8 per group halves the throughput on CUDA
+        (LISTING_2, 4, 0),
+        (LISTING_2, 40, 2),  # 40 is no multiple of 3
+        (LISTING_3, 64, 4),
+        (LISTING_3, 48, 3),
+        (LISTING_3, 32, 0),
+    ],
+)
+def test_auto_pipeline_groups_follow_the_stage_and_slot_counts(monkeypatch, listing, slots, groups):
+    model_bytes = 30 * GIB if listing is LISTING_2 else 50 * GIB
+    _groups_env(monkeypatch, listing = listing, model_bytes = model_bytes)
+    out, block, plan = _groups_load(slots)
+    stages = 2 if listing is LISTING_2 else 3
+    assert plan.topology == "layer_split" and len(plan.devices) == stages
+    assert _groups_of(block) == groups
+    assert out.llama_extra_args[-len(block) :] == block
+    assert plan.pipeline_groups == groups
+    assert plan.snapshot().get("pipeline_groups") == (groups or None)
+    # Every group gets the full -c: G contexts of KV, nothing divided.
+    assert plan.kv_bytes == pytest.approx(max(1, groups) * 4096 * KV_PER_CELL)
+    if groups:
+        assert block[-2:] == ["--pipeline-groups", str(groups)]
+
+
+def test_no_groups_leaves_the_block_and_kv_exactly_as_before(monkeypatch):
+    _groups_env(monkeypatch, supported = False)
+    _, unsupported, plan_u = _groups_load(48)
+    _groups_env(monkeypatch)
+    monkeypatch.setenv(cs.ENV_PIPELINE_GROUPS, "0")
+    _, disabled, plan_d = _groups_load(48)
+    _groups_env(monkeypatch)
+    _, few, plan_f = _groups_load(16)
+    assert unsupported == disabled == few
+    assert "--pipeline-groups" not in unsupported
+    assert plan_u.kv_bytes == plan_d.kv_bytes == plan_f.kv_bytes == 4096 * KV_PER_CELL
+    assert plan_u.weights == plan_d.weights == plan_f.weights
+
+
+def test_a_plan_that_fits_here_never_probes_for_groups(monkeypatch):
+    probes = _groups_env(monkeypatch, model_bytes = 5 * GIB)
+    request = _request(max_seq_length = 4096)
+    assert run(ss.before_load(request, 64)) is request
+    assert ss.status()["topology"] == "single" and cs.state().block == []
+    assert ss.PIPELINE_GROUPS_FLAG not in probes
+
+
+@pytest.mark.parametrize(
+    "value, slots, groups",
+    [
+        ("off", 48, 0),
+        ("0", 48, 0),
+        ("1", 48, 0),
+        ("auto", 48, 3),
+        ("2", 16, 2),  # forced: the 16-per-group floor is not applied
+        ("4", 48, 4),
+        ("3", 32, 0),  # never a slot count the server refuses
+        ("bogus", 48, 0),
+    ],
+)
+def test_the_environment_overrides_the_group_count(monkeypatch, value, slots, groups):
+    _groups_env(monkeypatch)
+    monkeypatch.setenv(cs.ENV_PIPELINE_GROUPS, value)
+    _, block, plan = _groups_load(slots)
+    assert plan.topology == "layer_split"
+    assert _groups_of(block) == groups
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--sleep-idle-seconds", "60"],
+        # The vector files themselves are sized as adapters, which this fixture makes huge.
+        ["--control-vector-layer-range", "1", "4"],
+        ["--sleep-idle-seconds=30"],
+    ],
+)
+def test_flags_the_server_refuses_with_groups_keep_one_context(monkeypatch, extra):
+    _groups_env(monkeypatch)
+    monkeypatch.setenv(cs.ENV_PIPELINE_GROUPS, "2")  # even forced
+    _, block, plan = _groups_load(48, extra = extra)
+    assert plan.topology == "layer_split" and _groups_of(block) == 0
+    assert "refuses" in cs.state().pipeline_groups_reason
+
+
+def test_an_automatic_context_keeps_one_context(monkeypatch):
+    _groups_env(monkeypatch)
+    monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "4096")
+    _, block, plan = _groups_load(48, ctx = 0)
+    assert _groups_of(block) == 3  # the environment's context is an explicit -c
+    monkeypatch.delenv("LLAMA_ARG_CTX_SIZE")
+    _, block, plan = _groups_load(48, ctx = 0)
+    # No -c reaches the server, which refuses the groups without one.
+    assert plan.topology == "layer_split" and _groups_of(block) == 0
+    refused = cs.pipeline_groups_candidates(2, 48, refusal = "multimodal", binary = "/b")
+    assert refused[0] == [] and "multimodal" in refused[1]
+
+
+def test_a_projector_keeps_one_context(monkeypatch, tmp_path):
+    _groups_env(monkeypatch)
+    projector = tmp_path / "mmproj-F16.gguf"
+    projector.write_bytes(b"\0" * 1024)
+    monkeypatch.setattr(ss, "auto_projector_file", lambda *a, **k: str(projector))
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda p: GIB if "mmproj" in str(p) else 30 * GIB)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    _, block, plan = _groups_load(48)
+    assert plan.topology == "layer_split" and _groups_of(block) == 0
+    assert "projector" in cs.state().pipeline_groups_reason
+
+
+def test_groups_fall_back_when_their_kv_does_not_fit(monkeypatch):
+    # 41.1 GiB usable, so 39.1 GiB once whole layers are allowed for; 1 GiB of KV per context.
+    _groups_env(monkeypatch, model_bytes = int(36.5 * GIB))
+    monkeypatch.setattr(ss, "estimate_kv_bytes", lambda path, cells, *a, **k: GIB * cells // 4096)
+    _, block, plan = _groups_load(48)  # three contexts (39.5 GiB) do not fit, two (38.5) do
+    assert plan.topology == "layer_split" and _groups_of(block) == 2
+    assert plan.kv_bytes == pytest.approx(2 * GIB) and plan.need_bytes == pytest.approx(38.5 * GIB)
+    _groups_env(monkeypatch, model_bytes = int(37.5 * GIB))
+    monkeypatch.setattr(ss, "estimate_kv_bytes", lambda path, cells, *a, **k: GIB * cells // 4096)
+    _, block, plan = _groups_load(48)  # only one context fits: the split runs without groups
+    assert plan.topology == "layer_split" and _groups_of(block) == 0
+    assert plan.kv_bytes == pytest.approx(GIB) and plan.need_bytes == pytest.approx(38.5 * GIB)
+    assert "does not fit" in cs.state().pipeline_groups_reason
+
+
+def test_a_callers_pipeline_groups_is_theirs_but_priced(monkeypatch):
+    _groups_env(monkeypatch)
+    extra = ["--pipeline-groups", "2"]
+    out, block, plan = _groups_load(48, extra = extra)
+    assert plan.topology == "layer_split"
+    assert "--pipeline-groups" not in block  # never a second flag
+    assert out.llama_extra_args[:2] == extra
+    assert plan.pipeline_groups == 2 and plan.kv_bytes == pytest.approx(2 * 4096 * KV_PER_CELL)
+    monkeypatch.setenv("LLAMA_ARG_PIPELINE_GROUPS", "4")
+    _, block, plan = _groups_load(48)
+    assert "--pipeline-groups" not in block and plan.pipeline_groups == 4
+
+
+def test_the_groups_flag_is_stripped_with_the_block_on_reload(monkeypatch):
+    _groups_env(monkeypatch)
+    out, block, _ = _groups_load(48, extra = ["--seed", "1"])
+    assert block[-2:] == ["--pipeline-groups", "3"]
+    assert ss.strip_layer_split_extra_args(out.llama_extra_args) == ["--seed", "1"]
+    backend = SimpleNamespace(
+        is_loaded = True,
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+    )
+    run(ss.after_load(backend, 48))
+    assert ss.current_topology() == "layer_split"
+    # A reload inheriting the served args plans afresh: one block, one --pipeline-groups.
+    inherited = ss.strip_layer_split_extra_args(out.llama_extra_args)
+    again = run(ss.before_load(_request(max_seq_length = 4096), 32, inherited_extra_args = inherited))
+    assert again.llama_extra_args.count("--pipeline-groups") == 1
+    assert _groups_of(cs.state().block) == 2
