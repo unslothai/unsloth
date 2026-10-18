@@ -5150,7 +5150,7 @@ def _apply_token_to_child_env(env, token, *, explicit):
 
 
 def _base_config_dir(repo_id, token = None):
-    """A temporary directory holding only `repo_id`'s config.json, which is all convert_lora_to_gguf.py --base reads; None if it cannot be fetched."""
+    """A temporary directory holding only `repo_id`'s config.json, which is all convert_lora_to_gguf.py --base reads; None if it cannot be fetched. `token` goes to huggingface_hub unchanged (False = anonymous)."""
     import tempfile
 
     try:
@@ -5166,7 +5166,7 @@ def _base_config_dir(repo_id, token = None):
             repo_id,
             "config.json",
             cache_dir = str(cache_dir) if cache_dir is not None else None,
-            token = token if isinstance(token, str) else None,
+            token = token,
         )
     except Exception:
         return None
@@ -5361,7 +5361,10 @@ def _unsloth_save_lora_gguf(
         if os.path.isdir(base_model_id):
             local_base = base_model_id
         elif not loaded_via_remote_code:
-            local_base = base_config_dir = _base_config_dir(base_model_id, token)
+            # False stays anonymous; a token we resolved ourselves is left to huggingface_hub, which honors HF_HUB_DISABLE_IMPLICIT_TOKEN.
+            local_base = base_config_dir = _base_config_dir(
+                base_model_id, token if token is False or token_is_explicit else None
+            )
         if local_base is not None:
             cmd += ["--base", local_base]
         else:

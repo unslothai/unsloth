@@ -108,6 +108,22 @@ def test_base_config_dir_holds_only_the_config(tmp_path, monkeypatch):
         shutil.rmtree(directory)
 
 
+def test_base_config_dir_passes_anonymous_through(tmp_path, monkeypatch):
+    import huggingface_hub
+
+    cached = tmp_path / "config.json"
+    cached.write_text("{}")
+    seen = []
+    monkeypatch.setattr(
+        huggingface_hub,
+        "hf_hub_download",
+        lambda *a, **k: seen.append(k["token"]) or str(cached),
+    )
+    for token in (False, None, "hf_explicit"):
+        shutil.rmtree(_base_config_dir("org/model", token))
+    assert seen == [False, None, "hf_explicit"]
+
+
 def test_base_config_dir_unavailable(monkeypatch):
     import huggingface_hub
 
