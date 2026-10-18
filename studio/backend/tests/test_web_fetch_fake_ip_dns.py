@@ -31,18 +31,30 @@ _ANSWERS = {
 }
 
 
-@pytest.fixture
-def fake_ip_dns(monkeypatch):
+def _dns(monkeypatch, unknown):
+    """Answers from ``_ANSWERS``; any other name (the resolver probe) gets ``unknown``, or NXDOMAIN when None."""
+    monkeypatch.setattr(tools, "_fake_ip_probe", [None, False])
     real = socket.getaddrinfo
 
     def getaddrinfo(host, port, *args, **kwargs):
-        if host in _ANSWERS:
-            return [
-                (socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port)) for ip in _ANSWERS[host]
-            ]
-        return real(host, port, *args, **kwargs)
+        if host == "127.0.0.1":
+            return real(host, port, *args, **kwargs)
+        answers = _ANSWERS.get(host, unknown)
+        if answers is None:
+            raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port)) for ip in answers]
 
     monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+
+
+@pytest.fixture
+def fake_ip_dns(monkeypatch):
+    _dns(monkeypatch, ["198.18.0.99"])
+
+
+@pytest.fixture
+def real_dns(monkeypatch):
+    _dns(monkeypatch, None)
 
 
 @pytest.mark.parametrize(
@@ -51,6 +63,14 @@ def fake_ip_dns(monkeypatch):
 )
 def test_public_name_with_a_fake_ip_answer_is_allowed(fake_ip_dns, host, pinned):
     assert tools._validate_and_resolve_host(host, 443) == (True, "", pinned)
+
+
+@pytest.mark.parametrize("unknown", [None, ["93.184.215.14"]])
+def test_fake_ip_answers_need_a_fake_ip_resolver(monkeypatch, unknown):
+    # Real DNS (NXDOMAIN, or an ISP's NXDOMAIN redirect) on the probe: a public name pointing into the range is refused.
+    _dns(monkeypatch, unknown)
+    ok, reason, _ = tools._validate_and_resolve_host("github.com", 443)
+    assert not ok and reason == "Blocked: refusing to fetch non-public address 198.18.0.24."
 
 
 @pytest.mark.parametrize(

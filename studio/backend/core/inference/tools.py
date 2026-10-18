@@ -16073,10 +16073,35 @@ def _explicit_proxy_applies(scheme: str, host: str) -> bool:
         return False
 
 
-# Fake-IP DNS (Clash/mihomo, sing-box, Surge in TUN mode) answers every name from RFC 2544 benchmarking space and maps
-# the address back to the name in the tunnel, so no real host sits there. Only a public name's answer may use it:
-# a literal is refused as before.
+# Fake-IP DNS (Clash/mihomo, sing-box, Surge in TUN mode) answers every name from RFC 2544 benchmarking space and the
+# tunnel maps the address back to the name, so the proxy app's own resolver picks the real host, as for every other
+# app there. Allowed only for a public name, and only once the resolver is seen doing it; a literal is refused as before.
 _FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+_FAKE_IP_PROBE_TTL = 60.0
+_fake_ip_probe: list = [None, False]  # (monotonic time checked, answer)
+
+
+def _resolver_is_fake_ip() -> bool:
+    """Whether the system resolver answers a name nobody registered from the fake-IP range, as fake-IP DNS answers every
+    name and real DNS says NXDOMAIN. Without this, any public domain could point into the range."""
+    import secrets
+    import socket
+
+    checked, answer = _fake_ip_probe
+    now = time.monotonic()
+    if checked is not None and now - checked < _FAKE_IP_PROBE_TTL:
+        return answer
+    try:
+        infos = socket.getaddrinfo(
+            f"unsloth-{secrets.token_hex(12)}.com", 443, type = socket.SOCK_STREAM
+        )
+        answer = bool(infos) and all(
+            ipaddress.ip_address(info[4][0]) in _FAKE_IP_NETWORK for info in infos
+        )
+    except (OSError, UnicodeError, ValueError):
+        answer = False
+    _fake_ip_probe[:] = [now, answer]
+    return answer
 
 
 def _is_public_name(hostname: str) -> bool:
@@ -16109,7 +16134,7 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, lis
     resolved = []
     for *_, sockaddr in infos:
         ip = ipaddress.ip_address(sockaddr[0])
-        if ip in _FAKE_IP_NETWORK and _is_public_name(hostname):
+        if ip in _FAKE_IP_NETWORK and _is_public_name(hostname) and _resolver_is_fake_ip():
             if sockaddr[0] not in resolved:
                 resolved.append(sockaddr[0])
             continue
