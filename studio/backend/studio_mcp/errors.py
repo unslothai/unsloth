@@ -61,7 +61,9 @@ MEMORY_HINT = "Pass allow_oversized=true to try anyway."
 CODE_HINTS: dict[str, str] = {}
 
 _UNLOAD_KIND = re.compile(r"would unload the (\w+) model")
-_NOT_LOADED = re.compile(r"^No (?:(diffusion|video) )?model (?:is )?loaded")
+_NOT_LOADED = re.compile(r"^No (?:(diffusion|image|video|GGUF) )?model (?:is )?loaded")
+# The kind a "No <word> model loaded" names outright, whatever route said it.
+_NOT_LOADED_WORDS = {"diffusion": "image", "image": "image", "video": "video", "GGUF": "chat"}
 # The kind a bare "No model loaded" is about, by the route that said it. First match wins.
 _NOT_LOADED_PATHS = (
     ("/v1/audio/transcriptions", "stt"),
@@ -181,7 +183,7 @@ def _not_loaded_kind(message: str, path: str) -> Optional[str]:
     if match is None:
         return None
     if match.group(1):
-        return "image" if match.group(1) == "diffusion" else "video"
+        return _NOT_LOADED_WORDS[match.group(1)]
     return next((kind for prefix, kind in _NOT_LOADED_PATHS if path.startswith(prefix)), "chat")
 
 

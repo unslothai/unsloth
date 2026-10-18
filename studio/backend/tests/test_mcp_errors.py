@@ -386,6 +386,20 @@ def _at(status, body, path):
         (_response(409, {"detail": "No diffusion model is loaded."}), "image"),
         (_response(503, {"detail": "No video model loaded. Load a video model first."}), "video"),
         (_v1(400, "No model loaded. Call POST /inference/load first."), "chat"),
+        (
+            _at(
+                503, {"detail": "No GGUF model loaded. Load a GGUF model first."}, "/v1/embeddings"
+            ),
+            "chat",
+        ),
+        (
+            _at(
+                503,
+                {"detail": "No image model loaded. Load an image model first."},
+                "/v1/images/generations",
+            ),
+            "image",
+        ),
     ],
     ids = [
         "audio-path",
@@ -397,6 +411,8 @@ def _at(status, body, path):
         "diffusion-wording",
         "video-wording",
         "no-request",
+        "gguf-wording",
+        "image-wording",
     ],
 )
 def test_not_loaded_names_the_kind(resp, kind):
