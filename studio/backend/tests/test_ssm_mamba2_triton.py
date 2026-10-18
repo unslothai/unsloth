@@ -185,3 +185,183 @@ def test_training_worker_routes_triton_loads_to_the_pure_wheel(monkeypatch):
     # And the worker's load path asks the shared predicate before installing anything.
     src = (_BACKEND / "core" / "training" / "worker.py").read_text()
     assert "triton_only = mamba2_runs_on_triton(kernels)" in src
+
+
+# ── Fallback: no usable extension-free wheel -> the CUDA-wheel route ──────────
+
+
+def _route(monkeypatch, *, pure_ok):
+    calls = []
+
+    def install(**kwargs):
+        calls.append((kwargs["import_name"], kwargs.get("wheel_url_builder")))
+        if kwargs.get("wheel_url_builder") is wheel_utils.mamba_ssm_pure_wheel_url:
+            return pure_ok
+        return True
+
+    monkeypatch.setattr(ssm_runtime, "_install_kernel", install)
+    monkeypatch.setattr(ssm_runtime.sys, "platform", "linux")
+    ssm_runtime.ensure_ssm_runtime(
+        "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
+        wants_causal_conv1d = True,
+        is_ssm = True,
+        mamba_ssm_required = True,
+        mamba_ssm_fatal = False,
+        mamba2_triton = True,
+    )
+    return calls
+
+
+def test_a_missing_pure_wheel_falls_back_to_the_cuda_route(monkeypatch):
+    pure = wheel_utils.mamba_ssm_pure_wheel_url
+    assert _route(monkeypatch, pure_ok = False) == [
+        ("mamba_ssm", pure),
+        ("causal_conv1d", None),
+        ("mamba_ssm", None),
+    ]
+    assert _route(monkeypatch, pure_ok = True) == [("mamba_ssm", pure)]
+
+
+@pytest.fixture
+def real_install(monkeypatch, tmp_path):
+    """_install_kernel for real (lock, memo, cleanup), with the network and pip faked."""
+    monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", str(tmp_path / "locks"))
+    monkeypatch.setattr(ssm_runtime, "_FAILED_INSTALLS", set())
+    monkeypatch.setattr(ssm_runtime.sys, "platform", "linux")
+    monkeypatch.setattr(
+        ssm_runtime,
+        "_torch_env",
+        lambda: {
+            "cuda_version": "13.0",
+            "cuda_major": "13",
+            "platform_tag": "linux_x86_64",
+            "torch_mm": "2.13",
+        },
+    )
+    import utils.utils as utils_utils
+
+    monkeypatch.setattr(utils_utils, "package_installs_offline", lambda: False)
+    monkeypatch.setattr(ssm_runtime, "_remove_broken", lambda *a, **k: None)
+    state = {"importable": set(), "installed": [], "probed": []}
+    monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: name in state["importable"])
+    cuda_url = "https://example.invalid/mamba_ssm-2.3.2.post1+cu13torch2.13-cp313-linux_x86_64.whl"
+    monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **k: cuda_url)
+    state["cuda_url"] = cuda_url
+    return state
+
+
+def _pure_then_cuda(
+    state,
+    monkeypatch,
+    *,
+    pure_exists,
+    pure_outcome = "installed",
+):
+    pure_url = wheel_utils.mamba_ssm_pure_wheel_url()
+
+    def url_exists(url):
+        state["probed"].append(url)
+        return pure_exists if url == pure_url else True
+
+    def install_prebuilt(url, *, verify, **kwargs):
+        state["installed"].append(url)
+        if url == pure_url and pure_outcome != "installed":
+            return pure_outcome
+        state["importable"].add("mamba_ssm")
+        return "installed" if verify() else "rejected"
+
+    monkeypatch.setattr(ssm_runtime, "url_exists", url_exists)
+    monkeypatch.setattr(ssm_runtime, "install_prebuilt", install_prebuilt)
+    ssm_runtime.ensure_ssm_runtime(
+        "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
+        wants_causal_conv1d = False,
+        is_ssm = True,
+        mamba_ssm_required = True,
+        mamba_ssm_fatal = False,
+        mamba2_triton = True,
+    )
+    return pure_url
+
+
+def test_a_404_on_the_pure_wheel_installs_the_cuda_wheel(real_install, monkeypatch):
+    pure_url = _pure_then_cuda(real_install, monkeypatch, pure_exists = False)
+    assert real_install["probed"] == [pure_url, real_install["cuda_url"]]
+    assert real_install["installed"] == [real_install["cuda_url"]]
+    assert "mamba_ssm" in real_install["importable"]
+
+
+@pytest.mark.parametrize("outcome", ["rejected", "failed"])
+def test_a_pure_wheel_that_does_not_install_or_import_falls_back(
+    real_install, monkeypatch, outcome
+):
+    pure_url = _pure_then_cuda(real_install, monkeypatch, pure_exists = True, pure_outcome = outcome)
+    assert real_install["installed"] == [pure_url, real_install["cuda_url"]]
+    assert "mamba_ssm" in real_install["importable"]
+
+
+def test_the_pure_failure_is_remembered_on_its_own_key(real_install, monkeypatch):
+    pure_url = _pure_then_cuda(real_install, monkeypatch, pure_exists = False)
+    keys = ssm_runtime._FAILED_INSTALLS
+    assert ssm_runtime._failure_key("mamba_ssm", wheel_utils.mamba_ssm_pure_wheel_url) in keys
+    # The CUDA mamba-ssm installed: nothing remembered against it.
+    assert ssm_runtime._failure_key("mamba_ssm") not in keys
+    # A later load in this process skips the pure probe and goes straight to the CUDA wheel.
+    real_install["importable"].clear()
+    real_install["probed"].clear()
+    real_install["installed"].clear()
+    _pure_then_cuda(real_install, monkeypatch, pure_exists = False)
+    assert pure_url not in real_install["probed"]
+    assert real_install["installed"] == [real_install["cuda_url"]]
+
+
+def test_training_worker_reports_whether_the_pure_wheel_took(monkeypatch):
+    from unittest import mock
+
+    from core.training import worker
+
+    monkeypatch.setattr(worker.sys, "platform", "linux")
+    for result in (True, False):
+        monkeypatch.setattr(worker, "_install_package_wheel_first", mock.Mock(return_value = result))
+        assert (
+            worker._ensure_mamba_ssm(
+                event_queue = [],
+                model_name = "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
+                required = True,
+                essential = True,
+                triton_only = True,
+            )
+            is result
+        )
+    src = (_BACKEND / "core" / "training" / "worker.py").read_text()
+    # On a False answer the run takes the CUDA route: causal-conv1d, then the CUDA mamba-ssm.
+    start = src.index("triton_only = mamba2_runs_on_triton(kernels)")
+    block = src[start : src.index("_ensure_flash_attn_for_long_context(", start)]
+    assert "if not triton_only:" in block
+    assert block.index("_ensure_causal_conv1d_fast_path(") < block.index("if not triton_only:")
+
+
+def test_training_failure_memo_follows_the_wheel_source(monkeypatch):
+    from core.training import worker
+
+    seen = []
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
+    monkeypatch.setattr(worker, "_model_offline_mode_enabled", lambda: False)
+    monkeypatch.setattr(worker, "_package_installs_offline", lambda: False)
+    pure_failed = ssm_runtime._failure_key("mamba_ssm", wheel_utils.mamba_ssm_pure_wheel_url)
+    monkeypatch.setattr(ssm_runtime, "_FAILED_INSTALLS", {pure_failed})
+    monkeypatch.setattr(
+        worker,
+        "_attempt_package_install",
+        lambda **k: seen.append(k.get("wheel_url_builder")) or True,
+    )
+    kwargs = worker._pinned_kernel_kwargs(worker.MAMBA_SSM)
+    # The remembered pure failure skips the pure attempt ...
+    assert (
+        worker._install_package_wheel_first(
+            event_queue = [], **kwargs, wheel_url_builder = wheel_utils.mamba_ssm_pure_wheel_url
+        )
+        is False
+    )
+    # ... but not the CUDA wheel.
+    assert worker._install_package_wheel_first(event_queue = [], **kwargs) is True
+    assert seen == [None]

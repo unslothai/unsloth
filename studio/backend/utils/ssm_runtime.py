@@ -838,7 +838,10 @@ def mamba2_runs_on_triton(kernels: "SsmKernels") -> bool:
     return _transformers_resolves_kernels_per_function() and _zoo_has_mamba2_triton_drop_ins()
 
 
-def _failure_key(import_name: str) -> tuple:
+def _failure_key(import_name: str, wheel_url_builder: Callable[..., Any] | None = None) -> tuple:
+    """What a failed install is remembered by. A non-default wheel source (the extension-free
+    mamba_ssm wheel) is its own attempt, so its failure does not also block the CUDA-wheel route
+    the load falls back to."""
     try:
         import importlib.metadata as metadata
         torch_version = metadata.version("torch")
@@ -846,6 +849,7 @@ def _failure_key(import_name: str) -> tuple:
         torch_version = None
     return (
         import_name,
+        getattr(wheel_url_builder, "__qualname__", None) if wheel_url_builder is not None else None,
         sys.executable,
         torch_version,
         shutil.which("nvcc"),
@@ -917,7 +921,7 @@ def _install_kernel(
         logger.info("Skipping %s installation while offline", display_name)
         return False
 
-    failure_key = _failure_key(import_name)
+    failure_key = _failure_key(import_name, wheel_url_builder)
     if failure_key in _FAILED_INSTALLS:
         logger.info("%s already failed to install in this process; not retrying", display_name)
         return False
@@ -1168,11 +1172,16 @@ def ensure_ssm_runtime(
     if mamba2_triton and is_ssm:
         # unsloth_zoo serves the causal conv on Triton and the extension-free mamba_ssm wheel the
         # scan: 224 KB instead of two CUDA wheels, nothing to build, same wheel on every platform.
-        if not _install(
+        if _install(
             MAMBA_SSM, allow_source_build = False, wheel_url_builder = mamba_ssm_pure_wheel_url
         ):
-            _emit(status_cb, "mamba-ssm is not available; continuing on the model's torch path.")
-        return installed
+            return installed
+        # Not published yet, refused, or not importable (removed again by _install_kernel): this
+        # load takes the CUDA-wheel route below, exactly as without the Triton drop-ins.
+        _emit(
+            status_cb,
+            "The extension-free mamba-ssm wheel is not available; using the CUDA kernels instead.",
+        )
 
     # causal-conv1d first: SSM modeling files lazy-import it, and mamba-ssm's fast path uses it.
     if wants_causal_conv1d and not _install(CAUSAL_CONV1D):

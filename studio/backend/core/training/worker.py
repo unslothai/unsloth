@@ -1464,7 +1464,7 @@ def _install_package_wheel_first(
     # chat load in the same process, never repeat a failed (possibly half-hour) build.
     from utils.ssm_runtime import _FAILED_INSTALLS, _failure_key
 
-    failure_key = _failure_key(import_name)
+    failure_key = _failure_key(import_name, kwargs.get("wheel_url_builder"))
     if failure_key in _FAILED_INSTALLS:
         logger.info("%s already failed to install in this process; not retrying", display_name)
         return False
@@ -1767,7 +1767,7 @@ def _ensure_mamba_ssm(
     required: bool | None = None,
     essential: bool | None = None,
     triton_only: bool = False,
-) -> None:
+) -> bool | None:
     # `required` is the config-resolved answer (resolved_model_is_ssm); the name is the fallback.
     # `essential`: Nemotron-H, Falcon-H1, Granite-4.0-H, which may build it from source. Training
     # stays best effort as at 9f5b13325: their native transformers path can run without it, so a
@@ -1791,16 +1791,15 @@ def _ensure_mamba_ssm(
 
     if triton_only:
         from utils.wheel_utils import mamba_ssm_pure_wheel_url
-
         logger.info("Mamba-2 model on Triton kernels; setting up the extension-free mamba-ssm")
-        _install_package_wheel_first(
+        # True when it imports; the caller then skips causal-conv1d and the CUDA mamba-ssm.
+        return _install_package_wheel_first(
             event_queue = event_queue,
             **_pinned_kernel_kwargs(MAMBA_SSM),
             wheel_url_builder = mamba_ssm_pure_wheel_url,
             allow_source_build = False,
             required = essential,
         )
-        return
 
     if not essential and not _is_importable(MAMBA_SSM.import_name):
         from utils.ssm_runtime import _mamba_ssm_floor_reason
@@ -4203,7 +4202,25 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             # extension-free mamba_ssm wheel.
             triton_only = mamba2_runs_on_triton(kernels)
             if triton_only:
-                wants_causal_conv1d = False
+                # The extension-free wheel first. Not published, refused or not importable: this
+                # run takes the CUDA-wheel route (causal-conv1d, then mamba-ssm) instead.
+                triton_only = bool(
+                    _ensure_mamba_ssm(
+                        event_queue,
+                        model_name,
+                        required = is_ssm,
+                        essential = kernels.mamba_ssm_required,
+                        triton_only = True,
+                    )
+                )
+                if triton_only:
+                    wants_causal_conv1d = False
+                else:
+                    _send_status(
+                        event_queue,
+                        "The extension-free mamba-ssm wheel is not available; using the CUDA "
+                        "kernels instead",
+                    )
             _ensure_causal_conv1d_fast_path(
                 event_queue,
                 model_name,
@@ -4214,13 +4231,13 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 model_name,
                 install_causal_conv1d = wants_causal_conv1d,
             )
-            _ensure_mamba_ssm(
-                event_queue,
-                model_name,
-                required = is_ssm,
-                essential = kernels.mamba_ssm_required,
-                triton_only = triton_only,
-            )
+            if not triton_only:
+                _ensure_mamba_ssm(
+                    event_queue,
+                    model_name,
+                    required = is_ssm,
+                    essential = kernels.mamba_ssm_required,
+                )
             _ensure_flash_attn_for_long_context(
                 event_queue,
                 int(config.get("max_seq_length", 2048)),
