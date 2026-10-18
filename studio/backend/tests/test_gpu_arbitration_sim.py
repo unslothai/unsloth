@@ -738,7 +738,11 @@ class VramSim:
         for owner in BACKENDS:
             monkeypatch.setitem(arb._EVICTORS, owner, lambda o = owner: self._evict(o))
             monkeypatch.setitem(
-                arb._SLOT_REPORTERS, owner, lambda o = owner: [{"kind": arb.KIND_LABELS[o], "model": f"{arb.KIND_LABELS[o]}-model"}]
+                arb._SLOT_REPORTERS,
+                owner,
+                lambda o = owner: [
+                    {"kind": arb.KIND_LABELS[o], "model": f"{arb.KIND_LABELS[o]}-model"}
+                ],
             )
         monkeypatch.setattr(arb, "_residents", {})
         monkeypatch.setattr(arb, "_accounts", {})
@@ -781,7 +785,13 @@ class VramSim:
         arb.acquire_for(owner, register, evicted = evicted, **kwargs)
         return evicted
 
-    def load_image(self, need_gb, gpu = 0, headroom_gb = 4, **kwargs):
+    def load_image(
+        self,
+        need_gb,
+        gpu = 0,
+        headroom_gb = 4,
+        **kwargs,
+    ):
         """An image load priced at ``need_gb``; idle, only its weights are allocated (the headroom is not)."""
         need, headroom = need_gb * GIB, headroom_gb * GIB
         priced = self.residency.MediaNeed(
@@ -789,9 +799,16 @@ class VramSim:
         )
         return self.load(arb.DIFFUSION, {gpu: need - headroom}, need_mib = priced, **kwargs)
 
-    def load_chat(self, gb = 10, gpu_ids = (0,), **kwargs):
+    def load_chat(
+        self,
+        gb = 10,
+        gpu_ids = (0,),
+        **kwargs,
+    ):
         held = {gpu: gb * GIB // max(len(gpu_ids or (0,)), 1) for gpu in (gpu_ids or (0,))}
-        return self.load(arb.CHAT, held, gpu_ids = list(gpu_ids) if gpu_ids is not None else None, **kwargs)
+        return self.load(
+            arb.CHAT, held, gpu_ids = list(gpu_ids) if gpu_ids is not None else None, **kwargs
+        )
 
 
 @pytest.fixture
@@ -846,9 +863,13 @@ def test_image_on_another_gpu_under_off_still_swaps(vram):
     assert v.evictions == [arb.CHAT] and set(arb.residents()) == {arb.DIFFUSION}
 
 
-def _chat_kwargs(config, placement, *, primary_can_retry = False):
+def _chat_kwargs(
+    config,
+    placement,
+    *,
+    primary_can_retry = False,
+):
     from routes import inference as inf
-
     token = inf._primary_can_retry_fit.set(primary_can_retry)
     try:
         return inf._chat_fit_kwargs(config, placement)
@@ -856,9 +877,13 @@ def _chat_kwargs(config, placement, *, primary_can_retry = False):
         inf._primary_can_retry_fit.reset(token)
 
 
-def _placement(gpus = (0,), *, vulkan = False, native_gb = None):
+def _placement(
+    gpus = (0,),
+    *,
+    vulkan = False,
+    native_gb = None,
+):
     from routes.inference import _LoadPlacement
-
     resolved = list(gpus) if gpus is not None else None
     return _LoadPlacement(resolved, resolved, vulkan, None, native_required_gb = native_gb)
 
@@ -881,16 +906,24 @@ def test_gguf_chat_joins_an_idle_image_and_its_launch_prices_the_image(vram):
         held = backend._other_planned_vram_mib()
     finally:
         llama_cpp.unregister_serving_backend(backend)
-    assert held == {0: 20 * GIB}  # weights plus the headroom the idle image will allocate when it generates
+    assert held == {
+        0: 20 * GIB
+    }  # weights plus the headroom the idle image will allocate when it generates
     # A stale free reading on GPU 0 is capped at total less what the image holds; GPU 1 is left alone.
     probed = [(0, 80 * GIB, 80 * GIB), (1, 70 * GIB, 80 * GIB)]
-    assert llama_cpp._net_of_held_vram(probed, held) == [(0, 60 * GIB, 80 * GIB), (1, 70 * GIB, 80 * GIB)]
+    assert llama_cpp._net_of_held_vram(probed, held) == [
+        (0, 60 * GIB, 80 * GIB),
+        (1, 70 * GIB, 80 * GIB),
+    ]
 
 
 def test_gguf_chat_with_no_fit_retry_evicts_first_under_fit(vram):
     v = vram(80)
     v.policy = "fit"
-    assert _chat_kwargs(SimpleNamespace(is_gguf = True), _placement()) == {"policy": "fit", "evict_first": True}
+    assert _chat_kwargs(SimpleNamespace(is_gguf = True), _placement()) == {
+        "policy": "fit",
+        "evict_first": True,
+    }
 
 
 @pytest.mark.parametrize(

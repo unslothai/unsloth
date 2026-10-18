@@ -65,7 +65,13 @@ class MultiModelAlwaysRefusal(RuntimeError):
     help, so routes answer 409 without Retry-After, with ``MULTI_MODEL_REFUSAL_HEADERS``.
     """
 
-    def __init__(self, message: str, *, kind: Optional[str] = None, model: Optional[str] = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: Optional[str] = None,
+        model: Optional[str] = None,
+    ):
         self.kind = kind
         self.model = model
         super().__init__(message)
@@ -80,10 +86,17 @@ class MultiModelAlwaysRefusal(RuntimeError):
             if path and path.startswith("/v1/")
             else message
         )
-        return HTTPException(status_code = 409, detail = detail, headers = dict(MULTI_MODEL_REFUSAL_HEADERS))
+        return HTTPException(
+            status_code = 409, detail = detail, headers = dict(MULTI_MODEL_REFUSAL_HEADERS)
+        )
 
 
-def always_refusal_message(kind: str, model: Optional[str] = None, *, is_owner: Optional[bool] = None) -> str:
+def always_refusal_message(
+    kind: str,
+    model: Optional[str] = None,
+    *,
+    is_owner: Optional[bool] = None,
+) -> str:
     """The Always refusal copy. ``kind`` is chat, audio, image or video."""
     if is_owner is None:
         from utils.account_context import is_owner_context
@@ -100,7 +113,9 @@ def always_refusal_message(kind: str, model: Optional[str] = None, *, is_owner: 
     )
 
 
-def refusal_for(slots: Iterable[dict[str, Any]], fallback_kind: str = "chat") -> MultiModelAlwaysRefusal:
+def refusal_for(
+    slots: Iterable[dict[str, Any]], fallback_kind: str = "chat"
+) -> MultiModelAlwaysRefusal:
     """Build the refusal naming the first model a load would have unloaded (hidden from other accounts)."""
     shown = public_slots(slots)
     first = shown[0] if shown else {"kind": fallback_kind, "model": ""}
@@ -257,14 +272,15 @@ def public_slots(slots: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
     try:
         from hub.services.models.account_access import managed_account
         from utils.account_context import current_account_id
-
         hide, me = managed_account(), current_account_id()
     except Exception:  # noqa: BLE001
         hide, me = False, None
     out = []
     for slot in slots:
         account = slot.get("account")
-        model = "" if hide and account is not None and account != me else str(slot.get("model") or "")
+        model = (
+            "" if hide and account is not None and account != me else str(slot.get("model") or "")
+        )
         out.append({"kind": str(slot.get("kind") or "chat"), "model": model})
     return out
 
@@ -419,7 +435,6 @@ def acquire_for_request(
     **kwargs,
 ) -> Any:
     from core.inference.gpu_residency import ChatLoadInFlightRefusal
-
     try:
         return acquire_for(owner, register, **kwargs)
     except (GpuBusyForAnotherAccountError, ChatLoadInFlightRefusal) as exc:
@@ -472,7 +487,6 @@ def acquire_for(
             # Only another account's work on this model blocks reloading it; residents it would evict are
             # checked one by one.
             from core.inference.gpu_residency import foreign_on
-
             busy = foreign_on(owner, acting)
             if busy:
                 raise GpuBusyForAnotherAccountError(owner, busy)
@@ -481,10 +495,15 @@ def acquire_for(
         others = [name for name in _residents if name != owner]
         if others and coreside:
             from core.inference.gpu_residency import coreside_locked
-
             coreside_locked(
-                owner, policy = policy, need_mib = need_mib, gpu_ids = gpu_ids, allow_evict = allow_evict,
-                evict_first = evict_first, acting = acting, evicted = evicted,
+                owner,
+                policy = policy,
+                need_mib = need_mib,
+                gpu_ids = gpu_ids,
+                allow_evict = allow_evict,
+                evict_first = evict_first,
+                acting = acting,
+                evicted = evicted,
             )
             others = []
         if others:

@@ -74,29 +74,45 @@ def cores(calls, monkeypatch):
     from state import active_generations
 
     env = types.SimpleNamespace(calls = calls, lifecycle = [], h3 = [], probes = [])
-    for name, value in {"_residents": {}, "_media_needs": {}, "_accounts": {}, "_owner_account": None,
-                        "_prior_account": None}.items():
+    for name, value in {
+        "_residents": {},
+        "_media_needs": {},
+        "_accounts": {},
+        "_owner_account": None,
+        "_prior_account": None,
+    }.items():
         monkeypatch.setattr(arb, name, value)
     monkeypatch.setitem(arb._EVICTORS, arb.VIDEO, lambda: calls.append("evict-video"))
     for owner, kind in ((arb.CHAT, "chat"), (arb.DIFFUSION, "image"), (arb.VIDEO, "video")):
-        monkeypatch.setitem(arb._SLOT_REPORTERS, owner, lambda kind = kind: [{"kind": kind, "model": f"org/{kind}"}])
+        monkeypatch.setitem(
+            arb._SLOT_REPORTERS, owner, lambda kind = kind: [{"kind": kind, "model": f"org/{kind}"}]
+        )
     monkeypatch.setattr(arb, "_release_idle_video_servers", env.h3.append)
-    monkeypatch.setattr(sys.modules["utils.hardware.hardware"], "get_parent_visible_gpu_ids", lambda: [])
+    monkeypatch.setattr(
+        sys.modules["utils.hardware.hardware"], "get_parent_visible_gpu_ids", lambda: []
+    )
     monkeypatch.setattr(res, "chat_load_in_flight", lambda: False)
     monkeypatch.setattr(res, "_media_busy", lambda owner: (False, False))
     rows = {gpu: {"free_mib": 8192, "total_mib": 24576} for gpu in (0, 1)}
     monkeypatch.setattr(res, "_free_mib_by_gpu", lambda: (rows, None))
     monkeypatch.setattr(model_slots, "eviction_victims", lambda *args, **kwargs: [])
     monkeypatch.setattr(video_minimax_h3, "release_h3_native_servers", lambda reason: 0)
-    monkeypatch.setattr(api_monitor, "record_lifecycle", lambda **event: env.lifecycle.append(event))
+    monkeypatch.setattr(
+        api_monitor, "record_lifecycle", lambda **event: env.lifecycle.append(event)
+    )
 
     def fits(*blockers):
         # Short while any of ``blockers`` is still resident, so a re-check after an eviction passes.
         def probe(owner, need_mib):
             env.probes.append(owner)
             short = any(name in arb._view() for name in blockers)
-            return not short, {"need_mib": {0: 6144}, "free_mib": {0: 2048},
-                               "short_mib": {0: 5120} if short else {}, "reason": "short" if short else "fits"}
+            return not short, {
+                "need_mib": {0: 6144},
+                "free_mib": {0: 2048},
+                "short_mib": {0: 5120} if short else {},
+                "reason": "short" if short else "fits",
+            }
+
         monkeypatch.setattr(res, "can_load_alongside", probe)
 
     def no_probe(owner, need_mib):
@@ -109,7 +125,10 @@ def cores(calls, monkeypatch):
     active_generations.reset_for_tests()
 
 
-CHAT_SLOT, IMAGE_SLOT = {"kind": "chat", "model": "org/chat"}, {"kind": "image", "model": "org/image"}
+CHAT_SLOT, IMAGE_SLOT = (
+    {"kind": "chat", "model": "org/chat"},
+    {"kind": "image", "model": "org/image"},
+)
 
 
 @pytest.mark.parametrize(
@@ -131,7 +150,9 @@ def test_image_load_beside_a_resident_chat_model_policy_matrix(cores, policy, ne
     assert set(arb.residents()) == ({arb.DIFFUSION} if evicts else {arb.CHAT, arb.DIFFUSION})
     assert evicted == ([CHAT_SLOT] if evicts else [])
     # The fit path records each eviction in the API monitor; Off keeps today's silent swap.
-    assert [event["reason"] for event in cores.lifecycle] == (["evicted"] if evicts and policy != "off" else [])
+    assert [event["reason"] for event in cores.lifecycle] == (
+        ["evicted"] if evicts and policy != "off" else []
+    )
     assert arb._media_needs.get(arb.DIFFUSION) == (need if policy != "off" else None)
 
 
@@ -178,14 +199,25 @@ def test_image_load_on_another_gpu_never_evicts_chat_unless_off(cores, policy):
         ("fit", False, {}, False, "evict"),  # unpriced media can't be counted
         ("always", False, {}, False, "refuse"),
         ("fit", True, {"evict_first": True}, False, "evict"),  # no estimate before launch
-        ("fit", True, {"need_mib": {0: 6144}}, False, "join"),  # audio.cpp, priced from native_required_gb
+        (
+            "fit",
+            True,
+            {"need_mib": {0: 6144}},
+            False,
+            "join",
+        ),  # audio.cpp, priced from native_required_gb
         ("fit", True, {"need_mib": {0: 6144}}, True, "evict"),
     ],
 )
 def test_chat_load_beside_an_idle_image_model(cores, policy, priced, kwargs, short, outcome):
     cores.fits(*([arb.DIFFUSION] if short else []))
-    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit" if priced else "off",
-                    need_mib = {0: 4096} if priced else None, gpu_ids = [0])
+    arb.acquire_for(
+        arb.DIFFUSION,
+        lambda: None,
+        policy = "fit" if priced else "off",
+        need_mib = {0: 4096} if priced else None,
+        gpu_ids = [0],
+    )
     assert (arb.DIFFUSION in arb._media_needs) is priced
     evicted: list = []
 
@@ -199,7 +231,9 @@ def test_chat_load_beside_an_idle_image_model(cores, policy, priced, kwargs, sho
         load()
     assert cores.calls == (["evict-diffusion"] if outcome == "evict" else [])
     assert evicted == ([IMAGE_SLOT] if outcome == "evict" else [])
-    expected = {"join": {arb.CHAT, arb.DIFFUSION}, "evict": {arb.CHAT}, "refuse": {arb.DIFFUSION}}[outcome]
+    expected = {"join": {arb.CHAT, arb.DIFFUSION}, "evict": {arb.CHAT}, "refuse": {arb.DIFFUSION}}[
+        outcome
+    ]
     assert set(arb.residents()) == expected
 
 
@@ -211,7 +245,9 @@ def test_chat_load_beside_an_idle_image_model(cores, policy, priced, kwargs, sho
         ("off", {1: 4096}, True),  # Off keeps the global guard
     ],
 )
-def test_another_accounts_stream_only_blocks_evicting_its_own_resident(cores, policy, need, refused):
+def test_another_accounts_stream_only_blocks_evicting_its_own_resident(
+    cores, policy, need, refused
+):
     import threading
 
     from state.active_generations import ActiveGeneration
@@ -221,8 +257,11 @@ def test_another_accounts_stream_only_blocks_evicting_its_own_resident(cores, po
     cores.fits(arb.CHAT)
     run_as(bob, arb.acquire_for, arb.CHAT, lambda: None, gpu_ids = [0])
     with ActiveGeneration(threading.Event(), run_id = "bob-chat", account_id = bob.account_id):
+
         def load():
-            run_as(alice, arb.acquire_for, arb.DIFFUSION, lambda: None, policy = policy, need_mib = need)
+            run_as(
+                alice, arb.acquire_for, arb.DIFFUSION, lambda: None, policy = policy, need_mib = need
+            )
 
         if refused:
             with pytest.raises(arb.GpuBusyForAnotherAccountError):
@@ -584,7 +623,7 @@ def test_the_safetensors_load_yields_a_gpu_it_lost_while_loading():
     # Gated on chat_load_needs_gpu like the GGUF branch: a load that never took the
     # arbiter has no ownership to lose, and checking against a None owner would 409
     # every CPU-placed audio load.
-    guard = tail.index("if chat_load_needs_gpu and current_owner() != CHAT:")
+    guard = tail.index("if chat_load_needs_gpu and not holds(CHAT):")
     assert "await asyncio.to_thread(backend.unload_model, config.identifier)" in tail[guard:]
     assert tail.index("status_code = 409", guard) > guard
 
@@ -618,3 +657,195 @@ def test_restore_owner_account_is_a_noop_once_someone_else_holds_residency(calls
     run_as(carol, arb.acquire_for, arb.VIDEO, lambda: None)
     assert run_as(bob, arb.restore_owner_account, arb.VIDEO) is False
     assert arb.owner_account() == carol.account_id
+
+
+# Multi-resident arbiter: Keep multiple models loaded policies, residents, eviction reports.
+
+from utils.account_context import AccountContext, run_as
+
+ALICE = AccountContext("a" * 32, "alice")
+BOB = AccountContext("b" * 32, "bob")
+
+
+@pytest.fixture
+def arb_log(monkeypatch):
+    log: list[str] = []
+    for name, value in (
+        ("_owner", None),
+        ("_residents", {}),
+        ("_accounts", {}),
+        ("_owner_account", None),
+        ("_prior_account", None),
+    ):
+        monkeypatch.setattr(arb, name, value)
+    for owner in (arb.CHAT, arb.DIFFUSION, arb.VIDEO, arb.DECISIONS):
+        monkeypatch.setitem(arb._EVICTORS, owner, lambda owner = owner: log.append(f"evict-{owner}"))
+    for owner in (arb.CHAT, arb.DIFFUSION, arb.VIDEO):
+        monkeypatch.setitem(arb._SLOT_REPORTERS, owner, lambda: [])
+    monkeypatch.setattr(arb, "_release_idle_video_servers", lambda reason: log.append("release-h3"))
+    return log
+
+
+def _report(monkeypatch, log, owner, *slots):
+    monkeypatch.setitem(
+        arb._SLOT_REPORTERS, owner, lambda: (log.append(f"report-{owner}"), list(slots))[1]
+    )
+
+
+@pytest.mark.parametrize(
+    "resident, owner, kind, model",
+    [
+        (arb.CHAT, arb.DIFFUSION, "chat", "unsloth/Qwen3-4B-GGUF"),
+        (arb.DIFFUSION, arb.CHAT, "image", "black-forest-labs/FLUX.1-dev"),
+        (arb.DIFFUSION, arb.VIDEO, "image", "black-forest-labs/FLUX.1-dev"),
+    ],
+)
+def test_always_refuses_instead_of_evicting(arb_log, monkeypatch, resident, owner, kind, model):
+    arb.acquire_for(resident)
+    _report(monkeypatch, arb_log, resident, {"kind": kind, "model": model, "account": "owner"})
+    arb_log.clear()
+    registered: list[bool] = []
+    with pytest.raises(arb.MultiModelAlwaysRefusal) as excinfo:
+        arb.acquire_for(owner, lambda: registered.append(True), policy = "always")
+    assert not [entry for entry in arb_log if entry.startswith("evict-")] and registered == []
+    message = str(excinfo.value)
+    assert f"the {kind} model {model}" in message and "is set to Always" in message
+    assert (excinfo.value.kind, excinfo.value.model) == (kind, model)
+    assert arb.residents() == {resident: None}
+
+    http = excinfo.value.as_http_exception("/api/inference/load")
+    assert http.status_code == 409 and http.headers == {"X-Unsloth-Refusal": "multi-model-always"}
+    assert isinstance(http.detail, str) and "is set to Always" in http.detail
+    v1 = excinfo.value.as_http_exception("/v1/chat/completions")
+    assert v1.status_code == 409 and v1.detail["error"]["code"] == "multi_model_always"
+    assert model in v1.detail["error"]["message"]
+
+
+def test_always_refusal_for_a_managed_account_hides_another_accounts_model(arb_log, monkeypatch):
+    arb.acquire_for(arb.CHAT)
+    _report(
+        monkeypatch,
+        arb_log,
+        arb.CHAT,
+        {"kind": "chat", "model": "bob/private-GGUF", "account": BOB.account_id},
+    )
+    with pytest.raises(arb.MultiModelAlwaysRefusal) as excinfo:
+        run_as(ALICE, arb.acquire_for, arb.DIFFUSION, policy = "always")
+    message = str(excinfo.value)
+    assert "bob/private-GGUF" not in message and "the chat model," in message
+    assert "is set to keep loaded" in message and "is set to Always" not in message
+    # Alice's own model stays named.
+    _report(
+        monkeypatch,
+        arb_log,
+        arb.CHAT,
+        {"kind": "chat", "model": "alice/mine-GGUF", "account": ALICE.account_id},
+    )
+    with pytest.raises(arb.MultiModelAlwaysRefusal, match = "alice/mine-GGUF"):
+        run_as(ALICE, arb.acquire_for, arb.DIFFUSION, policy = "always")
+
+
+@pytest.mark.parametrize("policy", ["off", "fit"])
+def test_off_and_fit_evict_then_release_idle_video_then_register(arb_log, policy):
+    arb.acquire_for(arb.DIFFUSION)
+    arb_log.clear()
+    arb.acquire_for(arb.CHAT, lambda: arb_log.append("register"), **arb.policy_kwargs(policy))
+    assert arb_log == ["evict-diffusion", "release-h3", "register"]
+    assert arb.residents() == {arb.CHAT: None}
+    assert arb.policy_kwargs("off") == {} and arb.policy_kwargs("always") == {"policy": "always"}
+
+
+def test_always_still_evicts_decisions_and_allow_evict_false_still_refuses(arb_log):
+    arb.acquire_for(arb.DECISIONS)
+    arb.acquire_for(arb.CHAT, policy = "always")
+    assert "evict-decisions" in arb_log and arb.residents() == {arb.CHAT: None}
+    arb.acquire_for(arb.DECISIONS, policy = "always")
+    assert "evict-chat" in arb_log
+    arb.acquire_for(arb.CHAT)
+    with pytest.raises(arb.GpuOwnerBusyError) as excinfo:
+        arb.acquire_for(arb.DECISIONS, allow_evict = False, policy = "always")
+    assert excinfo.value.owner == arb.CHAT
+
+
+def test_residents_use_physical_gpu_ids_under_a_masked_device_list(arb_log, monkeypatch):
+    import utils.hardware.hardware as hardware
+
+    monkeypatch.setattr(hardware, "get_parent_visible_gpu_ids", lambda: [2, 3])
+    arb.acquire_for(arb.CHAT, gpu_ids = [0])
+    assert arb.residents() == {"chat": frozenset({2})}
+    assert arb.physical_gpu_ids([1, 5]) == frozenset({3, 5}) and arb.physical_gpu_ids(None) is None
+    monkeypatch.setattr(hardware, "get_parent_visible_gpu_ids", lambda: [])
+    assert arb.physical_gpu_ids([0]) == frozenset({0})
+
+
+def test_a_directly_set_owner_wins_over_stale_residents(arb_log, monkeypatch):
+    monkeypatch.setattr(arb, "_owner", arb.DIFFUSION)
+    assert arb.holds(arb.DIFFUSION) and arb.residents() == {arb.DIFFUSION: None}
+    monkeypatch.setattr(arb, "_residents", {arb.CHAT: None})
+    monkeypatch.setattr(arb, "_owner", None)
+    assert arb.residents() == {} and not arb.holds(arb.CHAT)
+    monkeypatch.setattr(arb, "current_owner", lambda: arb.CHAT)
+    assert arb.holds(arb.CHAT) and arb.residents() == {arb.CHAT: None}
+
+
+def test_release_and_release_if_keep_owner_and_residents_in_sync(arb_log, monkeypatch):
+    monkeypatch.setattr(arb, "_residents", {arb.CHAT: frozenset({0}), arb.DIFFUSION: None})
+    monkeypatch.setattr(arb, "_owner", arb.DIFFUSION)
+    arb.release(arb.DIFFUSION)
+    assert arb.current_owner() == arb.CHAT and arb.residents() == {arb.CHAT: frozenset({0})}
+    assert arb.release_if(arb.CHAT, lambda: True) is True
+    assert arb.current_owner() is None and arb.residents() == {} and arb._residents == {}
+
+
+def test_evicted_collects_chat_primary_and_kept_slots_image_and_video(arb_log, monkeypatch):
+    chat = [
+        {"kind": "chat", "model": "org/A-GGUF", "account": "owner"},
+        {"kind": "chat", "model": "org/B-GGUF", "account": "owner"},
+    ]
+    _report(monkeypatch, arb_log, arb.CHAT, *chat)
+    _report(
+        monkeypatch,
+        arb_log,
+        arb.DIFFUSION,
+        {"kind": "image", "model": "org/Img", "account": "owner"},
+    )
+    _report(
+        monkeypatch, arb_log, arb.VIDEO, {"kind": "video", "model": "org/Vid", "account": "owner"}
+    )
+    arb.acquire_for(arb.CHAT)
+    evicted: list = []
+    arb.acquire_for(arb.DIFFUSION, evicted = evicted)
+    assert evicted == [
+        {"kind": "chat", "model": "org/A-GGUF"},
+        {"kind": "chat", "model": "org/B-GGUF"},
+    ]
+    assert arb_log.index("report-chat") < arb_log.index("evict-chat")
+    # Through the sink: the idle H3 release and non-resident video report nothing.
+    sink: list = []
+    token = arb.eviction_sink.set(sink)
+    try:
+        arb.acquire_for(arb.VIDEO)
+        arb.acquire_for(arb.CHAT)
+    finally:
+        arb.eviction_sink.reset(token)
+    assert sink == [{"kind": "image", "model": "org/Img"}, {"kind": "video", "model": "org/Vid"}]
+    assert "release-h3" in arb_log
+    arb.note_evictions([{"kind": "chat", "model": "x", "account": None}], evicted)
+    assert evicted[-1] == {"kind": "chat", "model": "x"}
+
+
+def test_owner_account_and_restore_are_tracked_per_owner(arb_log):
+    run_as(ALICE, arb.acquire_for, arb.VIDEO, lambda: None)
+    run_as(BOB, arb.acquire_for, arb.VIDEO, lambda: None)
+    # Two residents at once (as a "fit" acquire leaves them): CHAT claimed by alice beside bob's VIDEO.
+    arb._residents[arb.CHAT] = None
+    arb._accounts[arb.CHAT] = (ALICE.account_id, None)
+    assert arb.owner_account(arb.VIDEO) == BOB.account_id
+    assert arb.owner_account(arb.CHAT) == ALICE.account_id
+    assert run_as(ALICE, arb.restore_owner_account, arb.CHAT) is False  # no prior account
+    assert run_as(BOB, arb.restore_owner_account, arb.VIDEO) is True
+    assert arb.owner_account(arb.VIDEO) == ALICE.account_id
+    assert arb.owner_account(arb.CHAT) == ALICE.account_id
+    arb._accounts[arb.CHAT] = (BOB.account_id, ALICE.account_id)
+    assert run_as(BOB, arb.restore_owner_account, arb.CHAT) is True
+    assert arb.owner_account(arb.CHAT) == ALICE.account_id

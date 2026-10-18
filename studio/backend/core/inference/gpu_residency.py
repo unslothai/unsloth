@@ -86,6 +86,7 @@ def _media_busy(owner: str) -> tuple[bool, bool]:
         loading = bool(engine.loading_repo_ids())
         progress = engine.generate_progress() or {}
         from core.inference.media_keepwarm import _TRACKERS
+
         tracker = _TRACKERS.get(owner)
         outstanding = bool(tracker is not None and tracker.outstanding())
         return loading, bool(progress.get("active")) or outstanding
@@ -131,12 +132,18 @@ def media_load_need_mib(kind: str, request: Any, gpu_ordinal: Optional[int]) -> 
             physical = parent[gpu_ordinal] if 0 <= gpu_ordinal < len(parent) else None
         if physical is None:  # several GPUs and no pick, or a UUID/MIG mask with no numeric ids
             return None
-        priced = {arb.DIFFUSION: _image_need, arb.VIDEO: _video_need}.get(kind, lambda *_: None)(request, gpu_ordinal)
+        priced = {arb.DIFFUSION: _image_need, arb.VIDEO: _video_need}.get(kind, lambda *_: None)(
+            request, gpu_ordinal
+        )
         if priced is None or not priced[0] or priced[0] <= 0:
             return None
         weights, headroom = int(priced[0]), int(priced[1])
-        return MediaNeed({physical: weights + headroom}, weights_mib = weights, headroom_mib = headroom,
-                         kind = _MEDIA_KIND[kind])
+        return MediaNeed(
+            {physical: weights + headroom},
+            weights_mib = weights,
+            headroom_mib = headroom,
+            kind = _MEDIA_KIND[kind],
+        )
     except Exception as exc:  # noqa: BLE001 - an unpriced load is treated as not fitting
         logger.warning("gpu_residency: could not price the %s load: %s", kind, exc)
         return None
@@ -165,15 +172,25 @@ def _cached_pick(repo: str, filename: Optional[str]) -> Optional[str]:
 
 def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int, int]]:
     """(weights MiB, headroom MiB) for a diffusers image load, the way DiffusionBackend._plan_memory prices it."""
-    from core.inference.diffusion import DiffusionBackend as DB, _image_variant_hint, resolve_model_kind
+    from core.inference.diffusion import (
+        DiffusionBackend as DB,
+        _image_variant_hint,
+        resolve_model_kind,
+    )
     from core.inference.diffusion_auto_policy import resident_bytes_from_declared
     from core.inference.diffusion_engine_router import predict_engine
     from core.inference.diffusion_families import (
-        detect_family_for_pick, named_variant_base, prefer_ungated_mirror, resolve_base_repo,
+        detect_family_for_pick,
+        named_variant_base,
+        prefer_ungated_mirror,
+        resolve_base_repo,
     )
     from core.inference.diffusion_gguf_pipeline import whole_pipeline_gguf_resident_mib
     from core.inference.diffusion_memory import (
-        estimate_gguf_resident_mib, estimate_image_runtime_mib, estimate_safetensors_dense_mib, file_size_mib,
+        estimate_gguf_resident_mib,
+        estimate_image_runtime_mib,
+        estimate_safetensors_dense_mib,
+        file_size_mib,
     )
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
 
@@ -182,8 +199,11 @@ def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
         return None  # supplied companions are priced from their headers at load time only
     kind = resolve_model_kind(name, request.model_kind)
     fam = detect_family_for_pick(repo, name, request.family_override)
-    if fam is None or predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal,
-                                     gguf_filename = name) != ENGINE_DIFFUSERS:
+    if (
+        fam is None
+        or predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal, gguf_filename = name)
+        != ENGINE_DIFFUSERS
+    ):
         return None
     mib = 1024 * 1024
     if kind == "pipeline":
@@ -207,17 +227,24 @@ def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
             fp8 = not whole and "fp8" in str(name).lower()
             weights = estimate_safetensors_dense_mib(file_size_mib(path), fp8_upcast = fp8)
         elif whole:
-            weights = whole_pipeline_gguf_resident_mib(path) or estimate_gguf_resident_mib(file_size_mib(path))
+            weights = whole_pipeline_gguf_resident_mib(path) or estimate_gguf_resident_mib(
+                file_size_mib(path)
+            )
         else:
             weights = estimate_gguf_resident_mib(file_size_mib(path))
         base = (request.base_repo or "").strip()
-        if not base:  # offline only: the link a past load recorded, else the curated variant the name spells
+        if (
+            not base
+        ):  # offline only: the link a past load recorded, else the curated variant the name spells
             from hub.utils.companion_assets import read_companion_links
             linked = read_companion_links().get(str(repo).strip().lower()) or []
             base = linked[0] if linked else (named_variant_base(fam, repo, name) or "")
         base = resolve_base_repo(fam, base)
         if not whole:
-            companions = max(DB._companion_cache_bytes(prefer_ungated_mirror(base)), DB._companion_cache_bytes(base))
+            companions = max(
+                DB._companion_cache_bytes(prefer_ungated_mirror(base)),
+                DB._companion_cache_bytes(base),
+            )
             if not companions:
                 return None  # the text encoder and VAE are not downloaded yet
             weights = (weights or 0) + companions // mib
@@ -230,7 +257,10 @@ def _video_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
     from core.inference.diffusion import DiffusionBackend as DB
     from core.inference.diffusion_component_sizes import video_components_gb
     from core.inference.diffusion_memory import (
-        estimate_gguf_resident_mib, estimate_safetensors_dense_mib, estimate_video_runtime_mib, file_size_mib,
+        estimate_gguf_resident_mib,
+        estimate_safetensors_dense_mib,
+        estimate_video_runtime_mib,
+        file_size_mib,
     )
     from core.inference.video import _detect_load_family, resolve_video_model_kind
     from core.inference.video_families import resolve_video_base_repo
@@ -239,7 +269,9 @@ def _video_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
 
     repo, name = request.model_path, request.gguf_filename
     kind = resolve_video_model_kind(name, request.model_kind)
-    fam = _detect_load_family(repo, name, request.family_override, request.display_repo_id, request.model_kind)
+    fam = _detect_load_family(
+        repo, name, request.family_override, request.display_repo_id, request.model_kind
+    )
     if fam is None or is_h3_native(fam, kind):
         return None  # H3 native runs its own server processes, priced elsewhere
     gb = 1000.0**3 / (1024 * 1024)  # MiB per GB of the family tables
@@ -251,7 +283,9 @@ def _video_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
     else:
         names = [name] + ([moe_partner_filename(name)] if getattr(fam, "is_moe", False) else [])
         paths = [_cached_pick(repo, n) if n else None for n in names]
-        components = video_components_gb(fam, resolve_video_base_repo(fam, request.base_repo, repo), allow_hub = False)
+        components = video_components_gb(
+            fam, resolve_video_base_repo(fam, request.base_repo, repo), allow_hub = False
+        )
         if None in paths or components is None:
             return None
         sizes = [file_size_mib(p) for p in paths]
@@ -260,14 +294,15 @@ def _video_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
             return None
         weights = sum(price(s) for s in sizes) + int((components[1] + components[2]) * gb)
     preset = fam.resolution_presets[0]
-    return weights, estimate_video_runtime_mib(width = preset[0], height = preset[1], num_frames = fam.default_num_frames)
+    return weights, estimate_video_runtime_mib(
+        width = preset[0], height = preset[1], num_frames = fam.default_num_frames
+    )
 
 
 def _free_mib_by_gpu() -> tuple[Optional[dict[int, dict]], Optional[str]]:
     """{physical id: {free_mib, total_mib}} or (None, reason) when the host can't be priced."""
     try:
         from utils.hardware import DeviceType, get_device, get_visible_gpu_utilization
-
         if get_device() != DeviceType.CUDA:
             # MLX and other unified-memory hosts share the pool with the CPU: co-residency there is deferred.
             return None, "non_accelerator"
@@ -286,7 +321,10 @@ def _free_mib_by_gpu() -> tuple[Optional[dict[int, dict]], Optional[str]]:
         if used_gb is None:
             continue
         total = int(total_gb * 1024)
-        rows[device["index"]] = {"free_mib": max(int(total - used_gb * 1024), 0), "total_mib": total}
+        rows[device["index"]] = {
+            "free_mib": max(int(total - used_gb * 1024), 0),
+            "total_mib": total,
+        }
     return rows, None
 
 
@@ -353,7 +391,9 @@ def can_load_alongside(owner: str, need_mib: Optional[dict]) -> tuple[bool, dict
         return False, info
     if getattr(need_mib, "kind", None) == "image":
         for gpu in need_mib:
-            if not _keeps_transformer_resident(need_mib, gpu, info["free_mib"][gpu], rows[gpu]["total_mib"]):
+            if not _keeps_transformer_resident(
+                need_mib, gpu, info["free_mib"][gpu], rows[gpu]["total_mib"]
+            ):
                 info["reason"] = "would_stream"
                 return False, info
     return True, info
@@ -365,15 +405,18 @@ def chat_load_in_flight() -> bool:
     try:
         from core.inference import llama_keepwarm, model_slots
         from core.inference.llama_cpp import chat_load_active
-
         return bool(
-            llama_keepwarm._load_lock.locked() or chat_load_active() or model_slots.loading is not None
+            llama_keepwarm._load_lock.locked()
+            or chat_load_active()
+            or model_slots.loading is not None
         )
     except Exception:  # noqa: BLE001
         return False
 
 
-_CHAT_LOADING_MESSAGE = "Unsloth Studio is loading a chat model on this GPU. Retry once it has finished loading."
+_CHAT_LOADING_MESSAGE = (
+    "Unsloth Studio is loading a chat model on this GPU. Retry once it has finished loading."
+)
 
 
 class ChatLoadInFlightRefusal(Exception):
@@ -382,7 +425,12 @@ class ChatLoadInFlightRefusal(Exception):
     def __init__(self) -> None:
         super().__init__(_CHAT_LOADING_MESSAGE)
 
-    def as_http_exception(self, path: Optional[str] = None, *, openai_errors: bool = False):
+    def as_http_exception(
+        self,
+        path: Optional[str] = None,
+        *,
+        openai_errors: bool = False,
+    ):
         return chat_loading_http_exception(path, openai_errors = openai_errors)
 
 
@@ -421,7 +469,9 @@ def need_free_refusal(info: dict, slots: list[dict]) -> Exception:
         "unloaded to make room. Unload one of them, or choose When they fit."
     )
     first = slots[0] if slots else {}
-    return arb.MultiModelAlwaysRefusal(message, kind = first.get("kind"), model = first.get("model") or None)
+    return arb.MultiModelAlwaysRefusal(
+        message, kind = first.get("kind"), model = first.get("model") or None
+    )
 
 
 def foreign_on(owner: str, account_id: Optional[str]) -> int:
@@ -437,6 +487,7 @@ def foreign_on(owner: str, account_id: Optional[str]) -> int:
             return 0
         if owner == arb.VIDEO:
             import sys
+
             video = sys.modules.get("core.inference.video")
             running = video.generation_account_in_flight() if video is not None else None
             return int(running is not None and running != account_id)
@@ -467,7 +518,9 @@ def _record_evicted(slots: list[dict], evicted: Optional[list], freed: list[str]
                 pass
 
 
-def _evict_resident(name: str, acting: Optional[str], evicted: Optional[list], freed: list[str]) -> None:
+def _evict_resident(
+    name: str, acting: Optional[str], evicted: Optional[list], freed: list[str]
+) -> None:
     """Evict one whole resident. Caller holds the arbiter lock."""
     busy = foreign_on(name, acting)
     if busy:
@@ -510,7 +563,9 @@ def _free_steps(
     # 1. Residents still loading can't be sized.
     for name in overlapping():
         loading = (
-            chat_load_in_flight() if name == arb.CHAT else name in MEDIA_OWNERS and _media_busy(name)[0]
+            chat_load_in_flight()
+            if name == arb.CHAT
+            else name in MEDIA_OWNERS and _media_busy(name)[0]
         )
         if loading:
             _evict_resident(name, acting, evicted, freed)
@@ -536,8 +591,11 @@ def _free_steps(
     if arb.CHAT in overlapping() or owner == arb.CHAT:
         from core.inference import model_slots
 
-        short = short_mib or (max((can_load_alongside(owner, need_mib)[1].get("short_mib") or {0: 0}).values())
-                              if need_mib else 0)
+        short = short_mib or (
+            max((can_load_alongside(owner, need_mib)[1].get("short_mib") or {0: 0}).values())
+            if need_mib
+            else 0
+        )
         victims = model_slots.eviction_victims(None, short, gpu_ids)
         if victims:
             slots = [_kept_slot_report(victim) for victim in victims]
@@ -563,9 +621,14 @@ def _kept_slot_report(slot: Any) -> dict:
     return {"kind": "chat", "model": str(getattr(request, "model_path", "") or "")}
 
 
-def media_fit_kwargs(owner: str, request: Any, gpu_ordinal: Optional[int]) -> dict:
+def media_fit_kwargs(
+    owner: str,
+    request: Any,
+    gpu_ordinal: Optional[int],
+    policy: Optional[str] = None,
+) -> dict:
     """The acquire_for keywords for an image or video load: the policy and, when known, what it will hold."""
-    policy = current_policy()
+    policy = policy or current_policy()
     if policy == "off":
         return {}
     need = media_load_need_mib(owner, request, gpu_ordinal)
@@ -609,8 +672,14 @@ def coreside_locked(
     image or video load joins when it fits, else When they fit frees the cheapest residents and Always refuses.
     Anything that can't be priced is evicted first under When they fit, as with Off.
     """
-    target = arb.physical_gpu_ids(gpu_ids) if gpu_ids is not None else (frozenset(need_mib) if need_mib else None)
-    overlap = [name for name, gpus in arb._view().items() if name != owner and _overlaps(gpus, target)]
+    target = (
+        arb.physical_gpu_ids(gpu_ids)
+        if gpu_ids is not None
+        else (frozenset(need_mib) if need_mib else None)
+    )
+    overlap = [
+        name for name, gpus in arb._view().items() if name != owner and _overlaps(gpus, target)
+    ]
     for name in [n for n in overlap if n not in arb._KEPT_UNDER_ALWAYS]:
         # A Decision API server is evicted as before.
         if not allow_evict:
@@ -622,7 +691,9 @@ def coreside_locked(
         if not names:
             return
         if policy == "always":
-            raise arb.refusal_for([slot for n in names for slot in arb.resident_slots(n)], arb.KIND_LABELS[names[0]])
+            raise arb.refusal_for(
+                [slot for n in names for slot in arb.resident_slots(n)], arb.KIND_LABELS[names[0]]
+            )
         if not allow_evict:
             raise arb.GpuOwnerBusyError(names[-1])
         for name in names:
@@ -657,5 +728,7 @@ def coreside_locked(
     _free_steps(owner, target, f"GPU memory for {owner}", evicted, need_mib = need_mib, acting = acting)
     if not can_load_alongside(owner, need_mib)[0]:
         # Still short: unload the rest on these GPUs, as Off does, and let the planner offload.
-        for name in [n for n, gpus in arb._view().items() if n != owner and _overlaps(gpus, target)]:
+        for name in [
+            n for n, gpus in arb._view().items() if n != owner and _overlaps(gpus, target)
+        ]:
             _evict_resident(name, acting, evicted, [])

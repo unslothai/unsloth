@@ -563,17 +563,21 @@ def _select_gguf(checkpoint: Checkpoint, questions, preference: str) -> Checkpoi
     return checkpoint
 
 
+def _gpu_taken() -> bool:
+    """A chat, image or video model is resident on the GPU (a decision server does not count)."""
+    from core.inference import gpu_arbiter
+    return any(owner != gpu_arbiter.DECISIONS for owner in gpu_arbiter.residents())
+
+
 def _auto_keeps_pytorch(checkpoint: Checkpoint, native: Checkpoint) -> str | None:
     """Why Auto answers text on PyTorch although llama.cpp could: as before llama.cpp existed here."""
-    from core.inference.gpu_arbiter import DECISIONS, current_owner
-
     from .catalog import clef_unsupported_reason
 
     if _loaded == native and _agent is not None:
         return None
     if clef_unsupported_reason(wait = False) is not None:
         return None
-    if _native_gpu() and current_owner() not in (None, DECISIONS):
+    if _native_gpu() and _gpu_taken():
         return "Another model is using the GPU."
     if not native.is_local and not is_cached(native) and is_cached(checkpoint):
         return "The GGUF is not downloaded; the cached PyTorch checkpoint serves."
@@ -1560,8 +1564,7 @@ def _ensure_loading(checkpoint: Checkpoint, unloads: int | None = None) -> threa
         if _loaded == checkpoint and _agent is not None and not misplaced:
             return None
         if _wants_gpu(checkpoint):
-            from core.inference.gpu_arbiter import DECISIONS, current_owner
-            if current_owner() not in (None, DECISIONS):
+            if _gpu_taken():
                 busy = _GPU_BUSY.format(
                     checkpoint.name if _is_mlx(checkpoint) else "a decision model through llama.cpp"
                 )
@@ -2423,11 +2426,9 @@ def unload(reload_after_training: bool = False) -> bool:
 
 def _clef_preempted() -> bool:
     global _reload_stopped_by
-    from core.inference.gpu_arbiter import current_owner
-
     if _training_active():
         reason = "training"
-    elif _reloading is not None and current_owner() is not None:
+    elif _reloading is not None and _gpu_taken():
         # A reload nobody asked for yields to a chat, image or video model that claims the GPU meanwhile.
         reason = "gpu"
     else:
@@ -2439,18 +2440,11 @@ def _clef_preempted() -> bool:
 
 def _reload_after_training(checkpoint: Checkpoint, unloads: int) -> None:
     global _reloading, _reload_stopped_by, _failure
-    from core.inference.gpu_arbiter import current_owner
-
     while True:
         while _training_active():
             time.sleep(TRAINING_POLL_S)
         with _state_lock:
-            if (
-                _unloads != unloads
-                or _agent is not None
-                or _loading is not None
-                or current_owner() is not None
-            ):
+            if _unloads != unloads or _agent is not None or _loading is not None or _gpu_taken():
                 return
             _reloading = checkpoint
             _reload_stopped_by = None
@@ -2464,7 +2458,7 @@ def _reload_after_training(checkpoint: Checkpoint, unloads: int) -> None:
             with _state_lock:
                 _reloading = None
         training = _reload_stopped_by == "training" or _training_active()
-        if training or _reload_stopped_by == "gpu" or current_owner() is not None:
+        if training or _reload_stopped_by == "gpu" or _gpu_taken():
             # Another run, or a chat, image or video model, took the GPU while this loaded: not a failure to report.
             with _state_lock:
                 if _failure is not None and _failure[0] == checkpoint:
@@ -2477,7 +2471,7 @@ def _reload_after_training(checkpoint: Checkpoint, unloads: int) -> None:
 
         # The first decision builds the GPU kernels; done now, a request does not wait for it.
         try:
-            if current_owner() is None:
+            if not _gpu_taken():
                 agent.decide("ready", {"ready": {"type": "noul"}})
         except ClefWorkerError:
             logger.info(
@@ -2487,7 +2481,7 @@ def _reload_after_training(checkpoint: Checkpoint, unloads: int) -> None:
             return
         except Exception:
             logger.debug("Could not warm up %s", checkpoint.name, exc_info = True)
-        if current_owner() is not None:
+        if _gpu_taken():
             logger.info("Retiring %s: another model took the GPU as it reloaded", checkpoint.name)
             _evict_agent(agent)
 

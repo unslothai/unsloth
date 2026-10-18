@@ -284,7 +284,7 @@ def _resident_loader(modality: str) -> str | None:
         return recorded[0]
     from core.inference import gpu_arbiter
 
-    return gpu_arbiter.owner_account() if gpu_arbiter.current_owner() == modality else None
+    return gpu_arbiter.owner_account(modality) if gpu_arbiter.holds(modality) else None
 
 
 def release_shared_resident(modality: str) -> bool:
@@ -386,9 +386,14 @@ def resident_hidden(modality: str | None = None, reference: str | None = None) -
         return False
     from core.inference import gpu_arbiter
 
-    owner = gpu_arbiter.current_owner()
-    if owner is not None and (modality is None or owner == modality):
-        return gpu_arbiter.owner_account() != current_account_id()
+    if modality is None:
+        resident = gpu_arbiter.residents()
+        if resident:
+            return any(
+                gpu_arbiter.owner_account(owner) != current_account_id() for owner in resident
+            )
+    elif gpu_arbiter.holds(modality):
+        return gpu_arbiter.owner_account(modality) != current_account_id()
     if reference:
         account, references = _resident_accounts.get(modality, (OWNER.account_id, frozenset()))
         if reference not in references:

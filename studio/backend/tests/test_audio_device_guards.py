@@ -304,8 +304,9 @@ def test_the_post_load_ownership_check_is_gated_like_the_gguf_one():
     """Ungated, it unloads the CPU audio model it just loaded and returns 409:
     the load skips acquire_for, so on a clean server the owner is None."""
     src = _inference_source()
-    assert "if chat_load_needs_gpu and current_owner() != CHAT:" in src
-    assert "\n        if current_owner() != CHAT:" not in src
+    assert "if chat_load_needs_gpu and not holds(CHAT):" in src
+    assert "\n        if not holds(CHAT):" not in src
+    assert "chat_load_needs_gpu and current_owner() != CHAT" not in src
 
 
 def test_a_cpu_audio_worker_hides_cuda_and_hip():
