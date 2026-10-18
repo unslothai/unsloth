@@ -705,3 +705,21 @@ def test_always_keeps_distinct_local_folders_with_one_name_apart(arb_log, monkey
     with pytest.raises(arb.MultiModelAlwaysRefusal):
         arb.refuse_replacing_media(arb.DIFFUSION, "always", ("/mnt/b/Flux",))
     assert arb.refuse_replacing_media(arb.DIFFUSION, "always", ("/mnt/a/Flux",)) == []
+
+
+def test_an_unreadable_primary_counts_as_occupied(monkeypatch):
+    import core.inference.llama_cpp as llama_cpp
+    import routes.inference as inf
+    from core.inference import model_slots
+
+    monkeypatch.setattr(llama_cpp, "chat_load_active", lambda: False)
+    monkeypatch.setattr(model_slots, "any_loading", lambda: False)
+    monkeypatch.setattr(model_slots, "stuck", [])
+    monkeypatch.setattr(inf, "_primary_chat_reports", lambda: [])
+    assert arb._chat_occupied() is False
+
+    def broken():
+        raise RuntimeError("status unreadable")
+
+    monkeypatch.setattr(inf, "_primary_chat_reports", broken)
+    assert arb._chat_occupied() is True
