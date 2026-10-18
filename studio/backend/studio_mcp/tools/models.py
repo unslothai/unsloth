@@ -253,12 +253,18 @@ async def load_model(
         "gpu_layers": gpu_layers,
     }
     if trained:
+        # The export listing knows the type: a GGUF export is placed by its variant, not the Hub's listing.
         variant = trained.gguf_variant or variant
         if trained.unplaced_gguf and (device is not None or gpu_layers is not None):
             raise ToolError(
                 f"Pass variant (the export's quantization, such as Q4_K_M) to load {trained.name} with device or gpu_layers."
             )
-    placement.check_placement(kind, trained.name if trained else model, variant, **where)
+        if kind == "llm" and device == "cpu" and not trained.gguf_variant:
+            raise ToolError(placement.CPU_NEEDS_GGUF)
+        placement.check_placement(kind, trained.name, variant, **where)
+    else:
+        placement.check_placement(kind, model, variant, **where)
+        await placement.require_cpu_gguf(caller, kind, model, variant, device)
     if kind == "stt":
 
         async def load_stt(job: loading.LoadJob, _before: Any) -> LoadResult:

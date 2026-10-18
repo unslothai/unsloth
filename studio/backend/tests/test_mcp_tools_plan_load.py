@@ -197,3 +197,21 @@ def test_nothing_left_to_download_is_zero(monkeypatch):
     ]
     world = {**_world("off", []), ("GET", "/api/hub/gguf-variants"): {"variants": rows}}
     assert _plan(monkeypatch, world, {"model": QWEN, "variant": "Q8_0"})["download_bytes"] == 0
+
+
+@pytest.mark.parametrize(
+    "routes,args",
+    [
+        # Each of these load_model refuses before sending anything, so plan_load refuses too.
+        ({}, {"model": FLUX_GGUF, "kind": "image", "device": "cpu"}),
+        ({}, {"model": QWEN, "kind": "stt", "alongside": True}),
+        (
+            {("GET", "/api/hub/gguf-variants"): {"variants": []}},
+            {"model": "someone/not-a-gguf-repo", "device": "cpu"},
+        ),
+    ],
+)
+def test_a_load_that_load_model_refuses_gets_no_plan(monkeypatch, routes, args):
+    world = {**_world("off", [QWEN]), **routes}
+    result, _studio = run_tool(monkeypatch, world, "plan_load", args, fallback = {})
+    assert result["isError"] is True
