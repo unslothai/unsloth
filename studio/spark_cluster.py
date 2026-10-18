@@ -1702,7 +1702,7 @@ def cuda_health(peer_ip: Optional[str] = None) -> Dict[str, Any]:
     return out
 
 
-def _cmd_doctor() -> int:
+def _cmd_doctor(nccl_timeout: Optional[float] = None) -> int:
     if not is_dgx_spark():
         print("This machine is not a DGX Spark; nothing to check.")
         return 0
@@ -1796,7 +1796,8 @@ def _cmd_doctor() -> int:
         blockers.append("the llama.cpp bundles do not match")
 
     print(f"Measuring NCCL all-reduce {local} <-> {peer} (takes ~30s)...")
-    result = diagnose_link(nccl_bandwidth(peer, local))
+    probe_kw = {} if nccl_timeout is None else {"timeout": nccl_timeout}
+    result = diagnose_link(nccl_bandwidth(peer, local, **probe_kw))
     print("")
     print(f"  {result['summary']}")
     if result["advice"]:
@@ -5479,6 +5480,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument("--model", default = "", help = "GGUF path for `serve`")
     parser.add_argument("--script", default = "", help = "training script for `train`")
+    parser.add_argument(
+        "--timeout", type = float, default = None, help = "seconds for `doctor`'s NCCL probe"
+    )
     parser.add_argument("--port", type = int, default = 8080)
     parser.add_argument(
         "--rpc-port",
@@ -5597,7 +5601,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(json.dumps({"is_spark": is_dgx_spark(), "state": cluster_state()}))
         return 0 if cluster_state() in ("unconfigured", "configured") else 1
     if args.command == "doctor":
-        return _cmd_doctor()
+        return _cmd_doctor(args.timeout)
     if args.command == "estimate":
         if not args.model:
             print("estimate needs --model")

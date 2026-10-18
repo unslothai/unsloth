@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 import typer
 
 # The deepest bug found here, and why this check exists: /usr/local/cuda/bin is on the peer's PATH
@@ -672,6 +674,7 @@ def spark_doctor(
     deep: bool = False,
     skip_parity: bool = False,
     skip_fastpath: bool = False,
+    timeout: Optional[float] = None,
 ) -> int:
     """Check the setup and report anything that would slow training down, or hang it."""
     from studio import spark_cluster
@@ -701,6 +704,8 @@ def spark_doctor(
         _workload_guidance()
         return 1 if (parity_rc or fastpath_rc) else 0
 
-    link_rc = spark_cluster.main(["doctor"])
+    link_rc = spark_cluster.main(
+        ["doctor"] + ([] if timeout is None else ["--timeout", str(timeout)])
+    )
     _workload_guidance()
     return link_rc or (1 if (parity_rc or fastpath_rc) else 0)
