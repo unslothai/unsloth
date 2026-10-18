@@ -432,6 +432,8 @@ class HostInfo:
     macos_version: tuple[int, int] | None = None
     # Set only by _vulkan_only_host. The Windows arm64 branches read it, not has_intel_gpu.
     vulkan_routed: bool = False
+    # Set only by the probe route: the installed Vulkan bundle must itself list a Vulkan GPU.
+    vulkan_device_required: bool = False
 
 
 @dataclass
@@ -9953,6 +9955,29 @@ def existing_install_matches_plan(
     )
 
 
+_LISTED_VULKAN_DEVICE_RE = re.compile(r"^\s*Vulkan\d+:", re.MULTILINE)
+
+
+def bundle_lists_vulkan_device(server_path: Path, install_dir: Path, host: HostInfo) -> bool:
+    """Whether llama.cpp itself, from the installed bundle, enumerates a Vulkan GPU."""
+    try:
+        result = subprocess.run(
+            [str(server_path), "--list-devices"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            # Device init builds every shader pipeline: 50-90 s for one B200 on a loaded host.
+            timeout = 180,
+            env = binary_env(server_path, install_dir, host),
+            **windows_hidden_subprocess_kwargs(),
+        )
+    except Exception as exc:
+        log(f"llama-server --list-devices failed: {exc}")
+        return False
+    return result.returncode == 0 and bool(_LISTED_VULKAN_DEVICE_RE.search(result.stdout or ""))
+
+
 def validate_prebuilt_choice(
     choice: AssetChoice,
     host: HostInfo,
@@ -10013,6 +10038,15 @@ def validate_prebuilt_choice(
         (server_path, quantize_path), install_dir, host
     )
     ensure_repo_shape(install_dir)
+    if (
+        host.vulkan_device_required
+        and choice.install_kind in VULKAN_INSTALL_KINDS
+        and not bundle_lists_vulkan_device(server_path, install_dir, host)
+    ):
+        # The bundle runs on CPU without a device, so validation alone would keep it.
+        raise PrebuiltFallback(
+            f"{choice.name} lists no Vulkan GPU on this host; using the CPU bundle instead"
+        )
     write_prebuilt_metadata(
         install_dir,
         host = host,
@@ -11096,7 +11130,7 @@ def _route_to_vulkan_prebuilt(
             f"Vulkan GPU found ({names}); installing the Vulkan llama.cpp prebuilt, "
             "with the CPU bundle as fallback"
         )
-        host = _vulkan_only_host(host)
+        host = dataclasses_replace(_vulkan_only_host(host), vulkan_device_required = True)
         # Detected, like the Intel route: updates re-detect and the CPU crash recovery holds.
         persist_backend = None
     # A fork release without a linux-vulkan-arm64 bundle source-builds; no upstream prebuilt.

@@ -2668,6 +2668,8 @@ def test_vulkan_opt_in_routes_windows_arm64_to_vulkan(monkeypatch, env, flag):
     )
     assert routed.vulkan_routed is True
     assert routed.is_arm64 is True
+    # A named request keeps the Vulkan bundle without the device listing.
+    assert routed.vulkan_device_required is False
     assert (repo, tag) == (FORK, "pin")
     assert persist == "vulkan"
 
@@ -2752,6 +2754,8 @@ def test_cpu_bound_host_with_a_vulkan_gpu_routes_to_vulkan(monkeypatch, system, 
     host = _cpu_bound_host(system, arch, **overrides)
     routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert routed.vulkan_routed is True and routed.has_intel_gpu is True
+    # The installed bundle must then list the GPU itself, or the CPU bundle is used.
+    assert routed.vulkan_device_required is True
     assert persist is None
 
 
