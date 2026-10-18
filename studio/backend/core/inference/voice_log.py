@@ -25,10 +25,19 @@ JUDGE_SEND_THRESHOLD = 0.65
 # the user then says again was for the assistant; an answered turn that gets cut ("not you") is
 # logged as the outcome "cut" but not counted, since a barge-in has other causes.
 ERROR_KINDS: dict[str, dict[tuple[str, str], str]] = {
-    "judge": {("finished", "continued_quickly"): "finished_but_continued", ("hold", "flushed"): "held_but_flushed"},
-    "interject": {("ignore", "repeated"): "ignored_but_repeated", ("queue", "reasked"): "queued_but_reasked"},
+    "judge": {
+        ("finished", "continued_quickly"): "finished_but_continued",
+        ("hold", "flushed"): "held_but_flushed",
+    },
+    "interject": {
+        ("ignore", "repeated"): "ignored_but_repeated",
+        ("queue", "reasked"): "queued_but_reasked",
+    },
     "filler": {("say", "echoed"): "echoed", ("say", "too_late"): "too_late"},
-    "addressed": {("other", "repeated"): "missed_address", ("reading", "repeated"): "missed_address"},
+    "addressed": {
+        ("other", "repeated"): "missed_address",
+        ("reading", "repeated"): "missed_address",
+    },
 }
 
 _LOCK = threading.Lock()
@@ -37,7 +46,6 @@ _LOCK = threading.Lock()
 def log_dir() -> Path:
     try:
         from utils.paths.storage_roots import studio_root
-
         root = studio_root()
     except Exception:  # noqa: BLE001 - the legacy root is the fallback everywhere else too
         root = Path.home() / ".unsloth" / "studio"
@@ -112,8 +120,15 @@ def append(
     return row_id
 
 
-def set_outcome(row_id: str, outcome: str, detail: Optional[dict] = None) -> None:
-    _append_line(outcomes_path(), {"id": row_id, "outcome": outcome, "detail": detail or None, "at": time.time()})
+def set_outcome(
+    row_id: str,
+    outcome: str,
+    detail: Optional[dict] = None,
+) -> None:
+    _append_line(
+        outcomes_path(),
+        {"id": row_id, "outcome": outcome, "detail": detail or None, "at": time.time()},
+    )
 
 
 def read_rows() -> list[dict]:
@@ -163,7 +178,9 @@ def stats(rows: Optional[list[dict]] = None) -> dict:
             if k:
                 counts[k] += 1
         wrong = sum(counts.values())
-        lat = [float(r["latency_ms"]) for r in mine if isinstance(r.get("latency_ms"), (int, float))]
+        lat = [
+            float(r["latency_ms"]) for r in mine if isinstance(r.get("latency_ms"), (int, float))
+        ]
         per[model] = {
             "verdicts": len(mine),
             "with_outcome": len(judged),
@@ -173,7 +190,9 @@ def stats(rows: Optional[list[dict]] = None) -> dict:
             "latency_p95_ms": _percentile(lat, 0.95),
         }
     try:
-        size = log_path().stat().st_size + (outcomes_path().stat().st_size if outcomes_path().exists() else 0)
+        size = log_path().stat().st_size + (
+            outcomes_path().stat().st_size if outcomes_path().exists() else 0
+        )
     except OSError:
         size = 0
     return {"models": per, "rows": len(rows), "log_bytes": size, "path": str(log_path())}
@@ -285,5 +304,8 @@ def delete_thread_rows(thread_ids) -> int:
         gone = {r.get("id") for r in rows if r.get("thread_id") in ids}
         _rewrite(log_path(), keep)
         if outcomes_path().exists():
-            _rewrite(outcomes_path(), [o for o in _read_lines(outcomes_path()) if o.get("id") not in gone])
+            _rewrite(
+                outcomes_path(),
+                [o for o in _read_lines(outcomes_path()) if o.get("id") not in gone],
+            )
     return len(rows) - len(keep)

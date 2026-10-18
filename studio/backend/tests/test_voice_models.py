@@ -16,19 +16,49 @@ class _FakeJudge:
 
 
 class _FakeFiller:
-    def predict(self, text, prev_q = False):
-        return {"say": True, "class": "code", "confidence": 0.8, "phrase": "On it.", "slot": None, "echo": False, "ms": 0.1}
+    def predict(
+        self,
+        text,
+        prev_q = False,
+    ):
+        return {
+            "say": True,
+            "class": "code",
+            "confidence": 0.8,
+            "phrase": "On it.",
+            "slot": None,
+            "echo": False,
+            "ms": 0.1,
+        }
 
 
 class _FakeInterject:
-    def predict(self, prompt, utterance, elapsed_s = 2.0):
-        return {"action": "ignore", "confidence": 0.7, "probs": {"restart": 0.1, "ignore": 0.7, "queue": 0.2}, "merged_prompt": None}
+    def predict(
+        self,
+        prompt,
+        utterance,
+        elapsed_s = 2.0,
+    ):
+        return {
+            "action": "ignore",
+            "confidence": 0.7,
+            "probs": {"restart": 0.1, "ignore": 0.7, "queue": 0.2},
+            "merged_prompt": None,
+        }
 
 
 class _FakeAddressed:
-    def predict(self, text, prev = "none"):
+    def predict(
+        self,
+        text,
+        prev = "none",
+    ):
         label = "other" if "grandma" in text else "assistant"
-        return {"label": label, "confidence": 0.9, "probs": {"assistant": 0.05, "other": 0.9, "reading": 0.05}}
+        return {
+            "label": label,
+            "confidence": 0.9,
+            "probs": {"assistant": 0.05, "other": 0.9, "reading": 0.05},
+        }
 
 
 def _stubbed(tmp_path, monkeypatch, **loaders):
@@ -68,8 +98,11 @@ def test_a_loader_failure_is_remembered_and_never_raises(tmp_path, monkeypatch):
 
 def test_calls_go_through_to_the_loaded_models(tmp_path, monkeypatch):
     models = _stubbed(
-        tmp_path, monkeypatch,
-        judge = lambda root: _FakeJudge(), filler = lambda root: _FakeFiller(), interject = lambda root: _FakeInterject(),
+        tmp_path,
+        monkeypatch,
+        judge = lambda root: _FakeJudge(),
+        filler = lambda root: _FakeFiller(),
+        interject = lambda root: _FakeInterject(),
         addressed = lambda root: _FakeAddressed(),
     )
     assert models.judge("are you there?") == 0.9
@@ -77,9 +110,20 @@ def test_calls_go_through_to_the_loaded_models(tmp_path, monkeypatch):
     assert models.interject("write a poem", "ok", 1.0)["action"] == "ignore"
     assert models.addressed("grandma say something to it", "assistant")["label"] == "other"
     status = models.status()
-    assert {k: status[k] for k in vm.MODELS} == {"judge": True, "filler": True, "interject": True, "addressed": True}
+    assert {k: status[k] for k in vm.MODELS} == {
+        "judge": True,
+        "filler": True,
+        "interject": True,
+        "addressed": True,
+    }
     assert status["dir"] == str(tmp_path) and status["errors"] == {}
-    assert status["backends"] == {"judge": None, "filler": None, "interject": None, "addressed": None, "filler_echo": None}
+    assert status["backends"] == {
+        "judge": None,
+        "filler": None,
+        "interject": None,
+        "addressed": None,
+        "filler_echo": None,
+    }
 
 
 def test_local_dir_wins_and_the_hub_is_the_fallback(tmp_path, monkeypatch):
@@ -101,8 +145,12 @@ def test_local_dir_wins_and_the_hub_is_the_fallback(tmp_path, monkeypatch):
     assert vm.resolve_model_dir("judge", tmp_path, "someone") == tmp_path / "snap"
     assert seen["repo"] == "someone/voice-judge" and seen["patterns"] == vm.HUB_FILES["judge"]
     assert vm.resolve_model_dir("addressed", tmp_path, "someone") == tmp_path / "snap"
-    assert seen["repo"] == "someone/voice-addressed" and seen["patterns"] == vm.HUB_FILES["addressed"]
-    assert vm._MARKER["addressed"].startswith("models/") and vm._MARKER["addressed"].endswith("model_int8.onnx")
+    assert (
+        seen["repo"] == "someone/voice-addressed" and seen["patterns"] == vm.HUB_FILES["addressed"]
+    )
+    assert vm._MARKER["addressed"].startswith("models/") and vm._MARKER["addressed"].endswith(
+        "model_int8.onnx"
+    )
 
 
 def test_env_var_picks_the_models_dir(monkeypatch, tmp_path):
@@ -138,8 +186,14 @@ def test_echo_slot_rules(text, slot):
 
 def test_filler_phrase_and_echo_come_from_the_bank(tmp_path, monkeypatch):
     bank = {
-        "classes": {"code": {"phrases": [{"text": "On it.", "weight": 1}]}, "minimal": {"phrases": [{"text": "Sure.", "weight": 1}]}},
-        "echo_templates": {"templates": [{"text": "okay, {slot}.", "weight": 1}], "mix": {"echo_when_slot": 1.0}},
+        "classes": {
+            "code": {"phrases": [{"text": "On it.", "weight": 1}]},
+            "minimal": {"phrases": [{"text": "Sure.", "weight": 1}]},
+        },
+        "echo_templates": {
+            "templates": [{"text": "okay, {slot}.", "weight": 1}],
+            "mix": {"echo_when_slot": 1.0},
+        },
     }
     (tmp_path / "filler").mkdir()
     (tmp_path / "filler" / "phrases.json").write_text(json.dumps(bank))
@@ -171,12 +225,26 @@ def test_filler_phrase_and_echo_come_from_the_bank(tmp_path, monkeypatch):
     out = filler.predict("hi there friend")
     assert out["class"] == "minimal" and out["phrase"] == "Sure." and out["slot"] is None
     out = filler.predict("yeah")
-    assert out == {"say": False, "class": "none", "confidence": 0.8, "phrase": "", "slot": None, "echo": False, "ms": out["ms"]}
+    assert out == {
+        "say": False,
+        "class": "none",
+        "confidence": 0.8,
+        "phrase": "",
+        "slot": None,
+        "echo": False,
+        "ms": out["ms"],
+    }
 
 
 def test_merge_prompt_keeps_corrections_and_additions_apart():
-    assert vm.merge_prompt("write a poem about the sea.", "no wait, about mountains") == "write a poem about the sea. Correction: no wait, about mountains"
-    assert vm.merge_prompt("write a poem", "and also make it rhyme") == "write a poem. Also: make it rhyme"
+    assert (
+        vm.merge_prompt("write a poem about the sea.", "no wait, about mountains")
+        == "write a poem about the sea. Correction: no wait, about mountains"
+    )
+    assert (
+        vm.merge_prompt("write a poem", "and also make it rhyme")
+        == "write a poem. Also: make it rhyme"
+    )
 
 
 def test_runtime_bias_rules():
@@ -241,11 +309,20 @@ def _onnx_layout(tmp_path, classes):
         d.mkdir(parents = True)
         (d / "model_int8.onnx").write_bytes(b"")
         (d / "tokenizer.json").write_text("{}")
-    (tmp_path / "filler" / "models" / vm.FILLER_ONNX / "classes.json").write_text(json.dumps(classes))
-    (tmp_path / "filler" / "phrases.json").write_text(json.dumps({
-        "classes": {"code": {"phrases": [{"text": "On it.", "weight": 1}]}},
-        "echo_templates": {"templates": [{"text": "okay, {slot}.", "weight": 1}], "mix": {"echo_when_slot": 1.0}},
-    }))
+    (tmp_path / "filler" / "models" / vm.FILLER_ONNX / "classes.json").write_text(
+        json.dumps(classes)
+    )
+    (tmp_path / "filler" / "phrases.json").write_text(
+        json.dumps(
+            {
+                "classes": {"code": {"phrases": [{"text": "On it.", "weight": 1}]}},
+                "echo_templates": {
+                    "templates": [{"text": "okay, {slot}.", "weight": 1}],
+                    "mix": {"echo_when_slot": 1.0},
+                },
+            }
+        )
+    )
 
 
 def test_onnx_filler_is_preferred_when_its_folder_exists(tmp_path, monkeypatch):
@@ -258,7 +335,9 @@ def test_onnx_filler_is_preferred_when_its_folder_exists(tmp_path, monkeypatch):
     def cls_logits(n):
         return np.array([[0.0, 0.0, 4.0]], dtype = np.float32)
 
-    def tag_logits(n):  # "write me a snake game in python": B on "a", I on "snake", "game", O elsewhere
+    def tag_logits(
+        n,
+    ):  # "write me a snake game in python": B on "a", I on "snake", "game", O elsewhere
         bio = np.zeros((1, n, 3), dtype = np.float32)
         bio[0, :, 0] = 3.0
         if n >= 5:
@@ -268,27 +347,50 @@ def test_onnx_filler_is_preferred_when_its_folder_exists(tmp_path, monkeypatch):
         return bio
 
     sessions = iter([_FakeSession(cls_logits), _FakeSession(tag_logits)])
-    monkeypatch.setitem(__import__("sys").modules, "onnxruntime", types.SimpleNamespace(
-        SessionOptions = lambda: types.SimpleNamespace(intra_op_num_threads = 0),
-        InferenceSession = lambda path, so, providers: next(sessions),
-    ))
-    monkeypatch.setitem(__import__("sys").modules, "tokenizers", types.SimpleNamespace(Tokenizer = types.SimpleNamespace(from_file = _FakeTokenizer)))
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "onnxruntime",
+        types.SimpleNamespace(
+            SessionOptions = lambda: types.SimpleNamespace(intra_op_num_threads = 0),
+            InferenceSession = lambda path, so, providers: next(sessions),
+        ),
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "tokenizers",
+        types.SimpleNamespace(Tokenizer = types.SimpleNamespace(from_file = _FakeTokenizer)),
+    )
 
     filler = vm._Filler(tmp_path / "filler", seed = 0)
     assert filler.backend == "onnx" and filler.echo_backend == "onnx"
     out = filler.predict("write me a snake game in python")
     assert out["say"] and out["class"] == "code" and out["confidence"] > 0.9
-    assert out["slot"] == "a snake game" and out["echo"] is True and out["phrase"] == "Okay, a snake game."
+    assert (
+        out["slot"] == "a snake game"
+        and out["echo"] is True
+        and out["phrase"] == "Okay, a snake game."
+    )
     assert set(out) == {"say", "class", "confidence", "phrase", "slot", "echo", "ms"}
 
 
 def test_onnx_echo_tagger_falls_back_to_rules_when_absent(tmp_path, monkeypatch):
-    monkeypatch.setattr(vm, "_OnnxClassifier", lambda d: type("C", (), {"classify": lambda self, t, q: ("code", 0.9)})())
+    monkeypatch.setattr(
+        vm,
+        "_OnnxClassifier",
+        lambda d: type("C", (), {"classify": lambda self, t, q: ("code", 0.9)})(),
+    )
     (tmp_path / "filler" / "models" / vm.FILLER_ONNX).mkdir(parents = True)
-    (tmp_path / "filler" / "phrases.json").write_text(json.dumps({
-        "classes": {"code": {"phrases": [{"text": "On it.", "weight": 1}]}},
-        "echo_templates": {"templates": [{"text": "okay, {slot}.", "weight": 1}], "mix": {"echo_when_slot": 0.0}},
-    }))
+    (tmp_path / "filler" / "phrases.json").write_text(
+        json.dumps(
+            {
+                "classes": {"code": {"phrases": [{"text": "On it.", "weight": 1}]}},
+                "echo_templates": {
+                    "templates": [{"text": "okay, {slot}.", "weight": 1}],
+                    "mix": {"echo_when_slot": 0.0},
+                },
+            }
+        )
+    )
     filler = vm._Filler(tmp_path / "filler", seed = 0)
     assert filler.backend == "onnx" and filler.echo_backend == "rules"
     out = filler.predict("why is my install failing with this error")
@@ -310,35 +412,65 @@ def test_onnx_addressed_reads_classes_and_the_context_token(tmp_path, monkeypatc
         seen.append(n)
         return np.array([[0.0, 3.0, 0.0]] if n > 5 else [[3.0, 0.0, 0.0]], dtype = np.float32)
 
-    monkeypatch.setitem(__import__("sys").modules, "onnxruntime", types.SimpleNamespace(
-        SessionOptions = lambda: types.SimpleNamespace(intra_op_num_threads = 0),
-        InferenceSession = lambda path, so, providers: _FakeSession(logits),
-    ))
-    monkeypatch.setitem(__import__("sys").modules, "tokenizers", types.SimpleNamespace(Tokenizer = types.SimpleNamespace(from_file = _FakeTokenizer)))
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "onnxruntime",
+        types.SimpleNamespace(
+            SessionOptions = lambda: types.SimpleNamespace(intra_op_num_threads = 0),
+            InferenceSession = lambda path, so, providers: _FakeSession(logits),
+        ),
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "tokenizers",
+        types.SimpleNamespace(Tokenizer = types.SimpleNamespace(from_file = _FakeTokenizer)),
+    )
     model = vm._Addressed(tmp_path / "addressed")
     assert model.backend == "onnx"
     out = model.predict("grandma say something to it", "assistant")
     assert out["label"] == "other" and out["confidence"] > 0.9
-    assert set(out["probs"]) == {"assistant", "other", "reading"} and sum(out["probs"].values()) == pytest.approx(1.0, abs = 1e-3)
+    assert set(out["probs"]) == {"assistant", "other", "reading"} and sum(
+        out["probs"].values()
+    ) == pytest.approx(1.0, abs = 1e-3)
     assert model.predict("yeah", "assistant")["label"] == "assistant"
-    assert seen[-1] == 3  # "<prev:assistant> yeah <end>": the context token is part of what the model sees
+    assert (
+        seen[-1] == 3
+    )  # "<prev:assistant> yeah <end>": the context token is part of what the model sees
 
 
 @pytest.mark.skipif(not vm.models_dir().is_dir(), reason = "voice models dir not present")
 def test_real_models_end_to_end():
     models = vm.VoiceModels()
     status = models.status()
-    assert {k: status[k] for k in vm.MODELS} == {"judge": True, "filler": True, "interject": True, "addressed": True}, status
+    assert {k: status[k] for k in vm.MODELS} == {
+        "judge": True,
+        "filler": True,
+        "interject": True,
+        "addressed": True,
+    }, status
     assert status["errors"] == {} and status["dir"] == str(vm.models_dir())
-    assert status["backends"] == {"judge": "onnx", "filler": "onnx", "interject": "tfidf", "addressed": "onnx", "filler_echo": "onnx"}
+    assert status["backends"] == {
+        "judge": "onnx",
+        "filler": "onnx",
+        "interject": "tfidf",
+        "addressed": "onnx",
+        "filler_echo": "onnx",
+    }
     assert models.judge("what's the capital of france") > models.judge("what's the capital of")
     out = models.filler("write me a snake game in python")
     assert out["say"] and out["class"] == "code" and out["phrase"]
-    assert out["slot"] == models._models["filler"].echo.extract("write me a snake game in python")[0]
+    assert (
+        out["slot"] == models._models["filler"].echo.extract("write me a snake game in python")[0]
+    )
     assert out["ms"] < 100
     out = models.interject("write a poem about the sea", "no wait make it about the mountains", 1.0)
-    assert out["action"] == "restart" and out["merged_prompt"].startswith("write a poem about the sea. Correction:")
+    assert out["action"] == "restart" and out["merged_prompt"].startswith(
+        "write a poem about the sea. Correction:"
+    )
     assert models.interject("write a poem about the sea", "ok", 0.5)["action"] == "ignore"
     assert models.addressed("what's the capital of france")["label"] == "assistant"
-    assert models.addressed("grandma, say something to it, watch what it does", "none")["label"] == "other"
+    assert (
+        models.addressed("grandma, say something to it, watch what it does", "none")["label"]
+        == "other"
+    )
     assert os.environ.get(vm.ENV_DIR) or models.root == Path(vm.DEFAULT_DIR).expanduser()

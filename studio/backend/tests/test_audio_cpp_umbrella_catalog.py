@@ -132,7 +132,13 @@ SPEC_TASKS = {
     "smart_turn": ["turn"],
 }
 
-TASK_PAGE = {"tts": "speak", "music": "music", "asr": "transcribe", "sep": "separate", "vad": "detect"}
+TASK_PAGE = {
+    "tts": "speak",
+    "music": "music",
+    "asr": "transcribe",
+    "sep": "separate",
+    "vad": "detect",
+}
 
 CATALOG = Path(__file__).resolve().parents[2] / "frontend/src/features/audio/audio-cpp-catalog.ts"
 

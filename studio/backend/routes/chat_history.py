@@ -968,10 +968,11 @@ async def delete_threads(
 def _remove_voice_log_rows(thread_ids) -> None:
     try:
         from core.inference import voice_log
-
         voice_log.delete_thread_rows(thread_ids)
     except Exception:  # noqa: BLE001 - deletion must still complete
-        logger.warning("Could not remove the voice decision log rows for %s", thread_ids, exc_info = True)
+        logger.warning(
+            "Could not remove the voice decision log rows for %s", thread_ids, exc_info = True
+        )
 
 
 def _archive_cutoff() -> str:

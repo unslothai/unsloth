@@ -546,7 +546,13 @@ _CONVERT_TABLE = {
 
 
 def test_every_task_family_binds_its_workflows():
-    workflow_for = {"tts": "speak", "music": "music", "asr": "transcribe", "sep": "separate", "vad": "detect"}
+    workflow_for = {
+        "tts": "speak",
+        "music": "music",
+        "asr": "transcribe",
+        "sep": "separate",
+        "vad": "detect",
+    }
     endpoint_for = {
         "speak": "speech",
         "music": "tasks",
