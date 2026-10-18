@@ -176,3 +176,17 @@ def test_efficient_call_without_vllm_still_latches_an_ordinary_trainer(monkeypat
     )
     assert legacy["_get_per_token_logps"](trainer, None, None, None, 4) is None
     assert trainer._autocast_dtype is torch.bfloat16
+
+
+def test_efficient_call_without_vllm_keeps_bf16_for_a_forced_family_full_finetune(monkeypatch):
+    # rl.py lets forced-family models full finetune in bf16 (args.mixed_precision = "bf16"): keep that latch.
+    monkeypatch.setenv("UNSLOTH_FORCE_FLOAT32", "1")
+    ns = _namespace()
+    trainer = types.SimpleNamespace(
+        args = types.SimpleNamespace(mixed_precision = "bf16", bf16 = True, fp16 = False),
+        model = types.SimpleNamespace(_unsloth_forced_float32 = True),
+        use_vllm = False,
+    )
+    ns["_get_per_token_logps_and_entropies"](trainer, None, None, None, 4, compute_efficient = True)
+    assert trainer._autocast_enabled is True
+    assert trainer._autocast_dtype is torch.bfloat16

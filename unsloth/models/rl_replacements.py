@@ -1188,20 +1188,23 @@ def _unsloth_grpo_autocast(self):
 
 
 def _unsloth_grpo_autocast_unscored(self):
-    """Latch for a step that ran no scoring forward. A forced float32 model (Gemma3 on a T4) without vLLM
-    latches no loss autocast: nothing latched there before the TRL old-logprob gate came back, so zoo
-    trained it without autocast, and the ordinary latch would turn on float16. It is recorded on the
-    trainer rather than left to zoo's process-wide fallback, which a later model or trainer may have
-    changed. Under vLLM the old-policy forward always ran and latched, so it still latches."""
+    """Latch for a step that ran no scoring forward. Where the ordinary latch would force float16 autocast on a
+    forced float32 model (Gemma3 on a T4) without vLLM, record no loss autocast instead: nothing latched there
+    before the TRL old-logprob gate came back, so zoo trained it without autocast. A forced-family trainer on
+    bf16 (full finetuning) keeps its bf16 latch. Recorded on the trainer rather than left to zoo's
+    process-wide fallback, which a later model or trainer may have changed. Under vLLM the old-policy
+    forward always ran and latched, so it latches as before."""
+    fresh = not hasattr(self, "_autocast_enabled")
+    latched = _unsloth_grpo_autocast(self)
     if (
-        not hasattr(self, "_autocast_enabled")
+        fresh
         and not getattr(self, "use_vllm", False)
-        and _unsloth_grpo_autocast_forced_float32(self)
+        and getattr(self, "_autocast_force_float32", False)
     ):
         self._autocast_dtype = torch.float16
         self._autocast_enabled = False
-        self._autocast_force_float32 = True
-    return _unsloth_grpo_autocast(self)
+        latched = (self._autocast_enabled, self._autocast_dtype)
+    return latched
 
 
 def _unsloth_grpo_autocast_kwargs(self, device_type = DEVICE_TYPE_TORCH):
