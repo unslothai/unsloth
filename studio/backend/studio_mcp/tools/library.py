@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import re
 from typing import Annotated, Any, Literal, Optional
 
@@ -50,6 +51,13 @@ def _rows(payload: Any, key: str) -> list[dict]:
     )
 
 
+def _finite(text: str) -> bool:
+    try:
+        return math.isfinite(float(text))
+    except ValueError:
+        return False
+
+
 def _cursor(kind: str, cursor: Optional[str]) -> Optional[str]:
     """The kind-specific part of a cursor list_media returned, refused before any call when it belongs to another kind or is malformed."""
     if cursor is None:
@@ -59,13 +67,13 @@ def _cursor(kind: str, cursor: Optional[str]) -> Optional[str]:
         raise ToolError(
             f"This cursor is not from list_media(kind='{kind}'); pass the next_cursor that call returned."
         )
-    malformed = (
-        not _OFFSET.match(rest)
-        if kind in ("image", "video", "voice")
-        else not _AUDIO_CURSOR.match(rest)
-        if kind == "audio"
-        else not _TRANSCRIPT_CURSOR.match(rest)
-    )
+    if kind in ("image", "video", "voice"):
+        malformed = not _OFFSET.fullmatch(rest)
+    elif kind == "audio":
+        audio = _AUDIO_CURSOR.fullmatch(rest)
+        malformed = not audio or not all(_finite(n) for n in (audio[2], audio[1] or "0"))
+    else:
+        malformed = not _TRANSCRIPT_CURSOR.fullmatch(rest)
     if malformed:
         raise ToolError(
             "The cursor is malformed; pass next_cursor exactly as list_media returned it."
