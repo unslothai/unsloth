@@ -856,6 +856,9 @@ class ExportOrchestrator:
     def cleanup_memory(self) -> bool:
         with self._lock:
             if not self._ensure_subprocess_alive():
+                if self._proc is not None:
+                    # The worker died on its own (CUDA crash, OOM kill) and left its staging.
+                    _sweep_reap_staging_of(self._proc.pid)
                 self.current_checkpoint = None
                 self.is_vision = False
                 self.is_peft = False

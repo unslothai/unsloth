@@ -510,7 +510,8 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
             )
         else:
             success, message = False, f"Unknown export type: {export_type}"
-        if success and export_type in ("merged", "base", "gguf"):
+        # A failed Hub upload or Q4NX conversion still returns the completed local GGUF files.
+        if (success or output_path) and export_type in ("merged", "base", "gguf"):
             from core.export.reap import sync_reap_report
             sync_reap_report(backend, output_path)
 

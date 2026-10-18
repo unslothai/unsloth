@@ -763,3 +763,45 @@ def test_a_worker_that_survives_kill_is_not_swept(monkeypatch):
     finally:
         orch._proc = None
     assert swept == []
+
+
+@pytest.mark.parametrize(
+    "result, synced",
+    [
+        ((False, "GGUF files were saved to /out, but the Hub upload failed: 503", "/out"), True),
+        ((False, "GGUF export failed: out of disk", None), False),
+    ],
+)
+def test_a_failed_upload_after_complete_local_gguf_still_syncs_the_report(
+    monkeypatch, result, synced
+):
+    from core.export.worker import _handle_export
+
+    seen = []
+    monkeypatch.setattr(reap_mod, "sync_reap_report", lambda b, path: seen.append(path))
+    backend, q = _ExportBackend(), queue.Queue()
+    backend.export_gguf = lambda **kwargs: result
+    _handle_export(backend, {"export_type": "gguf", "save_directory": "/tmp/o"}, q)
+    assert seen == (["/out"] if synced else [])
+    assert _drain(q)[-1]["success"] is False
+
+
+def test_cleanup_after_a_worker_crash_sweeps_its_staging(monkeypatch):
+    # The worker died on its own (CUDA crash, OOM kill) after staging: cleanup sees it dead.
+    from core.export import orchestrator as orchestrator_module
+
+    class Dead:
+        pid = 777
+        is_alive = staticmethod(lambda: False)
+
+    swept = []
+    monkeypatch.setattr(
+        reap_mod, "sweep_reap_staging", lambda dead_pid = None: swept.append(dead_pid)
+    )
+    orch = orchestrator_module.ExportOrchestrator()
+    orch._proc = Dead()
+    try:
+        assert orch.cleanup_memory() is True
+    finally:
+        orch._proc = None
+    assert swept == [777]
