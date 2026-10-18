@@ -106,6 +106,11 @@ export const useBrowserAgentStore = create<BrowserAgentState>()(
     },
   ),
 );
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === useBrowserAgentStore.persist.getOptions().name) void useBrowserAgentStore.persist.rehydrate();
+  });
+}
 
 // A new chat's key -> its saved one, so a run that captured the old key still reaches its chat.
 const adopted = new Map<string, string>();

@@ -118,6 +118,11 @@ export const useBrowserBookmarksStore = create<BrowserBookmarksState>()(
     },
   ),
 );
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === useBrowserBookmarksStore.persist.getOptions().name) void useBrowserBookmarksStore.persist.rehydrate();
+  });
+}
 
 export function useBookmarkFor(url: string | null): Bookmark | undefined {
   return useBrowserBookmarksStore((state) =>
