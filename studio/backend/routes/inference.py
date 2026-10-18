@@ -18984,7 +18984,9 @@ async def _guard_primary_replacement(request: LoadRequest, names) -> None:
             raise refusal_for(await asyncio.to_thread(_kept_slot_reports, stuck[0]), "chat")
     try:
         reports = await asyncio.to_thread(model_slots.in_slot, None, _primary_chat_reports)
-    except Exception:  # noqa: BLE001 - nothing to name, so nothing to protect
+    except Exception:  # noqa: BLE001 - unreadable: Always keeps it, as for media
+        if always:
+            raise refusal_for([], "chat")
         reports = []
     if not reports:
         return
@@ -50524,7 +50526,7 @@ async def load_diffusion_model_gated(
 
         # Read outside the arbiter lock.
         multi_model_mode = await asyncio.to_thread(get_multi_model_mode)
-        media_names = (request.model_path, request.display_repo_id)
+        media_names = (request.model_path,)
         # Before the engine switch below: on any device the load replaces the loaded image model.
         replaced_media = await asyncio.to_thread(
             refuse_replacing_media, DIFFUSION, multi_model_mode, media_names
