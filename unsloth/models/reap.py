@@ -1065,7 +1065,10 @@ def reap_prune(
     model._unsloth_reap_saliency = saliencies
     if save_directory is not None:
         save_directory = os.path.abspath(save_directory)
-        source_model = getattr(model.config, "_name_or_path", None)
+        source_model = getattr(model.config, "_name_or_path", None) or None
+        if source_model and os.path.exists(source_model):
+            # This folder may be pushed to the Hub: name a local source without its path.
+            source_model = os.path.basename(os.path.normpath(source_model))
         # Every rank pruned the same experts (summed saliency); one writes, the rest wait for it.
         dist = torch.distributed
         multi_rank = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
