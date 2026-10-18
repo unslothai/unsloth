@@ -72,7 +72,9 @@ def test_both_keys_are_written_in_one_call(store):
 @pytest.mark.parametrize("bad", ["on", "", None, True, "Always"])
 def test_a_bad_mode_is_refused_with_the_setting_name(store, bad):
     _, writes = store
-    with pytest.raises(ValueError, match = "^Keep multiple models loaded must be off, fit or always.$"):
+    with pytest.raises(
+        ValueError, match = "^Keep multiple models loaded must be off, fit or always.$"
+    ):
         mms.set_multi_model_mode(bad)
     assert writes == []
 
@@ -150,10 +152,11 @@ def test_turning_it_off_queues_the_idle_unload(store):
     assert len(tasks.tasks) == 1
 
 
-@pytest.mark.parametrize("payload", [{}, {"mode": "fit", "enabled": True}, {"mode": "sometimes"}, {"enabled": "yes"}])
+@pytest.mark.parametrize(
+    "payload", [{}, {"mode": "fit", "enabled": True}, {"mode": "sometimes"}, {"enabled": "yes"}]
+)
 def test_the_payload_needs_exactly_one_valid_field(payload):
     import routes.settings as settings_routes
     from pydantic import ValidationError
-
     with pytest.raises(ValidationError):
         settings_routes.MultiModelPayload(**payload)

@@ -341,7 +341,6 @@ async def load_video_model_gated(
         acquire_for_request,
         eviction_sink,
         note_evictions,
-        policy_kwargs,
         refusal_for,
         release,
         require_no_foreign_generations,

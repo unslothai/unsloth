@@ -186,12 +186,12 @@ def test_every_slot_is_reported(monkeypatch):
     assert called == set(PAYLOADS)
 
 
-
 def test_chat_reports_the_keep_multiple_models_loaded_mode(monkeypatch):
     for mode in ("off", "fit", "always"):
         overrides = {("GET", "/api/inference/status"): {**CHAT, "multi_model_mode": mode}}
         result, _studio = _status(monkeypatch, overrides)
         assert result["structuredContent"]["chat"]["multi_model_mode"] == mode
+
 
 def test_failing_and_owner_only_slots_do_not_fail_the_tool(monkeypatch):
     broken = JSONResponse({"detail": "Video backend crashed at /srv/hf/ltx"}, status_code = 500)
