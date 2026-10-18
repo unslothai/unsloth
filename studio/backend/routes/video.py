@@ -1014,6 +1014,8 @@ async def get_gallery_video_frame(
         raise HTTPException(status_code = 404, detail = "Video not found.")
     try:
         data = await asyncio.to_thread(video_gallery.frame_png, path, at, max_px)
+    except FileNotFoundError:
+        raise HTTPException(status_code = 404, detail = "Video not found.") from None
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
     except RuntimeError as exc:
@@ -1055,7 +1057,9 @@ async def extract_gallery_video_audio(
     path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
     if record is None or path is None:
         raise HTTPException(status_code = 404, detail = "Video not found.")
-    name = f"{(str(record.get('prompt') or '').strip() or 'Video')[:60]} (audio).wav"
+    # The name is cleaned as a file name, so '/' and line breaks in the prompt become spaces first.
+    prompt = " ".join(str(record.get("prompt") or "").replace("/", " ").replace("\\", " ").split())
+    name = f"{(prompt or 'Video')[:60]} (audio).wav"
     try:
         saved, created = await asyncio.to_thread(
             audio_inputs.save_from_media, path, name, body.start_s, body.end_s

@@ -19,9 +19,9 @@ from .test_video_gallery import _real_mp4_bytes, _real_mp4_with_audio
 pytest.importorskip("av")
 
 
-def _clip(data: bytes) -> str:
+def _clip(data: bytes, prompt: str = "a grey ramp") -> str:
     meta = {
-        "prompt": "a grey ramp",
+        "prompt": prompt,
         "width": 64,
         "height": 48,
         "num_frames": 8,
@@ -64,6 +64,20 @@ def test_frames_pick_first_last_and_a_time():
         assert client.get(url).status_code == 404
 
 
+def test_a_clip_that_cannot_be_read_gets_a_plain_error_without_server_paths(monkeypatch, tmp_path):
+    video_id = _clip(b"not an mp4 at all, only bytes")
+    url = f"/api/inference/video/gallery/{video_id}/frame"
+    with _client(ALICE) as client:
+        broken = client.get(url)
+        assert broken.status_code == 400
+        assert broken.json()["detail"] == "This clip could not be decoded."
+        # The file can go away between the ownership check and the decode.
+        monkeypatch.setattr(video_gallery, "owned_video_path", lambda _id: tmp_path / "gone.mp4")
+        gone = client.get(url)
+    assert gone.status_code == 404
+    assert gone.json()["detail"] == "Video not found."
+
+
 def test_audio_track_becomes_a_trimmed_idempotent_audio_input():
     video_id = _clip(_real_mp4_with_audio(seconds = 1))
     url = f"/api/inference/video/gallery/{video_id}/audio-input"
@@ -90,6 +104,14 @@ def test_audio_track_becomes_a_trimmed_idempotent_audio_input():
         assert client.post(url, json = body).status_code == 404
     leftovers = list(run_as(ALICE, audio_inputs.inputs_dir).glob(".*.tmp"))
     assert leftovers == []
+
+
+def test_an_audio_input_name_keeps_a_prompt_with_slashes_and_line_breaks():
+    video_id = _clip(_real_mp4_with_audio(seconds = 1), prompt = "cats/dogs\nat dusk")
+    with _client(ALICE) as client:
+        response = client.post(f"/api/inference/video/gallery/{video_id}/audio-input", json = {})
+    assert response.status_code == 201, response.text
+    assert response.json()["name"] == "cats dogs at dusk (audio).wav"
 
 
 def test_a_silent_video_has_no_audio_track_to_extract():

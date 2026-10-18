@@ -268,7 +268,8 @@ def frame_png(
     max_px: Optional[int] = None,
 ) -> bytes:
     """One frame of a clip as PNG: ``first``, ``last`` or the frame shown at ``at`` seconds,
-    scaled to fit ``max_px`` when given. ValueError for a bad or past-end ``at``."""
+    scaled to fit ``max_px`` when given. ValueError for a bad or past-end ``at`` or a clip PyAV
+    cannot decode; FileNotFoundError when the file is gone."""
     import io
     import math
 
@@ -286,37 +287,45 @@ def frame_png(
         from PIL import Image
     except Exception as exc:  # noqa: BLE001 -- a missing decoder dependency
         raise RuntimeError("Frame extraction needs the 'av' and 'Pillow' packages.") from exc
-    with av.open(str(source)) as src:
-        if not src.streams.video:
-            raise ValueError("This clip has no video stream.")
-        stream = src.streams.video[0]
-        if stream.width * stream.height > _FRAME_MAX_PIXELS:
-            raise ValueError(f"{stream.width}x{stream.height} is too large to extract.")
-        duration = (src.duration or 0) / 1_000_000
-        if not duration and stream.duration is not None and stream.time_base:
-            duration = float(stream.duration * stream.time_base)
-        frame = None
-        if text == "first":
-            frame = next(src.decode(stream), None)
-        elif seconds is not None:
-            if duration and seconds > duration:
-                raise ValueError(f"at={seconds:g} is past the end of the clip ({duration:.2f} s).")
-            src.seek(int(seconds / stream.time_base), stream = stream, backward = True)
-            for candidate in src.decode(stream):
-                if frame is not None and _frame_time(candidate) > seconds + 1e-6:
-                    break
-                frame = candidate
-        else:
-            # Seek close to the end and keep the final frame; a failed seek falls back to a full decode.
-            for start in (max(0.0, duration - 2.0), 0.0):
-                src.seek(int(start / stream.time_base), stream = stream, backward = True)
+    try:
+        with av.open(str(source)) as src:
+            if not src.streams.video:
+                raise ValueError("This clip has no video stream.")
+            stream = src.streams.video[0]
+            if stream.width * stream.height > _FRAME_MAX_PIXELS:
+                raise ValueError(f"{stream.width}x{stream.height} is too large to extract.")
+            duration = (src.duration or 0) / 1_000_000
+            if not duration and stream.duration is not None and stream.time_base:
+                duration = float(stream.duration * stream.time_base)
+            frame = None
+            if text == "first":
+                frame = next(src.decode(stream), None)
+            elif seconds is not None:
+                if duration and seconds > duration:
+                    raise ValueError(
+                        f"at={seconds:g} is past the end of the clip ({duration:.2f} s)."
+                    )
+                src.seek(int(seconds / stream.time_base), stream = stream, backward = True)
                 for candidate in src.decode(stream):
+                    if frame is not None and _frame_time(candidate) > seconds + 1e-6:
+                        break
                     frame = candidate
-                if frame is not None or start == 0.0:
-                    break
-        if frame is None:
-            raise ValueError("This clip has no decodable frame there.")
-        image = frame.to_image()
+            else:
+                # Seek close to the end and keep the final frame; a failed seek falls back to a full decode.
+                for start in (max(0.0, duration - 2.0), 0.0):
+                    src.seek(int(start / stream.time_base), stream = stream, backward = True)
+                    for candidate in src.decode(stream):
+                        frame = candidate
+                    if frame is not None or start == 0.0:
+                        break
+            if frame is None:
+                raise ValueError("This clip has no decodable frame there.")
+            image = frame.to_image()
+    except FileNotFoundError:
+        raise
+    except av.error.FFmpegError:
+        # PyAV messages carry the file path, so callers get a fixed one.
+        raise ValueError("This clip could not be decoded.") from None
     if max_px:
         image.thumbnail((max_px, max_px), Image.LANCZOS)
     buf = io.BytesIO()

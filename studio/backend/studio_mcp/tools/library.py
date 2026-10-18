@@ -169,7 +169,7 @@ async def list_media(
         Optional[str], Field(description = "next_cursor from the previous page of the same kind.")
     ] = None,
 ) -> MediaPage:
-    """List earlier work saved in Unsloth Studio, newest first: images, audio clips, videos, transcripts or saved voices. Each row has its id, which other tools take as gallery_id, clip_id, video_id or voice_id, and for images, audio and videos a download_url that works without the API key for about an hour. Pass next_cursor back as cursor for the next page."""
+    """List earlier work saved in Unsloth Studio, newest first: images, audio clips, videos, transcripts or saved voices. Each row has its id, which other tools take as gallery_id, clip_id, video_id or voice_id, and for images, audio and videos a download_url that works without the API key for about an hour. Pass next_cursor back as cursor for the next page; image and video pages count rows, so deleting items between calls can shift them by a row."""
     caller = current_caller()
     rest = _cursor(kind, cursor)
     if kind == "image":
