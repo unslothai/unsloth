@@ -45,6 +45,29 @@ def _embed_scale(config, embed) -> Optional[float]:
     return float(config.hidden_size) ** 0.5
 
 
+def _embed_multiplier(owner) -> Optional[float]:
+    """Granite-family `embedding_multiplier`, which the decoder stack's forward applies to the
+    embedding output and a stage never calls; None when the stack has none or it is 1."""
+    mult = getattr(owner, "embedding_multiplier", None) if owner is not None else None
+    if isinstance(mult, bool) or not isinstance(mult, (int, float)) or mult == 1:
+        return None
+    return float(mult)
+
+
+def _multiply_embeddings(h, multiplier):
+    # A plain Python float, exactly as the model forward multiplies it.
+    return h if multiplier is None else h * multiplier
+
+
+def _rope_position_ids(rotary, ids):
+    """Position ids in the shape `rotary` reads. M-RoPE rotaries (Qwen3.5, Qwen3-VL) index three
+    position axes, and for text the model forward repeats the 1-D positions on all three; handing
+    them `[batch, seq]` raised IndexError on the first step."""
+    if ids is None or ids.dim() != 2 or getattr(rotary, "mrope_section", None) is None:
+        return ids
+    return ids[None].expand(3, -1, -1)
+
+
 def _scale_embeddings(h, scale):
     if scale is None:
         return h
@@ -528,7 +551,21 @@ def _materialise(model, model_name, cfg, device, dtype, log):
     from huggingface_hub import snapshot_download
     from safetensors import safe_open
 
-    wanted = {k for k, _ in model.named_parameters()} | {k for k, _ in model.named_buffers()}
+    quant = getattr(cfg, "quantization_config", None) if cfg is not None else None
+    if quant:
+        # The stage is built from the config as plain bf16 modules, so FP8 / MXFP4 / GPTQ tensors
+        # would be cast without their scales (silently wrong weights) or never matched at all.
+        method = quant.get("quant_method") if isinstance(quant, dict) else None
+        method = method or getattr(quant, "quant_method", None) or "quantized"
+        raise RuntimeError(
+            f"--shard-load reads unquantized safetensors, and {model_name} is a {method} "
+            f"checkpoint whose weights need their scales to dequantize. Use the bf16 release "
+            f"of this model, or load it without --shard-load."
+        )
+    # The dtype each tensor has in the stage: integer / bool buffers keep it.
+    target = {k: v.dtype for k, v in model.named_parameters()}
+    target.update({k: v.dtype for k, v in model.named_buffers()})
+    wanted = set(target)
     # A tied head is not saved under its own name: a checkpoint whose lm_head is the embedding
     # stores only the embedding key, so an exact-name filter looked for `lm_head.weight`, found
     # nothing, and the meta check below refused the load.
@@ -560,7 +597,19 @@ def _materialise(model, model_name, cfg, device, dtype, log):
         with safe_open(f, framework = "pt", device = "cpu") as sf:
             for k in sf.keys():
                 if k in wanted:
-                    loaded[k] = sf.get_tensor(k).to(dtype).to(device, non_blocking = False)
+                    t = sf.get_tensor(k)
+                    want = target.get(k, dtype)
+                    if want.is_floating_point and (
+                        not t.is_floating_point() or t.element_size() == 1
+                    ):
+                        raise RuntimeError(
+                            f"--shard-load: {k} is stored as {t.dtype} in {osp.basename(f)}, a "
+                            f"quantized encoding that cannot be cast to {dtype} without its "
+                            f"scales. Use an unquantized checkpoint, or load it without "
+                            f"--shard-load."
+                        )
+                    t = t.to(dtype) if want.is_floating_point else t.to(want)
+                    loaded[k] = t.to(device, non_blocking = False)
                     seen += 1
     for alias, src in aliases.items():
         # The SAME tensor object, not a copy: where a stage keeps both the embedding and the head,
@@ -619,6 +668,7 @@ class _Stage:
         # --full-finetune run on this backend. get_base_model() is the PEFT discriminator.
         self.base, self.inner = unwrap_stack(model)
         self.embed_scale = _embed_scale(self.base.config, self.inner.embed_tokens)
+        self.embed_multiplier = _embed_multiplier(self.inner)
         self.hidden = self.base.config.hidden_size
         # Set by the caller.
         self.grad_checkpoint = False
@@ -639,11 +689,14 @@ class _Stage:
 
         layers = self.chunk_layers[chunk]
         h = (
-            _scale_embeddings(self.inner.embed_tokens(ids), self.embed_scale)
+            _multiply_embeddings(
+                _scale_embeddings(self.inner.embed_tokens(ids), self.embed_scale),
+                self.embed_multiplier,
+            )
             if chunk == 0
             else hidden
         )
-        pos = self.inner.rotary_emb(h, posid)
+        pos = self.inner.rotary_emb(h, _rope_position_ids(self.inner.rotary_emb, posid))
         for i in layers:
             h = self._run_layer(self.inner.layers[i], h, pos)
         if chunk != self.n_chunks - 1:
@@ -664,11 +717,14 @@ class _Stage:
         import torch
 
         h = (
-            _scale_embeddings(self.inner.embed_tokens(ids), self.embed_scale)
+            _multiply_embeddings(
+                _scale_embeddings(self.inner.embed_tokens(ids), self.embed_scale),
+                self.embed_multiplier,
+            )
             if self.is_first
             else hidden
         )
-        pos = self.inner.rotary_emb(h, posid)
+        pos = self.inner.rotary_emb(h, _rope_position_ids(self.inner.rotary_emb, posid))
         for layer in self.inner.layers:
             if isinstance(layer, torch.nn.Identity):
                 continue
@@ -1248,6 +1304,7 @@ def stage_module_cls():
             self.lm_head = _first_attr(top, ("lm_head", "embed_out")) if is_last else None
             self.config = getattr(top, "config", None)
             self.embed_scale = _embed_scale(self.config, embed) if is_first else None
+            self.embed_multiplier = _embed_multiplier(owner) if is_first else None
             self.pass_position_embeddings = True
             if len(self.layers):
                 try:
@@ -1291,10 +1348,11 @@ def stage_module_cls():
             for name, rotary in self.rotary_for.items():
                 if rotary is None:
                     continue
+                rope_ids = _rope_position_ids(rotary, ids)
                 out[name] = (
-                    rotary(h, ids, layer_type = self._layer_type(layer))
+                    rotary(h, rope_ids, layer_type = self._layer_type(layer))
                     if self.rotary_wants_layer_type
-                    else rotary(h, ids)
+                    else rotary(h, rope_ids)
                 )
             return out
 
@@ -1314,7 +1372,14 @@ def stage_module_cls():
             return out[0] if isinstance(out, tuple) else out
 
         def forward(self, x):
-            h = _scale_embeddings(self.embed_tokens(x), self.embed_scale) if self.is_first else x
+            h = (
+                _multiply_embeddings(
+                    _scale_embeddings(self.embed_tokens(x), self.embed_scale),
+                    self.embed_multiplier,
+                )
+                if self.is_first
+                else x
+            )
             if self.embed_dropout is not None:
                 h = self.embed_dropout(h)
             if self.sliding_window is not None and h.shape[1] > self.sliding_window:
@@ -1699,6 +1764,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.save:
+        # `--save=~/out` reaches here unexpanded; the launcher collects into the expanded path.
+        args.save = osp.expanduser(args.save)
     if args.schedule is None:
         args.schedule = default_schedule(args.pp_backend)
 
