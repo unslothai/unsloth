@@ -1238,6 +1238,9 @@ class ClusterServing:
         self._untied = False
         self._diffusion = False
         self._ctx_compute: float = 0.0
+        # (estimator args, slots) _ctx_compute was sized with, and its per-group re-estimates.
+        self._ctx_compute_inputs: Optional[Tuple[tuple, int]] = None
+        self._group_scratch: Dict[int, float] = {}
         self._checkpoints: float = 0.0
         self._recurrent: float = 0.0
         self._recurrent_layer: float = 0.0
@@ -1699,7 +1702,7 @@ class ClusterServing:
                 margin_bytes = margin,
                 # Every device of a layer split holds its own context-dependent compute scratch,
                 # one per pipeline group.
-                scratch_bytes = self._ctx_compute * max(1, groups),
+                scratch_bytes = self._group_scratch_bytes(groups),
             )
 
         # The input embedding stays whole in this machine's host RAM: off every device's share
@@ -1740,6 +1743,7 @@ class ClusterServing:
         # never a second flag, but the plan prices the contexts it opens.
         caller_groups = _pipeline_groups_slot_step(flags, os.environ)
         groups = caller_groups if caller_groups > 1 else 0
+        await self._size_group_scratch(groups)
         plan, skipped, spec_off_single = plan_with(groups)
         emit_groups = 0
         if caller_groups > 1:
@@ -1760,6 +1764,7 @@ class ClusterServing:
                 len(plan.devices), slots, refusal = refusal, binary = binary
             )
             for g in candidates:
+                await self._size_group_scratch(g)
                 grouped, grouped_skipped, _single = plan_with(g)
                 if grouped.topology == "layer_split":
                     plan, skipped, groups, emit_groups = grouped, grouped_skipped, g, g
@@ -1835,8 +1840,30 @@ class ClusterServing:
             updates["force_reload"] = True
         return ss.SparkServing._request_with(request, updates)
 
+    async def _size_group_scratch(self, groups: int) -> None:
+        """Each --pipeline-groups context runs n_parallel / G slots (server-context.cpp sets
+        params_ctx.n_parallel = n_seq_per_group), so its sliding-window masks are sized for those,
+        not for every slot: re-estimate one group's scratch at that slot count."""
+        if groups <= 1 or groups in self._group_scratch or self._ctx_compute_inputs is None:
+            return
+        args, slots = self._ctx_compute_inputs
+        per_group = -(-slots // groups)
+        if per_group >= slots:
+            return
+        one = await asyncio.to_thread(_ctx_compute_bytes, *args, per_group)
+        if one:
+            # Never above the all-slot estimate: fewer slots never need more scratch.
+            self._group_scratch[groups] = min(float(one), self._ctx_compute)
+
+    def _group_scratch_bytes(self, groups: int) -> float:
+        if groups <= 1:
+            return self._ctx_compute
+        return self._group_scratch.get(groups, self._ctx_compute) * groups
+
     async def _size(self, request, n_parallel, extras, ss) -> Tuple[Optional[float], float, float]:
         self._uncertain_extra = 0.0
+        self._ctx_compute_inputs = None
+        self._group_scratch = {}
         self._host_projector = 0.0
         model_path = str(getattr(request, "model_path", "") or "")
         variant = getattr(request, "gguf_variant", None)
@@ -2158,19 +2185,13 @@ class ClusterServing:
                 self._kv_layer_frac = (peak or 0) / 1_000_000
         if kv is None and local_file and cells:
             kv = await asyncio.to_thread(ss.estimate_kv_bytes, local_file, cells, cache_type, kv_v)
-        compute = await asyncio.to_thread(
-            _ctx_compute_bytes,
-            local_file,
-            header_kv,
-            ctx,
-            min(batch, ubatch),
-            lighter,
-            flash_attn,
-            n_parallel,
-        )
+        compute_args = (local_file, header_kv, ctx, min(batch, ubatch), lighter, flash_attn)
+        compute = await asyncio.to_thread(_ctx_compute_bytes, *compute_args, n_parallel)
         if ctx and size and compute is None:
             self._unsized_kv = True
         self._ctx_compute = float(compute or 0)
+        if compute:
+            self._ctx_compute_inputs = (compute_args, int(n_parallel))
         # Context checkpoints are host RAM, the same pool on unified memory: charged to this
         # machine, never counted as freed.
         per_checkpoint = 0

@@ -3620,3 +3620,36 @@ def test_a_two_spark_worker_recorded_by_address_matches_a_node_named_by_host_nam
         lambda host, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.9", 0))],
     )
     assert not ss._legacy_worker_holds_a_cluster_port(), "another machine on that port"
+
+
+def test_each_pipeline_group_scratch_is_sized_for_its_own_slots(monkeypatch):
+    _groups_env(monkeypatch)
+
+    def compute(
+        path,
+        header_kv,
+        ctx,
+        ubatch,
+        cache_type,
+        flash_attn,
+        n_parallel,
+        what = "",
+        **k,
+    ):
+        # Sliding-window masks grow with the slots one context serves.
+        return 100 * MIB + 10 * MIB * n_parallel if what == "" else 0
+
+    monkeypatch.setattr(cs, "_ctx_compute_bytes", compute)
+    scratch = []
+    real = cs.plan_cluster
+
+    def spy(*a, **k):
+        scratch.append(k.get("scratch_bytes"))
+        return real(*a, **k)
+
+    monkeypatch.setattr(cs, "plan_cluster", spy)
+    _, block, plan = _groups_load(48)
+    assert _groups_of(block) == 3
+    # One context of 48 slots, then three contexts of 16 slots each (server-context.cpp).
+    assert scratch[0] == pytest.approx(580 * MIB)
+    assert scratch[-1] == pytest.approx(3 * 260 * MIB)
