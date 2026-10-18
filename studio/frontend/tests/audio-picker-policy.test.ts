@@ -84,6 +84,38 @@ test("curated downloaded STT artifacts override generic metadata only in Transcr
   );
 });
 
+test("a page-scoped catalog row the seed lacks lists On Device in its Audio picker", () => {
+  assert.equal(
+    curatedAudioInventoryMatches({
+      isActiveCatalogArtifact: true,
+      catalogScope: undefined,
+      catalogTask: undefined,
+      pickerTask: ["text-to-speech", "text-to-audio"],
+    }),
+    true,
+  );
+  for (const pickerTask of [undefined, []]) {
+    assert.equal(
+      curatedAudioInventoryMatches({
+        isActiveCatalogArtifact: true,
+        catalogScope: undefined,
+        catalogTask: undefined,
+        pickerTask,
+      }),
+      false,
+    );
+  }
+  assert.equal(
+    curatedAudioInventoryMatches({
+      isActiveCatalogArtifact: false,
+      catalogScope: undefined,
+      catalogTask: undefined,
+      pickerTask: ["text-to-speech"],
+    }),
+    false,
+  );
+});
+
 test("non-audio catalogs and unfiltered Chat get no downloaded-task exception", () => {
   assert.equal(
     curatedAudioInventoryMatches({
