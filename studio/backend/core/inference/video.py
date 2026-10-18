@@ -1789,9 +1789,12 @@ def _h3_mirrored_component_sources(
     *,
     local_files_only: bool,
     cache_dir: Optional[str] = None,
+    staged_dir: Optional[str] = None,
 ) -> dict[str, str]:
     """``{component: source}`` sending every modular spec that names ``base`` (either side of its mirror pair) to
     ``fetch_repo``, the repo the base was staged from, as ``load_components(pretrained_model_name_or_path = ...)``.
+    ``staged_dir``, a snapshot the plan reused from another cache root, takes those specs instead: load_components
+    searches only the live root and would fetch the ~145 GB of components again.
     Offline, tokenizer / processor specs resolve to that repo's cached snapshot folder (as
     ``offline_component_sources`` does). Empty when nothing is redirected: a local base, no mirror in play, or a
     spec naming a different repo (a derivative's own encoder keeps its source)."""
@@ -1808,9 +1811,12 @@ def _h3_mirrored_component_sources(
     out: dict[str, str] = {}
     for name, spec in specs.items():
         source = getattr(spec, "pretrained_model_name_or_path", None)
-        if not isinstance(source, str) or not source or source == fetch_repo:
+        if not isinstance(source, str) or not source or (source == fetch_repo and not staged_dir):
             continue
         if _h3_te_canonical(source) != want:
+            continue
+        if staged_dir:
+            out[name] = staged_dir
             continue
         target = fetch_repo
         if _is_tokenizer_or_processor(getattr(spec, "type_hint", None)):
@@ -1822,6 +1828,13 @@ def _h3_mirrored_component_sources(
             )
         out[name] = target
     return out
+
+
+def _is_under_dir(path: str, root: Optional[str]) -> bool:
+    try:
+        return bool(root) and Path(path).resolve().is_relative_to(Path(str(root)).resolve())
+    except (OSError, ValueError):
+        return False
 
 
 def _video_cached_completeness(repo_id: str) -> int:
@@ -9471,7 +9484,14 @@ class VideoBackend:
         # The index is byte identical, so every spec still names the upstream id; load_components would read those
         # from the vendor repo under a different cache key than the mirror the base was staged into.
         mirrored_sources = _h3_mirrored_component_sources(
-            pipe, base, fetch_base, local_files_only = local_files_only, cache_dir = hub_cache_dir()
+            pipe,
+            base,
+            fetch_base,
+            local_files_only = local_files_only,
+            cache_dir = hub_cache_dir(),
+            staged_dir = _base_local_dir
+            if _base_local_dir and not _is_under_dir(_base_local_dir, hub_cache_dir())
+            else None,
         )
         offline_sources = {**offline_sources, **mirrored_sources}
         # The redirected components read the plan's commit of the staged repo (a snapshot folder needs none).

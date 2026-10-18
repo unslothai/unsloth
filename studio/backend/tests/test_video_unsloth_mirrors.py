@@ -503,6 +503,27 @@ def test_h3_component_specs_follow_the_selected_mirror(empty_cache):
     )
 
 
+def test_h3_components_open_from_a_snapshot_staged_under_another_cache_root(tmp_path):
+    spec = lambda src, sub = None: types.SimpleNamespace(  # noqa: E731
+        pretrained_model_name_or_path = src, subfolder = sub, type_hint = object
+    )
+    pipe = types.SimpleNamespace(
+        _component_specs = {
+            "transformer": spec("MiniMaxAI/MiniMax-H3", "transformer"),
+            "scheduler": spec("unsloth/MiniMax-H3", "scheduler"),
+            "text_encoder": spec("someone/other-encoder", "text_encoder"),
+        }
+    )
+    staged = str(tmp_path / "other_root" / "snapshots" / "abc")
+    got = video_mod._h3_mirrored_component_sources(
+        pipe, "MiniMaxAI/MiniMax-H3", "unsloth/MiniMax-H3", local_files_only = False, staged_dir = staged
+    )
+    # Either side of the mirror pair reads the reused snapshot; a derivative's own encoder keeps its source.
+    assert got == {"transformer": staged, "scheduler": staged}
+    assert video_mod._is_under_dir(str(tmp_path / "a" / "b"), str(tmp_path / "a"))
+    assert not video_mod._is_under_dir(staged, str(tmp_path / "live"))
+
+
 def test_h3_modular_load_passes_the_mirrored_sources_to_load_components():
     import inspect
 
