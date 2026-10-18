@@ -240,6 +240,11 @@ export function referenceDigest(src: string): string {
 // image is not kept alive by the cache.
 let referenceDigests = new Map<string, string>();
 
+/** Drop the cached digests (and with them the uploads they are keyed on) once no preview is shown. */
+export function clearPreviewDigests(): void {
+  referenceDigests = new Map();
+}
+
 /** What a preview caption was written for: the prompt, the variant and the reference images. */
 export function previewSignature(body: PromptUpsamplerPreviewRequest): string {
   const next = new Map<string, string>();

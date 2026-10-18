@@ -50156,6 +50156,10 @@ async def load_diffusion_model_gated(
             # worker is handed the credential.
             for _ref in _media_repos_to_record:
                 _note_load_fetched_with_a_request_token(_ref, request.hf_token)
+            # Past admission: the upsampler serves the model being replaced, and a same-owner swap runs no eviction.
+            from core.inference.flux3_prompt_upsampler import stop_for_handover
+
+            stop_for_handover()
             # Kicks the slow load onto a background thread and returns at once (the client polls images/load-progress).
             return engine.begin_load(
                 request.model_path,
@@ -50545,7 +50549,8 @@ async def _enhance_generate_prompts(backend, request: DiffusionGenerateRequest):
             )
     except pup.UpsamplerCancelledError:
         raise HTTPException(status_code = 409, detail = DIFFUSION_CANCELLED_MSG)
-    if outcome.captions:
+    if outcome.status not in (None, pup.STATUS_OFF):
+        # Every attempted enhancement, a fallback too: a model swapped in meanwhile retries with its own default.
         from core.inference.diffusion_families import load_identity
 
         outcome.load = load_identity(status.get("repo_id"), status.get("base_repo"), family)
@@ -51472,8 +51477,7 @@ async def unload_diffusion_model(
 
     # Blocking: DIFFUSION ownership is dropped below, so a sidecar still starting or answering would sit beside the
     # next owner without an eviction to stop it.
-    pup.cancel_active()
-    await asyncio.to_thread(pup.unload_sidecar, True)
+    await asyncio.to_thread(pup.stop_for_handover)
     # Drop DIFFUSION ownership only if nothing is resident AND no load is in flight, or a later chat load skips eviction and
     # OOMs the new pipeline. An in-flight load reads is_loaded False, so gate on loading_repo_ids() and use release_if.
     engine = get_active_diffusion_engine()

@@ -11,6 +11,7 @@ under the lock, so a transfer is atomic vs other acquires.
 
 from __future__ import annotations
 
+import sys
 import threading
 from typing import Any, Callable, Optional
 
@@ -79,10 +80,17 @@ def _evict_diffusion() -> None:
     # Unload whichever engine the router has active (diffusers or native sd.cpp).
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
     get_active_diffusion_engine().unload()
-    # The FLUX.3 prompt upsampler serves the image model, so it leaves with it.
+    _stop_prompt_upsampler()
+
+
+def _stop_prompt_upsampler() -> None:
+    """The FLUX.3 prompt upsampler serves the image model, so it leaves with every DIFFUSION claim: an evicted, a
+    released or a replaced one. Only if Images ever started it."""
+    module = sys.modules.get("core.inference.flux3_prompt_upsampler")
+    if module is None:
+        return
     try:
-        from core.inference.flux3_prompt_upsampler import unload_sidecar
-        unload_sidecar(wait = True)
+        module.stop_for_handover()
     except Exception as exc:  # noqa: BLE001 - never block an acquire on this
         logger.warning("gpu_arbiter: could not stop the FLUX.3 prompt upsampler: %s", exc)
 
@@ -258,6 +266,8 @@ def release(owner: str) -> None:
     global _owner, _owner_epoch, _owner_account, _prior_account
     with _lock:
         if _owner == owner:
+            if owner == DIFFUSION:
+                _stop_prompt_upsampler()
             _owner = None
             _owner_account = None
             _prior_account = None
@@ -275,6 +285,8 @@ def release_if(owner: str, predicate: Callable[[], bool]) -> bool:
     with _lock:
         if _owner != owner or not predicate():
             return False
+        if owner == DIFFUSION:
+            _stop_prompt_upsampler()
         _owner = None
         _owner_account = None
         _prior_account = None

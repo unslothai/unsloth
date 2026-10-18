@@ -1117,6 +1117,13 @@ def get_sidecar() -> PromptUpsamplerSidecar:
         return _sidecar
 
 
+def stop_for_handover() -> None:
+    """The image model the server serves is leaving the GPU: stop every run still enhancing and the server, blocking,
+    so nothing of it outlives the DIFFUSION claim."""
+    cancel_active()
+    unload_sidecar(wait = True)
+
+
 def unload_sidecar(wait: bool = False) -> None:
     """Stop the server if one was ever started (the FLUX.3 model it serves was unloaded). Never creates one.
     ``wait`` also stops a busy one, for a GPU handover."""

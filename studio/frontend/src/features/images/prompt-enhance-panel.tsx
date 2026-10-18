@@ -30,6 +30,7 @@ import {
   type PromptUpsamplerStatus,
   upsamplerDownloadBytes,
   upsamplerNeedsDownload,
+  clearPreviewDigests,
   previewSignature,
   upsamplerDownloadFraction,
 } from "./lib/prompt-enhance";
@@ -199,6 +200,11 @@ export function EnhancePromptControls({
   }, [status?.download.downloading, refresh]);
 
   const [preview, setPreview] = useState<{ signature: string; caption: string } | null>(null);
+  // The stale check stops running without a preview, so its cache would otherwise keep the last uploads alive.
+  useEffect(() => {
+    if (preview === null) clearPreviewDigests();
+  }, [preview]);
+  useEffect(() => clearPreviewDigests, []);
   const [previewOpen, setPreviewOpen] = useState(true);
   const [previewing, setPreviewing] = useState(false);
   const previewSeq = useRef(0);

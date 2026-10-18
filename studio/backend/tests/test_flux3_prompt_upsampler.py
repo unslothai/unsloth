@@ -996,8 +996,48 @@ def test_arbiter_diffusion_eviction_stops_the_upsampler(monkeypatch):
     sidecar = _ResidentUpsampler()
     monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: _Engine())
     monkeypatch.setattr(pup, "_sidecar", sidecar)
-    gpu_arbiter._evict_diffusion()
+    import sys
+
+    monkeypatch.setitem(sys.modules, "core.inference.flux3_prompt_upsampler", pup)
+    event = threading.Event()
+    with pup._tracking(1, event):
+        gpu_arbiter._evict_diffusion()
+        # The run answering is stopped first, so the handover does not wait out its caption.
+        assert event.is_set()
     assert sidecar.unloaded == [True]
+
+
+def test_every_drop_of_the_diffusion_claim_stops_the_upsampler(monkeypatch):
+    import sys
+
+    from core.inference import gpu_arbiter
+
+    stops = []
+    monkeypatch.setitem(sys.modules, "core.inference.flux3_prompt_upsampler", pup)
+    monkeypatch.setattr(pup, "stop_for_handover", lambda: stops.append(gpu_arbiter.current_owner()))
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.DIFFUSION)
+    # A switch to a CPU-only image model releases the claim without an eviction.
+    gpu_arbiter.release(gpu_arbiter.DIFFUSION)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.DIFFUSION)
+    assert gpu_arbiter.release_if(gpu_arbiter.DIFFUSION, lambda: True)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    gpu_arbiter.release(gpu_arbiter.CHAT)
+    # Stopped while DIFFUSION still held the claim, so no other owner can start beside it.
+    assert stops == [gpu_arbiter.DIFFUSION, gpu_arbiter.DIFFUSION]
+
+
+def test_a_failed_enhancement_still_binds_the_generation_to_its_model(routes, runnable):
+    from core.inference.diffusion_families import load_identity
+
+    client, backend, saved = routes
+    runnable.error = RuntimeError("boom")
+    status = backend.status()
+    r = client.post("/api/inference/images/generate", json = {"prompt": "a cat", "steps": 4})
+    assert r.status_code == 200, r.text
+    assert r.json()["images"][0]["prompt_enhancement"] == "failed"
+    assert backend.calls[-1]["expected_load"] == load_identity(
+        status.get("repo_id"), status.get("base_repo"), "flux.3-klein"
+    )
 
 
 def test_a_queued_enhancement_keeps_the_active_one_tracked_and_stop_reaches_both():
