@@ -1272,7 +1272,7 @@ _MAGICK_CODER_PREFIX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]+:(?=[/\\~]|[A-Za-z
 
 def _segment_runs_magick(segment) -> bool:
     command = next((t for t in segment if not _SHELL_ASSIGN_TOKEN_RE.match(t)), "")
-    return _token_command_base(command) in _MAGICK_COMMANDS
+    return _tools._token_command_base(command) in _MAGICK_COMMANDS
 
 
 def _magick_images(args) -> "list[str]":
