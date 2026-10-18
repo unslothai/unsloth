@@ -601,6 +601,22 @@ def test_a_32_mb_image_fits_last_frame_and_reference_images():
         VideoJobCreateRequest(prompt = "x", last_frame = over)
     with pytest.raises(ValidationError, match = "each reference image must be at most 32 MB"):
         VideoJobCreateRequest(prompt = "x", reference_images = [over])
-    audio = "data:audio/wav;base64," + "A" * (32 * 1024 * 1024)
+    audio = "data:audio/wav;base64," + "A" * (33 * 1024 * 1024)
     with pytest.raises(ValidationError, match = "each reference audio must be at most 24 MB"):
         VideoJobCreateRequest(prompt = "x", reference_images = [header], reference_audios = [audio])
+
+
+def test_a_24_mb_audio_data_url_fits_reference_audios():
+    from pydantic import ValidationError
+
+    from models.inference import VideoJobCreateRequest
+
+    # The full 24 MB the upload and id paths accept, plus its data URL header.
+    audio = "data:audio/wav;base64," + "A" * (((24 * 1024 * 1024 + 2) // 3) * 4)
+    image = _reference_data_url("PNG", "image/png")
+    body = VideoJobCreateRequest(prompt = "x", reference_images = [image], reference_audios = [audio])
+    assert body.reference_audios == [audio]
+    with pytest.raises(ValidationError, match = "each reference audio must be at most 24 MB"):
+        VideoJobCreateRequest(
+            prompt = "x", reference_images = [image], reference_audios = [audio + "A" * 65536]
+        )

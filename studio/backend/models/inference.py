@@ -34,6 +34,9 @@ from core.inference.llama_server_args import (
 )
 from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
 from utils.upload_limits import VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES
+
+# A 24 MB reference audio as a base64 data URL, with room for its header.
+_VIDEO_REFERENCE_AUDIO_MAX_CHARS = ((24 * 1024 * 1024 + 2) // 3) * 4 + 64 * 1024
 from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 from models.providers import ProviderReasoningConfig
@@ -6113,14 +6116,17 @@ class VideoJobCreateRequest(BaseModel):
         None,
         max_length = 9,
         description = "Subject, style or scene references, at most 9, in the shapes "
-        "input_reference takes. The prompt calls them <Picture 1>, <Picture 2>, ... in order.",
+        "input_reference takes. The prompt calls them <Picture 1>, <Picture 2>, ... in order. "
+        "One request body carries about 32 MB of images and audio in all.",
     )
     reference_audios: Optional[list[Union[str, AudioSourceRef]]] = Field(
         None,
         max_length = 3,
-        description = "Voice or score references, at most 3: a file upload, a base64 data URL "
-        'or an Unsloth Studio audio id {"input_id" | "clip_id" | "voice_id": ...}. The prompt '
-        "calls them <Audio 1>, <Audio 2>, ... in order. They need a reference image to go with.",
+        description = "Voice or score references, at most 3 of up to 24 MB each: a file upload, a "
+        'base64 data URL or an Unsloth Studio audio id {"input_id" | "clip_id" | "voice_id": ...}. '
+        "The prompt calls them <Audio 1>, <Audio 2>, ... in order. They need a reference image "
+        "to go with. Inline audio counts toward the request body's 32 MB, so send larger or "
+        "several clips as ids (POST /v1/audio/inputs stores one).",
     )
 
     @field_validator("model", "seconds", "size", mode = "before")
@@ -6153,7 +6159,7 @@ class VideoJobCreateRequest(BaseModel):
         # Bound each item like last_frame, so a list cannot buffer what one field may not:
         # a 32 MB image or a 24 MB audio clip, base64-encoded.
         image = info.field_name == "reference_images"
-        cap = VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES if image else 32 * 1024 * 1024
+        cap = VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES if image else _VIDEO_REFERENCE_AUDIO_MAX_CHARS
         for item in value or []:
             if isinstance(item, str) and len(item) > cap:
                 raise ValueError(

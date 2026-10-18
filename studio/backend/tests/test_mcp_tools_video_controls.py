@@ -114,12 +114,16 @@ def test_images_share_the_one_request_budget_of_video_requests(monkeypatch):
 
     # The budget covers first_frame, last_frame and reference_images together.
     monkeypatch.setattr(video_tool, "VIDEO_INPUT_REFERENCE_MAX_BYTES", 2 * len(PNG))
-    ok = {"prompt": "x", "first_frame": PNG_URL, "reference_images": [PNG_URL]}
-    result, studio = run_tool(monkeypatch, _studio(), "generate_video", ok)
-    assert result["isError"] is False, result
+    for ok in (
+        {"prompt": "x", "first_frame": PNG_URL, "last_frame": PNG_URL},
+        {"prompt": "x", "reference_images": [PNG_URL] * 2},
+    ):
+        result, studio = run_tool(monkeypatch, _studio(), "generate_video", ok)
+        assert result["isError"] is False, result
+    monkeypatch.setattr(video_tool, "VIDEO_INPUT_REFERENCE_MAX_BYTES", 2 * len(PNG) - 1)
     for args in (
-        {**ok, "last_frame": PNG_URL},
-        {"prompt": "x", "reference_images": [PNG_URL] * 3},
+        {"prompt": "x", "first_frame": PNG_URL, "last_frame": PNG_URL},
+        {"prompt": "x", "reference_images": [PNG_URL] * 2},
     ):
         result, studio = run_tool(monkeypatch, _studio(), "generate_video", args)
         assert result["isError"] is True
@@ -157,3 +161,20 @@ def test_reference_audio_over_the_video_cap_is_refused_before_any_upload(monkeyp
     clip.write_bytes(_WAV)
     with pytest.raises(ToolError, match = "24 MB"):
         video_tool._refuse_large_audio(make_caller(), AudioInput(path = str(clip)))
+
+
+@pytest.mark.parametrize(
+    "args, text",
+    [
+        ({"seconds": 4, "num_frames": 49}, "not both"),
+        ({"last_frame": PNG_URL}, "last_frame cannot be combined"),
+        ({"first_frame": PNG_URL}, "first_frame cannot be combined"),
+    ],
+)
+def test_combinations_the_route_refuses_never_upload_audio(monkeypatch, args, text):
+    audio = {"data_base64": b64(_WAV), "filename": "v.wav"}
+    body = {"prompt": "x", "reference_images": [PNG_URL], "reference_audios": [audio], **args}
+    result, studio = run_tool(monkeypatch, _studio(), "generate_video", body)
+    assert result["isError"] is True
+    assert text in result["content"][0]["text"]
+    assert studio.state.calls == []
