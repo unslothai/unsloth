@@ -3,6 +3,8 @@
 
 """plan_load: what a load would download and unload, checked against what the same load then does."""
 
+import asyncio
+
 import pytest
 from fastapi.responses import JSONResponse
 
@@ -497,3 +499,16 @@ def test_an_unreadable_listing_is_no_proof_a_variant_is_missing(monkeypatch):
     }
     plan = _plan(monkeypatch, world, {"model": QWEN, "variant": "Q4_K_M"})
     assert plan["variants"] == [] and plan["would_evict_exact"] is False
+
+
+def test_a_stalled_status_read_gives_an_upper_bound_not_a_hang(monkeypatch):
+    from studio_mcp import placement
+
+    async def stalled(request, body):
+        await asyncio.sleep(10)
+        return {}
+
+    monkeypatch.setattr(placement, "READ_S", 0.05)
+    world = {**_world("off", [QWEN]), ("GET", "/api/inference/audio/stt/status"): stalled}
+    plan = _plan(monkeypatch, world, {"model": "openai/whisper-large-v3", "kind": "stt"})
+    assert plan["would_evict_exact"] is False

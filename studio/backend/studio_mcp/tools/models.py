@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated, Any, Literal, Optional
 from urllib.parse import quote
 
@@ -85,6 +86,9 @@ GpuLayers = Annotated[
         description = "GGUF models: how many layers to put on the GPU (0 runs on the CPU); unset lets Unsloth Studio fit as many as it can.",
     ),
 ]
+
+# plan_load's overall bound, above the 15 s each of its reads may take.
+PLAN_S = 60
 
 KIND_BY_TASK = {
     "text-to-image": "image",
@@ -323,7 +327,8 @@ async def plan_load(
     ``residents`` are the models loaded now, and ``would_evict`` the ones this load would unload; pass the same ``device``, ``gpu_layers``, ``kv_cache_type``, ``alongside``, image or video options and ``hf_token`` you would pass to load_model.
     Under Keep multiple models loaded set to Off the prediction is exact when it does not depend on where Unsloth Studio places the load; unloading another kind of model (which happens only when the load reaches the GPU), and every prediction under When they fit, is an upper bound (``would_evict_exact`` false).
     Under Always nothing is unloaded and ``would_refuse`` says the load may be refused instead; unload_model(kind="all"), alongside=true or device="cpu" avoid that."""
-    return await placement.plan_load(
+    # A preview never hangs: each read inside is bounded, and so is the whole plan.
+    plan = placement.plan_load(
         current_caller(),
         model = model,
         kind = kind,
@@ -342,6 +347,10 @@ async def plan_load(
         gpu_layers = gpu_layers,
         kv_cache_type = kv_cache_type,
     )
+    try:
+        return await asyncio.wait_for(plan, PLAN_S)
+    except asyncio.TimeoutError:
+        raise ToolError(f"Unsloth Studio did not answer within {PLAN_S} s; try plan_load again.")
 
 
 TOOLS = (

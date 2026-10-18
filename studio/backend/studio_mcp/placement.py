@@ -387,6 +387,14 @@ def predict(
     return upper + [s for s in off_set if s not in upper], False, False
 
 
+async def _bounded(caller: Caller, path: str) -> Any:
+    # A stalled read is an unreadable one: the plan then says it is an upper bound.
+    try:
+        return await asyncio.wait_for(try_json(caller, path), READ_S)
+    except asyncio.TimeoutError:
+        return None
+
+
 async def _post_json(caller: Caller, path: str, body: dict) -> Any:
     try:
         response = await forward(caller, "POST", path, json_body = body, hub_header = True)
@@ -422,10 +430,7 @@ async def plan_load(
     await require_cpu_gguf(caller, kind, model, variant, device, gpu_layers)
     await refuse_partial_variant(caller, model, kind, variant)
     status, image, video, stt = await asyncio.gather(
-        try_json(caller, STATUS),
-        try_json(caller, MEDIA_STATUS["image"]),
-        try_json(caller, MEDIA_STATUS["video"]),
-        try_json(caller, STT_STATUS),
+        *(_bounded(caller, path) for path in (STATUS, *MEDIA_STATUS.values(), STT_STATUS))
     )
     repo, variant = _split(model, variant)
     rows: list[dict] = []
