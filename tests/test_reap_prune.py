@@ -935,3 +935,54 @@ def test_shared_layer_state_follows_each_layer_without_offloading(monkeypatch):
         offload_hidden_states = False,
     )
     assert moved and set(moved) == {torch.device("cpu")}
+
+
+def test_mistral_common_backend_is_not_unwrapped():
+    # MistralCommonBackend is an HF tokenizer whose `.tokenizer` is the raw mistral_common one,
+    # which has neither __call__ nor apply_chat_template. Only processors are unwrapped.
+    from transformers import ProcessorMixin
+
+    class Raw:
+        pass
+
+    class Backend:
+        tokenizer = Raw()
+        chat_template = "{{ messages[0]['content'] }}"
+        pad_token_id = 0
+
+        def __call__(
+            self,
+            text,
+            truncation = True,
+            max_length = None,
+        ):
+            return {"input_ids": [5, 6, 7][:max_length]}
+
+        def apply_chat_template(
+            self,
+            messages,
+            tokenize = False,
+            **kwargs,
+        ):
+            return messages[0]["content"]
+
+    backend = Backend()
+    assert reap._text_tokenizer(backend) is backend
+    ids = reap._calibration_ids([{"messages": [{"role": "user", "content": "hi"}]}], backend, 4, 8)
+    assert ids == [[5, 6, 7]]
+    processor = ProcessorMixin.__new__(ProcessorMixin)
+    processor.tokenizer = backend
+    assert reap._text_tokenizer(processor) is backend
+
+
+def test_saved_pruned_checkpoint_carries_its_provenance(tmp_path):
+    import json
+
+    model = _qwen3_moe(seed = 0)
+    source = model.config._name_or_path
+    reap.reap_prune(
+        model, None, sparsity = 0.5, dataset = _samples(), device = "cpu", save_directory = str(tmp_path)
+    )
+    data = json.loads((tmp_path / reap.REAP_PROVENANCE_FILE).read_text(encoding = "utf-8"))
+    assert data["source_model"] == source
+    assert data["kept_experts"] == {k: list(v) for k, v in model._unsloth_reap_report.items()}

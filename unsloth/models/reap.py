@@ -188,9 +188,19 @@ def _row_text(row, tokenizer, chat):
     return chat.apply_chat_template(messages, tokenize = False, add_generation_prompt = False, **kwargs)
 
 
+def _text_tokenizer(tokenizer):
+    """The text tokenizer of a processor. Only a processor is unwrapped: MistralCommonBackend is
+    itself an HF tokenizer but keeps its raw mistral_common backend in ``.tokenizer``."""
+    try:
+        from transformers import ProcessorMixin
+    except ImportError:
+        return tokenizer
+    return tokenizer.tokenizer if isinstance(tokenizer, ProcessorMixin) else tokenizer
+
+
 def _calibration_ids(dataset, tokenizer, num_samples, max_seq_length):
     """Token id lists, truncated to ``max_seq_length`` like llm-compressor's tokenize step."""
-    text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    text_tokenizer = _text_tokenizer(tokenizer)
     chat = tokenizer if getattr(tokenizer, "chat_template", None) else text_tokenizer
     if dataset is None:
         dataset = _DEFAULT_DATASET
@@ -354,6 +364,10 @@ def _collective_device():
         index = getattr(accel, "current_device_index", None) or accel.current_device_idx
         device = torch.device(accel.current_accelerator().type, index())
     return device, torch.float64 if device.type in ("cuda", "cpu") else torch.float32
+
+
+# Written next to a pruned checkpoint saved by reap_prune(..., save_directory).
+REAP_PROVENANCE_FILE = "unsloth_reap.json"
 
 
 def _stream_in(layer, device):
@@ -803,7 +817,7 @@ def reap_prune(
     device = torch.device(device)
 
     pad_id = 0
-    text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    text_tokenizer = _text_tokenizer(tokenizer)
     if text_tokenizer is not None:
         pad_id = text_tokenizer.pad_token_id
         if pad_id is None:
@@ -1051,6 +1065,7 @@ def reap_prune(
     model._unsloth_reap_saliency = saliencies
     if save_directory is not None:
         save_directory = os.path.abspath(save_directory)
+        source_model = getattr(model.config, "_name_or_path", None)
         # Every rank pruned the same experts (summed saliency); one writes, the rest wait for it.
         dist = torch.distributed
         multi_rank = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
@@ -1060,6 +1075,11 @@ def reap_prune(
                 model.save_pretrained(save_directory)
                 if tokenizer is not None:
                     tokenizer.save_pretrained(save_directory)
+                # Survives a reload, unlike the in-process marker: the adapter push guard reads it.
+                with open(
+                    os.path.join(save_directory, REAP_PROVENANCE_FILE), "w", encoding = "utf-8"
+                ) as f:
+                    json.dump({"source_model": source_model, "kept_experts": report}, f, indent = 1)
             except Exception as e:
                 error = e
         # Rank 0 shares whether its write worked (this also syncs the ranks before going on).
