@@ -481,7 +481,23 @@ const ATOMIC_SETTING_KEYS = new Set<string>(["ragSource"]);
 const NESTED_MAP_SETTING_KEYS = new Set<string>(["inferenceParamsByModel"]);
 
 function mergePatch(into: SettingsPatch, more: SettingsPatch): void {
+  // The server forgets before it merges, so an older queued edit to a forgotten model goes too.
+  const forget = more.forgetInferenceParamsByModel;
+  if (forget?.length) {
+    const byModel = into.inferenceParamsByModel;
+    if (byModel) {
+      into.inferenceParamsByModel = Object.fromEntries(
+        Object.entries(byModel).filter(([id]) => !forget.includes(id)),
+      );
+    }
+    into.forgetInferenceParamsByModel = [
+      ...new Set([...(into.forgetInferenceParamsByModel ?? []), ...forget]),
+    ];
+  }
   for (const [key, value] of Object.entries(more)) {
+    if (key === "forgetInferenceParamsByModel") {
+      continue;
+    }
     const intoAny = into as Record<string, unknown>;
     const prev = intoAny[key];
     if (ATOMIC_SETTING_KEYS.has(key)) {
@@ -2702,6 +2718,9 @@ type ChatRuntimeStore = {
       /** Defaults came from the server-resident model at startup, so a legacy
        * global snapshot can be attributed to it. */
       migrateOwnedGlobalQwenDefaults?: boolean;
+      /** A preset pick: not an edit of the loaded model, so its remembered params are dropped
+       *  instead of overwritten, and its recommendation applies again on the next load. */
+      fromPreset?: boolean;
     },
   ) => void;
   setCustomPresets: (presets: Preset[]) => void;
@@ -2967,6 +2986,8 @@ const SCALAR_SETTING_KEYS = [
 // Ids this browser holds a local answer for. Hydration keeps these and merges the rest, so a
 // pre-hydration edit cannot drop other models.
 const locallyRememberedModels = new Set<string>();
+// Models whose params came from a preset pick, until an edit or their own defaults replace them.
+const modelsShowingPresetPick = new Set<string>();
 // Per-model edits made before the settings response landed, held as PATCHES rather than rows.
 // The set above is overlaid wholesale, which is right for a row built from a hydrated entry but
 // not for one typed before there was an entry: that row names only the keys the user touched, so
@@ -3159,6 +3180,7 @@ function trackParamsByModel(
   }
   if (paramsByModel && modelId) {
     locallyRememberedModels.add(modelId);
+    modelsShowingPresetPick.delete(modelId);
   }
   return paramsByModel;
 }
@@ -3208,6 +3230,28 @@ function getParamsByModelAfterEdit(
   return recorded ?? outgoing;
 }
 
+/** The map without `modelId`'s entry, or the outgoing snapshot when there is none to drop. The
+ *  server is told to forget it too, since its merge cannot remove a key. */
+function forgetModelParams(
+  state: ChatRuntimeStore,
+  outgoing: Record<string, PersistedInferenceParams> | null,
+  modelId: string,
+): Record<string, PersistedInferenceParams> | null {
+  if (!(state.rememberParamsPerModel && modelId && state.settingsHydrated)) {
+    return outgoing;
+  }
+  const current = outgoing ?? state.paramsByModel;
+  locallyRememberedModels.delete(modelId);
+  modelsShowingPresetPick.add(modelId);
+  saveSettingsPatch({ forgetInferenceParamsByModel: [modelId] });
+  if (current[modelId] === undefined) {
+    return outgoing;
+  }
+  return Object.fromEntries(
+    Object.entries(current).filter(([id]) => id !== modelId),
+  );
+}
+
 /** Snapshot the model being switched away from, so a model that was never edited still keeps what it ran with. */
 function rememberOutgoingModel(
   state: ChatRuntimeStore,
@@ -3215,6 +3259,14 @@ function rememberOutgoingModel(
 ): Record<string, PersistedInferenceParams> | null {
   if (!state.settingsHydrated && outgoing.checkpoint) {
     modelLeftBeforeHydration = outgoing.checkpoint;
+  }
+  // A custom preset's values, or Default's fixed ones before a status lands, are not this model's
+  // own: filed, they outranked its recommendation on every later load (#14068).
+  if (
+    state.activePresetSource === "custom" ||
+    modelsShowingPresetPick.has(outgoing.checkpoint)
+  ) {
+    return null;
   }
   const picked = pickRememberedParams(
     withoutActiveThreadParams(state, outgoing),
@@ -4710,6 +4762,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const outgoing = checkpointChanged
         ? rememberOutgoingModel(state, state.params)
         : null;
+      if (fromModelDefaults && state.activePresetSource === "builtin-default") {
+        modelsShowingPresetPick.delete(params.checkpoint);
+      }
       // An interactive local load arrives with the destination checkpoint and recommended params, reaching
       // setCheckpoint only later, so replay here or the switch never restores the model's own settings.
       noteLoadedContext(params.checkpoint, options?.maxTokensCap);
@@ -4757,19 +4812,22 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           : changedParams;
       // An edit belongs to the model the params now describe, so a call moving checkpoint and
       // sliders at once files them under the destination.
-      const paramsByModel = getParamsByModelAfterEdit(
-        state,
-        outgoing,
-        nextParams,
-        sharedParams,
-        options?.persist !== false && !fromModelDefaults,
-      );
+      const fromPreset = options?.fromPreset === true;
+      const paramsByModel = fromPreset
+        ? forgetModelParams(state, outgoing, nextParams.checkpoint)
+        : getParamsByModelAfterEdit(
+            state,
+            outgoing,
+            nextParams,
+            sharedParams,
+            options?.persist !== false && !fromModelDefaults,
+          );
       if (persistingGlobally) {
         // A switch replays the destination's entry over the params, so writing it back says nothing
         // new and, merged per key, would overwrite another tab's copy.
         persistParamEdit(
           sharedParams,
-          checkpointChanged ? null : paramsByModel,
+          checkpointChanged || fromPreset ? null : paramsByModel,
           nextParams.checkpoint,
         );
         // Level with what was just written, or a chat opened later this session falls back to the

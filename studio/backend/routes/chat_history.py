@@ -544,6 +544,8 @@ class ChatSettingsPayload(BaseModel):
     # Last-used params per checkpoint id. Deep-merged per key, so patching one
     # model cannot drop another's.
     inferenceParamsByModel: Optional[dict[str, ChatInferenceSettings]] = None
+    # Model ids whose entry above is removed before this patch merges; never stored.
+    forgetInferenceParamsByModel: Optional[list[str]] = Field(default = None, max_length = 1_000)
     rememberParamsPerModel: Optional[bool] = None
     customPresets: Optional[list[ChatPreset]] = None
     activePreset: Optional[str] = None

@@ -5568,6 +5568,23 @@ def _deep_merge_settings(current: dict[str, Any], updates: dict[str, Any]) -> di
     return merged
 
 
+# A command, not a setting: model ids whose remembered params are dropped before the rest of the
+# patch merges, since a deep merge can only add or overwrite (#14068).
+_FORGET_PARAMS_KEY = "forgetInferenceParamsByModel"
+
+
+def _merge_settings_updates(current: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
+    updates = dict(updates)
+    forget = updates.pop(_FORGET_PARAMS_KEY, None) or []
+    by_model = current.get("inferenceParamsByModel")
+    if forget and isinstance(by_model, dict):
+        current = {
+            **current,
+            "inferenceParamsByModel": {k: v for k, v in by_model.items() if k not in forget},
+        }
+    return _deep_merge_settings(current, updates)
+
+
 def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
     """Atomic read-merge-write under BEGIN IMMEDIATE so concurrent writers
     cannot drop each other's updates."""
@@ -5590,7 +5607,7 @@ def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
             raise CorruptSettingsError(
                 f"Cannot apply partial settings patch to corrupt key(s): {keys}"
             )
-        merged = _deep_merge_settings(current, updates)
+        merged = _merge_settings_updates(current, updates)
         now = datetime.now(timezone.utc).isoformat()
         conn.executemany(
             """
@@ -5676,7 +5693,7 @@ def upsert_chat_settings_merge_if_current(
             # those timestamps reads as a settings change.
             conn.commit()
             return current, True
-        merged = _deep_merge_settings(current, updates)
+        merged = _merge_settings_updates(current, updates)
         now = datetime.now(timezone.utc).isoformat()
         conn.executemany(
             """

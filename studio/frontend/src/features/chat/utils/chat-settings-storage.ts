@@ -307,6 +307,12 @@ export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   if (inferenceParamsByModel) {
     settings.inferenceParamsByModel = inferenceParamsByModel;
   }
+  if (Array.isArray(value.forgetInferenceParamsByModel)) {
+    const forget = value.forgetInferenceParamsByModel.filter(
+      (id): id is string => typeof id === "string" && id.length > 0,
+    );
+    if (forget.length > 0) settings.forgetInferenceParamsByModel = forget;
+  }
   if (rememberParamsPerModel !== undefined) {
     settings.rememberParamsPerModel = rememberParamsPerModel;
   }

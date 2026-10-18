@@ -59,10 +59,24 @@ function pathExists(current: unknown, path: string[]): boolean {
   return true;
 }
 
-function deepMerge(
+export function deepMerge(
   current: Record<string, unknown>,
   patch: Record<string, unknown>,
 ): Record<string, unknown> {
+  // The backend's forget command: drop those entries first, never store the key.
+  const { forgetInferenceParamsByModel: forget, ...rest } = patch;
+  if (Array.isArray(forget)) {
+    const byModel = current.inferenceParamsByModel;
+    if (byModel && typeof byModel === "object") {
+      current = {
+        ...current,
+        inferenceParamsByModel: Object.fromEntries(
+          Object.entries(byModel).filter(([id]) => !forget.includes(id)),
+        ),
+      };
+    }
+    patch = rest;
+  }
   const merged = { ...current };
   for (const [key, value] of Object.entries(patch)) {
     const existing = merged[key];
