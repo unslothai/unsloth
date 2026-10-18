@@ -674,7 +674,7 @@ export const VoiceOrb: FC = () => {
           // Transition the two things that change between states, not `all`:
           // that was also animating transform, which fights the breathe keyframe
           // on every state swap.
-          className="relative grid place-items-center transition-[box-shadow] duration-250 ease-out"
+          className="relative grid place-items-center transition-[box-shadow] duration-100 ease-out"
           aria-hidden
           style={{
             width: 140,
@@ -696,7 +696,7 @@ export const VoiceOrb: FC = () => {
               past it; clipped to the live blob (a circle when nothing is talking). */}
           <div
             ref={blobRef}
-            className="absolute grid place-items-center transition-[background] duration-250 ease-out"
+            className="absolute grid place-items-center"
             style={{
               width: ORB_BOX,
               height: ORB_BOX,
@@ -715,10 +715,12 @@ export const VoiceOrb: FC = () => {
           <AnimatePresence initial={false}>
             <motion.div
               key={showOverlay ? (meta?.icon ?? "none") : "hidden"}
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.9 }}
-              transition={{ duration: 0.18 }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              // Speaking and hearing trade places on every barge-in; a slow swap
+              // read as lag, so this is a quick fade and nothing else.
+              transition={{ duration: 0.09 }}
               style={{ display: "grid", placeItems: "center", gridArea: "1 / 1" }}
             >
               {meta && <OrbIcon icon={meta.icon} />}
@@ -735,10 +737,11 @@ export const VoiceOrb: FC = () => {
             {meta && (
               <motion.span
                 key={meta.label}
-                initial={{ opacity: 0, y: 6 }}
+                initial={{ opacity: 0, y: 3 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -6 }}
-                transition={{ duration: 0.22 }}
+                exit={{ opacity: 0, y: -3 }}
+                // mode="wait" plays exit then enter, so the swap costs twice this.
+                transition={{ duration: 0.09 }}
                 className="text-ui-13 font-medium uppercase tracking-[0.28em] text-foreground/55"
                 style={{ fontFamily: "var(--font-heading)" }}
               >
