@@ -325,3 +325,22 @@ def test_the_hf_token_argument_reaches_the_listing_and_the_plan(monkeypatch):
     assert result.get("isError") is not True
     (body,) = bodies(studio, "/api/inference/images/download-plan")
     assert body["hf_token"] == "hf_arg"
+
+
+def test_always_refuses_another_model_in_an_occupied_media_slot(monkeypatch):
+    world = _world("always", [], video = "other/video-model")
+    plan = _plan(monkeypatch, world, {"model": LTX, "kind": "video"})
+    assert plan["would_refuse"] is True and plan["would_evict"] == []
+
+
+def test_a_gguf_repo_is_known_by_its_listing_not_its_name(monkeypatch):
+    plan = _plan(monkeypatch, _world("off", []), {"model": "someone/qwen3-quants"})
+    assert [row["variant"] for row in plan["variants"]] == ["Q4_K_M", "Q8_0"]
+
+
+def test_a_native_tts_primary_makes_a_media_plan_an_upper_bound(monkeypatch):
+    # It may run on the CPU and keep its place, and status does not say which.
+    world = _world("off", [OUTETTS], is_audio = True)
+    plan = _plan(monkeypatch, world, {"model": FLUX_GGUF, "kind": "image"})
+    assert _names(plan["would_evict"]) == {("llm", OUTETTS)}
+    assert plan["would_evict_exact"] is False

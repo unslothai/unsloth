@@ -89,9 +89,18 @@ def _is_busy(response: httpx.Response) -> bool:
     )
 
 
+def _ended(item: QueuedVideo) -> bool:
+    # A submitted video runs until the next one starts (one at a time), so only the one this
+    # account's queue still waits on may be running; its queue id must keep working until then.
+    if item.status == "queued" or item.posting:
+        return False
+    running = _running.get(item.account_id)
+    return not (item.status == "submitted" and running and running[0] == item.video_id)
+
+
 def _evict() -> None:
     while len(_items) > CAPACITY:
-        oldest = next((k for k, item in _items.items() if item.status != "queued"), None)
+        oldest = next((k for k, item in _items.items() if _ended(item)), None)
         if oldest is None:
             return
         _items.pop(oldest)

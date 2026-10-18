@@ -344,10 +344,14 @@ def predict(
         upper = [] if joins and not gpu else off_set
         same = []
     else:
-        same = [s for s in media if s.kind == kind]
+        # Only another build of the same repo may replace the resident under Always; another model is refused.
+        same = [s for s in media if s.kind == kind and s.model.lower() == model.lower()]
         held = chat
         if chat and _cpu_primary(status):
             held, exact = chat[1:], False
+        elif chat and as_dict(status).get("is_audio") is True:
+            # A native TTS primary on the CPU holds no VRAM, but status does not say where it runs.
+            exact = False
         off_set = held + media
         upper = chat + media
     if mode == "off":
@@ -396,7 +400,8 @@ async def plan_load(
     repo, variant = _split(model, variant)
     rows: list[dict] = []
     row = listing = None
-    if kind != "stt" and is_gguf(repo, variant) and not is_local(repo):
+    # Whether it is a GGUF repo is the listing's answer, not the repo's spelling.
+    if kind != "stt" and not (is_local(repo) and repo.lower().endswith(".gguf")):
         listing = as_dict(await _variants(caller, repo))
         rows = [r for r in listing.get("variants") or [] if isinstance(r, dict)]
         row = pick_variant(listing, variant)
@@ -418,7 +423,12 @@ async def plan_load(
         )
     if kind in MEDIA_PLAN:
         body: dict[str, Any] = {"model_path": repo}
-        if row is not None and opt_text(row.get("filename")):
+        # The file load_media sends: a GGUF only for a named variant or a GGUF repo.
+        if (
+            (variant or "gguf" in repo.lower())
+            and row is not None
+            and opt_text(row.get("filename"))
+        ):
             body.update(gguf_filename = row["filename"], model_kind = "gguf")
         # The plan routes read the Hub token from the body, as the load routes do.
         if caller.hf_token:
