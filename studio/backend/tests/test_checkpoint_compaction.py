@@ -60,6 +60,29 @@ def _fit(messages, **kwargs):
     return fit_checkpoint_context(messages, **kwargs)
 
 
+@pytest.mark.parametrize("checkpoint_boundary", [True, False])
+def test_recount_cannot_deepen_an_existing_compaction_boundary(monkeypatch, checkpoint_boundary):
+    from core.inference import llama_cpp
+
+    def unexpected():
+        pytest.fail("Recounting must not probe or modify the archive")
+
+    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", unexpected)
+    messages = _thread(pad = 12, instruction = "")
+    _fitted, truncation = llama_cpp._fit_context(
+        messages,
+        context_length = 1200,
+        max_tokens = 200,
+        count_tokens = count,
+        sticky_dropped = 2,
+        sticky_is_checkpoint = checkpoint_boundary,
+        replay_only = True,
+    )
+
+    assert truncation["fits"] is False
+    assert truncation["dropped_messages"] <= 2
+
+
 def _turn(**overrides):
     """One stored conversation turn, with per-test overrides."""
     return {

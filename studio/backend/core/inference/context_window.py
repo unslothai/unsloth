@@ -831,6 +831,7 @@ def fit_rolling_context(
     keeps_boundary: bool = False,
     headroom_ratio: Optional[float] = None,
     estimate_message: Callable[[dict], int] = estimate_message_tokens,
+    replay_only: bool = False,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
     """Fit a chat into its context by dropping oldest complete turns; the current turn is never
     clipped.
@@ -863,6 +864,17 @@ def fit_rolling_context(
             fitted = candidate
             dropped_total = dropped
             current_tokens = count_tokens(fitted)
+
+    if replay_only:
+        if dropped_total == 0:
+            return messages, None
+        return fitted, {
+            "dropped_messages": dropped_total,
+            "prompt_tokens_before": initial_tokens,
+            "prompt_tokens_after": current_tokens,
+            "context_length": context_length,
+            "fits": current_tokens <= prompt_target,
+        }
 
     # Phase two: take a chunk out rather than skimming to the brim, so the boundary can stay put.
     trim_target = prompt_target

@@ -293,7 +293,10 @@ import {
 import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { savedBranchHead } from "./utils/branch-head";
 import { branchContextUsage, estimateBranch } from "./utils/saved-context-usage";
-import { refreshContextUsage } from "./utils/refresh-context-usage";
+import {
+  currentContextUsageReasoningKey,
+  refreshContextUsage,
+} from "./utils/refresh-context-usage";
 import { orderBySelectedBranch } from "./utils/message-order";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import {
@@ -4307,7 +4310,13 @@ export function ChatPage({
           const localWindow =
             checkpoint && !isExternalModelId(checkpoint) ? store.loadedContextLength : null;
           const usage =
-            branchContextUsage(branch, checkpoint, localWindow, store.loadedIsGguf ? localWindow : null) ??
+            branchContextUsage(
+              branch,
+              checkpoint,
+              localWindow,
+              store.loadedIsGguf ? localWindow : null,
+              currentContextUsageReasoningKey(),
+            ) ??
             estimateBranch(branch);
           if (!usage) return;
           // key usage by the restored thread because this read can outlast a thread switch.

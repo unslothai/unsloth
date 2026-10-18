@@ -2355,6 +2355,7 @@ type ContextUsageSnapshot = {
   // Anthropic-only; optional so pre-cache-stats persisted entries load.
   cacheWriteTokens?: number;
   modelId?: string;
+  reasoningKey?: string;
   // a text-length guess from storage, replaced by any count
   estimated?: boolean;
 };

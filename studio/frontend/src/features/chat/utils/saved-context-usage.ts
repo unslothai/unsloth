@@ -17,6 +17,7 @@ export type BranchContextUsage = {
   cachedTokens: number;
   cacheWriteTokens?: number;
   modelId?: string;
+  reasoningKey?: string;
   messageCount?: number;
   estimatedTokens?: number;
   revision?: number;
@@ -44,11 +45,20 @@ function revisionOf(custom: Record<string, unknown> | undefined): number {
   return typeof revision === "number" && Number.isInteger(revision) && revision > 0 ? revision : 0;
 }
 
+function researchRevisionOf(custom: Record<string, unknown> | undefined): number {
+  if (typeof custom?.researchRunId !== "string") return 0;
+  const run = custom.researchRun as { lastEventSeq?: unknown } | undefined;
+  const revision = custom.serverRevision ?? run?.lastEventSeq;
+  return typeof revision === "number" && Number.isInteger(revision) && revision > 0 ? revision : 0;
+}
+
 export function revisionTotal(
   messages: readonly { metadata?: { custom?: Record<string, unknown> } }[],
 ): number {
   let total = 0;
-  for (const message of messages) total += revisionOf(message.metadata?.custom);
+  for (const message of messages) {
+    total += revisionOf(message.metadata?.custom) + researchRevisionOf(message.metadata?.custom);
+  }
   return total;
 }
 
@@ -108,6 +118,7 @@ export function branchContextUsage(
   checkpoint: string | null | undefined,
   localWindow: number | null | undefined,
   ggufWindow: number | null | undefined,
+  reasoningKey?: string,
 ): BranchContextUsage | null {
   let revisions = 0;
   let anchor = -1;
@@ -115,6 +126,7 @@ export function branchContextUsage(
   branch.forEach((message, index) => {
     revisions += revisionOf(message.metadata);
     if (message.role !== "assistant") return;
+    if (typeof message.metadata?.researchRunId === "string") return;
     const usage = message.metadata?.contextUsage as BranchContextUsage | undefined;
     const context = usage?.contextTokens ?? usage?.totalTokens;
     if (!usage || typeof context !== "number" || !Number.isFinite(context) || context < 0) return;
@@ -124,6 +136,7 @@ export function branchContextUsage(
       : localWindow != null && localWindow > 0;
     if (!modelMatches || isSummedToolLoopUsage(usage, message.content)) return;
     const current =
+      (reasoningKey === undefined || isExternalModelId(checkpoint) || usage.reasoningKey === reasoningKey) &&
       (usage.revision ?? 0) === revisions &&
       (usage.messageCount === undefined || usage.messageCount === index + 1);
     if (current) {
@@ -164,6 +177,7 @@ export function sameContextUsage(
     shown.contextTokens === usage.contextTokens &&
     shown.cachedTokens === usage.cachedTokens &&
     shown.cacheWriteTokens === usage.cacheWriteTokens &&
+    shown.reasoningKey === usage.reasoningKey &&
     shown.modelId === (usage.modelId ?? checkpoint)
   );
 }

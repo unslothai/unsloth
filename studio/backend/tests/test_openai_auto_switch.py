@@ -5158,6 +5158,109 @@ def _counted_body(payload):
     return json.loads(response.body)
 
 
+@pytest.mark.parametrize("policy", ["checkpoint", "rolling"])
+def test_chat_count_tokens_replays_saved_compaction_without_archive_work(monkeypatch, policy):
+    from core.rag import conversation_archive
+
+    _count_tokens_backend(monkeypatch, supports_tools = True)
+    backend = inference_route.get_llama_cpp_backend()
+    backend._effective_context_length = 2048
+    counted = []
+
+    def count(messages, *_args, **_kwargs):
+        counted.append(messages)
+        return sum(max(1, len(str(message.get("content", ""))) // 4) for message in messages)
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("A token recount must not write or query the conversation archive")
+
+    backend.count_chat_tokens = count
+    monkeypatch.setattr(_tp, "get_tool_policy", lambda: None)
+    monkeypatch.setattr(conversation_archive, "enabled", lambda: True)
+    monkeypatch.setattr(conversation_archive, "can_archive", lambda _thread: True)
+    monkeypatch.setattr(conversation_archive, "has_archive", lambda _thread: True)
+    monkeypatch.setattr(conversation_archive, "archive_turns", unexpected)
+    monkeypatch.setattr(llama_cpp_mod, "_archive_is_degraded", unexpected)
+    monkeypatch.setattr(llama_cpp_mod, "_archive_and_recall", unexpected)
+    messages = []
+    for index in range(4):
+        messages.extend(
+            [
+                {"role": "user", "content": f"Old passage {index}: " + "x" * 3200},
+                {"role": "assistant", "content": f"Read passage {index}."},
+            ]
+        )
+    messages.extend(
+        [
+            {"role": "user", "content": "Continue with the current question."},
+            {"role": "assistant", "content": "Here is the current answer."},
+        ]
+    )
+    stored = [
+        {**message, "id": f"m-{index}", "parentId": f"m-{index - 1}" if index else None}
+        for index, message in enumerate(messages)
+    ]
+    stored[-1]["metadata"] = {
+        "contextTruncation": {
+            "fits": True,
+            "checkpoint": policy == "checkpoint",
+            "boundary_messages": 6,
+            "boundary_anchor": messages[6]["content"],
+        }
+    }
+    monkeypatch.setattr(studio_db, "list_chat_messages", lambda _thread: stored)
+    payload = _count_request(
+        messages,
+        thread_id = "compacted-thread",
+        context_overflow = "truncate_oldest",
+        context_policy = policy,
+        max_tokens = 256,
+        enable_tools = policy == "rolling",
+        enabled_tools = [],
+    )
+
+    body = _counted_body(payload)
+
+    assert 0 < body["input_tokens"] < 2048
+    rendered = json.dumps(counted[-1])
+    assert "Old passage 0" not in rendered
+    assert "Old passage 3" in rendered
+    assert "Here is the current answer." in rendered
+    assert "search_conversation" in rendered
+    assert body["input_tokens"] == count(counted[-1])
+
+
+@pytest.mark.parametrize("context_overflow", [None, "error", "truncate_oldest"])
+def test_chat_count_tokens_keeps_uncompacted_branches_intact(monkeypatch, context_overflow):
+    _count_tokens_backend(monkeypatch)
+    backend = inference_route.get_llama_cpp_backend()
+    backend._effective_context_length = 2048
+    messages = [
+        {"role": "user", "content": "old passage " + "x" * 12000},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "latest question"},
+    ]
+    seen = []
+
+    def count(candidate, *_args, **_kwargs):
+        seen.append(candidate)
+        return 3200
+
+    backend.count_chat_tokens = count
+    monkeypatch.setattr(studio_db, "list_chat_messages", lambda _thread: [])
+    body = _counted_body(
+        _count_request(
+            messages,
+            thread_id = "uncompacted-thread",
+            context_overflow = context_overflow,
+            enable_tools = False,
+        )
+    )
+
+    assert body["input_tokens"] == 3200
+    assert seen == [messages]
+
+
 @pytest.mark.parametrize(
     "content",
     [
@@ -5186,6 +5289,7 @@ def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
         tools_on,
         mcp_allowed,
         supports_vision = False,
+        checkpoint_fitted = False,
     ):
         gate.update(tools_on = tools_on, mcp_allowed = mcp_allowed)
         return [{"type": "function", "function": {"name": "web_search"}}]
@@ -5238,6 +5342,7 @@ def test_chat_count_tokens_strips_replayed_tool_markup(monkeypatch, fields, expe
         tools_on,
         mcp_allowed,
         supports_vision = False,
+        checkpoint_fitted = False,
     ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
@@ -5346,6 +5451,7 @@ def test_chat_count_tokens_prices_the_route_the_completion_takes(
         tools_on,
         mcp_allowed,
         supports_vision = False,
+        checkpoint_fitted = False,
     ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
@@ -5471,6 +5577,7 @@ def test_chat_count_tokens_dates_only_api_server_tool_prompts(monkeypatch):
         tools_on,
         mcp_allowed,
         supports_vision = False,
+        checkpoint_fitted = False,
     ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
@@ -5883,6 +5990,7 @@ def test_chat_count_tokens_counts_an_empty_chat_the_cli_policy_fills(monkeypatch
         tools_on,
         mcp_allowed,
         supports_vision = False,
+        checkpoint_fitted = False,
     ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 

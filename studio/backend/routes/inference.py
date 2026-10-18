@@ -43250,6 +43250,67 @@ def _count_model_id(model_id, via_api_key):
     ]
 
 
+def _count_chat_context_tokens(backend, payload, messages, tools, template_kwargs):
+    from core.inference.llama_cpp import (
+        _can_reset_epoch,
+        _compaction_fit_kwargs,
+        _fit_with_instruction_pins,
+        _memory_tool_withheld,
+        _sticky_compaction_details,
+    )
+
+    def count_tokens(candidate):
+        return backend.count_chat_tokens(
+            candidate,
+            None,
+            tools,
+            strict = True,
+            chat_template_kwargs = template_kwargs,
+            should_abort = lambda: model_slots.routed_generation_count() > 0,
+        )
+
+    context_length = getattr(backend, "_effective_context_length", None)
+    thread_id = getattr(payload, "thread_id", None)
+    if _rolling_context_policy(payload) is not None and context_length and thread_id:
+        policy = _request_context_policy(payload)
+        ratio = _request_compaction_headroom_ratio(payload)
+        can_reset = _can_reset_epoch(
+            thread_id,
+            backend.supports_tools,
+            tools_withheld = _memory_tool_withheld(thread_id, tools),
+        )
+        sticky, checkpoint, manual = _sticky_compaction_details(
+            thread_id,
+            messages,
+            context_policy = policy,
+            can_reset = can_reset,
+            compaction_headroom_ratio = ratio,
+        )
+        if sticky > 0:
+            fitted, truncation = _fit_with_instruction_pins(
+                messages,
+                context_length = context_length,
+                max_tokens = getattr(payload, "max_tokens", None),
+                count_tokens = count_tokens,
+                sticky_dropped = sticky,
+                sticky_is_checkpoint = checkpoint,
+                sticky_manual = manual,
+                keeps_boundary = True,
+                recall_offered = any(
+                    (tool.get("function") or {}).get("name") == "search_conversation"
+                    for tool in tools or []
+                ),
+                replay_only = True,
+                **_compaction_fit_kwargs(policy, ratio),
+            )
+            if truncation is not None and not truncation.get("fits"):
+                raise ValueError("The compacted prompt cannot be reconstructed within its window.")
+            if truncation is not None:
+                return int(truncation["prompt_tokens_after"])
+            messages = fitted
+    return count_tokens(messages)
+
+
 @router.post("/chat/count_tokens")
 async def chat_count_tokens(
     payload: ChatCountTokensRequest,
@@ -43454,12 +43515,17 @@ async def chat_count_tokens(
                 status_code = 503,
                 detail = "Cannot count tokens until enabled MCP tools have been discovered.",
             )
-    if not _takes_passthrough and (_tools_on or _mcp_on) and llama_backend.supports_tools:
+    if (
+        not _takes_passthrough
+        and llama_backend.supports_tools
+        and (_tools_on or _mcp_on or _checkpoint_recall_may_enable_tools(payload))
+    ):
         tools_to_use = await _select_request_tools(
             payload,
             tools_on = _tools_on,
             mcp_allowed = _mcp_allowed,
             supports_vision = bool(getattr(llama_backend, "is_vision", False)),
+            checkpoint_fitted = _rolling_context_policy(payload) is not None,
         )
         # Appended in the position _select_request_tools would have used, so the order matches.
         tools_to_use = tools_to_use + _mcp_tools
@@ -43484,6 +43550,12 @@ async def chat_count_tokens(
                 ),
                 tools_to_use,
                 rag_scope = payload.rag_scope,
+            )
+            _count_nudge = _apply_compaction_nudge(
+                _count_nudge,
+                tools_to_use,
+                checkpoint_fitted = _rolling_context_policy(payload) is not None,
+                payload = payload,
             )
             openai_messages = _append_to_system_message(openai_messages, _count_nudge)
 
@@ -43538,15 +43610,12 @@ async def chat_count_tokens(
 
     try:
         count = await asyncio.to_thread(
-            llama_backend.count_chat_tokens,
+            _count_chat_context_tokens,
+            llama_backend,
+            payload,
             openai_messages,
-            None,
             openai_tools,
-            strict = True,
-            chat_template_kwargs = _template_kwargs,
-            # Polled between /apply-template and /tokenize: admission and the work are separate
-            # steps, so a run starting in between is caught here and the second round trip is not.
-            should_abort = lambda: model_slots.routed_generation_count() > 0,
+            _template_kwargs,
         )
     except CountAborted:
         raise HTTPException(

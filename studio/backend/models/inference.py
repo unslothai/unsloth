@@ -3350,6 +3350,10 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
         ...,
         description = "Conversation messages in OpenAI chat form",
     )
+    max_tokens: Optional[int] = Field(None, ge = 1)
+    context_overflow: Optional[Literal["error", "truncate_middle", "truncate_oldest"]] = None
+    context_policy: Optional[Literal["checkpoint", "rolling"]] = None
+    compaction_headroom_ratio: Optional[float] = Field(None, ge = 0.0, le = 0.9)
     tools: Optional[list[dict]] = Field(
         None,
         description = "Optional OpenAI tool definitions included in the prompt",

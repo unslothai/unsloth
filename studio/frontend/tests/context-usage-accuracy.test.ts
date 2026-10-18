@@ -18,6 +18,7 @@ import {
   sameContextUsage,
   threadBranchRecords,
 } from "../src/features/chat/utils/saved-context-usage.ts";
+import { contextUsageReasoningKey } from "../src/features/chat/utils/context-usage-reasoning.ts";
 
 test("counts below a million keep the k suffix", () => {
   assert.equal(formatTokenCount(999), "999");
@@ -181,6 +182,33 @@ test("the tip's own count prices its branch", () => {
   assert.equal(branchContextUsage(branch, LOCAL, 8192, 8192), branch[3].metadata?.contextUsage);
 });
 
+test("local counts retain their exactness only under the reasoning mode that produced them", () => {
+  const on = contextUsageReasoningKey({ enable_thinking: true, preserve_thinking: true });
+  const off = contextUsageReasoningKey({ enable_thinking: false, preserve_thinking: true });
+  const branch = conversation();
+  branch[3] = {
+    ...branch[3],
+    metadata: {
+      contextUsage: { ...usage(500, LOCAL), reasoningKey: on, estimatedTokens: 40 },
+    },
+  };
+  assert.equal(branchContextUsage(branch, LOCAL, 8192, 8192, on), branch[3].metadata?.contextUsage);
+  const changed = branchContextUsage(branch, LOCAL, 8192, 8192, off);
+  assert.equal(changed?.estimated, true);
+  assert.equal(changed?.totalTokens, 500);
+  assert.equal(branchContextUsage(conversation(), LOCAL, 8192, 8192, on), null);
+});
+
+test("local reasoning defaults do not invalidate cloud context counts", () => {
+  const branch = conversation().map((message) => message.role === "assistant"
+    ? { ...message, metadata: { contextUsage: usage(500, CLOUD) } }
+    : message);
+  assert.equal(
+    branchContextUsage(branch, CLOUD, null, null, contextUsageReasoningKey({ enable_thinking: true })),
+    branch[3].metadata?.contextUsage,
+  );
+});
+
 test("a reply edited after it was written is estimated on top of the last count before it", () => {
   const branch = conversation();
   branch[3] = { ...branch[3], content: [{ type: "text", text: "y".repeat(400) }], metadata: { ...branch[3].metadata, revision: 1 } };
@@ -191,6 +219,28 @@ test("a reply edited after it was written is estimated on top of the last count 
     cachedTokens: 0,
     estimated: true,
   });
+});
+
+test("a research report replaces the handoff's count with an estimate from the preceding turn", () => {
+  const branch = conversation();
+  branch[3] = {
+    ...branch[3],
+    content: [{ type: "text", text: "r".repeat(400) }],
+    metadata: { ...branch[3].metadata, researchRunId: "research-1", researchStatus: "completed" },
+  };
+  const priced = branchContextUsage(branch, LOCAL, 8192, 8192);
+  assert.equal(priced?.estimated, true);
+  assert.equal(priced?.totalTokens, 410);
+  assert.equal(branchContextUsage(branch.slice(2), LOCAL, 8192, 8192), null);
+});
+
+test("a turn after a research report keeps its own exact context count", () => {
+  const branch = conversation();
+  branch[1] = {
+    ...branch[1],
+    metadata: { ...branch[1].metadata, researchRunId: "research-1", researchStatus: "completed" },
+  };
+  assert.equal(branchContextUsage(branch, LOCAL, 8192, 8192), branch[3].metadata?.contextUsage);
 });
 
 test("a revision invalidates every count after it and none before it", () => {
@@ -255,6 +305,29 @@ test("runtime messages read as branch records carrying their own metadata", () =
   ]);
   assert.equal(revisionTotal(messages), 3);
   assert.equal(revisionTotal([] as never), 0);
+});
+
+test("a research report replacing the same message changes the runtime branch revision", () => {
+  const message = {
+    metadata: { custom: { researchRunId: "research-1", serverRevision: 2, revision: 1 } },
+  };
+  assert.equal(revisionTotal([message]), 3);
+  message.metadata.custom.serverRevision = 20;
+  assert.equal(revisionTotal([message]), 21);
+  assert.equal(revisionTotal([{
+    metadata: { custom: { researchRunId: "research-1", researchRun: { lastEventSeq: 30 } } },
+  }]), 30);
+});
+
+test("generation stream revisions and malformed research revisions do not invalidate the meter", () => {
+  assert.equal(revisionTotal([{
+    metadata: { custom: { generationRunId: "generation-1", serverRevision: 100, revision: 2 } },
+  }]), 2);
+  for (const serverRevision of [undefined, null, "2", -1, Number.NaN, Infinity, 1.5]) {
+    assert.equal(revisionTotal([{
+      metadata: { custom: { researchRunId: "research-1", serverRevision } },
+    }]), 0);
+  }
 });
 
 test("a shown count matches only the same figure under the same model", () => {

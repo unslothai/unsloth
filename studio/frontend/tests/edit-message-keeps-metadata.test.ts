@@ -85,7 +85,7 @@ const hydrateUser = new Function(ts.transpileModule(
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } },
 ).outputText)() as (record: MessageRecord) => ThreadMessage;
 
-function harness() {
+function harness(persist?: () => Promise<void>) {
   const saved: Record<string, unknown>[] = [];
   const module = loadWithStubs<Module>(
     new URL(
@@ -96,6 +96,7 @@ function harness() {
       "../api/chat-api": {
         saveChatMessage: async (record: Record<string, unknown>) => {
           saved.push(record);
+          await persist?.();
           return record;
         },
       },
@@ -313,6 +314,107 @@ test("an incognito edit is never written at all", async () => {
   });
 
   assert.equal(h.saved.length, 0);
+});
+
+test("an edit publishes its revision only after the server accepts it", async () => {
+  let accept!: () => void;
+  const pending = new Promise<void>((resolve) => { accept = resolve; });
+  const h = harness(() => pending);
+  let exported = thread([{ type: "text", text: "original" }]);
+  const published: Exported[] = [];
+  const save = h.module.updateThreadMessage({
+    thread: {
+      export: () => exported,
+      import: (next) => { exported = next; published.push(next); },
+    },
+    messageId: "a0",
+    remoteId: "remote-1",
+    newText: "edited",
+    isIncognito: false,
+  });
+
+  assert.equal(h.saved.length, 1);
+  assert.equal(published.length, 0);
+  accept();
+  await save;
+  assert.equal(published.length, 1);
+  const messages = exported.messages.map(({ message }) => message) as unknown as ThreadMessage[];
+  assert.equal(revisionTotal(messages), 1);
+  assert.deepEqual(messages[1].content, [{ type: "text", text: "edited" }]);
+});
+
+test("a refused edit leaves the runtime and its context revision untouched", async () => {
+  const error = new Error("server-managed generation messages cannot be edited");
+  const h = harness(async () => { throw error; });
+  const exported = thread([{ type: "text", text: "original" }]);
+  let imports = 0;
+
+  await assert.rejects(h.module.updateThreadMessage({
+    thread: {
+      export: () => exported,
+      import: () => { imports += 1; },
+    },
+    messageId: "a0",
+    remoteId: "remote-1",
+    newText: "edited",
+    isIncognito: false,
+  }), error);
+
+  assert.equal(imports, 0);
+  const messages = exported.messages.map(({ message }) => message) as unknown as ThreadMessage[];
+  assert.equal(revisionTotal(messages), 0);
+  assert.deepEqual(messages[1].content, [{ type: "text", text: "original" }]);
+});
+
+test("accepting an edit retains messages and the branch selected while saving", async () => {
+  let accept!: () => void;
+  const pending = new Promise<void>((resolve) => { accept = resolve; });
+  const h = harness(() => pending);
+  let exported = thread([{ type: "text", text: "original" }]);
+  const save = h.module.updateThreadMessage({
+    thread: {
+      export: () => exported,
+      import: (next) => { exported = next; },
+    },
+    messageId: "a0",
+    remoteId: "remote-1",
+    newText: "edited",
+    isIncognito: false,
+  });
+  const followup = {
+    parentId: "a0",
+    message: { id: "u1", role: "user", content: [{ type: "text", text: "next" }] },
+  };
+  exported = { headId: "u1", messages: [...exported.messages, followup] };
+  accept();
+  await save;
+
+  assert.equal(exported.headId, "u1");
+  assert.equal(exported.messages.at(-1), followup);
+  assert.deepEqual(exported.messages[1].message.content, [{ type: "text", text: "edited" }]);
+});
+
+test("accepting an edit after changing threads leaves the visible thread alone", async () => {
+  let accept!: () => void;
+  const pending = new Promise<void>((resolve) => { accept = resolve; });
+  const h = harness(() => pending);
+  let exported = thread([{ type: "text", text: "original" }]);
+  let imports = 0;
+  const save = h.module.updateThreadMessage({
+    thread: {
+      export: () => exported,
+      import: () => { imports += 1; },
+    },
+    messageId: "a0",
+    remoteId: "remote-1",
+    newText: "edited",
+    isIncognito: false,
+  });
+  exported = { headId: null, messages: [] };
+  accept();
+  await save;
+
+  assert.equal(imports, 0);
 });
 
 test("the turn keeps its timestamp when the export carries epoch millis", async () => {

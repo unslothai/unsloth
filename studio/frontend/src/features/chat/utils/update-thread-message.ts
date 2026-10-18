@@ -250,25 +250,25 @@ export async function updateThreadMessage(args: {
     };
   }) as typeof currentExport.messages;
 
-  const originalExport = currentExport;
-  thread.import({ ...currentExport, messages: updatedMessages });
-
   const editedMessage = updatedMessages.find(m => m.message.id === messageId)?.message;
 
-  // If it's NOT incognito, we attempt to save to the DB regardless of the ID.
   if (remoteId && !isIncognito && editedMessage) {
-    try {
-      await saveChatMessage(
-        withoutServerOwnership(
-          exportedItemToRecord(remoteId, originalParentId, editedMessage),
-        ),
-        { allowGenerationEdit: true },
-      );
-    } catch (e) {
-      thread.import(originalExport);
-      console.error("Backend sync failed for message update. Rolling back UI.", e);
-      throw e;
-    }
+    await saveChatMessage(
+      withoutServerOwnership(
+        exportedItemToRecord(remoteId, originalParentId, editedMessage),
+      ),
+      { allowGenerationEdit: true },
+    );
+  }
+
+  const latestExport = thread.export();
+  if (editedMessage && latestExport.messages.some(m => m.message.id === messageId)) {
+    thread.import({
+      ...latestExport,
+      messages: latestExport.messages.map(m => m.message.id === messageId
+        ? { ...m, message: editedMessage }
+        : m),
+    });
   }
 
   return (updatedMessages.find(m => m.message.id === messageId)?.message.content) || [];

@@ -274,6 +274,7 @@ import {
   requestTemporaryPromptQueueStop,
 } from "./utils/prompt-queue-boundary";
 import {
+  currentContextUsageReasoningKey,
   refreshContextUsage,
   setActiveBranchReader,
 } from "./utils/refresh-context-usage";
@@ -2901,7 +2902,13 @@ function useStudioRuntimeAdapters(
         const localWindow =
           checkpoint && !isExternalModelId(checkpoint) ? store.loadedContextLength : null;
         const shownUsage =
-          branchContextUsage(branch, checkpoint, localWindow, store.loadedIsGguf ? localWindow : null) ??
+          branchContextUsage(
+            branch,
+            checkpoint,
+            localWindow,
+            store.loadedIsGguf ? localWindow : null,
+            currentContextUsageReasoningKey(),
+          ) ??
           estimateBranch(branch);
         if (shownUsage) {
           // key usage by the loaded thread because the active thread may change during awaits
@@ -3856,6 +3863,12 @@ function ThreadContextUsageRecount({
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
+  const reasoningSettings = useChatRuntimeStore(currentContextUsageReasoningKey);
+  const pricedReasoningRef = useRef<{
+    threadId: string | null;
+    checkpoint: string;
+    settings: string | undefined;
+  } | null>(null);
   // subscribe to run state so a recount skipped while busy is retried when the run ends
   const runActive = useChatRuntimeStore((s) =>
     Object.values(s.runningByThreadId).some(Boolean),
@@ -3881,6 +3894,43 @@ function ThreadContextUsageRecount({
     revision: number;
     ran: boolean;
   } | null>(null);
+
+  useEffect(() => {
+    const previous = pricedReasoningRef.current;
+    pricedReasoningRef.current = {
+      threadId: activeThreadId,
+      checkpoint,
+      settings: reasoningSettings,
+    };
+    if (
+      !enabled ||
+      modelLoading ||
+      !previous ||
+      previous.threadId !== activeThreadId ||
+      previous.checkpoint !== checkpoint ||
+      previous.settings === reasoningSettings ||
+      !checkpoint ||
+      isExternalModelId(checkpoint)
+    ) {
+      return;
+    }
+    const store = useChatRuntimeStore.getState();
+    try {
+      const branch = threadBranchRecords(activeThreadId ? aui.thread().getState().messages : []);
+      store.setContextUsage(
+        branchContextUsage(
+          branch,
+          checkpoint,
+          loadedContextLength,
+          store.loadedIsGguf ? loadedContextLength : null,
+          currentContextUsageReasoningKey(),
+        ) ?? estimateBranch(branch),
+      );
+    } catch {
+      store.setContextUsage(null);
+    }
+    void refreshContextUsage();
+  }, [activeThreadId, aui, checkpoint, enabled, loadedContextLength, modelLoading, reasoningSettings]);
 
   useEffect(() => {
     if (
@@ -3938,7 +3988,13 @@ function ThreadContextUsageRecount({
     const store = useChatRuntimeStore.getState();
     const branch = threadBranchRecords(messages);
     const usage =
-      branchContextUsage(branch, checkpoint, localWindow, store.loadedIsGguf ? localWindow : null) ??
+      branchContextUsage(
+        branch,
+        checkpoint,
+        localWindow,
+        store.loadedIsGguf ? localWindow : null,
+        currentContextUsageReasoningKey(),
+      ) ??
       estimateBranch(branch);
     if (!usage) return;
     store.setThreadContextUsage(activeThreadId, usage);
@@ -3981,6 +4037,14 @@ function ThreadContextUsageRecount({
       return;
     }
     if (tipRunning) return;
+    if (!tip) {
+      pricedTipRef.current = current;
+      store.setContextUsage(null);
+      if (!runActive && !queuedPromptPending) {
+        void refreshContextUsage({ threadId: activeThreadId });
+      }
+      return;
+    }
     const localWindow =
       checkpoint && !isExternalModelId(checkpoint) ? loadedContextLength : null;
     const branch = threadBranchRecords(messages);
@@ -3989,6 +4053,7 @@ function ThreadContextUsageRecount({
       checkpoint,
       localWindow,
       store.loadedIsGguf ? localWindow : null,
+      currentContextUsageReasoningKey(),
     );
     const exact = usage != null && !usage.estimated;
     const recount =
@@ -4012,11 +4077,8 @@ function ThreadContextUsageRecount({
       return;
     }
     if (recount) {
+      store.setContextUsage(usage ?? estimateBranch(branch));
       void refreshContextUsage({ threadId: activeThreadId });
-      return;
-    }
-    if (!tip) {
-      store.setContextUsage(null);
       return;
     }
     const next =

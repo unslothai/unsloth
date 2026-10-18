@@ -49,6 +49,7 @@ BOUND_NAMES = {
     "tipRunning",
     "branchLength",
     "branchRevision",
+    "reasoningSettings",
 }
 
 
@@ -153,6 +154,9 @@ HARNESS_PRELUDE = """
 export const world: any = {
   storedMessages: {} as Record<string, any[]>,
   countedMessages: [] as any[][],
+  countedPayloads: [] as any[],
+  countExtras: {},
+  countError: null,
   countedModel: undefined as string | undefined,
   switchedToNewThread: 0,
   clearedAttachments: 0,
@@ -175,6 +179,7 @@ const state: any = {
   loadedContextLength: null,
   modelLoading: false,
   runningByThreadId: {},
+  queuedSettingsEpoch: 0,
   // The subset decoding on the local llama-server: the recount must not share it with a decode.
   localRunByThreadId: {},
   // What the recount reads to tell an output-only audio GGUF from a chat one.
@@ -334,13 +339,13 @@ async function buildLocalTokenCountHistory(messages: any): Promise<{ messages: a
 }
 
 async function buildLocalTokenCountExtras(): Promise<Record<string, unknown>> {
-  return {};
+  return world.countExtras;
 }
 
 // The reasoning kwargs are pinned by test_token_count_prompt_parity.py; here the count
 // only has to reach the server with the right branch of messages.
 function buildLocalTokenCountReasoning(): Record<string, unknown> {
-  return {};
+  return state.supportsReasoning ? { enable_thinking: state.reasoningEnabled } : {};
 }
 
 // 12 tokens for the bare template, 25 more per message actually sent. The endpoint also
@@ -348,7 +353,9 @@ function buildLocalTokenCountReasoning(): Record<string, unknown> {
 // omits it, as an older backend would.
 async function countChatInputTokens(payload: any): Promise<any> {
   world.countedMessages.push(payload.messages);
+  world.countedPayloads.push(payload);
   if (world.countGate) await world.countGate;
+  if (world.countError) throw world.countError;
   return {
     input_tokens:
       world.countedTokensOverride === undefined
@@ -416,6 +423,7 @@ function replayEffects(effects: any[], scope: any, memo: any[]): void {
 
 const recountDeps: any[] = [];
 const pricedTipRef: any = { current: null };
+const pricedReasoningRef: any = { current: null };
 
 export function renderThreadContextUsageRecount(props: any = {}): void {
   const enabled = props.enabled ?? true;
@@ -437,6 +445,7 @@ export function renderThreadContextUsageRecount(props: any = {}): void {
   const tipRunning = tip?.role === "assistant" && tip.status?.type === "running";
   const branchLength = messages.length;
   const branchRevision = revisionTotal(messages);
+  const reasoningSettings = currentContextUsageReasoningKey(state);
   const scope: any = {
     activeThreadId,
     aui,
@@ -451,6 +460,7 @@ export function renderThreadContextUsageRecount(props: any = {}): void {
     tipRunning,
     branchLength,
     branchRevision,
+    reasoningSettings,
   };
   const effects: any[] = [
 __RECOUNT_EFFECTS__
@@ -2526,8 +2536,8 @@ def test_the_count_is_retried_once_the_run_finishes():
         "\nfunction CancelRegistrar(",
     )
     assert "runningByThreadId" in recount, "the effect must observe decoding"
-    deps = re.search(r"\}, \[([^\]]*)\]\);", recount, re.S)
-    assert deps and "runActive" in deps.group(1), (
+    deps = re.findall(r"\}, \[([^\]]*)\]\);", recount, re.S)
+    assert any("runActive" in effect for effect in deps), (
         "runActive must be a DEPENDENCY, not just a guard: nothing else in this array "
         "changes when a run ends, so without it a skipped count would never be retried"
     )
@@ -3027,6 +3037,10 @@ _LIVE_CHANGES = {
         "(live) => [...live.slice(0, 5), { ...live[5], metadata: { custom: "
         "{ ...live[5].metadata.custom, feedback: 'up' } } }]"
     ),
+    "research_report_replaces_the_tip": (
+        "(live) => [...live.slice(0, 5), msg('a6', 'assistant', 6, "
+        "{ contextUsage: saved(700, 6), researchRunId: 'research-1', serverRevision: 9 }, 400)]"
+    ),
     "delete_the_last_reply": "(live) => live.slice(0, 5)",
     "delete_the_last_turn": "(live) => live.slice(0, 4)",
     "delete_a_middle_turn": "(live) => [live[0], live[1], live[4], live[5]]",
@@ -3045,6 +3059,12 @@ _LIVE_CHANGES = {
             {"counts": 0, "total": 610, "estimated": True},
         ),
         ("metadata_only_change", "", {"counts": 0, "total": 700, "estimated": None}),
+        ("research_report_replaces_the_tip", "", {"counts": 1, "total": 162, "estimated": None}),
+        (
+            "research_report_replaces_the_tip",
+            "external::openai::gpt-x",
+            {"counts": 0, "total": 610, "estimated": True},
+        ),
         (
             "metadata_only_change",
             "external::openai::gpt-x",
@@ -3373,3 +3393,95 @@ def test_a_change_made_while_another_chat_generates_is_priced_when_it_ends(steps
     pick = f"useChatRuntimeStore.getState().setCheckpoint({json.dumps(picked)});" if picked else ""
     out = _run(_script(_OVERLAPPING_RUNS, PICK = pick, STEPS = textwrap.dedent(steps)))
     assert out == expected
+
+
+@pytest.mark.parametrize(
+    ("setup", "expected_counts"),
+    [
+        ('world.countError = new Error("count refused");', 1),
+        ("world.countedTokensOverride = { value: Number.NaN };", 1),
+        (
+            'world.countExtras = { rag_scope: { kb_id: "kb-1", autoinject: "always" } };',
+            0,
+        ),
+    ],
+    ids = ["refused", "invalid_response", "pending_retrieval"],
+)
+def test_a_declined_recount_cannot_leave_the_deleted_reply_count_exact(setup, expected_counts):
+    script = _script(_LIVE_CHANGE, PICK = "", AFTER = _LIVE_CHANGES["delete_the_last_reply"])
+    script = script.replace("const after =", setup + "\nconst after =")
+    out = _run(script)
+    assert out == {"counts": expected_counts, "total": 510, "estimated": True}
+
+
+@pytest.mark.parametrize("thread_id", ["thread-a", None], ids = ["saved_chat", "new_chat"])
+def test_changing_thinking_recounts_the_current_prompt(thread_id):
+    out = _run(
+        _script(
+            """
+            import { renderThreadContextUsageRecount, seed, snapshot, useChatRuntimeStore, world } from "./harness.ts";
+            __LOADED_MODEL__
+            seed({ activeThreadId: __THREAD_ID__, supportsReasoning: true, reasoningEnabled: true });
+            useChatRuntimeStore.getState().setContextUsage({ promptTokens: 351, completionTokens: 0, totalTokens: 351, cachedTokens: 0 });
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            const before = world.countedMessages.length;
+            world.countedTokensOverride = { value: 341 };
+            seed({ reasoningEnabled: false });
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            renderThreadContextUsageRecount();
+            console.log(JSON.stringify({
+              counts: world.countedMessages.length - before,
+              thinking: world.countedPayloads.at(-1)?.enable_thinking,
+              total: snapshot().contextUsage?.totalTokens,
+            }));
+            """,
+            THREAD_ID = json.dumps(thread_id),
+        )
+    )
+    assert out == {"counts": 1, "thinking": False, "total": 341}
+
+
+def test_reopening_after_thinking_changes_does_not_restore_the_previous_count():
+    out = _run(
+        _script(
+            """
+            import { hydrateThreadUsage, renderThreadContextUsageRecount, seed, snapshot, useChatRuntimeStore, world } from "./harness.ts";
+            __LOADED_MODEL__
+            seed({ activeThreadId: "thread-a", supportsReasoning: true, reasoningEnabled: true });
+            const saved = {
+              promptTokens: 351, completionTokens: 0, totalTokens: 351, cachedTokens: 0,
+              modelId: "unsloth/gguf-model", reasoningKey: "[true,null,null]",
+            };
+            const messages = [
+              { id: "u1", parentId: null, role: "user", createdAt: 1, content: [{ type: "text", text: "hello" }], metadata: {} },
+              { id: "a2", parentId: "u1", role: "assistant", createdAt: 2, content: [{ type: "text", text: "hello back" }], metadata: { contextUsage: saved } },
+            ];
+            world.storedMessages["thread-a"] = messages;
+            useChatRuntimeStore.getState().setContextUsage(saved);
+            renderThreadContextUsageRecount();
+            world.countedTokensOverride = { value: 341 };
+            seed({ reasoningEnabled: false });
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            const live = snapshot().contextUsage;
+            await hydrateThreadUsage({ remoteId: "thread-a", messages });
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({
+              live: live?.totalTokens,
+              reopened: snapshot().contextUsage?.totalTokens,
+              reasoningKey: snapshot().contextUsage?.reasoningKey,
+              counts: world.countedMessages.length,
+            }));
+            """
+        )
+    )
+    assert out == {"live": 341, "reopened": 341, "reasoningKey": "[false,null,null]", "counts": 1}
+
+
+def test_a_refused_empty_prompt_clears_the_deleted_turn_count():
+    script = _script(_LIVE_CHANGE, PICK = "", AFTER = _LIVE_CHANGES["delete_everything"])
+    script = script.replace("const after =", 'world.countError = new Error("empty prompt");\nconst after =')
+    out = _run(script)
+    assert out == {"counts": 1, "total": None, "estimated": None}

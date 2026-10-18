@@ -298,6 +298,20 @@ def _fit_context(messages, **kwargs):
     # /compact: only a checkpoint reset can honour it, since only its turns are archived.
     force_reset = bool(kwargs.pop("force_reset", False))
     sticky_manual = bool(kwargs.pop("sticky_manual", False))
+    if kwargs.pop("replay_only", False):
+        if int(kwargs.get("sticky_dropped") or 0) <= 0:
+            return messages, None
+        if sticky_is_checkpoint:
+            from core.inference import checkpoint
+
+            return checkpoint.fit_checkpoint_context(
+                messages,
+                can_reset = False,
+                searchable = recall_offered,
+                sticky_manual = sticky_manual,
+                **kwargs,
+            )
+        return fit_rolling_context(messages, replay_only = True, **kwargs)
     if kwargs.get("count_tokens") is not None:
         try:
             messages = fit_oversized_attachments(

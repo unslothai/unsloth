@@ -200,6 +200,31 @@ test("terminal recovery prices a tool loop's context, not its summed completions
   assert.equal(usage.totalTokens, 180);
 });
 
+test("recovered usage keeps the reasoning mode from its persisted request", () => {
+  const metadata = recoveredGenerationFinalMetadata({
+    current: { generationSettled: true },
+    run: {
+      id: "run-reasoning",
+      requestPayload: {
+        model: "local/model",
+        thinking: { type: "enabled" },
+        reasoning_effort: "high",
+        preserve_thinking: false,
+      },
+      createdAt: 100,
+      startedAt: 120,
+      completedAt: 1120,
+    },
+    usage: { prompt_tokens: 140, completion_tokens: 40, total_tokens: 180 },
+    totalChunks: 4,
+    markers: MARKERS,
+  });
+  assert.equal(
+    (metadata.contextUsage as { reasoningKey: string }).reasoningKey,
+    '[true,"high",false]',
+  );
+});
+
 test("terminal recovery restores final local usage and timing metadata", () => {
   const metadata = recoveredGenerationFinalMetadata({
     current: { generationSettled: true },
@@ -228,6 +253,7 @@ test("terminal recovery restores final local usage and timing metadata", () => {
     cachedTokens: 3,
     cacheWriteTokens: 0,
     modelId: "local/model",
+    reasoningKey: "[null,null,null]",
     ...MARKERS,
   });
   assert.deepEqual(metadata.serverTimings, {
@@ -406,6 +432,7 @@ test("recovery persists recovered usage alongside the cursor it advanced", () =>
     cachedTokens: 0,
     cacheWriteTokens: 0,
     modelId: "local/model",
+    reasoningKey: "[null,null,null]",
     ...MARKERS,
   });
   assert.deepEqual(settled.serverTimings, timings);

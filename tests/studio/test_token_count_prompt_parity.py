@@ -22,10 +22,13 @@ from _node_harness import (
 ADAPTER = source_path("studio/frontend/src/features/chat/api/chat-adapter.ts")
 CAPABILITIES = source_path("studio/frontend/src/features/chat/provider-capabilities.ts")
 MODEL_SIZE = source_path("studio/frontend/src/lib/model-size.ts")
+COMPACTION = source_path("studio/frontend/src/features/chat/utils/auto-compaction.ts")
+MODEL_CONFIG = source_path("studio/frontend/src/features/model-picker/model-config/per-model-config.ts")
+EXTERNAL_PROVIDERS = source_path("studio/frontend/src/features/chat/external-providers.ts")
 
 TEMP = WORKDIR / "temp" / "token_count_prompt_parity"
 
-SOURCES = (ADAPTER, CAPABILITIES, MODEL_SIZE)
+SOURCES = (ADAPTER, CAPABILITIES, MODEL_SIZE, COMPACTION, MODEL_CONFIG, EXTERNAL_PROVIDERS)
 
 
 def _prune_helpers() -> str:
@@ -48,6 +51,12 @@ def _outbound_builder() -> str:
 def _extras_builder() -> str:
     """Joined on blank lines, else a slice starting on the previous brace is not seen as a declaration."""
     parts = [
+        read(COMPACTION),
+        slice_between(
+            read(MODEL_CONFIG),
+            "export function isServedByLlamaCpp(",
+            "export function resumesThought(",
+        ),
         read(MODEL_SIZE).split("\n", 2)[2],
         slice_between(
             read(ADAPTER),
@@ -205,6 +214,26 @@ def _count_script(seed_patch: str) -> str:
         }}));
         """
     )
+
+
+@pytest.mark.parametrize("auto_compact", [True, False])
+@pytest.mark.parametrize("supports_tools", [True, False])
+def test_count_carries_the_completion_compaction_policy(auto_compact, supports_tools):
+    out = _run(
+        f"""
+        import {{ buildLocalTokenCountExtras, seed }} from "./harness.ts";
+        seed({{
+          loadedIsGguf: true,
+          autoCompactEnabled: {str(auto_compact).lower()},
+          supportsTools: {str(supports_tools).lower()},
+          params: {{ checkpoint: "local-model", maxTokens: 512 }},
+        }});
+        console.log(JSON.stringify(await buildLocalTokenCountExtras("thread-a")));
+        """
+    )
+    assert out["context_overflow"] == ("truncate_oldest" if auto_compact else "error")
+    assert out["max_tokens"] == 512
+    assert out["thread_id"] == "thread-a"
 
 
 USER_TURN = "draw me a bar chart"
