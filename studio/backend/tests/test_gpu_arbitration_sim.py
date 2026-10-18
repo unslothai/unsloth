@@ -754,6 +754,7 @@ class VramSim:
         monkeypatch.setattr(hardware_impl, "get_parent_visible_gpu_ids", lambda: list(self.parent))
         monkeypatch.setattr(gpu_residency, "current_policy", lambda: self.policy)
         monkeypatch.setattr(gpu_residency, "_media_busy", lambda owner: (False, False))
+        monkeypatch.setattr(gpu_residency, "_loaded_or_loading", lambda owner: True)
         monkeypatch.setattr(gpu_residency, "chat_load_in_flight", lambda: False)
         # The diffusion planner's own verdict is covered in test_gpu_residency_coexistence.py.
         monkeypatch.setattr(gpu_residency, "_keeps_transformer_resident", lambda *a: True)

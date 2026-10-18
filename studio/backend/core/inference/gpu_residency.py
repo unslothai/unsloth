@@ -56,7 +56,22 @@ def _media_records() -> dict[str, dict]:
     if not records:
         return {}
     resident = set(arb._view()) if hasattr(arb, "_view") else {arb._owner}
-    return {owner: need for owner, need in records.items() if owner in resident}
+    return {
+        owner: need
+        for owner, need in records.items()
+        if owner in resident and _loaded_or_loading(owner)
+    }
+
+
+def _loaded_or_loading(owner: str) -> bool:
+    """False once a media load failed and left nothing loaded, so its price stops counting. Unknown reads as True."""
+    try:
+        engine = _media_engine(owner)
+        if engine is None:
+            return True
+        return getattr(engine, "_state", None) is not None or bool(engine.loading_repo_ids())
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def media_held_mib() -> dict[int, int]:
@@ -600,10 +615,11 @@ def _free_steps(
         )
         victims = model_slots.eviction_victims(None, short, gpu_ids)
         if victims:
-            slots = [_kept_slot_report(victim) for victim in victims]
-            model_slots.evict_these(victims)
-            _record_evicted(slots, evicted, freed)
-            if done():
+            reports = {id(victim): _kept_slot_report(victim) for victim in victims}
+            # A slot a request reached since it was picked stays loaded, so it isn't reported.
+            dropped = model_slots.evict_these(victims) or []
+            _record_evicted([reports[id(victim)] for victim in dropped], evicted, freed)
+            if dropped and done():
                 return freed
     # 5. The active chat model.
     if owner != arb.CHAT and arb.CHAT in overlapping():
@@ -620,7 +636,8 @@ def _kept_slot_report(slot: Any) -> dict:
     except Exception:  # noqa: BLE001
         pass
     request = getattr(slot, "request", None)
-    return {"kind": "chat", "model": str(getattr(request, "model_path", "") or "")}
+    model = str(getattr(request, "model_path", "") or "")
+    return {"kind": "chat", "model": model, "account": getattr(slot, "account", None)}
 
 
 def media_fit_kwargs(

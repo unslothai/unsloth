@@ -93,6 +93,7 @@ def cores(calls, monkeypatch):
     )
     monkeypatch.setattr(res, "chat_load_in_flight", lambda: False)
     monkeypatch.setattr(res, "_media_busy", lambda owner: (False, False))
+    monkeypatch.setattr(res, "_loaded_or_loading", lambda owner: True)
     rows = {gpu: {"free_mib": 8192, "total_mib": 24576} for gpu in (0, 1)}
     monkeypatch.setattr(res, "_free_mib_by_gpu", lambda: (rows, None))
     monkeypatch.setattr(model_slots, "eviction_victims", lambda *args, **kwargs: [])

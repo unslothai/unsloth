@@ -224,6 +224,10 @@ class _ArbiterResetMixin:
         super().setUp()
         self._saved = {name: getattr(arb, name) for name in self._FIELDS}
         arb._owner, arb._residents, arb._media_needs, arb._accounts = None, {}, {}, {}
+        # Residents set by hand have no engine behind them; TestFailedLoadPrice covers the check.
+        self._engine_patch = patch.object(gr, "_loaded_or_loading", return_value = True)
+        self._engine_patch.start()
+        self.addCleanup(self._engine_patch.stop)
 
     def tearDown(self):
         for name, value in self._saved.items():
@@ -361,6 +365,22 @@ class TestCanLoadAlongside(_ArbiterResetMixin, unittest.TestCase):
             self.assertTrue(self._check(_need({0: 1000}, kind = "video"))[0])
 
 
+class TestFailedLoadPrice(_ArbiterResetMixin, unittest.TestCase):
+    def test_a_price_counts_only_while_its_model_is_loaded_or_loading(self):
+        self._engine_patch.stop()
+        self._resident(arb.VIDEO, {0}, _need({0: 5000}))
+        for state, loading, counted in (
+            (None, (), False),
+            ("s", (), True),
+            (None, ("org/v",), True),
+        ):
+            engine = SimpleNamespace(_state = state, loading_repo_ids = lambda loading = loading: loading)
+            with patch.object(gr, "_media_engine", return_value = engine):
+                self.assertEqual(gr.media_held_mib(), {0: 5000} if counted else {})
+        with patch.object(gr, "_media_engine", return_value = None):
+            self.assertEqual(gr.media_held_mib(), {0: 5000})
+
+
 class TestMediaHeldMib(_ArbiterResetMixin, unittest.TestCase):
     def test_nothing_resident_is_empty(self):
         self.assertEqual(gr.media_held_mib(), {})
@@ -395,6 +415,7 @@ class TestFreeForOrder(_ArbiterResetMixin, unittest.TestCase):
             MagicMock(return_value = (False, {})),
         )
         recorder = lambda name: (lambda: self.log.append(name))
+        self.dropped = list
         self.monitor = MagicMock()
         self._patches = [
             patch.dict(
@@ -431,7 +452,7 @@ class TestFreeForOrder(_ArbiterResetMixin, unittest.TestCase):
             ),
             patch(
                 "core.inference.model_slots.evict_these",
-                side_effect = lambda v: self.log.append("evict_these"),
+                side_effect = lambda v: self.log.append("evict_these") or self.dropped(v),
             ),
             patch("core.inference.api_monitor.api_monitor", self.monitor),
             patch("utils.account_context.current_account_id", return_value = "me"),
@@ -452,6 +473,12 @@ class TestFreeForOrder(_ArbiterResetMixin, unittest.TestCase):
         return gr.free_for(
             owner, gpus, "test", self.evicted, need_mib = _need({0: 1000}, kind = "image")
         )
+
+    def test_a_kept_slot_a_request_reached_is_not_reported(self):
+        self._resident(arb.CHAT, {0})
+        self.dropped = lambda victims: []
+        self._free()
+        self.assertNotIn({"kind": "chat", "model": "kept-model"}, self.evicted)
 
     def test_idle_media_before_kept_then_active_chat(self):
         self._resident(arb.VIDEO, {0})
