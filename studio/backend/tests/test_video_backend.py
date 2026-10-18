@@ -9547,16 +9547,24 @@ def test_plan_keeps_the_bf16_budget_without_a_hosted_pre_cast_encoder(fake_runti
 def test_default_load_budgets_the_hosted_encoder_its_family_defaults_to(fake_runtime, monkeypatch):
     # An UNSET request on a family with te_quant_auto takes the hosted fp8 encoder, so the plan is
     # built from the pre-cast size, exactly as for an explicit fp8; "none" keeps the bf16 budget.
+    # The hosted file has to be CONFIRMED (on disk or listed by the Hub): unconfirmed, the automatic pick falls back to
+    # the dense encoder, so that is what it budgets.
+    import core.inference.diffusion_te_prequant as tpq
     from core.inference.video_families import detect_video_family
     scale = _allow_te_prequant(monkeypatch)
     for repo in ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"):
         fam = detect_video_family(repo)
         transformer_gb, text_encoder_gb, vae_gb = fam.bf16_components_gb
+        monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda *a, **k: True)
         calls = _capture_plan(monkeypatch)
         VideoBackend().load_pipeline(repo, model_kind = "pipeline")
         assert calls[0]["text_encoder_dense_mib"] == int(
             text_encoder_gb * scale * _MIB_PER_GB
         ), repo
+        monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda *a, **k: False)
+        calls = _capture_plan(monkeypatch)
+        VideoBackend().load_pipeline(repo, model_kind = "pipeline")
+        assert calls[0]["text_encoder_dense_mib"] == int(text_encoder_gb * _MIB_PER_GB), repo
         calls = _capture_plan(monkeypatch)
         VideoBackend().load_pipeline(repo, model_kind = "pipeline", text_encoder_quant = "none")
         assert calls[0]["text_encoder_dense_mib"] == int(text_encoder_gb * _MIB_PER_GB), repo
