@@ -733,3 +733,58 @@ def test_unloading_stt_stops_a_load_still_downloading(monkeypatch, fast_polls):
         {"model": WHISPER, "engine": "transformers", "download_id": "d1"}
     ]
     assert bodies(studio, f"{STT}/load") == []
+
+
+@pytest.mark.parametrize("kind", ["llm", "video"])
+def test_unloading_stops_a_load_still_running(monkeypatch, fast_polls, kind):
+    # Nothing is resident yet, so before this the unload answered "nothing loaded" and posted nothing.
+    model = LLM if kind == "llm" else LTX
+    unload = "/api/inference/unload" if kind == "llm" else "/api/inference/video/unload"
+    if kind == "llm":
+        routes = {**PAYLOADS, LOAD: slow(LOADED, 5.0), STATUS_ROUTE: EMPTY_STATUS}
+    else:
+        routes = {
+            ("POST", "/api/inference/video/download-plan"): {"entries": []},
+            ("POST", "/api/inference/video/load"): slow(LTX_LOADED, 5.0),
+            ("GET", "/api/inference/video/load-progress"): READY,
+            VIDEO_STATUS: UNLOADED,
+            IMAGE_STATUS: UNLOADED,
+            ("POST", unload): UNLOADED,
+        }
+    studio = fake_studio(routes)
+    with session(monkeypatch, studio) as call:
+        early = call("load_model", {"model": model, "kind": kind, "wait_s": 0})
+        job_id = early["structuredContent"]["job_id"]
+        unloaded = call("unload_model", {"kind": kind})["structuredContent"]
+        job = call("get_job", {"kind": "load", "id": job_id})
+    assert unloaded == {"kind": kind, "model": model, "unloaded": True}
+    assert job["structuredContent"]["status"] == "cancelled"
+    assert len([c for c in studio.state.calls if c[1] == unload]) == 1
+    if kind == "llm":
+        assert bodies(studio, unload) == [{"model_path": LLM}]
+
+
+def test_unloading_stt_lets_a_load_past_its_download_finish_then_unloads_it(
+    monkeypatch, fast_polls
+):
+    # Cancelling the in-process load route would not stop the sidecar load, so it is waited for.
+    studio = fake_studio(
+        {
+            ("GET", f"{STT}/status"): sequence(
+                {"transformers": stt_state(downloaded = [WHISPER])},
+                {"transformers": stt_state(downloaded = [WHISPER], loaded = WHISPER)},
+                {"transformers": stt_state(downloaded = [WHISPER])},
+            ),
+            ("POST", f"{STT}/load"): slow({"loaded_model": WHISPER}, 0.5),
+            ("POST", f"{STT}/unload"): {"loaded_model": None},
+        }
+    )
+    with session(monkeypatch, studio) as call:
+        early = call("load_model", {"model": WHISPER, "kind": "stt", "wait_s": 0})
+        job_id = early["structuredContent"]["job_id"]
+        unloaded = call("unload_model", {"kind": "stt"})["structuredContent"]
+        job = call("get_job", {"kind": "load", "id": job_id})
+    assert unloaded == {"kind": "stt", "model": WHISPER, "unloaded": True}
+    assert job["structuredContent"]["status"] == "completed"
+    assert bodies(studio, f"{STT}/download/cancel") == []
+    assert len(bodies(studio, f"{STT}/load")) == 1

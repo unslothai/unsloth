@@ -67,8 +67,10 @@ class LoadJob(job_store.Job):
     fraction: Optional[float] = None
     # Each distinct (fraction, phase) the load went through, for every caller following it.
     marks: list[tuple[float, str]] = field(default_factory = list, repr = False)
-    # The STT download body this load started, so unload_model can stop it.
+    # The STT download this load started, so unload_model can stop it, and whether the STT load
+    # request is out (it then runs to the end: cancelling its in-process route does not stop it).
     download: Optional[dict] = None
+    posted: bool = False
 
     def note(self, fraction: Optional[float], phase: str) -> None:
         # A step without a fraction keeps the last one, so progress never drops back.
@@ -117,6 +119,22 @@ def _in_flight(caller: Caller, asked: LoadJob) -> Optional[LoadJob]:
         ):
             return job
     return None
+
+
+def _stop_loads(
+    caller: Caller,
+    slots: Any,
+    model: Optional[str] = None,
+) -> list[LoadJob]:
+    """Mark this caller's loads of ``slots`` still running in the job store cancelled. cancel has no load kind, so unload_model is how an agent stops one; each unload also stops the load server-side."""
+    jobs = [
+        job
+        for job in LOADS.running(caller.account_id)
+        if job.slot in slots and (model is None or _same_id(job.model, model))
+    ]
+    for job in jobs:
+        job_store.mark_cancelled(job)
+    return jobs
 
 
 def _early(job: LoadJob) -> LoadResult:
@@ -388,8 +406,13 @@ async def unload_llm(
     model: Optional[str],
     kind: str = "llm",
 ) -> UnloadResult:
+    # A load_model still loading runs on in the job store, and the route stops a load only when the
+    # unload names it, so without ``model`` that load is the one unloaded.
+    stopped = _stop_loads(caller, CHAT_ROUTE_KINDS, model)
     serving, checkpoints, before = await _llm_resident(caller)
-    if model is None:
+    if model is None and stopped:
+        target = model = stopped[-1].model
+    elif model is None:
         if not checkpoints:
             return UnloadResult(kind = kind, unloaded = False)
         target, model = checkpoints[0], (serving[0] if serving else checkpoints[0])
@@ -401,7 +424,7 @@ async def unload_llm(
     )
     # An id that matches nothing still answers success, so compare what is resident before and after.
     _serving, _checkpoints, after = await _llm_resident(caller)
-    was_loaded = bool({model, target} & before)
+    was_loaded = bool({model, target} & before) or bool(stopped)
     return UnloadResult(
         kind = kind, model = model, unloaded = was_loaded and not ({model, target} & after)
     )
@@ -561,11 +584,17 @@ async def _media_ready(
 
 async def unload_media(caller: Caller, kind: str) -> UnloadResult:
     routes = MEDIA_ROUTES[kind]
+    # A load_model still loading runs on in the job store; the unload route cancels its load too.
+    stopped = _stop_loads(caller, (kind,))
     before = as_dict(await route_json("GET", routes["status"], caller = caller))
-    if before.get("loaded") is not True:
+    if before.get("loaded") is not True and not stopped:
         return UnloadResult(kind = kind, unloaded = False)
     after = await route_json("POST", routes["unload"], caller = caller)
-    model = opt_text(before.get("display_repo_id")) or opt_text(before.get("repo_id"))
+    model = (
+        opt_text(before.get("display_repo_id"))
+        or opt_text(before.get("repo_id"))
+        or (stopped[-1].model if stopped else None)
+    )
     unloaded = isinstance(after, dict) and after.get("loaded") is not True
     return UnloadResult(kind = kind, model = model, unloaded = unloaded)
 
@@ -608,6 +637,8 @@ async def download_stt(
     """Download an STT model and wait for it; the download route reads the Hub token from its header."""
     if hf_token:
         caller = dataclasses.replace(caller, hf_token = hf_token)
+    if isinstance(ctx, LoadJob):
+        ctx.download = {"model": model, "engine": engine}
     started = await route_json(
         "POST",
         "/api/inference/audio/stt/download",
@@ -620,7 +651,7 @@ async def download_stt(
         hub_header = True,
     )
     download_id = started.get("download_id") if isinstance(started, dict) else None
-    if isinstance(ctx, LoadJob):
+    if isinstance(ctx, LoadJob) and download_id is not None:
         ctx.download = {"model": model, "engine": engine, "download_id": download_id}
     while True:
         await asyncio.sleep(POLL_INTERVAL_S)
@@ -663,6 +694,8 @@ async def load_stt(
     body: dict[str, Any] = {"model": model, "engine": engine}
     if variant:
         body["gguf_variant"] = variant
+    if isinstance(ctx, LoadJob):
+        ctx.posted = True
     loaded = await route_json(
         "POST", "/api/inference/audio/stt/load", caller = caller, json_body = body
     )
@@ -675,11 +708,17 @@ async def load_stt(
 
 
 async def _stop_stt_loads(caller: Caller, model: Optional[str]) -> Optional[str]:
-    """Stop this caller's STT loads still running in the job store, and their downloads; the last model stopped, if any."""
+    """Stop this caller's STT loads still downloading, and their downloads, and let one already loading finish so it can be unloaded; the last model stopped, if any."""
     stopped = None
     for job in LOADS.running(caller.account_id):
-        if job.slot != "stt" or (model is not None and not _same(job.model, model)):
-            continue
+        if job.slot == "stt" and job.posted and (model is None or _same_id(job.model, model)):
+            await job_store.settle(job, MAX_WAIT_S)
+    jobs = [
+        job
+        for job in LOADS.running(caller.account_id)
+        if job.slot == "stt" and not job.posted and (model is None or _same_id(job.model, model))
+    ]
+    for job in jobs:
         job_store.mark_cancelled(job)
         stopped = job.model
         # Partial files stay cached, so a later load resumes the download.
