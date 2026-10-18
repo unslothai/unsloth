@@ -177,6 +177,8 @@ def test_route_auto_still_ranks_on_a_multi_gpu_cuda_host(monkeypatch):
     from routes import inference as routes
 
     _ordinary(monkeypatch, visible = (0, 1))
+    # The event-loop gate reads live detection state; defer to the worker gate _ordinary stubs.
+    monkeypatch.setattr(dd, "auto_cuda_ranking_possible_cached", lambda: None)
     targets = _counting_target(monkeypatch, dd)
     ranks = _counting_rank(monkeypatch)
 
@@ -509,6 +511,7 @@ def test_mig_listing_parses_slices():
         ),
         _patch.object(nvidia.gpu_query, "enabled", lambda: False),
         _patch.object(nvidia, "_mig_entry", None),
+        _patch.object(nvidia, "get_mig_mode_gpu_indices_or_none", lambda: set()),
     ):
         assert hw._nvidia_mig_gpu_indices_or_none() == {0}
 

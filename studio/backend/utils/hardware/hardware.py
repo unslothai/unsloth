@@ -2098,12 +2098,17 @@ def _cuda_cards_identical(gpu_ids: Optional[list[int]] = None) -> Optional[bool]
 
 
 def _nvidia_mig_gpu_indices_or_none() -> Optional[set[int]]:
-    """Physical indices of NVIDIA cards with MIG instances, or None when discovery is unknown (the
-    listing failed or came back empty, unlike a confirmed set with no MIG card). Shares nvidia's
-    cache, so a failed listing backs off instead of re-running ``nvidia-smi -L`` per call."""
+    """Physical indices of NVIDIA cards with MIG instances or MIG mode on (an instance-less one has no
+    CUDA device, so its row is no ordinal either), or None when discovery is unknown (a listing failed or
+    came back empty, unlike a confirmed set with no MIG card). Shares nvidia's caches, so a failed
+    listing backs off instead of re-running nvidia-smi per call."""
     try:
         from . import nvidia
-        return nvidia.get_mig_gpu_indices_or_none()
+        instances = nvidia.get_mig_gpu_indices_or_none()
+        if instances is None:
+            return None
+        mode = nvidia.get_mig_mode_gpu_indices_or_none()
+        return None if mode is None else instances | mode
     except Exception:
         return None
 

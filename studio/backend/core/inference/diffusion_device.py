@@ -505,13 +505,25 @@ def auto_cuda_ranking_possible_cached() -> Optional[bool]:
             return None
         mask = os.environ.get("CUDA_VISIBLE_DEVICES")
         if mask is None:
-            if hw._physical_gpu_count is None:
+            # A stray HIP/ROCR mask is then read as the mask: leave that to the worker gate.
+            if hw._physical_gpu_count is None or {"HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"} & set(os.environ):
                 return None
-        elif not all(token.strip().isdigit() for token in mask.split(",") if token.strip()):
+            # The count in memory: get_physical_gpu_count() may re-read nvidia-smi, the worker gate does.
+            return hw._physical_gpu_count >= 2
+        if not all(token.strip().isdigit() for token in mask.split(",") if token.strip()):
             return None
+        # get_parent_visible_gpu_ids' CUDA rule, without its get_device(): an empty entry ends the
+        # list and a repeat empties it.
+        ids: list[int] = []
+        for token in (token.strip() for token in mask.split(",")):
+            if not token:
+                break
+            if int(token) in ids:
+                return False
+            ids.append(int(token))
+        return len(ids) >= 2
     except Exception:  # noqa: BLE001 -- let the worker-thread gate decide
         return None
-    return auto_cuda_ranking_possible()
 
 
 def auto_cuda_ranking_possible() -> bool:

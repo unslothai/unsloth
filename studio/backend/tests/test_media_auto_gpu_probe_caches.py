@@ -75,4 +75,5 @@ def test_mig_listing_answer(monkeypatch):
     monkeypatch.setattr(gpu_query, "run_nvidia_smi", _smi(out))
     monkeypatch.setattr(gpu_query, "enabled", lambda: False)
     monkeypatch.setattr(nvidia, "_mig_entry", None)
+    monkeypatch.setattr(nvidia, "get_mig_mode_gpu_indices_or_none", lambda: set())
     assert hw._nvidia_mig_gpu_indices_or_none() == {1}
